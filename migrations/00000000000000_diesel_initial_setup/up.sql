@@ -11,7 +11,8 @@ create table
     player (
         id TEXT not null constraint id_key primary key,
         username TEXT not null,
-        password TEXT not null
+        password TEXT not null,
+        synced INTEGER default false not null
     );
 
 create unique index id_index on player (id);

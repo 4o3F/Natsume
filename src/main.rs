@@ -1,6 +1,6 @@
 use std::fs::{self, OpenOptions};
 
-use clap::{Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand};
 use once_cell::sync::OnceCell;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -27,18 +27,24 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Start the server
+    #[cfg(feature = "server")]
     Serve {},
 
     /// Load ID info into database
+    #[cfg(feature = "server")]
     Load {
         #[arg(short, long, help = "CSV file containing id,username,password")]
         data_path: String,
     },
 
     /// Bind the device to a ID
+    #[cfg(feature = "client")]
     Bind {
         #[arg(long, short, help = "ID for this device")]
         id: String,
+
+        #[arg(long, short, help = "Skip check", default_value = "false", action = ArgAction::SetTrue)]
+        skip_check: bool,
     },
 }
 
@@ -91,37 +97,19 @@ fn main() {
     let config: config::Config = toml::from_str(&config).unwrap_or_log();
     GLOBAL_CONFIG.set(config).unwrap_or_log();
     match cli.command {
+        #[cfg(feature = "server")]
         Commands::Serve {} => {
-            #[cfg(feature = "server")]
-            {
-                tracing::info!("Starting in server mode");
-                server::serve().unwrap_or_log();
-            }
-            #[cfg(feature = "client")]
-            {
-                tracing::error!("Client should not call serve command!");
-            }
+            tracing::info!("Starting in server mode");
+            server::serve().unwrap_or_log();
         }
+        #[cfg(feature = "server")]
         Commands::Load { data_path } => {
-            #[cfg(feature = "server")]
-            {
-                tracing::info!("Staring data load");
-                server::load_data(data_path).unwrap_or_log();
-            }
-            #[cfg(feature = "client")]
-            {
-                tracing::error!("Client should not call load command!");
-            }
+            tracing::info!("Staring data load");
+            server::load_data(data_path).unwrap_or_log();
         }
-        Commands::Bind { id } => {
-            #[cfg(feature = "client")]
-            {
-                client::bind_ip(id).unwrap_or_log();
-            }
-            #[cfg(feature = "server")]
-            {
-                tracing::error!("Server should not call bind command!")
-            }
+        #[cfg(feature = "client")]
+        Commands::Bind { id, skip_check } => {
+            client::bind_ip(id, skip_check).unwrap_or_log();
         }
     }
 }

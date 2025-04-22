@@ -8,6 +8,7 @@ pub struct Config {
     pub client: ClientConfig,
 }
 
+#[cfg(feature = "server")]
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     pub port: u16,
@@ -16,5 +17,5 @@ pub struct ServerConfig {
 #[cfg(feature = "client")]
 #[derive(Deserialize, Debug)]
 pub struct ClientConfig {
-    pub server_addr: String
+    pub server_addr: String,
 }

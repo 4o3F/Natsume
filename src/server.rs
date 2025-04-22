@@ -1,6 +1,6 @@
 use actix_web::{
     App, HttpResponse, HttpServer,
-    body::{BoxBody, MessageBody},
+    body::BoxBody,
     dev::ServiceResponse,
     http::header,
     middleware::{ErrorHandlerResponse, ErrorHandlers},
@@ -9,7 +9,7 @@ use diesel::{
     dsl::{exists, insert_into, select, update},
     prelude::*,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::json;
 use tracing_unwrap::OptionExt;
 
@@ -45,6 +45,7 @@ pub async fn serve() -> std::io::Result<()> {
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
             .service(services::get_ip)
             .service(services::bind)
+            .service(services::status)
     })
     .bind(("0.0.0.0", server_config.server.port))?
     .run()
@@ -79,7 +80,11 @@ pub fn load_data(data_path: String) -> anyhow::Result<()> {
         if exist {
             // Data exist, this should happen between the warmup contest and official contest
             update(player.filter(id.eq(&info.id)))
-                .set((username.eq(&info.username), password.eq(&info.password)))
+                .set((
+                    username.eq(&info.username),
+                    password.eq(&info.password),
+                    synced.eq(false as i32),
+                ))
                 .execute(&mut connection)?;
             tracing::info!("ID {} data exist, updated", &info.id);
         } else {
@@ -91,6 +96,7 @@ pub fn load_data(data_path: String) -> anyhow::Result<()> {
                     id.eq(&info.id),
                     username.eq(&info.username),
                     password.eq(&info.password),
+                    synced.eq(false as i32),
                 ))
                 .execute(&mut connection)?;
         }
