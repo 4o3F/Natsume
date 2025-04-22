@@ -186,3 +186,28 @@ pub async fn bind(body: Json<BindRequestBody>) -> impl Responder {
         }
     }
 }
+
+#[derive(Deserialize)]
+struct SyncRequestBody {
+    mac: String,
+}
+#[post("/sync")]
+pub async fn sync(body: Json<SyncRequestBody>) -> impl Responder {
+    tracing::info!("Received sync request from MAC {}", body.mac);
+    let connection_pool = crate::server::database::DB_CONNECTION_POOL
+        .get()
+        .unwrap_or_log();
+
+    let mut connection;
+    match connection_pool.get() {
+        Ok(conn) => {
+            connection = conn;
+        }
+        Err(err) => {
+            tracing::error!("Error getting database connection {}", err);
+            return HttpResponse::InternalServerError().finish();
+        }
+    }
+
+    HttpResponse::Ok().finish()
+}

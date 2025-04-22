@@ -10,7 +10,6 @@ fn get_mac(target_ip: String) -> anyhow::Result<String> {
         bail!("Can't get MAC of loop addr localhost");
     }
 
-    // 检测是否是 127.x.x.x
     if let Ok(ip) = target_ip.parse::<IpAddr>() {
         if ip.is_loopback() {
             bail!("Can't get MAC of loop addr {}", target_ip);

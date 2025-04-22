@@ -9,6 +9,7 @@ use tracing_unwrap::{OptionExt, ResultExt};
 #[cfg(feature = "client")]
 mod client;
 mod config;
+mod crypto;
 #[cfg(feature = "server")]
 mod server;
 
@@ -20,7 +21,13 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    #[arg(long, short, help = "Path for config file")]
+    #[arg(
+        long,
+        short,
+        help = "Path for config file",
+        global = true,
+        default_value = "/etc/natsume/config.toml"
+    )]
     config: String,
 }
 

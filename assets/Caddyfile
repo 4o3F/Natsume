@@ -1,0 +1,4 @@
+{
+	admin localhost:20190
+	auto_https off
+}

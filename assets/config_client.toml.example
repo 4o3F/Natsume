@@ -1,2 +1,3 @@
 [client]
 server_addr = "http://127.0.0.1:8080"
+key = "aes_key"
