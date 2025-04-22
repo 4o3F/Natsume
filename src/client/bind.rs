@@ -10,6 +10,7 @@ fn get_mac(target_ip: String) -> anyhow::Result<String> {
         "#,
         target_ip
     );
+    tracing::info!("Full command: {}", full_cmd);
     let output = Command::new("sh").arg("-c").arg(full_cmd).output()?;
     let errout = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -19,7 +20,12 @@ fn get_mac(target_ip: String) -> anyhow::Result<String> {
         }
     }
 
-    let err = format!("errout: \n {} \n stdout: \n {}", errout, stdout);
+    let err = format!(
+        "exit status: {:?}\nstderr: \n{}\nstdout: \n{}",
+        output.status.code(),
+        errout,
+        stdout
+    );
     bail!(err)
 }
 
