@@ -1,4 +1,4 @@
-use actix_web::{get, HttpRequest, HttpResponse, Responder};
+use actix_web::{HttpRequest, HttpResponse, Responder, get};
 use serde::Serialize;
 
 #[get("/ip")]

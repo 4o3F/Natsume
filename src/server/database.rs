@@ -7,7 +7,7 @@ use once_cell::sync::OnceCell;
 
 pub(crate) const MIGRATIONS: EmbeddedMigrations = embed_migrations!("./migrations");
 
-static DB_CONNECTION_POOL: OnceCell<Pool<ConnectionManager<SqliteConnection>>> = OnceCell::new();
+pub static DB_CONNECTION_POOL: OnceCell<Pool<ConnectionManager<SqliteConnection>>> = OnceCell::new();
 
 fn run_migrations(
     connection: &mut impl MigrationHarness<diesel::sqlite::Sqlite>,

@@ -29,6 +29,12 @@ enum Commands {
     /// Start the server
     Serve {},
 
+    /// Load ID info into database
+    Load {
+        #[arg(short, long, help = "CSV file containing id,username,password")]
+        data_path: String,
+    },
+
     /// Bind the device to a ID
     Bind {
         #[arg(long, short, help = "ID for this device")]
@@ -94,6 +100,17 @@ fn main() {
             #[cfg(feature = "client")]
             {
                 tracing::error!("Client should not call serve command!");
+            }
+        }
+        Commands::Load { data_path } => {
+            #[cfg(feature = "server")]
+            {
+                tracing::info!("Staring data load");
+                server::load_data(data_path).unwrap_or_log();
+            }
+            #[cfg(feature = "client")]
+            {
+                tracing::error!("Client should not call load command!");
             }
         }
         Commands::Bind { id } => {
