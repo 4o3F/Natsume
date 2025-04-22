@@ -25,7 +25,7 @@ reqwest = { version = "0.12.15", default-features = false, features = [
     "blocking",
 ] }
 # Diesel and dataset
-diesel = { version = "2.2.9", features = ["sqlite"] }
+diesel = { version = "2.2.9", features = ["sqlite", "r2d2"] }
 diesel_migrations = "2.2.0"
 libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 libc = "0.2.172"
