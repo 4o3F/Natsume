@@ -71,7 +71,7 @@ fn main() {
 
     #[cfg(feature = "client")]
     {
-        if client::check_suid() {
+        if client::check_permission() {
             tracing::info!("Client priviledge correct, procedding.")
         } else {
             tracing::error!("Client do not have root exec priviledge!!!");

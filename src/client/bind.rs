@@ -5,20 +5,21 @@ use tracing_unwrap::OptionExt;
 
 fn get_mac(target_ip: String) -> anyhow::Result<String> {
     let full_cmd = format!(
-        "ip route get {} | awk '{{for(i=1;i<=NF;i++) if($i==\"dev\") print $(i+1)}}' \
-         | xargs -r -I{{}} ip -o link show {{}} \
-         | awk '{{for(i=1;i<=NF;i++) if($i==\"link/ether\") print $(i+1)}}'",
+        r#"
+        ip route get {} | awk '{{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}}' | xargs -r -I{{}} ip -o link show {{}} | awk '{{for(i=1;i<=NF;i++) if($i=="link/ether") print $(i+1)}}'
+        "#,
         target_ip
     );
     let output = Command::new("sh").arg("-c").arg(full_cmd).output()?;
+    let errout = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if output.status.success() {
-        let mac = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if !mac.is_empty() {
-            return Ok(mac);
+        if !stdout.is_empty() {
+            return Ok(stdout);
         }
     }
 
-    let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let err = format!("errout: \n {} \n stdout: \n {}", errout, stdout);
     bail!(err)
 }
 
