@@ -1,9 +1,20 @@
-use std::process::Command;
+use std::{net::IpAddr, process::Command};
 
 use anyhow::bail;
 use tracing_unwrap::OptionExt;
 
 fn get_mac(target_ip: String) -> anyhow::Result<String> {
+    if target_ip == "localhost" {
+        bail!("Can't get MAC of loop addr localhost");
+    }
+    
+    // 检测是否是 127.x.x.x
+    if let Ok(ip) = target_ip.parse::<IpAddr>() {
+        if ip.is_loopback() {
+            bail!("Can't get MAC of loop addr {}", target_ip);
+        }
+    }
+
     let full_cmd = format!(
         r#"
         ip route get {} | awk '{{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}}' | xargs -r -I{{}} ip -o link show {{}} | awk '{{for(i=1;i<=NF;i++) if($i=="link/ether") print $(i+1)}}'
