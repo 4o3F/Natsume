@@ -62,7 +62,9 @@ fn get_netinfo() -> anyhow::Result<String> {
 fn validate_direct_connection(url: &String) -> anyhow::Result<bool> {
     let request_url = format!("{}/ip", url);
 
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()?;
 
     // Fetch IP from remote server
     let response = client.get(request_url).send()?;
@@ -78,7 +80,12 @@ fn validate_direct_connection(url: &String) -> anyhow::Result<bool> {
         }
         other => {
             let error: crate::client::ErrorResponse = response.json()?;
-            tracing::error!("Wrong response code {}, error {}", other, error.msg);
+            tracing::error!(
+                "Wrong response code {}, error {} {}",
+                other,
+                error.msg,
+                error.error
+            );
             bail!("")
         }
     }
@@ -91,7 +98,9 @@ fn validate_direct_connection(url: &String) -> anyhow::Result<bool> {
 
 fn send_bind_req(url: &String, id: &String, mac: &String) -> anyhow::Result<()> {
     let request_url = format!("{}/bind", url);
-    let client = reqwest::blocking::Client::new();
+    let client = reqwest::blocking::Client::builder()
+        .danger_accept_invalid_certs(true)
+        .build()?;
     #[derive(Serialize)]
     struct RequestBody {
         mac: String,
@@ -107,7 +116,12 @@ fn send_bind_req(url: &String, id: &String, mac: &String) -> anyhow::Result<()> 
         StatusCode::OK => {}
         other => {
             let error: crate::client::ErrorResponse = response.json()?;
-            tracing::error!("Wrong response code {}, error {}", other, error.msg);
+            tracing::error!(
+                "Wrong response code {}, error {} {}",
+                other,
+                error.msg,
+                error.error
+            );
             bail!("")
         }
     }

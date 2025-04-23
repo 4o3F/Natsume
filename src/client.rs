@@ -4,10 +4,11 @@ mod sync;
 
 pub use bind::bind_ip;
 pub use permission::check_permission;
-pub use sync::sync_info;
 use serde::Deserialize;
+pub use sync::sync_info;
 
 #[derive(Deserialize)]
 struct ErrorResponse {
-    msg: String
+    msg: String,
+    error: String,
 }

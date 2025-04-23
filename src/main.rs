@@ -2,6 +2,7 @@ use std::fs::{self, OpenOptions};
 
 use clap::{Parser, Subcommand};
 use once_cell::sync::OnceCell;
+use sha2::{Digest, Sha256};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_unwrap::{OptionExt, ResultExt};
@@ -104,7 +105,27 @@ fn main() {
     // Do config parse
     tracing::info!("Parsing config file...");
     let config = fs::read_to_string(cli.config).unwrap_or_log();
-    let config: config::Config = toml::from_str(&config).unwrap_or_log();
+    let mut config: config::Config = toml::from_str(&config).unwrap_or_log();
+    // Pre compute token hash
+    #[cfg(feature = "server")]
+    {
+        let mut hasher = Sha256::new();
+        hasher.update(config.server.token.clone());
+        let hashed_token = hasher.finalize();
+        let hashed_token = hex::encode(hashed_token);
+        config.server.token = hashed_token;
+        tracing::info!("Server token set to {}", config.server.token);
+    }
+    #[cfg(feature = "client")]
+    {
+        let mut hasher = Sha256::new();
+        hasher.update(config.client.token.clone());
+        let hashed_token = hasher.finalize();
+        let hashed_token = hex::encode(hashed_token);
+        config.client.token = hashed_token;
+        tracing::info!("Client token set to {}", config.client.token);
+    }
+
     GLOBAL_CONFIG.set(config).unwrap_or_log();
     match cli.command {
         #[cfg(feature = "server")]

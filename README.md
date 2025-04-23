@@ -14,7 +14,7 @@
 
 ### Server
 1. Use `natsume_server -c config.toml serve` to init database and check config
-2. Use `natsume_server -c config.toml load -d data.csv` to load player info into database
+2. Use `natsume_server -c config.toml load -d data.csv` to load player info into database, CSV format is `id,username,password`
 3. TODO
 
 ## Process

@@ -2,7 +2,7 @@ use std::io::BufReader;
 
 use actix_web::{
     App, HttpResponse, HttpServer,
-    body::BoxBody,
+    body::{BoxBody, MessageBody, to_bytes},
     dev::ServiceResponse,
     http::header,
     middleware::{ErrorHandlerResponse, ErrorHandlers},
@@ -21,21 +21,41 @@ mod database;
 mod schema;
 mod services;
 
-fn add_error_header<B>(
+pub fn add_error_header<B>(
     res: ServiceResponse<B>,
-) -> actix_web::Result<ErrorHandlerResponse<BoxBody>> {
+) -> actix_web::Result<ErrorHandlerResponse<BoxBody>>
+where
+    B: MessageBody + 'static,
+    <B as MessageBody>::Error: actix_web::ResponseError,
+{
+    let (req, res) = res.into_parts();
     let status = res.status();
-    let error_msg = status.canonical_reason().unwrap_or("Unknown error");
+    let error_msg = status
+        .canonical_reason()
+        .unwrap_or("Unknown error")
+        .to_string();
 
-    let error_json = json!({ "msg": error_msg }).to_string();
+    let fut = async move {
+        // 把原始 body 转为字节
+        let body_bytes = to_bytes(res.into_body()).await?;
 
-    let new_res = HttpResponse::build(status)
-        .insert_header((header::CONTENT_TYPE, "application/json"))
-        .body(error_json);
+        // 原始 body 转为 string
+        let original_body_text = String::from_utf8_lossy(&body_bytes).to_string();
 
-    Ok(ErrorHandlerResponse::Response(
-        res.into_response(new_res.map_into_right_body()),
-    ))
+        let combined_body = json!({
+            "msg": error_msg,
+            "error": original_body_text
+        });
+        let new_response = HttpResponse::build(status)
+            .insert_header((header::CONTENT_TYPE, "application/json"))
+            .body(combined_body.to_string());
+
+        Ok(ServiceResponse::new(
+            req,
+            new_response.map_into_right_body(),
+        ))
+    };
+    Ok(ErrorHandlerResponse::Future(Box::pin(fut)))
 }
 
 #[actix_web::main]
@@ -45,7 +65,7 @@ pub async fn serve() -> std::io::Result<()> {
     database::init_database().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
     let rcgen::CertifiedKey { cert, key_pair } =
-        rcgen::generate_simple_self_signed([server_config.server.hostname.clone()]).unwrap();
+        rcgen::generate_simple_self_signed(["natsume.server".to_string()]).unwrap();
     let cert_file = cert.pem();
     let key_file = key_pair.serialize_pem();
 
@@ -66,9 +86,9 @@ pub async fn serve() -> std::io::Result<()> {
         App::new()
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
             .service(services::get_ip)
-            .service(services::bind)
-            .service(services::status)
-            .service(services::sync)
+            .service(services::bind_id)
+            .service(services::get_status)
+            .service(services::sync_info)
     })
     .bind_rustls_0_23(("0.0.0.0", server_config.server.port), tls_config)?
     .run()
