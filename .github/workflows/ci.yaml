@@ -18,9 +18,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      - name: Maybe install SSL packages
+      - name: Install SSL packages
         run: sudo apt-get update --yes && sudo apt-get install --yes pkg-config openssl libssl-dev
-        if: matrix.platform.features == 'native-tls'
       - name: Build Client
         uses: houseabsolute/actions-rust-cross@v1
         with:
