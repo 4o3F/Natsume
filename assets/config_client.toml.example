@@ -1,2 +1,5 @@
 [client]
 server_addr = "http://127.0.0.1:8080"
+token = "auth@token"
+caddyfile = "/etc/caddy/Caddyfile"
+domjudge_addr = "http://localhost"

@@ -1,4 +1,7 @@
+use std::{fs::OpenOptions, io::Write};
+
 use anyhow::bail;
+use base64::{Engine, prelude::BASE64_STANDARD};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing_unwrap::OptionExt;
@@ -14,7 +17,7 @@ struct SyncResponseBody {
     password: String,
 }
 
-pub fn sync_info() -> anyhow::Result<()> {
+fn fetch_info() -> anyhow::Result<SyncResponseBody> {
     let base_url = &crate::GLOBAL_CONFIG
         .get()
         .unwrap_or_log()
@@ -62,8 +65,63 @@ pub fn sync_info() -> anyhow::Result<()> {
         }
     }
     let info: SyncResponseBody = response.json()?;
-    tracing::info!("Synced info: {:?}", info);
+    Ok(info)
+}
 
-    // TODO: write caddy file into /etc/caddy/Caddyfile
-    todo!()
+fn format_caddyfile(username: String, password: String) -> String {
+    let domjudge_addr = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized")
+        .client
+        .domjudge_addr
+        .clone();
+    let mut encoded_password = String::new();
+    BASE64_STANDARD.encode_string(password, &mut encoded_password);
+    format!(
+        r#"
+{{
+	admin localhost:20190
+	auto_https off
+}}
+
+:80 {{
+	@autologin path /login*
+
+	handle @autologin {{
+		reverse_proxy {} {{
+			header_up X-DOMjudge-Login "{}"
+			header_up X-DOMjudge-Pass "{}"
+        }}
+	}}
+
+	handle {{
+		reverse_proxy {}
+	}}
+}}
+
+    "#,
+        domjudge_addr, username, encoded_password, domjudge_addr
+    )
+}
+
+pub fn sync_info() -> anyhow::Result<()> {
+    let info = fetch_info()?;
+    // Write caddy file into /etc/caddy/Caddyfile
+    let formated_caddyfile = format_caddyfile(info.username, info.password);
+    let caddyfile_path = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized")
+        .client
+        .caddyfile
+        .clone();
+    match OpenOptions::new().write(true).open(caddyfile_path) {
+        Ok(mut file) => {
+            file.write_all(formated_caddyfile.as_bytes())?;
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Failed to write to Caddyfile, err {}", e);
+            bail!("Failed to write to Caddyfile, err {}", e)
+        }
+    }
 }

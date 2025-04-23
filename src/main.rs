@@ -92,16 +92,6 @@ fn main() {
 
     let cli = Cli::parse();
 
-    #[cfg(feature = "client")]
-    {
-        if client::check_permission() {
-            tracing::info!("Client priviledge correct, procedding.")
-        } else {
-            tracing::error!("Client do not have root exec priviledge!!!");
-            return;
-        }
-    }
-
     // Do config parse
     tracing::info!("Parsing config file...");
     let config = fs::read_to_string(cli.config).unwrap_or_log();
@@ -126,7 +116,18 @@ fn main() {
         tracing::info!("Client token set to {}", config.client.token);
     }
 
+    #[cfg(feature = "client")]
+    {
+        if client::check_permission(config.client.caddyfile.clone()) {
+            tracing::info!("Client priviledge correct, procedding.")
+        } else {
+            tracing::error!("Client do not have root exec priviledge!!!");
+            return;
+        }
+    }
+
     GLOBAL_CONFIG.set(config).unwrap_or_log();
+
     match cli.command {
         #[cfg(feature = "server")]
         Commands::Serve {} => {

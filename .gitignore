@@ -2,3 +2,4 @@
 assets/config.toml
 *.db
 .env
+tmp*.txt

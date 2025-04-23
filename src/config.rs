@@ -19,5 +19,7 @@ pub struct ServerConfig {
 #[derive(Deserialize, Debug)]
 pub struct ClientConfig {
     pub server_addr: String,
+    pub caddyfile: String,
+    pub domjudge_addr: String,
     pub token: String
 }

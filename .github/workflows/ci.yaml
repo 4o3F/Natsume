@@ -1,0 +1,46 @@
+name: Build and release
+on: [push, pull_request]
+env:
+  RUST_BACKTRACE: 1
+jobs:
+  test-matrix:
+    name: ${{ matrix.platform.os-name }} with rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.platform.runs-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - os-name: Linux-x86_64
+            runs-on: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+        toolchain:
+          - stable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - name: Maybe install SSL packages
+        run: sudo apt-get update --yes && sudo apt-get install --yes pkg-config openssl libssl-dev
+        if: matrix.platform.features == 'native-tls'
+      - name: Build Client
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          args: "--release --bin natsume_client --features='client'"
+          strip: true
+      - name: Build Server
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: "build"
+          target: ${{ matrix.platform.target }}
+          toolchain: ${{ matrix.toolchain }}
+          args: "--release --bin natsume_server --features='server'"
+          strip: true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: Binary
+          path: |
+            target/release/natsume_server
+            target/release/natsume_client
