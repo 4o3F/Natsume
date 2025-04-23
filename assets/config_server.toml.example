@@ -1,3 +1,3 @@
 [server]
 port = 8080
-key = "aes_key"
+hostname = "172.26.64.1"

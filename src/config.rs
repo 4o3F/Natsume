@@ -12,7 +12,7 @@ pub struct Config {
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     pub port: u16,
-    pub key: String
+    pub hostname: String
 }
 
 #[cfg(feature = "client")]

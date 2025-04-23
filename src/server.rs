@@ -1,3 +1,5 @@
+use std::io::BufReader;
+
 use actix_web::{
     App, HttpResponse, HttpServer,
     body::BoxBody,
@@ -9,6 +11,8 @@ use diesel::{
     dsl::{exists, insert_into, select, update},
     prelude::*,
 };
+use rustls::pki_types::PrivateKeyDer;
+use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Deserialize;
 use serde_json::json;
 use tracing_unwrap::OptionExt;
@@ -40,14 +44,33 @@ pub async fn serve() -> std::io::Result<()> {
 
     database::init_database().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
 
+    let rcgen::CertifiedKey { cert, key_pair } =
+        rcgen::generate_simple_self_signed([server_config.server.hostname.clone()]).unwrap();
+    let cert_file = cert.pem();
+    let key_file = key_pair.serialize_pem();
+
+    let cert_file = &mut BufReader::new(cert_file.as_bytes());
+    let key_file = &mut BufReader::new(key_file.as_bytes());
+
+    let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>().unwrap();
+    let mut keys = pkcs8_private_keys(key_file)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    let tls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(keys.remove(0)))
+        .unwrap();
+
     HttpServer::new(|| {
         App::new()
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
             .service(services::get_ip)
             .service(services::bind)
             .service(services::status)
+            .service(services::sync)
     })
-    .bind(("0.0.0.0", server_config.server.port))?
+    .bind_rustls_0_23(("0.0.0.0", server_config.server.port), tls_config)?
     .run()
     .await
 }

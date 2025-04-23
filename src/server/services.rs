@@ -190,10 +190,18 @@ pub async fn bind(body: Json<BindRequestBody>) -> impl Responder {
 #[derive(Deserialize)]
 struct SyncRequestBody {
     mac: String,
+    /// IV should be in BASE64 format
+    iv: String,
 }
 #[post("/sync")]
 pub async fn sync(body: Json<SyncRequestBody>) -> impl Responder {
-    tracing::info!("Received sync request from MAC {}", body.mac);
+    #[derive(Serialize)]
+    struct SyncResponseBody {
+        username: String,
+        password: String,
+    }
+
+    tracing::info!("Received sync request from MAC {}, IV {}", body.mac, body.iv);
     let connection_pool = crate::server::database::DB_CONNECTION_POOL
         .get()
         .unwrap_or_log();
@@ -209,5 +217,43 @@ pub async fn sync(body: Json<SyncRequestBody>) -> impl Responder {
         }
     }
 
-    HttpResponse::Ok().finish()
+    use super::schema::id_bind::dsl as id_bind_dsl;
+    use super::schema::player::dsl as player_dsl;
+    let id;
+    match id_bind_dsl::id_bind
+        .filter(id_bind_dsl::mac.eq(&body.mac))
+        .select(id_bind_dsl::id)
+        .first::<String>(&mut connection)
+        .optional()
+    {
+        Ok(result) => match result {
+            Some(result) => id = result,
+            None => {
+                return HttpResponse::Forbidden().body("No ID bind to this MAC!");
+            }
+        },
+        Err(err) => {
+            tracing::error!("Failed to get ID by MAC from database, err: {}", err);
+            return HttpResponse::InternalServerError().finish();
+        }
+    }
+
+    let response: SyncResponseBody;
+    match player_dsl::player
+        .filter(player_dsl::id.eq(&id))
+        .select((
+            player_dsl::username,
+            player_dsl::password,
+            player_dsl::synced,
+        ))
+        .first::<(String, String, i32)>(&mut connection)
+    {
+        // TODO: consider should we introduce check for sync status? perhaps we should only return once for syncing?
+        Ok((username, password, _)) => response = SyncResponseBody { username, password },
+        Err(err) => {
+            tracing::error!("Failed to get info by ID from database, err: {}", err);
+            return HttpResponse::InternalServerError().finish();
+        }
+    }
+    HttpResponse::Ok().json(response)
 }

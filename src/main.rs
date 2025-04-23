@@ -1,6 +1,6 @@
 use std::fs::{self, OpenOptions};
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use once_cell::sync::OnceCell;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -9,7 +9,6 @@ use tracing_unwrap::{OptionExt, ResultExt};
 #[cfg(feature = "client")]
 mod client;
 mod config;
-mod crypto;
 #[cfg(feature = "server")]
 mod server;
 
@@ -50,9 +49,13 @@ enum Commands {
         #[arg(long, short, help = "ID for this device")]
         id: String,
 
-        #[arg(long, short, help = "Skip check", default_value = "false", action = ArgAction::SetTrue)]
+        #[arg(long, short, help = "Skip check", default_value = "false", action = clap::ArgAction::SetTrue)]
         skip_check: bool,
     },
+
+    /// Sync player info to device
+    #[cfg(feature = "client")]
+    Sync {},
 }
 
 fn main() {
@@ -117,6 +120,10 @@ fn main() {
         #[cfg(feature = "client")]
         Commands::Bind { id, skip_check } => {
             client::bind_ip(id, skip_check).unwrap_or_log();
+        }
+        #[cfg(feature = "client")]
+        Commands::Sync {} => {
+            client::sync_info().unwrap_or_log();
         }
     }
 }

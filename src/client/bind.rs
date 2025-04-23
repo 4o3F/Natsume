@@ -5,7 +5,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing_unwrap::OptionExt;
 
-fn get_mac(target_ip: String) -> anyhow::Result<String> {
+pub fn get_mac(target_ip: String) -> anyhow::Result<String> {
     if target_ip == "localhost" {
         bail!("Can't get MAC of loop addr localhost");
     }
