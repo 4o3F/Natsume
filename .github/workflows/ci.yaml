@@ -36,6 +36,8 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           args: "--release --bin natsume_server --features='server'"
           strip: true
+      - name: Setup upterm session
+        uses: lhotari/action-upterm@v1
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
