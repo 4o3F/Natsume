@@ -38,7 +38,7 @@ jobs:
           args: "--release --bin natsume_server --features='server'"
           strip: true
       - name: Upload artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: Binary
           path: |
