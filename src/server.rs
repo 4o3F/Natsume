@@ -80,6 +80,8 @@ pub async fn serve() -> std::io::Result<()> {
         .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(keys.remove(0)))
         .unwrap();
 
+    std::fs::create_dir("./static")?;
+
     HttpServer::new(|| {
         App::new()
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
@@ -87,6 +89,7 @@ pub async fn serve() -> std::io::Result<()> {
             .service(services::bind_id)
             .service(services::get_status)
             .service(services::sync_info)
+            .service(actix_files::Files::new("/static", "./static"))
     })
     .bind_rustls_0_23(("0.0.0.0", server_config.server.port), tls_config)?
     .run()

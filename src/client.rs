@@ -1,11 +1,13 @@
 mod bind;
 mod check;
+mod clean;
 mod sync;
 
 pub use bind::bind_ip;
 pub use check::{check_permission, check_prerequisite};
-use serde::Deserialize;
 pub use sync::sync_info;
+
+use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct ErrorResponse {
