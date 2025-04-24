@@ -19,8 +19,13 @@ pub fn check_permission(path: String) -> bool {
     {
         let useradd_ok = can_sudo_help("useradd");
         let userdel_ok = can_sudo_help("userdel");
-        if !useradd_ok || !userdel_ok {
+        let systemctl_reload_ok = can_sudo_help("systemctl reload");
+        if !useradd_ok || !userdel_ok{
             tracing::error!("No permission to ADD or DEL user!");
+            return false;
+        }
+        if !systemctl_reload_ok  {
+            tracing::error!("No permission to reload service!");
             return false;
         }
     }
@@ -40,6 +45,16 @@ fn check_caddy() -> bool {
         .unwrap_or(false)
 }
 
+pub fn check_caddy_active() -> bool {
+    let output = Command::new("systemctl")
+        .arg("is-active")
+        .arg("caddy")
+        .output()
+        .expect("failed to execute process");
+    let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    status.as_str() == "active"
+}
+
 pub fn check_prerequisite() -> bool {
-    check_caddy()
+    check_caddy() && check_caddy_active()
 }

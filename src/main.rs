@@ -1,4 +1,7 @@
-use std::fs::{self, OpenOptions};
+use std::{
+    fs::{self, OpenOptions},
+    process::ExitCode,
+};
 
 use clap::{Parser, Subcommand};
 use once_cell::sync::OnceCell;
@@ -49,9 +52,6 @@ enum Commands {
     Bind {
         #[arg(long, short, help = "ID for this device")]
         id: String,
-
-        #[arg(long, short, help = "Skip check", default_value = "false", action = clap::ArgAction::SetTrue)]
-        skip_check: bool,
     },
 
     /// Sync player info to device
@@ -59,7 +59,7 @@ enum Commands {
     Sync {},
 }
 
-fn main() {
+fn main() -> ExitCode {
     // Create logs dir
     fs::create_dir_all("logs").unwrap();
 
@@ -122,37 +122,71 @@ fn main() {
             tracing::info!("Client priviledge correct, procedding.")
         } else {
             tracing::error!("Client do not have root exec priviledge!!!");
-            return;
+            return ExitCode::FAILURE;
         }
 
         if client::check_prerequisite() {
             tracing::info!("Client prerequisite matched, procedding.")
         } else {
             tracing::error!("Client prerequisite does not match!!!");
-            return;
+            return ExitCode::FAILURE;
         }
     }
 
-    GLOBAL_CONFIG.set(config).unwrap_or_log();
+    GLOBAL_CONFIG
+        .set(config)
+        .expect_or_log("Failed to set global config!");
 
     match cli.command {
         #[cfg(feature = "server")]
         Commands::Serve {} => {
             tracing::info!("Starting in server mode");
-            server::serve().unwrap_or_log();
+            match server::serve() {
+                Ok(_) => {
+                    tracing::info!("Server shutdown gracefully!");
+                    return ExitCode::SUCCESS;
+                }
+                Err(err) => {
+                    tracing::error!("Server failed with error {}", err);
+                    return ExitCode::FAILURE;
+                }
+            }
         }
         #[cfg(feature = "server")]
         Commands::Load { data_path } => {
             tracing::info!("Staring data load");
-            server::load_data(data_path).unwrap_or_log();
+            match server::load_data(data_path) {
+                Ok(_) => {
+                    tracing::info!("Data successfully loaded into database!");
+                    return ExitCode::SUCCESS;
+                }
+                Err(err) => {
+                    tracing::error!("Data load failed with error {}", err);
+                    return ExitCode::FAILURE;
+                }
+            }
         }
         #[cfg(feature = "client")]
-        Commands::Bind { id, skip_check } => {
-            client::bind_ip(id, skip_check).unwrap_or_log();
-        }
+        Commands::Bind { id } => match client::bind_ip(id) {
+            Ok(_) => {
+                tracing::info!("Bind success!");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                tracing::error!("Bind failed with error {}", err);
+                return ExitCode::FAILURE;
+            }
+        },
         #[cfg(feature = "client")]
-        Commands::Sync {} => {
-            client::sync_info().unwrap_or_log();
-        }
+        Commands::Sync {} => match client::sync_info() {
+            Ok(_) => {
+                tracing::info!("Sync success!");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                tracing::error!("Sync failed with error {}", err);
+                return ExitCode::FAILURE;
+            }
+        },
     }
 }

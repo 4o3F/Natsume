@@ -80,13 +80,13 @@ fn validate_direct_connection(url: &String) -> anyhow::Result<bool> {
         }
         other => {
             let error: crate::client::ErrorResponse = response.json()?;
-            tracing::error!(
+
+            bail!(
                 "Wrong response code {}, error {} {}",
                 other,
                 error.msg,
                 error.error
-            );
-            bail!("")
+            )
         }
     }
 
@@ -116,34 +116,38 @@ fn send_bind_req(url: &String, id: &String, mac: &String) -> anyhow::Result<()> 
         StatusCode::OK => {}
         other => {
             let error: crate::client::ErrorResponse = response.json()?;
-            tracing::error!(
+
+            bail!(
                 "Wrong response code {}, error {} {}",
                 other,
                 error.msg,
                 error.error
-            );
-            bail!("")
+            )
         }
     }
 
     anyhow::Ok(())
 }
 
-pub fn bind_ip(id: String, skip_check: bool) -> anyhow::Result<()> {
+pub fn bind_ip(id: String) -> anyhow::Result<()> {
     let base_url = &crate::GLOBAL_CONFIG
         .get()
         .unwrap_or_log()
         .client
         .server_addr;
 
+    let skip_check = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized!")
+        .client
+        .skip_ip_check;
+
     if !validate_direct_connection(base_url)? {
-        tracing::error!("Real IP does not match self IP! Possibly behind a NAT!");
+        tracing::warn!("Real IP does not match self IP! Possibly behind a NAT!");
         if !skip_check {
-            bail!("ip mismatch")
+            bail!("IP mismatch, stop processing!")
         }
-        tracing::warn!(
-            "Skip check arg provided, will continue procedding, this should ONLY be used for testing purpose"
-        )
+        tracing::warn!("Skip check enabled, will continue procedding")
     }
 
     let parsed_url = reqwest::Url::parse(&base_url)

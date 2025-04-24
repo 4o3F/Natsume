@@ -20,6 +20,7 @@ pub struct ServerConfig {
 #[cfg(feature = "client")]
 #[derive(Deserialize, Debug)]
 pub struct ClientConfig {
+    pub skip_ip_check: bool,
     pub server_addr: String,
     pub caddyfile: String,
     pub domjudge_addr: String,

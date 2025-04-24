@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::Write};
+use std::{fs::OpenOptions, io::Write, process::Command};
 
 use anyhow::bail;
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -55,13 +55,13 @@ fn fetch_info() -> anyhow::Result<SyncResponseBody> {
         StatusCode::OK => {}
         other => {
             let error: crate::client::ErrorResponse = response.json()?;
-            tracing::error!(
+
+            bail!(
                 "Wrong response code {}, error {} {}",
                 other,
                 error.msg,
                 error.error
-            );
-            bail!("")
+            )
         }
     }
     let info: SyncResponseBody = response.json()?;
@@ -104,7 +104,27 @@ fn format_caddyfile(username: String, password: String) -> String {
     )
 }
 
+fn reload_caddy_service() -> bool {
+    let output = Command::new("sudo")
+        .arg("-n")
+        .arg("systemctl")
+        .arg("reload")
+        .arg("caddy")
+        .output();
+    match output {
+        Ok(result) => result.status.success(),
+        Err(err) => {
+            tracing::error!("Failed to run systemctl reload, err {}", err);
+            false
+        }
+    }
+}
+
 pub fn sync_info() -> anyhow::Result<()> {
+    if !crate::client::check::check_caddy_active() {
+        return Err(anyhow::Error::msg("Caddy service not running!"));
+    }
+
     let info = fetch_info()?;
     // Write caddy file into /etc/caddy/Caddyfile
     let formated_caddyfile = format_caddyfile(info.username, info.password);
@@ -117,11 +137,14 @@ pub fn sync_info() -> anyhow::Result<()> {
     match OpenOptions::new().write(true).open(caddyfile_path) {
         Ok(mut file) => {
             file.write_all(formated_caddyfile.as_bytes())?;
-            Ok(())
         }
         Err(e) => {
-            tracing::error!("Failed to write to Caddyfile, err {}", e);
             bail!("Failed to write to Caddyfile, err {}", e)
         }
     }
+
+    if !reload_caddy_service() {
+        bail!("Failed to reload caddy service!")
+    }
+    Ok(())
 }
