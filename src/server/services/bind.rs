@@ -13,7 +13,18 @@ struct BindRequestBody {
 }
 #[post("/bind")]
 pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
-    tracing::info!("MAC {} ID {}", body.mac, body.id);
+    let bind_enabled = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized!")
+        .server
+        .enable_bind;
+
+    if !bind_enabled {
+        tracing::warn!("MAC {} try to bind to ID {} with bind service disabled!", body.mac, body.id);
+        return HttpResponse::Forbidden()
+            .body("Bind is not enabled! This request has been logged".to_string());
+    }
+
     // Write to database
     let connection_pool = crate::server::database::DB_CONNECTION_POOL
         .get()
@@ -26,7 +37,7 @@ pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
         }
         Err(err) => {
             tracing::error!("Error getting database connection {}", err);
-            return HttpResponse::InternalServerError();
+            return HttpResponse::InternalServerError().finish();
         }
     }
 
@@ -36,7 +47,7 @@ pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
         Ok(result) => exist = result,
         Err(err) => {
             tracing::error!("Error fetching from database {}", err);
-            return HttpResponse::InternalServerError();
+            return HttpResponse::InternalServerError().finish();
         }
     }
 
@@ -48,7 +59,7 @@ pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
         {
             Ok(_) => {
                 tracing::info!("Updated MAC {} ID {}", body.mac, body.id);
-                HttpResponse::Ok()
+                HttpResponse::Ok().finish()
             }
             Err(err) => {
                 tracing::error!(
@@ -57,7 +68,7 @@ pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
                     body.id,
                     err
                 );
-                return HttpResponse::InternalServerError();
+                HttpResponse::InternalServerError().finish()
             }
         }
     } else {
@@ -68,7 +79,7 @@ pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
         {
             Ok(_) => {
                 tracing::info!("Updated MAC {} ID {}", body.mac, body.id);
-                HttpResponse::Ok()
+                HttpResponse::Ok().finish()
             }
             Err(err) => {
                 tracing::error!(
@@ -77,7 +88,7 @@ pub async fn bind_id(body: Json<BindRequestBody>) -> impl Responder {
                     body.id,
                     err
                 );
-                return HttpResponse::InternalServerError();
+                HttpResponse::InternalServerError().finish()
             }
         }
     }

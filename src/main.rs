@@ -124,6 +124,13 @@ fn main() {
             tracing::error!("Client do not have root exec priviledge!!!");
             return;
         }
+
+        if client::check_prerequisite() {
+            tracing::info!("Client prerequisite matched, procedding.")
+        } else {
+            tracing::error!("Client prerequisite does not match!!!");
+            return;
+        }
     }
 
     GLOBAL_CONFIG.set(config).unwrap_or_log();

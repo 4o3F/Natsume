@@ -36,10 +36,8 @@ where
         .to_string();
 
     let fut = async move {
-        // 把原始 body 转为字节
         let body_bytes = to_bytes(res.into_body()).await?;
 
-        // 原始 body 转为 string
         let original_body_text = String::from_utf8_lossy(&body_bytes).to_string();
 
         let combined_body = json!({

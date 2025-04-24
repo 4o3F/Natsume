@@ -44,7 +44,20 @@ impl FromRequest for Authenticated {
 
 #[post("/sync")]
 pub async fn sync_info(_auth: Authenticated, body: Json<SyncRequestBody>) -> impl Responder {
-    tracing::info!("Received valid sync request from MAC {}", body.mac,);
+    let sync_enabled = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized!")
+        .server
+        .enable_sync;
+
+    if !sync_enabled {
+        tracing::warn!(
+            "MAC {} try to sync info with sync service disabled!",
+            body.mac
+        );
+        return HttpResponse::Forbidden()
+            .body("Bind is not enabled! This request has been logged".to_string());
+    }
     let connection_pool = crate::server::database::DB_CONNECTION_POOL
         .get()
         .unwrap_or_log();
@@ -91,12 +104,12 @@ pub async fn sync_info(_auth: Authenticated, body: Json<SyncRequestBody>) -> imp
         ))
         .first::<(String, String, i32)>(&mut connection)
     {
-        // TODO: consider should we introduce check for sync status? perhaps we should only return once for syncing?
         Ok((username, password, _)) => response = SyncResponseBody { username, password },
         Err(err) => {
             tracing::error!("Failed to get info by ID from database, err: {}", err);
             return HttpResponse::InternalServerError().finish();
         }
     }
+    tracing::info!("Synced MAC {} with user {}", body.mac, response.username);
     HttpResponse::Ok().json(response)
 }

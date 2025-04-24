@@ -1,3 +1,5 @@
 [server]
 port = 8080
 token = "auth@token"
+enable_bind = true
+enable_sync = true

@@ -1,9 +1,9 @@
 mod bind;
-mod permission;
+mod check;
 mod sync;
 
 pub use bind::bind_ip;
-pub use permission::check_permission;
+pub use check::{check_permission, check_prerequisite};
 use serde::Deserialize;
 pub use sync::sync_info;
 

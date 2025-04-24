@@ -12,7 +12,9 @@ pub struct Config {
 #[derive(Deserialize, Debug)]
 pub struct ServerConfig {
     pub port: u16,
-    pub token: String
+    pub token: String,
+    pub enable_bind: bool,
+    pub enable_sync: bool,
 }
 
 #[cfg(feature = "client")]
