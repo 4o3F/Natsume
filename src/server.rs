@@ -1,4 +1,4 @@
-use std::io::BufReader;
+use std::{fs, io::BufReader};
 
 use actix_web::{
     App, HttpResponse, HttpServer,
@@ -80,7 +80,9 @@ pub async fn serve() -> std::io::Result<()> {
         .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(keys.remove(0)))
         .unwrap();
 
-    std::fs::create_dir("./static")?;
+    if !fs::exists("./static") {
+        std::fs::create_dir("./static")?;
+    }
 
     HttpServer::new(|| {
         App::new()
