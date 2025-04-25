@@ -89,6 +89,7 @@ pub async fn serve() -> std::io::Result<()> {
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
             .service(services::get_ip)
             .service(services::bind_id)
+            .service(services::report_status)
             .service(services::get_status)
             .service(services::sync_info);
         let static_file_enabled = crate::GLOBAL_CONFIG
