@@ -1,8 +1,8 @@
 #!/bin/sh
 
-NATSUME_SERVER="https://10.12.13.20:2333"
-NTP_SERVER="10.12.13.20"
-USER_PASSWD="icpc#2025"
+NATSUME_SERVER="https://localhost"
+NTP_SERVER="localhost"
+USER_PASSWD="passwd"
 
 
 if [ "$(whoami)" = "root" ]; then

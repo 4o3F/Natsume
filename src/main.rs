@@ -57,6 +57,10 @@ enum Commands {
     /// Sync player info to device
     #[cfg(feature = "client")]
     Sync {},
+
+    /// Clean player user data
+    #[cfg(feature = "client")]
+    Clean {},
 }
 
 fn main() -> ExitCode {
@@ -131,7 +135,10 @@ fn main() -> ExitCode {
         let hashed_token = hasher.finalize();
         let hashed_token = hex::encode(hashed_token);
         config.client.token = hashed_token;
-        tracing::info!("Client token set to {}", config.client.token);
+        #[cfg(debug_assertions)]
+        {
+            tracing::info!("Client token set to {}", config.client.token);
+        }
     }
 
     GLOBAL_CONFIG
@@ -186,6 +193,17 @@ fn main() -> ExitCode {
             }
             Err(err) => {
                 tracing::error!("Sync failed with error {}", err);
+                return ExitCode::FAILURE;
+            }
+        },
+        #[cfg(feature = "client")]
+        Commands::Clean {} => match client::clean_user() {
+            Ok(_) => {
+                tracing::info!("Clean success!");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                tracing::error!("Clean failed with error {}", err);
                 return ExitCode::FAILURE;
             }
         },
