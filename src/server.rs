@@ -80,7 +80,7 @@ pub async fn serve() -> std::io::Result<()> {
         .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(keys.remove(0)))
         .unwrap();
 
-    if !fs::exists("./static") {
+    if !fs::exists("./static")? {
         std::fs::create_dir("./static")?;
     }
 
