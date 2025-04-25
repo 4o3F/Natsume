@@ -61,6 +61,10 @@ enum Commands {
     /// Clean player user data
     #[cfg(feature = "client")]
     Clean {},
+
+    /// Start monitoring device and report
+    #[cfg(feature = "client")]
+    Monitor {},
 }
 
 fn main() -> ExitCode {
@@ -204,6 +208,17 @@ fn main() -> ExitCode {
             }
             Err(err) => {
                 tracing::error!("Clean failed with error {}", err);
+                return ExitCode::FAILURE;
+            }
+        },
+        #[cfg(feature = "client")]
+        Commands::Monitor {} => match client::do_monitor() {
+            Ok(_) => {
+                tracing::info!("Monitor graceful shutdown!");
+                return ExitCode::SUCCESS;
+            }
+            Err(err) => {
+                tracing::error!("Monitor failed with error {}", err);
                 return ExitCode::FAILURE;
             }
         },
