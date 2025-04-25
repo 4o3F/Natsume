@@ -1,0 +1,55 @@
+#!/bin/sh
+
+NATSUME_SERVER="https://10.12.13.20:2333"
+NTP_SERVER="10.12.13.20"
+USER_PASSWD="icpc#2025"
+
+
+if [ "$(whoami)" = "root" ]; then
+	echo "Is root user, procedding."
+else
+	echo "Not root user"
+fi
+
+echo "Remove sudo password for user icpc"
+echo "icpc ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/icpc
+chmod 440 /etc/sudoers.d/icpc
+
+
+echo "NTP=$NTP_SERVER" >> /etc/systemd/timesyncd.conf
+timedatectl set-timezone "Asia/Shanghai"
+systemctl restart systemd-timesyncd.service
+
+echo "Download public key into .ssh"
+curl -k "$NATSUME_SERVER/static/key.pub" -o /root/.ssh/authorized_keys
+curl -k "$NATSUME_SERVER/static/caddy.deb" -o /root/caddy.deb
+apt install -y /root/caddy.deb
+
+echo "Download natsume client"
+curl -k "$NATSUME_SERVER/static/natsume_client" -o /usr/bin/natsume_client
+mkdir /etc/natsume
+curl -k "$NATSUME_SERVER/static/client_config.toml" -o /etc/natsume/config.toml
+
+echo "Configuring permission... IMPORTTANT!"
+chown root /etc/natsume/config.toml
+chmod 4701 /usr/bin/natsume_client
+chmod 600 /etc/natsume/config.toml
+chmod 600 /etc/caddy/Caddyfile
+
+echo "Disabling SSH password login"
+sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl restart sshd
+
+echo "Activating CLion"
+curl -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLion2022.3/config/clion.key
+
+echo "Add new user"
+if id "stu" &>/dev/null; then
+    echo "User 'stu' exists. Deleting..."
+    sudo userdel -r stu
+    echo "User 'stu' deleted with home directory."
+else
+    echo "User 'stu' does not exist."
+fi
+
+useradd -m stu
+echo "stu:$USER_PASSWD" | sudo chpasswd

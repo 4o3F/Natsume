@@ -85,13 +85,21 @@ pub async fn serve() -> std::io::Result<()> {
     }
 
     HttpServer::new(|| {
-        App::new()
+        let mut app = App::new()
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
             .service(services::get_ip)
             .service(services::bind_id)
             .service(services::get_status)
-            .service(services::sync_info)
-            .service(actix_files::Files::new("/static", "./static"))
+            .service(services::sync_info);
+        let static_file_enabled = crate::GLOBAL_CONFIG
+            .get()
+            .unwrap()
+            .server
+            .enable_static_file;
+        if static_file_enabled {
+            app = app.service(actix_files::Files::new("/static", "./static"));
+        }
+        app
     })
     .bind_rustls_0_23(("0.0.0.0", server_config.server.port), tls_config)?
     .run()

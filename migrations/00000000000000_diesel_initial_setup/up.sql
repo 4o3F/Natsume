@@ -2,7 +2,8 @@
 create table
     id_bind (
         mac TEXT not null constraint mac_key primary key,
-        id TEXT not null
+        id TEXT not null,
+        ip TEXT not null
     );
 
 create unique index mac_index on id_bind (mac);

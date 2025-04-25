@@ -19,6 +19,8 @@ pub struct ServerConfig {
     pub enable_bind: bool,
     /// Enable sync service
     pub enable_sync: bool,
+    /// Enable static file service
+    pub enable_static_file: bool
 }
 
 #[cfg(feature = "client")]

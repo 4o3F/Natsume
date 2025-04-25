@@ -96,6 +96,24 @@ fn main() -> ExitCode {
     tracing::info!("Parsing config file...");
     let config = fs::read_to_string(cli.config).unwrap_or_log();
     let mut config: config::Config = toml::from_str(&config).unwrap_or_log();
+
+    #[cfg(feature = "client")]
+    {
+        if client::check_permission(config.client.caddyfile.clone()) {
+            tracing::info!("Client priviledge correct, procedding.")
+        } else {
+            tracing::error!("Client do not have root exec priviledge!!!");
+            return ExitCode::FAILURE;
+        }
+
+        if client::check_prerequisite() {
+            tracing::info!("Client prerequisite matched, procedding.")
+        } else {
+            tracing::error!("Client prerequisite does not match!!!");
+            return ExitCode::FAILURE;
+        }
+    }
+
     // Pre compute token hash
     #[cfg(feature = "server")]
     {
@@ -114,23 +132,6 @@ fn main() -> ExitCode {
         let hashed_token = hex::encode(hashed_token);
         config.client.token = hashed_token;
         tracing::info!("Client token set to {}", config.client.token);
-    }
-
-    #[cfg(feature = "client")]
-    {
-        if client::check_permission(config.client.caddyfile.clone()) {
-            tracing::info!("Client priviledge correct, procedding.")
-        } else {
-            tracing::error!("Client do not have root exec priviledge!!!");
-            return ExitCode::FAILURE;
-        }
-
-        if client::check_prerequisite() {
-            tracing::info!("Client prerequisite matched, procedding.")
-        } else {
-            tracing::error!("Client prerequisite does not match!!!");
-            return ExitCode::FAILURE;
-        }
     }
 
     GLOBAL_CONFIG

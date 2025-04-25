@@ -19,6 +19,8 @@
    + `caddy.deb` as the caddy installation deb
    + `natsume_client`
    + `client_config.toml` as the config that need to be sent to client
+   + `clion.key` as the activation file for CLion
+   + `natsume.service` as the systemd service
 4. TODO
 
 ## Process

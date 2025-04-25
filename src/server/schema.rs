@@ -4,6 +4,7 @@ diesel::table! {
     id_bind (mac) {
         mac -> Text,
         id -> Text,
+        ip -> Text,
     }
 }
 
