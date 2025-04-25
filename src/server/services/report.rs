@@ -1,5 +1,5 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, post, web::Json};
-use diesel::dsl::update;
+use diesel::dsl::{count_star, select, update};
 use diesel::prelude::*;
 use serde::Deserialize;
 use tracing_unwrap::OptionExt;
@@ -33,6 +33,27 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
         }
         Err(err) => {
             tracing::error!("Error getting database connection {}", err);
+            return HttpResponse::InternalServerError().finish();
+        }
+    }
+
+    match id_bind_dsl::id_bind
+        .filter(id_bind_dsl::mac.eq(&report.mac))
+        .select(count_star())
+        .execute(&mut connection)
+    {
+        Ok(result) => {
+            if result == 0 {
+                tracing::warn!(
+                    "Unbinded MAC {} reporting from IP {}!",
+                    report.mac,
+                    client_ip
+                );
+                return HttpResponse::Forbidden().body("Unknown MAC");
+            }
+        }
+        Err(err) => {
+            tracing::error!("Error checking MAC {} existance, err {}", report.mac, err);
             return HttpResponse::InternalServerError().finish();
         }
     }
