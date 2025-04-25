@@ -36,12 +36,15 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           args: "--release --bin natsume_server --features='server'"
           strip: true
-      - name: Upload artifact
+      - name: Upload server artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Binary
-          path: |
-            target/x86_64-unknown-linux-musl/release/natsume_server
-            target/x86_64-unknown-linux-musl/release/natsume_client
+          name: natsume_server
+          path: target/x86_64-unknown-linux-musl/release/natsume_server
+      - name: Upload client artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: natsume_client
+          path: target/x86_64-unknown-linux-musl/release/natsume_client
       - name: Setup upterm session
         uses: lhotari/action-upterm@v1
