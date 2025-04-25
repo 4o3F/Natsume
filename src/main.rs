@@ -107,11 +107,14 @@ fn main() -> ExitCode {
 
     #[cfg(feature = "client")]
     {
-        if client::check_permission(config.client.caddyfile.clone()) {
-            tracing::info!("Client priviledge correct, procedding.")
-        } else {
-            tracing::error!("Client do not have root exec priviledge!!!");
-            return ExitCode::FAILURE;
+        // Bind command should be run in non priviledged environment
+        if !matches!(cli.command, Commands::Bind { id: _ }) {
+            if client::check_permission(config.client.caddyfile.clone()) {
+                tracing::info!("Client priviledge correct, procedding.")
+            } else {
+                tracing::error!("Client do not have root exec priviledge!!!");
+                return ExitCode::FAILURE;
+            }
         }
 
         if client::check_prerequisite() {

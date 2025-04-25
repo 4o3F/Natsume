@@ -22,7 +22,7 @@ pub fn get_mac(target_ip: String) -> anyhow::Result<String> {
         "#,
         target_ip
     );
-    tracing::info!("Full command: {}", full_cmd);
+    tracing::debug!("Full command: {}", full_cmd);
     let output = Command::new("sh").arg("-c").arg(full_cmd).output()?;
     let errout = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
