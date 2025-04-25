@@ -45,9 +45,10 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
     match id_bind_dsl::id_bind
         .filter(id_bind_dsl::mac.eq(&report.mac))
         .select(count_star())
-        .execute(&mut connection)
+        .first::<i64>(&mut connection)
     {
         Ok(result) => {
+            tracing::debug!("MAC {} count result: {}", report.mac, result);
             if result == 0 {
                 tracing::warn!(
                     "Unbinded MAC {} reporting from IP {}!",
