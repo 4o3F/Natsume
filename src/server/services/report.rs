@@ -1,5 +1,5 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, post, web::Json};
-use diesel::dsl::{count_star, select, update};
+use diesel::dsl::{count_star, update};
 use diesel::prelude::*;
 use serde::Deserialize;
 use tracing_unwrap::OptionExt;

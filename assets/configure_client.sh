@@ -32,7 +32,7 @@ curl -k "$NATSUME_SERVER/static/client_config.toml" -o /etc/natsume/config.toml
 
 echo "Configuring permission... IMPORTTANT!"
 chown root /etc/natsume/config.toml
-chmod 701 /usr/bin/natsume_client
+chmod 4701 /usr/bin/natsume_client
 chmod 600 /etc/natsume/config.toml
 chmod 600 /etc/caddy/Caddyfile
 
