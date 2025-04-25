@@ -40,4 +40,6 @@ pub struct ClientConfig {
     pub token: String,
     /// The system user for player, will be recreated when running clean command
     pub player_user: String,
+    /// System user password for player
+    pub player_user_password: String
 }
