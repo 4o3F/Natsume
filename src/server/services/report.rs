@@ -24,6 +24,10 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
         return HttpResponse::InternalServerError().finish();
     }
 
+    for (i, c) in report.mac.chars().enumerate() {
+        tracing::debug!("MAC char {}: {:?} (U+{:04X})", i, c, c as u32);
+    }
+
     let connection_pool = crate::server::database::DB_CONNECTION_POOL
         .get()
         .unwrap_or_log();
@@ -50,9 +54,6 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
                     report.mac,
                     client_ip
                 );
-                for (i, c) in report.mac.chars().enumerate() {
-                    tracing::debug!("MAC char {}: {:?} (U+{:04X})", i, c, c as u32);
-                }
                 return HttpResponse::Forbidden().body("Unknown MAC");
             }
         }
