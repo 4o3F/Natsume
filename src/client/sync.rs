@@ -134,7 +134,14 @@ pub fn sync_info() -> anyhow::Result<()> {
         .client
         .caddyfile
         .clone();
-    match OpenOptions::new().write(true).open(caddyfile_path) {
+
+    std::fs::remove_file(&caddyfile_path)?;
+
+    match OpenOptions::new()
+        .write(true)
+        .create(true)
+        .open(caddyfile_path)
+    {
         Ok(mut file) => {
             file.write_all(formated_caddyfile.as_bytes())?;
         }

@@ -46,5 +46,5 @@ jobs:
         with:
           name: natsume_client
           path: target/x86_64-unknown-linux-musl/release/natsume_client
-      - name: Setup upterm session
-        uses: lhotari/action-upterm@v1
+      # - name: Setup upterm session
+      #   uses: lhotari/action-upterm@v1

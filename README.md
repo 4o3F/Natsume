@@ -15,7 +15,11 @@
 ### Server
 1. Use `natsume_server -c config.toml serve` to init database and check config
 2. Use `natsume_server -c config.toml load -d data.csv` to load player info into database, CSV format is `id,username,password`
-3. TODO
+3. The static folder should contain the following files:
+   + `caddy.deb` as the caddy installation deb
+   + `natsume_client`
+   + `client_config.toml` as the config that need to be sent to client
+4. TODO
 
 ## Process
 
