@@ -1,0 +1,12 @@
+[Unit]
+Description=Natsume monitor
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/natsume_client monitor
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=multi-user.target

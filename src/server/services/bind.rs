@@ -1,4 +1,5 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, post, web::Json};
+use chrono::Utc;
 use diesel::{
     dsl::{exists, insert_into, select, update},
     prelude::*,
@@ -67,10 +68,15 @@ pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Resp
         }
     }
 
+    let timestamp = Utc::now().timestamp().to_string();
     if exist {
         // Update bind id
         match update(id_bind_dsl::id_bind.filter(id_bind_dsl::mac.eq(&body.mac)))
-            .set((id_bind_dsl::id.eq(&body.id), id_bind_dsl::ip.eq(&client_ip)))
+            .set((
+                id_bind_dsl::id.eq(&body.id),
+                id_bind_dsl::ip.eq(&client_ip),
+                id_bind_dsl::last_seen.eq(&timestamp),
+            ))
             .execute(&mut connection)
         {
             Ok(_) => {
@@ -94,6 +100,7 @@ pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Resp
                 id_bind_dsl::mac.eq(&body.mac),
                 id_bind_dsl::id.eq(&body.id),
                 id_bind_dsl::ip.eq(&client_ip),
+                id_bind_dsl::last_seen.eq(&timestamp),
             ))
             .execute(&mut connection)
         {

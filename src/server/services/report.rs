@@ -1,4 +1,5 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, post, web::Json};
+use chrono::Utc;
 use diesel::dsl::{count_star, update};
 use diesel::prelude::*;
 use serde::Deserialize;
@@ -58,9 +59,14 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
         }
     }
 
+    let timestamp = Utc::now().timestamp().to_string();
+
     // Update client IP addr
     match update(id_bind_dsl::id_bind.filter(id_bind_dsl::mac.eq(&report.mac)))
-        .set(id_bind_dsl::ip.eq(&client_ip))
+        .set((
+            id_bind_dsl::ip.eq(&client_ip),
+            id_bind_dsl::last_seen.eq(&timestamp),
+        ))
         .execute(&mut connection)
     {
         Ok(_) => {}
@@ -94,6 +100,8 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
             }
         }
     }
+
+    tracing::info!("MAC {} heartbeat received!", report.mac);
 
     HttpResponse::Ok().finish()
 }

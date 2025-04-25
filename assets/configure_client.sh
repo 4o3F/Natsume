@@ -53,3 +53,26 @@ fi
 
 useradd -m stu
 echo "stu:$USER_PASSWD" | sudo chpasswd
+
+echo "Add Natsume monitor service"
+
+cat <<EOF | sudo tee "/etc/systemd/system/natsume.service" > /dev/null
+[Unit]
+Description=Natsume monitor
+After=network.target network-online.target
+Requires=network-online.target
+
+[Service]
+User=root
+ExecStart=/usr/bin/natsume_client monitor
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod 644 "/etc/systemd/system/natsume.service"
+sudo systemctl daemon-reload
+sudo systemctl enable "natsume"
+sudo systemctl start "natsume"
+sudo systemctl status "natsume"
