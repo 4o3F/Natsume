@@ -25,6 +25,9 @@ curl -k "$NATSUME_SERVER/static/key.pub" -o /root/.ssh/authorized_keys
 curl -k "$NATSUME_SERVER/static/caddy.deb" -o /root/caddy.deb
 apt install -y /root/caddy.deb
 
+echo "Disabling Natsume service"
+sudo systemctl stop "natsume"
+
 echo "Download natsume client"
 curl -k "$NATSUME_SERVER/static/natsume_client" -o /usr/bin/natsume_client
 mkdir /etc/natsume

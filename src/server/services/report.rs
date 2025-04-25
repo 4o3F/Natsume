@@ -50,6 +50,9 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
                     report.mac,
                     client_ip
                 );
+                for (i, c) in report.mac.chars().enumerate() {
+                    tracing::debug!("MAC char {}: {:?} (U+{:04X})", i, c, c as u32);
+                }
                 return HttpResponse::Forbidden().body("Unknown MAC");
             }
         }

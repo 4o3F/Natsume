@@ -64,7 +64,7 @@ pub fn do_monitor() -> anyhow::Result<()> {
     runtime.block_on(async {
         let forever: tokio::task::JoinHandle<Result<(), anyhow::Error>> =
             tokio::task::spawn(async {
-                let mut interval = tokio::time::interval(Duration::from_secs(60 * 5));
+                let mut interval = tokio::time::interval(Duration::from_secs(60 * 1));
                 loop {
                     interval.tick().await;
                     let result = send_report(false);
