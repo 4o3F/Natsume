@@ -119,6 +119,17 @@ fn reload_caddy_service() -> bool {
     }
 }
 
+fn reset_caddyfile_permission(path: String) -> bool {
+    let output = Command::new("chown").arg("caddy:caddy").arg(path).output();
+    match output {
+        Ok(result) => result.status.success(),
+        Err(err) => {
+            tracing::error!("Failed to reset Caddyfile permission, err {}", err);
+            false
+        }
+    }
+}
+
 pub fn sync_info() -> anyhow::Result<()> {
     if !crate::client::check::check_caddy_active() {
         return Err(anyhow::Error::msg("Caddy service not running!"));
@@ -139,7 +150,7 @@ pub fn sync_info() -> anyhow::Result<()> {
     match OpenOptions::new()
         .write(true)
         .create(true)
-        .open(caddyfile_path)
+        .open(&caddyfile_path)
     {
         Ok(mut file) => {
             file.write_all(formated_caddyfile.as_bytes())?;
@@ -147,6 +158,10 @@ pub fn sync_info() -> anyhow::Result<()> {
         Err(e) => {
             bail!("Failed to write to Caddyfile, err {}", e)
         }
+    }
+
+    if !reset_caddyfile_permission(caddyfile_path) {
+        bail!("Failed to reset Caddyfile permission!")
     }
 
     if !reload_caddy_service() {

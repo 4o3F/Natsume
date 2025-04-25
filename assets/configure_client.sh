@@ -37,6 +37,7 @@ echo "Configuring permission... IMPORTTANT!"
 chown root /etc/natsume/config.toml
 chmod 4701 /usr/bin/natsume_client
 chmod 600 /etc/natsume/config.toml
+chown caddy:caddy /etc/caddy/Caddyfile
 chmod 600 /etc/caddy/Caddyfile
 
 echo "Disabling SSH password login"
