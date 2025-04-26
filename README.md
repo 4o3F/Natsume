@@ -10,7 +10,9 @@
 6. Use `chown <sudoer> /etc/natsume/config.toml` to change client config owner to sudoer, then use `chmod 600 /etc/natsume/config.toml` to change it's permission
 7. Use `natsume_client bind --id <ID>` to bind this device to the given ID
 8. When the username and password need to refresh, use `natsume_client sync` to overwrite the Caddyfile and reload service
-9. TODO
+9. Use `natsume_client clean` to clean the player data
+10. Use `natsume_client session terminate` to end the player session
+11. Use `natsume_client session auto-login` to auto login to player account
 
 ### Server
 1. Use `natsume_server -c config.toml serve` to init database and check config
