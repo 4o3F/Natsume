@@ -35,24 +35,39 @@ pub fn terminate_sessions() -> anyhow::Result<()> {
         bail!("Failed to write to {}: {}", gdm_config, e)
     }
 
-    let status = Command::new("loginctl")
-        .arg("terminate-user")
-        .arg(&username)
-        .status()
-        .expect_or_log("Failed to terminate user session");
-    if !status.success() {
-        bail!("Failed to terminate user session for {}", username);
-    }
+    // Check if user is logged in
+    let who_output = Command::new("who")
+        .output()
+        .expect_or_log("Failed to execute 'who'");
+    let output_str = String::from_utf8_lossy(&who_output.stdout);
+    let user_logged_in = output_str.lines().any(|line| line.starts_with(&username));
 
-    let status = Command::new("systemctl")
-        .arg("restart")
-        .arg("gdm")
-        .status()
-        .expect_or_log("Failed to restart gdm");
-    if !status.success() {
-        bail!("Failed to retart gdm")
+    if user_logged_in {
+        let status = Command::new("loginctl")
+            .arg("terminate-user")
+            .arg(&username)
+            .status()
+            .expect_or_log("Failed to terminate user session");
+        if !status.success() {
+            bail!("Failed to terminate user session for {}", username);
+        }
+
+        let status = Command::new("systemctl")
+            .arg("restart")
+            .arg("gdm")
+            .status()
+            .expect_or_log("Failed to restart gdm");
+        if !status.success() {
+            bail!("Failed to retart gdm")
+        }
+        Ok(())
+    } else {
+        tracing::info!(
+            "User {} is not currently logged in. Skipping terminate.",
+            username
+        );
+        Ok(())
     }
-    Ok(())
 }
 
 pub fn autologin_session() -> anyhow::Result<()> {
