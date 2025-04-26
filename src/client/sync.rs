@@ -1,4 +1,4 @@
-use std::{fs::OpenOptions, io::Write, process::Command};
+use std::{fs::write, process::Command};
 
 use anyhow::bail;
 use base64::{Engine, prelude::BASE64_STANDARD};
@@ -145,20 +145,24 @@ pub fn sync_info() -> anyhow::Result<()> {
         .caddyfile
         .clone();
 
-    std::fs::remove_file(&caddyfile_path)?;
+    // std::fs::remove_file(&caddyfile_path)?;
 
-    match OpenOptions::new()
-        .write(true)
-        .create(true)
-        .open(&caddyfile_path)
-    {
-        Ok(mut file) => {
-            file.write_all(formated_caddyfile.as_bytes())?;
-        }
-        Err(e) => {
-            bail!("Failed to write to Caddyfile, err {}", e)
-        }
+    if let Err(err) = write(&caddyfile_path, formated_caddyfile) {
+        bail!("Failed to write to Caddyfile, err {}", err)
     }
+
+    // match OpenOptions::new()
+    //     .write(true)
+    //     .create(true)
+    //     .open(&caddyfile_path)
+    // {
+    //     Ok(mut file) => {
+    //         file.write_all(formated_caddyfile.as_bytes())?;
+    //     }
+    //     Err(e) => {
+    //         bail!("Failed to write to Caddyfile, err {}", e)
+    //     }
+    // }
 
     if !reset_caddyfile_permission(caddyfile_path) {
         bail!("Failed to reset Caddyfile permission!")

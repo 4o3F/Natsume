@@ -65,6 +65,21 @@ enum Commands {
     /// Start monitoring device and report
     #[cfg(feature = "client")]
     Monitor {},
+
+    /// Deal with user session
+    #[cfg(feature = "client")]
+    Session {
+        #[arg(value_enum, help = "Operation for session (terminate, autologin)")]
+        operation: SessionOperation,
+    },
+}
+
+#[derive(clap::ValueEnum, Clone)]
+enum SessionOperation {
+    /// Terminate the user session
+    Terminate,
+    /// Auto login to the given user session
+    AutoLogin,
 }
 
 fn main() -> ExitCode {
@@ -224,6 +239,29 @@ fn main() -> ExitCode {
                 tracing::error!("Monitor failed with error {}", err);
                 return ExitCode::FAILURE;
             }
+        },
+        #[cfg(feature = "client")]
+        Commands::Session { operation } => match operation {
+            SessionOperation::Terminate => match client::terminate_sessions() {
+                Ok(_) => {
+                    tracing::info!("Terminate user session successful");
+                    return ExitCode::SUCCESS;
+                }
+                Err(err) => {
+                    tracing::error!("Terminate user session failed with error {}", err);
+                    return ExitCode::FAILURE;
+                }
+            },
+            SessionOperation::AutoLogin => match client::autologin_session() {
+                Ok(_) => {
+                    tracing::info!("AutoLogin for user session successful");
+                    return ExitCode::SUCCESS;
+                }
+                Err(err) => {
+                    tracing::error!("AutoLogin user session failed with error {}", err);
+                    return ExitCode::FAILURE;
+                }
+            },
         },
     }
 }
