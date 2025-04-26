@@ -42,7 +42,7 @@ pub fn clean_user() -> anyhow::Result<()> {
     }
 
     let output = Command::new("sh")
-        .arg("-C")
+        .arg("-c")
         .arg(format!(
             "echo '{}:{}' | sudo chpasswd",
             &user_name, &user_password
