@@ -6,6 +6,8 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing_unwrap::OptionExt;
 
+use super::monitor;
+
 #[derive(Serialize)]
 struct SyncRequestBody {
     mac: String,
@@ -171,5 +173,6 @@ pub fn sync_info() -> anyhow::Result<()> {
     if !reload_caddy_service() {
         bail!("Failed to reload caddy service!")
     }
-    Ok(())
+
+    monitor::send_report(true)
 }
