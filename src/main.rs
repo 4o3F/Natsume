@@ -148,7 +148,14 @@ fn main() -> ExitCode {
         let hashed_token = hasher.finalize();
         let hashed_token = hex::encode(hashed_token);
         config.server.token = hashed_token;
-        tracing::info!("Server token set to {}", config.server.token);
+        tracing::info!("Server sync token set to {}", config.server.token);
+
+        let mut hasher = Sha256::new();
+        hasher.update(config.server.panel_token.clone());
+        let hashed_token = hasher.finalize();
+        let hashed_token = hex::encode(hashed_token);
+        config.server.panel_token = hashed_token;
+        tracing::info!("Server panel token set to {}", config.server.panel_token);
     }
     #[cfg(feature = "client")]
     {

@@ -20,7 +20,9 @@ pub struct ServerConfig {
     /// Enable sync service
     pub enable_sync: bool,
     /// Enable static file service
-    pub enable_static_file: bool
+    pub enable_static_file: bool,
+    /// Password for panel
+    pub panel_token: String
 }
 
 #[cfg(feature = "client")]

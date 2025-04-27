@@ -1,6 +1,7 @@
 [server]
 port = 8080
-token = "auth@token"
+token = "sync@token"
 enable_bind = true
 enable_sync = true
 enable_static_file = true
+panel_token = "panel@auth"

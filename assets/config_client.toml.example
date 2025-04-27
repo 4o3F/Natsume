@@ -1,7 +1,7 @@
 [client]
 skip_ip_check = false
 server_addr = "http://127.0.0.1:8080"
-token = "auth@token"
+token = "sync@token"
 caddyfile = "/etc/caddy/Caddyfile"
 domjudge_addr = "http://localhost"
 player_user = "stu"
