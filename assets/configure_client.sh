@@ -3,6 +3,8 @@
 NATSUME_SERVER="https://localhost"
 NTP_SERVER="localhost"
 USER_PASSWD="passwd"
+SCHEMA_FILE="/usr/share/glib-2.0/schemas/20_icpc-desktop-schema.gschema.override"
+
 
 if [ "$(whoami)" = "root" ]; then
 	echo "Is root user, procedding."
@@ -48,6 +50,12 @@ curl -s -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLi
 echo "Configure firefox homepage"
 echo "pref("browser.startup.homepage", "http://localhost");" >> /etc/firefox/syspref.js
 
+echo "Configure wallpaper"
+curl -s -k "$NATSUME_SERVER/static/wallpaper.png" -o /usr/share/backgrounds/wallpaper.png
+sed -i "s|^\(.*picture-uri\s*=\s*\).*|\1'file:///usr/share/backgrounds/wallpaper.png'|" "$SCHEMA_FILE"
+sed -i "s|^\(.*picture-options\s*=\s*\).*|\1'scaled'|" "$SCHEMA_FILE"
+glib-compile-schemas /usr/share/glib-2.0/schemas/
+
 echo "Add new user"
 if id "stu" &>/dev/null; then
     echo "User 'stu' exists. Deleting..."
@@ -72,6 +80,8 @@ Requires=network-online.target
 User=root
 ExecStart=/usr/bin/natsume_client monitor
 TimeoutStopSec=5s
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

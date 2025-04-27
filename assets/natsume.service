@@ -7,6 +7,8 @@ Requires=network-online.target
 User=root
 ExecStart=/usr/bin/natsume_client monitor
 TimeoutStopSec=5s
+Restart=always
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 use actix_web::{HttpResponse, Responder, get};
-use diesel::{dsl::count_star, prelude::*};
+use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, dsl::count_star};
 use serde::Serialize;
 use tracing_unwrap::OptionExt;
 
