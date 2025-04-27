@@ -1,5 +1,6 @@
 use std::{fs, io::BufReader};
 
+use actix_cors::Cors;
 use actix_web::{
     App, HttpResponse, HttpServer,
     body::{BoxBody, MessageBody, to_bytes},
@@ -87,6 +88,7 @@ pub async fn serve() -> std::io::Result<()> {
     HttpServer::new(|| {
         let mut app = App::new()
             .wrap(ErrorHandlers::new().default_handler(add_error_header))
+            .wrap(Cors::permissive())
             .service(services::get_ip)
             .service(services::bind_id)
             .service(services::report_status)
