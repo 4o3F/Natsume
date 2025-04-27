@@ -1,6 +1,6 @@
 use actix_web::{HttpRequest, HttpResponse, Responder, post, web::Json};
 use chrono::Utc;
-use diesel::dsl::{count_star, update};
+use diesel::dsl::{count_star, insert_into, update};
 use diesel::prelude::*;
 use serde::Deserialize;
 use tracing_unwrap::OptionExt;
@@ -42,6 +42,8 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
         }
     }
 
+    let mut insert_unknown = false;
+
     match id_bind_dsl::id_bind
         .filter(id_bind_dsl::mac.eq(&report.mac))
         .select(count_star())
@@ -51,11 +53,11 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
             tracing::debug!("MAC {} count result: {}", report.mac, result);
             if result == 0 {
                 tracing::warn!(
-                    "Unbinded MAC {} reporting from IP {}!",
+                    "Unbinded MAC {} reporting from IP {}! Logging as unknown",
                     report.mac,
                     client_ip
                 );
-                return HttpResponse::Forbidden().body("Unknown MAC");
+                insert_unknown = true;
             }
         }
         Err(err) => {
@@ -65,6 +67,27 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
     }
 
     let timestamp = Utc::now().timestamp().to_string();
+    if insert_unknown {
+        match insert_into(id_bind_dsl::id_bind)
+            .values((
+                id_bind_dsl::mac.eq(&report.mac),
+                id_bind_dsl::id.eq("UNKNOWN"),
+                id_bind_dsl::ip.eq(&client_ip),
+                id_bind_dsl::last_seen.eq(&timestamp),
+            ))
+            .execute(&mut connection)
+        {
+            Ok(_) => {
+                tracing::info!("Logging unbinded MAC with ID as unknown");
+                return HttpResponse::Ok().finish();
+            }
+            Err(err) => {
+                tracing::error!("Failed to log unbinded MAC with ID as unknown, err {}", err);
+                return HttpResponse::InternalServerError()
+                    .body("Failed to log unbinded MAC with ID as unknown");
+            }
+        }
+    }
 
     // Update client IP addr
     match update(id_bind_dsl::id_bind.filter(id_bind_dsl::mac.eq(&report.mac)))
