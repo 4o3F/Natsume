@@ -11,7 +11,7 @@ import {
 import {
   Table,
   TableBody,
-  TableCell,
+  TableCell, TableFooter,
   TableHead,
   TableHeader,
   TableRow,
@@ -21,7 +21,7 @@ import {
   getCoreRowModel,
   getExpandedRowModel,
   getFilteredRowModel,
-  getSortedRowModel, FlexRender,
+  getSortedRowModel, FlexRender, getPaginationRowModel,
 } from '@tanstack/vue-table'
 import type {
   ColumnDef,
@@ -42,6 +42,7 @@ import {valueUpdater} from "@/components/ui/table/utils.ts";
 import {RadioGroup, RadioGroupItem} from "@/components/ui/radio-group";
 import {Label} from "reka-ui";
 import {ArrowUpDown} from "lucide-vue-next";
+import DataTablePagination from "@/components/custom/DataTablePagination.vue";
 
 const mainStore = useMainStore()
 const newToken = ref<string>('')
@@ -161,7 +162,7 @@ const table = useVueTable({
   },
   columns,
   getCoreRowModel: getCoreRowModel(),
-  // getPaginationRowModel: getPaginationRowModel(),
+  getPaginationRowModel: getPaginationRowModel(),
   getSortedRowModel: getSortedRowModel(),
   getFilteredRowModel: getFilteredRowModel(),
   getExpandedRowModel: getExpandedRowModel(),
@@ -348,6 +349,7 @@ function isOffline(last_seen: null | string): boolean {
             </TableRow>
           </TableBody>
         </Table>
+        <DataTablePagination :table="table" class="w-full"/>
       </div>
     </div>
 
