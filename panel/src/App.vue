@@ -288,15 +288,15 @@ function isOffline(last_seen: null | string): boolean {
             <RadioGroup default-value="all" :orientation="'horizontal'" class="flex flex-row"
                         @update:modelValue="filterSync"
             >
-              <div class="space-x-2">
+              <div class="space-x-2 items-center flex">
                 <RadioGroupItem value="all" id="all"/>
                 <Label for="all">All</Label>
               </div>
-              <div class="space-x-2">
+              <div class="space-x-2 items-center flex">
                 <RadioGroupItem value="sync" id="sync"/>
                 <Label for="sync">Synced Only</Label>
               </div>
-              <div class="space-x-2">
+              <div class="space-x-2 items-center flex">
                 <RadioGroupItem value="unsync" id="unsync"/>
                 <Label for="unsync">UnSynced Only</Label>
               </div>
