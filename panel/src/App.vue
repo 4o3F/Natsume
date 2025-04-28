@@ -11,7 +11,7 @@ import {
 import {
   Table,
   TableBody,
-  TableCell, TableFooter,
+  TableCell,
   TableHead,
   TableHeader,
   TableRow,
