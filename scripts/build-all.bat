@@ -5,6 +5,6 @@ echo "Building client..."
 cargo build --bin natsume_client --features="client"
 
 echo "Building server..."
-cargo build --bin natsume_server --features="server"
+cargo build --bin natsume_server --features="server" 
 
 echo "Builds completed!"

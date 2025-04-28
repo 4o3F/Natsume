@@ -40,6 +40,9 @@ import Sonner from "@/components/ui/sonner/Sonner.vue";
 import {toast} from "vue-sonner";
 import {Input} from "@/components/ui/input";
 import {valueUpdater} from "@/components/ui/table/utils.ts";
+import {RadioGroup, RadioGroupItem} from "@/components/ui/radio-group";
+import {Label} from "reka-ui";
+import {ArrowUpDown} from "lucide-vue-next";
 
 const mainStore = useMainStore()
 const newToken = ref<string>('')
@@ -116,7 +119,13 @@ const columns: ColumnDef<Info>[] = [
   },
   {
     accessorKey: 'id',
-    header: 'ID',
+    header: ({column}) => {
+      return h(Button, {
+            variant: 'ghost',
+            onClick: () => column.toggleSorting(column.getIsSorted() === 'asc'),
+          }, () => ['ID', h(ArrowUpDown, {class: 'ml-2 h-4 w-4'})]
+      )
+    },
     cell: ({row}) => h('div', row.getValue('id') === null ? 'N/A' : row.getValue('id')),
   },
   {
@@ -180,6 +189,53 @@ const table = useVueTable({
     },
   },
 })
+
+function filterSync(mode: string) {
+  switch (mode) {
+    case "all":
+      table.getColumn("synced")?.setFilterValue(null)
+      break
+    case "sync":
+      table.getColumn("synced")?.setFilterValue(true)
+      break
+    case "unsync":
+      table.getColumn("synced")?.setFilterValue(false)
+      break
+  }
+}
+
+function downloadString(content: string, filename: string, mimeType = "text/plain") {
+  const blob = new Blob([content], {type: mimeType});
+  const url = URL.createObjectURL(blob);
+
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+
+  URL.revokeObjectURL(url);
+}
+
+
+function exportIPs(mode: string) {
+  switch (mode) {
+    case "all":
+      let ips = status.value.infos.filter(info => info.ip).map(info => info.ip)
+      downloadString(ips.join('\n'), 'ips_all.txt')
+      break
+    case "unsync":
+      let unsync_ips = status.value.infos.filter(info => info.ip && !info.synced).map(info => info.ip)
+      downloadString(unsync_ips.join('\n'), 'ips_unsync.txt')
+      break
+  }
+}
+
+function isOffline(last_seen: null | string): boolean {
+  if (last_seen === null) {
+    return false
+  }
+  return (Date.now() - (+last_seen) * 1000) > 50 * 1000
+}
 </script>
 
 <template>
@@ -224,9 +280,36 @@ const table = useVueTable({
           </CardContent>
         </Card>
       </div>
-      <div class="p-3 m-5 flex flex-col">
-        <div class="flex flex-row">
-
+      <div class="p-3 m-5 flex flex-col gap-5">
+        <div class="flex flex-col gap-2">
+          <p class="text-xl font-bold">Tools</p>
+          <div class="flex flex-row gap-3 items-center">
+            <p class="font-bold">Sync Status</p>
+            <RadioGroup default-value="all" :orientation="'horizontal'" class="flex flex-row"
+                        @update:modelValue="filterSync"
+            >
+              <div class="space-x-2">
+                <RadioGroupItem value="all" id="all"/>
+                <Label for="all">All</Label>
+              </div>
+              <div class="space-x-2">
+                <RadioGroupItem value="sync" id="sync"/>
+                <Label for="sync">Synced Only</Label>
+              </div>
+              <div class="space-x-2">
+                <RadioGroupItem value="unsync" id="unsync"/>
+                <Label for="unsync">UnSynced Only</Label>
+              </div>
+            </RadioGroup>
+          </div>
+          <div class="flex flex-row gap-3">
+            <Button @click="exportIPs('all')">
+              Export ALL IPs
+            </Button>
+            <Button @click="exportIPs('unsync')">
+              Export UnSynced IPs
+            </Button>
+          </div>
         </div>
         <Table>
           <TableHeader>
@@ -241,7 +324,8 @@ const table = useVueTable({
             <template v-if="table.getRowModel().rows?.length">
               <template v-for="row in table.getRowModel().rows" :key="row.id">
                 <TableRow :data-state="row.getIsSelected() && 'selected'" :class="{
-                  'bg-amber-500 hover:bg-amber-300': !row.getValue('synced')
+                  'bg-amber-500 hover:bg-amber-300': !row.getValue('synced'),
+                  'bg-red-500 hover:bg-red-400': isOffline(row.original.last_seen),
                 }">
                   <TableCell v-for="cell in row.getVisibleCells()" :key="cell.id">
                     <FlexRender :render="cell.column.columnDef.cell" :props="cell.getContext()"/>

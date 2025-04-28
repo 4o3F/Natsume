@@ -7,6 +7,7 @@ use actix_web::{
     dev::ServiceResponse,
     http::header,
     middleware::{ErrorHandlerResponse, ErrorHandlers},
+    web,
 };
 use diesel::{
     dsl::{exists, insert_into, select, update},
@@ -16,6 +17,7 @@ use rustls::pki_types::PrivateKeyDer;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Deserialize;
 use serde_json::json;
+use services::spa_handler;
 use tracing_unwrap::OptionExt;
 
 mod database;
@@ -93,7 +95,8 @@ pub async fn serve() -> std::io::Result<()> {
             .service(services::bind_id)
             .service(services::report_status)
             .service(services::get_status)
-            .service(services::sync_info);
+            .service(services::sync_info)
+            .service(web::scope("/panel").default_service(web::to(spa_handler)));
         let static_file_enabled = crate::GLOBAL_CONFIG
             .get()
             .unwrap()

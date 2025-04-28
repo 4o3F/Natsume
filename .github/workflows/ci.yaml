@@ -20,6 +20,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install SSL packages
         run: sudo apt-get update --yes && sudo apt-get install --yes pkg-config openssl libssl-dev
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
       - name: Build Client
         uses: houseabsolute/actions-rust-cross@v1
         with:
