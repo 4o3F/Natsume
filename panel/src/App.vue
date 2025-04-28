@@ -21,7 +21,6 @@ import {
   getCoreRowModel,
   getExpandedRowModel,
   getFilteredRowModel,
-  getPaginationRowModel,
   getSortedRowModel, FlexRender,
 } from '@tanstack/vue-table'
 import type {
@@ -162,7 +161,7 @@ const table = useVueTable({
   },
   columns,
   getCoreRowModel: getCoreRowModel(),
-  getPaginationRowModel: getPaginationRowModel(),
+  // getPaginationRowModel: getPaginationRowModel(),
   getSortedRowModel: getSortedRowModel(),
   getFilteredRowModel: getFilteredRowModel(),
   getExpandedRowModel: getExpandedRowModel(),
@@ -234,7 +233,7 @@ function isOffline(last_seen: null | string): boolean {
   if (last_seen === null) {
     return false
   }
-  return (Date.now() - (+last_seen) * 1000) > 50 * 1000
+  return (Date.now() - (+last_seen) * 1000) > 5 * 60 * 1000
 }
 </script>
 

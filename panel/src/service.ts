@@ -5,6 +5,7 @@ const api = createBaseAPI()
 function createBaseAPI(): AxiosInstance {
     return axios.create({
         baseURL: "/",
+        // baseURL: "https://localhost:2333/",
         headers: {},
         withCredentials: false,
         adapter: 'fetch',
