@@ -5,6 +5,7 @@ diesel::table! {
         mac -> Text,
         id -> Text,
         ip -> Text,
+        client_version -> Text,
         last_seen -> Text,
     }
 }

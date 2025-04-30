@@ -144,6 +144,11 @@ const columns: ColumnDef<Info>[] = [
     cell: ({row}) => h('div', row.getValue('password') === null ? 'N/A' : row.getValue('password')),
   },
   {
+    accessorKey: 'client_version',
+    header: 'Client version',
+    cell: ({row}) => h('div', row.getValue('client_version') === null ? 'N/A' : row.getValue('client_version')),
+  },
+  {
     accessorKey: 'synced',
     header: 'Synced',
     cell: ({row}) => h('div', row.getValue('synced') === null ? 'N/A' : row.getValue('synced')),
@@ -282,7 +287,6 @@ function isOffline(last_seen: null | string): boolean {
       </div>
       <div class="p-3 m-5 flex flex-col gap-5">
         <div class="flex flex-col gap-2">
-          <p class="text-xl font-bold">Tools</p>
           <div class="flex flex-row gap-3 items-center">
             <p class="font-bold">Sync Status</p>
             <RadioGroup default-value="all" :orientation="'horizontal'" class="flex flex-row"

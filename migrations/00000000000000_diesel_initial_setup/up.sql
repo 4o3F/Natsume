@@ -4,6 +4,7 @@ create table
         mac TEXT not null constraint mac_key primary key,
         id TEXT not null,
         ip TEXT not null,
+        client_version TEXT not null,
         last_seen TEXT not null
     );
 

@@ -8,6 +8,7 @@ export const InfoSchema = z.object({
     "last_seen": z.union([z.null(), z.string()]),
     "username": z.union([z.null(), z.string()]),
     "password": z.union([z.null(), z.string()]),
+    "client_version": z.union([z.null(), z.string()]),
     "synced": z.union([z.boolean(), z.null()]),
 });
 export type Info = z.infer<typeof InfoSchema>;

@@ -96,19 +96,22 @@ fn validate_direct_connection(url: &String) -> anyhow::Result<bool> {
     Ok(netinfo.contains(ip.ip.as_str()))
 }
 
+#[derive(Serialize)]
+struct RequestBody {
+    mac: String,
+    id: String,
+    client_version: String,
+}
+
 fn send_bind_req(url: &String, id: &String, mac: &String) -> anyhow::Result<()> {
     let request_url = format!("{}/bind", url);
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()?;
-    #[derive(Serialize)]
-    struct RequestBody {
-        mac: String,
-        id: String,
-    }
     let body = RequestBody {
         mac: mac.clone(),
         id: id.clone(),
+        client_version: version!().to_string(),
     };
 
     let response = client.post(request_url).json(&body).send()?;

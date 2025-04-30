@@ -12,6 +12,8 @@ use crate::server::schema::player::dsl as player_dsl;
 struct ReportStatusRequest {
     mac: String,
     synced: bool,
+    #[serde(default)]
+    client_version: Option<String>,
 }
 
 #[post("/report")]
@@ -53,9 +55,10 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
             tracing::debug!("MAC {} count result: {}", report.mac, result);
             if result == 0 {
                 tracing::warn!(
-                    "Unbinded MAC {} reporting from IP {}! Logging as unknown",
+                    "Unbinded MAC {} reporting from IP {} with version '{}'! Logging as unknown",
                     report.mac,
-                    client_ip
+                    client_ip,
+                    report.client_version.as_deref().unwrap_or_default()
                 );
                 insert_unknown = true;
             }
@@ -73,6 +76,8 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
                 id_bind_dsl::mac.eq(&report.mac),
                 id_bind_dsl::id.eq("UNKNOWN"),
                 id_bind_dsl::ip.eq(&client_ip),
+                id_bind_dsl::client_version
+                    .eq(&report.client_version.as_deref().unwrap_or_default()),
                 id_bind_dsl::last_seen.eq(&timestamp),
             ))
             .execute(&mut connection)
@@ -93,6 +98,7 @@ pub async fn report_status(req: HttpRequest, report: Json<ReportStatusRequest>) 
     match update(id_bind_dsl::id_bind.filter(id_bind_dsl::mac.eq(&report.mac)))
         .set((
             id_bind_dsl::ip.eq(&client_ip),
+            id_bind_dsl::client_version.eq(&report.client_version.as_deref().unwrap_or_default()),
             id_bind_dsl::last_seen.eq(&timestamp),
         ))
         .execute(&mut connection)

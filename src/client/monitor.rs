@@ -11,6 +11,7 @@ use crate::client::bind;
 struct ReportRequest {
     mac: String,
     synced: bool,
+    client_version: String,
 }
 
 pub fn send_report(synced: bool) -> anyhow::Result<()> {
@@ -39,6 +40,7 @@ pub fn send_report(synced: bool) -> anyhow::Result<()> {
         .json(&ReportRequest {
             mac: mac.clone(),
             synced,
+            client_version: version!().to_string(),
         })
         .send()?;
 

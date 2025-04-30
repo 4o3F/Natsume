@@ -10,6 +10,9 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use tracing_unwrap::{OptionExt, ResultExt};
 
+#[macro_use]
+extern crate version;
+
 #[cfg(feature = "client")]
 mod client;
 mod config;
@@ -114,6 +117,11 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
+
+    #[cfg(feature = "client")]
+    tracing::info!("Currently in client mode version {}", version!());
+    #[cfg(feature = "server")]
+    tracing::info!("Currently in server mode version {}", version!());
 
     // Do config parse
     tracing::info!("Parsing config file...");

@@ -11,6 +11,8 @@ use tracing_unwrap::OptionExt;
 struct BindRequestBody {
     mac: String,
     id: String,
+    #[serde(default)]
+    client_version: Option<String>,
 }
 #[post("/bind")]
 pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Responder {
@@ -75,6 +77,7 @@ pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Resp
             .set((
                 id_bind_dsl::id.eq(&body.id),
                 id_bind_dsl::ip.eq(&client_ip),
+                id_bind_dsl::client_version.eq(&body.client_version.as_deref().unwrap_or_default()),
                 id_bind_dsl::last_seen.eq(&timestamp),
             ))
             .execute(&mut connection)
@@ -100,6 +103,7 @@ pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Resp
                 id_bind_dsl::mac.eq(&body.mac),
                 id_bind_dsl::id.eq(&body.id),
                 id_bind_dsl::ip.eq(&client_ip),
+                id_bind_dsl::client_version.eq(&body.client_version.as_deref().unwrap_or_default()),
                 id_bind_dsl::last_seen.eq(&timestamp),
             ))
             .execute(&mut connection)
