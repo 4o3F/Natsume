@@ -84,7 +84,7 @@ async function updateStatus(token: string): Promise<boolean> {
 
 if (mainStore.panel_token !== null) {
   updateStatus(mainStore.panel_token)
-  setInterval(() => updateStatus(mainStore.panel_token), 30000)
+  // setInterval(() => updateStatus(mainStore.panel_token), 30000)
 }
 
 // Data Table
