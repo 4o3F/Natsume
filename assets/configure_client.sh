@@ -48,7 +48,7 @@ echo "Activating CLion"
 curl -s -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLion2022.3/config/clion.key
 
 echo "Configure firefox homepage"
-echo "pref("browser.startup.homepage", "http://localhost");" >> /etc/firefox/syspref.js
+echo "pref(\"browser.startup.homepage\", \"http://localhost\");" >> /etc/firefox/syspref.js
 
 echo "Configure wallpaper"
 curl -s -k "$NATSUME_SERVER/static/wallpaper.png" -o /usr/share/backgrounds/wallpaper.png
