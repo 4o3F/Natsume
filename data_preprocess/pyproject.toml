@@ -1,0 +1,13 @@
+[project]
+name = "data-preprocess"
+version = "0.1.0"
+description = "Preprocess team info for DomJudge import"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastexcel>=0.15.1",
+    "polars>=1.33.0",
+    "pyarrow>=21.0.0",
+    "pyyaml>=6.0.2",
+    "requests>=2.32.5",
+]

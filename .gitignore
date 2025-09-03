@@ -4,3 +4,4 @@ assets/config.toml
 .env
 tmp*.txt
 logs
+data_preprocess/.venv
