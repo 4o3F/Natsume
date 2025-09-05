@@ -31,7 +31,7 @@ import type {
   VisibilityState,
 } from '@tanstack/vue-table'
 import {Button} from '@/components/ui/button'
-import {getStatus} from "./service.ts";
+import {getStatus, removeBindByMAC} from "./service.ts";
 import {h, ref} from "vue";
 import type {AxiosResponse} from "axios";
 import {ErrorResponseSchema, type StatusResponse, StatusResponseSchema, type Info} from "./schema.ts";
@@ -84,7 +84,7 @@ async function updateStatus(token: string): Promise<boolean> {
 
 if (mainStore.panel_token !== null) {
   updateStatus(mainStore.panel_token)
-  // setInterval(() => updateStatus(mainStore.panel_token), 30000)
+  setInterval(() => updateStatus(mainStore.panel_token), 10000)
 }
 
 // Data Table
@@ -152,6 +152,24 @@ const columns: ColumnDef<Info>[] = [
     accessorKey: 'synced',
     header: 'Synced',
     cell: ({row}) => h('div', row.getValue('synced') === null ? 'N/A' : row.getValue('synced')),
+  },
+  {
+    accessorKey: 'actions',
+    header: 'Action',
+    cell: ({row}) => {
+      return h('div', {class: 'flex flex-row gap-2'}, [
+        h(Button, {
+          variant: 'secondary', class: 'bg-red-600 text-white hover:text-black', onClick: async () => {
+            let result = await removeBindByMAC(row.getValue('mac'), mainStore.panel_token)
+            if (result.status == 200) {
+              toast.success("Delete success")
+            } else {
+              toast.error("Error deleting, err " + result.status)
+            }
+          }, disabled: row.getValue('mac') === null
+        }, 'Delete')
+      ])
+    }
   }
 ]
 
@@ -193,6 +211,7 @@ const table = useVueTable({
       return expanded.value
     },
   },
+  autoResetAll: false,
 })
 
 function filterSync(mode: string) {

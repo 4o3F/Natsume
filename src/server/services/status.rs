@@ -1,8 +1,4 @@
-use std::future::Ready;
-
-use actix_web::{
-    FromRequest, HttpRequest, HttpResponse, Responder, dev::Payload, error::ErrorUnauthorized, get,
-};
+use actix_web::{HttpResponse, Responder, get};
 use diesel::{
     ExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryDsl, RunQueryDsl,
     dsl::count_star, prelude::Queryable,
@@ -30,31 +26,9 @@ struct Info {
     password: Option<String>,
     synced: Option<bool>,
 }
-pub struct Authenticated;
-
-impl FromRequest for Authenticated {
-    type Error = actix_web::Error;
-    type Future = Ready<Result<Self, Self::Error>>;
-
-    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
-        let config = crate::GLOBAL_CONFIG.get().expect("Config not initialized");
-
-        match req.headers().get("token") {
-            Some(header_value) => {
-                if let Ok(token) = header_value.to_str() {
-                    if token == config.server.panel_token {
-                        return std::future::ready(Ok(Authenticated));
-                    }
-                }
-                std::future::ready(Err(ErrorUnauthorized("Invalid token")))
-            }
-            None => std::future::ready(Err(ErrorUnauthorized("Missing token header"))),
-        }
-    }
-}
 
 #[get("/status")]
-pub async fn get_status(_auth: Authenticated) -> impl Responder {
+pub async fn get_status(_auth: crate::server::services::Authenticated) -> impl Responder {
     let connection_pool = crate::server::database::DB_CONNECTION_POOL
         .get()
         .unwrap_or_log();

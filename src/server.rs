@@ -96,6 +96,7 @@ pub async fn serve() -> std::io::Result<()> {
             .service(services::report_status)
             .service(services::get_status)
             .service(services::sync_info)
+            .service(services::remove_bind)
             .service(web::scope("/panel").default_service(web::to(spa_handler)));
         let static_file_enabled = crate::GLOBAL_CONFIG
             .get()

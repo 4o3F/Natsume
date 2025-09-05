@@ -17,6 +17,8 @@ pub struct ServerConfig {
     pub token: String,
     /// Enable bind service
     pub enable_bind: bool,
+    /// Allow bind update
+    pub enable_bind_update: bool,
     /// Enable sync service
     pub enable_sync: bool,
     /// Enable static file service
