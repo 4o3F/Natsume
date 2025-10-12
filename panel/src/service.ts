@@ -24,7 +24,7 @@ export function getStatus(token: string) {
 }
 
 export function removeBindByMAC(mac: string, token: string) {
-    return api.post("/bind", {
+    return api.post("/unbind", {
         "mac": mac
     }, {
         headers: {

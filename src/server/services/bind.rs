@@ -145,7 +145,7 @@ pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Resp
 struct UnBindRequestBody {
     mac: String,
 }
-#[post("/bind")]
+#[post("/unbind")]
 pub async fn remove_bind(
     _auth: crate::server::services::Authenticated,
     body: Json<UnBindRequestBody>,
