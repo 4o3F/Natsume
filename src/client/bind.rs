@@ -161,8 +161,8 @@ pub fn bind_ip(id: String) -> anyhow::Result<()> {
         }
         Err(e) => {
             tracing::error!("Bind FAILED!");
-            tracing::error!("Error: {}", e);
-            Err(anyhow::Error::msg(""))
+            tracing::error!("Error: {:#}", e);
+            Err(e)
         }
     }
 }

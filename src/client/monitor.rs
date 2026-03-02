@@ -71,7 +71,7 @@ pub fn do_monitor() -> anyhow::Result<()> {
                     match result {
                         Ok(_) => {}
                         Err(err) => {
-                            tracing::error!("Error sending report {}", err);
+                            tracing::error!("Error sending report {:#}", err);
                         }
                     }
                 }

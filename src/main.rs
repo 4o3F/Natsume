@@ -192,7 +192,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
-                    tracing::error!("Server failed with error {}", err);
+                    tracing::error!("Server failed with error {:#}", err);
                     ExitCode::FAILURE
                 }
             }
@@ -206,7 +206,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
-                    tracing::error!("Data load failed with error {}", err);
+                    tracing::error!("Data load failed with error {:#}", err);
                     ExitCode::FAILURE
                 }
             }
@@ -218,7 +218,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                tracing::error!("Bind failed with error {}", err);
+                tracing::error!("Bind failed with error {:#}", err);
                 ExitCode::FAILURE
             }
         },
@@ -229,7 +229,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                tracing::error!("Sync failed with error {}", err);
+                tracing::error!("Sync failed with error {:#}", err);
                 ExitCode::FAILURE
             }
         },
@@ -240,7 +240,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                tracing::error!("Clean failed with error {}", err);
+                tracing::error!("Clean failed with error {:#}", err);
                 ExitCode::FAILURE
             }
         },
@@ -251,7 +251,7 @@ fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             Err(err) => {
-                tracing::error!("Monitor failed with error {}", err);
+                tracing::error!("Monitor failed with error {:#}", err);
                 ExitCode::FAILURE
             }
         },
@@ -263,7 +263,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
-                    tracing::error!("Terminate user session failed with error {}", err);
+                    tracing::error!("Terminate user session failed with error {:#}", err);
                     ExitCode::FAILURE
                 }
             },
@@ -273,7 +273,7 @@ fn main() -> ExitCode {
                     ExitCode::SUCCESS
                 }
                 Err(err) => {
-                    tracing::error!("AutoLogin user session failed with error {}", err);
+                    tracing::error!("AutoLogin user session failed with error {:#}", err);
                     ExitCode::FAILURE
                 }
             },

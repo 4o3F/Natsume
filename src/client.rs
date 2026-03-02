@@ -32,11 +32,15 @@ fn build_server_http_client() -> anyhow::Result<reqwest::blocking::Client> {
     })?;
 
     reqwest::blocking::Client::builder()
-        .add_root_certificate(ca_cert)
-        .https_only(true)
+        .tls_certs_only(vec![ca_cert])
         .tls_danger_accept_invalid_hostnames(true)
+        .https_only(true)
         .build()
-        .map_err(anyhow::Error::from)
+        .map_err(|err| {
+            anyhow::Error::msg(format!(
+                "Failed to build HTTPS client using CA certificate {ca_cert_path}: {err:?}"
+            ))
+        })
 }
 
 #[derive(Deserialize)]
