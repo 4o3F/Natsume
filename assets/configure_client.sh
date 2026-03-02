@@ -47,8 +47,34 @@ sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd
 echo "Activating CLion"
 curl -s -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLion2022.3/config/clion.key
 
-echo "Configure firefox homepage"
-echo "pref(\"browser.startup.homepage\", \"http://localhost\");" >> /etc/firefox/syspref.js
+echo "Configure Firefox"
+mkdir -p /etc/firefox/policies
+cat << 'EOF' > /etc/firefox/policies/policies.json
+{
+  "policies": {
+    "Homepage": {
+      "URL": "https://tester.icpc/",
+      "Locked": true,
+      "StartPage": "homepage"
+    },
+
+    "Permissions": {
+      "Notifications": {
+        "Allow": [
+          "https://tester.icpc/"
+        ]
+      }
+    },
+
+    "Certificates": {
+      "Install": [
+        "/etc/natsume/ca.cert"
+      ]
+    }
+  }
+}
+EOF
+chmod 644 /etc/firefox/policies/policies.json
 
 # echo "Configure wallpaper"
 # curl -s -k "$NATSUME_SERVER/static/wallpaper.png" -o /usr/share/backgrounds/wallpaper.png
