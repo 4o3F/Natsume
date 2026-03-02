@@ -30,10 +30,10 @@ impl FromRequest for Authenticated {
 
         match req.headers().get("token") {
             Some(header_value) => {
-                if let Ok(token) = header_value.to_str() {
-                    if token == config.server.token {
-                        return std::future::ready(Ok(Authenticated));
-                    }
+                if let Ok(token) = header_value.to_str()
+                    && token == config.server.token
+                {
+                    return std::future::ready(Ok(Authenticated));
                 }
                 std::future::ready(Err(ErrorUnauthorized("Invalid token")))
             }
@@ -94,8 +94,7 @@ pub async fn sync_info(_auth: Authenticated, body: Json<SyncRequestBody>) -> imp
         }
     }
 
-    let response: SyncResponseBody;
-    match player_dsl::player
+    let response: SyncResponseBody = match player_dsl::player
         .filter(player_dsl::id.eq(&id))
         .select((
             player_dsl::username,
@@ -104,12 +103,12 @@ pub async fn sync_info(_auth: Authenticated, body: Json<SyncRequestBody>) -> imp
         ))
         .first::<(String, String, i32)>(&mut connection)
     {
-        Ok((username, password, _)) => response = SyncResponseBody { username, password },
+        Ok((username, password, _)) => SyncResponseBody { username, password },
         Err(err) => {
             tracing::error!("Failed to get info by ID from database, err: {}", err);
             return HttpResponse::InternalServerError().finish();
         }
-    }
+    };
     tracing::info!("Synced MAC {} with user {}", body.mac, response.username);
     HttpResponse::Ok().json(response)
 }

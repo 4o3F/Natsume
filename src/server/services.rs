@@ -6,7 +6,7 @@ mod status;
 mod sync;
 use std::future::Ready;
 
-use actix_web::{FromRequest, HttpRequest, error::ErrorUnauthorized, dev::Payload};
+use actix_web::{FromRequest, HttpRequest, dev::Payload, error::ErrorUnauthorized};
 pub use bind::bind_id;
 pub use bind::remove_bind;
 pub use ip::get_ip;
@@ -26,10 +26,10 @@ impl FromRequest for Authenticated {
 
         match req.headers().get("token") {
             Some(header_value) => {
-                if let Ok(token) = header_value.to_str() {
-                    if token == config.server.panel_token {
-                        return std::future::ready(Ok(Authenticated));
-                    }
+                if let Ok(token) = header_value.to_str()
+                    && token == config.server.panel_token
+                {
+                    return std::future::ready(Ok(Authenticated));
                 }
                 std::future::ready(Err(ErrorUnauthorized("Invalid token")))
             }

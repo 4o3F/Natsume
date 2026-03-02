@@ -57,18 +57,17 @@ pub async fn bind_id(req: HttpRequest, body: Json<BindRequestBody>) -> impl Resp
     }
 
     use crate::server::schema::id_bind::dsl as id_bind_dsl;
-    let exist;
-    match select(exists(
+    let exist = match select(exists(
         id_bind_dsl::id_bind.filter(id_bind_dsl::mac.eq(&body.mac)),
     ))
     .get_result::<bool>(&mut connection)
     {
-        Ok(result) => exist = result,
+        Ok(result) => result,
         Err(err) => {
             tracing::error!("Error fetching from database {}", err);
             return HttpResponse::InternalServerError().finish();
         }
-    }
+    };
 
     let timestamp = Utc::now().timestamp().to_string();
     if exist {
@@ -166,18 +165,17 @@ pub async fn remove_bind(
     }
 
     use crate::server::schema::id_bind::dsl as id_bind_dsl;
-    let exist;
-    match select(exists(
+    let exist = match select(exists(
         id_bind_dsl::id_bind.filter(id_bind_dsl::mac.eq(&body.mac)),
     ))
     .get_result::<bool>(&mut connection)
     {
-        Ok(result) => exist = result,
+        Ok(result) => result,
         Err(err) => {
             tracing::error!("Error fetching from database {}", err);
             return HttpResponse::InternalServerError().finish();
         }
-    }
+    };
 
     if !exist {
         tracing::warn!("Tried to remove unknown bind of MAC {}!", body.mac);

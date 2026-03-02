@@ -20,19 +20,16 @@ pub fn check_permission(path: String) -> bool {
         let useradd_ok = can_sudo_help("useradd");
         let userdel_ok = can_sudo_help("userdel");
         let systemctl_reload_ok = can_sudo_help("systemctl reload");
-        if !useradd_ok || !userdel_ok{
+        if !useradd_ok || !userdel_ok {
             tracing::error!("No permission to ADD or DEL user!");
             return false;
         }
-        if !systemctl_reload_ok  {
+        if !systemctl_reload_ok {
             tracing::error!("No permission to reload service!");
             return false;
         }
     }
-    match OpenOptions::new().write(true).open(path) {
-        Ok(_) => true,
-        Err(_) => false,
-    }
+    OpenOptions::new().write(true).open(path).is_ok()
 }
 
 fn check_caddy() -> bool {

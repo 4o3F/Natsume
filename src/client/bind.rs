@@ -10,10 +10,10 @@ pub fn get_mac(target_ip: String) -> anyhow::Result<String> {
         bail!("Can't get MAC of loop addr localhost");
     }
 
-    if let Ok(ip) = target_ip.parse::<IpAddr>() {
-        if ip.is_loopback() {
-            bail!("Can't get MAC of loop addr {}", target_ip);
-        }
+    if let Ok(ip) = target_ip.parse::<IpAddr>()
+        && ip.is_loopback()
+    {
+        bail!("Can't get MAC of loop addr {}", target_ip);
     }
 
     let full_cmd = format!(
@@ -26,10 +26,8 @@ pub fn get_mac(target_ip: String) -> anyhow::Result<String> {
     let output = Command::new("sh").arg("-c").arg(full_cmd).output()?;
     let errout = String::from_utf8_lossy(&output.stderr).trim().to_string();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if output.status.success() {
-        if !stdout.is_empty() {
-            return Ok(stdout);
-        }
+    if output.status.success() && !stdout.is_empty() {
+        return Ok(stdout);
     }
 
     let err = format!(
@@ -45,10 +43,8 @@ fn get_netinfo() -> anyhow::Result<String> {
     let output = Command::new("sh").arg("-c").arg("ip addr").output()?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let errout = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    if output.status.success() {
-        if !stdout.is_empty() {
-            return Ok(stdout);
-        }
+    if output.status.success() && !stdout.is_empty() {
+        return Ok(stdout);
     }
     let err = format!(
         "exit status: {:?}\nstderr: \n{}\nstdout: \n{}",
@@ -103,14 +99,14 @@ struct RequestBody {
     client_version: String,
 }
 
-fn send_bind_req(url: &String, id: &String, mac: &String) -> anyhow::Result<()> {
+fn send_bind_req(url: &String, id: &str, mac: &str) -> anyhow::Result<()> {
     let request_url = format!("{}/bind", url);
     let client = reqwest::blocking::Client::builder()
         .danger_accept_invalid_certs(true)
         .build()?;
     let body = RequestBody {
-        mac: mac.clone(),
-        id: id.clone(),
+        mac: mac.to_string(),
+        id: id.to_string(),
         client_version: version!().to_string(),
     };
 
@@ -153,7 +149,7 @@ pub fn bind_ip(id: String) -> anyhow::Result<()> {
         tracing::warn!("Skip check enabled, will continue procedding")
     }
 
-    let parsed_url = reqwest::Url::parse(&base_url)
+    let parsed_url = reqwest::Url::parse(base_url)
         .map_err(|_| anyhow::Error::msg("Failed to parse base URL"))?;
     let target_ip = parsed_url
         .host_str()

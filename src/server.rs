@@ -63,12 +63,12 @@ where
 pub async fn serve() -> std::io::Result<()> {
     let server_config = super::GLOBAL_CONFIG.get().unwrap_or_log();
 
-    database::init_database().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    database::init_database().map_err(std::io::Error::other)?;
 
-    let rcgen::CertifiedKey { cert, key_pair } =
+    let rcgen::CertifiedKey { cert, signing_key } =
         rcgen::generate_simple_self_signed(["natsume.server".to_string()]).unwrap();
     let cert_file = cert.pem();
-    let key_file = key_pair.serialize_pem();
+    let key_file = signing_key.serialize_pem();
 
     let cert_file = &mut BufReader::new(cert_file.as_bytes());
     let key_file = &mut BufReader::new(key_file.as_bytes());

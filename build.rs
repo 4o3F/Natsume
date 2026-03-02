@@ -4,7 +4,7 @@ fn main() {
     match env::var("CARGO_FEATURE_SERVER") {
         Ok(_) => {
             use std::process::Command;
-            let status = Command::new("pnpm")
+            let status = Command::new("pnpm.cmd")
                 .arg("install")
                 .current_dir("panel")
                 .status()
@@ -14,7 +14,7 @@ fn main() {
                 panic!("Vue frontend prepare failed");
             }
 
-            let status = Command::new("pnpm")
+            let status = Command::new("pnpm.cmd")
                 .arg("build")
                 .current_dir("panel")
                 .status()

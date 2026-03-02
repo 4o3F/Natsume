@@ -21,7 +21,7 @@ pub fn send_report(synced: bool) -> anyhow::Result<()> {
         .client
         .server_addr;
 
-    let parsed_url = reqwest::Url::parse(&base_url)
+    let parsed_url = reqwest::Url::parse(base_url)
         .map_err(|_| anyhow::Error::msg("Failed to parse base URL"))?;
     let target_ip = parsed_url
         .host_str()
@@ -66,7 +66,7 @@ pub fn do_monitor() -> anyhow::Result<()> {
     runtime.block_on(async {
         let forever: tokio::task::JoinHandle<Result<(), anyhow::Error>> =
             tokio::task::spawn(async {
-                let mut interval = tokio::time::interval(Duration::from_secs(60 * 1));
+                let mut interval = tokio::time::interval(Duration::from_secs(60));
                 loop {
                     interval.tick().await;
                     let result = send_report(false);

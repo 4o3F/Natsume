@@ -189,11 +189,11 @@ fn main() -> ExitCode {
             match server::serve() {
                 Ok(_) => {
                     tracing::info!("Server shutdown gracefully!");
-                    return ExitCode::SUCCESS;
+                    ExitCode::SUCCESS
                 }
                 Err(err) => {
                     tracing::error!("Server failed with error {}", err);
-                    return ExitCode::FAILURE;
+                    ExitCode::FAILURE
                 }
             }
         }
@@ -203,11 +203,11 @@ fn main() -> ExitCode {
             match server::load_data(data_path) {
                 Ok(_) => {
                     tracing::info!("Data successfully loaded into database!");
-                    return ExitCode::SUCCESS;
+                    ExitCode::SUCCESS
                 }
                 Err(err) => {
                     tracing::error!("Data load failed with error {}", err);
-                    return ExitCode::FAILURE;
+                    ExitCode::FAILURE
                 }
             }
         }
@@ -215,44 +215,44 @@ fn main() -> ExitCode {
         Commands::Bind { id } => match client::bind_ip(id) {
             Ok(_) => {
                 tracing::info!("Bind success!");
-                return ExitCode::SUCCESS;
+                ExitCode::SUCCESS
             }
             Err(err) => {
                 tracing::error!("Bind failed with error {}", err);
-                return ExitCode::FAILURE;
+                ExitCode::FAILURE
             }
         },
         #[cfg(feature = "client")]
         Commands::Sync {} => match client::sync_info() {
             Ok(_) => {
                 tracing::info!("Sync success!");
-                return ExitCode::SUCCESS;
+                ExitCode::SUCCESS
             }
             Err(err) => {
                 tracing::error!("Sync failed with error {}", err);
-                return ExitCode::FAILURE;
+                ExitCode::FAILURE
             }
         },
         #[cfg(feature = "client")]
         Commands::Clean {} => match client::clean_user() {
             Ok(_) => {
                 tracing::info!("Clean success!");
-                return ExitCode::SUCCESS;
+                ExitCode::SUCCESS
             }
             Err(err) => {
                 tracing::error!("Clean failed with error {}", err);
-                return ExitCode::FAILURE;
+                ExitCode::FAILURE
             }
         },
         #[cfg(feature = "client")]
         Commands::Monitor {} => match client::do_monitor() {
             Ok(_) => {
                 tracing::info!("Monitor graceful shutdown!");
-                return ExitCode::SUCCESS;
+                ExitCode::SUCCESS
             }
             Err(err) => {
                 tracing::error!("Monitor failed with error {}", err);
-                return ExitCode::FAILURE;
+                ExitCode::FAILURE
             }
         },
         #[cfg(feature = "client")]
@@ -260,21 +260,21 @@ fn main() -> ExitCode {
             SessionOperation::Terminate => match client::terminate_sessions() {
                 Ok(_) => {
                     tracing::info!("Terminate user session successful");
-                    return ExitCode::SUCCESS;
+                    ExitCode::SUCCESS
                 }
                 Err(err) => {
                     tracing::error!("Terminate user session failed with error {}", err);
-                    return ExitCode::FAILURE;
+                    ExitCode::FAILURE
                 }
             },
             SessionOperation::AutoLogin => match client::autologin_session() {
                 Ok(_) => {
                     tracing::info!("AutoLogin for user session successful");
-                    return ExitCode::SUCCESS;
+                    ExitCode::SUCCESS
                 }
                 Err(err) => {
                     tracing::error!("AutoLogin user session failed with error {}", err);
-                    return ExitCode::FAILURE;
+                    ExitCode::FAILURE
                 }
             },
         },

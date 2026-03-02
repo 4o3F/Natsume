@@ -25,7 +25,7 @@ fn fetch_info() -> anyhow::Result<SyncResponseBody> {
         .unwrap_or_log()
         .client
         .server_addr;
-    let parsed_url = reqwest::Url::parse(&base_url)
+    let parsed_url = reqwest::Url::parse(base_url)
         .map_err(|_| anyhow::Error::msg("Failed to parse base URL"))?;
     let target_ip = parsed_url
         .host_str()
