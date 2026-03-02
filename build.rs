@@ -1,33 +1,24 @@
-use std::env;
+use std::{env, process::Command};
+
+fn run_pnpm(args: &[&str], dir: &str) {
+    let pnpm = if cfg!(windows) { "pnpm.cmd" } else { "pnpm" };
+
+    let status = Command::new(pnpm)
+        .args(args)
+        .current_dir(dir)
+        .status()
+        .unwrap_or_else(|e| panic!("failed to run {} {:?}: {}", pnpm, args, e));
+
+    if !status.success() {
+        panic!("pnpm {:?} failed with {}", args, status);
+    }
+}
 
 fn main() {
-    match env::var("CARGO_FEATURE_SERVER") {
-        Ok(_) => {
-            use std::process::Command;
-            let status = Command::new("pnpm.cmd")
-                .arg("install")
-                .current_dir("panel")
-                .status()
-                .expect("failed to install frontend dependency");
-
-            if !status.success() {
-                panic!("Vue frontend prepare failed");
-            }
-
-            let status = Command::new("pnpm.cmd")
-                .arg("build")
-                .current_dir("panel")
-                .status()
-                .expect("failed to build frontend");
-
-            if !status.success() {
-                panic!("Vue frontend build failed");
-            }
-        }
-        Err(env::VarError::NotPresent) => {}
-        Err(other) => {
-            panic!("Failed to parse feature flag, err {}", other)
-        }
+    if env::var_os("CARGO_FEATURE_SERVER").is_some() {
+        run_pnpm(&["install"], "panel");
+        run_pnpm(&["build"], "panel");
     }
+
     println!("cargo:rerun-if-changed=migrations");
 }
