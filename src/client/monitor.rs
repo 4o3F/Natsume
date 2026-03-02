@@ -28,9 +28,7 @@ pub fn send_report(synced: bool) -> anyhow::Result<()> {
         .expect_or_log("Failed to get host str from base URL")
         .to_string();
 
-    let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()?;
+    let client = super::build_server_http_client()?;
 
     let request_url = format!("{}/report", base_url);
 

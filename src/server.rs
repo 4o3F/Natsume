@@ -1,4 +1,4 @@
-use std::{fs, io::BufReader};
+use std::{fs, io::BufReader, path::Path};
 
 use actix_cors::Cors;
 use actix_web::{
@@ -13,6 +13,7 @@ use diesel::{
     dsl::{exists, insert_into, select, update},
     prelude::*,
 };
+use rcgen::{CertificateParams, Issuer, KeyPair};
 use rustls::pki_types::PrivateKeyDer;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use serde::Deserialize;
@@ -23,6 +24,16 @@ use tracing_unwrap::OptionExt;
 mod database;
 mod schema;
 mod services;
+
+fn ensure_parent_dir(path: &str) -> std::io::Result<()> {
+    if let Some(parent) = Path::new(path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+
+    Ok(())
+}
 
 pub fn add_error_header<B>(
     res: ServiceResponse<B>,
@@ -65,23 +76,98 @@ pub async fn serve() -> std::io::Result<()> {
 
     database::init_database().map_err(std::io::Error::other)?;
 
-    let rcgen::CertifiedKey { cert, signing_key } =
-        rcgen::generate_simple_self_signed(["natsume.server".to_string()]).unwrap();
-    let cert_file = cert.pem();
-    let key_file = signing_key.serialize_pem();
+    let ca_cert_pem =
+        fs::read_to_string(&server_config.server.tls_ca_cert_path).map_err(|err| {
+            std::io::Error::other(format!(
+                "Failed to read CA certificate {}: {err}",
+                server_config.server.tls_ca_cert_path
+            ))
+        })?;
+    let ca_key_pem = fs::read_to_string(&server_config.server.tls_ca_key_path).map_err(|err| {
+        std::io::Error::other(format!(
+            "Failed to read CA key {}: {err}",
+            server_config.server.tls_ca_key_path
+        ))
+    })?;
 
-    let cert_file = &mut BufReader::new(cert_file.as_bytes());
-    let key_file = &mut BufReader::new(key_file.as_bytes());
+    let ca_key = KeyPair::from_pem(&ca_key_pem).map_err(std::io::Error::other)?;
+    let ca_issuer =
+        Issuer::from_ca_cert_pem(&ca_cert_pem, ca_key).map_err(std::io::Error::other)?;
 
-    let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>().unwrap();
-    let mut keys = pkcs8_private_keys(key_file)
-        .collect::<Result<Vec<_>, _>>()
-        .unwrap();
+    let tls_cert_path = &server_config.server.tls_cert_path;
+    let tls_key_path = &server_config.server.tls_key_path;
+    let cached_cert = fs::read_to_string(tls_cert_path);
+    let cached_key = fs::read_to_string(tls_key_path);
+
+    let (cert_chain_pem, key_pem) = match (cached_cert, cached_key) {
+        (Ok(cert_pem), Ok(key_pem)) => {
+            tracing::info!(
+                "Using cached issued server TLS cert {} and key {}",
+                tls_cert_path,
+                tls_key_path
+            );
+            (cert_pem, key_pem)
+        }
+        _ => {
+            tracing::info!(
+                "Cached issued server TLS cert/key not found, issuing and persisting a new one"
+            );
+
+            let mut certificate_params = CertificateParams::new(vec!["natsume.server".to_string()])
+                .map_err(std::io::Error::other)?;
+            certificate_params.is_ca = rcgen::IsCa::NoCa;
+            certificate_params.use_authority_key_identifier_extension = true;
+            certificate_params
+                .extended_key_usages
+                .push(rcgen::ExtendedKeyUsagePurpose::ServerAuth);
+
+            let signing_key = KeyPair::generate().map_err(std::io::Error::other)?;
+            let cert = certificate_params
+                .signed_by(&signing_key, &ca_issuer)
+                .map_err(std::io::Error::other)?;
+
+            let cert_chain_pem = format!("{}\n{ca_cert_pem}", cert.pem());
+            let key_pem = signing_key.serialize_pem();
+
+            ensure_parent_dir(tls_cert_path)?;
+            ensure_parent_dir(tls_key_path)?;
+
+            fs::write(tls_cert_path, &cert_chain_pem).map_err(|err| {
+                std::io::Error::other(format!(
+                    "Failed to persist issued TLS certificate {}: {err}",
+                    tls_cert_path
+                ))
+            })?;
+            fs::write(tls_key_path, &key_pem).map_err(|err| {
+                std::io::Error::other(format!(
+                    "Failed to persist issued TLS key {}: {err}",
+                    tls_key_path
+                ))
+            })?;
+
+            tracing::info!(
+                "Persisted issued server TLS cert to {} and key to {}",
+                tls_cert_path,
+                tls_key_path
+            );
+
+            (cert_chain_pem, key_pem)
+        }
+    };
+
+    let cert_file = &mut BufReader::new(cert_chain_pem.as_bytes());
+    let key_file = &mut BufReader::new(key_pem.as_bytes());
+
+    let cert_chain = certs(cert_file).collect::<Result<Vec<_>, _>>()?;
+    let mut keys = pkcs8_private_keys(key_file).collect::<Result<Vec<_>, _>>()?;
+    let key = keys.pop().ok_or_else(|| {
+        std::io::Error::other("No PKCS#8 private key generated for server certificate")
+    })?;
 
     let tls_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(keys.remove(0)))
-        .unwrap();
+        .with_single_cert(cert_chain, PrivateKeyDer::Pkcs8(key))
+        .map_err(std::io::Error::other)?;
 
     if !fs::exists("./static")? {
         std::fs::create_dir("./static")?;

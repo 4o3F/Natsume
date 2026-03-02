@@ -37,7 +37,7 @@ reqwest = { version = "0.13.2", default-features = false, features = [
 ], optional = true }
 csv = { version = "1.4.0", optional = true }
 # TLS related crates
-rcgen = { version = "0.14.7", optional = true }
+rcgen = { version = "0.14.7", features = ["x509-parser"], optional = true }
 rustls = { version = "0.23.37", optional = true }
 rustls-pemfile = { version = "2.2.0", optional = true }
 sha2 = "0.10.9"

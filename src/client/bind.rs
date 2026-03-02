@@ -58,9 +58,7 @@ fn get_netinfo() -> anyhow::Result<String> {
 fn validate_direct_connection(url: &String) -> anyhow::Result<bool> {
     let request_url = format!("{}/ip", url);
 
-    let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()?;
+    let client = super::build_server_http_client()?;
 
     // Fetch IP from remote server
     let response = client.get(request_url).send()?;
@@ -101,9 +99,7 @@ struct RequestBody {
 
 fn send_bind_req(url: &String, id: &str, mac: &str) -> anyhow::Result<()> {
     let request_url = format!("{}/bind", url);
-    let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()?;
+    let client = super::build_server_http_client()?;
     let body = RequestBody {
         mac: mac.to_string(),
         id: id.to_string(),

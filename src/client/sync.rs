@@ -42,9 +42,7 @@ fn fetch_info() -> anyhow::Result<SyncResponseBody> {
         .clone();
 
     let request_url = format!("{}/sync", base_url);
-    let client = reqwest::blocking::Client::builder()
-        .danger_accept_invalid_certs(true)
-        .build()?;
+    let client = super::build_server_http_client()?;
 
     let request_body = SyncRequestBody { mac };
 

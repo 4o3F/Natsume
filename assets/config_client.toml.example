@@ -1,6 +1,7 @@
 [client]
 skip_ip_check = false
-server_addr = "http://127.0.0.1:8080"
+server_addr = "https://127.0.0.1:8080"
+tls_ca_cert_path = "/etc/natsume/ca-cert.pem"
 token = "sync@token"
 caddyfile = "/etc/caddy/Caddyfile"
 domjudge_addr = "http://localhost"

@@ -53,7 +53,11 @@ pub fn clean_user() -> anyhow::Result<()> {
     if !output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        bail!("Failed to change user password, stdout {} stderr {}", stdout, stderr)
+        bail!(
+            "Failed to change user password, stdout {} stderr {}",
+            stdout,
+            stderr
+        )
     }
 
     Ok(())

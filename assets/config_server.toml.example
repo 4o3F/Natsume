@@ -6,3 +6,5 @@ enable_bind_update = false
 enable_sync = true
 enable_static_file = true
 panel_token = "panel@auth"
+tls_ca_cert_path = "/path/to/ca-cert.pem"
+tls_ca_key_path = "/path/to/ca-key.pem"
