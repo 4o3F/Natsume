@@ -39,12 +39,12 @@ pub struct ServerConfig {
 
 #[cfg(feature = "server")]
 fn default_tls_cert_path() -> String {
-    "./static/tls/server-cert.pem".to_string()
+    "./cert/server-cert.pem".to_string()
 }
 
 #[cfg(feature = "server")]
 fn default_tls_key_path() -> String {
-    "./static/tls/server-key.pem".to_string()
+    "./cert/server-key.pem".to_string()
 }
 
 #[cfg(feature = "client")]
