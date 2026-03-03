@@ -98,6 +98,7 @@ fn format_caddyfile(username: String, password: String) -> String {
     format!(
         r#"
 {{
+    admin localhost:20190
 	auto_https off
 }}
 
