@@ -57,6 +57,12 @@ pub struct ClientConfig {
     pub server_addr: String,
     /// Path to PEM-encoded CA public certificate used to verify the server certificate
     pub tls_ca_cert_path: String,
+    /// Path to PEM-encoded reverse proxy certificate used to enable HTTP2 on client side
+    pub tls_reverse_cert_path: String,
+    /// Path to PEM-encoded reverse proxy key
+    pub tls_reverse_key_path: String,
+    /// Reverse proxied domain, should match TLS reverse certificate
+    pub reverse_addr: String,
     /// Path for client Caddyfile, the default one is /etc/caddy/Caddyfile
     pub caddyfile: String,
     /// Adress for DomJudge server, this will be inserted into Caddyfile as reverse proxy upstream,

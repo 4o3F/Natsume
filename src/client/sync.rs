@@ -75,6 +75,24 @@ fn format_caddyfile(username: String, password: String) -> String {
         .client
         .domjudge_addr
         .clone();
+    let reverse_addr = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized")
+        .client
+        .reverse_addr
+        .clone();
+    let tls_reverse_cert_path = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized")
+        .client
+        .tls_reverse_cert_path
+        .clone();
+    let tls_reverse_key_path = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized")
+        .client
+        .tls_reverse_key_path
+        .clone();
     let mut encoded_password = String::new();
     BASE64_STANDARD.encode_string(password, &mut encoded_password);
     format!(
@@ -83,7 +101,8 @@ fn format_caddyfile(username: String, password: String) -> String {
 	auto_https off
 }}
 
-:80 {{
+{}:443 {{
+    tls {} {}
 	@autologin path /login*
 
 	handle @autologin {{
@@ -99,7 +118,13 @@ fn format_caddyfile(username: String, password: String) -> String {
 }}
 
     "#,
-        domjudge_addr, username, encoded_password, domjudge_addr
+        reverse_addr,
+        tls_reverse_cert_path,
+        tls_reverse_key_path,
+        domjudge_addr,
+        username,
+        encoded_password,
+        domjudge_addr
     )
 }
 

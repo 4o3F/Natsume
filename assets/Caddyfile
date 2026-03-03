@@ -3,17 +3,18 @@
 	auto_https off
 }
 
-:80 {
-	@autologin path /login*
+tester.icpc:443 {
+    tls /etc/natsume/reverse.crt /etc/natsume/reverse.key
 
-	handle @autologin {
-		reverse_proxy http://localhost {
-			header_up X-DOMjudge-Login "test_team"
-			header_up X-DOMjudge-Pass "dGVzdEBwYXNzd29yZA=="
-		}
-	}
+    @autologin path /login*
+    handle @autologin {
+        reverse_proxy http://localhost {
+            header_up X-DOMjudge-Login "test_team"
+            header_up X-DOMjudge-Pass "dGVzdEBwYXNzd29yZA=="
+        }
+    }
 
-	handle {
-		reverse_proxy http://localhost
-	}
+    handle {
+        reverse_proxy http://localhost
+    }
 }
