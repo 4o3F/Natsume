@@ -1,5 +1,7 @@
 #!/bin/sh
 
+CERT_DOMAIN="tester.icpc"
+CERT_IP="127.0.0.1"
 NATSUME_SERVER="https://localhost"
 NTP_SERVER="localhost"
 USER_PASSWD="passwd"
@@ -11,6 +13,26 @@ if [ "$(whoami)" = "root" ]; then
 else
 	echo "Not root user"
 fi
+
+echo "Configuring hosts entry for certificate domain"
+tmp_hosts="$(mktemp)"
+awk -v domain="$CERT_DOMAIN" '
+{
+    has_domain=0
+    for (i = 2; i <= NF; i++) {
+        if ($i == domain) {
+            has_domain=1
+            break
+        }
+    }
+    if (!has_domain) {
+        print
+    }
+}
+' /etc/hosts > "$tmp_hosts"
+cat "$tmp_hosts" > /etc/hosts
+rm -f "$tmp_hosts"
+echo "$CERT_IP $CERT_DOMAIN" >> /etc/hosts
 
 echo "Remove sudo password for user icpc"
 echo "icpc ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/icpc
@@ -32,7 +54,11 @@ sudo systemctl stop "natsume"
 echo "Download natsume client"
 curl -s -k "$NATSUME_SERVER/static/natsume_client" -o /usr/bin/natsume_client
 mkdir /etc/natsume
+mkdir /etc/natsume/cert
 curl -s -k "$NATSUME_SERVER/static/client_config.toml" -o /etc/natsume/config.toml
+curl -s -k "$NATSUME_SERVER/static/cert/reverse.crt" -o /etc/natsume/cert/reverse.crt
+curl -s -k "$NATSUME_SERVER/static/cert/reverse.key" -o /etc/natsume/cert/reverse.key
+curl -s -k "$NATSUME_SERVER/static/ca.crt" -o /etc/natsume/ca.crt
 
 echo "Configuring permission... IMPORTTANT!"
 chown root /etc/natsume/config.toml
@@ -49,11 +75,11 @@ curl -s -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLi
 
 echo "Configure Firefox"
 mkdir -p /etc/firefox/policies
-cat << 'EOF' > /etc/firefox/policies/policies.json
+cat << EOF > /etc/firefox/policies/policies.json
 {
   "policies": {
     "Homepage": {
-      "URL": "https://tester.icpc/",
+      "URL": "https://$CERT_DOMAIN/",
       "Locked": true,
       "StartPage": "homepage"
     },
@@ -61,14 +87,14 @@ cat << 'EOF' > /etc/firefox/policies/policies.json
     "Permissions": {
       "Notifications": {
         "Allow": [
-          "https://tester.icpc/"
+          "https://$CERT_DOMAIN/"
         ]
       }
     },
 
     "Certificates": {
       "Install": [
-        "/etc/natsume/ca.cert"
+        "/etc/natsume/ca.crt"
       ]
     }
   }
