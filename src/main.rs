@@ -66,7 +66,7 @@ enum Commands {
         #[arg(
             long,
             conflicts_with = "id",
-            help = "Prompt for ID via zenity GUI dialog"
+            help = "Prompt for ID via yad GUI dialog"
         )]
         prompt: bool,
         #[arg(long = "_bg", hide = true)]

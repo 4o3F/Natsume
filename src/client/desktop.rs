@@ -194,24 +194,24 @@ pub fn ensure_prompt_prerequisites(player_user: &str) -> anyhow::Result<()> {
     )
     .map_err(|_| anyhow::Error::msg("runuser is not available"))?;
 
-    ensure_zenity_available()?;
+    ensure_yad_available()?;
     find_graphical_session(player_user).map(|_| ())
 }
 
-pub fn ensure_zenity_available() -> anyhow::Result<()> {
+pub fn ensure_yad_available() -> anyhow::Result<()> {
     get_command_output(
         {
             let mut command = safe_command("which");
             command
-                .arg("zenity")
+                .arg("yad")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
             command
         },
-        "which zenity",
+        "which yad",
     )
     .map(|_| ())
-    .map_err(|_| anyhow::Error::msg("zenity is not installed or not available in PATH"))
+    .map_err(|_| anyhow::Error::msg("yad is not installed or not available in PATH"))
 }
 
 pub fn find_graphical_session(player_user: &str) -> anyhow::Result<DesktopSessionEnv> {
@@ -292,7 +292,7 @@ pub fn find_graphical_session(player_user: &str) -> anyhow::Result<DesktopSessio
     bail!("No active graphical session found for user {player_user}")
 }
 
-pub fn run_zenity_as_user(
+pub fn run_yad_as_user(
     player_user: &str,
     env: &DesktopSessionEnv,
     args: &[&str],
@@ -302,7 +302,7 @@ pub fn run_zenity_as_user(
         .arg("-u")
         .arg(player_user)
         .arg("--")
-        .arg("zenity")
+        .arg("yad")
         .args(args)
         .env("HOME", &env.home)
         .env("XDG_RUNTIME_DIR", &env.xdg_runtime_dir);
@@ -322,11 +322,11 @@ pub fn run_zenity_as_user(
 
     command
         .output()
-        .with_context(|| format!("Failed to run zenity as user {player_user}"))
+        .with_context(|| format!("Failed to run yad as user {player_user}"))
 }
 
 pub fn prompt_bind_id(player_user: &str) -> anyhow::Result<PromptResult> {
-    ensure_zenity_available()?;
+    ensure_yad_available()?;
     let desktop_env = find_graphical_session(player_user)?;
     let hostname = get_hostname()?;
     let text = format!("Location: {hostname}\nEnter contestant ID");
@@ -340,7 +340,7 @@ pub fn prompt_bind_id(player_user: &str) -> anyhow::Result<PromptResult> {
         "--width=420".to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
-    let output = run_zenity_as_user(player_user, &desktop_env, &arg_refs)?;
+    let output = run_yad_as_user(player_user, &desktop_env, &arg_refs)?;
 
     match output.status.code() {
         Some(0) => {
@@ -354,9 +354,9 @@ pub fn prompt_bind_id(player_user: &str) -> anyhow::Result<PromptResult> {
         Some(1) => bail!("Bind prompt cancelled by user"),
         Some(code) => {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            bail!("Zenity prompt failed with exit code {code}: {stderr}")
+            bail!("Yad prompt failed with exit code {code}: {stderr}")
         }
-        None => bail!("Zenity prompt terminated by signal"),
+        None => bail!("Yad prompt terminated by signal"),
     }
 }
 
@@ -376,7 +376,7 @@ pub fn show_bind_result(
     ];
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
 
-    match run_zenity_as_user(player_user, env, &arg_refs) {
+    match run_yad_as_user(player_user, env, &arg_refs) {
         Ok(output) => match output.status.code() {
             Some(0) | Some(5) => {}
             Some(code) => {

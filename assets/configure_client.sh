@@ -45,10 +45,16 @@ systemctl restart systemd-timesyncd.service
 echo "Download public key into .ssh"
 curl -s -k "$NATSUME_SERVER/static/key.pub" -o /root/.ssh/authorized_keys
 curl -s -k "$NATSUME_SERVER/static/caddy.deb" -o /root/caddy.deb
-apt install -y /root/caddy.deb
+curl -s -k "$NATSUME_SERVER/static/yad.deb" -o /root/yad.deb
+dpkg -i /root/caddy.deb
+dpkg -i /root/yad.deb
 
 echo "Disabling Natsume service"
 sudo systemctl stop "natsume"
+
+echo "Disabling Nginx service"
+sudo systemctl stop "nginx"
+sudo systemctl disable "nginx"
 
 echo "Download natsume client"
 curl -s -k "$NATSUME_SERVER/static/natsume_client" -o /usr/bin/natsume_client
@@ -70,7 +76,7 @@ echo "Disabling SSH password login"
 sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication no/' /etc/ssh/sshd_config && systemctl restart sshd
 
 echo "Activating CLion"
-curl -s -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLion2022.3/config/clion.key
+curl -s -k "$NATSUME_SERVER/static/clion.key" -o /etc/skel/.config/JetBrains/CLion2025.2/clion.key
 
 echo "Configure Firefox"
 mkdir -p /etc/firefox/policies
