@@ -154,10 +154,7 @@ fn is_valid_bind_id(id: &str) -> bool {
 
 fn get_hostname() -> anyhow::Result<String> {
     let output = get_command_output(
-        {
-            let command = safe_command("hostname");
-            command
-        },
+        safe_command("hostname"),
         "hostname",
     )?;
     let hostname = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -321,7 +318,7 @@ pub fn prompt_bind_id(player_user: &str) -> anyhow::Result<PromptResult> {
     let desktop_env = find_graphical_session(player_user)?;
     let hostname = get_hostname()?;
     let text = format!("Location: {hostname}\nEnter contestant ID");
-    let args = vec![
+    let args = [
         "--entry".to_string(),
         "--title=Natsume Bind".to_string(),
         format!("--text={text}"),
@@ -358,11 +355,10 @@ pub fn show_bind_result(
     text: &str,
 ) {
     let dialog_type = if success { "--info" } else { "--error" };
-    let args = vec![
+    let args = [
         dialog_type.to_string(),
         "--title=Natsume Bind".to_string(),
         format!("--text={text}"),
-        "--timeout=5".to_string(),
         "--width=420".to_string(),
     ];
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();

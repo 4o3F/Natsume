@@ -172,7 +172,7 @@ fn perform_bind(id: &str) -> anyhow::Result<()> {
     let mac = get_mac(target_ip)?;
     tracing::info!("Current device MAC is {}", mac);
 
-    match send_bind_req(base_url, &id, &mac) {
+    match send_bind_req(base_url, id, &mac) {
         Ok(_) => {
             tracing::info!("Bind success!");
             Ok(())
