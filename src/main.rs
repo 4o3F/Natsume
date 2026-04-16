@@ -1,3 +1,5 @@
+#![cfg_attr(feature = "client", feature(process_setsid))]
+
 use std::{
     fs::{self, OpenOptions},
     process::ExitCode,
@@ -53,8 +55,22 @@ enum Commands {
     /// Bind the device to a ID
     #[cfg(feature = "client")]
     Bind {
-        #[arg(long, short, help = "ID for this device")]
-        id: String,
+        #[arg(
+            long,
+            short,
+            conflicts_with = "prompt",
+            required_unless_present = "prompt",
+            help = "ID for this device"
+        )]
+        id: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "id",
+            help = "Prompt for ID via zenity GUI dialog"
+        )]
+        prompt: bool,
+        #[arg(long = "_bg", hide = true)]
+        background: bool,
     },
 
     /// Sync player info to device
@@ -125,13 +141,14 @@ fn main() -> ExitCode {
 
     // Do config parse
     tracing::info!("Parsing config file...");
-    let config = fs::read_to_string(cli.config).unwrap_or_log();
+    let config_path = cli.config.clone();
+    let config = fs::read_to_string(&config_path).unwrap_or_log();
     let mut config: config::Config = toml::from_str(&config).unwrap_or_log();
 
     #[cfg(feature = "client")]
     {
         // Bind command should be run in non priviledged environment
-        if !matches!(cli.command, Commands::Bind { id: _ }) {
+        if !matches!(cli.command, Commands::Bind { .. }) {
             if client::check_permission(config.client.caddyfile.clone()) {
                 tracing::info!("Client priviledge correct, procedding.")
             } else {
@@ -212,16 +229,27 @@ fn main() -> ExitCode {
             }
         }
         #[cfg(feature = "client")]
-        Commands::Bind { id } => match client::bind_ip(id) {
-            Ok(_) => {
-                tracing::info!("Bind success!");
-                ExitCode::SUCCESS
+        Commands::Bind {
+            id,
+            prompt,
+            background,
+        } => {
+            let options = client::BindOptions {
+                id,
+                prompt,
+                background,
+            };
+            match client::bind_ip(options, &config_path) {
+                Ok(_) => {
+                    tracing::info!("Bind success!");
+                    ExitCode::SUCCESS
+                }
+                Err(err) => {
+                    tracing::error!("Bind failed with error {:#}", err);
+                    ExitCode::FAILURE
+                }
             }
-            Err(err) => {
-                tracing::error!("Bind failed with error {:#}", err);
-                ExitCode::FAILURE
-            }
-        },
+        }
         #[cfg(feature = "client")]
         Commands::Sync {} => match client::sync_info() {
             Ok(_) => {

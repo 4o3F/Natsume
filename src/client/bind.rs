@@ -1,9 +1,27 @@
-use std::{net::IpAddr, process::Command};
+use std::{
+    net::IpAddr,
+    os::unix::process::CommandExt,
+    process::{self, Command, Stdio},
+};
 
 use anyhow::bail;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing_unwrap::OptionExt;
+
+pub struct BindOptions {
+    pub id: Option<String>,
+    pub prompt: bool,
+    pub background: bool,
+}
+
+enum BindInput {
+    Cli(String),
+    Gui {
+        id: String,
+        desktop_env: super::desktop::DesktopSessionEnv,
+    },
+}
 
 pub fn get_mac(target_ip: String) -> anyhow::Result<String> {
     if target_ip == "localhost" {
@@ -124,7 +142,7 @@ fn send_bind_req(url: &String, id: &str, mac: &str) -> anyhow::Result<()> {
     anyhow::Ok(())
 }
 
-pub fn bind_ip(id: String) -> anyhow::Result<()> {
+fn perform_bind(id: &str) -> anyhow::Result<()> {
     let base_url = &crate::GLOBAL_CONFIG
         .get()
         .unwrap_or_log()
@@ -163,6 +181,83 @@ pub fn bind_ip(id: String) -> anyhow::Result<()> {
             tracing::error!("Bind FAILED!");
             tracing::error!("Error: {:#}", e);
             Err(e)
+        }
+    }
+}
+
+fn spawn_background_bind(config_path: &str) -> anyhow::Result<()> {
+    let exe = std::env::current_exe()?;
+    Command::new(exe)
+        .arg("--config")
+        .arg(config_path)
+        .arg("bind")
+        .arg("--prompt")
+        .arg("--_bg")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .setsid(true)
+        .spawn()?;
+
+    tracing::info!("Background bind process spawned");
+    Ok(())
+}
+
+pub fn bind_ip(options: BindOptions, config_path: &str) -> anyhow::Result<()> {
+    if options.prompt && !options.background {
+        // Verify prerequisites in parent so failures are visible to pssh/SSH
+        let player_user = crate::GLOBAL_CONFIG
+            .get()
+            .expect_or_log("Global config not initialized")
+            .client
+            .player_user
+            .clone();
+        super::desktop::ensure_prompt_prerequisites(&player_user)?;
+
+        spawn_background_bind(config_path)?;
+        process::exit(0);
+    }
+
+    let bind_input = match (options.id, options.prompt, options.background) {
+        (Some(id), _, _) => BindInput::Cli(id),
+        (None, true, true) => {
+            let player_user = crate::GLOBAL_CONFIG
+                .get()
+                .expect_or_log("Global config not initialized")
+                .client
+                .player_user
+                .clone();
+            let prompt_result = super::desktop::prompt_bind_id(&player_user)?;
+            BindInput::Gui {
+                id: prompt_result.id,
+                desktop_env: prompt_result.desktop_env,
+            }
+        }
+        _ => bail!("Bind ID not provided"),
+    };
+
+    let player_user = crate::GLOBAL_CONFIG
+        .get()
+        .expect_or_log("Global config not initialized")
+        .client
+        .player_user
+        .clone();
+
+    match bind_input {
+        BindInput::Cli(id) => perform_bind(&id),
+        BindInput::Gui { id, desktop_env } => {
+            let bind_result = perform_bind(&id);
+            let result_text = match &bind_result {
+                Ok(_) => format!("Bind succeeded for contestant ID {id}"),
+                Err(err) => format!("Bind failed: {err:#}"),
+            };
+            super::desktop::show_bind_result(
+                &player_user,
+                &desktop_env,
+                bind_result.is_ok(),
+                &result_text,
+            );
+            bind_result
         }
     }
 }

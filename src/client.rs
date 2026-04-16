@@ -1,11 +1,12 @@
 mod bind;
 mod check;
+mod desktop;
 mod clean;
 mod monitor;
 mod session;
 mod sync;
 
-pub use bind::bind_ip;
+pub use bind::{BindOptions, bind_ip};
 pub use check::{check_permission, check_prerequisite};
 pub use clean::clean_user;
 pub use monitor::do_monitor;
