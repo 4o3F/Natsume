@@ -16,11 +16,11 @@ jobs:
         toolchain:
           - nightly
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: Swatinem/rust-cache@v2
       - name: Install SSL packages
         run: sudo apt-get update --yes && sudo apt-get install --yes pkg-config openssl libssl-dev
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
         with:
           version: 10
       - name: Build Client
@@ -40,12 +40,12 @@ jobs:
           args: "--release --bin natsume_server --features='server'"
           strip: true
       - name: Upload server artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: natsume_server
           path: target/x86_64-unknown-linux-musl/release/natsume_server
       - name: Upload client artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: natsume_client
           path: target/x86_64-unknown-linux-musl/release/natsume_client
