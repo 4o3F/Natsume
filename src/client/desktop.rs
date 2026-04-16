@@ -99,50 +99,41 @@ fn read_process_environ(pid: u32) -> anyhow::Result<HashMap<String, String>> {
 }
 
 fn parse_session_metadata(session_id: &str) -> anyhow::Result<Option<SessionMetadata>> {
+    // Use Key=Value format (no --value) because loginctl does not guarantee
+    // output order matches the -p argument order.
     let output = get_command_output(
         {
             let mut command = safe_command("loginctl");
             command
                 .arg("show-session")
                 .arg(session_id)
-                .args([
-                    "-p",
-                    "Name",
-                    "-p",
-                    "Remote",
-                    "-p",
-                    "Active",
-                    "-p",
-                    "State",
-                    "-p",
-                    "Type",
-                    "-p",
-                    "Leader",
-                    "--value",
-                ]);
+                .args(["-p", "Name", "-p", "Remote", "-p", "Active", "-p", "State", "-p", "Type", "-p", "Leader"]);
             command
         },
         "loginctl show-session",
     )?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let values: Vec<&str> = stdout.lines().collect();
-    if values.len() < 6 {
-        bail!("Unexpected loginctl session metadata format");
+    let mut props = HashMap::new();
+    for line in stdout.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            props.insert(key.trim().to_string(), value.trim().to_string());
+        }
     }
 
-    let name = values[0].trim();
-    let remote = values[1].trim();
-    let active = values[2].trim();
-    let state = values[3].trim();
-    let session_type = values[4].trim();
-    let leader_pid = values[5]
-        .trim()
+    let name = props.get("Name").context("Missing Name property")?;
+    let remote = props.get("Remote").context("Missing Remote property")?;
+    let active = props.get("Active").context("Missing Active property")?;
+    let state = props.get("State").context("Missing State property")?;
+    let session_type = props.get("Type").context("Missing Type property")?;
+    let leader_pid = props
+        .get("Leader")
+        .context("Missing Leader property")?
         .parse::<u32>()
         .context("Failed to parse session leader PID")?;
 
     let is_active = active == "yes" || state == "active";
-    let is_graphical = matches!(session_type, "x11" | "wayland");
+    let is_graphical = session_type == "x11" || session_type == "wayland";
     if !is_active || !is_graphical || remote != "no" {
         return Ok(None);
     }
