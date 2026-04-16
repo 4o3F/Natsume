@@ -5,7 +5,6 @@ CERT_IP="127.0.0.1"
 NATSUME_SERVER="https://localhost"
 NTP_SERVER="localhost"
 USER_PASSWD="passwd"
-SCHEMA_FILE="/usr/share/glib-2.0/schemas/20_icpc-desktop-schema.gschema.override"
 
 
 if [ "$(whoami)" = "root" ]; then
@@ -101,12 +100,6 @@ cat << EOF > /etc/firefox/policies/policies.json
 }
 EOF
 chmod 644 /etc/firefox/policies/policies.json
-
-# echo "Configure wallpaper"
-# curl -s -k "$NATSUME_SERVER/static/wallpaper.png" -o /usr/share/backgrounds/wallpaper.png
-# sed -i "s|^\(.*picture-uri\s*=\s*\).*|\1'file:///usr/share/backgrounds/wallpaper.png'|" "$SCHEMA_FILE"
-# sed -i "s|^\(.*picture-options\s*=\s*\).*|\1'scaled'|" "$SCHEMA_FILE"
-# glib-compile-schemas /usr/share/glib-2.0/schemas/
 
 echo "Add new user"
 if id "stu" &>/dev/null; then
