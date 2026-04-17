@@ -162,12 +162,12 @@ const columns: ColumnDef<Info>[] = [
           variant: 'secondary', class: 'bg-red-600 text-white hover:text-black', onClick: async () => {
             let result = await removeBindByMAC(row.getValue('mac'), mainStore.panel_token)
             if (result.status == 200) {
-              toast.success("Delete success")
+              toast.success("Unbind success")
             } else {
               toast.error("Error deleting, err " + result.status)
             }
           }, disabled: row.getValue('mac') === null
-        }, 'Delete')
+        }, 'Unbind')
       ])
     }
   }
