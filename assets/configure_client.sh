@@ -56,6 +56,9 @@ echo "Disabling Nginx service"
 sudo systemctl stop "nginx"
 sudo systemctl disable "nginx"
 
+sudo systemctl stop container-vscgallery.service
+sudo systemctl disable container-vscgallery.service
+
 echo "Download natsume client"
 curl -s -k "$NATSUME_SERVER/static/natsume_client" -o /usr/bin/natsume_client
 mkdir /etc/natsume

@@ -1,79 +1,80 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
-# REMEMBER TO CHANGE API PATH AND AUTHORIZE TOKEN
-DOMJUDGE_VERSION="8.3.2"
+# ╔════════════════════════════════════════════════════════════╗
+# ║  DOMjudge Judgehost Setup Script                          ║
+# ║  Edit the variables below before running                  ║
+# ╚════════════════════════════════════════════════════════════╝
 
-SCRIPT_PATH="$(realpath "$0" 2>/dev/null || echo "$(cd "$(dirname "$0")" && pwd)/$(basename "$0")")"
+# ── Configuration (EDIT THESE) ─────────────────────────────
+DJVER="snapshot-20260416"
+DOMSERVER_URL="http://10.12.13.20/domjudge/api/"
+JUDGEHOST_USER="judgehost"
+JUDGEHOST_PASS="passw0rd"
+INSTALL_PREFIX="/opt/domjudge"
+# CPU cores to use for judging (space-separated), e.g. "0 1 2 3"
+JUDGE_CORES="0"
+# ───────────────────────────────────────────────────────────
 
+echo "[1/8] Switching to BFSU mirror and installing dependencies..."
 sudo sed -i 's/cn.archive.ubuntu.com/mirrors.bfsu.edu.cn/g' /etc/apt/sources.list
+sudo sed -i 's/archive.ubuntu.com/mirrors.bfsu.edu.cn/g' /etc/apt/sources.list
+sudo sed -i 's/security.ubuntu.com/mirrors.bfsu.edu.cn/g' /etc/apt/sources.list
+sudo apt-get update -qq
+sudo apt-get install -y -qq make pkg-config sudo debootstrap libcgroup-dev \
+    php-cli php-curl php-json php-xml php-zip lsof procps gcc g++ wget
+sudo apt-get remove -y apport 2>/dev/null || true
 
-STATE_FILE="/opt/domjudge_install_state"
-
-if [ -f "$STATE_FILE" ]; then
-
-    sudo bash /opt/domjudge/judgehost/bin/create_cgroups
-
-    /opt/domjudge/judgehost/bin/judgedaemon
-
-    sudo rm -f "$STATE_FILE"
-    sudo rm -f /etc/systemd/system/domjudge-continue.service
-    sudo systemctl daemon-reload
-
-    echo "success"
-    exit 0
-fi
-
-sudo apt update
-
-sudo apt install -y make sudo debootstrap libcgroup-dev lsof \
-    php-cli php-curl php-json php-xml php-zip procps \
-    gcc g++ openjdk-8-jre-headless openjdk-8-jdk ghc \
-    fp-compiler libcurl4-gnutls-dev libjsoncpp-dev \
-    libmagic-dev mono-mcs wget
-
-DOMJUDGE_URL="https://www.domjudge.org/releases/domjudge-${DOMJUDGE_VERSION}.tar.gz"
-
-wget "$DOMJUDGE_URL" -O "domjudge-${DOMJUDGE_VERSION}.tar.gz"
-tar -zxvf "domjudge-${DOMJUDGE_VERSION}.tar.gz"
-cd "domjudge-${DOMJUDGE_VERSION}"
-
-sudo mkdir -p /opt/domjudge
-./configure --prefix=/opt/domjudge --with-baseurl=127.0.0.1
-make judgehost
-sudo make install-judgehost
-
-sudo useradd -d /nonexistent -U -M -s /bin/false domjudge-run || true
-
-sudo cp /opt/domjudge/judgehost/etc/sudoers-domjudge /etc/sudoers.d/
-
-RESTAPI_SECRET_FILE="/opt/domjudge/judgehost/etc/restapi.secret"
-echo "default http://<host>/api judgehost <token>" | sudo tee "$RESTAPI_SECRET_FILE"
-
-sudo sed -i 's,http://us.archive.ubuntu.com/ubuntu/,http://mirrors.aliyun.com/ubuntu,g' /opt/domjudge/judgehost/bin/dj_make_chroot
-
-sudo /opt/domjudge/judgehost/bin/dj_make_chroot
-sudo sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT=/c\GRUB_CMDLINE_LINUX_DEFAULT="quiet cgroup_enable=memory swapaccount=1 systemd.unified_cgroup_hierarchy=0"' /etc/default/grub
+echo "[2/8] Configuring kernel boot parameters (cgroup)..."
+sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT=.*/GRUB_CMDLINE_LINUX_DEFAULT="quiet cgroup_enable=memory swapaccount=1"/' /etc/default/grub
 sudo update-grub
 
-sudo touch "$STATE_FILE"
+echo "[3/8] Downloading and building DOMjudge ${DJVER}..."
+cd /tmp
+if [ ! -d "domjudge-${DJVER}" ]; then
+    wget --no-check-certificate -q "https://10.12.13.20:2333/static/domjudge-${DJVER}.tar.gz"
+    tar xzf "domjudge-${DJVER}.tar.gz"
+fi
+cd "domjudge-${DJVER}"
+./configure --prefix="${INSTALL_PREFIX}" --quiet
+make judgehost -j"$(nproc)"
+sudo make install-judgehost
 
-sudo tee /etc/systemd/system/domjudge-continue.service > /dev/null <<EOF
-[Unit]
-Description=Continue DOMjudge Install after Reboot
-After=network.target
+echo "[4/8] Creating users and groups..."
+sudo groupadd -f domjudge-run
+for core in $JUDGE_CORES; do
+    id "domjudge-run-${core}" &>/dev/null || \
+        sudo useradd -d /nonexistent -g domjudge-run -M -s /bin/false "domjudge-run-${core}"
+done
 
-[Service]
-Type=oneshot
-ExecStart=/bin/bash $SCRIPT_PATH
-RemainAfterExit=true
+echo "[5/8] Installing sudoers rules..."
+sudo cp "${INSTALL_PREFIX}/judgehost/etc/sudoers-domjudge" /etc/sudoers.d/
+sudo chmod 440 /etc/sudoers.d/sudoers-domjudge
 
-[Install]
-WantedBy=multi-user.target
-EOF
-
+echo "[6/8] Installing systemd services..."
+sudo cp judge/domjudge-judgedaemon@.service /etc/systemd/system/
+sudo cp judge/create-cgroups.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable domjudge-continue.service
+sudo systemctl enable create-cgroups --now
 
-sleep 5
-sudo reboot
+echo "[7/8] Building chroot environment (this may take a few minutes)..."
+sudo DEBMIRROR="https://mirrors.bfsu.edu.cn/ubuntu" "${INSTALL_PREFIX}/judgehost/bin/dj_make_chroot"
+
+echo "[8/8] Configuring REST API credentials and enabling services..."
+sudo tee "${INSTALL_PREFIX}/judgehost/etc/restapi.secret" > /dev/null <<EOF
+# id  URL  username  password
+default ${DOMSERVER_URL} ${JUDGEHOST_USER} ${JUDGEHOST_PASS}
+EOF
+sudo chmod 640 "${INSTALL_PREFIX}/judgehost/etc/restapi.secret"
+
+for core in $JUDGE_CORES; do
+    sudo systemctl enable "domjudge-judgedaemon@${core}"
+done
+
+echo ""
+echo "=========================================="
+echo "  Judgehost setup complete!"
+echo "  DOMserver: ${DOMSERVER_URL}"
+echo "  Judge cores: ${JUDGE_CORES}"
+echo "  NOTE: Reboot required for cgroup changes"
+echo "=========================================="
