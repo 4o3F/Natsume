@@ -8,31 +8,32 @@ use anyhow::bail;
 use tracing_unwrap::{OptionExt, ResultExt};
 
 pub fn terminate_sessions() -> anyhow::Result<()> {
-    let gdm_config = "/etc/gdm3/custom.conf";
+    let lightdm_config = "/etc/lightdm/lightdm.conf";
     let username = crate::GLOBAL_CONFIG
         .get()
         .expect_or_log("Global config not initialized")
         .client
         .player_user
         .clone();
-    let contents = match read_to_string(gdm_config) {
+    let contents = match read_to_string(lightdm_config) {
         Ok(c) => c,
         Err(_) => {
-            bail!("Failed to read {}", gdm_config)
+            bail!("Failed to read {}", lightdm_config)
         }
     };
 
     let filtered: Vec<String> = contents
         .lines()
         .filter(|line| {
-            !line.trim().eq("AutomaticLoginEnable=true")
-                && !line.trim().eq(&format!("AutomaticLogin={}", username))
+            let trimmed = line.trim();
+            trimmed != format!("autologin-user={username}")
+                && trimmed != "autologin-user-timeout=0"
         })
         .map(String::from)
         .collect();
 
-    if let Err(e) = write(gdm_config, filtered.join("\n") + "\n") {
-        bail!("Failed to write to {}: {}", gdm_config, e)
+    if let Err(e) = write(lightdm_config, filtered.join("\n") + "\n") {
+        bail!("Failed to write to {}: {}", lightdm_config, e)
     }
 
     // Check if user is logged in
@@ -54,11 +55,11 @@ pub fn terminate_sessions() -> anyhow::Result<()> {
 
         let status = Command::new("systemctl")
             .arg("restart")
-            .arg("gdm")
+            .arg("lightdm")
             .status()
-            .expect_or_log("Failed to restart gdm");
+            .expect_or_log("Failed to restart lightdm");
         if !status.success() {
-            bail!("Failed to retart gdm")
+            bail!("Failed to restart lightdm")
         }
         Ok(())
     } else {
@@ -71,31 +72,31 @@ pub fn terminate_sessions() -> anyhow::Result<()> {
 }
 
 pub fn autologin_session() -> anyhow::Result<()> {
-    let gdm_config = "/etc/gdm3/custom.conf";
+    let lightdm_config = "/etc/lightdm/lightdm.conf";
     let username = crate::GLOBAL_CONFIG
         .get()
         .expect_or_log("Global config not initialized")
         .client
         .player_user
         .clone();
-    if let Ok(mut file) = OpenOptions::new().append(true).open(gdm_config) {
-        writeln!(file, "[daemon]").expect("Failed to write to config");
-        writeln!(file, "AutomaticLoginEnable=true").expect("Failed to write to config");
-        writeln!(file, "AutomaticLogin={}", username).expect("Failed to write to config");
+    if let Ok(mut file) = OpenOptions::new().append(true).open(lightdm_config) {
+        writeln!(file, "[Seat:*]").expect("Failed to write to config");
+        writeln!(file, "autologin-user={}", username).expect("Failed to write to config");
+        writeln!(file, "autologin-user-timeout=0").expect("Failed to write to config");
     } else {
-        bail!("Failed to open {}", gdm_config);
+        bail!("Failed to open {}", lightdm_config);
     }
 
     let status = Command::new("systemctl")
         .arg("restart")
-        .arg("gdm")
+        .arg("lightdm")
         .status()
-        .expect_or_log("Failed to restart gdm");
+        .expect_or_log("Failed to restart lightdm");
 
     if status.success() {
-        tracing::info!("gdm restarted successfully.");
+        tracing::info!("lightdm restarted successfully.");
         Ok(())
     } else {
-        bail!("Failed to restart gdm.");
+        bail!("Failed to restart lightdm.");
     }
 }

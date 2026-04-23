@@ -16,10 +16,29 @@ INSTALL_PREFIX="/opt/domjudge"
 JUDGE_CORES="0"
 # ───────────────────────────────────────────────────────────
 
+echo "Current hostname: $(hostname)"
+read -rp "Enter new hostname (leave empty to keep current): " NEW_HOSTNAME < /dev/tty || true
+if [ -n "${NEW_HOSTNAME:-}" ]; then
+    sudo hostnamectl set-hostname "$NEW_HOSTNAME"
+    echo "Hostname changed to: $NEW_HOSTNAME"
+fi
+
 echo "[1/8] Switching to BFSU mirror and installing dependencies..."
-sudo sed -i 's/cn.archive.ubuntu.com/mirrors.bfsu.edu.cn/g' /etc/apt/sources.list
-sudo sed -i 's/archive.ubuntu.com/mirrors.bfsu.edu.cn/g' /etc/apt/sources.list
-sudo sed -i 's/security.ubuntu.com/mirrors.bfsu.edu.cn/g' /etc/apt/sources.list
+CODENAME=$(lsb_release -cs)
+sudo rm -f /etc/apt/sources.list.d/* /etc/apt/sources.list
+sudo tee /etc/apt/sources.list.d/ubuntu.sources > /dev/null <<EOF
+Types: deb
+URIs: https://mirrors.bfsu.edu.cn/ubuntu
+Suites: ${CODENAME} ${CODENAME}-updates ${CODENAME}-backports
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+
+Types: deb
+URIs: https://mirrors.bfsu.edu.cn/ubuntu
+Suites: ${CODENAME}-security
+Components: main restricted universe multiverse
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+EOF
 sudo apt-get update -qq
 sudo apt-get install -y -qq make pkg-config sudo debootstrap libcgroup-dev \
     php-cli php-curl php-json php-xml php-zip lsof procps gcc g++ wget
@@ -32,7 +51,7 @@ sudo update-grub
 echo "[3/8] Downloading and building DOMjudge ${DJVER}..."
 cd /tmp
 if [ ! -d "domjudge-${DJVER}" ]; then
-    wget --no-check-certificate -q "https://10.12.13.20:2333/static/domjudge-${DJVER}.tar.gz"
+    wget --no-check-certificate -q "https://10.12.13.166:2333/static/domjudge-${DJVER}.tar.gz"
     tar xzf "domjudge-${DJVER}.tar.gz"
 fi
 cd "domjudge-${DJVER}"
@@ -54,6 +73,12 @@ sudo chmod 440 /etc/sudoers.d/sudoers-domjudge
 echo "[6/8] Installing systemd services..."
 sudo cp judge/domjudge-judgedaemon@.service /etc/systemd/system/
 sudo cp judge/create-cgroups.service /etc/systemd/system/
+sudo tee -a /etc/systemd/system/domjudge-judgedaemon@.service > /dev/null <<'EOF'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
 sudo systemctl enable create-cgroups --now
 

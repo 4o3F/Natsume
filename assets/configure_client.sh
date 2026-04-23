@@ -5,6 +5,7 @@ CERT_IP="127.0.0.1"
 NATSUME_SERVER="https://localhost"
 NTP_SERVER="localhost"
 USER_PASSWD="passwd"
+ROOT_PASSWD="root_passwd"
 
 
 if [ "$(whoami)" = "root" ]; then
@@ -12,6 +13,10 @@ if [ "$(whoami)" = "root" ]; then
 else
 	echo "Not root user"
 fi
+
+
+echo "Set root password"
+echo "root:$ROOT_PASSWD" | chpasswd
 
 echo "Configuring hosts entry for certificate domain"
 tmp_hosts="$(mktemp)"
