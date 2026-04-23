@@ -118,6 +118,8 @@ chmod 644 /etc/firefox/policies/policies.json
 echo "Add new user"
 if id "stu" &>/dev/null; then
     echo "User 'stu' exists. Deleting..."
+    umount -f /home/stu/.vscode/extensions
+    umount -f /home/stu/.vscode/extensions-root
     sudo userdel -r stu
     echo "User 'stu' deleted with home directory."
 else
