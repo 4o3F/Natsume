@@ -91,6 +91,13 @@ mkdir -p /etc/firefox/policies
 cat << EOF > /etc/firefox/policies/policies.json
 {
   "policies": {
+    "OverrideFirstRunPage": "https://$CERT_DOMAIN/",
+    "OverridePostUpdatePage": "https://$CERT_DOMAIN/",
+    "DisableFirefoxAccounts": true,
+    "DisableTelemetry": true,
+    "DisableFirefoxStudies": true,
+    "DontCheckDefaultBrowser": true,
+    "HardwareAcceleration": false,
     "Homepage": {
       "URL": "https://$CERT_DOMAIN/",
       "Locked": true,
