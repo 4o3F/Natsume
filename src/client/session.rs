@@ -28,6 +28,7 @@ pub fn terminate_sessions() -> anyhow::Result<()> {
             let trimmed = line.trim();
             trimmed != format!("autologin-user={username}")
                 && trimmed != "autologin-user-timeout=0"
+                && trimmed != "[Seat:*]"
         })
         .map(String::from)
         .collect();
