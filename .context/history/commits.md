@@ -9,3 +9,4 @@
 | 2026-04-24 | cb54caeb | pending | chore(assets): tighten firefox contest browser policy | Apply Firefox enterprise policies in bootstrap | - | Low: browser defaults only |
 | 2026-04-24 | f658e748 | pending | chore(assets): tighten firefox contest browser policy | Apply Firefox enterprise policies in bootstrap | - | Low: browser defaults only |
 | 2026-04-24 | 17b6238c | pending | fix(client): remove lightdm seat header on cleanup | Remove stale LightDM seat header during cleanup | Duplicate [Seat:*] entries in lightdm.conf | Low: managed cleanup only |
+| 2026-04-24 | 302aebcc | pending | fix(assets): configure caddy admin before reload | Prepend Caddy global options after package install | Reloads can fail without expected Caddy admin/global settings | Low: bootstrap script restart only |

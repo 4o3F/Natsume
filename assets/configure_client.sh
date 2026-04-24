@@ -52,6 +52,23 @@ curl -s -k "$NATSUME_SERVER/static/key.pub" -o /root/.ssh/authorized_keys
 curl -s -k "$NATSUME_SERVER/static/caddy.deb" -o /root/caddy.deb
 curl -s -k "$NATSUME_SERVER/static/yad.deb" -o /root/yad.deb
 dpkg -i /root/caddy.deb
+
+if ! grep -q '^    admin localhost:20190$' /etc/caddy/Caddyfile; then
+    echo "Configuring Caddy global options"
+    tmp_caddyfile="$(mktemp)"
+    cat > "$tmp_caddyfile" <<'EOF'
+{
+    admin localhost:20190
+    auto_https off
+}
+
+EOF
+    cat /etc/caddy/Caddyfile >> "$tmp_caddyfile"
+    cat "$tmp_caddyfile" > /etc/caddy/Caddyfile
+    rm -f "$tmp_caddyfile"
+fi
+systemctl restart caddy
+
 dpkg -i /root/yad.deb
 
 echo "Disabling Natsume service"
