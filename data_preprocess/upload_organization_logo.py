@@ -10,7 +10,7 @@ def read_and_validate_xlsx(file_path: str) -> pl.DataFrame:
     """Read and validate XLSX file structure."""
     expected_columns = [
         "organization", "team_name_en", "team_name_zh", 
-        "room", "seat", "account", "password"
+        "seat", "account", "password"
     ]
     
     df = pl.read_excel(file_path)
