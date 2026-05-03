@@ -1,10 +1,29 @@
 import sys
 import polars as pl
+import fastexcel
 import json
 import yaml
 from typing import List, Dict, Any, Tuple
 from collections import defaultdict
 import re
+
+
+EXCEL_ERROR_VALUES = {
+    "Null": "#NULL!",
+    "Div0": "#DIV/0!",
+    "Value": "#VALUE!",
+    "Ref": "#REF!",
+    "Name": "#NAME?",
+    "Num": "#NUM!",
+    "NA": "#N/A",
+}
+
+
+def excel_error_literal(detail: str) -> str | None:
+    match = re.search(r"Error\(([^)]+)\)", detail)
+    if not match:
+        return None
+    return EXCEL_ERROR_VALUES.get(match.group(1))
 
 
 def read_and_validate_xlsx(file_path: str) -> pl.DataFrame:
@@ -16,16 +35,24 @@ def read_and_validate_xlsx(file_path: str) -> pl.DataFrame:
         "seat",
         "account",
         "password",
+        "category",
     ]
 
-    df = pl.read_excel(
-        file_path,
-        schema_overrides={
-            "seat": pl.String,
-            "account": pl.String,
-            "password": pl.String,
-        },
-    )
+    sheet = fastexcel.read_excel(file_path).load_sheet(0, dtypes="string")
+    batch, errors = sheet.to_arrow_with_errors()
+    df = pl.from_arrow(batch)
+
+    if errors:
+        rows = df.to_dicts()
+        columns = df.columns
+        for error in errors.errors:
+            error_value = excel_error_literal(error.detail)
+            if error_value is None:
+                continue
+            row_idx, col_idx = error.offset_position
+            if 0 <= row_idx < len(rows) and 0 <= col_idx < len(columns):
+                rows[row_idx][columns[col_idx]] = error_value
+        df = pl.DataFrame(rows, schema={column: pl.String for column in columns})
 
     if df.columns != expected_columns:
         print("Error: Column names don't match the expected structure.")
@@ -120,20 +147,21 @@ def generate_teams_json(
 
         location_desc = f"{row['seat']}".strip("-")
         location = {"description": location_desc} if location_desc else {}
+        category = str(row["category"]).strip()
 
         # print(row['account'])
-        team_data = {
+        team_data: dict[str, object] = {
             "id": str(row["account"]),
             "icpc_id": str(row["account"]),
             "label": str(row["account"]),
-            "display_name": str(row["team_name_zh"]),
-            "group_ids": ["participants"],
-            "name": str(row["team_name_zh"]),
+            "display_name": str(f"{row['team_name_zh']}({row['team_name_en']})"),
+            "group_ids": [category],
+            "name": str(f"{row['team_name_zh']}({row['team_name_en']})"),
             "organization_id": str(org_id),
         }
 
         if location:
-            team_data["location"] = str(location)
+            team_data["location"] = location
 
         teams.append(team_data)
 

@@ -5,12 +5,14 @@ import requests
 from typing import List, Set, Dict
 import re
 import base64
+from io import BytesIO
+from PIL import Image
 
 def read_and_validate_xlsx(file_path: str) -> pl.DataFrame:
     """Read and validate XLSX file structure."""
     expected_columns = [
-        "organization", "team_name_en", "team_name_zh", 
-        "seat", "account", "password"
+        "organization", "team_name_en", "team_name_zh",
+        "seat", "account", "password", "category"
     ]
     
     df = pl.read_excel(file_path)
@@ -74,23 +76,29 @@ def get_organization_id_mapping(organizations: List[str]) -> Dict[str, str]:
 def upload_logo(api_domain: str, org_id: str, file_path: str, auth_token: str) -> bool:
     """Upload logo file to API."""
     url = f"{api_domain}/api/v4/organizations/{org_id}/logo"
-    
+
     try:
-        with open(file_path, 'rb') as f:
-            files = {'logo': f}
-            headers = {
-                'Authorization': f'Basic {auth_token}',
-            }
-            
-            response = requests.post(url, files=files, headers=headers)
-            
-            if response.status_code == 204:
-                print(f"✓ Successfully uploaded logo for {org_id}")
-                return True
-            else:
-                print(f"✗ Failed to upload logo for {org_id}: {response.status_code} - {response.text}")
-                return False
-                
+        with Image.open(file_path) as image:
+            image = image.convert('RGBA').resize((64, 64), Image.Resampling.LANCZOS)
+            logo = BytesIO()
+            image.save(logo, format='PNG')
+            logo.seek(0)
+
+        files = {'logo': (os.path.basename(file_path), logo, 'image/png')}
+        headers = {
+            'Authorization': f'Basic {auth_token}',
+        }
+
+        response = requests.post(url, files=files, headers=headers)
+        logo.close()
+
+        if response.status_code == 204:
+            print(f"✓ Successfully uploaded logo for {org_id}")
+            return True
+        else:
+            print(f"✗ Failed to upload logo for {org_id}: {response.status_code} - {response.text}")
+            return False
+
     except Exception as e:
         print(f"✗ Error uploading logo for {org_id}: {e}")
         return False
