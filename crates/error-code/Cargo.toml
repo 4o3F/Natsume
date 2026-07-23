@@ -1,0 +1,16 @@
+[package]
+name = "natsume-error-code"
+description = "Stable Natsume error codes, surface mappings, and report redaction"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

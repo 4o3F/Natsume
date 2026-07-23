@@ -7,6 +7,7 @@ members = [
   "client/privileged-helper",
   "client/session-agent",
   "crates/device-protocol",
+  "crates/error-code",
   "crates/local-control-api",
   "crates/machine-identity",
   "integration-tests",
@@ -17,6 +18,7 @@ default-members = [
   "client/privileged-helper",
   "client/session-agent",
   "crates/device-protocol",
+  "crates/error-code",
   "crates/local-control-api",
   "crates/machine-identity",
 ]
@@ -35,6 +37,7 @@ csv = "1"
 hkdf = "0.13"
 prost = "0.14"
 quinn = "0.11"
+regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pki-types = "1"

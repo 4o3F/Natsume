@@ -1283,6 +1283,7 @@ dependencies = [
  "chacha20poly1305",
  "hkdf",
  "natsume-device-protocol",
+ "natsume-error-code",
  "natsume-local-control-api",
  "natsume-machine-identity",
  "quinn",
@@ -1308,6 +1309,15 @@ dependencies = [
  "prost-build",
  "protoc-bin-vendored",
  "snafu",
+]
+
+[[package]]
+name = "natsume-error-code"
+version = "2.0.0"
+dependencies = [
+ "regex",
+ "serde",
+ "uuid",
 ]
 
 [[package]]
@@ -1341,6 +1351,7 @@ name = "natsume-privileged-helper"
 version = "2.0.0"
 dependencies = [
  "libsystemd",
+ "natsume-error-code",
  "natsume-local-control-api",
  "natsume-machine-identity",
  "procfs",
@@ -1364,6 +1375,7 @@ dependencies = [
  "csv",
  "hkdf",
  "natsume-device-protocol",
+ "natsume-error-code",
  "natsume-machine-identity",
  "quinn",
  "rustls",
@@ -1383,9 +1395,9 @@ dependencies = [
 name = "natsume-session-agent"
 version = "2.0.0"
 dependencies = [
+ "natsume-error-code",
  "natsume-local-control-api",
  "serde",
- "snafu",
  "zbus",
 ]
 
