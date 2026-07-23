@@ -30,7 +30,8 @@
 
 - Cargo virtual workspace 管全部 Rust packages；pnpm workspace 管 `web/`；根 `justfile` 只委托原生工具。
 - nFPM 直接映射 Rust binaries、`web/dist`、固定 Caddy 和 package-owned rootfs，最终只发布 Server/Client 两个 Debian packages。
-- `crates/device-protocol`、`crates/local-control-api`、`crates/machine-identity` 是仅有的共享生产契约。
+- `crates/error-code`、`crates/device-protocol`、`crates/local-control-api`、`crates/machine-identity` 是仅有的共享生产契约。
+- `crates/error-code` 是第四个、也是 Phase 0 唯一新增的共享生产契约；它独占稳定错误字符串、HTTP/protocol/D-Bus 显式映射与报告脱敏，各领域仍保留自己的 typed SNAFU error。
 - Package-owned Caddy 状态页不是第二个 Web application。
 
 ## Step 1 工具链基线

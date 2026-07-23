@@ -137,13 +137,13 @@
 |---|---|---|
 | YYYY-MM-DD | 初稿 | `ROLE_*` |
 
-## Phase 0 预定 ADR 索引（均未创建）
+## Phase 0 ADR 索引
 
-| 预定 ID | 主题 |
-|---|---|
-| `ADR-0001` | Native monorepo 与 direct nFPM |
-| `ADR-0002` | ErrorCode registry |
-| `ADR-0003` | IP-SAN 安装 endpoint |
-| `ADR-0004` | Device/Gateway certificate ladder |
-| `ADR-0005` | Caddy version/module/source pin |
-| `ADR-0006` | OverlayFS 与 staged-copy backend |
+| ID | 主题 | 状态 |
+|---|---|---|
+| `ADR-0001` | Native monorepo 与 direct nFPM | 未创建 |
+| [`ADR-0002`](./0002-error-code-registry.md) | ErrorCode registry | `PROPOSED` |
+| `ADR-0003` | IP-SAN 安装 endpoint | 未创建 |
+| `ADR-0004` | Device/Gateway certificate ladder | 未创建 |
+| `ADR-0005` | Caddy version/module/source pin | 未创建 |
+| `ADR-0006` | OverlayFS 与 staged-copy backend | 未创建 |

@@ -213,7 +213,7 @@ HTTP、QUIC、TLS、X.509、Protobuf、D-Bus、SQLite、CSV、密码学、system
 | SQLite | SQLx、`sqlx::migrate!` | WAL、短事务、writer gate |
 | QUIC/TLS | Quinn、rustls | Quinn/rustls 负责 TLS 1.3 handshake 与 QUIC packet protection |
 | Protobuf | Prost、prost-build、protoc-bin-vendored | 生成到 `OUT_DIR` |
-| Error | SNAFU | stable error code 显式映射，不解析 Display |
+| Error | SNAFU + `natsume-error-code` | typed domain errors；stable error code、surface mapping 与 redaction 集中；不解析 Display |
 | Configuration | Figment + Serde | root-owned TOML + env override |
 | CSV | csv | 只接受固定 schema UTF-8 CSV |
 | Cryptography | chacha20poly1305、hkdf、sha2、secrecy、zeroize | 随机 root key + identity-bound KDF；不自研 cipher |
@@ -228,10 +228,12 @@ HTTP、QUIC、TLS、X.509、Protobuf、D-Bus、SQLite、CSV、密码学、system
 - 每个领域/基础设施模块定义 typed error enum；
 - 使用 context selector 补充 operation/resource context；
 - binary 顶层使用 `snafu::Report` 或 `#[snafu::report]`；
-- HTTP Problem Details、Protobuf、D-Bus、Command Result 显式映射稳定错误码；
+- `crates/error-code` 的 `ErrorCode::as_str` 是稳定字符串唯一来源，领域错误通过 `AsErrorCode` 或穷尽 match 显式映射；
+- HTTP Problem Details、Protobuf、D-Bus、Command Result 显式映射稳定错误码，禁止从 `Display`/`Debug` 推导；
+- Problem Details 默认不携带 `detail`；operator/report 边界必须先移除 secret、path 与 source chain；
 - `Whatever`、裸字符串、无分类 `Box<dyn Error>` 不作为公共逃生舱；
 - Secret、private key、password、CSR、Caddy runtime config 使用 redacted `Debug/Display` wrapper；
-- CI 包含 report/source-chain/redaction 测试。
+- CI 包含 registry 唯一性、surface mapping、report/source-chain/redaction 测试。
 
 ### 2.4 单文件 CSV
 
@@ -368,6 +370,7 @@ Natsume/
 │   ├── src/api/generated/
 │   └── e2e/
 ├── crates/
+│   ├── error-code/
 │   ├── device-protocol/
 │   ├── local-control-api/
 │   └── machine-identity/
@@ -390,23 +393,28 @@ Natsume/
 | `client/device-daemon` | `natsume-device-daemon` | 启动身份校验、Enrollment、QUIC、Command journal、Client vault、Caddy adapter |
 | `client/privileged-helper` | `natsume-privileged-helper` | root hardware collection、Home、logind；无外网 |
 | `client/session-agent` | `natsume-session-agent` | binding prompt、desktop lock gate、Browser launch；无秘密 |
+| `crates/error-code` | `natsume-error-code` | stable error strings、HTTP/protocol/D-Bus 显式映射、report redaction |
 | `crates/device-protocol` | `natsume-device-protocol` | Protobuf schema、generated facade、wire fixture |
 | `crates/local-control-api` | `natsume-local-control-api` | D-Bus interface/value types |
 | `crates/machine-identity` | `natsume-machine-identity` | 纯 normalization、candidate 与 boot-match 逻辑 |
 | `web` | `@natsume/web` | operator Panel |
 | `integration-tests` | `natsume-integration-tests` | 跨进程、重启、同传、fault 与 package tests |
 
-禁止创建通用 `common/utils/helpers/pipeline` 垃圾桶。只有出现两个真实生产 consumer 且契约稳定时才抽 shared crate。
+禁止创建通用 `common/utils/helpers/pipeline` 垃圾桶。只有出现两个真实生产 consumer 且契约稳定时才抽 shared crate。`crates/error-code` 是第四个、也是 Phase 0 唯一新增的共享生产契约。
 
 ### 3.3 依赖方向
 
 ```mermaid
 flowchart LR
-    Protocol["device-protocol"] --> Server["server"]
-    Protocol --> Daemon["device-daemon"]
+    Errors["error-code"] --> Server["server"]
+    Errors --> Daemon["device-daemon"]
+    Errors --> Helper["privileged-helper"]
+    Errors --> Agent["session-agent"]
+    Protocol["device-protocol"] --> Server
+    Protocol --> Daemon
     Local["local-control-api"] --> Daemon
-    Local --> Helper["privileged-helper"]
-    Local --> Agent["session-agent"]
+    Local --> Helper
+    Local --> Agent
     Identity["machine-identity"] --> Daemon
     Identity --> Helper
     Server -. "OpenAPI snapshot" .-> Web["web"]
@@ -416,7 +424,7 @@ flowchart LR
     Agent --> Tests
 ```
 
-`machine-identity` 不做 Linux I/O；Collector 位于 Privileged Helper。`local-control-api` 不含密码或 root implementation。Production package 不依赖 integration-tests。
+`error-code` 不取代领域 SNAFU error，也不依赖 Axum、Prost 或 zbus runtime。`machine-identity` 不做 Linux I/O；Collector 位于 Privileged Helper。`local-control-api` 不含密码或 root implementation。Production package 不依赖 integration-tests。
 
 ### 3.4 原生 workspace
 
@@ -2870,26 +2878,25 @@ Plaintext password只在：CSV parser row、Server import/dispatch buffer、Clie
 
 ### 18.2 Stable error codes
 
-Namespaces：
+Phase 0 的稳定字符串唯一来源是 `crates/error-code` 中的 `ErrorCode::as_str`。当前最小命名空间/固定码为：
 
 ```text
-AUTH_*
-IMPORT_*
-IDENTITY_*
-ENROLLMENT_*
-CERTIFICATE_*
+INSTALL_ENDPOINT_*
 PROTOCOL_*
-COMMAND_*
-STATE_*
-SECRET_*
-GATEWAY_*
-SESSION_*
-HOME_*
-VAULT_*
-PACKAGE_*
+ENROLLMENT_*
+GATEWAY_CERT_*
+VAULT_CORRUPT
+SESSION_CHANGED
+STALE_LOCK_EPOCH
+LOCK_COMMAND_MISMATCH
+NO_ACTIVE_LOCK
+HOME_TRANSITION
+PACKAGE_LAYOUT_INVALID
 ```
 
-错误Display可变，stable code不可随文案变化。Secret/path/source chain不得进入远端Problem Details或CommandStatus。
+不得引入通用 `CERTIFICATE_*` wire namespace：HTTPS Enrollment 只能返回 `ENROLLMENT_*`；Gateway certificate 失败只能使用 `GATEWAY_CERT_*`，且只属于 authenticated mandatory-mTLS QUIC + active `SYNC_STATE`。HTTP status 是共享 taxonomy，不得据此把 `GATEWAY_CERT_*` 暴露到 Enrollment route。
+
+错误 `Display` 可变，stable code 不可随文案变化，也不得通过解析 `Display`/`Debug` 做业务判断。Problem Details 默认无 `detail`；secret/path/source chain 不得进入远端 Problem Details、ProtocolError、CommandStatus、D-Bus 或 operator report。
 
 ### 18.3 Retry
 
