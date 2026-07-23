@@ -1,0 +1,10 @@
+# Client
+
+The signed Client package contains exactly three Natsume processes plus Caddy:
+
+- `device-daemon`: integrated Machine-ID startup check, encrypted vault, Device-only Enrollment, mandatory-mTLS QUIC, explicit Command journal, `SYNC_STATE`-bound Gateway key/CSR/certificate lifecycle and Caddy adapter;
+- `privileged-helper`: root/no-network hardware, logind and Home transactions;
+- `session-agent`: contest-user binding prompt, desktop-only lock gate and managed Browser launch;
+- Caddy: separate non-root loopback HTTPS data plane.
+
+There is no Identity Guard service, installation instance, generic certificate-install Command or Session-to-Caddy lock coupling. Gateway private material is generated locally only when an explicit state sync requires it.
