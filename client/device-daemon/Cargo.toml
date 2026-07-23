@@ -1,0 +1,32 @@
+
+[package]
+name = "natsume-device-daemon"
+description = "Unprivileged Natsume startup identity check, encrypted vault, QUIC control and Caddy integration daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+chacha20poly1305.workspace = true
+hkdf.workspace = true
+natsume-device-protocol = { path = "../../crates/device-protocol" }
+natsume-local-control-api = { path = "../../crates/local-control-api" }
+natsume-machine-identity = { path = "../../crates/machine-identity" }
+quinn.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+rustls-pki-types.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+sha2.workspace = true
+snafu.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

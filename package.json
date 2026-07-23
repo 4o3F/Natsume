@@ -1,0 +1,22 @@
+{
+  "name": "@natsume/repository",
+  "private": true,
+  "packageManager": "pnpm@11.1.0",
+  "engines": {
+    "node": "24.1.0",
+    "pnpm": "11.1.0"
+  },
+  "scripts": {
+    "web:dev": "pnpm --filter @natsume/web dev",
+    "web:typecheck": "pnpm --filter @natsume/web typecheck",
+    "web:test": "pnpm --filter @natsume/web test",
+    "web:build": "pnpm --filter @natsume/web build",
+    "web:e2e": "pnpm --filter @natsume/web e2e",
+    "api:generate": "pnpm --filter @natsume/web api:generate",
+    "diagrams": "node docs/validate-mermaid.mjs docs"
+  },
+  "devDependencies": {
+    "jsdom": "29.1.1",
+    "mermaid": "11.16.0"
+  }
+}

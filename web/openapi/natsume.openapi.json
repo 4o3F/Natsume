@@ -1,0 +1,90 @@
+{
+  "openapi": "3.1.0",
+  "info": { "title": "Natsume V2", "version": "2.5.0" },
+  "paths": {
+    "/api/v2/imports": {
+      "post": {
+        "operationId": "createCsvImport",
+        "summary": "Upload one authoritative seat/account/password CSV",
+        "responses": {
+          "202": { "description": "Import staged for masked preview" }
+        }
+      }
+    },
+    "/api/v2/imports/{import_id}:commit": {
+      "post": {
+        "operationId": "commitCsvImport",
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Atomic domain commit; no device sync is implied"
+          }
+        }
+      }
+    },
+    "/api/v2/enrollment-requests/{request_id}:approve": {
+      "post": {
+        "operationId": "approveEnrollment",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string", "format": "uuid" }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Device Identity certificate issuance workflow accepted; no Gateway credential is issued"
+          }
+        },
+        "summary": "Approve Device Enrollment and issue only the QUIC client certificate"
+      }
+    },
+    "/api/v2/devices/{device_id}/actions/sync-state": {
+      "post": {
+        "operationId": "syncDeviceState",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Explicit SYNC_STATE operation created; Gateway certificate issuance may occur within the command"
+          }
+        },
+        "description": "Creates an explicit non-secret state Command. If required, the Device requests its Gateway certificate over the authenticated QUIC session as a command-bound subflow."
+      }
+    },
+    "/api/v2/devices/{device_id}/actions/sync-secret": {
+      "post": {
+        "operationId": "syncDeviceSecret",
+        "description": "Requires a human operator, re-authentication and an audit reason.",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Explicit human-triggered SYNC_SECRET operation created"
+          }
+        }
+      }
+    }
+  }
+}

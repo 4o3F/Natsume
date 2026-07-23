@@ -1,0 +1,32 @@
+/target/
+/node_modules/
+/web/node_modules/
+/web/dist/
+/web/playwright-report/
+/web/test-results/
+/dist/
+*.deb
+*.rpm
+*.log
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+.DS_Store
+__pycache__/
+*.pyc
+
+# Never commit runtime secrets or machine state.
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Local supply-chain artifacts; version and checksum manifests are tracked.
+/packaging/client/caddy
+/packaging/client/caddy_*.tar.gz
+/packaging/nfpm
+/packaging/nfpm_*.tar.gz
+
+.claude

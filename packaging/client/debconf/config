@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+
+. /usr/share/debconf/confmodule
+
+db_input critical natsume-client/server-ip || true
+db_input critical natsume-client/server-port || true
+# db_go is a zero-argument debconf protocol operation; package config arguments
+# must not be forwarded to it.
+# shellcheck disable=SC2119
+db_go

@@ -1,0 +1,14 @@
+# Official standard Caddy distribution; no custom or non-standard modules.
+# These modules are the minimum required by the bootstrap and planned proxy contract.
+caddy.adapters.caddyfile
+http
+http.handlers.file_server
+http.handlers.headers
+http.handlers.reverse_proxy
+http.handlers.rewrite
+http.handlers.static_response
+http.handlers.subroute
+http.handlers.vars
+http.matchers.path
+tls
+tls.certificates.load_files

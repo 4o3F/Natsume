@@ -1,0 +1,66 @@
+
+[workspace]
+resolver = "3"
+members = [
+  "server",
+  "client/device-daemon",
+  "client/privileged-helper",
+  "client/session-agent",
+  "crates/device-protocol",
+  "crates/local-control-api",
+  "crates/machine-identity",
+  "integration-tests",
+]
+default-members = [
+  "server",
+  "client/device-daemon",
+  "client/privileged-helper",
+  "client/session-agent",
+  "crates/device-protocol",
+  "crates/local-control-api",
+  "crates/machine-identity",
+]
+
+[workspace.package]
+version = "2.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+license = "AGPL-3.0-or-later"
+publish = false
+
+[workspace.dependencies]
+bytes = "1"
+chacha20poly1305 = "0.11"
+csv = "1"
+hkdf = "0.13"
+prost = "0.14"
+quinn = "0.11"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-pki-types = "1"
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.11"
+snafu = "0.9"
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "uuid"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+uuid = { version = "1", features = ["serde", "v5", "v7"] }
+zeroize = { version = "1", features = ["derive"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+elided_lifetimes_in_paths = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

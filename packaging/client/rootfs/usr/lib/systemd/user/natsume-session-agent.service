@@ -1,0 +1,11 @@
+[Unit]
+Description=Natsume V2 Session Agent
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/natsume-session-agent
+Restart=on-failure
+
+[Install]
+WantedBy=graphical-session.target

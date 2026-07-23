@@ -1,0 +1,37 @@
+name: natsume-server
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: Natsume Project
+vendor: Natsume Project
+homepage: https://example.invalid/natsume
+description: Natsume V2 server and Web Panel
+umask: 0o022
+
+contents:
+  - src: ${RUST_RELEASE_DIR}/natsume-server
+    dst: /usr/bin/natsume-server
+    file_info: {mode: 0o755}
+  - src: web/dist/
+    dst: /usr/share/natsume-server/web/
+    type: tree
+  - src: ${SITE_CONFIG}
+    dst: /etc/natsume/site.toml
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: ${CONTROL_CA_CERT}
+    dst: /etc/natsume/trust/control-ca.crt
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: ${LOCAL_ORIGIN_CA_CERT}
+    dst: /etc/natsume/trust/local-origin-ca.crt
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: packaging/server/rootfs/
+    dst: /
+    type: tree
+
+scripts:
+  postinstall: packaging/server/scripts/postinstall.sh

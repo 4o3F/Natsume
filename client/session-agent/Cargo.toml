@@ -1,0 +1,17 @@
+[package]
+name = "natsume-session-agent"
+description = "Contest-session Natsume user agent for binding prompts and browser launch"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+snafu.workspace = true
+natsume-local-control-api = { path = "../../crates/local-control-api" }
+serde.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

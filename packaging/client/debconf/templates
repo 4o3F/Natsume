@@ -1,0 +1,12 @@
+
+Template: natsume-client/server-ip
+Type: string
+Description: Natsume Server IP address:
+ Enter the canonical IPv4 or IPv6 literal used by this workstation to reach the Natsume Server.
+ The Server TLS certificate must contain this address as an IP subjectAltName.
+
+Template: natsume-client/server-port
+Type: string
+Default: 8443
+Description: Natsume Server port:
+ The same numeric port is used for HTTPS over TCP and Device QUIC over UDP.

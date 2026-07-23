@@ -1,0 +1,8 @@
+# Example only; release jobs provide a site-owned, signed input through SITE_CONFIG.
+# This file is not copied into a package by default.
+schema_version = 1
+fleet_namespace_uuid = "REPLACE-WITH-STABLE-SITE-UUID"
+
+[trust]
+control_root_sha256 = "REPLACE-WITH-SHA256"
+local_origin_root_sha256 = "REPLACE-WITH-SHA256"

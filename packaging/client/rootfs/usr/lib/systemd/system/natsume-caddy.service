@@ -1,0 +1,25 @@
+
+[Unit]
+Description=Natsume V2 Local HTTPS Gateway
+After=local-fs.target
+ConditionPathExists=/run/natsume/gateway-tls/ready
+ConditionPathExists=/run/natsume/gateway-tls/fullchain.pem
+ConditionPathExists=/run/natsume/gateway-tls/key.pem
+
+[Service]
+Type=notify
+User=natsume-caddy
+SupplementaryGroups=natsume-gateway
+UMask=0007
+ExecStart=/usr/lib/natsume/caddy run --config /etc/natsume/caddy/bootstrap.caddyfile --adapter caddyfile
+ExecReload=/usr/lib/natsume/caddy reload --config /etc/natsume/caddy/bootstrap.caddyfile --adapter caddyfile
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/run/natsume/gateway-tls /usr/share/natsume/gateway-status /run/natsume/gateway-status
+LimitCORE=0
+Restart=on-failure

@@ -1,0 +1,26 @@
+
+[Unit]
+Description=Natsume V2 Server
+After=network-online.target local-fs.target
+Wants=network-online.target
+ConditionPathExists=/etc/natsume/site.toml
+ConditionPathExists=/etc/natsume/trust/control-ca.crt
+ConditionPathExists=/etc/natsume/trust/local-origin-ca.crt
+
+[Service]
+Type=simple
+User=natsume-server
+ExecStart=/usr/bin/natsume-server
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/natsume-server /etc/natsume /usr/share/natsume-server
+ReadWritePaths=/var/lib/natsume-server /var/log/natsume-server
+LimitCORE=0
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,15 @@
+[package]
+name = "natsume-local-control-api"
+description = "Stable typed local D-Bus contracts shared by Natsume client processes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+zbus.workspace = true
+
+[lints]
+workspace = true

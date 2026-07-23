@@ -1,0 +1,6 @@
+
+# Replaced atomically by package debconf configuration.
+# This file contains no credential or trust-on-first-use material.
+[server]
+ip = "0.0.0.0"
+port = 0

@@ -1,0 +1,56 @@
+
+name: natsume-client
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: admin
+priority: optional
+maintainer: Natsume Project
+vendor: Natsume Project
+homepage: https://example.invalid/natsume
+description: Natsume V2 workstation client, local gateway and OS integration
+umask: 0o022
+depends:
+  - ca-certificates
+  - dbus
+  - debconf
+  - libsystemd0
+  - libudev1
+  - systemd
+
+contents:
+  - src: ${RUST_RELEASE_DIR}/natsume-device-daemon
+    dst: /usr/bin/natsume-device-daemon
+    file_info: {mode: 0o755}
+  - src: ${RUST_RELEASE_DIR}/natsume-privileged-helper
+    dst: /usr/lib/natsume/natsume-privileged-helper
+    file_info: {mode: 0o755}
+  - src: ${RUST_RELEASE_DIR}/natsume-session-agent
+    dst: /usr/bin/natsume-session-agent
+    file_info: {mode: 0o755}
+  - src: ${CADDY_BIN}
+    dst: /usr/lib/natsume/caddy
+    file_info: {mode: 0o755}
+  - src: ${SITE_CONFIG}
+    dst: /etc/natsume/site.toml
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: ${CONTROL_CA_CERT}
+    dst: /etc/natsume/trust/control-ca.crt
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: ${LOCAL_ORIGIN_CA_CERT}
+    dst: /etc/natsume/trust/local-origin-ca.crt
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: packaging/client/rootfs/
+    dst: /
+    type: tree
+
+scripts:
+  postinstall: packaging/client/scripts/postinstall.sh
+
+deb:
+  scripts:
+    templates: packaging/client/debconf/templates
+    config: packaging/client/debconf/config

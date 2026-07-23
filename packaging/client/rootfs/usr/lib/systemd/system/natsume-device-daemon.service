@@ -1,0 +1,29 @@
+
+[Unit]
+Description=Natsume V2 Device Daemon
+After=network-online.target dbus.service local-fs.target natsume-privileged-helper.service
+Wants=network-online.target
+Requires=natsume-privileged-helper.service
+ConditionPathExists=/etc/natsume/config.toml
+ConditionPathExists=/etc/natsume/site.toml
+ConditionPathExists=/etc/natsume/trust/control-ca.crt
+ConditionPathExists=/etc/natsume/trust/local-origin-ca.crt
+
+[Service]
+Type=simple
+User=natsume
+SupplementaryGroups=natsume-gateway
+ExecStart=/usr/bin/natsume-device-daemon
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadOnlyPaths=/etc/natsume
+ReadWritePaths=/var/lib/natsume /run/natsume
+LimitCORE=0
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

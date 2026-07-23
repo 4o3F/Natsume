@@ -1,0 +1,7 @@
+[schema]
+enabled = true
+catalog = {
+  paths = [
+    "tombi://www.schemastore.org/api/json/catalog.json"
+  ]
+}
