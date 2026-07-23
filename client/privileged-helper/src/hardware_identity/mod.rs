@@ -19,7 +19,8 @@ use snafu::Snafu;
 /// # Errors
 ///
 /// Returns [`HardwareCollectionError::NotImplemented`] until Probe D implements
-/// the typed Linux collectors.
+/// the typed Linux collectors. This blueprint-only error intentionally has no stable
+/// wire code.
 pub fn collect() -> Result<HardwareClaim, HardwareCollectionError> {
     // Implementation deliberately omitted from the architecture blueprint.
     // Each source must return a typed status and fixture-testable evidence.

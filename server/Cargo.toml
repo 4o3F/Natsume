@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 chacha20poly1305.workspace = true
+natsume-error-code = { path = "../crates/error-code" }
 csv.workspace = true
 hkdf.workspace = true
 natsume-device-protocol = { path = "../crates/device-protocol" }

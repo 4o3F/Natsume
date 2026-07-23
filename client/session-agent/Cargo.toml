@@ -8,7 +8,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-snafu.workspace = true
+natsume-error-code = { path = "../../crates/error-code" }
 natsume-local-control-api = { path = "../../crates/local-control-api" }
 serde.workspace = true
 zbus.workspace = true
