@@ -1,0 +1,120 @@
+# GitHub-hosted shared-runner smoke only.
+# This workflow is not target-OS, physical-lab, reboot, or G0 evidence.
+name: nightly-smoke
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  shared-runner-smoke:
+    name: shared-runner-smoke
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install native dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            gettext-base libudev-dev pkg-config shellcheck
+
+      - name: Setup pinned Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+        with:
+          toolchain: 1.97.1
+          components: clippy,rustfmt
+
+      - name: Install pinned cargo-deny
+        run: cargo install cargo-deny --version 0.20.2 --locked
+
+      - name: Setup Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned pnpm
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@11.1.0 --activate
+
+      - name: Frozen install
+        run: pnpm install --frozen-lockfile
+
+      - name: Rust verification
+        run: |
+          set -euo pipefail
+          cargo fmt --all --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo test --workspace --all-features --locked
+          cargo deny check
+
+      - name: Web verification
+        run: |
+          set -euo pipefail
+          pnpm --filter @natsume/web format:check
+          pnpm --filter @natsume/web lint
+          pnpm --filter @natsume/web typecheck
+          pnpm --filter @natsume/web test
+          pnpm --filter @natsume/web build
+
+      - name: Install pinned Chromium
+        run: pnpm --filter @natsume/web exec playwright install --with-deps chromium
+
+      - name: Playwright smoke
+        run: pnpm --filter @natsume/web e2e
+        env:
+          CI: "true"
+
+      # Step 2 validates the committed snapshot; Rust-owned generation starts in Step 4.
+      - name: Committed contract snapshot smoke
+        run: |
+          set -euo pipefail
+          cargo run -p natsume-server --locked --bin export-openapi -- \
+            web/openapi/natsume.openapi.json
+          pnpm --filter @natsume/web api:generate
+          git diff --exit-code -- \
+            web/openapi/natsume.openapi.json \
+            web/src/api/generated/schema.d.ts
+          cargo test -p natsume-integration-tests --locked
+          pnpm diagrams
+
+      - name: Policy scan
+        run: bash integration-tests/policy-scan.sh
+
+      - name: Package content smoke
+        run: bash packaging/ci-package-smoke.sh
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: nightly-shared-runner-debs
+          path: dist/packages/ci/*.deb
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload Playwright diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: nightly-playwright-diagnostics
+          path: |
+            web/playwright-report/
+            web/test-results/
+          if-no-files-found: ignore
+          retention-days: 7
