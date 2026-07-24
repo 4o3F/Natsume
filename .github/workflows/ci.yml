@@ -176,6 +176,12 @@ jobs:
 
       - name: Static policy and secret canaries
         run: bash integration-tests/policy-scan.sh
+      - name: XDG-only Session Agent package contract
+        run: |
+          set -euo pipefail
+          test -f packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
+          test ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service
+          grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
 
       - name: Enrollment and certificate boundaries
         run: |

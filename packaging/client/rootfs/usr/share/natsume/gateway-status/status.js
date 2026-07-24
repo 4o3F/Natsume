@@ -39,36 +39,12 @@ const copy = {
     footer: "This page shows non-sensitive local state only. It never displays contest credentials.",
     unavailable: "Local status is temporarily unavailable; the secure gateway remains blocked.",
     states: {
-      restoring: [
-        "RESTORING",
-        "Restoring the contest gateway",
-        "Certificates, configuration and local safety state are being verified.",
-      ],
-      transition_blocked: [
-        "TRANSITION",
-        "Switching workstation assignment",
-        "The previous session is blocked while the target configuration is verified.",
-      ],
-      secret_missing: [
-        "SECRET",
-        "Waiting for credential synchronization",
-        "The assignment is applied, but an operator has not synchronized the credential.",
-      ],
-      upstream_unhealthy: [
-        "UPSTREAM",
-        "Contest service unavailable",
-        "The local gateway is healthy, but the central service failed its health check.",
-      ],
-      recovery_required: [
-        "RECOVERY",
-        "Workstation recovery required",
-        "The current state cannot be proven safe, so contest access remains blocked.",
-      ],
-      unassigned: [
-        "UNASSIGNED",
-        "Workstation not assigned",
-        "Waiting for an operator to bind a seat and synchronize configuration.",
-      ],
+      restoring: ["RESTORING", "Restoring the contest gateway", "Certificates, configuration and local safety state are being verified."],
+      transition_blocked: ["TRANSITION", "Switching workstation assignment", "The previous session is blocked while the target configuration is verified."],
+      secret_missing: ["SECRET", "Waiting for credential synchronization", "The assignment is applied, but an operator has not synchronized the credential."],
+      upstream_unhealthy: ["UPSTREAM", "Contest service unavailable", "The local gateway is healthy, but the central service failed its health check."],
+      recovery_required: ["RECOVERY", "Workstation recovery required", "The current state cannot be proven safe, so contest access remains blocked."],
+      unassigned: ["UNASSIGNED", "Workstation not assigned", "Waiting for an operator to bind a seat and synchronize configuration."],
     },
     actions: {
       wait: "Keep this page open. The workstation will retry automatically.",

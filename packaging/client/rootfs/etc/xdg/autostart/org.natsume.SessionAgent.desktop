@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Natsume Session Agent
+Comment=Runs the hidden Natsume desktop-session agent and shows typed UI only when requested
+Exec=/usr/bin/natsume-session-agent --autostart
+TryExec=/usr/bin/natsume-session-agent
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+X-GNOME-Autostart-enabled=true

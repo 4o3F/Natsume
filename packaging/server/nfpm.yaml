@@ -6,7 +6,7 @@ section: admin
 priority: optional
 maintainer: Natsume Project
 vendor: Natsume Project
-homepage: https://example.invalid/natsume
+homepage: https://github.com/4o3F/Natsume
 description: Natsume V2 server and Web Panel
 umask: 0o022
 

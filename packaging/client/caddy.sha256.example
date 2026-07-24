@@ -1,2 +1,1 @@
-# Example format only; use the verified digest in caddy.sha256 for packaging.
-0000000000000000000000000000000000000000000000000000000000000000  caddy
+REPLACE_WITH_VERIFIED_SHA256  caddy

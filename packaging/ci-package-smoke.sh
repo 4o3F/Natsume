@@ -23,6 +23,16 @@ for command in cargo curl cut dpkg-deb envsubst grep node openssl pnpm python3 s
     require_command "${command}"
 done
 
+session_autostart_source='packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop'
+session_user_unit_source='packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service'
+test -f "${session_autostart_source}" || fail 'XDG Autostart entry is missing from the Client rootfs'
+test ! -e "${session_user_unit_source}" || fail 'Session Agent systemd user unit must not be packaged'
+grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${session_autostart_source}" \
+    || fail 'XDG Autostart entry has an unexpected Exec'
+if grep -Eq '^(OnlyShowIn|NotShowIn)=' "${session_autostart_source}"; then
+    fail 'XDG Autostart entry must remain desktop-neutral'
+fi
+
 work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/natsume-package-smoke.XXXXXX")"
 trap 'rm -rf "${work_root}"' EXIT HUP INT TERM
 
@@ -182,7 +192,7 @@ for path in \
     /usr/lib/systemd/system/natsume-privileged-helper.service \
     /usr/lib/systemd/system/natsume-caddy.service \
     /usr/lib/systemd/system/natsume-caddy.path \
-    /usr/lib/systemd/user/natsume-session-agent.service \
+    /etc/xdg/autostart/org.natsume.SessionAgent.desktop \
     /usr/share/dbus-1/system.d/org.natsume.Device1.conf \
     /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf \
     /usr/share/natsume/gateway-status/index.html \
@@ -192,6 +202,9 @@ for path in \
     require_package_path "${work_root}/client.contents" "${path}"
 done
 
+if grep -Fq 'natsume-session-agent.service' "${work_root}/client.contents"; then
+    fail 'client package unexpectedly contains a Session Agent user unit'
+fi
 if grep -Fiq 'identity-guard' "${work_root}/server.contents" "${work_root}/client.contents"; then
     fail 'Identity Guard path is present in a package'
 fi
@@ -200,6 +213,9 @@ grep -E '^-rwxr-xr-x .*\./usr/bin/natsume-device-daemon$' "${work_root}/client.c
     || fail 'device daemon package mode is not 0755'
 grep -E '^-rwxr-xr-x .*\./usr/lib/natsume/caddy$' "${work_root}/client.contents" >/dev/null \
     || fail 'Caddy package mode is not 0755'
+grep -E '^-rw-r--r-- .*\./etc/xdg/autostart/org.natsume.SessionAgent.desktop$' \
+    "${work_root}/client.contents" >/dev/null \
+    || fail 'XDG Autostart entry package mode is not 0644'
 
 shellcheck -x \
     packaging/client/debconf/config \
@@ -228,17 +244,12 @@ systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \
     /usr/lib/systemd/system/natsume-caddy.service \
     /usr/lib/systemd/system/natsume-caddy.path
 
-session_unit="${extract_root}/client/usr/lib/systemd/user/natsume-session-agent.service"
-grep -Fxq 'ExecStart=/usr/bin/natsume-session-agent' "${session_unit}" \
-    || fail 'session agent user unit has an unexpected ExecStart'
-grep -E '^-rw-r--r-- .*\./usr/lib/systemd/user/natsume-session-agent.service$' \
-    "${work_root}/client.contents" >/dev/null \
-    || fail 'session agent user unit package mode is not 0644'
-session_verify_unit="${work_root}/natsume-session-agent.service"
-sed \
-    "s|^ExecStart=/usr/bin/natsume-session-agent$|ExecStart=${extract_root}/client/usr/bin/natsume-session-agent|" \
-    "${session_unit}" > "${session_verify_unit}"
-systemd-analyze --user --recursive-errors=no verify "${session_verify_unit}"
+session_autostart="${extract_root}/client/etc/xdg/autostart/org.natsume.SessionAgent.desktop"
+grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${session_autostart}" \
+    || fail 'packaged XDG Autostart entry has an unexpected Exec'
+if grep -Eq '^(OnlyShowIn|NotShowIn)=' "${session_autostart}"; then
+    fail 'packaged XDG Autostart entry must remain desktop-neutral'
+fi
 
 python3 - "${extract_root}/client" <<'PY'
 from pathlib import Path

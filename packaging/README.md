@@ -19,3 +19,6 @@ The `linux_amd64` records are the Phase 0 packaging candidate, not target-enviro
 
 Both nFPM manifests require `SITE_CONFIG`, `CONTROL_CA_CERT` and `LOCAL_ORIGIN_CA_CERT`. They are non-secret, site-stable release inputs: the immutable fleet namespace, the public Control Trust Root and the public Local Origin Root. Private root keys are never package inputs. `packaging/site-config.example.toml` documents the shape but is not packaged.
 
+## Session Agent package invariant
+
+The Client package installs exactly one system-wide XDG Autostart entry and no Session Agent systemd user unit. In the current Phase 0 tree the Agent binary establishes only the direct-launch, resident-and-hidden process contract. The selected Slint GUI is implemented in Phase 6; its reviewed reference lives under `docs/reference/session-agent-slint/` and is intentionally not in the current Cargo graph. Package verification must reject a user unit, runtime `.slint` interpretation and external GUI helpers.
