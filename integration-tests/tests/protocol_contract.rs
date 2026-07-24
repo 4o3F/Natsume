@@ -3,7 +3,7 @@ const PROTO: &str = include_str!("../../crates/device-protocol/proto/device_cont
 fn message_body(name: &str) -> &'static str {
     let marker = format!("message {name} {{");
     let Some(start) = PROTO.find(&marker) else {
-        panic!("message {name} must exist");
+        panic!("message must exist: {name}");
     };
     let bytes = PROTO.as_bytes();
     let mut depth = 0usize;
@@ -18,11 +18,13 @@ fn message_body(name: &str) -> &'static str {
                 }
             }
             b'}' => {
-                assert!(depth > 0, "message {name} has unbalanced braces");
-                depth -= 1;
+                depth = match depth.checked_sub(1) {
+                    Some(depth) => depth,
+                    None => panic!("message braces must remain balanced: {name}"),
+                };
                 if depth == 0 {
                     let Some(body_start) = body_start else {
-                        panic!("message {name} body must start before it ends");
+                        panic!("message body must start: {name}");
                     };
                     return &PROTO[body_start..index];
                 }
@@ -97,4 +99,19 @@ fn gateway_certificate_is_a_sync_state_quic_subprotocol() {
     assert!(!PROTO.contains("message InstallCertificate"));
     assert!(!PROTO.contains("CertificateIssueRequest"));
     assert!(!PROTO.contains("CertificateIssueResult"));
+}
+
+#[test]
+fn protocol_observes_cross_desktop_session_agent() {
+    let observed = message_body("ObservedStateSnapshot");
+    let agent = message_body("SessionAgentObservation");
+
+    assert!(observed.contains("SessionAgentObservation session_agent"));
+    assert!(agent.contains("GraphicalSessionType graphical_session_type"));
+    assert!(agent.contains("DisplayBackend display_backend"));
+    assert!(agent.contains("reserved 4"));
+    assert!(!PROTO.contains("enum SessionSupervisor"));
+    assert!(agent.contains("UiPresentationState presentation"));
+    assert!(agent.contains("SessionScreenKind screen"));
+    assert!(PROTO.contains("UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED"));
 }

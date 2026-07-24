@@ -105,6 +105,64 @@ enum SessionLockState {
   SESSION_LOCK_STATE_ERROR = 7;
 }
 
+
+enum GraphicalSessionType {
+  GRAPHICAL_SESSION_TYPE_UNSPECIFIED = 0;
+  GRAPHICAL_SESSION_TYPE_WAYLAND = 1;
+  GRAPHICAL_SESSION_TYPE_X11 = 2;
+}
+
+enum DisplayBackend {
+  DISPLAY_BACKEND_UNSPECIFIED = 0;
+  DISPLAY_BACKEND_WAYLAND = 1;
+  DISPLAY_BACKEND_X11 = 2;
+}
+
+
+enum UiPresentationState {
+  UI_PRESENTATION_STATE_UNSPECIFIED = 0;
+  UI_PRESENTATION_STATE_HIDDEN = 1;
+  UI_PRESENTATION_STATE_PRESENTING = 2;
+  UI_PRESENTATION_STATE_PRESENTED_FOCUSED = 3;
+  UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED = 4;
+  UI_PRESENTATION_STATE_UNSUPPORTED = 5;
+  UI_PRESENTATION_STATE_FAILED = 6;
+}
+
+enum SessionScreenKind {
+  SESSION_SCREEN_KIND_UNSPECIFIED = 0;
+  SESSION_SCREEN_KIND_HIDDEN = 1;
+  SESSION_SCREEN_KIND_IDLE_STATUS = 2;
+  SESSION_SCREEN_KIND_BINDING_PROMPT = 3;
+  SESSION_SCREEN_KIND_BINDING_PENDING = 4;
+  SESSION_SCREEN_KIND_BINDING_RESULT = 5;
+  SESSION_SCREEN_KIND_RECOVERY_STATUS = 6;
+  SESSION_SCREEN_KIND_LOCK_PRESENTATION = 7;
+  SESSION_SCREEN_KIND_FATAL_LOCAL_ERROR = 8;
+}
+
+enum SessionAgentState {
+  SESSION_AGENT_STATE_UNSPECIFIED = 0;
+  SESSION_AGENT_STATE_ABSENT = 1;
+  SESSION_AGENT_STATE_STARTING = 2;
+  SESSION_AGENT_STATE_READY = 3;
+  SESSION_AGENT_STATE_DEGRADED = 4;
+  SESSION_AGENT_STATE_ERROR = 5;
+}
+
+message SessionAgentObservation {
+  SessionAgentState state = 1;
+  GraphicalSessionType graphical_session_type = 2;
+  DisplayBackend display_backend = 3;
+  reserved 4; // removed launch-supervision field; XDG Autostart is the only product path
+  UiPresentationState presentation = 5;
+  SessionScreenKind screen = 6;
+  bool notifications_available = 7;
+  bool desktop_lock_supported = 8;
+  bool desktop_unlock_supported = 9;
+  string stable_error_code = 10;
+}
+
 enum HomeState {
   HOME_STATE_UNSPECIFIED = 0;
   HOME_STATE_UNMOUNTED = 1;
@@ -138,6 +196,7 @@ message ObservedStateSnapshot {
   string stable_component_error_code = 21;
   int64 observed_at_unix_ms = 22;
   int64 gateway_certificate_not_after_unix_ms = 23;
+  SessionAgentObservation session_agent = 24;
 }
 
 message TargetAssignment {

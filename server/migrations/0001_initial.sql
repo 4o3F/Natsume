@@ -242,6 +242,30 @@ CREATE TABLE observed_device_states (
     gateway_certificate_fingerprint BLOB,
     gateway_certificate_not_after TEXT,
     session_state TEXT NOT NULL,
+    session_instance_id TEXT,
+    session_epoch INTEGER,
+    session_lock_state TEXT,
+    session_lock_epoch INTEGER,
+    active_lock_command_id TEXT,
+    session_agent_state TEXT NOT NULL DEFAULT 'absent'
+        CHECK (session_agent_state IN ('absent', 'starting', 'ready', 'degraded', 'error')),
+    graphical_session_type TEXT
+        CHECK (graphical_session_type IS NULL OR graphical_session_type IN ('wayland', 'x11')),
+    display_backend TEXT
+        CHECK (display_backend IS NULL OR display_backend IN ('wayland', 'x11')),
+    ui_presentation_state TEXT NOT NULL DEFAULT 'hidden'
+        CHECK (ui_presentation_state IN (
+            'hidden', 'presenting', 'presented_focused', 'presented_unfocused', 'unsupported', 'failed'
+        )),
+    session_screen_kind TEXT NOT NULL DEFAULT 'hidden'
+        CHECK (session_screen_kind IN (
+            'hidden', 'idle_status', 'binding_prompt', 'binding_pending', 'binding_result',
+            'recovery_status', 'lock_presentation', 'fatal_local_error'
+        )),
+    notifications_available INTEGER NOT NULL DEFAULT 0 CHECK (notifications_available IN (0, 1)),
+    desktop_lock_supported INTEGER NOT NULL DEFAULT 0 CHECK (desktop_lock_supported IN (0, 1)),
+    desktop_unlock_supported INTEGER NOT NULL DEFAULT 0 CHECK (desktop_unlock_supported IN (0, 1)),
+    session_agent_error_code TEXT,
     home_state TEXT NOT NULL,
     observed_at TEXT NOT NULL
 ) STRICT;

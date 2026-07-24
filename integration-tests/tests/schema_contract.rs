@@ -3,11 +3,11 @@ const SCHEMA: &str = include_str!("../../server/migrations/0001_initial.sql");
 fn table_body(name: &str) -> &'static str {
     let marker = format!("CREATE TABLE {name} (");
     let Some(start) = SCHEMA.find(&marker) else {
-        panic!("table {name} must exist");
+        panic!("table must exist: {name}");
     };
     let rest = &SCHEMA[start + marker.len()..];
     let Some(end) = rest.find("\n) STRICT;") else {
-        panic!("table {name} must end with STRICT");
+        panic!("table must end: {name}");
     };
     &rest[..end]
 }
@@ -51,4 +51,26 @@ fn gateway_certificate_request_is_bound_to_sync_state_identity() {
 
     assert!(SCHEMA.contains("issued_for_command_id TEXT NOT NULL REFERENCES commands(command_id)"));
     assert!(SCHEMA.contains("CREATE UNIQUE INDEX one_active_gateway_certificate"));
+}
+
+#[test]
+fn observed_state_persists_session_agent_platform_facts() {
+    let observed = table_body("observed_device_states");
+
+    for field in [
+        "session_agent_state",
+        "graphical_session_type",
+        "display_backend",
+        "ui_presentation_state",
+        "session_screen_kind",
+        "notifications_available",
+        "desktop_lock_supported",
+        "desktop_unlock_supported",
+        "session_agent_error_code",
+    ] {
+        assert!(observed.contains(field), "missing observed field {field}");
+    }
+
+    assert!(observed.contains("presented_unfocused"));
+    assert!(!observed.contains("session_supervisor"));
 }
