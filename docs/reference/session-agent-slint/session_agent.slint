@@ -1,0 +1,52 @@
+import { Button, HorizontalBox, LineEdit, VerticalBox } from "std-widgets.slint";
+
+export component SessionWindow inherits Window {
+    in property <string> title-text: "Natsume";
+    in property <string> message-text: "";
+    in property <bool> seat-input-visible: false;
+    in-out property <string> seat-code: "";
+
+    callback confirm-seat(string);
+    callback cancel();
+
+    width: 520px;
+    height: 300px;
+
+    VerticalBox {
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: root.title-text;
+            font-size: 24px;
+            font-weight: 700;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: root.message-text;
+            font-size: 16px;
+            wrap: word-wrap;
+        }
+
+        LineEdit {
+            visible: root.seat-input-visible;
+            text <=> root.seat-code;
+            placeholder-text: "Seat";
+            accepted => { root.confirm-seat(self.text); }
+        }
+
+        HorizontalBox {
+            spacing: 12px;
+            Button {
+                visible: root.seat-input-visible;
+                text: "Confirm";
+                clicked => { root.confirm-seat(root.seat-code); }
+            }
+            Button {
+                text: "Close";
+                clicked => { root.cancel(); }
+            }
+        }
+    }
+}

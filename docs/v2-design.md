@@ -1,7 +1,7 @@
 # Natsume V2 完整架构设计
 
-> 状态：V2 权威设计基线（Greenfield，v2.5）  
-> 日期：2026-07-22  
+> 状态：V2 权威设计基线（Greenfield，v2.7）  
+> 日期：2026-07-23  
 > 适用范围：Natsume V2 首个可生产版本及同代演进  
 > 约束：V2 不兼容 V1；每次赛事部署都以全新 Server 数据和全新运行基线初始化；产品运行期只服务一场赛事
 
@@ -11,7 +11,7 @@
 
 本文描述 Natsume V2 的产品边界、领域模型、设备身份、首次接入、QUIC/mTLS 协议、Web Panel、客户端权限、本地加密存储、Caddy 数据面、离线恢复、Session、Home Reset、部署、测试与实施计划。
 
-v2.5 在 v2.4 的最小领域模型上完成证书生命周期收口：首次 Enrollment 只签发供 Daemon 建立 QUIC mTLS 的 Device Identity certificate；Gateway 私钥、CSR 与证书均延迟到显式 `SYNC_STATE` 执行期间，通过已经完成 mTLS 的 QUIC control session 按目标配置签发。v2.5 同时把总体 Roadmap 与各实施阶段的详细计划拆分为独立文件。
+v2.7 在 v2.6 的跨桌面目标上重新收敛 Session Agent 边界：GDM、LightDM 等 Display Manager 只负责认证并启动桌面会话，运行时会话控制由 Daemon 经 Privileged Helper/logind 完成，Agent 不调用 Display Manager。系统级 XDG Autostart 在真实用户桌面会话中直接启动一个常驻、初始无窗口的 Agent；Agent 继承该会话的 Wayland/X11、session bus、locale 与输入法环境，自行经 logind 验证并向 Daemon 注册。GUI 改用 Slint 的成熟组件、布局、输入、文本和跨平台窗口抽象，`.slint` 文件在构建期编译进 binary；只在收到 typed UI snapshot 时懒创建并显示窗口，隐藏后进程继续运行。产品代码不再直接组合 winit、softbuffer、tiny-skia 和 cosmic-text，也不再安装或依赖 systemd user unit。
 
 实现若改变本节冻结的核心决策，必须在同一变更中完成：
 
@@ -59,6 +59,9 @@ v2.5 在 v2.4 的最小领域模型上完成证书生命周期收口：首次 En
 | 解密失败 | 身份匹配但 vault 解密失败视为损坏/密钥丢失并 fail closed；不得自动认定为新 Device |
 | Caddy | 固定版本、独立非 root、loopback HTTPS；磁盘 bootstrap 无秘密并显示本地可视化 503 状态页 |
 | Session lock | `LOCK_SESSION`/`UNLOCK_SESSION` 只控制桌面与 Session Agent gate；不切换、不 reload、不阻断 Caddy |
+| Session Agent 启动 | 系统级 XDG Autostart 在认证后的真实 graphical session 中直接启动长驻 Agent；Agent 继承桌面环境、自行验证 logind session、取得单实例锁并向 Daemon 注册；不安装 systemd user unit，不经过 bootstrap/run 两段交接；受管 Home 必须清除同名 user-level autostart shadow |
+| Session Agent GUI | 单一 Rust binary + Slint；`.slint` 在 build.rs 中编译，使用 Slint winit backend 覆盖 Wayland/X11，并以 Skia renderer满足Unicode/中文与成熟文本输入；初始不创建窗口，收到 typed snapshot 后懒显示；不启用 Qt backend、runtime interpreter、live-preview、system tray、MCP/system-testing或外部 GUI helper |
+| GUI 呈现语义 | Wayland 下 compositor 可拒绝聚焦/激活；Agent 必须回报 `presented_focused` 或 `presented_unfocused`，后者可辅以标准桌面通知，但不得将普通窗口当作安全锁屏 |
 | Client 安装 | 安装阶段询问并持久化 Server IP 与 port；支持 debconf/preseed 和非交互配置 |
 | 离线连续性 | steady 状态可从本地加密 vault/LKG 恢复 Caddy；Server 离线时当前赛位继续工作 |
 | Home Reset | 固定 contest 用户 + 版本化 Home Template + OverlayFS；不支持时部署期固定 staged-copy fallback |
@@ -71,10 +74,11 @@ v2.5 在 v2.4 的最小领域模型上完成证书生命周期收口：首次 En
 4. 让秘密同步始终由 operator 明确触发，且可以审计、超时、重试并抑制重复效果。
 5. 将非秘密目标状态与一次性副作用分离：目标状态可计算，真正应用必须由 Command 触发。
 6. 让正常 Device control 在 TLS 握手阶段完成双向认证，而不是在应用层自造 bearer token 或签名协议。
-7. 支持批量 enrollment、证书签发、binding、state sync、secret sync、Session、Home Reset、诊断与 readiness 检查。
+7. 支持批量 enrollment、证书签发、binding、state sync、secret sync、Session、Home Reset、诊断与 readiness 检查；Binding Prompt 在 GNOME Wayland/X11 以及 LightDM 启动的受支持桌面中由同一 XDG Autostart + Slint Agent 呈现。
 8. 控制服务器或控制网络短暂不可用时，已准备好的工作站仍能访问 DOMjudge。
 9. 将浏览器可控 HTTP 输入、联网 daemon、root helper、桌面 Agent 与 Caddy 拆成独立信任边界。
 10. 对 2,000 台并发在线设备保持有界资源、可观察状态和确定恢复语义。
+11. Client package 不要求额外安装 GUI toolkit、Web engine 或语言运行时；Slint/Skia 作为构建产物的一部分交付，Session Agent 只依赖受支持桌面镜像本来就具备的 Wayland/X11 client stack、logind、D-Bus、字体/输入法与其动态库闭包。
 
 ### 0.3 明确非目标
 
@@ -91,6 +95,9 @@ v2.5 在 v2.4 的最小领域模型上完成证书生命周期收口：首次 En
 - 不实现后台证书续签器；签发和重签均为显式 workflow。
 - 不承诺抵抗本地 root、kernel、固件或物理攻击。
 - 不把 Session lock 当作网络隔离或秘密撤销机制。
+- 不为不同 Display Manager 分叉 Session Agent；LightDM/GDM/SDDM 是桌面下层的 Display Manager，不是 Agent 启动器、GUI backend 或 Agent IPC 对端。
+- 不承诺普通 Wayland application 可强制置顶、抢占焦点、覆盖 compositor lock screen 或构成不可绕过的安全锁。
+- 不启用 Slint Qt backend、runtime interpreter、live-preview、system tray、MCP/system-testing；不引入 WebKit、Electron、Chromium WebView、Node、Python、JVM、zenity、kdialog、yad、xdg-open 或外部 shell 作为 Session Agent GUI 运行时。
 
 ### 0.4 系统不变量
 
@@ -119,6 +126,11 @@ v2.5 在 v2.4 的最小领域模型上完成证书生命周期收口：首次 En
 23. Session lock/unlock 不得 reload Caddy；桌面解锁失败不能改变当前 Caddy runtime config。
 24. Home Reset 不得删除或重建系统用户；无法证明 Home 状态安全时不得启动 contest session。
 25. BLOCKED 状态页只能暴露 allowlist 中的非秘密 enum、短 ID、时间、进度和恢复提示。
+26. Session Agent 只能注册当前 contest UID 的本地、active、`class=user`、`type=wayland|x11` graphical session；greeter、lock-screen、TTY、SSH、remote、inactive、错误 seat 或多重歧义 session 均不得注册。
+27. Agent 必须由桌面会话的系统级 XDG Autostart entry 直接启动，并继承该会话原生环境；Daemon、Privileged Helper 和 Display Manager 不得伪造 `DISPLAY`、`WAYLAND_DISPLAY`、session bus 或通过 shell/systemd user manager 二次启动 Agent。Agent 必须拒绝非 XDG Autostart 启动模式并在 `$XDG_RUNTIME_DIR/natsume` 取得 owner-only 单实例锁。
+28. XDG Autostart 不是安全授权边界或进程监督器；受管 Home 在 display-manager 启动前及每次 Natsume 控制的 session 重建前，必须删除或拒绝同名 user-level `org.natsume.SessionAgent.desktop` shadow。发现 shadow、Agent 重复启动、Agent 异常退出或 graphical session 出现后 lease 超时，Browser 必须保持 gated，Device 不得报告 session ready；恢复通过受管 logout/session replacement 重新触发 Autostart。
+29. Binding Prompt 的业务内容只能是 typed snapshot、message ID 与受限参数；不得接受任意 HTML、Markdown、图片 URL、字体文件、脚本或格式字符串。
+30. Window focus、fullscreen 或 desktop notification 只能作为呈现事实，不能替代 logind/Desktop lock 状态、SessionTarget 校验或 Command acknowledgement。
 
 ---
 
@@ -132,22 +144,32 @@ flowchart LR
     Server["natsume-server\nHTTPS API + Enrollment + QUIC + SQLite"]
     Daemon["natsume-device-daemon\nidentity check + control + local vault"]
     Privileged["natsume-privileged-helper\nroot and no external network"]
-    Session["natsume-session-agent\ncontest desktop"]
+    DM["Display Manager\nGDM LightDM or equivalent"]
+    Desktop["Authenticated graphical session\nGNOME or supported XDG desktop"]
+    Agent["natsume-session-agent\nXDG Autostart resident process\ninitially no window"]
+    Slint["Slint UI\nlazy window on typed trigger"]
     Caddy["Caddy\nloopback HTTPS gateway"]
-    Browser["Firefox or Chromium"]
+    Browser["managed Browser"]
     DOM["DOMjudge frontend\ntrusted contest LAN"]
 
     Operator -->|"HTTPS JSON and SSE"| Server
-    Daemon -->|"HTTPS server-auth enrollment for Device cert"| Server
+    Daemon -->|"HTTPS server-auth Enrollment for Device cert"| Server
     Daemon -->|"QUIC mTLS control and Gateway CSR"| Server
     Daemon -->|"typed system D-Bus"| Privileged
-    Daemon -->|"typed system D-Bus"| Session
+    Daemon -->|"typed system D-Bus"| Agent
+    Daemon -->|"session orchestration"| Privileged
+    Privileged -->|"logind and display-manager control"| DM
+    DM -->|"authenticate and launch selected session"| Desktop
+    Desktop -->|"XDG Autostart direct launch"| Agent
+    Agent -->|"typed snapshot requests presentation"| Slint
+    Agent --> Browser
     Daemon -->|"Caddy Admin over Unix socket"| Caddy
     Browser -->|"loopback HTTPS"| Caddy
     Caddy -->|"trusted LAN HTTP"| DOM
 ```
 
-### 1.2 三个逻辑平面与一个 Enrollment 通道
+Display Manager 处于桌面环境下层，负责认证、greeter 和启动所选桌面 session；它不是 Agent 的 IPC 对端、GUI backend 或生命周期 supervisor。Daemon 的会话管理意图经 Privileged Helper/logind 落地；Agent 只运行在已经建立的桌面会话内，并直接继承该会话的 display socket、session bus、locale、字体与输入法环境。
+### 1.2 三个逻辑平面、一个 Enrollment 通道与一个本地会话平面
 
 | 平面/通道 | 连接 | 主要职责 |
 |---|---|---|
@@ -155,6 +177,7 @@ flowchart LR
 | Enrollment 通道 | Daemon → Server，server-auth HTTPS | 提交 Machine Hardware ID 与 Device Identity CSR、查询审批、取得 Daemon QUIC client leaf/chain |
 | 设备控制平面 | Daemon → Server，QUIC + mandatory mTLS | `SYNC_STATE`、Gateway CSR/签发结果、`SYNC_SECRET`、其他 Command、Observed、Heartbeat |
 | 比赛数据平面 | Browser → Caddy → DOMjudge | 本地 TLS、HTTP/2、登录头注入、Brotli 透明传输、fail-closed |
+| 本地会话平面 | Desktop → XDG Autostart → Agent ↔ Daemon/Helper | graphical session 识别、Binding Prompt、状态 UI、managed Browser、desktop-only lock/terminate |
 
 边界规则：
 
@@ -163,9 +186,39 @@ flowchart LR
 - Device certificate 不能调用 operator CRUD；
 - Caddy 不参与 Device 身份或 Server 授权；
 - Privileged Helper 不持有 DOMjudge 密码，也不能连接 Server 或 DOMjudge；
-- Session Agent 不读取本地 vault。
+- Session Agent 不读取本地 vault；
+- XDG Autostart 只负责由真实 desktop session 直接创建 Agent 进程；Agent 自行验证 session 并且不持有 Device/Gateway key、密码或 Server capability；
+- GUI window 只能消费 Daemon 提供的 typed local snapshot，不可直接读取 Command journal 或远端 payload。
 
-### 1.3 关键数据流
+### 1.3 Session Agent 启动数据流
+
+```mermaid
+sequenceDiagram
+    participant DM as Display Manager
+    participant DE as Desktop session
+    participant Agent as Session Agent
+    participant Logind as systemd-logind
+    participant Daemon as Device daemon
+    participant UI as Slint UI
+
+    DM->>DE: Start authenticated graphical session
+    DE->>Agent: Direct launch through XDG Autostart
+    Agent->>Logind: Resolve this PID to a graphical session
+    Agent->>Agent: Validate UID class type active remote and seat
+    Agent->>Agent: Acquire XDG runtime singleton lock
+    Agent->>Daemon: Register session instance and capabilities
+    Daemon-->>Agent: Return current typed UI snapshot
+    Agent->>UI: Enter event loop with no visible window
+    alt snapshot requests presentation
+        Daemon-->>Agent: UI snapshot changed
+        Agent->>UI: Lazily create update and show component
+    else hidden or acknowledged
+        Agent->>UI: Hide component and remain resident
+    end
+```
+
+不存在 bootstrap/run 双模式、环境 descriptor 或 systemd user unit。XDG Autostart 创建的同一个进程完成会话验证、D-Bus registration、后台消息处理与 Slint event loop；它初始没有窗口，只有 typed snapshot 要求呈现时才创建或显示窗口。
+### 1.4 业务数据流
 
 ```mermaid
 flowchart TB
@@ -213,7 +266,7 @@ HTTP、QUIC、TLS、X.509、Protobuf、D-Bus、SQLite、CSV、密码学、system
 | SQLite | SQLx、`sqlx::migrate!` | WAL、短事务、writer gate |
 | QUIC/TLS | Quinn、rustls | Quinn/rustls 负责 TLS 1.3 handshake 与 QUIC packet protection |
 | Protobuf | Prost、prost-build、protoc-bin-vendored | 生成到 `OUT_DIR` |
-| Error | SNAFU + `natsume-error-code` | typed domain errors；stable error code、surface mapping 与 redaction 集中；不解析 Display |
+| Error | SNAFU + `natsume-error-code` | 领域错误保持 typed enum；稳定字符串、HTTP/Protocol/D-Bus 显式映射和报告脱敏由共享 registry 独占，不解析 Display |
 | Configuration | Figment + Serde | root-owned TOML + env override |
 | CSV | csv | 只接受固定 schema UTF-8 CSV |
 | Cryptography | chacha20poly1305、hkdf、sha2、secrecy、zeroize | 随机 root key + identity-bound KDF；不自研 cipher |
@@ -223,17 +276,18 @@ HTTP、QUIC、TLS、X.509、Protobuf、D-Bus、SQLite、CSV、密码学、system
 | Retry | backon + business deadline | 无界 retry 禁止 |
 | Observability | tracing | 结构化、类型层脱敏 |
 
-### 2.3 SNAFU 错误规则
+### 2.3 SNAFU 与稳定 ErrorCode registry
 
-- 每个领域/基础设施模块定义 typed error enum；
-- 使用 context selector 补充 operation/resource context；
-- binary 顶层使用 `snafu::Report` 或 `#[snafu::report]`；
-- `crates/error-code` 的 `ErrorCode::as_str` 是稳定字符串唯一来源，领域错误通过 `AsErrorCode` 或穷尽 match 显式映射；
-- HTTP Problem Details、Protobuf、D-Bus、Command Result 显式映射稳定错误码，禁止从 `Display`/`Debug` 推导；
-- Problem Details 默认不携带 `detail`；operator/report 边界必须先移除 secret、path 与 source chain；
-- `Whatever`、裸字符串、无分类 `Box<dyn Error>` 不作为公共逃生舱；
-- Secret、private key、password、CSR、Caddy runtime config 使用 redacted `Debug/Display` wrapper；
-- CI 包含 registry 唯一性、surface mapping、report/source-chain/redaction 测试。
+- 每个领域/基础设施模块定义 typed SNAFU error enum，并使用 context selector 补充 operation/resource context；
+- binary 顶层可以使用 `snafu::Report` 或显式 `CodedReport`，但外部表面不得直接暴露 source chain；
+- `crates/error-code` 是第四个共享生产契约，也是稳定错误字符串的唯一事实来源；
+- `ErrorCode::as_str()` 独占 SCREAMING_SNAKE wire/API 字符串，禁止从 `Display`、`Debug`、翻译文案或 source error 推导；
+- HTTP Problem Details、Protobuf/Command、D-Bus error name 使用穷尽显式映射；registry 不依赖 Axum、Prost 或 zbus runtime；
+- owning module 通过 `AsErrorCode` 或显式 `match` 把 typed domain error 映射到 registry，不能以通用 `ErrorCode` 取代领域错误；
+- Problem Details 默认不含 detail；跨 operator/report 边界前使用 `Redacted<T>`、`CodedReport` 或 `redact_report`；
+- Device-only Enrollment 只使用 `ENROLLMENT_*`；Gateway 证书只使用 `GATEWAY_CERT_*`，且后者只属于 authenticated mTLS QUIC + active `SYNC_STATE`；
+- `Whatever`、裸字符串、无分类 `Box<dyn Error>`、解析文案做业务判断均禁止；
+- CI 必须覆盖 23 个 Phase 0 最小稳定码的唯一性、surface 映射和 private key/CSR/password/header/path/source-chain 脱敏。
 
 ### 2.4 单文件 CSV
 
@@ -316,7 +370,103 @@ Natsume 保留 mTLS 的原因：
 - ALPN 固定为 `natsume-device/2`；
 - Server leaf certificate 包含安装时配置 IP 的 SAN；Client trust root 由签名 package/image 安装。
 
-### 2.8 React Web Panel
+### 2.8 Session Agent：XDG Autostart + Slint
+
+#### 直接由桌面会话启动
+
+系统级 desktop entry 安装到 `/etc/xdg/autostart/org.natsume.SessionAgent.desktop`，不设置 `OnlyShowIn` 或 `NotShowIn`，直接执行：
+
+```text
+/usr/bin/natsume-session-agent --autostart
+```
+
+XDG Autostart 在用户登录后的桌面环境启动应用，因此 Agent 天然继承正确的 `XDG_RUNTIME_DIR`、Wayland/X11 display、session bus、locale、字体和输入法环境。设计不再把这些值写入中间 descriptor，也不通过 systemd user manager 二次启动。Agent 不接受 `--run`、`--bootstrap` 或任意 display 参数；Daemon、Helper 和 operator 均不能替它拼装 GUI 环境。
+
+Agent 启动后按顺序执行：
+
+1. 通过自身 PID 调用 logind `GetSessionByPID`；
+2. 校验 contest UID、`class=user`、`type=wayland|x11`、active、non-remote 与本地 seat；
+3. 检查同 UID 是否存在第二个 eligible graphical session；
+4. 在 `$XDG_RUNTIME_DIR/natsume/session-agent.lock` 取得 owner-only、进程生命周期单实例锁；
+5. 向 Daemon 注册 session instance、display backend 与能力，并取得 lease；
+6. 在主线程进入 Slint `run_event_loop_until_quit()`；
+7. 在没有 UI 请求时保持无窗口、无托盘、无 splash 的常驻状态。
+
+Greeter、lock-screen、TTY、SSH、remote、inactive、错误 UID/seat、歧义 session 或重复 Agent 均 fail closed。XDG user-level 同名 entry 可以覆盖系统 entry，因此受管 Home 仍只检查固定路径 `~/.config/autostart/org.natsume.SessionAgent.desktop`；发现 shadow 或 Agent lease 缺失时 Browser 保持 gated。XDG Autostart 不负责进程重启：Agent 异常退出后，Daemon 令 lease 过期并报告 `SESSION_AGENT_MISSING`，恢复方式是受管 logout/session replacement 后由桌面重新执行 Autostart，而不是由 Daemon 猜测 display 环境重启 GUI。
+
+#### Slint GUI 技术栈
+
+产品代码采用：
+
+```text
+Slint                   component/layout/input/text/window abstraction
+Slint winit backend     one backend covering Wayland and X11
+Slint Skia renderer     mature Unicode/text rendering and desktop rasterization
+slint-build             compile package-owned .slint files at build time
+zbus                    typed local D-Bus and desktop notifications
+```
+
+`client/session-agent/ui/*.slint` 由 `build.rs` + `slint-build` 生成 Rust code，并通过 `slint::include_modules!()` 编入 binary。生产构建禁用 Slint default features，只显式启用 `std`、`compat-1-2`、`backend-winit`、`renderer-skia` 与必要的 accessibility；不启用 Qt backend、system tray、runtime interpreter、live-preview、MCP、system-testing 或运行时资源加载。应用在启动时用 `BackendSelector` 固定选择 `winit` + `skia`，不信任 `SLINT_BACKEND` 等外部环境改变产品 backend。
+
+不选择 Slint built-in `renderer-software` 作为正式中文 UI renderer，因为其当前文本支持受限于 western scripts。Skia 增加构建体积，但换来成熟 Unicode、字体 fallback、输入与跨 X11/Wayland 行为；是否使用 GPU 路径由目标平台和 Slint/Skia 实现决定，发布 Gate 要求在目标硬件上证明即使缺少可用 GPU 加速仍能启动和交互，且 package 依赖闭包完整。
+
+Session Agent 不再直接依赖或编写：
+
+```text
+winit window/event plumbing
+softbuffer surface lifecycle
+tiny-skia drawing primitives
+cosmic-text shaping/editing state machine
+```
+
+这些通用 GUI 能力交给 Slint。Natsume 只实现 typed screen model、业务 callback、Daemon IPC、session validation 和 Browser/lock 语义。
+
+#### 无窗口常驻与线程模型
+
+Slint event loop 必须位于主线程。Tokio/zbus worker 在后台线程处理 Daemon lease、snapshot、submission 和 display/session 变化，并使用 `slint::invoke_from_event_loop()` 把更新投递到 UI 线程：
+
+```text
+Agent starts
+→ select Slint backend
+→ start IPC worker
+→ run event loop with zero visible windows
+→ receive SessionUiSnapshot
+→ lazily instantiate SessionWindow
+→ set typed properties and callbacks
+→ show
+→ acknowledge presentation
+→ hide on Hidden/terminal state
+→ continue event loop and lease
+```
+
+UI component 只在第一次需要呈现时创建，之后可隐藏并复用；隐藏不等于 Agent 退出。关闭窗口按钮被解释为 typed cancel/ack 或重新隐藏，不能绕过 active lock/prompt policy。
+
+#### Display Manager、Wayland 与扩展边界
+
+Display Manager 差异不进入 Agent。首版支持组合为 GNOME/GDM/Wayland、目标发行版仍提供时的 GNOME/GDM/X11，以及 Xfce/MATE 等由 LightDM 启动的 X11 desktop；它们都走同一个 XDG Autostart entry、同一个 Slint binary 和同一 D-Bus contract。
+
+Wayland compositor 可以拒绝聚焦或激活，因此 acknowledgement 保留：
+
+```text
+presented_focused
+presented_unfocused
+unsupported
+failed
+```
+
+`presented_unfocused` 可辅以标准 desktop notification，但普通窗口永远不是安全锁。
+
+未来扩展只允许在以下 typed 边界增加编译期 adapter：
+
+```text
+SessionProbe
+NotificationBackend
+DesktopLockBackend
+ManagedBrowserBackend
+```
+
+窗口、布局、输入、文本和渲染不再建立 Natsume 自研 `WindowBackend`。不使用 `dlopen` 插件、下载脚本、desktop-name shell hook、任意 executable discovery 或每个 Display Manager 一套 Agent。
+### 2.9 React Web Panel
 
 ```text
 React + TypeScript + Vite
@@ -329,11 +479,11 @@ Vitest + Playwright
 
 Web 不保存密码、Device/Gateway private key、local vault key、Caddy runtime JSON 或 enrollment private material。Local/session storage 只保存非敏感 UI 偏好。
 
-### 2.9 Protobuf 与 codegen
+### 2.10 Protobuf 与 codegen
 
 `.proto` 只属于 `crates/device-protocol`，通过 `prost-build` 与 `protoc-bin-vendored` 在 Cargo `build.rs` 中生成到 `OUT_DIR`。CI 校验 descriptor、golden fixture、最大消息大小与 breaking change。Protobuf 只表达消息，可靠投递与幂等由业务层承担。
 
-### 2.10 Caddy、Home 与 package
+### 2.11 Caddy、Home 与 package
 
 - Caddy 只监听 loopback，Admin API 只绑定 permissioned Unix socket；
 - 磁盘 bootstrap 只包含 visual BLOCKED page，无 upstream/password；
@@ -370,8 +520,8 @@ Natsume/
 │   ├── src/api/generated/
 │   └── e2e/
 ├── crates/
-│   ├── error-code/
 │   ├── device-protocol/
+│   ├── error-code/
 │   ├── local-control-api/
 │   └── machine-identity/
 ├── integration-tests/
@@ -393,14 +543,14 @@ Natsume/
 | `client/device-daemon` | `natsume-device-daemon` | 启动身份校验、Enrollment、QUIC、Command journal、Client vault、Caddy adapter |
 | `client/privileged-helper` | `natsume-privileged-helper` | root hardware collection、Home、logind；无外网 |
 | `client/session-agent` | `natsume-session-agent` | binding prompt、desktop lock gate、Browser launch；无秘密 |
-| `crates/error-code` | `natsume-error-code` | stable error strings、HTTP/protocol/D-Bus 显式映射、report redaction |
+| `crates/error-code` | `natsume-error-code` | 稳定 ErrorCode、HTTP/Protocol/D-Bus 映射与报告脱敏 |
 | `crates/device-protocol` | `natsume-device-protocol` | Protobuf schema、generated facade、wire fixture |
 | `crates/local-control-api` | `natsume-local-control-api` | D-Bus interface/value types |
 | `crates/machine-identity` | `natsume-machine-identity` | 纯 normalization、candidate 与 boot-match 逻辑 |
 | `web` | `@natsume/web` | operator Panel |
 | `integration-tests` | `natsume-integration-tests` | 跨进程、重启、同传、fault 与 package tests |
 
-禁止创建通用 `common/utils/helpers/pipeline` 垃圾桶。只有出现两个真实生产 consumer 且契约稳定时才抽 shared crate。`crates/error-code` 是第四个、也是 Phase 0 唯一新增的共享生产契约。
+禁止创建通用 `common/utils/helpers/pipeline` 垃圾桶。只有出现两个真实生产 consumer 且契约稳定时才抽 shared crate。
 
 ### 3.3 依赖方向
 
@@ -410,11 +560,11 @@ flowchart LR
     Errors --> Daemon["device-daemon"]
     Errors --> Helper["privileged-helper"]
     Errors --> Agent["session-agent"]
-    Protocol["device-protocol"] --> Server
-    Protocol --> Daemon
+    Protocol["device-protocol"] --> Server["server"]
+    Protocol --> Daemon["device-daemon"]
     Local["local-control-api"] --> Daemon
-    Local --> Helper
-    Local --> Agent
+    Local --> Helper["privileged-helper"]
+    Local --> Agent["session-agent"]
     Identity["machine-identity"] --> Daemon
     Identity --> Helper
     Server -. "OpenAPI snapshot" .-> Web["web"]
@@ -424,7 +574,7 @@ flowchart LR
     Agent --> Tests
 ```
 
-`error-code` 不取代领域 SNAFU error，也不依赖 Axum、Prost 或 zbus runtime。`machine-identity` 不做 Linux I/O；Collector 位于 Privileged Helper。`local-control-api` 不含密码或 root implementation。Production package 不依赖 integration-tests。
+`machine-identity` 不做 Linux I/O；Collector 位于 Privileged Helper。`local-control-api` 不含密码或 root implementation。Production package 不依赖 integration-tests。
 
 ### 3.4 原生 workspace
 
@@ -1603,7 +1753,10 @@ string installed_credential_revision_id;
 GatewayState gateway_state;
 SessionState session_state;
 HomeState home_state;
+SessionAgentObservation session_agent;
 ```
+
+`SessionAgentObservation` 只上报无秘密的本地事实：Agent absent/ready/error、graphical session type、实际 display backend、当前 UI screen、`presented_focused|presented_unfocused`、notification/desktop-lock capability 与 stable error code。`XDG_CURRENT_DESKTOP` 不进入授权协议；account/password、窗口文字、seat input和环境变量不回传。
 
 Device 在 received、validating、applying、applied、failed/recovery_required transition 后发送 snapshot。Server 以 `observed_sequence` 去重和排序。单独 `DesiredStateStatus` 会与 Observed 重复、产生不同步的双状态源，因此不保留。
 
@@ -1799,6 +1952,7 @@ Observed 只报告事实：
 - installed credential revision；
 - Gateway runtime revision/health；
 - Session instance/epoch/lock；
+- Session Agent registration、Wayland/X11 backend、ready-hidden/presentation/focus与capability；
 - Home instance/template；
 - unfinished recovery transaction；
 - stable component error code。
@@ -1996,7 +2150,7 @@ Secret、Session、Home 使用短且明确 deadline。过期 secret command不�
 
 ---
 
-## 12. Client 进程、启动顺序与权限边界
+## 12. Client 进程、图形会话启动与权限边界
 
 ### 12.1 进程图
 
@@ -2005,42 +2159,64 @@ flowchart TB
     Server["Natsume Server"]
     Daemon["natsume-device-daemon\nnon-root networked"]
     Helper["natsume-privileged-helper\nroot no external network"]
-    Agent["natsume-session-agent\ncontest user"]
+    DM["GDM LightDM or equivalent"]
+    Desktop["Authenticated desktop session\nWayland or X11"]
+    Agent["natsume-session-agent --autostart\ncontest user resident no initial window"]
+    Slint["Slint component runtime\nlazy visible windows"]
     Caddy["Caddy\nnatsume-caddy"]
-    Bus["system D-Bus"]
+    Bus["system and session D-Bus"]
     Logind["systemd-logind"]
-    Browser["Browser"]
+    Browser["managed Browser"]
 
     Daemon -->|"Enrollment HTTPS and QUIC mTLS"| Server
     Daemon --> Bus
     Helper --> Bus
     Agent --> Bus
     Helper --> Logind
+    Agent --> Logind
+    Daemon -->|"typed session intent"| Helper
+    Helper -->|"logind or managed display-manager action"| DM
+    DM -->|"start authenticated session"| Desktop
+    Desktop -->|"XDG Autostart direct launch"| Agent
+    Agent --> Slint
     Daemon -->|"HTTP over Unix socket"| Caddy
     Agent --> Browser
     Browser --> Caddy
 ```
 
-### 12.2 Device Daemon
+### 12.2 Display Manager 与 Desktop Session 边界
 
-职责：
+GDM、LightDM 或未来 Display Manager 位于桌面环境下层，只负责 greeter、认证、display server 与启动所选 desktop session。运行时需要终止/重建 contest session、控制 autologin 或协调 display manager 时，由 Daemon 通过 Privileged Helper、logind 和 package-owned deployment config 完成；Agent 不直接调用 Display Manager，也不按 Display Manager 名称选择 GUI backend。
 
-- 读取 Server IP/port/trust root；
-- 启动 Machine Hardware ID 校验；
-- 生成/管理 client root key 与 encrypted DB；
-- 首次 Enrollment 与 certificate install；
-- QUIC/mTLS control session；
-- Command journal/resource lanes；
-- target/Observed/Drift 本地状态；
-- password/LKG/Gateway keys encrypted vault；Gateway key只在`SYNC_STATE`按需生成；
-- Caddy runtime config/materialization/recovery；
-- Session Agent/Helper typed D-Bus orchestration。
+正式支持的是完整组合：
 
-Daemon 非 root，不能 mount、任意改 system config、读取原始 SMBIOS 或执行 shell。
+| 组合 | Agent 启动 | GUI | 支持级别 |
+|---|---|---|---|
+| GNOME + GDM + Wayland | desktop XDG Autostart | Slint winit/Wayland + Skia | 首版必选 |
+| GNOME + GDM + X11 | desktop XDG Autostart | Slint winit/X11 + Skia | 目标发行版提供时必测 |
+| Xfce/MATE 等 + LightDM + X11 | desktop XDG Autostart | Slint winit/X11 + Skia | 首版 LightDM 路径 |
+| LightDM + Wayland desktop | 具体 desktop 的 XDG Autostart | Slint winit/Wayland + Skia | 纳入目标发行版后支持 |
+| GDM/LightDM greeter | 禁止 | 无 | 明确拒绝 |
+| TTY、SSH、remote session | 禁止 | 无 | 明确拒绝 |
 
-### 12.3 Privileged Helper
+“支持 LightDM”只表示它成功启动的目标 desktop session 能按 XDG 标准直接启动 Agent，绝不表示 Agent 与 LightDM 有 IPC 或插件耦合。
 
-Root + `PrivateNetwork=yes`。固定 methods：
+### 12.3 Device Daemon
+
+职责：Server endpoint、identity/vault startup、Enrollment、QUIC/mTLS、Command journal、Target/Observed、secret/LKG/Gateway、Caddy 与 typed local orchestration。Session 相关职责：
+
+- 保存当前 Agent registration、lease、session instance 与 capabilities；
+- 生成无秘密 `SessionUiSnapshot`；
+- 只在 Agent lease、Gateway、Home 与 policy 都满足时报告 session ready；
+- 接收 typed `BindingSubmission`、`SessionUiAction` 与 `UiPresentationAck`；
+- Agent 丢失时关闭 Browser gate、报告 `SESSION_AGENT_MISSING`，但不自行设置 display 环境或拉起 GUI；
+- 会话终止/重建请求经 Privileged Helper 执行，使桌面再次运行 XDG Autostart。
+
+Daemon 不向 Agent 发送 password、secret envelope、Caddy runtime JSON、任意 HTML/Markdown、remote resource 或 shell/path 参数。
+
+### 12.4 Privileged Helper
+
+Root + `PrivateNetwork=yes`，固定 methods：
 
 ```text
 CollectHardwareCandidates
@@ -2051,88 +2227,175 @@ GarbageCollectHomeInstance
 QueryContestSession
 TerminateContestSession
 RequestDesktopLock
+RequestDesktopUnlock
 InstallManagedBrowserPolicy
 ```
 
-参数只允许 typed IDs/enums/revisions。Contest UID、paths、template root、allowed units 来自本地只读配置，不由 Server自由传入。
+Helper 根据本地 contest UID/seat 配置和 logind session object 实施会话动作；如目标部署需要管理 LightDM/GDM autologin 或 service lifecycle，也只能使用 package-owned fixed configuration/typed action，不把 Display Manager handle、display socket 或 GUI payload交给 Agent。
 
-### 12.4 Session Agent
+### 12.5 XDG Autostart 直接启动
 
-- 随 graphical contest session 启动；
-- 注册 `session_instance_id`/`session_epoch`；
-- 显示 Binding prompt、desktop lock gate、recovery status；
-- GatewayReady 时启动 managed Browser；
-- 提交 BindingRequest；
-- 不读取 password、Device/Gateway key 或 Client DB vault。
+Client package 安装：
 
-### 12.5 Session lock/unlock
-
-Lock 只控制桌面环境：
-
-1. Daemon 验证 exact SessionTarget；
-2. 持久化 lock journal；
-3. Agent 显示不可绕过的 full-screen gate；
-4. Helper/logind 请求桌面 lock；
-5. Agent确认 locked；
-6. Command terminal success。
-
-Unlock：
-
-1. 必须匹配 `session_instance_id + session_epoch + lock_epoch + lock_command_id`；
-2. Agent/desktop unlock；
-3. 移除 gate；
-4. 不调用 Caddy Admin，不 reload、不 health check、不切换 Gateway；
-5. Caddy/Browser network session 在 lock 期间保持原样。
-
-Daemon/Agent 在同一 graphical session 中重启时按 durable journal 重建 lock gate。Session 被 terminate、logind replacement 或整机 reboot 后 session epoch 改变，旧 lock/unlock 变成 stale，不自动作用于新 session。
-
-### 12.6 Caddy
-
-- 独立 non-root；
-- loopback 443；
-- Admin Unix socket；
-- 只读取 `/run/natsume/gateway-tls` 中 Daemon materialize 的 Gateway key/cert；
-- 不读取 Client DB、Device key、Command journal 或 D-Bus privileged interface；
-- 每次启动先 visual BLOCKED。
-
-### 12.7 本地 IPC
-
-| Interface | Owner | Caller | 实现 |
-|---|---|---|---|
-| `org.natsume.Privileged1` | Helper | daemon UID | zbus + system-bus policy |
-| `org.natsume.Device1` | Daemon | contest UID | zbus typed methods/signals |
-| `org.freedesktop.login1` | logind | Helper | zbus_systemd |
-| Caddy Admin | Caddy | daemon group | Reqwest Unix socket |
-
-### 12.8 systemd ordering
-
-```mermaid
-flowchart TD
-    FS["local-fs.target"] --> Helper["privileged-helper"]
-    FS --> Daemon["device-daemon"]
-    Network["network-online.target"] --> Daemon
-    Helper --> Daemon
-    Daemon --> Check["integrated identity and vault startup"]
-    Check --> Runtime["materialize Gateway cert key and ready marker"]
-    Runtime --> Path["natsume-caddy.path"]
-    Path --> Caddy["natsume-caddy.service"]
-    Display["display-manager"] --> Agent["session-agent user unit"]
+```text
+/etc/xdg/autostart/org.natsume.SessionAgent.desktop
+/usr/bin/natsume-session-agent
 ```
 
-不存在 `natsume-identity-guard.service`。Daemon 未完成 identity/vault check 时不创建 ready marker，Caddy 不启动。
+不安装 `natsume-session-agent.service` 或其他 systemd user unit。Desktop entry：
 
-### 12.9 Hardening
+```ini
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Natsume Session Agent
+Comment=Natsume contest-session background agent
+Exec=/usr/bin/natsume-session-agent --autostart
+TryExec=/usr/bin/natsume-session-agent
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+X-GNOME-Autostart-enabled=true
+```
 
-Daemon：User=natsume、NoNewPrivileges、ProtectSystem=strict、ProtectHome=yes、CapabilityBoundingSet empty、仅 `/var/lib/natsume` 与 `/run/natsume` writable。
+不得设置 `OnlyShowIn`/`NotShowIn`，不得为 GNOME、LightDM、Xfce 等复制多份 entry。Agent 只接受 `--autostart` 闭集模式，拒绝任意 display/session 参数。启动步骤：
 
-Helper：root、PrivateNetwork、RestrictAddressFamilies=AF_UNIX、最小 capability、显式 writable paths。
+1. 确认必要的 `XDG_RUNTIME_DIR` 与 Wayland/X11 环境来自当前进程；
+2. 通过自身 PID 调用 logind 并验证 session eligibility；
+3. 检查第二个 eligible graphical session；
+4. 在 `$XDG_RUNTIME_DIR/natsume/session-agent.lock` 取得单实例锁；
+5. 注册 Daemon、取得 lease 和当前 UI snapshot；
+6. 启动后台 D-Bus worker；
+7. 主线程进入 Slint event loop，保持无窗口直到 typed trigger。
 
-Caddy：User=natsume-caddy、只读 `/run/natsume/gateway-tls` 与 status assets、Admin socket group、最小 bind capability。
+受管 Home 仍清理/拒绝固定同名 user-level shadow。Agent 启动成功不代表 GUI 已显示；`ready + hidden` 是正常稳态。
 
-Agent：contest user systemd user unit，无 linger、无 system secret path access。
+### 12.6 Agent 生命周期与故障语义
 
----
+Agent 是桌面 session 的子进程，生命周期不由 systemd user manager监督：
 
+- 正常 login：桌面执行 Autostart，Agent注册并保持常驻；
+- UI hidden：进程和 lease 继续，窗口不存在或已隐藏；
+- logout/session terminate/display loss：Agent撤销 registration、停止 Browser 并退出；
+- duplicate start：后启动实例因 singleton lock 失败退出并报告 `SESSION_AGENT_DUPLICATE`；
+- crash：Daemon在 lease timeout 后报告 `SESSION_AGENT_MISSING`，Browser保持gated；
+- recovery：Daemon/Operator终止并重新建立受管 graphical session，由桌面重新执行 Autostart；
+- 禁止 recovery：Daemon直接 `exec` Agent、调用 `systemd-run --user`、猜测 `DISPLAY`/`WAYLAND_DISPLAY` 或复用旧 session bus。
+
+由于 Agent 无秘密且只是 presentation plane，缺少自动 process restart 造成的是显式可用性故障，不会降低身份、秘密或命令安全边界。
+
+### 12.7 Slint GUI runtime
+
+Session Agent package：
+
+```text
+client/session-agent/
+├── build.rs
+├── src/
+│   ├── main.rs
+│   ├── platform.rs
+│   └── ui.rs
+└── ui/
+    └── session_agent.slint
+```
+
+技术规则：
+
+- `.slint` 在构建期编译，生产运行时不读取 UI source；
+- Slint default features关闭，仅启用所需 `backend-winit`、`renderer-skia`、`std`、`compat-1-2` 和 accessibility；
+- BackendSelector 固定 `winit`/`skia`，外部环境不能切到 Qt 或其他 backend；
+- 不启用 system tray、interpreter、live-preview、MCP、system-testing；
+- main thread只运行 Slint event loop和短 UI callback；Tokio/zbus在worker thread；
+- worker通过`invoke_from_event_loop`更新component；
+- Agent启动时不实例化/显示window；第一次非hidden snapshot才懒创建；
+- screen闭集：`hidden | idle_status | binding_prompt | binding_pending | binding_result | recovery_status | lock_presentation | fatal_local_error`；
+- package-owned message catalog、layout、icon在构建期固化；不接受remote image/font/markup；
+- 系统字体与IME属于支持桌面镜像契约，Client package不下载字体；
+- 不直接依赖 GTK、Qt、WebKit、Electron、Node、Python、JVM或外部GUI helper。
+
+### 12.8 Local Control API
+
+Daemon 拥有 `org.natsume.Device1` system-bus interface，Agent只允许调用固定方法并接收固定 signals：
+
+```text
+RegisterSessionAgent(SessionAgentRegistration) -> SessionAgentLease + SessionUiSnapshot
+RenewSessionAgentLease(lease_id, target)
+GetSessionUiSnapshot(target, after_revision)
+SubmitSessionUiAction(SessionUiAction)
+SubmitBinding(BindingSubmission)
+AcknowledgePresentation(UiPresentationAck)
+UnregisterSessionAgent(target, process_nonce)
+SessionUiSnapshotChanged(snapshot)
+SessionLeaseRevoked(target, reason)
+```
+
+Registration 包含 session instance/logind ID/UID/seat/boot/process nonce/version、graphical session type、display backend 与能力；不再包含 supervisor 类型。Daemon 校验 D-Bus peer UID、logind session、seat、boot、nonce 与 lease。Agent只接受单调 `ui_revision` 和完全匹配的 `SessionTarget`。
+
+### 12.9 Binding Prompt 交互
+
+Binding Prompt由typed `SessionUiSnapshot`触发。Slint component懒显示，呈现：Machine ID短码、Seat输入/确认、deadline与状态。提交必须携带`prompt_command_id + prompt_nonce + exact SessionTarget`。UI callback只产生typed action，不直接改变binding或secret。
+
+窗口关闭、取消、timeout、focus denied与display lost都产生明确ack；不能把“window object已创建”冒充“用户可见”。Wayland拒绝focus时回报`presented_unfocused`并可发送一次无秘密通知。
+
+### 12.10 Managed Browser
+
+Browser由Agent以package-owned绝对路径和fixed argv启动；不使用`PATH`查找、`xdg-open`或shell。启动条件：
+
+```text
+current Agent lease valid
+current graphical SessionTarget exact
+Home ready
+Gateway policy satisfied
+Daemon Browser gate open
+```
+
+Agent退出、lease撤销、display/session replacement或terminate时停止旧Browser。Desktop lock期间保持当前Gateway数据面，是否隐藏/暂停Browser由桌面锁行为决定。
+
+### 12.11 Desktop lock/unlock
+
+`LOCK_SESSION`/`UNLOCK_SESSION`由Daemon协调，Privileged Helper通过logind/desktop能力发请求，Agent回报当前presentation/desktop observation。成功仍要求exact：
+
+```text
+session_instance_id
+session_epoch
+lock_epoch
+originating_lock_command_id
+verified desktop lock state
+Agent acknowledgement
+```
+
+普通Slint fullscreen/window不是安全锁。lock/unlock不调用Caddy Admin、不切换Gateway config、不删除secret。
+
+### 12.12 Caddy 与本地 IPC
+
+Caddy Admin仍只接受Daemon经permissioned Unix socket访问。Agent无socket权限、无Gateway key、无LKG、无vault。Local D-Bus contract只传typed无秘密UI/session值；Browser/Caddy不会通过Agent绕行控制面。
+
+### 12.13 扩展策略
+
+桌面扩展点只保留：
+
+```text
+SessionProbe
+NotificationBackend
+DesktopLockBackend
+ManagedBrowserBackend
+```
+
+Slint统一负责Window/layout/input/text/rendering，不再暴露Natsume自研WindowBackend。新增桌面支持必须进入同一binary、同一XDG entry、同一D-Bus contract，并有目标OS/compositor测试。禁止Display-Manager-specific Agent、运行时plugin、脚本hook与任意executable discovery。
+
+### 12.14 Hardening 与依赖闭包
+
+Agent运行在contest UID，`umask 0077`，无root、无vault、无Caddy Admin、无Device/Gateway key。由于不再有systemd user sandbox，安全边界依靠：
+
+- 最小D-Bus policy与peer UID/session验证；
+- 只读package binary/UI assets；
+- XDG runtime singleton/lease；
+- Browser固定argv和managed profile；
+- typed closed-set payload；
+- 无秘密设计；
+- target desktop session本身的权限边界。
+
+Release检查最终ELF `DT_NEEDED`、Debian dependency closure、Slint feature tree和package content。允许Slint/Skia随binary进入构建产物以及目标桌面已有的X11/Wayland、fontconfig/freetype、D-Bus等系统库；禁止Qt backend、GTK、WebKit、Electron、Node、Python、JVM、runtime interpreter、live-preview、system tray/MCP/testing server和外部GUI helper。
 ## 13. 本地 HTTPS、Caddy visual status、Brotli 与恢复
 
 ### 13.1 数据路径
@@ -2408,38 +2671,49 @@ unbind old Device
 ---
 ## 15. Session 管理与 Home Reset
 
-### 15.1 Session identity
+### 15.1 Graphical Session identity
 
-`natsume-session-agent` 每次 graphical session 注册：
-
-```text
-session_instance_id = UUIDv7 generated by Agent
-session_epoch = daemon-monotonic counter for current logind session
-logind_session_id
-contest_uid
-boot_id
-agent_version
-```
-
-以下情况改变 epoch 或 instance：Agent重新注册且旧实例消失、logind session替换、用户logout、整机reboot、terminate完成。Server/Device都不能只用 `logind_session_id` 或 PID 作为长期目标。
-
-### 15.2 Session 状态
+Daemon/Helper 以 logind 为 session truth。Agent 由该桌面 session 的 XDG Autostart 直接启动，并通过自身 PID 解析同一 logind session：
 
 ```text
-absent
-starting
-ready
-locking
-locked
-unlocking
-terminating
-stopped
-error
+session_instance_id = UUIDv7 generated by Daemon on accepted registration
+session_epoch       = monotonic per accepted graphical session
+logind_session_id   = validated local session object
+agent_process_nonce = random per Autostart process
 ```
 
-Session state 与 Gateway state 正交。Session locked 时 Gateway仍可 READY。
+Agent registration 只在 contest UID、本地 seat、`class=user`、`type=wayland|x11`、active、non-remote 且单一 eligible session 时接受。XDG display/session-bus环境直接来自桌面进程树，不从 descriptor恢复。Agent取得 `$XDG_RUNTIME_DIR/natsume/session-agent.lock` 后才能注册；lock和process nonce共同阻止同一session多实例。
+### 15.2 Session 与 UI 状态
 
-### 15.3 `LOCK_SESSION`
+Daemon保存：
+
+```text
+session_state
+session_instance_id
+session_epoch
+lock_state
+lock_epoch
+active_lock_command_id
+agent_state
+agent_lease_expires_at
+agent_process_nonce
+graphical_session_type
+display_backend
+ui_revision
+ui_screen
+ui_presentation_state
+```
+
+不保存 `SessionSupervisor`，因为Agent只有XDG Autostart直接启动这一种产品路径。Agent正常启动后的默认状态是`ready + hidden`：进程和lease存在，但没有可见窗口。只有typed snapshot要求非hidden screen时才创建/显示Slint component；窗口隐藏不终止Agent。
+### 15.3 `OPEN_BINDING_PROMPT`
+
+Payload绑定：prompt command ID、exact SessionTarget、expiry、allowed input policy和本地message ID。Daemon先journal，再创建UI snapshot并等待Agent acknowledgement。
+
+成功呈现的最低条件是窗口已map且Agent回报`presented_focused`或`presented_unfocused`。Wayland不能保证focus；未聚焦时可发送标准notification并在Panel显示“已显示，未聚焦”。Command result不得声称强制置顶。
+
+Seat提交必须包含prompt command ID、SessionTarget、Agent UI nonce和规范化前原始seat code。Daemon/Server负责最终normalize、deadline、binding conflict与BindingResult。Agent不持有account/password。
+
+### 15.4 `LOCK_SESSION`
 
 Payload：
 
@@ -2453,18 +2727,18 @@ deadline
 
 执行：
 
-1. 校验 target 与当前注册 Session 完全匹配；
-2. 确认 `requested_lock_epoch` 是当前 epoch 的下一值；
+1. 校验target与当前eligible logind session完全匹配；
+2. 检查desktop lock capability；
 3. journal fsync；
-4. Agent开启 full-screen gate；
-5. Helper通过 logind/桌面 API请求 lock；
-6. 等待 Agent acknowledgement；
-7. 持久化 active `lock_command_id`；
+4. Agent展示lock presentation；
+5. Helper请求当前desktop session lock；
+6. 等待可验证的desktop/logind locked state与Agent acknowledgement；
+7. 持久化active lock command/epoch；
 8. terminal success。
 
-`LOCK_SESSION` 使用 `ONLINE_ONLY_SNAPSHOT`，不允许排队到未来新 Session。
+应用窗口不是lock authority。若desktop只接受请求但无法确认状态，Command返回`SESSION_LOCK_UNSUPPORTED`或明确timeout，而不是把fullscreen window当作成功。
 
-### 15.4 `UNLOCK_SESSION`
+### 15.5 `UNLOCK_SESSION`
 
 Payload：
 
@@ -2477,29 +2751,26 @@ command_id
 deadline
 ```
 
-只有四元组匹配当前 durable lock 才执行。迟到、重复、跨 Session、跨 epoch 或对错误 lock command 的 unlock 返回：
+只有四元组匹配当前durable lock才请求desktop unlock。迟到、跨session/epoch、错误originating command或无active lock分别返回稳定错误。成功要求desktop lock state离开locked并由Agent确认当前session仍相同；之后移除lock presentation。Caddy、Gateway、password、LKG和Browser network session不变。
 
-```text
-SESSION_CHANGED
-STALE_LOCK_EPOCH
-LOCK_COMMAND_MISMATCH
-NO_ACTIVE_LOCK
-```
+不支持可验证remote unlock的桌面返回`SESSION_UNLOCK_UNSUPPORTED`。不允许通过销毁一个普通Agent窗口来冒充unlock。
 
-执行只调用桌面 unlock/Agent gate removal。Caddy config、Gateway health、password、Browser network connection和LKG均不变。
+### 15.6 Restart、logout 与 replacement semantics
 
-### 15.5 Restart semantics
+- Daemon restart：Agent保持当前桌面进程与Slint event loop，重新注册/续租并从Daemon取得最新snapshot；无法重建lease时Browser保持gated。
+- Agent crash：没有systemd user自动重启；Daemon在lease timeout后标记`SESSION_AGENT_MISSING`并关闭Browser gate。
+- Agent恢复：通过受管logout、`TERMINATE_SESSION`或session replacement重新建立desktop session，由XDG Autostart启动新Agent；Daemon不得猜测display环境直接spawn。
+- logout/display disconnect：Agent撤销registration、停止managed Browser并退出；Daemon提升session epoch。
+- relogin：新Agent process nonce、新session instance/epoch和新singleton lock；旧UI action与unlock全部失效。
+- whole reboot：boot ID变化使所有旧session target/lease/nonce失效。
+- duplicate Autostart：后启动进程因singleton lock失败，返回`SESSION_AGENT_DUPLICATE`，不能替换当前Agent。
 
-- Agent crash/restart且仍是同一 logind session：Daemon重新下发当前 lock state，gate恢复；
-- Daemon crash/restart：从 journal 恢复同一 Session lock；
-- logind session replacement/reboot：旧 target invalid，旧 lock/unlock terminal为 `SESSION_CHANGED`；
-- 新 Session默认按部署的 kiosk/browser policy启动，不继承 stale lock。
+Agent没有秘密，因此fail-closed的人工/session重建恢复优先于引入第二套跨桌面supervisor。
+### 15.7 `TERMINATE_SESSION`
 
-### 15.6 `TERMINATE_SESSION`
+终止前停止managed Browser、撤销Agent registration、使active lock和pending prompt失效，再由Helper对exact logind session执行terminate。它不清除Device certificate；是否清secret由独立state/secret workflow决定。
 
-终止前：停止 managed Browser、撤销 Agent registration、使 active lock无效、请求 logind terminate。它不清除 Device certificate；是否清 secret由单独 state/secret workflow决定。
-
-### 15.7 Home 模型
+### 15.8 Home 模型
 
 ```text
 HomeTemplateRevision
@@ -2510,7 +2781,7 @@ HomeResetCommand
 
 固定 contest OS user。Home reset切换 filesystem instance，不删除/recreate user。
 
-### 15.8 OverlayFS backend
+### 15.9 OverlayFS backend
 
 ```text
 lowerdir = /usr/lib/natsume/home-templates/<revision>
@@ -2521,7 +2792,7 @@ mount    = /home/contest
 
 必须验证：目标 filesystem `d_type/xattr/ACL`、upper/work同 filesystem、template只读、mount options、Browser/IDE behavior、shutdown ordering。
 
-### 15.9 Staged-copy fallback
+### 15.10 Staged-copy fallback
 
 部署期固定选择，不允许运行时自动切 backend：
 
@@ -2532,7 +2803,7 @@ mount    = /home/contest
 5. 保留 previous直到成功；
 6. background GC。
 
-### 15.10 Home Reset transaction
+### 15.11 Home Reset transaction
 
 ```mermaid
 stateDiagram-v2
@@ -2552,7 +2823,7 @@ stateDiagram-v2
 
 步骤：验证 Session target → terminate/quiesce → journal → prepare new instance → activate → verify → start new session → terminal。每一步后执行 kill/reboot test。
 
-### 15.11 冲突矩阵
+### 15.12 冲突矩阵
 
 | Running operation | New operation | 结果 |
 |---|---|---|
@@ -2784,6 +3055,8 @@ flowchart LR
     Server --> Daemon["mTLS device boundary"]
     Daemon --> Helper["typed privilege boundary"]
     Contest["contest user"] --> Agent["session boundary"]
+    Desktop["desktop session and compositor"] --> Agent
+    Autostart["XDG Autostart environment"] --> Agent
     Disk["copied disk/state"] --> Identity["startup identity boundary"]
 ```
 
@@ -2801,6 +3074,12 @@ flowchart LR
 | Command/CSR重放 | mTLS、0-RTT disabled、command/request ID journal、deadline、generation/config revision/SPKI binding |
 | 迟到unlock | exact session/lock epochs与originating command |
 | Session lock导致Gateway恢复故障 | lock不触碰Caddy |
+| Greeter/SSH/错误用户启动Agent | logind PID映射；UID/Class/Type/Active/Remote/Seat全量校验；歧义拒绝 |
+| 恶意环境或伪造display启动路径 | Agent只接受package-owned XDG Autostart模式并继承真实desktop环境；logind PID/UID/seat/session校验、owner-only singleton、Daemon/Helper禁止拼装display参数 |
+| Contest user用同名user-level entry禁用Autostart | Home prepare/session rebuild只清理固定shadow路径；受管desktop禁用非受管logout/switch；Agent lease缺失时Browser gated、Device not ready |
+| Wayland拒绝抢焦点 | 显式`presented_unfocused`、一次标准通知、不得循环抢焦点或冒充安全锁 |
+| GUI payload注入 | typed screen/message ID/参数；无HTML/Markdown/remote asset/runtime plugin |
+| GUI toolkit/语言runtime扩大供应链 | `.slint`构建期编译，Slint feature固定为winit+Skia所需闭包；禁用Qt/interpreter/live-preview/tray/MCP/testing，ELF/package门禁禁止额外WebView/VM/helper运行时 |
 | root helper被网络驱动 | PrivateNetwork、typed methods、fixed paths/enums |
 | systemd credential依赖 | 不使用；application vault + file ACL |
 | Secret进入core/log | no core、redacted Debug、zeroize、payload-log ban |
@@ -2852,6 +3131,8 @@ Plaintext password只在：CSV parser row、Server import/dispatch buffer、Clie
 - Server离线时无法即时撤销旧Client的本地LKG；
 - SQLite WAL/SSD物理介质不承诺secure erase；
 - visual lock不是反作弊安全边界。
+- Wayland compositor可拒绝窗口activation/focus；Natsume不能承诺应用窗口强制置顶。
+- 自定义软件渲染GUI不等同于完整桌面无障碍平台；首版至少保证键盘操作、可读缩放与高对比，扩展辅助技术需单独验收。
 
 ---
 
@@ -2874,29 +3155,38 @@ Plaintext password只在：CSV parser row、Server import/dispatch buffer、Clie
 | Sync Secret crash | encrypted record/journal恢复，绝不plaintext | resume/clear/retry |
 | Caddy load fail | visual BLOCKED | fixconfig/cert/upstream/retry |
 | Session unlock stale | desktop保持当前状态 | new exact unlock |
+| XDG Autostart进程处于greeter/remote/inactive session | Agent验证失败并退出 | 等待合格contest graphical session |
+| 两个eligible graphical sessions | 不自动选择，UI owner为空 | 结束多余session后重新autostart |
+| Agent异常退出或display connection丢失 | lease过期、Browser保持gated；Daemon不伪造display环境重启Agent | 受管logout/terminate/session replacement重新触发Autostart |
+| user-level Autostart shadow或Agent lease超时 | Browser保持gated，Device不ready | 固定路径Home repair并建立新的受管session |
+| Wayland focus denied | 窗口保持mapped并回报presented_unfocused | notification/用户手动聚焦 |
+| display connection lost | Agent撤销registration并退出；Browser按policy停止 | 建立新的受管desktop session后由XDG Autostart重启 |
+| notification service absent | 窗口仍工作 | capability=false，无需额外daemon |
 | Home activation uncertain | 不启动contest session | recover/manual intervention |
 
 ### 18.2 Stable error codes
 
-Phase 0 的稳定字符串唯一来源是 `crates/error-code` 中的 `ErrorCode::as_str`。当前最小命名空间/固定码为：
+Namespaces：
 
 ```text
-INSTALL_ENDPOINT_*
-PROTOCOL_*
+AUTH_*
+IMPORT_*
+IDENTITY_*
 ENROLLMENT_*
-GATEWAY_CERT_*
-VAULT_CORRUPT
-SESSION_CHANGED
-STALE_LOCK_EPOCH
-LOCK_COMMAND_MISMATCH
-NO_ACTIVE_LOCK
-HOME_TRANSITION
-PACKAGE_LAYOUT_INVALID
+CERTIFICATE_*
+PROTOCOL_*
+COMMAND_*
+STATE_*
+SECRET_*
+GATEWAY_*
+SESSION_*
+SESSION_GUI_*
+HOME_*
+VAULT_*
+PACKAGE_*
 ```
 
-不得引入通用 `CERTIFICATE_*` wire namespace：HTTPS Enrollment 只能返回 `ENROLLMENT_*`；Gateway certificate 失败只能使用 `GATEWAY_CERT_*`，且只属于 authenticated mandatory-mTLS QUIC + active `SYNC_STATE`。HTTP status 是共享 taxonomy，不得据此把 `GATEWAY_CERT_*` 暴露到 Enrollment route。
-
-错误 `Display` 可变，stable code 不可随文案变化，也不得通过解析 `Display`/`Debug` 做业务判断。Problem Details 默认无 `detail`；secret/path/source chain 不得进入远端 Problem Details、ProtocolError、CommandStatus、D-Bus 或 operator report。
+错误Display可变，stable code不可随文案变化。Secret/path/source chain不得进入远端Problem Details或CommandStatus。
 
 ### 18.3 Retry
 
@@ -2907,7 +3197,8 @@ PACKAGE_LAYOUT_INVALID
 - Server DB/vault：Server runbook；
 - Client identity/vault：Daemon startup + operator factory reset；
 - Caddy activation：Daemon；
-- Session lock：Daemon + Agent；
+- Session Agent/GUI：desktop XDG Autostart direct process + logind validation + Daemon snapshot；
+- Session lock：Daemon + Agent + Helper/logind；
 - Home：Helper + Daemon journal；
 - package upgrade：maintainer scripts + systemd；
 - 不允许两个组件各自“修复”同一 durable state。
@@ -2978,6 +3269,7 @@ Client：
 - command journal/recovery；
 - state/secret apply duration；
 - Caddy load/health/replay；
+- Session Agent startup/registration/lease、ready-hidden、display backend、UI presentation/focus结果；
 - Session/Home transitions；
 - vault auth failures。
 
@@ -3003,6 +3295,7 @@ Server ready要求DB migration、vault key-check、HTTPS listener、QUIC listene
 - Caddy BLOCKED/upstream failure；
 - unfinished Home/Gateway recovery；
 - Device/Gateway certificate approaching expiry 与 stuck Gateway request；
+- Agent absent/restart loop、SESSION_AMBIGUOUS、display lost、binding prompt presented_unfocused above threshold；
 - audit export/backups failing。
 
 ---
@@ -3060,10 +3353,9 @@ natsume-server_<version>_<arch>.deb
 natsume-client_<version>_<arch>.deb
 ```
 
-Server包：binary、Web assets、systemd unit、default config、sysusers/tmpfiles、migration metadata、public trust/provisioning templates。站点 offline Root private key不进入package。
+Server包：binary、Web assets、systemd unit、default config、sysusers/tmpfiles、migration metadata、public trust/provisioning templates。站点offline Root private key不进入package。
 
-Client包：daemon/helper/agent、fixed Caddy、systemd units/path、D-Bus policies、sysusers/tmpfiles、browser policy、Home template、visual status assets，以及构建期注入的站点 `fleet_namespace_uuid`、Control Root 与 Local Origin Root public certificates。
-
+Client包：daemon/helper/agent、fixed Caddy、systemd system units/path、system-wide XDG Autostart desktop entry、D-Bus policies、sysusers/tmpfiles、browser policy、Home template、visual status assets，以及构建期注入的站点`fleet_namespace_uuid`、Control Root与Local Origin Root public certificates。Agent的`.slint`界面经`slint-build`编译进binary；包不安装systemd user unit、Qt/GTK toolkit、WebKit/Electron、Node/Python/JVM、外部GUI helper或字体文件。
 ### 21.2 Client 安装交互
 
 `postinst`/debconf问题：
@@ -3083,20 +3375,25 @@ NATSUME_SERVER_IP / NATSUME_SERVER_PORT package variables
 
 Maintainer script不得在未提供值时猜测localhost/广播发现，不下载CA，不生成one-time token，不直接发Enrollment request。Daemon首次启动负责identity/vault/enrollment。
 
-### 21.3 Client systemd units
+### 21.3 Client systemd 与桌面启动单元
 
-只保留三个产品进程与一个Caddy path/unit：
+系统级只保留Daemon、Privileged Helper与Caddy相关unit：
 
 ```text
 natsume-privileged-helper.service
 natsume-device-daemon.service
 natsume-caddy.path
 natsume-caddy.service
-natsume-session-agent.service (user)
+natsume-home-prepare.service
 ```
 
-无 Identity Guard service。Daemon依赖Helper/local-fs/network-online；Caddy path只观察runtime ready marker。
+桌面会话启动文件只有：
 
+```text
+/etc/xdg/autostart/org.natsume.SessionAgent.desktop
+```
+
+无Identity Guard service，也无`natsume-session-agent.service`、`systemd --user` enable/start、linger或`graphical-session.target`依赖。Daemon依赖Helper/local-fs/network-online；Caddy path只观察runtime ready marker；Agent由每次真实桌面登录直接启动。
 ### 21.4 Server secret startup
 
 Server unit直接以固定User读取：
@@ -3267,18 +3564,37 @@ Fixture-first，至少六台异构硬件和VM：
 - transition reboot never restores old account；
 - Caddy/Daemon restart matrix。
 
-### 22.8 Session/Home tests
+### 22.8 Session Agent GUI、Session 与 Home tests
 
-- lock/unlock exact instance/epochs/command；
-- Agent/Daemon restart same session reasserts gate；
+启动/会话矩阵：
+
+- GNOME + GDM + Wayland；
+- GNOME + GDM + X11（目标发行版提供时）；
+- Xfce或MATE + LightDM + X11；
+- LightDM + Wayland desktop仅在目标发行版声明支持时；
+- greeter、lock-screen、TTY、SSH、remote、inactive与错误UID/seat均拒绝；
+- 两个eligible graphical sessions返回`SESSION_AMBIGUOUS`；
+- XDG entry不含OnlyShowIn/NotShowIn，直接执行唯一`--autostart`模式；package中不存在Session Agent systemd user unit；
+- user-level同名`Hidden=true`/replacement shadow在Home prepare与受管session重建时被清理或阻止；
+- Agent启动时无window、无tray、无splash，`ready + hidden`可持续续租；
+- 第一次Binding/Recovery snapshot懒创建Slint window，Hidden snapshot隐藏但不退出event loop；
+- Agent duplicate通过XDG runtime singleton拒绝；crash后lease超时且Browser gated，受管relogin重新启动；
+- Daemon不得通过systemd user、shell或伪造display环境拉起Agent；
+- Slint worker通过`invoke_from_event_loop`更新UI，主线程不被D-Bus/网络阻塞；
+- Wayland focus拒绝回报`presented_unfocused`且不无限抢focus；
+- notification service absent不影响主窗口；
+- X11/Wayland display断开时撤销registration并停止旧Browser；
+- HiDPI、fractional scale、multi-monitor、键盘、paste、IME、中文/ASCII fallback与长Seat label；
+- build graph只含Slint backend-winit/renderer-skia所需feature，不含Qt backend、system-tray、interpreter、live-preview、MCP/system-testing；
+- 最终ELF/package不要求额外安装GTK/Qt/WebKit/Electron/Node/Python/JVM或外部GUI helper；
+- source/package中无`systemctl --user`、`systemd-run --user`、`dbus-update-activation-environment`、`zenity`、`kdialog`、`yad`或`xdg-open`调用；
+- lock/unlock exact instance/epochs/command与真实desktop lock state；
 - reboot/new session invalidates stale unlock；
-- lock/unlock produces zero Caddy Admin calls/config changes；
-- Browser/Gateway remains functional behind desktop lock；
-- Home reset kill/reboot after every durable step；
+- lock/unlock产生zero Caddy Admin calls/config changes；
+- Home reset在每个durable step后kill/reboot；
 - OverlayFS/staged-copy target OS behavior；
 - D-Bus authorization/invalid typed parameter；
 - Helper no external network。
-
 ### 22.9 Secret leakage tests
 
 Automated repository/artifact/runtime scans：
@@ -3296,16 +3612,18 @@ Automated repository/artifact/runtime scans：
 
 ### 22.10 Package tests
 
-- interactive and preseed server IP/port；
+- interactive and preseed Server IP/port；
 - invalid/missing endpoint fail install/configure clearly；
 - clean install/upgrade/reinstall/remove/purge；
-- exactly expected service units, no identity-guard unit；
+- exactly expected system units，无Identity Guard或Session Agent user unit；
+- XDG Autostart entry路径、权限、唯一`--autostart`命令、无OnlyShowIn/NotShowIn；
+- Slint build features、`.slint` build-time compilation和Agent ELF/package dependency closure符合允许清单；
+- package不包含runtime `.slint` source、live-preview/interpreter/MCP/testing server、system tray或外部GUI helper；
 - sysusers/tmpfiles/D-Bus policy；
 - Caddy digest/modules；
-- unit hardening/systemd-analyze；
+- system unit hardening/systemd-analyze；
 - offline APT/signature；
 - no runtime downloads。
-
 ### 22.11 Release gates
 
 Gates：
@@ -3327,7 +3645,7 @@ G7 full contest rehearsal and production ready
 
 ## 23. 实施计划
 
-总体职责、阶段窗口和阶段验收标准见 `Natsume_V2_Implementation_Roadmap_v1.2.md`。详细实施任务不再内嵌在 Roadmap 或本文，分别维护在：
+总体职责、阶段窗口和阶段验收标准见 `Natsume_V2_Implementation_Roadmap_v1.4.md`。详细实施任务不再内嵌在 Roadmap 或本文，分别维护在：
 
 ```text
 docs/implementation/phase-0-engineering-baseline.md
@@ -3360,7 +3678,7 @@ Phase 3 的验收不得声称 Gateway 已准备；它只证明 Device Identity c
 至少：
 
 1. Native polyglot monorepo与direct nFPM；
-2. SNAFU统一错误模型；
+2. SNAFU typed领域错误 + 单一稳定ErrorCode registry与脱敏边界；
 3. Single-lifetime deployment：无Event/phase；
 4. Seat/account/password最小领域模型；
 5. Single authoritative CSV import；
@@ -3374,14 +3692,13 @@ Phase 3 的验收不得声称 Gateway 已准备；它只证明 Device Identity c
 13. Human-only explicit SYNC_SECRET and no secret in Target State；
 14. Observed snapshot replaces DesiredStateStatus；
 15. Visual Caddy BLOCKED page；
-16. Desktop-only epoch-bound Session lock；
-17. Home backend and recovery；
-18. Device delete/re-enroll instead of merge/split。
+16. Session Agent is directly launched by desktop XDG Autostart, runs resident without an initial window, and has no systemd user unit；
+17. Slint owns Wayland/X11 window, layout, input and text; `.slint` is compiled at build time and production disables Qt/interpreter/live-preview/tray/MCP/testing features；
+18. Desktop-only epoch-bound Session lock；
+19. Home backend and recovery；
+20. Device delete/re-enroll instead of merge/split。
 
 ADR必须包含context、decision、alternatives、failure/recovery、security impact、test impact、migration impact。
-
----
-
 ## 25. V2 MVP 验收清单
 
 ### 25.1 领域与数据
@@ -3436,24 +3753,31 @@ ADR必须包含context、decision、alternatives、failure/recovery、security i
 - [ ] 首次Enrollment后Gateway key/cert可以不存在；第一次`SYNC_STATE`才生成/签发。
 - [ ] Gateway key/cert persistent只为vault ciphertext，plaintext只在`/run`。
 - [ ] Caddy visual 503 page无secret/injection/remote asset。
-- [ ] Session lock/unlock不触碰Caddy。
-- [ ] stale unlock无法作用于新Session。
-- [ ] steady状态Server离线整机reboot可恢复Gateway。
-- [ ] non-steady transition不恢复旧account。
+- [ ] 系统级XDG Autostart在GNOME Wayland/X11及LightDM启动的受支持桌面中直接启动Agent。
+- [ ] Package中不存在Session Agent systemd user unit、bootstrap/run双模式或display环境descriptor。
+- [ ] 同名user-level Autostart shadow被固定路径preflight清理/拒绝；缺少Agent lease时Browser保持gated且Device不ready。
+- [ ] Agent通过自身PID/logind拒绝greeter/remote/inactive/错误UID/错误seat/歧义session，并用XDG runtime singleton拒绝重复实例。
+- [ ] Agent启动后保持`ready + hidden`且无window/tray/splash；typed snapshot才懒创建Slint window，Hidden状态隐藏而不退出。
+- [ ] GUI使用Slint build-time组件、backend-winit与renderer-skia；产品代码不再手写winit/softbuffer/tiny-skia/cosmic-text组合。
+- [ ] 生产feature无Qt backend、interpreter、live-preview、system tray、MCP/system-testing。
+- [ ] Wayland focus拒绝可观测为`presented_unfocused`，不会冒充置顶或安全锁。
+- [ ] Agent crash后lease失效并保持Browser gated；受管session replacement/relogin重新触发Autostart，Daemon不猜测display环境spawn。
+- [ ] Binding Prompt可从Daemon snapshot恢复，payload无HTML/Markdown/remote asset/secret。
+- [ ] Browser由绝对路径固定argv启动，不调用`xdg-open`且无credential env/argv。
+- [ ] Session lock/unlock不触碰Caddy；stale unlock无法作用于新Session。
+- [ ] steady状态Server离线整机reboot可恢复Gateway；non-steady transition不恢复旧account。
 - [ ] Home reset可断电恢复。
-
 ### 25.6 Packaging/operations
 
 - [ ] 无Identity Guard service。
 - [ ] 无systemd LoadCredential/SetCredential。
 - [ ] Client安装支持interactive/preseed endpoint。
 - [ ] Two Deb clean install/upgrade/purge通过。
+- [ ] Agent XDG desktop entry、user-level shadow防护、Slint feature/ELF依赖闭包和GNOME/LightDM真实session矩阵通过。
+- [ ] Package中无Session Agent user unit、runtime `.slint` loader、Qt/GTK/WebKit/Electron/Node/Python/JVM或外部GUI helper依赖。
 - [ ] 2,000 Device/200 Command通过。
 - [ ] Server/Client vault backup/reset runbook演练。
 - [ ] 完整赛事演练签收。
-
----
-
 ## 26. 技术依据
 
 ### 26.1 QUIC/TLS/mTLS
@@ -3469,7 +3793,17 @@ ADR必须包含context、decision、alternatives、failure/recovery、security i
 - RFC 9001: QUIC uses TLS handshake secrets for packet protection; TLS record protection is not used, and 0-RTT application data is replayable.  
   <https://www.rfc-editor.org/rfc/rfc9001.html>
 
-### 26.2 其他基础
+### 26.2 Session Agent 与桌面基础
+
+- XDG Autostart Specification：用户登录后的桌面环境启动system-wide entry；user-level同名entry与`Hidden=true`覆盖语义；
+- systemd-logind D-Bus：`GetSessionByPID`、Session Type/Class/Active/Remote/Seat/CanLock/LockedHint与lock/unlock request；
+- LightDM/GDM：Display Manager负责display server、greeter、authentication和selected desktop session，不是Agent GUI backend或Agent supervisor；
+- Slint Rust API：external `.slint` + `slint-build`、generated component show/hide、main-thread event loop、`run_event_loop_until_quit`与`invoke_from_event_loop`；
+- Slint cargo features/backends：禁用default features，显式选择winit backend与Skia renderer；不启用Qt、system tray、live-preview、MCP或system-testing；
+- Slint winit backend覆盖Wayland/X11；built-in software renderer当前文本限western scripts，因此正式中文UI使用Skia并在目标硬件验证无GPU加速场景；
+- Wayland xdg-activation：compositor可忽略activation/focus请求；
+- Desktop Notifications Specification。
+### 26.3 其他基础
 
 - SQLite WAL/backup/foreign keys/STRICT tables；
 - systemd service sandboxing、sysusers、tmpfiles、logind D-Bus；
@@ -3484,24 +3818,23 @@ ADR必须包含context、decision、alternatives、failure/recovery、security i
 
 ## 27. 最终架构摘要
 
-Natsume V2 v2.5 是一个**单赛事生命周期、最小领域模型、显式副作用、分阶段证书生命周期和本地可恢复数据面**：
+Natsume V2 v2.7 是一个**单赛事生命周期、最小领域模型、显式副作用、分阶段证书生命周期和本地可恢复数据面**：
 
-- 实例初始化后不再建模Event或phase；
-- CSV只包含Seat、Account、Password；Seat是稳定物理主键；
-- Device只有一个immutable Machine Hardware ID，不存在installation instance、版本、merge/split或冗余身份字段；站点 `fleet_namespace_uuid` 跨赛事保持稳定；
-- 独立identity file让Daemon在打开复制的加密vault前判断硬件是否匹配；
-- mismatch清理后走普通首次安装，decrypt failure则作为corruption fail closed；
-- 初次接入走server-auth HTTPS pending Enrollment，人工或受限自动批准，无token，且**只签发Daemon的Device Identity/QUIC client certificate**；
-- 批准后QUIC control强制mTLS，Quinn/rustls透明完成TLS1.3和packet protection；
-- Gateway key不会在Enrollment中预生成或签发。第一次显式`SYNC_STATE`执行时，Daemon按需生成Gateway key/CSR，通过已认证QUIC提交；Server把请求绑定到Device、command、generation与configuration，并从冻结target派生SAN/profile后签发；
-- DeviceTargetState是非秘密target且不会自动同步；`SYNC_STATE`是显式Command，并负责确保相应Gateway TLS prerequisite；
-- Password只通过human-triggered `SYNC_SECRET`，不属于Target State，也不受reconnect/automation隐式发送；
-- Observed snapshot是唯一设备事实回报，不保留重复的DesiredStateStatus；
+- 实例初始化后不再建模Event或phase；CSV只包含Seat、Account、Password，Seat是稳定物理主键；
+- Device只有一个immutable Machine Hardware ID，不存在installation instance、版本、merge/split或冗余身份字段；
+- 独立identity file让Daemon在打开复制的加密vault前判断硬件是否匹配；mismatch清理后走普通首次安装，decrypt failure作为corruption fail closed；
+- 初次接入走server-auth HTTPS pending Enrollment，人工或受限自动批准，无token，且只签发Daemon的Device Identity/QUIC client certificate；
+- 批准后QUIC control强制mTLS；Gateway key/CSR/certificate只在第一次显式`SYNC_STATE`中通过已认证QUIC按目标配置生成和签发；
+- DeviceTargetState是非秘密target且不会自动同步；Password只通过human-triggered `SYNC_SECRET`；Observed snapshot是唯一设备事实回报；
 - Server/Client秘密都在应用层AEAD加密SQLite records，root key为受文件权限保护的随机key，不依赖systemd credentials；
 - Caddy通过tmpfs runtime key、encrypted LKG和visual BLOCKED page实现fail-closed/offline restore；
-- Session lock只控制桌面，完全不切换Caddy，从而降低unlock恢复耦合；
-- 所有设备副作用通过Operation/Command/journal/deadline/epoch受审计执行；Gateway certificate request是`SYNC_STATE`的窄子协议而不是通用签发接口；
-- Roadmap只保留各阶段职责与验收标准，详细工作包分别存放在八个Phase文件中；
+- GDM、LightDM等Display Manager只负责启动认证后的desktop session；Daemon通过Privileged Helper/logind负责会话控制，Agent与Display Manager没有IPC或适配关系；
+- Session Agent由该desktop session的系统级XDG Autostart直接启动，没有bootstrap/run交接、environment descriptor或systemd user unit；它自行验证logind session、取得单实例锁、注册Daemon并常驻；
+- Agent启动时无window、tray或splash，主线程运行Slint event loop；后台zbus worker收到typed snapshot后通过`invoke_from_event_loop`懒创建/显示Slint component，Hidden状态只隐藏窗口而不结束进程；
+- Slint统一承担Wayland/X11窗口、布局、输入和文本；`.slint`在构建期编译，正式构建使用winit backend与Skia renderer，并禁用Qt、interpreter、live-preview、tray、MCP/testing等不需要能力；
+- Wayland focus失败是可观察的`presented_unfocused`，普通窗口不构成安全锁；Session lock只控制桌面并完全不切换Caddy；
+- Agent异常退出后Daemon令lease过期并保持Browser gated，恢复通过受管session replacement/relogin重新触发XDG Autostart，不由Daemon伪造display环境启动GUI；
+- 所有设备副作用通过Operation/Command/journal/deadline/epoch受审计执行；Roadmap只保留阶段职责与Gate，详细计划维护在八个Phase文件；
 - package、fault、scale与完整赛事演练是架构的一部分，而不是发布前补丁。
 
-这组边界把Daemon身份建立与Browser/Gateway身份建立明确分开：先通过Enrollment取得控制面身份，再在已认证控制面中按实际配置签发数据面证书，避免Enrollment提前制造尚无配置上下文的Gateway credential。
+这组边界把桌面进程所有权放回desktop session，把LightDM/GDM留在Daemon/Privileged Helper的会话管理平面，并把通用GUI复杂度交给Slint。Natsume只保留业务状态、typed IPC、会话真实性、秘密隔离和恢复语义。

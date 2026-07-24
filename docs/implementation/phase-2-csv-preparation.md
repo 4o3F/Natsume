@@ -1,8 +1,8 @@
 # Natsume V2 Phase 2 详细实施计划：单 CSV 与 Preparation Center
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W7–W13，与 Phase 3 并行  
 > Gate：G2A  
 > 前置依赖：Phase 1 的 Domain、Vault、Auth/API、Target calculator 可用

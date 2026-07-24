@@ -67,6 +67,8 @@ mandatory-mTLS QUIC（Device certificate）
 | `REQ-P0-035` | SQL migration 真实执行；Enrollment 表无 Gateway 列 | B/CI | G0-005 | `OPEN` |
 | `REQ-P0-036` | 协议和 CI 禁止 `CertificateIssueRequest` 与 `INSTALL_CERTIFICATE` | B/CI | G0-005 | `OPEN` |
 | `REQ-P0-037` | 文档、OpenAPI 和 UI 文案必须区分 Device Identity 与 Gateway certificate 就绪；禁止将 Enrollment 成功描述为 Gateway 已准备 | B/DOC/CI | G0-005/006 | `OPEN` |
+| `REQ-P0-038` | Session Agent 只由桌面会话通过系统级 XDG Autostart 直接启动；无 systemd user unit、无环境转交文件；启动后保持 resident + hidden，只有 typed UI snapshot 才懒创建窗口 | E/F/CI | G0-010/012/013 | `OPEN` |
+| `REQ-P0-039` | Phase 6 GUI 固定采用 build-time compiled Slint（winit + Skia）；产品不得直接拼装 winit/softbuffer/tiny-skia/cosmic-text，不得依赖 runtime interpreter、外部 GUI helper、Node/Python/JVM；GNOME/GDM/Wayland 与 LightDM 启动的目标 X11 desktop 均需实测 | E/F | G0-010/012/014 | `OPEN` |
 
 ## 6. P0.5 空壳 Deb 与安装配置
 
@@ -75,7 +77,7 @@ mandatory-mTLS QUIC（Device certificate）
 | `REQ-P0-040` | 可构建并安装空壳 `natsume-server` 与 `natsume-client` Deb | F | G0-012 | `OPEN` |
 | `REQ-P0-041` | debconf/preseed 只收集 Server IP literal 与 port，并由 daemon 验证 | A/F | G0-002 | `OPEN` |
 | `REQ-P0-042` | upgrade/reinstall 保留有效 endpoint，仅 explicit reconfigure/override 重写 | A/F | G0-002 | `OPEN` |
-| `REQ-P0-043` | 最终用户、目录、mode、sysusers、tmpfiles、D-Bus 和 Caddy topology 符合设计 | F | G0-012/013 | `OPEN` |
+| `REQ-P0-043` | 最终用户、目录、mode、sysusers、tmpfiles、D-Bus、Caddy topology 与 XDG Autostart entry 符合设计；Client package 不包含 Session Agent systemd user unit | F | G0-010/012/013 | `OPEN` |
 | `REQ-P0-044` | postinst 不下载组件、不生成 token/CA/private key | F | G0-013 | `OPEN` |
 | `REQ-P0-045` | 不存在 Identity Guard service/unit | F | G0-013 | `OPEN` |
 | `REQ-P0-046` | 不使用 `LoadCredential`/`SetCredential` | F/CI | G0-013 | `OPEN` |
@@ -117,7 +119,7 @@ mandatory-mTLS QUIC（Device certificate）
 | B | Enrollment → mTLS → Gateway CSR | REQ-P0-031/032/037/052–057 |
 | C | Caddy/DOMjudge | REQ-P0-003/060/066 |
 | D | Machine Identity | REQ-P0-061/062 |
-| E | Session/Home | REQ-P0-034/063/064/066 |
+| E | Session Agent/Desktop/Home | REQ-P0-034/038/039/063/064/066 |
 | F | Package/systemd | REQ-P0-040–046/065 |
 
 ## 10. 非目标

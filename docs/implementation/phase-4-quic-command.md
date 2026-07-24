@@ -1,8 +1,8 @@
 # Natsume V2 Phase 4 详细实施计划：QUIC mTLS、Observed 与可靠 Command
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W14–W22  
 > Gate：G3  
 > 前置依赖：Phase 3 Device certificate/mTLS；Phase 1 Operation/Command schema

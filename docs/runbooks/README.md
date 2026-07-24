@@ -10,8 +10,11 @@ Required operational runbooks:
 - Machine ID mismatch, local vault corruption and local factory reset;
 - explicit `SYNC_STATE` and human-only `SYNC_SECRET`;
 - Device replacement by unbind/delete/re-enroll/rebind;
+- Session Agent XDG/logind startup, GNOME/LightDM GUI diagnostics and focus-denied behavior;
 - Session lock/unlock recovery and stale-epoch rejection;
 - Caddy visual BLOCKED page and replay recovery;
 - Home recovery;
 - backup/restore and package rollback;
 - fleet readiness and full contest rehearsal.
+
+- [`session-agent-gui-startup.md`](session-agent-gui-startup.md): XDG Autostart, hidden resident Agent, logind validation and lazy Slint UI recovery.

@@ -1,0 +1,85 @@
+#![forbid(unsafe_code)]
+
+use std::ffi::OsString;
+
+use natsume_local_control_api::GraphicalSessionType;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentMode {
+    Autostart,
+}
+
+pub fn parse_mode<I>(arguments: I) -> Result<AgentMode, &'static str>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut arguments = arguments.into_iter();
+    let mode = match arguments.next().and_then(|value| value.into_string().ok()) {
+        Some(value) if value == "--autostart" => AgentMode::Autostart,
+        _ => return Err("usage: natsume-session-agent --autostart"),
+    };
+
+    if arguments.next().is_some() {
+        return Err("unexpected session-agent argument");
+    }
+
+    Ok(mode)
+}
+
+/// Implemented with logind GetSessionByPID for this process. Display-manager
+/// private APIs are intentionally outside the Session Agent boundary.
+pub trait SessionProbe {
+    fn validate_current_graphical_session(&self) -> Result<ValidatedSession, PlatformError>;
+    fn session_is_still_current(&self, session: &ValidatedSession) -> Result<bool, PlatformError>;
+}
+
+/// Implemented as an owner-only lock below XDG_RUNTIME_DIR.
+pub trait SessionSingleton {
+    fn acquire(&self, session: &ValidatedSession) -> Result<(), PlatformError>;
+}
+
+pub trait NotificationBackend {
+    fn notify_binding_required(&self, machine_short_id: &str) -> Result<(), PlatformError>;
+}
+
+pub trait DesktopLockBackend {
+    fn request_lock(&self, session: &ValidatedSession) -> Result<(), PlatformError>;
+    fn request_unlock(&self, session: &ValidatedSession) -> Result<(), PlatformError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedSession {
+    pub logind_session_id: String,
+    pub contest_uid: u32,
+    pub seat_id: String,
+    pub session_type: GraphicalSessionType,
+    pub boot_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PlatformError {
+    SessionIneligible,
+    SessionAmbiguous,
+    DuplicateAgent,
+    RuntimeDirectoryRejected,
+    DisplayUnavailable,
+    DisplayLost,
+    DesktopLockUnsupported,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AgentMode, parse_mode};
+    use std::ffi::OsString;
+
+    #[test]
+    fn only_accepts_the_xdg_autostart_mode() {
+        assert_eq!(
+            parse_mode([OsString::from("--autostart")]),
+            Ok(AgentMode::Autostart)
+        );
+        assert!(parse_mode([OsString::from("--bootstrap")]).is_err());
+        assert!(parse_mode([OsString::from("--run")]).is_err());
+        assert!(parse_mode([]).is_err());
+    }
+}

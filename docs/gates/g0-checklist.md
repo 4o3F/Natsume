@@ -18,7 +18,7 @@
 | G0 总体 | `OPEN`，通过计数 `0 / 15` |
 | 输入门禁 | 多项 `BLOCKED-INPUT`；不计作 G0 PASS |
 | 证书不变量 | 全部未勾选 |
-| Top 阻塞 | 目标 OS VM、Server IP literal、Caddy pin、物理机 0/6、Desktop/lock API |
+| Top 阻塞 | 目标 OS VM、Server IP literal、Caddy pin、物理机 0/6、双桌面矩阵、XDG/Slint/lock API |
 
 ## 判定定义
 
@@ -44,7 +44,7 @@ G0-001 至 G0-015 均不可豁免，也不可标记 `N/A`。
 | [ ] | `G0-007` | 无 active command、错误 generation/configuration 的 Gateway CSR 被拒绝 | REQ-P0-054/057 | B | `OPEN` | 未产生 | `ROLE_PROTOCOL` |
 | [ ] | `G0-008` | 相同 request/SPKI 幂等，不同 SPKI conflict | REQ-P0-055 | B | `OPEN` | 未产生 | `ROLE_PROTOCOL` |
 | [ ] | `G0-009` | CSR SAN 被忽略，certificate 使用 target SAN/hostname | REQ-P0-056 | B | `OPEN` | 未产生 | `ROLE_PKI` |
-| [ ] | `G0-010` | desktop lock/unlock 不调用 Caddy Admin，不改变 Caddy config/hash/epoch/status；状态页无 `session_locked` | REQ-P0-034、REQ-P0-063、REQ-P0-066 | C/E | `OPEN` | 未产生 | `ROLE_DESKTOP` |
+| [ ] | `G0-010` | GNOME/GDM/Wayland 与 LightDM 启动的目标 X11 desktop 均通过 XDG Autostart 直接启动同一 Agent；初始 resident + hidden、typed trigger 懒弹窗、无 systemd user unit；desktop lock/unlock 不调用 Caddy Admin且不改变 config/hash/epoch/status；状态页无 `session_locked` | REQ-P0-034、REQ-P0-038、REQ-P0-039、REQ-P0-063、REQ-P0-066 | C/E/F | `OPEN` | 未产生 | `ROLE_DESKTOP` |
 | [ ] | `G0-011` | 至少 6 台物理 Machine ID fixture，满足 OEM 和 SATA/NVMe 覆盖 | REQ-P0-061/062 | D | `OPEN` | 未产生；当前 0/6 | `ROLE_LAB_HARDWARE` |
 | [ ] | `G0-012` | 空壳 Deb 在目标 OS 完成 install/reinstall/upgrade/remove/purge/reboot | REQ-P0-040/043/060/065 | C/F | `OPEN` | 未产生 | `ROLE_RELEASE` |
 | [ ] | `G0-013` | 无 Identity Guard、systemd credentials、runtime download 或 secret leakage | REQ-P0-013/044–046 | F/CI | `OPEN` | 未产生 | `ROLE_SECURITY` |
@@ -62,7 +62,7 @@ G0-001 至 G0-015 均不可豁免，也不可标记 `N/A`。
 | [ ] | `G0-IN-001` | Server/Client 目标 OS、architecture、systemd 已冻结 | 2026-07-29 | `BLOCKED-INPUT` | G0-012 |
 | [ ] | `G0-IN-002` | 实验室 Server IP literal 与 TCP/UDP port 已冻结 | 2026-07-29 | `BLOCKED-INPUT` | G0-002/003/006 |
 | [ ] | `G0-IN-003` | Caddy version/modules/source/SHA-256 已冻结 | 2026-07-29 | `BLOCKED-INPUT` | G0-012/013 |
-| [ ] | `G0-IN-004` | Browser、DOMjudge、Desktop/lock API 已冻结 | 2026-08-01 | `BLOCKED-INPUT` | Probe C/E、G0-010 |
+| [ ] | `G0-IN-004` | Browser、DOMjudge、GNOME/GDM/Wayland、LightDM+目标 X11 desktop、XDG Autostart、Slint runtime closure 与 lock API 已冻结 | 2026-08-01 | `BLOCKED-INPUT` | Probe C/E/F、G0-010 |
 | [ ] | `G0-IN-005` | 六台物理硬件已到位并登记 | 2026-08-01 | `BLOCKED-INPUT` | G0-011 |
 | [ ] | `G0-IN-006` | PKI test material 与 ownership 已登记 | 2026-08-01 | `BLOCKED-INPUT` | G0-003–009 |
 | [ ] | `G0-IN-007` | 五份 Step 0 文档已创建；Requirements、platform、lab、ADR、checklist 的 ID 和术语仍需正式对齐签收 | Step 0 | `OPEN` | G0-014/015 |
@@ -88,7 +88,7 @@ G0-001 至 G0-015 均不可豁免，也不可标记 `N/A`。
 | [ ] | B | `docs/probes/b-certificate-ladder.md` | 未创建 |
 | [ ] | C | `docs/probes/c-caddy-domjudge.md` | 未创建 |
 | [ ] | D | `docs/probes/d-machine-identity.md` | 未创建 |
-| [ ] | E | `docs/probes/e-session-home.md` | 未创建 |
+| [ ] | E | `docs/probes/e-session-home.md`（含 XDG direct launch、hidden/lazy UI、双桌面矩阵与 lock） | 未创建 |
 | [ ] | F | `docs/probes/f-package-systemd.md` | 未创建 |
 
 报告文件存在不等于 Probe 通过；必须同时提供结果、证据和 reviewer 结论。

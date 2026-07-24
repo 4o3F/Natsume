@@ -1,8 +1,8 @@
 # Natsume V2 Phase 3 详细实施计划：Machine ID、Client Vault 与 Device-only Enrollment
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W7–W16  
 > Gate：G2B  
 > 前置依赖：G0；Phase 1 的 Enrollment/PKI/Vault schema 可并行稳定

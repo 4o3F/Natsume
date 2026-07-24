@@ -1,8 +1,8 @@
 # Natsume V2 Phase 5 详细实施计划：显式 State/Secret、Gateway 证书与离线数据面
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W20–W29  
 > Gate：G4  
 > 前置依赖：G2A、G2B、G3；Origin Issuing Intermediate 可用

@@ -1,8 +1,8 @@
 # Natsume V2 Phase 1 详细实施计划：最小控制域与 Server 基础
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W4–W9  
 > Gate：G1  
 > 前置依赖：G0
@@ -13,7 +13,7 @@
 
 建立无 Event、无运行时 phase、无 Team metadata 的权威 Server 事务模型和 Web 控制面基础。Phase 1 负责把所有核心事实、约束、秘密存储、审计和状态变更放入可恢复的 SQLite 事务中，但不连接真实 Device。
 
-本阶段必须在数据库层固化 v2.5 的证书边界：
+本阶段必须在数据库层固化 v2.6 的证书边界：
 
 - Enrollment 只保存 Device CSR/SPKI；
 - `gateway_certificate_requests` 是 `SYNC_STATE` 的子资源；

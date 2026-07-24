@@ -1,8 +1,8 @@
 # Natsume V2 Phase 7 详细实施计划：Productionization 与正式发布
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W31–W44  
 > Gate：G6 Release Candidate、G7 Production Ready  
 > 前置依赖：G4；G5 在 RC freeze 前完成
@@ -27,6 +27,8 @@
 - debconf/preseed Server endpoint；
 - build-time site namespace/public trust roots；
 - sysusers/tmpfiles/D-Bus/browser/Home/status assets；
+- system-wide XDG Autostart entry与user-level shadow guard；明确不存在Session Agent systemd user unit；
+- Agent Slint feature tree、ELF/DT_NEEDED、transitive package dependencies与forbidden runtime/executable scan；
 - exactly expected units；
 - no Identity Guard service；
 - no systemd credentials；
@@ -53,7 +55,7 @@
 - pending Gateway certificate request/Command recovery；
 - Caddy/systemd replacement；
 - interrupted upgrade；
-- no ongoing pre-v2.5 compatibility layer。
+- no ongoing pre-v2.6 compatibility layer。
 
 ### P7.4 Security hardening
 
@@ -110,6 +112,15 @@
 ---
 
 ## 3. Phase 7B Pilot 与演练
+
+### P7.8 桌面支持矩阵与长期回归
+
+- GNOME/GDM/Wayland为主支持组合；
+- GNOME/GDM/X11在发行版提供时；
+- Xfce或MATE/LightDM/X11为Display Manager独立性组合；
+- 每个组合执行login/logout/relogin、Agent ready+hidden、lazy Binding window、Agent crash/lease timeout/session replacement、display disconnect、focus denied、notification absent、Browser launch、lock/unlock/terminate、Home reset；
+- package升级后desktop entry、无user-unit约束、Slint feature和binary依赖闭包不漂移；
+- 新desktop adapter必须通过ADR、fixture、VM/image和真实硬件矩阵。
 
 ### Pilot 1：10–30 Devices
 
@@ -244,6 +255,7 @@ initialize fresh Server DB/vault/PKI
 | full rehearsal Enrollment | only Device cert returned |
 | full rehearsal first config sync | Gateway cert over mTLS QUIC |
 | operator password update | explicit human secret sync only |
+| Session Agent GUI support matrix | GNOME Wayland、LightDM/X11、greeter拒绝、ready+hidden、lazy Slint window、user-level shadow、focus denied、crash/relogin |
 | lock/unlock | Caddy unchanged |
 | Server outage/reboot | steady Device recovers locally |
 
@@ -266,6 +278,9 @@ initialize fresh Server DB/vault/PKI
 ## 8. G6 Gate 清单
 
 - [ ] formal packages clean/upgrade/purge/reboot 通过；
+- [ ] XDG Autostart direct Agent在全部支持桌面组合通过，package无Session Agent user unit；
+- [ ] user-level shadow guard与Agent-missing Browser gate package/VM test通过；
+- [ ] Agent Slint feature/依赖闭包无Qt/tray/interpreter/live-preview/MCP/testing及额外GUI runtime，且无外部GUI helper调用；
 - [ ] SBOM/license/security/provenance/signing 完整；
 - [ ] secret canary/package scans clean；
 - [ ] backup/restore/key handling 演练；
@@ -280,6 +295,7 @@ initialize fresh Server DB/vault/PKI
 
 - [ ] Pilot 1/2 通过；
 - [ ] full rehearsal 无 architecture bypass/manual DB edit/plaintext secret；
+- [ ] full rehearsal至少在GNOME Wayland与LightDM/X11验证Agent初始无窗口并完成Slint Binding Prompt；
 - [ ] Enrollment only Device certificate 被现场验证；
 - [ ] first Gateway certificate 由 SYNC_STATE over mTLS QUIC 取得；
 - [ ] operator sign-off；

@@ -23,7 +23,7 @@
 | 物理 Client | 6 台、2 个 OEM/主板系列、SATA+NVMe | 0/6，`UNASSIGNED` | `ROLE_LAB_HARDWARE` | 2026-08-01 | Probe D、G0-011 |
 | Server 目标 OS VM | 至少 1 台，systemd 可用 | `UNASSIGNED` | `ROLE_SERVER_PLATFORM` | 2026-07-29 | Probe A/F、G0-003/012 |
 | Client 目标 OS VM | 至少 1 台，可安装 Deb | `UNASSIGNED` | `ROLE_CLIENT_PLATFORM` | 2026-07-29 | Probe C/F、G0-012 |
-| Desktop/Kiosk 环境 | 至少 1 套冻结 DM/DE | `UNASSIGNED` | `ROLE_DESKTOP` | 2026-08-01 | Probe E、G0-010 |
+| Desktop/Kiosk 环境 | 至少 2 套：GNOME/GDM/Wayland 与 LightDM 启动的目标 X11 desktop | `UNASSIGNED` | `ROLE_DESKTOP` | 2026-08-01 | Probe E/F、G0-010/012 |
 | 实验室网络 | Server IP literal、TCP/UDP port、Client 地址段 | `UNFROZEN` | `ROLE_LAB_NETWORK` | 2026-07-29 | Probe A/B/F、G0-002/003/006 |
 | Caddy/DOMjudge | 固定 Caddy 与 DOMjudge contract 环境 | `UNASSIGNED` | `ROLE_CADDY_SUPPLY` / `ROLE_DOMJUDGE` | 2026-08-01 | Probe C |
 
@@ -57,10 +57,15 @@ WSL、普通开发机或虚拟硬件序列号不得充当目标 OS 或六台物�
 | `ENV-SERVER-01` | Server package/IP-SAN | `ENV-UNFROZEN` | systemd `ENV-UNFROZEN` | `ENV-UNFROZEN` | `ROLE_SERVER_PLATFORM` | 2026-07-29 至 2026-08-12 | `UNASSIGNED` | A/F |
 | `ENV-CLIENT-01` | Client package/Caddy | `ENV-UNFROZEN` | systemd `ENV-UNFROZEN` | `ENV-UNFROZEN` | `ROLE_CLIENT_PLATFORM` | 2026-07-29 至 2026-08-12 | `UNASSIGNED` | C/F |
 | `ENV-CLIENT-02` | Upgrade/reinstall | `ENV-UNFROZEN` | systemd `ENV-UNFROZEN` | `ENV-UNFROZEN` | `ROLE_RELEASE` | 2026-08-05 至 2026-08-12 | `UNASSIGNED` | F |
-| `ENV-DESKTOP-01` | lock/unlock/Home | `ENV-UNFROZEN` | DM/DE `ENV-UNFROZEN` | `ENV-UNFROZEN` | `ROLE_DESKTOP` | 2026-08-01 至 2026-08-08 | `UNASSIGNED` | E |
+| `ENV-DESKTOP-01` | Agent/lock/Home | `ENV-UNFROZEN` | GNOME + GDM + Wayland | `ENV-UNFROZEN` | `ROLE_DESKTOP` | 2026-08-01 至 2026-08-08 | `UNASSIGNED` | E/F |
+| `ENV-DESKTOP-02` | Agent/lock/Home | `ENV-UNFROZEN` | LightDM + target X11 desktop | `ENV-UNFROZEN` | `ROLE_DESKTOP` | 2026-08-01 至 2026-08-08 | `UNASSIGNED` | E/F |
 
 Desktop 环境关闭 G0-010 前必须产生：
 
+- [ ] 两套桌面均由 `/etc/xdg/autostart/org.natsume.SessionAgent.desktop` 直接启动同一 binary；
+- [ ] 初始状态无可见窗口，typed trigger 后懒创建 Slint 窗口并可再次隐藏；
+- [ ] package/运行态均不存在 `natsume-session-agent.service` user unit；
+- [ ] 中文/IME、HiDPI、focus denied 与依赖闭包证据；
 - [ ] 一次真实 lock；
 - [ ] 一次真实 unlock；
 - [ ] Caddy Admin 调用次数为 0 的证据；

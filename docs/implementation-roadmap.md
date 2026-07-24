@@ -1,8 +1,8 @@
 # Natsume V2 总体实施 Roadmap
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 版本：v1.2  
-> 日期：2026-07-22  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 版本：v1.4  
+> 日期：2026-07-23  
 > 状态：实施阶段职责与 Gate 基线  
 > 说明：本文只定义各阶段负责的结果及其验收标准。详细工作包、任务顺序、测试矩阵、风险与交付物分别维护在各 Phase 文件中。
 
@@ -20,7 +20,7 @@
 | Phase 3 | W7–W16 | Machine ID、Client vault、Daemon 启动检查、只签发 Device certificate 的 Enrollment | G2B | `docs/implementation/phase-3-identity-enrollment.md` |
 | Phase 4 | W14–W22 | mandatory-mTLS QUIC、Observed、Operation/Command/journal、Gateway CSR 窄协议契约 | G3 | `docs/implementation/phase-4-quic-command.md` |
 | Phase 5 | W20–W29 | `SYNC_STATE` 内 Gateway 证书签发、`SYNC_SECRET`、Caddy、LKG、离线恢复 | G4 | `docs/implementation/phase-5-state-gateway-data-plane.md` |
-| Phase 6 | W25–W34 | D-Bus、desktop-only Session、Binding Prompt、Home Reset | G5 | `docs/implementation/phase-6-session-home.md` |
+| Phase 6 | W25–W34 | D-Bus、XDG Autostart 常驻 Slint Session Agent、desktop-only Session、Binding Prompt、Home Reset | G5 | `docs/implementation/phase-6-session-home.md` |
 | Phase 7 | W31–W44 | Packaging、Hardening、Scale、Pilot、完整赛事演练与正式发布 | G6/G7 | `docs/implementation/phase-7-production-release.md` |
 
 ```mermaid
@@ -56,7 +56,7 @@ flowchart LR
 
 ### 负责内容
 
-建立可重复构建、可测试、可安装的真实仓库基线；冻结受支持的 Server/Client OS、Desktop、Browser、DOMjudge、Caddy、硬件和 Home backend；完成 IP-SAN、Enrollment/QUIC 双 TLS 配置、Machine ID、Session lock、Home 和 Debian package 的技术探针。
+建立可重复构建、可测试、可安装的真实仓库基线；冻结受支持的 Server/Client OS、Desktop、Browser、DOMjudge、Caddy、硬件和 Home backend；完成 IP-SAN、Enrollment/QUIC 双 TLS 配置、Machine ID、跨桌面 Session Agent XDG/logind/Slint Wayland/X11 GUI、Session lock、Home 和 Debian package 的技术探针。
 
 ### 验收标准 G0
 
@@ -64,6 +64,8 @@ flowchart LR
 - Client 安装能通过交互与 preseed 保存并验证 Server IP/port；
 - Server IP SAN 和错误 CA/IP 的正反测试通过；
 - 匿名 QUIC handshake 被 mandatory client-auth 配置在进入 Protobuf 前拒绝；
+- XDG Autostart在GNOME Wayland与LightDM启动的目标X11 desktop中直接启动常驻Agent，且package无Session Agent systemd user unit；greeter/remote/ambiguous session被拒绝；
+- Agent初始无窗口，typed trigger才懒显示Slint UI；Slint feature/ELF闭包无Qt backend、interpreter、live-preview、tray、MCP/testing或外部GUI runtime，Wayland unfocused为可观察结果；
 - desktop lock/unlock 探针证明不调用 Caddy Admin、不改变 Caddy 配置；
 - 目标物理硬件可稳定采集 Machine ID 候选并产出 fixture；
 - 空壳 Server/Client Deb 的最终用户、目录、unit、D-Bus 与 Caddy 拓扑可安装、升级和卸载。
@@ -160,11 +162,15 @@ flowchart LR
 
 ### 负责内容
 
-完成 local-control D-Bus、Privileged Helper hardening、Session Agent、Binding Prompt、desktop-only lock/unlock/terminate、Browser policy、Home Template、OverlayFS/staged-copy backend 与 Home Reset 恢复事务。
+完成 local-control D-Bus、Privileged Helper hardening、由 desktop XDG Autostart 直接启动并常驻无初始窗口的 Session Agent、Slint Wayland/X11 GUI、Binding Prompt、desktop-only lock/unlock/terminate、managed Browser、Home Template、OverlayFS/staged-copy backend 与 Home Reset 恢复事务。
 
 ### 验收标准 G5
 
 - Privileged Helper 无外部网络、无任意命令/路径/unit，未授权 UID 无法调用；
+- GNOME Wayland、GNOME X11（发行版提供时）和 LightDM 启动的目标 X11 desktop 可由同一system-wide XDG Autostart entry直接启动Agent；greeter、remote、inactive、错误UID/seat和多session歧义均被拒绝；
+- Agent启动即常驻但无可见窗口，typed snapshot才懒显示Slint component；package无systemd user unit，Daemon不得猜测display环境重启Agent；
+- Slint正式构建使用backend-winit + renderer-skia，并禁用Qt backend、interpreter、live-preview、system tray、MCP/system-testing；
+- Binding Prompt 在Wayland focus被拒时准确回报`presented_unfocused`并可使用标准通知，不能把普通窗口当安全锁；
 - Session commands 精确绑定 session instance/epoch/lock epoch/originating command；stale unlock 无法作用于新 session；
 - lock/unlock/terminate 全程不调用或 reload Caddy，当前 Gateway 行为保持不变；
 - BindingRequest/BindingResult 端到端可用，binding 不自动同步 secret；
@@ -181,10 +187,10 @@ flowchart LR
 
 ### 验收标准 G6/G7
 
-- 两个正式 Deb 在支持 OS 上通过 clean install、reinstall、upgrade、interrupted upgrade、remove/purge、reboot；无 runtime download、systemd credentials 或 Identity Guard service；
+- 两个正式 Deb 在支持OS上通过clean install、reinstall、upgrade、interrupted upgrade、remove/purge、reboot；无runtime download、systemd credentials、Identity Guard或Session Agent user service；XDG Autostart与Slint/Agent依赖闭包正确；
 - SBOM、license/security scan、checksums/signatures、offline APT repository 与 provenance 完整；
 - 2,000 sustained mTLS connections、200 active Commands、bulk `SYNC_STATE`/human `SYNC_SECRET`、reconnect storm 和 soak tests 通过；
 - Server DB/root key 分离备份恢复、Client vault corruption/factory reset、PKI、Caddy、Session、Home 和 Device replacement runbook 由非作者人员演练通过；
-- Pilot 和完整赛事演练覆盖：单 CSV、Device-only Enrollment、首次 `SYNC_STATE` 的 Gateway QUIC 签发、Binding、Secret Sync、登录提交、锁定、换机、Home Reset、Server outage/reboot、configured-disk copy、audit/backup/reset；
+- Pilot 和完整赛事演练覆盖：单 CSV、Device-only Enrollment、首次 `SYNC_STATE` 的 Gateway QUIC 签发、GNOME Wayland与LightDM/X11的XDG Autostart + Slint Binding GUI、Secret Sync、登录提交、锁定、换机、Home Reset、Server outage/reboot、configured-disk copy、audit/backup/reset；
 - 演练中无架构绕过、手工改库、明文秘密或匿名证书通道；
 - 无未解决 Critical/High defect，operator sign-off、release notes、known limitations、rollback/factory reset 和生产 tag/package/repository 全部冻结。

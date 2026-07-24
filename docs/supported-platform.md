@@ -66,7 +66,7 @@ ROLE_WEB           ROLE_DOCS            ROLE_GATE_G0
 
 | 字段 | 状态 | 当前值或待决项 | Owner | 截止日期 | 阻塞 |
 |---|---|---|---|---|---|
-| 产品进程拓扑 | `ARCH-FROZEN` | Daemon、Privileged Helper、Session Agent、Caddy path/service、Session user unit；无 Identity Guard | `ROLE_CLIENT` | — | G0-013 |
+| 产品进程拓扑 | `ARCH-FROZEN` | Daemon、Privileged Helper、Caddy path/service 为系统组件；Session Agent 位于认证后的桌面会话内并由系统级 XDG Autostart 直接启动；无 Session user unit、无 Identity Guard | `ROLE_CLIENT` | — | G0-010/013 |
 | 安装 endpoint | `ARCH-FROZEN` | 仅 Server IP literal + port，经 debconf/preseed/显式环境输入；无 TOFU | `ROLE_PACKAGING` | — | Probe A/F、G0-002 |
 | OS 发行版和版本 | `ENV-UNFROZEN` | 待选择唯一主支持版本 | `ROLE_CLIENT_PLATFORM` | 2026-07-29 | Probe D/E/F、G0-010/011/012 |
 | kernel 基线 | `ENV-UNFROZEN` | 待目标 OS 确认 | `ROLE_CLIENT_PLATFORM` | 2026-07-29 | Probe D/E |
@@ -79,10 +79,13 @@ ROLE_WEB           ROLE_DOCS            ROLE_GATE_G0
 
 | 字段 | 状态 | 当前值或待决项 | Owner | 截止日期 | 阻塞 |
 |---|---|---|---|---|---|
-| Display Manager | `ENV-UNFROZEN` | 待选择唯一主支持 DM | `ROLE_DESKTOP` | 2026-07-29 | Probe E、G0-010 |
-| Desktop/Kiosk shell | `ENV-UNFROZEN` | 待选择唯一主支持环境 | `ROLE_DESKTOP` | 2026-07-29 | Probe E、G0-010 |
-| Autologin | `ENV-UNFROZEN` | 待冻结配置方式 | `ROLE_DESKTOP` | 2026-08-01 | Probe E |
-| lock/unlock API | `ENV-UNFROZEN` | 必须在目标环境验证；失败时更换 Desktop 或明确不支持 | `ROLE_DESKTOP` | 2026-08-01 | Probe E、G0-010 |
+| Display Manager 边界 | `ARCH-FROZEN` | GDM/LightDM 只负责认证并启动 Desktop Session；Agent 不使用 DM plugin、greeter extension 或 DM-specific IPC。Daemon/Helper 通过 logind 与固定部署配置编排 session | `ROLE_ARCHITECTURE` | — | Probe E、G0-010 |
+| 必测组合 A | `ENV-UNFROZEN` | GNOME + GDM + Wayland | `ROLE_DESKTOP` | 2026-07-29 | Probe E/F、G0-010/012 |
+| 必测组合 B | `ENV-UNFROZEN` | LightDM 启动的目标 X11 desktop（Xfce/MATE 等由目标发行版冻结一种） | `ROLE_DESKTOP` | 2026-07-29 | Probe E/F、G0-010/012 |
+| Agent 启动 | `ARCH-FROZEN` | `/etc/xdg/autostart/org.natsume.SessionAgent.desktop` 直接执行 `--autostart`；无 systemd user unit、无 display 环境转交；进程初始 resident + hidden | `ROLE_CLIENT` | — | Probe E/F、G0-010/012/013 |
+| GUI 技术栈 | `ARCH-FROZEN` | Phase 6 使用 build-time compiled Slint + winit backend + Skia renderer；无 runtime interpreter、外部 GUI helper 或第一方低层 GUI 拼装 | `ROLE_CLIENT` | — | Probe E/F、G0-010/012/014 |
+| Autologin | `ENV-UNFROZEN` | 待按各 Display Manager 的 package-owned 固定部署配置冻结；Agent 不参与 | `ROLE_DESKTOP` | 2026-08-01 | Probe E |
+| lock/unlock API | `ENV-UNFROZEN` | 必须在两套目标桌面验证真实 desktop/logind lock state；失败时更换 Desktop 或明确不支持 | `ROLE_DESKTOP` | 2026-08-01 | Probe E、G0-010 |
 | Session 与 Caddy 边界 | `ARCH-FROZEN` | lock/unlock/terminate 不得 reload、切换或阻断 Caddy | `ROLE_ARCHITECTURE` | — | Probe E、G0-010 |
 
 ## 4. Browser

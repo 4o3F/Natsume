@@ -1,10 +1,10 @@
-# ADR-0002：稳定 ErrorCode registry、SNAFU 映射与脱敏边界
+# ADR-0019：稳定 ErrorCode registry、SNAFU 映射与脱敏边界
 
 ## 元数据
 
 | 字段 | 值 |
 |---|---|
-| ADR ID | `ADR-0002` |
+| ADR ID | `ADR-0019` |
 | 状态 | `PROPOSED` |
 | 日期 | `2026-07-23` |
 | Decision owner | `ROLE_SECURITY` |

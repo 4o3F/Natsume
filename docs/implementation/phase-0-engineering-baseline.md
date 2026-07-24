@@ -1,8 +1,8 @@
 # Natsume V2 Phase 0 详细实施计划：工程基线与目标环境探针
 
-> 架构基线：`Natsume_V2_Design_v2.5.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.2.md`  
-> 计划版本：Phase Plan v1.0  
+> 架构基线：`Natsume_V2_Design_v2.7.md`  
+> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
+> 计划版本：Phase Plan v1.1  
 > 基准窗口：W1–W3  
 > Gate：G0  
 > 前置依赖：无
@@ -107,11 +107,11 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 - Client debconf 交互与 preseed 保存 canonical Server IP/port；
 - config upgrade/reinstall preservation；
 - 最终用户、group、目录、mode、sysusers、tmpfiles、D-Bus policy；
-- 仅三个产品 Rust service、Caddy service/path 和 Session user unit；
+- 仅三个产品Rust binary、Caddy service/path与system-wide XDG Autostart entry；无Session Agent user unit；
 - 无 Identity Guard service；
 - postinst 不下载 Caddy、CA、crate、npm package，不生成 token。
 
-### P0.6 六项前置探针
+### P0.6 六项基础探针
 
 #### A. Server IP SAN 与安装 endpoint
 
@@ -162,6 +162,26 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 
 ---
 
+### P0.7 XDG Autostart + Slint Session Agent 探针
+
+在进入 Phase 6 前，必须用最小同一 Rust binary 证明：
+
+- `/etc/xdg/autostart` entry 在 GNOME/GDM/Wayland、GNOME/X11（可用时）和 Xfce或MATE/LightDM/X11 中直接启动唯一`--autostart`进程；
+- package中不存在Session Agent systemd user unit、bootstrap/run双模式或环境descriptor；
+- 同名user-level `Hidden=true`/replacement shadow在Home prepare时被固定路径清理或阻止；Agent lease超时保持Browser gated；
+- Agent通过自身PID/logind识别UID/Class/Type/Active/Remote/Seat，拒绝greeter/TTY/SSH/inactive/错误用户/歧义session；
+- Agent取得`$XDG_RUNTIME_DIR/natsume/session-agent.lock`，重复实例被拒绝；
+- Agent进入Slint event loop时没有window/tray/splash，typed trigger才懒显示并可重新隐藏；
+- `.slint`由`slint-build`编译，正式features只含backend-winit、renderer-skia、std/compat/accessibility；
+- Qt backend、interpreter、live-preview、system tray、MCP/system-testing均未启用；
+- 中文/ASCII、输入框、按钮、IME/paste、HiDPI、fractional scaling和multi-monitor基本行为可接受；
+- Wayland拒绝focus时回报`presented_unfocused`，标准notification缺失时仍可用；
+- Agent crash导致lease过期/Browser gated，受管relogin重启；Daemon不通过systemd user或伪造display环境spawn；
+- 最终ELF/package不要求额外安装GTK、Qt、WebKit、Electron、Node、Python、JVM或外部GUI helper；
+- Agent不能访问vault/Caddy Admin，Binding UI payload为typed message ID和参数。
+
+探针产出明确支持矩阵，而不是笼统声明“支持LightDM”。LightDM只负责启动目标desktop；Agent与其没有IPC。
+
 ## 4. 三周实施顺序
 
 ### Week 1
@@ -183,7 +203,7 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 
 - 把所有检查变为真实 CI；
 - 完成 clean install/upgrade/remove；
-- 汇总六项 probe 结论与 ADR；
+- 汇总七项 probe 结论与 ADR；
 - 完成 G0 evidence bundle 与 Gate review。
 
 ---
@@ -191,7 +211,7 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 ## 5. 交付物
 
 - `supported-platform.md` 与平台冻结记录；
-- 六份 probe report；
+- 七份 probe report（含跨桌面Session Agent矩阵与依赖闭包）；
 - real CI workflows；
 - real lockfiles/toolchain pins；
 - 空壳 Server/Client Deb；
@@ -214,6 +234,8 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 | 相同 request/SPKI 重试 | 返回同一结果 |
 | 相同 request 不同 SPKI | conflict |
 | 错误 Server IP/CA | HTTPS/QUIC 均拒绝 |
+| Session Agent XDG Autostart direct launch | GNOME Wayland与LightDM/X11直接启动；初始无窗口；greeter/remote/ambiguous拒绝；shadow受控；Wayland unfocused可观察 |
+| Agent runtime dependency closure | Slint feature闭包正确；无额外GUI toolkit/VM/WebView/helper运行时 |
 | desktop lock/unlock | Caddy hash/epoch/Admin call count 不变 |
 | image 中预置 root key/private key | package/image scan 失败 |
 
@@ -240,8 +262,24 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 - [ ] Enrollment 只签 Device cert 的 schema、DB fixture 与运行探针通过；
 - [ ] Device cert → mandatory-mTLS QUIC → mock Gateway CSR 的两步探针通过；
 - [ ] 匿名/错误上下文 Gateway CSR 被拒绝；
+- [ ] XDG/logind direct Slint Agent探针通过GNOME Wayland与LightDM/X11；
+- [ ] user-level同名Autostart shadow、singleton、crash/missing-lease Browser gate探针通过；
+- [ ] greeter/remote/inactive/ambiguous拒绝与logout/relogin新进程/lease防护通过；
+- [ ] Slint lazy GUI/focus-denied/HiDPI/IME与feature/依赖闭包通过；
 - [ ] desktop lock/unlock 无 Caddy 调用；
 - [ ] Machine ID physical fixture 完成；
 - [ ] 空壳 Deb 的最终 topology 通过；
 - [ ] 所有高风险 probe 有 ADR/owner/结论；
 - [ ] Gate decision 已签署。
+
+## 13. 已合并的上游 Phase 0 实现基线
+
+本整合包以 `v2@dcbefb68035ab2fb1df74f5ddafa0ce7a181820c` 为代码基线，已经包含但不等于 Gate PASS：
+
+- 23 个最小稳定 ErrorCode 的 `crates/error-code` registry；
+- HTTP/Protocol/D-Bus 显式映射、`Redacted<T>`、`CodedReport` 与 source/path/secret 脱敏测试；
+- Server、Daemon、Privileged Helper、Session Agent 的 compile-time ownership 接线；
+- 真实 Cargo/pnpm lockfile、PR CI、nightly smoke 与 package content 检查；
+- XDG Autostart package boundary，并移除 Session Agent systemd user unit。
+
+仍保持 OPEN：目标 OS、GNOME/Wayland、LightDM 启动的 X11 desktop、真实 Slint/IME、Caddy、nFPM、重启与物理实验室 Gate。
