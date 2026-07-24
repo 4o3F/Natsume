@@ -18,7 +18,7 @@
 | G0 总体 | `OPEN`，通过计数 `0 / 15` |
 | 输入门禁 | 多项 `BLOCKED-INPUT`；不计作 G0 PASS |
 | 证书不变量 | 全部未勾选 |
-| Top 阻塞 | 目标 OS VM、Server IP literal、Caddy pin、物理机 0/6、双桌面矩阵、XDG/Slint/lock API |
+| Top 阻塞 | 目标 OS VM、Server IP literal、Caddy 供应链签收、物理机 0/6、双桌面/Slint 目标环境、lock API、Home filesystem |
 
 ## 判定定义
 
@@ -62,10 +62,11 @@ G0-001 至 G0-015 均不可豁免，也不可标记 `N/A`。
 | [ ] | `G0-IN-001` | Server/Client 目标 OS、architecture、systemd 已冻结 | 2026-07-29 | `BLOCKED-INPUT` | G0-012 |
 | [ ] | `G0-IN-002` | 实验室 Server IP literal 与 TCP/UDP port 已冻结 | 2026-07-29 | `BLOCKED-INPUT` | G0-002/003/006 |
 | [ ] | `G0-IN-003` | Caddy version/modules/source/SHA-256 已冻结 | 2026-07-29 | `BLOCKED-INPUT` | G0-012/013 |
-| [ ] | `G0-IN-004` | Browser、DOMjudge、GNOME/GDM/Wayland、LightDM+目标 X11 desktop、XDG Autostart、Slint runtime closure 与 lock API 已冻结 | 2026-08-01 | `BLOCKED-INPUT` | Probe C/E/F、G0-010 |
+| [ ] | `G0-IN-004` | Browser、DOMjudge、GNOME/GDM/Wayland、LightDM+目标 X11 desktop、Slint 目标 backend/依赖闭包环境与 lock API 已冻结 | 2026-08-01 | `BLOCKED-INPUT` | Probe C/E/F、G0-010 |
 | [ ] | `G0-IN-005` | 六台物理硬件已到位并登记 | 2026-08-01 | `BLOCKED-INPUT` | G0-011 |
 | [ ] | `G0-IN-006` | PKI test material 与 ownership 已登记 | 2026-08-01 | `BLOCKED-INPUT` | G0-003–009 |
 | [ ] | `G0-IN-007` | 五份 Step 0 文档已创建；Requirements、platform、lab、ADR、checklist 的 ID 和术语仍需正式对齐签收 | Step 0 | `OPEN` | G0-014/015 |
+| [ ] | `G0-IN-008` | OverlayFS、ACL、xattr、Browser/IDE 与 reboot 的目标 Home compatibility 已冻结 | 2026-08-08 | `BLOCKED-INPUT` | Probe E、G0-014 |
 
 ## 3. 证书不变量复核
 
@@ -88,7 +89,7 @@ G0-001 至 G0-015 均不可豁免，也不可标记 `N/A`。
 | [ ] | B | `docs/probes/b-certificate-ladder.md` | 未创建 |
 | [ ] | C | `docs/probes/c-caddy-domjudge.md` | 未创建 |
 | [ ] | D | `docs/probes/d-machine-identity.md` | 未创建 |
-| [ ] | E | `docs/probes/e-session-home.md`（含 XDG direct launch、hidden/lazy UI、双桌面矩阵与 lock） | 未创建 |
+| [ ] | E | `docs/probes/e-session-home.md`（E1 XDG/Slint：direct launch、hidden/lazy UI、双桌面矩阵；E2 Session lock/Home） | 未创建 |
 | [ ] | F | `docs/probes/f-package-systemd.md` | 未创建 |
 
 报告文件存在不等于 Probe 通过；必须同时提供结果、证据和 reviewer 结论。

@@ -5,7 +5,7 @@
 
 ## 使用规则
 
-1. 状态仅使用 `PROPOSED`、`ACCEPTED`、`REJECTED`、`SUPERSEDED`。
+1. 实际 ADR 的决策状态仅使用 `PROPOSED`、`ACCEPTED`、`REJECTED`、`SUPERSEDED`；本模板使用文件状态 `TEMPLATE`，不参与决策状态统计。
 2. 所有事实必须引用权威设计、目标环境或探针证据。
 3. 平台输入未确认时引用 `docs/supported-platform.md` 中的 `ENV-UNFROZEN` 或 `ENV-PROPOSED` 条目；禁止使用无前缀的 `FROZEN` / `UNFROZEN` 表示平台冻结状态。
 4. 涉及证书时必须分别描述 Device Identity 与 Gateway `SYNC_STATE` 边界。
@@ -137,13 +137,17 @@
 |---|---|---|
 | YYYY-MM-DD | 初稿 | `ROLE_*` |
 
-## Phase 0 ADR 索引
+## Phase 0 相关 ADR 定位
 
-| ID | 主题 | 状态 |
+本表只记录文件存在性，不替代各 ADR 内的决策状态。
+
+| ID | 主题 | 文件 |
 |---|---|---|
-| `ADR-0001` | Native monorepo 与 direct nFPM | 未创建 |
-| [`ADR-0002`](./0002-error-code-registry.md) | ErrorCode registry | `PROPOSED` |
-| `ADR-0003` | IP-SAN 安装 endpoint | 未创建 |
-| `ADR-0004` | Device/Gateway certificate ladder | 未创建 |
-| `ADR-0005` | Caddy version/module/source pin | 未创建 |
-| `ADR-0006` | OverlayFS 与 staged-copy backend | 未创建 |
+| `ADR-0001` | Native polyglot monorepo | [`0001-native-polyglot-monorepo.md`](./0001-native-polyglot-monorepo.md) |
+| `ADR-0003` | Direct nFPM packaging | [`0003-direct-nfpm-packaging.md`](./0003-direct-nfpm-packaging.md) |
+| `ADR-0004` | SNAFU unified error model | [`0004-snafu-unified-error-model.md`](./0004-snafu-unified-error-model.md) |
+| `ADR-0012` | Server-auth Enrollment 与 mTLS control | [`0012-server-auth-enrollment-and-mtls-control.md`](./0012-server-auth-enrollment-and-mtls-control.md) |
+| `ADR-0015` | Home backend 与 recovery | [`0015-home-backend-and-recovery.md`](./0015-home-backend-and-recovery.md) |
+| `ADR-0016` | Gateway certificate during `SYNC_STATE` | [`0016-gateway-certificate-issued-during-sync-state.md`](./0016-gateway-certificate-issued-during-sync-state.md) |
+| `ADR-0018` | XDG direct Slint Session Agent | [`0018-xdg-direct-slint-session-agent.md`](./0018-xdg-direct-slint-session-agent.md) |
+| `ADR-0019` | Stable ErrorCode registry | [`0019-stable-error-code-registry.md`](./0019-stable-error-code-registry.md) |

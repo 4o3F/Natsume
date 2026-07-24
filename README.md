@@ -23,7 +23,7 @@ This tree is intended to replace a local Natsume V2 working copy **after backing
 
 The upstream branch is still a Phase 0 engineering baseline, not the completed Natsume product. The stable `natsume-error-code` crate, lockfiles, CI, package topology and contract tests are retained as real code. The v2.7 Session Agent launch boundary is applied now: package-owned XDG Autostart, hidden resident process, and no systemd user unit.
 
-The mature Slint GUI remains a **Phase 6 implementation task**. Its reviewed scaffold is stored under `docs/reference/session-agent-slint/` instead of being inserted into the current Cargo graph prematurely. This keeps the upstream `Cargo.lock` valid and avoids claiming Phase 6 completion in a Phase 0 branch.
+Phase 0 must add the minimal real Slint vertical slice required by P0.7 and Probe E: direct XDG launch, a resident hidden process, typed-trigger lazy presentation, and build/package dependency-closure evidence. The reviewed scaffold under `docs/reference/session-agent-slint/` is the starting point. Phase 6 still owns the complete production Binding, Session and Home GUI state machines; completing the Phase 0 probe does not claim Phase 6 completion.
 
 ## Local replacement
 

@@ -40,8 +40,8 @@ The implementation repository commits one `Cargo.lock`, one `pnpm-lock.yaml`, a 
 ## Session Agent runtime boundary
 
 - System-wide XDG Autostart is the primary graphical-session entry; `graphical-session.target` is not the sole start condition.
-- Bootstrap validates the current logind session and passes only an explicit environment allowlist through an owner-only atomic runtime descriptor.
-- The desktop XDG Autostart entry directly owns the long-running Agent process. No Session Agent systemd user unit, bootstrap/run handoff, whole-environment import or display synthesis is allowed.
+- The directly XDG-launched `/usr/bin/natsume-session-agent --autostart` process validates its own current logind session. It creates no runtime descriptor, transfers no environment and performs no bootstrap/run handoff.
+- The desktop XDG Autostart entry directly owns the long-running Agent process. No Session Agent systemd user unit, whole-environment import or display synthesis is allowed.
 - LightDM/GDM are display managers, not GUI backends. Support is declared for complete desktop/session combinations.
 - No GTK, Qt, WebKit, Electron, WebView, Node, Python, JVM, zenity, kdialog, yad or `xdg-open` runtime path.
 - Wayland activation/focus is best-effort and reported as a presentation fact; it is never treated as a security lock.
@@ -54,3 +54,4 @@ The implementation repository commits one `Cargo.lock`, one `pnpm-lock.yaml`, a 
 - Reject Qt, interpreter, live-preview, system-tray, MCP and system-testing features in production dependency trees.
 - Package tests inspect built ELF dependencies and clean-install closure; the source feature list does not replace target desktop tests.
 - UI assets and `.slint` sources are package-owned build inputs; no runtime downloads or interpreted remote UI.
+- Phase 0 admits only the minimal real Slint probe required by P0.7/Probe E; Phase 6 owns production Session/Home GUI completeness.

@@ -164,9 +164,9 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 
 ### P0.7 XDG Autostart + Slint Session Agent 探针
 
-在进入 Phase 6 前，必须用最小同一 Rust binary 证明：
+P0.7 不创建第七份报告。它是 Probe E 的 **E1 XDG/Slint** 子部分；原有 Session lock/Home 验证作为 **E2**。在进入 Phase 6 前，必须用最小同一 Rust binary 证明：
 
-- `/etc/xdg/autostart` entry 在 GNOME/GDM/Wayland、GNOME/X11（可用时）和 Xfce或MATE/LightDM/X11 中直接启动唯一`--autostart`进程；
+- `/etc/xdg/autostart` entry 在 GNOME/GDM/Wayland 与 LightDM 启动的目标 X11 desktop 中直接启动唯一 `--autostart` 进程；具体 OS 版本和 X11 desktop 在 `supported-platform.md` 冻结前保持 `BLOCKED-INPUT`；
 - package中不存在Session Agent systemd user unit、bootstrap/run双模式或环境descriptor；
 - 同名user-level `Hidden=true`/replacement shadow在Home prepare时被固定路径清理或阻止；Agent lease超时保持Browser gated；
 - Agent通过自身PID/logind识别UID/Class/Type/Active/Remote/Seat，拒绝greeter/TTY/SSH/inactive/错误用户/歧义session；
@@ -203,7 +203,7 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 
 - 把所有检查变为真实 CI；
 - 完成 clean install/upgrade/remove；
-- 汇总七项 probe 结论与 ADR；
+- 汇总六项 Probe A–F 结论与 ADR；Probe E 同时覆盖 E1 XDG/Slint 与 E2 Session lock/Home；
 - 完成 G0 evidence bundle 与 Gate review。
 
 ---
@@ -211,7 +211,7 @@ Nightly：目标 OS VM、reboot/fault、dependency scan。Scheduled：fleet/load
 ## 5. 交付物
 
 - `supported-platform.md` 与平台冻结记录；
-- 七份 probe report（含跨桌面Session Agent矩阵与依赖闭包）；
+- 六份 Probe A–F report；跨桌面 Session Agent 矩阵与 Slint 依赖闭包记录在 Probe E，不创建 Probe G；
 - real CI workflows；
 - real lockfiles/toolchain pins；
 - 空壳 Server/Client Deb；

@@ -102,7 +102,7 @@ IP-SAN 决策未被 ADR 替代前，禁止使用 TOFU 或 dangerous verifier。
 | B | CI harness；可选实验室网络 smoke | `docs/probes/b-certificate-ladder.md` | 未执行 | PKI test material、契约实现 |
 | C | `ENV-CLIENT-01`、Caddy、DOMjudge upstream | `docs/probes/c-caddy-domjudge.md` | 未执行 | Caddy/Browser/DOMjudge |
 | D | `HW-01` 至 `HW-06` | `docs/probes/d-machine-identity.md` | 未执行 | 六台物理机 |
-| E | `ENV-DESKTOP-01` | `docs/probes/e-session-home.md` | 未执行 | Desktop、filesystem |
+| E | `ENV-DESKTOP-01/02` | `docs/probes/e-session-home.md`（E1 XDG/Slint；E2 Session lock/Home） | 未执行 | 双 Desktop、filesystem |
 | F | `ENV-SERVER-01`、`ENV-CLIENT-01/02` | `docs/probes/f-package-systemd.md` | 未执行 | 目标 OS、nFPM、Caddy |
 
 报告路径是后续计划位置，不表示文件或证据已经存在。

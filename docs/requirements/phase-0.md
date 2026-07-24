@@ -1,7 +1,7 @@
 # Phase 0 需求与追踪
 
 > 状态：`DRAFT-STEP0`  
-> 范围：P0.1–P0.6，Gate G0  
+> 范围：P0.1–P0.7，Gate G0
 > 规则：稳定 ASCII ID；本文件创建时全部需求为 `OPEN`，不代表实现或验收完成。
 
 ## 状态定义
@@ -119,7 +119,7 @@ mandatory-mTLS QUIC（Device certificate）
 | B | Enrollment → mTLS → Gateway CSR | REQ-P0-031/032/037/052–057 |
 | C | Caddy/DOMjudge | REQ-P0-003/060/066 |
 | D | Machine Identity | REQ-P0-061/062 |
-| E | Session Agent/Desktop/Home | REQ-P0-034/038/039/063/064/066 |
+| E | E1: XDG/Slint；E2: Session lock/Home | REQ-P0-034/038/039/063/064/066 |
 | F | Package/systemd | REQ-P0-040–046/065 |
 
 ## 10. 非目标

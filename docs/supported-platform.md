@@ -83,7 +83,7 @@ ROLE_WEB           ROLE_DOCS            ROLE_GATE_G0
 | 必测组合 A | `ENV-UNFROZEN` | GNOME + GDM + Wayland | `ROLE_DESKTOP` | 2026-07-29 | Probe E/F、G0-010/012 |
 | 必测组合 B | `ENV-UNFROZEN` | LightDM 启动的目标 X11 desktop（Xfce/MATE 等由目标发行版冻结一种） | `ROLE_DESKTOP` | 2026-07-29 | Probe E/F、G0-010/012 |
 | Agent 启动 | `ARCH-FROZEN` | `/etc/xdg/autostart/org.natsume.SessionAgent.desktop` 直接执行 `--autostart`；无 systemd user unit、无 display 环境转交；进程初始 resident + hidden | `ROLE_CLIENT` | — | Probe E/F、G0-010/012/013 |
-| GUI 技术栈 | `ARCH-FROZEN` | Phase 6 使用 build-time compiled Slint + winit backend + Skia renderer；无 runtime interpreter、外部 GUI helper 或第一方低层 GUI 拼装 | `ROLE_CLIENT` | — | Probe E/F、G0-010/012/014 |
+| GUI 技术栈 | `ARCH-FROZEN` | Phase 0 先完成 P0.7 最小 build-time Slint probe；Phase 6 完成生产 GUI。固定 winit backend + Skia renderer；无 runtime interpreter、外部 GUI helper 或第一方低层 GUI 拼装 | `ROLE_CLIENT` | — | Probe E/F、G0-010/012/014 |
 | Autologin | `ENV-UNFROZEN` | 待按各 Display Manager 的 package-owned 固定部署配置冻结；Agent 不参与 | `ROLE_DESKTOP` | 2026-08-01 | Probe E |
 | lock/unlock API | `ENV-UNFROZEN` | 必须在两套目标桌面验证真实 desktop/logind lock state；失败时更换 Desktop 或明确不支持 | `ROLE_DESKTOP` | 2026-08-01 | Probe E、G0-010 |
 | Session 与 Caddy 边界 | `ARCH-FROZEN` | lock/unlock/terminate 不得 reload、切换或阻断 Caddy | `ROLE_ARCHITECTURE` | — | Probe E、G0-010 |
@@ -157,7 +157,7 @@ ROLE_WEB           ROLE_DOCS            ROLE_GATE_G0
 | pnpm | `ENV-PROPOSED` | 仓库固定 `11.1.0` 并生成 `pnpm-lock.yaml`；本地 frozen install、Web gates 和 contract generation 已通过，GitHub-hosted run 尚未签收 | `ROLE_WEB` | 2026-07-29 | G0-001 |
 | Node.js | `ENV-PROPOSED` | `.node-version` 与 `engines.node` 固定 `24.1.0`，已在开发环境核对；GitHub-hosted run 尚未签收 | `ROLE_WEB` | 2026-07-29 | G0-001 |
 | nFPM | `ENV-PROPOSED` | 官方 `2.47.0` Linux x86_64 host-tool archive 版本和 SHA-256 已记录；本地 Deb content smoke 已通过，目标 OS lifecycle 与 hosted run 尚未签收 | `ROLE_RELEASE` | 2026-07-29 | Probe F、G0-012 |
-| Protobuf compiler | `ENV-PROPOSED` | `build.rs` 使用 `protoc-bin-vendored`，Cargo.lock 固定 crate `3.2.0`；当前 contract tests 已进入 CI，但 Step 4 descriptor 可复现性尚未实施 | `ROLE_PROTOCOL` | 2026-07-29 | G0-001 |
+| Protobuf compiler | `ENV-PROPOSED` | `build.rs` 使用 `protoc-bin-vendored`，Cargo.lock 固定 crate `3.2.0`；当前 contract tests 已进入 CI，但 Phase 0 descriptor golden 可复现性尚未实施 | `ROLE_PROTOCOL` | 2026-07-29 | G0-001 |
 | Mermaid validator | `ENV-PROPOSED` | 精确固定 `mermaid@11.16.0`，由 `docs/validate-mermaid.mjs` 校验仓库 Mermaid fences；本地已验证 23 个图，hosted run 尚未签收 | `ROLE_DOCS` | 2026-07-29 | G0-001 |
 | PR/push CI | `ENV-PROPOSED` | `.github/workflows/ci.yml` 已实现 Rust、Web、contracts、policy-scan、packages 五类门禁；GitHub Actions 固定到检索时最新的精确 release version，actionlint 与本地 parity 已通过，尚无 hosted-run 签收证据 | `ROLE_BUILD` | 2026-07-29 | G0-001/012/013 |
 | Nightly shared-runner smoke | `ENV-PROPOSED` | `.github/workflows/nightly.yml` 每日 `03:17 UTC` 运行 shared-runner smoke；只提供回归信号，不是目标 OS、物理实验室、reboot 或 G0 证据 | `ROLE_BUILD` | 2026-07-29 | G0-001/012/013 |
