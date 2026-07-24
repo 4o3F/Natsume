@@ -1,0 +1,2 @@
+natsume-client natsume-client/server-ip string 192.0.2.10
+natsume-client natsume-client/server-port string 8443

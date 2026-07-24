@@ -1,6 +1,12 @@
 #!/bin/sh
 set -eu
 
+case "${1:-configure}" in
+    configure|reconfigure) ;;
+    abort-*) exit 0 ;;
+    *) exit 0 ;;
+esac
+
 . /usr/share/debconf/confmodule
 
 db_input critical natsume-client/server-ip || true

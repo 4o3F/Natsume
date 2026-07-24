@@ -1,42 +1,18 @@
-use std::{env, net::IpAddr, str::FromStr};
+use std::env;
 
-use natsume_error_code::{AsErrorCode, CodedReport, ErrorCode};
+use natsume_device_daemon::parse_endpoint;
+use natsume_error_code::CodedReport;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
-enum EndpointError {
-    #[snafu(display("invalid Natsume Server IP literal"))]
-    Ip,
-
-    #[snafu(display("invalid Natsume Server port"))]
-    Port,
-}
-
-impl AsErrorCode for EndpointError {
-    fn error_code(&self) -> ErrorCode {
-        match self {
-            Self::Ip => ErrorCode::InstallEndpointInvalidIp,
-            Self::Port => ErrorCode::InstallEndpointInvalidPort,
-        }
-    }
-}
-
-#[derive(Debug, Snafu)]
 enum Error {
-    #[snafu(display("usage: natsume-device-daemon --validate-endpoint <ip> <port>"))]
+    #[snafu(display(
+        "usage: natsume-device-daemon [--validate-endpoint|--print-canonical-endpoint] <ip> <port>"
+    ))]
     Arguments,
 
     #[snafu(display("{report}"))]
     Endpoint { report: CodedReport },
-}
-
-fn validate_endpoint(ip: &str, port: &str) -> Result<(), EndpointError> {
-    IpAddr::from_str(ip).map_err(|_| EndpointError::Ip)?;
-    let parsed = port.parse::<u16>().map_err(|_| EndpointError::Port)?;
-    if parsed == 0 {
-        return Err(EndpointError::Port);
-    }
-    Ok(())
 }
 
 fn run_args(args: &[String]) -> Result<(), Error> {
@@ -48,10 +24,17 @@ fn run_args(args: &[String]) -> Result<(), Error> {
             ));
             Ok(())
         }
-        [flag, ip, port] if flag == "--validate-endpoint" => {
-            validate_endpoint(ip, port).map_err(|error| Error::Endpoint {
+        [flag, ip, port] if flag == "--validate-endpoint" => parse_endpoint(ip, port)
+            .map(|_| ())
+            .map_err(|error| Error::Endpoint {
                 report: CodedReport::from_error(&error),
-            })
+            }),
+        [flag, ip, port] if flag == "--print-canonical-endpoint" => {
+            let endpoint = parse_endpoint(ip, port).map_err(|error| Error::Endpoint {
+                report: CodedReport::from_error(&error),
+            })?;
+            println!("{} {}", endpoint.ip(), endpoint.port());
+            Ok(())
         }
         _ => Err(Error::Arguments),
     }
@@ -69,6 +52,9 @@ fn main() -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
+    use natsume_device_daemon::EndpointError;
+    use natsume_error_code::{AsErrorCode, ErrorCode};
+
     use super::*;
 
     #[test]
@@ -86,7 +72,7 @@ mod tests {
     #[test]
     fn report_contains_code_without_rejected_input() {
         let rejected_ip = "203.0.113.999";
-        let Err(error) = validate_endpoint(rejected_ip, "8443") else {
+        let Err(error) = parse_endpoint(rejected_ip, "8443") else {
             panic!("invalid IP must be rejected");
         };
         let report = CodedReport::from_error(&error);
@@ -104,7 +90,7 @@ mod tests {
         let display = format!("{error}");
         assert_eq!(
             display,
-            "usage: natsume-device-daemon --validate-endpoint <ip> <port>"
+            "usage: natsume-device-daemon [--validate-endpoint|--print-canonical-endpoint] <ip> <port>"
         );
         assert!(!display.contains("PACKAGE_LAYOUT_INVALID"));
     }

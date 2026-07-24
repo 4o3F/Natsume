@@ -43,9 +43,19 @@ contents:
     dst: /etc/natsume/trust/local-origin-ca.crt
     type: config|noreplace
     file_info: {mode: 0o644}
-  - src: packaging/client/rootfs/
-    dst: /
+  - src: packaging/client/rootfs/usr/
+    dst: /usr/
     type: tree
+  - src: packaging/client/rootfs/etc/xdg/
+    dst: /etc/xdg/
+    type: tree
+  - src: packaging/client/rootfs/etc/natsume/caddy/
+    dst: /etc/natsume/caddy/
+    type: tree
+  - src: packaging/client/rootfs/etc/natsume/config.toml
+    dst: /etc/natsume/config.toml
+    type: config|noreplace
+    file_info: {mode: 0o640, owner: root, group: root}
 
 scripts:
   postinstall: packaging/client/scripts/postinstall.sh

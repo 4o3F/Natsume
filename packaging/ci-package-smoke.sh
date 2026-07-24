@@ -120,6 +120,12 @@ openssl req -x509 -newkey rsa:2048 -nodes \
 rm -f "${input_root}/control-ca.key" "${input_root}/local-origin-ca.key"
 
 cargo build --workspace --release --locked
+canonical_endpoint="$(target/release/natsume-device-daemon --print-canonical-endpoint '2001:0db8:0:0:0:0:0:10' '8443')"
+[[ ${canonical_endpoint} == '2001:db8::10 8443' ]] \
+    || fail 'Device Daemon did not emit the canonical IPv6 endpoint'
+if target/release/natsume-device-daemon --print-canonical-endpoint 'server.example' '8443' >/dev/null 2>&1; then
+    fail 'Device Daemon accepted a hostname as an install endpoint'
+fi
 pnpm --filter @natsume/web build
 
 export VERSION="${VERSION:-2.0.0~ci1}"
@@ -192,6 +198,7 @@ for path in \
     /usr/lib/systemd/system/natsume-privileged-helper.service \
     /usr/lib/systemd/system/natsume-caddy.service \
     /usr/lib/systemd/system/natsume-caddy.path \
+    /etc/natsume/config.toml \
     /etc/xdg/autostart/org.natsume.SessionAgent.desktop \
     /usr/share/dbus-1/system.d/org.natsume.Device1.conf \
     /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf \
@@ -220,13 +227,30 @@ grep -E '^-rw-r--r-- .*\./etc/xdg/autostart/org.natsume.SessionAgent.desktop$' \
 shellcheck -x \
     packaging/client/debconf/config \
     packaging/client/scripts/postinstall.sh \
-    packaging/server/scripts/postinstall.sh
+    packaging/server/scripts/postinstall.sh \
+    packaging/target-vm/phase0-lifecycle.sh
+
+client_control="${work_root}/client-control"
+dpkg-deb --control "${client_deb}" "${client_control}"
+grep -Fxq '/etc/natsume/config.toml' "${client_control}/conffiles" \
+    || fail 'endpoint config is not registered as a Debian conffile'
+if grep -Eq 'systemd-(sysusers|tmpfiles).*[|][|][[:space:]]*true' \
+    packaging/client/scripts/postinstall.sh packaging/server/scripts/postinstall.sh; then
+    fail 'required sysusers/tmpfiles failures are suppressed'
+fi
 
 dpkg-deb --extract "${server_deb}" "${extract_root}/server"
 dpkg-deb --extract "${client_deb}" "${extract_root}/client"
 
 client_caddyfile="${extract_root}/client/etc/natsume/caddy/bootstrap.caddyfile"
+client_config_placeholder="${extract_root}/client/etc/natsume/config.toml"
 client_status_root="${extract_root}/client/usr/share/natsume/gateway-status"
+grep -Fxq '# Natsume endpoint is written by postinstall after debconf validation.' \
+    "${client_config_placeholder}" \
+    || fail 'packaged endpoint conffile is not the fail-closed placeholder'
+if grep -Eq '^[[:space:]]*(ip|port)[[:space:]]*=' "${client_config_placeholder}"; then
+    fail 'packaged endpoint placeholder contains an unvalidated endpoint'
+fi
 node --check "${client_status_root}/status.js"
 grep -Fq 'Content-Security-Policy' "${client_caddyfile}" \
     || fail 'packaged bootstrap Caddyfile does not set Content-Security-Policy'
