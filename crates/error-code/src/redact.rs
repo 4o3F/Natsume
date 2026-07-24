@@ -204,7 +204,6 @@ pub fn redact_report(input: &str) -> RedactedString {
         &output,
         "[REDACTED_BASE64]",
     );
-
     RedactedString(output)
 }
 
@@ -289,7 +288,6 @@ mod tests {
     #[test]
     fn raw_redacted_values_never_format_the_inner_value() {
         let secret = Redacted::new("operator-password");
-
         assert_eq!(format!("{secret}"), "[REDACTED]");
         assert_eq!(format!("{secret:?}"), "[REDACTED]");
         assert_eq!(secret.expose(), &"operator-password");
@@ -323,7 +321,6 @@ at /home/operator/natsume/server/src/main.rs:18:5
         );
         let redacted = redact_report(&input);
         let text = redacted.as_str();
-
         for canary in [
             "PRIVATE KEY",
             "CERTIFICATE REQUEST",
@@ -340,7 +337,6 @@ at /home/operator/natsume/server/src/main.rs:18:5
         ] {
             assert!(!text.contains(canary), "canary survived: {canary}: {text}");
         }
-
         assert_eq!(format!("{redacted}"), text);
         assert_eq!(format!("{redacted:?}"), text);
     }
@@ -352,7 +348,6 @@ at /home/operator/natsume/server/src/main.rs:18:5
             private_key_marker("BEGIN")
         );
         let redacted = redact_report(&input);
-
         assert_eq!(
             redacted.as_str(),
             "operation failed\n[REDACTED_SECRET_REMAINDER]"
@@ -366,7 +361,6 @@ at /home/operator/natsume/server/src/main.rs:18:5
         let report = CodedReport::from_error(&error);
         let display = format!("{report}");
         let debug = format!("{report:?}");
-
         assert_eq!(report.code(), ErrorCode::VaultCorrupt);
         assert!(display.starts_with("VAULT_CORRUPT: "));
         assert!(!display.contains("/var/lib/natsume"));
@@ -381,11 +375,9 @@ at /home/operator/natsume/server/src/main.rs:18:5
             source: SensitiveSource,
         };
         assert!(error.source().is_some());
-
         let report = CodedReport::from_error(&error);
         let display = format!("{report}");
         let debug = format!("{report:?}");
-
         assert_eq!(display, "VAULT_CORRUPT: vault operation failed");
         assert!(!display.contains("/home/operator"));
         assert!(!display.contains("hunter2"));

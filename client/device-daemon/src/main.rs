@@ -91,7 +91,6 @@ mod tests {
         };
         let report = CodedReport::from_error(&error);
         let display = format!("{report}");
-
         assert!(display.starts_with("INSTALL_ENDPOINT_INVALID_IP: "));
         assert!(!display.contains(rejected_ip));
     }
@@ -103,7 +102,6 @@ mod tests {
             panic!("unknown arguments must be rejected");
         };
         let display = format!("{error}");
-
         assert_eq!(
             display,
             "usage: natsume-device-daemon --validate-endpoint <ip> <port>"
