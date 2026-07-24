@@ -30,3 +30,4 @@ __pycache__/
 /packaging/nfpm_*.tar.gz
 
 .claude
+web/tsconfig.tsbuildinfo
