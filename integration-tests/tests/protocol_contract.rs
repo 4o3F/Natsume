@@ -115,3 +115,106 @@ fn protocol_observes_cross_desktop_session_agent() {
     assert!(agent.contains("SessionScreenKind screen"));
     assert!(PROTO.contains("UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED"));
 }
+
+#[test]
+fn generated_descriptor_matches_the_committed_golden() {
+    use prost::Message;
+
+    let generated = natsume_device_protocol::file_descriptor_set();
+    let golden = include_bytes!("../../crates/device-protocol/testdata/device_control.pb");
+    assert_eq!(generated, golden);
+
+    let Ok(descriptor) = prost_types::FileDescriptorSet::decode(generated) else {
+        panic!("generated descriptor must decode");
+    };
+    assert_eq!(descriptor.file.len(), 1);
+    assert_eq!(
+        descriptor.file[0].package.as_deref(),
+        Some("natsume.device.v2")
+    );
+    assert!(
+        descriptor.file[0]
+            .message_type
+            .iter()
+            .any(|message| message.name.as_deref() == Some("ControlEnvelope"))
+    );
+}
+
+#[test]
+fn framing_is_big_endian_bounded_and_streaming_safe() {
+    use bytes::BytesMut;
+    use natsume_device_protocol::{
+        DEFAULT_MAX_FRAME_BYTES, decode_frame, encode_frame,
+        generated::{ControlEnvelope, Heartbeat, control_envelope},
+    };
+
+    let envelope = ControlEnvelope {
+        body: Some(control_envelope::Body::Heartbeat(Heartbeat::default())),
+    };
+    let Ok(frame) = encode_frame(&envelope, DEFAULT_MAX_FRAME_BYTES) else {
+        panic!("small envelope must encode");
+    };
+    assert_eq!(
+        u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize,
+        frame.len() - 4
+    );
+
+    let mut incomplete = BytesMut::from(&frame[..frame.len() - 1]);
+    assert!(matches!(
+        decode_frame(&mut incomplete, DEFAULT_MAX_FRAME_BYTES),
+        Ok(None)
+    ));
+
+    let mut complete = BytesMut::from(frame.as_ref());
+    let Ok(Some(decoded)) = decode_frame(&mut complete, DEFAULT_MAX_FRAME_BYTES) else {
+        panic!("complete frame must decode");
+    };
+    assert_eq!(decoded, envelope);
+    assert!(complete.is_empty());
+}
+
+#[test]
+fn framing_rejects_oversized_and_malformed_payloads() {
+    use bytes::BytesMut;
+    use natsume_device_protocol::decode_frame;
+    use natsume_error_code::{AsErrorCode, ErrorCode};
+
+    let mut oversized = BytesMut::from(&[0, 0, 0, 9][..]);
+    let Err(error) = decode_frame(&mut oversized, 8) else {
+        panic!("advertised oversize must fail before payload allocation");
+    };
+    assert_eq!(error.error_code(), ErrorCode::ProtocolFrameTooLarge);
+
+    let mut malformed = BytesMut::from(&[0, 0, 0, 1, 0xff][..]);
+    let Err(error) = decode_frame(&mut malformed, 8) else {
+        panic!("malformed complete payload must fail");
+    };
+    assert_eq!(error.error_code(), ErrorCode::ProtocolInvalidEnvelope);
+}
+
+#[test]
+fn semantic_validation_rejects_empty_oneofs_and_invalid_enums() {
+    use natsume_device_protocol::{
+        generated::{ControlEnvelope, Heartbeat, control_envelope},
+        validate_envelope,
+    };
+    use natsume_error_code::{AsErrorCode, ErrorCode};
+
+    let Err(error) = validate_envelope(&ControlEnvelope { body: None }) else {
+        panic!("empty envelope body must fail");
+    };
+    assert_eq!(error.error_code(), ErrorCode::ProtocolInvalidEnvelope);
+
+    let unspecified = ControlEnvelope {
+        body: Some(control_envelope::Body::Heartbeat(Heartbeat::default())),
+    };
+    assert!(validate_envelope(&unspecified).is_err());
+
+    let unknown = ControlEnvelope {
+        body: Some(control_envelope::Body::Heartbeat(Heartbeat {
+            session_lock_state: 999,
+            ..Heartbeat::default()
+        })),
+    };
+    assert!(validate_envelope(&unknown).is_err());
+}

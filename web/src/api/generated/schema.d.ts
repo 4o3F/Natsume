@@ -4,6 +4,73 @@
  */
 
 export interface paths {
+  "/api/v2/devices/{device_id}/actions/sync-secret": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Requires a human operator, re-authentication and an audit reason. */
+    post: operations["syncDeviceSecret"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/actions/sync-state": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Creates an explicit non-secret state Command. If required, the Device requests its Gateway certificate over the authenticated QUIC session as a command-bound subflow. */
+    post: operations["syncDeviceState"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/enrollment-requests/{request_id}:approve": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Approve Device Enrollment and issue only the QUIC client certificate */
+    post: operations["approveEnrollment"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/health": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getHealth"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/imports": {
     parameters: {
       query?: never;
@@ -37,61 +104,29 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/enrollment-requests/{request_id}:approve": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Approve Device Enrollment and issue only the QUIC client certificate */
-    post: operations["approveEnrollment"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/devices/{device_id}/actions/sync-state": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** @description Creates an explicit non-secret state Command. If required, the Device requests its Gateway certificate over the authenticated QUIC session as a command-bound subflow. */
-    post: operations["syncDeviceState"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/devices/{device_id}/actions/sync-secret": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** @description Requires a human operator, re-authentication and an audit reason. */
-    post: operations["syncDeviceSecret"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-  schemas: never;
+  schemas: {
+    EnrollmentApprovalAccepted: {
+      certificate_scope: string;
+      /** Format: uuid */
+      enrollment_request_id: string;
+    };
+    HealthResponse: {
+      status: string;
+    };
+    OpenApiProblemDetails: {
+      code: string;
+      /** Format: uuid */
+      correlation_id: string;
+      detail?: string | null;
+      /** Format: int32 */
+      status: number;
+      title: string;
+      type: string;
+    };
+  };
   responses: never;
   parameters: never;
   requestBodies: never;
@@ -100,6 +135,91 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  syncDeviceSecret: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Device identifier */
+        device_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Explicit human-triggered SYNC_SECRET operation created */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  syncDeviceState: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Device identifier */
+        device_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Explicit SYNC_STATE operation created; Gateway certificate issuance may occur within the command */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  approveEnrollment: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Enrollment request identifier */
+        request_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Device Identity certificate issuance workflow accepted; no Gateway credential is issued */
+      202: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EnrollmentApprovalAccepted"];
+        };
+      };
+    };
+  };
+  getHealth: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Server process is healthy */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+    };
+  };
   createCsvImport: {
     parameters: {
       query?: never;
@@ -123,6 +243,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
+        /** @description CSV import identifier */
         import_id: string;
       };
       cookie?: never;
@@ -131,66 +252,6 @@ export interface operations {
     responses: {
       /** @description Atomic domain commit; no device sync is implied */
       200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  approveEnrollment: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        request_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Device Identity certificate issuance workflow accepted; no Gateway credential is issued */
-      202: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  syncDeviceState: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        device_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Explicit SYNC_STATE operation created; Gateway certificate issuance may occur within the command */
-      202: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-    };
-  };
-  syncDeviceSecret: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        device_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Explicit human-triggered SYNC_SECRET operation created */
-      202: {
         headers: {
           [name: string]: unknown;
         };

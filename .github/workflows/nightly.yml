@@ -81,8 +81,7 @@ jobs:
         env:
           CI: "true"
 
-      # Step 2 validates the committed snapshot; Rust-owned generation starts in Step 4.
-      - name: Committed contract snapshot smoke
+      - name: Regenerate executable contract snapshots
         run: |
           set -euo pipefail
           cargo run -p natsume-server --locked --bin export-openapi -- \

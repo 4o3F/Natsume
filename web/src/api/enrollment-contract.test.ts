@@ -30,8 +30,29 @@ describe("Phase 0 Enrollment OpenAPI contract", () => {
     expect(enrollment.post.summary.toLowerCase()).toContain("device");
   });
 
+  it("contains the Rust-owned health operation", () => {
+    expect(openapi.paths["/api/v2/health"].get.operationId).toBe("getHealth");
+  });
+
+  it("preserves the accepted compatibility skeleton routes", () => {
+    expect(openapi.paths["/api/v2/imports"].post.operationId).toBe(
+      "createCsvImport",
+    );
+    expect(
+      openapi.paths["/api/v2/imports/{import_id}:commit"].post.operationId,
+    ).toBe("commitCsvImport");
+    expect(
+      openapi.paths["/api/v2/devices/{device_id}/actions/sync-state"].post
+        .operationId,
+    ).toBe("syncDeviceState");
+    expect(
+      openapi.paths["/api/v2/devices/{device_id}/actions/sync-secret"].post
+        .operationId,
+    ).toBe("syncDeviceSecret");
+  });
+
   it("contains no Gateway credential object keys", () => {
-    const keys = collectObjectKeys(openapi.paths[ENROLLMENT_APPROVE_PATH]);
+    const keys = collectObjectKeys(openapi);
     const forbidden = keys.filter((key) => FORBIDDEN_CREDENTIAL_KEY.test(key));
 
     expect(forbidden).toEqual([]);

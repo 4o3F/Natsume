@@ -4,7 +4,7 @@ Shared Phase 0 contract for stable Natsume error identifiers and boundary-safe r
 
 ## Responsibilities
 
-- define the 23 Phase 0 stable error strings;
+- define the 33 Phase 0 stable error strings, including the cross-desktop Session Agent lifecycle set;
 - map each code explicitly to HTTP status/title, protocol string and D-Bus error name;
 - provide RFC 9457-shaped Problem Details without a default detail field;
 - provide redacted wrappers and reports for operator-facing error boundaries.
@@ -42,4 +42,4 @@ assert_eq!(report.code(), ErrorCode::VaultCorrupt);
 - zbus introspection/runtime behavior;
 - parsing `Display` text to determine program behavior.
 
-See [`DESIGN.md`](DESIGN.md) and [`ADR-0002`](../../docs/adr/0002-error-code-registry.md).
+See [`DESIGN.md`](DESIGN.md) and [`ADR-0019`](../../docs/adr/0019-stable-error-code-registry.md).

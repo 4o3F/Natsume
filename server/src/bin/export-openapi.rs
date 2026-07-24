@@ -7,8 +7,10 @@ fn run() -> Result<(), &'static str> {
         .nth(1)
         .map(PathBuf::from)
         .ok_or("usage: export-openapi <output.json>")?;
-    let document = include_str!("../../../web/openapi/natsume.openapi.json");
-    fs::write(output, document).map_err(|_| "OPENAPI_EXPORT_WRITE_FAILED")
+    let document = natsume_server::openapi::openapi()
+        .to_pretty_json()
+        .map_err(|_| "OPENAPI_EXPORT_SERIALIZE_FAILED")?;
+    fs::write(output, format!("{document}\n")).map_err(|_| "OPENAPI_EXPORT_WRITE_FAILED")
 }
 
 fn main() -> ExitCode {

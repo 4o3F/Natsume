@@ -1,21 +1,22 @@
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
+use zbus::zvariant::Type;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct SanitizedHardwareClaim {
     pub candidates: Vec<HardwareCandidate>,
     pub collection_complete: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Type)]
 pub struct HardwareCandidate {
     pub anchor_kind: String,
     pub candidate_id: String,
     pub quality: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum StartupIdentityState {
     CleanFirstStart,
@@ -30,7 +31,7 @@ pub enum StartupIdentityState {
     Enrolled,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionLockState {
     None,
@@ -42,13 +43,13 @@ pub enum SessionLockState {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionTarget {
     pub session_instance_id: String,
     pub session_epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct LockSessionRequest {
     pub command_id: String,
     pub target: SessionTarget,
@@ -56,7 +57,7 @@ pub struct LockSessionRequest {
     pub deadline_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct UnlockSessionRequest {
     pub command_id: String,
     pub target: SessionTarget,
@@ -65,21 +66,21 @@ pub struct UnlockSessionRequest {
     pub deadline_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct TerminateSessionRequest {
     pub command_id: String,
     pub target: SessionTarget,
     pub deadline_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ApplyLockRequest {
     pub command_id: String,
     pub target: SessionTarget,
     pub lock_epoch: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct ApplyUnlockRequest {
     pub command_id: String,
     pub target: SessionTarget,
@@ -87,7 +88,7 @@ pub struct ApplyUnlockRequest {
     pub expected_lock_command_id: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionControlApplied {
     pub command_id: String,
     pub target: SessionTarget,
@@ -95,7 +96,7 @@ pub struct SessionControlApplied {
     pub lock_state: SessionLockState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionChanged {
     pub previous: Option<SessionTarget>,
     pub current: Option<SessionTarget>,
@@ -103,7 +104,7 @@ pub struct SessionChanged {
     pub lock_state: SessionLockState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayBlockReason {
     Restoring,
@@ -114,7 +115,7 @@ pub enum GatewayBlockReason {
     Unassigned,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayReasonCode {
     BootRestore,
@@ -125,7 +126,7 @@ pub enum GatewayReasonCode {
     NoAssignment,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SuggestedAction {
     Wait,
@@ -134,7 +135,7 @@ pub enum SuggestedAction {
     RequestSecretSync,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct GatewayStatusSnapshot {
     pub schema_version: u32,
     pub state: GatewayBlockReason,
@@ -148,24 +149,23 @@ pub struct GatewayStatusSnapshot {
     pub suggested_action: SuggestedAction,
 }
 
-// Frozen zbus interface traits belong here after method signatures are finalized.
 // Session lock implementations are desktop-only; this crate intentionally has no Caddy method.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum GraphicalSessionType {
     Wayland,
     X11,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum DisplayBackend {
     Wayland,
     X11,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum UiPresentationState {
     Hidden,
@@ -176,7 +176,7 @@ pub enum UiPresentationState {
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionScreenKind {
     Hidden,
@@ -189,14 +189,14 @@ pub enum SessionScreenKind {
     FatalLocalError,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SeatInputPolicy {
     SeatCode,
     OperatorSelectedSeat,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionUiActionKind {
     ConfirmBinding,
@@ -205,7 +205,7 @@ pub enum SessionUiActionKind {
     RetryLocalPresentation,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SessionAgentCapabilities {
     pub graphical_session_type: GraphicalSessionType,
@@ -218,7 +218,7 @@ pub struct SessionAgentCapabilities {
     pub multi_monitor_supported: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionAgentRegistration {
     pub session_instance_id: String,
     pub logind_session_id: String,
@@ -230,20 +230,20 @@ pub struct SessionAgentRegistration {
     pub capabilities: SessionAgentCapabilities,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionAgentLease {
     pub lease_id: String,
     pub target: SessionTarget,
     pub expires_at_unix_ms: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct UiTextParameter {
     pub name: String,
     pub value: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionUiSnapshot {
     pub schema_version: u32,
     pub target: SessionTarget,
@@ -260,7 +260,7 @@ pub struct SessionUiSnapshot {
     pub presentation: UiPresentationState,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct UiPresentationAck {
     pub target: SessionTarget,
     pub ui_revision: u64,
@@ -271,7 +271,7 @@ pub struct UiPresentationAck {
     pub stable_error_code: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct BindingSubmission {
     pub target: SessionTarget,
     pub prompt_command_id: String,
@@ -279,7 +279,7 @@ pub struct BindingSubmission {
     pub seat_code: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionUiAction {
     pub target: SessionTarget,
     pub ui_revision: u64,
@@ -298,3 +298,113 @@ pub const SESSION_AGENT_SINGLETON_RELATIVE_PATH: &str = "natsume/session-agent.l
 
 /// The sole supported product invocation. Display/session parameters are never accepted.
 pub const SESSION_AGENT_AUTOSTART_MODE: &str = "--autostart";
+
+pub const DEVICE1_SERVICE: &str = "org.natsume.Device1";
+pub const DEVICE1_PATH: &str = "/org/natsume/Device1";
+pub const DEVICE1_INTERFACE: &str = "org.natsume.Device1";
+pub const PRIVILEGED1_SERVICE: &str = "org.natsume.Privileged1";
+pub const PRIVILEGED1_PATH: &str = "/org/natsume/Privileged1";
+pub const PRIVILEGED1_INTERFACE: &str = "org.natsume.Privileged1";
+
+pub const DEVICE1_INTROSPECTION_XML: &str = include_str!("../dbus/org.natsume.Device1.xml");
+pub const PRIVILEGED1_INTROSPECTION_XML: &str = include_str!("../dbus/org.natsume.Privileged1.xml");
+
+#[zbus::proxy(
+    interface = "org.natsume.Device1",
+    default_service = "org.natsume.Device1",
+    default_path = "/org/natsume/Device1"
+)]
+pub trait Device1 {
+    #[zbus(name = "RegisterSessionAgent")]
+    fn register_session_agent(
+        &self,
+        registration: &SessionAgentRegistration,
+    ) -> zbus::Result<(SessionAgentLease, SessionUiSnapshot)>;
+
+    #[zbus(name = "RenewSessionAgentLease")]
+    fn renew_session_agent_lease(
+        &self,
+        lease_id: &str,
+        target: &SessionTarget,
+    ) -> zbus::Result<SessionAgentLease>;
+
+    #[zbus(name = "GetSessionUiSnapshot")]
+    fn get_session_ui_snapshot(
+        &self,
+        target: &SessionTarget,
+        after_revision: u64,
+    ) -> zbus::Result<SessionUiSnapshot>;
+
+    #[zbus(name = "SubmitSessionUiAction")]
+    fn submit_session_ui_action(&self, action: &SessionUiAction) -> zbus::Result<()>;
+
+    #[zbus(name = "SubmitBinding")]
+    fn submit_binding(&self, submission: &BindingSubmission) -> zbus::Result<()>;
+
+    #[zbus(name = "AcknowledgePresentation")]
+    fn acknowledge_presentation(&self, acknowledgement: &UiPresentationAck) -> zbus::Result<()>;
+
+    #[zbus(name = "UnregisterSessionAgent")]
+    fn unregister_session_agent(
+        &self,
+        target: &SessionTarget,
+        process_nonce: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(signal, name = "SessionUiSnapshotChanged")]
+    fn session_ui_snapshot_changed(&self, snapshot: SessionUiSnapshot) -> zbus::Result<()>;
+
+    #[zbus(signal, name = "SessionLeaseRevoked")]
+    fn session_lease_revoked(&self, target: SessionTarget, reason: String) -> zbus::Result<()>;
+}
+
+#[zbus::proxy(
+    interface = "org.natsume.Privileged1",
+    default_service = "org.natsume.Privileged1",
+    default_path = "/org/natsume/Privileged1"
+)]
+pub trait Privileged1 {
+    #[zbus(name = "CollectHardwareCandidates")]
+    fn collect_hardware_candidates(&self) -> zbus::Result<SanitizedHardwareClaim>;
+
+    #[zbus(name = "PrepareHomeInstance")]
+    fn prepare_home_instance(
+        &self,
+        target: &SessionTarget,
+        home_template_revision: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(name = "ActivateHomeInstance")]
+    fn activate_home_instance(&self, target: &SessionTarget) -> zbus::Result<()>;
+
+    #[zbus(name = "RecoverHomeInstance")]
+    fn recover_home_instance(
+        &self,
+        target: &SessionTarget,
+        home_template_revision: &str,
+    ) -> zbus::Result<()>;
+
+    #[zbus(name = "GarbageCollectHomeInstance")]
+    fn garbage_collect_home_instance(&self, retained_template_revision: &str) -> zbus::Result<()>;
+
+    #[zbus(name = "QueryContestSession")]
+    fn query_contest_session(&self) -> zbus::Result<Option<SessionTarget>>;
+
+    #[zbus(name = "TerminateContestSession")]
+    fn terminate_contest_session(&self, target: &SessionTarget) -> zbus::Result<()>;
+
+    #[zbus(name = "RequestDesktopLock")]
+    fn request_desktop_lock(
+        &self,
+        request: &ApplyLockRequest,
+    ) -> zbus::Result<SessionControlApplied>;
+
+    #[zbus(name = "RequestDesktopUnlock")]
+    fn request_desktop_unlock(
+        &self,
+        request: &ApplyUnlockRequest,
+    ) -> zbus::Result<SessionControlApplied>;
+
+    #[zbus(name = "InstallManagedBrowserPolicy")]
+    fn install_managed_browser_policy(&self, policy_revision: &str) -> zbus::Result<()>;
+}

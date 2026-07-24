@@ -140,8 +140,7 @@ jobs:
       - name: Frozen install
         run: pnpm install --frozen-lockfile
 
-      # Step 2 validates the committed snapshot; Rust-owned generation starts in Step 4.
-      - name: Validate committed OpenAPI snapshot and generated TypeScript
+      - name: Regenerate Rust-owned OpenAPI and TypeScript snapshots
         run: |
           set -euo pipefail
           cargo run -p natsume-server --locked --bin export-openapi -- \

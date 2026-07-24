@@ -1,25 +1,136 @@
 {
   "openapi": "3.1.0",
-  "info": { "title": "Natsume V2", "version": "2.5.0" },
+  "info": {
+    "title": "Natsume V2",
+    "description": "Rust-owned Phase 0 API contract. Version 2.5.0 is the retained API skeleton baseline and is independent of the 2.0.0 package version. The Phase 0 blueprint router exposes only GET /api/v2/health; imports, enrollment-request approval and explicit device-action paths are frozen compatibility contracts, not currently mounted runtime routes. Catalogue routes in the architecture do not replace them implicitly.",
+    "license": {
+      "name": "AGPL-3.0-or-later",
+      "identifier": "AGPL-3.0-or-later"
+    },
+    "version": "2.5.0"
+  },
   "paths": {
+    "/api/v2/devices/{device_id}/actions/sync-secret": {
+      "post": {
+        "tags": [],
+        "description": "Requires a human operator, re-authentication and an audit reason.",
+        "operationId": "syncDeviceSecret",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Explicit human-triggered SYNC_SECRET operation created"
+          }
+        }
+      }
+    },
+    "/api/v2/devices/{device_id}/actions/sync-state": {
+      "post": {
+        "tags": [],
+        "description": "Creates an explicit non-secret state Command. If required, the Device requests its Gateway certificate over the authenticated QUIC session as a command-bound subflow.",
+        "operationId": "syncDeviceState",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Device identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Explicit SYNC_STATE operation created; Gateway certificate issuance may occur within the command"
+          }
+        }
+      }
+    },
+    "/api/v2/enrollment-requests/{request_id}:approve": {
+      "post": {
+        "tags": [],
+        "summary": "Approve Device Enrollment and issue only the QUIC client certificate",
+        "operationId": "approveEnrollment",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "description": "Enrollment request identifier",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "Device Identity certificate issuance workflow accepted; no Gateway credential is issued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentApprovalAccepted"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/health": {
+      "get": {
+        "tags": [],
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Server process is healthy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v2/imports": {
       "post": {
-        "operationId": "createCsvImport",
+        "tags": [],
         "summary": "Upload one authoritative seat/account/password CSV",
+        "operationId": "createCsvImport",
         "responses": {
-          "202": { "description": "Import staged for masked preview" }
+          "202": {
+            "description": "Import staged for masked preview"
+          }
         }
       }
     },
     "/api/v2/imports/{import_id}:commit": {
       "post": {
+        "tags": [],
         "operationId": "commitCsvImport",
         "parameters": [
           {
             "name": "import_id",
             "in": "path",
+            "description": "CSV import identifier",
             "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
           }
         ],
         "responses": {
@@ -28,60 +139,56 @@
           }
         }
       }
-    },
-    "/api/v2/enrollment-requests/{request_id}:approve": {
-      "post": {
-        "operationId": "approveEnrollment",
-        "parameters": [
-          {
-            "name": "request_id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string", "format": "uuid" }
+    }
+  },
+  "components": {
+    "schemas": {
+      "EnrollmentApprovalAccepted": {
+        "type": "object",
+        "required": ["enrollment_request_id", "certificate_scope"],
+        "properties": {
+          "certificate_scope": {
+            "type": "string"
+          },
+          "enrollment_request_id": {
+            "type": "string",
+            "format": "uuid"
           }
-        ],
-        "responses": {
-          "202": {
-            "description": "Device Identity certificate issuance workflow accepted; no Gateway credential is issued"
+        }
+      },
+      "HealthResponse": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": {
+            "type": "string"
           }
-        },
-        "summary": "Approve Device Enrollment and issue only the QUIC client certificate"
-      }
-    },
-    "/api/v2/devices/{device_id}/actions/sync-state": {
-      "post": {
-        "operationId": "syncDeviceState",
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string" }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Explicit SYNC_STATE operation created; Gateway certificate issuance may occur within the command"
-          }
-        },
-        "description": "Creates an explicit non-secret state Command. If required, the Device requests its Gateway certificate over the authenticated QUIC session as a command-bound subflow."
-      }
-    },
-    "/api/v2/devices/{device_id}/actions/sync-secret": {
-      "post": {
-        "operationId": "syncDeviceSecret",
-        "description": "Requires a human operator, re-authentication and an audit reason.",
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "path",
-            "required": true,
-            "schema": { "type": "string" }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "Explicit human-triggered SYNC_SECRET operation created"
+        }
+      },
+      "OpenApiProblemDetails": {
+        "type": "object",
+        "required": ["type", "title", "status", "code", "correlation_id"],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "correlation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "detail": {
+            "type": ["string", "null"]
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
           }
         }
       }

@@ -24,7 +24,7 @@ typed domain error
  CodedReport / redaction
 ```
 
-The crate intentionally has no Axum, Prost or zbus runtime dependency. Step 4 owns framework integration and generated contracts.
+The crate intentionally has no Axum, Prost or zbus runtime dependency. Owning crates integrate the 33-code registry with generated OpenAPI, Protobuf framing/validation and D-Bus contracts without deriving behavior from error text.
 
 ## Redaction
 

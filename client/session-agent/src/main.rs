@@ -8,7 +8,8 @@ fn run() -> Result<(), &'static str> {
         (Some(mode), None) if mode == OsStr::new("--autostart") => {
             // Phase 0 resident process contract: desktop XDG Autostart owns
             // launch; the process begins hidden and does not create a window.
-            // Phase 6 adds logind validation, Daemon lease and lazy Slint UI.
+            // P0.7/Probe E1 still owes logind validation, Daemon lease renewal
+            // and the minimal lazy Slint slice; Phase 6 owns the full GUI state machines.
             loop {
                 thread::park();
             }

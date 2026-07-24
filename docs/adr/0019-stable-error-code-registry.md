@@ -29,7 +29,7 @@ Phase 0 已在 Protobuf 和数据库骨架中预留 stable error code 字段，�
 > 4. 领域错误仍由 owning module 定义 typed SNAFU enum，并通过 `AsErrorCode` 或显式 match 映射；不得用 `ErrorCode` 取代领域错误。
 > 5. Problem Details 默认 `detail = None`。跨 operator/report 边界前使用 `Redacted<T>`、`CodedReport` 或 `redact_report`，禁止输出 secret、path 或 source chain。
 > 6. Server、Daemon、Privileged Helper、Session Agent 均成为真实 package consumer；仍为 infallible blueprint 的 binary 使用公开 compile-time ownership module，不伪造 runtime failure。
-> 7. Phase 0 最小集合固定为计划列出的 23 个码；新增或改变已发布语义需要更新 ADR、需求和契约测试。
+> 7. Phase 0 最小集合为 33 个码：原有 23 个边界码加 P0.7 所需的 10 个 Session Agent lifecycle/presentation 码；新增或改变已发布语义需要更新 ADR、需求和契约测试。
 >
 > 我们明确不采用：
 >
@@ -55,8 +55,9 @@ Phase 0 已在 Protobuf 和数据库骨架中预留 stable error code 字段，�
 | HTTPS Enrollment | Server | `ENROLLMENT_*` |
 | mandatory-mTLS control | Server + Device Daemon | `PROTOCOL_*` |
 | Gateway certificate subprotocol | Server + Device Daemon | `GATEWAY_CERT_*` |
-| Session lock D-Bus | Session Agent + Device Daemon | `SESSION_CHANGED`、lock epoch/command codes |
-| Home | Privileged Helper | `HOME_TRANSITION` |
+| Session Agent lifecycle/presentation | Session Agent | `SESSION_INELIGIBLE`、`SESSION_AMBIGUOUS`、Agent singleton/autostart/display/presentation codes；lock capability absence may reuse the stable unsupported codes |
+| Agent presence and lock command state | Device Daemon | `SESSION_AGENT_MISSING`、`SESSION_CHANGED`、lock epoch/command codes |
+| Desktop lock execution / Home | Privileged Helper | lock/unlock execution unsupported codes、`HOME_TRANSITION` |
 | vault | Server + Device Daemon | `VAULT_CORRUPT` |
 | package/invocation contract | package consumers | `PACKAGE_LAYOUT_INVALID` |
 
@@ -146,3 +147,4 @@ Helper 的 `HardwareCollectionError::NotImplemented` 是 blueprint stub，不映
 | 日期 | 修改 | 作者角色 |
 |---|---|---|
 | 2026-07-23 | Step 3 初稿 | `ROLE_BUILD` |
+| 2026-07-24 | 补充 P0.7 Session Agent lifecycle/presentation 稳定码 | `ROLE_CLIENT` |

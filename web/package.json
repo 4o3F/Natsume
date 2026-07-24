@@ -11,7 +11,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "e2e": "playwright test",
-    "api:generate": "openapi-typescript openapi/natsume.openapi.json -o src/api/generated/schema.d.ts && prettier --write src/api/generated/schema.d.ts"
+    "api:generate": "openapi-typescript openapi/natsume.openapi.json -o src/api/generated/schema.d.ts && prettier --write openapi/natsume.openapi.json src/api/generated/schema.d.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.0.0",

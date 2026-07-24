@@ -6,8 +6,15 @@
 use natsume_error_code::ErrorCode;
 
 /// Stable codes owned by Privileged Helper production boundaries.
-pub const PRIVILEGED_HELPER_ERROR_CODES: &[ErrorCode] =
-    &[ErrorCode::HomeTransition, ErrorCode::PackageLayoutInvalid];
+///
+/// Lock/unlock unsupported codes are emitted by Helper D-Bus execution and share the
+/// stable string space with Session Agent capability reporting.
+pub const PRIVILEGED_HELPER_ERROR_CODES: &[ErrorCode] = &[
+    ErrorCode::HomeTransition,
+    ErrorCode::SessionLockUnsupported,
+    ErrorCode::SessionUnlockUnsupported,
+    ErrorCode::PackageLayoutInvalid,
+];
 
 #[cfg(test)]
 mod tests {

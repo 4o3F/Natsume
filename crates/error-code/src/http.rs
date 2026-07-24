@@ -68,17 +68,26 @@ pub const fn http_status(code: ErrorCode) -> u16 {
         | ErrorCode::EnrollmentCsrInvalid
         | ErrorCode::GatewayCertCsrInvalid => 400,
         ErrorCode::ProtocolAnonymousClient => 401,
-        ErrorCode::GatewayCertRequestNotAuthorized => 403,
+        ErrorCode::GatewayCertRequestNotAuthorized | ErrorCode::SessionIneligible => 403,
         ErrorCode::GatewayCertCommandMismatch
         | ErrorCode::GatewayCertRequestExpired
         | ErrorCode::GatewayCertSpkiConflict
         | ErrorCode::GatewayCertLocalKeyMismatch
         | ErrorCode::SessionChanged
+        | ErrorCode::SessionAmbiguous
+        | ErrorCode::SessionAgentDuplicate
+        | ErrorCode::SessionAutostartShadowed
+        | ErrorCode::SessionUiPresentedUnfocused
+        | ErrorCode::SessionLockUnsupported
+        | ErrorCode::SessionUnlockUnsupported
         | ErrorCode::StaleLockEpoch
         | ErrorCode::LockCommandMismatch
         | ErrorCode::NoActiveLock
         | ErrorCode::HomeTransition => 409,
-        ErrorCode::GatewayCertIssuerUnavailable => 503,
+        ErrorCode::GatewayCertIssuerUnavailable
+        | ErrorCode::SessionAgentMissing
+        | ErrorCode::SessionDisplayUnavailable
+        | ErrorCode::SessionDisplayLost => 503,
         ErrorCode::GatewayCertProfileInvalid
         | ErrorCode::GatewayCertInstallFailed
         | ErrorCode::VaultCorrupt

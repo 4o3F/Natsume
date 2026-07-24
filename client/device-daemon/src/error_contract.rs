@@ -34,9 +34,10 @@ pub const GATEWAY_CERT_ERROR_CODES: &[ErrorCode] = &[
 /// Local encrypted-vault errors shared with Server.
 pub const DEVICE_VAULT_ERROR_CODES: &[ErrorCode] = &[ErrorCode::VaultCorrupt];
 
-/// Session lock errors shared with Session Agent.
+/// Session lifecycle and lock errors observed by the Device Daemon.
 pub const SESSION_ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::SessionChanged,
+    ErrorCode::SessionAgentMissing,
     ErrorCode::StaleLockEpoch,
     ErrorCode::LockCommandMismatch,
     ErrorCode::NoActiveLock,
@@ -78,5 +79,10 @@ mod tests {
             assert!(code.as_str().starts_with("GATEWAY_CERT_"));
             assert!(!code.as_str().starts_with("ENROLLMENT_"));
         }
+    }
+
+    #[test]
+    fn daemon_owns_missing_session_agent_detection() {
+        assert!(SESSION_ERROR_CODES.contains(&ErrorCode::SessionAgentMissing));
     }
 }

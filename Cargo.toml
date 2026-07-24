@@ -31,26 +31,31 @@ license = "AGPL-3.0-or-later"
 publish = false
 
 [workspace.dependencies]
+axum = "0.8"
 bytes = "1"
 chacha20poly1305 = "0.11"
 csv = "1"
 hkdf = "0.13"
 prost = "0.14"
+prost-types = "0.14"
 quinn = "0.11"
+roxmltree = "0.20"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 rustls-pki-types = "1"
 secrecy = "0.10"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 sha2 = "0.11"
 snafu = "0.9"
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "uuid"] }
+sqlx = { version = "0.9", default-features = false, features = ["macros", "migrate", "runtime-tokio", "sqlite", "uuid"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["codec", "rt"] }
+utoipa = { version = "5", features = ["uuid"] }
 uuid = { version = "1", features = ["serde", "v5", "v7"] }
 zeroize = { version = "1", features = ["derive"] }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "5", default-features = false, features = ["option-as-array", "tokio"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

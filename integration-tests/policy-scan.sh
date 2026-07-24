@@ -31,6 +31,7 @@ reject_matches 'systemd credential directive is present' 'LoadCredential=|SetCre
 reject_matches 'Identity Guard product surface is present' 'natsume-identity-guard|identity_guard|IdentityGuard' server client crates integration-tests packaging
 reject_matches 'maintainer script downloads at install time' '(^|[^[:alnum:]_])(curl|wget|aria2c)([^[:alnum:]_]|$)|https?://|cargo[[:space:]]+install|pnpm[[:space:]]+(add|install)|npm[[:space:]]+install|go[[:space:]]+install' packaging/client/scripts packaging/server/scripts packaging/client/debconf
 reject_matches 'first-party Rust code depends on anyhow or thiserror' '(^|[^[:alnum:]_])(anyhow|thiserror)([^[:alnum:]_]|$)' server client crates integration-tests
+reject_matches 'first-party Rust code parses Display text for behavior' '\.to_string\(\)[[:space:]]*\.(contains|starts_with|ends_with)|format!\([^;]*\)[[:space:]]*\.(contains|starts_with|ends_with)' server client crates
 reject_matches 'spreadsheet adapter surface is present' '(^|[^[:alnum:]_])(calamine|umya-spreadsheet|exceljs|sheetjs|xlsx-js-style)([^[:alnum:]_]|$)' server client crates integration-tests web package.json Cargo.toml
 reject_matches 'generic certificate issue/install protocol is present' 'CertificateIssueRequest|INSTALL_CERTIFICATE|InstallCertificate' server client crates web/openapi
 
