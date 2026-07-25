@@ -23,6 +23,7 @@ pub enum UiUpdate {
 pub fn apply(update: UiUpdate) -> Result<(), slint::PlatformError> {
     WINDOW.with(|slot| {
         let mut slot = slot.borrow_mut();
+
         match update {
             UiUpdate::Hidden => {
                 if let Some(window) = slot.as_ref() {
@@ -50,12 +51,14 @@ pub fn apply(update: UiUpdate) -> Result<(), slint::PlatformError> {
                         window
                     }
                 };
+
                 window.set_title_text(title.into());
                 window.set_message_text(message.into());
                 window.set_seat_input_visible(seat_input_visible);
                 window.show()?;
             }
         }
+
         Ok(())
     })
 }

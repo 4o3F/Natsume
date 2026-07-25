@@ -14,7 +14,10 @@ where
     I: IntoIterator<Item = OsString>,
 {
     let mut arguments = arguments.into_iter();
-    let mode = match arguments.next().and_then(|value| value.into_string().ok()) {
+    let mode = match arguments
+        .next()
+        .and_then(|value| value.into_string().ok())
+    {
         Some(value) if value == "--autostart" => AgentMode::Autostart,
         _ => return Err("usage: natsume-session-agent --autostart"),
     };
@@ -26,25 +29,41 @@ where
     Ok(mode)
 }
 
-/// Implemented with logind GetSessionByPID for this process. Display-manager
-/// private APIs are intentionally outside the Session Agent boundary.
+/// Production implementation uses logind GetSessionByPID for this process.
+/// Display-manager private APIs remain outside the Agent boundary.
 pub trait SessionProbe {
-    fn validate_current_graphical_session(&self) -> Result<ValidatedSession, PlatformError>;
-    fn session_is_still_current(&self, session: &ValidatedSession) -> Result<bool, PlatformError>;
+    fn validate_current_graphical_session(
+        &self,
+    ) -> Result<ValidatedSession, PlatformError>;
+
+    fn session_is_still_current(
+        &self,
+        session: &ValidatedSession,
+    ) -> Result<bool, PlatformError>;
 }
 
-/// Implemented as an owner-only lock below XDG_RUNTIME_DIR.
+/// Production implementation uses an owner-only lock below XDG_RUNTIME_DIR.
 pub trait SessionSingleton {
     fn acquire(&self, session: &ValidatedSession) -> Result<(), PlatformError>;
 }
 
 pub trait NotificationBackend {
-    fn notify_binding_required(&self, machine_short_id: &str) -> Result<(), PlatformError>;
+    fn notify_binding_required(
+        &self,
+        machine_short_id: &str,
+    ) -> Result<(), PlatformError>;
 }
 
 pub trait DesktopLockBackend {
-    fn request_lock(&self, session: &ValidatedSession) -> Result<(), PlatformError>;
-    fn request_unlock(&self, session: &ValidatedSession) -> Result<(), PlatformError>;
+    fn request_lock(
+        &self,
+        session: &ValidatedSession,
+    ) -> Result<(), PlatformError>;
+
+    fn request_unlock(
+        &self,
+        session: &ValidatedSession,
+    ) -> Result<(), PlatformError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +88,7 @@ pub enum PlatformError {
 
 #[cfg(test)]
 mod tests {
-    use super::{AgentMode, parse_mode};
+    use super::{parse_mode, AgentMode};
     use std::ffi::OsString;
 
     #[test]

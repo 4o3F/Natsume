@@ -1,18 +1,40 @@
-# ADR-0006: Daemon-integrated Machine ID startup check
+# ADR-0006: Daemon-integrated Machine Identity startup
+
+> Status: `ACCEPTED`  
+> Scope: Natsume V2
+
+## Context
+
+身份检查必须先于 vault。单独 Identity Guard service 或安装实例 fallback 会增加启动竞态、状态同步和恢复特例。
 
 ## Decision
 
-Persist exactly one immutable Machine Hardware ID in an independent atomic file together with schema version, site namespace and checksum. At every daemon start, inventory local identity-bound artifacts before opening the encrypted vault:
+Machine identity startup 是 Device Daemon 的第一段 application flow，不创建独立 Guard service。Daemon 根据当前硬件、持久化 ID、identity-bound artifact 和 vault 结果执行封闭决策表；失败即 fail closed。
 
-- all artifacts absent: clean first start;
-- identity record missing/corrupt while DB, root key, certificate or LKG exists: fail closed;
-- stored namespace differs from deployment namespace: fail closed;
-- stored ID present in current candidates: continue;
-- evidence temporarily unavailable: fail closed and retry without deletion;
-- complete contradictory evidence: delete identity-bound local state and return to the same first-start path as a clean installation.
+## Alternatives
 
-There is no installation instance, identity alias graph, separate Identity Guard service, special clone reason or special enrollment path.
+- 独立 Identity Guard unit：增加服务间状态/ordering/恢复耦合。
+- 安装实例 ID fallback：disk copy 后可能错误继续。
+- vault 失败时自动 re-enroll：会丢失身份和证据。
 
-## Recovery
+## Consequences
 
-Vault authentication failure after an identity match is `local_vault_corrupt`, not evidence of a new device. Identity-record loss and site-namespace mismatch are also not first-start states. Each requires an explicit local factory-reset or site reprovisioning workflow.
+### Positive
+
+- 启动顺序单一；
+- identity/vault 决策可原子审计；
+- package 拓扑更小。
+
+### Negative / trade-offs
+
+- Daemon composition 必须严格保证其他 adapter 后初始化；
+- 启动错误需要清晰诊断。
+
+## Evidence and revisit trigger
+
+若未来多个进程都需要在启动前共享同一硬件身份 gate，可考虑最小只读机制，但不能绕过 `INV-IDENTITY-02`。
+
+## References
+
+- [security-recovery.md](../security-recovery.md)
+- [machine-identity-and-vault-recovery.md](../runbooks/machine-identity-and-vault-recovery.md)

@@ -1,10 +1,40 @@
+# ADR-0005: CSV-only import
 
-# ADR-0005: One authoritative UTF-8 CSV
+> Status: `ACCEPTED`  
+> Scope: Natsume V2
+
+## Context
+
+现场输入只需要 Seat、account 和 password。支持 XLSX/ODS、sheet、公式和列映射会显著增加 parser/supply-chain/preview 特例，并扩大秘密处理面。
 
 ## Decision
 
-Each import accepts exactly one UTF-8 CSV (optional BOM) with exact header `seat,account,password`. The file is a complete snapshot keyed by immutable Seat label. The first successful commit creates and freezes the Seat universe; every later file must contain exactly the same Seat set. Re-import creates assignment/password revisions or no-ops; commit is atomic and never triggers Device synchronization.
+只接受一个 UTF-8/BOM CSV，列必须恰好为 `seat,account,password`。上传进入加密 staging；preview 后显式 commit；首次 commit 冻结 Seat universe。无 XLSX/ODS、公式、列映射或密码导出。
+
+## Alternatives
+
+- XLSX/ODS：复杂解析和公式/格式风险。
+- 可配置列映射：增加 UI、错误和审计分支。
+- 直接导入无 preview：不满足现场可审查和原子提交。
 
 ## Consequences
 
-There is no `ImportSource`, multi-file workspace, column mapping, XLSX/ODS adapter, delimiter guessing, legacy encoding or DOMjudge credential-file export. Password staging is AEAD-encrypted and preview is masked.
+### Positive
+
+- 契约简单且可 fuzz；
+- 秘密路径小；
+- preview/commit 语义确定。
+
+### Negative / trade-offs
+
+- 上游表格必须先转换 CSV；
+- 不能容忍自定义列名。
+
+## Evidence and revisit trigger
+
+只有明确产品需求证明多个输入格式的收益高于安全和测试成本时才重新评估。
+
+## References
+
+- [domain-model.md](../domain-model.md)
+- [phase-2-csv-preparation.md](../implementation/phase-2-csv-preparation.md)

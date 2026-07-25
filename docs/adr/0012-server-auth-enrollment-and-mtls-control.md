@@ -1,40 +1,41 @@
-# ADR-0012: Device-only Server-auth Enrollment followed by mandatory-mTLS QUIC
+# ADR-0012: Server-auth Enrollment and mTLS control
 
-## Status
-
-Accepted for Natsume V2 v2.5.
+> Status: `ACCEPTED`  
+> Scope: Natsume V2
 
 ## Context
 
-A newly installed Client has no Device certificate, so it cannot enter the normal mutually authenticated QUIC control listener. At that point it also has no authoritative `DeviceTargetState`: the local origin hostname, Gateway certificate profile and minimum validity requirement are not yet frozen by a `SYNC_STATE` command.
-
-Issuing a Gateway certificate during Enrollment would therefore mix two trust transitions:
-
-1. approving the Daemon as a control-plane Device;
-2. provisioning a data-plane identity for a configuration that may not exist yet.
-
-It would also give the anonymous Enrollment surface a second certificate-issuing capability that is not needed to establish control connectivity.
+首次注册时 Device 尚无 client certificate，但后续控制必须强认证。把 Enrollment、control 和所有证书签发混成一个接口会产生匿名授权面。
 
 ## Decision
 
-The Client first uses HTTPS that authenticates only the Server through the package-installed Control CA and configured Server IP SAN. Enrollment is manually approved or approved by an explicit bounded policy; there is no one-time token.
+Enrollment 使用 server-auth HTTPS，只提交 Device Identity CSR并返回 Device leaf/chain。随后 Device control 使用 mandatory-mTLS QUIC，匿名 peer 在 TLS 阶段拒绝，0-RTT 禁用。Server control certificate 由离线 control root 流程提供；local origin PKI 分离。
 
-Enrollment accepts exactly one locally generated CSR: the Device Identity CSR. Approval signs and returns only the `clientAuth` Device leaf and chain used by `natsume-device-daemon` for QUIC. Enrollment request, persistence schema and poll result contain no Gateway CSR, Gateway SPKI or Gateway certificate.
+## Alternatives
 
-After issuance, normal Quinn/QUIC control uses a separate rustls `ServerConfig` that requires a valid Device client certificate. 0-RTT is disabled. Quinn/rustls owns TLS 1.3 and QUIC packet protection; Natsume validates the authenticated peer identity and application protocol.
-
-Gateway key generation and certificate issuance are deferred to ADR-0016 and can occur only inside an authenticated `SYNC_STATE` execution.
-
-## Server control certificate provisioning
-
-The Server generates its control private key directly inside the encrypted vault and exports only a CSR. The offline site Control Trust Root signs an IP-SAN leaf, which is imported only after SPKI/profile validation. Package installation never embeds or downloads an offline root private key.
-
-A stable Local Origin Root separately signs the Server-side Origin Issuing Intermediate. That issuer may be unavailable while Enrollment and normal Device mTLS remain healthy; it is required only when a `SYNC_STATE` needs a new Gateway leaf.
+- 预共享 enrollment token：增加 token 分发/泄漏/恢复。
+- TOFU：不满足 IP-SAN/trust 决策。
+- server-auth-only QUIC：Device 身份不足。
+- 一个通用 certificate endpoint：扩大签发权限。
 
 ## Consequences
 
-- A successful Enrollment proves only that the Daemon can authenticate to the control plane.
-- The Client may have a Device key/certificate while Gateway key/certificate are completely absent.
-- Phase 3 owns Device Enrollment and first mTLS connection; Phase 5 owns the first Gateway key/CSR/certificate path.
-- Enrollment compromise cannot directly mint local-origin server certificates.
-- Caddy remains absent or BLOCKED until an explicit state sync obtains a valid Gateway certificate.
+### Positive
+
+- 认证阶梯清晰；
+- 匿名输入不进入协议 decoder；
+- Enrollment 和 control 风险分离。
+
+### Negative / trade-offs
+
+- 需要预部署 Server trust；
+- PKI ceremony 和 certificate lifecycle 增加运维。
+
+## Evidence and revisit trigger
+
+Probe A/B、schema/DB tests 和 package provisioning 必须证明完整阶梯。
+
+## References
+
+- [contracts.md](../contracts.md)
+- [security-recovery.md](../security-recovery.md)

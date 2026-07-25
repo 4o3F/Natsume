@@ -14,7 +14,6 @@ function compareNames(left, right) {
 async function collectMarkdownFiles(input) {
   const absolute = path.resolve(input);
   let metadata;
-
   try {
     metadata = await stat(absolute);
   } catch (error) {
@@ -33,7 +32,6 @@ async function collectMarkdownFiles(input) {
   }
 
   const files = [];
-
   async function visit(directory) {
     const entries = await readdir(directory, { withFileTypes: true });
     entries.sort((left, right) => compareNames(left.name, right.name));
@@ -43,8 +41,8 @@ async function collectMarkdownFiles(input) {
       if (entry.isDirectory()) {
         await visit(entryPath);
       } else if (
-        entry.isFile() &&
-        MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
+        entry.isFile()
+        && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
       ) {
         files.push(entryPath);
       }
@@ -58,8 +56,8 @@ async function collectMarkdownFiles(input) {
 function isClosingFence(line, marker, minimumLength) {
   const candidate = line.replace(/^ {0,3}/, "").trimEnd();
   return (
-    candidate.length >= minimumLength &&
-    [...candidate].every((character) => character === marker)
+    candidate.length >= minimumLength
+    && [...candidate].every((character) => character === marker)
   );
 }
 
@@ -71,9 +69,7 @@ function extractMermaidBlocks(source, file) {
     const opening = lines[lineIndex].match(
       /^ {0,3}(`{3,}|~{3,})[ \t]*mermaid(?:[ \t]+.*)?$/i,
     );
-    if (!opening) {
-      continue;
-    }
+    if (!opening) continue;
 
     const marker = opening[1][0];
     const minimumLength = opening[1].length;
@@ -93,9 +89,11 @@ function extractMermaidBlocks(source, file) {
       throw new Error(`${file}:${openingLine}: unclosed Mermaid fence`);
     }
 
-    const sourceText = body.join("\n");
-    const firstLine = body.find((line) => line.trim())?.trim() ?? "<empty>";
-    blocks.push({ line: openingLine, source: sourceText, firstLine });
+    blocks.push({
+      line: openingLine,
+      source: body.join("\n"),
+      firstLine: body.find((line) => line.trim())?.trim() ?? "",
+    });
   }
 
   return blocks;
@@ -109,9 +107,7 @@ function formatError(error) {
 async function main() {
   const inputs = process.argv.slice(2);
   if (inputs.length === 0) {
-    throw new Error(
-      "usage: node docs/validate-mermaid.mjs <markdown-file-or-directory> [...]",
-    );
+    throw new Error("usage: node docs/validate-mermaid.mjs <file-or-directory> [...]");
   }
 
   const discovered = [];
@@ -124,7 +120,7 @@ async function main() {
     throw new Error("no Markdown files found in the requested inputs");
   }
 
-  const dom = new JSDOM("<!doctype html><html><body></body></html>");
+  const dom = new JSDOM("");
   globalThis.window = dom.window;
   globalThis.document = dom.window.document;
 
@@ -139,8 +135,7 @@ async function main() {
     let blocks;
 
     try {
-      const source = await readFile(file, "utf8");
-      blocks = extractMermaidBlocks(source, relativeFile);
+      blocks = extractMermaidBlocks(await readFile(file, "utf8"), relativeFile);
     } catch (error) {
       failures.push(formatError(error));
       continue;
@@ -175,9 +170,7 @@ async function main() {
   );
 }
 
-try {
-  await main();
-} catch (error) {
+main().catch((error) => {
   console.error(`validate-mermaid: ${formatError(error)}`);
   process.exitCode = 1;
-}
+});

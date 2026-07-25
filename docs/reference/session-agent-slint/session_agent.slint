@@ -33,19 +33,27 @@ export component SessionWindow inherits Window {
             visible: root.seat-input-visible;
             text <=> root.seat-code;
             placeholder-text: "Seat";
-            accepted => { root.confirm-seat(self.text); }
+            accepted => {
+                root.confirm-seat(self.text);
+            }
         }
 
         HorizontalBox {
             spacing: 12px;
+
             Button {
                 visible: root.seat-input-visible;
                 text: "Confirm";
-                clicked => { root.confirm-seat(root.seat-code); }
+                clicked => {
+                    root.confirm-seat(root.seat-code);
+                }
             }
+
             Button {
                 text: "Close";
-                clicked => { root.cancel(); }
+                clicked => {
+                    root.cancel();
+                }
             }
         }
     }

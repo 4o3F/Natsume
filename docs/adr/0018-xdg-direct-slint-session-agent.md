@@ -1,29 +1,43 @@
-# ADR-0018: XDG-Autostart direct resident Session Agent with lazy Slint UI
+# ADR-0018: XDG direct Slint Session Agent
 
-- Status: Accepted
-- Date: 2026-07-23
-- Supersedes: ADR-0017 startup/supervision/GUI implementation
+> Status: `ACCEPTED`  
+> Scope: Natsume V2
 
 ## Context
 
-Session Agent must execute inside the authenticated desktop session so it receives the real Wayland/X11 socket, session bus, locale, fonts and IME environment. GDM and LightDM are Display Managers below that session; they are not Agent UI backends or Agent IPC peers. A second systemd-user launch plane adds environment handoff, restart and ownership states without improving the product security boundary. Building widgets, shaping, input and rendering directly from low-level crates also duplicates mature GUI-library work.
+Session Agent 必须在真实图形会话中工作，支持 GNOME/GDM/Wayland 与 LightDM/X11，并保持 Daemon/Agent 权限分离。bootstrap/environment handoff 和 systemd user unit 增加 session identity、环境和生命周期耦合。
 
 ## Decision
 
-1. Install one system-wide XDG Autostart entry with absolute `Exec=/usr/bin/natsume-session-agent --autostart` and no desktop-specific scope.
-2. The same process validates its own PID through logind, acquires an owner-only singleton below `XDG_RUNTIME_DIR`, registers with the Daemon and renews a lease.
-3. Do not install a Session Agent systemd user unit. Do not implement bootstrap/run modes, an environment descriptor, `systemd-run --user`, display guessing or Daemon-spawned GUI recovery.
-4. The normal state is `ready + hidden`: the process runs the Slint event loop but creates no top-level component until a typed UI snapshot requests presentation.
-5. Compile package-owned `.slint` files at build time with `slint-build`. Production explicitly enables Slint `backend-winit`, `renderer-skia`, `std`, `compat-1-2` and accessibility, while disabling Qt, interpreter, live-preview, tray, MCP and system-testing features.
-6. Natsume product code no longer directly implements winit/softbuffer/tiny-skia/cosmic-text GUI plumbing.
-7. The zbus/Tokio worker delivers UI changes through `slint::invoke_from_event_loop`; all Slint component access remains on the event-loop thread.
-8. XDG Autostart is not a crash supervisor. Agent loss expires the lease, gates the Browser and requires a fresh managed desktop session to rerun Autostart. The Daemon does not synthesize display state.
-9. Runtime session lifecycle intent belongs to Daemon → Privileged Helper/logind. Agent does not call LightDM/GDM private interfaces.
+Client package 安装系统级 XDG Autostart entry，直接启动同一个 resident Agent binary。Agent 验证当前 logind session和 singleton，初始 hidden，收到 typed snapshot 后 lazy 创建 build-time Slint UI；使用 winit backend + Skia renderer。无 user unit、bootstrap/run handoff、环境 descriptor、runtime interpreter 或外部 GUI helper。
+
+## Alternatives
+
+- systemd user unit：不作为唯一可靠图形会话启动边界。
+- bootstrap → run：环境文件和双进程竞态。
+- 直接手拼 winit/renderer/text：维护和 IME/HiDPI 成本高。
+- GTK/Qt/Electron/helper：引入额外 runtime 或桌面依赖。
 
 ## Consequences
 
-- One startup path and one process own the graphical-session state.
-- There is no automatic in-session restart after Agent crash; fail-closed lease behavior and managed session replacement are operationally explicit.
-- Slint/Skia add build size and native dependency work, which becomes a package/ELF/reproducibility Gate.
-- GNOME/GDM/Wayland and a target LightDM-started X11 desktop must pass real login, hidden steady-state, lazy-window, IME, focus-denied and crash/relogin tests.
-- Protocol/database contracts remove `SessionSupervisor`; field number 4 remains reserved in Protobuf.
+### Positive
+
+- 单进程生命周期；
+- UI 与业务 contract 分离；
+- package 边界可扫描；
+- 双桌面共用核心模型。
+
+### Negative / trade-offs
+
+- Slint runtime closure 必须实测；
+- Wayland focus 不能保证，只能报告结果；
+- Agent event loop/thread 约束严格。
+
+## Evidence and revisit trigger
+
+Probe E/F 必须验证双桌面、hidden/lazy、IME/HiDPI、focus denied、display lost、no user unit 和 Caddy 不变。
+
+## References
+
+- [supported-platform.md](../supported-platform.md)
+- [phase-6-session-home.md](../implementation/phase-6-session-home.md)

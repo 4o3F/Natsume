@@ -1,41 +1,41 @@
-# ADR-0016: Gateway certificate issuance is bound to authenticated SYNC_STATE
+# ADR-0016: Gateway certificate issued during SYNC_STATE
 
-## Status
-
-Accepted for Natsume V2 v2.5.
+> Status: `ACCEPTED`  
+> Scope: Natsume V2
 
 ## Context
 
-A Gateway certificate is meaningful only relative to an explicit local-origin hostname, certificate profile and validity requirement. Those values belong to a frozen target snapshot, not to first-contact Enrollment. The Gateway private key must remain local to the Client, while the Server must prevent a compromised Device from asking the Origin issuer to sign arbitrary names or profiles.
+Gateway certificate 的授权取决于当前 Device、binding、Target hostname 和 configuration generation。Enrollment 时这些条件可能不存在或会变化。
 
 ## Decision
 
-The first Gateway key is generated lazily by `natsume-device-daemon` while executing a `SYNC_STATE` command. An existing encrypted Gateway key/certificate may be reused only when its SPKI, DNS SAN, profile, chain and validity satisfy the frozen target.
+Gateway key 在 Client 本地生成；CSR 只能通过 authenticated mTLS QUIC，在 active `SYNC_STATE` Command 中提交。Server 从 Target 派生 SAN/profile/validity，忽略 CSR 自报授权字段；request/SPKI 幂等并检测冲突。
 
-When issuance is required, the Daemon persists the key and request journal, creates a CSR and sends `GatewayCertificateRequest` on the already authenticated QUIC control stream. The request is bound to:
+## Alternatives
 
-- authenticated Device identity from the mTLS peer certificate;
-- `request_id`;
-- `command_id` whose kind is `SYNC_STATE`;
-- target generation;
-- configuration revision;
-- CSR SPKI hash and request nonce.
-
-The Server ignores all CSR-requested SAN, EKU, KeyUsage and CA flags. It derives DNS SAN, profile and validity from the command snapshot, verifies command ownership/state/deadline, signs with the Origin Issuing Intermediate, independently parses the result, persists the request/certificate transaction and returns `GatewayCertificateResult`.
-
-A retry with the same request/command/generation/configuration/SPKI returns the same certificate. The same request identity with a different SPKI is a conflict. There is no anonymous HTTPS recovery route, Enrollment fallback, generic `CertificateIssueRequest`, or `INSTALL_CERTIFICATE` command.
-
-## Failure behavior
-
-- Invalid or expired command: reject with a stable error.
-- QUIC disconnect: keep the command/request durable and retry before deadline.
-- Issuer temporarily unavailable: report a retryable result and keep Caddy absent/BLOCKED.
-- CSR/profile/SPKI conflict: fail closed and require a new explicit sync or operator action.
-- Device validates chain, SPKI, SAN, EKU, KeyUsage, BasicConstraints and minimum validity before encrypted installation.
+- Enrollment 同时签 Gateway：过早绑定且扩大匿名注册面。
+- 通用 INSTALL_CERTIFICATE：形成任意证书分发能力。
+- Client 决定 SAN：授权下放错误。
 
 ## Consequences
 
-- Device control identity is established before data-plane identity.
-- Origin issuance is authorized by an existing Device certificate and a concrete operator-approved command.
-- Configuration hostname changes naturally trigger certificate replacement on the next state sync.
-- Gateway issuance shares the configuration resource lane and cannot race Caddy activation for the same Device.
+### Positive
+
+- 签发绑定当前业务意图；
+- 私钥不离开 Client；
+- 幂等和审计清晰。
+
+### Negative / trade-offs
+
+- 首次 state sync 多一个子协议；
+- 需要处理证书和 Caddy 原子激活。
+
+## Evidence and revisit trigger
+
+Probe B/C 和 G0-005–009 的负向测试必须通过。
+
+## References
+
+- [contracts.md](../contracts.md)
+- [security-recovery.md](../security-recovery.md)
+- [gateway-certificate-sync.md](../runbooks/gateway-certificate-sync.md)

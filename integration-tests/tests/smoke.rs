@@ -10,7 +10,7 @@ fn repository_smoke_finds_authoritative_phase0_inputs() {
     for relative_path in [
         "Cargo.lock",
         "pnpm-lock.yaml",
-        "docs/v2-design.md",
+        "docs/README.md",
         "docs/requirements/phase-0.md",
         "docs/gates/g0-checklist.md",
     ] {

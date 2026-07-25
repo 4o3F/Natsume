@@ -1,36 +1,121 @@
-# Natsume V2 integrated development snapshot
+# Natsume V2
 
-> Upstream base: `4o3F/Natsume` branch `v2` at `dcbefb68035ab2fb1df74f5ddafa0ce7a181820c`  
-> Architecture baseline: **v2.7**  
-> Roadmap baseline: **v1.4**  
-> Integration date: **2026-07-23**
+Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。本分支当前仍处于 **Phase 0 工程基线**：仓库已建立 Rust/Web workspace、锁文件、CI、打包拓扑、稳定错误码和部分契约骨架；领域功能、生产数据面与 Session/Home 全流程尚未完成。
 
-This tree is intended to replace a local Natsume V2 working copy **after backing up local-only changes**. It preserves the latest upstream Phase 0 engineering baseline and stable-error implementation, then merges the accepted v2.7 architecture, roadmap, phase plans, protocol/schema contracts and XDG Autostart packaging boundary.
+本文档集采用“**一个事实、一个权威位置**”的维护规则。当前入口直接指向权威文档；由 registry 生成的 Markdown 仅作为可读视图。
 
-## Start here
+## 阅读入口
 
-- Architecture: [`docs/v2-design.md`](docs/v2-design.md)
-- Concise roadmap: [`docs/implementation-roadmap.md`](docs/implementation-roadmap.md)
-- Detailed Phase 0–7 plans: [`docs/implementation/`](docs/implementation/)
-- Upstream provenance: [`docs/upstream-base.md`](docs/upstream-base.md)
-- Merge decisions and overwrite procedure: [`docs/merge-report.md`](docs/merge-report.md)
-- Validation report: [`docs/validation-report.md`](docs/validation-report.md)
-- Source integrity: `FILE_MANIFEST.sha256` and `FILE_MANIFEST.json`
-- Phase 0 requirements and G0: [`docs/requirements/phase-0.md`](docs/requirements/phase-0.md), [`docs/gates/g0-checklist.md`](docs/gates/g0-checklist.md)
-- Target platform and lab inventory: [`docs/supported-platform.md`](docs/supported-platform.md), [`docs/lab/phase-0-inventory.md`](docs/lab/phase-0-inventory.md)
+- 文档地图与维护规则：[`docs/README.md`](docs/README.md)
+- 系统架构：[`docs/architecture.md`](docs/architecture.md)
+- 领域模型：[`docs/domain-model.md`](docs/domain-model.md)
+- 边界契约：[`docs/contracts.md`](docs/contracts.md)
+- 状态与执行模型：[`docs/state-and-execution.md`](docs/state-and-execution.md)
+- 安全与恢复不变量：[`docs/security-recovery.md`](docs/security-recovery.md)
+- 平台支持状态：[`docs/supported-platform.md`](docs/supported-platform.md)
+- 实施路线图：[`docs/roadmap.md`](docs/roadmap.md)
+- Phase 0 当前状态：[`docs/verification/phase-0-status.md`](docs/verification/phase-0-status.md)
+- 运维手册：[`docs/runbooks/README.md`](docs/runbooks/README.md)
 
-## Current implementation boundary
+生成视图：
 
-The upstream branch is still a Phase 0 engineering baseline, not the completed Natsume product. The stable `natsume-error-code` crate, lockfiles, CI, package topology and contract tests are retained as real code. The v2.7 Session Agent launch boundary is applied now: package-owned XDG Autostart, hidden resident process, and no systemd user unit.
+- [`docs/requirements/phase-0.md`](docs/requirements/phase-0.md)
+- [`docs/gates/g0-checklist.md`](docs/gates/g0-checklist.md)
 
-Phase 0 must add the minimal real Slint vertical slice required by P0.7 and Probe E: direct XDG launch, a resident hidden process, typed-trigger lazy presentation, and build/package dependency-closure evidence. The reviewed scaffold under `docs/reference/session-agent-slint/` is the starting point. Phase 6 still owns the complete production Binding, Session and Home GUI state machines; completing the Phase 0 probe does not claim Phase 6 completion.
+## 当前实现边界
 
-## Local replacement
+当前可视为真实工程基线的内容包括：
 
-1. Back up uncommitted or local-only files.
-2. Remove the old working-tree contents except `.git` when preserving local history.
-3. Copy this archive's `Natsume/` contents into the repository root.
-4. Review `docs/merge-report.md` and run the verification commands available in your environment.
-5. Commit the integration as one local merge commit before continuing feature work.
+- Cargo virtual workspace 与单一 `Cargo.lock`；
+- pnpm Web workspace 与单一 `pnpm-lock.yaml`；
+- `natsume-error-code`、协议/本地 API/Machine ID 等共享 crate 骨架；
+- Rust、Web、契约、策略和 Deb smoke 的 CI 命令；
+- Server/Client 包拓扑；
+- 系统级 XDG Autostart 的 Session Agent 包边界。
 
-Do not copy `.git` from another checkout; this distribution intentionally contains source files only.
+以下仍是后续 Phase 的目标，不应从文档存在推断为已实现：
+
+- 完整 Server 领域模型、RBAC、审计与 Preparation Center；
+- 生产 Enrollment、mTLS QUIC、Command journal 和 Gateway certificate 流程；
+- 生产 Caddy 激活与 DOMjudge 数据面；
+- 成熟 Slint Session Agent；
+- Session/Home 状态机；
+- 完整备份、升级、演练和发布签收。
+
+## 仓库拓扑
+
+```text
+server/                  natsume-server
+client/
+  device-daemon/         natsume-device-daemon
+  privileged-helper/     natsume-privileged-helper
+  session-agent/         natsume-session-agent
+crates/
+  device-protocol/
+  error-code/
+  local-control-api/
+  machine-identity/
+web/                     operator Web Panel
+integration-tests/
+packaging/
+docs/
+```
+
+详细边界见 [`docs/repository-layout.md`](docs/repository-layout.md)。
+
+## 常用命令
+
+仓库根 `justfile` 只分发原生工具命令：
+
+```bash
+just toolchain
+just install
+just fmt
+just lint
+just unit
+just api
+just diagrams
+just integration
+just verify
+just package
+```
+
+验证文档注册表：
+
+```bash
+node docs/verification/validate-registry.mjs
+node docs/verification/render.mjs --check
+node docs/verification/validate-markdown.mjs docs README.md
+node docs/verification/validate-links.mjs docs README.md
+pnpm diagrams
+```
+
+生成 Phase 0 Markdown 视图：
+
+```bash
+node docs/verification/render.mjs --write
+```
+
+## 关键设计边界
+
+1. 一个初始化后的 Server 实例只服务当前一场竞赛，不建模多 Event。
+2. Enrollment 只签发 Device Identity certificate。
+3. Gateway certificate 只在已认证 mTLS QUIC 的 active `SYNC_STATE` 内签发。
+4. Target 不含密码且不自动产生远端副作用。
+5. `SYNC_STATE` 与 `SYNC_SECRET` 都必须由操作员明确触发；密码只进入秘密专用路径。
+6. Observed snapshot 是设备实际状态的唯一业务来源。
+7. root Helper 无外网、无 DOMjudge 密码、无任意命令接口。
+8. Session Agent 无 vault、PKI 或 Caddy 所有权。
+9. Session lock/unlock 不改变 Caddy 配置、epoch 或状态。
+10. 无法证明 Machine ID、vault 或 Home 安全时必须 fail closed。
+
+完整规则以 [`docs/security-recovery.md`](docs/security-recovery.md) 的 `INV-*` 条目为准。
+
+## 文档基线
+
+- 架构来源：Natsume V2 v2.7 决策集合；
+- 文档重构基线：2026-07-24；
+- Phase 0 窗口：2026-07-23 至 2026-08-12；
+- G0 当前结论：`OPEN`，不得从文档重构推断为 Gate 通过。
+
+文档重构记录见 [`docs/history/document-refactor-2026-07-24.md`](docs/history/document-refactor-2026-07-24.md)。

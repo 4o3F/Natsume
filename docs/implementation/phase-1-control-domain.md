@@ -1,230 +1,127 @@
-# Natsume V2 Phase 1 详细实施计划：最小控制域与 Server 基础
+# Phase 1 — Control Domain
 
-> 架构基线：`Natsume_V2_Design_v2.7.md`  
-> Roadmap 基线：`Natsume_V2_Implementation_Roadmap_v1.4.md`  
-> 计划版本：Phase Plan v1.1  
-> 基准窗口：W4–W9  
-> Gate：G1  
-> 前置依赖：G0
+> 计划：W4–W8  
+> 入口：G0 PASS  
+> 退出：G1
 
----
+## 1. 目标
 
-## 1. 阶段使命与边界
+建立 Server 端可持续演进的领域、持久化、授权、审计和 Web shell，使后续 CSV、Device control 和 Operation 都依赖清晰模块而不是一个巨型 Server handler。
 
-建立无 Event、无运行时 phase、无 Team metadata 的权威 Server 事务模型和 Web 控制面基础。Phase 1 负责把所有核心事实、约束、秘密存储、审计和状态变更放入可恢复的 SQLite 事务中，但不连接真实 Device。
+## 2. 工作包
 
-本阶段必须在数据库层固化 v2.6 的证书边界：
+### P1.1 Persistence baseline
 
-- Enrollment 只保存 Device CSR/SPKI；
-- `gateway_certificate_requests` 是 `SYNC_STATE` 的子资源；
-- AutomationPolicy 无独立 Device/Gateway cert toggle；
-- Target State 不含 expected Gateway fingerprint；
-- Gateway certificate 是执行结果和 Observed fact。
+- SQLite WAL；
+- migration runner；
+- 空库和升级测试；
+- table ownership；
+- transaction helper；
+- backup-compatible settings；
+- no cross-module arbitrary writes。
 
----
+概念实体见 [领域模型](../domain-model.md)。实际列和 index 由 migration 拥有。
 
-## 2. 前置输入
+### P1.2 Contest domain
 
-- G0 支持平台、PKI ownership、目录/user/unit 决策；
-- SNAFU/error-code registry；
-- OpenAPI/Proto/D-Bus generation；
-- Server root key/vault cryptographic spike；
-- SQL migration harness 与 package test VM。
+- Seat/account/credential metadata；
+- Device；
+- Binding；
+- revision/generation value objects；
+- lifecycle rules；
+- repository ports；
+- domain tests。
 
----
+不实现生产 CSV parser；使用 fixture/command 建立最小事实。
 
-## 3. 详细工作包
+### P1.3 Server vault
 
-### P1.1 SQLite schema 与 migration
+- AEAD format；
+- key loading；
+- secret handle/use case；
+- atomic write/rotation skeleton；
+- redaction；
+- wrong-key/tamper tests；
+- backup/restore test fixture。
+
+### P1.4 Auth/RBAC
+
+最小角色：
+
+- platform/admin；
+- contest operator；
+- read-only/auditor；
+- secret-sync authorization。
 
 实现：
 
-```text
-site_identity
-instance_state
-server_vault_records
-system_configuration_revisions
-automation_policy_revisions
-seats
-accounts
-credential_revisions
-seat_assignments
-devices
-device_bindings
-device_certificates
-gateway_certificates
-device_target_states
-observed_device_states
-enrollment_challenges
-enrollment_requests
-csv_imports / csv_import_rows
-operations / operation_targets
-commands / command_attempts
-gateway_certificate_requests
-idempotency_records
-audit_events / change_events
-```
+- session lifecycle；
+- CSRF/session protection；
+- route/use-case authorization；
+- audit actor identity；
+- Web auth shell。
 
-关键结构：
+### P1.5 Audit and outbox
 
-- `enrollment_requests` 只有 `device_csr_der`、`device_spki_sha256`；
-- `gateway_certificates` 记录 `dns_san`、`certificate_profile_id`、`issued_for_configuration_revision_id`；
-- `gateway_certificate_requests` 绑定 `device_pk`、`command_id`、`target_generation`、`configuration_revision_id`、CSR、SPKI、state、issued certificate；
-- `automation_policy_revisions` 只有 auto approve enrollment/binding、auto sync state、auto prompt；
-- Target snapshot 存 hostname/profile/minimum validity，不存 expected certificate fingerprint。
+- AuditEvent schema；
+- ChangeEvent/outbox；
+- domain transaction atomicity；
+- dispatcher/SSE consumer skeleton；
+- redacted diff；
+- retry/idempotency；
+- retention/export policy skeleton。
 
-约束：Seat universe freeze、Seat immutable、username unique、active assignment/binding unique、Machine ID immutable unique、active cert unique、Command/idempotency unique、Gateway request/command/device/generation 一致性由事务服务与 DB 共同保证。
+### P1.6 Operation/Command persistence
 
-### P1.2 Server encrypted vault
+- Operation、OperationTarget、Command、Attempt；
+- 状态和值对象；
+- repository；
+- 归约；
+- 不连接真实 Device；
+- mock dispatcher；
+- 普通 CRUD 不强制创建 Operation。
 
-- 创建 `/var/lib/natsume-server/keys/server-root.key`：CSPRNG、O_EXCL、O_NOFOLLOW、0400、fsync；
-- HKDF/per-record AEAD/AAD/key-check；
-- record types：password、staged password、Device CA key、Origin Intermediate key、Server control key、secret command payload；
-- SQLite/WAL/temp/plaintext canary 扫描；
-- root key 与 DB 分离 backup/restore 原型；
-- key/AAD version 预留 migration。
+### P1.7 Operator API and Web shell
 
-### P1.3 Domain/Application services
+- generated OpenAPI；
+- problem details/ErrorCode；
+- navigation；
+- auth；
+- Device/Seat/Binding read model；
+- Operation/Audit placeholders backed by real API；
+- loading/empty/error/accessibility；
+- SSE reconnect skeleton。
 
-- Seat、Account、CredentialRevision、SeatAssignment；
-- Device、Binding、delete preconditions、no merge/split；
-- SystemConfigurationRevision；
-- AutomationPolicy；
-- DeviceTargetState pure calculator；
-- certificate requirement calculator；
-- domain mutation 只更新 Server truth，不自动 dispatch。
+## 3. 交付物
 
-### P1.4 Enrollment 与 certificate domain skeleton
-
-- Enrollment challenge/request/poll state machine；
-- approval result 语义为 Device certificate issuance；
-- Gateway certificate request repository/service interface，仅接受 command context；
-- certificate profile objects 与 post-sign parser interface；
-- Phase 1 使用 test signer，不接真实 Client。
-
-### P1.5 Operation/Command skeleton
-
-- Operation、Target、Command、Attempt 状态机；
-- frozen selection digest、deadline、offline policy；
-- `SYNC_STATE` payload 非秘密；
-- `SYNC_SECRET` payload 只能指向 Server vault record；
-- fake online registry/dispatcher；
-- Gateway request 必须引用 kind=`SYNC_STATE` Command。
-
-### P1.6 HTTP/Auth/RBAC
-
-- local operator accounts + Argon2id；
-- secure cookie、CSRF、idle/absolute timeout；
-- viewer/operator/lead/admin；
-- re-auth：secret、PKI、delete、automation；
-- Problem Details、ETag/If-Match、Idempotency-Key、cursor pagination；
-- Enrollment approval API 描述明确为 Device certificate。
-
-### P1.7 Audit、Change 与 SSE
-
-- domain/Audit/Change 同事务；
-- persisted cursor、Last-Event-ID、retention/reset；
-- no password/raw hardware/CSR DER/private key；
-- certificate audit 区分 `device_enrollment_certificate_issued` 和 `gateway_certificate_issued_for_sync_state`；
-- JSONL export skeleton。
-
-### P1.8 Web Shell
-
-- route/layout/auth；
-- Seat/Account/Device/Binding/Configuration/Automation/Operation/Audit；
-- Enrollment 页面只有 Device CSR fingerprint；
-- Gateway certificate status 独立显示，不提供 Enrollment 签发按钮；
-- 2,000-row table virtualization baseline；
-- generated API types。
-
----
-
-## 4. 实施顺序
-
-### W4–W5：Schema、Vault、Auth Skeleton
-
-- 初始 migration 与约束测试；
-- Server root key/vault；
-- operator auth/session；
-- OpenAPI skeleton。
-
-### W6–W7：Domain、Target、Audit/SSE
-
-- Seat/Account/Assignment/Device/Binding；
-- Configuration/Automation；
-- pure target calculator；
-- Audit/Change/SSE；
-- Web domain views。
-
-### W8：Enrollment/Command Skeleton
-
-- Device-only Enrollment state machine；
-- Gateway request persistence contract；
-- fake registry/Operation/Command；
-- certificate UI state。
-
-### W9：整合与 Gate
-
-- crash/concurrency/security tests；
-- backup/restart demo；
-- Web → API → SQLite → Audit/SSE vertical demo；
+- production migration set；
+- module dependency tests；
+- domain/application tests；
+- Server vault format；
+- RBAC matrix；
+- Audit/outbox integration；
+- OpenAPI + TS generated code；
+- Web shell e2e；
 - G1 evidence。
 
----
+## 4. Definition of Done
 
-## 5. 交付物
+- 领域 module 不依赖 Axum/SQL row/Quinn；
+- transaction + audit + outbox 原子；
+- secret 不进入 read models/logs；
+- RBAC 在 use-case boundary 强制；
+- stable ErrorCode 穷举；
+- migration 空库/升级通过；
+- Operation 归约可重算；
+- Web 不复制 domain enum；
+- restart 后 Server state 可恢复；
+- G1 decision 签署。
 
-- 初始 SQL migration 与 migration test suite；
-- Server vault module + backup prototype；
-- domain/application service modules；
-- Auth/RBAC/API/OpenAPI；
-- persisted SSE；
-- Web Shell；
-- fake Device/Operation harness；
-- certificate lifecycle schema tests；
-- G1 evidence bundle。
+## 5. 非目标
 
----
-
-## 6. 验证矩阵
-
-| 场景 | 预期 |
-|---|---|
-| 更新 Seat label | DB 拒绝 `seat_label_immutable` |
-| 第二个 active DeviceBinding | unique constraint/typed conflict |
-| Machine ID update | DB 拒绝 |
-| Enrollment insert 含 Gateway CSR 字段 | schema 不存在/contract test 失败 |
-| Gateway request 引用非 SYNC_STATE Command | service 拒绝稳定错误码 |
-| Automation policy 试图设置 auto issue cert | OpenAPI/DB/UI 均无字段 |
-| Target hash 输入 certificate fingerprint | pure calculator test 失败 |
-| password canary | 只在 vault ciphertext，API/log/WAL scan clean |
-| 同 Idempotency-Key 不同 body | conflict |
-| SSE 断线重连 | cursor 补齐或 snapshot reset |
-
----
-
-## 7. 风险与缓解
-
-| 风险 | 缓解 |
-|---|---|
-| Domain service 绕过 DB constraint | 所有关键约束同时有 DB test 与 service test |
-| Vault record 明文落 WAL/temp | canary test、短事务、禁止 plaintext column、temp-dir scan |
-| Gateway request 过早做成通用 API | 无公开 HTTP route；repository 要求 command context |
-| Web 误导 Enrollment 已完成 Gateway | 独立状态标签和 E2E negative assertion |
-| Target hash 不稳定 | canonical serialization/golden fixture/property test |
-
----
-
-## 8. G1 Gate 清单
-
-- [ ] 完整最小 domain CRUD/constraints；
-- [ ] Server vault key-check、tamper、restart、backup prototype；
-- [ ] Enrollment schema 只有 Device CSR；
-- [ ] Gateway request schema 与 active SYNC_STATE 绑定；
-- [ ] Automation 无 cert issuance toggle；
-- [ ] Target 无 expected Gateway fingerprint；
-- [ ] password internal round-trip only；
-- [ ] Web → API → SQLite → Audit/SSE demo；
-- [ ] domain mutation 无 Device side effect；
-- [ ] 无 Event/phase/Team metadata/merge-split；
-- [ ] G1 evidence 已签署。
+- 生产 CSV；
+- Enrollment；
+- QUIC；
+- Device journal；
+- Gateway/Caddy；
+- Session/Home。

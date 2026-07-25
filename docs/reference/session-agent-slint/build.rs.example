@@ -1,5 +1,6 @@
 fn main() {
     println!("cargo:rerun-if-changed=ui/session_agent.slint");
+
     if let Err(error) = slint_build::compile("ui/session_agent.slint") {
         panic!("failed to compile Session Agent Slint UI: {error}");
     }
