@@ -1,6 +1,6 @@
 # Device Replacement
 
-> 适用：硬件更换、主板身份变化、工作站永久退役  
+> 适用：硬件更换、主板身份变化、工作站永久退役
 > 关键不变量：`INV-IDENTITY-02`、`INV-CERT-01`、`INV-SECRET-02`
 
 Replacement 不是修改 Machine Hardware ID，也不是复制旧 vault/key。
@@ -11,7 +11,7 @@ Replacement 不是修改 Machine Hardware ID，也不是复制旧 vault/key。
 - 新硬件可独立收集 Machine ID；
 - 原设备状态（在线、丢失、损坏）已记录；
 - 有权限 retire/delete、unbind、enroll、bind、sync；
-- 当前竞赛和 Seat universe 保持不变；
+- Device replacement 本身不修改 confirmed contest configuration；只有独立 Import Commit 才能替换 Seat collection（见 [CSV Import](csv-import.md)）；
 - 对丢失/疑似泄露设备准备证书撤销。
 
 ## 2. 保护原设备
@@ -62,7 +62,8 @@ Replacement 不是修改 Machine Hardware ID，也不是复制旧 vault/key。
 - 新 Device完成 state/secret；
 - Caddy/Observed/Drift 正常；
 - 没有 key/vault/identity copy；
-- audit 将原/新 lifecycle 关联为 replacement。
+- audit 将原/新 lifecycle 关联为 replacement；
+- confirmed contest configuration 未被本流程修改。
 
 ## 6. 回滚
 

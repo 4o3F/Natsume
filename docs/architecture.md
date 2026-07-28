@@ -32,7 +32,7 @@ Natsume 为单场竞赛现场提供以下能力：
 ### 2.1 包含
 
 - 一个 Server 实例服务当前一场竞赛；
-- 一个固定 Seat universe；
+- 当前单场竞赛的一份可重复 import 的 confirmed contest configuration；
 - `seat,account,password` CSV；
 - Device 注册、绑定、配置和状态；
 - Device 与 Gateway 两级证书；
@@ -105,7 +105,7 @@ flowchart LR
 不得：
 
 - 直接访问工作站本地文件、桌面或 Caddy Admin；
-- 把密码加入普通 Target、Observed、日志、SSE 或导出；
+- 把密码、password length、password fingerprint、password-derived digest、raw CSV hash 或内部 candidate digest 加入 Target、Observed、普通 API/Browser 可见响应、日志、指标、SSE、audit diff、outbox 或导出；
 - 将 Web request 生命周期当作远端副作用完成边界；
 - 让 Enrollment 签发 Gateway certificate。
 
@@ -125,6 +125,7 @@ flowchart LR
 
 - 保存密码到浏览器持久化存储；
 - 自行计算权限、Target 或 Drift；
+- 本地重算 import diff classification；只渲染 Server 返回的结构化 preview；
 - 解析错误显示文本作业务判断；
 - 宣称命令已完成，除非 Server 状态已经确认。
 
@@ -270,7 +271,7 @@ database / vault / protocol / OS adapters
 
 | 数据 | 唯一 Owner | 允许消费者 |
 |---|---|---|
-| Seat universe | contest-domain | Target、Web、CSV |
+| confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV |
 | account 标识 | contest-domain | Target、Web |
 | password 明文 | Server vault / Client vault 的短生命周期 use case | secret sync、Caddy credential adapter |
 | Device lifecycle | identity-enrollment/device-control | Web、Target |
@@ -296,14 +297,16 @@ database / vault / protocol / OS adapters
 upload
   → encrypted staging
   → strict parse
-  → preview classification
-  → explicit commit
-  → domain transaction
-  → AuditEvent + ChangeEvent
-  → Target becomes stale/recomputable
+  → immutable candidate import
+  → server-computed redacted preview
+  → explicit Import Commit
+  → baseline compare-and-swap + binding freshness 校验
+  → atomic unbind-and-replace（仅当 preview 已授权的待解绑 bound Seat 集合非空）
+  → redacted AuditEvent；内容变化 ChangeEvent/outbox 仅在 material/binding 实际变化时
+  → Target becomes stale/recomputable（仅 material 导致 Server truth 实际变化）
 ```
 
-CSV 提交只改变 Server truth，不直接联系 Device。首次成功提交冻结 Seat universe。
+每个 `seat,account,password` CSV 都是完整的 contest configuration candidate。**Material** Import Commit 才替换 confirmed contest configuration，并在需要时做 atomic unbind 与相关 revision 提升；**no-op** Import Commit（`is_noop`）只记录 lineage 与 redacted AuditEvent，不突变 confirmed 内容、不提升 contest/credential/assignment revision、不写内容变化 ChangeEvent/outbox、不触发 Target churn。Import Commit 不创建 Operation/Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O，也不表示 Device 已同步。baseline 或 binding freshness mismatch 须重新 preview，且不得改变 confirmed truth。集合可重复 import 完整替换；权威 diff taxonomy、revision CAS、preview token 与 atomic unbind-and-replace 规则见 [领域模型](domain-model.md#42-contest-configuration-import)，本文不重复完整 taxonomy/wire 字段表。
 
 ### 8.2 Device Enrollment
 

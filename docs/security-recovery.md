@@ -66,9 +66,18 @@ Natsume 主要防护：
 - Caddy 状态页；
 - ErrorCode detail 或 source chain。
 
-允许的秘密路径必须使用专用类型、最短生命周期、应用层加密和 redacted 结果。
+对 password-bearing CSV / candidate import，下列材料同样 **不得**进入上述 ordinary surfaces（以及 outbox / metric）：
 
-**验证入口：** secret scan、API/schema snapshot、日志测试、UI/e2e、Command redaction、package scan。
+- password 值；
+- password length；
+- password fingerprint；
+- raw CSV content hash；
+- 其他由 password-bearing CSV 内容派生的 digest；
+- Server 内部 candidate digest/revision（仅允许存在于 encrypted staging / secret-safe persistence）。
+
+允许的秘密路径必须使用专用类型、最短生命周期、应用层加密和 redacted 结果。Import 普通边界（含 API、Browser 可见响应、audit、log、metric、SSE、outbox）只可使用 opaque `preview_token` 与 redacted 分类/计数/identity/revision 证据；不得要求 Browser 持有或回传 password-derived digest/fingerprint/length 或内部 candidate digest。
+
+**验证入口：** secret scan、API/schema snapshot、日志测试、UI/e2e、Command redaction、import redaction、package scan。
 
 ### `INV-INPUT-01`：网络输入只能映射到封闭契约
 
@@ -142,11 +151,15 @@ Target 只含非秘密数据且本身惰性。CSV、binding 或配置变化不�
 
 只有人工发起的 `SYNC_STATE` 可以应用 Target。Observed 是实际状态来源，Drift 是纯比较。
 
-**验证入口：** domain tests、outbox tests、UI authorization、offline Device tests。
+Import Commit 须区分 **material** 与 **no-op**。**Material** Import Commit 才改变 Server truth（confirmed contest configuration 及必要的同事务 binding/revision，以及仅在实际 material/binding 变化时的内容变化 ChangeEvent/outbox）。**No-op** Import Commit 只记录 lineage 与 redacted AuditEvent，不突变 confirmed 内容、不提升 contest/credential/assignment revision、不写内容变化 outbox、不触发 Target churn。Import 不创建 Operation/Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表示 Device 已同步。失败、取消（discard）、过期、stale baseline、binding freshness mismatch、preview token mismatch 与 transaction rollback **均不得**改变 confirmed configuration、binding、Target truth 或相关 revision；binding freshness mismatch 须重新 preview。
+
+**验证入口：** domain tests、outbox tests、UI authorization、offline Device tests、import non-mutation tests。
 
 ### `INV-SECRET-02`：秘密只由人类明确同步
 
-没有自动 `SYNC_SECRET`。每次 secret sync 必须：
+没有自动 `SYNC_SECRET`。Import Commit、binding 变更或 confirmed contest configuration 替换本身 **不得** 创建或暗示 secret sync；密码材料只进入 encrypted staging / Server vault / 明确发起的 secret-sync 路径，且不得以 length、fingerprint 或 password-derived digest 出现在 ordinary surface。
+
+每次 secret sync 必须：
 
 - 由授权操作员明确发起；
 - 绑定当前 Device、Seat、assignment revision 和 credential revision；
@@ -155,7 +168,7 @@ Target 只含非秘密数据且本身惰性。CSV、binding 或配置变化不�
 - 返回 redacted 结果；
 - 可审计。
 
-**验证入口：** authorization tests、stale revision tests、secret scan、audit tests。
+**验证入口：** authorization tests、stale revision tests、secret scan、audit tests、import non-auto-sync tests。
 
 ### `INV-COMMAND-01`：Command durable 且幂等
 
@@ -245,6 +258,8 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 - key rotation/format migration 原子且可恢复；
 - audit 记录访问动作但不记录值。
 
+CSV / candidate import 的 password-bearing 材料与内部 candidate digest 只进入 encrypted staging 与 secret-safe persistence。staging 失败、过期清理、discard 与未提交 candidate **不得**把明文或 password-derived ordinary-surface 证据残留到 API、audit、log、metric、SSE 或 outbox；未成功 Import Commit 不得改变 confirmed contest configuration。
+
 ### 5.2 Client vault
 
 - 随机 32-byte root key；
@@ -326,7 +341,10 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 
 以下动作必须审计：
 
-- CSV upload/preview/commit/discard；
+- CSV upload / preview / Import Commit / discard；
+- import stale reject、expiry reject、preview token mismatch reject、binding freshness mismatch reject；
+- no-op Import Commit（仅 lineage/redacted AuditEvent；无 confirmed-content 突变、无 contest/credential/assignment revision bump、无内容变化 outbox/Target churn）；
+- material Import Commit 的 atomic unbind impact（仅当 preview 已授权的待解绑 bound Seat 集合非空；受影响 Seat/Device 计数与 identity，动作如 `UNBIND_ON_COMMIT`）；
 - account/credential revision 变化；
 - Device Enrollment、retire、delete、replacement；
 - binding/unbind；
@@ -338,7 +356,18 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 - Gate/平台状态签收；
 - 安全恢复和人工 override。
 
-审计事件最少包含 actor、action、resource、result、time、correlation、revision 和 redacted change。只有指定安全审计角色可查看敏感元数据，但仍不包含秘密值。
+审计事件最少包含 actor、action、resource、result、time、correlation、revision 和 redacted change。Import 相关 redacted change **只允许**：
+
+- redacted diff classification 与各类计数；
+- `is_noop` / commit 结果类别；
+- 受影响 Seat code 与允许展示的 Device identity；
+- before/after `ContestConfigurationRevision`、`AssignmentRevision`、`CredentialRevision`（仅实际变化时）；
+- import lineage 标识（如 `import_id`、correlation）；
+- binding impact 摘要（计数与 `UNBIND_ON_COMMIT` 等动作标签）。
+
+Import 审计与 ordinary surface **不得**包含 password 值、password length、password fingerprint、raw CSV、raw CSV hash、password-derived digest，或 Server 内部 candidate digest。只有指定安全审计角色可查看敏感元数据，但仍不包含秘密值。
+
+失败、discard、expiry、stale baseline、binding freshness mismatch、preview token mismatch 与 transaction failure 的审计记录不得被解释为 confirmed truth 已变更。
 
 ## 10. 日志和指标脱敏
 
@@ -354,6 +383,8 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 默认禁止：
 
 - password/ciphertext；
+- password length、password fingerprint 或 password-derived digest；
+- raw CSV hash / Server 内部 candidate digest；
 - private key；
 - 原始硬件 serial；
 - 完整 Machine Hardware ID；
@@ -362,7 +393,8 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 - CSV 原始行；
 - D-Bus/HTTP payload dump；
 - error source chain；
-- operator cookie/token。
+- operator cookie/token；
+- opaque 之外的 preview 绑定材料明文（不得把内部 candidate digest 当诊断字段打印）。
 
 ## 11. 安全变更评审
 

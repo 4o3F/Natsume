@@ -9,7 +9,7 @@
 ## 1. 建模原则
 
 1. 一个实例只建模当前一场竞赛，不创建 `Event` 聚合。
-2. Seat universe 在首次成功 CSV commit 后冻结。
+2. Confirmed contest configuration 只能通过完整 candidate 的显式 Import Commit 被替换；不存在首次 commit 后永久冻结。
 3. 内部主键与外部/硬件标识分离。
 4. 密码是秘密值，不是普通实体属性。
 5. Target、Observed、Drift、Operation 和 Command 含义相互独立。
@@ -21,8 +21,9 @@
 
 | 名称 | 含义 | 规则 |
 |---|---|---|
-| `SeatCode` | 现场席位代码 | CSV 首次 commit 后集合不可增加、删除或重命名 |
+| `SeatCode` | 现场席位代码 | 在当前 confirmed contest configuration 内唯一；集合可由成功 Import Commit 完整替换；Seat code 即身份，rename 视为 `REMOVED + ADDED` |
 | `AccountName` | DOMjudge 账号标识 | 不含密码；按输入契约规范化 |
+| `ContestConfigurationRevision` | confirmed configuration 内容的单调 revision | `0` 表示空 baseline；仅内容实际变化时递增；不得与 Device `ConfigurationGeneration` 混用；用作 baseline CAS token |
 | `CredentialRevision` | 账号密码版本 | 每次密码有效变更单调递增 |
 | `DevicePk` | Server 内部 Device 主键 | UUIDv7；不能从硬件数据推导 |
 | `MachineHardwareId` | 稳定硬件身份 | UUIDv5；站点 namespace + 规范化硬件来源 |
@@ -42,9 +43,10 @@
 
 ```text
 ContestConfiguration
-  ├─ Seat
-  ├─ Account
-  └─ Credential metadata
+  ├─ confirmed Seat/account/credential-metadata collection
+  ├─ ContestConfigurationRevision
+  ├─ non-secret internal content hash
+  └─ candidate / import lineage
 
 Device
   ├─ lifecycle
@@ -80,11 +82,11 @@ Operation
 
 拥有：
 
-- Seat universe；
-- account 与 Seat 的当前映射；
-- credential revision；
-- CSV import lineage；
-- 首次 commit 冻结状态。
+- 当前 confirmed contest configuration（Seat/account/credential-metadata 集合）；
+- `ContestConfigurationRevision`；
+- 仅基于非秘密信息的内部 content hash（Seat、account、credential revision 等一致性证据）；
+- candidate import 与 import lineage；
+- credential revision 元数据。
 
 不拥有：
 
@@ -92,51 +94,170 @@ Operation
 - binding；
 - Device Target；
 - 密码明文的普通读取接口；
-- DOMjudge 运行时状态。
+- DOMjudge 运行时状态；
+- 完整历史 snapshot / rollback 产品；
+- 永久 freeze 标记。
 
-### 4.2 CSV 提交规则
+### 4.2 Contest configuration import
 
-CSV 只接受一个 UTF-8 文本文件，可允许 UTF-8 BOM，列必须恰好为：
+每个 `seat,account,password` CSV 都是完整的 contest configuration candidate，不是增量 patch。
+
+输入契约：
+
+- 只接受一个 UTF-8 文本文件，可允许 UTF-8 BOM；
+- 列必须恰好为：
 
 ```text
 seat,account,password
 ```
 
-每行语义：
-
-- `seat` 必须唯一；
-- `account` 必须满足冻结的规范化规则；
+- `seat` 在 candidate 内必须唯一；
+- `account` 必须满足冻结的规范化规则，且在完整 candidate 映射内必须唯一；confirmed 完整映射同样不得出现重复 account；
+- candidate 内重复 `account` 判为 `INVALID`，令 `commit_allowed = false`，Operator 必须修复文件并创建新 candidate；合法 account 互换（两 Seat 交换 account，完整映射仍唯一）允许；
+- 空 candidate 或仅 header、无有效数据行的 candidate 显式 `INVALID`，`commit_allowed = false`；不得通过 CSV import 清空 confirmed contest configuration；清空仅可通过独立的 single-lifetime reset 机制，不得由 import 隐式完成；
 - `password` 只能进入加密 staging 和 secret commit path；
-- 不接受额外列、公式、sheet、列映射或自动猜测。
+- 不接受额外列、公式、sheet、列映射、XLSX/ODS 或自动猜测；
+- 不得向普通 API、Browser、audit、log、metric、SSE 或 outbox 暴露 raw CSV hash、password fingerprint、password length 或其他 password-derived digest。
 
-首次成功 commit：
+统一 lifecycle（首次与后续相同）：
 
-1. 建立 Seat universe；
-2. 冻结 Seat code 集合；
-3. 建立账号和 credential revision；
-4. 记录 AuditEvent 和 ChangeEvent；
-5. 不创建远端 Command。
+```text
+upload
+  -> encrypted staging
+  -> strict parse
+  -> immutable candidate import
+  -> server-computed redacted diff
+  -> explicit Import Commit 或 Import Discard
+```
 
-后续 commit：
+Import Commit 在通过幂等预检后的分支：
 
-- Seat 集合必须完全相同；
-- account/password 可以按明确 preview action 更新；
-- unchanged 行不增加 revision；
-- password 变化增加 `CredentialRevision`；
-- commit 必须全有或全无。
+```text
+idempotency preflight (step 0)
+  -> [material] live validation
+       -> baseline compare-and-swap
+       -> atomic unbind-and-replace（仅当已授权 binding impact 非空）
+       -> replace confirmed configuration / revision bumps / content outbox（仅实际变化）
+  -> [no-op] live validation
+       -> lineage + redacted audit only
+       （before_revision == after_revision；无 unbind-and-replace、无内容 ChangeEvent/outbox、无 Target churn）
+```
+
+术语：
+
+- **Confirmed contest configuration**：Server 当前权威的 Seat/account/credential-metadata 集合。
+- **Contest configuration revision**：confirmed configuration 内容的单调 revision（`ContestConfigurationRevision`）；`0` 表示空 baseline；仅内容实际变化时递增；不得与 Device `ConfigurationGeneration` 混用；用作 baseline CAS token。
+- **Candidate import**：单次 CSV upload 的不可变解析结果；外部以 `import_id` 标识；Server 内部 candidate digest/revision 仅存在于 encrypted staging / secret-safe persistence。
+- **Import preview / import diff**：Server 对 candidate 与 confirmed baseline 的 redacted 结构化比较结果；Server 是 diff classification 的唯一权威；client/UI 只渲染结构化结果。
+- **Import Commit**：二次确认动作；不新增独立 confirmation resource。须区分 **material** 与 **no-op**（见下）。
+- **Import Discard**：Operator 对尚未提交的 candidate 的显式放弃动作；按 `import_id` 将 candidate 转入终端 `DISCARDED`，使对应 `preview_token`/evidence 对 commit 失效；不改变 confirmed configuration、binding、revision 或 Target。
+- **preview token**：Server 签发或持久化的 opaque 证据句柄；普通 surface 只持有该 opaque token，不暴露 password-derived digest/fingerprint/length 或其他可作为离线猜测 oracle 的 candidate 内容证据。
+- **preview evidence（签发时不可变）**：与 `preview_token` 对应、在 preview 签发时刻冻结的完整证据。绑定字段至少包括：
+  - candidate identity（外部 `import_id` 及内部 candidate identity）；
+  - baseline `ContestConfigurationRevision`；
+  - 完整 redacted diff（含逐项分类与汇总）；
+  - 精确 binding impact 集合，每一项为 `(SeatCode, DevicePk 或允许展示的非秘密 Device identity, AssignmentRevision, UNBIND_ON_COMMIT)`；
+  - preview actor / authorization context；
+  - expiry。
+  签发后，stored evidence、redacted `summary`/items、binding impact 集合均不得再被原地修改；若需新结果，必须签发新 preview / 新 token。
+- Commit 另需 `idempotency_key` 与 `correlation_id`。Commit 不依赖 Browser 重新计算 hash 或 diff。
+
+Baseline：
+
+- baseline kind：`NONE`（`ContestConfigurationRevision = 0` / 空集合）或 `CONFIRMED`（当前已确认集合）；CAS 以单调 `ContestConfigurationRevision` 为准。
+- 初次 import 的 baseline 为 `NONE`；所有有效 Seat 均为 `ADDED`。
+- 后续 import 允许新增、删除和修改 Seat/account/password。
+- Seat code 是身份；rename 表示为 `REMOVED + ADDED`，不引入 identity mapping。
+- 保留的 Seat code 即使 account/password 改变，也保持现有 binding。
+
+Commit 前置与非变更结果：
+
+- 任何 `INVALID` 行（含重复 account、空/仅 header candidate 等）阻止 commit（`commit_allowed = false`）；Operator 必须修复文件并创建新 candidate。
+- **幂等预检（step 0，先于一切 live 校验与突变）**：在 authorization 重验、preview evidence 相等校验、baseline CAS、binding impact 重算/比较，以及任何 mutation **之前**，先按 `idempotency_key` 与 commit 语义 body 做预检：
+  - 已存在 **COMMITTED** 记录且 key 与语义 body 均相同 → 直接返回已存储的业务结果，**零副作用**（不重跑 authorization/evidence/CAS/binding 重算，不解绑，不替换 configuration，不写 outbox，不提升任何 revision）；
+  - 已存在 **COMMITTED** 记录但 key/body 不匹配（同 key 不同 body，或同 body 语义与已存记录冲突）→ `idempotency conflict`；
+  - 已存在**非终态**（in-flight / non-terminal）同 key 记录但 body 不同 → `idempotency conflict`；
+  - 仅**首次**执行或判定为尚未落定成功结果的非重放路径，才进入后续 live validation 与 mutation。
+- **成功后重试接受语义**：material commit 成功后可能已提升 `ContestConfigurationRevision` / `AssignmentRevision` 并完成 unbind；此后对**相同 key + 相同语义 body** 的重试仍须在 step 0 命中已存储成功结果并原样返回，即使当前 live baseline/binding 已与该次 commit 前不同。不得因 post-success 的 revision bump 或 unbind 而误报 stale baseline / binding-stale。对**不同** key 的新 commit 才走 live CAS/binding 校验。
+- Commit（首次/非重放路径）必须对 preview 签发时冻结的 evidence 做**逐字段相等**校验（candidate identity、baseline revision、完整 redacted diff、精确 binding impact 集合、preview actor/authz context、expiry 语义），并在 transaction 内**重验当前 authorization**；evidence 不相等或 token 无法解析到该不可变证据时拒绝，且不得改变 confirmed truth。
+- **Binding freshness**：preview evidence 绑定签发时精确且不可变的 binding impact 集合，每一项为 `(SeatCode, DevicePk 或允许展示的非秘密 Device identity, AssignmentRevision, UNBIND_ON_COMMIT)`。Commit 必须对全部将被 `REMOVED` 的 Seat **重算当前** binding impacts，并与 evidence 中的集合做**精确相等**比较（不得多、不得少、不得改 identity/revision/动作）。任一新增、缺失或变更的 binding/revision 均视为 binding-stale / preview-mismatch，拒绝 commit 并要求重新 preview。Commit **仅可**解绑该 preview 已授权的精确集合，不得解绑集合外 Device。本 freshness 校验只适用于 step 0 之后的首次/非重放执行路径。
+- Stale baseline、binding-stale、expired candidate、preview token/evidence mismatch、discard、失败 transaction、UI disconnect 均不得改变 confirmed configuration、binding、Target truth 或相关 revision。
+- **`is_noop = true`** 当且仅当：不存在 `ADDED`/`REMOVED`/account 变更/password 变更，不存在任何 `INVALID`，且 binding impact 集合为空；全部有效项均为 `UNCHANGED`。No-op import 仍需二次确认并记录 import lineage/redacted audit，但**不**提升 contest configuration、credential 或 assignment revision（`before_revision == after_revision`），**不**执行 unbind-and-replace，**不**写内容变化 ChangeEvent/outbox，**不**产生 Target churn。
+
+Import Commit 的 transaction 顺序（仅 step 0 判定为首次/非重放后执行）：
+
+0. **幂等预检**（见上）；命中已 COMMITTED 同 key/同 body 则直接返回存储结果并结束；
+1. transaction 内重验 authorization、candidate state（非 `DISCARDED`/非已终态不可 commit）、preview token 与不可变 evidence 相等性、expiry、baseline `ContestConfigurationRevision`，并重算 REMOVED Seat 的当前 binding impacts 做精确集合相等比较；
+2. **分支 — material**（`is_noop = false` 且内容将实际变化）：
+   - 仅当 preview 已授权的 binding impact 集合非空时，解绑该精确集合中的 Device 并提升对应 `AssignmentRevision`；
+   - 完整替换 Seat/account/credential metadata 为 candidate 集合（合法 account swap 须在同一 transaction 内以 clear-then-apply 或等价顺序落实，避免非延迟唯一约束下的假冲突）；
+   - 仅实际 password 变化提升 `CredentialRevision`；
+   - 仅内容实际变化提升 `ContestConfigurationRevision` 并更新非秘密内部 content hash；
+   - 标记 import terminal `COMMITTED`；
+   - 原子写入 redacted AuditEvent；仅在内容实际变化时写入 ChangeEvent/outbox；
+   - commit。
+3. **分支 — no-op**（`is_noop = true`）：
+   - **不**执行 unbind-and-replace，**不**替换 confirmed configuration 内容；
+   - **不**提升 contest configuration、credential 或 assignment revision（响应中 `before_revision == after_revision`）；
+   - 标记 import terminal `COMMITTED`（no-op 成功）；
+   - 仅原子写入 import lineage 与 redacted AuditEvent（及幂等/terminal 所需非内容元数据）；
+   - **不**写内容变化 ChangeEvent/outbox，**不**触发 Target churn；
+   - commit。
+
+#### Import Discard
+
+**Import Discard** 是与 Import Commit 并列的显式领域动作，不是失败状态的附带描述。
+
+- 输入：`import_id`（及边界层要求的 actor/auth 上下文；actor 不得由 client 自报为可信任主体）。
+- 校验：重验 actor authorization；`import_id` 必须指向既有 candidate。
+- 效果：
+  - 将 candidate 转入终端状态 `DISCARDED`；
+  - 使该 candidate 上已签发的 `preview_token`/preview evidence **对后续 Import Commit 失效**（不得再用于 commit）；
+  - **不**改变 confirmed contest configuration、binding、任何相关 revision 或 Target；
+  - **不**创建 Operation/Command，不产生 Device I/O，不写内容变化 ChangeEvent/outbox；
+  - encrypted staging 清理遵循安全策略（discard 触发清理、expiry/cleanup job 或等价策略）；不得因 discard 把明文或 password-derived 材料泄漏到 ordinary surface。
+- 幂等：对**已经** `DISCARDED` 的同一 `import_id` 再次 Discard 必须幂等成功（或等价无副作用确认），不改变 confirmed truth。
+- 禁止：Discard **不得**撤销、回滚或覆盖已 `COMMITTED` 的 import；对已提交 import 的 Discard 必须拒绝（稳定冲突/非法状态），且 confirmed truth 不变。
+
+始终：
+
+- `AUTO_COMMAND_COUNT = 0`；
+- Import Commit / Discard 均不创建 Operation/Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O；
+- **Material** Import Commit 只改变 Server truth；由此产生的 Target/Drift 变化不代表 Device 已同步；
+- **No-op** Import Commit 与 **Import Discard** 均不改变 confirmed configuration 内容，也不制造 Target churn。
 
 ### 4.3 Preview 分类
 
-Preview 至少区分：
+Server 权威 taxonomy（完整枚举）：
 
-- `UNCHANGED`
+- `ADDED`
+- `REMOVED`
 - `ACCOUNT_CHANGED`
 - `PASSWORD_CHANGED`
 - `ACCOUNT_AND_PASSWORD_CHANGED`
+- `UNCHANGED`
 - `INVALID`
-- `SEAT_SET_MISMATCH`
 
-分类是纯计算结果，不产生副作用。UI 不得通过字符串比较自行重建该分类。
+`INVALID` 至少覆盖：列/编码/唯一性等结构性错误、规范化失败、**candidate 内重复 account**、**空或仅 header candidate**，以及其他使 candidate 不可提交的输入错误。任一 `INVALID` 即 `commit_allowed = false`。
+
+Preview 汇总至少包含：
+
+- 各分类数量；
+- `is_noop`（定义见 §4.2：无 `ADDED`/`REMOVED`/account/password 变更、无 `INVALID`、无 binding impact，全部有效项 `UNCHANGED`）；
+- binding impacts 与 count（count 为 0 时仍须显式给出空集合）；
+- `commit_allowed`；
+- `blocking_reasons`。
+
+Binding impact 每一项在 preview 签发时冻结，至少包含：
+
+- `SeatCode`；
+- `DevicePk` 或允许展示的非秘密 Device identity；
+- 当前 `AssignmentRevision`；
+- 动作 `UNBIND_ON_COMMIT`。
+
+删除当前已绑定 Seat 时，preview 必须列出**全部** binding impacts，并纳入不可变 preview evidence。确认后在同一 Server transaction 中：重算并校验 impact 集合精确相等 → **仅**解绑该精确集合 → 提升对应 `AssignmentRevision` → 再替换集合。
+
+不存在 `SEAT_SET_MISMATCH` 硬错误：Seat 集合差异通过 `ADDED`/`REMOVED` 表达。分类是纯计算结果，不产生副作用。UI 不得通过字符串比较或本地重算自行重建该分类。普通 surface 只使用 opaque `preview_token` 与 redacted 证据，不暴露 password-derived digest。
 
 ## 5. `Device`
 
@@ -206,10 +327,11 @@ SeatCode ↔ DevicePk
 
 - 一个 Seat 同时最多绑定一台 active Device；
 - 一台 Device 同时最多绑定一个 Seat；
-- 只有冻结 Seat universe 中的 Seat 可绑定；
+- 只有当前 confirmed contest configuration 中的 Seat 可处于 bound；
 - 只有 active Device 可绑定；
 - 每次有效变化增加 assignment revision；
-- unbind 也是显式领域操作；
+- unbind 也是显式领域操作；Import Commit 可在同一 transaction 中对将被删除的 Seat 执行 atomic unbind-and-replace；
+- 保留的 Seat code 上的 binding 在 account/password 变化时保持不变；
 - binding 修改只改变 Server truth 和 Target，不自动同步 Device；
 - secret sync 必须绑定发起时的 Seat、Device 和 assignment revision。
 
@@ -221,6 +343,8 @@ SeatCode ↔ DevicePk
 - AssignmentRevision；
 - AuditEvent；
 - ChangeEvent/outbox。
+
+Import Commit 触发的 unbind-and-replace 另见 §4.2：binding、confirmed configuration、相关 revision、redacted audit 与 outbox 必须在同一 Server transaction 中提交或全部回滚。
 
 不在该事务中：
 
@@ -399,6 +523,8 @@ Command 与 Attempt 详见 [状态与执行模型](state-and-execution.md)。
 - 相关 Operation/Command；
 - evidence locator（如适用）。
 
+Import 相关 AuditEvent 仅可记录 redacted 分类、数量、受影响 Seat/Device identity 与 before/after revision，以及 import lineage 标识；不得记录 password、raw CSV、password-derived digest 或完整 candidate 秘密材料。
+
 不得记录密码、private key、完整证书私密材料、任意上传原文或未脱敏错误链。
 
 ### 13.2 ChangeEvent/outbox
@@ -500,7 +626,8 @@ NOT_PREPARED
 - 通过破坏性 runbook 清理业务状态和秘密；
 - 不在业务模型中创建历史 Event；
 - 保留或导出审计需由部署策略明确；
-- 重置后重新初始化 Seat universe。
+- 重置后 confirmed contest configuration 为空，`ContestConfigurationRevision = 0`；
+- 下一次 import 仍走普通 first-import lifecycle（baseline 为空集合），不引入特殊分支。
 
 ## 16. 领域测试最低要求
 
@@ -517,7 +644,14 @@ NOT_PREPARED
 
 跨聚合集成测试重点：
 
-- CSV commit 不创建远端副作用；
+- first / no-op / material Import Commit 语义与 revision 规则；
+- invalid、stale baseline、expiry、preview token mismatch、discard、transaction failure 均不改变 confirmed truth；
+- 幂等预检为 step 0：已 COMMITTED 同 key/同 body 在 CAS/binding 重算之前返回存储结果；post-success 在 revision bump/unbind 之后的同 key 重试仍零副作用成功；key/body 冲突返回 idempotency conflict；
+- explicit Import Discard：terminal `DISCARDED`、token 失效、confirmed truth 不变；对已 discarded 幂等；不得撤销已 COMMITTED import；
+- no-op：`before_revision == after_revision`，无 unbind-and-replace、无内容 outbox、无 Target churn；
+- atomic unbind-and-replace 与 rollback（仅 material）；
+- import secret redaction（无 password-derived digest 进入普通 surface）；
+- Import Commit 始终 `AUTO_COMMAND_COUNT = 0`，不创建远端副作用；
 - binding 变化只使 Target/Drift 变化；
 - Target/Observed 可重算 Drift；
 - secret revision 不进入 Target 明文；

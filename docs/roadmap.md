@@ -1,9 +1,9 @@
 # Natsume V2 实施路线图
 
-> 状态：`ACTIVE-PLAN`  
-> 架构基线：Natsume V2 v2.7 决策集合  
-> 当前阶段：Phase 0  
-> 计划基线：44 周 + 4–6 周外部缓冲  
+> 状态：`ACTIVE-PLAN`
+> 架构基线：Natsume V2 v2.7 决策集合
+> 当前阶段：Phase 0
+> 计划基线：44 周 + 4–6 周外部缓冲
 > 注意：日期和周数是计划，不是完成声明
 
 本文件只定义阶段结果、依赖、Gate 和交付证据。协议字段、证书规则、平台特例和测试用例分别由规范、平台、verification 和 probe 文档拥有。
@@ -111,26 +111,30 @@ G0 platform/contract evidence
 
 ### Phase 2 结果
 
-- `seat,account,password` 固定输入；
+- `seat,account,password` 固定完整 candidate 输入；
 - encrypted staging；
-- parse/normalize/preview；
-- 首次 commit 冻结 Seat universe；
-- 后续 exact Seat set；
-- credential revision；
-- Preparation Center；
-- commit audit/outbox；
+- parse/normalize 与 Server 权威 redacted diff（Web 只渲染、不重分类）；
+- duplicate account → `INVALID`；合法 account swap 允许；空/仅 header candidate → `INVALID`（不可经 CSV wipe 全部 Seat）；
+- 可重复 Import Commit（二次确认）：baseline CAS、immutable preview evidence、binding impact（`binding_impact_count` 含显式零）、atomic unbind-and-replace；
+- binding-stale reject（live binding 集合或 `AssignmentRevision` 与 preview evidence 不等须重新 preview）；
+- no-op 与 material revision 规则（含 `ContestConfigurationRevision` / `AssignmentRevision` / `CredentialRevision`）；no-op 无内容变化 outbox；
+- opaque preview token；password 与 password-derived digest 不进入普通 surface；
+- Preparation Center 展示 required preview evidence；显式 voluntary discard（terminal discarded、token 不可复用、confirmed truth 不变）；
+- commit audit；material 时 redacted outbox；transaction failure 仅原子回滚（无 historical rollback 产品）；
 - 非秘密导出；
-- 不产生自动远端副作用。
+- CSV → Server truth only；始终 zero Command（无自动远端副作用）。
 
 ### Gate G2
 
-- malformed/duplicate/extra-column/BOM/size tests；
-- secret 不进入 API/log/browser；
-- preview/commit 并发与 rollback；
-- Seat freeze；
-- Web accessibility/e2e；
+- malformed/duplicate Seat/duplicate account INVALID/empty-or-header-only INVALID/extra-column/BOM/size tests；
+- 合法 account swap；first / no-op（`OUTBOX_EVIDENCE=N/A`）/ material import；
+- stale CAS、binding-stale、expiry、voluntary discard、idempotent retry、transaction atomic rollback；
+- immutable preview evidence 与 commit 相等校验；binding impact 可见（count 含 0；>0 完整行）且 atomic unbind-and-replace；`AUTO_COMMAND_COUNT = 0`；
+- secret 与 password-derived digest 不进入 API/log/audit/metric/SSE/outbox/browser；
+- preview/commit 并发与 transaction rollback（非 historical rollback）；
+- Web accessibility/e2e；Server classification authority（无本地重分类）；
 - staging cleanup/recovery；
-- CSV → Server truth 的完整 trace。
+- CSV → Server truth 的完整 trace（Target/Drift 变化不表示 Device 已同步）。
 
 ## 7. Phase 3：Identity & Enrollment
 

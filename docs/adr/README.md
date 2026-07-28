@@ -18,7 +18,7 @@ ADR 记录“为什么选择”，不替代当前规范。当前行为应同时�
 | [0002](0002-library-first-machine-identity.md) | Library-first Machine Identity | ACCEPTED |
 | [0003](0003-direct-nfpm-packaging.md) | Direct nFPM packaging | ACCEPTED |
 | [0004](0004-snafu-unified-error-model.md) | SNAFU unified error model | ACCEPTED |
-| [0005](0005-csv-only-import.md) | CSV-only import | ACCEPTED |
+| [0005](0005-csv-only-import.md) | CSV-only import | SUPERSEDED |
 | [0006](0006-daemon-integrated-machine-identity-startup.md) | Daemon-integrated identity startup | ACCEPTED |
 | [0007](0007-epoch-bound-session-lock.md) | Epoch-bound session lock | ACCEPTED |
 | [0008](0008-visual-caddy-blocked-page.md) | Visual Caddy BLOCKED page | ACCEPTED |
@@ -33,6 +33,7 @@ ADR 记录“为什么选择”，不替代当前规范。当前行为应同时�
 | [0017](0017-cross-desktop-session-agent-gui.md) | Cross-desktop Session Agent GUI | SUPERSEDED |
 | [0018](0018-xdg-direct-slint-session-agent.md) | XDG direct Slint Session Agent | ACCEPTED |
 | [0019](0019-stable-error-code-registry.md) | Stable ErrorCode registry | PROPOSED |
+| [0020](0020-repeatable-contest-configuration-import.md) | Repeatable contest configuration import | ACCEPTED |
 
 ## 维护
 

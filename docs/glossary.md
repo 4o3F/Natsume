@@ -19,8 +19,15 @@
 | **Fleet namespace UUID** | 站点级公开且不可变的 UUID，用于确定性派生 Machine Hardware ID。 |
 | **Binding** | Seat 与 Device 当前业务关联。 |
 | **Assignment revision** | Binding/席位分配的单调修订，用于拒绝陈旧操作。 |
-| **Configuration generation** | 非秘密 Target 配置的单调代际。 |
+| **Confirmed contest configuration** | Server 当前权威的 Seat/account/credential-metadata 集合；不是永久 frozen Seat universe，只能通过完整 candidate 的显式 Import Commit 被替换。 |
+| **Contest configuration revision** | Confirmed contest configuration 内容的单调 revision（`ContestConfigurationRevision`）；`0` 表示空 baseline；仅内容实际变化时递增；用作 import baseline CAS token。**不是** Device 侧的 Configuration generation。 |
+| **Configuration generation** | 面向单台 Device 的非秘密 Target 配置单调代际。**不是** Contest configuration revision；二者不得混用。 |
 | **Credential revision** | 某账号秘密发生变更后的单调修订。 |
+| **Candidate import** | 单次 CSV upload 的不可变解析结果；外部以 `import_id` 标识。Server 内部 candidate digest/revision 仅存在于 encrypted staging / secret-safe persistence。 |
+| **Import preview / import diff** | Server 对 candidate 与 confirmed baseline 的 redacted 结构化比较结果。**不是** Device Target 或 Observed snapshot；Server 是 classification 的唯一权威。 |
+| **Import Commit** | Operator 对 candidate 的显式二次确认动作；幂等预检之后经 live 校验应用。Material 含必要的 unbind-and-replace 与内容 revision 提升；no-op 仅 lineage/redacted audit 且 revision 不变。不新增独立 confirmation resource，也不自动产生 Device Command。 |
+| **Preview token** | Server 签发或持久化的 opaque 证据，绑定内部 candidate identity、baseline `ContestConfigurationRevision`、完整 redacted diff、精确 binding impact 集合（每项为 `(SeatCode, DevicePk 或允许展示的非秘密 Device identity, AssignmentRevision, UNBIND_ON_COMMIT)`）、actor authorization context 与 expiry；不得暴露 password-derived digest。 |
+| **Import Discard** | Operator 按 `import_id` 显式放弃尚未提交的 candidate：转入终端 `DISCARDED`，使 preview token/evidence 对 commit 失效；不改变 confirmed configuration、binding、revision 或 Target；对已 discarded 幂等，不得撤销已 COMMITTED import。 |
 | **Session epoch** | 当前受管桌面会话的身份代际；会话操作必须绑定该 epoch。 |
 | **Home epoch** | 当前 Home 准备事务的身份代际；不得跨 epoch 复用未证明安全的结果。 |
 | **Client vault** | Device 本地应用加密存储，保存需要离线稳态使用的秘密和证书材料。 |

@@ -52,7 +52,7 @@ Operation? → Command → Attempt(s)
 
 以下动作只提交领域事实：
 
-- CSV commit；
+- Import Commit（CSV candidate 的显式二次确认）；
 - Device lifecycle 变化；
 - binding 变化；
 - 非秘密策略变化；
@@ -64,7 +64,16 @@ Operation? → Command → Attempt(s)
 domain state + AuditEvent + ChangeEvent/outbox
 ```
 
+**例外：no-op Import Commit。** 当 `is_noop = true` 时，不写入 confirmed-content / binding 突变，不提升 contest configuration、credential 或 assignment revision，不写内容变化 ChangeEvent/outbox，也不触发 Target churn；仅原子写入 import lineage 与 redacted AuditEvent（及幂等/terminal 所需的非内容元数据）。
+
 它不等待 Device，也不直接创建“已同步”结论。
+
+Import Commit 是 domain transaction，须区分 **material** 与 **no-op**：
+
+- **Material** Import Commit：在同一 Server transaction 中校验 baseline CAS 与 binding freshness；仅当 preview 已授权的待解绑 bound Seat 集合非空时执行 atomic unbind 并提升对应 `AssignmentRevision`，再替换 confirmed configuration；仅在实际 material/binding 变化时提升相关 revision 并写内容变化 ChangeEvent/outbox。
+- **No-op** Import Commit：只记录 lineage 与 redacted AuditEvent；无 confirmed-content 突变、无 contest/credential/assignment revision bump、无内容变化 ChangeEvent/outbox、无 Target churn。
+
+二者均不创建 Operation/Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，也不产生 Device I/O。Material Import 改变 Server truth 后可能出现的 assignment / configuration / secret Drift 不代表 Device 已同步。baseline 或 binding freshness mismatch 须重新 preview，且不得改变 confirmed truth。完整 candidate、redacted preview、baseline CAS、`is_noop` 与 zero-Command 规则见 [领域模型](domain-model.md#42-contest-configuration-import)。
 
 ### 3.2 Target 计算
 
@@ -81,7 +90,8 @@ Target 由当前 Server truth 和冻结策略派生。实现可以：
 - 每个语义变化对应新的 `ConfigurationGeneration`；
 - 密码明文从不进入 Target；
 - Target 变化不会自动联系 Device；
-- 旧 Target 必须可识别为 superseded。
+- 旧 Target 必须可识别为 superseded；
+- Target 仅因实际 Server truth 变化而变为 stale/recomputable；**no-op** Import Commit 不突变 confirmed 内容、不提升 contest configuration / credential / assignment revision、不写内容变化 ChangeEvent/outbox，也不触发 Target churn。
 
 ## 4. Observed
 

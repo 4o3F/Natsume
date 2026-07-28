@@ -1,7 +1,7 @@
 # Single-Lifetime Contest Reset
 
-> 适用：当前一场竞赛结束后，将同一 Server 部署重置为下一次独立生命周期  
-> 这是破坏性操作，需要双人批准  
+> 适用：当前一场竞赛结束后，将同一 Server 部署重置为下一次独立生命周期
+> 这是破坏性操作，需要双人批准
 > 关键决策：ADR-0009
 
 Natsume 不在业务数据库中保存多个 Event。需要保留的审计/业务记录必须在 reset 前按批准策略导出和归档。
@@ -56,25 +56,26 @@ Natsume 不在业务数据库中保存多个 Event。需要保留的审计/业�
 - 生成 reset ID；
 - 记录预重置 audit；
 - 清理 Seat/account/credential、binding、Target、Observed业务视图、Operation/Command活动状态；
+- 将 confirmed contest configuration 恢复为空集合，并使 `ContestConfigurationRevision` 回到定义的 empty state（`0`）；
 - 按 policy保留或归档 Device identity/certificate metadata；
 - 销毁当前竞赛 Server vault secrets；
-- 重置 Seat universe frozen marker；
-- 清理 staging/outbox；
+- 清理 staging/candidate import/outbox；
 - 保留必要安全审计和 reset lineage；
 - 生成空实例状态。
 
-具体保留范围必须在实现和发布策略中固定，不能现场选择 nullable 特例。
+具体保留范围必须在实现和发布策略中固定，不能现场选择 nullable 特例。不存在“解冻 / 再冻结 Seat universe”生命周期；reset 后的下一次配置导入使用普通 first-import preview/commit 流程。
 
 ## 5. 验证空状态
 
 - 无 Seat/account/password/binding；
+- confirmed contest configuration 为空，`ContestConfigurationRevision = 0`；
 - 无 active Target/Drift/Operation/Command；
 - 无可用旧 credential；
 - Client不使用旧 Gateway/credential进入新 READY；
 - operator/RBAC按 policy保留或重新初始化；
 - audit可以定位 reset；
 - backup仍可在隔离环境恢复旧生命周期；
-- 新 CSV首次 commit重新冻结 Seat universe。
+- 新 CSV 按 empty-baseline first import：upload → preview → 显式 Import Commit（见 [CSV Import](csv-import.md)）。
 
 ## 6. 回滚
 
@@ -90,12 +91,12 @@ Reset 完成后通常不做原地“撤销”。需要恢复旧竞赛时：
 ## 7. 成功判定
 
 - 旧竞赛秘密不可用于新生命周期；
-- 空实例符合初始化状态；
+- 空实例符合初始化状态（空 confirmed configuration / revision `0`）；
 - Client/Home/Caddy无旧授权；
 - 旧 backup可验证恢复；
 - reset audit和双人签署完整；
 - 没有引入 Event/phase兼容字段；
-- 下一次 CSV按首次 commit语义运行。
+- 下一次 CSV 按普通 first-import 语义运行，而非 re-freeze。
 
 ## 8. Evidence
 
@@ -109,6 +110,7 @@ SESSION_HOME_CLEAN=
 CERTIFICATE_ACTIONS=
 SECRET_DESTRUCTION=
 EMPTY_STATE_CHECK=
+CONFIRMED_CONFIG_REVISION=0
 APPROVER_1=
 APPROVER_2=
 DATE=
