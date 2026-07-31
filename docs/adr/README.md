@@ -44,5 +44,18 @@ ADR 记录“为什么选择”，不替代当前规范。当前行为应同时�
 - 接受后同步权威规范；
 - supersede 时在旧 ADR 和新 ADR 双向链接；
 - template 不维护当前项目索引；
-- 多数 ADR 保持简短；详细测试和操作步骤留在 probe/runbook；
+- 多数 ADR 保持简短；详细测试和操作步骤留在实现与验证产物中；
 - 放宽 `INV-*` 必须在 ADR 中逐条说明安全影响。
+
+## 已废弃的引用
+
+ADR 正文是不可变的历史记录，不因后续文档重组而改写。已接受的 ADR 中出现的 `Probe A`–`Probe F` 与 `REQ-P0-*` / `G0-0NN` 编号来自已撤销的 registry 与 probe 报告体系；它们表达的验证意图仍然有效，当前状态以 [`../gates/phase-0-status.md`](../gates/phase-0-status.md) 为准：
+
+| 旧编号 | 验证主题 |
+|---|---|
+| Probe A | IP-SAN 与 endpoint |
+| Probe B | Enrollment → mTLS → Gateway CSR 证书阶梯 |
+| Probe C | Caddy 与 DOMjudge 数据面 |
+| Probe D | Machine identity 与物理硬件 fixture |
+| Probe E | Session Agent、双桌面与 Home |
+| Probe F | Package 与 systemd 生命周期 |

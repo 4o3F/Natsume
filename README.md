@@ -2,7 +2,7 @@
 
 Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。本分支当前仍处于 **Phase 0 工程基线**：仓库已建立 Rust/Web workspace、锁文件、CI、打包拓扑、稳定错误码和部分契约骨架；领域功能、生产数据面与 Session/Home 全流程尚未完成。
 
-本文档集采用“**一个事实、一个权威位置**”的维护规则。当前入口直接指向权威文档；由 registry 生成的 Markdown 仅作为可读视图。
+本文档集采用“**一个事实、一个权威位置**”的维护规则；每个主题只有一个权威文档，其余位置只引用不复制。
 
 ## 阅读入口
 
@@ -15,7 +15,7 @@ Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。本
 - 平台支持状态：[`docs/supported-platform.md`](docs/supported-platform.md)
 - 实施路线图：[`docs/roadmap.md`](docs/roadmap.md)
 - Phase 0 当前状态：[`docs/gates/phase-0-status.md`](docs/gates/phase-0-status.md)
-- 运维手册：[`docs/runbooks/README.md`](docs/runbooks/README.md)
+- 贡献与评审自检：[`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ## 当前实现边界
 
@@ -101,8 +101,7 @@ pnpm diagrams
 ## 文档基线
 
 - 架构来源：Natsume V2 v2.7 决策集合；
-- 文档重构基线：2026-07-24；
 - Phase 0 窗口：2026-07-23 至 2026-08-12；
-- G0 当前结论：`OPEN`，不得从文档重构推断为 Gate 通过。
+- G0 当前结论：`OPEN`，不得从文档存在推断为 Gate 通过。
 
-文档重构记录见 [`docs/history/document-refactor-2026-07-24.md`](docs/history/document-refactor-2026-07-24.md)。
+文档演进记录见 git history。

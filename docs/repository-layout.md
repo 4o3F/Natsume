@@ -74,11 +74,10 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 | `integration-tests/` | 跨 crate、协议、schema、policy |
 | Web unit/component | view model、UI |
 | Web e2e | operator journey |
-| `docs/probes/` | 目标环境高风险验证报告 |
 | packaging smoke | install/upgrade/remove/reboot |
-| runbook rehearsal | 恢复和发布可执行性 |
+| 目标环境验证 | 硬件、桌面和数据面高风险假设 |
 
-探针报告不是自动化测试替代；自动化测试也不替代目标硬件证据。
+自动化测试不替代目标硬件证据；目标环境验证也不替代自动化测试。目标环境验证结果记录在 [`gates/phase-0-status.md`](gates/phase-0-status.md)。
 
 ## 7. Generated artifacts
 
@@ -106,17 +105,6 @@ Server package 只包含 Server artifact 和其明确依赖。Client package 只
 - nFPM 从仓库固定路径映射已构建产物；
 - Caddy binary 和 checksum 由 supply-chain policy 管理。
 
-## 9. 新模块审查清单
+## 9. 新模块审查
 
-- Owner 和变化原因是什么？
-- 哪些表/文件/secret 属于它？
-- 它对外暴露的 port 是什么？
-- 是否只有一个消费者而不应成为 crate？
-- 是否泄漏 framework types？
-- 是否需要 root 或外网？
-- 是否能用现有 typed contract？
-- 是否造成循环依赖？
-- 是否可以独立测试？
-- 删除它时影响哪些组件？
-
-回答不清楚时，不新增“manager/service/common”层。
+新模块的评审自检清单见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。回答不清楚时，不新增“manager/service/common”层。

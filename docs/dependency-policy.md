@@ -144,7 +144,7 @@ Web 只通过 pnpm workspace 管理。
 - display-manager 私有 API；
 - 下载式字体/runtime。
 
-最终 Slint feature set、version 和 runtime closure 必须在目标 GNOME/GDM/Wayland 与 LightDM/X11 环境通过 Probe E 后冻结。
+最终 Slint feature set、version 和 runtime closure 必须在目标 GNOME/GDM/Wayland 与 LightDM/X11 环境实测后冻结。
 
 ## 9. Machine identity
 

@@ -326,7 +326,7 @@ CSV / candidate import 的 password-bearing 材料与内部 candidate digest 只
 7. 无法证明旧状态安全时进入 BLOCKED，而不是尝试“最大可用性”。
 8. runbook 中的每个 destructive step 必须有备份/rollback 条件。
 
-具体恢复步骤将在对应 Phase 实现后写入 `runbooks/`；当前不保留未建系统的目标操作流程。
+具体恢复步骤在对应 Phase 实现后编写；当前不保留未建系统的目标操作流程。
 
 ## 9. 审计
 
@@ -389,18 +389,6 @@ Import 审计与 ordinary surface **不得**包含 password 值、password lengt
 
 ## 11. 安全变更评审
 
-每个安全相关变更至少回答：
+安全变更的自检清单见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
 
-- 资产和攻击者是谁？
-- 新增了哪个 trust boundary？
-- 哪个进程获得了新 capability？
-- 是否能用更窄的 typed contract？
-- secret 在哪里出现、保存多久、如何清零？
-- identity/revision/epoch 如何绑定？
-- 失败时保留什么、拒绝什么？
-- 重试是否幂等？
-- audit 是否原子？
-- 正向、负向、故障注入和恢复证据在哪里？
-- 是否需要更新 `INV-*`、ADR、Gate 和 runbook？
-
-没有 evidence locator 的安全声明不得用于 Gate PASS。
+**没有 evidence locator 的安全声明不得用于 Gate PASS。**
