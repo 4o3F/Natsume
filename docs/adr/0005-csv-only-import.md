@@ -43,4 +43,3 @@
 
 - [ADR-0020](0020-repeatable-contest-configuration-import.md)
 - [domain-model.md](../domain-model.md)
-- [phase-2-csv-preparation.md](../implementation/phase-2-csv-preparation.md)

@@ -38,4 +38,3 @@ Probe B/C 和 G0-005–009 的负向测试必须通过。
 
 - [contracts.md](../contracts.md)
 - [security-recovery.md](../security-recovery.md)
-- [gateway-certificate-sync.md](../runbooks/gateway-certificate-sync.md)

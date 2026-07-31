@@ -1,14 +1,10 @@
 # Natsume Runbooks
 
-Runbook 只描述操作、验证、回滚和证据。架构和安全规则分别由：
+Runbook 只描述操作、验证、回滚和证据。架构和安全规则分别由 [Architecture](../architecture.md)、[Contracts](../contracts.md)、[Security & recovery](../security-recovery.md) 拥有。遇到冲突时，必须停止操作并修正文档，不在现场自行创造例外。
 
-- [Architecture](../architecture.md)
-- [Contracts](../contracts.md)
-- [Security & recovery](../security-recovery.md)
+## 当前状态
 
-拥有。遇到冲突时，必须停止操作并修正文档，不在现场自行创造例外。
-
-当前仓库仍是 Phase 0 工程基线。涉及尚未实现的 binary、API 或状态机的步骤是目标操作契约，不是当前可执行性或 Gate 证据；每个发布候选必须用实际命令、包路径和目标环境 evidence 复核后才能投入现场。
+当前仓库仍是 Phase 0 工程基线。具体 runbook 在对应 Phase 实现后编写，目前不保留未建系统的目标操作流程。涉及尚未实现的 binary、API 或状态机的步骤是目标操作契约，不是当前可执行性或 Gate 证据；每个发布候选必须用实际命令、包路径和目标环境 evidence 复核后才能投入现场。
 
 ## 使用规则
 
@@ -20,34 +16,6 @@ Runbook 只描述操作、验证、回滚和证据。架构和安全规则分别
 6. 用 Observed、Drift、certificate inspection、Caddy health 和 audit 验证结果；
 7. 失败后按 rollback/stop condition 处理，不通过删除 vault/identity/journal“重试”；
 8. 运行后记录 commit、environment、owner、reviewer、date 和 limitations。
-
-## 索引
-
-### 初始化与发布
-
-- [Server control certificate provisioning](server-control-certificate-provisioning.md)
-- [CSV import](csv-import.md)
-- [Backup, restore and upgrade](backup-restore-and-upgrade.md)
-- [Readiness rehearsal](readiness-rehearsal.md)
-- [Single-lifetime reset](single-lifetime-reset.md)
-
-### Device 和证书
-
-- [Enrollment and mTLS](enrollment-and-mtls.md)
-- [Device replacement](device-replacement.md)
-- [Gateway certificate sync](gateway-certificate-sync.md)
-- [Machine identity and vault recovery](machine-identity-and-vault-recovery.md)
-
-### 状态和数据面
-
-- [Explicit state and secret sync](explicit-state-and-secret-sync.md)
-- [Caddy status page and data plane](caddy-status-page.md)
-
-### Session 和 Home
-
-- [Session Agent GUI startup](session-agent-gui-startup.md)
-- [Session lock recovery](session-lock-recovery.md)
-- [Home recovery](home-recovery.md)
 
 ## 通用事件记录
 

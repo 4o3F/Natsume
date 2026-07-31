@@ -14,13 +14,8 @@ Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。本
 - 安全与恢复不变量：[`docs/security-recovery.md`](docs/security-recovery.md)
 - 平台支持状态：[`docs/supported-platform.md`](docs/supported-platform.md)
 - 实施路线图：[`docs/roadmap.md`](docs/roadmap.md)
-- Phase 0 当前状态：[`docs/verification/phase-0-status.md`](docs/verification/phase-0-status.md)
+- Phase 0 当前状态：[`docs/gates/phase-0-status.md`](docs/gates/phase-0-status.md)
 - 运维手册：[`docs/runbooks/README.md`](docs/runbooks/README.md)
-
-生成视图：
-
-- [`docs/requirements/phase-0.md`](docs/requirements/phase-0.md)
-- [`docs/gates/g0-checklist.md`](docs/gates/g0-checklist.md)
 
 ## 当前实现边界
 
@@ -80,20 +75,12 @@ just verify
 just package
 ```
 
-验证文档注册表：
+验证文档：
 
 ```bash
-node docs/verification/validate-registry.mjs
-node docs/verification/render.mjs --check
-node docs/verification/validate-markdown.mjs docs README.md
 node docs/verification/validate-links.mjs docs README.md
+node docs/verification/validate-markdown.mjs docs README.md
 pnpm diagrams
-```
-
-生成 Phase 0 Markdown 视图：
-
-```bash
-node docs/verification/render.mjs --write
 ```
 
 ## 关键设计边界

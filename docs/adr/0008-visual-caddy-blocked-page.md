@@ -37,4 +37,3 @@ Probe C/E 和状态页安全测试必须证明 503、CSP、allowlist、无 secre
 ## References
 
 - [state-and-execution.md](../state-and-execution.md)
-- [caddy-status-page.md](../runbooks/caddy-status-page.md)

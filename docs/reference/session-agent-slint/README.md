@@ -36,5 +36,4 @@ Phase 6 开始时：
 
 - [ADR-0018](../../adr/0018-xdg-direct-slint-session-agent.md)
 - [Dependency policy](../../dependency-policy.md)
-- [Phase 6 plan](../../implementation/phase-6-session-home.md)
 - [Probe E](../../probes/e-session-home.md)

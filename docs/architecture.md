@@ -109,7 +109,7 @@ flowchart LR
 - 将 Web request 生命周期当作远端副作用完成边界；
 - 让 Enrollment 签发 Gateway certificate。
 
-内部模块边界见 [仓库布局](repository-layout.md#5-server-内部模块)。
+内部模块边界见 [仓库布局](repository-layout.md)。
 
 ### 4.2 Web Panel
 
@@ -152,7 +152,7 @@ flowchart LR
 - 将密码返回给 Server、Agent、浏览器或普通日志；
 - 在身份不确定或 vault 解密失败时自动创建新身份。
 
-内部必须分离 transport、application、domain、port 和 adapter。见 [仓库布局](repository-layout.md#6-device-daemon-内部模块)。
+内部必须分离 transport、application、domain、port 和 adapter。见 [仓库布局](repository-layout.md)。
 
 ### 4.4 `natsume-privileged-helper`
 
@@ -306,7 +306,7 @@ upload
   → Target becomes stale/recomputable（仅 material 导致 Server truth 实际变化）
 ```
 
-每个 `seat,account,password` CSV 都是完整的 contest configuration candidate。**Material** Import Commit 才替换 confirmed contest configuration，并在需要时做 atomic unbind 与相关 revision 提升；**no-op** Import Commit（`is_noop`）只记录 lineage 与 redacted AuditEvent，不突变 confirmed 内容、不提升 contest/credential/assignment revision、不写内容变化 ChangeEvent/outbox、不触发 Target churn。Import Commit 不创建 Operation/Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O，也不表示 Device 已同步。baseline 或 binding freshness mismatch 须重新 preview，且不得改变 confirmed truth。集合可重复 import 完整替换；权威 diff taxonomy、revision CAS、preview token 与 atomic unbind-and-replace 规则见 [领域模型](domain-model.md#42-contest-configuration-import)，本文不重复完整 taxonomy/wire 字段表。
+每个 `seat,account,password` CSV 都是完整的 contest configuration candidate。**Material** Import Commit 才替换 confirmed contest configuration，并在需要时做 atomic unbind 与相关 revision 提升；**no-op** Import Commit（`is_noop`）只记录 lineage 与 redacted AuditEvent，不突变 confirmed 内容、不提升 contest/credential/assignment revision、不写内容变化 ChangeEvent/outbox、不触发 Target churn。Import Commit 不创建 Operation/Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O，也不表示 Device 已同步。baseline 或 binding freshness mismatch 须重新 preview，且不得改变 confirmed truth。集合可重复 import 完整替换；权威 diff taxonomy、revision CAS、preview token 与 atomic unbind-and-replace 规则见 [领域模型](domain-model.md)，本文不重复完整 taxonomy/wire 字段表。
 
 ### 8.2 Device Enrollment
 

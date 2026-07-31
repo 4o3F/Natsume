@@ -37,4 +37,3 @@ Machine Hardware ID 对一个 Device lifecycle 不可变；Server 内部使用�
 ## References
 
 - [domain-model.md](../domain-model.md)
-- [device-replacement.md](../runbooks/device-replacement.md)

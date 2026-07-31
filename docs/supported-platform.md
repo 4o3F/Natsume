@@ -282,4 +282,4 @@ RELATED_GATES:
 | `G0-IN-006` | PKI test material 与 owner | 2026-08-01 | `BLOCKED-INPUT` |
 | `G0-IN-007` | Step 0 文档/ID/术语签收 | Step 0 | `OPEN` |
 
-Gate 的机器状态以 [`verification/registry.json`](verification/registry.json) 为准。
+Gate 的机器状态以 [`phase-0-status.md`](gates/phase-0-status.md) 为准。

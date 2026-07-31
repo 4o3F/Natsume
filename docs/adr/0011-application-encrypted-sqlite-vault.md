@@ -38,4 +38,3 @@ Server/Client 需要在 SQLite 或本地状态中保存密码和 key material。
 ## References
 
 - [security-recovery.md](../security-recovery.md)
-- [backup-restore-and-upgrade.md](../runbooks/backup-restore-and-upgrade.md)

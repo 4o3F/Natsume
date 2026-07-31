@@ -38,4 +38,3 @@
 
 - [architecture.md](../architecture.md)
 - [domain-model.md](../domain-model.md)
-- [single-lifetime-reset.md](../runbooks/single-lifetime-reset.md)

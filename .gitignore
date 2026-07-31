@@ -31,3 +31,4 @@ __pycache__/
 
 .claude
 web/tsconfig.tsbuildinfo
+.ccg

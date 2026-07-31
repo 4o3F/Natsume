@@ -151,7 +151,7 @@ Target 只含非秘密数据且本身惰性。CSV、binding 或配置变化不�
 
 只有人工发起的 `SYNC_STATE` 可以应用 Target。Observed 是实际状态来源，Drift 是纯比较。
 
-Import Commit 须区分 **material** 与 **no-op**。**Material** Import Commit 才改变 Server truth（confirmed contest configuration 及必要的同事务 binding/revision，以及仅在实际 material/binding 变化时的内容变化 ChangeEvent/outbox）。**No-op** Import Commit 只记录 lineage 与 redacted AuditEvent，不突变 confirmed 内容、不提升 contest/credential/assignment revision、不写内容变化 outbox、不触发 Target churn。Import 不创建 Operation/Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表示 Device 已同步。失败、取消（discard）、过期、stale baseline、binding freshness mismatch、preview token mismatch 与 transaction rollback **均不得**改变 confirmed configuration、binding、Target truth 或相关 revision；binding freshness mismatch 须重新 preview。
+Import 不创建 Operation/Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表示 Device 已同步。失败、discard、过期、stale baseline、binding/preview mismatch 与 transaction rollback **均不得**改变 confirmed configuration、binding、Target truth 或相关 revision。material/no-op import 的完整 revision 与 outbox 规则以 [领域模型](domain-model.md) 为准。
 
 **验证入口：** domain tests、outbox tests、UI authorization、offline Device tests、import non-mutation tests。
 
@@ -326,16 +326,7 @@ CSV / candidate import 的 password-bearing 材料与内部 candidate digest 只
 7. 无法证明旧状态安全时进入 BLOCKED，而不是尝试“最大可用性”。
 8. runbook 中的每个 destructive step 必须有备份/rollback 条件。
 
-具体步骤见：
-
-- [Machine identity 与 vault 恢复](runbooks/machine-identity-and-vault-recovery.md)
-- [Enrollment 与 Device replacement](runbooks/enrollment-and-mtls.md)
-- [Gateway certificate](runbooks/gateway-certificate-sync.md)
-- [Caddy 数据面](runbooks/caddy-status-page.md)
-- [Session lock](runbooks/session-lock-recovery.md)
-- [Home 恢复](runbooks/home-recovery.md)
-- [备份、恢复与升级](runbooks/backup-restore-and-upgrade.md)
-- [单生命周期重置](runbooks/single-lifetime-reset.md)
+具体恢复步骤将在对应 Phase 实现后写入 `runbooks/`；当前不保留未建系统的目标操作流程。
 
 ## 9. 审计
 

@@ -38,4 +38,3 @@
 
 - [repository-layout.md](../repository-layout.md)
 - [dependency-policy.md](../dependency-policy.md)
-- [backup-restore-and-upgrade.md](../runbooks/backup-restore-and-upgrade.md)

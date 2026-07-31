@@ -37,4 +37,3 @@ Machine identity startup 是 Device Daemon 的第一段 application flow，不�
 ## References
 
 - [security-recovery.md](../security-recovery.md)
-- [machine-identity-and-vault-recovery.md](../runbooks/machine-identity-and-vault-recovery.md)

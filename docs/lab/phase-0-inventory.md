@@ -6,7 +6,7 @@
 > 当前没有已验证硬件或目标环境 evidence  
 > 规则：不得编造 IP、主机、硬件型号、序列号、fixture 或 PASS
 
-平台冻结状态见 [`../supported-platform.md`](../supported-platform.md)；Gate 机器状态见 [`../verification/registry.json`](../verification/registry.json)。
+平台冻结状态见 [`../supported-platform.md`](../supported-platform.md)；Gate 机器状态见 [phase-0-status](../gates/phase-0-status.md)。
 
 ## 1. 资产状态
 

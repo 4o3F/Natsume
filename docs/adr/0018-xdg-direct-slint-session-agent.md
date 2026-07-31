@@ -40,4 +40,3 @@ Probe E/F 必须验证双桌面、hidden/lazy、IME/HiDPI、focus denied、displ
 ## References
 
 - [supported-platform.md](../supported-platform.md)
-- [phase-6-session-home.md](../implementation/phase-6-session-home.md)

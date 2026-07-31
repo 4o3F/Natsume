@@ -80,7 +80,7 @@ G0 platform/contract evidence
 
 ### Gate G0
 
-15 项全部 `PASS` 且 decision 已签署，才可关闭。当前机器状态见 [`verification/phase-0-status.md`](verification/phase-0-status.md)。
+15 项全部 `PASS` 且 decision 已签署，才可关闭。当前机器状态见 [`gates/phase-0-status.md`](gates/phase-0-status.md)。
 
 ## 5. Phase 1：Control Domain
 

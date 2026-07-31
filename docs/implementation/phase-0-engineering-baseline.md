@@ -2,7 +2,7 @@
 
 > 计划：W1–W3  
 > 当前状态：`IN-PROGRESS / G0 OPEN`  
-> Requirement/Gate 状态：[verification registry](../verification/phase-0-status.md)
+> Requirement/Gate 状态：[phase-0-status](../gates/phase-0-status.md)
 
 ## 1. 目标
 
@@ -131,4 +131,4 @@ Probe 报告位于 [`../probes/`](../probes/)，必须包含真实环境、步�
 | 桌面环境太晚验证 | G0-IN-004 + Probe E |
 | Machine ID 无物理证据 | G0-IN-005 + 6 台 fixture |
 | package 拓扑只在文档 | install/upgrade/reboot smoke |
-| 文档状态漂移 | registry renderer + link validator |
+| 文档状态漂移 | link validator |

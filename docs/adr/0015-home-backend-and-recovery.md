@@ -37,4 +37,3 @@ Probe E 必须覆盖 prepare/cleanup、crash、reboot、disk full、ownership �
 ## References
 
 - [state-and-execution.md](../state-and-execution.md)
-- [home-recovery.md](../runbooks/home-recovery.md)

@@ -1,7 +1,7 @@
 # Phase 0 Probe Reports
 
 > 当前状态：全部 `NOT-RUN`  
-> Probe 状态的唯一事实源：[`../verification/registry.json`](../verification/registry.json)
+> Probe 状态见 [phase-0-status](../gates/phase-0-status.md)
 
 Probe 用于验证目标环境中的高风险假设。报告文件存在不等于通过；只有填写真实环境、步骤、结果、artifact、owner 和 reviewer 后，才能更新 registry。
 

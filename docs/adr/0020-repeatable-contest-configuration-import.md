@@ -87,8 +87,6 @@ CSV 含 password，因此 ordinary API、Browser、audit、log、metric、SSE �
 - [architecture.md](../architecture.md)
 - [contracts.md](../contracts.md)
 - [security-recovery.md](../security-recovery.md)
-- [phase-2-csv-preparation.md](../implementation/phase-2-csv-preparation.md)
-- [csv-import.md](../runbooks/csv-import.md)
 - [ADR-0005](0005-csv-only-import.md)
 - [ADR-0009](0009-single-lifetime-minimal-domain.md)
 - [ADR-0013](0013-explicit-state-and-secret-commands.md)
