@@ -4,6 +4,7 @@
 > Scope: Natsume V2 contest configuration import
 > Supersedes: [ADR-0005](0005-csv-only-import.md)
 > Superseded by: —
+> Note: 并发防护条款（binding impact 精确集合重验、`idempotency_key`）与 password-derived digest 禁令已由 [ADR-0028](0028-single-operator-import-and-secret-evidence-scope.md) 收窄；完整 candidate 替换、preview token、baseline CAS、atomic unbind-and-replace、zero Device Command 维持有效。
 
 ## Context
 

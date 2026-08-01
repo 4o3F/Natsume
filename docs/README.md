@@ -1,8 +1,8 @@
 # Natsume 文档地图
 
 > 文档状态：`ACTIVE`
-> 基线日期：2026-07-31
-> 当前工程阶段：Phase 0
+> 基线日期：2026-08-01（v2.8 决策集合）
+> 当前工程阶段：Phase 0（收尾）
 > 当前 Gate：G0 `OPEN`
 
 本目录使用"**一个事实、一个权威位置**"原则。消费者文档应引用稳定 ID 或链接，不应复制规范正文。任何无法定位证据的 `PASS` 都是无效状态。
@@ -23,8 +23,8 @@
 |---|---|---|
 | 产品范围、进程、职责和依赖方向 | [`architecture.md`](architecture.md) | 摘要和链接 |
 | 领域实体、聚合、事务边界 | [`domain-model.md`](domain-model.md) | ID 引用 |
-| HTTP、Enrollment、QUIC、D-Bus、错误契约 | [`contracts.md`](contracts.md) | 用例级引用 |
-| Target/Observed、Operation/Command、状态应用 | [`state-and-execution.md`](state-and-execution.md) | Gate/测试引用 |
+| HTTP、Enrollment、WSS、D-Bus、错误契约 | [`contracts.md`](contracts.md) | 用例级引用 |
+| Target/Observed、Command、状态应用 | [`state-and-execution.md`](state-and-execution.md) | Gate/测试引用 |
 | 安全、秘密、证书、fail-closed、恢复规则 | [`security-recovery.md`](security-recovery.md) | `INV-*` 引用 |
 | 源码目录与模块所有权 | [`repository-layout.md`](repository-layout.md) | 路径引用 |
 | 依赖准入、feature、供应链规则 | [`dependency-policy.md`](dependency-policy.md) | ADR 引用 |

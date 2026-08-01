@@ -3,6 +3,7 @@
 > 状态：`NORMATIVE`  
 > 适用范围：Natsume V2  
 > 当前实现成熟度：Phase 0 工程基线  
+> 校准基线：[ADR-0022](adr/0022-deployment-facts-and-trust-assumptions.md)  
 > 相关文档：[领域模型](domain-model.md) · [边界契约](contracts.md) · [状态与执行](state-and-execution.md) · [安全与恢复](security-recovery.md)
 
 ## 1. 目标
@@ -12,11 +13,11 @@ Natsume 为单场竞赛现场提供以下能力：
 1. 从固定 CSV 导入 Seat、account 和 password；
 2. 将 Seat 绑定到受管理工作站；
 3. 以显式命令同步非秘密状态和密码；
-4. 管理 Device Identity 与 Gateway certificate；
-5. 在工作站本地提供受控浏览器数据面；
+4. 在 provisioning 窗口内为 Device 签发 Token 与 Gateway certificate；
+5. 在工作站本地提供受控浏览器数据面与 DOMjudge 自动登录；
 6. 编排受管桌面会话和 Home 准备；
 7. 让操作员看到 Target、Observed、Drift、Command 和审计记录；
-8. 在身份、vault、证书或 Home 无法证明安全时停止敏感操作。
+8. 在身份、凭据、证书或 Home 无法证明安全时停止敏感操作。
 
 架构优先级依次是：
 
@@ -25,7 +26,7 @@ Natsume 为单场竞赛现场提供以下能力：
 3. 离线稳态和可恢复性；
 4. 低耦合、高内聚；
 5. 可验证、可打包和可运维；
-6. 在当前现场规模下保持实现简单。
+6. 与 [ADR-0022](adr/0022-deployment-facts-and-trust-assumptions.md) 部署事实相称的实现规模。
 
 ## 2. 产品范围
 
@@ -34,12 +35,12 @@ Natsume 为单场竞赛现场提供以下能力：
 - 一个 Server 实例服务当前一场竞赛；
 - 当前单场竞赛的一份可重复 import 的 confirmed contest configuration；
 - `seat,account,password` CSV；
-- Device 注册、绑定、配置和状态；
-- Device 与 Gateway 两级证书；
-- operator Web Panel；
-- Caddy 到 DOMjudge 的本地 HTTPS 数据面；
+- Device 注册（provisioning 窗口）、绑定、配置和状态；
+- Device Token 与 Gateway certificate；
+- operator Web Panel（admin/viewer 两级角色）；
+- Caddy 到 DOMjudge 的本地 HTTPS 数据面与 `/login` 自动登录注入；
 - Session Agent、受管会话和 Home 准备；
-- 审计、操作状态和恢复流程。
+- 审计、命令状态和恢复流程。
 
 ### 2.2 不包含
 
@@ -51,8 +52,10 @@ Natsume 为单场竞赛现场提供以下能力：
 - 任意反向代理配置平台；
 - Server 高可用或多控制器一致性；
 - ACME、TOFU、运行时下载或 postinstall 下载；
+- 多桌面环境同时支持（每周期单镜像，[ADR-0027](adr/0027-single-image-desktop-cycle.md)）；
+- 可编辑的角色/权限模型（固定 admin/viewer）；
 - 对本地 root、物理攻击者或固件篡改的防护；
-- 将 Session lock 当作网络隔离。
+- 将 Session lock 或遮罩 UI 当作网络隔离/完整性边界。
 
 需要进入这些范围时，必须先新增 ADR，而不是在现有接口中加入特例。
 
@@ -73,15 +76,15 @@ flowchart LR
     Operator -->|HTTPS| Server
     Server --> Web
     Device -->|Enrollment HTTPS| Server
-    Device <-->|mTLS QUIC| Server
+    Device <-->|WSS + Device Token| Server
     Device -->|typed D-Bus| Helper
     Agent <-->|local typed D-Bus| Device
-    Device -->|validated admin plan| Caddy
+    Device -->|rendered config + reload| Caddy
     Browser -->|loopback HTTPS| Caddy
-    Caddy -->|fixed upstream| DOMjudge
+    Caddy -->|fixed TLS upstream| DOMjudge
 ```
 
-该图表示信任和调用方向，不表示所有组件已经实现。
+该图表示信任和调用方向，不表示所有组件已经实现。Operator HTTP、Enrollment 与 Device WSS 共用同一 TCP 端口（[ADR-0023](adr/0023-wss-control-channel-with-device-token.md)）。
 
 ## 4. 进程与职责
 
@@ -89,25 +92,25 @@ flowchart LR
 
 拥有：
 
-- operator 身份、授权和 HTTP API；
+- operator 身份、授权（admin/viewer）和 HTTP API；
 - CSV staging、preview、commit；
 - Server truth；
 - Target 计算；
 - Device lifecycle 和 binding；
-- Enrollment；
-- PKI 签发策略；
-- mTLS QUIC Device control；
-- Operation/Command dispatcher；
+- provisioning 窗口状态；
+- Enrollment：Device Token 与 Gateway certificate 签发（origin CA key 保管）；
+- WSS Device control；
+- Command dispatcher；
 - Server vault；
-- AuditEvent 和 ChangeEvent；
+- AuditEvent；
 - Web Panel 静态资源或集成入口。
 
 不得：
 
-- 直接访问工作站本地文件、桌面或 Caddy Admin；
-- 把密码、password length、password fingerprint、password-derived digest、raw CSV hash 或内部 candidate digest 加入 Target、Observed、普通 API/Browser 可见响应、日志、指标、SSE、audit diff、outbox 或导出；
+- 直接访问工作站本地文件、桌面或 Caddy；
+- 把 password 明文、private key 或 Device Token 值加入 Target、Observed、普通 API/Browser 可见响应、日志、指标、audit diff 或导出；
 - 将 Web request 生命周期当作远端副作用完成边界；
-- 让 Enrollment 签发 Gateway certificate。
+- 在 provisioning 窗口之外签发任何 token 或证书。
 
 内部模块边界见 [仓库布局](repository-layout.md)。
 
@@ -117,8 +120,9 @@ flowchart LR
 
 - operator 交互；
 - Preparation Center；
-- Device、binding、Target、Observed、Drift、Operation 和 Audit 视图；
+- Device、binding、Target、Observed、Drift、Command 和 Audit 视图（轮询刷新）；
 - 人工触发 `SYNC_STATE`、`SYNC_SECRET`、session/home 操作；
+- provisioning 窗口开关入口；
 - 可访问性和错误呈现。
 
 不得：
@@ -133,24 +137,23 @@ flowchart LR
 
 拥有：
 
-- identity-before-vault 启动检查；
-- Client vault；
-- Enrollment 客户端；
-- Device certificate 与 Gateway certificate 本地材料；
-- mTLS QUIC 连接；
+- identity-before-credentials 启动检查；
+- Client 凭据文件（Device Token、Gateway key/leaf、Seat 凭据、LKG）；
+- Enrollment 客户端（含 Gateway CSR）；
+- WSS 控制连接；
 - Command journal 和幂等执行；
 - Target 应用和 Observed 采集；
-- Caddy 配置/证书激活编排；
+- Caddy 配置渲染（含 `/login` 自动登录注入）、validate、原子激活与 LKG 回滚；
 - Session Agent 协调；
 - Home transaction 编排；
-- LKG 和离线稳态。
+- 离线稳态。
 
 不得：
 
 - 直接执行网络输入给出的路径、UID、unit、命令或 upstream；
-- 把一个传输 handler 同时作为 vault、Caddy 和 Home 的业务实现；
+- 把一个传输 handler 同时作为凭据、Caddy 和 Home 的业务实现；
 - 将密码返回给 Server、Agent、浏览器或普通日志；
-- 在身份不确定或 vault 解密失败时自动创建新身份。
+- 在身份不确定或凭据文件损坏时自动 re-enroll 或重建凭据。
 
 内部必须分离 transport、application、domain、port 和 adapter。见 [仓库布局](repository-layout.md)。
 
@@ -165,9 +168,9 @@ flowchart LR
 不得：
 
 - 建立外部网络连接；
-- 持有 DOMjudge 密码、Device private key 或 Gateway private key；
+- 持有 DOMjudge 密码、Device Token 或 Gateway private key；
 - 接受任意 shell、任意路径、任意 UID、任意 unit 或任意环境变量；
-- 读取 Server/Client vault；
+- 读取 Server vault 或 Client 凭据文件；
 - 代替 Device Daemon 作业务决策。
 
 Helper 的每个方法必须是独立、可审计、参数封闭的 capability。
@@ -178,7 +181,7 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 
 - 由系统级 XDG Autostart 在当前图形会话中直接启动；
 - 当前会话资格和 singleton 验证；
-- typed snapshot 的本地展示；
+- typed snapshot 的本地展示（view kind 为封闭 enum，可经版本升级扩展）；
 - Seat/binding 提示；
 - lock/unlock 等经授权的会话交互；
 - focus-denied 等 UI 结果报告。
@@ -187,7 +190,7 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 
 - 使用 systemd user unit；
 - 使用 bootstrap/run 两阶段或环境转交文件；
-- 读取 vault、密码、Device/Gateway private key；
+- 读取凭据文件、密码、Device Token 或 Gateway private key；
 - 管理 Caddy；
 - 调用 Server；
 - 依赖外部 GUI helper 或 runtime UI interpreter。
@@ -197,18 +200,19 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 拥有：
 
 - package-pinned binary 和固定 module closure；
-- loopback HTTPS；
-- Gateway certificate 使用；
+- loopback HTTPS（Gateway certificate）；
 - BLOCKED 状态页；
-- READY 时代理固定 DOMjudge upstream；
-- Unix socket 或等价的本地受限 Admin control。
+- READY 时代理固定 DOMjudge upstream（TLS）；
+- 仅 `/login` 路由的 X-Headers 自动登录注入（[ADR-0024](adr/0024-domjudge-autologin-via-xheaders.md)）；
+- `Accept-Encoding` 透传（brotli 在 upstream 完成）。
 
 不得：
 
-- 决定 Device 身份、binding、授权或密码；
+- 决定 Device 身份、binding、授权；
 - 接收自由格式 upstream、路径或配置片段；
 - 因 Session lock/unlock 变更配置；
-- 在证书或配置未验证时代理 upstream。
+- 在证书或配置未验证时代理 upstream；
+- 在 `/login` 之外的路由注入凭据头。
 
 ### 4.7 Managed Browser
 
@@ -219,27 +223,27 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 
 不得：
 
-- 直接访问 Device control 或 vault；
+- 直接访问 Device control 或凭据文件；
 - 绕过 Caddy 访问由 Natsume 管理的 upstream；
 - 被视为秘密存储。
 
 ### 4.8 DOMjudge
 
-是外部竞赛系统。Natsume 只依赖已冻结的访问契约，不拥有其用户、比赛或认证实现。DOMjudge 版本和 endpoint 必须在平台文档中冻结。
+是外部竞赛系统。Natsume 只依赖已冻结的访问契约，不拥有其用户、比赛或认证实现。部署前提（在平台文档冻结并经 contract lab 验证）：版本与 endpoint；`auth_methods` 含 `xheaders`；web server 启用 brotli；upstream 至少 `/login` 为 TLS。
 
 ## 5. 信任边界
 
 | 边界 | 认证 | 数据类型 | 失败策略 |
 |---|---|---|---|
-| Operator → Server | operator session/RBAC | 人类控制面 | 拒绝并审计 |
-| Device Enrollment → Server | server-auth HTTPS | Device CSR 和 enrollment material | 不创建 Device identity artifact |
-| Device control ↔ Server | mandatory mTLS QUIC | typed protocol、Command、Observed | TLS/协议失败即断开 |
+| Operator → Server | operator session/固定角色 | 人类控制面 | 拒绝并审计 |
+| Device Enrollment → Server | server-auth HTTPS + provisioning 窗口 | 硬件身份证据、Gateway CSR | 窗口关闭或校验失败即拒绝，零状态变更 |
+| Device control ↔ Server | server-auth TLS + Device Token（WSS） | typed protocol、Command、Observed | 认证失败 401（解码前）；协议失败断开 |
 | Device Daemon → Helper | 本地 system D-Bus + OS policy | 封闭特权请求 | 拒绝且不降级 |
 | Agent ↔ Device Daemon | 本地 session-aware typed IPC | UI snapshot 和会话动作 | lease/epoch 失效 |
 | Browser → Caddy | loopback HTTPS | 页面和 DOMjudge 流量 | BLOCKED/503 |
-| Caddy → DOMjudge | 固定 upstream policy | 竞赛数据面 | 不健康则 fail closed |
+| Caddy → DOMjudge | 固定 TLS upstream（`INV-DATAPLANE-02`） | 竞赛数据面与 `/login` 凭据注入 | 不健康或非 TLS 则 fail closed |
 
-信任边界之间不得共享“全能 context”或未分类秘密。
+信任边界之间不得共享"全能 context"或未分类秘密。
 
 ## 6. 分层与依赖方向
 
@@ -254,12 +258,12 @@ domain policies and value objects
               ↓
 ports
               ↓
-database / vault / protocol / OS adapters
+database / credential / protocol / OS adapters
 ```
 
 规则：
 
-1. domain 不依赖 Axum、SQLx、Quinn、zbus、Slint 或 Caddy；
+1. domain 不依赖 Axum、SQLx、zbus、Slint 或 Caddy；
 2. application 不暴露数据库 row、Protobuf message 或 D-Bus object；
 3. adapter 负责结构转换和公开错误映射；
 4. transport handler 只完成认证、解码、调用 use case 和编码；
@@ -273,19 +277,19 @@ database / vault / protocol / OS adapters
 |---|---|---|
 | confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV |
 | account 标识 | contest-domain | Target、Web |
-| password 明文 | Server vault / Client vault 的短生命周期 use case | secret sync、Caddy credential adapter |
-| Device lifecycle | identity-enrollment/device-control | Web、Target |
+| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染 |
+| Device lifecycle 与 provisioning 窗口 | identity-enrollment | Web、Target |
+| Device Token（哈希） | identity-enrollment | WSS 认证 adapter |
 | Binding | contest-domain | Target、session |
 | Target | configuration-target | dispatcher、Web |
 | Observed snapshot | device-control | Drift、Web |
-| Operation/Command | command-dispatch | Web、audit |
-| Server certificate/key | pki-vault | Server TLS adapter |
-| Device certificate/key | Client vault | QUIC adapter |
-| Gateway certificate/key | Client vault | Caddy adapter |
+| Command | command-dispatch | Web、audit |
+| Server certificate/key | pki | Server TLS adapter |
+| origin CA key | pki | Enrollment 签发 use case |
+| Gateway certificate/key | Client 凭据文件 | Caddy 配置渲染 |
 | Machine Hardware ID | identity startup | Enrollment、Observed |
 | Session/Home epoch | local runtime domain | Agent/Home adapters |
 | AuditEvent | audit module | operator query/export |
-| ChangeEvent/outbox | transaction owner | SSE/dispatcher |
 
 数据库表是模块实现细节。一个模块不得通过任意 SQL 写入另一个模块拥有的状态。
 
@@ -294,50 +298,49 @@ database / vault / protocol / OS adapters
 ### 8.1 CSV 到 Server truth
 
 ```text
-upload
+upload（全局单 pending candidate）
   → encrypted staging
   → strict parse
   → immutable candidate import
-  → server-computed redacted preview
+  → server-computed redacted preview（opaque preview_token）
   → explicit Import Commit
-  → baseline compare-and-swap + binding freshness 校验
-  → atomic unbind-and-replace（仅当 preview 已授权的待解绑 bound Seat 集合非空）
-  → redacted AuditEvent；内容变化 ChangeEvent/outbox 仅在 material/binding 实际变化时
-  → Target becomes stale/recomputable（仅 material 导致 Server truth 实际变化）
+  → 双 CAS（ContestConfigurationRevision + AssignmentRevision）
+  → atomic unbind-and-replace（仅当存在待解绑 bound Seat）
+  → redacted AuditEvent
+  → Target 可重算（仅 material 变化时）
 ```
 
-每个 `seat,account,password` CSV 都是完整的 contest configuration candidate。**Material** Import Commit 才替换 confirmed contest configuration，并在需要时做 atomic unbind 与相关 revision 提升；**no-op** Import Commit（`is_noop`）只记录 lineage 与 redacted AuditEvent，不突变 confirmed 内容、不提升 contest/credential/assignment revision、不写内容变化 ChangeEvent/outbox、不触发 Target churn。Import Commit 不创建 Operation/Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O，也不表示 Device 已同步。baseline 或 binding freshness mismatch 须重新 preview，且不得改变 confirmed truth。集合可重复 import 完整替换；权威 diff taxonomy、revision CAS、preview token 与 atomic unbind-and-replace 规则见 [领域模型](domain-model.md)，本文不重复完整 taxonomy/wire 字段表。
+每个 CSV 都是完整的 contest configuration candidate。**Material** Import Commit 才替换 confirmed contest configuration；**no-op**（`is_noop`）只记录 lineage 与 redacted AuditEvent，不提升 revision、不触发 Target churn。Import Commit 不创建 Command，不产生 Device I/O。任一 CAS 失配须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0028](adr/0028-single-operator-import-and-secret-evidence-scope.md)。
 
-### 8.2 Device Enrollment
+### 8.2 Device Enrollment（provisioning 窗口内）
 
 ```text
-identity-before-vault
-  → server endpoint/trust validation
-  → server-auth HTTPS
-  → Device Identity CSR
-  → Server policy validation
-  → Device Identity leaf/chain
-  → local atomic persistence
-  → mandatory-mTLS QUIC
+identity-before-credentials（ADR-0025 配方）
+  → server endpoint/trust validation（预置 CA + IP-SAN）
+  → 本地生成 Gateway keypair + CSR
+  → server-auth HTTPS enrollment 请求
+  → Server：窗口门禁 → 校验 → 同一事务签发 { Device Token + Gateway leaf } + 审计
+  → Client 校验响应（SPKI/chain/SAN）
+  → 本地原子持久化（token 0600、gateway 0640）
+  → WSS 控制连接（Bearer token）
 ```
 
-Enrollment 不接收或返回 Gateway CSR/certificate。
+窗口关闭后 Server 拒绝一切签发。重复 Enrollment 为受审计的替换。
 
 ### 8.3 非秘密状态同步
 
 ```text
 operator starts SYNC_STATE
-  → Target snapshot and generation are frozen
+  → Target snapshot 与派生代际被冻结
   → durable Command is created
   → Device persists receipt
   → Device validates and stages state
-  → Gateway CSR subprotocol, when required
-  → Caddy activation
+  → Caddy 配置渲染 → validate → 原子激活（失败回滚 LKG）
   → Observed snapshot
   → Command terminal status
 ```
 
-Gateway certificate 只能存在于该 active Command 上下文。
+`SYNC_STATE` 不涉及任何签发。
 
 ### 8.4 密码同步
 
@@ -345,9 +348,10 @@ Gateway certificate 只能存在于该 active Command 上下文。
 operator starts SYNC_SECRET
   → current assignment + credential revision are frozen
   → secret read from Server vault
-  → encrypted authenticated command
+  → encrypted authenticated command（WSS）
   → Device validates current binding/revision
-  → atomic Client vault update
+  → 凭据文件原子更新
+  → Caddy /login 注入配置重渲染并原子激活
   → secret is discarded from transient buffers
   → redacted terminal status
 ```
@@ -391,7 +395,8 @@ Server control certificate 由离线控制根或经批准的离线流程签发�
 - 固定 Caddy binary；
 - system service、D-Bus policy；
 - `/etc/xdg/autostart/org.natsume.SessionAgent.desktop`；
-- BLOCKED 状态页静态资源。
+- BLOCKED 状态页静态资源；
+- debconf 预置：Server endpoint、Gateway hostname、站点参数。
 
 Client 包不得包含 Session Agent systemd user unit。
 
@@ -400,11 +405,11 @@ Client 包不得包含 Session Agent systemd user unit。
 Device 可以在 Server 暂时不可达时继续使用已经验证的本地状态，但不得推断新授权：
 
 - 已验证 LKG 配置可以继续服务；
-- 已安装且未过期/未撤销的 Gateway certificate 可以继续使用；
+- 已安装且未过期的 Gateway certificate 可以继续使用；
 - 当前有效 binding 的本地凭据可以继续使用；
-- 不得在离线时创建新 binding、签发证书或接受陈旧 generation；
+- 不得在离线时创建新 binding、获得新 token/证书或接受陈旧 revision；
 - 重连后通过 Observed 和 Drift 收敛；
-- 本地损坏不能通过“自动重建身份”绕过。
+- 本地损坏不能通过"自动重建身份"绕过。
 
 ## 11. 变更治理
 

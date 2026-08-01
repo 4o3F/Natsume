@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-ADR 记录“为什么选择”，不替代当前规范。当前行为应同时满足已接受 ADR 和权威文档。
+ADR 记录"为什么选择"，不替代当前规范。当前行为应同时满足已接受 ADR 和权威文档。
 
 ## 状态
 
@@ -9,6 +9,8 @@ ADR 记录“为什么选择”，不替代当前规范。当前行为应同时�
 - `SUPERSEDED`：已被后续 ADR 替代，仅保留历史；
 - `REJECTED`：未采用；
 - `DEPRECATED`：仍可能存在但计划移除。
+
+部分 `ACCEPTED` ADR 带有 Note 标注：个别条款被后续 ADR 收窄或替代，其余条款仍有效（见 0002/0006/0011/0018/0020）。
 
 ## 索引
 
@@ -27,22 +29,31 @@ ADR 记录“为什么选择”，不替代当前规范。当前行为应同时�
 | [0009](0009-single-lifetime-minimal-domain.md) | Single-lifetime minimal domain | ACCEPTED | 实现 | P1 |
 | [0010](0010-immutable-machine-id-and-device-lifecycle.md) | Immutable Machine ID and Device lifecycle | ACCEPTED | 边界 | P3 |
 | [0011](0011-application-encrypted-sqlite-vault.md) | Application-encrypted SQLite vault | ACCEPTED | 边界 | P1 / P3 |
-| [0012](0012-server-auth-enrollment-and-mtls-control.md) | Server-auth Enrollment and mTLS control | ACCEPTED | 边界 | P3 / P4 |
+| [0012](0012-server-auth-enrollment-and-mtls-control.md) | Server-auth Enrollment and mTLS control | SUPERSEDED | 历史 | P3 / P4 |
 | [0013](0013-explicit-state-and-secret-commands.md) | Explicit state and secret commands | ACCEPTED | 边界 | P2 / P5 |
 | [0014](0014-observed-snapshot-is-the-status-source.md) | Observed snapshot is status source | ACCEPTED | 实现 | P4 / P5 |
 | [0015](0015-home-backend-and-recovery.md) | Home backend and recovery | ACCEPTED | 边界 | P6 |
-| [0016](0016-gateway-certificate-issued-during-sync-state.md) | Gateway certificate during SYNC_STATE | ACCEPTED | 边界 | P4 / P5 |
+| [0016](0016-gateway-certificate-issued-during-sync-state.md) | Gateway certificate during SYNC_STATE | SUPERSEDED | 历史 | P4 / P5 |
 | [0017](0017-cross-desktop-session-agent-gui.md) | Cross-desktop Session Agent GUI | SUPERSEDED | 历史 | P6 |
 | [0018](0018-xdg-direct-slint-session-agent.md) | XDG direct Slint Session Agent | ACCEPTED | 实现 | P0 / P6 |
 | [0019](0019-stable-error-code-registry.md) | Stable ErrorCode registry | PROPOSED | 实现 | P0 |
 | [0020](0020-repeatable-contest-configuration-import.md) | Repeatable contest configuration import | ACCEPTED | 实现 | P2 |
+| [0021](0021-provisioning-window-certificate-issuance.md) | Provisioning-window certificate issuance | ACCEPTED | 边界 | P3 |
+| [0022](0022-deployment-facts-and-trust-assumptions.md) | Deployment facts and trust assumptions | ACCEPTED | 边界 | 全部 |
+| [0023](0023-wss-control-channel-with-device-token.md) | WSS control channel with Device Token | ACCEPTED | 边界 | P3 / P4 |
+| [0024](0024-domjudge-autologin-via-xheaders.md) | DOMjudge autologin via X-Headers | ACCEPTED | 边界 | P5 |
+| [0025](0025-deterministic-hardware-identity-recipe.md) | Deterministic hardware identity recipe | ACCEPTED | 边界 | P3 |
+| [0026](0026-client-secrets-as-permission-files.md) | Client secrets as permission files | ACCEPTED | 边界 | P3 |
+| [0027](0027-single-image-desktop-cycle.md) | Single-image desktop cycle | ACCEPTED | 实现 | P0 / P6 |
+| [0028](0028-single-operator-import-and-secret-evidence-scope.md) | Single-operator import and secret-evidence scope | ACCEPTED | 边界 | P2 |
+| [0029](0029-right-sizing-control-plane-machinery.md) | Right-sizing control-plane machinery | ACCEPTED | 实现 | P1 / P4 / P5 |
 
 ## 维护
 
 - 新 ADR 使用 [`0000-template.md`](0000-template.md)；
 - ID 单调递增，不复用；
 - 接受后同步权威规范；
-- supersede 时在旧 ADR 和新 ADR 双向链接；
+- supersede 时在旧 ADR 和新 ADR 双向链接；条款级收窄用 Note 标注双向引用；
 - template 不维护当前项目索引；
 - 多数 ADR 保持简短；详细测试和操作步骤留在实现与验证产物中；
 - 放宽 `INV-*` 必须在 ADR 中逐条说明安全影响。
@@ -54,8 +65,8 @@ ADR 正文是不可变的历史记录，不因后续文档重组而改写。已�
 | 旧编号 | 验证主题 |
 |---|---|
 | Probe A | IP-SAN 与 endpoint |
-| Probe B | Enrollment → mTLS → Gateway CSR 证书阶梯 |
+| Probe B | Enrollment 签发阶梯（现为两段，见 ADR-0021/0023） |
 | Probe C | Caddy 与 DOMjudge 数据面 |
 | Probe D | Machine identity 与物理硬件 fixture |
-| Probe E | Session Agent、双桌面与 Home |
+| Probe E | Session Agent、桌面与 Home |
 | Probe F | Package 与 systemd 生命周期 |

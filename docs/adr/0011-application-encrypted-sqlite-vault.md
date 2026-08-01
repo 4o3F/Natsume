@@ -1,7 +1,8 @@
 # ADR-0011: Application-encrypted SQLite vault
 
 > Status: `ACCEPTED`  
-> Scope: Natsume V2
+> Scope: Natsume V2  
+> Note: Client 侧条款（随机 root key + HKDF 绑定的 Client vault）已由 [ADR-0026](0026-client-secrets-as-permission-files.md) 替代为权限文件；Server vault 条款维持有效。
 
 ## Context
 

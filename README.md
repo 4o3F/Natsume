@@ -30,9 +30,9 @@ Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。本
 
 以下仍是后续 Phase 的目标，不应从文档存在推断为已实现：
 
-- 完整 Server 领域模型、RBAC、审计与 Preparation Center；
-- 生产 Enrollment、mTLS QUIC、Command journal 和 Gateway certificate 流程；
-- 生产 Caddy 激活与 DOMjudge 数据面；
+- 完整 Server 领域模型、admin/viewer 授权、审计与 Preparation Center；
+- 生产 Enrollment（provisioning 窗口 + Device Token + Gateway certificate）、WSS 控制面与 Command journal；
+- 生产 Caddy 激活、xheaders 自动登录与 DOMjudge 数据面；
 - 成熟 Slint Session Agent；
 - Session/Home 状态机；
 - 完整备份、升级、演练和发布签收。
@@ -86,22 +86,22 @@ pnpm diagrams
 ## 关键设计边界
 
 1. 一个初始化后的 Server 实例只服务当前一场竞赛，不建模多 Event。
-2. Enrollment 只签发 Device Identity certificate。
-3. Gateway certificate 只在已认证 mTLS QUIC 的 active `SYNC_STATE` 内签发。
+2. 一切签发只发生在 provisioning 窗口内的 Enrollment：Device Token + Gateway certificate；窗口关闭后无签发路径。
+3. Device control 为 server-auth TLS 上的 WSS + Device Token；无 token 的连接在解码前拒绝。
 4. Target 不含密码且不自动产生远端副作用。
 5. `SYNC_STATE` 与 `SYNC_SECRET` 都必须由操作员明确触发；密码只进入秘密专用路径。
 6. Observed snapshot 是设备实际状态的唯一业务来源。
 7. root Helper 无外网、无 DOMjudge 密码、无任意命令接口。
-8. Session Agent 无 vault、PKI 或 Caddy 所有权。
+8. Session Agent 无凭据、PKI 或 Caddy 所有权。
 9. Session lock/unlock 不改变 Caddy 配置、epoch 或状态。
-10. 无法证明 Machine ID、vault 或 Home 安全时必须 fail closed。
+10. 无法证明 Machine ID、本地凭据或 Home 安全时必须 fail closed。
 
 完整规则以 [`docs/security-recovery.md`](docs/security-recovery.md) 的 `INV-*` 条目为准。
 
 ## 文档基线
 
-- 架构来源：Natsume V2 v2.7 决策集合；
-- Phase 0 窗口：2026-07-23 至 2026-08-12；
+- 架构来源：Natsume V2 v2.8 决策集合（[ADR-0022](docs/adr/0022-deployment-facts-and-trust-assumptions.md)–[0029](docs/adr/0029-right-sizing-control-plane-machinery.md)）；
+- Phase 0 窗口：2026-07-23 至 2026-08-19；
 - G0 当前结论：`OPEN`，不得从文档存在推断为 Gate 通过。
 
 文档演进记录见 git history。

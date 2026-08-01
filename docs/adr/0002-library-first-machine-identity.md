@@ -1,7 +1,8 @@
 # ADR-0002: Library-first Machine Identity
 
 > Status: `ACCEPTED`  
-> Scope: Natsume V2
+> Scope: Natsume V2  
+> Note: 来源策略（增量准入 smbios/raw-cpuid/procfs/udev 等）已由 [ADR-0025](0025-deterministic-hardware-identity-recipe.md) 收窄为固定来源集合；library-first 结构与本 ADR 其余条款维持有效。
 
 ## Context
 

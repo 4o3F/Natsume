@@ -1,7 +1,8 @@
 # ADR-0006: Daemon-integrated Machine Identity startup
 
 > Status: `ACCEPTED`  
-> Scope: Natsume V2
+> Scope: Natsume V2  
+> Note: 正文中的 "vault" 现指 [ADR-0026](0026-client-secrets-as-permission-files.md) 的 Client 凭据文件；identity-before-credentials 顺序与决策表语义不变。
 
 ## Context
 

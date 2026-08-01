@@ -1,7 +1,8 @@
 # ADR-0018: XDG direct Slint Session Agent
 
 > Status: `ACCEPTED`  
-> Scope: Natsume V2
+> Scope: Natsume V2  
+> Note: 双桌面（GNOME/GDM/Wayland 与 LightDM/X11）持续支持要求已由 [ADR-0027](0027-single-image-desktop-cycle.md) 替换为"每赛事周期单镜像/单桌面 + 升级重验清单"；启动模型与 GUI 栈条款维持有效。
 
 ## Context
 

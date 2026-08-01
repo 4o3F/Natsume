@@ -49,7 +49,7 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 
 | Crate | 责任 | 典型消费者 |
 |---|---|---|
-| `device-protocol` | Protobuf/wire contract 与 framing value | Server、Device Daemon、integration tests |
+| `device-protocol` | Protobuf message contract（WS binary frame，一帧一消息）与 envelope value | Server、Device Daemon、integration tests |
 | `error-code` | 公开稳定错误码和值 | Server、Device、Agent/API adapters |
 | `local-control-api` | D-Bus/local IPC value types | Device Daemon、Helper、Agent |
 | `machine-identity` | 纯候选规范化、质量与 UUID 派生 | Device Daemon、Helper/tests |
@@ -60,11 +60,11 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 
 每个有业务逻辑的进程应分离 transport / application / domain / port / adapter 层（见 [架构 §6](architecture.md)）。各进程的内部模块仅给出目标边界；具体 `src/` 结构在对应 Phase 实现时确定。
 
-- **Server（`natsume-server`，composition root）**：内部模块按职责隔离（identity/enrollment、device control、contest domain、configuration target、command dispatch、operator API、audit/outbox、pki/vault）。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。**
-- **Device Daemon（`natsume-device-daemon`）**：分离 identity startup、enrollment、control、command runtime、target apply、gateway、caddy、session、home、observed、vault、journal。**QUIC handler 不直接操作 vault、journal、Caddy 或 D-Bus**；module 间传递 value object，不传递 transport request 或全局 mutable context；`identity_startup` 在其他 identity-bound adapter 初始化前运行。
+- **Server（`natsume-server`，composition root）**：内部模块按职责隔离（identity/enrollment（含 provisioning 窗口与 Token/Gateway 签发）、device control（WSS）、contest domain、configuration target、command dispatch、operator API、audit、pki/server-vault）。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。**
+- **Device Daemon（`natsume-device-daemon`）**：分离 identity startup、enrollment、control（WSS）、command runtime、target apply、caddy render/activation、session、home、observed、credentials、journal。**WSS handler 不直接操作凭据文件、journal、Caddy 或 D-Bus**；module 间传递 value object，不传递 transport request 或全局 mutable context；`identity_startup` 在其他 identity-bound adapter 初始化前运行。
 - **Privileged Helper**：每个 capability 独立可审计（hardware sources、home backend、login session、filesystem policy）。**禁止 `execute(request)` 或 `run_action(name, args)` 一类通用入口**；path/UID 由固定 policy 重新派生，Device Daemon 传入值只作受限 ID。
 - **Session Agent（`natsume-session-agent`）**：分离 platform（logind/session/singleton/desktop）、local_api、presentation、ui。**不得引入 Server client、vault、PKI、Caddy 或 privileged D-Bus client**；由系统级 XDG Autostart 直接启动。
-- **Web（operator Web Panel）**：feature-oriented（api/generated、auth、preparation、devices、bindings、operations、audit、shared/ui）。**Web 只依赖生成 API 和自己的 view model，不复制 Rust domain enum 后自行演进**；`shared/ui` 只含无业务语义的视觉组件。
+- **Web（operator Web Panel）**：feature-oriented（api/generated、auth、preparation、devices、bindings、commands、audit、shared/ui）。**Web 只依赖生成 API 和自己的 view model，不复制 Rust domain enum 后自行演进**；`shared/ui` 只含无业务语义的视觉组件。
 
 ## 6. Tests
 

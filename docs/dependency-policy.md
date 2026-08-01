@@ -68,23 +68,22 @@
 
 依赖升级必须运行已知向量、format migration、wrong-key、tamper 和 crash recovery 测试。
 
-## 5. TLS/QUIC
+## 5. TLS 与控制通道
 
-Enrollment server-auth TLS 与 Device control mTLS 使用独立配置构造。不得通过一个布尔 flag 在同一 builder 中切换认证模型。
+全部入口为 server-auth TLS（[ADR-0023](adr/0023-wss-control-channel-with-device-token.md)）：Operator HTTP、Enrollment 与 Device WSS 共用同一 rustls 栈与同一 TCP 端口，不引入第二个协议栈（无 quinn/QUIC、无独立 HTTP/2 gRPC 栈）。
 
 必须显式：
 
 - trust roots；
 - server name/IP-SAN；
-- client certificate verifier；
 - ALPN；
 - protocol version；
-- 0-RTT policy；
-- certificate profile；
-- key usage；
-- max frame/connection limits。
+- 0-RTT/early data 保持关闭；
+- WS subprotocol version；
+- max frame/connection limits；
+- 签发侧的 certificate profile 与 key usage（Gateway）。
 
-测试 helper 不能被 production build 导出为 dangerous verifier。
+测试 helper 不能被 production build 导出为 dangerous verifier。Device Token 比对必须常数时间。
 
 ## 6. SQL 和持久化
 
@@ -148,12 +147,11 @@ Web 只通过 pnpm workspace 管理。
 
 ## 9. Machine identity
 
-遵循 library-first：
+遵循 library-first 与固定配方（[ADR-0025](adr/0025-deterministic-hardware-identity-recipe.md)）：
 
-- `machine-identity` crate 只做候选规范化、质量、冲突和 UUID 派生；
+- `machine-identity` crate 只做候选规范化、placeholder 过滤、2-of-3 判定和 UUID 派生；
+- 来源集合固定（DMI system UUID、主板 serial、首块盘 serial）；变更来源集合须修订 ADR-0025，不按证据增量准入新来源库；
 - raw source collector 留在 privileged adapter；
-- 优先 sysinfo 等稳定库；
-- smbios/raw-cpuid/procfs/udev/libsystemd 只按证据增量准入；
 - 不把 root/helper framework 泄漏到纯 crate；
 - 不提交原始 serial fixture。
 
@@ -174,7 +172,7 @@ Caddy、nFPM 等外部 release artifact：
 - 固定官方 source；
 - 固定 archive SHA-256；
 - 解包后 binary SHA-256；
-- 固定 module/feature closure；
+- 固定 module/feature closure（不引入 encode/brotli 模块；`Accept-Encoding` 透传，压缩在 upstream 完成）；
 - 在 CI 验证；
 - 不在 postinstall 下载；
 - 升级需要 smoke、config compatibility、rollback evidence。
