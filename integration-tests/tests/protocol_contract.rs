@@ -41,7 +41,7 @@ fn protocol_uses_explicit_state_and_secret_commands() {
     assert!(PROTO.contains("message SyncState"));
     assert!(PROTO.contains("message SyncSecret"));
     assert!(PROTO.contains("message TargetStateSnapshot"));
-    assert!(PROTO.contains("GatewayCertificateMode gateway_certificate_mode"));
+    assert!(!PROTO.contains("GatewayCertificateMode gateway_certificate_mode"));
     assert!(!PROTO.contains("DesiredStateStatus"));
 }
 
@@ -59,42 +59,53 @@ fn binding_response_is_named_binding_result() {
 }
 
 #[test]
-fn enrollment_is_device_identity_only() {
+fn enrollment_issues_device_token_and_gateway_certificate() {
     let request = message_body("EnrollDeviceRequest");
-    let result = message_body("EnrollmentPollResult");
+    let response = message_body("EnrollDeviceResponse");
 
-    assert!(request.contains("device_identity_csr_der"));
-    assert!(request.contains("device_spki_sha256"));
-    assert!(!request.contains("gateway"));
+    assert!(request.contains("string machine_hardware_id = 1;"));
+    assert!(request.contains("HardwareClaim hardware_claim = 2;"));
+    assert!(request.contains("bytes gateway_csr_der = 3;"));
+    assert!(request.contains("string client_version = 4;"));
+    assert!(request.contains("uint32 protocol_version = 5;"));
+    assert!(!request.contains("device_identity_csr_der"));
+    assert!(!request.contains("device_spki_sha256"));
 
-    assert!(result.contains("device_leaf_der"));
-    assert!(result.contains("device_chain_der"));
-    assert!(!result.contains("gateway"));
+    assert!(response.contains("string device_id = 1;"));
+    assert!(response.contains("SecretBytes device_token = 2;"));
+    assert!(response.contains("bytes gateway_leaf_der = 3;"));
+    assert!(response.contains("repeated bytes gateway_chain_der = 4;"));
+    assert!(response.contains("EnrollmentState state = 5;"));
+    assert!(response.contains("string stable_error_code = 6;"));
+
+    assert!(!PROTO.contains("message EnrollmentChallengeRequest"));
+    assert!(!PROTO.contains("message EnrollmentChallengeResponse"));
+    assert!(!PROTO.contains("message EnrollmentPollRequest"));
+    assert!(!PROTO.contains("message EnrollmentPollResult"));
+    assert!(!PROTO.contains("device_identity_csr_der"));
+    assert!(!PROTO.contains("device_spki_sha256"));
+    assert!(!PROTO.contains("device_leaf_der"));
+    assert!(!PROTO.contains("device_chain_der"));
 }
 
 #[test]
-fn gateway_certificate_is_a_sync_state_quic_subprotocol() {
-    let request = message_body("GatewayCertificateRequest");
-    let result = message_body("GatewayCertificateResult");
+fn gateway_certificate_is_issued_only_at_enrollment() {
+    let enrollment_request = message_body("EnrollDeviceRequest");
+    let enrollment_response = message_body("EnrollDeviceResponse");
+    let sync_state = message_body("SyncState");
     let command = message_body("Command");
 
-    for field in [
-        "request_id",
-        "command_id",
-        "target_generation",
-        "configuration_revision_id",
-        "csr_der",
-        "spki_sha256",
-        "request_nonce",
-    ] {
-        assert!(
-            request.contains(field),
-            "missing gateway request field {field}"
-        );
-    }
-
-    assert!(result.contains("GatewayCertificateResultState"));
-    assert!(result.contains("certificate_fingerprint"));
+    assert!(enrollment_request.contains("gateway_csr_der"));
+    assert!(enrollment_response.contains("gateway_leaf_der"));
+    assert!(enrollment_response.contains("gateway_chain_der"));
+    assert!(!PROTO.contains("message GatewayCertificateRequest"));
+    assert!(!PROTO.contains("message GatewayCertificateResult"));
+    assert!(!PROTO.contains("enum GatewayCertificateResultState"));
+    assert!(!PROTO.contains("enum GatewayCertificateMode"));
+    assert!(!PROTO.contains("STATE_APPLY_STATUS_WAITING_FOR_GATEWAY_CERTIFICATE"));
+    assert!(!sync_state.contains("gateway_certificate"));
+    assert!(!command.contains("gateway_certificate"));
+    assert!(!command.contains("certificate"));
     assert!(!command.contains("install_certificate"));
     assert!(!PROTO.contains("message InstallCertificate"));
     assert!(!PROTO.contains("CertificateIssueRequest"));
@@ -109,11 +120,109 @@ fn protocol_observes_cross_desktop_session_agent() {
     assert!(observed.contains("SessionAgentObservation session_agent"));
     assert!(agent.contains("GraphicalSessionType graphical_session_type"));
     assert!(agent.contains("DisplayBackend display_backend"));
-    assert!(agent.contains("reserved 4"));
+    assert!(!agent.contains("reserved 4"));
+    assert!(agent.contains("UiPresentationState presentation = 4;"));
     assert!(!PROTO.contains("enum SessionSupervisor"));
     assert!(agent.contains("UiPresentationState presentation"));
     assert!(agent.contains("SessionScreenKind screen"));
     assert!(PROTO.contains("UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED"));
+}
+
+#[test]
+fn revision_fields_are_numeric_and_field_numbers_are_stable() {
+    let observed = message_body("ObservedStateSnapshot");
+    assert!(observed.contains("uint64 installed_binding_revision = 8;"));
+    assert!(observed.contains("uint64 installed_credential_revision = 9;"));
+    assert!(observed.contains("uint64 gateway_configuration_revision = 12;"));
+    assert!(!observed.contains("revision_id"));
+
+    let assignment = message_body("TargetAssignment");
+    assert!(assignment.contains("reserved 1, 5;"));
+    assert!(assignment.contains("uint64 binding_revision = 2;"));
+    assert!(assignment.contains("string seat_id = 3;"));
+    assert!(assignment.contains("string seat_code = 4;"));
+    assert!(assignment.contains("string account_id = 6;"));
+    assert!(assignment.contains("string domjudge_username = 7;"));
+    assert!(!assignment.contains("binding_id"));
+
+    let gateway = message_body("TargetGateway");
+    assert!(gateway.contains("uint64 configuration_revision = 1;"));
+    assert!(!gateway.contains("configuration_revision_id"));
+
+    let secret = message_body("SyncSecret");
+    assert!(secret.contains("string seat_id = 1;"));
+    assert!(secret.contains("uint64 binding_revision = 2;"));
+    assert!(secret.contains("string account_id = 3;"));
+    assert!(secret.contains("uint64 credential_revision = 4;"));
+    assert!(secret.contains("SecretBytes password = 5;"));
+    assert!(!secret.contains("seat_assignment_revision"));
+
+    let binding_result = message_body("BindingResult");
+    assert!(binding_result.contains("uint64 binding_revision = 3;"));
+    assert!(!binding_result.contains("assignment_revision"));
+
+    let command = message_body("Command");
+    let status = message_body("CommandStatus");
+    assert!(command.contains("string command_id = 1;"));
+    assert!(status.contains("string command_id = 1;"));
+}
+
+#[test]
+fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
+    use natsume_device_protocol::{
+        generated::{
+            Command, CommandState, CommandStatus, ControlEnvelope, RestartAgent, command,
+            control_envelope,
+        },
+        validate_envelope,
+    };
+    use natsume_error_code::{AsErrorCode, ErrorCode};
+
+    const UUID_V7: &str = "018f0e2e-8c1d-7c5e-8b12-3456789abcde";
+    let command_envelope = |command_id: &str| ControlEnvelope {
+        body: Some(control_envelope::Body::Command(Command {
+            command_id: command_id.to_owned(),
+            created_at_unix_ms: 0,
+            deadline_unix_ms: 0,
+            offline_policy: String::new(),
+            resource_lane: String::new(),
+            body: Some(command::Body::RestartAgent(RestartAgent::default())),
+        })),
+    };
+    let status_envelope = |command_id: &str| ControlEnvelope {
+        body: Some(control_envelope::Body::CommandStatus(CommandStatus {
+            command_id: command_id.to_owned(),
+            state: CommandState::Received as i32,
+            stable_error_code: String::new(),
+            terminal_result_cursor: 0,
+        })),
+    };
+
+    assert!(validate_envelope(&command_envelope(UUID_V7)).is_ok());
+    assert!(validate_envelope(&status_envelope(UUID_V7)).is_ok());
+
+    let uppercase = UUID_V7.to_uppercase();
+    let braced = format!("{{{UUID_V7}}}");
+    let compact = UUID_V7.replace('-', "");
+    for invalid in [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "018f0e2e-8c1d-7c5e-0b12-3456789abcde",
+        "018f0e2e-8c1d-7c5e-cb12-3456789abcde",
+        "018f0e2e-8c1d-7c5e-eb12-3456789abcde",
+        uppercase.as_str(),
+        braced.as_str(),
+        compact.as_str(),
+        "not-a-command-id",
+    ] {
+        for envelope in [command_envelope(invalid), status_envelope(invalid)] {
+            let Err(error) = validate_envelope(&envelope) else {
+                panic!("non-canonical command ID must fail: {invalid}");
+            };
+            assert_eq!(error.error_code(), ErrorCode::CommandIdInvalid);
+            let rendered = error.to_string();
+            assert!(!rendered.contains(invalid));
+        }
+    }
 }
 
 #[test]
@@ -138,58 +247,6 @@ fn generated_descriptor_matches_the_committed_golden() {
             .iter()
             .any(|message| message.name.as_deref() == Some("ControlEnvelope"))
     );
-}
-
-#[test]
-fn framing_is_big_endian_bounded_and_streaming_safe() {
-    use bytes::BytesMut;
-    use natsume_device_protocol::{
-        DEFAULT_MAX_FRAME_BYTES, decode_frame, encode_frame,
-        generated::{ControlEnvelope, Heartbeat, control_envelope},
-    };
-
-    let envelope = ControlEnvelope {
-        body: Some(control_envelope::Body::Heartbeat(Heartbeat::default())),
-    };
-    let Ok(frame) = encode_frame(&envelope, DEFAULT_MAX_FRAME_BYTES) else {
-        panic!("small envelope must encode");
-    };
-    assert_eq!(
-        u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize,
-        frame.len() - 4
-    );
-
-    let mut incomplete = BytesMut::from(&frame[..frame.len() - 1]);
-    assert!(matches!(
-        decode_frame(&mut incomplete, DEFAULT_MAX_FRAME_BYTES),
-        Ok(None)
-    ));
-
-    let mut complete = BytesMut::from(frame.as_ref());
-    let Ok(Some(decoded)) = decode_frame(&mut complete, DEFAULT_MAX_FRAME_BYTES) else {
-        panic!("complete frame must decode");
-    };
-    assert_eq!(decoded, envelope);
-    assert!(complete.is_empty());
-}
-
-#[test]
-fn framing_rejects_oversized_and_malformed_payloads() {
-    use bytes::BytesMut;
-    use natsume_device_protocol::decode_frame;
-    use natsume_error_code::{AsErrorCode, ErrorCode};
-
-    let mut oversized = BytesMut::from(&[0, 0, 0, 9][..]);
-    let Err(error) = decode_frame(&mut oversized, 8) else {
-        panic!("advertised oversize must fail before payload allocation");
-    };
-    assert_eq!(error.error_code(), ErrorCode::ProtocolFrameTooLarge);
-
-    let mut malformed = BytesMut::from(&[0, 0, 0, 1, 0xff][..]);
-    let Err(error) = decode_frame(&mut malformed, 8) else {
-        panic!("malformed complete payload must fail");
-    };
-    assert_eq!(error.error_code(), ErrorCode::ProtocolInvalidEnvelope);
 }
 
 #[test]

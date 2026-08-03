@@ -13,7 +13,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | 1 | 工具链与单一 lockfile 可重现（clean checkout） | `OPEN` |
 | 2 | 真实 CI：Rust/Web/契约 clean diff/policy scan/package smoke | `OPEN` |
 | 3 | SNAFU + stable ErrorCode 边界与 redaction tests | `OPEN` |
-| 4 | 契约骨架重定向 v2.8：窗口门禁 Enrollment（token+gateway）、WSS envelope、Observed/CommandStatus、D-Bus、SQL migrations、golden clean diff | `OPEN` |
+| 4 | 契约骨架重定向 v2.8：current-state SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/journal/UI 完成 | `OPEN` |
 | 5 | QUIC/framing/mTLS 骨架与测试残留清除（`crates/device-protocol` framing、CI 断言同步） | `OPEN` |
 | 6 | Server/Client 空 Deb 构建+安装+权限/preseed 验证 | `OPEN` |
 | 7 | 目标环境：IP-SAN/endpoint 与单 TCP 端口验证 | `BLOCKED-INPUT` |
@@ -33,7 +33,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | G0-IN-004 | Browser、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | `BLOCKED-INPUT` |
 | G0-IN-005 | 硬件 fixture 集（v1 事故 + 代表性异构） | `BLOCKED-INPUT` |
 | G0-IN-006 | PKI test material（control CA / origin CA）与 owner | `BLOCKED-INPUT` |
-| G0-IN-007 | v2.8 文档/ID/术语签收 | `OPEN` |
+| G0-IN-007 | v2.8 current-state、BindingRevision、provisioning recovery、Panel Command ID 与 frozen-payload 文档/术语签收 | `OPEN` |
 
 ## 目标环境验证
 

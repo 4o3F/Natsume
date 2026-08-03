@@ -11,13 +11,8 @@ pub enum ErrorCode {
     ProtocolFrameTooLarge,
     ProtocolInvalidEnvelope,
     ProtocolAnonymousClient,
-    EnrollmentDeviceOnlyViolation,
+    ProvisioningWindowClosed,
     EnrollmentCsrInvalid,
-    GatewayCertRequestNotAuthorized,
-    GatewayCertCommandMismatch,
-    GatewayCertRequestExpired,
-    GatewayCertCsrInvalid,
-    GatewayCertSpkiConflict,
     GatewayCertIssuerUnavailable,
     GatewayCertProfileInvalid,
     GatewayCertLocalKeyMismatch,
@@ -39,22 +34,19 @@ pub enum ErrorCode {
     NoActiveLock,
     HomeTransition,
     PackageLayoutInvalid,
+    CommandIdInvalid,
+    CommandRequestConflict,
 }
 
 /// Every Phase 0 minimum stable error code exactly once.
-pub const ALL_ERROR_CODES: [ErrorCode; 33] = [
+pub const ALL_ERROR_CODES: [ErrorCode; 30] = [
     ErrorCode::InstallEndpointInvalidIp,
     ErrorCode::InstallEndpointInvalidPort,
     ErrorCode::ProtocolFrameTooLarge,
     ErrorCode::ProtocolInvalidEnvelope,
     ErrorCode::ProtocolAnonymousClient,
-    ErrorCode::EnrollmentDeviceOnlyViolation,
+    ErrorCode::ProvisioningWindowClosed,
     ErrorCode::EnrollmentCsrInvalid,
-    ErrorCode::GatewayCertRequestNotAuthorized,
-    ErrorCode::GatewayCertCommandMismatch,
-    ErrorCode::GatewayCertRequestExpired,
-    ErrorCode::GatewayCertCsrInvalid,
-    ErrorCode::GatewayCertSpkiConflict,
     ErrorCode::GatewayCertIssuerUnavailable,
     ErrorCode::GatewayCertProfileInvalid,
     ErrorCode::GatewayCertLocalKeyMismatch,
@@ -76,6 +68,8 @@ pub const ALL_ERROR_CODES: [ErrorCode; 33] = [
     ErrorCode::NoActiveLock,
     ErrorCode::HomeTransition,
     ErrorCode::PackageLayoutInvalid,
+    ErrorCode::CommandIdInvalid,
+    ErrorCode::CommandRequestConflict,
 ];
 
 impl ErrorCode {
@@ -88,13 +82,8 @@ impl ErrorCode {
             Self::ProtocolFrameTooLarge => "PROTOCOL_FRAME_TOO_LARGE",
             Self::ProtocolInvalidEnvelope => "PROTOCOL_INVALID_ENVELOPE",
             Self::ProtocolAnonymousClient => "PROTOCOL_ANONYMOUS_CLIENT",
-            Self::EnrollmentDeviceOnlyViolation => "ENROLLMENT_DEVICE_ONLY_VIOLATION",
+            Self::ProvisioningWindowClosed => "PROVISIONING_WINDOW_CLOSED",
             Self::EnrollmentCsrInvalid => "ENROLLMENT_CSR_INVALID",
-            Self::GatewayCertRequestNotAuthorized => "GATEWAY_CERT_REQUEST_NOT_AUTHORIZED",
-            Self::GatewayCertCommandMismatch => "GATEWAY_CERT_COMMAND_MISMATCH",
-            Self::GatewayCertRequestExpired => "GATEWAY_CERT_REQUEST_EXPIRED",
-            Self::GatewayCertCsrInvalid => "GATEWAY_CERT_CSR_INVALID",
-            Self::GatewayCertSpkiConflict => "GATEWAY_CERT_SPKI_CONFLICT",
             Self::GatewayCertIssuerUnavailable => "GATEWAY_CERT_ISSUER_UNAVAILABLE",
             Self::GatewayCertProfileInvalid => "GATEWAY_CERT_PROFILE_INVALID",
             Self::GatewayCertLocalKeyMismatch => "GATEWAY_CERT_LOCAL_KEY_MISMATCH",
@@ -116,6 +105,8 @@ impl ErrorCode {
             Self::NoActiveLock => "NO_ACTIVE_LOCK",
             Self::HomeTransition => "HOME_TRANSITION",
             Self::PackageLayoutInvalid => "PACKAGE_LAYOUT_INVALID",
+            Self::CommandIdInvalid => "COMMAND_ID_INVALID",
+            Self::CommandRequestConflict => "COMMAND_REQUEST_CONFLICT",
         }
     }
 
@@ -128,17 +119,16 @@ impl ErrorCode {
             Self::ProtocolFrameTooLarge => "Protocol frame too large",
             Self::ProtocolInvalidEnvelope => "Invalid protocol envelope",
             Self::ProtocolAnonymousClient => "Anonymous control client rejected",
-            Self::EnrollmentDeviceOnlyViolation => "Enrollment accepts Device Identity only",
-            Self::EnrollmentCsrInvalid => "Enrollment CSR invalid",
-            Self::GatewayCertRequestNotAuthorized => "Gateway certificate request not authorized",
-            Self::GatewayCertCommandMismatch => "Gateway certificate command mismatch",
-            Self::GatewayCertRequestExpired => "Gateway certificate request expired",
-            Self::GatewayCertCsrInvalid => "Gateway certificate CSR invalid",
-            Self::GatewayCertSpkiConflict => "Gateway certificate SPKI conflict",
-            Self::GatewayCertIssuerUnavailable => "Gateway certificate issuer unavailable",
-            Self::GatewayCertProfileInvalid => "Gateway certificate profile invalid",
-            Self::GatewayCertLocalKeyMismatch => "Gateway certificate local key mismatch",
-            Self::GatewayCertInstallFailed => "Gateway certificate install failed",
+            Self::ProvisioningWindowClosed => "Provisioning window closed",
+            Self::EnrollmentCsrInvalid => "Enrollment Gateway CSR invalid",
+            Self::GatewayCertIssuerUnavailable => {
+                "Enrollment Gateway certificate issuer unavailable"
+            }
+            Self::GatewayCertProfileInvalid => "Configured Gateway certificate profile invalid",
+            Self::GatewayCertLocalKeyMismatch => {
+                "Enrolled Gateway certificate does not match the local key"
+            }
+            Self::GatewayCertInstallFailed => "Enrolled Gateway certificate install failed",
             Self::VaultCorrupt => "Vault corrupt",
             Self::SessionChanged => "Session changed",
             Self::SessionIneligible => "Graphical session is not eligible",
@@ -156,6 +146,8 @@ impl ErrorCode {
             Self::NoActiveLock => "No active lock",
             Self::HomeTransition => "Home transition rejected",
             Self::PackageLayoutInvalid => "Package layout invalid",
+            Self::CommandIdInvalid => "Invalid Command ID",
+            Self::CommandRequestConflict => "Command request conflicts with existing Command",
         }
     }
 
@@ -191,39 +183,36 @@ mod tests {
             ErrorCode::ProtocolFrameTooLarge => 2,
             ErrorCode::ProtocolInvalidEnvelope => 3,
             ErrorCode::ProtocolAnonymousClient => 4,
-            ErrorCode::EnrollmentDeviceOnlyViolation => 5,
+            ErrorCode::ProvisioningWindowClosed => 5,
             ErrorCode::EnrollmentCsrInvalid => 6,
-            ErrorCode::GatewayCertRequestNotAuthorized => 7,
-            ErrorCode::GatewayCertCommandMismatch => 8,
-            ErrorCode::GatewayCertRequestExpired => 9,
-            ErrorCode::GatewayCertCsrInvalid => 10,
-            ErrorCode::GatewayCertSpkiConflict => 11,
-            ErrorCode::GatewayCertIssuerUnavailable => 12,
-            ErrorCode::GatewayCertProfileInvalid => 13,
-            ErrorCode::GatewayCertLocalKeyMismatch => 14,
-            ErrorCode::GatewayCertInstallFailed => 15,
-            ErrorCode::VaultCorrupt => 16,
-            ErrorCode::SessionChanged => 17,
-            ErrorCode::SessionIneligible => 18,
-            ErrorCode::SessionAmbiguous => 19,
-            ErrorCode::SessionAgentDuplicate => 20,
-            ErrorCode::SessionAutostartShadowed => 21,
-            ErrorCode::SessionAgentMissing => 22,
-            ErrorCode::SessionDisplayUnavailable => 23,
-            ErrorCode::SessionDisplayLost => 24,
-            ErrorCode::SessionUiPresentedUnfocused => 25,
-            ErrorCode::SessionLockUnsupported => 26,
-            ErrorCode::SessionUnlockUnsupported => 27,
-            ErrorCode::StaleLockEpoch => 28,
-            ErrorCode::LockCommandMismatch => 29,
-            ErrorCode::NoActiveLock => 30,
-            ErrorCode::HomeTransition => 31,
-            ErrorCode::PackageLayoutInvalid => 32,
+            ErrorCode::GatewayCertIssuerUnavailable => 7,
+            ErrorCode::GatewayCertProfileInvalid => 8,
+            ErrorCode::GatewayCertLocalKeyMismatch => 9,
+            ErrorCode::GatewayCertInstallFailed => 10,
+            ErrorCode::VaultCorrupt => 11,
+            ErrorCode::SessionChanged => 12,
+            ErrorCode::SessionIneligible => 13,
+            ErrorCode::SessionAmbiguous => 14,
+            ErrorCode::SessionAgentDuplicate => 15,
+            ErrorCode::SessionAutostartShadowed => 16,
+            ErrorCode::SessionAgentMissing => 17,
+            ErrorCode::SessionDisplayUnavailable => 18,
+            ErrorCode::SessionDisplayLost => 19,
+            ErrorCode::SessionUiPresentedUnfocused => 20,
+            ErrorCode::SessionLockUnsupported => 21,
+            ErrorCode::SessionUnlockUnsupported => 22,
+            ErrorCode::StaleLockEpoch => 23,
+            ErrorCode::LockCommandMismatch => 24,
+            ErrorCode::NoActiveLock => 25,
+            ErrorCode::HomeTransition => 26,
+            ErrorCode::PackageLayoutInvalid => 27,
+            ErrorCode::CommandIdInvalid => 28,
+            ErrorCode::CommandRequestConflict => 29,
         }
     }
 
     #[test]
-    fn minimum_set_has_exactly_33_unique_stable_strings() {
+    fn minimum_set_has_exactly_30_unique_stable_strings() {
         let mut stable_strings = BTreeSet::new();
         let mut variants = [false; ALL_ERROR_CODES.len()];
 

@@ -24,6 +24,7 @@ fn main() -> Result<(), Error> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.file_descriptor_set_path(descriptor_path);
+    config.skip_debug([".natsume.device.v2.SecretBytes"]);
     config
         .compile_protos(&["proto/device_control.proto"], &["proto"])
         .context(GenerateProtocolSnafu)?;

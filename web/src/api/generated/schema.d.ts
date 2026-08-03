@@ -4,7 +4,7 @@
  */
 
 export interface paths {
-  "/api/v2/devices/{device_id}/actions/sync-secret": {
+  "/api/v2/commands/{command_id}": {
     parameters: {
       query?: never;
       header?: never;
@@ -12,16 +12,19 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    put?: never;
-    /** @description Requires a human operator, re-authentication and an audit reason. */
-    post: operations["syncDeviceSecret"];
+    /**
+     * Persist a Panel-generated Command
+     * @description The Control Panel generates command_id before submission. It must be a canonical lowercase hyphenated UUIDv7. Retrying the same command_id with the same normalized request returns the persisted Command; a different request for that ID conflicts. A persisted response never represents Device execution.
+     */
+    put: operations["putCommand"];
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
     patch?: never;
     trace?: never;
   };
-  "/api/v2/devices/{device_id}/actions/sync-state": {
+  "/api/v2/enrollment-requests/{request_id}/actions/approve": {
     parameters: {
       query?: never;
       header?: never;
@@ -30,24 +33,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Creates an explicit non-secret state Command. If required, the Device requests its Gateway certificate over the authenticated QUIC session as a command-bound subflow. */
-    post: operations["syncDeviceState"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/enrollment-requests/{request_id}:approve": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Approve Device Enrollment and issue only the QUIC client certificate */
+    /** Approve Device Enrollment for Device Token-authenticated WSS control */
     post: operations["approveEnrollment"];
     delete?: never;
     options?: never;
@@ -88,7 +74,7 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/imports/{import_id}:commit": {
+  "/api/v2/imports/{import_id}/actions/commit": {
     parameters: {
       query?: never;
       header?: never;
@@ -108,6 +94,21 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    /**
+     * @description The only Panel-command kinds frozen by the Phase 0 HTTP contract.
+     *
+     *     Device-facing payloads remain bounded by this enum; arbitrary remote-management commands are
+     *     intentionally not representable.
+     * @enum {string}
+     */
+    CommandKind: "sync_state" | "sync_secret";
+    /**
+     * @description The persistence state returned by the Command endpoint.
+     *
+     *     This is deliberately not a Device execution outcome.
+     * @enum {string}
+     */
+    CommandPersistenceState: "persisted";
     EnrollmentApprovalAccepted: {
       certificate_scope: string;
       /** Format: uuid */
@@ -126,6 +127,51 @@ export interface components {
       title: string;
       type: string;
     };
+    /** @description A Command accepted into durable Server storage. */
+    PersistedCommandResponse: {
+      /**
+       * Format: uuid
+       * @example 018f0e2e-8c1d-7c5e-8b12-3456789abcde
+       */
+      command_id: string;
+      device_id: string;
+      kind: components["schemas"]["CommandKind"];
+      state: components["schemas"]["CommandPersistenceState"];
+    };
+    /**
+     * @description Persisted request data supplied by the Control Panel.
+     *
+     *     Each `kind` has a separate closed object, so unknown or cross-kind input is rejected.
+     */
+    PutCommandRequest:
+      | components["schemas"]["SyncStateCommandRequest"]
+      | components["schemas"]["SyncSecretCommandRequest"];
+    /** @description No secret material is accepted from the Panel. The Server resolves it from the vault later. */
+    SyncSecretCommandInput: Record<string, never>;
+    /** @enum {string} */
+    SyncSecretCommandKind: "sync_secret";
+    SyncSecretCommandRequest: {
+      device_id: string;
+      group_correlation_id?: string | null;
+      input: components["schemas"]["SyncSecretCommandInput"];
+      /** Format: int32 */
+      input_version: number;
+      kind: components["schemas"]["SyncSecretCommandKind"];
+      reason_code: string;
+    };
+    /** @description No caller-controlled state payload is accepted. The Server derives it from current truth. */
+    SyncStateCommandInput: Record<string, never>;
+    /** @enum {string} */
+    SyncStateCommandKind: "sync_state";
+    SyncStateCommandRequest: {
+      device_id: string;
+      group_correlation_id?: string | null;
+      input: components["schemas"]["SyncStateCommandInput"];
+      /** Format: int32 */
+      input_version: number;
+      kind: components["schemas"]["SyncStateCommandKind"];
+      reason_code: string;
+    };
   };
   responses: never;
   parameters: never;
@@ -135,45 +181,60 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-  syncDeviceSecret: {
+  putCommand: {
     parameters: {
       query?: never;
       header?: never;
       path: {
-        /** @description Device identifier */
-        device_id: string;
+        /**
+         * @description Panel-generated canonical lowercase hyphenated UUIDv7 Command identifier
+         * @example 018f0e2e-8c1d-7c5e-8b12-3456789abcde
+         */
+        command_id: string;
       };
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PutCommandRequest"];
+      };
+    };
     responses: {
-      /** @description Explicit human-triggered SYNC_SECRET operation created */
-      202: {
+      /** @description The same command_id and normalized request replayed an existing persisted Command; Device execution is not implied. */
+      200: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["PersistedCommandResponse"];
+        };
       };
-    };
-  };
-  syncDeviceState: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        /** @description Device identifier */
-        device_id: string;
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Explicit SYNC_STATE operation created; Gateway certificate issuance may occur within the command */
-      202: {
+      /** @description The Command was persisted for the first time; Device execution is not implied. */
+      201: {
         headers: {
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["PersistedCommandResponse"];
+        };
+      };
+      /** @description The command_id is not a canonical lowercase hyphenated UUIDv7 (COMMAND_ID_INVALID). The response never echoes the invalid value. */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OpenApiProblemDetails"];
+        };
+      };
+      /** @description The command_id is already bound to a different normalized request (COMMAND_REQUEST_CONFLICT). */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OpenApiProblemDetails"];
+        };
       };
     };
   };
@@ -189,7 +250,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Device Identity certificate issuance workflow accepted; no Gateway credential is issued */
+      /** @description Enrollment approval accepted; the provisioning-window Enrollment transaction issues the Device Token and Gateway certificate (ADR-0033) */
       202: {
         headers: {
           [name: string]: unknown;

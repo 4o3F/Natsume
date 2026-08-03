@@ -1,7 +1,8 @@
 //! Compile-time ownership of Device Daemon stable error codes.
 //!
-//! Runtime QUIC, Gateway certificate, vault and Session handlers arrive in later steps. These
-//! groups freeze the Daemon side of shared contracts without introducing placeholder handlers.
+//! Runtime WSS, Device Token authentication, Gateway certificate, vault and Session handlers
+//! arrive in later steps. These groups freeze the Daemon side of shared contracts without
+//! introducing placeholder handlers.
 
 use natsume_error_code::ErrorCode;
 
@@ -11,20 +12,21 @@ pub const INSTALL_ENDPOINT_ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::InstallEndpointInvalidPort,
 ];
 
-/// Mandatory-mTLS control protocol errors shared with Server.
+/// Device Token-authenticated WSS control protocol errors shared with Server.
 pub const CONTROL_PROTOCOL_ERROR_CODES: &[ErrorCode] = &[
     ErrorCode::ProtocolFrameTooLarge,
     ErrorCode::ProtocolInvalidEnvelope,
     ErrorCode::ProtocolAnonymousClient,
 ];
 
-/// Gateway certificate errors for authenticated QUIC plus active `SYNC_STATE` only.
+/// Enrollment issuance errors returned by the Server.
+pub const ENROLLMENT_ERROR_CODES: &[ErrorCode] = &[
+    ErrorCode::ProvisioningWindowClosed,
+    ErrorCode::EnrollmentCsrInvalid,
+];
+
+/// Gateway certificate errors for provisioning-window Enrollment and local installation.
 pub const GATEWAY_CERT_ERROR_CODES: &[ErrorCode] = &[
-    ErrorCode::GatewayCertRequestNotAuthorized,
-    ErrorCode::GatewayCertCommandMismatch,
-    ErrorCode::GatewayCertRequestExpired,
-    ErrorCode::GatewayCertCsrInvalid,
-    ErrorCode::GatewayCertSpkiConflict,
     ErrorCode::GatewayCertIssuerUnavailable,
     ErrorCode::GatewayCertProfileInvalid,
     ErrorCode::GatewayCertLocalKeyMismatch,
@@ -47,6 +49,7 @@ pub const SESSION_ERROR_CODES: &[ErrorCode] = &[
 pub const DEVICE_DAEMON_OWNED_ERROR_CODES: &[&[ErrorCode]] = &[
     INSTALL_ENDPOINT_ERROR_CODES,
     CONTROL_PROTOCOL_ERROR_CODES,
+    ENROLLMENT_ERROR_CODES,
     GATEWAY_CERT_ERROR_CODES,
     DEVICE_VAULT_ERROR_CODES,
     SESSION_ERROR_CODES,

@@ -143,7 +143,7 @@ pub struct GatewayStatusSnapshot {
     pub updated_at_unix_ms: i64,
     pub machine_short_id: String,
     pub seat_label: Option<String>,
-    pub operation_short_id: Option<String>,
+    pub command_short_id: Option<String>,
     pub progress_current: Option<u32>,
     pub progress_total: Option<u32>,
     pub suggested_action: SuggestedAction,

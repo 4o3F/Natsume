@@ -1,6 +1,6 @@
 [package]
 name = "natsume-device-protocol"
-description = "Natsume QUIC control-session Protobuf schema and Rust facade"
+description = "Natsume WSS control-session Protobuf schema and Rust facade"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,10 +9,10 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
-bytes.workspace = true
 natsume-error-code = { path = "../error-code" }
 prost.workspace = true
 snafu.workspace = true
+uuid.workspace = true
 
 [build-dependencies]
 snafu.workspace = true

@@ -1,17 +1,18 @@
 # ADR-NNNN: Title
 
-> Status: `PROPOSED`  
-> Scope:  
-> Supersedes: —  
+> Status: `PROPOSED`
+> Scope:
+> Consolidates: —
+> Supersedes: —
 > Superseded by: —
 
 ## Context
 
-描述需要做出的稳定决策、约束和触发因素。只写理解决策必需的事实。
+只写理解稳定取舍所必需的事实、约束和触发因素。当前行为细节应链接权威规范，不在此复制。
 
 ## Decision
 
-使用可验证的陈述说明选择。必要时列出不可协商边界。
+用简短、可验证的陈述说明选择及不可协商边界。
 
 ## Alternatives
 
@@ -28,14 +29,10 @@
 
 - …
 
-## Evidence and revisit trigger
+## Acceptance basis and revisit trigger
 
-说明：
+说明接受该取舍的依据，以及哪些事实变化会重新打开决策。不要复制 Gate 清单、probe、runbook 或未来 Phase 工作包。
 
-- 接受前需要什么 evidence；
-- 什么条件会重新打开该决策；
-- 关联 requirement、Gate、probe 或 runbook。
-
-## References
+## Normative sources
 
 - [Architecture](../architecture.md)

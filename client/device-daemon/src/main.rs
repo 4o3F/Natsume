@@ -20,7 +20,7 @@ fn run_args(args: &[String]) -> Result<(), Error> {
         [] => {
             println!(concat!(
                 "natsume-device-daemon blueprint: identity check -> vault -> ",
-                "Device-only enrollment -> mTLS control -> SYNC_STATE Gateway PKI"
+                "provisioning-window Enrollment -> install Gateway certificate -> Device Token-authenticated WSS control"
             ));
             Ok(())
         }

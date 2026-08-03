@@ -100,7 +100,7 @@ pnpm diagrams
 
 ## 文档基线
 
-- 架构来源：Natsume V2 v2.8 决策集合（[ADR-0022](docs/adr/0022-deployment-facts-and-trust-assumptions.md)–[0029](docs/adr/0029-right-sizing-control-plane-machinery.md)）；
+- 架构来源：Natsume V2 当前主题决策集合（[ADR-0030](docs/adr/0030-foundation-deployment-and-delivery-baseline.md)–[0036](docs/adr/0036-error-architecture-and-public-codes.md)）；
 - Phase 0 窗口：2026-07-23 至 2026-08-19；
 - G0 当前结论：`OPEN`，不得从文档存在推断为 Gate 通过。
 

@@ -11,6 +11,10 @@ toolchain:
     grep -Exq '[0-9a-f]{64}  nfpm_2\.47\.0_Linux_x86_64\.tar\.gz' packaging/nfpm.sha256
     grep -Fqx 'name = "protoc-bin-vendored"' Cargo.lock
 
+docs-validate:
+    node docs/verification/validate-links.mjs docs README.md
+    node docs/verification/validate-markdown.mjs docs README.md
+
 install:
     pnpm install --frozen-lockfile
 

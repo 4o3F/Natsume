@@ -1,9 +1,9 @@
 # Natsume V2 系统架构
 
-> 状态：`NORMATIVE`  
-> 适用范围：Natsume V2  
-> 当前实现成熟度：Phase 0 工程基线  
-> 校准基线：[ADR-0022](adr/0022-deployment-facts-and-trust-assumptions.md)  
+> 状态：`NORMATIVE`
+> 适用范围：Natsume V2
+> 当前实现成熟度：Phase 0 工程基线
+> 校准基线：[ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md)
 > 相关文档：[领域模型](domain-model.md) · [边界契约](contracts.md) · [状态与执行](state-and-execution.md) · [安全与恢复](security-recovery.md)
 
 ## 1. 目标
@@ -26,7 +26,7 @@ Natsume 为单场竞赛现场提供以下能力：
 3. 离线稳态和可恢复性；
 4. 低耦合、高内聚；
 5. 可验证、可打包和可运维；
-6. 与 [ADR-0022](adr/0022-deployment-facts-and-trust-assumptions.md) 部署事实相称的实现规模。
+6. 与 [ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md) 部署事实相称的实现规模。
 
 ## 2. 产品范围
 
@@ -52,7 +52,7 @@ Natsume 为单场竞赛现场提供以下能力：
 - 任意反向代理配置平台；
 - Server 高可用或多控制器一致性；
 - ACME、TOFU、运行时下载或 postinstall 下载；
-- 多桌面环境同时支持（每周期单镜像，[ADR-0027](adr/0027-single-image-desktop-cycle.md)）；
+- 多桌面环境同时支持（每周期单镜像，[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）；
 - 可编辑的角色/权限模型（固定 admin/viewer）；
 - 对本地 root、物理攻击者或固件篡改的防护；
 - 将 Session lock 或遮罩 UI 当作网络隔离/完整性边界。
@@ -84,7 +84,7 @@ flowchart LR
     Caddy -->|fixed TLS upstream| DOMjudge
 ```
 
-该图表示信任和调用方向，不表示所有组件已经实现。Operator HTTP、Enrollment 与 Device WSS 共用同一 TCP 端口（[ADR-0023](adr/0023-wss-control-channel-with-device-token.md)）。
+该图表示信任和调用方向，不表示所有组件已经实现。Operator HTTP、Enrollment 与 Device WSS 共用同一 TCP 端口（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。
 
 ## 4. 进程与职责
 
@@ -94,13 +94,13 @@ flowchart LR
 
 - operator 身份、授权（admin/viewer）和 HTTP API；
 - CSV staging、preview、commit；
-- Server truth；
+- Server truth（当前 Seat 集合、Seat→Account mapping、current-only credential 与当前 Binding；无 Seat-universe freeze、generic instance state 或业务 snapshot history）；
 - Target 计算；
 - Device lifecycle 和 binding；
 - provisioning 窗口状态；
 - Enrollment：Device Token 与 Gateway certificate 签发（origin CA key 保管）；
 - WSS Device control；
-- Command dispatcher；
+- direct single-Device Command persistence（`commands` 使用 `frozen_payload_json` 保存 typed frozen content）与 dispatcher；
 - Server vault；
 - AuditEvent；
 - Web Panel 静态资源或集成入口。
@@ -121,6 +121,7 @@ flowchart LR
 - operator 交互；
 - Preparation Center；
 - Device、binding、Target、Observed、Drift、Command 和 Audit 视图（轮询刷新）；
+- 在每个 direct Command create 前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并调用 `PUT /api/v2/commands/{command_id}`；
 - 人工触发 `SYNC_STATE`、`SYNC_SECRET`、session/home 操作；
 - provisioning 窗口开关入口；
 - 可访问性和错误呈现。
@@ -131,6 +132,7 @@ flowchart LR
 - 自行计算权限、Target 或 Drift；
 - 本地重算 import diff classification；只渲染 Server 返回的结构化 preview；
 - 解析错误显示文本作业务判断；
+- 让 Server 为同一请求生成/替换 Command ID，或以额外 request replay / event-delivery 机制补充 direct-Command 语义；
 - 宣称命令已完成，除非 Server 状态已经确认。
 
 ### 4.3 `natsume-device-daemon`
@@ -141,7 +143,7 @@ flowchart LR
 - Client 凭据文件（Device Token、Gateway key/leaf、Seat 凭据、LKG）；
 - Enrollment 客户端（含 Gateway CSR）；
 - WSS 控制连接；
-- Command journal 和幂等执行；
+- Command journal 与同一 `command_id` 的去重执行（原样保留 Panel-generated canonical UUIDv7；同 ID 不同 frozen payload conflict/reject）；
 - Target 应用和 Observed 采集；
 - Caddy 配置渲染（含 `/login` 自动登录注入）、validate、原子激活与 LKG 回滚；
 - Session Agent 协调；
@@ -203,7 +205,7 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 - loopback HTTPS（Gateway certificate）；
 - BLOCKED 状态页；
 - READY 时代理固定 DOMjudge upstream（TLS）；
-- 仅 `/login` 路由的 X-Headers 自动登录注入（[ADR-0024](adr/0024-domjudge-autologin-via-xheaders.md)）；
+- 仅 `/login` 路由的 X-Headers 自动登录注入（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）；
 - `Accept-Encoding` 透传（brotli 在 upstream 完成）。
 
 不得：
@@ -275,15 +277,15 @@ database / credential / protocol / OS adapters
 
 | 数据 | 唯一 Owner | 允许消费者 |
 |---|---|---|
-| confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV |
-| account 标识 | contest-domain | Target、Web |
-| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染 |
+| confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV；无 Seat-universe freeze 或业务 snapshot history |
+| account 标识与当前 Seat→Account mapping | contest-domain | Target、Web；`account_mappings` 属于 `revision_counters.configuration_revision` |
+| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 每个 subject 仅当前 ciphertext |
 | Device lifecycle 与 provisioning 窗口 | identity-enrollment | Web、Target |
-| Device Token（哈希） | identity-enrollment | WSS 认证 adapter |
-| Binding | contest-domain | Target、session |
+| Device Token（哈希） | identity-enrollment | WSS 认证 adapter；`device_tokens` 仅保存 device/request/hash |
+| 当前 Seat↔Device Binding | contest-domain | Target、session；Binding-set mutation 以全局 `BindingRevision` CAS |
 | Target | configuration-target | dispatcher、Web |
-| Observed snapshot | device-control | Drift、Web |
-| Command | command-dispatch | Web、audit |
+| Observed snapshot | device-control | Drift、Web；按 `device_pk` 的 current row |
+| direct single-Device Command | command-dispatch | Web、audit；Panel-owned UUIDv7 ID，typed content 位于 `frozen_payload_json` |
 | Server certificate/key | pki | Server TLS adapter |
 | origin CA key | pki | Enrollment 签发 use case |
 | Gateway certificate/key | Client 凭据文件 | Caddy 配置渲染 |
@@ -298,24 +300,24 @@ database / credential / protocol / OS adapters
 ### 8.1 CSV 到 Server truth
 
 ```text
-upload（全局单 pending candidate）
-  → encrypted staging
-  → strict parse
-  → immutable candidate import
+upload（全局单 encrypted pending candidate）
+  → strict parse（invalid 不落库）
+  → encrypted staging + current candidate row
   → server-computed redacted preview（opaque preview_token）
   → explicit Import Commit
-  → 双 CAS（ContestConfigurationRevision + AssignmentRevision）
+  → 对 `revision_counters` 的双 CAS（configuration_revision + binding_revision）
   → atomic unbind-and-replace（仅当存在待解绑 bound Seat）
   → redacted AuditEvent
+  → candidate + payload terminal deletion
   → Target 可重算（仅 material 变化时）
 ```
 
-每个 CSV 都是完整的 contest configuration candidate。**Material** Import Commit 才替换 confirmed contest configuration；**no-op**（`is_noop`）只记录 lineage 与 redacted AuditEvent，不提升 revision、不触发 Target churn。Import Commit 不创建 Command，不产生 Device I/O。任一 CAS 失配须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0028](adr/0028-single-operator-import-and-secret-evidence-scope.md)。
+每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 的变化推进 `revision_counters.configuration_revision`，Binding-set 变化才推进全局 `BindingRevision`。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不提升 revision、不触发 Target churn。commit、discard 和 expiry 终止 candidate 时删除 `pending_import_candidate` 及其引用 payload vault row，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O。任一 CAS 失配须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
 
 ### 8.2 Device Enrollment（provisioning 窗口内）
 
 ```text
-identity-before-credentials（ADR-0025 配方）
+identity-before-credentials（ADR-0032 配方）
   → server endpoint/trust validation（预置 CA + IP-SAN）
   → 本地生成 Gateway keypair + CSR
   → server-auth HTTPS enrollment 请求
@@ -325,30 +327,34 @@ identity-before-credentials（ADR-0025 配方）
   → WSS 控制连接（Bearer token）
 ```
 
-窗口关闭后 Server 拒绝一切签发。重复 Enrollment 为受审计的替换。
+窗口关闭后 Server 拒绝一切签发。窗口只有一个 current singleton；restart/restore 若发现 `open`，以同事务 audit+CAS close-once，若已 `closed` 则零写入。重复 Enrollment 为受审计的替换。
 
 ### 8.3 非秘密状态同步
 
 ```text
 operator starts SYNC_STATE
+  → Panel generates canonical UUIDv7 command_id
+  → PUT /api/v2/commands/{command_id}（same canonical request = existing Command）
   → Target snapshot 与派生代际被冻结
-  → durable Command is created
-  → Device persists receipt
+  → durable direct Command is created
+  → Device persists receipt with the same command_id
   → Device validates and stages state
   → Caddy 配置渲染 → validate → 原子激活（失败回滚 LKG）
   → Observed snapshot
-  → Command terminal status
+  → Command terminal status with the same command_id
 ```
 
-`SYNC_STATE` 不涉及任何签发。
+`SYNC_STATE` 不涉及任何签发。首次 create/replay/conflict 只表示 Server Command 持久化，不表示 Device 执行完成。
 
 ### 8.4 密码同步
 
 ```text
 operator starts SYNC_SECRET
+  → Panel generates canonical UUIDv7 command_id
+  → PUT /api/v2/commands/{command_id}
   → current assignment + credential revision are frozen
-  → secret read from Server vault
-  → encrypted authenticated command（WSS）
+  → secret read from current Server vault record
+  → encrypted authenticated command（WSS, same command_id）
   → Device validates current binding/revision
   → 凭据文件原子更新
   → Caddy /login 注入配置重渲染并原子激活
@@ -356,7 +362,7 @@ operator starts SYNC_SECRET
   → redacted terminal status
 ```
 
-没有自动 secret sync。
+没有自动 secret sync。相同 ID+相同 canonical request 只返回既有 Command；同 ID+不同 request conflict，重新执行使用新 ID。
 
 ### 8.5 Session/Home
 
@@ -396,7 +402,7 @@ Server control certificate 由离线控制根或经批准的离线流程签发�
 - system service、D-Bus policy；
 - `/etc/xdg/autostart/org.natsume.SessionAgent.desktop`；
 - BLOCKED 状态页静态资源；
-- debconf 预置：Server endpoint、Gateway hostname、站点参数。
+- debconf 预置：Server endpoint、Gateway hostname、站点参数；Gateway hostname 与 Server endpoint 使用同一 canonical parser/validator。
 
 Client 包不得包含 Session Agent systemd user unit。
 

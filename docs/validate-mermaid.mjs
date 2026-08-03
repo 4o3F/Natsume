@@ -7,6 +7,13 @@ import { JSDOM } from "jsdom";
 
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
 
+function isLocalAdrArchive(directory) {
+  return (
+    path.basename(directory) === "archive" &&
+    path.basename(path.dirname(directory)) === "adr"
+  );
+}
+
 function compareNames(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
 }
@@ -38,7 +45,7 @@ async function collectMarkdownFiles(input) {
 
     for (const entry of entries) {
       const entryPath = path.join(directory, entry.name);
-      if (entry.isDirectory()) {
+      if (entry.isDirectory() && !isLocalAdrArchive(entryPath)) {
         await visit(entryPath);
       } else if (
         entry.isFile()

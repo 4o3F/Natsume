@@ -81,7 +81,7 @@ function render(snapshot) {
   setText("state-detail", detail);
   setText("machine-id", snapshot.machine_short_id);
   setText("seat-label", snapshot.seat_label);
-  setText("operation-id", snapshot.operation_short_id);
+  setText("operation-id", snapshot.command_short_id);
 
   const updatedAt = Number.isFinite(snapshot.updated_at_unix_ms)
     ? new Date(snapshot.updated_at_unix_ms)

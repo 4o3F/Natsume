@@ -1,7 +1,7 @@
 
 [package]
 name = "natsume-device-daemon"
-description = "Unprivileged Natsume startup identity check, encrypted vault, QUIC control and Caddy integration daemon"
+description = "Unprivileged Natsume startup identity check, encrypted vault, Device Token-authenticated WSS control and Caddy integration daemon"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -15,7 +15,6 @@ natsume-device-protocol = { path = "../../crates/device-protocol" }
 natsume-error-code = { path = "../../crates/error-code" }
 natsume-local-control-api = { path = "../../crates/local-control-api" }
 natsume-machine-identity = { path = "../../crates/machine-identity" }
-quinn.workspace = true
 reqwest.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true

@@ -8,6 +8,8 @@
 4. Domain crates retain typed SNAFU errors and map them explicitly at a boundary.
 5. Phase 0 Problem Details omit `detail`; fields are not publicly mutable, and any future detail API must accept reviewed redacted text.
 6. Secret, path and source-chain content is removed before an operator report crosses a boundary.
+7. `COMMAND_ID_INVALID` means the supplied Command ID was not a canonical lowercase hyphenated UUIDv7; its public response never echoes the rejected value.
+8. `COMMAND_REQUEST_CONFLICT` means a canonical Command ID is already bound to a different normalized request.
 
 ## Surface model
 
@@ -24,7 +26,7 @@ typed domain error
  CodedReport / redaction
 ```
 
-The crate intentionally has no Axum, Prost or zbus runtime dependency. Owning crates integrate the 33-code registry with generated OpenAPI, Protobuf framing/validation and D-Bus contracts without deriving behavior from error text.
+The crate intentionally has no Axum, Prost or zbus runtime dependency. Owning crates integrate the 30-code registry with generated OpenAPI, Protobuf framing/validation and D-Bus contracts without deriving behavior from error text.
 
 ## Redaction
 

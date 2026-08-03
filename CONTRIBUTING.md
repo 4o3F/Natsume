@@ -79,11 +79,13 @@ pnpm diagrams
 
 ## 何时需要 ADR
 
-需要：产品范围与信任边界变化、新进程/新 root capability/新外部网络路径、身份与证书与秘密与 fail-closed 规则、wire compatibility 或持久化身份语义、新共享 crate、Home backend 策略、目标桌面启动模型、放宽任何 `INV-*`。
+先判断变更是否属于 [`docs/adr/README.md`](docs/adr/README.md) 中已有主题：同一主题内、不改变稳定边界的澄清直接更新现有主题 ADR，不新增编号。
 
-不需要：不改变稳定语义的内部重构、新增测试或 evidence、已定义 contract 内的新 adapter、不影响跨模块边界的性能优化。
+只有下列情况新增 ADR：独立 trust boundary、真实架构反转、公开兼容性承诺、持久化身份语义，或现有主题无法容纳的新产品边界。新进程/root capability/外部网络路径、身份/证书/秘密/fail-closed 规则、新共享 crate、Home backend、桌面启动模型及放宽任何 `INV-*`，必须至少更新对应主题 ADR；是否新编号取决于是否形成独立决策。
 
-架构变更合并时同步检查：对应规范文档、ADR、machine schema/golden、Gate 引用、安全与负向测试。
+不需要 ADR：不改变稳定语义的内部重构、新增测试或 evidence、已定义 contract 内的新 adapter、不影响跨模块边界的性能优化，以及仅补充实现步骤、Gate、probe 或 runbook。
+
+架构变更合并时同步检查：对应规范文档、主题 ADR、machine schema/golden、Gate 引用、安全与负向测试。
 
 ## 提交约定
 

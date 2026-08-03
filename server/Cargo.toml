@@ -1,7 +1,7 @@
 
 [package]
 name = "natsume-server"
-description = "Natsume V2 control server with Device-only Enrollment, mandatory-mTLS QUIC and command-bound Gateway PKI"
+description = "Natsume V2 control server with provisioning-window Enrollment and Device Token-authenticated WSS control"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,7 +16,6 @@ csv.workspace = true
 hkdf.workspace = true
 natsume-device-protocol = { path = "../crates/device-protocol" }
 natsume-machine-identity = { path = "../crates/machine-identity" }
-quinn.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 secrecy.workspace = true

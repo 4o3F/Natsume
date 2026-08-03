@@ -30,13 +30,27 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-            libudev-dev pkg-config
+            just libudev-dev pkg-config
 
       - name: Setup pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           toolchain: 1.97.1
           components: clippy,rustfmt
+
+      - name: Setup Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned pnpm
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@11.1.0 --activate
+
+      - name: Verify pinned toolchain
+        run: just toolchain
 
       - name: Install pinned cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
@@ -74,7 +88,6 @@ jobs:
           set -euo pipefail
           corepack enable
           corepack prepare pnpm@11.1.0 --activate
-          test "$(pnpm --version)" = "11.1.0"
 
       - name: Frozen install
         run: pnpm install --frozen-lockfile
@@ -121,6 +134,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.1
 
+      - name: Install just
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends just
+
       - name: Setup pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
@@ -136,6 +155,9 @@ jobs:
           set -euo pipefail
           corepack enable
           corepack prepare pnpm@11.1.0 --activate
+
+      - name: Validate documentation
+        run: just docs-validate
 
       - name: Frozen install
         run: pnpm install --frozen-lockfile

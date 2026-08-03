@@ -27,12 +27,12 @@
 | Server init system | systemd-compatible Linux |
 | Client init/session discovery | systemd + logind-compatible Linux |
 | Operator UI | 现代浏览器中的 Web Panel |
-| Client data plane | package-pinned Caddy，loopback HTTPS，`/login` xheaders 注入（[ADR-0024](adr/0024-domjudge-autologin-via-xheaders.md)） |
-| Device control | WSS（server-auth TLS + Device Token）+ Protobuf，单 TCP 端口（[ADR-0023](adr/0023-wss-control-channel-with-device-token.md)） |
-| 签发模型 | provisioning 窗口内 Enrollment 签发 Token + Gateway cert（[ADR-0021](adr/0021-provisioning-window-certificate-issuance.md)） |
+| Client data plane | package-pinned Caddy，loopback HTTPS，`/login` xheaders 注入（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)） |
+| Device control | WSS（server-auth TLS + Device Token）+ Protobuf，单 TCP 端口（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)） |
+| 签发模型 | provisioning 窗口内 Enrollment 签发 Token + Gateway cert（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)） |
 | Session Agent launch | system-level XDG Autostart，直接 resident process |
 | Session Agent GUI | build-time Slint，winit backend + Skia renderer |
-| Desktop 策略 | 每赛事周期单镜像/单桌面 + 镜像升级重验清单（[ADR-0027](adr/0027-single-image-desktop-cycle.md)）；当前周期 X11 |
+| Desktop 策略 | 每赛事周期单镜像/单桌面 + 镜像升级重验清单（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）；当前周期 X11 |
 | Home backend | 部署时在 OverlayFS/staged-copy 二选一，运行时不 silent fallback |
 | Package | Server/Client Deb，nFPM 映射 artifact |
 | Runtime download | 禁止 postinstall/运行时下载 |
@@ -64,17 +64,17 @@ Caddy 只有在 source、archive checksum、binary checksum、module closure、�
 |---|---|
 | Server OS | 发行版/架构/kernel/glibc/systemd；clean install、reboot、包生命周期 |
 | Client OS（ICPC 派生镜像） | 镜像版本、Deb 安装、Caddy 执行、D-Bus/logind、当期桌面（X11） |
-| Server 网络 | Server 固定 IP literal 与单 TCP 端口（候选 `8443`）；Client 为 DHCP 短租期（ADR-0022 F3） |
+| Server 网络 | Server 固定 IP literal 与单 TCP 端口（候选 `8443`）；Client 为 DHCP 短租期（ADR-0030 F3） |
 | Operator 浏览器 | family/version、OS、分辨率/缩放、中文输入、安全 policy、更新窗口 |
 | DOMjudge | 版本、upstream scheme/host/port/path；**`auth_methods` 含 `xheaders` 且登录契约验证**；**web server brotli 启用**；**upstream（至少 `/login`）TLS 与信任链**；健康检查 |
 | Desktop（当期单环境） | 镜像升级重验清单全项（见下） |
 | Slint runtime closure | 精确版本、features、动态链接库、font/IME、package size、cold start |
-| Home backend | OverlayFS 与 staged-copy 二选一（均为 `ENV-PROPOSED`），限时定案 |
-| 物理硬件 fixture | v1 事故机器与代表性异构硬件的匿名化 fixture；全量实地验证在首次 provisioning 完成（[ADR-0025](adr/0025-deterministic-hardware-identity-recipe.md)，不再作为 G0 阻塞门禁） |
+| Home backend | OverlayFS 与 staged-copy 二选一（均为 `ENV-PROPOSED`），按 safety、recovery 与 performance evidence 限时定案 |
+| 物理硬件 fixture | v1 事故机器与代表性异构硬件的匿名化 fixture；全量实地验证在首次 provisioning 完成（[ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)，不再作为 G0 阻塞门禁） |
 
 网络必须验证：正确 IP-SAN 通过、错误 IP/错误 CA/过期证书失败、单 TCP 端口防火墙与 NAT、DNS 不作为必需 fallback、preseed/upgrade 保留 endpoint、不使用 TOFU 或 dangerous verifier。
 
-**镜像升级重验清单**（每次镜像 bump 重跑，[ADR-0027](adr/0027-single-image-desktop-cycle.md)）：XDG Autostart 直接启动同一 binary、初始 resident + hidden、typed trigger 后 lazy Slint window、current logind session 识别、owner-only singleton、中文/IME、HiDPI、focus result 可观察、lock/unlock、terminate/replacement、display lost 与 crash recovery、无 systemd user unit、lock/unlock 的 Caddy 调用数为 0。核心应用依赖 capability，不直接依赖桌面名称；无法保证 focus 时报告 `VISIBLE_UNFOCUSED`，不加入 desktop-specific 强制聚焦 hack。
+**镜像升级重验清单**（每次镜像 bump 重跑，[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）：XDG Autostart 直接启动同一 binary、初始 resident + hidden、typed trigger 后 lazy Slint window、current logind session 识别、owner-only singleton、中文/IME、HiDPI、focus result 可观察、lock/unlock、terminate/replacement、display lost 与 crash recovery、无 systemd user unit、lock/unlock 的 Caddy 调用数为 0。核心应用依赖 capability，不直接依赖桌面名称；无法保证 focus 时报告 `VISIBLE_UNFOCUSED`，不加入 desktop-specific 强制聚焦 hack。
 
 硬件 fixture 只保存匿名化候选、typed result 和 derived ID，不得保存原始 serial、private key、真实 password 或完整 Machine Hardware ID。fixture 必须覆盖 placeholder/缺失/permission denied/重复 source 与 configured-disk copy。
 

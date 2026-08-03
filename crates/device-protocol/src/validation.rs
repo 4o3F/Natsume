@@ -1,11 +1,11 @@
 use natsume_error_code::{AsErrorCode, ErrorCode};
 use snafu::Snafu;
+use uuid::{Uuid, Variant, Version};
 
 use crate::generated::{
-    Command, CommandState, ControlEnvelope, DisplayBackend, GatewayCertificateMode,
-    GatewayCertificateResultState, GatewayState, GraphicalSessionType, HomeState, SecretState,
-    SessionAgentObservation, SessionAgentState, SessionLockState, SessionScreenKind, SessionState,
-    StateApplyStatus, UiPresentationState, command, control_envelope,
+    Command, CommandState, ControlEnvelope, DisplayBackend, GatewayState, GraphicalSessionType,
+    HomeState, SecretState, SessionAgentObservation, SessionAgentState, SessionLockState,
+    SessionScreenKind, SessionState, StateApplyStatus, UiPresentationState, control_envelope,
 };
 
 #[derive(Debug, Snafu)]
@@ -16,6 +16,9 @@ pub enum ProtocolValidationError {
     #[snafu(display("command body is missing"))]
     MissingCommandBody,
 
+    #[snafu(display("command ID must be a canonical lowercase UUIDv7"))]
+    InvalidCommandId,
+
     #[snafu(display("enum field {field} is unspecified"))]
     UnspecifiedEnum { field: &'static str },
 
@@ -25,7 +28,13 @@ pub enum ProtocolValidationError {
 
 impl AsErrorCode for ProtocolValidationError {
     fn error_code(&self) -> ErrorCode {
-        ErrorCode::ProtocolInvalidEnvelope
+        match self {
+            Self::InvalidCommandId => ErrorCode::CommandIdInvalid,
+            Self::MissingEnvelopeBody
+            | Self::MissingCommandBody
+            | Self::UnspecifiedEnum { .. }
+            | Self::UnknownEnum { .. } => ErrorCode::ProtocolInvalidEnvelope,
+        }
     }
 }
 
@@ -74,6 +83,7 @@ pub fn validate_envelope(envelope: &ControlEnvelope) -> Result<(), ProtocolValid
         }
         control_envelope::Body::Command(command) => validate_command(command),
         control_envelope::Body::CommandStatus(status) => {
+            validate_command_id(&status.command_id)?;
             require_enum::<CommandState>(status.state, "CommandStatus.state")
         }
         control_envelope::Body::BindingResult(result) => require_enum::<
@@ -81,32 +91,33 @@ pub fn validate_envelope(envelope: &ControlEnvelope) -> Result<(), ProtocolValid
         >(
             result.state, "BindingResult.state"
         ),
-        control_envelope::Body::GatewayCertificateResult(result) => {
-            require_enum::<GatewayCertificateResultState>(
-                result.state,
-                "GatewayCertificateResult.state",
-            )
-        }
         control_envelope::Body::ClientHello(_)
         | control_envelope::Body::ServerHello(_)
         | control_envelope::Body::BindingRequest(_)
-        | control_envelope::Body::GatewayCertificateRequest(_)
         | control_envelope::Body::ServerDrain(_)
         | control_envelope::Body::ProtocolError(_) => Ok(()),
     }
 }
 
 fn validate_command(value: &Command) -> Result<(), ProtocolValidationError> {
-    let Some(body) = value.body.as_ref() else {
+    if value.body.is_none() {
         return MissingCommandBodySnafu.fail();
+    }
+    validate_command_id(&value.command_id)
+}
+
+fn validate_command_id(value: &str) -> Result<(), ProtocolValidationError> {
+    let Ok(uuid) = Uuid::parse_str(value) else {
+        return InvalidCommandIdSnafu.fail();
     };
 
-    if let command::Body::SyncState(sync_state) = body {
-        require_enum::<GatewayCertificateMode>(
-            sync_state.gateway_certificate_mode,
-            "SyncState.gateway_certificate_mode",
-        )?;
+    if uuid.get_version() != Some(Version::SortRand)
+        || uuid.get_variant() != Variant::RFC4122
+        || uuid.to_string() != value
+    {
+        return InvalidCommandIdSnafu.fail();
     }
+
     Ok(())
 }
 
@@ -138,4 +149,78 @@ where
         return UnknownEnumSnafu { field, value }.fail();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::generated::{CommandStatus, RestartAgent, control_envelope};
+
+    const CANONICAL_UUID_V7: &str = "018f0e2e-8c1d-7c5e-8b12-3456789abcde";
+
+    fn command_envelope(command_id: &str) -> ControlEnvelope {
+        ControlEnvelope {
+            body: Some(control_envelope::Body::Command(Command {
+                command_id: command_id.to_owned(),
+                created_at_unix_ms: 0,
+                deadline_unix_ms: 0,
+                offline_policy: String::new(),
+                resource_lane: String::new(),
+                body: Some(crate::generated::command::Body::RestartAgent(
+                    RestartAgent::default(),
+                )),
+            })),
+        }
+    }
+
+    fn command_status_envelope(command_id: &str) -> ControlEnvelope {
+        ControlEnvelope {
+            body: Some(control_envelope::Body::CommandStatus(CommandStatus {
+                command_id: command_id.to_owned(),
+                state: 1,
+                stable_error_code: String::new(),
+                terminal_result_cursor: 0,
+            })),
+        }
+    }
+
+    #[test]
+    fn canonical_uuidv7_command_and_status_ids_are_accepted() {
+        assert!(validate_envelope(&command_envelope(CANONICAL_UUID_V7)).is_ok());
+        assert!(validate_envelope(&command_status_envelope(CANONICAL_UUID_V7)).is_ok());
+    }
+
+    #[test]
+    fn noncanonical_command_ids_are_rejected_without_echoing_input() {
+        let uppercase = CANONICAL_UUID_V7.to_uppercase();
+        let braced = format!("{{{CANONICAL_UUID_V7}}}");
+        let without_hyphens = CANONICAL_UUID_V7.replace('-', "");
+        let invalid_ids = [
+            "550e8400-e29b-41d4-a716-446655440000",
+            "018f0e2e-8c1d-7c5e-0b12-3456789abcde",
+            "018f0e2e-8c1d-7c5e-cb12-3456789abcde",
+            "018f0e2e-8c1d-7c5e-eb12-3456789abcde",
+            uppercase.as_str(),
+            braced.as_str(),
+            without_hyphens.as_str(),
+            "not-a-command-id",
+        ];
+
+        for command_id in invalid_ids {
+            let Err(error) = validate_envelope(&command_envelope(command_id)) else {
+                panic!("noncanonical command ID must be rejected");
+            };
+            assert!(matches!(error, ProtocolValidationError::InvalidCommandId));
+            let rendered = error.to_string();
+            assert!(!rendered.contains(command_id));
+        }
+
+        let invalid_status_id = "not-a-command-status-id";
+        let Err(error) = validate_envelope(&command_status_envelope(invalid_status_id)) else {
+            panic!("noncanonical CommandStatus ID must be rejected");
+        };
+        assert!(matches!(error, ProtocolValidationError::InvalidCommandId));
+        let rendered = error.to_string();
+        assert!(!rendered.contains(invalid_status_id));
+    }
 }

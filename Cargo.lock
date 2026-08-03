@@ -558,18 +558,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fastbloom"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef975e30683b2d965054bb0a836f8973857c4ebf6acf274fe46617cd285060d8"
-dependencies = [
- "foldhash 0.2.0",
- "libm",
- "portable-atomic",
- "siphasher",
-]
-
-[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1203,12 +1191,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
 
 [[package]]
-name = "libm"
-version = "0.2.16"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
-
-[[package]]
 name = "libsqlite3-sys"
 version = "0.37.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1359,7 +1341,6 @@ dependencies = [
  "natsume-error-code",
  "natsume-local-control-api",
  "natsume-machine-identity",
- "quinn",
  "reqwest",
  "rustls",
  "rustls-pki-types",
@@ -1378,12 +1359,12 @@ dependencies = [
 name = "natsume-device-protocol"
 version = "2.0.0"
 dependencies = [
- "bytes",
  "natsume-error-code",
  "prost",
  "prost-build",
  "protoc-bin-vendored",
  "snafu",
+ "uuid",
 ]
 
 [[package]]
@@ -1399,7 +1380,6 @@ dependencies = [
 name = "natsume-integration-tests"
 version = "2.0.0"
 dependencies = [
- "bytes",
  "natsume-device-protocol",
  "natsume-error-code",
  "natsume-local-control-api",
@@ -1408,6 +1388,7 @@ dependencies = [
  "prost",
  "prost-types",
  "roxmltree",
+ "serde_json",
  "sqlx",
  "tokio",
  "uuid",
@@ -1463,7 +1444,6 @@ dependencies = [
  "natsume-device-protocol",
  "natsume-error-code",
  "natsume-machine-identity",
- "quinn",
  "rustls",
  "rustls-pki-types",
  "secrecy",
@@ -1637,12 +1617,6 @@ dependencies = [
  "cpufeatures 0.3.0",
  "universal-hash",
 ]
-
-[[package]]
-name = "portable-atomic"
-version = "1.14.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d20d5497ef88037a52ff98267d066e7f11fcc5e99bbfbd58a42336193aacec3"
 
 [[package]]
 name = "potential_utf"
@@ -1845,7 +1819,6 @@ checksum = "2f4bfc015262b9df63c8845072ce59068853ff5872180c2ce2f13038b970e560"
 dependencies = [
  "aws-lc-rs",
  "bytes",
- "fastbloom",
  "getrandom 0.4.3",
  "lru-slab",
  "rand",
@@ -1854,7 +1827,6 @@ dependencies = [
  "rustc-hash",
  "rustls",
  "rustls-pki-types",
- "rustls-platform-verifier",
  "slab",
  "thiserror",
  "tinyvec",
@@ -2346,12 +2318,6 @@ name = "simdutf8"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
-
-[[package]]
-name = "siphasher"
-version = "1.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "slab"

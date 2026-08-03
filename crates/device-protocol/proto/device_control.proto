@@ -11,10 +11,8 @@ message ControlEnvelope {
     CommandStatus command_status = 6;
     BindingRequest binding_request = 7;
     BindingResult binding_result = 8;
-    GatewayCertificateRequest gateway_certificate_request = 9;
-    GatewayCertificateResult gateway_certificate_result = 10;
-    ServerDrain server_drain = 11;
-    ProtocolError protocol_error = 12;
+    ServerDrain server_drain = 9;
+    ProtocolError protocol_error = 10;
   }
 }
 
@@ -63,7 +61,6 @@ enum StateApplyStatus {
   STATE_APPLY_STATUS_APPLIED = 5;
   STATE_APPLY_STATUS_FAILED = 6;
   STATE_APPLY_STATUS_RECOVERY_REQUIRED = 7;
-  STATE_APPLY_STATUS_WAITING_FOR_GATEWAY_CERTIFICATE = 8;
 }
 
 enum SecretState {
@@ -154,13 +151,12 @@ message SessionAgentObservation {
   SessionAgentState state = 1;
   GraphicalSessionType graphical_session_type = 2;
   DisplayBackend display_backend = 3;
-  reserved 4; // removed launch-supervision field; XDG Autostart is the only product path
-  UiPresentationState presentation = 5;
-  SessionScreenKind screen = 6;
-  bool notifications_available = 7;
-  bool desktop_lock_supported = 8;
-  bool desktop_unlock_supported = 9;
-  string stable_error_code = 10;
+  UiPresentationState presentation = 4;
+  SessionScreenKind screen = 5;
+  bool notifications_available = 6;
+  bool desktop_lock_supported = 7;
+  bool desktop_unlock_supported = 8;
+  string stable_error_code = 9;
 }
 
 enum HomeState {
@@ -180,11 +176,11 @@ message ObservedStateSnapshot {
   bytes applied_hash = 5;
   StateApplyStatus state_apply_status = 6;
   string state_error_code = 7;
-  uint64 installed_assignment_revision = 8;
-  string installed_credential_revision_id = 9;
+  uint64 installed_binding_revision = 8;
+  uint64 installed_credential_revision = 9;
   SecretState secret_state = 10;
   GatewayState gateway_state = 11;
-  string gateway_configuration_revision_id = 12;
+  uint64 gateway_configuration_revision = 12;
   bytes gateway_certificate_fingerprint = 13;
   SessionState session_state = 14;
   string session_instance_id = 15;
@@ -200,17 +196,16 @@ message ObservedStateSnapshot {
 }
 
 message TargetAssignment {
-  string binding_id = 1;
+  reserved 1, 5;
   uint64 binding_revision = 2;
   string seat_id = 3;
-  string seat_label = 4;
-  uint64 seat_assignment_revision = 5;
+  string seat_code = 4;
   string account_id = 6;
   string domjudge_username = 7;
 }
 
 message TargetGateway {
-  string configuration_revision_id = 1;
+  uint64 configuration_revision = 1;
   string local_origin_hostname = 2;
   string fixed_upstream_profile_id = 3;
   string exact_login_policy_id = 4;
@@ -230,17 +225,10 @@ message TargetStateSnapshot {
   TargetSession session = 4;
 }
 
-enum GatewayCertificateMode {
-  GATEWAY_CERTIFICATE_MODE_UNSPECIFIED = 0;
-  GATEWAY_CERTIFICATE_MODE_ENSURE_VALID = 1;
-  GATEWAY_CERTIFICATE_MODE_FORCE_REISSUE = 2;
-}
-
 message SyncState {
   uint64 generation = 1;
   bytes canonical_hash = 2;
   TargetStateSnapshot snapshot = 3;
-  GatewayCertificateMode gateway_certificate_mode = 4;
 }
 
 message SecretBytes {
@@ -249,9 +237,9 @@ message SecretBytes {
 
 message SyncSecret {
   string seat_id = 1;
-  uint64 seat_assignment_revision = 2;
+  uint64 binding_revision = 2;
   string account_id = 3;
-  string credential_revision_id = 4;
+  uint64 credential_revision = 4;
   SecretBytes password = 5;
 }
 
@@ -293,25 +281,24 @@ message RunLocalPreflight {}
 message ClearLocalSecret {}
 
 message Command {
-  reserved 21;
-
+  // The Panel owns generation: canonical lowercase hyphenated UUIDv7, preserved end-to-end.
   string command_id = 1;
   int64 created_at_unix_ms = 2;
   int64 deadline_unix_ms = 3;
   string offline_policy = 4;
   string resource_lane = 5;
   oneof body {
-    SyncState sync_state = 10;
-    SyncSecret sync_secret = 11;
-    OpenBindingPrompt open_binding_prompt = 12;
-    LockSession lock_session = 13;
-    UnlockSession unlock_session = 14;
-    TerminateSession terminate_session = 15;
-    ResetHome reset_home = 16;
-    CollectDiagnostics collect_diagnostics = 17;
-    RestartAgent restart_agent = 18;
-    RunLocalPreflight run_local_preflight = 19;
-    ClearLocalSecret clear_local_secret = 20;
+    SyncState sync_state = 6;
+    SyncSecret sync_secret = 7;
+    OpenBindingPrompt open_binding_prompt = 8;
+    LockSession lock_session = 9;
+    UnlockSession unlock_session = 10;
+    TerminateSession terminate_session = 11;
+    ResetHome reset_home = 12;
+    CollectDiagnostics collect_diagnostics = 13;
+    RestartAgent restart_agent = 14;
+    RunLocalPreflight run_local_preflight = 15;
+    ClearLocalSecret clear_local_secret = 16;
   }
 }
 
@@ -327,6 +314,7 @@ enum CommandState {
 }
 
 message CommandStatus {
+  // Echoes the Panel-owned canonical lowercase hyphenated UUIDv7 from Command.command_id.
   string command_id = 1;
   CommandState state = 2;
   string stable_error_code = 3;
@@ -357,36 +345,6 @@ message BindingResult {
   BindingResultState state = 2;
   uint64 binding_revision = 3;
   string stable_error_code = 4;
-}
-
-enum GatewayCertificateResultState {
-  GATEWAY_CERTIFICATE_RESULT_STATE_UNSPECIFIED = 0;
-  GATEWAY_CERTIFICATE_RESULT_STATE_ISSUED = 1;
-  GATEWAY_CERTIFICATE_RESULT_STATE_REJECTED = 2;
-  GATEWAY_CERTIFICATE_RESULT_STATE_CONFLICT = 3;
-  GATEWAY_CERTIFICATE_RESULT_STATE_TEMPORARILY_UNAVAILABLE = 4;
-  GATEWAY_CERTIFICATE_RESULT_STATE_EXPIRED = 5;
-}
-
-message GatewayCertificateRequest {
-  string request_id = 1;
-  string command_id = 2;
-  uint64 target_generation = 3;
-  string configuration_revision_id = 4;
-  bytes csr_der = 5;
-  bytes spki_sha256 = 6;
-  bytes request_nonce = 7;
-}
-
-message GatewayCertificateResult {
-  string request_id = 1;
-  string command_id = 2;
-  uint64 target_generation = 3;
-  GatewayCertificateResultState state = 4;
-  bytes leaf_der = 5;
-  repeated bytes chain_der = 6;
-  bytes certificate_fingerprint = 7;
-  string stable_error_code = 8;
 }
 
 message ServerDrain {
@@ -432,51 +390,19 @@ enum EnrollmentState {
   ENROLLMENT_STATE_CONFLICT = 6;
 }
 
-message EnrollmentChallengeRequest {
-  string machine_hardware_id = 1;
-}
-
-message EnrollmentChallengeResponse {
-  string challenge_id = 1;
-  bytes challenge = 2;
-  int64 expires_at_unix_ms = 3;
-}
-
 message EnrollDeviceRequest {
-  reserved 5, 7;
-
   string machine_hardware_id = 1;
-  EvidenceQuality hardware_identity_quality = 2;
-  HardwareClaim hardware_claim = 3;
-  bytes device_identity_csr_der = 4;
-  bytes device_spki_sha256 = 6;
-  string software_version = 8;
-  string challenge_id = 9;
-  bytes server_challenge = 10;
-  bytes request_nonce = 11;
-  bytes request_signature = 12;
+  HardwareClaim hardware_claim = 2;
+  bytes gateway_csr_der = 3;
+  string client_version = 4;
+  uint32 protocol_version = 5;
 }
 
 message EnrollDeviceResponse {
-  string enrollment_request_id = 1;
-  EnrollmentState state = 2;
-  bytes poll_challenge = 3;
-  int64 retry_after_unix_ms = 4;
-  string stable_error_code = 5;
-}
-
-message EnrollmentPollRequest {
-  string enrollment_request_id = 1;
-  bytes poll_nonce = 2;
-  bytes device_key_signature = 3;
-}
-
-message EnrollmentPollResult {
-  reserved 5, 6;
-
-  string enrollment_request_id = 1;
-  EnrollmentState state = 2;
-  bytes device_leaf_der = 3;
-  repeated bytes device_chain_der = 4;
-  string stable_error_code = 7;
+  string device_id = 1;
+  SecretBytes device_token = 2;
+  bytes gateway_leaf_der = 3;
+  repeated bytes gateway_chain_der = 4;
+  EnrollmentState state = 5;
+  string stable_error_code = 6;
 }

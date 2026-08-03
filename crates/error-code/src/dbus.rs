@@ -11,17 +11,8 @@ pub const fn to_dbus_name(code: ErrorCode) -> &'static str {
         ErrorCode::ProtocolFrameTooLarge => "org.natsume.Error.ProtocolFrameTooLarge",
         ErrorCode::ProtocolInvalidEnvelope => "org.natsume.Error.ProtocolInvalidEnvelope",
         ErrorCode::ProtocolAnonymousClient => "org.natsume.Error.ProtocolAnonymousClient",
-        ErrorCode::EnrollmentDeviceOnlyViolation => {
-            "org.natsume.Error.EnrollmentDeviceOnlyViolation"
-        }
+        ErrorCode::ProvisioningWindowClosed => "org.natsume.Error.ProvisioningWindowClosed",
         ErrorCode::EnrollmentCsrInvalid => "org.natsume.Error.EnrollmentCsrInvalid",
-        ErrorCode::GatewayCertRequestNotAuthorized => {
-            "org.natsume.Error.GatewayCertRequestNotAuthorized"
-        }
-        ErrorCode::GatewayCertCommandMismatch => "org.natsume.Error.GatewayCertCommandMismatch",
-        ErrorCode::GatewayCertRequestExpired => "org.natsume.Error.GatewayCertRequestExpired",
-        ErrorCode::GatewayCertCsrInvalid => "org.natsume.Error.GatewayCertCsrInvalid",
-        ErrorCode::GatewayCertSpkiConflict => "org.natsume.Error.GatewayCertSpkiConflict",
         ErrorCode::GatewayCertIssuerUnavailable => "org.natsume.Error.GatewayCertIssuerUnavailable",
         ErrorCode::GatewayCertProfileInvalid => "org.natsume.Error.GatewayCertProfileInvalid",
         ErrorCode::GatewayCertLocalKeyMismatch => "org.natsume.Error.GatewayCertLocalKeyMismatch",
@@ -43,6 +34,8 @@ pub const fn to_dbus_name(code: ErrorCode) -> &'static str {
         ErrorCode::NoActiveLock => "org.natsume.Error.NoActiveLock",
         ErrorCode::HomeTransition => "org.natsume.Error.HomeTransition",
         ErrorCode::PackageLayoutInvalid => "org.natsume.Error.PackageLayoutInvalid",
+        ErrorCode::CommandIdInvalid => "org.natsume.Error.CommandIdInvalid",
+        ErrorCode::CommandRequestConflict => "org.natsume.Error.CommandRequestConflict",
     }
 }
 

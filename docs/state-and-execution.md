@@ -6,23 +6,28 @@
 
 ## 1. 状态与副作用分离
 
-Natsume 同时处理：已提交事实（Server truth）、期望状态（Target）、实际状态（Observed）、纯差异（Drift）、人工意图（Command）和本地原子激活（Caddy/Home）。这些概念压缩成一个"device status"会产生高耦合：普通 CRUD 依赖网络、重试改变业务事实、UI 文案变成状态机输入。本文件冻结这些层次的安全 outcome；具体状态机、字段与事务编排延迟到对应 Phase 实现。
+Natsume 同时处理：已提交事实（Server truth）、期望状态（Target）、实际状态（Observed）、纯差异（Drift）、人工意图（Command）和本地原子激活（Caddy/Home）。这些概念压缩成一个“device status”会产生高耦合：普通 CRUD 依赖网络、重试改变业务事实、UI 文案变成状态机输入。本文件冻结这些层次的安全 outcome；具体状态机、字段与事务编排延迟到对应 Phase 实现。
 
 - **Server truth**：已提交领域事实。**提交 Server truth 不意味着 Device 已完成**；import 不创建远端副作用。
 - **Target**：从 Server truth 派生的非秘密期望。**不含明文密码，确定性派生，不自动联系 Device。**
 - **Observed**：Device 的 typed 实际状态报告。**只接受认证、有界、typed 的 observation；Device 自报属性不构成授权。**
 - **Drift**：`compare(Target, latest valid Observed)` 的纯比较结果，可重算。
-- **Command**：单 Device durable intent；批量操作 = 批量 Command + 查询聚合；投递/重试观察是 Command 元数据（[ADR-0029](adr/0029-right-sizing-control-plane-machinery.md)）。
+- **Command**：单 Device durable intent；批量操作 = 批量 Command + 查询聚合。持久化范围仅为 migration 定义的 `commands` current row，不声明独立 delivery history 或 dispatch statistics（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）。
 
-## 2. Command 幂等与冲突
+## 2. Command identity、replay 与 conflict
 
-- **相同 `command_id`**：payload 相同返回既有状态/结果；payload 不同为冲突；已成功不重复副作用；正在运行不并发执行第二次；已失败按策略返回终态，不偷偷重启。需要重新执行时创建新 Command ID。
-- **revision/epoch**：Device 在执行前和关键原子提交前检查 assignment/configuration/credential/session/home 各代；**陈旧时用稳定错误拒绝，不"尽量兼容"地部分应用。**
-- **Command receipt 在 Device durable 持久化前不得确认**；进程崩溃后相同 Command 能恢复或返回原结果。终态不可被后来的 transport error 覆盖；重复终态消息幂等合并。
+- **ID authority**：Panel 在每次创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`。它使用 `PUT /api/v2/commands/{command_id}`；Server、WSS 和 Device journal 不生成、重写或替换该 ID。
+- **canonical request**：Server 以 versioned、domain-separated fingerprint 覆盖 target Device、kind、reason、可选 group correlation 与 typed client input，并保存为 `request_fingerprint_version` 与 `request_fingerprint_sha256`；不覆盖 retry time、actor 或 Server 后续派生状态。同 ID + 同 fingerprint 返回既有 Command；同 ID + 不同 fingerprint 是稳定 conflict。
+- **HTTP outcome**：首次持久化为 `201`；same-ID/same-request replay 为 `200`；非 canonical UUIDv7 为 `400` / `COMMAND_ID_INVALID`；same-ID/different-request 为 `409` / `COMMAND_REQUEST_CONFLICT`。这些 outcome 只表示 Server 持久化，不表示 Device 已执行。
+- **跨平面 identity**：同一 ID 字符串必须原样出现在 Server Command、WSS `Command`、Device durable journal、WSS `CommandStatus` 和 per-Command audit correlation。Device 对同 ID 的同一 `frozen_payload_json` 不重复副作用；同 ID 但不相同的 frozen payload conflict/reject。
+- **执行状态**：已成功不重复副作用；正在运行不并发执行第二次；已失败按策略返回终态，不偷偷重启。需要重新执行时，Panel 创建新的 Command ID。
+- **revision/epoch**：Device 在执行前和关键原子提交前检查适用的 binding/configuration/credential/session/home current facts；**陈旧时用稳定错误拒绝，不“尽量兼容”地部分应用。**
+- **receipt 与恢复**：Command receipt 在 Device durable 持久化前不得确认；进程崩溃后相同 Command 能恢复或返回原结果。终态不可被后来的 transport error 覆盖；重复终态消息可安全合并。
+- **bulk**：每个 target 是独立 Command；可选 `group_correlation_id` 仅支持查询和审计分组，不定义跨 Device 顺序、原子性、retry 或 lifecycle。
 
-具体 Command 状态机与 dispatcher/journal 流程在 Phase 4 实现时定义。
+具体 Command 状态机、HTTP handler、dispatcher、Device journal 和 Panel mutation 在后续 Phase 实现；本文件不把该契约当作实现完成声明。
 
-## 3. SYNC_STATE 的安全 outcome
+## 3. `SYNC_STATE` 的安全 outcome
 
 `SYNC_STATE` 必须由操作员显式触发（不自动）。激活失败的 fail-closed 规则：
 
@@ -36,17 +41,17 @@ Natsume 同时处理：已提交事实（Server truth）、期望状态（Target
 
 ## 4. Gateway readiness
 
-Device Token 与 Gateway certificate 都在 Enrollment 获得（[ADR-0021](adr/0021-provisioning-window-certificate-issuance.md)），但 **Enrollment 成功不得被展示为数据面 ready**：READY 还需要 Target 应用、配置渲染、validate、reload 与健康检查全部通过。证书持有与数据面状态是两个独立维度。
+Device Token 与 Gateway certificate 都在 Enrollment 获得（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)），但 **Enrollment 成功不得被展示为数据面 ready**：READY 还需要 Target 应用、配置渲染、validate、reload 与健康检查全部通过。证书持有与数据面状态是两个独立维度。
 
-## 5. SYNC_SECRET 的安全 outcome
+## 5. `SYNC_SECRET` 的安全 outcome
 
 `SYNC_SECRET` 必须：
 
 - 只能由人类明确触发，**不能由 Target drift 自动触发；**
-- Command 创建时冻结 assignment/credential revision，Device 写入前重新校验；
+- Command 的 frozen typed input 使用 `frozen_payload_json`；Device 写入前重新校验适用的 BindingRevision 与 credential revision；
 - 凭据文件更新原子，失败时保留旧 secret 或明确标记不可用，**不留半写**；
-- 成功后重渲染 Caddy `/login` 注入配置并原子激活（[ADR-0024](adr/0024-domjudge-autologin-via-xheaders.md)）；
-- 成功后 Observed 只报告 revision；retry 使用相同 Command ID，不重复不可逆动作；
+- 成功后重渲染 Caddy `/login` 注入配置并原子激活（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）；
+- 成功后 Observed 只报告 revision；transport retry 保持相同 Command ID，不重复不可逆动作；
 - 结果 redacted，不向普通 surface 暴露 secret。
 
 具体阶段序列在 Phase 5 实现时定义。
@@ -62,13 +67,13 @@ Caddy 业务状态只需 `BLOCKED` / `READY`。
 
 ## 7. Session 与 Home
 
-- **Session**：每个 transition 绑定当前 `SessionEpoch`；Agent 通过 lease 证明属于当前 logind session。陈旧 Agent 或 UI action 被拒绝；Agent 崩溃后 lease 过期，不解锁额外权限，不改变 Caddy。锁定语义走当期镜像桌面的原生 session lock；遮罩类 UI 是呈现层，不是完整性边界（[ADR-0027](adr/0027-single-image-desktop-cycle.md)）。
-- **Home**：开始时创建新 `HomeEpoch`；prepare 完成前不启动受管 session；cleanup 只作用于当前 epoch；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend。** 重置为操作员在场的受控事件，实现为状态文件 + 幂等可重跑步骤。
+- **Session**：每个 transition 绑定当前 `SessionEpoch`；Agent 通过 lease 证明属于当前 logind session。陈旧 Agent 或 UI action 被拒绝；Agent 崩溃后 lease 过期，不解锁额外权限，不改变 Caddy。锁定语义走当期镜像桌面的原生 session lock；遮罩类 UI 是呈现层，不是完整性边界（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）。
+- **Home**：开始时创建新 `HomeEpoch`；prepare 完成前不启动受管 session；cleanup 只作用于当前 epoch；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend。** 重置为操作员在场的受控事件，实现为状态文件 + 可安全重复运行的步骤。
 
 ## 8. 可观测性
 
-Server 与 Device 指标追踪连接、Command 队列/延迟/重试、Observed freshness、Drift、enrollment/签发结果与 stable ErrorCode。**指标 label 不得包含密码、token 值、路径、certificate body、Machine ID 全值或自由格式错误。**
+Server 与 Device 指标追踪连接、Observed freshness、Drift、enrollment/签发结果与 stable ErrorCode。`group_correlation_id` 只能作为有限的查询/审计分组字段，不承载 workflow status。**指标 label 不得包含密码、token 值、路径、certificate body、Machine ID 全值或自由格式错误。**
 
 ## 9. 测试模型
 
-必须覆盖的安全 fault class：Server 事务成功但 Device 离线、receipt 前后断线、执行中崩溃、重复 Command、相同 ID 不同 payload、陈旧 revision/epoch、窗口关闭签发拒绝、重复 Enrollment 替换语义、无 token upgrade 拒绝、WSS 断线重连收敛、Caddy validate/reload 中断、old LKG 保留、secret 写入中断、Observed 丢失重发、Agent crash/focus denied/display lost、Home prepare/cleanup 中断、cancel 与 terminal status race。具体测试场景随对应 Phase 实现补全。
+必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID/same-fingerprint、same-ID/different-fingerprint、`request_fingerprint_*`/`frozen_payload_json`、HTTP/WSS/journal/status/audit 同 ID、Server 事务成功但 Device 离线、receipt 前后断线、执行中崩溃、重复 Command、陈旧 revision/epoch、窗口关闭签发拒绝、open-window restart/restore close-once、重复 Enrollment 替换语义、无 token upgrade 拒绝、WSS 断线重连收敛、Caddy validate/reload 中断、old LKG 保留、secret 写入中断、Observed 丢失重发、Agent crash/focus denied/display lost、Home prepare/cleanup 中断、cancel 与 terminal status race。具体测试场景随对应 Phase 实现补全。

@@ -7,6 +7,13 @@ import process from "node:process";
 const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
+function isLocalAdrArchive(directory) {
+  return (
+    path.basename(directory) === "archive" &&
+    path.basename(path.dirname(directory)) === "adr"
+  );
+}
+
 async function collect(input) {
   const absolute = path.resolve(input);
   const metadata = await stat(absolute);
@@ -20,7 +27,7 @@ async function collect(input) {
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       const candidate = path.join(directory, entry.name);
-      if (entry.isDirectory()) await visit(candidate);
+      if (entry.isDirectory() && !isLocalAdrArchive(candidate)) await visit(candidate);
       else if (entry.isFile() && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) files.push(candidate);
     }
   }

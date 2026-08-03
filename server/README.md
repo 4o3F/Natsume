@@ -1,7 +1,11 @@
 # Server
 
-`natsume-server` owns the single-contest domain, SQLite migrations, application-encrypted vault, HTTPS management/Device-only Enrollment, Device and Origin PKI authorities, mandatory-mTLS QUIC gateway, target calculator, dispatcher, audit and SSE.
+`natsume-server` is the design owner for the single-contest domain, current-state SQLite migrations, the application-encrypted vault, HTTPS management, provisioning-window Enrollment, Gateway PKI issuance, Device-Token-authenticated WSS control, target calculation, direct single-Device Commands, and redacted audit evidence.
 
-The Server has no Event/phase model. Import is one `seat,account,password` CSV. Target state is inert; Device effects require explicit Commands, and password distribution requires a human-triggered `SYNC_SECRET`.
+The Server stores current facts rather than a frozen Seat universe, generic instance state, historical Seat→Account mappings, or historical credential ciphertexts. The `revision_counters` singleton holds `configuration_revision` for confirmed configuration and `binding_revision` (`BindingRevision`) for the Seat↔Device Binding set; `account_mappings` belongs to the former and `device_bindings` records the latter. A provisioning window is one current singleton with only `state`, `revision`, and `last_audit_event_id`, plus audit evidence; restart/restore closes an open window once and never reopens it.
 
-Enrollment signs only the Daemon Device Identity certificate. Gateway certificate issuance is accepted only as a request on an authenticated QUIC session while the same Device is executing a matching, unexpired `SYNC_STATE`; SAN/profile/validity are derived from the frozen command snapshot.
+A `server_vault_records` row has only `vault_record_id`, `record_type`, `subject_id`, `nonce`, and `ciphertext`. An `audit_events` row has only the audit envelope plus typed `redacted_detail_json`; revisions and counts are event-specific JSON details. Each audited guarded operation inserts its audit row together with its business mutation in one transaction. A fresh `audit_event_id` may be supplied as typed operation input, but an already persisted ID or preinserted audit row cannot be replayed as backing for a new mutation.
+
+The Panel generates a canonical lowercase hyphenated UUIDv7 `command_id` before `PUT /api/v2/commands/{command_id}`. The Server returns the existing Command for the same ID and canonical request, and a conflict for the same ID with a different request. Each `commands` row uses `request_fingerprint_version`, `request_fingerprint_sha256`, `payload_version`, and typed `frozen_payload_json` instead of separate frozen payload or dispatcher-metadata columns. Bulk work is independent Commands with optional query-only group correlation.
+
+These are frozen ownership and contract boundaries. They do not claim that the Phase 0 HTTP listener, Command repository/dispatcher, WSS journal, or Panel mutation flow is already implemented.

@@ -32,13 +32,11 @@ publish = false
 
 [workspace.dependencies]
 axum = "0.8"
-bytes = "1"
 chacha20poly1305 = "0.11"
 csv = "1"
 hkdf = "0.13"
 prost = "0.14"
 prost-types = "0.14"
-quinn = "0.11"
 roxmltree = "0.20"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

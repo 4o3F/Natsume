@@ -1,5 +1,5 @@
 fn main() {
     println!(
-        "natsume-server blueprint: Device-only HTTPS Enrollment + mandatory-mTLS QUIC + command-bound Gateway PKI + SQLite vault"
+        "natsume-server blueprint: provisioning-window HTTPS Enrollment issues Device Token + Gateway certificate; WSS control + SQLite vault"
     );
 }

@@ -1,72 +1,45 @@
 # Architecture Decision Records
 
-ADR 记录"为什么选择"，不替代当前规范。当前行为应同时满足已接受 ADR 和权威文档。
+ADR 记录“为什么选择”，不替代当前规范。当前行为由权威规范与机器 schema 定义；ADR 只保留跨边界取舍、被拒绝方案、代价和重开条件。
+
+## 当前决策集
+
+| ADR | 主题 | 状态 | 主属范围 |
+|---|---|---|---|
+| [0030](0030-foundation-deployment-and-delivery-baseline.md) | Foundation, deployment, and delivery baseline | ACCEPTED | 全局 / P0 / P1 / P7 |
+| [0031](0031-contest-import-and-secret-evidence.md) | Contest import and secret-evidence scope | ACCEPTED | P2 |
+| [0032](0032-device-identity-and-local-credential-lifecycle.md) | Device identity and local credential lifecycle | ACCEPTED | P3 |
+| [0033](0033-enrollment-and-device-control-boundary.md) | Enrollment and Device control boundary | ACCEPTED | P3 / P4 |
+| [0034](0034-state-execution-and-data-plane-boundary.md) | State, execution, and data-plane boundary | ACCEPTED | P2 / P4 / P5 |
+| [0035](0035-session-home-and-desktop-cycle.md) | Session, Home, and desktop cycle | ACCEPTED | P0 / P6 |
+| [0036](0036-error-architecture-and-public-codes.md) | Error architecture and public codes | ACCEPTED | 全部 |
+
+ADR-0001～ADR-0029 已在一次性 consolidation 中退出 Git。旧 ID、原状态、替代关系和当前去向见 [`history-map.md`](history-map.md)。完整旧正文仅存在于本地 ignored archive，不是 clean clone 或 CI 的依赖。
 
 ## 状态
 
 - `PROPOSED`：待批准；
-- `ACCEPTED`：当前有效；
-- `SUPERSEDED`：已被后续 ADR 替代，仅保留历史；
+- `ACCEPTED`：当前治理决策，不表示功能已经实现；
+- `SUPERSEDED`：被后续 ADR 整体替代；
 - `REJECTED`：未采用；
-- `DEPRECATED`：仍可能存在但计划移除。
+- `DEPRECATED`：仍可能存在，但计划移除。
 
-部分 `ACCEPTED` ADR 带有 Note 标注：个别条款被后续 ADR 收窄或替代，其余条款仍有效（见 0002/0006/0011/0018/0020）。
+工程完成度只由 [`../roadmap.md`](../roadmap.md)、Gate 与 [`../supported-platform.md`](../supported-platform.md) 的 evidence 状态决定。
 
-## 索引
+## 阅读规则
 
-类别说明：**边界** = 安全/授权/fail-closed 不变量（已冻结）；**实现** = 工具/产品范围/wire 形式化决策，细节待对应 Phase 证据冻结；**历史** = 已 supersede。
+1. 先从 [`../README.md`](../README.md) 找到主题的唯一权威规范；
+2. 需要理解取舍时再阅读对应主题 ADR；
+3. 遇到旧提交、issue 或注释中的 `ADR-00xx` 时，通过 [`history-map.md`](history-map.md) 定位当前主题；
+4. 不从历史 ADR 或 ADR 摘要反推 wire、数据库、状态机或安全不变量的当前细节。
 
-| ADR | 标题 | 状态 | 类别 | 主属 Phase |
-|---|---|---|---|---|
-| [0001](0001-native-polyglot-monorepo.md) | Native polyglot monorepo | ACCEPTED | 实现 | P0 |
-| [0002](0002-library-first-machine-identity.md) | Library-first Machine Identity | ACCEPTED | 边界 | P3 |
-| [0003](0003-direct-nfpm-packaging.md) | Direct nFPM packaging | ACCEPTED | 实现 | P0 / P7 |
-| [0004](0004-snafu-unified-error-model.md) | SNAFU unified error model | ACCEPTED | 实现 | P0 |
-| [0005](0005-csv-only-import.md) | CSV-only import | SUPERSEDED | 历史 | P2 |
-| [0006](0006-daemon-integrated-machine-identity-startup.md) | Daemon-integrated identity startup | ACCEPTED | 边界 | P3 |
-| [0007](0007-epoch-bound-session-lock.md) | Epoch-bound session lock | ACCEPTED | 边界 | P6 |
-| [0008](0008-visual-caddy-blocked-page.md) | Visual Caddy BLOCKED page | ACCEPTED | 边界 | P5 |
-| [0009](0009-single-lifetime-minimal-domain.md) | Single-lifetime minimal domain | ACCEPTED | 实现 | P1 |
-| [0010](0010-immutable-machine-id-and-device-lifecycle.md) | Immutable Machine ID and Device lifecycle | ACCEPTED | 边界 | P3 |
-| [0011](0011-application-encrypted-sqlite-vault.md) | Application-encrypted SQLite vault | ACCEPTED | 边界 | P1 / P3 |
-| [0012](0012-server-auth-enrollment-and-mtls-control.md) | Server-auth Enrollment and mTLS control | SUPERSEDED | 历史 | P3 / P4 |
-| [0013](0013-explicit-state-and-secret-commands.md) | Explicit state and secret commands | ACCEPTED | 边界 | P2 / P5 |
-| [0014](0014-observed-snapshot-is-the-status-source.md) | Observed snapshot is status source | ACCEPTED | 实现 | P4 / P5 |
-| [0015](0015-home-backend-and-recovery.md) | Home backend and recovery | ACCEPTED | 边界 | P6 |
-| [0016](0016-gateway-certificate-issued-during-sync-state.md) | Gateway certificate during SYNC_STATE | SUPERSEDED | 历史 | P4 / P5 |
-| [0017](0017-cross-desktop-session-agent-gui.md) | Cross-desktop Session Agent GUI | SUPERSEDED | 历史 | P6 |
-| [0018](0018-xdg-direct-slint-session-agent.md) | XDG direct Slint Session Agent | ACCEPTED | 实现 | P0 / P6 |
-| [0019](0019-stable-error-code-registry.md) | Stable ErrorCode registry | PROPOSED | 实现 | P0 |
-| [0020](0020-repeatable-contest-configuration-import.md) | Repeatable contest configuration import | ACCEPTED | 实现 | P2 |
-| [0021](0021-provisioning-window-certificate-issuance.md) | Provisioning-window certificate issuance | ACCEPTED | 边界 | P3 |
-| [0022](0022-deployment-facts-and-trust-assumptions.md) | Deployment facts and trust assumptions | ACCEPTED | 边界 | 全部 |
-| [0023](0023-wss-control-channel-with-device-token.md) | WSS control channel with Device Token | ACCEPTED | 边界 | P3 / P4 |
-| [0024](0024-domjudge-autologin-via-xheaders.md) | DOMjudge autologin via X-Headers | ACCEPTED | 边界 | P5 |
-| [0025](0025-deterministic-hardware-identity-recipe.md) | Deterministic hardware identity recipe | ACCEPTED | 边界 | P3 |
-| [0026](0026-client-secrets-as-permission-files.md) | Client secrets as permission files | ACCEPTED | 边界 | P3 |
-| [0027](0027-single-image-desktop-cycle.md) | Single-image desktop cycle | ACCEPTED | 实现 | P0 / P6 |
-| [0028](0028-single-operator-import-and-secret-evidence-scope.md) | Single-operator import and secret-evidence scope | ACCEPTED | 边界 | P2 |
-| [0029](0029-right-sizing-control-plane-machinery.md) | Right-sizing control-plane machinery | ACCEPTED | 实现 | P1 / P4 / P5 |
-
-## 维护
+## 维护规则
 
 - 新 ADR 使用 [`0000-template.md`](0000-template.md)；
 - ID 单调递增，不复用；
-- 接受后同步权威规范；
-- supersede 时在旧 ADR 和新 ADR 双向链接；条款级收窄用 Note 标注双向引用；
-- template 不维护当前项目索引；
-- 多数 ADR 保持简短；详细测试和操作步骤留在实现与验证产物中；
-- 放宽 `INV-*` 必须在 ADR 中逐条说明安全影响。
-
-## 已废弃的引用
-
-ADR 正文是不可变的历史记录，不因后续文档重组而改写。已接受的 ADR 中出现的 `Probe A`–`Probe F` 与 `REQ-P0-*` / `G0-0NN` 编号来自已撤销的 registry 与 probe 报告体系；它们表达的验证意图仍然有效，当前状态以 [`../gates/phase-0-status.md`](../gates/phase-0-status.md) 为准：
-
-| 旧编号 | 验证主题 |
-|---|---|
-| Probe A | IP-SAN 与 endpoint |
-| Probe B | Enrollment 签发阶梯（现为两段，见 ADR-0021/0023） |
-| Probe C | Caddy 与 DOMjudge 数据面 |
-| Probe D | Machine identity 与物理硬件 fixture |
-| Probe E | Session Agent、桌面与 Home |
-| Probe F | Package 与 systemd 生命周期 |
+- 同一主题内、不改变稳定边界的澄清直接更新现有主题 ADR；
+- 只有新增独立 trust boundary、真实反转、兼容性承诺或持久化身份语义时才新增 ADR；
+- 接受或修改 ADR 后，同步更新唯一权威规范和机器 schema；
+- `supersede` 必须在新旧 ADR 双向标记；条款级变化优先更新主题 ADR，避免继续拆分微型记录；
+- 详细协议字段、测试步骤、Gate 清单、probe/runbook 和预实现工作包不得写入 ADR；
+- 放宽任何 `INV-*` 必须在 ADR 中逐条说明安全影响和恢复边界。

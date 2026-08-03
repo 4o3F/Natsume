@@ -9,4 +9,4 @@ Template: natsume-client/server-port
 Type: string
 Default: 8443
 Description: Natsume Server port:
- The same numeric port is used for HTTPS over TCP and Device QUIC over UDP.
+ The same TCP port is used for HTTPS and Device WSS.

@@ -2,7 +2,6 @@
 # Non-secret configuration only. Persistent secrets are AEAD-encrypted in SQLite.
 [listen]
 https = "0.0.0.0:8443"
-quic = "0.0.0.0:8443"
 
 [storage]
 database = "/var/lib/natsume-server/natsume.db"

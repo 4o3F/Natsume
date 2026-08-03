@@ -66,11 +66,11 @@
 - 依赖外部 shell 工具完成核心加密；
 - 为方便测试禁用证书验证。
 
-依赖升级必须运行已知向量、format migration、wrong-key、tamper 和 crash recovery 测试。
+依赖升级必须运行已知向量、wrong-key、tamper 和 crash recovery 测试。
 
 ## 5. TLS 与控制通道
 
-全部入口为 server-auth TLS（[ADR-0023](adr/0023-wss-control-channel-with-device-token.md)）：Operator HTTP、Enrollment 与 Device WSS 共用同一 rustls 栈与同一 TCP 端口，不引入第二个协议栈（无 quinn/QUIC、无独立 HTTP/2 gRPC 栈）。
+全部入口为 server-auth TLS（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）：Operator HTTP、Enrollment 与 Device WSS 共用同一 rustls 栈与同一 TCP 端口，不引入第二个协议栈（无 quinn/QUIC、无独立 HTTP/2 gRPC 栈）。
 
 必须显式：
 
@@ -91,7 +91,6 @@
 - domain 不依赖 SQL row type；
 - query 使用参数绑定；
 - migration 从空库和升级路径测试；
-- vault ciphertext format 独立版本；
 - 不引入第二个 ORM/数据库层；
 - SQLite WAL 是初始部署选择，不在 domain API 中暴露；
 - backup/restore 通过 runbook 和 integration test 验证。
@@ -143,14 +142,14 @@ Web 只通过 pnpm workspace 管理。
 - display-manager 私有 API；
 - 下载式字体/runtime。
 
-最终 Slint feature set、version 和 runtime closure 必须在目标 GNOME/GDM/Wayland 与 LightDM/X11 环境实测后冻结。
+最终 Slint feature set、version 和 runtime closure 必须在当期冻结镜像与单一桌面环境的 capability 清单上实测后冻结；每次镜像 bump 重新验证，不维持永久双桌面矩阵。
 
 ## 9. Machine identity
 
-遵循 library-first 与固定配方（[ADR-0025](adr/0025-deterministic-hardware-identity-recipe.md)）：
+遵循 library-first 与固定配方（[ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)）：
 
 - `machine-identity` crate 只做候选规范化、placeholder 过滤、2-of-3 判定和 UUID 派生；
-- 来源集合固定（DMI system UUID、主板 serial、首块盘 serial）；变更来源集合须修订 ADR-0025，不按证据增量准入新来源库；
+- 来源集合固定（DMI system UUID、主板 serial、首块盘 serial）；变更来源集合须修订 ADR-0032，不按证据增量准入新来源库；
 - raw source collector 留在 privileged adapter；
 - 不把 root/helper framework 泄漏到纯 crate；
 - 不提交原始 serial fixture。

@@ -3,7 +3,7 @@
 > 状态：`NORMATIVE`  
 > 适用范围：所有进程、协议、持久化、打包、运维和恢复  
 > 规则：放宽任何 `INV-*` 必须先有已接受 ADR  
-> 校准基线：[ADR-0022](adr/0022-deployment-facts-and-trust-assumptions.md) 的部署事实与信任假设
+> 校准基线：[ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md) 的部署事实与信任假设
 
 本文件定义少量稳定不变量。字段级负向案例属于 contract tests、policy scan 和 runbook，不在架构正文中重复枚举。
 
@@ -23,7 +23,7 @@ Natsume 主要防护：
 - 恢复操作通过删除证据"修好"故障；
 - 文档或 Gate 在无证据时宣称安全已验证。
 
-不承诺防护（ADR-0022 T2）：
+不承诺防护（ADR-0030 T2）：
 
 - 本地 root；
 - 物理访问和固件篡改；
@@ -41,12 +41,12 @@ Natsume 主要防护：
 | Offline control root key | 离线介质 | PKI ceremony | 运行中 Server |
 | Device Token | Server DB（仅哈希）；Client `0600` 凭据文件 | WSS 认证 adapter | Agent、Helper、Caddy、浏览器 |
 | Gateway private key | Client `0640 root:natsume-gateway` 文件 | Caddy | Agent、Helper、Server |
-| DOMjudge password | Server vault；Client `0600` 凭据文件；渲染的 Caddy `/login` 注入配置（`0640`） | secret sync、Daemon 渲染、Caddy `/login` header 注入 | API、Observed、日志、Agent、状态页 |
+| DOMjudge password | Server vault（每个 subject 仅当前 ciphertext）；Client `0600` 凭据文件；渲染的 Caddy `/login` 注入配置（`0640`） | secret sync、Daemon 渲染、Caddy `/login` header 注入 | API、Observed、日志、Agent、状态页 |
 | Fleet namespace UUID | 配置/Server truth | identity derivation | 无秘密属性 |
 | Machine Hardware ID | identity file/Server metadata | identity、Enrollment | 不作为密码或 token |
 | Operator session | Server/Web secure session | operator API | Device control |
 
-秘密必须有明确 owner、生命周期、存储、使用者和销毁路径。不存在"暂时放到普通配置"这一例外。含凭据的 Caddy 配置是 secret artifact，与凭据文件同级管理（[ADR-0024](adr/0024-domjudge-autologin-via-xheaders.md)）。
+秘密必须有明确 owner、生命周期、存储、使用者和销毁路径。不存在"暂时放到普通配置"这一例外。含凭据的 Caddy 配置是 secret artifact，与凭据文件同级管理（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）。
 
 ## 3. 核心不变量
 
@@ -68,7 +68,7 @@ password 明文、private key、Device Token 值**不得**进入：
 
 允许的秘密路径必须使用专用类型、最短生命周期和 redacted 结果。Import 普通边界只使用 opaque `preview_token` 与 redacted 分类/计数/identity/revision 证据。
 
-按 [ADR-0028](adr/0028-single-operator-import-and-secret-evidence-scope.md)：password-derived digest/length/fingerprint 不再作为独立禁止类别维护（审计仅面向内部管理员，F9）；工程默认仍不输出这些值。F9 失效时该条必须重审。
+按 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)：password-derived digest/length/fingerprint 不再作为独立禁止类别维护（审计仅面向内部管理员，F9）；工程默认仍不输出这些值。F9 失效时该条必须重审。
 
 **验证入口：** secret scan、API/schema snapshot、日志测试、UI/e2e、Command redaction、package scan。
 
@@ -93,7 +93,7 @@ password 明文、private key、Device Token 值**不得**进入：
 
 ### `INV-IDENTITY-01`：Machine Hardware ID 不是认证凭据
 
-Machine Hardware ID 是站点 namespace 下的稳定标识（派生配方见 [ADR-0025](adr/0025-deterministic-hardware-identity-recipe.md)），不是 secret、token 或 certificate。网络认证必须使用 Device Token、TLS 和 operator auth。
+Machine Hardware ID 是站点 namespace 下的稳定标识（派生配方见 [ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)），不是 secret、token 或 certificate。网络认证必须使用 Device Token、TLS 和 operator auth。
 
 原始硬件 serial 只在最小采集边界短暂出现；日志、Server API 和 fixture 只保存规范化/匿名化结果。
 
@@ -103,7 +103,7 @@ Machine Hardware ID 是站点 namespace 下的稳定标识（派生配方见 [AD
 
 Device 启动必须先验证当前 Machine Hardware ID，再读取或使用任何 identity-bound 产物（Device Token、Gateway key、Seat 凭据、LKG）。
 
-当 identity-bound 产物已存在且当前身份不可获得、与持久化值不匹配或有效来源不足（少于 2 个，见 ADR-0025）时，Device 必须 fail closed。凭据文件损坏同样 fail closed，不能自动重建或自动 re-enroll。
+当 identity-bound 产物已存在且当前身份不可获得、与持久化值不匹配或有效来源不足（少于 2 个，见 ADR-0032）时，Device 必须 fail closed。凭据文件损坏同样 fail closed，不能自动重建或自动 re-enroll。
 
 **验证入口：** startup decision table、fault tests、configured-disk-copy fixture、recovery runbook。
 
@@ -117,7 +117,7 @@ server-auth TLS（全部入口，预置 trust + IP-SAN 验证）
   → WSS 控制面（token 认证）；SYNC_STATE / SYNC_SECRET 不签发任何东西
 ```
 
-窗口关闭时不存在任何签发路径；窗口状态默认关闭、变更受审计、故障恢复后不自动开启（[ADR-0021](adr/0021-provisioning-window-certificate-issuance.md)）。Enrollment 之外、operator API 与任何 Command 都不能获得 token 或证书。
+窗口关闭时不存在任何签发路径。`provisioning_window` 是一个当前 singleton，只含 `state`（`open`/`closed`）、单调 `revision` 与 `last_audit_event_id`；正常 open/close 与其 redacted audit 以同一 transaction 的 guarded operation CAS 提交；AuditEvent 是证据历史，不是 provisioning revision ledger。restart/restore 绝不自动开启：已 `closed` 时零写入，只有已 `open` 时才以 `system:recovery` audit 原子 close 并将 revision 加一；成功后再次恢复不产生第二条 close audit（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。Enrollment 之外、operator API 与任何 Command 都不能获得 token 或证书。
 
 **验证入口：** 窗口关闭负向测试、OpenAPI/DB/schema tests、无 token upgrade 拒绝测试。
 
@@ -146,7 +146,7 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 每次 secret sync 必须：
 
 - 由授权操作员明确发起；
-- 绑定当前 Device、Seat、assignment revision 和 credential revision；
+- 绑定当前 Device、Seat、BindingRevision 和 credential revision；
 - 使用 durable Command；
 - 在 Device 写入前再次校验；
 - 返回 redacted 结果；
@@ -154,13 +154,13 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 
 **验证入口：** authorization tests、stale revision tests、secret scan、audit tests。
 
-### `INV-COMMAND-01`：Command durable 且幂等
+### `INV-COMMAND-01`：Command durable、identity-stable 且不重复副作用
 
-Server 先持久化 Command 再投递；Device 先持久化 receipt/journal 再确认。相同 `command_id` 不得重复副作用。
+Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并通过 `PUT /api/v2/commands/{command_id}` 提交。Server 先持久化 Command 与创建 audit 再投递；Device 先持久化 receipt/journal 再确认。相同 ID 必须原样贯穿 HTTP、WSS、journal、CommandStatus 和 audit correlation，且不得重复副作用。
 
-相同 ID 不同 payload 必须 conflict；崩溃和重连后必须能恢复既有状态。
+Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。Device 对同 ID 但不同 `frozen_payload_json` 内容 conflict/reject；崩溃和重连后必须能恢复既有状态。每 Command 的 frozen content 只保存在 typed JSON，而不使用一组专用 top-level columns。
 
-**验证入口：** crash/fault injection、duplicate delivery、journal durability、reconnect tests。
+**验证入口：** UUIDv7 正/反例、`201/200/400/409` contract、same-ID fingerprint conflict、HTTP/WSS/journal/status/audit ID 一致性、crash/fault injection、duplicate delivery、journal durability、reconnect tests。
 
 ### `INV-PRIVILEGE-01`：最小权限
 
@@ -190,7 +190,7 @@ Caddy 只有在证书、私钥、SAN/profile、配置和本地健康检查全部
 
 ### `INV-DATAPLANE-02`：凭据注入只经 TLS upstream
 
-DOMjudge 凭据只通过 Caddy 对 `/login` 路由的 header 注入进入数据面（[ADR-0024](adr/0024-domjudge-autologin-via-xheaders.md)）；**Caddy → DOMjudge upstream 必须为 TLS**，至少覆盖 `/login`。upstream 非 TLS 时不得激活注入配置。本机 loopback HTTPS 不替代该要求。
+DOMjudge 凭据只通过 Caddy 对 `/login` 路由的 header 注入进入数据面（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）；**Caddy → DOMjudge upstream 必须为 TLS**，至少覆盖 `/login`。upstream 非 TLS 时不得激活注入配置。本机 loopback HTTPS 不替代该要求。
 
 **验证入口：** 非 TLS upstream 拒绝激活测试、`/login` 之外路由无注入头的负向测试、含凭据配置的权限/日志脱敏检查。
 
@@ -198,7 +198,7 @@ DOMjudge 凭据只通过 Caddy 对 `/login` 路由的 header 注入进入数据�
 
 所有 Session/Home 动作绑定当前 epoch。陈旧 Agent、陈旧 UI action、陈旧 Home cleanup 必须拒绝。
 
-Home 无法证明安全时不得启动受管 session。Session lock/unlock/terminate 不调用 Caddy、不改变 Caddy config/状态。遮罩类 UI（如未来实现）是呈现层，不是完整性边界；完整性依靠 `SESSION_TERMINATE` 与数据面 BLOCKED（[ADR-0027](adr/0027-single-image-desktop-cycle.md)）。
+Home 无法证明安全时不得启动受管 session。Session lock/unlock/terminate 不调用 Caddy、不改变 Caddy config/状态。遮罩类 UI（如未来实现）是呈现层，不是完整性边界；完整性依靠 `SESSION_TERMINATE` 与数据面 BLOCKED（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）。
 
 **验证入口：** 桌面 capability 清单、epoch race tests、Caddy call counter、Home fault recovery。
 
@@ -211,25 +211,27 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 | control CA → Server TLS leaf | 离线生成，runbook 保管；Server leaf 经批准的离线流程签发 | Device 与操作员浏览器；经 package/debconf 预置 `control-ca.crt` |
 | origin CA → 各 Device Gateway leaf | origin CA key 在 Server 上，provisioning 窗口内经 Enrollment 签发 | 各设备本机浏览器；origin CA 证书经包构建期注入 `local-origin-ca.crt` |
 
-不存在 Device Identity CA（[ADR-0023](adr/0023-wss-control-channel-with-device-token.md)）。每张 Gateway certificate 跟踪：serial、SPKI fingerprint、not-after、status。不建吊销分发机制；revoked/retired 仅作台账。
+不存在 Device Identity CA（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。每张 Gateway certificate 的 `gateway_certificates` row 只有 `certificate_id`、`device_pk`、`enrollment_request_id`、serial、SPKI hash、not-after、status；不存 certificate body，不建吊销分发机制；`revoked`/`retired` 仅作台账状态。
 
 ## 5. 秘密存储
 
 ### 5.1 Server vault
 
 - 应用层 AEAD；
-- ciphertext、nonce、format version 和 associated data 明确；
+- `server_vault_records` row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 和 `ciphertext`；没有 format/key/AAD version、timestamp 或 rotation metadata；
+- 每个 `(record_type, subject_id)` 只有一个当前 ciphertext。密码 material change 替换该 record 并推进对应 `credential_revision`，不建立 superseded、active/inactive 或历史 credential 行；
 - DB 备份不应单独恢复出明文；
 - key 不通过 argv、env、日志或 Web；
 - secret read 只通过专用 use case；
-- key rotation/format migration 原子且可恢复；
-- audit 记录访问动作但不记录值。
+- audit 记录访问、替换与终止动作但不记录值。
 
-CSV / candidate import 的 password-bearing 材料只进入 encrypted staging 与 secret-safe persistence。staging 失败、过期清理、discard 与未提交 candidate 不得把明文残留到普通 surface；未成功 Import Commit 不得改变 confirmed contest configuration。
+CSV / candidate import 的 password-bearing 材料只进入 encrypted staging 与 secret-safe persistence。全局只有一个 encrypted pending candidate；严格解析成功才写入。candidate row 存在即为 pending，不使用 workflow state/history。commit、discard 或 expiry 在同一事务删除 candidate 与其 payload vault record，并留下 redacted audit lineage；staging 失败、未成功 Import Commit 或终止候选不得把明文残留到普通 surface，也不得改变 confirmed contest configuration。
+
+这里的删除是删除可寻址数据库事实，不承诺 SQLite page、WAL、backup 或底层介质上的取证级物理擦除。备份保留、介质销毁和 destructive reset 属于恢复 runbook，不得以“已经逻辑删除”替代其操作。
 
 ### 5.2 Client 凭据文件
 
-按 [ADR-0026](adr/0026-client-secrets-as-permission-files.md)：
+按 [ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)：
 
 - root-owned 权限文件，无应用层加密；
 - Device Token `0600 root:root`；Gateway key/leaf 与含凭据 Caddy 配置 `0640 root:natsume-gateway`；Seat 凭据 `0600 root:root`；
@@ -288,35 +290,52 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 1. 先保存证据，再修改状态。
 2. 先确认身份和当前 epoch，再执行恢复。
 3. 不把删除凭据、identity、journal 或数据库行当作首选修复。
-4. 恢复动作使用与正常路径相同的校验和权限边界。
-5. 任何身份重建、凭据替换、Device replacement 和 contest reset 都必须人工明确授权（窗口重开本身受审计）。
-6. 恢复后用 Observed、Drift、certificate inspection 和 audit 验证，而不是只看服务进程已启动。
-7. 无法证明旧状态安全时进入 BLOCKED，而不是尝试"最大可用性"。
-8. runbook 中的每个 destructive step 必须有备份/rollback 条件。
+4. provisioning 恢复只处理当前 singleton：已关闭时零写入；已打开时通过 audited CAS close-once。它绝不从 audit、backup 或启动路径推断应当重新打开窗口。
+5. 恢复动作使用与正常路径相同的校验和权限边界。
+6. 任何身份重建、凭据替换、Device replacement 和 contest reset 都必须人工明确授权（窗口重开本身受审计）。
+7. 恢复后用 Observed、Drift、certificate inspection 和 audit 验证，而不是只看服务进程已启动。
+8. 无法证明旧状态安全时进入 BLOCKED，而不是尝试“最大可用性”。
+9. runbook 中的每个 destructive step 必须有备份/rollback 条件。
 
 具体恢复步骤在对应 Phase 实现后编写；当前不保留未建系统的目标操作流程。
 
 ## 9. 审计
 
+`AuditEvent` 是唯一通用的历史/证据表。敏感 mutation 与其 AuditEvent 必须由同一个 guarded operation 在同一 transaction 中原子写入；该 operation 自行插入 audit row 和业务 mutation。fresh `audit_event_id` 可作为 typed operation input，但已持久化的同 ID 或预插入 audit row 不能重放为新 mutation 的凭据。audit 写入、redaction 验证或 commit 失败时，mutation 必须回滚。每个事件的明确字段是：
+
+```text
+audit_event_id
+occurred_at
+actor
+action_kind
+resource_type
+resource_id?                 # nullable
+result
+reason_code?                 # nullable
+correlation_id
+group_correlation_id?        # nullable；仅查询/审计分组
+redacted_detail_json         # typed、allowlisted、已脱敏；承载 revisions、counts 和其他 event-specific detail
+```
+
 以下动作必须审计：
 
-- CSV upload / preview / Import Commit / discard；
+- CSV upload / preview / Import Commit / discard / expiry，以及 candidate/payload 的终态删除；
 - import stale reject、expiry reject、binding-stale reject；
 - no-op Import Commit（仅 lineage；无 revision bump、无 Target churn）；
-- material Import Commit 的 atomic unbind impact（受影响 Seat/Device 计数与 identity）；
+- material Import Commit 的 atomic unbind impact（受影响 Seat/Device 计数与允许的 identity）；
 - account/credential revision 变化；
-- provisioning 窗口开启/关闭；
-- Device Enrollment（含替换语义 re-enrollment 与"旧连接存活时被替换"异常事件）、retire、delete；
+- provisioning 窗口正常开启/关闭与 `system:recovery` close-once；
+- Device Enrollment（含替换语义 re-enrollment 与“旧连接存活时被替换”异常事件）、retire、delete；
 - Device Token 吊销；
 - binding/unbind；
-- `SYNC_STATE`、`SYNC_SECRET`；
+- Command create/replay/conflict、`SYNC_STATE`、`SYNC_SECRET` 与终态；
 - certificate issuance 与台账状态变化；
 - Session/Home action；
 - 角色变化；
 - backup/restore/reset；
 - 安全恢复和人工 override。
 
-审计事件最少包含 actor、action、resource、result、time、correlation、revision 和 redacted change。审计与普通 surface 不包含 password 明文、private key 或 Device Token 值。失败、discard、expiry 与 rollback 的审计记录不得被解释为 confirmed truth 已变更。
+`redacted_detail_json` 只能保存 typed allowlisted evidence，例如适用 revision、变更分类、计数和稳定 reason；不得成为任意 payload dump。审计与普通 surface 不包含 password 明文、private key、Device Token 值、原始 CSV、ciphertext、CSR/certificate body、完整路径或未脱敏 source chain。失败、discard、expiry 与 rollback 的 audit 不得被解释为 confirmed truth 已变更；它们只证明尝试、拒绝或终止发生过。
 
 ## 10. 日志和指标脱敏
 
@@ -347,4 +366,4 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 
 安全变更的自检清单见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
 
-**没有 evidence locator 的安全声明不得用于 Gate PASS。**
+**没有可定位证据的安全声明不得用于 Gate PASS。**

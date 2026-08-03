@@ -64,14 +64,11 @@ pub const fn http_status(code: ErrorCode) -> u16 {
         | ErrorCode::InstallEndpointInvalidPort
         | ErrorCode::ProtocolFrameTooLarge
         | ErrorCode::ProtocolInvalidEnvelope
-        | ErrorCode::EnrollmentDeviceOnlyViolation
         | ErrorCode::EnrollmentCsrInvalid
-        | ErrorCode::GatewayCertCsrInvalid => 400,
+        | ErrorCode::CommandIdInvalid => 400,
         ErrorCode::ProtocolAnonymousClient => 401,
-        ErrorCode::GatewayCertRequestNotAuthorized | ErrorCode::SessionIneligible => 403,
-        ErrorCode::GatewayCertCommandMismatch
-        | ErrorCode::GatewayCertRequestExpired
-        | ErrorCode::GatewayCertSpkiConflict
+        ErrorCode::SessionIneligible => 403,
+        ErrorCode::ProvisioningWindowClosed
         | ErrorCode::GatewayCertLocalKeyMismatch
         | ErrorCode::SessionChanged
         | ErrorCode::SessionAmbiguous
@@ -83,7 +80,8 @@ pub const fn http_status(code: ErrorCode) -> u16 {
         | ErrorCode::StaleLockEpoch
         | ErrorCode::LockCommandMismatch
         | ErrorCode::NoActiveLock
-        | ErrorCode::HomeTransition => 409,
+        | ErrorCode::HomeTransition
+        | ErrorCode::CommandRequestConflict => 409,
         ErrorCode::GatewayCertIssuerUnavailable
         | ErrorCode::SessionAgentMissing
         | ErrorCode::SessionDisplayUnavailable
@@ -112,6 +110,12 @@ pub fn to_problem_details(code: ErrorCode, correlation_id: Uuid) -> ProblemDetai
 mod tests {
     use super::*;
     use crate::ALL_ERROR_CODES;
+
+    #[test]
+    fn command_id_errors_have_their_contractual_http_statuses() {
+        assert_eq!(http_status(ErrorCode::CommandIdInvalid), 400);
+        assert_eq!(http_status(ErrorCode::CommandRequestConflict), 409);
+    }
 
     #[test]
     fn every_code_has_a_safe_explicit_problem_details_mapping() {

@@ -32,3 +32,6 @@ __pycache__/
 .claude
 web/tsconfig.tsbuildinfo
 .ccg
+
+# Local-only ADR source archive used during consolidation review.
+/docs/adr/archive/
