@@ -150,9 +150,44 @@ Device Daemon **不发送任意 Caddyfile、不使用 Caddy Admin API**。控制
 
 依赖方向：`DomainError → exhaustive adapter mapping → stable ErrorCode → HTTP/Protobuf/D-Bus/CommandStatus`。**禁止 `stable ErrorCode → domain decision`。**
 
-规则：字符串值显式定义；每个公开 adapter 映射穷举；未分类内部错误映射到有限通用码；`detail` 默认无或脱敏；新内部错误不自动成为新稳定码；删除稳定码需要兼容计划；**Web/Device 不解析 Display 文本**；同一语义跨 transport 使用同一稳定码。
+规则：字符串值显式定义；每个公开 adapter 映射穷举；未分类内部错误映射到有限通用码；`detail` 默认无或脱敏；新内部错误不自动成为新稳定码；删除稳定码需要兼容计划；**Web/Device 不解析 Display 文本**；同一语义跨 transport 使用同一稳定码。实现级 variant 不直接进入 registry，只有调用方可稳定处理、会跨公开边界或持久化到 `CommandStatus`/Observed 的语义才进入下表。
 
-`COMMAND_ID_INVALID` 是非 canonical UUIDv7 的 `400`；`COMMAND_REQUEST_CONFLICT` 是 same-ID/different-fingerprint 的 `409`。实际码值由 `natsume-error-code` crate 维护；该 registry 作为独立 crate 的治理决策已由 [ADR-0036](adr/0036-error-architecture-and-public-codes.md) 接受，实施完成度仍以 Gate evidence 为准。
+| 类别 | 稳定码 | 当前公开语义 |
+|---|---|---|
+| common | `INTERNAL_ERROR` | adapter 穷举分类后仍无法安全公开具体语义的内部失败；`detail` 默认缺失，不回显 source chain。 |
+| common | `INVALID_REQUEST` | 未被更具体稳定码覆盖的闭合结构或参数校验失败。 |
+| common | `AUTHENTICATION_FAILED` | Operator session 或 Device Token 认证失败；不得公开区分 missing、wrong、revoked 等可形成 oracle 的原因。Device WSS upgrade 在解码前返回 `401`。 |
+| common | `AUTHORIZATION_DENIED` | 已识别调用方无权执行操作，包括 Operator role 与本地 Helper policy 拒绝。 |
+| operator | `IMPORT_CANDIDATE_INVALID` | Import candidate 结构无效、重复 account、为空或仅含 header；不得持久化 candidate 或改变 confirmed truth。 |
+| operator | `IMPORT_CANDIDATE_PENDING` | singleton pending candidate 已存在，新 upload 必须先显式终止或完成既有 candidate。 |
+| operator | `IMPORT_CANDIDATE_UNAVAILABLE` | candidate 已过期、discard、删除或不再可提交；调用方必须重新创建 candidate。 |
+| operator | `IMPORT_PREVIEW_STALE` | Import Commit 的 configuration/binding baseline 任一前移；拒绝且要求重新 preview，零 confirmed-state 变更。 |
+| enrollment | `PROVISIONING_WINDOW_CLOSED` | provisioning window 非 open 时拒绝 Enrollment，零签发、零 Server-state 变更。 |
+| enrollment | `ENROLLMENT_REQUEST_INVALID` | Enrollment 的有界 typed request、CSR/SPKI 或协议输入无效；不得留下部分 issuance。 |
+| enrollment | `DEVICE_IDENTITY_CONFLICT` | 硬件身份冲突要求人工恢复；不得自动 merge、选择候选或删除凭据。 |
+| control | `COMMAND_ID_INVALID` | `command_id` 不是 canonical lowercase hyphenated UUIDv7；HTTP 为 `400`，不得回显原始 ID。 |
+| control | `COMMAND_REQUEST_CONFLICT` | 已有 `command_id` 与当前 versioned canonical request fingerprint 不同；HTTP 为 `409`，不得覆写既有 Command。 |
+| control | `PROTOCOL_VERSION_UNSUPPORTED` | WSS subprotocol 或 typed control protocol version 不受支持；拒绝协商，不猜测兼容。 |
+| control | `PROTOCOL_INVALID_ENVELOPE` | 已接收的 typed control envelope 含未知/非法 kind、oneof 或结构；关闭连接，不解析 Display 文本。 |
+| control | `COMMAND_PAYLOAD_CONFLICT` | Device journal 收到相同 `command_id` 但不同 `frozen_payload_json`；拒绝且不产生第二次副作用。 |
+| control | `COMMAND_PAYLOAD_INVALID` | Command 的 payload version、typed schema、target 或允许集合校验失败，且不属于 stale current-fact。 |
+| control | `COMMAND_STALE` | 执行前或关键原子提交前发现 binding/configuration/credential 或 Command generation current fact 陈旧；拒绝且不部分应用。SessionEpoch/HomeEpoch 陈旧无论经 D-Bus、WSS 或 `CommandStatus` 暴露，始终分别映射为 `SESSION_CONTEXT_STALE` / `HOME_EPOCH_STALE`。 |
+| device | `DEVICE_IDENTITY_UNAVAILABLE` | identity-bound 产物存在但当前硬件身份无法获得或有效来源不足；Device fail closed。 |
+| device | `DEVICE_IDENTITY_MISMATCH` | 当前硬件身份与持久化身份不匹配；不得使用凭据或自动 re-enroll。 |
+| device | `DEVICE_CREDENTIALS_UNREADABLE` | identity-bound 凭据文件损坏或不可安全读取；不得自动重建。 |
+| device | `GATEWAY_CREDENTIAL_INVALID` | Gateway certificate/private key 的 SPKI、chain、SAN 或有效期验证失败；不得激活未验证配置。 |
+| device | `GATEWAY_CREDENTIAL_INSTALL_FAILED` | Enrollment 收尾时 Gateway credential 无法原子持久化；不得留下“看似已 Enrollment”的半状态。 |
+| device | `GATEWAY_ACTIVATION_FAILED` | Caddy candidate validate、reload、health 或 LKG recovery 无法安全完成；保留已验证 LKG 或进入 BLOCKED。 |
+| device | `GATEWAY_UPSTREAM_TLS_REQUIRED` | fixed DOMjudge upstream（至少 `/login`）不满足 TLS policy；不得激活明文凭据注入。 |
+| device | `SECRET_INSTALL_FAILED` | `SYNC_SECRET` 无法原子写入或激活凭据；保留旧 secret 或明确标记不可用，不留半写。 |
+| session | `SESSION_CONTEXT_STALE` | SessionEpoch、Agent lease、logind/boot/session identity 或 UI action 已陈旧；拒绝控制 replacement session。 |
+| session | `SESSION_UNAVAILABLE` | 当前 graphical session/Agent/display 不存在、不唯一或不满足受管操作条件。 |
+| session | `SESSION_ACTION_UNSUPPORTED` | 当期冻结镜像不支持请求的 native session lock/unlock/terminate capability。 |
+| session | `SESSION_STATE_CONFLICT` | 请求动作与当前 session/lock state 不一致，例如无 active lock 或 command/state 不匹配；调用方应刷新 typed state。 |
+| home | `HOME_EPOCH_STALE` | prepare/cleanup 请求的 HomeEpoch 不是当前 epoch；拒绝作用于 replacement Home。 |
+| home | `HOME_OPERATION_FAILED` | 无法证明 mount/copy/ownership/cleanup 安全，或 Home prepare/clean 无法可恢复地完成；fail closed，不启动受管 session。 |
+
+WSS frame size 仍必须有明确上限和负向测试，但 oversized frame 是 transport ingress resource-limit failure：直接关闭连接，不进入稳定 ErrorCode registry。该 catalog 由 `natsume-error-code` crate 实现；每个 variant 使用显式 Serde rename 实现稳定字符串 `Serialize`/`Deserialize`，不得使用 `rename_all`、手写字符串 parser 或从 Rust variant 名推导 wire value。独立 registry 的治理决策已由 [ADR-0036](adr/0036-error-architecture-and-public-codes.md) 接受，实施完成度仍以 Gate evidence 为准。
 
 ## 13. 版本和兼容
 

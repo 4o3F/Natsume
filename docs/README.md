@@ -46,14 +46,14 @@
 
 ## 4. 稳定标识
 
-| 前缀 | 用途 | 示例 |
+| 形式 | 用途 | 示例 |
 |---|---|---|
 | `INV-*` | 架构/安全不变量 | `INV-CERT-01` |
 | `Gn` / `Gn-IN-*` | Phase Gate 与输入门禁 | `G0`、`G0-IN-004` |
 | `ADR-*` | 架构决策 | `ADR-0035` |
-| `ERR_*` | 稳定公开错误码 | `ERR_PROTOCOL_VERSION` |
+| 显式 `UPPER_SNAKE_CASE` | 稳定公开错误码 | `COMMAND_ID_INVALID` |
 
-发布后的 ID 不复用。废弃时保留 ID，并标明 `RETIRED` 或 `SUPERSEDED`。
+ErrorCode 不使用统一 `ERR_*` 前缀；具体 wire value 由 [`contracts.md`](contracts.md) 与 `natsume-error-code` registry 显式定义，不从 Rust variant、`Display`、`Debug` 或示例前缀派生。发布后的 ID 不复用。废弃时保留 ID，并标明 `RETIRED` 或 `SUPERSEDED`。
 
 ## 5. 状态词汇
 

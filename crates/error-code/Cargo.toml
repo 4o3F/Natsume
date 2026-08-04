@@ -1,6 +1,6 @@
 [package]
 name = "natsume-error-code"
-description = "Stable Natsume error codes, surface mappings, and report redaction"
+description = "Stable public ErrorCode registry shared by Natsume boundaries"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,9 +8,10 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-regex.workspace = true
 serde.workspace = true
-uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
 
 [lints]
 workspace = true

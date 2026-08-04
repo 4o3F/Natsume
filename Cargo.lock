@@ -1371,9 +1371,8 @@ dependencies = [
 name = "natsume-error-code"
 version = "2.0.0"
 dependencies = [
- "regex",
  "serde",
- "uuid",
+ "serde_json",
 ]
 
 [[package]]
