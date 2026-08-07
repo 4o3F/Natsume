@@ -1,7 +1,7 @@
 use std::env;
 
-use natsume_device_daemon::parse_endpoint;
-use natsume_error_code::CodedReport;
+use natsume_device_daemon::{EndpointError, parse_endpoint};
+use natsume_error_code::ErrorCode;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
@@ -11,8 +11,18 @@ enum Error {
     ))]
     Arguments,
 
-    #[snafu(display("{report}"))]
-    Endpoint { report: CodedReport },
+    #[snafu(display("{}: {error}", code.as_str()))]
+    Endpoint {
+        code: ErrorCode,
+        error: EndpointError,
+    },
+}
+
+fn endpoint_error(error: EndpointError) -> Error {
+    Error::Endpoint {
+        code: error.error_code(),
+        error,
+    }
 }
 
 fn run_args(args: &[String]) -> Result<(), Error> {
@@ -24,15 +34,11 @@ fn run_args(args: &[String]) -> Result<(), Error> {
             ));
             Ok(())
         }
-        [flag, ip, port] if flag == "--validate-endpoint" => parse_endpoint(ip, port)
-            .map(|_| ())
-            .map_err(|error| Error::Endpoint {
-                report: CodedReport::from_error(&error),
-            }),
+        [flag, ip, port] if flag == "--validate-endpoint" => {
+            parse_endpoint(ip, port).map(|_| ()).map_err(endpoint_error)
+        }
         [flag, ip, port] if flag == "--print-canonical-endpoint" => {
-            let endpoint = parse_endpoint(ip, port).map_err(|error| Error::Endpoint {
-                report: CodedReport::from_error(&error),
-            })?;
+            let endpoint = parse_endpoint(ip, port).map_err(endpoint_error)?;
             println!("{} {}", endpoint.ip(), endpoint.port());
             Ok(())
         }
@@ -53,32 +59,38 @@ fn main() -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use natsume_device_daemon::EndpointError;
-    use natsume_error_code::{AsErrorCode, ErrorCode};
+    use natsume_error_code::{ErrorCode, common::CommonErrorCode};
 
     use super::*;
 
     #[test]
-    fn endpoint_errors_map_to_stable_install_codes() {
+    fn endpoint_errors_map_to_stable_invalid_request() {
         assert_eq!(
             EndpointError::Ip.error_code(),
-            ErrorCode::InstallEndpointInvalidIp
+            ErrorCode::Common(CommonErrorCode::InvalidRequest)
         );
         assert_eq!(
             EndpointError::Port.error_code(),
-            ErrorCode::InstallEndpointInvalidPort
+            ErrorCode::Common(CommonErrorCode::InvalidRequest)
         );
     }
 
     #[test]
-    fn report_contains_code_without_rejected_input() {
-        let rejected_ip = "203.0.113.999";
+    fn report_contains_only_reviewed_text_and_code() {
+        let rejected_ip = "/sensitive/path secret-value source-chain-canary";
         let Err(error) = parse_endpoint(rejected_ip, "8443") else {
             panic!("invalid IP must be rejected");
         };
-        let report = CodedReport::from_error(&error);
+        let report = endpoint_error(error);
         let display = format!("{report}");
-        assert!(display.starts_with("INSTALL_ENDPOINT_INVALID_IP: "));
+        assert_eq!(
+            display,
+            "INVALID_REQUEST: invalid Natsume Server IP literal"
+        );
         assert!(!display.contains(rejected_ip));
+        assert!(!display.contains("/sensitive/path"));
+        assert!(!display.contains("secret-value"));
+        assert!(!display.contains("source-chain-canary"));
     }
 
     #[test]
@@ -92,6 +104,6 @@ mod tests {
             display,
             "usage: natsume-device-daemon [--validate-endpoint|--print-canonical-endpoint] <ip> <port>"
         );
-        assert!(!display.contains("PACKAGE_LAYOUT_INVALID"));
+        assert!(!display.contains("INVALID_REQUEST"));
     }
 }

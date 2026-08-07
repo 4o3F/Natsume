@@ -1,50 +1,53 @@
 # natsume-error-code
 
-Shared Phase 0 contract for stable Natsume error identifiers and boundary-safe rendering.
+Shared value-only registry for stable Natsume public error identifiers.
 
 ## Responsibilities
 
-- define the 30 Phase 0 stable error strings, including the cross-desktop Session Agent lifecycle set and Command request failures;
-- map each code explicitly to HTTP status/title, protocol string and D-Bus error name;
-- provide RFC 9457-shaped Problem Details without a default detail field;
-- provide redacted wrappers and reports for operator-facing error boundaries.
+- define 32 stable codes in the `common`, `operator`, `enrollment`, `control`, `device`, `session`, and `home` categories;
+- give every category variant an explicit stable wire string and Serde representation;
+- provide the unified `ErrorCode` value for boundaries that carry codes from multiple categories;
+- keep the registry independent of domain errors and transport runtimes.
 
 ## Consumers
 
-`server`, `client/device-daemon`, `client/privileged-helper` and `client/session-agent` are production consumers. A consumer keeps its own typed SNAFU errors and implements `AsErrorCode` or an equivalent exhaustive mapping.
+Production consumers keep typed errors in their owning modules and use explicit exhaustive matches to select a categorized stable code. HTTP status, Problem Details, Protobuf, D-Bus, `CommandStatus`, logging, and operator-facing rendering remain owned by their respective adapters.
 
 ## Command request errors
 
-- `COMMAND_ID_INVALID` maps to HTTP `400` when a Command ID is not a canonical lowercase hyphenated UUIDv7. Public responses must not echo the invalid value.
-- `COMMAND_REQUEST_CONFLICT` maps to HTTP `409` when a canonical Command ID is already bound to a different normalized request.
+- `COMMAND_ID_INVALID` means a Command ID is not a canonical lowercase hyphenated UUIDv7. The HTTP adapter maps it to `400` and must not echo the rejected value.
+- `COMMAND_REQUEST_CONFLICT` means a canonical Command ID is already bound to a different canonical request. The HTTP adapter maps it to `409`.
 
 ## Usage
 
 ```rust
-use natsume_error_code::{AsErrorCode, CodedReport, ErrorCode};
+use natsume_error_code::{ErrorCode, control::ControlErrorCode};
 
-# struct DomainError;
-# impl core::fmt::Display for DomainError {
-#     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-#         formatter.write_str("operation failed")
-#     }
-# }
-impl AsErrorCode for DomainError {
-    fn error_code(&self) -> ErrorCode {
-        ErrorCode::VaultCorrupt
+enum CommandValidationError {
+    MissingBody,
+    UnknownKind,
+}
+
+fn stable_code(error: &CommandValidationError) -> ErrorCode {
+    match error {
+        CommandValidationError::MissingBody | CommandValidationError::UnknownKind => {
+            ErrorCode::Control(ControlErrorCode::ProtocolInvalidEnvelope)
+        }
     }
 }
 
-let report = CodedReport::from_error(&DomainError);
-assert_eq!(report.code(), ErrorCode::VaultCorrupt);
+assert_eq!(
+    stable_code(&CommandValidationError::MissingBody).as_str(),
+    "PROTOCOL_INVALID_ENVELOPE"
+);
 ```
 
 ## Non-goals
 
-- domain error definitions or retry policy;
-- Axum response construction;
-- Prost messages or WSS frame handling;
-- zbus introspection/runtime behavior;
-- parsing `Display` text to determine program behavior.
+- domain errors, retry policy, or authorization decisions;
+- transport status/title/error-name mappings or response construction;
+- redaction wrappers, reports, or source-error formatting;
+- Axum, Prost, WSS, or zbus runtime behavior;
+- deriving behavior or stable strings from `Display`, `Debug`, or Rust variant names.
 
 See [`DESIGN.md`](DESIGN.md) and [`ADR-0036`](../../docs/adr/0036-error-architecture-and-public-codes.md).

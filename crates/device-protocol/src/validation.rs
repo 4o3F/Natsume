@@ -1,4 +1,4 @@
-use natsume_error_code::{AsErrorCode, ErrorCode};
+use natsume_error_code::{ErrorCode, control::ControlErrorCode};
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
 
@@ -26,14 +26,18 @@ pub enum ProtocolValidationError {
     UnknownEnum { field: &'static str, value: i32 },
 }
 
-impl AsErrorCode for ProtocolValidationError {
-    fn error_code(&self) -> ErrorCode {
+impl ProtocolValidationError {
+    /// Maps a typed validation failure to its stable public control semantic.
+    #[must_use]
+    pub const fn error_code(&self) -> ErrorCode {
         match self {
-            Self::InvalidCommandId => ErrorCode::CommandIdInvalid,
+            Self::InvalidCommandId => ErrorCode::Control(ControlErrorCode::CommandIdInvalid),
             Self::MissingEnvelopeBody
             | Self::MissingCommandBody
             | Self::UnspecifiedEnum { .. }
-            | Self::UnknownEnum { .. } => ErrorCode::ProtocolInvalidEnvelope,
+            | Self::UnknownEnum { .. } => {
+                ErrorCode::Control(ControlErrorCode::ProtocolInvalidEnvelope)
+            }
         }
     }
 }
@@ -222,5 +226,28 @@ mod tests {
         assert!(matches!(error, ProtocolValidationError::InvalidCommandId));
         let rendered = error.to_string();
         assert!(!rendered.contains(invalid_status_id));
+    }
+
+    #[test]
+    fn implementation_validation_failures_collapse_to_public_control_semantics() {
+        assert_eq!(
+            ProtocolValidationError::InvalidCommandId.error_code(),
+            ErrorCode::Control(ControlErrorCode::CommandIdInvalid)
+        );
+
+        for error in [
+            ProtocolValidationError::MissingEnvelopeBody,
+            ProtocolValidationError::MissingCommandBody,
+            ProtocolValidationError::UnspecifiedEnum { field: "field" },
+            ProtocolValidationError::UnknownEnum {
+                field: "field",
+                value: 99,
+            },
+        ] {
+            assert_eq!(
+                error.error_code(),
+                ErrorCode::Control(ControlErrorCode::ProtocolInvalidEnvelope)
+            );
+        }
     }
 }

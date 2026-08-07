@@ -30,6 +30,7 @@ Panel-owned Command ID 还需要把输入无效与同 ID 不同请求这两类�
 - `ErrorCode` 不进入 domain policy。每个可跨 public boundary 的 local variant 都在 adapter 中显式、编译期穷举映射；多个 local variant 可以收敛为一个 reviewed public semantic。
 - 同一公开语义在所有 transport 使用同一 `ErrorCode`。HTTP 显式映射 status 与 Problem Details/correlation ID；Protobuf/CommandStatus 使用稳定字符串；D-Bus 使用显式稳定 error name。
 - stable string 不从 `Display`、`Debug`、localization、source error、Rust variant name 或 transport text 派生；published code 不得无 compatibility plan 地删除或改义。
+- 旧 flat implementation-specific codes 在 G0 通过且形成 Gate-backed/public release baseline 之前即被分类 32-code registry 替换（[Phase 0 status](../gates/phase-0-status.md) 仍为 G0 `OPEN`）；这是 coordinated pre-release baseline reset，不是删除已发布 compatibility contract。32-code catalog 一旦成为 published compatibility baseline，任何删除或语义变更仍必须有 compatibility plan，本处置不放宽上一条规则。
 - public Client 只能按 `ErrorCode` 和明确安全的 typed fields 分支，不得解析 title、detail、Display、source-chain 或翻译文本。
 - public `detail` 默认缺失；只有经过 review/redaction 才能输出。password、private key、Device Token、certificate/CSR body、完整 Machine Hardware ID、path、arbitrary payload 与 source chain 不得进入 public、audit、metric 或 ordinary log boundary。
 - internal diagnostic 可以保留受限 source/context，但 error constructor 本身不得捕获 secret/path；redaction 不是把敏感值放入 error context 的许可。

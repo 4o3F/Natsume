@@ -1,4 +1,3 @@
 #![forbid(unsafe_code)]
 
-pub mod error_contract;
 pub mod hardware_identity;

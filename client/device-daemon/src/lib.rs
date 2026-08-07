@@ -3,10 +3,8 @@
 
 use std::{net::IpAddr, num::NonZeroU16, str::FromStr};
 
-use natsume_error_code::{AsErrorCode, ErrorCode};
+use natsume_error_code::{ErrorCode, common::CommonErrorCode};
 use snafu::Snafu;
-
-pub mod error_contract;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CanonicalEndpoint {
@@ -35,11 +33,12 @@ pub enum EndpointError {
     Port,
 }
 
-impl AsErrorCode for EndpointError {
-    fn error_code(&self) -> ErrorCode {
+impl EndpointError {
+    /// Maps endpoint validation failures to the stable invalid-request semantic.
+    #[must_use]
+    pub const fn error_code(&self) -> ErrorCode {
         match self {
-            Self::Ip => ErrorCode::InstallEndpointInvalidIp,
-            Self::Port => ErrorCode::InstallEndpointInvalidPort,
+            Self::Ip | Self::Port => ErrorCode::Common(CommonErrorCode::InvalidRequest),
         }
     }
 }
@@ -84,5 +83,13 @@ mod tests {
         assert!(parse_endpoint("[2001:db8::1]", "8443").is_err());
         assert!(parse_endpoint("192.0.2.10", "0").is_err());
         assert!(parse_endpoint("192.0.2.10", "65536").is_err());
+    }
+
+    #[test]
+    fn endpoint_failures_share_the_stable_invalid_request_semantic() {
+        let expected = ErrorCode::Common(CommonErrorCode::InvalidRequest);
+
+        assert_eq!(EndpointError::Ip.error_code(), expected);
+        assert_eq!(EndpointError::Port.error_code(), expected);
     }
 }

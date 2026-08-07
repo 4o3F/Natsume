@@ -176,7 +176,7 @@ fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
         },
         validate_envelope,
     };
-    use natsume_error_code::{AsErrorCode, ErrorCode};
+    use natsume_error_code::{ErrorCode, control::ControlErrorCode};
 
     const UUID_V7: &str = "018f0e2e-8c1d-7c5e-8b12-3456789abcde";
     let command_envelope = |command_id: &str| ControlEnvelope {
@@ -218,7 +218,10 @@ fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
             let Err(error) = validate_envelope(&envelope) else {
                 panic!("non-canonical command ID must fail: {invalid}");
             };
-            assert_eq!(error.error_code(), ErrorCode::CommandIdInvalid);
+            assert_eq!(
+                error.error_code(),
+                ErrorCode::Control(ControlErrorCode::CommandIdInvalid)
+            );
             let rendered = error.to_string();
             assert!(!rendered.contains(invalid));
         }
@@ -255,12 +258,15 @@ fn semantic_validation_rejects_empty_oneofs_and_invalid_enums() {
         generated::{ControlEnvelope, Heartbeat, control_envelope},
         validate_envelope,
     };
-    use natsume_error_code::{AsErrorCode, ErrorCode};
+    use natsume_error_code::{ErrorCode, control::ControlErrorCode};
 
     let Err(error) = validate_envelope(&ControlEnvelope { body: None }) else {
         panic!("empty envelope body must fail");
     };
-    assert_eq!(error.error_code(), ErrorCode::ProtocolInvalidEnvelope);
+    assert_eq!(
+        error.error_code(),
+        ErrorCode::Control(ControlErrorCode::ProtocolInvalidEnvelope)
+    );
 
     let unspecified = ControlEnvelope {
         body: Some(control_envelope::Body::Heartbeat(Heartbeat::default())),
