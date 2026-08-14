@@ -21,7 +21,7 @@ Both nFPM manifests require `SITE_CONFIG`, `CONTROL_CA_CERT` and `LOCAL_ORIGIN_C
 
 ## Session Agent package invariant
 
-The Client package installs exactly one system-wide XDG Autostart entry and no Session Agent systemd user unit. P0.7 promotes the reviewed reference under `docs/reference/session-agent-slint/` into a minimal build-time Slint probe using the same direct-launched binary; Probe E must validate hidden/lazy presentation and the final feature/ELF dependency closure. Phase 6 still owns the complete production GUI. Package verification must reject a user unit, bootstrap/runtime descriptor, runtime `.slint` interpretation and external GUI helpers.
+The Client package installs exactly one system-wide XDG Autostart entry and no Session Agent systemd user unit. The minimal build-time Slint probe (hidden/lazy presentation and the final feature/ELF dependency closure) is desktop-capability evidence: its acceptance criteria are frozen in [the supported platform](../docs/supported-platform.md) and its status is tracked in [Phase 0 status](../docs/gates/phase-0-status.md); Phase 6 owns the complete production GUI. Package verification must reject a user unit, bootstrap/runtime descriptor, runtime `.slint` interpretation and external GUI helpers.
 
 ## Endpoint conffile lifecycle
 

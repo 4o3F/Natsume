@@ -1,6 +1,6 @@
 # Phase 0 target-VM package lifecycle
 
-This harness is intentionally excluded from shared-runner CI. It mutates package state and must run only on a disposable VM whose OS/systemd baseline is registered in `docs/lab/phase-0-inventory.md`.
+This harness is intentionally excluded from shared-runner CI. It mutates package state and must run only on a disposable VM whose OS/systemd baseline is frozen in [the supported platform](../../docs/supported-platform.md) and recorded with the run evidence in [Phase 0 status](../../docs/gates/phase-0-status.md).
 
 ## Inputs
 
