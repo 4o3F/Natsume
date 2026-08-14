@@ -20,8 +20,8 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | 8 | 目标环境：`INV-CERT-01` 两段阶梯 schema/路由负向断言 | `OPEN` |
 | 9 | DOMjudge lab：xheaders 登录、brotli 透传、upstream TLS 三项结论 | `BLOCKED-INPUT` |
 | 10 | identity fixture 集（v1 事故 + 代表性异构 + configured-disk copy）决策表测试 | `BLOCKED-INPUT` |
-| 11 | 当期镜像桌面 capability 清单首次执行 | `BLOCKED-INPUT` |
-| 12 | package/systemd 生命周期 smoke（install/upgrade/remove/purge/reboot） | `BLOCKED-INPUT` |
+| 11 | 当期镜像桌面 capability 清单首次执行 | `OPEN`（client 镜像已可得，待执行） |
+| 12 | package/systemd 生命周期 smoke（install/upgrade/remove/purge/reboot） | `OPEN`（client 镜像已可得，client 半可执行；Server 半待 Ubuntu 26 镜像精确值） |
 
 ## 已登记证据
 
@@ -35,17 +35,17 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 
 | ID | 输入 | 状态 |
 |---|---|---|
-| G0-IN-001 | Server/Client OS、architecture、systemd | `ENV-PROPOSED`（Ubuntu 24.04 已提供，缺 point release/kernel/glibc/systemd 精确值） |
+| G0-IN-001 | Server/Client OS、architecture、systemd | `ENV-PROPOSED`（2026-08-14：Client 精确值已提供——Ubuntu 24.04.3/6.14.0-29/x86_64/glibc 2.39/systemd 255；Server 变更为 Ubuntu 26 官方镜像，精确值待补；见[支持平台](../supported-platform.md) §4.2） |
 | G0-IN-002 | Server endpoint 与单 TCP 端口 | `RESOLVED`：地址按部署配置，不需要仓库 IP literal；端口固定 `8443` |
 | G0-IN-003 | Caddy version/modules/source/checksum | `RESOLVED`：2.11.4 标准发行版已固定并由 `just ci-packages` 校验 |
-| G0-IN-004 | Browser、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | 大部分推进：桌面 GNOME + X11；xheaders 协议契约已确认，认证语义核实为 password-verifying；Browser TLS 1.3 非阻塞。剩余 DOMjudge 部署事实（含部署版本 xheaders 语义复核）、Slint closure、lock API |
+| G0-IN-004 | Browser、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | 大部分推进：桌面 Xfce + X11（2026-08-14 变更自 GNOME）；xheaders 协议契约已确认，认证语义核实为 password-verifying；Browser 由所有者豁免至 Web Panel 阶段；upstream 必须 TLS（origin CA 签发）与版本策略已定（[支持平台](../supported-platform.md) §4.2）。剩余 DOMjudge lab（upstream 不可访问）、Slint closure、lock API 定案 |
 | G0-IN-005 | 硬件 fixture 集（v1 事故 + 代表性异构） | `BLOCKED-INPUT`：所需字段与场景清单见 [支持平台](../supported-platform.md) §4.1 |
 | G0-IN-006 | PKI test material（control CA / origin CA）与 owner | `RESOLVED`：两根均自签；test material 由 `rcgen` 运行时生成 |
 | G0-IN-007 | v2.8 current-fact、BindingRevision、provisioning recovery、Panel Command ID 与 frozen-payload 文档/术语签收 | `RESOLVED`（2026-08-14）：五主题 23 项悬项由仓库所有者逐项决议；术语与冻结面实施于 commit `cbe7d46` 与 `b457e7f`，含 fingerprint v1 算法、命令族七族收敛、Identifier 契约、审计词汇注册表与 18 表清单 |
 
 ## 目标环境验证
 
-尚未开始。条目 7–12 被 `G0-IN-001` 至 `G0-IN-006` 阻塞；条目 1–6、8 可在仓库内先行。
+尚未开始执行。2026-08-14 输入更新后：条目 11/12 已解锁待执行（client 镜像可得）；条目 7 待部署网络；条目 9 待 DOMjudge upstream 可访问；条目 10 待硬件 fixture 采集（`G0-IN-005`）。
 
 每次验证记录：主题、`COMMIT_SHA`、精确环境或硬件标识、步骤、正向与负向结果、artifact 路径、日期、已知限制。部分通过记为未通过。
 

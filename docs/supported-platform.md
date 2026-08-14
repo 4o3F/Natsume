@@ -62,13 +62,13 @@ Caddy 只有在 source、archive checksum、binary checksum、module closure、�
 
 | 项目 | 需要冻结的内容 |
 |---|---|
-| Server OS | **Ubuntu 24.04**（`ENV-PROPOSED`，见 §4.1）；仍需 architecture/kernel/glibc/systemd 精确值与 clean install、reboot、包生命周期 evidence |
-| Client OS（ICPC 派生镜像） | **Ubuntu 24.04** 派生镜像（`ENV-PROPOSED`）；仍需镜像版本标识、Deb 安装、Caddy 执行、D-Bus/logind、当期桌面 evidence |
+| Server OS | **Ubuntu 26（官方 server 镜像）**（`ENV-PROPOSED`，见 §4.2，变更自 24.04 提案）；仍需精确 release/kernel/glibc/systemd 值与 clean install、reboot、包生命周期 evidence |
+| Client OS（ICPC 派生镜像） | **Ubuntu 24.04.3 LTS** 派生镜像（`ENV-PROPOSED`，精确值见 §4.2）；镜像标识按 image build 日期；仍需 Deb 安装、Caddy 执行、D-Bus/logind、当期桌面 evidence |
 | Server 网络 | Server 地址由**部署时配置**，不是仓库冻结的 IP literal：Server 自身监听 `0.0.0.0:8443`（包内配置），Client 端 endpoint 经 debconf 配置并在 `postinstall` 规范化校验；地址在同一部署内必须稳定，变更需重新签发带新 IP-SAN 的 TLS leaf 并重配 Client。Client 为 DHCP 短租期（ADR-0030 F3） |
 | 时间同步 | Server 与全部 500 台工作站的时钟纪律：竞赛 LAN 上的 NTP source（或等效机制）与最大容许 skew（`ENV-UNFROZEN`，待部署证据）。静默依赖时钟的消费者：Command `deadline_at` 与 freshness 判定、Gateway 与 Server 证书的有效期窗口、TLS 有效期校验、UUIDv7 的时间序 |
 | Operator 浏览器 | family/version、OS、分辨率/缩放、中文输入、安全 policy、更新窗口 |
-| DOMjudge | 版本、upstream scheme/host/port/path；**`auth_methods` 含 `xheaders` 且登录契约验证**；**web server brotli 启用**；**upstream（至少 `/login`）TLS 与信任链**；健康检查 |
-| Desktop（当期单环境） | **GNOME + X11**（`ENV-PROPOSED`，见 §4.1）；仍需镜像升级重验清单全项（见下） |
+| DOMjudge | 部署 snapshot 标识、upstream scheme/host/port/path；**`auth_methods` 含 `xheaders` 且登录契约验证**；**web server brotli 启用**；**upstream（至少 `/login`）TLS，材料由自签 origin CA 签发**；无健康检查端点，upstream 健康探测为被动（见 §4.2） |
+| Desktop（当期单环境） | **Xfce + X11**（`ENV-PROPOSED`，见 §4.2，变更自 GNOME 提案）；仍需镜像升级重验清单全项（见下） |
 | Slint runtime closure | 精确版本、features、动态链接库、font/IME、package size、cold start |
 | Home backend | OverlayFS 与 staged-copy 二选一（均为 `ENV-PROPOSED`），按 safety、recovery 与 performance evidence 限时定案 |
 | 物理硬件 fixture | v1 事故机器与代表性异构硬件的匿名化 fixture；全量实地验证在首次 provisioning 完成（[ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)，不再作为 G0 阻塞门禁） |
@@ -90,7 +90,7 @@ WSL、普通开发机、虚拟硬件 serial 或 reference scaffold 不得充当�
 | 输入 | 提供值 | 仍需的 evidence |
 |---|---|---|
 | Server / Client OS | Ubuntu 24.04 | 精确 point release、architecture、kernel、glibc、systemd 版本；clean install、reboot、Deb install/upgrade/remove/purge |
-| 当期桌面 | GNOME + X11 | GNOME 版本、会话类型确认为 X11、镜像升级重验清单全项 |
+| 当期桌面 | GNOME + X11（**已被 §4.2 变更为 Xfce + X11**） | 桌面版本、会话类型确认为 X11、镜像升级重验清单全项 |
 | Server 地址 | **不是固定 literal，按部署配置** | 部署实际 endpoint、TLS leaf 的 IP-SAN 与之匹配、错误 IP/错误 CA/过期证书的负向结果 |
 | Caddy | 由本项目自由选择，当前选定 2.11.4 标准发行版 | 目标 OS 上的执行与 package lifecycle（仓库层已验证，见下） |
 | Operator 浏览器 TLS | 任意现代浏览器均支持 TLS 1.3 | UI 相关的 browser 事实随 Web Panel 阶段验证，非 Server 阻塞项（见下） |
@@ -204,6 +204,23 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 
 数量上限没有硬规定，但少于上表场景数即无法覆盖。若某场景在真实 fleet 中不存在（例如没有 `unsupported` 的机型），应显式说明"该场景在本 fleet 不可得"，而不是用构造数据填充——构造数据不能作为实地 evidence。
 
+## 4.2 环境输入补充与变更（2026-08-14）
+
+以下由项目所有者提供，状态为 `ENV-PROPOSED`（值已具体，仍缺目标环境上的可复现 evidence）：
+
+| 输入 | 提供值 | 假设与后续事项 |
+|---|---|---|
+| Client OS 精确值 | Ubuntu 24.04.3 LTS、kernel `6.14.0-29-generic`、`x86_64`、glibc 2.39（`2.39-0ubuntu8.5`）、systemd 255（`255.4-1ubuntu8.10`） | 生命周期 evidence 待条目 12 在该镜像上执行 |
+| Client 镜像标识 | 按 image build 日期锚定 | 每次镜像 bump 触发重验清单 |
+| Server OS | 官方 Ubuntu 26 server 镜像（精确 release/kernel/glibc/systemd 待补），**变更自 2026-08-08 的 24.04 提案** | 所有者假设 24.04 构建产物可向前兼容运行；该假设不替代 evidence——Server 侧生命周期证据最终须在该镜像上产出。后续对齐事项：CI runner 与 packaging smoke 当前为 ubuntu-24.04 |
+| 当期桌面 | **Xfce + X11**（`XDG_SESSION_TYPE=x11` 已确认），**变更自 2026-08-08 的 GNOME 提案** | lock API 待定：Xfce 下建议以 logind lock-session 为准，Phase 6 限时定案（ADR-0030 F4 已同步修订） |
+| DOMjudge 版本策略 | 部署恒为最新 main 分支 snapshot | 所有者断言 xheaders 契约跨版本稳定；条目 9 lab 结论必须登记测试时的实际 snapshot 标识，更换 snapshot 触发 xheaders 语义复核。upstream 当前不可访问，lab 待其可得 |
+| DOMjudge upstream TLS | **必须 TLS**，证书由自签 origin CA（`LOCAL_ORIGIN_CA`）签发 | 维持 ADR-0034 fixed-TLS-upstream 不变量与 G5「非 TLS 拒绝激活」验收，不引入可信链路豁免 |
+| DOMjudge 健康检查 | 无专用端点，Natsume 不做主动探测 | `GatewayState` 的 `upstream_unhealthy` 只由被动信号（代理错误）驱动 |
+| 时间同步 | Client 部署时与 Server 做 NTP 校准 | 持续 skew 容差仍 `ENV-UNFROZEN`；时钟消费者（`deadline_at`、证书有效期、UUIDv7 序）在容差冻结前不得假设长期同步 |
+| Operator 浏览器 | 所有者豁免其余 freeze 字段 | 相关事实随 Web Panel 阶段验证，不作为 G0 输入 |
+| 硬件 fixture | 当前不可采集，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
+
 ## 5. 支持声明
 
 在 G0 通过前：
@@ -219,12 +236,12 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 
 | ID | 输入 | 目标 | 状态 |
 |---|---|---|---|
-| `G0-IN-001` | Server/Client OS、architecture、systemd | P0 收尾 | `ENV-PROPOSED`：Ubuntu 24.04 已提供，仍缺 point release/architecture/kernel/glibc/systemd 精确值与 lifecycle evidence（§4.1） |
+| `G0-IN-001` | Server/Client OS、architecture、systemd | P0 收尾 | `ENV-PROPOSED`：Client 精确值已提供（§4.2）；Server 变更为 Ubuntu 26 官方镜像，精确值待补；两侧 lifecycle evidence 待目标环境执行 |
 | `G0-IN-002` | Server endpoint 与单 TCP 端口 | P0 收尾 | `RESOLVED`（性质变更）：地址按部署配置，不需要仓库 IP literal；端口固定 `8443`。剩余部分并入目标环境验证（§4.1） |
 | `G0-IN-003` | Caddy version/modules/source/checksum | P0 收尾 | `RESOLVED`：2.11.4 标准发行版已固定并由 `just ci-packages` 校验；剩余为目标 OS 执行（§4.1） |
-| `G0-IN-004` | Browser（含 TLS 1.3 互操作证据）、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | P0 收尾 | 大部分推进：桌面 GNOME + X11（`ENV-PROPOSED`）；xheaders 协议契约由官方文档确认、认证语义由上游源码核实为 password-verifying；Browser TLS 1.3 非阻塞项。剩余为 DOMjudge 部署事实（含部署版本的 xheaders 语义复核）、Slint runtime closure、lock API（§4.1） |
+| `G0-IN-004` | Browser（含 TLS 1.3 互操作证据）、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | P0 收尾 | 大部分推进：桌面 Xfce + X11（`ENV-PROPOSED`，§4.2）；xheaders 协议契约由官方文档确认、认证语义由上游源码核实为 password-verifying；Browser 由所有者豁免至 Web Panel 阶段；upstream TLS 与版本策略已定（§4.2）。剩余为 DOMjudge lab（upstream 不可访问）、Slint runtime closure、lock API 定案 |
 | `G0-IN-005` | 硬件 fixture 集（v1 事故 + 代表性异构） | P0 收尾 | `BLOCKED-INPUT`：所需字段与场景清单已在 §4.1 明确，等待实地采集 |
 | `G0-IN-006` | PKI test material（control CA / origin CA）与 owner | P0 收尾 | `RESOLVED`：两根均自签；test material 由 `rcgen` 运行时生成，已被 Stage 3 TLS 测试消费。Phase 3 需另行冻结 origin CA 私钥路径（§4.1） |
-| `G0-IN-007` | v2.8 文档/ID/术语签收 | Step 0 | `OPEN` |
+| `G0-IN-007` | v2.8 文档/ID/术语签收 | Step 0 | `RESOLVED`（2026-08-14）：见 [`gates/phase-0-status.md`](gates/phase-0-status.md) 的签收记录 |
 
 Gate 状态以 [`gates/phase-0-status.md`](gates/phase-0-status.md) 为准。

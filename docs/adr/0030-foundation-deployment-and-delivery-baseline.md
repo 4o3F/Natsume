@@ -37,7 +37,7 @@ Natsume 同时包含 Rust Server/Client、TypeScript Web、Debian packaging 与�
 - **F1**：约 500 台异构受管工作站；非统一采购，v1 曾发生 MAC 地址冲突。
 - **F2**：单机房有线 LAN，由第三方管理；带宽受限，必须节约；UDP 通过性无保证。
 - **F3**：单 Server 实例；Server 地址**由部署时配置**，不是产品内固定的 IP literal，但在同一部署内必须保持稳定（TLS leaf 的 IP-SAN 与全部 Client endpoint 都绑定该值，更换需重新签发与重配）。工作站使用 DHCP 短租期，不能保证静态 IP 或长租期。
-- **F4**：基础 OS 镜像派生自 ICPC 官方镜像；大版本更新可能改变桌面栈；当前周期为 GNOME + X11；最终镜像由本项目构建。
+- **F4**：基础 OS 镜像派生自 ICPC 官方镜像；大版本更新可能改变桌面栈；当前周期为 Xfce + X11（**2026-08-14 修订**：变更自 GNOME + X11，见[支持平台](../supported-platform.md) §4.2）；最终镜像由本项目构建。
 - **F5**：DOMjudge 是外部竞赛系统，其 Web Server 已启用 brotli；v1 实测其相对 gzip 的带宽收益显著，这是保留本机 HTTPS 的依据。
 - **F6**：一次部署服务一场竞赛；产品跨赛事长期复用。
 - **F7**：开发窗口约 6 个月，团队 3 人。
