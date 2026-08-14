@@ -77,8 +77,7 @@ just package
 验证文档：
 
 ```bash
-node docs/verification/validate-links.mjs docs README.md
-node docs/verification/validate-markdown.mjs docs README.md
+just docs-validate
 pnpm diagrams
 ```
 

@@ -17,7 +17,7 @@ toolchain:
 
 docs-validate:
     node --test docs/verification/markdown.test.mjs
-    node docs/verification/validate-links.mjs docs README.md
+    git ls-files -z -- '*.md' | xargs -0r node docs/verification/validate-links.mjs
     node docs/verification/validate-markdown.mjs docs README.md
 
 install:
@@ -105,7 +105,7 @@ ci-web: install
     pnpm --filter @natsume/web test
     pnpm --filter @natsume/web build
 
-ci-contracts: install docs-validate
+ci-contracts: install docs-validate diesel-schema
     cargo run -p natsume-server --locked --bin export-openapi -- web/openapi/natsume.openapi.json
     pnpm --filter @natsume/web openapi:lint
     pnpm --filter @natsume/web api:generate
@@ -119,7 +119,7 @@ ci-policy: shell-format secret-scan
 ci-packages:
     bash packaging/ci-package-smoke.sh
 
-verify: toolchain install fmt lint unit api diagrams docs-validate secret-scan
+verify: toolchain install fmt lint unit api diesel-schema diagrams docs-validate secret-scan
 
 package-server:
     nfpm package --packager deb --config packaging/server/nfpm.yaml --target dist/packages/

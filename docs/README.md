@@ -80,8 +80,7 @@ ErrorCode 不使用统一 `ERR_*` 前缀；具体 wire value 由 [`contracts.md`
 合并前至少执行：
 
 ```bash
-node docs/verification/validate-links.mjs docs README.md
-node docs/verification/validate-markdown.mjs docs README.md
+just docs-validate
 pnpm diagrams
 ```
 

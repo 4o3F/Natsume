@@ -89,6 +89,7 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 | OpenAPI | Web TypeScript schema |
 | `.proto` | Rust types + descriptor golden |
 | D-Bus XML/value types | adapter code/tests |
+| SQL migrations | `server/src/db/schema.rs` |
 | Mermaid fences | parse validation |
 
 生成产物不得手工编辑。CI 使用 clean diff 证明同步。

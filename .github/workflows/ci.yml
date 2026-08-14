@@ -180,6 +180,12 @@ jobs:
             exit 1
           fi
 
+      - name: Install pinned diesel CLI
+        run: cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled
+
+      - name: Diesel schema clean diff
+        run: just diesel-schema
+
       - name: Rust contract tests
         run: cargo test -p natsume-integration-tests --locked
 
