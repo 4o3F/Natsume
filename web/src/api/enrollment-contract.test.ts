@@ -236,11 +236,20 @@ describe("Natsume V2 browser OpenAPI contract", () => {
 
     const command = openapi.paths[COMMAND_PATH].put;
     expect(command.operationId).toBe("putCommand");
-    expectResponseSet(command, ["200", "201", "400", "409"]);
+    expectResponseSet(command, [
+      "200",
+      "201",
+      "400",
+      "401",
+      "403",
+      "404",
+      "409",
+      "500",
+    ]);
     expect(command.description).toContain(
       "canonical lowercase hyphenated UUIDv7",
     );
-    expect(command.description).toContain("same normalized request");
+    expect(command.description).toContain("same canonical request");
     expect(command.description).toContain("conflicts");
 
     const commandId = command.parameters?.find(

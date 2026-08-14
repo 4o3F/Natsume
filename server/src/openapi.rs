@@ -20,7 +20,7 @@ const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const COMMAND_ID_PATTERN: &str =
     "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
-const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyphenated UUIDv7. The same normalized request replays the existing Command. A differing normalized request conflicts.";
+const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.";
 
 #[derive(utoipa::OpenApi)]
 #[openapi(
@@ -203,7 +203,11 @@ fn put_command_operation() -> Operation {
         .response("200", Response::new("Identical Command request replayed"))
         .response("201", Response::new("Command created"))
         .response("400", Response::new("Command ID is not canonical UUIDv7"))
+        .response("401", Response::new("Session authentication failed"))
+        .response("403", Response::new("Administrator role required"))
+        .response("404", Response::new("Device does not exist"))
         .response("409", Response::new("Command request conflicts"))
+        .response("500", Response::new("Internal failure"))
         .build()
 }
 
@@ -423,7 +427,7 @@ mod tests {
                 ("put".to_owned(), "/api/v2/commands/{command_id}".to_owned()),
                 (
                     "putCommand".to_owned(),
-                    string_set(["200", "201", "400", "409"]),
+                    string_set(["200", "201", "400", "401", "403", "404", "409", "500"]),
                 ),
             ),
         ]);
@@ -543,7 +547,7 @@ mod tests {
         let operation = operation_at(&value, "/api/v2/commands/{command_id}", "put")?;
         if operation.get("description").and_then(Value::as_str)
             != Some(
-                "command_id must be a canonical lowercase hyphenated UUIDv7. The same normalized request replays the existing Command. A differing normalized request conflicts.",
+                "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.",
             )
         {
             return Err(TestFailure::CommandDescriptionChanged);
