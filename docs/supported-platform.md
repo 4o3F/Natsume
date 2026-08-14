@@ -220,6 +220,7 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 | 时间同步 | Client 部署时与 Server 做 NTP 校准 | 持续 skew 容差仍 `ENV-UNFROZEN`；时钟消费者（`deadline_at`、证书有效期、UUIDv7 序）在容差冻结前不得假设长期同步 |
 | Operator 浏览器 | 所有者豁免其余 freeze 字段 | 相关事实随 Web Panel 阶段验证，不作为 G0 输入 |
 | 硬件 fixture | 当前不可采集，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
+| V1 残留 | 仅测试 VM 曾装过 V1；fleet 机器无 V1 部署残留 | V1 与 V2 共用 `/etc/natsume/config.toml` 路径，残留会改变 dpkg 安装分支（conffile 提示、`.dpkg-old`）；lifecycle harness 已加干净 VM 守卫，检测到残留即拒绝 |
 
 ## 5. 支持声明
 

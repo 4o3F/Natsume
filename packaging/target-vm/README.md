@@ -32,3 +32,5 @@ sudo env \
 ```
 
 Omit the previous Deb only when testing a first-version package. The harness verifies canonical endpoint persistence across reinstall/upgrade, explicit reconfiguration, reboot persistence, remove retention and purge cleanup. A shared runner, WSL instance or non-systemd container is not G0 evidence.
+
+The pre-reboot phase refuses to run when `natsume-client` is already installed or `/etc/natsume` already exists: stale residue (for example from an old V1 installation) changes dpkg's install branches and contaminates the evidence. Use a freshly provisioned VM or restore a clean snapshot.

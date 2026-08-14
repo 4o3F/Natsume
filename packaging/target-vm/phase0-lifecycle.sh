@@ -54,7 +54,14 @@ pre-reboot)
   reconfigure_ip=${NATSUME_TEST_RECONFIGURE_IP:-2001:db8::10}
   reconfigure_port=${NATSUME_TEST_RECONFIGURE_PORT:-9443}
 
-  dpkg --purge natsume-client >/dev/null 2>&1 || true
+  # Stale state changes dpkg's install branches (conffile prompts, .dpkg-old
+  # leftovers), so a dirty VM is refused instead of silently purged.
+  if dpkg -s natsume-client >/dev/null 2>&1; then
+    fail 'natsume-client is already installed; use a clean disposable VM'
+  fi
+  [[ ! -e /etc/natsume ]] ||
+    fail '/etc/natsume already exists (stale residue); use a clean disposable VM'
+
   printf 'natsume-client natsume-client/server-ip string %s\n' "${server_ip}" |
     debconf-set-selections
   printf 'natsume-client natsume-client/server-port string %s\n' "${server_port}" |
