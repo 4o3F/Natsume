@@ -1,7 +1,7 @@
 # Natsume 文档地图
 
 > 文档状态：`ACTIVE`
-> 基线日期：2026-08-03（ADR-0030～0036 主题决策集合）
+> 基线日期：2026-08-05（ADR-0030～0037 主题决策集合）
 > 当前工程阶段：Phase 0（收尾）
 > 当前 Gate：G0 `OPEN`
 
@@ -14,8 +14,6 @@
 **交付与计划**：[`roadmap.md`](roadmap.md) → [`gates/phase-0-status.md`](gates/phase-0-status.md) → [`supported-platform.md`](supported-platform.md)
 
 **决策追溯**：[`adr/README.md`](adr/README.md) → 对应 ADR
-
-**代码评审启发式**：[`../CONTRIBUTING.md`](../CONTRIBUTING.md)
 
 ## 2. 权威性矩阵
 
@@ -41,8 +39,6 @@
 - **规范文档**：`architecture.md`、`domain-model.md`、`contracts.md`、`state-and-execution.md`、`security-recovery.md`、`repository-layout.md`、`dependency-policy.md`。使用"必须/不得/应/可以"强度，且规则应当可测试。
 - **状态文档**：`roadmap.md`、`supported-platform.md`、`gates/`。可频繁变化，但不得重新定义架构规则。
 - **决策文档**：`adr/` 解释"为什么选择"。ADR 与规范冲突时，当前行为以规范与已接受 ADR 的最新一致集合为准。
-
-不可测试的评审启发式属于 [`../CONTRIBUTING.md`](../CONTRIBUTING.md)，不属于规范文档。
 
 ## 4. 稳定标识
 

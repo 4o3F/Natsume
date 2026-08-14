@@ -25,7 +25,12 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 - restart、recovery 或 backup restore 不得自动打开窗口。恢复时已 `closed` 的 singleton 零写入、零 recovery audit；只有观察到 `open` 时，Server 才在一个事务内写入 `system:recovery` 的 redacted audit 并 CAS 关闭、`revision + 1`。成功后所有后续恢复都看到 `closed`，因此只关闭并审计一次。
 - 只有窗口内 Enrollment 可以签发 Device Token 或 Gateway certificate；关闭时请求返回稳定错误且 Server state 零变更。
 - issuance transaction 关联 `devices`、`enrollment_requests`、`device_tokens`、`gateway_certificates` 与 `audit_events`：Enrollment request 记录硬件 ID/质量、CSR DER、SPKI hash、client/protocol/source-IP、`state`（`pending`/`approved`/`rejected`/`issued`/`expired`/`conflict`）、可选 `resolution`（`create_device`/`replace_device_credentials`）、resolved Device 和 issuance audit；`issued` request 必须同时具有 resolution、resolved Device 和 issuance audit，且 issuance audit 只可用于 `issued`；同一 hardware-ID/SPKI 最多一个 live `pending`/`approved` request。Device Token row 以 `device_pk` 为键并关联唯一 Enrollment request；certificate row 也关联唯一 Enrollment request。失败不得留下部分 issuance。
-- 同一 `machine_hardware_id` 在窗口内重复 Enrollment 使用 `enrollment_requests.resolution = 'replace_device_credentials'` 的受审计替换路径：`device_tokens.token_hash` 被替换以使旧 bearer credential 失效，并签发新的 Gateway certificate metadata；仍存活的旧连接记录为 anomaly。
+- **审批是非对称的。** `resolution = 'create_device'`（未知 hardware ID 的首次 Enrollment）在窗口内以同一事务同步签发，不需要 operator 审批；`resolution = 'replace_device_credentials'`（该 hardware ID 已存在 Device）必须经 operator 显式审批。不对称的理由：全新的 rogue device 几乎得不到任何东西——它没有 Binding、不接收任何 secret、被审计且可随时 revoke；而 F8 的 1–3 名操作员无法为 500 台设备逐台点击审批。
+- **替换需要审批是 load-bearing 的威胁控制。** `machine_hardware_id` 不是 secret（`INV-IDENTITY-01`）。若替换也同步签发，则在任意开窗期内，LAN 上的攻击者（[ADR-0030](0030-foundation-deployment-and-delivery-baseline.md) T4）伪造某台已绑定 Device 的 hardware ID 即可使受害者的 Token 失效、继承其 Binding 仍然存活的 `device_pk`，并在下一次 `SYNC_SECRET` 时收到该 Seat 的 DOMjudge 密码。
+- **same-SPKI 例外自动批准。** 替换请求的 `gateway_spki_sha256` 与该 Device 当前 `issued` request 的 SPKI 相同时自动批准：持有同一 private key 证明这是同一台机器在 finalization 失败后重试，攻击者无法复现该 SPKI。SPKI 不同则必须人工审批。
+- 同一 `machine_hardware_id` 在窗口内经批准的重复 Enrollment 仍使用 `enrollment_requests.resolution = 'replace_device_credentials'` 的受审计替换路径：`device_tokens.token_hash` 被替换以使旧 bearer credential 失效，并签发新的 Gateway certificate metadata；仍存活的旧连接记录为 anomaly。
+- **approve-then-claim 的 wire 语义。** Token 在数据库只以 hash 形式存在，因此审批动作本身不签发任何东西。需审批的 Enrollment 请求创建或返回 live pending request，并以 `202` 和 typed 非错误 body（request identity + state）应答；Device 通过幂等重投**同一** request 轮询（相同 hardware ID + SPKI 返回同一条 live pending request，不新增 row）；operator 审批把 state 置为 `approved`（受审计，零签发）；观察到 `approved` 的下一次 Device 重投在该请求内**同步**执行签发事务，并在同一响应中返回 Token 与 leaf——明文只存在于那一次响应。claim 时必须重新检查窗口仍为 `open`（`INV-CERT-01` 不变：窗口外不存在签发路径）。窗口关闭时未被 claim 的 `pending`/`approved` request 转为 `expired`。claim 响应丢失时 Device 重试，落入 same-SPKI 自动批准的替换路径重新签发，因此自愈。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定错误拒绝，维持每 hardware-ID/SPKI 最多一个 live request 的约束；operator 必须先 reject 现有请求。
+- operator 拒绝把 state 置为 `rejected`（受审计）；轮询中的 Device 收到稳定码 `ENROLLMENT_REQUEST_REJECTED`，必须停止并等待现场人员介入，零签发。
 
 ### Gateway certificate authority
 
@@ -65,6 +70,7 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 - 当前窗口状态保持窄；审计提供 open/close/recovery 的证据，而不把旧开窗状态重新当作权威事实。
 - close-once recovery 在重复启动和 restore 中只执行一次，不伪造额外 operator action。
 - 单 TCP port 与 WSS 降低 firewall 和 protocol surface；匿名输入在 decode 前拒绝。
+- 非对称审批把人工成本放在唯一真正危险的路径上：500 台首次 Enrollment 保持零点击，而凭据替换——唯一能继承既有 Binding 并因此收到 Seat 密码的路径——始终需要人或同一 private key 的证明。
 
 ### Negative / trade-offs
 
@@ -72,10 +78,11 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 - Device Token 是 bearer credential，安全依赖正确 TLS 验证和 root-owned local storage。
 - 窗口关闭后不进行常规 Token/leaf rotation，validity 必须赛前正确选择。
 - 当前边界不适用于 cross-internet、multi-site 或第三方 Device identity verification。
+- 更换主板或磁盘导致 SPKI 与 hardware ID 同时变化的真实机器，其重新 Enrollment 需要现场 operator 审批，不再是无人值守动作；Device 侧因此必须实现幂等轮询而非一次性请求。
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖正确/错误 Server trust 与 IP-SAN、closed-window 零变更、无窗口外 issuance route、正常 open/close 的 audit+CAS 原子性、open 状态 restart/restore 的 close-once recovery、closed 状态 restart 的零写入、Server transaction 与 Client finalization 原子性、CSR authority rejection、re-enrollment replacement、certificate preflight、pre-decode `401`、protocol limit 和断线收敛。
+证据必须覆盖正确/错误 Server trust 与 IP-SAN、closed-window 零变更、无窗口外 issuance route、正常 open/close 的 audit+CAS 原子性、open 状态 restart/restore 的 close-once recovery、closed 状态 restart 的零写入、Server transaction 与 Client finalization 原子性、CSR authority rejection、create 路径的同步签发、replacement 的 approve-then-claim（`202` 幂等轮询、approval 零签发、claim 时窗口复检、窗口关闭时未 claim 请求转 `expired`）、same-SPKI 自动批准重试、同 hardware ID 上不同 SPKI 的稳定拒绝、`rejected` 的稳定码、certificate preflight、pre-decode `401`、protocol limit 和断线收敛。
 
 出现 per-Device hostname、多 venue/Internet、失去物理 provisioning window、第三方 Device identity verifier，或 Server trust/network assumption 变化时，先修订 ADR-0030，再用新 ADR 替代本边界。
 

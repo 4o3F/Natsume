@@ -31,18 +31,19 @@ Venue 输入只有 Seat、account 和 password。支持 spreadsheet、公式、�
 - Server 独占 redacted diff 分类；Client 只展示 typed 结果，不自行重算。
 - 普通 surface 只获得 opaque `preview_token`、`candidate_id`、baseline `configuration_revision`、baseline `binding_revision`、redacted diff 与过期信息，不获得 password；数据库只保存该 token 的 `preview_token_hash`。
 - Import Commit 是高影响变更的第二次显式确认；commit 时重新检查授权。
-- Commit 对 `revision_counters` singleton 的 `configuration_revision` 与 `binding_revision` 做双 CAS。前者保护 Seat 集合、Seat→Account mapping 与密码内容；后者保护全局 Seat↔Device 当前 Binding 集合。stale、expired、discarded、unauthorized 或事务失败时，不得修改 confirmed configuration、binding、Target 或相关 revision；操作员必须重新 preview。
+- Commit 对 `revision_counters` singleton 的 `configuration_revision` 与 `binding_revision` 做双 CAS。前者保护 Seat 集合与 Seat→Account mapping；后者保护全局 Seat↔Device 当前 Binding 集合。密码写入不由该 CAS 保护，而由全局单一 pending candidate 串行化。stale、expired、discarded、unauthorized 或事务失败时，不得修改 confirmed configuration、binding、Target 或相关 revision；操作员必须重新 preview。
 - candidate 的存在性、双 CAS 与 redacted audit 是恢复和冲突边界。
 
 ### 当前状态、替换与修订
 
 - `seats` 只保存当前 Seat 身份。Seat collection 不冻结；Seat code rename 表示 `REMOVED + ADDED`，不建立 rename mapping。
-- `accounts` 只保存 `account_id`、`domjudge_username`、`credential_vault_record_id` 与 `credential_revision`。关联的 `server_vault_records` current row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`；密码 material change 替换当前密文、推进该 Account 的 `credential_revision` 并写 redacted audit，不保留旧密码版本。
+- `accounts` 只保存 `account_id`、`domjudge_username`、`credential_vault_record_id` 与 `credential_revision`。关联的 `server_vault_records` current row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`；已提交的 Import Commit 无条件以新 nonce 替换当前密文、推进该 Account 的 `credential_revision` 并写 redacted audit，不做明文比较，也不保留旧密码版本。
 - `account_mappings` 只表达当前 Seat→Account mapping：每个 Seat 最多一条、每个 Account 最多属于一个 Seat；没有 row 表示该 Seat 当前无 Account。它属于 confirmed contest configuration；mapping 变化受 `revision_counters.configuration_revision` 保护，而不是 Binding。
 - `device_bindings` 同样只表达当前 Seat↔Device 关系，row 包含 `seat_id`、`device_pk` 与 `binding_revision`。每次 Binding 集合实际变化（bind、unbind、rebind，或 import 删除已绑定 Seat）以 CAS 推进一次全局 `BindingRevision`（`revision_counters.binding_revision`）；受影响的新增/变更 Binding 记录该值，未变化 Binding 不重写。仅 Account mapping 或密码变化而 Binding 保持时不得推进 `BindingRevision`。
-- material Import Commit 在一个 Server transaction 中替换当前配置、执行必要的 unbind-and-replace，并且每个 revision 在一个事务内最多递增一次。Seat 集合、Seat→Account mapping 或密码内容实际变化时才推进 `revision_counters.configuration_revision`；no-op、discard、expiry 与失败都不推进任一 revision。
+- material Import Commit 在一个 Server transaction 中替换当前配置、执行必要的 unbind-and-replace，并且每个 revision 在一个事务内最多递增一次。只有 Seat 集合或 Seat→Account mapping 实际变化才推进 `revision_counters.configuration_revision`，密码内容不参与；discard、expiry 与失败不推进任一 revision，而**任何已提交的 import 都推进新确认配置中每个 Account 的 `credential_revision`**。
+- 把密码内容移出 CAS 保护范围不损失并发保护：密码的唯一写入方就是 Import Commit 本身，而全局单一 pending candidate 已经把 preview→commit 串行化——存在 pending candidate 时第二次 import 无法提交；single-lifetime reset 会删除 candidate 并清零计数器，使 CAS 无论如何都会失败。
 - 允许有效 account swap，拒绝 duplicate account、空候选和只有 header 的候选。清空 confirmed configuration 不是 import；必须使用独立的 destructive single-lifetime reset。
-- no-op 只保留 lineage 与 redacted audit，不增加 configuration、credential 或 binding revision，也不制造 Target churn。
+- 「no-op」自此只在非秘密维度上定义：不推进 configuration 或 binding revision、不制造 Target churn，只保留 lineage 与 redacted audit。它**不**表示 credential 未变——已提交的 import 始终推进 credential revision。
 
 ### Effect、审计与秘密边界
 
@@ -78,6 +79,8 @@ Venue 输入只有 Seat、account 和 password。支持 spreadsheet、公式、�
 - 删除已绑定 Seat 会产生需要操作员理解的影响和后续 Drift。
 - 同一时间只能审查一个 candidate；冲突、过期或未知结果后必须重新 preview。
 - 没有产品级历史 snapshot rollback，也不提供取证级 SQLite 物理擦除承诺。
+- preview 不再能揭示密码内容是否真的变化，操作员无法在 commit 前发现上游误重新生成了整列密码。接受该代价的前提是运行模型本就要求每次 import 之后对整个 fleet 重新同步秘密。
+- 每次已提交的 import 都产生 fleet 范围的 credential-stale Drift；这同时也是操作员执行批量 `SYNC_SECRET` 的提示信号。
 
 ## Acceptance basis and revisit trigger
 

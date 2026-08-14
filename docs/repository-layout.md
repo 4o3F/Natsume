@@ -60,7 +60,7 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 
 每个有业务逻辑的进程应分离 transport / application / domain / port / adapter 层（见 [架构 §6](architecture.md)）。各进程的内部模块仅给出目标边界；具体 `src/` 结构在对应 Phase 实现时确定。
 
-- **Server（`natsume-server`，composition root）**：内部模块按职责隔离（identity/enrollment（含 provisioning 窗口与 Token/Gateway 签发）、device control（WSS）、contest domain、configuration target、command dispatch、operator API、audit、pki/server-vault）。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。**
+- **Server（`natsume-server`，composition root）**：内部模块按职责隔离（identity/enrollment（含 provisioning 窗口与 Token/Gateway 签发）、device control（WSS）、contest domain、configuration target、command dispatch、operator API、audit、pki/server-vault）。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。** 已知偏差（当前实现）：Device revoke/disable 落在 contest 模块，`server/src/db/contest.rs` 的 `apply_lifecycle_mutations` 在同一事务内写 `devices.state`、删除 `device_tokens` row 并把 `gateway_certificates.status` 置为 `revoked`；operation 跨这三张表是 [契约](contracts.md) §3.6.1 冻结的语义，偏差只在模块归属——[架构 §7](architecture.md) 把 Device lifecycle 与 Device Token（哈希）归 identity-enrollment，`gateway_certificates` 台账由 Enrollment 签发事务写入（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。Phase 3 引入真实 identity-enrollment/pki 模块时必须迁移；在此之前不预建空模块（[路线图 §6](roadmap.md)）。另一处已知偏差（当前实现）：本节按领域列出 Server 模块，实现按层组织（`server/src/application/`、`server/src/db/`、`server/src/http/`），领域是第二维；本节允许该差异（"具体 `src/` 结构在对应 Phase 实现时确定"），代价是一个领域概念跨三个目录、两半无法共享私有 item，这就是把 persisted-fact 类型推向层边界 crate 级 `pub(crate)` 可见性的压力来源。当前不变量：application 与 db 严格单向——db 依赖 application，application 只调用签名中仅出现 application 类型的 db 函数；**db 的 persisted-fact 类型与 store error enum 对 `db` 私有**，所以向上引用是编译错误而不是评审意见。上述 Phase 3 迁移应与 layer-first/domain-first 的取舍一并决定（那批模块本来就要新建）：domain-first 布局能让每个纵向切片把 persisted-fact 类型完全私有，层边界上不再需要任何 `pub(crate)`。
 - **Device Daemon（`natsume-device-daemon`）**：分离 identity startup、enrollment、control（WSS）、command runtime、target apply、caddy render/activation、session、home、observed、credentials、journal。**WSS handler 不直接操作凭据文件、journal、Caddy 或 D-Bus**；module 间传递 value object，不传递 transport request 或全局 mutable context；`identity_startup` 在其他 identity-bound adapter 初始化前运行。
 - **Privileged Helper**：每个 capability 独立可审计（hardware sources、home backend、login session、filesystem policy）。**禁止 `execute(request)` 或 `run_action(name, args)` 一类通用入口**；path/UID 由固定 policy 重新派生，Device Daemon 传入值只作受限 ID。
 - **Session Agent（`natsume-session-agent`）**：分离 platform（logind/session/singleton/desktop）、local_api、presentation、ui。**不得引入 Server client、vault、PKI、Caddy 或 privileged D-Bus client**；由系统级 XDG Autostart 直接启动。
@@ -104,7 +104,3 @@ Server package 只包含 Server artifact 和其明确依赖。Client package 只
 - postinstall 不生成 CA/private key，不下载 runtime；
 - nFPM 从仓库固定路径映射已构建产物；
 - Caddy binary 和 checksum 由 supply-chain policy 管理。
-
-## 9. 新模块审查
-
-新模块的评审自检清单见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。回答不清楚时，不新增“manager/service/common”层。

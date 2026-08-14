@@ -20,7 +20,7 @@
 
 ## 2. 标识和值对象
 
-领域使用一组稳定值对象区分业务身份与硬件标识。共享修订只由 `revision_counters` singleton 持有：`configuration_revision` 表示 confirmed Seat 集合、Seat→Account mapping 或密码内容的修订，也是 import baseline CAS token；`binding_revision`（`BindingRevision`）表示**全局** Seat↔Device 当前 Binding 集合的 CAS 修订，不表示 Seat→Account mapping。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`SessionEpoch` / `HomeEpoch` 是本地运行时代际。
+领域使用一组稳定值对象区分业务身份与硬件标识。共享修订只由 `revision_counters` singleton 持有：`configuration_revision` 表示 confirmed Seat 集合与 Seat→Account mapping 的修订，也是 import baseline CAS token，密码内容不参与该修订；`binding_revision`（`BindingRevision`）表示**全局** Seat↔Device 当前 Binding 集合的 CAS 修订，不表示 Seat→Account mapping。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`SessionEpoch` / `HomeEpoch` 是本地运行时代际。
 
 每次 Binding 集合实际变化时，`BindingRevision` 在该事务内最多递增一次。受影响的新增/变更 `device_bindings` row 记录该全局值；未变化 Binding 不重写，因此不因无关绑定变更而成为 secret-sync stale。Account mapping 或密码变化而 Binding 保持时，不得推进它。
 
@@ -40,7 +40,8 @@
 - `password` 只进入加密 staging 和 secret commit path，明文不进任何普通 surface；
 - Commit、discard 与 expiry 在其事务中删除 candidate 和 `payload_vault_record_id` 所引用的 `server_vault_records` row，只留下 redacted audit lineage；这不承诺 SQLite/WAL/backup 的取证级物理擦除；
 - Commit 校验为双 CAS：baseline `configuration_revision` + `binding_revision`；任一失配 → 拒绝并重新 preview，**不改变 confirmed configuration、binding、Target truth 或相关 revision**；
-- `configuration_revision` 只在 Seat 集合、Seat→Account mapping 或密码内容实际改变时推进；`BindingRevision` 只在 Binding 集合实际改变时推进，包括 import 删除已绑定 Seat；
+- `configuration_revision` 只在 Seat 集合或 Seat→Account mapping 实际改变时推进——二者都是非秘密事实，无需接触秘密即可比较；`BindingRevision` 只在 Binding 集合实际改变时推进，包括 import 删除已绑定 Seat；
+- **已提交的 Import Commit 无条件替换新确认配置中每个 Account 的 vault ciphertext（新 nonce）并推进其 `credential_revision`**；不做任何明文比较，preview 也不分类或展示密码内容是否变化。因此每次成功 import 之后全部已绑定 Device 的已安装 credential revision 都是陈旧的，操作员必须显式发起批量 `SYNC_SECRET`（N 个独立 Command）；import 本身仍然零 Command、零 Device I/O（`INV-SECRET-02` 不变）；
 - 任何 `INVALID`（结构性错误、candidate 内重复 account、空或仅 header candidate）、expiry 或 discard 同样不改变 confirmed configuration、binding、Target 或 revision；
 - Import Commit 不创建 Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O；
 - 清空 confirmed configuration 只能通过独立的 single-lifetime reset，不得由 import 隐式完成。
@@ -50,6 +51,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 ## 4. Device 与 provisioning
 
 - `devices.machine_hardware_id` 是 unique，因此一个存储的 `machine_hardware_id` 最多对应一个 `devices` row；该 row 只有 `device_pk`、硬件 ID、`hardware_identity_quality`（`strong`/`medium`/`weak`）与 `state`（`enrolled`/`revoked`/`disabled`）。
+- 凭据签发或替换要求其绑定的 Device 当前为 `enrolled`；`revoked` 或 `disabled` Device 必须拒绝签发，恢复使用须经过显式、受审计的 lifecycle 动作，不得由 Enrollment 隐式复活。
 - provisioning window 由 `provisioning_window` current singleton 表示，只有 `state`、`revision` 和 `last_audit_event_id`；审计而非 revision ledger 保存历史。restart/restore 只会对观察到的 `open` 状态执行一次 audited CAS close；已 `closed` 时零写入。
 - provisioning 窗口内同一 `machine_hardware_id` 的 Enrollment 由 `enrollment_requests` 的 `resolution` 与 `resolved_device_pk` 表达受审计的 create/credential-replacement 结果；关联的 `device_tokens` 和 `gateway_certificates` row 提供当前 token/certificate 事实。若旧连接仍存活，记录异常审计事件。
 - 窗口外的硬件身份冲突：**不自动合并、不选择“最近上线者”、不删除凭据**，停止敏感进展并返回稳定错误，要求人工执行恢复 runbook。
@@ -66,7 +68,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 ## 6. Credential
 
-密码明文不作为普通 `Account` 字段暴露。`accounts` 只通过 unique `credential_vault_record_id` 关联一个 `server_vault_records` row，并保存 `credential_revision`；vault row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`，没有 format/key/AAD version 或 timestamp。密码 material change 替换当前密文并推进该 Account revision，不建立 history credential/vault row。
+密码明文不作为普通 `Account` 字段暴露。`accounts` 只通过 unique `credential_vault_record_id` 关联一个 `server_vault_records` row，并保存 `credential_revision`；vault row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`，没有 format/key/AAD version 或 timestamp。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row。
 
 读取密码的 application use case 必须：
 
@@ -103,19 +105,32 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 
 敏感变更必须有 redacted audit；**不得记录密码、private key、Device Token 值、任意上传原文或未脱敏错误链。** Web Panel 以轮询读取权威状态（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）。
 
-## 12. 本地运行时领域
+## 12. Operator 身份与会话
+
+**Operator** 是控制面人类操作者的当前身份事实，不是配置项（[ADR-0037](adr/0037-operator-identity-and-server-runtime-secrets.md)）。
+
+- 一个 Operator 持有稳定内部主键、唯一登录标识和固定角色（`admin` / `viewer`）。角色是封闭枚举，**不建立 role/permission 关联表，也不表示权限位集合**。
+- **密码是秘密值，不是普通实体属性**：只保存具备工作因子的密码哈希，明文不进入领域结构、日志、审计或响应。
+- **Session** 是 Operator 的当前会话事实，只保存会话凭证哈希、所属 Operator 与绝对过期时间；不保存来源 IP、User-Agent、最近活动时间或会话历史，也不做滑动续期。
+- 会话终止（登出、过期、撤销）通过删除当前会话行表达，不保留 terminal 会话状态；重复终止是 repeat-safe 的零写入。
+- Operator 是 `audit_events.actor` 的来源之一；`system:recovery` 等非人类 actor 不对应 Operator 行。
+- Operator 身份**不参与 Device 认证**：不能取得 Device Token、Gateway certificate 或 WSS 控制面身份（`INV-CERT-01`）。
+
+Device lifecycle 的 operator 动作（转 `revoked` / `disabled`，以及移除当前 `device_tokens` row 与关联 `gateway_certificates` 台账状态）是 repeat-safe 的当前事实 mutation：目标状态已达成时零业务写入，只记录 `result = 'noop'` 的 audit。它们**不创建 Command、不产生 Device I/O、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
+
+## 13. 本地运行时领域
 
 - **Machine identity startup**：identity 检查先于一切 identity-bound 产物使用。决策是封闭枚举（如 `FIRST_BOOT_ALLOWED`、`IDENTITY_MATCH`、`IDENTITY_UNAVAILABLE_FAIL_CLOSED`、`IDENTITY_MISMATCH_FAIL_CLOSED`、`CREDENTIALS_UNREADABLE_FAIL_CLOSED`、`RECOVERY_REQUIRED`）。**不能输出“猜测最可能是同一台机器并继续”。**
 - **Session**：所有 lock/unlock/terminate/UI action 都必须校验当前 `SessionEpoch`；陈旧 Agent 或陈旧 UI action 被拒绝。
 - **Home**：开始时创建新 `HomeEpoch`；prepare 完成前不启动受管 session；cleanup 只作用于当前 epoch；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend**。重置是操作员在场的受控事件，实现为状态文件 + 可安全重复运行的步骤。
 
-## 13. 删除、重置和替换
+## 14. 删除、重置和替换
 
 - **Device 删除**：Server 显式授权、停止新 Command、更新 `devices.state`、移除或替换当前 `device_tokens` row、更新关联 `gateway_certificates.status`、解除 binding、记录审计；不复用旧 `device_pk`。
 - **Device 替换**：原 lifecycle 结束、重开 provisioning 窗口、新硬件独立 Enrollment、人工重建 binding、显式 `SYNC_STATE`/`SYNC_SECRET`；不复制凭据文件。
 - **单生命周期竞赛重置**：通过破坏性 runbook 清理业务状态和秘密；重置后 `revision_counters.configuration_revision = 0`，下一次 import 走普通 first-import lifecycle。
 - **candidate/credential 替换**：终止 pending candidate 删除其 encrypted payload；密码替换删除可寻址的旧 current ciphertext。两者的 redacted audit 保留，但不承诺存储介质的物理擦除。
 
-## 14. 领域测试最低要求
+## 15. 领域测试最低要求
 
 每个聚合至少覆盖：value object 边界、正向状态转移、陈旧 revision/epoch 拒绝、事务回滚、audit envelope 原子性、secret redaction 与 adapter 错误穷举映射。当前基线还必须覆盖 BindingRevision 的全局 Binding-set CAS、candidate 终态删除、provisioning close-once recovery、`frozen_payload_json` 验证以及 canonical UUIDv7 Command ID 的 replay/conflict；具体场景随对应 Phase 实现补全。

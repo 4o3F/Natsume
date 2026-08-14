@@ -66,7 +66,7 @@ password 明文、private key、Device Token 值**不得**进入：
 - Caddy 状态页；
 - ErrorCode detail 或 source chain。
 
-允许的秘密路径必须使用专用类型、最短生命周期和 redacted 结果。Import 普通边界只使用 opaque `preview_token` 与 redacted 分类/计数/identity/revision 证据。
+允许的秘密路径必须使用专用类型、最短生命周期和 redacted 结果。Import 普通边界只使用 opaque `preview_token` 与 redacted 的**非秘密**分类/计数/identity/revision 证据（密码内容本身不产生任何分类证据，见 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）。
 
 按 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)：password-derived digest/length/fingerprint 不再作为独立禁止类别维护（审计仅面向内部管理员，F9）；工程默认仍不输出这些值。F9 失效时该条必须重审。
 
@@ -219,7 +219,7 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 
 - 应用层 AEAD；
 - `server_vault_records` row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 和 `ciphertext`；没有 format/key/AAD version、timestamp 或 rotation metadata；
-- 每个 `(record_type, subject_id)` 只有一个当前 ciphertext。密码 material change 替换该 record 并推进对应 `credential_revision`，不建立 superseded、active/inactive 或历史 credential 行；
+- 每个 `(record_type, subject_id)` 只有一个当前 ciphertext。已提交的 Import Commit 无条件替换该 record 并推进对应 `credential_revision`，不建立 superseded、active/inactive 或历史 credential 行；
 - DB 备份不应单独恢复出明文；
 - key 不通过 argv、env、日志或 Web；
 - secret read 只通过专用 use case；
@@ -321,17 +321,18 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 
 - CSV upload / preview / Import Commit / discard / expiry，以及 candidate/payload 的终态删除；
 - import stale reject、expiry reject、binding-stale reject；
-- no-op Import Commit（仅 lineage；无 revision bump、无 Target churn）；
+- no-op Import Commit（仅 lineage；无 configuration/binding revision bump、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
 - material Import Commit 的 atomic unbind impact（受影响 Seat/Device 计数与允许的 identity）；
 - account/credential revision 变化；
 - provisioning 窗口正常开启/关闭与 `system:recovery` close-once；
-- Device Enrollment（含替换语义 re-enrollment 与“旧连接存活时被替换”异常事件）、retire、delete；
+- Device Enrollment（含凭据替换请求的 operator 批准与拒绝、替换语义 re-enrollment 与“旧连接存活时被替换”异常事件）、retire、delete；
 - Device Token 吊销；
 - binding/unbind；
-- Command create/replay/conflict、`SYNC_STATE`、`SYNC_SECRET` 与终态；
+- Command create（首次持久化）与同 ID/不同 fingerprint 的 conflict 拒绝、`SYNC_STATE`、`SYNC_SECRET` 与终态；同 ID/同 fingerprint 的 replay **不写**新 audit——它是幂等的读等价结果，为它写审计既违反零副作用 replay 规则，又让重试的 client 得以撑大审计表；
 - certificate issuance 与台账状态变化；
 - Session/Home action；
-- 角色变化；
+- operator 登录失败限流触发（每个 limiter window 一条，actor 为非人类 system actor；不记录尝试使用的 login name）；
+- operator password 的离线重置（`natsume-server reset-operator-password`，含随之终止的该 operator 全部 session）；
 - backup/restore/reset；
 - 安全恢复和人工 override。
 
@@ -346,6 +347,7 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 - stable ErrorCode；
 - revision/epoch；
 - certificate serial/fingerprint 的受限表示；
+- 静态内部失败判别符（编译期常量字符串，不含用户输入、路径或 source chain）；
 - 状态和耗时。
 
 默认禁止：
@@ -363,7 +365,5 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 - operator cookie/token。
 
 ## 11. 安全变更评审
-
-安全变更的自检清单见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。
 
 **没有可定位证据的安全声明不得用于 Gate PASS。**

@@ -124,6 +124,7 @@ flowchart LR
 - 在每个 direct Command create 前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并调用 `PUT /api/v2/commands/{command_id}`；
 - 人工触发 `SYNC_STATE`、`SYNC_SECRET`、session/home 操作；
 - provisioning 窗口开关入口；
+- enrollment 凭据替换请求的待审批视图与批准/拒绝动作（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）；
 - 可访问性和错误呈现。
 
 不得：
@@ -265,8 +266,9 @@ database / credential / protocol / OS adapters
 
 规则：
 
-1. domain 不依赖 Axum、SQLx、zbus、Slint 或 Caddy；
+1. domain 不依赖 Axum、具体持久化 adapter、zbus、Slint 或 Caddy；
 2. application 不暴露数据库 row、Protobuf message 或 D-Bus object；
+   - application 的只读 value object 可以携带 schema 描述性 derive（`serde::Serialize`、`utoipa::ToSchema`）——它们描述形状，不引入对 framework 或持久化 adapter 的依赖。此放宽仅在传输形状与应用形状完全一致时适用；一旦二者分叉，必须重新引入独立的 adapter 类型，由 adapter 承担转换。
 3. adapter 负责结构转换和公开错误映射；
 4. transport handler 只完成认证、解码、调用 use case 和编码；
 5. 跨模块调用使用明确 port 或 command，不直接跨表写入；
@@ -309,10 +311,10 @@ upload（全局单 encrypted pending candidate）
   → atomic unbind-and-replace（仅当存在待解绑 bound Seat）
   → redacted AuditEvent
   → candidate + payload terminal deletion
-  → Target 可重算（仅 material 变化时）
+  → Target 可重算（仅非秘密 material 变化时）
 ```
 
-每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 的变化推进 `revision_counters.configuration_revision`，Binding-set 变化才推进全局 `BindingRevision`。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不提升 revision、不触发 Target churn。commit、discard 和 expiry 终止 candidate 时删除 `pending_import_candidate` 及其引用 payload vault row，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O。任一 CAS 失配须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
+每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 的变化推进 `revision_counters.configuration_revision`，Binding-set 变化才推进全局 `BindingRevision`。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不提升 configuration/binding revision、不触发 Target churn。material 与 no-op 都只在**非秘密**维度上定义：任何已提交的 import 都无条件以新 nonce 替换每个 Account 的 vault ciphertext 并推进其 `credential_revision`（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)），随后由操作员显式发起批量 `SYNC_SECRET`。commit、discard 和 expiry 终止 candidate 时删除 `pending_import_candidate` 及其引用 payload vault row，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O。任一 CAS 失配须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
 
 ### 8.2 Device Enrollment（provisioning 窗口内）
 
@@ -321,13 +323,20 @@ identity-before-credentials（ADR-0032 配方）
   → server endpoint/trust validation（预置 CA + IP-SAN）
   → 本地生成 Gateway keypair + CSR
   → server-auth HTTPS enrollment 请求
-  → Server：窗口门禁 → 校验 → 同一事务签发 { Device Token + Gateway leaf } + 审计
+  → Server：窗口门禁 → 校验 → resolution 判定
+      ├─ create_device（未知 hardware ID）
+      │    → 同一事务签发 { Device Token + Gateway leaf } + 审计
+      └─ replace_device_credentials（hardware ID 已有 Device）
+           ├─ 同一 SPKI → 自动批准，同上同步签发
+           └─ 不同 SPKI → 202 pending → operator 审批（零签发）
+                → Device 幂等重投观察到 approved
+                → 该次请求内同步签发 { Device Token + Gateway leaf } + 审计
   → Client 校验响应（SPKI/chain/SAN）
   → 本地原子持久化（token 0600、gateway 0640）
   → WSS 控制连接（Bearer token）
 ```
 
-窗口关闭后 Server 拒绝一切签发。窗口只有一个 current singleton；restart/restore 若发现 `open`，以同事务 audit+CAS close-once，若已 `closed` 则零写入。重复 Enrollment 为受审计的替换。
+窗口关闭后 Server 拒绝一切签发，未被 claim 的 `pending`/`approved` request 转为 `expired`。窗口只有一个 current singleton；restart/restore 若发现 `open`，以同事务 audit+CAS close-once，若已 `closed` 则零写入。首次 Enrollment 同步完成且不需要审批；凭据替换是受审计的 operator 审批路径，只有同 SPKI 的重试自动批准（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。operator 拒绝后 Device 收到稳定码并停止，等待现场人员介入。
 
 ### 8.3 非秘密状态同步
 
@@ -416,7 +425,3 @@ Device 可以在 Server 暂时不可达时继续使用已经验证的本地状�
 - 不得在离线时创建新 binding、获得新 token/证书或接受陈旧 revision；
 - 重连后通过 Observed 和 Drift 收敛；
 - 本地损坏不能通过"自动重建身份"绕过。
-
-## 11. 变更治理
-
-低耦合/高内聚自检、应拒绝的设计信号，以及需要或不需要 ADR 的变更分类，见 [`CONTRIBUTING.md`](../CONTRIBUTING.md)。

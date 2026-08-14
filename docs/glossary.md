@@ -23,11 +23,11 @@
 | **Binding revision** | 全局单调 `BindingRevision`，即 `revision_counters.binding_revision`，表示当前 Seat↔Device Binding 集合的 CAS 版本。实际 Binding-set 变化才推进；受影响 Binding 记录其建立/变更时的值，未变化 Binding 不重写。它不表示 Seat→Account mapping。 |
 | **Seat→Account mapping** | `account_mappings` 中当前 confirmed contest configuration 内 Seat 与 Account 的一对一关系；没有 mapping row 表示 Seat 当前无 Account。它受 `revision_counters.configuration_revision` 保护，不推进 `BindingRevision`。 |
 | **Confirmed contest configuration** | Server 当前权威的 Seat 集合、Seat→Account mapping 和 credential metadata。没有永久冻结的 Seat universe、generic instance state 或可查询的历史 mapping/credential 版本；只能通过完整 candidate 的显式 Import Commit 被替换。 |
-| **Contest configuration revision** | `revision_counters.configuration_revision`；`0` 表示空 baseline；Seat 集合、Seat→Account mapping 或密码内容实际变化时递增；用作 import baseline CAS token。 |
-| **Credential revision** | `accounts.credential_revision`：某 Account 当前秘密发生 material change 后的单调修订。每个 Account 只有其关联的 current vault ciphertext，不保留可寻址的旧密码版本。 |
+| **Contest configuration revision** | `revision_counters.configuration_revision`；`0` 表示空 baseline；Seat 集合或 Seat→Account mapping 实际变化时递增，密码内容不参与；用作 import baseline CAS token。 |
+| **Credential revision** | `accounts.credential_revision`：某 Account 当前秘密的单调修订。任何已提交的 Import Commit 都无条件替换该 Account 的当前 ciphertext 并推进此修订，不做明文比较。每个 Account 只有其关联的 current vault ciphertext，不保留可寻址的旧密码版本。 |
 | **Candidate import** | 单次严格 CSV upload 的完整、加密 pending candidate；全局同一时刻最多一个。`pending_import_candidate` singleton 只保存 candidate ID、expiry、两个 baseline revision、preview-token hash、payload-vault reference 和 redacted preview；终止时该 row 与引用的 vault payload 删除，只保留 redacted audit lineage。 |
 | **Import preview / import diff** | Server 对 candidate 与 confirmed baseline 的 redacted 结构化比较结果。Server 是 classification 的唯一权威。 |
-| **Import Commit** | Operator 对 candidate 的显式二次确认动作；以双 CAS（`configuration_revision` + `binding_revision`）校验后原子应用。前者保护配置内容，后者保护 Binding 集合；material commit 含必要的 unbind-and-replace 与相应 revision 提升；no-op 仅 lineage/redacted audit。不自动产生 Device Command。 |
+| **Import Commit** | Operator 对 candidate 的显式二次确认动作；以双 CAS（`configuration_revision` + `binding_revision`）校验后原子应用。前者保护 Seat 集合与 Seat→Account mapping，后者保护 Binding 集合；material commit 含必要的 unbind-and-replace 与相应 revision 提升；no-op 仅 lineage/redacted audit。material/no-op 只在非秘密维度上定义：任何已提交的 commit 都推进每个 Account 的 credential revision。不自动产生 Device Command。 |
 | **Preview token** | Server 签发的 opaque 证据；`pending_import_candidate` 只保存其 `preview_token_hash`，并保存 candidate identity、两个 baseline revision、redacted preview 与 expiry。 |
 | **Import Discard** | Operator 显式终止尚未提交的 candidate：在同一事务删除 `pending_import_candidate` 与其引用的 encrypted payload vault row，并保留 redacted audit；不改变 confirmed configuration、binding、revision 或 Target。 |
 | **Session epoch** | 当前受管桌面会话的身份代际；会话操作必须绑定该 epoch。 |

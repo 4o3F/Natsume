@@ -37,6 +37,10 @@
 - crypto/TLS/serialization/database 依赖需要 owner；
 - production dependency 必须进入 locked CI 和 advisory/license scan。
 
+通用编码、协议语法、文档语法和 CLI parsing 优先使用已维护且 feature closure 可审计的社区库；第一方代码只保留 Natsume 特有的 closed-world validation、稳定错误映射和 fail-closed 策略，不复制通用 parser/serializer。
+
+CLI argument parser 只允许分派封闭 runtime mode，不得演变为配置、路径或 secret transport；缺失、未知 mode 与额外参数必须在任何文件系统访问前失败。
+
 ## 3. 错误处理
 
 第一方 Rust domain/application 使用 SNAFU typed error。
@@ -50,11 +54,11 @@
 - library 不 `panic!`、`unwrap`、`expect` 处理可恢复输入；
 - secret/path 不进入 error context；
 - `anyhow`/`thiserror` 不作为第一方统一错误模型，除非 ADR 明确局部例外；
-- ErrorCode crate 不依赖 Axum、Prost、zbus 或 SQLx。
+- ErrorCode crate 不依赖 Axum、Prost、zbus 或具体持久化实现。
 
 ## 4. 加密与秘密
 
-允许的选择必须来自经过维护的 Rust crypto ecosystem，并使用公开审计的构造。当前基线包括 AEAD、HKDF、SHA-2、secrecy/zeroize 等类型。
+允许的选择必须来自经过维护的 Rust crypto ecosystem，并使用公开审计的构造。当前基线包括 AEAD、HKDF、SHA-2、secrecy/zeroize 等类型。operator password hashing 必须使用 memory-hard algorithm 与显式 work factor；`hkdf` 与 `sha2` 都不得作为 password KDF。`sha2` 仍可用于对高熵 session credential 做单向 hash。
 
 禁止：
 
@@ -63,6 +67,8 @@
 - 把 Machine ID 当作 key；
 - 在 serde/debug 中暴露 secret；
 - 通过 env、argv、unit text 或普通配置传 secret；
+- 在 `bootstrap` provisioning 或 `reset-operator-password` 恢复时，通过交互式 TTY 之外的任何 channel 输入 operator password；两条路径上 TTY 都是唯一允许的输入 channel，password 不得来自 argv、环境变量、systemd credential、配置或 packaging script；
+- 对 Argon2 password salt 调用 `SaltString::generate` 或引入第二套 RNG stack；salt 必须由 workspace 唯一的 OS CSPRNG（`getrandom`）生成并以 `SaltString::encode_b64` 编码；
 - 依赖外部 shell 工具完成核心加密；
 - 为方便测试禁用证书验证。
 
@@ -87,17 +93,18 @@
 
 ## 6. SQL 和持久化
 
-- SQLx/migration 由 owning module 使用；
+- Diesel 与 `diesel_migrations` 仅由数据库 adapter 使用，application、domain 和 transport 不直接依赖；
+- 业务 CRUD 优先使用 Diesel Query DSL；SQLite PRAGMA、schema introspection 和无法清晰表达的专有查询可使用参数绑定的 raw SQL；
+- 同步 Diesel 操作通过共享 r2d2 pool 执行；每个完整数据库 use case 只进入一次 blocking task，事务始终占用同一连接；
 - domain 不依赖 SQL row type；
-- query 使用参数绑定；
 - migration 从空库和升级路径测试；
-- 不引入第二个 ORM/数据库层；
+- 不引入第二个 ORM、SQLite driver 或数据库层；
 - SQLite WAL 是初始部署选择，不在 domain API 中暴露；
 - backup/restore 通过 runbook 和 integration test 验证。
 
 ## 7. Web 依赖
 
-Web 只通过 pnpm workspace 管理。
+Web 只通过 pnpm workspace 管理。Dependency lifecycle script 默认不得执行；`pnpm-workspace.yaml` 的 `allowBuilds` 必须对每个有 build script 的 package 显式记录 `true` 或 `false`，analytics/telemetry postinstall 保持禁用。
 
 新增 dependency 必须说明：
 
@@ -182,13 +189,13 @@ Caddy、nFPM 等外部 release artifact：
 
 CI 至少检查：
 
-- Rust advisory；
-- Rust licenses/sources；
-- Web lockfile/install；
-- package artifact checksum；
-- secret/private key；
+- Rust advisory、licenses 和 sources；
+- Web frozen lockfile/install 与 High/Critical dependency audit；
+- pinned external tool 和 package artifact checksum；
+- Git history 与当前工作树中的 secret/private key；
+- tracked shell script 的 pinned `shfmt` 结果；
 - 禁止 dependency/feature；
-- 生成 artifact clean diff。
+- OpenAPI 通用规范 lint、项目 contract tests 和生成 artifact clean diff。
 
 高危漏洞处理：
 

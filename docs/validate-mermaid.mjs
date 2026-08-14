@@ -1,110 +1,15 @@
 #!/usr/bin/env node
 
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { JSDOM } from "jsdom";
-
-const MARKDOWN_EXTENSIONS = new Set([".md", ".markdown"]);
-
-function isLocalAdrArchive(directory) {
-  return (
-    path.basename(directory) === "archive" &&
-    path.basename(path.dirname(directory)) === "adr"
-  );
-}
-
-function compareNames(left, right) {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
-async function collectMarkdownFiles(input) {
-  const absolute = path.resolve(input);
-  let metadata;
-  try {
-    metadata = await stat(absolute);
-  } catch (error) {
-    throw new Error(`cannot access ${input}: ${error.message}`);
-  }
-
-  if (metadata.isFile()) {
-    if (!MARKDOWN_EXTENSIONS.has(path.extname(absolute).toLowerCase())) {
-      throw new Error(`not a Markdown file: ${input}`);
-    }
-    return [absolute];
-  }
-
-  if (!metadata.isDirectory()) {
-    throw new Error(`unsupported input type: ${input}`);
-  }
-
-  const files = [];
-  async function visit(directory) {
-    const entries = await readdir(directory, { withFileTypes: true });
-    entries.sort((left, right) => compareNames(left.name, right.name));
-
-    for (const entry of entries) {
-      const entryPath = path.join(directory, entry.name);
-      if (entry.isDirectory() && !isLocalAdrArchive(entryPath)) {
-        await visit(entryPath);
-      } else if (
-        entry.isFile()
-        && MARKDOWN_EXTENSIONS.has(path.extname(entry.name).toLowerCase())
-      ) {
-        files.push(entryPath);
-      }
-    }
-  }
-
-  await visit(absolute);
-  return files;
-}
-
-function isClosingFence(line, marker, minimumLength) {
-  const candidate = line.replace(/^ {0,3}/, "").trimEnd();
-  return (
-    candidate.length >= minimumLength
-    && [...candidate].every((character) => character === marker)
-  );
-}
-
-function extractMermaidBlocks(source, file) {
-  const lines = source.split(/\r?\n/);
-  const blocks = [];
-
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const opening = lines[lineIndex].match(
-      /^ {0,3}(`{3,}|~{3,})[ \t]*mermaid(?:[ \t]+.*)?$/i,
-    );
-    if (!opening) continue;
-
-    const marker = opening[1][0];
-    const minimumLength = opening[1].length;
-    const openingLine = lineIndex + 1;
-    const body = [];
-    let closed = false;
-
-    for (lineIndex += 1; lineIndex < lines.length; lineIndex += 1) {
-      if (isClosingFence(lines[lineIndex], marker, minimumLength)) {
-        closed = true;
-        break;
-      }
-      body.push(lines[lineIndex]);
-    }
-
-    if (!closed) {
-      throw new Error(`${file}:${openingLine}: unclosed Mermaid fence`);
-    }
-
-    blocks.push({
-      line: openingLine,
-      source: body.join("\n"),
-      firstLine: body.find((line) => line.trim())?.trim() ?? "",
-    });
-  }
-
-  return blocks;
-}
+import { visit } from "unist-util-visit";
+import {
+  collectAllMarkdownFiles,
+  detectUnclosedFence,
+  parseMarkdown,
+} from "./verification/markdown.mjs";
 
 function formatError(error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -114,15 +19,12 @@ function formatError(error) {
 async function main() {
   const inputs = process.argv.slice(2);
   if (inputs.length === 0) {
-    throw new Error("usage: node docs/validate-mermaid.mjs <file-or-directory> [...]");
+    throw new Error(
+      "usage: node docs/validate-mermaid.mjs <file-or-directory> [...]",
+    );
   }
 
-  const discovered = [];
-  for (const input of inputs) {
-    discovered.push(...(await collectMarkdownFiles(input)));
-  }
-
-  const files = [...new Set(discovered)].sort(compareNames);
+  const files = await collectAllMarkdownFiles(inputs);
   if (files.length === 0) {
     throw new Error("no Markdown files found in the requested inputs");
   }
@@ -139,14 +41,35 @@ async function main() {
 
   for (const file of files) {
     const relativeFile = path.relative(process.cwd(), file) || file;
-    let blocks;
-
-    try {
-      blocks = extractMermaidBlocks(await readFile(file, "utf8"), relativeFile);
-    } catch (error) {
-      failures.push(formatError(error));
+    const source = await readFile(file, "utf8");
+    const unclosed = detectUnclosedFence(source);
+    if (unclosed?.info.split(/\s+/, 1)[0]?.toLowerCase() === "mermaid") {
+      failures.push(`${relativeFile}:${unclosed.line}: unclosed Mermaid fence`);
       continue;
     }
+
+    let tree;
+    try {
+      tree = parseMarkdown(source);
+    } catch {
+      failures.push(`${relativeFile}: failed to parse Markdown`);
+      continue;
+    }
+
+    const blocks = [];
+    visit(tree, "code", (node) => {
+      if (node.lang?.toLowerCase() === "mermaid") {
+        blocks.push({
+          line: node.position?.start.line ?? 1,
+          source: node.value,
+          firstLine:
+            node.value
+              .split(/\r?\n/)
+              .find((line) => line.trim())
+              ?.trim() ?? "",
+        });
+      }
+    });
 
     for (const [index, block] of blocks.entries()) {
       diagramCount += 1;
