@@ -12,6 +12,14 @@ abort-*) exit 0 ;;
 *) exit 0 ;;
 esac
 
+# confmodule re-execs this script under the debconf frontend at source time;
+# loading it here at top level keeps the original maintainer-script arguments.
+# A lazy in-function load re-execs with the function's empty "$@", leaving the
+# frontend's action undefined and silently re-running the earlier script body.
+[ -r /usr/share/debconf/confmodule ] ||
+  fail 'debconf configuration module is unavailable'
+. /usr/share/debconf/confmodule
+
 systemd-sysusers /usr/lib/sysusers.d/natsume.conf >/dev/null ||
   fail 'failed to create required package users and groups'
 systemd-tmpfiles --create /usr/lib/tmpfiles.d/natsume.conf >/dev/null ||
@@ -21,19 +29,7 @@ config=/etc/natsume/config.toml
 placeholder='# Natsume endpoint is written by postinstall after debconf validation.'
 canonical_ip=
 canonical_port=
-debconf_loaded=0
-
-load_debconf() {
-  if [ "$debconf_loaded" -eq 0 ]; then
-    [ -r /usr/share/debconf/confmodule ] ||
-      fail 'debconf configuration module is unavailable'
-    . /usr/share/debconf/confmodule
-    debconf_loaded=1
-  fi
-}
-
 record_debconf_endpoint() {
-  load_debconf
   db_set natsume-client/server-ip "$canonical_ip" ||
     fail 'failed to record canonical Server IP in debconf'
   db_set natsume-client/server-port "$canonical_port" ||
@@ -125,7 +121,6 @@ if [ "$env_ip_set" -eq 1 ]; then
   candidate_ip=$NATSUME_SERVER_IP
   candidate_port=$NATSUME_SERVER_PORT
 else
-  load_debconf
   db_get natsume-client/server-ip ||
     fail 'failed to read natsume-client/server-ip from debconf'
   candidate_ip=${RET:-}
