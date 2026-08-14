@@ -72,13 +72,15 @@ diesel-schema:
     set -euo pipefail
     version="$(diesel --version | sed -n 's/^ Version: //p')"
     test "$version" = "2.3.12"
+    # print-schema silently emits unformatted output when rustfmt is missing.
+    rustfmt --version >/dev/null
     temp_dir="$(mktemp -d /tmp/natsume-diesel-schema.XXXXXX)"
     trap 'rm -rf -- "$temp_dir"' EXIT
     database="$temp_dir/schema.sqlite3"
     generated="$temp_dir/schema.rs"
     diesel --database-url "$database" --config-file /dev/null migration run --migration-dir server/migrations
     diesel --database-url "$database" --config-file server/diesel.toml print-schema > "$generated"
-    cmp -- "$generated" server/src/db/schema.rs
+    diff -u -- "$generated" server/src/db/schema.rs
 
 build:
     cargo build --workspace --release --locked

@@ -147,6 +147,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           toolchain: 1.97.1
+          components: rustfmt
 
       - name: Setup Node
         uses: actions/setup-node@v7.0.0
