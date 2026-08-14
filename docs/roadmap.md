@@ -138,7 +138,7 @@ Target derivation（派生代际）、explicit `SYNC_STATE`、Caddy 配置渲染
 
 package-owned XDG Autostart、resident hidden Session Agent、build-time Slint、local typed D-Bus、logind session validation、singleton/lease、session epoch lock/unlock/terminate、固定 contest user、选定 Home backend（限时定案）、多次重置流程。
 
-**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、epoch race、lock/unlock 的 Caddy 调用数为 0、Home prepare/cleanup/fault/reboot 与连续多次重置。
+**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、epoch race、lock/unlock 的 Caddy 调用数为 0、Home reset/fault/reboot 与连续多次重置。
 
 ### Phase 7：Production Release
 

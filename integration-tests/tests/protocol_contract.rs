@@ -146,7 +146,8 @@ fn revision_fields_are_numeric_and_field_numbers_are_stable() {
     assert!(!assignment.contains("binding_id"));
 
     let gateway = message_body("TargetGateway");
-    assert!(gateway.contains("uint64 configuration_revision = 1;"));
+    assert!(gateway.contains("uint64 gateway_configuration_revision = 1;"));
+    assert!(!gateway.contains("uint64 configuration_revision = 1;"));
     assert!(!gateway.contains("configuration_revision_id"));
 
     let secret = message_body("SyncSecret");
@@ -168,11 +169,39 @@ fn revision_fields_are_numeric_and_field_numbers_are_stable() {
 }
 
 #[test]
+fn command_reserves_removed_surface() {
+    let command = message_body("Command");
+
+    assert!(command.contains("reserved 4, 5, 13, 14, 15, 16;"));
+    assert!(command.contains(
+        "reserved \"offline_policy\", \"resource_lane\", \"collect_diagnostics\", \"restart_agent\", \"run_local_preflight\", \"clear_local_secret\";"
+    ));
+    for removed_field in [
+        "string offline_policy =",
+        "string resource_lane =",
+        "CollectDiagnostics collect_diagnostics =",
+        "RestartAgent restart_agent =",
+        "RunLocalPreflight run_local_preflight =",
+        "ClearLocalSecret clear_local_secret =",
+    ] {
+        assert!(!command.contains(removed_field));
+    }
+    for removed_message in [
+        "message CollectDiagnostics {",
+        "message RestartAgent {",
+        "message RunLocalPreflight {",
+        "message ClearLocalSecret {",
+    ] {
+        assert!(!PROTO.contains(removed_message));
+    }
+}
+
+#[test]
 fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
     use natsume_device_protocol::{
         generated::{
-            Command, CommandState, CommandStatus, ControlEnvelope, RestartAgent, command,
-            control_envelope,
+            Command, CommandState, CommandStatus, ControlEnvelope, LockSession, SessionTarget,
+            command, control_envelope,
         },
         validate_envelope,
     };
@@ -184,9 +213,13 @@ fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
             command_id: command_id.to_owned(),
             created_at_unix_ms: 0,
             deadline_unix_ms: 0,
-            offline_policy: String::new(),
-            resource_lane: String::new(),
-            body: Some(command::Body::RestartAgent(RestartAgent::default())),
+            body: Some(command::Body::LockSession(LockSession {
+                target: Some(SessionTarget {
+                    session_instance_id: "session-1".to_owned(),
+                    session_epoch: 1,
+                }),
+                requested_lock_epoch: 1,
+            })),
         })),
     };
     let status_envelope = |command_id: &str| ControlEnvelope {

@@ -9,7 +9,7 @@
 5. Transport adapters own HTTP, Protobuf, D-Bus, `CommandStatus`, and operator-rendering mappings.
 6. Public payloads are constructed from reviewed fields and never from a domain error's source chain or unreviewed `Display` text.
 7. `COMMAND_ID_INVALID` means the supplied Command ID was not a canonical lowercase hyphenated UUIDv7; its public response never echoes the rejected value.
-8. `COMMAND_REQUEST_CONFLICT` means a canonical Command ID is already bound to a different normalized request.
+8. `COMMAND_REQUEST_CONFLICT` means a canonical Command ID is already bound to a different canonical request.
 9. Oversized WSS frames are transport ingress resource-limit failures and do not enter this stable registry.
 
 ## Surface model

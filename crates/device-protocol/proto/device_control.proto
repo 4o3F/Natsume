@@ -205,7 +205,7 @@ message TargetAssignment {
 }
 
 message TargetGateway {
-  uint64 configuration_revision = 1;
+  uint64 gateway_configuration_revision = 1;
   string local_origin_hostname = 2;
   string fixed_upstream_profile_id = 3;
   string exact_login_policy_id = 4;
@@ -270,23 +270,17 @@ message TerminateSession {
 
 message ResetHome {
   string home_template_revision = 1;
+  // The Server assigns a strictly monotonic Home epoch per reset; a non-monotonic value is rejected as HOME_EPOCH_STALE.
+  uint64 home_epoch = 2;
 }
-
-message CollectDiagnostics {
-  string redaction_profile = 1;
-}
-
-message RestartAgent {}
-message RunLocalPreflight {}
-message ClearLocalSecret {}
 
 message Command {
+  reserved 4, 5, 13, 14, 15, 16;
+  reserved "offline_policy", "resource_lane", "collect_diagnostics", "restart_agent", "run_local_preflight", "clear_local_secret";
   // The Panel owns generation: canonical lowercase hyphenated UUIDv7, preserved end-to-end.
   string command_id = 1;
   int64 created_at_unix_ms = 2;
   int64 deadline_unix_ms = 3;
-  string offline_policy = 4;
-  string resource_lane = 5;
   oneof body {
     SyncState sync_state = 6;
     SyncSecret sync_secret = 7;
@@ -295,10 +289,6 @@ message Command {
     UnlockSession unlock_session = 10;
     TerminateSession terminate_session = 11;
     ResetHome reset_home = 12;
-    CollectDiagnostics collect_diagnostics = 13;
-    RestartAgent restart_agent = 14;
-    RunLocalPreflight run_local_preflight = 15;
-    ClearLocalSecret clear_local_secret = 16;
   }
 }
 

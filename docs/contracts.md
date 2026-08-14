@@ -18,6 +18,12 @@
 8. 人类叙述状态不能偷偷成为 wire 字段。
 9. Command replay 由 Panel-owned `command_id` 以及 `request_fingerprint_version` / `request_fingerprint_sha256` 定义；持久化 payload 使用 `payload_version` 与 `frozen_payload_json`。
 
+### 1.1 Identifier
+
+以下 Server/Panel 生成的 surrogate public identifier 必须是 canonical lowercase hyphenated UUIDv7：`device_pk`、`operator_id`、`account_id`、`audit_event_id`、`vault_record_id`、`correlation_id`、`group_correlation_id`、`command_id` 与 `enrollment_request_id`。其中 `command_id` 由 Panel 生成，其余由 Server 生成。`device_pk` 在 wire 上的名字是 `device_id`（对应关系见 §3.6.1）。
+
+业务自然键明确不属于该 Identifier 契约：`seat_id` 是 seat code，`machine_hardware_id` 是按固定配方派生的 hash。该约束的 guard 位于 HTTP/WSS 边界；SQL 列继续使用 `TEXT`，schema tests 会有意插入非 UUID 值。
+
 ## 2. 契约所有权与入口拓扑
 
 每个边界的机器权威源（OpenAPI、Protobuf descriptor、D-Bus introspection、SQL migration）是其结构的唯一来源；语义由对应模块拥有。**不得手工维护与生成契约并行的“第二份完整字段表”。**
@@ -34,13 +40,13 @@ Server TLS leaf 与私钥从 Server 私有状态目录读取，分别固定为 X
 
 ### 2.1 Server 运行模式
 
-单一 runtime binary `natsume-server` 使用 clap derive 只分派三个必选 subcommand：`serve`、`bootstrap` 与 `reset-operator-password`。三者均无自定义参数与自定义 flag；argv 不承载配置、路径或秘密，唯一配置源保持 package-owned 固定文件 `/etc/natsume-server/config.toml`。缺少或未知 subcommand、或出现额外参数时，必须在接触文件系统前 fail closed。
+单一 runtime binary `natsume-server` 使用 clap derive 只分派三个必选 subcommand：`serve`、`bootstrap` 与 `reset-operator-password`（后者已声明、尚未实现，见下）。三者均无自定义参数与自定义 flag；argv 不承载配置、路径或秘密，唯一配置源保持 package-owned 固定文件 `/etc/natsume-server/config.toml`。缺少或未知 subcommand、或出现额外参数时，必须在接触文件系统前 fail closed。
 
 `natsume-server serve` 的固定启动序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration 与 provisioning close-once recovery；只读取并校验**已经存在**的 vault 主密钥，缺失即失败且绝不创建；校验 TLS identity；最后才 bind 并 serve。`serve` 不创建数据库、vault 主密钥或 operator account，也不提示输入。
 
 `natsume-server bootstrap` 的固定离线序列为：加载固定配置；以 `create_if_missing = true` 创建或打开并 migrate 数据库；vault 主密钥缺失时创建，已存在时只读取并校验；从 TTY 读取 login name，并以不回显方式读取两次 password；仅当 `operator_accounts` 为空时，把唯一 first admin 与其 typed audit row 在同一事务内创建，然后退出。它不做 TLS preflight、不 bind、不启动 listener。重复执行 `bootstrap` 必须保持零业务写入并以非零状态退出。
 
-`natsume-server reset-operator-password` 是 first admin 密码遗失时唯一的非破坏性恢复路径（[ADR-0037](adr/0037-operator-identity-and-server-runtime-secrets.md)）。其固定离线序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration；从 TTY 读取目标 login name，并以不回显方式读取两次新 password，使用与 §3.6.3 完全相同的 Argon2id profile。随后在**同一事务**内更新该 operator 的 PHC string、删除该 operator 当前全部 session row，并插入 actor 为 `system:recovery` 的 typed audit row。login name 未知时以非零状态退出且零写入。它不做 TLS preflight、不 bind、不启动 listener；**它绝不创建账户，也绝不接触 vault 主密钥。**
+`natsume-server reset-operator-password` 是 first admin 密码遗失时唯一的非破坏性恢复路径（[ADR-0037](adr/0037-operator-identity-and-server-runtime-secrets.md)）。其固定离线序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration；从 TTY 读取目标 login name，并以不回显方式读取两次新 password，使用与 §3.6.3 完全相同的 Argon2id profile。随后在**同一事务**内更新该 operator 的 PHC string、删除该 operator 当前全部 session row，并插入 actor 为 `system:password-reset` 的 typed audit row。login name 未知时以非零状态退出且零写入。它不做 TLS preflight、不 bind、不启动 listener；**它绝不创建账户，也绝不接触 vault 主密钥。** **声明保留，实现归 Phase 1 收尾；当前二进制只有 `serve` / `bootstrap`。**
 
 `postinstall` 不得调用需要交互式 TTY 的 `bootstrap` 或 `reset-operator-password`，安装期不得处理 operator secret；operator 必须在 TTY 上以 `natsume-server` 用户手工运行它们。
 
@@ -96,13 +102,21 @@ PUT /api/v2/commands/{command_id}
 ```
 
 - **Panel 在发起请求前生成 `command_id`**。它必须是 canonical lowercase hyphenated UUIDv7：可解析、version 为 7，且其 canonical string 与 path 输入逐字符相同。Server 不生成、重写或为同一意图替换这个 ID。
-- request 的持久化 target 是 `device_pk`，并使用封闭 `kind`、可选 `group_correlation_id` 与 versioned typed client input。`reason_code` 等 typed input 只有在 `frozen_payload_json` schema 接受时才保存；`commands` 不另设这些 top-level columns。
-- Server 对 canonical request 计算 versioned、domain-separated SHA-256 fingerprint，并持久化为 `request_fingerprint_version` 和 `request_fingerprint_sha256`。输入覆盖 target Device、kind、reason、group correlation 和 typed client input；不覆盖 retry time、actor 或 Server 后续冻结/派生状态。
+- request 的持久化 target 是 `device_pk`，并使用封闭 `kind`、`payload_version`、`payload`、可选 `reason_code` 与可选 `group_correlation_id`；持久化 row 只为 `group_correlation_id` 保留对应 top-level column，`reason_code` 不另设 top-level column。
+- Server 对 canonical request 计算 versioned、domain-separated SHA-256 fingerprint，并持久化为 `request_fingerprint_version` 和 `request_fingerprint_sha256`；算法由下述 v1 小节冻结。
 - 没有该 ID 时，Server 原子持久化 Command 与 `created_audit_event_id` 指向的创建 audit，返回 `201`。已有该 ID 且 fingerprint 相同，返回同一个已持久化 Command，返回 `200`，不再写 audit 或重复任何副作用。已有该 ID 且 fingerprint 不同，返回 `409` / `COMMAND_REQUEST_CONFLICT`。
 - `409` conflict 路径写一行 audit：`resource_id` 为 `command_id`、`result` 为 rejected、`reason_code` 为 `COMMAND_REQUEST_CONFLICT`；`redacted_detail_json` 可含 fingerprint **version** 与计数，**绝不含 fingerprint 值或 request 回显**。conflict 是低频异常信号（client 缺陷或攻击），与既有 import stale-reject 审计同一原则。same-ID/same-fingerprint replay 仍然零 audit 写入。
 - 非 canonical UUIDv7 返回 `400` / `COMMAND_ID_INVALID`。错误不得回显原始 request、fingerprint、secret 或未脱敏诊断。
 - 每个 bulk target 使用一个独立 `command_id`。可选 `group_correlation_id` 只用于查询和审计分组；即使它参与 fingerprint，也不表达顺序、原子性、重试或跨 Device lifecycle。
 - 本节冻结 OpenAPI 和后续实现必须遵守的语义；**不声明 Phase 0 已经提供 HTTP listener、授权 handler、Command repository、dispatcher 或实际 Panel mutation。**
+
+#### Command request fingerprint v1
+
+wire `payload` / `payload_version` 即列 `frozen_payload_json` / `payload_version` 的输入；`payload` 经 per-kind schema 验证后，其 JCS（RFC 8785）规范形原样存入 `frozen_payload_json`，验证后的规范形即存储形。fingerprint 覆盖同一 JCS 规范形；因此同 `command_id` 同 fingerprint 蕴含同 frozen payload。反向不成立：仅 `reason_code` 或 `group_correlation_id` 不同的请求 fingerprint 不同而 frozen payload 相同——server 谓词严格更细且权威。
+
+`request_fingerprint_version = 1` 的 fingerprint 是以下字节序列的 SHA-256：ASCII domain separator `natsume:command-request:v1`，随后一个 NUL byte（`0x00`），随后对象 `{device_id, kind, payload_version, payload, reason_code, group_correlation_id}` 的 JCS（RFC 8785）序列化。`reason_code` 与 `group_correlation_id` 缺失时必须完全省略对应 key；全部输入均使用通过 schema 验证的 HTTP request 值。Server 派生的 frozen timestamps、actor、session 与 retry time 绝不参与。
+
+字段集合或序列化的任何变更都必须使用 `request_fingerprint_version + 1`；旧版本永久有效，每行由 `request_fingerprint_version` 记录其版本。
 
 ### 3.6 Operator session 与 Phase 1 operator API
 
@@ -120,15 +134,15 @@ Operator 身份与会话是 Server 持久化事实（[ADR-0037](adr/0037-operato
 | `GET` | `/api/v2/seats` | `admin` / `viewer` | 返回当前 Seat 集合 |
 | `GET` | `/api/v2/accounts` | `admin` / `viewer` | 返回当前 Account identity 与 credential revision，不含任何 password evidence |
 | `GET` | `/api/v2/devices` | `admin` / `viewer` | 返回当前 Device 集合与 state |
-| `GET` | `/api/v2/bindings` | `admin` / `viewer` | 返回当前 Seat↔Device Binding 集合 |
-| `POST` | `/api/v2/devices/{device_id}/actions/revoke` | `admin` | Device 转为 `revoked`、移除当前 Device Token，并将关联 Gateway certificate ledger entry 转为 `revoked` |
+| `GET` | `/api/v2/bindings` | `admin` / `viewer` | 返回当前 Seat↔Device Binding 集合；响应行 = `{seat_id, device_id, binding_revision}`，其中 `binding_revision` 为行级 stamp，供 Panel 做变更感知 |
+| `POST` | `/api/v2/devices/{device_id}/actions/revoke` | `admin` | Device 转为 `revoked`、移除当前 Device Token，并将关联 Gateway certificate 状态行转为 `revoked` 后保留 |
 | `POST` | `/api/v2/devices/{device_id}/actions/disable` | `admin` | Device 转为 `disabled` |
 
 两个 Device lifecycle action 是 **repeat-safe** 的 current-fact mutation：目标 state 已达到时零业务写入，写一行 `result = 'noop'` 的 audit，并返回 HTTP `200`；首次实际生效同样返回 HTTP `200`，audit 为 `result = 'succeeded'`。
 
-transition matrix 固定如下：`revoke` 可从任意当前 state 应用；从 `enrolled` 或 `disabled` 执行完整 revoke effect，从 `revoked` 进入 convergence 检查。只有 `devices.state = 'revoked'`、不存在当前 `device_tokens` row，且该 Device 不存在任何非 `revoked` 的 `gateway_certificates` ledger row 时，`revoke` 才是 `noop`；任一部分尚未收敛都必须补全剩余 effect，并记录 `result = 'succeeded'`。
+transition matrix 固定如下：`revoke` 可从任意当前 state 应用；从 `enrolled` 或 `disabled` 执行完整 revoke effect，从 `revoked` 进入 convergence 检查。只有 `devices.state = 'revoked'`、不存在当前 `device_tokens` row，且该 Device 不存在任何状态不为 `revoked` 的保留 `gateway_certificates` row 时，`revoke` 才是 `noop`；任一部分尚未收敛都必须补全剩余 effect，并记录 `result = 'succeeded'`。
 
-`disable` 从 `enrolled` 转为 `disabled`；对已经 `disabled` 的 Device 是 repeat-safe `noop`。对 `revoked` Device 同样是零业务写入的 `noop`：`revoked` 已包含比 `disabled` 更强的限制，并额外移除了 Device Token、撤销了 certificate ledger；不得把它降级回 `disabled` 而静默削弱安全状态，也不为此引入新的 stable ErrorCode。
+`disable` 从 `enrolled` 转为 `disabled`；对已经 `disabled` 的 Device 是 repeat-safe `noop`。对 `revoked` Device 同样是零业务写入的 `noop`：`revoked` 已包含比 `disabled` 更强的限制，并额外移除了 Device Token、将关联 certificate 状态行转为 `revoked` 后保留；不得把它降级回 `disabled` 而静默削弱安全状态，也不为此引入新的 stable ErrorCode。
 
 二者都不创建 Command、不产生 Device I/O、不改变 Binding 集合，也不推进任何 revision。解绑是独立的 Binding-set mutation，绝不由 Device state transition 隐含触发。
 
@@ -159,6 +173,47 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 - 真正的 persistence 或 infrastructure failure 返回 `500` / `INTERNAL_ERROR`，不得以 `204` 掩盖仍可能存活的 session。这不构成可利用的 credential-state oracle：termination path 对 live session 与 no-row path 都先开启 `BEGIN IMMEDIATE` transaction、读取并 commit，因此连接获取、事务开启与读取阶段的失败不与 session 是否存在相关联。写执行阶段的失败只可能出现在 live path（no-row path 零写入），但到达任一分支都必须先呈递结构合法的 32-byte credential，其猜测代价使该差异不可利用。
 - expired session 只做 lazy cleanup：首个观察到仍存在 expired row 的请求在同一事务内删除并审计一次，后续请求为零写入；不运行 background cleaner。不做 GC 的前提是累积量已被这些事实限死：单实例只服务单场 contest、operator 账户是个位数、session 绝对 TTL 为 16 小时，且[领域模型](domain-model.md) §14 的 single-lifetime reset 会按场次清空业务状态。
 - 只审计 bootstrap first-admin creation、session established、首次 session termination、首次 observed expiry 与 §3.6.5 的失败登录限流触发。单次失败登录本身不审计（flood control）；但限流阈值被跨越时，每个 limiter window 写一条 audit row：actor 是非人类 system actor，`redacted_detail_json` 以 typed field 承载失败计数与来源 IP。**尝试使用的 login name 绝不进入 audit 或日志**——它可能是误输入到该字段的密码。
+
+##### 当前 AuditEvent 词汇注册表
+
+以下四张注册表只收录当前生产写入器已冻结的词汇；测试夹具中用于造数的 actor/action 不属于生产契约。任何新的审计行形状都必须先在这里注册其 `actor`、`action_kind`、`reason_code` 与对应 action 的 `redacted_detail_json` 键，之后才能增加写入器与测试。本契约另已声明但尚未实现两个审计行形状——§3.5 的 `COMMAND_REQUEST_CONFLICT` 冲突行与 §3.6.4 的失败登录限流行——其完整词汇必须在写入器落地前先在此注册。
+
+| `actor` | 状态 |
+|---|---|
+| `operator:self` | 已实现 |
+| `system:bootstrap` | 已实现 |
+| `system:expiry` | 已实现 |
+| `system:recovery` | 已实现 |
+| `system:password-reset` | **RESERVED**；仅供 §2.1 已声明但尚未实现的 `reset-operator-password` |
+
+| `action_kind` |
+|---|
+| `close_provisioning_window` |
+| `create_first_admin` |
+| `establish_session` |
+| `terminate_session` |
+| `expire_session` |
+| `revoke_device` |
+| `disable_device` |
+
+| `reason_code` | 当前使用处 |
+|---|---|
+| `startup_recovery` | `close_provisioning_window` |
+| `initial_provisioning` | `create_first_admin` |
+| `credentials_verified` | `establish_session` |
+| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device` 的 `succeeded` 结果 |
+| `absolute_expiry_observed` | `expire_session` |
+| `target_already_satisfied` | `revoke_device` / `disable_device` 的 `noop` 结果 |
+
+| `action_kind` | `redacted_detail_json` keys |
+|---|---|
+| `close_provisioning_window` | `previous_revision`、`new_revision` |
+| `create_first_admin` | `role` |
+| `establish_session` | `role` |
+| `terminate_session` | 无（`{}`） |
+| `expire_session` | 无（`{}`） |
+| `revoke_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
+| `disable_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 
 #### 3.6.5 HTTP adapter、CSRF 与 ingress capacity
 
@@ -221,9 +276,11 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 
 Command current row 直接绑定 `command_id`、`device_pk`、`kind`、`state`、request fingerprint version/hash、可选 `group_correlation_id`、`payload_version`、`frozen_payload_json`、`created_at`、`deadline_at`、可选 terminal error/result 和 `created_audit_event_id`。它不保存秘密 payload copy、certificate 或 token issuance 数据；每 Command 的 frozen typed input 只在 `frozen_payload_json` 内表示。
 
-V2 业务 family 限于：`SYNC_STATE`、`SYNC_SECRET`、`SESSION_LOCK`/`UNLOCK`/`TERMINATE`、`HOME_PREPARE`/`CLEAN`、`OBSERVE_NOW`、`DEVICE_RETIRE`（具体枚举以 `.proto` 为准；新增 family 必须证明不是任意远程管理能力）。**Command receipt 在 Device durable 持久化前不得确认**，且只表示“已可靠接收”不表示“已成功执行”。终态由可选 `terminal_error_code` 或 `redacted_terminal_result_json` 表示（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）。
+`commands.state` 的取值集合随 Phase 4 状态机冻结；在此之前该列无 CHECK，该缺口随状态机冻结时一并关闭。
 
-相同 `command_id` 的重投递必须保持同一 `frozen_payload_json`；Device journal 对相同 ID 不重复副作用，对同 ID 但不同 frozen payload conflict/reject。Server DB、WSS Command、journal、CommandStatus 和 audit correlation 的 ID 关联不可断开。
+V2 业务 family 限于：`SYNC_STATE`、`SYNC_SECRET`、`OPEN_BINDING_PROMPT`、`SESSION_LOCK`/`UNLOCK`/`TERMINATE`、`HOME_RESET`（具体枚举以 `.proto` 为准；新增 family 必须证明不是任意远程管理能力）。wire/DB `kind` 值即 proto oneof 字段名（lower snake，例如 `SESSION_LOCK`↔`lock_session`、`HOME_RESET`↔`reset_home`），文档族名为其 UPPER_SNAKE 标签。`OPEN_BINDING_PROMPT` 只携带 expiry 与 message-catalog ID 两个 typed 字段，并且只驱动封闭的 binding-prompt screen，因此不构成任意远程管理能力。**Command receipt 在 Device durable 持久化前不得确认**，且只表示“已可靠接收”不表示“已成功执行”。终态由可选 `terminal_error_code` 或 `redacted_terminal_result_json` 表示（[ADR-0034](adr/0034-state-execution-and-data-plane-boundary.md)）。
+
+Device journal 保存收到的 Command frame bytes；相同 `command_id` 且 frame bytes 相同时不重复副作用，相同 ID 但 frame bytes 不同时以 `COMMAND_PAYLOAD_CONFLICT` 拒绝。Server 必须从已存储的 frozen payload 确定性渲染给定 `command_id` 的 wire Command，使每次重新投递的 frame byte-identical。Server-side `COMMAND_REQUEST_CONFLICT` fingerprint predicate 保持权威；依照 §3.5 的 payload 单一 JCS 规范形不变量，同 fingerprint 蕴含 byte-identical frame，Device predicate 只会在 Server 不变量被破坏时触发。Server DB、WSS Command、journal、CommandStatus 和 audit correlation 的 ID 关联不可断开。
 
 ## 7. `SYNC_STATE`
 
@@ -286,7 +343,7 @@ Device Daemon **不发送任意 Caddyfile、不使用 Caddy Admin API**。控制
 | control | `COMMAND_REQUEST_CONFLICT` | 已有 `command_id` 与当前 versioned canonical request fingerprint 不同；HTTP 为 `409`，不得覆写既有 Command。 |
 | control | `PROTOCOL_VERSION_UNSUPPORTED` | WSS subprotocol 或 typed control protocol version 不受支持；拒绝协商，不猜测兼容。 |
 | control | `PROTOCOL_INVALID_ENVELOPE` | 已接收的 typed control envelope 含未知/非法 kind、oneof 或结构；关闭连接，不解析 Display 文本。 |
-| control | `COMMAND_PAYLOAD_CONFLICT` | Device journal 收到相同 `command_id` 但不同 `frozen_payload_json`；拒绝且不产生第二次副作用。 |
+| control | `COMMAND_PAYLOAD_CONFLICT` | Device journal 已保存相同 `command_id` 的 Command frame bytes，但后续收到的 frame bytes 不同；拒绝且不产生第二次副作用。Server 对该 ID 的确定性重新投递必须 byte-identical。 |
 | control | `COMMAND_PAYLOAD_INVALID` | Command 的 payload version、typed schema、target 或允许集合校验失败，且不属于 stale current-fact。 |
 | control | `COMMAND_STALE` | 执行前或关键原子提交前发现 binding/configuration/credential 或 Command generation current fact 陈旧；拒绝且不部分应用。SessionEpoch/HomeEpoch 陈旧无论经 D-Bus、WSS 或 `CommandStatus` 暴露，始终分别映射为 `SESSION_CONTEXT_STALE` / `HOME_EPOCH_STALE`。 |
 | device | `DEVICE_IDENTITY_UNAVAILABLE` | identity-bound 产物存在但当前硬件身份无法获得或有效来源不足；Device fail closed。 |
@@ -301,8 +358,8 @@ Device Daemon **不发送任意 Caddyfile、不使用 Caddy Admin API**。控制
 | session | `SESSION_UNAVAILABLE` | 当前 graphical session/Agent/display 不存在、不唯一或不满足受管操作条件。 |
 | session | `SESSION_ACTION_UNSUPPORTED` | 当期冻结镜像不支持请求的 native session lock/unlock/terminate capability。 |
 | session | `SESSION_STATE_CONFLICT` | 请求动作与当前 session/lock state 不一致，例如无 active lock 或 command/state 不匹配；调用方应刷新 typed state。 |
-| home | `HOME_EPOCH_STALE` | prepare/cleanup 请求的 HomeEpoch 不是当前 epoch；拒绝作用于 replacement Home。 |
-| home | `HOME_OPERATION_FAILED` | 无法证明 mount/copy/ownership/cleanup 安全，或 Home prepare/clean 无法可恢复地完成；fail closed，不启动受管 session。 |
+| home | `HOME_EPOCH_STALE` | `HOME_RESET` 携带的 `home_epoch` 不大于 Device 当前 epoch（非单调）；拒绝且零副作用。 |
+| home | `HOME_OPERATION_FAILED` | 无法证明 mount/copy/ownership 安全，或 Home reset 无法可恢复地完成；fail closed，不启动受管 session。 |
 
 WSS frame size 仍必须有明确上限和负向测试，但 oversized frame 是 transport ingress resource-limit failure：直接关闭连接，不进入稳定 ErrorCode registry。该 catalog 由 `natsume-error-code` crate 实现；每个 variant 使用显式 Serde rename 实现稳定字符串 `Serialize`/`Deserialize`，不得使用 `rename_all`、手写字符串 parser 或从 Rust variant 名推导 wire value。独立 registry 的治理决策已由 [ADR-0036](adr/0036-error-architecture-and-public-codes.md) 接受，实施完成度仍以 Gate evidence 为准。`RESOURCE_NOT_FOUND` 与 `ENROLLMENT_REQUEST_REJECTED` 的新增发生在 ADR-0036 所述的 coordinated pre-release baseline window 内（G0 仍为 `OPEN`），因此暂不需要 §13 的兼容性计划；该 window 关闭后，任何删除或语义变更仍受 §13 约束。
 

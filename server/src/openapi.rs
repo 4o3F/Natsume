@@ -18,8 +18,17 @@ use utoipa::{
 const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice.\nDeclared but not mounted in Stage 5B operation IDs: createCsvImport, commitCsvImport, approveEnrollment, putCommand.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
-const COMMAND_ID_PATTERN: &str =
+const CANONICAL_UUID_V7_PATTERN: &str =
     "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+const COMMAND_KIND_VALUES: [&str; 7] = [
+    "sync_state",
+    "sync_secret",
+    "open_binding_prompt",
+    "lock_session",
+    "unlock_session",
+    "terminate_session",
+    "reset_home",
+];
 const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.";
 
 #[derive(utoipa::OpenApi)]
@@ -57,6 +66,10 @@ pub fn document() -> OpenApi {
         "PutCommandRequest".to_owned(),
         put_command_request_schema().into(),
     );
+    components.schemas.insert(
+        "CanonicalUuidV7".to_owned(),
+        canonical_uuid_v7_schema().into(),
+    );
     components
         .schemas
         .insert("ErrorResponse".to_owned(), error_response_schema().into());
@@ -67,6 +80,26 @@ pub fn document() -> OpenApi {
 
     let mut paths = mounted.paths;
     paths.merge(declared_but_unmounted_paths());
+    for path in [
+        "/api/v2/devices/{device_id}/actions/revoke",
+        "/api/v2/devices/{device_id}/actions/disable",
+    ] {
+        let Some(parameters) = paths
+            .paths
+            .get_mut(path)
+            .and_then(|path_item| path_item.post.as_mut())
+            .and_then(|operation| operation.parameters.as_mut())
+        else {
+            continue;
+        };
+        let Some(device_id) = parameters
+            .iter_mut()
+            .find(|parameter| parameter.name == "device_id")
+        else {
+            continue;
+        };
+        device_id.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
+    }
     remove_operation_tags(&mut paths);
     enrich_responses(&mut paths);
 
@@ -187,7 +220,7 @@ fn put_command_operation() -> Operation {
                 .description(Some(
                     "Canonical lowercase hyphenated UUIDv7 supplied by the Panel",
                 ))
-                .schema(Some(command_id_schema()))
+                .schema(Some(Ref::from_schema_name("CanonicalUuidV7")))
                 .build(),
         )
         .request_body(Some(
@@ -215,33 +248,38 @@ fn session_cookie_requirement() -> SecurityRequirement {
     SecurityRequirement::new(SESSION_COOKIE_SECURITY_SCHEME, Vec::<String>::new())
 }
 
-fn command_id_schema() -> ObjectBuilder {
+fn canonical_uuid_v7_schema() -> ObjectBuilder {
     ObjectBuilder::new()
         .schema_type(Type::String)
         .format(Some(SchemaFormat::KnownFormat(KnownFormat::Uuid)))
-        .pattern(Some(COMMAND_ID_PATTERN))
+        .pattern(Some(CANONICAL_UUID_V7_PATTERN))
 }
 
 fn put_command_request_schema() -> Schema {
     ObjectBuilder::new()
         .schema_type(Type::Object)
-        .property("device_id", uuid_schema())
+        .property("device_id", Ref::from_schema_name("CanonicalUuidV7"))
         .property("group_correlation_id", uuid_schema())
-        .property("input", ObjectBuilder::new().schema_type(Type::Object))
+        .property("payload", ObjectBuilder::new().schema_type(Type::Object))
         .property(
-            "input_version",
+            "payload_version",
             ObjectBuilder::new()
                 .schema_type(Type::Integer)
                 .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int32))),
         )
-        .property("kind", ObjectBuilder::new().schema_type(Type::String))
+        .property(
+            "kind",
+            ObjectBuilder::new()
+                .schema_type(Type::String)
+                .enum_values(Some(COMMAND_KIND_VALUES)),
+        )
         .property(
             "reason_code",
             ObjectBuilder::new().schema_type(Type::String),
         )
         .required("device_id")
-        .required("input")
-        .required("input_version")
+        .required("payload")
+        .required("payload_version")
         .required("kind")
         .additional_properties(Some(AdditionalProperties::FreeForm(false)))
         .build()
@@ -329,7 +367,7 @@ mod tests {
         http,
     };
 
-    use super::document;
+    use super::{COMMAND_KIND_VALUES, document};
 
     const UNMOUNTED_DESCRIPTION_PREFIX: &str =
         "Declared but not mounted in Stage 5B operation IDs: ";
@@ -516,6 +554,17 @@ mod tests {
     #[test]
     fn device_lifecycle_path_parameters_are_exact() -> Result<(), TestFailure> {
         let value = serialized_document()?;
+        let canonical_uuid_v7 = value
+            .pointer("/components/schemas/CanonicalUuidV7")
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::DocumentShapeInvalid)?;
+        if canonical_uuid_v7.get("type").and_then(Value::as_str) != Some("string")
+            || canonical_uuid_v7.get("format").and_then(Value::as_str) != Some("uuid")
+            || canonical_uuid_v7.get("pattern").and_then(Value::as_str)
+                != Some("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        {
+            return Err(TestFailure::LifecyclePathContractChanged);
+        }
         for path in [
             "/api/v2/devices/{device_id}/actions/revoke",
             "/api/v2/devices/{device_id}/actions/disable",
@@ -532,8 +581,8 @@ mod tests {
                 .ok_or(TestFailure::LifecyclePathContractChanged)?;
             if parameter.get("in").and_then(Value::as_str) != Some("path")
                 || parameter.get("required").and_then(Value::as_bool) != Some(true)
-                || parameter.pointer("/schema/pattern").and_then(Value::as_str)
-                    != Some("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+                || parameter.pointer("/schema/$ref").and_then(Value::as_str)
+                    != Some("#/components/schemas/CanonicalUuidV7")
             {
                 return Err(TestFailure::LifecyclePathContractChanged);
             }
@@ -567,9 +616,8 @@ mod tests {
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         if parameter.get("in").and_then(Value::as_str) != Some("path")
             || parameter.get("required").and_then(Value::as_bool) != Some(true)
-            || parameter_schema.get("format").and_then(Value::as_str) != Some("uuid")
-            || parameter_schema.get("pattern").and_then(Value::as_str)
-                != Some("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+            || parameter_schema.get("$ref").and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
         {
             return Err(TestFailure::CommandIdContractChanged);
         }
@@ -589,13 +637,29 @@ mod tests {
         let expected_properties = BTreeSet::from([
             "device_id",
             "group_correlation_id",
-            "input",
-            "input_version",
             "kind",
+            "payload",
+            "payload_version",
             "reason_code",
         ]);
+        let kind = properties
+            .get("kind")
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::DocumentShapeInvalid)?;
+        let actual_kind_values = kind
+            .get("enum")
+            .and_then(Value::as_array)
+            .and_then(|values| values.iter().map(Value::as_str).collect::<Option<Vec<_>>>());
         if property_set != expected_properties
             || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || kind.get("type").and_then(Value::as_str) != Some("string")
+            || actual_kind_values != Some(COMMAND_KIND_VALUES.to_vec())
+            || properties
+                .get("device_id")
+                .and_then(Value::as_object)
+                .and_then(|device_id| device_id.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
         {
             return Err(TestFailure::CommandRequestContractChanged);
         }

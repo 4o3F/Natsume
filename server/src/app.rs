@@ -44,7 +44,13 @@ where
         .map_err(|_| AppError::Database)?;
     provisioning::recover_on_startup(&database)
         .await
-        .map_err(|_| AppError::Database)?;
+        .map_err(|error| match error {
+            provisioning::ProvisioningError::RevisionOverflow => {
+                tracing::error!("provisioning window revision overflow prevented startup");
+                AppError::ProvisioningRevisionOverflow
+            }
+            provisioning::ProvisioningError::PersistenceFailed => AppError::Database,
+        })?;
     tracing::info!("database ready");
     require_master_key(config.vault_master_key_path()).map_err(|_| AppError::Vault)?;
     tracing::info!("vault key verified");

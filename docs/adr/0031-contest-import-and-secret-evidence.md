@@ -1,7 +1,7 @@
 # ADR-0031: Contest import and secret-evidence scope
 
 > Status: `ACCEPTED`
-> Scope: contest-configuration import, preview/commit concurrency, current-state replacement, and password-derived evidence
+> Scope: contest-configuration import, preview/commit concurrency, current-fact（当前事实） replacement, and password-derived evidence
 > Consolidates: ADR-0005, ADR-0020, ADR-0028
 > Supersedes: consolidated historical records; see [`history-map.md`](history-map.md)
 > Superseded by: —

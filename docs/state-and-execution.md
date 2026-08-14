@@ -17,9 +17,9 @@ Natsume 同时处理：已提交事实（Server truth）、期望状态（Target
 ## 2. Command identity、replay 与 conflict
 
 - **ID authority**：Panel 在每次创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`。它使用 `PUT /api/v2/commands/{command_id}`；Server、WSS 和 Device journal 不生成、重写或替换该 ID。
-- **canonical request**：Server 以 versioned、domain-separated fingerprint 覆盖 target Device、kind、reason、可选 group correlation 与 typed client input，并保存为 `request_fingerprint_version` 与 `request_fingerprint_sha256`；不覆盖 retry time、actor 或 Server 后续派生状态。同 ID + 同 fingerprint 返回既有 Command；同 ID + 不同 fingerprint 是稳定 conflict。
+- **canonical request**：Server 以 versioned、domain-separated fingerprint 覆盖通过 schema 验证的 HTTP request 值 `device_id`、`kind`、`payload_version`、`payload`、可选 `reason_code` 与可选 `group_correlation_id`，并保存为 `request_fingerprint_version` 与 `request_fingerprint_sha256`；不覆盖 frozen timestamps、actor、session 或 retry time。同 ID + 同 fingerprint 返回既有 Command；同 ID + 不同 fingerprint 是稳定 conflict。
 - **HTTP outcome**：首次持久化为 `201`；same-ID/same-request replay 为 `200`；非 canonical UUIDv7 为 `400` / `COMMAND_ID_INVALID`；same-ID/different-request 为 `409` / `COMMAND_REQUEST_CONFLICT`。这些 outcome 只表示 Server 持久化，不表示 Device 已执行。
-- **跨平面 identity**：同一 ID 字符串必须原样出现在 Server Command、WSS `Command`、Device durable journal、WSS `CommandStatus` 和 per-Command audit correlation。Device 对同 ID 的同一 `frozen_payload_json` 不重复副作用；同 ID 但不相同的 frozen payload conflict/reject。
+- **跨平面 identity**：同一 ID 字符串必须原样出现在 Server Command、WSS `Command`、Device durable journal、WSS `CommandStatus` 和 per-Command audit correlation。Device durable journal 保存收到的 Command frame bytes；同 ID 且 frame bytes 相同时不重复副作用，同 ID 但 frame bytes 不同时以 `COMMAND_PAYLOAD_CONFLICT` 拒绝。Server 从已存储的 frozen payload 确定性渲染该 ID 的 wire Command，使每次重新投递的 frame byte-identical。
 - **执行状态**：已成功不重复副作用；正在运行不并发执行第二次；已失败按策略返回终态，不偷偷重启。需要重新执行时，Panel 创建新的 Command ID。
 - **revision/epoch**：Device 在执行前和关键原子提交前检查适用的 binding/configuration/credential/session/home current facts；**陈旧时用稳定错误拒绝，不“尽量兼容”地部分应用。**
 - **receipt 与恢复**：Command receipt 在 Device durable 持久化前不得确认；进程崩溃后相同 Command 能恢复或返回原结果。终态不可被后来的 transport error 覆盖；重复终态消息可安全合并。
@@ -68,7 +68,7 @@ Caddy 业务状态只需 `BLOCKED` / `READY`。
 ## 7. Session 与 Home
 
 - **Session**：每个 transition 绑定当前 `SessionEpoch`；Agent 通过 lease 证明属于当前 logind session。陈旧 Agent 或 UI action 被拒绝；Agent 崩溃后 lease 过期，不解锁额外权限，不改变 Caddy。锁定语义走当期镜像桌面的原生 session lock；遮罩类 UI 是呈现层，不是完整性边界（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）。
-- **Home**：开始时创建新 `HomeEpoch`；prepare 完成前不启动受管 session；cleanup 只作用于当前 epoch；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend。** 重置为操作员在场的受控事件，实现为状态文件 + 可安全重复运行的步骤。
+- **Home**：每次 `HOME_RESET` 建立新的、由 Server 分配且严格单调的 `HomeEpoch`；reset 完成前不启动受管 session；中断的 reset 必须可恢复；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend。** 重置仍是操作员在场的受控事件，实现为状态文件 + 可安全重复运行的步骤；本地 `PrepareHomeInstance` / `ActivateHomeInstance` / `RecoverHomeInstance` / `GarbageCollectHomeInstance` 分解只属实现面，D-Bus surface 保持不变。
 
 ## 8. 可观测性
 
@@ -76,4 +76,4 @@ Server 与 Device 指标追踪连接、Observed freshness、Drift、enrollment/�
 
 ## 9. 测试模型
 
-必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID/same-fingerprint、same-ID/different-fingerprint、`request_fingerprint_*`/`frozen_payload_json`、HTTP/WSS/journal/status/audit 同 ID、Server 事务成功但 Device 离线、receipt 前后断线、执行中崩溃、重复 Command、陈旧 revision/epoch、窗口关闭签发拒绝、open-window restart/restore close-once、重复 Enrollment 替换语义、无 token upgrade 拒绝、WSS 断线重连收敛、Caddy validate/reload 中断、old LKG 保留、secret 写入中断、Observed 丢失重发、Agent crash/focus denied/display lost、Home prepare/cleanup 中断、cancel 与 terminal status race。具体测试场景随对应 Phase 实现补全。
+必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID/same-fingerprint、same-ID/different-fingerprint、`request_fingerprint_*`/`frozen_payload_json`、HTTP/WSS/journal/status/audit 同 ID、Server 事务成功但 Device 离线、receipt 前后断线、执行中崩溃、重复 Command、陈旧 revision/epoch、窗口关闭签发拒绝、open-window restart/restore close-once、重复 Enrollment 替换语义、无 token upgrade 拒绝、WSS 断线重连收敛、Caddy validate/reload 中断、old LKG 保留、secret 写入中断、Observed 丢失重发、Agent crash/focus denied/display lost、Home reset 中断、cancel 与 terminal status race。具体测试场景随对应 Phase 实现补全。

@@ -162,9 +162,7 @@
             "description": "Canonical lowercase hyphenated UUIDv7 supplied by the Panel",
             "required": true,
             "schema": {
-              "type": "string",
-              "format": "uuid",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              "$ref": "#/components/schemas/CanonicalUuidV7"
             }
           }
         ],
@@ -407,8 +405,7 @@
             "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
             "required": true,
             "schema": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              "$ref": "#/components/schemas/CanonicalUuidV7"
             }
           }
         ],
@@ -538,8 +535,7 @@
             "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
             "required": true,
             "schema": {
-              "type": "string",
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              "$ref": "#/components/schemas/CanonicalUuidV7"
             }
           }
         ],
@@ -1121,6 +1117,11 @@
         },
         "additionalProperties": false
       },
+      "CanonicalUuidV7": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
       "DeviceResponse": {
         "type": "object",
         "required": ["device_id", "state", "hardware_identity_quality"],
@@ -1171,25 +1172,33 @@
       },
       "PutCommandRequest": {
         "type": "object",
-        "required": ["device_id", "input", "input_version", "kind"],
+        "required": ["device_id", "payload", "payload_version", "kind"],
         "properties": {
           "device_id": {
-            "type": "string",
-            "format": "uuid"
+            "$ref": "#/components/schemas/CanonicalUuidV7"
           },
           "group_correlation_id": {
             "type": "string",
             "format": "uuid"
           },
-          "input": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "sync_state",
+              "sync_secret",
+              "open_binding_prompt",
+              "lock_session",
+              "unlock_session",
+              "terminate_session",
+              "reset_home"
+            ]
+          },
+          "payload": {
             "type": "object"
           },
-          "input_version": {
+          "payload_version": {
             "type": "integer",
             "format": "int32"
-          },
-          "kind": {
-            "type": "string"
           },
           "reason_code": {
             "type": "string"

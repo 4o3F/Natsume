@@ -158,7 +158,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generated::{CommandStatus, RestartAgent, control_envelope};
+    use crate::generated::{CommandStatus, LockSession, SessionTarget, control_envelope};
 
     const CANONICAL_UUID_V7: &str = "018f0e2e-8c1d-7c5e-8b12-3456789abcde";
 
@@ -168,11 +168,13 @@ mod tests {
                 command_id: command_id.to_owned(),
                 created_at_unix_ms: 0,
                 deadline_unix_ms: 0,
-                offline_policy: String::new(),
-                resource_lane: String::new(),
-                body: Some(crate::generated::command::Body::RestartAgent(
-                    RestartAgent::default(),
-                )),
+                body: Some(crate::generated::command::Body::LockSession(LockSession {
+                    target: Some(SessionTarget {
+                        session_instance_id: "session-1".to_owned(),
+                        session_epoch: 1,
+                    }),
+                    requested_lock_epoch: 1,
+                })),
             })),
         }
     }

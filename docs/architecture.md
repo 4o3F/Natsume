@@ -94,7 +94,7 @@ flowchart LR
 
 - operator 身份、授权（admin/viewer）和 HTTP API；
 - CSV staging、preview、commit；
-- Server truth（当前 Seat 集合、Seat→Account mapping、current-only credential 与当前 Binding；无 Seat-universe freeze、generic instance state 或业务 snapshot history）；
+- Server truth（当前 Seat 集合、Seat→Account mapping、credential 的 current-fact（当前事实）与当前 Binding；无 Seat-universe freeze、generic instance state 或业务 snapshot history）；
 - Target 计算；
 - Device lifecycle 和 binding；
 - provisioning 窗口状态；

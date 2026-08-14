@@ -10,7 +10,7 @@
 
 1. 一个实例只建模当前一场竞赛，不创建 `Event` 聚合。
 2. Confirmed contest configuration 只能通过完整 candidate 的显式 Import Commit 被替换。
-3. 业务表保存当前事实；不可替代的历史只限 redacted `AuditEvent` 与安全台账，不创建 generic instance state 或可恢复的业务 snapshot。
+3. 业务表只保存 current-fact（当前事实）；不可替代的历史只限 redacted `AuditEvent`，以及在其所属表段落显式声明了保留理由与消费者的终态行；不创建 generic instance state 或可恢复的业务 snapshot。
 4. 内部主键与外部/硬件标识分离。
 5. **密码是秘密值，不是普通实体属性。**
 6. Target、Observed、Drift 和 Command 含义相互独立。
@@ -18,15 +18,42 @@
 8. **删除、重置和替换必须显式，不能通过 identity fallback 隐式发生。**
 9. **所有陈旧性判断使用单调 revision/epoch，而不是时间戳猜测。**
 
+### 1.1 权威业务表注册表
+
+| 表名 | 职责 |
+|---|---|
+| `site_identity` | 站点身份（fleet namespace UUID） |
+| `revision_counters` | 全局修订计数器 singleton |
+| `server_vault_records` | 加密 vault 密文 |
+| `seats` | 座位 |
+| `devices` | 设备 |
+| `audit_events` | 审计事件（唯一证据历史） |
+| `operator_accounts` | 操作员账户 |
+| `operator_sessions` | 操作员会话 |
+| `accounts` | 竞赛账户 |
+| `account_mappings` | Seat→Account 映射 |
+| `device_bindings` | Seat↔Device 绑定 |
+| `observed_device_states` | 设备观测状态 |
+| `provisioning_window` | 发放窗口 singleton |
+| `enrollment_requests` | 设备注册请求 |
+| `device_tokens` | 设备令牌 |
+| `gateway_certificates` | 网关证书 |
+| `pending_import_candidate` | 唯一待定 CSV 导入候选 |
+| `commands` | 命令 current row |
+
+本清单与 schema tests（`integration-tests/tests/schema_contract.rs`、`server/src/db.rs`）相互锁定：新增或删除任何表都必须同步更新两处测试与本清单。
+
 ## 2. 标识和值对象
 
 领域使用一组稳定值对象区分业务身份与硬件标识。共享修订只由 `revision_counters` singleton 持有：`configuration_revision` 表示 confirmed Seat 集合与 Seat→Account mapping 的修订，也是 import baseline CAS token，密码内容不参与该修订；`binding_revision`（`BindingRevision`）表示**全局** Seat↔Device 当前 Binding 集合的 CAS 修订，不表示 Seat→Account mapping。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`SessionEpoch` / `HomeEpoch` 是本地运行时代际。
 
 每次 Binding 集合实际变化时，`BindingRevision` 在该事务内最多递增一次。受影响的新增/变更 `device_bindings` row 记录该全局值；未变化 Binding 不重写，因此不因无关绑定变更而成为 secret-sync stale。Account mapping 或密码变化而 Binding 保持时，不得推进它。
 
+wire 上的 `binding_revision`（`TargetAssignment` / `SyncSecret` / `BindingResult`）是行级 stamp：该 Binding 行创建或变更时记录的全局值，不是当前全局计数器本身。`observed_device_states.installed_binding_revision = 0` 是合法哨兵，表示尚未安装任何 Binding；列域 `>= 0` 与 Binding 行要求 `> 0` 的差异即来源于此。
+
 面向单台 Device 的非秘密 generation 是从 current Server truth 派生的 contract artifact，不创建独立 counter 或通用 version system；`observed_device_states` 只记录 Device 报告的 `received_generation`、`applied_generation`，以及可选 `gateway_configuration_revision`。
 
-内部主键（`devices.device_pk`，TEXT）不得从硬件数据推导；硬件身份（`machine_hardware_id`，派生配方见 [ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)）不是认证凭据。
+内部主键（`devices.device_pk`，TEXT）是 Server 生成、遵守[契约 Identifier](contracts.md#11-identifier)的 canonical lowercase hyphenated UUIDv7，且不得从硬件数据推导；硬件身份（`machine_hardware_id`，派生配方见 [ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)）不是认证凭据。
 
 值对象必须在进入 domain 前完成结构校验。**Domain 不解析自由格式路径、URL、shell、证书文本或 UI 文案。**
 
@@ -52,8 +79,9 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 - `devices.machine_hardware_id` 是 unique，因此一个存储的 `machine_hardware_id` 最多对应一个 `devices` row；该 row 只有 `device_pk`、硬件 ID、`hardware_identity_quality`（`strong`/`medium`/`weak`）与 `state`（`enrolled`/`revoked`/`disabled`）。
 - 凭据签发或替换要求其绑定的 Device 当前为 `enrolled`；`revoked` 或 `disabled` Device 必须拒绝签发，恢复使用须经过显式、受审计的 lifecycle 动作，不得由 Enrollment 隐式复活。
-- provisioning window 由 `provisioning_window` current singleton 表示，只有 `state`、`revision` 和 `last_audit_event_id`；审计而非 revision ledger 保存历史。restart/restore 只会对观察到的 `open` 状态执行一次 audited CAS close；已 `closed` 时零写入。
-- provisioning 窗口内同一 `machine_hardware_id` 的 Enrollment 由 `enrollment_requests` 的 `resolution` 与 `resolved_device_pk` 表达受审计的 create/credential-replacement 结果；关联的 `device_tokens` 和 `gateway_certificates` row 提供当前 token/certificate 事实。若旧连接仍存活，记录异常审计事件。
+- provisioning window 由 `provisioning_window` current singleton 表示，只有 `state`、`revision` 和 `last_audit_event_id`；不保留逐次 provisioning revision 状态行，历史由审计提供。restart/restore 只会对观察到的 `open` 状态执行一次 audited CAS close；已 `closed` 时零写入。
+- provisioning 窗口内同一 `machine_hardware_id` 的 Enrollment 由 `enrollment_requests` 的 `resolution` 与 `resolved_device_pk` 表达受审计的 create/credential-replacement 结果；关联的 `device_tokens` 和 `gateway_certificates` row 提供当前 token/certificate 事实。`enrollment_requests` 的终态行（`rejected` / `expired` / `conflict` 等）予以保留；其消费者是 same-SPKI 重试自动批准判定、同硬件不同 SPKI 稳定拒绝与审计回溯。不设清理规则，赛后导出与清理归 Phase 7。若旧连接仍存活，记录异常审计事件。
+- `gateway_certificates` 的 `revoked` / `retired` 状态行予以保留；其消费者是单活跃证书唯一性判定（partial unique index 只约束 `status = 'active'`）、Enrollment 替换路径对旧证书的处置与审计回溯。
 - 窗口外的硬件身份冲突：**不自动合并、不选择“最近上线者”、不删除凭据**，停止敏感进展并返回稳定错误，要求人工执行恢复 runbook。
 - Device 删除/替换不复用 `device_pk` 或凭据文件；替换走窗口重开 + 新 Enrollment 的受审计生命周期，而不是 merge。
 
@@ -95,7 +123,7 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 
 **Command** 是面向单台 Device 的 direct durable intent。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}`；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。首次 `201`、replay `200`、invalid ID `400`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
 
-`commands` current row 只有 `command_id`、`device_pk`、`kind`、`state`、两个 request fingerprint field、可选 `group_correlation_id`、`payload_version`、typed object `frozen_payload_json`、`created_at`、`deadline_at`、可选 `terminal_error_code`/`redacted_terminal_result_json` 与 `created_audit_event_id`。**Command receipt 在 Device 持久化前不得确认；相同 Command ID 不得重复副作用。** 每 Command 的 frozen content 只由 `frozen_payload_json` 表达，而不是许多 frozen top-level columns 或 dispatcher metadata；陈旧时用稳定错误拒绝，不“尽量兼容”地部分应用。相同 ID 必须原样贯穿 Server、WSS、Device journal、CommandStatus 与审计 correlation。
+`commands` current row 只有 `command_id`、`device_pk`、`kind`、`state`、两个 request fingerprint field、可选 `group_correlation_id`、`payload_version`、typed object `frozen_payload_json`、`created_at`、`deadline_at`、可选 `terminal_error_code`/`redacted_terminal_result_json` 与 `created_audit_event_id`。**Command receipt 在 Device 持久化前不得确认；相同 Command ID 不得重复副作用。** 每 Command 的 frozen content 只由 `frozen_payload_json` 表达，而不是许多 frozen top-level columns 或 dispatcher metadata；陈旧时用稳定错误拒绝，不“尽量兼容”地部分应用。相同 ID 必须原样贯穿 Server、WSS、Device journal、CommandStatus 与审计 correlation。终态行（`terminal_error_code` / `redacted_terminal_result_json`）予以保留；其消费者是 Panel 状态查询与审计回溯，清理与赛后导出归 Phase 7。
 
 批量操作 = 批量创建 Command，进度视图只由查询聚合；可选 `group_correlation_id` 只用于查询和审计分组，不定义跨 Device 顺序、原子性或 lifecycle。Command 的具体状态机与字段在 Phase 4 实现时定义；本规范不声明 dispatcher/journal/Panel mutation 已完成。
 
@@ -116,13 +144,13 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 - Operator 是 `audit_events.actor` 的来源之一；`system:recovery` 等非人类 actor 不对应 Operator 行。
 - Operator 身份**不参与 Device 认证**：不能取得 Device Token、Gateway certificate 或 WSS 控制面身份（`INV-CERT-01`）。
 
-Device lifecycle 的 operator 动作（转 `revoked` / `disabled`，以及移除当前 `device_tokens` row 与关联 `gateway_certificates` 台账状态）是 repeat-safe 的当前事实 mutation：目标状态已达成时零业务写入，只记录 `result = 'noop'` 的 audit。它们**不创建 Command、不产生 Device I/O、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
+Device lifecycle 的 operator 动作（转 `revoked` / `disabled`，以及移除当前 `device_tokens` row、将关联 `gateway_certificates` 状态行转为 `revoked` 后保留）是 repeat-safe 的当前事实 mutation：目标状态已达成时零业务写入，只记录 `result = 'noop'` 的 audit。它们**不创建 Command、不产生 Device I/O、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
 
 ## 13. 本地运行时领域
 
 - **Machine identity startup**：identity 检查先于一切 identity-bound 产物使用。决策是封闭枚举（如 `FIRST_BOOT_ALLOWED`、`IDENTITY_MATCH`、`IDENTITY_UNAVAILABLE_FAIL_CLOSED`、`IDENTITY_MISMATCH_FAIL_CLOSED`、`CREDENTIALS_UNREADABLE_FAIL_CLOSED`、`RECOVERY_REQUIRED`）。**不能输出“猜测最可能是同一台机器并继续”。**
 - **Session**：所有 lock/unlock/terminate/UI action 都必须校验当前 `SessionEpoch`；陈旧 Agent 或陈旧 UI action 被拒绝。
-- **Home**：开始时创建新 `HomeEpoch`；prepare 完成前不启动受管 session；cleanup 只作用于当前 epoch；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend**。重置是操作员在场的受控事件，实现为状态文件 + 可安全重复运行的步骤。
+- **Home**：每次 `HOME_RESET` 建立新的、由 Server 分配且严格单调的 `HomeEpoch`；reset 完成前不启动受管 session；中断的 reset 必须可恢复；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend**。重置仍是操作员在场的受控事件，实现为状态文件 + 可安全重复运行的步骤；本地 `PrepareHomeInstance` / `ActivateHomeInstance` / `RecoverHomeInstance` / `GarbageCollectHomeInstance` 分解只属实现面，D-Bus surface 保持不变。
 
 ## 14. 删除、重置和替换
 

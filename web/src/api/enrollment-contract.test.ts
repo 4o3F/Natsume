@@ -8,6 +8,8 @@ const COMMAND_PATH = "/api/v2/commands/{command_id}";
 const SESSION_REQUEST_PASSWORD_PATH =
   "/components/schemas/SessionRequest/properties/password";
 const SESSION_REQUEST_REFERENCE = "#/components/schemas/SessionRequest";
+const CANONICAL_UUID_V7_REFERENCE =
+  "#/components/schemas/CanonicalUuidV7";
 const UUID_V7_PATTERN =
   "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 // INV-SECRET-01 forbids exposing secret material on any API surface. Public
@@ -207,9 +209,15 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       expect(deviceId).toMatchObject({
         in: "path",
         required: true,
-        schema: { pattern: UUID_V7_PATTERN },
+        schema: { $ref: CANONICAL_UUID_V7_REFERENCE },
       });
     }
+
+    expect(openapi.components.schemas.CanonicalUuidV7).toEqual({
+      type: "string",
+      format: "uuid",
+      pattern: UUID_V7_PATTERN,
+    });
 
     expect(
       Object.keys(openapi.components.schemas.SessionResponse.properties).sort(),
@@ -259,8 +267,7 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       in: "path",
       required: true,
       schema: {
-        format: "uuid",
-        pattern: UUID_V7_PATTERN,
+        $ref: CANONICAL_UUID_V7_REFERENCE,
       },
     });
 
@@ -269,11 +276,14 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     expect(Object.keys(requestSchema.properties).sort()).toEqual([
       "device_id",
       "group_correlation_id",
-      "input",
-      "input_version",
       "kind",
+      "payload",
+      "payload_version",
       "reason_code",
     ]);
+    expect(requestSchema.properties.device_id).toEqual({
+      $ref: CANONICAL_UUID_V7_REFERENCE,
+    });
 
     expect(openapi.paths).not.toHaveProperty(
       "/api/v2/devices/{device_id}/actions/sync-state",

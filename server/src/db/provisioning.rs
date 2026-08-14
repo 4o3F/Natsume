@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::{
     application::provisioning::{
         ProvisioningError, ProvisioningWindow, ProvisioningWindowState, RecoveryOutcome,
-        recovered_provisioning_window,
+        RevisionOverflow, recovered_provisioning_window,
     },
     audit::{self, AuditEvent, AuditEventId, CorrelationId},
     db::{Database, schema::provisioning_window},
@@ -20,8 +20,9 @@ use crate::{
 ///
 /// # Errors
 ///
-/// Returns a redacted [`ProvisioningError`] if current facts cannot be read,
-/// audit insertion fails, the compare-and-swap loses, or commit fails.
+/// Returns a redacted [`ProvisioningError`] if the revision overflows, current
+/// facts cannot be read, audit insertion fails, the compare-and-swap loses, or
+/// commit fails.
 pub(crate) async fn recover_provisioning_window(
     database: &Database,
 ) -> Result<RecoveryOutcome, ProvisioningError> {
@@ -40,7 +41,7 @@ fn recover_provisioning_window_in_transaction(
     let current = read_provisioning_window(connection)?;
 
     let Some(next) = recovered_provisioning_window(current)
-        .map_err(|_| ProvisioningStoreError::PolicyRejected)?
+        .map_err(|RevisionOverflow| ProvisioningStoreError::RevisionOverflow)?
     else {
         return Ok(RecoveryOutcome::AlreadyClosed {
             revision: current.revision,
@@ -166,8 +167,8 @@ enum ProvisioningStoreError {
     ReadFailed,
     #[snafu(display("the provisioning window contains invalid current facts"))]
     InvalidCurrentFacts,
-    #[snafu(display("the provisioning-window policy rejected the transition"))]
-    PolicyRejected,
+    #[snafu(display("the provisioning window revision cannot be incremented"))]
+    RevisionOverflow,
     #[snafu(display("the audit event could not be written"))]
     AuditFailed,
     #[snafu(display("the provisioning window could not be mutated"))]
@@ -185,11 +186,20 @@ impl From<diesel::result::Error> for ProvisioningStoreError {
 }
 
 impl From<ProvisioningStoreError> for ProvisioningError {
-    /// The store vocabulary never leaves this module. Startup recovery is the
-    /// only caller and every stage failure is one internal persistence failure to
-    /// it, so the collapse is total.
-    fn from(_source: ProvisioningStoreError) -> Self {
-        Self::PersistenceFailed
+    /// The store vocabulary never leaves this module. Revision overflow keeps
+    /// its dedicated application meaning; every other stage failure is one
+    /// internal persistence failure to the startup caller.
+    fn from(source: ProvisioningStoreError) -> Self {
+        match source {
+            ProvisioningStoreError::RevisionOverflow => Self::RevisionOverflow,
+            ProvisioningStoreError::AcquireFailed
+            | ProvisioningStoreError::TransactionFailed
+            | ProvisioningStoreError::ReadFailed
+            | ProvisioningStoreError::InvalidCurrentFacts
+            | ProvisioningStoreError::AuditFailed
+            | ProvisioningStoreError::MutationFailed
+            | ProvisioningStoreError::CompareAndSwapConflict => Self::PersistenceFailed,
+        }
     }
 }
 

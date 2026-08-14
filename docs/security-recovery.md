@@ -117,7 +117,9 @@ server-auth TLS（全部入口，预置 trust + IP-SAN 验证）
   → WSS 控制面（token 认证）；SYNC_STATE / SYNC_SECRET 不签发任何东西
 ```
 
-窗口关闭时不存在任何签发路径。`provisioning_window` 是一个当前 singleton，只含 `state`（`open`/`closed`）、单调 `revision` 与 `last_audit_event_id`；正常 open/close 与其 redacted audit 以同一 transaction 的 guarded operation CAS 提交；AuditEvent 是证据历史，不是 provisioning revision ledger。restart/restore 绝不自动开启：已 `closed` 时零写入，只有已 `open` 时才以 `system:recovery` audit 原子 close 并将 revision 加一；成功后再次恢复不产生第二条 close audit（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。Enrollment 之外、operator API 与任何 Command 都不能获得 token 或证书。
+窗口关闭时不存在任何签发路径。`provisioning_window` 是一个当前 singleton，只含 `state`（`open`/`closed`）、单调 `revision` 与 `last_audit_event_id`；正常 open/close 与其 redacted audit 以同一 transaction 的 guarded operation CAS 提交；AuditEvent 是证据历史，不保留逐次 provisioning revision 状态行。restart/restore 绝不自动开启：已 `closed` 时零写入，只有已 `open` 时才以 `system:recovery` audit 原子 close 并将 revision 加一；成功后再次恢复不产生第二条 close audit（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。Enrollment 之外、operator API 与任何 Command 都不能获得 token 或证书。
+
+`revision` 为 64 位有符号整数；溢出时恢复失败、启动 fail closed，不回绕；db 层以显式 `BigInt` 绑定绕过 Diesel schema 的 `Integer` 渲染。
 
 **验证入口：** 窗口关闭负向测试、OpenAPI/DB/schema tests、无 token upgrade 拒绝测试。
 
@@ -158,7 +160,7 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 
 Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并通过 `PUT /api/v2/commands/{command_id}` 提交。Server 先持久化 Command 与创建 audit 再投递；Device 先持久化 receipt/journal 再确认。相同 ID 必须原样贯穿 HTTP、WSS、journal、CommandStatus 和 audit correlation，且不得重复副作用。
 
-Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。Device 对同 ID 但不同 `frozen_payload_json` 内容 conflict/reject；崩溃和重连后必须能恢复既有状态。每 Command 的 frozen content 只保存在 typed JSON，而不使用一组专用 top-level columns。
+Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。Device journal 保存收到的 Command frame bytes；同 ID 但 frame bytes 不同必须以 `COMMAND_PAYLOAD_CONFLICT` 拒绝。Server 从已存储的 frozen payload 确定性渲染给定 ID 的 wire Command，使每次重新投递的 frame byte-identical；崩溃和重连后必须能恢复既有状态。每 Command 的 frozen content 只保存在 typed JSON，而不使用一组专用 top-level columns。
 
 **验证入口：** UUIDv7 正/反例、`201/200/400/409` contract、same-ID fingerprint conflict、HTTP/WSS/journal/status/audit ID 一致性、crash/fault injection、duplicate delivery、journal durability、reconnect tests。
 
@@ -211,7 +213,7 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 | control CA → Server TLS leaf | 离线生成，runbook 保管；Server leaf 经批准的离线流程签发 | Device 与操作员浏览器；经 package/debconf 预置 `control-ca.crt` |
 | origin CA → 各 Device Gateway leaf | origin CA key 在 Server 上，provisioning 窗口内经 Enrollment 签发 | 各设备本机浏览器；origin CA 证书经包构建期注入 `local-origin-ca.crt` |
 
-不存在 Device Identity CA（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。每张 Gateway certificate 的 `gateway_certificates` row 只有 `certificate_id`、`device_pk`、`enrollment_request_id`、serial、SPKI hash、not-after、status；不存 certificate body，不建吊销分发机制；`revoked`/`retired` 仅作台账状态。
+不存在 Device Identity CA（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。每张 Gateway certificate 的 `gateway_certificates` row 只有 `certificate_id`、`device_pk`、`enrollment_request_id`、serial、SPKI hash、not-after、status；不存 certificate body，不建吊销分发机制；`revoked` / `retired` 状态行予以保留，用于撤销语义与审计回溯。
 
 ## 5. 秘密存储
 
@@ -329,7 +331,7 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 - Device Token 吊销；
 - binding/unbind；
 - Command create（首次持久化）与同 ID/不同 fingerprint 的 conflict 拒绝、`SYNC_STATE`、`SYNC_SECRET` 与终态；同 ID/同 fingerprint 的 replay **不写**新 audit——它是幂等的读等价结果，为它写审计既违反零副作用 replay 规则，又让重试的 client 得以撑大审计表；
-- certificate issuance 与台账状态变化；
+- certificate issuance 与证书状态行变化（含 `revoked` / `retired` 终态保留）；
 - Session/Home action；
 - operator 登录失败限流触发（每个 limiter window 一条，actor 为非人类 system actor；不记录尝试使用的 login name）；
 - operator password 的离线重置（`natsume-server reset-operator-password`，含随之终止的该 operator 全部 session）；
@@ -362,7 +364,8 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 - CSV 原始行；
 - D-Bus/HTTP payload dump；
 - error source chain；
-- operator cookie/token。
+- operator cookie/token；
+- request fingerprint 哈希值（`request_fingerprint_sha256`）——日志与 metrics 只允许 `request_fingerprint_version` 与「匹配/不匹配」判定。
 
 ## 11. 安全变更评审
 

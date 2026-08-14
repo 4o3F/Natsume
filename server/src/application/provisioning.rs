@@ -29,23 +29,26 @@ pub struct ProvisioningWindow {
     pub revision: i64,
 }
 
+/// The current revision cannot be incremented; overflow is the only failure
+/// the pure recovery transition can produce, and callers map it into their
+/// own error vocabulary immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RevisionOverflow;
+
 /// Computes the close-once recovery transition from current facts.
 ///
 /// # Errors
 ///
-/// Returns [`ProvisioningError::RevisionOverflow`] when the current revision
-/// cannot be incremented.
+/// Returns [`RevisionOverflow`] when the current revision cannot be
+/// incremented.
 pub(crate) fn recovered_provisioning_window(
     current: ProvisioningWindow,
-) -> Result<Option<ProvisioningWindow>, ProvisioningError> {
+) -> Result<Option<ProvisioningWindow>, RevisionOverflow> {
     if current.state == ProvisioningWindowState::Closed {
         return Ok(None);
     }
 
-    let revision = current
-        .revision
-        .checked_add(1)
-        .ok_or(ProvisioningError::RevisionOverflow)?;
+    let revision = current.revision.checked_add(1).ok_or(RevisionOverflow)?;
 
     Ok(Some(ProvisioningWindow {
         state: ProvisioningWindowState::Closed,
@@ -57,8 +60,9 @@ pub(crate) fn recovered_provisioning_window(
 ///
 /// # Errors
 ///
-/// Returns [`ProvisioningError::PersistenceFailed`] if provisioning recovery
-/// fails.
+/// Returns [`ProvisioningError::RevisionOverflow`] when the open window's
+/// revision cannot advance, or [`ProvisioningError::PersistenceFailed`] for a
+/// persistence failure.
 pub async fn recover_on_startup(database: &Database) -> Result<RecoveryOutcome, ProvisioningError> {
     db::provisioning::recover_provisioning_window(database).await
 }

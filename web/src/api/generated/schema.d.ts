@@ -219,6 +219,8 @@ export interface components {
       device_id: string;
       seat_id: string;
     };
+    /** Format: uuid */
+    CanonicalUuidV7: string;
     DeviceResponse: {
       device_id: string;
       /** @enum {string} */
@@ -237,14 +239,21 @@ export interface components {
       status: string;
     };
     PutCommandRequest: {
-      /** Format: uuid */
-      device_id: string;
+      device_id: components["schemas"]["CanonicalUuidV7"];
       /** Format: uuid */
       group_correlation_id?: string;
-      input: Record<string, never>;
+      /** @enum {string} */
+      kind:
+        | "sync_state"
+        | "sync_secret"
+        | "open_binding_prompt"
+        | "lock_session"
+        | "unlock_session"
+        | "terminate_session"
+        | "reset_home";
+      payload: Record<string, never>;
       /** Format: int32 */
-      input_version: number;
-      kind: string;
+      payload_version: number;
       reason_code?: string;
     };
     SeatResponse: {
@@ -363,7 +372,7 @@ export interface operations {
       header?: never;
       path: {
         /** @description Canonical lowercase hyphenated UUIDv7 supplied by the Panel */
-        command_id: string;
+        command_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };
@@ -509,7 +518,7 @@ export interface operations {
       header?: never;
       path: {
         /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
-        device_id: string;
+        device_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };
@@ -587,7 +596,7 @@ export interface operations {
       header?: never;
       path: {
         /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
-        device_id: string;
+        device_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };

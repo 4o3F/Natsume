@@ -8,14 +8,18 @@
 | **Target** | Server 从已提交事实计算出的、面向某台 Device 的非秘密期望状态。Target 本身不产生远端副作用。 |
 | **Observed snapshot** | Device 报告的实际可观察状态。它是设备应用状态的唯一业务来源。 |
 | **Drift** | Target 与最新有效 Observed snapshot 的差异。 |
+| **current-fact（当前事实）** | 业务表所保存的当前权威事实；不可替代的历史仅限 redacted `AuditEvent`，以及在所属表段落显式声明了保留理由与消费者的终态行。 |
+| **Identifier（surrogate 标识符）** | Server 或 Panel 生成、对外可见且不承载业务自然语义的标识符；本契约中的 `device_pk`、`operator_id`、`account_id`、`audit_event_id`、`vault_record_id`、`correlation_id`、`group_correlation_id`、`command_id` 与 `enrollment_request_id` 均以 canonical lowercase hyphenated UUIDv7 表示。`seat_id` 与 `machine_hardware_id` 是业务自然键，不属于该术语。 |
 | **Command** | 面向单台 Device 的持久化、可重试远端意图。`commands` 只保存一个 current row；相同 ID 的重投递不会变成第二个业务执行。 |
 | **Command ID / `command_id`** | Panel 在提交前生成的 canonical lowercase hyphenated UUIDv7。相同 ID 原样贯穿 HTTP、Server Command、WSS、Device journal、CommandStatus 和 per-Command audit correlation。 |
-| **Canonical request fingerprint** | Server 对 versioned、domain-separated canonical Command request 计算的 SHA-256，并持久化为 `request_fingerprint_version` 与 `request_fingerprint_sha256`。它区分同一 `command_id` 的 replay 与冲突；不包含重试时间、actor 或 Server 后续派生状态。 |
-| **`frozen_payload_json`** | `commands` 的 typed object column，与 `payload_version` 一起保存每 Command 的 frozen payload；它替代多个 frozen top-level columns 或 dispatcher metadata。 |
+| **Canonical request fingerprint** | Server 对经 JCS（RFC 8785）规范化、versioned 且 domain-separated 的 canonical Command request 计算的 SHA-256，并持久化为 `request_fingerprint_version` 与 `request_fingerprint_sha256`；算法由[契约](contracts.md#command-request-fingerprint-v1)的「Command request fingerprint v1」小节冻结。它区分同一 `command_id` 的 replay 与冲突；不包含 frozen timestamps、actor、session 或 retry time。 |
+| **domain-separated** | 哈希输入使用固定、版本化的域分隔前缀，与其他用途的输入空间隔离的约定。 |
+| **`frozen_payload_json`** | `commands` 的 typed object column，保存通过 per-kind schema 验证的 payload 的 JCS（RFC 8785）规范形，并与 `payload_version` 一起构成每 Command 的 frozen payload；它替代多个 frozen top-level columns 或 dispatcher metadata。 |
 | **Group correlation ID** | 可选、仅用于批量 Command 的查询和审计分组的关联值；不定义顺序、原子性、重试或跨 Device lifecycle。 |
 | **Device** | 一台受管理工作站的业务实体；`devices` row 只有 `device_pk`、unique `machine_hardware_id`、`hardware_identity_quality` 与 `state`。 |
 | **Device Token** | Enrollment 时 Server 生成的 32 字节不透明随机凭据；`device_tokens` row 以 `device_pk` 为键，保存唯一 `enrollment_request_id` 和 32-byte `token_hash`，不保存 TTL、timestamp 或 plaintext token。 |
 | **Provisioning window** | `provisioning_window` 的当前 singleton 开关：`state`、`revision`、`last_audit_event_id`。开启期间 Enrollment 可签发 Device Token 与 Gateway certificate；关闭后不存在任何签发路径。恢复只会将已打开状态 close-once，不会自动打开。 |
+| **close-once** | provisioning 窗口恢复语义：只关闭一次观察到的 `open` current-fact，后续 `closed` observation 不形成第二次恢复事件。 |
 | **Gateway certificate** | provisioning 窗口内经 Enrollment 签发、供本机 Caddy loopback HTTPS 使用的证书；`gateway_certificates` 保存 `certificate_id`、`device_pk`、`enrollment_request_id`、serial、SPKI hash、not-after、status，而不保存 certificate body；私钥在 Client 本地生成且不离机。 |
 | **Machine Hardware ID** | 按固定多源配方（ADR-0032）规范化并派生的稳定机器标识；不是认证凭据。 |
 | **Fleet namespace UUID** | 站点级公开且不可变的 UUID，用于确定性派生 Machine Hardware ID。 |
@@ -31,10 +35,13 @@
 | **Preview token** | Server 签发的 opaque 证据；`pending_import_candidate` 只保存其 `preview_token_hash`，并保存 candidate identity、两个 baseline revision、redacted preview 与 expiry。 |
 | **Import Discard** | Operator 显式终止尚未提交的 candidate：在同一事务删除 `pending_import_candidate` 与其引用的 encrypted payload vault row，并保留 redacted audit；不改变 confirmed configuration、binding、revision 或 Target。 |
 | **Session epoch** | 当前受管桌面会话的身份代际；会话操作必须绑定该 epoch。 |
-| **Home epoch** | 当前 Home 准备事务的身份代际；不得跨 epoch 复用未证明安全的结果。 |
+| **Home epoch** | 每次 `HOME_RESET` 由 Server 分配的严格单调身份代际；不得跨 epoch 复用未证明安全的结果。 |
 | **Client 凭据文件** | Device 本地 root-owned 权限文件（Device Token、Gateway key/leaf、Seat 凭据、LKG），原子写，无应用层加密（ADR-0032）。 |
 | **Server vault** | `server_vault_records` 中的应用层加密秘密存储。每个 `(record_type, subject_id)` 只有一个 row；row 只有 `vault_record_id`、type/subject、nonce 和 ciphertext，不含 format/key/AAD version 或 timestamp。 |
 | **AuditEvent** | 具有 `audit_event_id`、由 audited guarded operation 自行插入并与敏感领域 mutation 原子提交的 redacted 证据；fresh ID 可作为 typed operation input，但已持久化的同 ID 或预插入 audit row 不能重放为新 mutation 的依据。其 envelope 只有 occurred-at、actor、action kind、resource type/optional ID、result、optional reason code、correlation ID、optional group correlation ID 和 typed `redacted_detail_json`；revision/count 等 event-specific detail 只在该 JSON 内。 |
+| **guarded operation** | 具有显式 guard，并在一个 transaction 内原子提交敏感领域 mutation 与其 typed `AuditEvent` 的领域操作。 |
+| **`system:recovery`** | [审计词汇注册表](contracts.md#当前-auditevent-词汇注册表)中表示启动或恢复路径的系统 actor 值。 |
+| **`system:password-reset`** | [审计词汇注册表](contracts.md#当前-auditevent-词汇注册表)中为离线 operator password reset 声明保留的系统 actor 值。 |
 | **LKG** | Last Known Good，本地最后一次已验证可用的配置或证书集合。 |
 | **Caddy BLOCKED** | Caddy 仅提供有限本地状态页，不代理 DOMjudge 的 fail-closed 状态。 |
 | **Caddy READY** | Gateway 证书、配置和目标 upstream 都通过验证后激活的数据面状态。 |

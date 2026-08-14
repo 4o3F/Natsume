@@ -9,6 +9,8 @@ pub enum AppError {
     Logging,
     #[snafu(display("database startup failed"))]
     Database,
+    #[snafu(display("provisioning window revision overflow prevented startup"))]
+    ProvisioningRevisionOverflow,
     #[snafu(display("vault startup failed"))]
     Vault,
     #[snafu(display("TLS startup failed"))]

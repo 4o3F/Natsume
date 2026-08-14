@@ -12,7 +12,7 @@ Device 在 Enrollment 前没有 control credential；进入选手使用期后，
 
 部署是单站点、带宽受限 LAN，UDP 通过性不确定，Server 单实例且需要双向 control semantics。证书授权和 Device control authentication 必须是分离、可测试的小边界，不能让 Client 选择 SAN/profile，也不能永久开放 issuance surface。
 
-provisioning window 的当前开关和它的审计证据是不同事实。保留 revision ledger 会把当前状态误建模为可恢复的业务历史；本设计只需要一个当前 singleton，以及不可替代的 redacted audit lineage。
+provisioning window 的当前开关和它的审计证据是不同事实。保留逐次 revision 状态行会把当前状态误建模为可恢复的业务历史；本设计只需要一个当前 singleton，以及不可替代的 redacted audit lineage。
 
 ## Decision
 
@@ -20,7 +20,7 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 
 - Operator HTTP、Enrollment 与 Device control 共享一个 Server TCP port，但 route、authentication、authorization 和 rate limit 分离。
 - 所有 Device-facing 入口使用 Server-authenticated TLS；Client 校验预配置 trust 与 configured IP-SAN/endpoint，禁止 TOFU 和 dangerous verifier。
-- provisioning window 默认关闭。当前状态由 `provisioning_window` singleton 表示，只有 `state`（`closed`/`open`）、单调 `revision` 和 nullable `last_audit_event_id`；没有 `changed_at`、provisioning revision ledger、通用 instance state 或历史状态表。
+- provisioning window 默认关闭。当前状态由 `provisioning_window` singleton 表示，只有 `state`（`closed`/`open`）、单调 `revision` 和 nullable `last_audit_event_id`；没有 `changed_at`，也不保留逐次 provisioning revision 状态行、通用 instance state 或历史状态表。
 - 正常 open/close 是显式、持久化、受审计的 operator action。guarded operation 接收 fresh `audit_event_id` 作为 typed input，在同一 transaction 内自行插入 redacted `AuditEvent`、以预期 `state + revision` CAS 更新 singleton，并更新 `last_audit_event_id`；已持久化的同 ID 或预插入 audit row 因唯一约束失败，不能重放为新变更的依据。任何 audit、CAS 或 commit 失败都不得留下半个窗口变更。
 - restart、recovery 或 backup restore 不得自动打开窗口。恢复时已 `closed` 的 singleton 零写入、零 recovery audit；只有观察到 `open` 时，Server 才在一个事务内写入 `system:recovery` 的 redacted audit 并 CAS 关闭、`revision + 1`。成功后所有后续恢复都看到 `closed`，因此只关闭并审计一次。
 - 只有窗口内 Enrollment 可以签发 Device Token 或 Gateway certificate；关闭时请求返回稳定错误且 Server state 零变更。
@@ -55,7 +55,7 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 
 - Enrollment pre-shared token：引入 Device 尚未受管前的分发、泄露与恢复通道。
 - TOFU、permissive verifier 或仅 Server-auth transport：无法同时抵抗 LAN impersonation 并建立 Device authority。
-- provisioning revision ledger、append-only window history 或 generic instance state：把当前安全开关扩展成没有消费者的状态模型；审计已提供必要证据。
+- 保留逐次 provisioning revision 状态行、append-only window history 或 generic instance state：把当前安全开关扩展成没有消费者的状态模型；审计已提供必要证据。
 - 恢复时直接重开、每次启动重复 close/audit，或在 audit/CAS 失败后继续：分别扩大签发面、制造重复证据，或破坏安全状态和审计的原子性。
 - generic certificate/artifact endpoint 或 Client-selected SAN/profile：扩大 signing surface 并把授权交给不可信请求。
 - baked/shared Gateway key、self-signed browser trust 或运行期 issuance：破坏每机 key isolation、安装期 hostname 与窗口边界。

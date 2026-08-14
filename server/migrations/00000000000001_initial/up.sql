@@ -91,7 +91,9 @@ CREATE TABLE observed_device_states (
     received_generation INTEGER NOT NULL CHECK (received_generation >= 0),
     applied_generation INTEGER NOT NULL CHECK (applied_generation >= 0),
     applied_hash BLOB CHECK (applied_hash IS NULL OR length(applied_hash) = 32),
-    state_apply_status TEXT NOT NULL,
+    state_apply_status TEXT NOT NULL CHECK (state_apply_status IN (
+        'idle', 'received', 'validating', 'applying', 'applied', 'failed', 'recovery_required'
+    )),
     state_error_code TEXT,
     installed_binding_revision INTEGER CHECK (
         installed_binding_revision IS NULL OR installed_binding_revision >= 0
@@ -99,8 +101,11 @@ CREATE TABLE observed_device_states (
     installed_credential_revision INTEGER CHECK (
         installed_credential_revision IS NULL OR installed_credential_revision >= 0
     ),
-    secret_state TEXT NOT NULL,
-    gateway_state TEXT NOT NULL,
+    secret_state TEXT NOT NULL
+        CHECK (secret_state IN ('absent', 'installed', 'stale', 'failed')),
+    gateway_state TEXT NOT NULL CHECK (gateway_state IN (
+        'absent', 'blocked', 'restoring', 'ready', 'upstream_unhealthy', 'recovery_required'
+    )),
     gateway_configuration_revision INTEGER CHECK (
         gateway_configuration_revision IS NULL OR gateway_configuration_revision >= 0
     ),
@@ -108,10 +113,16 @@ CREATE TABLE observed_device_states (
         gateway_certificate_fingerprint IS NULL OR length(gateway_certificate_fingerprint) = 32
     ),
     gateway_certificate_not_after TEXT,
-    session_state TEXT NOT NULL,
+    session_state TEXT NOT NULL CHECK (session_state IN (
+        'none', 'starting', 'active', 'locked', 'terminating', 'error'
+    )),
     session_instance_id TEXT,
     session_epoch INTEGER CHECK (session_epoch IS NULL OR session_epoch >= 0),
-    session_lock_state TEXT,
+    session_lock_state TEXT CHECK (
+        session_lock_state IS NULL OR session_lock_state IN (
+            'none', 'locking', 'locked', 'unlocking', 'unlocked', 'terminating', 'error'
+        )
+    ),
     session_lock_epoch INTEGER CHECK (session_lock_epoch IS NULL OR session_lock_epoch >= 0),
     active_lock_command_id TEXT,
     session_agent_state TEXT NOT NULL DEFAULT 'absent'
@@ -133,7 +144,9 @@ CREATE TABLE observed_device_states (
     desktop_lock_supported INTEGER NOT NULL DEFAULT 0 CHECK (desktop_lock_supported IN (0, 1)),
     desktop_unlock_supported INTEGER NOT NULL DEFAULT 0 CHECK (desktop_unlock_supported IN (0, 1)),
     session_agent_error_code TEXT,
-    home_state TEXT NOT NULL,
+    home_state TEXT NOT NULL CHECK (home_state IN (
+        'unmounted', 'ready', 'resetting', 'recovery_required', 'error'
+    )),
     observed_at TEXT NOT NULL
 ) STRICT;
 
@@ -215,7 +228,10 @@ CREATE TABLE pending_import_candidate (
 CREATE TABLE commands (
     command_id TEXT PRIMARY KEY,
     device_pk TEXT NOT NULL REFERENCES devices(device_pk),
-    kind TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'sync_state', 'sync_secret', 'open_binding_prompt', 'lock_session',
+        'unlock_session', 'terminate_session', 'reset_home'
+    )),
     state TEXT NOT NULL,
     request_fingerprint_version INTEGER NOT NULL CHECK (request_fingerprint_version >= 1),
     request_fingerprint_sha256 BLOB NOT NULL CHECK (length(request_fingerprint_sha256) = 32),

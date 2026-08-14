@@ -622,7 +622,7 @@ fn seed_constraint_prerequisites(database: &TestDatabase) {
           '2026-01-01T00:00:00.000Z')",
         "INSERT INTO observed_device_states VALUES \
          ('device-1', 1, 'boot-1', 1, 1, NULL, 'applied', NULL, NULL, NULL, \
-          'available', 'ready', NULL, NULL, NULL, 'active', NULL, NULL, NULL, NULL, NULL, \
+          'installed', 'ready', NULL, NULL, NULL, 'active', NULL, NULL, NULL, NULL, NULL, \
           'absent', NULL, NULL, 'hidden', 'hidden', 0, 0, 0, NULL, 'ready', \
           '2026-01-01T00:00:00.000Z')",
     ];
@@ -680,6 +680,14 @@ fn assert_closed_enums(database: &TestDatabase) {
          ('bad-role', 'operator-2', 'owner', 'work-factor-hash')",
         "operator_accounts.role",
     );
+    assert_rejected(
+        database,
+        "INSERT INTO commands VALUES \
+         ('bad-kind', 'device-1', 'unknown', 'queued', 1, zeroblob(32), \
+          NULL, 1, '{}', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', \
+          NULL, NULL, 'command-audit')",
+        "commands.kind",
+    );
     execute_fixture_statement(
         database,
         "UPDATE provisioning_window SET state = 'open', revision = 1, \
@@ -693,7 +701,115 @@ fn assert_closed_enums(database: &TestDatabase) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+fn assert_observed_enum_insert_rejected(
+    database: &TestDatabase,
+    device_pk: &str,
+    state_apply_status: &str,
+    secret_state: &str,
+    gateway_state: &str,
+    session_state: &str,
+    session_lock_state: &str,
+    home_state: &str,
+    contract: &'static str,
+) {
+    let mut connection = database.observer();
+    let hardware_id = format!("hardware-{device_pk}");
+    require_ok(
+        diesel::sql_query("INSERT INTO devices VALUES (?, ?, 'strong', 'enrolled')")
+            .bind::<Text, _>(device_pk)
+            .bind::<Text, _>(&hardware_id)
+            .execute(&mut connection),
+        "observed enum prerequisite device must insert",
+    );
+    let result = diesel::sql_query(
+        "INSERT INTO observed_device_states (device_pk, observed_sequence, boot_id, \
+         received_generation, applied_generation, state_apply_status, secret_state, \
+         gateway_state, session_state, session_lock_state, home_state, observed_at) \
+         VALUES (?, 1, 'boot-invalid-enum', 1, 1, ?, ?, ?, ?, ?, ?, \
+         '2026-01-01T00:00:00.000Z')",
+    )
+    .bind::<Text, _>(device_pk)
+    .bind::<Text, _>(state_apply_status)
+    .bind::<Text, _>(secret_state)
+    .bind::<Text, _>(gateway_state)
+    .bind::<Text, _>(session_state)
+    .bind::<Text, _>(session_lock_state)
+    .bind::<Text, _>(home_state)
+    .execute(&mut connection);
+    assert!(
+        result.is_err(),
+        "{contract} accepted an out-of-domain value"
+    );
+}
+
 fn assert_observed_closed_enums(database: &TestDatabase) {
+    assert_observed_enum_insert_rejected(
+        database,
+        "bad-state-apply-status",
+        "unknown",
+        "installed",
+        "ready",
+        "active",
+        "none",
+        "ready",
+        "observed_device_states.state_apply_status",
+    );
+    assert_observed_enum_insert_rejected(
+        database,
+        "bad-secret-state",
+        "applied",
+        "unknown",
+        "ready",
+        "active",
+        "none",
+        "ready",
+        "observed_device_states.secret_state",
+    );
+    assert_observed_enum_insert_rejected(
+        database,
+        "bad-gateway-state",
+        "applied",
+        "installed",
+        "unknown",
+        "active",
+        "none",
+        "ready",
+        "observed_device_states.gateway_state",
+    );
+    assert_observed_enum_insert_rejected(
+        database,
+        "bad-session-state",
+        "applied",
+        "installed",
+        "ready",
+        "unknown",
+        "none",
+        "ready",
+        "observed_device_states.session_state",
+    );
+    assert_observed_enum_insert_rejected(
+        database,
+        "bad-session-lock-state",
+        "applied",
+        "installed",
+        "ready",
+        "active",
+        "unknown",
+        "ready",
+        "observed_device_states.session_lock_state",
+    );
+    assert_observed_enum_insert_rejected(
+        database,
+        "bad-home-state",
+        "applied",
+        "installed",
+        "ready",
+        "active",
+        "none",
+        "unknown",
+        "observed_device_states.home_state",
+    );
     assert_rejected(
         database,
         "UPDATE observed_device_states SET session_agent_state = 'unknown' \
@@ -794,7 +910,7 @@ fn assert_binary_and_json_domains(database: &TestDatabase) {
     assert_rejected(
         database,
         "INSERT INTO commands VALUES \
-         ('bad-fingerprint', 'device-1', 'SYNC_STATE', 'queued', 1, zeroblob(31), \
+         ('bad-fingerprint', 'device-1', 'sync_state', 'queued', 1, zeroblob(31), \
           NULL, 1, '{}', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', \
           NULL, NULL, 'command-audit')",
         "commands.request_fingerprint_sha256",
@@ -809,7 +925,7 @@ fn assert_binary_and_json_domains(database: &TestDatabase) {
     assert_rejected(
         database,
         "INSERT INTO commands VALUES \
-         ('bad-payload', 'device-1', 'SYNC_STATE', 'queued', 1, zeroblob(32), \
+         ('bad-payload', 'device-1', 'sync_state', 'queued', 1, zeroblob(32), \
           NULL, 1, '[]', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', \
           NULL, NULL, 'command-audit')",
         "commands.frozen_payload_json",
@@ -824,7 +940,7 @@ fn assert_binary_and_json_domains(database: &TestDatabase) {
     assert_rejected(
         database,
         "INSERT INTO commands VALUES \
-         ('bad-terminal-result', 'device-1', 'SYNC_STATE', 'failed', 1, zeroblob(32), \
+         ('bad-terminal-result', 'device-1', 'sync_state', 'failed', 1, zeroblob(32), \
           NULL, 1, '{}', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', \
           NULL, '[]', 'command-audit')",
         "commands.redacted_terminal_result_json",
@@ -923,7 +1039,7 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
     assert_rejected(
         database,
         "INSERT INTO commands VALUES \
-         ('bad-request-version', 'device-1', 'SYNC_STATE', 'queued', 0, zeroblob(32), \
+         ('bad-request-version', 'device-1', 'sync_state', 'queued', 0, zeroblob(32), \
           NULL, 1, '{}', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', \
           NULL, NULL, 'command-audit')",
         "commands.request_fingerprint_version",
@@ -931,7 +1047,7 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
     assert_rejected(
         database,
         "INSERT INTO commands VALUES \
-         ('bad-payload-version', 'device-1', 'SYNC_STATE', 'queued', 1, zeroblob(32), \
+         ('bad-payload-version', 'device-1', 'sync_state', 'queued', 1, zeroblob(32), \
           NULL, 0, '{}', '2026-01-01T00:00:00.000Z', '2026-01-02T00:00:00.000Z', \
           NULL, NULL, 'command-audit')",
         "commands.payload_version",
@@ -1538,6 +1654,78 @@ async fn startup_recovery_closes_an_open_window_exactly_once() {
     )
     .value;
     assert_eq!(window_after, recovered_window);
+    assert_eq!(audit_count_after, audit_count_before);
+    assert_eq!(data_version_after, data_version_before);
+}
+
+#[tokio::test]
+async fn startup_recovery_revision_overflow_is_distinct_and_zero_write() {
+    let fixture = TestDatabase::new();
+    let database = fixture.connect().await;
+    let opening_audit_id = Uuid::now_v7();
+    insert_open_window_fixture(&fixture, opening_audit_id);
+
+    let mut connection = fixture.observer();
+    require_ok(
+        diesel::sql_query(
+            "UPDATE provisioning_window SET revision = ? \
+             WHERE singleton = 1 AND state = 'open'",
+        )
+        .bind::<BigInt, _>(i64::MAX)
+        .execute(&mut connection),
+        "overflow fixture revision must update with an explicit BigInt binding",
+    );
+    let audit_count_before = require_ok(
+        diesel::sql_query("SELECT COUNT(*) AS value FROM audit_events")
+            .get_result::<IntegerRow>(&mut connection),
+        "audit count must be queryable",
+    )
+    .value;
+    let mut observer = fixture.observer();
+    let data_version_before = require_ok(
+        diesel::sql_query("SELECT data_version AS value FROM pragma_data_version")
+            .get_result::<IntegerRow>(&mut observer),
+        "database version must be queryable",
+    )
+    .value;
+
+    let Err(error) = recover_on_startup(&database).await else {
+        panic!("overflow recovery unexpectedly succeeded");
+    };
+    assert_eq!(error, ProvisioningError::RevisionOverflow);
+    assert_eq!(
+        error.to_string(),
+        "the provisioning window revision cannot be incremented"
+    );
+    assert_provisioning_error_is_redacted(error, "overflow-recovery-canary");
+
+    let window_after = require_ok(
+        diesel::sql_query(
+            "SELECT singleton, state, revision, last_audit_event_id \
+             FROM provisioning_window WHERE singleton = 1",
+        )
+        .get_result::<ProvisioningWindowRow>(&mut connection),
+        "overflowed provisioning window must be queryable",
+    );
+    let audit_count_after = require_ok(
+        diesel::sql_query("SELECT COUNT(*) AS value FROM audit_events")
+            .get_result::<IntegerRow>(&mut connection),
+        "audit count must be queryable",
+    )
+    .value;
+    let data_version_after = require_ok(
+        diesel::sql_query("SELECT data_version AS value FROM pragma_data_version")
+            .get_result::<IntegerRow>(&mut observer),
+        "database version must be queryable",
+    )
+    .value;
+
+    assert_eq!(window_after.state, "open");
+    assert_eq!(window_after.revision, i64::MAX);
+    assert_eq!(
+        window_after.last_audit_event_id.as_deref(),
+        Some(opening_audit_id.to_string().as_str())
+    );
     assert_eq!(audit_count_after, audit_count_before);
     assert_eq!(data_version_after, data_version_before);
 }

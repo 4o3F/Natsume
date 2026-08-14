@@ -8,7 +8,7 @@
 
 ## Context
 
-Desktop session 会因 reboot、logout/login、display loss 或 delayed message 被替换；Seat 或 UID 无法区分旧 Agent 与当前 graphical session。Home reset 同样必须在 interrupted prepare/cleanup 后可恢复，不能在 runtime 静默切换 backend。
+Desktop session 会因 reboot、logout/login、display loss 或 delayed message 被替换；Seat 或 UID 无法区分旧 Agent 与当前 graphical session。Home reset 同样必须在中断后可恢复，不能在 runtime 静默切换 backend。
 
 Session Agent 必须运行于真实 graphical session，但不能成为 credential、Server、Caddy 或 privileged-control owner。项目每个赛事周期只部署一个最终镜像，未来 image upgrade 可能改变 desktop capability，因此支持边界应按 image capability 冻结，而不是永久承诺多个桌面名称。
 
@@ -24,10 +24,12 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 ### Home recovery transaction
 
+**2026-08-14 修订：** 面向 Server/operator 的 `HOME_PREPARE` 与 `HOME_CLEAN` Command family 合并为单一 `HOME_RESET`；每次 reset 的 `HomeEpoch` 改由 Server 分配并保持严格单调；中断 reset 的恢复保证实质不变；本地 `PrepareHomeInstance` / `ActivateHomeInstance` / `RecoverHomeInstance` / `GarbageCollectHomeInstance` 分解保持不变，仍只属于实现面，D-Bus surface 保持不变。
+
 - 使用固定 contest user 与 versioned Home template。
 - deployment 基于 target safety、recovery 与 performance evidence 只选择一个 Home backend（OverlayFS 或 staged copy），并记录到 platform evidence；runtime 不静默 fallback。
-- 每次 prepare 获得新 `HomeEpoch`；必须证明 mount/copy、ownership 与 cleanup safety 后才能启动 managed graphical session。
-- cleanup 只作用于匹配的当前 epoch；interrupted prepare/cleanup 通过显式状态和可重入步骤恢复，不确定时 fail closed。
+- 每次 `HOME_RESET` 获得由 Server 分配且严格单调的新 `HomeEpoch`；reset 完成并证明 mount/copy 与 ownership safety 后才能启动 managed graphical session。
+- 中断的 reset 通过显式状态和可重入步骤恢复，不确定时 fail closed。
 - reset 是 operator-present controlled event，不因 session replacement 隐式发生。
 
 ### Direct capability-oriented Agent
@@ -58,7 +60,7 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 ### Positive
 
 - stale Agent 和 delayed action 不能控制 replacement session。
-- Home prepare、cleanup、crash 与 recovery 有明确 epoch boundary。
+- Home reset、crash 与 recovery 有明确 epoch boundary。
 - Agent authority、secret exposure 与 GUI runtime 被严格收窄。
 - image upgrade 对应有限、可重复的 capability validation，而非永久兼容承诺。
 
@@ -71,7 +73,7 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖 stale epoch/Agent/UI、logind replacement、reboot、lease expiry、Caddy-call counter；direct XDG launch、singleton、hidden/lazy UI、typed IPC、IME、HiDPI、focus、display loss 和 crash recovery；Home prepare/cleanup/disk-full/ownership/reboot/repeated reset 与 backend performance；以及 package/Slint runtime closure。
+证据必须覆盖 stale epoch/Agent/UI、logind replacement、reboot、lease expiry、Caddy-call counter；direct XDG launch、singleton、hidden/lazy UI、typed IPC、IME、HiDPI、focus、display loss 和 crash recovery；Home reset/disk-full/ownership/reboot/repeated reset 与 backend performance；以及 package/Slint runtime closure。
 
 出现 simultaneous multi-image/multi-desktop requirement、direct Agent capability 不再可行、新 Home backend 或确认的 overlay requirement 时，以新 ADR 重开。
 
