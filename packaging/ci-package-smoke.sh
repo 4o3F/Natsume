@@ -227,6 +227,7 @@ grep -E '^-rw-r--r-- .*\./etc/xdg/autostart/org.natsume.SessionAgent.desktop$' \
 shellcheck -x \
   packaging/client/debconf/config \
   packaging/client/scripts/postinstall.sh \
+  packaging/hosted-lifecycle.sh \
   packaging/server/scripts/postinstall.sh \
   packaging/target-vm/phase0-lifecycle.sh
 

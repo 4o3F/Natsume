@@ -1,0 +1,75 @@
+# Weekly and pre-release package lifecycle lane on a shared GitHub-hosted runner.
+# This performs real install/reinstall/reconfigure/remove/purge for both packages, but it is
+# not the target OS and has no reboot coverage. The reboot half runs manually through
+# packaging/target-vm/phase0-lifecycle.sh; this workflow alone is not G0 item-12 evidence.
+name: package-lifecycle
+
+on:
+  schedule:
+    - cron: "47 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-lifecycle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package-lifecycle:
+    name: package-lifecycle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Install package validation dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
+            gettext-base libudev-dev pkg-config shellcheck
+
+      - name: Setup pinned Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+        with:
+          toolchain: 1.97.1
+
+      - name: Setup Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: .node-version
+
+      - name: Enable pinned pnpm
+        run: |
+          set -euo pipefail
+          corepack enable
+          corepack prepare pnpm@11.1.0 --activate
+
+      - name: Frozen install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and inspect Deb packages
+        run: bash packaging/ci-package-smoke.sh
+
+      - name: Exercise hosted package lifecycle
+        run: |
+          sudo env \
+            NATSUME_HOSTED_LIFECYCLE_ACK=hosted-destructive-package-lifecycle \
+            bash packaging/hosted-lifecycle.sh \
+            ./dist/packages/ci/natsume-server_2.0.0~ci1_amd64.deb \
+            ./dist/packages/ci/natsume-client_2.0.0~ci1_amd64.deb
+
+      - name: Upload package lifecycle artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: hosted-package-lifecycle-debs
+          path: dist/packages/ci/*.deb
+          if-no-files-found: ignore
+          retention-days: 7
