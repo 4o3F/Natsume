@@ -3,39 +3,77 @@ set -euo pipefail
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repository_root}"
 
-fail() { printf 'policy-scan: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf 'policy-scan: %s\n' "$*" >&2
+  exit 1
+}
 reject_matches() {
-  local description="$1" pattern="$2"; shift 2
+  local description="$1" pattern="$2"
+  shift 2
   local matches status
   if matches=$(grep -RInE --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist \
-      --exclude-dir=playwright-report --exclude-dir=test-results --exclude=policy-scan.sh \
-      -- "${pattern}" "$@"); then
-    printf '%s\n' "${matches}" >&2; fail "${description}"
+    --exclude-dir=playwright-report --exclude-dir=test-results --exclude=policy-scan.sh \
+    -- "${pattern}" "$@"); then
+    printf '%s\n' "${matches}" >&2
+    fail "${description}"
   else
-    status=$?; [[ ${status} -eq 1 ]] || fail "scanner error while checking ${description}"
+    status=$?
+    [[ ${status} -eq 1 ]] || fail "scanner error while checking ${description}"
   fi
 }
 
 # Same as reject_matches, but drops lines matching an allow pattern first. Used where the
 # forbidden token is a short word that also appears in a legitimate unrelated construct.
 reject_matches_except() {
-  local description="$1" pattern="$2" allow="$3"; shift 3
+  local description="$1" pattern="$2" allow="$3"
+  shift 3
   local raw status matches
   raw=$(grep -RInE --exclude-dir=node_modules --exclude-dir=target --exclude-dir=dist \
-      --exclude-dir=playwright-report --exclude-dir=test-results --exclude=policy-scan.sh \
-      -- "${pattern}" "$@") || {
-    status=$?; [[ ${status} -eq 1 ]] || fail "scanner error while checking ${description}"
+    --exclude-dir=playwright-report --exclude-dir=test-results --exclude=policy-scan.sh \
+    -- "${pattern}" "$@") || {
+    status=$?
+    [[ ${status} -eq 1 ]] || fail "scanner error while checking ${description}"
     return 0
   }
   matches=$(printf '%s\n' "${raw}" | grep -vE -- "${allow}") || {
-    status=$?; [[ ${status} -eq 1 ]] || fail "scanner error while filtering ${description}"
+    status=$?
+    [[ ${status} -eq 1 ]] || fail "scanner error while filtering ${description}"
     return 0
   }
-  [[ -z ${matches} ]] || { printf '%s\n' "${matches}" >&2; fail "${description}"; }
+  [[ -z ${matches} ]] || {
+    printf '%s\n' "${matches}" >&2
+    fail "${description}"
+  }
 }
 
 private_key_pattern='BEGIN ([A-Z ]+ )?PRIVATE KEY'
 printf '%s\n' '-----BEGIN PRIVATE KEY-----' | grep -Eq "${private_key_pattern}" || fail 'private-key canary was not detected'
+sqlx_pattern='(^|[^[:alnum:]_])sqlx([^[:alnum:]_]|$)'
+printf '%s\n' 'sqlx::query' | grep -Eq "${sqlx_pattern}" || fail 'SQLx canary was not detected'
+print_macro_pattern='(^|[^[:alnum:]_])(print|println|eprint|eprintln|dbg)!'
+printf '%s\n' 'println!("canary")' | grep -Eq "${print_macro_pattern}" || fail 'Rust print-macro canary was not detected'
+test_support_pattern='(^|[^[:alnum:]_])test_support([^[:alnum:]_]|$)'
+printf '%s\n' 'mod test_support;' | grep -Eq "${test_support_pattern}" || fail 'test-support module canary was not detected'
+discarded_rollback_pattern='let[[:space:]]+_[[:space:]]*=[[:space:]]*rollback_transaction'
+printf '%s\n' 'let _ = rollback_transaction(connection);' | grep -Eq "${discarded_rollback_pattern}" || fail 'discarded rollback canary was not detected'
+diesel_anonymous_trait_pattern='(^|[^[:alnum:]_])(Connection|RunQueryDsl|ExpressionMethods|QueryDsl|OptionalExtension|SimpleConnection|MigrationHarness)[[:space:]]+as[[:space:]]+_'
+printf '%s\n' 'use diesel::{Connection as _, RunQueryDsl as _};' | grep -Eq "${diesel_anonymous_trait_pattern}" || fail 'anonymous Diesel trait canary was not detected'
+legacy_http_auth_helper_pattern='(^|[^[:alnum:]_])authenticated_operator([^[:alnum:]_]|$)'
+printf '%s\n' 'authenticated_operator(headers)' | grep -Eq "${legacy_http_auth_helper_pattern}" || fail 'legacy HTTP authentication helper canary was not detected'
+http_session_authentication_pattern='operator::authenticate_session'
+printf '%s\n' 'operator::authenticate_session(database, credential)' | grep -Eq "${http_session_authentication_pattern}" || fail 'HTTP session authentication canary was not detected'
+http_problem_module_pattern='(^|[^[:alnum:]_])ApiProblem([^[:alnum:]_]|$)|mod[[:space:]]+problem[[:space:]]*;|problem::ApiProblem'
+for canary in 'ApiProblem' 'mod problem;' 'problem::ApiProblem'; do
+  printf '%s\n' "${canary}" | grep -Eq "${http_problem_module_pattern}" || fail 'legacy HTTP problem-module canary was not detected'
+done
+discarded_logging_initialization_pattern='let[[:space:]]+_[[:alnum:]_]*[[:space:]]*=[[:space:]]*tracing::subscriber::set_global_default'
+printf '%s\n' 'let _initialization = tracing::subscriber::set_global_default(subscriber);' | grep -Eq "${discarded_logging_initialization_pattern}" || fail 'discarded logging initialization canary was not detected'
+legacy_logging_initialization_pattern='tracing::subscriber::set_global_default'
+printf '%s\n' 'tracing::subscriber::set_global_default(subscriber)' | grep -Eq "${legacy_logging_initialization_pattern}" || fail 'legacy logging initialization canary was not detected'
+discarded_vault_cleanup_pattern='let[[:space:]]+_[[:alnum:]_]*[[:space:]]*=[[:space:]]*fs::remove_file\(&self\.path\)'
+printf '%s\n' 'let _cleanup_result = fs::remove_file(&self.path);' | grep -Eq "${discarded_vault_cleanup_pattern}" || fail 'discarded vault cleanup canary was not detected'
+silent_password_verifier_pattern='let[[:space:]]+Ok\(verifier\)[[:space:]]*=[[:space:]]*frozen_argon2\(\)[[:space:]]*else'
+printf '%s\n' 'let Ok(verifier) = frozen_argon2() else {' | grep -Eq "${silent_password_verifier_pattern}" || fail 'silent password verifier canary was not detected'
 
 while IFS= read -r usage; do
   reference="${usage##*@}"
@@ -49,11 +87,37 @@ reject_matches 'systemd credential directive is present' 'LoadCredential=|SetCre
 reject_matches 'Identity Guard product surface is present' 'natsume-identity-guard|identity_guard|IdentityGuard' server client crates integration-tests packaging
 reject_matches 'maintainer script downloads at install time' '(^|[^[:alnum:]_])(curl|wget|aria2c)([^[:alnum:]_]|$)|https?://|cargo[[:space:]]+install|pnpm[[:space:]]+(add|install)|npm[[:space:]]+install|go[[:space:]]+install' packaging/client/scripts packaging/server/scripts packaging/client/debconf
 reject_matches 'first-party Rust code depends on anyhow or thiserror' '(^|[^[:alnum:]_])(anyhow|thiserror)([^[:alnum:]_]|$)' server client crates integration-tests
+reject_matches 'SQLx dependency or first-party Rust source usage is present' "${sqlx_pattern}" \
+  Cargo.toml server/Cargo.toml server/src client/*/Cargo.toml client/*/src \
+  crates/*/Cargo.toml crates/*/src integration-tests/Cargo.toml integration-tests/tests
+reject_matches 'first-party Rust source uses direct print macros instead of tracing or an explicit writer' \
+  "${print_macro_pattern}" server/src client/*/src crates/*/src integration-tests/*.rs integration-tests/tests
+reject_matches 'test support is split from its owning tests module' \
+  "${test_support_pattern}" server/src client/*/src crates/*/src integration-tests/tests
+reject_matches 'database rollback result is discarded' \
+  "${discarded_rollback_pattern}" server/src/db
+reject_matches 'Diesel trait is imported anonymously instead of by name' \
+  "${diesel_anonymous_trait_pattern}" server/src integration-tests/tests
+reject_matches 'legacy handler-level HTTP authentication helper is present' \
+  "${legacy_http_auth_helper_pattern}" server/src/http
+reject_matches_except 'HTTP session authentication is outside the authentication middleware' \
+  "${http_session_authentication_pattern}" \
+  '^server/src/http/middleware/authentication\.rs:[0-9]+:' server/src/http
+reject_matches 'legacy HTTP problem module or ApiProblem type is present' \
+  "${http_problem_module_pattern}" server/src/http
+reject_matches 'client logging initialization result is discarded' \
+  "${discarded_logging_initialization_pattern}" client/*/src
+reject_matches 'logging initialization bypasses tracing-subscriber try_init' \
+  "${legacy_logging_initialization_pattern}" server/src/logging.rs client/*/src
+reject_matches 'vault temporary-key cleanup result is discarded' \
+  "${discarded_vault_cleanup_pattern}" server/src/vault.rs
+reject_matches 'password verifier construction failure is collapsed into authentication failure' \
+  "${silent_password_verifier_pattern}" server/src/application/operator.rs
 reject_matches 'first-party Rust code parses Display text for behavior' '\.to_string\(\)[[:space:]]*\.(contains|starts_with|ends_with)|format!\([^;]*\)[[:space:]]*\.(contains|starts_with|ends_with)' server client crates
 reject_matches 'quinn dependency or source usage is present' '(^|[^[:alnum:]_])quinn([^[:alnum:]_]|$)' Cargo.toml server client crates integration-tests packaging web
 reject_matches 'QUIC transport surface is present' '([Qq][Uu][Ii][Cc][[:space:]-]+(transport|control|gateway|session|client|listener|endpoint|over)|[Qq][Uu][Ii][Cc][[:space:]]*=|Device[[:space:]]+[Qq][Uu][Ii][Cc]|mTLS[[:space:]-]+[Qq][Uu][Ii][Cc])' server client crates integration-tests packaging web
 reject_matches 'custom length-prefix framing is present' 'encode_frame|decode_frame|length[-_[:space:]]*(prefix|delimited)' server client crates integration-tests packaging web
-reject_matches 'mTLS client-certificate verifier is present' 'WebPkiClientVerifier|ClientCertVerifier|client_auth' server client crates integration-tests packaging web
+reject_matches_except 'mTLS client-certificate verifier is present' 'WebPkiClientVerifier|ClientCertVerifier|client_auth' '^server/src/tls\.rs:[0-9]+:[[:space:]]*\.with_no_client_auth\(\);?[[:space:]]*$' server client crates integration-tests packaging web
 reject_matches 'spreadsheet adapter surface is present' '(^|[^[:alnum:]_])(calamine|umya-spreadsheet|exceljs|sheetjs|xlsx-js-style)([^[:alnum:]_]|$)' server client crates integration-tests web package.json Cargo.toml
 reject_matches_except 'generic EXEC command capability is present' '(^|[^A-Za-z])EXEC([^A-Za-z]|$)|(^|[^A-Za-z0-9_])exec([^A-Za-z0-9_]|$)|::[[:space:]]*Exec|(^|[^A-Za-z0-9_])Exec[[:space:]]*[,({]' '(pnpm|npm|npx|yarn|cargo)[[:space:]]+(--filter[[:space:]]+[^[:space:]]+[[:space:]]+)?exec[[:space:]]' server client crates integration-tests packaging web
 reject_matches 'generic RUN_SHELL command capability is present' '(^|[^[:alnum:]_])(RUN_SHELL|RunShell|run_shell)([^[:alnum:]_]|$)' server client crates integration-tests packaging web
@@ -66,17 +130,19 @@ reject_matches 'generic SET_ENV command capability is present' '(^|[^[:alnum:]_]
 spreadsheet_file="$(find . -path './target' -prune -o -path './node_modules' -prune -o -type f \( -iname '*.xlsx' -o -iname '*.xls' -o -iname '*.ods' \) -print -quit)"
 [[ -z ${spreadsheet_file} ]] || fail "spreadsheet file is present: ${spreadsheet_file}"
 
-[[ ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service ]] \
-  || fail 'Session Agent systemd user unit is present'
+[[ ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service ]] ||
+  fail 'Session Agent systemd user unit is present'
 require_desktop='packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop'
 [[ -f ${require_desktop} ]] || fail 'Session Agent XDG Autostart entry is missing'
-grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${require_desktop}" \
-  || fail 'Session Agent XDG Autostart Exec is incorrect'
+grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${require_desktop}" ||
+  fail 'Session Agent XDG Autostart Exec is incorrect'
 reject_matches 'direct low-level GUI stack dependency is present in production manifests' \
   '(^|[^[:alnum:]_])(winit|softbuffer|tiny-skia|cosmic-text)([^[:alnum:]_]|$)' \
   Cargo.toml client/*/Cargo.toml server/Cargo.toml crates/*/Cargo.toml
 reject_matches 'systemd-user Session Agent launcher is referenced' \
   'systemctl[[:space:]]+--user|systemd-run[[:space:]]+--user|graphical-session\.target' \
   client packaging/client/rootfs/usr/lib packaging/client/rootfs/etc integration-tests
+
+cargo run --quiet --locked -p natsume-integration-tests --bin production-module-scan
 
 printf 'policy-scan: ok\n'

@@ -1,11 +1,43 @@
 # Server
 
-`natsume-server` is the design owner for the single-contest domain, current-state SQLite migrations, the application-encrypted vault, HTTPS management, provisioning-window Enrollment, Gateway PKI issuance, Device-Token-authenticated WSS control, target calculation, direct single-Device Commands, and redacted audit evidence.
+Stage 3 provides a TLS 1.3-only, HTTP/1.1-only listener with the unauthenticated
+`GET /api/v2/health` process-liveness route.
 
-The Server stores current facts rather than a frozen Seat universe, generic instance state, historical Seat→Account mappings, or historical credential ciphertexts. The `revision_counters` singleton holds `configuration_revision` for confirmed configuration and `binding_revision` (`BindingRevision`) for the Seat↔Device Binding set; `account_mappings` belongs to the former and `device_bindings` records the latter. A provisioning window is one current singleton with only `state`, `revision`, and `last_audit_event_id`, plus audit evidence; restart/restore closes an open window once and never reopens it.
+The single `natsume-server` binary has exactly two mandatory modes and no custom
+arguments or flags. Both load only `/etc/natsume-server/config.toml`; argv never
+carries configuration, paths, or secrets.
 
-A `server_vault_records` row has only `vault_record_id`, `record_type`, `subject_id`, `nonce`, and `ciphertext`. An `audit_events` row has only the audit envelope plus typed `redacted_detail_json`; revisions and counts are event-specific JSON details. Each audited guarded operation inserts its audit row together with its business mutation in one transaction. A fresh `audit_event_id` may be supplied as typed operation input, but an already persisted ID or preinserted audit row cannot be replayed as backing for a new mutation.
+- `natsume-server serve` opens an existing database, runs migrations and
+  provisioning close-once recovery, requires an existing valid vault master
+  key, validates the TLS identity, and then binds. It never creates a database,
+  key, or account and never prompts.
+- `natsume-server bootstrap` creates or migrates the database, creates the vault
+  master key only when absent, reads the login name and password from a TTY
+  (password twice without echo), atomically creates the single first admin with
+  its typed audit row, and exits without TLS preflight or a listener. Repeating
+  it makes zero business writes and exits non-zero.
 
-The Panel generates a canonical lowercase hyphenated UUIDv7 `command_id` before `PUT /api/v2/commands/{command_id}`. The Server returns the existing Command for the same ID and canonical request, and a conflict for the same ID with a different request. Each `commands` row uses `request_fingerprint_version`, `request_fingerprint_sha256`, `payload_version`, and typed `frozen_payload_json` instead of separate frozen payload or dispatcher-metadata columns. Bulk work is independent Commands with optional query-only group correlation.
+The server embeds and runs its Diesel migrations at runtime; deployed packages
+and production hosts do not require Diesel CLI. Developers and CI use exactly
+`diesel_cli 2.3.12` only for `just diesel-schema`, which rebuilds the committed
+private schema artifact from a temporary database and checks the clean diff.
 
-These are frozen ownership and contract boundaries. They do not claim that the Phase 0 HTTP listener, Command repository/dispatcher, WSS journal, or Panel mutation flow is already implemented.
+For initial provisioning, install the package and complete the fixed non-secret
+configuration, then open an interactive TTY and run:
+
+```console
+sudo -u natsume-server -- /usr/bin/natsume-server bootstrap
+```
+
+Enter the login name and the same password twice at the prompts, then start the
+`natsume-server.service`. Do not run bootstrap as root or from automation. The
+package `postinstall` must not run it because install-time secret handling and a
+packaging-script TTY prompt are forbidden. The service always invokes
+`natsume-server serve`.
+
+Known Gate limitations: the 4096-byte session body limit is closed. Header
+count/size and slow-header handling remain open while Stage 4 retains
+`axum::serve`; connection capacity remains `ENV-UNFROZEN` pending S0-4 Device
+fleet evidence for the shared future WSS port. Gate 4 is therefore not fully
+`PASS`. `INV-CERT` integration remains pending, and target platform, browser,
+network, and PKI inputs remain `ENV-UNFROZEN`.

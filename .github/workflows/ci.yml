@@ -92,6 +92,9 @@ jobs:
       - name: Frozen install
         run: pnpm install --frozen-lockfile
 
+      - name: Dependency audit
+        run: pnpm audit --audit-level high --registry https://registry.npmjs.org
+
       - name: Format
         run: pnpm --filter @natsume/web format:check
 
@@ -156,17 +159,18 @@ jobs:
           corepack enable
           corepack prepare pnpm@11.1.0 --activate
 
-      - name: Validate documentation
-        run: just docs-validate
-
       - name: Frozen install
         run: pnpm install --frozen-lockfile
+
+      - name: Validate documentation
+        run: just docs-validate
 
       - name: Regenerate Rust-owned OpenAPI and TypeScript snapshots
         run: |
           set -euo pipefail
           cargo run -p natsume-server --locked --bin export-openapi -- \
             web/openapi/natsume.openapi.json
+          pnpm --filter @natsume/web openapi:lint
           pnpm --filter @natsume/web api:generate
           if ! git diff --exit-code -- \
             web/openapi/natsume.openapi.json \
@@ -189,14 +193,46 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
 
       - name: Setup pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           toolchain: 1.97.1
 
-      - name: Static policy and secret canaries
-        run: bash integration-tests/policy-scan.sh
+      - name: Install policy dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends just
+
+      - name: Install pinned policy tools
+        run: |
+          set -euo pipefail
+          tool_dir="${RUNNER_TEMP}/natsume-policy-tools"
+          mkdir -p "${tool_dir}"
+
+          shfmt_version="$(<tools/shfmt.version)"
+          shfmt_asset="shfmt_v${shfmt_version}_linux_amd64"
+          curl --fail --silent --show-error --location \
+            "https://github.com/mvdan/sh/releases/download/v${shfmt_version}/${shfmt_asset}" \
+            --output "${tool_dir}/${shfmt_asset}"
+          (cd "${tool_dir}" && sha256sum -c "${GITHUB_WORKSPACE}/tools/shfmt.sha256")
+          chmod 0755 "${tool_dir}/${shfmt_asset}"
+          mv "${tool_dir}/${shfmt_asset}" "${tool_dir}/shfmt"
+
+          gitleaks_version="$(<tools/gitleaks.version)"
+          gitleaks_asset="gitleaks_${gitleaks_version}_linux_x64.tar.gz"
+          curl --fail --silent --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks_version}/${gitleaks_asset}" \
+            --output "${tool_dir}/${gitleaks_asset}"
+          (cd "${tool_dir}" && sha256sum -c "${GITHUB_WORKSPACE}/tools/gitleaks.sha256")
+          tar -xzf "${tool_dir}/${gitleaks_asset}" -C "${tool_dir}" gitleaks
+          printf '%s\n' "${tool_dir}" >> "${GITHUB_PATH}"
+
+      - name: Static policy, shell format, and secret scan
+        run: just ci-policy
       - name: XDG-only Session Agent package contract
         run: |
           set -euo pipefail

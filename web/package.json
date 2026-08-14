@@ -11,7 +11,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "e2e": "playwright test",
-    "api:generate": "openapi-typescript openapi/natsume.openapi.json -o src/api/generated/schema.d.ts && prettier --write openapi/natsume.openapi.json src/api/generated/schema.d.ts"
+    "api:generate": "openapi-typescript openapi/natsume.openapi.json -o src/api/generated/schema.d.ts && prettier --write openapi/natsume.openapi.json src/api/generated/schema.d.ts",
+    "openapi:lint": "spectral lint openapi/natsume.openapi.json --ruleset openapi/.spectral.yaml --fail-severity warn"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.0.0",
@@ -26,6 +27,7 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.61.1",
+    "@stoplight/spectral-cli": "6.16.2",
     "@types/node": "24.13.3",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",

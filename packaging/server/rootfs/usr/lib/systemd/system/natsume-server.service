@@ -10,7 +10,7 @@ ConditionPathExists=/etc/natsume/trust/local-origin-ca.crt
 [Service]
 Type=simple
 User=natsume-server
-ExecStart=/usr/bin/natsume-server
+ExecStart=/usr/bin/natsume-server serve
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

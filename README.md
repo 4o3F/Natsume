@@ -15,7 +15,6 @@ Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。本
 - 平台支持状态：[`docs/supported-platform.md`](docs/supported-platform.md)
 - 实施路线图：[`docs/roadmap.md`](docs/roadmap.md)
 - Phase 0 当前状态：[`docs/gates/phase-0-status.md`](docs/gates/phase-0-status.md)
-- 贡献与评审自检：[`CONTRIBUTING.md`](CONTRIBUTING.md)
 
 ## 当前实现边界
 
@@ -100,7 +99,7 @@ pnpm diagrams
 
 ## 文档基线
 
-- 架构来源：Natsume V2 当前主题决策集合（[ADR-0030](docs/adr/0030-foundation-deployment-and-delivery-baseline.md)–[0036](docs/adr/0036-error-architecture-and-public-codes.md)）；
+- 架构来源：Natsume V2 当前主题决策集合（[ADR-0030](docs/adr/0030-foundation-deployment-and-delivery-baseline.md)–[0037](docs/adr/0037-operator-identity-and-server-runtime-secrets.md)）；
 - Phase 0 窗口：2026-07-23 至 2026-08-19；
 - G0 当前结论：`OPEN`，不得从文档存在推断为 Gate 通过。
 

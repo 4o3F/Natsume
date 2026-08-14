@@ -11,7 +11,7 @@ Shared value-only registry for stable Natsume public error identifiers.
 
 ## Consumers
 
-Production consumers keep typed errors in their owning modules and use explicit exhaustive matches to select a categorized stable code. HTTP status, Problem Details, Protobuf, D-Bus, `CommandStatus`, logging, and operator-facing rendering remain owned by their respective adapters.
+Production consumers keep typed errors in their owning modules and use explicit exhaustive matches to select a categorized stable code. HTTP status, error response body, Protobuf, D-Bus, `CommandStatus`, logging, and operator-facing rendering remain owned by their respective adapters.
 
 ## Command request errors
 

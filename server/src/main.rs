@@ -1,5 +1,47 @@
-fn main() {
-    println!(
-        "natsume-server blueprint: provisioning-window HTTPS Enrollment issues Device Token + Gateway certificate; WSS control + SQLite vault"
-    );
+use clap::{Parser, Subcommand};
+use natsume_server::{app, config::ServerConfig, error::AppError};
+
+#[derive(Parser)]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    Serve,
+    Bootstrap,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), AppError> {
+    let cli = Cli::parse();
+    let config = ServerConfig::load().map_err(|_| AppError::Configuration)?;
+    match cli.command {
+        Command::Serve => app::serve(config).await,
+        Command::Bootstrap => app::bootstrap(config).await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn missing_subcommand_is_rejected() {
+        assert!(Cli::try_parse_from(["natsume-server"]).is_err());
+    }
+
+    #[test]
+    fn unknown_subcommand_is_rejected() {
+        assert!(Cli::try_parse_from(["natsume-server", "unknown"]).is_err());
+    }
+
+    #[test]
+    fn extra_arguments_are_rejected() {
+        assert!(Cli::try_parse_from(["natsume-server", "serve", "extra"]).is_err());
+        assert!(Cli::try_parse_from(["natsume-server", "bootstrap", "extra"]).is_err());
+    }
 }

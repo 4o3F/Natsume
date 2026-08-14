@@ -2,10 +2,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE site_identity (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    fleet_namespace_uuid TEXT NOT NULL UNIQUE,
-    control_root_sha256 BLOB NOT NULL CHECK (length(control_root_sha256) = 32),
-    local_origin_root_sha256 BLOB NOT NULL CHECK (length(local_origin_root_sha256) = 32),
-    initialized_at TEXT NOT NULL
+    fleet_namespace_uuid TEXT NOT NULL UNIQUE
 ) STRICT;
 
 CREATE TABLE revision_counters (
@@ -52,12 +49,21 @@ CREATE TABLE audit_events (
     redacted_detail_json TEXT NOT NULL
         CHECK (json_valid(redacted_detail_json) AND json_type(redacted_detail_json) = 'object')
 ) STRICT;
-CREATE INDEX audit_events_by_correlation_id_occurred_at
-    ON audit_events(correlation_id, occurred_at);
-CREATE INDEX audit_events_by_group_correlation_id_occurred_at
-    ON audit_events(group_correlation_id, occurred_at);
-CREATE INDEX audit_events_by_resource_type_resource_id_occurred_at
-    ON audit_events(resource_type, resource_id, occurred_at);
+CREATE TABLE operator_accounts (
+    operator_id TEXT PRIMARY KEY,
+    login_name TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'viewer')),
+    password_hash TEXT NOT NULL
+) STRICT;
+
+CREATE TABLE operator_sessions (
+    session_credential_hash BLOB PRIMARY KEY CHECK (length(session_credential_hash) = 32),
+    operator_id TEXT NOT NULL REFERENCES operator_accounts(operator_id),
+    expires_at TEXT NOT NULL CHECK (
+        strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS NOT NULL
+        AND expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', expires_at)
+    )
+) STRICT;
 
 CREATE TABLE accounts (
     account_id TEXT PRIMARY KEY,
@@ -230,13 +236,6 @@ CREATE TABLE commands (
         ),
     created_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id)
 ) STRICT;
-CREATE INDEX commands_by_device_state_created_at
-    ON commands(device_pk, state, created_at);
-CREATE INDEX commands_by_group_correlation_id_created_at
-    ON commands(group_correlation_id, created_at);
-CREATE INDEX commands_by_deadline_at
-    ON commands(deadline_at);
-
 INSERT INTO revision_counters(singleton, configuration_revision, binding_revision)
 VALUES (1, 0, 0);
 

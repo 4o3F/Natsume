@@ -1,0 +1,10 @@
+title = "Natsume secret scanning"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated and dependency trees"
+paths = [
+  '''(?:^|/)(?:dist|node_modules|playwright-report|target|test-results)(?:/|$)''',
+]

@@ -13,24 +13,30 @@ allow-wildcard-paths = true
 # Exact-version skips only. Prefer deleting entries when upstream converges.
 # Do not use skip-tree or multiple-versions = "allow".
 skip = [
-  # --- RustCrypto 0.10 leftover via sqlx-core + libsystemd (workspace is on 0.11) ---
-  { crate = "sha2@0.10.9", reason = "sqlx-core 0.9 and libsystemd 0.7 still require sha2 ^0.10 while first-party code uses sha2 0.11; remove when both move to sha2 0.11" },
+  # --- RustCrypto 0.10 leftover via libsystemd (workspace is on 0.11) ---
+  { crate = "sha2@0.10.9", reason = "libsystemd 0.7 still requires sha2 ^0.10 while first-party code uses sha2 0.11; remove when libsystemd moves to sha2 0.11" },
   { crate = "hmac@0.12.1", reason = "libsystemd 0.7 requires hmac ^0.12 while hkdf 0.13 pulls hmac 0.13; remove when libsystemd upgrades" },
-  { crate = "digest@0.10.7", reason = "transitively required by sha2 0.10.9 / hmac 0.12.1 (sqlx-core + libsystemd); remove with sha2/hmac 0.10 stack" },
-  { crate = "crypto-common@0.1.7", reason = "transitively required by digest 0.10.7 (sqlx-core + libsystemd); remove with digest 0.10 stack" },
-  { crate = "block-buffer@0.10.4", reason = "transitively required by digest 0.10.7 (sqlx-core + libsystemd); remove with digest 0.10 stack" },
+  { crate = "digest@0.10.7", reason = "transitively required by sha2 0.10.9 and hmac 0.12.1 through libsystemd; remove with the libsystemd RustCrypto 0.10 stack" },
+  { crate = "crypto-common@0.1.7", reason = "transitively required by digest 0.10.7 through libsystemd; remove with digest 0.10" },
+  { crate = "block-buffer@0.10.4", reason = "transitively required by digest 0.10.7 through libsystemd; remove with digest 0.10" },
   { crate = "cpufeatures@0.2.17", reason = "sha2 0.10.9 still requires cpufeatures ^0.2 while chacha20/poly1305/sha2 0.11 need ^0.3; remove when sha2 0.10 leaves the graph" },
 
-  # --- hash table stack: petgraph 0.15 vs sqlx 0.16 vs indexmap 0.17 ---
-  { crate = "hashbrown@0.15.5", reason = "petgraph 0.8.3 (via prost-build) requires hashbrown ^0.15; sqlx-core 0.9 uses 0.16 and indexmap 2.14 uses 0.17; remove when petgraph accepts hashbrown >=0.16" },
-  { crate = "hashbrown@0.16.1", reason = "sqlx-core 0.9 / hashlink 0.11 require hashbrown ^0.16 while indexmap 2.14 requires ^0.17; remove when sqlx-core moves to hashbrown 0.17" },
-  { crate = "foldhash@0.1.5", reason = "only via hashbrown 0.15.5 (petgraph/prost-build); foldhash 0.2 is used by hashbrown 0.16+ and fastbloom; remove with hashbrown 0.15" },
+  # --- Argon2/password-hash: stable 0.5 retains rand_core 0.6 ---
+  { crate = "rand_core@0.6.4", reason = "password-hash 0.5 (required by stable argon2 0.5) still requires rand_core ^0.6 while the rest of the workspace uses rand_core 0.10; first-party Argon2 salt generation is structurally isolated to the existing getrandom OS CSPRNG plus SaltString::encode_b64 and never calls SaltString::generate; remove when argon2 0.6 reaches a stable release whose password-hash 0.6 closure no longer requires rand_core 0.6" },
+
+  # --- hash table stack: petgraph 0.15 vs indexmap 0.17 ---
+  { crate = "hashbrown@0.15.5", reason = "petgraph 0.8.3 (via prost-build) requires hashbrown ^0.15 while indexmap 2.14 requires ^0.17; remove when petgraph accepts hashbrown 0.17" },
 
   # --- getrandom: ring still on 0.2, rest of graph on 0.4 ---
   { crate = "getrandom@0.2.17", reason = "ring 0.17 (rustls) still requires getrandom ^0.2 while uuid/rand/crypto-common use 0.4; remove when ring adopts getrandom 0.3+/0.4" },
 
   # --- syn major split during ecosystem migration to syn 3 ---
-  { crate = "syn@2.0.119", reason = "serde_derive/thiserror-impl/async-trait/serde_repr already on syn 3, but tokio/futures/prost/zbus/sqlx-macros/icu/zeroize derives still require syn 2; remove when those proc-macros migrate to syn 3" },
+  { crate = "syn@2.0.119", reason = "serde_derive/thiserror-impl/async-trait/serde_repr already on syn 3, but Diesel/tokio/futures/prost/zbus/ICU/zeroize derives still require syn 2; remove when those proc-macros migrate to syn 3" },
+
+  # --- Diesel migrations 2.3.2 retains the TOML 0.9 parser stack ---
+  { crate = "toml@0.9.12", reason = "migrations_internals 2.3.0, required by diesel_migrations 2.3.2, pins toml 0.9 while first-party configuration uses toml 1.1; remove when Diesel migrations adopts toml 1.x" },
+  { crate = "toml_datetime@0.7.5", reason = "only retained by toml 0.9.12 through migrations_internals 2.3.0; remove with the Diesel migrations TOML 0.9 stack" },
+  { crate = "winnow@0.7.15", reason = "only retained by toml 0.9.12 through migrations_internals 2.3.0; remove with the Diesel migrations TOML 0.9 stack" },
 ]
 
 [licenses]

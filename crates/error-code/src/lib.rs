@@ -32,9 +32,13 @@ macro_rules! define_error_codes {
                     $(Self::$variant => $stable,)+
                 }
             }
+        }
 
-            #[cfg(test)]
-            pub(crate) const ALL: &'static [Self] = &[$(Self::$variant,)+];
+        #[cfg(test)]
+        pub(crate) mod tests {
+            use super::$name;
+
+            pub(crate) const ALL: &'static [$name] = &[$($name::$variant,)+];
         }
     };
 }
@@ -141,31 +145,31 @@ mod tests {
     fn every_defined_code_round_trips_through_serde() {
         let mut count = 0;
 
-        for &code in CommonErrorCode::ALL {
+        for &code in common::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }
-        for &code in OperatorErrorCode::ALL {
+        for &code in operator::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }
-        for &code in EnrollmentErrorCode::ALL {
+        for &code in enrollment::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }
-        for &code in ControlErrorCode::ALL {
+        for &code in control::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }
-        for &code in DeviceErrorCode::ALL {
+        for &code in device::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }
-        for &code in SessionErrorCode::ALL {
+        for &code in session::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }
-        for &code in HomeErrorCode::ALL {
+        for &code in home::tests::ALL {
             assert_round_trip(code.into());
             count += 1;
         }

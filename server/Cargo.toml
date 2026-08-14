@@ -1,7 +1,6 @@
-
 [package]
 name = "natsume-server"
-description = "Natsume V2 control server with provisioning-window Enrollment and Device Token-authenticated WSS control"
+description = "Natsume V2 control server"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,13 +8,17 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+argon2.workspace = true
 axum.workspace = true
-chacha20poly1305.workspace = true
+clap.workspace = true
+cookie.workspace = true
+diesel.workspace = true
+diesel_migrations.workspace = true
+getrandom.workspace = true
+hex.workspace = true
 natsume-error-code = { path = "../crates/error-code" }
-csv.workspace = true
-hkdf.workspace = true
-natsume-device-protocol = { path = "../crates/device-protocol" }
-natsume-machine-identity = { path = "../crates/machine-identity" }
+percent-encoding.workspace = true
+rpassword.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
 secrecy.workspace = true
@@ -23,12 +26,20 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 snafu.workspace = true
-sqlx.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-rustls.workspace = true
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+rcgen.workspace = true
+regex.workspace = true
+rustls = { workspace = true, features = ["tls12"] }
+tower.workspace = true
 
 [lints]
 workspace = true

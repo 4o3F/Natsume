@@ -4,6 +4,38 @@
  */
 
 export interface paths {
+  "/api/v2/accounts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listAccounts"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/bindings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listBindings"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/commands/{command_id}": {
     parameters: {
       query?: never;
@@ -13,11 +45,59 @@ export interface paths {
     };
     get?: never;
     /**
-     * Persist a Panel-generated Command
-     * @description The Control Panel generates command_id before submission. It must be a canonical lowercase hyphenated UUIDv7. Retrying the same command_id with the same normalized request returns the persisted Command; a different request for that ID conflicts. A persisted response never represents Device execution.
+     * Create or replay a direct Device Command
+     * @description command_id must be a canonical lowercase hyphenated UUIDv7. The same normalized request replays the existing Command. A differing normalized request conflicts.
      */
     put: operations["putCommand"];
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listDevices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/actions/disable": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["disableDevice"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/actions/revoke": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["revokeDevice"];
     delete?: never;
     options?: never;
     head?: never;
@@ -33,7 +113,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Approve Device Enrollment for Device Token-authenticated WSS control */
+    /** Approve a Device enrollment request */
     post: operations["approveEnrollment"];
     delete?: never;
     options?: never;
@@ -66,7 +146,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Upload one authoritative seat/account/password CSV */
+    /** Create a CSV import preview */
     post: operations["createCsvImport"];
     delete?: never;
     options?: never;
@@ -83,8 +163,41 @@ export interface paths {
     };
     get?: never;
     put?: never;
+    /** Commit a validated CSV import */
     post: operations["commitCsvImport"];
     delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/seats": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listSeats"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/session": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getSession"];
+    put?: never;
+    post: operations["createSession"];
+    delete: operations["deleteSession"];
     options?: never;
     head?: never;
     patch?: never;
@@ -94,83 +207,58 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
-    /**
-     * @description The only Panel-command kinds frozen by the Phase 0 HTTP contract.
-     *
-     *     Device-facing payloads remain bounded by this enum; arbitrary remote-management commands are
-     *     intentionally not representable.
-     * @enum {string}
-     */
-    CommandKind: "sync_state" | "sync_secret";
-    /**
-     * @description The persistence state returned by the Command endpoint.
-     *
-     *     This is deliberately not a Device execution outcome.
-     * @enum {string}
-     */
-    CommandPersistenceState: "persisted";
-    EnrollmentApprovalAccepted: {
-      certificate_scope: string;
+    AccountResponse: {
+      account_id: string;
+      /** Format: int64 */
+      credential_revision: number;
+      domjudge_username: string;
+    };
+    BindingResponse: {
+      /** Format: int64 */
+      binding_revision: number;
+      device_id: string;
+      seat_id: string;
+    };
+    DeviceResponse: {
+      device_id: string;
+      /** @enum {string} */
+      hardware_identity_quality: "strong" | "medium" | "weak";
+      /** @enum {string} */
+      state: "enrolled" | "revoked" | "disabled";
+    };
+    ErrorResponse: {
+      code: string;
       /** Format: uuid */
-      enrollment_request_id: string;
+      correlation_id: string;
+      status: number;
+      title: string;
     };
     HealthResponse: {
       status: string;
     };
-    OpenApiProblemDetails: {
-      code: string;
+    PutCommandRequest: {
       /** Format: uuid */
-      correlation_id: string;
-      detail?: string | null;
-      /** Format: int32 */
-      status: number;
-      title: string;
-      type: string;
-    };
-    /** @description A Command accepted into durable Server storage. */
-    PersistedCommandResponse: {
-      /**
-       * Format: uuid
-       * @example 018f0e2e-8c1d-7c5e-8b12-3456789abcde
-       */
-      command_id: string;
       device_id: string;
-      kind: components["schemas"]["CommandKind"];
-      state: components["schemas"]["CommandPersistenceState"];
-    };
-    /**
-     * @description Persisted request data supplied by the Control Panel.
-     *
-     *     Each `kind` has a separate closed object, so unknown or cross-kind input is rejected.
-     */
-    PutCommandRequest:
-      | components["schemas"]["SyncStateCommandRequest"]
-      | components["schemas"]["SyncSecretCommandRequest"];
-    /** @description No secret material is accepted from the Panel. The Server resolves it from the vault later. */
-    SyncSecretCommandInput: Record<string, never>;
-    /** @enum {string} */
-    SyncSecretCommandKind: "sync_secret";
-    SyncSecretCommandRequest: {
-      device_id: string;
-      group_correlation_id?: string | null;
-      input: components["schemas"]["SyncSecretCommandInput"];
+      /** Format: uuid */
+      group_correlation_id?: string;
+      input: Record<string, never>;
       /** Format: int32 */
       input_version: number;
-      kind: components["schemas"]["SyncSecretCommandKind"];
-      reason_code: string;
+      kind: string;
+      reason_code?: string;
     };
-    /** @description No caller-controlled state payload is accepted. The Server derives it from current truth. */
-    SyncStateCommandInput: Record<string, never>;
-    /** @enum {string} */
-    SyncStateCommandKind: "sync_state";
-    SyncStateCommandRequest: {
-      device_id: string;
-      group_correlation_id?: string | null;
-      input: components["schemas"]["SyncStateCommandInput"];
-      /** Format: int32 */
-      input_version: number;
-      kind: components["schemas"]["SyncStateCommandKind"];
-      reason_code: string;
+    SeatResponse: {
+      seat_code: string;
+      seat_id: string;
+    };
+    SessionRequest: {
+      login_name: string;
+      password: string;
+    };
+    SessionResponse: {
+      /** Format: uuid */
+      operator_id: string;
+      role: string;
     };
   };
   responses: never;
@@ -181,15 +269,100 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+  listAccounts: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current Account set */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AccountResponse"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listBindings: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current Seat-to-Device Binding set */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BindingResponse"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
   putCommand: {
     parameters: {
       query?: never;
       header?: never;
       path: {
-        /**
-         * @description Panel-generated canonical lowercase hyphenated UUIDv7 Command identifier
-         * @example 018f0e2e-8c1d-7c5e-8b12-3456789abcde
-         */
+        /** @description Canonical lowercase hyphenated UUIDv7 supplied by the Panel */
         command_id: string;
       };
       cookie?: never;
@@ -200,40 +373,244 @@ export interface operations {
       };
     };
     responses: {
-      /** @description The same command_id and normalized request replayed an existing persisted Command; Device execution is not implied. */
+      /** @description Identical Command request replayed */
       200: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
-        content: {
-          "application/json": components["schemas"]["PersistedCommandResponse"];
-        };
+        content?: never;
       };
-      /** @description The Command was persisted for the first time; Device execution is not implied. */
+      /** @description Command created */
       201: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
-        content: {
-          "application/json": components["schemas"]["PersistedCommandResponse"];
-        };
+        content?: never;
       };
-      /** @description The command_id is not a canonical lowercase hyphenated UUIDv7 (COMMAND_ID_INVALID). The response never echoes the invalid value. */
+      /** @description Command ID is not canonical UUIDv7 */
       400: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["OpenApiProblemDetails"];
+          "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description The command_id is already bound to a different normalized request (COMMAND_REQUEST_CONFLICT). */
+      /** @description Command request conflicts */
       409: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["OpenApiProblemDetails"];
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listDevices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current Device set */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeviceResponse"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  disableDevice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Device disable applied or already satisfied */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Device ID is not canonical UUIDv7 */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device does not exist */
+      404: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  revokeDevice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Device revoke applied or already converged */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Device ID is not canonical UUIDv7 */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device does not exist */
+      404: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
         };
       };
     };
@@ -243,21 +620,20 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description Enrollment request identifier */
         request_id: string;
       };
       cookie?: never;
     };
     requestBody?: never;
     responses: {
-      /** @description Enrollment approval accepted; the provisioning-window Enrollment transaction issues the Device Token and Gateway certificate (ADR-0033) */
+      /** @description Device enrollment approval accepted */
       202: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
-        content: {
-          "application/json": components["schemas"]["EnrollmentApprovalAccepted"];
-        };
+        content?: never;
       };
     };
   };
@@ -270,13 +646,26 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Server process is healthy */
+      /** @description Server is healthy */
       200: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
         };
       };
     };
@@ -290,9 +679,11 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Import staged for masked preview */
+      /** @description CSV import accepted for preview */
       202: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -304,19 +695,207 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description CSV import identifier */
         import_id: string;
       };
       cookie?: never;
     };
     requestBody?: never;
     responses: {
-      /** @description Atomic domain commit; no device sync is implied */
+      /** @description CSV import committed */
       200: {
         headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
+      };
+    };
+  };
+  listSeats: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current Seat set */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SeatResponse"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current session */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  createSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SessionRequest"];
+      };
+    };
+    responses: {
+      /** @description Session established */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionResponse"];
+        };
+      };
+      /** @description Invalid closed request */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body exceeds the session ingress limit */
+      413: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  deleteSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Session terminated or credential-state no-op */
+      204: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Session termination infrastructure failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
       };
     };
   };

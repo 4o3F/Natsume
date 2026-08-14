@@ -16,7 +16,13 @@
     "diagrams": "node docs/validate-mermaid.mjs docs"
   },
   "devDependencies": {
+    "github-slugger": "2.0.0",
     "jsdom": "29.1.1",
-    "mermaid": "11.16.0"
+    "mdast-util-to-string": "4.0.0",
+    "mermaid": "11.16.0",
+    "remark-gfm": "4.0.1",
+    "remark-parse": "11.0.0",
+    "unified": "11.0.5",
+    "unist-util-visit": "5.1.0"
   }
 }

@@ -5,6 +5,11 @@ import openapi from "../../openapi/natsume.openapi.json";
 const ENROLLMENT_APPROVE_PATH =
   "/api/v2/enrollment-requests/{request_id}/actions/approve";
 const COMMAND_PATH = "/api/v2/commands/{command_id}";
+const SESSION_REQUEST_PASSWORD_PATH =
+  "/components/schemas/SessionRequest/properties/password";
+const SESSION_REQUEST_REFERENCE = "#/components/schemas/SessionRequest";
+const UUID_V7_PATTERN =
+  "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 // INV-SECRET-01 forbids exposing secret material on any API surface. Public
 // certificate material (CSR, leaf, chain, SPKI digest) and one-way hashes are
 // not secrets and must stay representable. `\w*_` rather than `.*_` keeps the
@@ -50,22 +55,69 @@ const PUBLIC_KEY_SAMPLES = [
   "not_after",
 ];
 
-function collectObjectKeys(value: unknown, output: string[] = []): string[] {
+interface ObjectKeyOccurrence {
+  key: string;
+  path: string;
+}
+
+function escapeJsonPointer(value: string): string {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function collectObjectKeys(
+  value: unknown,
+  path = "",
+  output: ObjectKeyOccurrence[] = [],
+): ObjectKeyOccurrence[] {
   if (Array.isArray(value)) {
-    for (const item of value) {
-      collectObjectKeys(item, output);
+    for (const [index, item] of value.entries()) {
+      collectObjectKeys(item, `${path}/${index}`, output);
     }
   } else if (value !== null && typeof value === "object") {
     for (const [key, child] of Object.entries(value)) {
-      output.push(key.replaceAll("-", "_"));
-      collectObjectKeys(child, output);
+      const childPath = `${path}/${escapeJsonPointer(key)}`;
+      output.push({ key: key.replaceAll("-", "_"), path: childPath });
+      collectObjectKeys(child, childPath, output);
     }
   }
 
   return output;
 }
 
-describe("Phase 0 Enrollment OpenAPI contract", () => {
+function collectStringPaths(
+  value: unknown,
+  expected: string,
+  path = "",
+  output: string[] = [],
+): string[] {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      collectStringPaths(item, expected, `${path}/${index}`, output);
+    }
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, child] of Object.entries(value)) {
+      collectStringPaths(
+        child,
+        expected,
+        `${path}/${escapeJsonPointer(key)}`,
+        output,
+      );
+    }
+  } else if (value === expected) {
+    output.push(path);
+  }
+
+  return output;
+}
+
+function expectResponseSet(
+  operation: { responses: Record<string, unknown> },
+  expected: string[],
+): void {
+  expect(Object.keys(operation.responses).sort()).toEqual(expected);
+}
+
+describe("Natsume V2 browser OpenAPI contract", () => {
   it("contains the Device Enrollment approval operation", () => {
     const enrollment = openapi.paths[ENROLLMENT_APPROVE_PATH];
 
@@ -75,6 +127,102 @@ describe("Phase 0 Enrollment OpenAPI contract", () => {
 
   it("contains the Rust-owned health operation", () => {
     expect(openapi.paths["/api/v2/health"].get.operationId).toBe("getHealth");
+  });
+
+  it("contains exactly the mounted and declared-but-unmounted frozen surface", () => {
+    expect(Object.keys(openapi.paths).sort()).toEqual([
+      "/api/v2/accounts",
+      "/api/v2/bindings",
+      "/api/v2/commands/{command_id}",
+      "/api/v2/devices",
+      "/api/v2/devices/{device_id}/actions/disable",
+      "/api/v2/devices/{device_id}/actions/revoke",
+      "/api/v2/enrollment-requests/{request_id}/actions/approve",
+      "/api/v2/health",
+      "/api/v2/imports",
+      "/api/v2/imports/{import_id}/actions/commit",
+      "/api/v2/seats",
+      "/api/v2/session",
+    ]);
+
+    expect(openapi.paths["/api/v2/health"].get.operationId).toBe("getHealth");
+    expect(openapi.paths["/api/v2/session"].post.operationId).toBe(
+      "createSession",
+    );
+    expect(openapi.paths["/api/v2/session"].get.operationId).toBe("getSession");
+    expect(openapi.paths["/api/v2/session"].delete.operationId).toBe(
+      "deleteSession",
+    );
+    expect(openapi.paths["/api/v2/seats"].get.operationId).toBe("listSeats");
+    expect(openapi.paths["/api/v2/accounts"].get.operationId).toBe(
+      "listAccounts",
+    );
+    expect(openapi.paths["/api/v2/devices"].get.operationId).toBe(
+      "listDevices",
+    );
+    expect(openapi.paths["/api/v2/bindings"].get.operationId).toBe(
+      "listBindings",
+    );
+    expect(
+      openapi.paths["/api/v2/devices/{device_id}/actions/revoke"].post
+        .operationId,
+    ).toBe("revokeDevice");
+    expect(
+      openapi.paths["/api/v2/devices/{device_id}/actions/disable"].post
+        .operationId,
+    ).toBe("disableDevice");
+
+    expect(openapi.paths["/api/v2/imports"].post.operationId).toBe(
+      "createCsvImport",
+    );
+    expect(
+      openapi.paths["/api/v2/imports/{import_id}/actions/commit"].post
+        .operationId,
+    ).toBe("commitCsvImport");
+    expect(openapi.paths[ENROLLMENT_APPROVE_PATH].post.operationId).toBe(
+      "approveEnrollment",
+    );
+    expect(openapi.paths[COMMAND_PATH].put.operationId).toBe("putCommand");
+  });
+
+  it("freezes the operator response sets, path IDs, and redacted DTOs", () => {
+    for (const path of [
+      "/api/v2/seats",
+      "/api/v2/accounts",
+      "/api/v2/devices",
+      "/api/v2/bindings",
+    ] as const) {
+      expectResponseSet(openapi.paths[path].get, ["200", "401", "500"]);
+    }
+
+    for (const path of [
+      "/api/v2/devices/{device_id}/actions/revoke",
+      "/api/v2/devices/{device_id}/actions/disable",
+    ] as const) {
+      const operation = openapi.paths[path].post;
+      expectResponseSet(operation, ["200", "400", "401", "403", "404", "500"]);
+      const deviceId = operation.parameters?.find(
+        (parameter) => "name" in parameter && parameter.name === "device_id",
+      );
+      expect(deviceId).toMatchObject({
+        in: "path",
+        required: true,
+        schema: { pattern: UUID_V7_PATTERN },
+      });
+    }
+
+    expect(
+      Object.keys(openapi.components.schemas.SessionResponse.properties).sort(),
+    ).toEqual(["operator_id", "role"]);
+    expect(
+      openapi.components.schemas.SessionResponse.additionalProperties,
+    ).toBe(false);
+    expect(
+      openapi.components.schemas.DeviceResponse.properties,
+    ).not.toHaveProperty("machine_hardware_id");
+    expect(
+      openapi.components.schemas.AccountResponse.properties,
+    ).not.toHaveProperty("credential_vault_record_id");
   });
 
   it("preserves imports and freezes the Panel-owned Command resource", () => {
@@ -88,12 +236,7 @@ describe("Phase 0 Enrollment OpenAPI contract", () => {
 
     const command = openapi.paths[COMMAND_PATH].put;
     expect(command.operationId).toBe("putCommand");
-    expect(Object.keys(command.responses).sort()).toEqual([
-      "200",
-      "201",
-      "400",
-      "409",
-    ]);
+    expectResponseSet(command, ["200", "201", "400", "409"]);
     expect(command.description).toContain(
       "canonical lowercase hyphenated UUIDv7",
     );
@@ -108,35 +251,20 @@ describe("Phase 0 Enrollment OpenAPI contract", () => {
       required: true,
       schema: {
         format: "uuid",
-        pattern:
-          "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        pattern: UUID_V7_PATTERN,
       },
     });
 
-    const requestSchema = openapi.components.schemas.PutCommandRequest as {
-      oneOf: Array<{ $ref: string }>;
-    };
-    const schemas = openapi.components.schemas as Record<
-      string,
-      {
-        additionalProperties?: boolean;
-        properties?: Record<string, unknown>;
-      }
-    >;
-    for (const branch of requestSchema.oneOf) {
-      const schemaName = branch.$ref.split("/").at(-1);
-      expect(schemaName).toBeDefined();
-      const schema = schemas[schemaName ?? ""];
-      expect(schema.additionalProperties).toBe(false);
-      expect(Object.keys(schema.properties ?? {}).sort()).toEqual([
-        "device_id",
-        "group_correlation_id",
-        "input",
-        "input_version",
-        "kind",
-        "reason_code",
-      ]);
-    }
+    const requestSchema = openapi.components.schemas.PutCommandRequest;
+    expect(requestSchema.additionalProperties).toBe(false);
+    expect(Object.keys(requestSchema.properties).sort()).toEqual([
+      "device_id",
+      "group_correlation_id",
+      "input",
+      "input_version",
+      "kind",
+      "reason_code",
+    ]);
 
     expect(openapi.paths).not.toHaveProperty(
       "/api/v2/devices/{device_id}/actions/sync-state",
@@ -149,12 +277,23 @@ describe("Phase 0 Enrollment OpenAPI contract", () => {
     );
   });
 
-  it("contains no secret credential object keys", () => {
-    const keys = collectObjectKeys(openapi);
-
-    expect(keys.filter((key) => FORBIDDEN_CREDENTIAL_KEY.test(key))).toEqual(
-      [],
+  it("permits only the write-only session request password credential key", () => {
+    const forbiddenKeys = collectObjectKeys(openapi).filter(({ key }) =>
+      FORBIDDEN_CREDENTIAL_KEY.test(key),
     );
+    expect(forbiddenKeys).toEqual([
+      { key: "password", path: SESSION_REQUEST_PASSWORD_PATH },
+    ]);
+
+    const password =
+      openapi.components.schemas.SessionRequest.properties.password;
+    expect(password.writeOnly).toBe(true);
+    expect(password).not.toHaveProperty("example");
+    expect(password).not.toHaveProperty("examples");
+    expect(password).not.toHaveProperty("default");
+    expect(collectStringPaths(openapi, SESSION_REQUEST_REFERENCE)).toEqual([
+      "/paths/~1api~1v2~1session/post/requestBody/content/application~1json/schema/$ref",
+    ]);
   });
 
   it("recognises secret material while permitting public certificate material", () => {
