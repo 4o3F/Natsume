@@ -8,8 +8,7 @@ const COMMAND_PATH = "/api/v2/commands/{command_id}";
 const SESSION_REQUEST_PASSWORD_PATH =
   "/components/schemas/SessionRequest/properties/password";
 const SESSION_REQUEST_REFERENCE = "#/components/schemas/SessionRequest";
-const CANONICAL_UUID_V7_REFERENCE =
-  "#/components/schemas/CanonicalUuidV7";
+const CANONICAL_UUID_V7_REFERENCE = "#/components/schemas/CanonicalUuidV7";
 const UUID_V7_PATTERN =
   "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 // INV-SECRET-01 forbids exposing secret material on any API surface. Public
