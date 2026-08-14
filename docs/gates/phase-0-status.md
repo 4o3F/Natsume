@@ -21,7 +21,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | 9 | DOMjudge lab：xheaders 登录、brotli 透传、upstream TLS 三项结论 | `BLOCKED-INPUT` |
 | 10 | identity fixture 集（v1 事故 + 代表性异构 + configured-disk copy）决策表测试 | `BLOCKED-INPUT` |
 | 11 | 当期镜像桌面 capability 清单首次执行 | `OPEN`（client 镜像已可得，待执行） |
-| 12 | package/systemd 生命周期 smoke（install/upgrade/remove/purge/reboot） | `OPEN`（client 镜像已可得，client 半可执行；Server 半待 Ubuntu 26 镜像精确值） |
+| 12 | package/systemd 生命周期 smoke（install/upgrade/remove/purge/reboot） | `OPEN`（client 半证据已登记，见已执行记录；Server 半待 Ubuntu 26 镜像精确值） |
 
 ## 已登记证据
 
@@ -49,7 +49,8 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 
 已执行记录：
 
-- 条目 12（client 半）首次运行（2026-08-14，deb 构建于 `294aa87`，client 镜像 VM `icpc`）：**带已知限制，不作为通过证据**——VM 带 V1 残留（`/etc/natsume/config.toml`），安装走 conffile 冲突分支，干净首装路径未验证；owner 确认 fleet 无 V1 残留、仅此测试 VM 有。该次运行暴露 harness 开场静默 purge 掩盖脏状态的缺陷，已以干净 VM 守卫修复（`4ee6195`）。通过证据待干净 VM 重跑。
+- 条目 12（client 半）首次运行（2026-08-14，deb 构建于 `294aa87`，client 镜像 VM `icpc`）：**带已知限制，不作为通过证据**——VM 带 V1 残留（`/etc/natsume/config.toml`），安装走 conffile 冲突分支，干净首装路径未验证；owner 确认 fleet 无 V1 残留、仅此测试 VM 有。该次运行暴露 harness 开场静默 purge 掩盖脏状态的缺陷，已以干净 VM 守卫修复（`4ee6195`）。
+- 条目 12（client 半）干净 VM 运行（2026-08-14 15:15–15:17 UTC，VM `icpc`：`6.14.0-29-generic`/`x86_64`/systemd `255.4-1ubuntu8.10`/glibc `2.39-0ubuntu8.5`；deb 构建于 `294aa87`，harness 含 `4ee6195` 守卫）：干净首装无 conffile 提示；**post-reboot 结论行原样在录**——`phase0-lifecycle: install/reinstall/upgrade/reconfigure/reboot/remove/purge passed`，`COMMAND_EXIT_CODE=0`。已知限制：pre-reboot 自身结论行因 `script` 缓冲随 reboot 丢失未被捕获，其完成性由 post-reboot 的 state-file 前置门（仅在 pre-reboot 末步写入）与全量断言结构性证明。运行中在干净 VM 复现 debconf `$action` 警告，根因为 postinst 函数内懒加载 confmodule 致 frontend 重执行丢参，已修复（`68213a8`），运行时复核并入下一次 VM 运行。client 半证据至此完整；条目关闭待 Server 半（Ubuntu 26 镜像）。
 
 每次验证记录：主题、`COMMIT_SHA`、精确环境或硬件标识、步骤、正向与负向结果、artifact 路径、日期、已知限制。部分通过记为未通过。
 
