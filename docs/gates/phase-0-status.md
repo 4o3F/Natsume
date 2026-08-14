@@ -13,7 +13,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | 1 | 工具链与单一 lockfile 可重现（clean checkout） | `PASS` |
 | 2 | 真实 CI：Rust/Web/契约 clean diff/policy scan/package smoke | `PASS` |
 | 3 | SNAFU + stable ErrorCode 边界与 redaction tests | `OPEN` |
-| 4 | 契约骨架重定向 v2.8：current-state SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/journal/UI 完成 | `OPEN` |
+| 4 | 契约骨架重定向 v2.8：current-fact SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/journal/UI 完成 | `OPEN` |
 | 5 | QUIC/framing/mTLS 骨架与测试残留清除（`crates/device-protocol` framing、CI 断言同步） | `PASS` |
 | 6 | Server/Client 空 Deb 构建+安装+权限/preseed 验证 | `PASS` |
 | 7 | 目标环境：IP-SAN/endpoint 与单 TCP 端口验证 | `BLOCKED-INPUT` |
@@ -40,7 +40,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | G0-IN-004 | Browser、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | 大部分推进：桌面 GNOME + X11；xheaders 协议契约已确认，认证语义核实为 password-verifying；Browser TLS 1.3 非阻塞。剩余 DOMjudge 部署事实（含部署版本 xheaders 语义复核）、Slint closure、lock API |
 | G0-IN-005 | 硬件 fixture 集（v1 事故 + 代表性异构） | `BLOCKED-INPUT`：所需字段与场景清单见 [支持平台](../supported-platform.md) §4.1 |
 | G0-IN-006 | PKI test material（control CA / origin CA）与 owner | `RESOLVED`：两根均自签；test material 由 `rcgen` 运行时生成 |
-| G0-IN-007 | v2.8 current-state、BindingRevision、provisioning recovery、Panel Command ID 与 frozen-payload 文档/术语签收 | `OPEN` |
+| G0-IN-007 | v2.8 current-fact、BindingRevision、provisioning recovery、Panel Command ID 与 frozen-payload 文档/术语签收 | `RESOLVED`（2026-08-14）：五主题 23 项悬项由仓库所有者逐项决议；术语与冻结面实施于 commit `cbe7d46` 与 `b457e7f`，含 fingerprint v1 算法、命令族七族收敛、Identifier 契约、审计词汇注册表与 18 表清单 |
 
 ## 目标环境验证
 

@@ -21,7 +21,7 @@
 
 | Phase | 计划窗口 | 主要结果 | Gate |
 |---|---:|---|---|
-| 0. Engineering Baseline（收尾） | W1–W2 | 可重现仓库、真实 CI、current-state schema 与 Command-ID 契约声明、WSS/token 骨架、空壳 Deb、输入冻结、DOMjudge lab 启动 | G0 |
+| 0. Engineering Baseline（收尾） | W1–W2 | 可重现仓库、真实 CI、current-fact schema 与 Command-ID 契约声明、WSS/token 骨架、空壳 Deb、输入冻结、DOMjudge lab 启动 | G0 |
 | 1. Control Domain | W3–W6 | Server 领域、admin/viewer auth、审计、Command 骨架、Web shell | G1 |
 | 2. CSV Preparation | W7–W9 | 严格 CSV、加密 staging、单 pending + 双 CAS import、Preparation Center | G2 |
 | 3. Identity & Enrollment | W10–W12 | 固定配方 Machine ID、provisioning 窗口、Token + Gateway 联合签发、凭据文件 | G3 |
@@ -75,7 +75,7 @@ Phase 0 不实现产品功能，而是消除会在后续放大的工具链、契
 - **P0.1 Monorepo 与工具链**：Cargo/pnpm/`just`/nFPM 所有权边界；固定 Rust、Node、pnpm、Mermaid、nFPM、Caddy、protoc；单一 lockfile；禁止占位命令和"工具缺失即跳过"。
 - **P0.2 真实 CI**：PR 执行 Rust（fmt/clippy/test/doc/deny）、Web（frozen install/format/lint/typecheck/test/build）、契约 clean diff、policy scan、package smoke。完整 install/upgrade/remove/purge/reboot 生命周期改为每周与发版前执行。
 - **P0.3 Error model**：第一方 typed SNAFU error；stable ErrorCode registry；HTTP error response body 与 Protobuf/D-Bus/CommandStatus 显式映射；redaction tests；禁止解析 Display 文本。
-- **P0.4 Contract skeleton（v2.8 重定向）**：current-only SQL 基线（无 Seat-universe freeze、generic instance state 或未消费的 workflow history）；窗口门禁 Enrollment（token + gateway）；Panel-owned canonical UUIDv7 `command_id` 与声明式 `PUT /api/v2/commands/{command_id}`（`201/200/400/409`、same-ID fingerprint conflict、`request_fingerprint_*` 与 `frozen_payload_json`）；WSS envelope（一帧一消息）、Observed/CommandStatus、Local D-Bus、machine-generated golden、`INV-CERT-01` 两段阶梯负向 contract test。该工作包只冻结 migration/schema/contract，不宣称 HTTP listener、Command repository/dispatcher、Device journal 或 Panel mutation 已实现。**删除**：QUIC/framing 骨架、Device Identity CSR 契约、mTLS client verifier 骨架。
+- **P0.4 Contract skeleton（v2.8 重定向）**：current-fact SQL 基线（无 Seat-universe freeze、generic instance state 或未消费的 workflow history）；窗口门禁 Enrollment（token + gateway）；Panel-owned canonical UUIDv7 `command_id` 与声明式 `PUT /api/v2/commands/{command_id}`（`201/200/400/409`、same-ID fingerprint conflict、`request_fingerprint_*` 与 `frozen_payload_json`）；WSS envelope（一帧一消息）、Observed/CommandStatus、Local D-Bus、machine-generated golden、`INV-CERT-01` 两段阶梯负向 contract test。该工作包只冻结 migration/schema/contract，不宣称 HTTP listener、Command repository/dispatcher、Device journal 或 Panel mutation 已实现。**删除**：QUIC/framing 骨架、Device Identity CSR 契约、mTLS client verifier 骨架。
 - **P0.5 空壳 Deb**：`natsume-server` 与 `natsume-client` 可构建/安装；sysusers/tmpfiles/mode、systemd services、D-Bus policy、package-owned Caddy、XDG Autostart、endpoint/hostname preseed；无 Identity Guard、无 Agent user unit、无 runtime download、无 postinstall CA 生成。
 - **P0.6 目标环境验证（v2.8 收缩）**：在目标 OS（ICPC 派生镜像）与 Server 网络上验证：IP-SAN/endpoint 与单 TCP 端口、窗口签发阶梯 schema 负向断言、**DOMjudge lab：xheaders 登录、brotli 透传、upstream TLS**、identity fixture（v1 事故 + 代表性异构）、当期桌面 capability 清单、package/systemd。结果必须是可复现命令、日志或 artifact。
 
@@ -106,7 +106,7 @@ clean checkout 的 mandatory CI 真实运行；toolchain/artifact pin 可审计�
 
 ### Phase 1：Control Domain
 
-Server current-state migration 与模块边界、Seat/account/current-credential metadata、`account_mappings`、Device 与当前 Binding、Server vault、operator auth（admin/viewer）、只含 correlation/redaction envelope 的 AuditEvent（event-specific revision/count 在 `redacted_detail_json`，由 guarded operation 与领域 mutation 同事务写入）、operator API/OpenAPI、Web navigation 与 auth shell（轮询）。
+Server current-fact migration 与模块边界、Seat/account/current-credential metadata、`account_mappings`、Device 与当前 Binding、Server vault、operator auth（admin/viewer）、只含 correlation/redaction envelope 的 AuditEvent（event-specific revision/count 在 `redacted_detail_json`，由 guarded operation 与领域 mutation 同事务写入）、operator API/OpenAPI、Web navigation 与 auth shell（轮询）。
 
 **G1 覆盖**：migration（空库与升级）、领域不变量与事务原子性、secret redaction、两角色授权、audit 原子性、API generated clean diff、模块依赖扫描。
 
@@ -114,7 +114,7 @@ Server current-state migration 与模块边界、Seat/account/current-credential
 
 `seat,account,password` 固定完整 candidate、encrypted staging、严格解析后唯一 `pending_import_candidate`、Server 权威 redacted diff、双 CAS Import Commit、atomic unbind-and-replace、commit/discard/expiry 的 candidate+payload 终态删除、opaque preview token、Preparation Center。Seat→Account mapping 只推进 `revision_counters.configuration_revision`；Seat↔Device Binding-set mutation 才推进全局 `BindingRevision`。
 
-**G2 覆盖**：malformed/duplicate/empty candidate 拒绝、单 pending mutual exclusion、非秘密维度上的 first/no-op/material 区分、已提交 import 无条件推进全部 `credential_revision` 且 preview 不含密码变化分类、双 CAS 拒绝与重复提交安全失败、candidate/payload 终态删除、current-only credential/mapping、事务回滚、password 明文不进任何普通 surface、CSV → Server truth 且零自动 Command。
+**G2 覆盖**：malformed/duplicate/empty candidate 拒绝、单 pending mutual exclusion、非秘密维度上的 first/no-op/material 区分、已提交 import 无条件推进全部 `credential_revision` 且 preview 不含密码变化分类、双 CAS 拒绝与重复提交安全失败、candidate/payload 终态删除、current-fact credential/mapping、事务回滚、password 明文不进任何普通 surface、CSV → Server truth 且零自动 Command。
 
 ### Phase 3：Identity & Enrollment
 
