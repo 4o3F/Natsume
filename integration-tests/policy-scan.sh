@@ -74,6 +74,10 @@ discarded_vault_cleanup_pattern='let[[:space:]]+_[[:alnum:]_]*[[:space:]]*=[[:sp
 printf '%s\n' 'let _cleanup_result = fs::remove_file(&self.path);' | grep -Eq "${discarded_vault_cleanup_pattern}" || fail 'discarded vault cleanup canary was not detected'
 silent_password_verifier_pattern='let[[:space:]]+Ok\(verifier\)[[:space:]]*=[[:space:]]*frozen_argon2\(\)[[:space:]]*else'
 printf '%s\n' 'let Ok(verifier) = frozen_argon2() else {' | grep -Eq "${silent_password_verifier_pattern}" || fail 'silent password verifier canary was not detected'
+web_title_branch_pattern='\.title[[:space:]]*[!=]==?|\.title\.(includes|startsWith|endsWith|match|search)\('
+for canary in 'if (error.title === "boom") {' 'error.title.includes("boom")'; do
+  printf '%s\n' "${canary}" | grep -Eq "${web_title_branch_pattern}" || fail 'Web title-branch canary was not detected'
+done
 
 while IFS= read -r usage; do
   reference="${usage##*@}"
@@ -113,7 +117,8 @@ reject_matches 'vault temporary-key cleanup result is discarded' \
   "${discarded_vault_cleanup_pattern}" server/src/vault.rs
 reject_matches 'password verifier construction failure is collapsed into authentication failure' \
   "${silent_password_verifier_pattern}" server/src/application/operator.rs
-reject_matches 'first-party Rust code parses Display text for behavior' '\.to_string\(\)[[:space:]]*\.(contains|starts_with|ends_with)|format!\([^;]*\)[[:space:]]*\.(contains|starts_with|ends_with)' server client crates
+reject_matches 'first-party Rust code parses Display text for behavior' '\.to_string\(\)[[:space:]]*\.(contains|starts_with|ends_with)|format!\([^;]*\)[[:space:]]*\.(contains|starts_with|ends_with)' server client crates integration-tests
+reject_matches 'Web code branches on error title text instead of the stable code' "${web_title_branch_pattern}" web/src
 reject_matches 'quinn dependency or source usage is present' '(^|[^[:alnum:]_])quinn([^[:alnum:]_]|$)' Cargo.toml server client crates integration-tests packaging web
 reject_matches 'QUIC transport surface is present' '([Qq][Uu][Ii][Cc][[:space:]-]+(transport|control|gateway|session|client|listener|endpoint|over)|[Qq][Uu][Ii][Cc][[:space:]]*=|Device[[:space:]]+[Qq][Uu][Ii][Cc]|mTLS[[:space:]-]+[Qq][Uu][Ii][Cc])' server client crates integration-tests packaging web
 reject_matches 'custom length-prefix framing is present' 'encode_frame|decode_frame|length[-_[:space:]]*(prefix|delimited)' server client crates integration-tests packaging web
