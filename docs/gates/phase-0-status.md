@@ -2,7 +2,7 @@
 
 > 状态：`DRAFT-STEP0`
 > 最后更新：2026-08-14
-> G0：`OPEN`（4/12 PASS）
+> G0：`OPEN`（5/12 PASS）
 
 Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通过需可定位 evidence（CI run / commit / artifact 链接 + 一行结论），不得以文档存在、scaffold 或截图替代可复现结果。
 
@@ -13,7 +13,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | 1 | 工具链与单一 lockfile 可重现（clean checkout） | `PASS` |
 | 2 | 真实 CI：Rust/Web/契约 clean diff/policy scan/package smoke | `PASS` |
 | 3 | SNAFU + stable ErrorCode 边界与 redaction tests | `OPEN` |
-| 4 | 契约骨架重定向 v2.8：current-fact SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/journal/UI 完成 | `OPEN` |
+| 4 | 契约骨架重定向 v2.8：current-fact SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/journal/UI 完成 | `PASS` |
 | 5 | QUIC/framing/mTLS 骨架与测试残留清除（`crates/device-protocol` framing、CI 断言同步） | `PASS` |
 | 6 | Server/Client 空 Deb 构建+安装+权限/preseed 验证 | `PASS` |
 | 7 | 目标环境：IP-SAN/endpoint 与单 TCP 端口验证 | `BLOCKED-INPUT` |
@@ -27,6 +27,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 
 - 条目 1：[ci run 31794482161](https://github.com/4o3F/Natsume/actions/runs/31794482161)（commit `869804e`，2026-08-14）——clean checkout 上 pinned 工具链断言（`just toolchain`）与 Cargo/pnpm frozen lockfile 全套 lane 通过。
 - 条目 2：[ci run 31794482161](https://github.com/4o3F/Natsume/actions/runs/31794482161) 与 [package-lifecycle run 31792908910](https://github.com/4o3F/Natsume/actions/runs/31792908910)（2026-08-14）——Rust/Web/契约 clean diff（含 diesel schema）/policy scan/package smoke 五条 lane 真实运行全绿；weekly 生命周期 lane 首次真实执行通过。已知限制：该 lane 为 same-version reinstall、无 reboot、非目标 OS（`packaging/README.md`），完整生命周期归条目 12。
+- 条目 4：[ci run 31807486086](https://github.com/4o3F/Natsume/actions/runs/31807486086)（commit `cbe7d46`/`b457e7f`，G0-IN-007 签收，2026-08-14）——current-fact SQL 与 18 表契约测试、fingerprint v1 算法冻结、Panel UUIDv7 `PUT` 全状态码声明、七族 `kind` 与 observed CHECK、WSS envelope/Observed/CommandStatus/D-Bus 契约、descriptor/OpenAPI/TS/diesel golden clean diff 全绿；行为实现与其测试按条目自身声明归对应 Phase。
 - 条目 5：[ci run 31794482161](https://github.com/4o3F/Natsume/actions/runs/31794482161)（2026-08-14）——policy scan 的 QUIC/framing/mTLS/CSR 负向断言与 `protocol_contract` 冻结测试全绿，仓内残留 grep 为零。
 - 条目 6：[package-lifecycle run 31792908910](https://github.com/4o3F/Natsume/actions/runs/31792908910)（2026-08-14）——双包真实 install/reinstall（client 另有 reconfigure）/remove/purge 与 sysusers 账户、tmpfiles mode/owner、endpoint conffile 断言全部通过（shared runner，非目标 OS；目标 OS 验证归条目 7/12）。
 
