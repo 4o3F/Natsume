@@ -38,6 +38,6 @@ Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 �
 - **Web hook 层单测**（2026-08-15）：`useSession`/`useLogin`/`useLogout`/守卫三态目前由 Playwright e2e 行为覆盖；组件级单测需 jsdom + @testing-library，暂缓至有真实回归需求时引入。
 - **Web 深链保留**（2026-08-15，审查 Low 项）：会话过期后登录不回原深链（`path="*"` replace 到 `/`）。体验项，随 Panel 功能页增多时评估。
 - **reset-operator-password 真机 TTY 验证**（2026-08-15）：单测全覆盖；本地 dev 后端上的交互式实跑（改密→浏览器新密码登录闭环）待 owner 时间，非阻断。
-- **`record_type` 封闭枚举强制**（2026-08-15，WP1 审查项，归 Phase 2）：ADR-0037 已冻结 `account_credential` | `import_payload` 枚举，但 migration 列无 CHECK、Rust 侧仅字面量常量；WP2 落 `account_credential` 写入器时一并收敛强制方式。
-- **diesel 生成列 Integer/BigInt 类型地雷**（2026-08-15，WP1 审查项，归 Phase 2）：`revision_counters.*` 与 candidate baseline 列生成为 `Integer`(i32)，现有读写用显式 BigInt cast 规避；后续直接使用生成类型的读者会静默截断（现实值域内不触发）。建议 diesel patch file 改列型；WP2 的 CAS 读写必须沿用显式 cast。
-- **`InvalidPersistedFacts` 卡死态恢复**（2026-08-15，WP1 审查项，归 Phase 2）：pending candidate 与 payload vault row 计数不一致时上传路径 fail closed 且无解锁手段；WP2 的 discard 实现须能清理该态（或登记显式恢复 runbook）。
+- **`record_type` 封闭枚举强制**（2026-08-15，WP1 审查项，归 Phase 2）：**仍开放**；WP2 已落 Rust `VaultRecordType` 封闭枚举，但这只是写入器约定，不构成数据库强制；当前既无 DDL CHECK，也无拒绝未注册值的 schema test，enforcement 采用哪一种仍待决定。
+- **diesel 生成列 Integer/BigInt 类型地雷**（2026-08-15，WP1 审查项，归 Phase 2）：WP2 upheld the explicit-cast discipline（verified）；the generated-i32 truncation landmine for FUTURE readers remains open until a diesel patch-file or schema test lands。
+- **`InvalidPersistedFacts` 卡死态恢复**（2026-08-15，WP1 审查项，归 Phase 2）：**已解决（Phase 2 WP2）**；该态在 `foreign_keys=ON` 下仅经带外操作（备份恢复/DBA）可达；测试以 `PRAGMA foreign_keys=OFF` 人工制造，discard 对 payload vault row 的 0/1 计数容忍清理，缺失 payload 时仍删除 candidate 并审计成功。

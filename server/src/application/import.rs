@@ -6,8 +6,9 @@ use std::{
     str,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
@@ -71,7 +72,8 @@ impl Display for CsvImportError {
 
 impl Error for CsvImportError {}
 
-#[derive(Serialize, Zeroize, ZeroizeOnDrop)]
+#[derive(Deserialize, Serialize, Zeroize, ZeroizeOnDrop)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ImportRow {
     seat_code: String,
     domjudge_username: String,
@@ -242,6 +244,21 @@ pub(crate) struct CandidateRowFacts {
     pub(crate) domjudge_username: String,
 }
 
+pub(crate) struct SealedCommitRow {
+    pub(crate) seat_code: String,
+    pub(crate) domjudge_username: String,
+    pub(crate) nonce: [u8; 24],
+    pub(crate) ciphertext: Vec<u8>,
+}
+
+pub(crate) struct CommitCandidatePayload {
+    pub(crate) candidate_id: Uuid,
+    pub(crate) preview_token_hash: [u8; 32],
+    pub(crate) payload_vault_record_id: Uuid,
+    pub(crate) nonce: Vec<u8>,
+    pub(crate) ciphertext: Vec<u8>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ImportMappingChange {
     seat_code: String,
@@ -356,6 +373,10 @@ impl PreviewToken {
         Sha256::digest(self.bytes.as_slice()).into()
     }
 
+    pub(crate) fn from_bytes(bytes: [u8; PREVIEW_TOKEN_LENGTH]) -> Self {
+        Self { bytes }
+    }
+
     #[must_use]
     pub(crate) const fn as_bytes(&self) -> &[u8; PREVIEW_TOKEN_LENGTH] {
         &self.bytes
@@ -369,6 +390,31 @@ pub(crate) struct CreatedImportCandidate {
     baseline_configuration_revision: i64,
     baseline_binding_revision: i64,
     diff: RedactedImportPreview,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CommittedImportFacts {
+    configuration_revision: i64,
+    binding_revision: i64,
+}
+
+impl CommittedImportFacts {
+    pub(crate) const fn new(configuration_revision: i64, binding_revision: i64) -> Self {
+        Self {
+            configuration_revision,
+            binding_revision,
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn configuration_revision(self) -> i64 {
+        self.configuration_revision
+    }
+
+    #[must_use]
+    pub(crate) const fn binding_revision(self) -> i64 {
+        self.binding_revision
+    }
 }
 
 impl CreatedImportCandidate {
@@ -408,6 +454,8 @@ pub(crate) enum ImportError {
     InvalidCsv(CsvImportError),
     CandidateInvalid,
     CandidatePending,
+    CandidateUnavailable,
+    PreviewStale,
     EntropyUnavailable,
     VaultFailure,
     PersistenceFailure,
@@ -418,6 +466,8 @@ impl Display for ImportError {
         formatter.write_str(match self {
             Self::InvalidCsv(_) | Self::CandidateInvalid => "the import candidate is invalid",
             Self::CandidatePending => "an import candidate is already pending",
+            Self::CandidateUnavailable => "the import candidate is unavailable",
+            Self::PreviewStale => "the import preview is stale",
             Self::EntropyUnavailable => "import candidate entropy is unavailable",
             Self::VaultFailure => "the import payload could not be staged",
             Self::PersistenceFailure => "the import candidate could not be persisted",
@@ -465,6 +515,111 @@ pub(crate) async fn create_import_candidate(
         baseline_binding_revision: created.baseline_binding_revision,
         diff: created.diff,
     })
+}
+
+pub(crate) async fn commit_import(
+    database: &Database,
+    master_key_path: &Path,
+    import_id: Uuid,
+    presented_token: &PreviewToken,
+    correlation_id: CorrelationId,
+) -> Result<CommittedImportFacts, ImportError> {
+    let payload = db::import::read_commit_candidate(database, import_id, correlation_id).await?;
+    let presented_token_hash = presented_token.sha256();
+    if !bool::from(
+        presented_token_hash
+            .as_slice()
+            .ct_eq(payload.preview_token_hash.as_slice()),
+    ) {
+        db::import::audit_preview_token_mismatch(
+            database,
+            payload.candidate_id,
+            payload.preview_token_hash,
+            correlation_id,
+        )
+        .await?;
+        return Err(ImportError::CandidateUnavailable);
+    }
+
+    let vault_session = vault::load(master_key_path).map_err(|_| ImportError::VaultFailure)?;
+    let plaintext = vault_session
+        .open(&payload.nonce, &payload.ciphertext)
+        .map_err(|_| ImportError::VaultFailure)?;
+    let rows = decode_staging_rows(&plaintext)?;
+    drop(plaintext);
+    let sealed_rows = seal_commit_rows(&vault_session, &rows)?;
+    drop(rows);
+    drop(vault_session);
+
+    db::import::commit_import(
+        database,
+        payload.candidate_id,
+        payload.preview_token_hash,
+        payload.payload_vault_record_id,
+        sealed_rows,
+        correlation_id,
+    )
+    .await
+}
+
+pub(crate) async fn discard_import(
+    database: &Database,
+    import_id: Uuid,
+    correlation_id: CorrelationId,
+) -> Result<(), ImportError> {
+    db::import::discard_import(database, import_id, correlation_id).await
+}
+
+fn decode_staging_rows(plaintext: &[u8]) -> Result<Vec<ImportRow>, ImportError> {
+    let rows = serde_json::from_slice::<Vec<ImportRow>>(plaintext)
+        .map_err(|_| ImportError::PersistenceFailure)?;
+    validate_staging_rows(&rows)?;
+    Ok(rows)
+}
+
+fn validate_staging_rows(rows: &[ImportRow]) -> Result<(), ImportError> {
+    if rows.is_empty() || rows.len() > MAX_IMPORT_ROWS {
+        return Err(ImportError::PersistenceFailure);
+    }
+    let mut seat_codes = HashSet::with_capacity(rows.len());
+    let mut account_usernames = HashSet::with_capacity(rows.len());
+    for row in rows {
+        if !valid_staged_field(&row.seat_code, SEAT_CODE_LENGTH_LIMIT)
+            || !valid_staged_field(&row.domjudge_username, ACCOUNT_USERNAME_LENGTH_LIMIT)
+            || !valid_staged_field(&row.password, PASSWORD_LENGTH_LIMIT)
+            || !seat_codes.insert(row.seat_code.as_str())
+            || !account_usernames.insert(row.domjudge_username.as_str())
+        {
+            return Err(ImportError::PersistenceFailure);
+        }
+    }
+    Ok(())
+}
+
+fn valid_staged_field(value: &str, length_limit: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= length_limit
+        && !value.contains(',')
+        && !value.chars().any(char::is_control)
+}
+
+fn seal_commit_rows(
+    vault_session: &vault::VaultSession,
+    rows: &[ImportRow],
+) -> Result<Vec<SealedCommitRow>, ImportError> {
+    let mut sealed_rows = Vec::with_capacity(rows.len());
+    for row in rows {
+        let (nonce, ciphertext) = vault_session
+            .seal(row.password.as_bytes())
+            .map_err(|_| ImportError::VaultFailure)?;
+        sealed_rows.push(SealedCommitRow {
+            seat_code: row.seat_code.clone(),
+            domjudge_username: row.domjudge_username.clone(),
+            nonce,
+            ciphertext,
+        });
+    }
+    Ok(sealed_rows)
 }
 
 #[cfg(test)]
@@ -646,7 +801,10 @@ mod candidate_tests {
         vault::{ensure_master_key, open},
     };
 
-    use super::{CsvImportErrorCategory, ImportError, create_import_candidate};
+    use super::{
+        CsvImportErrorCategory, ImportError, PreviewToken, commit_import, create_import_candidate,
+        discard_import,
+    };
 
     const DEVICE_C: &str = "01900000-0000-7000-8000-000000000201";
     const DEVICE_D: &str = "01900000-0000-7000-8000-000000000202";
@@ -868,6 +1026,42 @@ mod candidate_tests {
     }
 
     #[tokio::test]
+    async fn upload_recovers_expired_candidate_with_missing_payload() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,missing-expired-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let old = candidate_evidence(&fixture.database).await?;
+        expire_current_candidate(&fixture.database).await?;
+        delete_payload_out_of_band(&fixture, &old.payload_vault_record_id)?;
+
+        let replacement = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nB-02,team-b,replacement-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::ExpiredReplacementFailed)?;
+        let current = candidate_evidence(&fixture.database).await?;
+        if current.candidate_id != replacement.candidate_id().to_string()
+            || current.candidate_id == old.candidate_id
+            || expiry_audit(&fixture.database, &old.candidate_id)
+                .await?
+                .count
+                != 1
+        {
+            return Err(TestFailure::ExpiredCandidateWasNotReplaced);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn identical_candidate_has_an_empty_non_secret_diff() -> Result<(), TestFailure> {
         let fixture = ImportFixture::new().await?;
         seed_identical_current_facts(&fixture.database).await?;
@@ -893,6 +1087,487 @@ mod candidate_tests {
             || !created.diff().binding_impacts().is_empty()
         {
             return Err(TestFailure::EmptyDiffChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn material_commit_atomically_replaces_configuration_and_credentials()
+    -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        seed_golden_current_facts(&fixture.database).await?;
+        seed_surviving_binding(&fixture.database).await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\n\
+              A-01,old-b,material-password-old-b\n\
+              B-02,same-a,material-password-same-a\n\
+              F-06,new-f,material-password-new-f",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate = candidate_evidence(&fixture.database).await?;
+        let token_bytes = *created.preview_token().as_bytes();
+
+        let committed = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CommitFailed)?;
+        let state = committed_state(&fixture.database).await?;
+        let old_b = account_for_username(&state.accounts, "old-b")?;
+        let same_a = account_for_username(&state.accounts, "same-a")?;
+        let new_f = account_for_username(&state.accounts, "new-f")?;
+
+        if committed.configuration_revision() != 24
+            || committed.binding_revision() != 32
+            || state.revisions != RevisionEvidence::new(24, 32)
+            || state.seats
+                != vec![
+                    SeatEvidence::new("A-01", "seat-a", Some("account-b"), Some("old-b")),
+                    SeatEvidence::new("B-02", "seat-b", Some("account-a"), Some("same-a")),
+                    SeatEvidence::new(
+                        "F-06",
+                        "F-06",
+                        Some(new_f.account_id.as_str()),
+                        Some("new-f"),
+                    ),
+                ]
+            || state.bindings != vec![BindingEvidence::new("A-01", DEVICE_A, 19)]
+            || state.accounts.len() != 3
+            || !account_nonces_are_pairwise_distinct(&state.accounts)
+            || state.candidate_count != 0
+            || vault_record_count(&fixture.database, &candidate.payload_vault_record_id).await? != 0
+        {
+            return Err(TestFailure::MaterialCommitChanged);
+        }
+
+        if old_b.account_id != "account-b"
+            || old_b.credential_vault_record_id != "vault-b"
+            || old_b.credential_revision != 4
+            || old_b.nonce == vec![0x02]
+            || old_b.ciphertext == vec![0x12]
+            || same_a.account_id != "account-a"
+            || same_a.credential_vault_record_id != "vault-a"
+            || same_a.credential_revision != 3
+            || same_a.nonce == vec![0x01]
+            || same_a.ciphertext == vec![0x11]
+            || new_f.credential_revision != 1
+            || state.accounts.iter().any(|account| {
+                matches!(
+                    account.domjudge_username.as_str(),
+                    "old-c" | "old-d" | "old-e"
+                )
+            })
+            || vault_record_count(&fixture.database, "vault-c").await? != 0
+            || vault_record_count(&fixture.database, "vault-d").await? != 0
+            || vault_record_count(&fixture.database, "vault-e").await? != 0
+        {
+            return Err(TestFailure::CredentialReplacementChanged);
+        }
+        assert_canonical_uuid_v7(&new_f.account_id)?;
+        assert_canonical_uuid_v7(&new_f.credential_vault_record_id)?;
+        assert_opened_credential(&fixture.master_key_path, old_b, b"material-password-old-b")?;
+        assert_opened_credential(
+            &fixture.master_key_path,
+            same_a,
+            b"material-password-same-a",
+        )?;
+        assert_opened_credential(&fixture.master_key_path, new_f, b"material-password-new-f")?;
+
+        assert_material_commit_audit(&fixture.database, &candidate.candidate_id).await?;
+        assert_database_files_exclude_all(
+            &fixture.database_path,
+            &[
+                b"material-password-old-b",
+                b"material-password-same-a",
+                b"material-password-new-f",
+                token_bytes.as_slice(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn no_op_commit_only_rotates_credentials() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        seed_identical_current_facts(&fixture.database).await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nB-02,team-b,no-op-password-b\nA-01,team-a,no-op-password-a",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate_id = created.candidate_id().to_string();
+        let commit_correlation = correlation_id();
+        let committed = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            commit_correlation,
+        )
+        .await
+        .map_err(|_| TestFailure::CommitFailed)?;
+        let state = committed_state(&fixture.database).await?;
+        if committed != super::CommittedImportFacts::new(7, 9)
+            || state.revisions != RevisionEvidence::new(7, 9)
+            || account_for_username(&state.accounts, "team-a")?.credential_revision != 4
+            || account_for_username(&state.accounts, "team-b")?.credential_revision != 5
+            || state.bindings != vec![BindingEvidence::new("A-01", DEVICE_A, 9)]
+            || state.candidate_count != 0
+        {
+            return Err(TestFailure::NoOpCommitChanged);
+        }
+        let audit = audit_for_action(
+            &fixture.database,
+            &candidate_id,
+            "commit_import",
+            "succeeded",
+        )
+        .await?;
+        if audit.correlation_id != commit_correlation.as_text()
+            || audit.redacted_detail_json
+                != r#"{"seats_added_count":0,"seats_removed_count":0,"mappings_changed_count":0,"binding_impact_count":0,"credential_revision_advanced_count":2,"configuration_revision_advanced":false,"binding_revision_advanced":false}"#
+        {
+            return Err(TestFailure::CommitAuditChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mapping_only_commit_advances_configuration_without_binding_revision()
+    -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        seed_identical_current_facts(&fixture.database).await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-b,mapping-password-b\nB-02,team-a,mapping-password-a",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate_id = created.candidate_id().to_string();
+        let committed = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CommitFailed)?;
+        let state = committed_state(&fixture.database).await?;
+        if committed != super::CommittedImportFacts::new(8, 9)
+            || state.revisions != RevisionEvidence::new(8, 9)
+            || state.seats
+                != vec![
+                    SeatEvidence::new(
+                        "A-01",
+                        "same-seat-a",
+                        Some("same-account-b"),
+                        Some("team-b"),
+                    ),
+                    SeatEvidence::new(
+                        "B-02",
+                        "same-seat-b",
+                        Some("same-account-a"),
+                        Some("team-a"),
+                    ),
+                ]
+            || state.bindings != vec![BindingEvidence::new("A-01", DEVICE_A, 9)]
+            || state.candidate_count != 0
+        {
+            return Err(TestFailure::MappingOnlyCommitChanged);
+        }
+        let audit = audit_for_action(
+            &fixture.database,
+            &candidate_id,
+            "commit_import",
+            "succeeded",
+        )
+        .await?;
+        if audit.redacted_detail_json
+            != r#"{"seats_added_count":0,"seats_removed_count":0,"mappings_changed_count":2,"binding_impact_count":0,"credential_revision_advanced_count":2,"configuration_revision_advanced":true,"binding_revision_advanced":false}"#
+        {
+            return Err(TestFailure::CommitAuditChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_commit_writes_only_a_rejected_audit_and_keeps_candidate()
+    -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        seed_identical_current_facts(&fixture.database).await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,stale-password-a\nB-02,team-b,stale-password-b",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        bump_configuration_revision(&fixture.database).await?;
+        let before = committed_state(&fixture.database).await?;
+        let before_audits = audit_count(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let data_version_before = data_version(&mut observer)?;
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::StaleCommitSucceeded);
+        };
+        let after = committed_state(&fixture.database).await?;
+        let data_version_after = data_version(&mut observer)?;
+        if error != ImportError::PreviewStale
+            || before != after
+            || audit_count(&fixture.database).await? != before_audits + 1
+            || data_version_after == data_version_before
+        {
+            return Err(TestFailure::StaleCommitChangedBusinessFacts);
+        }
+        assert_rejected_commit_audit(
+            &fixture.database,
+            &created.candidate_id().to_string(),
+            "baseline_stale",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn token_mismatch_is_unavailable_and_keeps_candidate() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,mismatch-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let before = persistence_snapshot(&fixture.database).await?;
+        let wrong_token = PreviewToken::from_bytes([0x5a; 32]);
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            &wrong_token,
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::MismatchedTokenSucceeded);
+        };
+        let after = persistence_snapshot(&fixture.database).await?;
+        if error != ImportError::CandidateUnavailable
+            || before.candidate_count != after.candidate_count
+            || before.vault_count != after.vault_count
+            || before.candidate_id != after.candidate_id
+            || after.audit_count != before.audit_count + 1
+        {
+            return Err(TestFailure::MismatchedTokenChangedCandidate);
+        }
+        assert_rejected_commit_audit(
+            &fixture.database,
+            &created.candidate_id().to_string(),
+            "preview_token_mismatch",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn commit_observation_lazily_expires_candidate() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,expired-commit-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate = candidate_evidence(&fixture.database).await?;
+        expire_current_candidate(&fixture.database).await?;
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::ExpiredOperationSucceeded);
+        };
+        if error != ImportError::CandidateUnavailable
+            || persistence_snapshot(&fixture.database)
+                .await?
+                .candidate_count
+                != 0
+            || vault_record_count(&fixture.database, &candidate.payload_vault_record_id).await? != 0
+            || expiry_audit(&fixture.database, &candidate.candidate_id)
+                .await?
+                .count
+                != 1
+        {
+            return Err(TestFailure::ExpiryOperationChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discard_observation_lazily_expires_candidate() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,expired-discard-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate = candidate_evidence(&fixture.database).await?;
+        expire_current_candidate(&fixture.database).await?;
+        let Err(error) =
+            discard_import(&fixture.database, created.candidate_id(), correlation_id()).await
+        else {
+            return Err(TestFailure::ExpiredOperationSucceeded);
+        };
+        if error != ImportError::CandidateUnavailable
+            || persistence_snapshot(&fixture.database)
+                .await?
+                .candidate_count
+                != 0
+            || vault_record_count(&fixture.database, &candidate.payload_vault_record_id).await? != 0
+            || expiry_audit(&fixture.database, &candidate.candidate_id)
+                .await?
+                .count
+                != 1
+        {
+            return Err(TestFailure::ExpiryOperationChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_commit_and_repeat_discard_are_zero_write() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,discard-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let before_unknown = persistence_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before_unknown = data_version(&mut observer)?;
+        let unknown_id = Uuid::now_v7();
+        let unknown_token = PreviewToken::from_bytes([0x6b; 32]);
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            unknown_id,
+            &unknown_token,
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::UnknownOperationSucceeded);
+        };
+        if error != ImportError::CandidateUnavailable
+            || persistence_snapshot(&fixture.database).await? != before_unknown
+            || data_version(&mut observer)? != version_before_unknown
+        {
+            return Err(TestFailure::UnknownOperationWroteData);
+        }
+
+        let discard_correlation = correlation_id();
+        discard_import(
+            &fixture.database,
+            created.candidate_id(),
+            discard_correlation,
+        )
+        .await
+        .map_err(|_| TestFailure::DiscardFailed)?;
+        let discard_audit = audit_for_action(
+            &fixture.database,
+            &created.candidate_id().to_string(),
+            "discard_import_candidate",
+            "succeeded",
+        )
+        .await?;
+        if discard_audit.actor != "operator:self"
+            || discard_audit.reason_code.as_deref() != Some("operator_requested")
+            || discard_audit.correlation_id != discard_correlation.as_text()
+            || discard_audit.redacted_detail_json != "{}"
+        {
+            return Err(TestFailure::DiscardAuditChanged);
+        }
+        let before_repeat = persistence_snapshot(&fixture.database).await?;
+        let version_before_repeat = data_version(&mut observer)?;
+        let Err(error) =
+            discard_import(&fixture.database, created.candidate_id(), correlation_id()).await
+        else {
+            return Err(TestFailure::UnknownOperationSucceeded);
+        };
+        if error != ImportError::CandidateUnavailable
+            || persistence_snapshot(&fixture.database).await? != before_repeat
+            || data_version(&mut observer)? != version_before_repeat
+        {
+            return Err(TestFailure::UnknownOperationWroteData);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn discard_recovers_candidate_with_missing_payload() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,wedged-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate = candidate_evidence(&fixture.database).await?;
+        delete_payload_out_of_band(&fixture, &candidate.payload_vault_record_id)?;
+        discard_import(&fixture.database, created.candidate_id(), correlation_id())
+            .await
+            .map_err(|_| TestFailure::DiscardFailed)?;
+        let snapshot = persistence_snapshot(&fixture.database).await?;
+        let audit = audit_for_action(
+            &fixture.database,
+            &candidate.candidate_id,
+            "discard_import_candidate",
+            "succeeded",
+        )
+        .await?;
+        if snapshot.candidate_count != 0
+            || vault_record_count(&fixture.database, &candidate.payload_vault_record_id).await? != 0
+            || audit.redacted_detail_json != "{}"
+        {
+            return Err(TestFailure::WedgedDiscardFailed);
         }
         Ok(())
     }
@@ -964,6 +1639,211 @@ mod candidate_tests {
             .await
             .map_err(|_| TestFailure::FixtureFailed)?
             .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn seed_surviving_binding(database: &Database) -> Result<(), TestFailure> {
+        database
+            .interact(|connection| {
+                connection.batch_execute(&format!(
+                    "INSERT INTO devices \
+                     (device_pk, machine_hardware_id, hardware_identity_quality, state) VALUES \
+                     ('{DEVICE_A}', 'machine-a-surviving', 'strong', 'enrolled'); \
+                     INSERT INTO device_bindings (seat_id, device_pk, binding_revision) \
+                     VALUES ('seat-a', '{DEVICE_A}', 19);"
+                ))
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn bump_configuration_revision(database: &Database) -> Result<(), TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "UPDATE revision_counters SET configuration_revision = \
+                     configuration_revision + 1 WHERE singleton = 1",
+                )
+                .execute(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map(|_| ())
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    fn delete_payload_out_of_band(
+        fixture: &ImportFixture,
+        payload_vault_record_id: &str,
+    ) -> Result<(), TestFailure> {
+        let mut connection = fixture.observer()?;
+        connection
+            .batch_execute("PRAGMA foreign_keys = OFF")
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        diesel::sql_query("DELETE FROM server_vault_records WHERE vault_record_id = ?")
+            .bind::<Text, _>(payload_vault_record_id)
+            .execute(&mut connection)
+            .map(|_| ())
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn committed_state(database: &Database) -> Result<CommittedState, TestFailure> {
+        database
+            .interact(|connection| {
+                let revisions = diesel::sql_query(
+                    "SELECT configuration_revision, binding_revision \
+                     FROM revision_counters WHERE singleton = 1",
+                )
+                .get_result::<RevisionEvidence>(connection)?;
+                let seats = diesel::sql_query(
+                    "SELECT s.seat_code, s.seat_id, m.account_id, a.domjudge_username \
+                     FROM seats s \
+                     LEFT JOIN account_mappings m ON m.seat_id = s.seat_id \
+                     LEFT JOIN accounts a ON a.account_id = m.account_id \
+                     ORDER BY s.seat_code",
+                )
+                .load::<SeatEvidence>(connection)?;
+                let accounts = diesel::sql_query(
+                    "SELECT a.domjudge_username, a.account_id, a.credential_vault_record_id, \
+                     a.credential_revision, v.record_type, v.subject_id, v.nonce, v.ciphertext \
+                     FROM accounts a \
+                     JOIN server_vault_records v \
+                       ON v.vault_record_id = a.credential_vault_record_id \
+                     ORDER BY a.domjudge_username",
+                )
+                .load::<AccountEvidence>(connection)?;
+                let bindings = diesel::sql_query(
+                    "SELECT s.seat_code, b.device_pk, b.binding_revision \
+                     FROM device_bindings b JOIN seats s ON s.seat_id = b.seat_id \
+                     ORDER BY s.seat_code",
+                )
+                .load::<BindingEvidence>(connection)?;
+                let candidate_count =
+                    diesel::sql_query("SELECT COUNT(*) AS value FROM pending_import_candidate")
+                        .get_result::<CountRow>(connection)?
+                        .value;
+                Ok::<CommittedState, diesel::result::Error>(CommittedState {
+                    revisions,
+                    seats,
+                    accounts,
+                    bindings,
+                    candidate_count,
+                })
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+            .map_err(|_| TestFailure::EvidenceFailed)
+    }
+
+    fn account_for_username<'a>(
+        accounts: &'a [AccountEvidence],
+        username: &str,
+    ) -> Result<&'a AccountEvidence, TestFailure> {
+        accounts
+            .iter()
+            .find(|account| account.domjudge_username == username)
+            .ok_or(TestFailure::EvidenceFailed)
+    }
+
+    fn account_nonces_are_pairwise_distinct(accounts: &[AccountEvidence]) -> bool {
+        accounts.iter().enumerate().all(|(index, account)| {
+            accounts[index + 1..]
+                .iter()
+                .all(|other| account.nonce != other.nonce)
+        })
+    }
+
+    fn assert_opened_credential(
+        master_key_path: &Path,
+        account: &AccountEvidence,
+        expected: &[u8],
+    ) -> Result<(), TestFailure> {
+        if account.record_type != "account_credential"
+            || account.subject_id != account.account_id
+            || account.nonce.len() != 24
+        {
+            return Err(TestFailure::CredentialReplacementChanged);
+        }
+        let opened = open(master_key_path, &account.nonce, &account.ciphertext)
+            .map_err(|_| TestFailure::PayloadOpenFailed)?;
+        if opened.as_slice() != expected {
+            return Err(TestFailure::CredentialReplacementChanged);
+        }
+        Ok(())
+    }
+
+    async fn audit_for_action(
+        database: &Database,
+        resource_id: &str,
+        action_kind: &str,
+        result: &str,
+    ) -> Result<AuditEvidence, TestFailure> {
+        let resource_id = resource_id.to_owned();
+        let action_kind = action_kind.to_owned();
+        let result = result.to_owned();
+        database
+            .interact(move |connection| {
+                diesel::sql_query(
+                    "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
+                     correlation_id, redacted_detail_json FROM audit_events \
+                     WHERE resource_id = ? AND action_kind = ? AND result = ?",
+                )
+                .bind::<Text, _>(resource_id)
+                .bind::<Text, _>(action_kind)
+                .bind::<Text, _>(result)
+                .get_result::<AuditEvidence>(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+            .map_err(|_| TestFailure::EvidenceFailed)
+    }
+
+    async fn assert_rejected_commit_audit(
+        database: &Database,
+        candidate_id: &str,
+        reason: &str,
+    ) -> Result<(), TestFailure> {
+        let audit = audit_for_action(database, candidate_id, "commit_import", "rejected").await?;
+        if audit.actor != "operator:self"
+            || audit.action_kind != "commit_import"
+            || audit.resource_type != "import_candidate"
+            || audit.resource_id.as_deref() != Some(candidate_id)
+            || audit.result != "rejected"
+            || audit.reason_code.as_deref() != Some(reason)
+            || audit.redacted_detail_json != "{}"
+        {
+            return Err(TestFailure::CommitAuditChanged);
+        }
+        Ok(())
+    }
+
+    async fn assert_material_commit_audit(
+        database: &Database,
+        candidate_id: &str,
+    ) -> Result<(), TestFailure> {
+        let audit = audit_for_action(database, candidate_id, "commit_import", "succeeded").await?;
+        if audit.actor != "operator:self"
+            || audit.resource_type != "import_candidate"
+            || audit.resource_id.as_deref() != Some(candidate_id)
+            || audit.reason_code.as_deref() != Some("operator_requested")
+            || audit.redacted_detail_json
+                != r#"{"seats_added_count":1,"seats_removed_count":3,"mappings_changed_count":2,"binding_impact_count":2,"credential_revision_advanced_count":3,"configuration_revision_advanced":true,"binding_revision_advanced":true}"#
+        {
+            return Err(TestFailure::CommitAuditChanged);
+        }
+        Ok(())
+    }
+
+    async fn audit_count(database: &Database) -> Result<i64, TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query("SELECT COUNT(*) AS value FROM audit_events")
+                    .get_result::<CountRow>(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+            .map(|row| row.value)
+            .map_err(|_| TestFailure::EvidenceFailed)
     }
 
     async fn candidate_evidence(database: &Database) -> Result<CandidateEvidence, TestFailure> {
@@ -1122,6 +2002,16 @@ mod candidate_tests {
         Ok(())
     }
 
+    fn assert_database_files_exclude_all(
+        path: &Path,
+        canaries: &[&[u8]],
+    ) -> Result<(), TestFailure> {
+        for canary in canaries {
+            assert_database_files_exclude(path, canary)?;
+        }
+        Ok(())
+    }
+
     fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
         !needle.is_empty()
             && haystack
@@ -1182,6 +2072,100 @@ mod candidate_tests {
     impl Drop for ImportFixture {
         fn drop(&mut self) {
             let _cleanup_result = fs::remove_dir_all(&self.directory_path);
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct CommittedState {
+        revisions: RevisionEvidence,
+        seats: Vec<SeatEvidence>,
+        accounts: Vec<AccountEvidence>,
+        bindings: Vec<BindingEvidence>,
+        candidate_count: i64,
+    }
+
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    struct RevisionEvidence {
+        #[diesel(sql_type = BigInt)]
+        configuration_revision: i64,
+        #[diesel(sql_type = BigInt)]
+        binding_revision: i64,
+    }
+
+    impl RevisionEvidence {
+        const fn new(configuration_revision: i64, binding_revision: i64) -> Self {
+            Self {
+                configuration_revision,
+                binding_revision,
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    struct SeatEvidence {
+        #[diesel(sql_type = Text)]
+        seat_code: String,
+        #[diesel(sql_type = Text)]
+        seat_id: String,
+        #[diesel(sql_type = Nullable<Text>)]
+        account_id: Option<String>,
+        #[diesel(sql_type = Nullable<Text>)]
+        domjudge_username: Option<String>,
+    }
+
+    impl SeatEvidence {
+        fn new(
+            seat_code: &str,
+            seat_id: &str,
+            account_id: Option<&str>,
+            domjudge_username: Option<&str>,
+        ) -> Self {
+            Self {
+                seat_code: seat_code.to_owned(),
+                seat_id: seat_id.to_owned(),
+                account_id: account_id.map(str::to_owned),
+                domjudge_username: domjudge_username.map(str::to_owned),
+            }
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    struct AccountEvidence {
+        #[diesel(sql_type = Text)]
+        domjudge_username: String,
+        #[diesel(sql_type = Text)]
+        account_id: String,
+        #[diesel(sql_type = Text)]
+        credential_vault_record_id: String,
+        #[diesel(sql_type = BigInt)]
+        credential_revision: i64,
+        #[diesel(sql_type = Text)]
+        record_type: String,
+        #[diesel(sql_type = Text)]
+        subject_id: String,
+        #[diesel(sql_type = Binary)]
+        nonce: Vec<u8>,
+        #[diesel(sql_type = Binary)]
+        ciphertext: Vec<u8>,
+    }
+
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    struct BindingEvidence {
+        #[diesel(sql_type = Text)]
+        seat_code: String,
+        #[diesel(sql_type = Text)]
+        device_pk: String,
+        #[diesel(sql_type = BigInt)]
+        binding_revision: i64,
+    }
+
+    impl BindingEvidence {
+        fn new(seat_code: &str, device_pk: &str, binding_revision: i64) -> Self {
+            Self {
+                seat_code: seat_code.to_owned(),
+                device_pk: device_pk.to_owned(),
+                binding_revision,
+            }
         }
     }
 
@@ -1313,5 +2297,39 @@ mod candidate_tests {
         ExpiryAuditChanged,
         #[snafu(display("the empty import diff changed"))]
         EmptyDiffChanged,
+        #[snafu(display("the import commit failed"))]
+        CommitFailed,
+        #[snafu(display("the material import commit changed"))]
+        MaterialCommitChanged,
+        #[snafu(display("the committed credential replacement changed"))]
+        CredentialReplacementChanged,
+        #[snafu(display("the import commit audit changed"))]
+        CommitAuditChanged,
+        #[snafu(display("the no-op import commit changed"))]
+        NoOpCommitChanged,
+        #[snafu(display("the mapping-only import commit changed"))]
+        MappingOnlyCommitChanged,
+        #[snafu(display("a stale import commit succeeded"))]
+        StaleCommitSucceeded,
+        #[snafu(display("a stale import commit changed business facts"))]
+        StaleCommitChangedBusinessFacts,
+        #[snafu(display("an import commit with the wrong token succeeded"))]
+        MismatchedTokenSucceeded,
+        #[snafu(display("a token mismatch changed the import candidate"))]
+        MismatchedTokenChangedCandidate,
+        #[snafu(display("an operation on an expired import candidate succeeded"))]
+        ExpiredOperationSucceeded,
+        #[snafu(display("lazy import expiry behavior changed"))]
+        ExpiryOperationChanged,
+        #[snafu(display("an operation on an unknown import candidate succeeded"))]
+        UnknownOperationSucceeded,
+        #[snafu(display("an operation on an unknown import candidate wrote data"))]
+        UnknownOperationWroteData,
+        #[snafu(display("the import discard failed"))]
+        DiscardFailed,
+        #[snafu(display("the import discard audit changed"))]
+        DiscardAuditChanged,
+        #[snafu(display("discard did not recover a wedged import candidate"))]
+        WedgedDiscardFailed,
     }
 }

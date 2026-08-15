@@ -10,12 +10,27 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
 };
 use snafu::Snafu;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const MASTER_KEY_LENGTH: usize = 32;
 const RECORD_NONCE_LENGTH: usize = 24;
 const PRIVATE_FILE_FORBIDDEN_BITS: u32 = 0o177;
 const PRIVATE_DIRECTORY_FORBIDDEN_BITS: u32 = 0o077;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VaultRecordType {
+    AccountCredential,
+    ImportPayload,
+}
+
+impl VaultRecordType {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::AccountCredential => "account_credential",
+            Self::ImportPayload => "import_payload",
+        }
+    }
+}
 
 /// Ensures that the Server vault master key exists and satisfies its storage
 /// policy.
@@ -64,20 +79,7 @@ pub(crate) fn seal(
     master_key_path: &Path,
     plaintext: &[u8],
 ) -> Result<([u8; RECORD_NONCE_LENGTH], Vec<u8>), VaultError> {
-    validate_private_directory(master_key_path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .open(master_key_path)
-        .map_err(|_| VaultError::InvalidExistingKey)?;
-    let master_key = read_existing_key(file)?;
-    let cipher = XChaCha20Poly1305::new(master_key.expose().into());
-    let mut nonce_bytes = [0_u8; RECORD_NONCE_LENGTH];
-    getrandom::fill(&mut nonce_bytes).map_err(|_| VaultError::EntropyUnavailable)?;
-    let nonce = XNonce::from(nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(&nonce, plaintext)
-        .map_err(|_| VaultError::RecordSealFailed)?;
-    Ok((nonce_bytes, ciphertext))
+    load(master_key_path)?.seal(plaintext)
 }
 
 /// Decrypts one authenticated vault record.
@@ -91,19 +93,52 @@ pub(crate) fn open(
     master_key_path: &Path,
     nonce: &[u8],
     ciphertext: &[u8],
-) -> Result<Vec<u8>, VaultError> {
-    let nonce_bytes: [u8; RECORD_NONCE_LENGTH] =
-        nonce.try_into().map_err(|_| VaultError::RecordOpenFailed)?;
+) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+    load(master_key_path)?.open(nonce, ciphertext)
+}
+
+pub(crate) struct VaultSession {
+    master_key: VaultMasterKey,
+}
+
+pub(crate) fn load(master_key_path: &Path) -> Result<VaultSession, VaultError> {
     validate_private_directory(master_key_path)?;
     let file = OpenOptions::new()
         .read(true)
         .open(master_key_path)
         .map_err(|_| VaultError::InvalidExistingKey)?;
-    let master_key = read_existing_key(file)?;
-    let cipher = XChaCha20Poly1305::new(master_key.expose().into());
-    cipher
-        .decrypt(&XNonce::from(nonce_bytes), ciphertext)
-        .map_err(|_| VaultError::RecordOpenFailed)
+    Ok(VaultSession {
+        master_key: read_existing_key(file)?,
+    })
+}
+
+impl VaultSession {
+    pub(crate) fn seal(
+        &self,
+        plaintext: &[u8],
+    ) -> Result<([u8; RECORD_NONCE_LENGTH], Vec<u8>), VaultError> {
+        let cipher = XChaCha20Poly1305::new(self.master_key.expose().into());
+        let mut nonce_bytes = [0_u8; RECORD_NONCE_LENGTH];
+        getrandom::fill(&mut nonce_bytes).map_err(|_| VaultError::EntropyUnavailable)?;
+        let ciphertext = cipher
+            .encrypt(&XNonce::from(nonce_bytes), plaintext)
+            .map_err(|_| VaultError::RecordSealFailed)?;
+        Ok((nonce_bytes, ciphertext))
+    }
+
+    pub(crate) fn open(
+        &self,
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+        let nonce_bytes: [u8; RECORD_NONCE_LENGTH] =
+            nonce.try_into().map_err(|_| VaultError::RecordOpenFailed)?;
+        let cipher = XChaCha20Poly1305::new(self.master_key.expose().into());
+        cipher
+            .decrypt(&XNonce::from(nonce_bytes), ciphertext)
+            .map(Zeroizing::new)
+            .map_err(|_| VaultError::RecordOpenFailed)
+    }
 }
 
 struct VaultMasterKey {
@@ -285,7 +320,7 @@ mod tests {
 
     use super::{
         MASTER_KEY_LENGTH, TemporaryKeyFile, VaultError, create_master_key, ensure_master_key,
-        open, require_master_key, seal, temporary_key_path,
+        load, open, require_master_key, seal, temporary_key_path,
     };
 
     #[test]
@@ -321,6 +356,27 @@ mod tests {
         };
         *last ^= 1;
         assert_record_open_failure(&key_path, &nonce, &tampered, plaintext)
+    }
+
+    #[test]
+    fn vault_session_reuses_one_loaded_master_key() -> Result<(), TestFailure> {
+        let directory = TestDirectory::new(0o700)?;
+        let key_path = directory.path.join("master.key");
+        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        let session = load(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        fs::remove_file(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+
+        let plaintext = b"single-load-vault-session-canary";
+        let (nonce, ciphertext) = session
+            .seal(plaintext)
+            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        let opened = session
+            .open(&nonce, &ciphertext)
+            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        if opened.as_slice() != plaintext {
+            return Err(TestFailure::UnexpectedVaultFailure);
+        }
+        Ok(())
     }
 
     #[test]

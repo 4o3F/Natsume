@@ -340,7 +340,7 @@ pub(crate) mod tests {
 
     use diesel::{Connection, connection::SimpleConnection, sql_types::Binary};
 
-    use crate::db::DatabaseConfig;
+    use crate::{db::DatabaseConfig, vault::VaultRecordType};
 
     use super::*;
 
@@ -425,15 +425,18 @@ pub(crate) mod tests {
     ) -> Result<(), ContestError> {
         let vault_pointer_canary = vault_pointer_canary.to_owned();
         let hardware_id_canary = hardware_id_canary.to_owned();
+        let record_type = VaultRecordType::AccountCredential.as_str();
         database
         .interact(move |connection| {
             diesel::sql_query(
                 "INSERT INTO server_vault_records \
                  (vault_record_id, record_type, subject_id, nonce, ciphertext) VALUES \
-                 (?, 'account_password', 'account-a', x'01', x'02'), \
-                 ('vault-record-b', 'account_password', 'account-b', x'03', x'04')",
+                 (?, ?, 'account-a', x'01', x'02'), \
+                 ('vault-record-b', ?, 'account-b', x'03', x'04')",
             )
             .bind::<Text, _>(&vault_pointer_canary)
+            .bind::<Text, _>(record_type)
+            .bind::<Text, _>(record_type)
             .execute(connection)
             .map_err(|_| ContestError::PersistenceFailed)?;
             diesel::sql_query(

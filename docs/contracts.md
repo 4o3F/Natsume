@@ -104,7 +104,7 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 - Discard：`POST /api/v2/imports/{import_id}/actions/discard`，无 body，`admin` only；成功 `204`。**不要求 `preview_token`**——token 只存在于浏览器内存，页面刷新即丢失；若 discard 也要求 token，operator 将被锁死至过期而无法重传。discard 是零业务变更操作，admin session 已是足够授权；commit 保持 token 必需（第二次显式确认，并把提交绑定到已审阅的 preview）。
 - 错误映射（复用 error-code registry 既有冻结码；随 route 挂载登入 §3.6.5 表）：解析失败、结构错误、candidate 内重复 account、空或仅 header → `400 IMPORT_CANDIDATE_INVALID`；存在 pending 时的再次 upload → `409 IMPORT_CANDIDATE_PENDING`；未知、已过期或已 discard 的 `import_id`，以及 **`preview_token` 不匹配** → `404 IMPORT_CANDIDATE_UNAVAILABLE`（token 不匹配与 candidate 不存在必须不可区分，不给未持 token 方提供 candidate 存在性 oracle；audit 内部以 `reason_code` 区分真相）；baseline 任一前移 → `409 IMPORT_PREVIEW_STALE`。
 - 过期为 lazy 清理（与 expired session row 同原则）：首个观察到 expired candidate 的 import surface 请求在同一事务内删除 candidate 与 payload vault row 并审计一次，不运行 background cleaner。
-- 审计词汇已按 §3.6.4「先注册后写入器」纪律登记；`create_import_candidate` 与 `expire_import_candidate` 的写入器已落地（已实现），`commit_import` 与 `discard_import_candidate` 保持 RESERVED。
+- 审计词汇已按 §3.6.4「先注册后写入器」纪律登记；四个 import 写入器均已落地（已实现）；仅 HTTP 层 rejected-upload 的 `candidate_invalid` 审计保持 RESERVED，归后续 HTTP package。
 
 ### 3.5 Direct Command creation
 
@@ -210,8 +210,8 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `revoke_device` |
 | `disable_device` |
 | `create_import_candidate`（**已实现**，§3.4 Phase 2） |
-| `commit_import`（**RESERVED**，§3.4 Phase 2） |
-| `discard_import_candidate`（**RESERVED**，§3.4 Phase 2） |
+| `commit_import`（**已实现**，§3.4 Phase 2） |
+| `discard_import_candidate`（**已实现**，§3.4 Phase 2） |
 | `expire_import_candidate`（**已实现**，§3.4 Phase 2） |
 
 | `reason_code` | 当前使用处 |
@@ -220,12 +220,12 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `initial_provisioning` | `create_first_admin` |
 | `credential_recovery` | `reset_operator_password` |
 | `credentials_verified` | `establish_session` |
-| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device` 与 `create_import_candidate` 的 `succeeded` 结果；**RESERVED**：`commit_import` 的 `succeeded` 与 `discard_import_candidate` |
+| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（已实现） |
 | `target_already_satisfied` | `revoke_device` / `disable_device` 的 `noop` 结果 |
 | `candidate_invalid` | **RESERVED**：`create_import_candidate` 的 `rejected` 结果 |
-| `baseline_stale` | **RESERVED**：`commit_import` 的 `rejected` 结果 |
-| `preview_token_mismatch` | **RESERVED**：`commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
+| `baseline_stale` | `commit_import` 的 `rejected` 结果 |
+| `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
 
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
@@ -236,8 +236,8 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `terminate_session` | 无（`{}`） |
 | `expire_session` | 无（`{}`） |
 | `create_import_candidate`（已实现） | `succeeded`：`seats_added_count`、`seats_removed_count`、`mappings_changed_count`、`binding_impact_count`；`rejected`：无（`{}`） |
-| `commit_import`（RESERVED） | `succeeded`：前四计数 + `credential_revision_advanced_count`、`configuration_revision_advanced`、`binding_revision_advanced`；`rejected`：无（`{}`） |
-| `discard_import_candidate`（RESERVED） | 无（`{}`） |
+| `commit_import`（已实现） | `succeeded`：前四计数 + `credential_revision_advanced_count`、`configuration_revision_advanced`、`binding_revision_advanced`；`rejected`：无（`{}`） |
+| `discard_import_candidate`（已实现） | 无（`{}`） |
 | `expire_import_candidate`（已实现） | 无（`{}`） |
 | `revoke_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 | `disable_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
