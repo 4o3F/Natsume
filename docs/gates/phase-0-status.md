@@ -1,8 +1,8 @@
 # Phase 0 状态
 
 > 状态：`DRAFT-STEP0`
-> 最后更新：2026-08-14
-> G0：`OPEN`（6/12 PASS）
+> 最后更新：2026-08-15
+> G0：`OPEN`（7/12 PASS）
 
 Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通过需可定位 evidence（CI run / commit / artifact 链接 + 一行结论），不得以文档存在、scaffold 或截图替代可复现结果。
 
@@ -21,7 +21,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | 9 | DOMjudge lab：xheaders 登录、brotli 透传、upstream TLS 三项结论 | `BLOCKED-INPUT` |
 | 10 | identity fixture 集（v1 事故 + 代表性异构 + configured-disk copy）决策表测试 | `BLOCKED-INPUT` |
 | 11 | 当期镜像桌面 capability 清单首次执行 | `PASS`（首次执行完成，Phase 0 可执行项全通过；Phase 6 接线项按清单纪律随镜像 bump 复跑） |
-| 12 | package/systemd 生命周期 smoke（install/upgrade/remove/purge/reboot） | `OPEN`（client 半证据已登记，见已执行记录；Server 半待 Ubuntu 26 镜像精确值） |
+| 12 | package/systemd 生命周期 smoke（install/upgrade/remove/purge/reboot） | `PASS`（client 全周期含 reboot + server 周期于真实 VM；已知限制见已执行记录） |
 
 ## 已登记证据
 
@@ -45,7 +45,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 
 ## 目标环境验证
 
-2026-08-14 输入更新后：条目 11/12 已解锁待执行（client 镜像可得）；条目 7 待部署网络；条目 9 待 DOMjudge upstream 可访问；条目 10 待硬件 fixture 采集（`G0-IN-005`）。
+当前待执行：条目 7 待目标 VM 复跑矩阵（WSL 预演已全过，脚本现成）；条目 9 待 DOMjudge upstream 可访问；条目 10 待硬件 fixture 实地采集（采集工具已就绪）。
 
 已执行记录：
 
@@ -54,6 +54,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 - 条目 11 IME 复验（2026-08-15）：镜像加装中文输入法后，owner 定向复验 **IME 输入与渲染正常**——本次镜像变更仅为加装输入法，接受定向复验，全清单复跑并入下一次实质镜像 bump。CI 于含 probe 的 head 全绿（[run 31861675885](https://github.com/4o3F/Natsume/actions/runs/31861675885)、[run 31862244434](https://github.com/4o3F/Natsume/actions/runs/31862244434)）。至此 Phase 0 可执行清单项全部通过，条目 11 翻 `PASS`；lock/unlock、terminate/replacement、display lost/crash recovery、logind 识别按清单纪律随 Phase 6 与镜像 bump 复跑。
 - 条目 7 预演（2026-08-15，开发机 WSL，**已知限制：WSL 不得充当目标环境证据，不作为通过依据**；deb 构建于 `ab1e085`）：验证矩阵全部按预期——正确 IP-SAN 返回 `{"status":"ok"}`；SAN 不匹配拒绝（curl 60，no alternative subject name）；错误 CA 拒绝（curl 60，unable to get local issuer）；TLS 1.2 被服务端 protocol-version alert 拒绝（TLS 1.3-only 实证）；单监听仅 `0.0.0.0:8443`。过期证书用例未测（无 faketime）。观察：bootstrap 无 TTY 时 fail-closed（符合契约）；交互 bootstrap、systemd 拉起、purge 清理全部正常。升级路径：同脚本在目标 VM 重跑。
 - 条目 11 观察项关闭（2026-08-15）：probe confirm 回路复验通过（`seat code confirmed` 日志在录，owner 确认）。另：fixture 采集工具在 VM 上实跑，虚拟主板占位串被投影匹配正确判 `rejected_placeholder`、DMI UUID 派生正常——工具行为观察，不作为 fixture 证据。
+- 条目 12（server 半）VM 运行（2026-08-15，VM `icpc`，deb 构建于 `ab1e085`）：`hosted-lifecycle.sh` 双包全周期通过，结论行原样在录——server install/reinstall/remove/purge 与 client install/reinstall/reconfigure/remove/purge；reinstall 为真实重装（`1 reinstalled`），sysusers 创建在录。已知限制：upgrade 为 same-version（无已发布前版）；server 无独立 reboot 用例（client 半 reboot 已验，server 包无持久业务状态依赖 boot 序）；server 目标 OS 为 Ubuntu 26 的复跑随 owner 构建时执行（2026-08-14 决定）。条目 12 至此翻 `PASS`。
 - 条目 12（client 半）干净 VM 运行（2026-08-14 15:15–15:17 UTC，VM `icpc`：`6.14.0-29-generic`/`x86_64`/systemd `255.4-1ubuntu8.10`/glibc `2.39-0ubuntu8.5`；deb 构建于 `294aa87`，harness 含 `4ee6195` 守卫）：干净首装无 conffile 提示；**post-reboot 结论行原样在录**——`phase0-lifecycle: install/reinstall/upgrade/reconfigure/reboot/remove/purge passed`，`COMMAND_EXIT_CODE=0`。已知限制：pre-reboot 自身结论行因 `script` 缓冲随 reboot 丢失未被捕获，其完成性由 post-reboot 的 state-file 前置门（仅在 pre-reboot 末步写入）与全量断言结构性证明。运行中在干净 VM 复现 debconf `$action` 警告，根因为 postinst 函数内懒加载 confmodule 致 frontend 重执行丢参，已修复（`68213a8`），运行时复核并入下一次 VM 运行。client 半证据至此完整；条目关闭待 Server 半（Ubuntu 26 镜像）。
 
 每次验证记录：主题、`COMMIT_SHA`、精确环境或硬件标识、步骤、正向与负向结果、artifact 路径、日期、已知限制。部分通过记为未通过。
