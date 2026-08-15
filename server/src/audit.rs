@@ -4,7 +4,11 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    application::{contest::DeviceLifecycleAction, provisioning::ProvisioningWindowAction},
+    application::{
+        contest::DeviceLifecycleAction,
+        enrollment::{EnrollmentResolution, IssuanceReason},
+        provisioning::ProvisioningWindowAction,
+    },
     db::schema::audit_events,
 };
 
@@ -86,6 +90,21 @@ pub enum AuditDetail {
         removed_token_count: i64,
         revoked_certificate_count: i64,
     },
+    EnrollmentRequestCreated {
+        resolution: &'static str,
+        state: &'static str,
+        gateway_spki_sha256: String,
+    },
+    DeviceCredentialsIssued {
+        resolution: &'static str,
+        certificate_serial: String,
+        gateway_spki_sha256: String,
+    },
+    EnrollmentRequestApproved {},
+    EnrollmentRequestRejected {},
+    EnrollmentRequestsExpired {
+        expired_count: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +117,12 @@ pub(crate) enum DeviceLifecycleAuditResult {
 pub(crate) enum ProvisioningWindowAuditResult {
     Succeeded,
     Noop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollmentExpiryActor {
+    Operator,
+    Recovery,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -473,6 +498,127 @@ impl AuditEvent {
             correlation_id,
             group_correlation_id: None,
             detail,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn enrollment_request_created(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        enrollment_request_id: Uuid,
+        resolution: EnrollmentResolution,
+        gateway_spki_sha256: [u8; 32],
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "device:enrollment",
+            action_kind: "create_enrollment_request",
+            resource_type: "enrollment_request",
+            resource_id: Some(enrollment_request_id.to_string()),
+            result: "succeeded",
+            reason_code: Some("credential_replacement"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::EnrollmentRequestCreated {
+                resolution: resolution.as_persisted(),
+                state: "pending",
+                gateway_spki_sha256: hex::encode(gateway_spki_sha256),
+            },
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn device_credentials_issued(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        enrollment_request_id: Uuid,
+        resolution: EnrollmentResolution,
+        reason: IssuanceReason,
+        certificate_serial: String,
+        gateway_spki_sha256: [u8; 32],
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "device:enrollment",
+            action_kind: "issue_device_credentials",
+            resource_type: "enrollment_request",
+            resource_id: Some(enrollment_request_id.to_string()),
+            result: "succeeded",
+            reason_code: Some(reason.as_audit_reason()),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::DeviceCredentialsIssued {
+                resolution: resolution.as_persisted(),
+                certificate_serial,
+                gateway_spki_sha256: hex::encode(gateway_spki_sha256),
+            },
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn enrollment_request_approved(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        enrollment_request_id: Uuid,
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "operator:self",
+            action_kind: "approve_enrollment_request",
+            resource_type: "enrollment_request",
+            resource_id: Some(enrollment_request_id.to_string()),
+            result: "succeeded",
+            reason_code: Some("operator_requested"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::EnrollmentRequestApproved {},
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn enrollment_request_rejected(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        enrollment_request_id: Uuid,
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "operator:self",
+            action_kind: "reject_enrollment_request",
+            resource_type: "enrollment_request",
+            resource_id: Some(enrollment_request_id.to_string()),
+            result: "succeeded",
+            reason_code: Some("operator_requested"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::EnrollmentRequestRejected {},
+        }
+    }
+
+    #[must_use]
+    pub(crate) const fn enrollment_requests_expired(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        actor: EnrollmentExpiryActor,
+        expired_count: i64,
+    ) -> Self {
+        let actor = match actor {
+            EnrollmentExpiryActor::Operator => "operator:self",
+            EnrollmentExpiryActor::Recovery => "system:recovery",
+        };
+        Self {
+            id: audit_event_id,
+            actor,
+            action_kind: "expire_enrollment_requests",
+            resource_type: "enrollment_request_set",
+            resource_id: None,
+            result: "succeeded",
+            reason_code: Some("window_closed"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::EnrollmentRequestsExpired { expired_count },
         }
     }
 

@@ -3411,6 +3411,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "uuid",
+ "x509-parser",
  "zeroize",
 ]
 

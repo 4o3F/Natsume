@@ -10,12 +10,12 @@ use utoipa::{
         path::{Paths, PathsBuilder},
         request_body::RequestBodyBuilder,
         response::Response,
-        schema::{AdditionalProperties, KnownFormat, ObjectBuilder, Schema, Type},
+        schema::{AdditionalProperties, ArrayItems, KnownFormat, ObjectBuilder, Schema, Type},
         security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme},
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -50,7 +50,8 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::import::discard_import,
         crate::http::handler::provisioning::get_provisioning_window,
         crate::http::handler::provisioning::open_provisioning_window,
-        crate::http::handler::provisioning::close_provisioning_window
+        crate::http::handler::provisioning::close_provisioning_window,
+        crate::http::handler::enrollment::create_enrollment_request
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -68,7 +69,13 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::import::ImportPendingResponse,
         crate::http::handler::import::ImportCommitRequest,
         crate::http::handler::import::ImportCommitResponse,
-        crate::http::handler::provisioning::ProvisioningWindowResponse
+        crate::http::handler::provisioning::ProvisioningWindowResponse,
+        crate::http::handler::enrollment::EnrollmentRequest,
+        crate::http::handler::enrollment::EnrollmentHardwareIdentityQuality,
+        crate::http::handler::enrollment::EnrollmentIssuedResponse,
+        crate::http::handler::enrollment::EnrollmentIssuedState,
+        crate::http::handler::enrollment::EnrollmentPendingResponse,
+        crate::http::handler::enrollment::EnrollmentPendingState
     ))
 )]
 struct MountedDocument;
@@ -108,6 +115,28 @@ pub fn document() -> OpenApi {
             "candidate_id".to_owned(),
             Ref::from_schema_name("CanonicalUuidV7").into(),
         );
+    }
+    for schema_name in ["EnrollmentIssuedResponse", "EnrollmentPendingResponse"] {
+        if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
+            schema.properties.insert(
+                "enrollment_request_id".to_owned(),
+                Ref::from_schema_name("CanonicalUuidV7").into(),
+            );
+        }
+    }
+    if let Some(RefOr::T(Schema::Object(schema))) =
+        components.schemas.get_mut("EnrollmentIssuedResponse")
+    {
+        schema.properties.insert(
+            "device_id".to_owned(),
+            Ref::from_schema_name("CanonicalUuidV7").into(),
+        );
+        if let Some(RefOr::T(Schema::Array(chain))) = schema.properties.get_mut("gateway_chain_der")
+            && let ArrayItems::RefOrSchema(items) = &mut chain.items
+            && let RefOr::T(Schema::Object(item)) = items.as_mut()
+        {
+            item.format = Some(SchemaFormat::KnownFormat(KnownFormat::Byte));
+        }
     }
 
     let mut paths = mounted.paths;
@@ -382,10 +411,11 @@ mod tests {
     const UNMOUNTED_DESCRIPTION_PREFIX: &str =
         "Declared but not mounted in Stage 5B operation IDs: ";
     const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
-    const ALLOWED_CREDENTIAL_PATHS: [&str; 3] = [
+    const ALLOWED_CREDENTIAL_PATHS: [&str; 4] = [
         "/components/schemas/SessionRequest/properties/password",
         "/components/schemas/ImportPreviewResponse/properties/preview_token",
         "/components/schemas/ImportCommitRequest/properties/preview_token",
+        "/components/schemas/EnrollmentIssuedResponse/properties/device_token",
     ];
     type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
     const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
@@ -429,6 +459,7 @@ mod tests {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn expected_operation_table() -> OperationTable {
         let rows: &[(&str, &str, &str, &[&str])] = &[
             (
@@ -504,6 +535,12 @@ mod tests {
                 "/api/v2/imports/{import_id}/actions/discard",
                 "discardCsvImport",
                 &["204", "400", "401", "403", "404", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/enrollment-requests",
+                "createEnrollmentRequest",
+                &["201", "202", "400", "409", "413", "500"],
             ),
             (
                 "post",
@@ -598,7 +635,7 @@ mod tests {
             .and_then(Value::as_str)
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         if description
-            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         {
             return Err(TestFailure::InfoDescriptionChanged);
         }
@@ -725,6 +762,152 @@ mod tests {
                 != Some(false)
         {
             return Err(TestFailure::ProvisioningWindowContractChanged);
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn enrollment_operation_and_closed_schemas_are_exact_and_role_free() -> Result<(), TestFailure>
+    {
+        let value = serialized_document()?;
+        let operation = operation_at(&value, "/api/v2/enrollment-requests", "post")?;
+        if operation.get("security").is_some()
+            || nested_value(
+                operation,
+                &[
+                    "requestBody",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/EnrollmentRequest")
+            || nested_value(
+                operation,
+                &[
+                    "responses",
+                    "201",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/EnrollmentIssuedResponse")
+            || nested_value(
+                operation,
+                &[
+                    "responses",
+                    "202",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/EnrollmentPendingResponse")
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
+        }
+
+        let request = schema_object(&value, "EnrollmentRequest")?;
+        let request_properties = schema_properties(request)?;
+        if property_names(request_properties)
+            != BTreeSet::from([
+                "client_version",
+                "gateway_csr_der",
+                "gateway_spki_sha256",
+                "hardware_identity_quality",
+                "machine_hardware_id",
+                "protocol_version",
+            ])
+            || required_property_names(request)? != property_names(request_properties)
+            || request.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || request_properties
+                .get("gateway_csr_der")
+                .and_then(|property| property.get("format"))
+                .and_then(Value::as_str)
+                != Some("byte")
+            || request_properties
+                .get("gateway_spki_sha256")
+                .and_then(|property| property.get("pattern"))
+                .and_then(Value::as_str)
+                != Some("^[0-9a-f]{64}$")
+            || request_properties
+                .get("protocol_version")
+                .and_then(|property| property.get("minimum"))
+                .and_then(Value::as_u64)
+                != Some(1)
+            || request_properties
+                .get("protocol_version")
+                .and_then(|property| property.get("maximum"))
+                .and_then(Value::as_u64)
+                != Some(1)
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
+        }
+
+        let issued = schema_object(&value, "EnrollmentIssuedResponse")?;
+        let issued_properties = schema_properties(issued)?;
+        if property_names(issued_properties)
+            != BTreeSet::from([
+                "device_id",
+                "device_token",
+                "enrollment_request_id",
+                "gateway_chain_der",
+                "gateway_leaf_der",
+                "state",
+            ])
+            || required_property_names(issued)? != property_names(issued_properties)
+            || issued.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || issued_properties
+                .get("enrollment_request_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || issued_properties
+                .get("device_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || issued_properties
+                .get("device_token")
+                .and_then(|property| property.get("pattern"))
+                .and_then(Value::as_str)
+                != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
+            || issued_properties
+                .get("device_token")
+                .is_some_and(|property| property.get("writeOnly").is_some())
+            || issued_properties
+                .get("gateway_leaf_der")
+                .and_then(|property| property.get("format"))
+                .and_then(Value::as_str)
+                != Some("byte")
+            || issued_properties
+                .get("gateway_chain_der")
+                .and_then(|property| property.pointer("/items/format"))
+                .and_then(Value::as_str)
+                != Some("byte")
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
+        }
+
+        let pending = schema_object(&value, "EnrollmentPendingResponse")?;
+        if property_names(schema_properties(pending)?)
+            != BTreeSet::from(["enrollment_request_id", "state"])
+            || required_property_names(pending)? != property_names(schema_properties(pending)?)
+            || pending.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || value
+                .pointer("/components/schemas/EnrollmentPendingState/enum")
+                .and_then(Value::as_array)
+                != Some(&vec![Value::from("pending"), Value::from("approved")])
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
         }
         Ok(())
     }
@@ -1564,6 +1747,8 @@ mod tests {
         ImportContractChanged,
         #[snafu(display("the provisioning-window OpenAPI contract changed"))]
         ProvisioningWindowContractChanged,
+        #[snafu(display("the Enrollment OpenAPI contract changed"))]
+        EnrollmentContractChanged,
         #[snafu(display("the Command description changed"))]
         CommandDescriptionChanged,
         #[snafu(display("the Command ID contract changed"))]

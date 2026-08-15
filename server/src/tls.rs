@@ -118,7 +118,7 @@ fn load_signing_key(
     signing_key.map_err(|_| TlsError::Identity)
 }
 
-fn read_private_file(path: &Path) -> Result<Vec<u8>, TlsError> {
+pub(crate) fn read_private_file(path: &Path) -> Result<Vec<u8>, TlsError> {
     let parent = path.parent().ok_or(TlsError::Identity)?;
     let parent_metadata = fs::metadata(parent).map_err(|_| TlsError::Identity)?;
     if !parent_metadata.is_dir()
@@ -176,7 +176,10 @@ pub(crate) mod tests {
     use uuid::Uuid;
     use zeroize::Zeroize;
 
-    use crate::http;
+    use crate::{
+        config::{ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME},
+        http,
+    };
 
     use super::{ALPN_HTTP_1_1, TlsError, TlsListener, load_server_config, load_signing_key};
 
@@ -205,6 +208,17 @@ pub(crate) mod tests {
             let ca_certificate = ca_params
                 .self_signed(&ca_key)
                 .map_err(|_| TestSupportError)?;
+            install_der(
+                &directory.path.join(ORIGIN_CA_CERTIFICATE_FILENAME),
+                ca_certificate.der().as_ref(),
+            )?;
+            let mut origin_private_key_der = ca_key.serialize_der();
+            let origin_key_result = install_der(
+                &directory.path.join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+                &origin_private_key_der,
+            );
+            origin_private_key_der.zeroize();
+            origin_key_result?;
             let issuer = Issuer::new(ca_params, ca_key);
 
             let leaf_key = KeyPair::generate().map_err(|_| TestSupportError)?;

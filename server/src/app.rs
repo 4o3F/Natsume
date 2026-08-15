@@ -1,3 +1,4 @@
+use axum::serve::ListenerExt as _;
 use std::{
     fs::OpenOptions,
     future::Future,
@@ -8,10 +9,11 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::{
     application::{
+        enrollment::GatewayIssuer,
         operator::{OperatorCredentials, hash_password},
         provisioning,
     },
-    config::ServerConfig,
+    config::{GatewaySiteConfig, ServerConfig},
     db::{self, Database, DatabaseConfig},
     error::AppError,
     http, logging,
@@ -43,6 +45,8 @@ pub(crate) async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<()
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    let site = GatewaySiteConfig::load_from(config.site_config_path())
+        .map_err(|_| AppError::SiteConfiguration)?;
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
@@ -59,6 +63,19 @@ where
     tracing::info!("database ready");
     require_master_key(config.vault_master_key_path()).map_err(|_| AppError::Vault)?;
     tracing::info!("vault key verified");
+    let origin_ca_certificate_path = config
+        .origin_ca_certificate_path()
+        .map_err(|_| AppError::Configuration)?;
+    let origin_ca_private_key_path = config
+        .origin_ca_private_key_path()
+        .map_err(|_| AppError::Configuration)?;
+    let gateway_issuer = GatewayIssuer::load(
+        &origin_ca_certificate_path,
+        &origin_ca_private_key_path,
+        site,
+    )
+    .map_err(|_| AppError::OriginCa)?;
+    tracing::info!("Origin CA issuing material verified");
     let listener = TlsListener::bind(
         config.listen_address(),
         config.tls_certificate_path(),
@@ -68,10 +85,11 @@ where
     .map_err(|_| AppError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let router = http::router(
+    let router = http::router_with_enrollment(
         database,
         config.vault_master_key_path(),
         Path::new(WEB_ASSETS_PATH),
+        gateway_issuer,
     );
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -80,10 +98,14 @@ where
         tracing::info!("graceful shutdown initiated");
     }
     .with_subscriber(dispatcher);
-    let result = axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .map_err(|_| AppError::Http);
+    let listener = listener.tap_io(|_stream| {});
+    let result = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .map_err(|_| AppError::Http);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }
@@ -231,7 +253,9 @@ mod tests {
     use crate::{
         application::operator::{OperatorCredentials, OperatorRole, hash_password, sign_in},
         audit::CorrelationId,
-        config::{LogLevel, ServerConfig},
+        config::{
+            LogLevel, ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME, ServerConfig,
+        },
         db::{
             Database, DatabaseConfig, operator as db_operator,
             tests::{test_data_version, test_observer},
@@ -250,6 +274,10 @@ mod tests {
     async fn bootstrap_creates_artifacts_and_repeat_is_zero_write() -> Result<(), TestFailure> {
         let identity =
             TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let origin_material = origin_material_paths(&identity);
+        for path in &origin_material {
+            fs::remove_file(path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        }
         let key_directory = identity.directory_path().join("keys");
         create_private_directory(&key_directory)?;
         let database_path = identity.directory_path().join("server.db");
@@ -275,7 +303,10 @@ mod tests {
         })
         .await
         .map_err(|_| TestFailure::UnexpectedStartupFailure)?;
-        if !database_path.is_file() || !master_key_path.is_file() {
+        if !database_path.is_file()
+            || !master_key_path.is_file()
+            || origin_material.iter().any(|path| path.exists())
+        {
             return Err(TestFailure::StartupArtifactMissing);
         }
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
@@ -765,6 +796,10 @@ mod tests {
         .await
         .map_err(|_| TestFailure::SessionFixtureFailed)?;
         fs::remove_file(&master_key_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let origin_material = origin_material_paths(&identity);
+        for path in &origin_material {
+            fs::remove_file(path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        }
 
         let config = ServerConfig::load_from(&config_path)
             .map_err(|_| TestFailure::FixtureCreationFailed)?;
@@ -773,7 +808,10 @@ mod tests {
         })
         .await
         .map_err(|_| TestFailure::PasswordResetFailed)?;
-        if master_key_path.exists() || master_key_path.with_extension("tmp").exists() {
+        if master_key_path.exists()
+            || master_key_path.with_extension("tmp").exists()
+            || origin_material.iter().any(|path| path.exists())
+        {
             return Err(TestFailure::PasswordResetTouchedVault);
         }
         let counts = db_operator::tests::test_session_and_audit_counts(&database)
@@ -914,6 +952,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         let _subscriber_guard = SubscriberTestGuard::acquire();
         let invalid_config_identity =
@@ -929,6 +968,28 @@ mod tests {
         if ServerConfig::load_from(&invalid_config_path).is_ok() {
             return Err(TestFailure::ExpectedStartupFailure);
         }
+
+        let invalid_site_identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let invalid_site_path = write_config(
+            &invalid_site_identity,
+            SocketAddr::from((LOCALHOST, 0)),
+            &invalid_site_identity.directory_path().join("missing.db"),
+            &invalid_site_identity.directory_path().join("root.key"),
+            invalid_site_identity.certificate_path(),
+            invalid_site_identity.private_key_path(),
+        )?;
+        fs::write(
+            invalid_site_identity.directory_path().join("site.toml"),
+            "gateway_hostname = 'malformed-site-canary'\n",
+        )
+        .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let invalid_site_config = ServerConfig::load_from(&invalid_site_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        assert_startup_error(
+            run_until(invalid_site_config, ready(())).await,
+            AppError::SiteConfiguration,
+        )?;
 
         let invalid_database_identity =
             TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
@@ -985,6 +1046,35 @@ mod tests {
         )?;
         drop(invalid_vault_guard);
 
+        let missing_origin_identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let origin_key_directory = missing_origin_identity.directory_path().join("keys");
+        create_private_directory(&origin_key_directory)?;
+        let missing_origin_database = missing_origin_identity.directory_path().join("server.db");
+        create_database(&missing_origin_database).await?;
+        let origin_master_key = origin_key_directory.join("root.key");
+        ensure_master_key(&origin_master_key).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        fs::remove_file(
+            missing_origin_identity
+                .directory_path()
+                .join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+        )
+        .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let missing_origin_path = write_config(
+            &missing_origin_identity,
+            SocketAddr::from((LOCALHOST, 0)),
+            &missing_origin_database,
+            &origin_master_key,
+            missing_origin_identity.certificate_path(),
+            missing_origin_identity.private_key_path(),
+        )?;
+        let missing_origin_config = ServerConfig::load_from(&missing_origin_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        assert_startup_error(
+            run_until(missing_origin_config, ready(())).await,
+            AppError::OriginCa,
+        )?;
+
         let invalid_tls_identity =
             TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
         let valid_key_directory = invalid_tls_identity.directory_path().join("keys");
@@ -1015,6 +1105,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn serve_runs_migrations_and_close_once_recovery() -> Result<(), TestFailure> {
         let _subscriber_guard = SubscriberTestGuard::acquire();
         let identity =
@@ -1077,6 +1168,30 @@ mod tests {
         .bind::<Text, _>(&opening_audit_id)
         .execute(&mut connection)
         .map_err(|_| TestFailure::FixtureIoFailed)?;
+        let recovery_device_id = uuid::Uuid::now_v7().to_string();
+        let recovery_request_id = uuid::Uuid::now_v7().to_string();
+        diesel::sql_query(
+            "INSERT INTO devices (device_pk, machine_hardware_id, \
+             hardware_identity_quality, state) VALUES (?, \
+             '00000000-0000-5000-8000-000000000001', 'strong', 'enrolled')",
+        )
+        .bind::<Text, _>(&recovery_device_id)
+        .execute(&mut connection)
+        .map_err(|_| TestFailure::FixtureIoFailed)?;
+        diesel::sql_query(
+            "INSERT INTO enrollment_requests (enrollment_request_id, \
+             machine_hardware_id, hardware_identity_quality, gateway_csr_der, \
+             gateway_spki_sha256, client_version, protocol_version, source_ip, state, \
+             resolution, resolved_device_pk, issuance_audit_event_id, created_at) \
+             VALUES (?, '00000000-0000-5000-8000-000000000001', 'strong', X'30', \
+             zeroblob(32), 'recovery-test', 1, '127.0.0.1', 'approved', \
+             'replace_device_credentials', ?, NULL, \
+             strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))",
+        )
+        .bind::<Text, _>(&recovery_request_id)
+        .bind::<Text, _>(&recovery_device_id)
+        .execute(&mut connection)
+        .map_err(|_| TestFailure::FixtureIoFailed)?;
         drop(connection);
 
         let config = ServerConfig::load_from(&config_path)
@@ -1098,7 +1213,26 @@ mod tests {
         .get_result::<CountRow>(&mut observer)
         .map_err(|_| TestFailure::FixtureIoFailed)?
         .value;
-        if window.state != "closed" || window.revision != 2 || recovery_count != 1 {
+        let request_state = diesel::sql_query(
+            "SELECT state AS value FROM enrollment_requests WHERE enrollment_request_id = ?",
+        )
+        .bind::<Text, _>(&recovery_request_id)
+        .get_result::<TextValueRow>(&mut observer)
+        .map_err(|_| TestFailure::FixtureIoFailed)?
+        .value;
+        let expiry_detail = diesel::sql_query(
+            "SELECT redacted_detail_json AS value FROM audit_events \
+             WHERE actor = 'system:recovery' AND action_kind = 'expire_enrollment_requests'",
+        )
+        .get_result::<TextValueRow>(&mut observer)
+        .map_err(|_| TestFailure::FixtureIoFailed)?
+        .value;
+        if window.state != "closed"
+            || window.revision != 2
+            || recovery_count != 2
+            || request_state != "expired"
+            || expiry_detail != r#"{"expired_count":1}"#
+        {
             return Err(TestFailure::RecoveryDidNotRun);
         }
         Ok(())
@@ -1356,6 +1490,17 @@ mod tests {
         PathBuf::from(format!("{}-{suffix}", path.display()))
     }
 
+    fn origin_material_paths(identity: &TestIdentity) -> [PathBuf; 2] {
+        [
+            identity
+                .directory_path()
+                .join(ORIGIN_CA_CERTIFICATE_FILENAME),
+            identity
+                .directory_path()
+                .join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+        ]
+    }
+
     fn write_config(
         identity: &TestIdentity,
         listen_address: SocketAddr,
@@ -1365,14 +1510,28 @@ mod tests {
         private_key_path: &Path,
     ) -> Result<PathBuf, TestFailure> {
         let config_path = identity.directory_path().join("config.toml");
+        let site_config_path = identity.directory_path().join("site.toml");
+        fs::write(
+            &site_config_path,
+            "gateway_hostname = \"gateway.contest.example\"\n\
+             gateway_not_after = \"4090-01-01T00:00:00Z\"\n",
+        )
+        .map_err(|_| TestFailure::FixtureCreationFailed)?;
         let config = format!(
             "[listen]\nhttps = \"{listen_address}\"\n\
              [storage]\ndatabase = \"{}\"\nroot_key = \"{}\"\n\
-             [tls]\ncertificate = \"{}\"\nprivate_key = \"{}\"\n",
+             [tls]\ncertificate = \"{}\"\nprivate_key = \"{}\"\n\
+             [site]\nconfig = \"{}\"\ncontrol_root = \"{}\"\nlocal_origin_root = \"{}\"\n",
             database_path.display(),
             master_key_path.display(),
             certificate_path.display(),
             private_key_path.display(),
+            site_config_path.display(),
+            identity.directory_path().join("control-ca.crt").display(),
+            identity
+                .directory_path()
+                .join("local-origin-ca.crt")
+                .display(),
         );
         fs::write(&config_path, config).map_err(|_| TestFailure::FixtureCreationFailed)?;
         Ok(config_path)

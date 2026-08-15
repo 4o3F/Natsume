@@ -4,6 +4,7 @@ import openapi from "../../openapi/natsume.openapi.json";
 
 const ENROLLMENT_APPROVE_PATH =
   "/api/v2/enrollment-requests/{request_id}/actions/approve";
+const ENROLLMENT_CREATE_PATH = "/api/v2/enrollment-requests";
 const COMMAND_PATH = "/api/v2/commands/{command_id}";
 const PROVISIONING_WINDOW_PATH = "/api/v2/provisioning-window";
 const OPEN_PROVISIONING_WINDOW_PATH =
@@ -16,6 +17,8 @@ const IMPORT_COMMIT_TOKEN_PATH =
   "/components/schemas/ImportCommitRequest/properties/preview_token";
 const IMPORT_PREVIEW_TOKEN_PATH =
   "/components/schemas/ImportPreviewResponse/properties/preview_token";
+const ENROLLMENT_DEVICE_TOKEN_PATH =
+  "/components/schemas/EnrollmentIssuedResponse/properties/device_token";
 const SESSION_REQUEST_REFERENCE = "#/components/schemas/SessionRequest";
 const CANONICAL_UUID_V7_REFERENCE = "#/components/schemas/CanonicalUuidV7";
 const UUID_V7_PATTERN =
@@ -147,6 +150,7 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       "/api/v2/devices",
       "/api/v2/devices/{device_id}/actions/disable",
       "/api/v2/devices/{device_id}/actions/revoke",
+      ENROLLMENT_CREATE_PATH,
       "/api/v2/enrollment-requests/{request_id}/actions/approve",
       "/api/v2/health",
       "/api/v2/imports",
@@ -208,6 +212,9 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     );
     expect(openapi.paths[CLOSE_PROVISIONING_WINDOW_PATH].post.operationId).toBe(
       "closeProvisioningWindow",
+    );
+    expect(openapi.paths[ENROLLMENT_CREATE_PATH].post.operationId).toBe(
+      "createEnrollmentRequest",
     );
     expect(openapi.paths[ENROLLMENT_APPROVE_PATH].post.operationId).toBe(
       "approveEnrollment",
@@ -365,11 +372,77 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     });
   });
 
+  it("freezes the role-free enrollment intake and one-response credential schema", () => {
+    const operation = openapi.paths[ENROLLMENT_CREATE_PATH].post;
+    expect(operation.operationId).toBe("createEnrollmentRequest");
+    expect(operation).not.toHaveProperty("security");
+    expectResponseSet(operation, ["201", "202", "400", "409", "413", "500"]);
+    expect(operation.requestBody).toMatchObject({
+      required: true,
+      content: {
+        "application/json": {
+          schema: { $ref: "#/components/schemas/EnrollmentRequest" },
+        },
+      },
+    });
+
+    const request = openapi.components.schemas.EnrollmentRequest;
+    expect(request.additionalProperties).toBe(false);
+    expect([...request.required].sort()).toEqual(
+      Object.keys(request.properties).sort(),
+    );
+    expect(Object.keys(request.properties).sort()).toEqual([
+      "client_version",
+      "gateway_csr_der",
+      "gateway_spki_sha256",
+      "hardware_identity_quality",
+      "machine_hardware_id",
+      "protocol_version",
+    ]);
+    expect(request.properties.gateway_csr_der.format).toBe("byte");
+    expect(request.properties.gateway_spki_sha256.pattern).toBe(
+      "^[0-9a-f]{64}$",
+    );
+    expect(request.properties.protocol_version).toMatchObject({
+      minimum: 1,
+      maximum: 1,
+    });
+
+    const issued = openapi.components.schemas.EnrollmentIssuedResponse;
+    expect(issued.additionalProperties).toBe(false);
+    expect([...issued.required].sort()).toEqual(
+      Object.keys(issued.properties).sort(),
+    );
+    expect(issued.properties.enrollment_request_id).toEqual({
+      $ref: CANONICAL_UUID_V7_REFERENCE,
+    });
+    expect(issued.properties.device_id).toEqual({
+      $ref: CANONICAL_UUID_V7_REFERENCE,
+    });
+    expect(issued.properties.gateway_leaf_der.format).toBe("byte");
+    expect(issued.properties.gateway_chain_der.items.format).toBe("byte");
+    expect(issued.properties.device_token).not.toHaveProperty("writeOnly");
+    expect(issued.properties.device_token).not.toHaveProperty("example");
+    expect(issued.properties.device_token).not.toHaveProperty("default");
+
+    const pending = openapi.components.schemas.EnrollmentPendingResponse;
+    expect(pending.additionalProperties).toBe(false);
+    expect(Object.keys(pending.properties).sort()).toEqual([
+      "enrollment_request_id",
+      "state",
+    ]);
+    expect(openapi.components.schemas.EnrollmentPendingState.enum).toEqual([
+      "pending",
+      "approved",
+    ]);
+  });
+
   it("permits only the frozen session and import credential keys", () => {
     const forbiddenKeys = collectObjectKeys(openapi).filter(({ key }) =>
       FORBIDDEN_CREDENTIAL_KEY.test(key),
     );
     expect(forbiddenKeys).toEqual([
+      { key: "device_token", path: ENROLLMENT_DEVICE_TOKEN_PATH },
       { key: "preview_token", path: IMPORT_COMMIT_TOKEN_PATH },
       { key: "preview_token", path: IMPORT_PREVIEW_TOKEN_PATH },
       { key: "password", path: SESSION_REQUEST_PASSWORD_PATH },

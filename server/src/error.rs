@@ -9,6 +9,8 @@ pub enum AppError {
     Logging,
     #[snafu(display("database startup failed"))]
     Database,
+    #[snafu(display("site configuration startup failed"))]
+    SiteConfiguration,
     #[snafu(display("provisioning window revision overflow prevented startup"))]
     ProvisioningRevisionOverflow,
     #[snafu(display("vault startup failed"))]
@@ -17,6 +19,8 @@ pub enum AppError {
     WebAssets,
     #[snafu(display("TLS startup failed"))]
     Tls,
+    #[snafu(display("Origin CA startup failed"))]
+    OriginCa,
     #[snafu(display("HTTP serving failed"))]
     Http,
     #[snafu(display("shutdown signal setup failed"))]

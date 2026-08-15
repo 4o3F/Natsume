@@ -174,7 +174,7 @@ mod tests {
             count += 1;
         }
 
-        assert_eq!(count, 32);
+        assert_eq!(count, 34);
     }
 
     fn assert_round_trip(code: ErrorCode) {

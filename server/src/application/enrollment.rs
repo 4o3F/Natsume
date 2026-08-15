@@ -1,0 +1,776 @@
+//! Enrollment intake, validation, and the single Gateway certificate profile.
+//!
+//! Same-SPKI replacement is issued immediately on the first eligible POST. The
+//! CSR signature proves possession of the current private key, so persisting a
+//! synthetic approval would add no authority and would make response-loss
+//! recovery less direct. Different-SPKI replacement remains approve-then-claim.
+
+use std::{net::IpAddr, path::Path, sync::Arc, time::SystemTime};
+
+use rcgen::{
+    CertificateParams, CertificateSigningRequestParams, DistinguishedName, ExtendedKeyUsagePurpose,
+    IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SerialNumber,
+};
+use rustls::{
+    RootCertStore,
+    client::{WebPkiServerVerifier, danger::ServerCertVerifier as _},
+    server::ParsedCertificate,
+};
+use rustls_pki_types::{
+    CertificateDer, CertificateSigningRequestDer, PrivatePkcs8KeyDer, ServerName, UnixTime,
+};
+use sha2::{Digest, Sha256};
+use snafu::Snafu;
+use subtle::ConstantTimeEq;
+use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+use crate::{
+    audit::CorrelationId,
+    config::{GatewaySiteConfig, UtcDateTimeComponents},
+    db::{self, Database},
+    tls,
+};
+
+pub(crate) const ENROLLMENT_PROTOCOL_VERSION: u32 = 1;
+pub(crate) const GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS: i64 = 300;
+pub(crate) const MAX_GATEWAY_CSR_DER_BYTES: usize = 32 * 1024;
+const MAX_CLIENT_VERSION_BYTES: usize = 64;
+const DEVICE_TOKEN_BYTES: usize = 32;
+const CERTIFICATE_SERIAL_BYTES: usize = 20;
+#[cfg(test)]
+pub(crate) const TEST_GATEWAY_HOSTNAME: &str = "gateway.contest.example";
+#[cfg(test)]
+pub(crate) const TEST_GATEWAY_NOT_AFTER: &str = "4090-01-01T00:00:00Z";
+
+#[derive(Clone)]
+pub(crate) struct GatewayIssuer(Arc<GatewayIssuerInner>);
+
+struct GatewayIssuerInner {
+    issuer: Issuer<'static, KeyPair>,
+    origin_certificate_der: Vec<u8>,
+    site: GatewaySiteConfig,
+}
+
+impl GatewayIssuer {
+    /// Loads and validates fixed-encoding Origin CA material and the site-owned
+    /// Gateway profile before the HTTP listener is bound.
+    pub(crate) fn load(
+        certificate_path: &Path,
+        private_key_path: &Path,
+        site: GatewaySiteConfig,
+    ) -> Result<Self, GatewayIssuerError> {
+        let certificate_bytes = tls::read_private_file(certificate_path)
+            .map_err(|_| GatewayIssuerError::MaterialUnreadable)?;
+        let mut private_key_bytes = tls::read_private_file(private_key_path)
+            .map_err(|_| GatewayIssuerError::MaterialUnreadable)?;
+        let private_key_der = PrivatePkcs8KeyDer::from(private_key_bytes.as_slice());
+        let key_pair = KeyPair::try_from(&private_key_der).map_err(|_| {
+            private_key_bytes.zeroize();
+            GatewayIssuerError::InvalidMaterial
+        })?;
+        private_key_bytes.zeroize();
+
+        let certificate_der = CertificateDer::from(certificate_bytes.clone());
+        let parsed = ParsedCertificate::try_from(&certificate_der)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        if parsed.subject_public_key_info().as_ref()
+            != key_pair.subject_public_key_info().as_slice()
+        {
+            return Err(GatewayIssuerError::InvalidMaterial);
+        }
+        let issuer: Issuer<'static, KeyPair> = Issuer::from_ca_cert_der(&certificate_der, key_pair)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let gateway_issuer = Self(Arc::new(GatewayIssuerInner {
+            issuer,
+            origin_certificate_der: certificate_bytes,
+            site,
+        }));
+        gateway_issuer.verify_issuing_material()?;
+        Ok(gateway_issuer)
+    }
+
+    fn verify_issuing_material(&self) -> Result<(), GatewayIssuerError> {
+        let probe_key = KeyPair::generate().map_err(|_| GatewayIssuerError::EntropyUnavailable)?;
+        let probe = self.sign_public_key(&probe_key)?;
+        let origin = CertificateDer::from(self.0.origin_certificate_der.clone());
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(origin)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let verifier = WebPkiServerVerifier::builder_with_provider(
+            Arc::new(roots),
+            Arc::new(rustls::crypto::ring::default_provider()),
+        )
+        .build()
+        .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let server_name = ServerName::try_from(self.0.site.gateway_hostname().to_owned())
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        verifier
+            .verify_server_cert(
+                &CertificateDer::from(probe.leaf_der),
+                &[],
+                &server_name,
+                &[],
+                UnixTime::now(),
+            )
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        Ok(())
+    }
+
+    pub(crate) fn issue_from_csr(
+        &self,
+        csr_der: &[u8],
+    ) -> Result<IssuedGatewayCertificate, GatewayIssuerError> {
+        let csr =
+            CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(csr_der))
+                .map_err(|_| GatewayIssuerError::InvalidCsr)?;
+        self.sign_public_key(&csr.public_key)
+    }
+
+    fn sign_public_key(
+        &self,
+        public_key: &impl PublicKeyData,
+    ) -> Result<IssuedGatewayCertificate, GatewayIssuerError> {
+        let now = current_unix_seconds()?;
+        let minimum_not_after = now
+            .checked_add(GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS)
+            .ok_or(GatewayIssuerError::ClockInvalid)?;
+        if self.0.site.gateway_not_after().unix_seconds() < minimum_not_after {
+            return Err(GatewayIssuerError::ValidityTooShort);
+        }
+
+        let mut serial_bytes = [0_u8; CERTIFICATE_SERIAL_BYTES];
+        getrandom::fill(&mut serial_bytes).map_err(|_| GatewayIssuerError::EntropyUnavailable)?;
+        serial_bytes[0] &= 0x7f;
+        if serial_bytes.iter().all(|byte| *byte == 0) {
+            serial_bytes[CERTIFICATE_SERIAL_BYTES - 1] = 1;
+        }
+        let serial = hex::encode(serial_bytes);
+        let mut params = CertificateParams::new(vec![self.0.site.gateway_hostname().to_owned()])
+            .map_err(|_| GatewayIssuerError::SigningFailed)?;
+        params.distinguished_name = DistinguishedName::new();
+        params.is_ca = IsCa::ExplicitNoCa;
+        params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
+        set_certificate_time(
+            &mut params,
+            UtcDateTimeComponents::from_unix_seconds(now)
+                .ok_or(GatewayIssuerError::ClockInvalid)?,
+            CertificateTimeField::NotBefore,
+        )?;
+        set_certificate_time(
+            &mut params,
+            self.0.site.gateway_not_after().components(),
+            CertificateTimeField::NotAfter,
+        )?;
+        let certificate = params
+            .signed_by(public_key, &self.0.issuer)
+            .map_err(|_| GatewayIssuerError::SigningFailed)?;
+        Ok(IssuedGatewayCertificate {
+            leaf_der: certificate.der().to_vec(),
+            chain_der: vec![self.0.origin_certificate_der.clone()],
+            serial,
+            not_after: self.0.site.gateway_not_after().encoded().to_owned(),
+        })
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn for_test() -> Result<Self, GatewayIssuerError> {
+        let site = GatewaySiteConfig::for_test(TEST_GATEWAY_HOSTNAME, TEST_GATEWAY_NOT_AFTER)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        Self::for_test_with_site(site)
+    }
+
+    /// Bypasses startup preflight so tests can exercise the issuance-time
+    /// validity recheck that protects a long-running process.
+    #[cfg(test)]
+    pub(crate) fn for_test_with_remaining_validity(
+        remaining_seconds: i64,
+    ) -> Result<Self, GatewayIssuerError> {
+        let not_after = current_unix_seconds()?
+            .checked_add(remaining_seconds)
+            .and_then(UtcDateTimeComponents::from_unix_seconds)
+            .ok_or(GatewayIssuerError::ClockInvalid)?;
+        let encoded_not_after = format!(
+            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            not_after.year,
+            not_after.month,
+            not_after.day,
+            not_after.hour,
+            not_after.minute,
+            not_after.second
+        );
+        let site = GatewaySiteConfig::for_test(TEST_GATEWAY_HOSTNAME, &encoded_not_after)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        Self::for_test_with_site(site)
+    }
+
+    #[cfg(test)]
+    fn for_test_with_site(site: GatewaySiteConfig) -> Result<Self, GatewayIssuerError> {
+        use rcgen::{BasicConstraints, CertificateParams, IsCa};
+
+        let key = KeyPair::generate().map_err(|_| GatewayIssuerError::EntropyUnavailable)?;
+        let mut params = CertificateParams::new(Vec::<String>::new())
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        params.distinguished_name = DistinguishedName::new();
+        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        params.key_usages = vec![
+            KeyUsagePurpose::KeyCertSign,
+            KeyUsagePurpose::DigitalSignature,
+        ];
+        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
+        params.not_after = rcgen::date_time_ymd(4095, 1, 1);
+        let certificate = params
+            .self_signed(&key)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let certificate_der = CertificateDer::from(certificate.der().to_vec());
+        let issuer = Issuer::from_ca_cert_der(&certificate_der, key)
+            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        Ok(Self(Arc::new(GatewayIssuerInner {
+            issuer,
+            origin_certificate_der: certificate.der().to_vec(),
+            site,
+        })))
+    }
+}
+
+fn current_unix_seconds() -> Result<i64, GatewayIssuerError> {
+    let elapsed = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_err(|_| GatewayIssuerError::ClockInvalid)?;
+    i64::try_from(elapsed.as_secs()).map_err(|_| GatewayIssuerError::ClockInvalid)
+}
+
+#[derive(Clone, Copy)]
+enum CertificateTimeField {
+    NotBefore,
+    NotAfter,
+}
+
+fn set_certificate_time(
+    params: &mut CertificateParams,
+    components: UtcDateTimeComponents,
+    field: CertificateTimeField,
+) -> Result<(), GatewayIssuerError> {
+    let timestamp = rcgen::date_time_ymd(components.year, components.month, components.day)
+        .replace_hour(components.hour)
+        .and_then(|value| value.replace_minute(components.minute))
+        .and_then(|value| value.replace_second(components.second))
+        .and_then(|value| value.replace_nanosecond(components.nanosecond))
+        .map_err(|_| GatewayIssuerError::ClockInvalid)?;
+    match field {
+        CertificateTimeField::NotBefore => params.not_before = timestamp,
+        CertificateTimeField::NotAfter => params.not_after = timestamp,
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[snafu(module)]
+pub(crate) enum GatewayIssuerError {
+    #[snafu(display("the Origin CA material could not be read"))]
+    MaterialUnreadable,
+    #[snafu(display("the Origin CA material is invalid"))]
+    InvalidMaterial,
+    #[snafu(display("the Gateway CSR is invalid"))]
+    InvalidCsr,
+    #[snafu(display("the system clock is invalid"))]
+    ClockInvalid,
+    #[snafu(display("the Gateway certificate validity policy is too short"))]
+    ValidityTooShort,
+    #[snafu(display("certificate entropy is unavailable"))]
+    EntropyUnavailable,
+    #[snafu(display("the Gateway certificate could not be signed"))]
+    SigningFailed,
+}
+
+pub(crate) struct IssuedGatewayCertificate {
+    pub(crate) leaf_der: Vec<u8>,
+    pub(crate) chain_der: Vec<Vec<u8>>,
+    pub(crate) serial: String,
+    pub(crate) not_after: String,
+}
+
+#[derive(Clone)]
+pub(crate) struct EnrollmentRequestInput {
+    pub(crate) machine_hardware_id: String,
+    pub(crate) hardware_identity_quality: String,
+    pub(crate) gateway_csr_der: String,
+    pub(crate) gateway_spki_sha256: String,
+    pub(crate) client_version: String,
+    pub(crate) protocol_version: u32,
+}
+
+pub(crate) struct ValidatedEnrollmentRequest {
+    pub(crate) machine_hardware_id: String,
+    pub(crate) hardware_identity_quality: HardwareIdentityQuality,
+    pub(crate) gateway_csr_der: Vec<u8>,
+    pub(crate) gateway_spki_sha256: [u8; 32],
+    pub(crate) client_version: String,
+    pub(crate) protocol_version: u32,
+    pub(crate) source_ip: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HardwareIdentityQuality {
+    Strong,
+    Medium,
+    Weak,
+}
+
+impl HardwareIdentityQuality {
+    fn parse(value: &str) -> Result<Self, EnrollmentError> {
+        match value {
+            "strong" => Ok(Self::Strong),
+            "medium" => Ok(Self::Medium),
+            "weak" => Ok(Self::Weak),
+            _ => Err(EnrollmentError::InvalidHardwareIdentityQuality),
+        }
+    }
+
+    pub(crate) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Strong => "strong",
+            Self::Medium => "medium",
+            Self::Weak => "weak",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollmentResolution {
+    CreateDevice,
+    ReplaceDeviceCredentials,
+}
+
+impl EnrollmentResolution {
+    pub(crate) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::CreateDevice => "create_device",
+            Self::ReplaceDeviceCredentials => "replace_device_credentials",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollmentState {
+    Pending,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IssuanceReason {
+    FirstEnrollment,
+    CredentialReplacement,
+    SameSpkiRetry,
+}
+
+impl IssuanceReason {
+    pub(crate) const fn as_audit_reason(self) -> &'static str {
+        match self {
+            Self::FirstEnrollment => "first_enrollment",
+            Self::CredentialReplacement => "credential_replacement",
+            Self::SameSpkiRetry => "same_spki_retry",
+        }
+    }
+}
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub(crate) struct DeviceToken([u8; DEVICE_TOKEN_BYTES]);
+
+impl DeviceToken {
+    pub(crate) fn generate() -> Result<Self, EnrollmentError> {
+        let mut bytes = [0_u8; DEVICE_TOKEN_BYTES];
+        getrandom::fill(&mut bytes).map_err(|_| EnrollmentError::EntropyUnavailable)?;
+        Ok(Self(bytes))
+    }
+
+    pub(crate) fn sha256(&self) -> [u8; 32] {
+        Sha256::digest(self.0).into()
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; DEVICE_TOKEN_BYTES] {
+        &self.0
+    }
+}
+
+pub(crate) enum EnrollmentOutcome {
+    Issued(IssuedEnrollment),
+    Pending(PendingEnrollment),
+}
+
+pub(crate) struct IssuedEnrollment {
+    pub(crate) enrollment_request_id: Uuid,
+    pub(crate) device_id: Uuid,
+    pub(crate) device_token: DeviceToken,
+    pub(crate) gateway_leaf_der: Vec<u8>,
+    pub(crate) gateway_chain_der: Vec<Vec<u8>>,
+}
+
+pub(crate) struct PendingEnrollment {
+    pub(crate) enrollment_request_id: Uuid,
+    pub(crate) state: EnrollmentState,
+}
+
+/// Validates a device request completely before any database access, then lets
+/// the store perform the window gate and state transition atomically.
+pub(crate) async fn intake(
+    database: &Database,
+    issuer: GatewayIssuer,
+    input: EnrollmentRequestInput,
+    source_ip: IpAddr,
+    correlation_id: CorrelationId,
+) -> Result<EnrollmentOutcome, EnrollmentError> {
+    let request = validate_request(input, source_ip)?;
+    db::enrollment::intake(database, issuer, request, correlation_id).await
+}
+
+#[allow(dead_code)]
+pub(crate) async fn approve_request(
+    database: &Database,
+    request_id: Uuid,
+    correlation_id: CorrelationId,
+) -> Result<(), EnrollmentError> {
+    db::enrollment::approve_request(database, request_id, correlation_id).await
+}
+
+#[allow(dead_code)]
+pub(crate) async fn reject_request(
+    database: &Database,
+    request_id: Uuid,
+    correlation_id: CorrelationId,
+) -> Result<(), EnrollmentError> {
+    db::enrollment::reject_request(database, request_id, correlation_id).await
+}
+
+fn validate_request(
+    input: EnrollmentRequestInput,
+    source_ip: IpAddr,
+) -> Result<ValidatedEnrollmentRequest, EnrollmentError> {
+    let machine_hardware_id = Uuid::parse_str(&input.machine_hardware_id)
+        .map_err(|_| EnrollmentError::InvalidMachineHardwareId)?;
+    if machine_hardware_id.get_version_num() != 5
+        || machine_hardware_id.hyphenated().to_string() != input.machine_hardware_id
+    {
+        return Err(EnrollmentError::InvalidMachineHardwareId);
+    }
+    let hardware_identity_quality =
+        HardwareIdentityQuality::parse(&input.hardware_identity_quality)?;
+    if input.client_version.is_empty()
+        || input.client_version.len() > MAX_CLIENT_VERSION_BYTES
+        || !input
+            .client_version
+            .bytes()
+            .all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(EnrollmentError::InvalidClientVersion);
+    }
+    if input.protocol_version != ENROLLMENT_PROTOCOL_VERSION {
+        return Err(EnrollmentError::UnsupportedProtocolVersion);
+    }
+    if input.gateway_spki_sha256.len() != 64
+        || !input
+            .gateway_spki_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(EnrollmentError::InvalidSpki);
+    }
+    let mut claimed_spki = [0_u8; 32];
+    hex::decode_to_slice(&input.gateway_spki_sha256, &mut claimed_spki)
+        .map_err(|_| EnrollmentError::InvalidSpki)?;
+    let gateway_csr_der = decode_standard_base64(&input.gateway_csr_der)
+        .ok_or(EnrollmentError::InvalidCsrEncoding)?;
+    if gateway_csr_der.is_empty() || gateway_csr_der.len() > MAX_GATEWAY_CSR_DER_BYTES {
+        return Err(EnrollmentError::InvalidCsr);
+    }
+    let csr = CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(
+        gateway_csr_der.as_slice(),
+    ))
+    .map_err(|_| EnrollmentError::InvalidCsr)?;
+    let recomputed_spki: [u8; 32] = Sha256::digest(csr.public_key.subject_public_key_info()).into();
+    if !bool::from(recomputed_spki.ct_eq(&claimed_spki)) {
+        return Err(EnrollmentError::SpkiMismatch);
+    }
+    Ok(ValidatedEnrollmentRequest {
+        machine_hardware_id: input.machine_hardware_id,
+        hardware_identity_quality,
+        gateway_csr_der,
+        gateway_spki_sha256: claimed_spki,
+        client_version: input.client_version,
+        protocol_version: input.protocol_version,
+        source_ip: source_ip.to_string(),
+    })
+}
+
+pub(crate) fn encode_standard_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = u32::from(chunk[0]);
+        let second = u32::from(*chunk.get(1).unwrap_or(&0));
+        let third = u32::from(*chunk.get(2).unwrap_or(&0));
+        let value = (first << 16) | (second << 8) | third;
+        encoded.push(char::from(ALPHABET[((value >> 18) & 0x3f) as usize]));
+        encoded.push(char::from(ALPHABET[((value >> 12) & 0x3f) as usize]));
+        if chunk.len() >= 2 {
+            encoded.push(char::from(ALPHABET[((value >> 6) & 0x3f) as usize]));
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() == 3 {
+            encoded.push(char::from(ALPHABET[(value & 0x3f) as usize]));
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
+}
+
+fn decode_standard_base64(value: &str) -> Option<Vec<u8>> {
+    let bytes = value.as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
+        return None;
+    }
+    let padding = usize::from(bytes.ends_with(b"=")) + usize::from(bytes.ends_with(b"=="));
+    let decoded_len = bytes
+        .len()
+        .checked_div(4)?
+        .checked_mul(3)?
+        .checked_sub(padding)?;
+    if decoded_len > MAX_GATEWAY_CSR_DER_BYTES {
+        return None;
+    }
+    let mut decoded = Vec::with_capacity(decoded_len);
+    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
+        let last = index + 1 == bytes.len() / 4;
+        let a = decode_standard_base64_byte(chunk[0])?;
+        let b = decode_standard_base64_byte(chunk[1])?;
+        let c = if chunk[2] == b'=' {
+            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
+                return None;
+            }
+            0
+        } else {
+            decode_standard_base64_byte(chunk[2])?
+        };
+        let d = if chunk[3] == b'=' {
+            if !last || (chunk[2] != b'=' && c & 0x03 != 0) {
+                return None;
+            }
+            0
+        } else {
+            if chunk[2] == b'=' {
+                return None;
+            }
+            decode_standard_base64_byte(chunk[3])?
+        };
+        let aggregate =
+            (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(c) << 6) | u32::from(d);
+        decoded.push(((aggregate >> 16) & 0xff) as u8);
+        if chunk[2] != b'=' {
+            decoded.push(((aggregate >> 8) & 0xff) as u8);
+        }
+        if chunk[3] != b'=' {
+            decoded.push((aggregate & 0xff) as u8);
+        }
+    }
+    (decoded.len() == decoded_len).then_some(decoded)
+}
+
+const fn decode_standard_base64_byte(byte: u8) -> Option<u8> {
+    match byte {
+        b'A'..=b'Z' => Some(byte - b'A'),
+        b'a'..=b'z' => Some(byte - b'a' + 26),
+        b'0'..=b'9' => Some(byte - b'0' + 52),
+        b'+' => Some(62),
+        b'/' => Some(63),
+        _ => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+pub(crate) enum EnrollmentError {
+    #[snafu(display("the machine hardware ID is invalid"))]
+    InvalidMachineHardwareId,
+    #[snafu(display("the hardware identity quality is invalid"))]
+    InvalidHardwareIdentityQuality,
+    #[snafu(display("the client version is invalid"))]
+    InvalidClientVersion,
+    #[snafu(display("the Enrollment protocol version is unsupported"))]
+    UnsupportedProtocolVersion,
+    #[snafu(display("the claimed Gateway SPKI digest is invalid"))]
+    InvalidSpki,
+    #[snafu(display("the Gateway CSR encoding is invalid"))]
+    InvalidCsrEncoding,
+    #[snafu(display("the Gateway CSR is invalid"))]
+    InvalidCsr,
+    #[snafu(display("the claimed Gateway SPKI digest does not match the CSR"))]
+    SpkiMismatch,
+    #[snafu(display("the provisioning window is closed"))]
+    ProvisioningWindowClosed,
+    #[snafu(display("the Enrollment request was rejected"))]
+    RequestRejected,
+    #[snafu(display("the device identity conflicts with a live Enrollment request"))]
+    DeviceIdentityConflict,
+    #[snafu(display("the Enrollment request does not exist"))]
+    RequestNotFound,
+    #[snafu(display("the Enrollment request is not pending"))]
+    RequestNotPending,
+    #[snafu(display("the persisted Enrollment facts are invalid"))]
+    InvalidPersistedFacts,
+    #[snafu(display("Enrollment entropy is unavailable"))]
+    EntropyUnavailable,
+    #[snafu(display("the Gateway issuance policy no longer has sufficient validity"))]
+    IssuancePolicyExpired,
+    #[snafu(display("Gateway certificate signing failed"))]
+    SigningFailed,
+    #[snafu(display("Enrollment persistence failed"))]
+    PersistenceFailed,
+}
+
+impl From<GatewayIssuerError> for EnrollmentError {
+    fn from(error: GatewayIssuerError) -> Self {
+        match error {
+            GatewayIssuerError::ValidityTooShort => Self::IssuancePolicyExpired,
+            GatewayIssuerError::EntropyUnavailable => Self::EntropyUnavailable,
+            GatewayIssuerError::MaterialUnreadable
+            | GatewayIssuerError::InvalidMaterial
+            | GatewayIssuerError::InvalidCsr
+            | GatewayIssuerError::ClockInvalid
+            | GatewayIssuerError::SigningFailed => Self::SigningFailed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, net::Ipv4Addr};
+
+    use snafu::Snafu;
+
+    use crate::{
+        config::{
+            GatewaySiteConfig, ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME,
+        },
+        tls::tests::TestIdentity,
+    };
+
+    use super::{GatewayIssuer, GatewayIssuerError};
+
+    #[test]
+    fn origin_ca_preflight_accepts_only_matching_der_material_and_valid_site_policy()
+    -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let certificate_path = identity
+            .directory_path()
+            .join(ORIGIN_CA_CERTIFICATE_FILENAME);
+        let private_key_path = identity
+            .directory_path()
+            .join(ORIGIN_CA_PRIVATE_KEY_FILENAME);
+        let site = valid_site()?;
+        GatewayIssuer::load(&certificate_path, &private_key_path, site)
+            .map_err(|_| TestFailure::ExpectedValidMaterial)?;
+
+        let other =
+            TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        fs::copy(
+            other.directory_path().join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+            &private_key_path,
+        )
+        .map_err(|_| TestFailure::FixtureFailed)?;
+        assert_preflight_error(
+            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuerError::InvalidMaterial,
+        )?;
+
+        fs::write(&private_key_path, b"malformed-origin-ca-key-canary")
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        assert_preflight_error(
+            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuerError::InvalidMaterial,
+        )?;
+        fs::copy(
+            other.directory_path().join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+            &private_key_path,
+        )
+        .map_err(|_| TestFailure::FixtureFailed)?;
+        fs::write(&certificate_path, b"malformed-origin-ca-canary")
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        assert_preflight_error(
+            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuerError::InvalidMaterial,
+        )?;
+        fs::remove_file(&certificate_path).map_err(|_| TestFailure::FixtureFailed)?;
+        assert_preflight_error(
+            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuerError::MaterialUnreadable,
+        )
+    }
+
+    #[test]
+    fn issuance_time_margin_fails_closed_during_preflight() -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let site = GatewaySiteConfig::for_test("gateway.contest.example", "1970-01-01T00:00:00Z")
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        assert_preflight_error(
+            GatewayIssuer::load(
+                &identity
+                    .directory_path()
+                    .join(ORIGIN_CA_CERTIFICATE_FILENAME),
+                &identity
+                    .directory_path()
+                    .join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+                site,
+            ),
+            GatewayIssuerError::ValidityTooShort,
+        )
+    }
+
+    fn valid_site() -> Result<GatewaySiteConfig, TestFailure> {
+        GatewaySiteConfig::for_test("gateway.contest.example", "4090-01-01T00:00:00Z")
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    fn assert_preflight_error(
+        result: Result<GatewayIssuer, GatewayIssuerError>,
+        expected: GatewayIssuerError,
+    ) -> Result<(), TestFailure> {
+        let error = result.err().ok_or(TestFailure::ExpectedFailure)?;
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        let canary_escaped = [
+            "malformed-origin-ca-canary",
+            "malformed-origin-ca-key-canary",
+        ]
+        .iter()
+        .any(|canary| contains_canary(&display, canary) || contains_canary(&debug, canary));
+        if error != expected || canary_escaped {
+            return Err(TestFailure::UnexpectedFailure);
+        }
+        Ok(())
+    }
+
+    fn contains_canary(value: &str, canary: &str) -> bool {
+        value
+            .as_bytes()
+            .windows(canary.len())
+            .any(|window| window == canary.as_bytes())
+    }
+
+    #[derive(Debug, Snafu)]
+    enum TestFailure {
+        #[snafu(display("the Origin CA fixture failed"))]
+        FixtureFailed,
+        #[snafu(display("valid Origin CA material was rejected"))]
+        ExpectedValidMaterial,
+        #[snafu(display("an Origin CA preflight failure was expected"))]
+        ExpectedFailure,
+        #[snafu(display("the Origin CA preflight failure changed"))]
+        UnexpectedFailure,
+    }
+}

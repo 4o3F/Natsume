@@ -16,7 +16,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::{audit::CorrelationId, db::Database};
+use crate::{application::enrollment::GatewayIssuer, audit::CorrelationId, db::Database};
 
 use self::error::ApiError;
 
@@ -24,13 +24,38 @@ use self::error::ApiError;
 pub(crate) struct AppState {
     database: Database,
     vault_master_key_path: PathBuf,
+    gateway_issuer: Option<GatewayIssuer>,
 }
 
 /// Builds the mounted Server HTTP surface over an already-migrated database.
 pub fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
+    router_inner(database, vault_master_key_path, web_root, None)
+}
+
+pub(crate) fn router_with_enrollment(
+    database: Database,
+    vault_master_key_path: &Path,
+    web_root: &Path,
+    gateway_issuer: GatewayIssuer,
+) -> Router {
+    router_inner(
+        database,
+        vault_master_key_path,
+        web_root,
+        Some(gateway_issuer),
+    )
+}
+
+fn router_inner(
+    database: Database,
+    vault_master_key_path: &Path,
+    web_root: &Path,
+    gateway_issuer: Option<GatewayIssuer>,
+) -> Router {
     let state = AppState {
         database,
         vault_master_key_path: vault_master_key_path.to_owned(),
+        gateway_issuer,
     };
     let static_service =
         any_service(ServeDir::new(web_root).fallback(ServeFile::new(web_root.join("index.html"))))
@@ -54,6 +79,7 @@ fn api_v2(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(handler::health::routes())
         .merge(handler::session::public_routes())
+        .merge(handler::enrollment::routes())
         .merge(authenticated)
 }
 

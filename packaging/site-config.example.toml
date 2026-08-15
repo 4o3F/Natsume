@@ -2,6 +2,8 @@
 # This file is not copied into a package by default.
 schema_version = 1
 fleet_namespace_uuid = "REPLACE-WITH-STABLE-SITE-UUID"
+gateway_hostname = "gateway.contest.example"
+gateway_not_after = "2030-01-01T00:00:00Z"
 
 [trust]
 control_root_sha256 = "REPLACE-WITH-SHA256"

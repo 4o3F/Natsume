@@ -1,8 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use axum::{
     Router,
     body::{Body, to_bytes},
+    extract::ConnectInfo,
     http::{Method, Request, StatusCode, header},
 };
 use diesel::{
@@ -214,7 +218,7 @@ async fn operator_session_grants_no_device_credential_or_wss_identity() {
             .collect::<Vec<_>>(),
         ["operator_id", "role"]
     );
-    assert_browser_document_excludes_device_credentials(&document);
+    assert_browser_document_scopes_device_credentials_to_enrollment(&document);
 }
 
 #[tokio::test]
@@ -295,7 +299,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
         Path::new("/natsume-integration-test-unused-vault-master-key"),
         Path::new("/natsume-integration-test-unused-web-root"),
     );
-    for (method, path, expected) in mounted_operator_routes() {
+    for (method, path, expected) in mounted_routes() {
         assert_eq!(drive(&application, method, path).await, expected, "{path}");
     }
 
@@ -336,6 +340,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             "closeProvisioningWindow",
             "commitCsvImport",
             "createCsvImport",
+            "createEnrollmentRequest",
             "createSession",
             "deleteSession",
             "disableDevice",
@@ -358,12 +363,12 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             .pointer("/info/description")
             .and_then(Value::as_str),
         Some(
-            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         )
     );
 }
 
-fn mounted_operator_routes() -> [(Method, &'static str, StatusCode); 17] {
+fn mounted_routes() -> [(Method, &'static str, StatusCode); 18] {
     [
         (Method::GET, "/api/v2/health", StatusCode::OK),
         (Method::POST, "/api/v2/session", StatusCode::BAD_REQUEST),
@@ -410,6 +415,11 @@ fn mounted_operator_routes() -> [(Method, &'static str, StatusCode); 17] {
             "/api/v2/provisioning-window/actions/close",
             StatusCode::UNAUTHORIZED,
         ),
+        (
+            Method::POST,
+            "/api/v2/enrollment-requests",
+            StatusCode::BAD_REQUEST,
+        ),
     ]
 }
 
@@ -421,11 +431,12 @@ async fn drive(application: &Router, method: Method, path: &str) -> StatusCode {
     } else {
         Body::empty()
     };
+    let mut request = require_ok(request.body(body), "request must build");
+    request
+        .extensions_mut()
+        .insert(ConnectInfo(SocketAddr::from(([198, 51, 100, 19], 45_123))));
     let response = require_ok(
-        application
-            .clone()
-            .oneshot(require_ok(request.body(body), "request must build"))
-            .await,
+        application.clone().oneshot(request).await,
         "router must answer",
     );
     let status = response.status();
@@ -447,9 +458,55 @@ fn require_object<'a>(
     }
 }
 
-fn assert_browser_document_excludes_device_credentials(document: &Value) {
+fn assert_browser_document_scopes_device_credentials_to_enrollment(document: &Value) {
+    let intake = require_object(
+        document,
+        "/paths/~1api~1v2~1enrollment-requests/post",
+        "Enrollment intake operation must exist",
+    );
+    assert!(intake.get("security").is_none());
+    assert_eq!(
+        document
+            .pointer("/paths/~1api~1v2~1enrollment-requests/post/responses/201/content/application~1json/schema/$ref")
+            .and_then(Value::as_str),
+        Some("#/components/schemas/EnrollmentIssuedResponse")
+    );
+    let issued_properties = require_object(
+        document,
+        "/components/schemas/EnrollmentIssuedResponse/properties",
+        "Enrollment issuance response must exist",
+    );
+    assert_eq!(
+        issued_properties
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "device_id",
+            "device_token",
+            "enrollment_request_id",
+            "gateway_chain_der",
+            "gateway_leaf_der",
+            "state",
+        ]
+    );
+
+    let mut non_enrollment_document = document.clone();
+    require_object_mut(
+        &mut non_enrollment_document,
+        "/paths",
+        "OpenAPI paths must exist",
+    )
+    .remove("/api/v2/enrollment-requests");
+    let schemas = require_object_mut(
+        &mut non_enrollment_document,
+        "/components/schemas",
+        "OpenAPI schemas must exist",
+    );
+    schemas.remove("EnrollmentRequest");
+    schemas.remove("EnrollmentIssuedResponse");
     let encoded = require_ok(
-        serde_json::to_string(document),
+        serde_json::to_string(&non_enrollment_document),
         "OpenAPI document must encode",
     )
     .to_ascii_lowercase()
@@ -469,5 +526,16 @@ fn assert_browser_document_excludes_device_credentials(document: &Value) {
             !encoded.contains(forbidden),
             "browser OpenAPI exposed {forbidden}"
         );
+    }
+}
+
+fn require_object_mut<'a>(
+    document: &'a mut Value,
+    pointer: &str,
+    message: &str,
+) -> &'a mut serde_json::Map<String, Value> {
+    match document.pointer_mut(pointer).and_then(Value::as_object_mut) {
+        Some(value) => value,
+        None => panic!("{message}"),
     }
 }

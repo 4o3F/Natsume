@@ -534,7 +534,7 @@ mod tests {
             &unknown,
             StatusCode::NOT_FOUND,
             "Not Found",
-            "INVALID_REQUEST",
+            "RESOURCE_NOT_FOUND",
         )?;
         Ok(())
     }

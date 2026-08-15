@@ -3,13 +3,16 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use natsume_error_code::{
-    ErrorCode, common::CommonErrorCode, operator::OperatorErrorCode as PublicOperatorErrorCode,
+    ErrorCode, common::CommonErrorCode,
+    enrollment::EnrollmentErrorCode as PublicEnrollmentErrorCode,
+    operator::OperatorErrorCode as PublicOperatorErrorCode,
 };
 use serde::Serialize;
 
 use crate::{
     application::{
         contest::ContestError,
+        enrollment::EnrollmentError,
         import::{CsvImportErrorCategory, ImportError},
         operator::OperatorError,
         provisioning::ProvisioningError,
@@ -74,10 +77,102 @@ impl ApiError {
         Self::new(
             StatusCode::NOT_FOUND,
             "Not Found",
-            CommonErrorCode::InvalidRequest,
+            CommonErrorCode::ResourceNotFound,
             cause,
             correlation_id,
         )
+    }
+
+    pub(super) fn invalid_enrollment_request(
+        cause: &'static str,
+        correlation_id: CorrelationId,
+    ) -> Self {
+        Self::enrollment_error(
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            PublicEnrollmentErrorCode::EnrollmentRequestInvalid,
+            cause,
+            correlation_id,
+        )
+    }
+
+    pub(super) fn from_enrollment(error: EnrollmentError, correlation_id: CorrelationId) -> Self {
+        match error {
+            EnrollmentError::InvalidMachineHardwareId => Self::invalid_enrollment_request(
+                "enrollment_machine_hardware_id_invalid",
+                correlation_id,
+            ),
+            EnrollmentError::InvalidHardwareIdentityQuality => Self::invalid_enrollment_request(
+                "enrollment_hardware_identity_quality_invalid",
+                correlation_id,
+            ),
+            EnrollmentError::InvalidClientVersion => Self::invalid_enrollment_request(
+                "enrollment_client_version_invalid",
+                correlation_id,
+            ),
+            EnrollmentError::UnsupportedProtocolVersion => Self::invalid_enrollment_request(
+                "enrollment_protocol_version_unsupported",
+                correlation_id,
+            ),
+            EnrollmentError::InvalidSpki => {
+                Self::invalid_enrollment_request("enrollment_spki_invalid", correlation_id)
+            }
+            EnrollmentError::InvalidCsrEncoding => {
+                Self::invalid_enrollment_request("enrollment_csr_encoding_invalid", correlation_id)
+            }
+            EnrollmentError::InvalidCsr => {
+                Self::invalid_enrollment_request("enrollment_csr_invalid", correlation_id)
+            }
+            EnrollmentError::SpkiMismatch => {
+                Self::invalid_enrollment_request("enrollment_spki_mismatch", correlation_id)
+            }
+            EnrollmentError::ProvisioningWindowClosed => Self::enrollment_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                PublicEnrollmentErrorCode::ProvisioningWindowClosed,
+                "enrollment_provisioning_window_closed",
+                correlation_id,
+            ),
+            EnrollmentError::RequestRejected => Self::enrollment_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                PublicEnrollmentErrorCode::EnrollmentRequestRejected,
+                "enrollment_request_rejected",
+                correlation_id,
+            ),
+            EnrollmentError::DeviceIdentityConflict => Self::enrollment_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                PublicEnrollmentErrorCode::DeviceIdentityConflict,
+                "enrollment_device_identity_conflict",
+                correlation_id,
+            ),
+            EnrollmentError::RequestNotPending => Self::enrollment_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                PublicEnrollmentErrorCode::DeviceIdentityConflict,
+                "enrollment_request_not_pending",
+                correlation_id,
+            ),
+            EnrollmentError::RequestNotFound => {
+                Self::not_found("enrollment_request_not_found", correlation_id)
+            }
+            EnrollmentError::InvalidPersistedFacts => {
+                Self::internal_error("enrollment_invalid_persisted_facts", correlation_id)
+            }
+            EnrollmentError::EntropyUnavailable => {
+                Self::internal_error("enrollment_entropy_unavailable", correlation_id)
+            }
+            EnrollmentError::IssuancePolicyExpired => {
+                Self::internal_error("enrollment_issuance_policy_expired", correlation_id)
+            }
+            EnrollmentError::SigningFailed => {
+                Self::internal_error("enrollment_signing_failed", correlation_id)
+            }
+            EnrollmentError::PersistenceFailed => {
+                Self::internal_error("enrollment_persistence_failed", correlation_id)
+            }
+        }
     }
 
     pub(super) fn internal_error(cause: &'static str, correlation_id: CorrelationId) -> Self {
@@ -259,6 +354,22 @@ impl ApiError {
         }
     }
 
+    fn enrollment_error(
+        status: StatusCode,
+        title: &'static str,
+        code: PublicEnrollmentErrorCode,
+        cause: &'static str,
+        correlation_id: CorrelationId,
+    ) -> Self {
+        Self {
+            status,
+            title,
+            code: ErrorCode::from(code).as_str(),
+            cause,
+            correlation_id,
+        }
+    }
+
     fn new(
         status: StatusCode,
         title: &'static str,
@@ -328,6 +439,7 @@ mod tests {
 
     use crate::{
         application::{
+            enrollment::EnrollmentError,
             import::{ImportError, parse_csv},
             provisioning::ProvisioningError,
         },
@@ -368,6 +480,11 @@ mod tests {
             }
             for (error, cause, status) in provisioning_causes() {
                 let rendered = ApiError::from_provisioning(error, correlation_id);
+                assert_cause_stays_internal(rendered, cause, status).await?;
+                causes.push(cause);
+            }
+            for (error, cause, status) in enrollment_causes() {
+                let rendered = ApiError::from_enrollment(error, correlation_id);
                 assert_cause_stays_internal(rendered, cause, status).await?;
                 causes.push(cause);
             }
@@ -542,6 +659,101 @@ mod tests {
             (
                 ProvisioningError::PersistenceFailed,
                 "provisioning_persistence_failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ]
+    }
+
+    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 18] {
+        [
+            (
+                EnrollmentError::InvalidMachineHardwareId,
+                "enrollment_machine_hardware_id_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::InvalidHardwareIdentityQuality,
+                "enrollment_hardware_identity_quality_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::InvalidClientVersion,
+                "enrollment_client_version_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::UnsupportedProtocolVersion,
+                "enrollment_protocol_version_unsupported",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::InvalidSpki,
+                "enrollment_spki_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::InvalidCsrEncoding,
+                "enrollment_csr_encoding_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::InvalidCsr,
+                "enrollment_csr_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::SpkiMismatch,
+                "enrollment_spki_mismatch",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                EnrollmentError::ProvisioningWindowClosed,
+                "enrollment_provisioning_window_closed",
+                StatusCode::CONFLICT,
+            ),
+            (
+                EnrollmentError::RequestRejected,
+                "enrollment_request_rejected",
+                StatusCode::CONFLICT,
+            ),
+            (
+                EnrollmentError::DeviceIdentityConflict,
+                "enrollment_device_identity_conflict",
+                StatusCode::CONFLICT,
+            ),
+            (
+                EnrollmentError::RequestNotFound,
+                "enrollment_request_not_found",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                EnrollmentError::RequestNotPending,
+                "enrollment_request_not_pending",
+                StatusCode::CONFLICT,
+            ),
+            (
+                EnrollmentError::InvalidPersistedFacts,
+                "enrollment_invalid_persisted_facts",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                EnrollmentError::EntropyUnavailable,
+                "enrollment_entropy_unavailable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                EnrollmentError::IssuancePolicyExpired,
+                "enrollment_issuance_policy_expired",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                EnrollmentError::SigningFailed,
+                "enrollment_signing_failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                EnrollmentError::PersistenceFailed,
+                "enrollment_persistence_failed",
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ]

@@ -70,6 +70,7 @@ tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 utoipa = { version = "5", default-features = false, features = ["macros", "uuid"] }
 uuid = { version = "1", features = ["serde", "v5", "v7"] }
+x509-parser = { version = "0.18", default-features = false }
 zeroize = { version = "1", features = ["derive"] }
 zbus = { version = "5", default-features = false, features = ["option-as-array", "tokio"] }
 

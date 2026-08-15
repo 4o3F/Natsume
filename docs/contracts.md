@@ -36,13 +36,15 @@ Server TLS 只启用 TLS 1.3；不得启用 TLS 1.2 或更早版本。
 
 Server TLS leaf 与私钥从 Server 私有状态目录读取，分别固定为 X.509 DER 与 PKCS#8 DER；Server 不接受 PEM 或其他编码。
 
+**2026-08-16 修订（Phase 3 WP2b）**：package-owned `/etc/natsume-server/config.toml` 的 `[site]` section 固定包含 `config = "/etc/natsume/site.toml"`、`control_root = "/etc/natsume/trust/control-ca.crt"` 与 `local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"`；三者均为绝对路径。共享 `/etc/natsume/site.toml` 为 Gateway 签发新增两个必填顶层 key：`gateway_hostname`（canonical lowercase DNS hostname，不允许 IP literal、尾随点、空 label 或非 LDH label）与 `gateway_not_after`（RFC 3339 UTC、尾随 `Z`）。Origin CA issuing material 只从 Server 私有 keys 目录的固定文件 `/var/lib/natsume-server/keys/origin-ca.der`（X.509 DER）和 `/var/lib/natsume-server/keys/origin-ca-key.pk8`（PKCS#8 DER）读取；`serve` 在 bind 前校验证书、私钥及二者匹配，missing/malformed/mismatch 均 fail closed，`bootstrap` 与 `reset-operator-password` 绝不创建、修改或校验这两个文件。Gateway leaf 每次签发仍复检 site `not_after` 至少晚于当前时间硬编码常量 `GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS = 300`；该安全下限不进入配置。
+
 - `GET /api/v2/health` 是无需认证的进程存活检查，固定返回 HTTP 200 与 JSON `{"status":"ok"}`，不查询数据库，且不表示 readiness 或依赖健康状态。
 
 ### 2.1 Server 运行模式
 
 单一 runtime binary `natsume-server` 使用 clap derive 只分派三个必选 subcommand：`serve`、`bootstrap` 与 `reset-operator-password`。三者均无自定义参数与自定义 flag；argv 不承载配置、路径或秘密，唯一配置源保持 package-owned 固定文件 `/etc/natsume-server/config.toml`。缺少或未知 subcommand、或出现额外参数时，必须在接触文件系统前 fail closed。
 
-`natsume-server serve` 的固定启动序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration 与 provisioning close-once recovery；只读取并校验**已经存在**的 vault 主密钥，缺失即失败且绝不创建；校验 TLS identity；最后才 bind 并 serve。`serve` 不创建数据库、vault 主密钥或 operator account，也不提示输入。
+`natsume-server serve` 的固定启动序列为：加载固定配置与共享 site issuance policy；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration 与 provisioning close-once recovery；只读取并校验**已经存在**的 vault 主密钥，缺失即失败且绝不创建；校验 Origin CA issuing material，再校验 TLS identity；最后才 bind 并 serve。`serve` 不创建数据库、vault 主密钥、Origin CA material 或 operator account，也不提示输入。
 
 `natsume-server bootstrap` 的固定离线序列为：加载固定配置；以 `create_if_missing = true` 创建或打开并 migrate 数据库；vault 主密钥缺失时创建，已存在时只读取并校验；从 TTY 读取 login name，并以不回显方式读取两次 password；仅当 `operator_accounts` 为空时，把唯一 first admin 与其 typed audit row 在同一事务内创建，然后退出。它不做 TLS preflight、不 bind、不启动 listener。重复执行 `bootstrap` 必须保持零业务写入并以非零状态退出。
 
@@ -193,6 +195,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 **2026-08-16 修订（Phase 3 WP2a）**：新增挂载 `getProvisioningWindow`、`openProvisioningWindow` 与 `closeProvisioningWindow`，三者均为真实 handler；前者允许 `admin` / `viewer`，后两者仅允许 `admin`。
 
+**2026-08-16 修订（Phase 3 WP2b）**：新增挂载无需 operator session 的 device operation `createEnrollmentRequest`（`POST /api/v2/enrollment-requests`）；`approveEnrollment` 仍只声明、不挂载，operator approve/reject HTTP 均归 WP2c。`info.description` 的 mounted 与 declared-but-unmounted 集合必须同步反映该边界。
+
 #### 3.6.3 建立与查询
 
 - `POST /api/v2/session` 只接受恰好含 `login_name` 与 `password` 的封闭 JSON object，未知字段必须拒绝。成功同时发送 session cookie 并返回 `200`，响应体只含 `operator_id` 与 `role`。
@@ -217,6 +221,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 | `actor` | 状态 |
 |---|---|
+| `device:enrollment` | 已实现（device-initiated intake / claim writers） |
 | `operator:self` | 已实现 |
 | `system:bootstrap` | 已实现 |
 | `system:expiry` | 已实现 |
@@ -225,6 +230,11 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 | `action_kind` |
 |---|
+| `create_enrollment_request`（**已实现**；`device:enrollment`） |
+| `issue_device_credentials`（**已实现**；`device:enrollment`） |
+| `approve_enrollment_request`（**已实现**；`operator:self` DB writer；HTTP mounting 归 WP2c） |
+| `reject_enrollment_request`（**已实现**；`operator:self` DB writer；HTTP mounting 归 WP2c） |
+| `expire_enrollment_requests`（**已实现**；`operator:self` close 与 `system:recovery` close-once） |
 | `open_provisioning_window`（**已实现**；`operator:self` operator action） |
 | `close_provisioning_window`（**已实现**；`operator:self` operator action 与 `system:recovery` startup recovery） |
 | `create_first_admin` |
@@ -241,11 +251,15 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 | `reason_code` | 当前使用处 |
 |---|---|
+| `first_enrollment` | `issue_device_credentials` 的 `create_device` 同步签发 |
+| `credential_replacement` | `create_enrollment_request` 与经审批的 `issue_device_credentials` 替换签发 |
+| `same_spki_retry` | `issue_device_credentials` 的 same-SPKI 自动批准重试 |
+| `window_closed` | `expire_enrollment_requests` |
 | `startup_recovery` | `close_provisioning_window` |
 | `initial_provisioning` | `create_first_admin` |
 | `credential_recovery` | `reset_operator_password` |
 | `credentials_verified` | `establish_session` |
-| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
+| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window`、`approve_enrollment_request` / `reject_enrollment_request`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（已实现） |
 | `target_already_satisfied` | `revoke_device` / `disable_device` 与 `open_provisioning_window` / `close_provisioning_window` 的 `noop` 结果 |
 | `candidate_invalid` | `create_import_candidate` 的 `rejected` 结果（已实现） |
@@ -254,6 +268,11 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
+| `create_enrollment_request` | `resolution`、`state`、`gateway_spki_sha256` |
+| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`；serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token |
+| `approve_enrollment_request` | 无（`{}`） |
+| `reject_enrollment_request` | 无（`{}`） |
+| `expire_enrollment_requests` | `expired_count` |
 | `open_provisioning_window` | `previous_revision`、`new_revision` |
 | `close_provisioning_window` | `previous_revision`、`new_revision` |
 | `create_first_admin` | `role` |
@@ -322,6 +341,10 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 **审批与 claim**：需要审批的 Enrollment 请求以 HTTP `202` 与 typed 非错误 body（request identity 与 state）应答，不携带任何签发结果。Device 通过幂等重投**同一** request 轮询：相同 `machine_hardware_id` + `gateway_spki_sha256` 返回同一条 live request，不新增 row。operator 批准把 state 置为 `approved`，受审计且零签发；operator 拒绝把 state 置为 `rejected`，轮询中的 Device 收到 `ENROLLMENT_REQUEST_REJECTED`，必须停止并等待现场人员介入。观察到 `approved` 的下一次重投在**该次请求内**同步执行签发事务，并在同一响应返回 Device Token 与 Gateway leaf——明文只存在于那一次响应，数据库始终只保存 hash。claim 前必须重新校验窗口仍为 `open`（`INV-CERT-01`：窗口外不存在签发路径）；窗口关闭时未被 claim 的 `pending`/`approved` request 转为 `expired`。claim 响应丢失时 Device 重试，落入 same-SPKI 自动批准路径重新签发。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定 ErrorCode 拒绝，维持每 hardware-ID/SPKI 最多一个 live request 的约束；operator 必须先拒绝现有请求。
 
 **Client 收尾**：leaf 与本地私钥 SPKI 匹配、chain 通到预置 origin CA、SAN 等于配置 hostname、本地持久化原子完成后才提交结果；**中途失败不得留下“看似已 Enrollment”的半状态**（重试自然落入替换语义）。
+
+**2026-08-16 修订（Phase 3 WP2b wire precision）**：device intake 固定为 `POST /api/v2/enrollment-requests`、`Content-Type: application/json`，无需 operator session；route 级硬编码上限为 `ENROLLMENT_REQUEST_BODY_LIMIT_BYTES = 65_536`，只作用于该 `MethodRouter`，不进入 `config.toml`，超限在 JSON/CSR 解析与任何数据库访问前返回 transport-level `413`。request 是拒绝未知字段的 closed object；`machine_hardware_id` 为 canonical lowercase hyphenated UUIDv5，`hardware_identity_quality` 只允许 `strong` / `medium` / `weak`，`gateway_csr_der` 为 RFC 4648 padded base64 的 DER CSR，`gateway_spki_sha256` 为 lowercase hex 64，`client_version` 为 1–64 bytes ASCII graphic（`0x21`–`0x7e`），`protocol_version` 当前只允许 `1`。Server 必须验证 CSR signature/structure、从 CSR public key DER 重算 SHA-256 并与 claimed SPKI 常数内容比较；mismatch 返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入。
+
+成功同步签发返回 `201` 与 closed body `{enrollment_request_id, state:"issued", device_id, device_token, gateway_leaf_der, gateway_chain_der}`：两个 ID 均为 canonical UUIDv7；32-byte Device Token 使用 43-character unpadded base64url，仅该响应携带；leaf 是 RFC 4648 padded base64 DER，chain array 以相同编码从 leaf 的直接 issuer 排到 root，因此与独立 leaf 合并后的验证顺序固定为 leaf→root。待审批或轮询返回 `202` 与 closed body `{enrollment_request_id, state}`，`state` 只允许 `pending` / `approved` 且不携带签发材料。公开失败映射固定为：无效 request/CSR/SPKI/protocol → `400` / `ENROLLMENT_REQUEST_INVALID`；窗口非 open → `409` / `PROVISIONING_WINDOW_CLOSED`；已拒绝轮询 → `409` / `ENROLLMENT_REQUEST_REJECTED`；同 hardware ID 的 live different-SPKI 或其他人工恢复 identity conflict → `409` / `DEVICE_IDENTITY_CONFLICT`；未分类内部/持久化/签发失败 → `500` / `INTERNAL_ERROR`。所有结果含 Server-owned canonical UUIDv7 `X-Correlation-Id`；`201` / `202` body 也不得回显 CSR authority fields。
 
 ## 5. Device control：WSS
 

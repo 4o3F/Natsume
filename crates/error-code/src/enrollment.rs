@@ -7,6 +7,8 @@ define_error_codes! {
         ProvisioningWindowClosed => "PROVISIONING_WINDOW_CLOSED",
         /// The bounded typed Enrollment request is invalid.
         EnrollmentRequestInvalid => "ENROLLMENT_REQUEST_INVALID",
+        /// The operator rejected this terminal Enrollment request.
+        EnrollmentRequestRejected => "ENROLLMENT_REQUEST_REJECTED",
         /// Hardware identity facts conflict and require manual recovery.
         DeviceIdentityConflict => "DEVICE_IDENTITY_CONFLICT",
     }

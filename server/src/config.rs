@@ -4,6 +4,8 @@ use serde::Deserialize;
 use snafu::Snafu;
 
 const CONFIG_PATH: &str = "/etc/natsume-server/config.toml";
+pub(crate) const ORIGIN_CA_CERTIFICATE_FILENAME: &str = "origin-ca.der";
+pub(crate) const ORIGIN_CA_PRIVATE_KEY_FILENAME: &str = "origin-ca-key.pk8";
 
 /// Validated configuration consumed by the Stage 3 Server startup.
 pub struct ServerConfig {
@@ -13,6 +15,9 @@ pub struct ServerConfig {
     vault_master_key_path: PathBuf,
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
+    site_config_path: PathBuf,
+    control_root_path: PathBuf,
+    local_origin_root_path: PathBuf,
 }
 
 impl ServerConfig {
@@ -52,6 +57,9 @@ impl ServerConfig {
             vault_master_key_path: raw.storage.root_key,
             tls_certificate_path: raw.tls.certificate,
             tls_private_key_path: raw.tls.private_key,
+            site_config_path: raw.site.config,
+            control_root_path: raw.site.control_root,
+            local_origin_root_path: raw.site.local_origin_root,
         };
         config.validate_paths()?;
         Ok(config)
@@ -70,6 +78,15 @@ impl ServerConfig {
         require_absolute(
             &self.tls_private_key_path,
             ConfigError::RelativeTlsPrivateKeyPath,
+        )?;
+        require_absolute(&self.site_config_path, ConfigError::RelativeSiteConfigPath)?;
+        require_absolute(
+            &self.control_root_path,
+            ConfigError::RelativeControlRootPath,
+        )?;
+        require_absolute(
+            &self.local_origin_root_path,
+            ConfigError::RelativeLocalOriginRootPath,
         )?;
         Ok(())
     }
@@ -100,6 +117,26 @@ impl ServerConfig {
     pub(crate) fn tls_private_key_path(&self) -> &Path {
         &self.tls_private_key_path
     }
+
+    pub(crate) fn site_config_path(&self) -> &Path {
+        &self.site_config_path
+    }
+
+    pub(crate) fn origin_ca_certificate_path(&self) -> Result<PathBuf, ConfigError> {
+        self.private_keys_directory()
+            .map(|directory| directory.join(ORIGIN_CA_CERTIFICATE_FILENAME))
+    }
+
+    pub(crate) fn origin_ca_private_key_path(&self) -> Result<PathBuf, ConfigError> {
+        self.private_keys_directory()
+            .map(|directory| directory.join(ORIGIN_CA_PRIVATE_KEY_FILENAME))
+    }
+
+    fn private_keys_directory(&self) -> Result<&Path, ConfigError> {
+        self.tls_private_key_path
+            .parent()
+            .ok_or(ConfigError::InvalidPrivateKeysDirectory)
+    }
 }
 
 fn require_absolute(path: &Path, error: ConfigError) -> Result<(), ConfigError> {
@@ -117,6 +154,7 @@ struct RawServerConfig {
     log: RawLogConfig,
     storage: RawStorageConfig,
     tls: RawTlsConfig,
+    site: RawSitePathsConfig,
 }
 
 #[derive(Deserialize, Default)]
@@ -153,6 +191,290 @@ struct RawTlsConfig {
     private_key: PathBuf,
 }
 
+#[derive(Deserialize)]
+struct RawSitePathsConfig {
+    config: PathBuf,
+    control_root: PathBuf,
+    local_origin_root: PathBuf,
+}
+
+/// Validated installation policy used by the Gateway certificate issuer.
+#[derive(Clone)]
+pub(crate) struct GatewaySiteConfig {
+    gateway_hostname: String,
+    gateway_not_after: GatewayNotAfter,
+}
+
+impl GatewaySiteConfig {
+    /// Loads the shared site file and validates the two issuance-owned keys.
+    ///
+    /// Other site keys remain owned by their respective Client consumers and
+    /// are deliberately ignored by this Server projection.
+    pub(crate) fn load_from(path: &Path) -> Result<Self, SiteConfigError> {
+        let encoded = fs::read_to_string(path).map_err(|_| SiteConfigError::ReadFailed)?;
+        let raw: RawGatewaySiteConfig =
+            toml::from_str(&encoded).map_err(|_| SiteConfigError::DecodeFailed)?;
+        if !is_canonical_dns_hostname(&raw.gateway_hostname) {
+            return Err(SiteConfigError::InvalidGatewayHostname);
+        }
+        let gateway_not_after = GatewayNotAfter::parse(raw.gateway_not_after)
+            .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
+        Ok(Self {
+            gateway_hostname: raw.gateway_hostname,
+            gateway_not_after,
+        })
+    }
+
+    pub(crate) fn gateway_hostname(&self) -> &str {
+        &self.gateway_hostname
+    }
+
+    pub(crate) const fn gateway_not_after(&self) -> &GatewayNotAfter {
+        &self.gateway_not_after
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) fn for_test(
+        gateway_hostname: &str,
+        gateway_not_after: &str,
+    ) -> Result<Self, SiteConfigError> {
+        if !is_canonical_dns_hostname(gateway_hostname) {
+            return Err(SiteConfigError::InvalidGatewayHostname);
+        }
+        Ok(Self {
+            gateway_hostname: gateway_hostname.to_owned(),
+            gateway_not_after: GatewayNotAfter::parse(gateway_not_after.to_owned())
+                .ok_or(SiteConfigError::InvalidGatewayNotAfter)?,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct RawGatewaySiteConfig {
+    gateway_hostname: String,
+    gateway_not_after: String,
+}
+
+// The Server endpoint is parsed as `SocketAddr`, so it has no reusable DNS
+// hostname parser. This site-only validator therefore closes the LDH grammar.
+fn is_canonical_dns_hostname(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 253
+        || value.ends_with('.')
+        || value.parse::<std::net::IpAddr>().is_ok()
+        || !value.bytes().any(|byte| byte.is_ascii_lowercase())
+    {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+    })
+}
+
+/// Parsed RFC 3339 UTC timestamp retained in its policy wire representation.
+#[derive(Clone)]
+pub(crate) struct GatewayNotAfter {
+    encoded: String,
+    unix_seconds: i64,
+    components: UtcDateTimeComponents,
+}
+
+impl GatewayNotAfter {
+    fn parse(encoded: String) -> Option<Self> {
+        let bytes = encoded.as_bytes();
+        if bytes.len() < 20
+            || bytes.get(4) != Some(&b'-')
+            || bytes.get(7) != Some(&b'-')
+            || bytes.get(10) != Some(&b'T')
+            || bytes.get(13) != Some(&b':')
+            || bytes.get(16) != Some(&b':')
+            || bytes.last() != Some(&b'Z')
+        {
+            return None;
+        }
+        let year = parse_decimal(bytes.get(0..4)?)?;
+        let month = parse_decimal(bytes.get(5..7)?)?;
+        let day = parse_decimal(bytes.get(8..10)?)?;
+        let hour = parse_decimal(bytes.get(11..13)?)?;
+        let minute = parse_decimal(bytes.get(14..16)?)?;
+        let second = parse_decimal(bytes.get(17..19)?)?;
+        let nanosecond = match bytes.len() {
+            20 => 0,
+            22..=30 if bytes.get(19) == Some(&b'.') => {
+                let digits = bytes.get(20..bytes.len() - 1)?;
+                if digits.is_empty() || digits.len() > 9 {
+                    return None;
+                }
+                let fraction = parse_decimal(digits)?;
+                let digit_count = u32::try_from(digits.len()).ok()?;
+                fraction.checked_mul(10_u32.pow(9_u32.checked_sub(digit_count)?))?
+            }
+            _ => return None,
+        };
+        let year = i32::try_from(year).ok()?;
+        let month = u8::try_from(month).ok()?;
+        let day = u8::try_from(day).ok()?;
+        let hour = u8::try_from(hour).ok()?;
+        let minute = u8::try_from(minute).ok()?;
+        let second = u8::try_from(second).ok()?;
+        let components = UtcDateTimeComponents {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            nanosecond,
+        };
+        if !components.is_valid() || year < 1970 {
+            return None;
+        }
+        let days = days_from_civil(year, month, day)?;
+        let unix_seconds = days
+            .checked_mul(86_400)?
+            .checked_add(i64::from(hour) * 3_600)?
+            .checked_add(i64::from(minute) * 60)?
+            .checked_add(i64::from(second))?;
+        Some(Self {
+            encoded,
+            unix_seconds,
+            components,
+        })
+    }
+
+    pub(crate) fn encoded(&self) -> &str {
+        &self.encoded
+    }
+
+    pub(crate) const fn unix_seconds(&self) -> i64 {
+        self.unix_seconds
+    }
+
+    pub(crate) const fn components(&self) -> UtcDateTimeComponents {
+        self.components
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct UtcDateTimeComponents {
+    pub(crate) year: i32,
+    pub(crate) month: u8,
+    pub(crate) day: u8,
+    pub(crate) hour: u8,
+    pub(crate) minute: u8,
+    pub(crate) second: u8,
+    pub(crate) nanosecond: u32,
+}
+
+impl UtcDateTimeComponents {
+    pub(crate) fn from_unix_seconds(unix_seconds: i64) -> Option<Self> {
+        if unix_seconds < 0 {
+            return None;
+        }
+        let days = unix_seconds.div_euclid(86_400);
+        let seconds_of_day = unix_seconds.rem_euclid(86_400);
+        let (year, month, day) = civil_from_days(days)?;
+        Some(Self {
+            year,
+            month,
+            day,
+            hour: u8::try_from(seconds_of_day / 3_600).ok()?,
+            minute: u8::try_from((seconds_of_day % 3_600) / 60).ok()?,
+            second: u8::try_from(seconds_of_day % 60).ok()?,
+            nanosecond: 0,
+        })
+    }
+
+    fn is_valid(self) -> bool {
+        (1970..=9999).contains(&self.year)
+            && (1..=12).contains(&self.month)
+            && (1..=days_in_month(self.year, self.month)).contains(&self.day)
+            && self.hour <= 23
+            && self.minute <= 59
+            && self.second <= 59
+            && self.nanosecond <= 999_999_999
+    }
+}
+
+fn parse_decimal(bytes: &[u8]) -> Option<u32> {
+    bytes.iter().try_fold(0_u32, |value, byte| {
+        byte.is_ascii_digit()
+            .then_some(())
+            .and_then(|()| value.checked_mul(10))
+            .and_then(|value| value.checked_add(u32::from(byte - b'0')))
+    })
+}
+
+const fn is_leap_year(year: i32) -> bool {
+    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+}
+
+const fn days_in_month(year: i32, month: u8) -> u8 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if is_leap_year(year) => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+fn days_from_civil(year: i32, month: u8, day: u8) -> Option<i64> {
+    let adjusted_year = year.checked_sub(i32::from(month <= 2))?;
+    let era = adjusted_year.div_euclid(400);
+    let year_of_era = adjusted_year - era * 400;
+    let shifted_month = i32::from(month) + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * shifted_month + 2) / 5 + i32::from(day) - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    Some(i64::from(era) * 146_097 + i64::from(day_of_era) - 719_468)
+}
+
+fn civil_from_days(days: i64) -> Option<(i32, u8, u8)> {
+    let shifted = days.checked_add(719_468)?;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let mut year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
+    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
+    year += i64::from(month <= 2);
+    Some((
+        i32::try_from(year).ok()?,
+        u8::try_from(month).ok()?,
+        u8::try_from(day).ok()?,
+    ))
+}
+
+/// Redacted shared-site configuration failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[snafu(module)]
+pub(crate) enum SiteConfigError {
+    #[snafu(display("the site configuration could not be read"))]
+    ReadFailed,
+    #[snafu(display("the site configuration could not be decoded"))]
+    DecodeFailed,
+    #[snafu(display("the Gateway hostname is invalid"))]
+    InvalidGatewayHostname,
+    #[snafu(display("the Gateway certificate not-after policy is invalid"))]
+    InvalidGatewayNotAfter,
+}
+
 /// Redacted Server configuration failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub enum ConfigError {
@@ -170,16 +492,30 @@ pub enum ConfigError {
     RelativeTlsCertificatePath,
     #[snafu(display("the configured TLS private key path must be absolute"))]
     RelativeTlsPrivateKeyPath,
+    #[snafu(display("the configured site file path must be absolute"))]
+    RelativeSiteConfigPath,
+    #[snafu(display("the configured control root path must be absolute"))]
+    RelativeControlRootPath,
+    #[snafu(display("the configured local origin root path must be absolute"))]
+    RelativeLocalOriginRootPath,
+    #[snafu(display("the configured private keys directory is invalid"))]
+    InvalidPrivateKeysDirectory,
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use snafu::Snafu;
     use uuid::Uuid;
 
-    use super::{ConfigError, LogLevel, ServerConfig};
+    use super::{
+        ConfigError, GatewaySiteConfig, LogLevel, ServerConfig, SiteConfigError,
+        UtcDateTimeComponents,
+    };
 
     const VALID_CONFIG: &str = r#"
 [listen]
@@ -192,6 +528,21 @@ root_key = "/var/lib/natsume-server/keys/server-root.key"
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
 private_key = "/var/lib/natsume-server/keys/server-tls-key.pk8"
+
+[site]
+config = "/etc/natsume/site.toml"
+control_root = "/etc/natsume/trust/control-ca.crt"
+local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"
+"#;
+
+    const VALID_SITE_CONFIG: &str = r#"
+schema_version = 1
+fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
+gateway_hostname = "gateway.contest.example"
+gateway_not_after = "2028-02-29T23:59:58.123456789Z"
+
+[trust]
+control_root_sha256 = "ignored-by-server"
 "#;
 
     #[test]
@@ -200,6 +551,104 @@ private_key = "/var/lib/natsume-server/keys/server-tls-key.pk8"
         ServerConfig::load_from(fixture.path())
             .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
         Ok(())
+    }
+
+    #[test]
+    fn packaged_config_with_site_paths_parses_and_derives_fixed_origin_filenames()
+    -> Result<(), TestFailure> {
+        let config = ServerConfig::load_from(Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../packaging/server/rootfs/etc/natsume-server/config.toml"
+        )))
+        .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+        if config
+            .origin_ca_certificate_path()
+            .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?
+            .as_path()
+            != Path::new("/var/lib/natsume-server/keys/origin-ca.der")
+            || config
+                .origin_ca_private_key_path()
+                .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?
+                .as_path()
+                != Path::new("/var/lib/natsume-server/keys/origin-ca-key.pk8")
+        {
+            return Err(TestFailure::OriginCaPathsChanged);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn site_issuance_policy_is_strict_but_tolerates_other_consumers_keys() -> Result<(), TestFailure>
+    {
+        let fixture = ConfigFixture::new(VALID_SITE_CONFIG)?;
+        let site = GatewaySiteConfig::load_from(fixture.path())
+            .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+        let components = site.gateway_not_after().components();
+        if site.gateway_hostname() != "gateway.contest.example"
+            || site.gateway_not_after().encoded() != "2028-02-29T23:59:58.123456789Z"
+            || components.year != 2028
+            || components.month != 2
+            || components.day != 29
+            || components.hour != 23
+            || components.minute != 59
+            || components.second != 58
+            || components.nanosecond != 123_456_789
+            || UtcDateTimeComponents::from_unix_seconds(site.gateway_not_after().unix_seconds())
+                .is_none_or(|round_trip| {
+                    round_trip.year != components.year
+                        || round_trip.month != components.month
+                        || round_trip.day != components.day
+                        || round_trip.hour != components.hour
+                        || round_trip.minute != components.minute
+                        || round_trip.second != components.second
+                })
+        {
+            return Err(TestFailure::SitePolicyChanged);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_site_policy_is_rejected_without_echoing_input() -> Result<(), TestFailure> {
+        for (contents, expected, canary) in [
+            (
+                VALID_SITE_CONFIG.replace(
+                    "gateway.contest.example",
+                    "Gateway.invalid-host-canary.example",
+                ),
+                SiteConfigError::InvalidGatewayHostname,
+                "invalid-host-canary",
+            ),
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-29T23:59:58.123456789Z",
+                    "2028-02-30T23:59:58Z-not-after-canary",
+                ),
+                SiteConfigError::InvalidGatewayNotAfter,
+                "not-after-canary",
+            ),
+        ] {
+            let fixture = ConfigFixture::new(&contents)?;
+            let Err(error) = GatewaySiteConfig::load_from(fixture.path()) else {
+                return Err(TestFailure::ExpectedConfigurationFailure);
+            };
+            let display = error.to_string();
+            let debug = format!("{error:?}");
+            if error != expected
+                || contains_canary(&display, canary)
+                || contains_canary(&debug, canary)
+            {
+                return Err(TestFailure::ErrorWasNotRedacted);
+            }
+        }
+        Ok(())
+    }
+
+    fn contains_canary(value: &str, canary: &str) -> bool {
+        value
+            .as_bytes()
+            .windows(canary.len())
+            .any(|window| window == canary.as_bytes())
     }
 
     #[test]
@@ -389,5 +838,9 @@ private_key = "/var/lib/natsume-server/keys/server-tls-key.pk8"
         ErrorWasNotRedacted,
         #[snafu(display("the logging level configuration contract changed"))]
         LogLevelContractChanged,
+        #[snafu(display("the fixed Origin CA paths changed"))]
+        OriginCaPathsChanged,
+        #[snafu(display("the parsed site issuance policy changed"))]
+        SitePolicyChanged,
     }
 }

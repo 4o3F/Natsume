@@ -333,7 +333,7 @@ async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestF
         &api_not_found,
         StatusCode::NOT_FOUND,
         "Not Found",
-        "INVALID_REQUEST",
+        "RESOURCE_NOT_FOUND",
     )?;
     Ok(())
 }
@@ -418,7 +418,7 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
             &response,
             StatusCode::NOT_FOUND,
             "Not Found",
-            "INVALID_REQUEST",
+            "RESOURCE_NOT_FOUND",
         )?;
     }
     Ok(())

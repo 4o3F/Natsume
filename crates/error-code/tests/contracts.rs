@@ -7,9 +7,10 @@ use natsume_error_code::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 
-const COMMON_CODES: [CommonErrorCode; 4] = [
+const COMMON_CODES: [CommonErrorCode; 5] = [
     CommonErrorCode::InternalError,
     CommonErrorCode::InvalidRequest,
+    CommonErrorCode::ResourceNotFound,
     CommonErrorCode::AuthenticationFailed,
     CommonErrorCode::AuthorizationDenied,
 ];
@@ -21,9 +22,10 @@ const OPERATOR_CODES: [OperatorErrorCode; 4] = [
     OperatorErrorCode::ImportPreviewStale,
 ];
 
-const ENROLLMENT_CODES: [EnrollmentErrorCode; 3] = [
+const ENROLLMENT_CODES: [EnrollmentErrorCode; 4] = [
     EnrollmentErrorCode::ProvisioningWindowClosed,
     EnrollmentErrorCode::EnrollmentRequestInvalid,
+    EnrollmentErrorCode::EnrollmentRequestRejected,
     EnrollmentErrorCode::DeviceIdentityConflict,
 ];
 
@@ -60,7 +62,7 @@ const HOME_CODES: [HomeErrorCode; 2] = [
     HomeErrorCode::HomeOperationFailed,
 ];
 
-const ALL_ERROR_CODES: [(ErrorCode, &str); 32] = [
+const ALL_ERROR_CODES: [(ErrorCode, &str); 34] = [
     (
         ErrorCode::Common(CommonErrorCode::InternalError),
         "INTERNAL_ERROR",
@@ -68,6 +70,10 @@ const ALL_ERROR_CODES: [(ErrorCode, &str); 32] = [
     (
         ErrorCode::Common(CommonErrorCode::InvalidRequest),
         "INVALID_REQUEST",
+    ),
+    (
+        ErrorCode::Common(CommonErrorCode::ResourceNotFound),
+        "RESOURCE_NOT_FOUND",
     ),
     (
         ErrorCode::Common(CommonErrorCode::AuthenticationFailed),
@@ -100,6 +106,10 @@ const ALL_ERROR_CODES: [(ErrorCode, &str); 32] = [
     (
         ErrorCode::Enrollment(EnrollmentErrorCode::EnrollmentRequestInvalid),
         "ENROLLMENT_REQUEST_INVALID",
+    ),
+    (
+        ErrorCode::Enrollment(EnrollmentErrorCode::EnrollmentRequestRejected),
+        "ENROLLMENT_REQUEST_REJECTED",
     ),
     (
         ErrorCode::Enrollment(EnrollmentErrorCode::DeviceIdentityConflict),
@@ -309,6 +319,7 @@ const fn expected_string(code: ErrorCode) -> &'static str {
         ErrorCode::Common(code) => match code {
             CommonErrorCode::InternalError => "INTERNAL_ERROR",
             CommonErrorCode::InvalidRequest => "INVALID_REQUEST",
+            CommonErrorCode::ResourceNotFound => "RESOURCE_NOT_FOUND",
             CommonErrorCode::AuthenticationFailed => "AUTHENTICATION_FAILED",
             CommonErrorCode::AuthorizationDenied => "AUTHORIZATION_DENIED",
         },
@@ -321,6 +332,7 @@ const fn expected_string(code: ErrorCode) -> &'static str {
         ErrorCode::Enrollment(code) => match code {
             EnrollmentErrorCode::ProvisioningWindowClosed => "PROVISIONING_WINDOW_CLOSED",
             EnrollmentErrorCode::EnrollmentRequestInvalid => "ENROLLMENT_REQUEST_INVALID",
+            EnrollmentErrorCode::EnrollmentRequestRejected => "ENROLLMENT_REQUEST_REJECTED",
             EnrollmentErrorCode::DeviceIdentityConflict => "DEVICE_IDENTITY_CONFLICT",
         },
         ErrorCode::Control(code) => match code {

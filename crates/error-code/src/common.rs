@@ -7,6 +7,8 @@ define_error_codes! {
         InternalError => "INTERNAL_ERROR",
         /// A closed request or argument contract is invalid.
         InvalidRequest => "INVALID_REQUEST",
+        /// A structurally valid request names a current resource that does not exist.
+        ResourceNotFound => "RESOURCE_NOT_FOUND",
         /// Authentication failed without disclosing credential state.
         AuthenticationFailed => "AUTHENTICATION_FAILED",
         /// The authenticated caller is not authorized for the operation.

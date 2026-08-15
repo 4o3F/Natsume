@@ -19,6 +19,7 @@ getrandom.workspace = true
 hex.workspace = true
 natsume-error-code = { path = "../crates/error-code" }
 percent-encoding.workspace = true
+rcgen = { workspace = true, features = ["x509-parser"] }
 rpassword.workspace = true
 rustls.workspace = true
 rustls-pki-types.workspace = true
@@ -39,10 +40,10 @@ uuid.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-rcgen.workspace = true
 regex.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
 tower.workspace = true
+x509-parser.workspace = true
 
 [lints]
 workspace = true

@@ -27,3 +27,5 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 
 - G3 证据登记需含各包 head 的全绿 CI run（待 owner push）。
 - fixture 决策表全路径证据依赖 G0-IN-005 硬件 fixture（BLOCKED-INPUT，工具已就绪）。
+- WP2b 不写 `enrollment_requests.state = 'conflict'`：冻结文档只定义 different-SPKI live request 的稳定零写入拒绝，尚未定义该 persisted terminal state 的 writer。
+- WP2b 的 credential replacement 旧连接 anomaly audit 等 WSS connection facts 落地后实现；本包禁止预建 WSS 或虚构 live-connection evidence。

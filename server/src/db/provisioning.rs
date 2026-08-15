@@ -12,7 +12,10 @@ use crate::{
         ProvisioningError, ProvisioningWindow, ProvisioningWindowAction, ProvisioningWindowState,
         RecoveryOutcome, RevisionOverflow, recovered_provisioning_window,
     },
-    audit::{self, AuditEvent, AuditEventId, CorrelationId, ProvisioningWindowAuditResult},
+    audit::{
+        self, AuditEvent, AuditEventId, CorrelationId, EnrollmentExpiryActor,
+        ProvisioningWindowAuditResult,
+    },
     db::{Database, schema::provisioning_window},
 };
 
@@ -81,6 +84,7 @@ async fn open_window_with_ids(
         ProvisioningWindowAction::Open,
         correlation_id,
         audit_event_id,
+        None,
     )
     .await
 }
@@ -100,6 +104,7 @@ pub(crate) async fn close_window(
         database,
         correlation_id,
         AuditEventId::from_uuid(Uuid::now_v7()),
+        AuditEventId::from_uuid(Uuid::now_v7()),
     )
     .await
     .map_err(ProvisioningError::from)
@@ -109,12 +114,14 @@ async fn close_window_with_ids(
     database: &Database,
     correlation_id: CorrelationId,
     audit_event_id: AuditEventId,
+    expiry_audit_event_id: AuditEventId,
 ) -> Result<ProvisioningWindow, ProvisioningStoreError> {
     mutate_window_with_ids(
         database,
         ProvisioningWindowAction::Close,
         correlation_id,
         audit_event_id,
+        Some(expiry_audit_event_id),
     )
     .await
 }
@@ -124,11 +131,18 @@ async fn mutate_window_with_ids(
     action: ProvisioningWindowAction,
     correlation_id: CorrelationId,
     audit_event_id: AuditEventId,
+    expiry_audit_event_id: Option<AuditEventId>,
 ) -> Result<ProvisioningWindow, ProvisioningStoreError> {
     database
         .interact(move |connection| {
             connection.immediate_transaction(|connection| {
-                mutate_window_in_transaction(connection, action, correlation_id, audit_event_id)
+                mutate_window_in_transaction(
+                    connection,
+                    action,
+                    correlation_id,
+                    audit_event_id,
+                    expiry_audit_event_id,
+                )
             })
         })
         .await
@@ -140,6 +154,7 @@ fn mutate_window_in_transaction(
     action: ProvisioningWindowAction,
     correlation_id: CorrelationId,
     audit_event_id: AuditEventId,
+    expiry_audit_event_id: Option<AuditEventId>,
 ) -> Result<ProvisioningWindow, ProvisioningStoreError> {
     let current = read_provisioning_window(connection)?;
     let target_state = match action {
@@ -172,6 +187,14 @@ fn mutate_window_in_transaction(
     audit::insert_diesel(connection, &event).map_err(|_| ProvisioningStoreError::AuditFailed)?;
 
     if audit_result == ProvisioningWindowAuditResult::Succeeded {
+        if action == ProvisioningWindowAction::Close {
+            expire_live_enrollment_requests(
+                connection,
+                correlation_id,
+                EnrollmentExpiryActor::Operator,
+                expiry_audit_event_id.ok_or(ProvisioningStoreError::InvalidExpiryAuditInput)?,
+            )?;
+        }
         apply_operator_window_cas(connection, current, next, &event)?;
     }
     Ok(next)
@@ -222,13 +245,21 @@ fn recover_provisioning_window_in_transaction(
     };
 
     let audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
     let event = AuditEvent::recovery_close(
         audit_event_id,
-        CorrelationId::from_uuid(Uuid::now_v7()),
+        correlation_id,
         current.revision,
         next.revision,
     );
-    close_open_window(connection, current, next, &event)?;
+    close_open_window(
+        connection,
+        current,
+        next,
+        &event,
+        correlation_id,
+        AuditEventId::from_uuid(Uuid::now_v7()),
+    )?;
 
     Ok(RecoveryOutcome::Closed {
         previous_revision: current.revision,
@@ -299,8 +330,17 @@ fn close_open_window(
     expected: ProvisioningWindow,
     next: ProvisioningWindow,
     event: &AuditEvent,
+    expiry_correlation_id: CorrelationId,
+    expiry_audit_event_id: AuditEventId,
 ) -> Result<(), ProvisioningStoreError> {
     audit::insert_diesel(connection, event).map_err(|_| ProvisioningStoreError::AuditFailed)?;
+
+    expire_live_enrollment_requests(
+        connection,
+        expiry_correlation_id,
+        EnrollmentExpiryActor::Recovery,
+        expiry_audit_event_id,
+    )?;
 
     let result = diesel::update(
         provisioning_window::table
@@ -330,6 +370,31 @@ fn close_open_window(
     Ok(())
 }
 
+fn expire_live_enrollment_requests(
+    connection: &mut SqliteConnection,
+    correlation_id: CorrelationId,
+    actor: EnrollmentExpiryActor,
+    audit_event_id: AuditEventId,
+) -> Result<i64, ProvisioningStoreError> {
+    let expired_count = diesel::sql_query(
+        "UPDATE enrollment_requests SET state = 'expired' \
+         WHERE state IN ('pending', 'approved')",
+    )
+    .execute(connection)
+    .map_err(|_| ProvisioningStoreError::EnrollmentExpiryFailed)?;
+    let expired_count =
+        i64::try_from(expired_count).map_err(|_| ProvisioningStoreError::EnrollmentExpiryFailed)?;
+    let event = AuditEvent::enrollment_requests_expired(
+        audit_event_id,
+        correlation_id,
+        actor,
+        expired_count,
+    );
+    audit::insert_diesel(connection, &event)
+        .map_err(|_| ProvisioningStoreError::ExpiryAuditFailed)?;
+    Ok(expired_count)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 enum ProvisioningStoreError {
     #[snafu(display("the database connection could not be acquired"))]
@@ -348,6 +413,12 @@ enum ProvisioningStoreError {
     MutationFailed,
     #[snafu(display("the provisioning window changed concurrently"))]
     CompareAndSwapConflict,
+    #[snafu(display("the expiry audit input is invalid"))]
+    InvalidExpiryAuditInput,
+    #[snafu(display("live Enrollment requests could not be expired"))]
+    EnrollmentExpiryFailed,
+    #[snafu(display("the Enrollment expiry audit could not be written"))]
+    ExpiryAuditFailed,
 }
 
 impl From<diesel::result::Error> for ProvisioningStoreError {
@@ -371,7 +442,10 @@ impl From<ProvisioningStoreError> for ProvisioningError {
             | ProvisioningStoreError::InvalidCurrentFacts
             | ProvisioningStoreError::AuditFailed
             | ProvisioningStoreError::MutationFailed
-            | ProvisioningStoreError::CompareAndSwapConflict => Self::PersistenceFailed,
+            | ProvisioningStoreError::CompareAndSwapConflict
+            | ProvisioningStoreError::InvalidExpiryAuditInput
+            | ProvisioningStoreError::EnrollmentExpiryFailed
+            | ProvisioningStoreError::ExpiryAuditFailed => Self::PersistenceFailed,
         }
     }
 }
@@ -454,7 +528,7 @@ mod tests {
         let evidence = persistence_snapshot(&database).await?;
         if evidence.window.state != "open"
             || evidence.window.revision != 3
-            || evidence.audit_count != 3
+            || evidence.audit_count != 4
             || evidence.audits.len() != 3
             || evidence.window.last_audit_event_id.as_deref()
                 != evidence
@@ -637,6 +711,7 @@ mod tests {
             &database,
             CorrelationId::from_uuid(Uuid::now_v7()),
             AuditEventId::from_uuid(duplicate_close_id),
+            AuditEventId::from_uuid(Uuid::now_v7()),
         )
         .await;
         if close_result != Err(ProvisioningStoreError::AuditFailed)
@@ -743,6 +818,8 @@ mod tests {
                             revision: next_revision,
                         },
                         &event,
+                        CorrelationId::from_uuid(Uuid::now_v7()),
+                        AuditEventId::from_uuid(Uuid::now_v7()),
                     )
                 });
                 if result != Err(expected_error) {
