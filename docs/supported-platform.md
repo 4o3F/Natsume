@@ -220,7 +220,7 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 | 时间同步 | Client 部署时与 Server 做 NTP 校准 | 持续 skew 容差仍 `ENV-UNFROZEN`；时钟消费者（`deadline_at`、证书有效期、UUIDv7 序）在容差冻结前不得假设长期同步 |
 | Operator 浏览器 | 所有者豁免其余 freeze 字段 | 相关事实随 Web Panel 阶段验证，不作为 G0 输入 |
 | 硬件 fixture | 当前不可采集，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
-| Slint runtime closure（实测） | Slint `1.15.1`；features `compat-1-2`/`std`/`backend-winit-x11`/`renderer-skia`；直接 ELF NEEDED 冻结于 `packaging/client/session-agent.needed` 且 target VM `ldd` 全表吻合；二进制 11,734,952 字节；冷启动至 resident marker 59 ms（图形会话内实测） | CJK **渲染**在各屏形态正常；**当期镜像不带中文输入法，IME 输入项未验证**——镜像加装中文 IME 后复验。probe 各屏（binding_prompt/lock_presentation 等）、HiDPI 缩放与焦点观察均通过 |
+| Slint runtime closure（实测） | Slint `1.15.1`；features `compat-1-2`/`std`/`backend-winit-x11`/`renderer-skia`；直接 ELF NEEDED 冻结于 `packaging/client/session-agent.needed` 且 target VM `ldd` 全表吻合；二进制 11,734,952 字节；冷启动至 resident marker 59 ms（图形会话内实测） | CJK **渲染**在各屏形态正常；镜像于 2026-08-15 加装中文输入法后 **IME 输入与渲染复验通过**（该次镜像变更仅为加装输入法，接受定向复验）。probe 各屏（binding_prompt/lock_presentation 等）、HiDPI 缩放与焦点观察均通过 |
 | V1 残留 | 仅测试 VM 曾装过 V1；fleet 机器无 V1 部署残留 | V1 与 V2 共用 `/etc/natsume/config.toml` 路径，残留会改变 dpkg 安装分支（conffile 提示、`.dpkg-old`）；lifecycle harness 已加干净 VM 守卫，检测到残留即拒绝 |
 
 ## 5. 支持声明
@@ -241,7 +241,7 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 | `G0-IN-001` | Server/Client OS、architecture、systemd | P0 收尾 | `ENV-PROPOSED`：Client 精确值已提供（§4.2）；Server 变更为 Ubuntu 26 官方镜像，精确值待补；两侧 lifecycle evidence 待目标环境执行 |
 | `G0-IN-002` | Server endpoint 与单 TCP 端口 | P0 收尾 | `RESOLVED`（性质变更）：地址按部署配置，不需要仓库 IP literal；端口固定 `8443`。剩余部分并入目标环境验证（§4.1） |
 | `G0-IN-003` | Caddy version/modules/source/checksum | P0 收尾 | `RESOLVED`：2.11.4 标准发行版已固定并由 `just ci-packages` 校验；剩余为目标 OS 执行（§4.1） |
-| `G0-IN-004` | Browser（含 TLS 1.3 互操作证据）、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | P0 收尾 | 大部分推进：桌面 Xfce + X11（`ENV-PROPOSED`，§4.2）；xheaders 协议契约由官方文档确认、认证语义由上游源码核实为 password-verifying；Browser 由所有者豁免至 Web Panel 阶段；upstream TLS 与版本策略已定（§4.2）；Slint runtime closure 已实测（§4.2）。剩余为 DOMjudge lab（upstream 不可访问）、lock API 定案，及新发现缺口：当期镜像缺中文输入法（IME 项待镜像加装后复验） |
+| `G0-IN-004` | Browser（含 TLS 1.3 互操作证据）、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | P0 收尾 | 大部分推进：桌面 Xfce + X11（`ENV-PROPOSED`，§4.2）；xheaders 协议契约由官方文档确认、认证语义由上游源码核实为 password-verifying；Browser 由所有者豁免至 Web Panel 阶段；upstream TLS 与版本策略已定（§4.2）；Slint runtime closure 已实测（§4.2）。剩余为 DOMjudge lab（upstream 不可访问）与 lock API 定案；镜像已加装中文 IME 并复验通过（§4.2） |
 | `G0-IN-005` | 硬件 fixture 集（v1 事故 + 代表性异构） | P0 收尾 | `BLOCKED-INPUT`：所需字段与场景清单已在 §4.1 明确，等待实地采集 |
 | `G0-IN-006` | PKI test material（control CA / origin CA）与 owner | P0 收尾 | `RESOLVED`：两根均自签；test material 由 `rcgen` 运行时生成，已被 Stage 3 TLS 测试消费。Phase 3 需另行冻结 origin CA 私钥路径（§4.1） |
 | `G0-IN-007` | v2.8 文档/ID/术语签收 | Step 0 | `RESOLVED`（2026-08-14）：见 [`gates/phase-0-status.md`](gates/phase-0-status.md) 的签收记录 |
