@@ -1,25 +1,27 @@
-const capabilities = [
-  "Single authoritative seat/account/password CSV",
-  "Device-only manual or policy-approved enrollment",
-  "Explicit state synchronization with Gateway PKI",
-  "Human-only secret synchronization",
-  "Desktop session lock / unlock",
-  "Visual Gateway status",
-];
+import { Navigate, Route, Routes } from "react-router";
+
+import { RequireSession } from "@/auth/require-session";
+import { AppLayout } from "@/layout/app-layout";
+import { AccountsPage } from "@/pages/accounts-page";
+import { BindingsPage } from "@/pages/bindings-page";
+import { DevicesPage } from "@/pages/devices-page";
+import { LoginPage } from "@/pages/login-page";
+import { SeatsPage } from "@/pages/seats-page";
 
 export function App() {
   return (
-    <main>
-      <h1>Natsume V2 Preparation Center</h1>
-      <p>
-        Architecture blueprint for the v2.5 single-contest workstation control
-        boundary.
-      </p>
-      <ul>
-        {capabilities.map((capability) => (
-          <li key={capability}>{capability}</li>
-        ))}
-      </ul>
-    </main>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route element={<RequireSession />}>
+        <Route element={<AppLayout />}>
+          <Route index element={<Navigate to="/seats" replace />} />
+          <Route path="/seats" element={<SeatsPage />} />
+          <Route path="/accounts" element={<AccountsPage />} />
+          <Route path="/devices" element={<DevicesPage />} />
+          <Route path="/bindings" element={<BindingsPage />} />
+        </Route>
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

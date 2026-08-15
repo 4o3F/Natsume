@@ -106,6 +106,8 @@ ci-web: install
     pnpm --filter @natsume/web typecheck
     pnpm --filter @natsume/web test
     pnpm --filter @natsume/web build
+    ! grep -rq '@apply' web/dist/assets
+    grep -rq 'min-h-screen' web/dist/assets
 
 ci-contracts: install docs-validate diesel-schema
     cargo run -p natsume-server --locked --bin export-openapi -- web/openapi/natsume.openapi.json
