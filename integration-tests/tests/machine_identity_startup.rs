@@ -1,40 +1,34 @@
 use natsume_machine_identity::{
-    CollectionCompleteness, EvidenceQuality, HardwareCandidate, HardwareClaim, IdentityRecordState,
-    LocalIdentityPreflightDecision, StartupIdentityDecision, evaluate_local_identity_preflight,
-    evaluate_startup_identity,
+    IdentityRecordState, LocalIdentityPreflightDecision, MachineIdentityDecision,
+    StartupIdentityDecision, evaluate_local_identity_preflight, evaluate_startup_identity,
 };
 use uuid::Uuid;
 
-fn complete_claim(id: u128) -> HardwareClaim {
-    HardwareClaim {
-        candidates: vec![HardwareCandidate {
-            anchor_kind: "system_uuid".to_owned(),
-            candidate_id: Uuid::from_u128(id),
-            quality: EvidenceQuality::Strong,
-        }],
-        completeness: CollectionCompleteness::Complete,
+fn derived_identity(id: u128) -> MachineIdentityDecision {
+    MachineIdentityDecision::Derived {
+        machine_hardware_id: Uuid::from_u128(id),
+        present_slot_count: 3,
     }
 }
 
 #[test]
 fn copied_configured_state_on_different_hardware_uses_standard_reset_path() {
     assert_eq!(
-        evaluate_startup_identity(Some(Uuid::from_u128(1)), &complete_claim(2)),
+        evaluate_startup_identity(Some(Uuid::from_u128(1)), &derived_identity(2)),
         StartupIdentityDecision::ResetRequired {
             stored: Uuid::from_u128(1),
-            selected_current: Uuid::from_u128(2),
+            recomputed_machine_hardware_id: Uuid::from_u128(2),
         },
     );
 }
 
 #[test]
 fn temporary_hardware_collection_failure_never_deletes_state() {
-    let claim = HardwareClaim {
-        candidates: Vec::new(),
-        completeness: CollectionCompleteness::TemporarilyUnavailable,
+    let decision = MachineIdentityDecision::InsufficientSources {
+        present_slot_count: 1,
     };
     assert_eq!(
-        evaluate_startup_identity(Some(Uuid::from_u128(1)), &claim),
+        evaluate_startup_identity(Some(Uuid::from_u128(1)), &decision),
         StartupIdentityDecision::Indeterminate,
     );
 }

@@ -1,6 +1,6 @@
 [package]
 name = "natsume-machine-identity"
-description = "Pure Natsume hardware-evidence normalization, candidate and identity-resolution logic"
+description = "Pure Natsume slot evaluation and whole-machine identity claim logic"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,6 @@ publish.workspace = true
 
 [dependencies]
 serde.workspace = true
-sha2.workspace = true
 uuid.workspace = true
 
 [lints]

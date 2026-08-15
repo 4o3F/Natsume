@@ -11,17 +11,17 @@
 //! Raw serials are normalized and hashed in this process, then zeroized/discarded.
 //! No shell commands and no text parsing of dmidecode/lsblk/udevadm/findmnt are allowed.
 
-use natsume_machine_identity::HardwareClaim;
+use natsume_machine_identity::ReadOutcome;
 use snafu::Snafu;
 
-/// Collects and normalizes hardware identity evidence inside the privileged helper.
+/// Collects the three frozen hardware identity readings inside the privileged helper.
 ///
 /// # Errors
 ///
 /// Returns [`HardwareCollectionError::NotImplemented`] until Probe D implements
 /// the typed Linux collectors. This blueprint-only error intentionally has no stable
 /// wire code.
-pub fn collect() -> Result<HardwareClaim, HardwareCollectionError> {
+pub fn collect() -> Result<[ReadOutcome; 3], HardwareCollectionError> {
     // Implementation deliberately omitted from the architecture blueprint.
     // Each source must return a typed status and fixture-testable evidence.
     Err(HardwareCollectionError::NotImplemented)

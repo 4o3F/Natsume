@@ -28,6 +28,8 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 
 **Layering 边界：** R7 只冻结 per-slot candidate derivation；原条款中的 whole-machine ID combination recipe 与 2-of-3 decision 继续由 claim 层拥有，其精确 byte recipe 在 Phase 3 实现时冻结。现有 combined `derive_candidate` / `anchor_priority` vocabulary 属于 claim 层；它与新 slot label 的差异是已知 vocabulary split，将在 Phase 3 wiring 时统一。
 
+**2026-08-16 修订**：claim 层整机配方冻结——按 ANCHOR_ORDER 逐槽拼接 `anchor_literal ++ 0x00 ++（present 槽的 R2 归一化值 | 单字节 0x01 缺失标记）++ 0x00`，在同一 Fleet namespace 下派生 UUIDv5 得 `machine_hardware_id`；判定为 2-of-3——任一槽 `unsupported` 即整体 `unsupported`，否则 `present` 槽数 ≥2 才允许派生，非 present 槽以缺失标记参与拼接；slot/claim 词表已统一。
+
 开发期匿名 fixture collector 位于 `client/privileged-helper/examples/collect_identity_fixture.rs`，只输出上述匿名化 slot 结果与 completeness，不输出原始硬件值。
 
 - Machine Hardware ID 是 lifecycle identifier，不是 authenticator；网络认证使用 Server-authenticated TLS 与 Device Token。

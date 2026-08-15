@@ -1,7 +1,16 @@
 #![forbid(unsafe_code)]
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+pub mod claim;
+
+pub use claim::{
+    MachineIdentityDecision, StartupIdentityDecision, decide_machine_identity,
+    evaluate_startup_identity,
+};
 
 /// A frozen hardware-evidence source slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +55,7 @@ pub enum ReadOutcome {
 }
 
 /// The policy result for one frozen hardware-evidence source slot.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct SlotEvaluation {
     /// The classified collection status.
     pub status: EvidenceStatus,
@@ -54,6 +63,21 @@ pub struct SlotEvaluation {
     pub quality: EvidenceQuality,
     /// The anonymized `UUIDv5` candidate, present only for valid evidence.
     pub candidate_id: Option<Uuid>,
+    // Claim-layer input retained inside the pure-computation boundary. The custom Debug
+    // implementation intentionally keeps normalized hardware values out of logs.
+    normalized_value: Option<String>,
+    fleet_namespace: Uuid,
+}
+
+impl fmt::Debug for SlotEvaluation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SlotEvaluation")
+            .field("status", &self.status)
+            .field("quality", &self.quality)
+            .field("candidate_id", &self.candidate_id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -129,8 +153,12 @@ fn normalize_value(kind: AnchorKind, value: &str) -> NormalizedValue {
         return NormalizedValue::Malformed;
     }
 
-    let normalized = value
-        .trim_matches(|character: char| character.is_ascii_whitespace())
+    let trimmed = value.trim_matches(|character: char| character.is_ascii_whitespace());
+    if trimmed.chars().any(char::is_control) {
+        return NormalizedValue::Malformed;
+    }
+
+    let normalized = trimmed
         .chars()
         .filter(|character| !matches!(character, '-' | '_' | ':' | ' '))
         .flat_map(char::to_lowercase)
@@ -171,36 +199,51 @@ pub fn evaluate_slot(
     let quality = anchor_quality(kind);
     match reading {
         ReadOutcome::Value(value) => match normalize_value(kind, value) {
-            NormalizedValue::Present(normalized) => SlotEvaluation {
-                status: EvidenceStatus::Present,
-                quality,
-                candidate_id: Some(derive_slot_candidate(fleet_namespace, kind, &normalized)),
-            },
+            NormalizedValue::Present(normalized) => {
+                let candidate_id = derive_slot_candidate(fleet_namespace, kind, &normalized);
+                SlotEvaluation {
+                    status: EvidenceStatus::Present,
+                    quality,
+                    candidate_id: Some(candidate_id),
+                    normalized_value: Some(normalized),
+                    fleet_namespace,
+                }
+            }
             NormalizedValue::Malformed => SlotEvaluation {
                 status: EvidenceStatus::Malformed,
                 quality,
                 candidate_id: None,
+                normalized_value: None,
+                fleet_namespace,
             },
             NormalizedValue::RejectedPlaceholder => SlotEvaluation {
                 status: EvidenceStatus::RejectedPlaceholder,
                 quality,
                 candidate_id: None,
+                normalized_value: None,
+                fleet_namespace,
             },
         },
         ReadOutcome::Unavailable => SlotEvaluation {
             status: EvidenceStatus::Unavailable,
             quality,
             candidate_id: None,
+            normalized_value: None,
+            fleet_namespace,
         },
         ReadOutcome::PermissionDenied => SlotEvaluation {
             status: EvidenceStatus::PermissionDenied,
             quality,
             candidate_id: None,
+            normalized_value: None,
+            fleet_namespace,
         },
         ReadOutcome::Unsupported => SlotEvaluation {
             status: EvidenceStatus::Unsupported,
             quality,
             candidate_id: None,
+            normalized_value: None,
+            fleet_namespace,
         },
     }
 }
@@ -217,28 +260,6 @@ pub fn collection_completeness(statuses: &[EvidenceStatus; 3]) -> CollectionComp
         CollectionCompleteness::Complete
     } else {
         CollectionCompleteness::TemporarilyUnavailable
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HardwareCandidate {
-    pub anchor_kind: String,
-    pub candidate_id: Uuid,
-    pub quality: EvidenceQuality,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HardwareClaim {
-    pub candidates: Vec<HardwareCandidate>,
-    pub completeness: CollectionCompleteness,
-}
-
-impl Default for HardwareClaim {
-    fn default() -> Self {
-        Self {
-            candidates: Vec::new(),
-            completeness: CollectionCompleteness::TemporarilyUnavailable,
-        }
     }
 }
 
@@ -265,21 +286,6 @@ pub enum LocalIdentityPreflightDecision {
     SiteNamespaceMismatch {
         configured_namespace: Uuid,
         stored_namespace: Uuid,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartupIdentityDecision {
-    FirstStart {
-        selected: Uuid,
-    },
-    Matched,
-    Indeterminate,
-    IdentityUnavailable,
-    ResetRequired {
-        stored: Uuid,
-        selected_current: Uuid,
     },
 }
 
@@ -318,113 +324,9 @@ pub fn evaluate_local_identity_preflight(
     }
 }
 
-/// Pure deterministic candidate derivation. Linux I/O stays in the privileged helper.
-#[must_use]
-pub fn derive_candidate(
-    namespace: Uuid,
-    anchor_kind: &str,
-    component_fingerprints: &[&[u8]],
-) -> Uuid {
-    let mut name = b"natsume/machine-hardware-id/v1\0".to_vec();
-    name.extend_from_slice(anchor_kind.as_bytes());
-    name.push(0);
-    let mut sorted = component_fingerprints.to_vec();
-    sorted.sort_unstable();
-    for fingerprint in sorted {
-        name.extend_from_slice(fingerprint);
-    }
-    Uuid::new_v5(&namespace, &name)
-}
-
-fn anchor_priority(kind: &str) -> u8 {
-    match kind {
-        "system_uuid_board" => 0,
-        "product_board" => 1,
-        "system_uuid" => 2,
-        "board_chassis" => 3,
-        "board_processor" => 4,
-        "board_root_disk" => 5,
-        "board_only" => 6,
-        "root_disk_only" => 7,
-        _ => u8::MAX,
-    }
-}
-
-/// Selects exactly one immutable ID at first start. The deterministic tie-breaker prevents
-/// collector ordering from changing the choice. Unknown anchor kinds are rejected here even
-/// if a compromised or future collector emits them.
-#[must_use]
-pub fn select_machine_hardware_id(claim: &HardwareClaim) -> Option<Uuid> {
-    let mut candidates = claim
-        .candidates
-        .iter()
-        .filter(|candidate| anchor_priority(&candidate.anchor_kind) != u8::MAX)
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| {
-        right
-            .quality
-            .cmp(&left.quality)
-            .then_with(|| {
-                anchor_priority(&left.anchor_kind).cmp(&anchor_priority(&right.anchor_kind))
-            })
-            .then_with(|| {
-                left.candidate_id
-                    .as_bytes()
-                    .cmp(right.candidate_id.as_bytes())
-            })
-    });
-    candidates.first().map(|candidate| candidate.candidate_id)
-}
-
-/// Evaluates hardware evidence before any identity-bound vault record, certificate or LKG is used.
-/// A transient collection failure never destroys state; a complete contradictory claim does.
-#[must_use]
-pub fn evaluate_startup_identity(
-    stored_machine_hardware_id: Option<Uuid>,
-    current: &HardwareClaim,
-) -> StartupIdentityDecision {
-    let selected = select_machine_hardware_id(current);
-    let Some(stored) = stored_machine_hardware_id else {
-        return selected.map_or(StartupIdentityDecision::IdentityUnavailable, |selected| {
-            StartupIdentityDecision::FirstStart { selected }
-        });
-    };
-
-    if current
-        .candidates
-        .iter()
-        .any(|candidate| candidate.candidate_id == stored)
-    {
-        return StartupIdentityDecision::Matched;
-    }
-
-    if current.completeness != CollectionCompleteness::Complete {
-        return StartupIdentityDecision::Indeterminate;
-    }
-
-    selected.map_or(
-        StartupIdentityDecision::IdentityUnavailable,
-        |selected_current| StartupIdentityDecision::ResetRequired {
-            stored,
-            selected_current,
-        },
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn claim(id: u128, completeness: CollectionCompleteness) -> HardwareClaim {
-        HardwareClaim {
-            candidates: vec![HardwareCandidate {
-                anchor_kind: "system_uuid".to_owned(),
-                candidate_id: Uuid::from_u128(id),
-                quality: EvidenceQuality::Strong,
-            }],
-            completeness,
-        }
-    }
 
     #[test]
     fn frozen_anchor_order_and_labels_match_the_recipe() {
@@ -748,68 +650,6 @@ mod tests {
             ),
             LocalIdentityPreflightDecision::ReadyForHardwareCheck {
                 stored_machine_hardware_id: Uuid::from_u128(1),
-            },
-        );
-    }
-
-    #[test]
-    fn first_start_selects_one_immutable_id() {
-        assert_eq!(
-            evaluate_startup_identity(None, &claim(1, CollectionCompleteness::Complete)),
-            StartupIdentityDecision::FirstStart {
-                selected: Uuid::from_u128(1),
-            },
-        );
-    }
-
-    #[test]
-    fn unknown_anchor_kind_is_not_selected() {
-        let claim = HardwareClaim {
-            candidates: vec![HardwareCandidate {
-                anchor_kind: "future_unapproved_anchor".to_owned(),
-                candidate_id: Uuid::from_u128(1),
-                quality: EvidenceQuality::Strong,
-            }],
-            completeness: CollectionCompleteness::Complete,
-        };
-        assert_eq!(select_machine_hardware_id(&claim), None);
-    }
-
-    #[test]
-    fn stored_id_matching_any_current_candidate_is_valid() {
-        assert_eq!(
-            evaluate_startup_identity(
-                Some(Uuid::from_u128(1)),
-                &claim(1, CollectionCompleteness::Complete),
-            ),
-            StartupIdentityDecision::Matched,
-        );
-    }
-
-    #[test]
-    fn temporary_collection_failure_is_never_destructive() {
-        assert_eq!(
-            evaluate_startup_identity(
-                Some(Uuid::from_u128(1)),
-                &HardwareClaim {
-                    candidates: Vec::new(),
-                    completeness: CollectionCompleteness::TemporarilyUnavailable,
-                },
-            ),
-            StartupIdentityDecision::Indeterminate,
-        );
-    }
-
-    #[test]
-    fn complete_contradictory_evidence_requires_standard_local_reset() {
-        assert_eq!(
-            evaluate_startup_identity(
-                Some(Uuid::from_u128(1)),
-                &claim(2, CollectionCompleteness::Complete),
-            ),
-            StartupIdentityDecision::ResetRequired {
-                stored: Uuid::from_u128(1),
-                selected_current: Uuid::from_u128(2),
             },
         );
     }
