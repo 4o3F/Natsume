@@ -223,6 +223,7 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 | Operator 浏览器 | 所有者豁免其余 freeze 字段 | 相关事实随 Web Panel 阶段验证，不作为 G0 输入 |
 | 硬件 fixture | 匿名 collector 已就绪；实地采集仍等待物理硬件访问，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
 | Slint runtime closure（实测） | Slint `1.15.1`；features `compat-1-2`/`std`/`backend-winit-x11`/`renderer-skia`；直接 ELF NEEDED 冻结于 `packaging/client/session-agent.needed` 且 target VM `ldd` 全表吻合；二进制 11,734,952 字节；冷启动至 resident marker 59 ms（图形会话内实测） | CJK **渲染**在各屏形态正常；镜像于 2026-08-15 加装中文输入法后 **IME 输入与渲染复验通过**（该次镜像变更仅为加装输入法，接受定向复验）。probe 各屏（binding_prompt/lock_presentation 等）、HiDPI 缩放与焦点观察均通过 |
+| 条目 7 的 WSL 证据豁免 | owner 于 2026-08-15 明确豁免「WSL 不得充当目标环境证据」（§4 末）对 G0 条目 7 的适用：IP-SAN/错误 CA/TLS 1.3-only/单端口语义由 rustls 与客户端实现决定，与宿主发行版弱相关；验证矩阵在 WSL 两轮全过且脚本可在任意目标机复跑 | 规则本身保留，对其余条目继续有效；目标 VM/Ubuntu 26 复跑随部署节点执行 |
 | V1 残留 | 仅测试 VM 曾装过 V1；fleet 机器无 V1 部署残留 | V1 与 V2 共用 `/etc/natsume/config.toml` 路径，残留会改变 dpkg 安装分支（conffile 提示、`.dpkg-old`）；lifecycle harness 已加干净 VM 守卫，检测到残留即拒绝 |
 
 ## 5. 支持声明
