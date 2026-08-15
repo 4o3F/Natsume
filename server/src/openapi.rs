@@ -15,7 +15,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -44,6 +44,7 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::contest::list_bindings,
         crate::http::handler::contest::revoke_device,
         crate::http::handler::contest::disable_device,
+        crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
         crate::http::handler::import::commit_import,
         crate::http::handler::import::discard_import
@@ -60,6 +61,8 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::import::ImportBindingImpactResponse,
         crate::http::handler::import::ImportRedactedDiff,
         crate::http::handler::import::ImportPreviewResponse,
+        crate::http::handler::import::ImportPendingSummary,
+        crate::http::handler::import::ImportPendingResponse,
         crate::http::handler::import::ImportCommitRequest,
         crate::http::handler::import::ImportCommitResponse
     ))
@@ -88,6 +91,14 @@ pub fn document() -> OpenApi {
     );
     if let Some(RefOr::T(Schema::Object(schema))) =
         components.schemas.get_mut("ImportPreviewResponse")
+    {
+        schema.properties.insert(
+            "candidate_id".to_owned(),
+            Ref::from_schema_name("CanonicalUuidV7").into(),
+        );
+    }
+    if let Some(RefOr::T(Schema::Object(schema))) =
+        components.schemas.get_mut("ImportPendingSummary")
     {
         schema.properties.insert(
             "candidate_id".to_owned(),
@@ -429,6 +440,12 @@ mod tests {
                 &["200", "401", "500"],
             ),
             (
+                "get",
+                "/api/v2/imports",
+                "getCsvImport",
+                &["200", "401", "403", "500"],
+            ),
+            (
                 "post",
                 "/api/v2/devices/{device_id}/actions/revoke",
                 "revokeDevice",
@@ -556,7 +573,7 @@ mod tests {
             .and_then(Value::as_str)
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         if description
-            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         {
             return Err(TestFailure::InfoDescriptionChanged);
         }
@@ -633,6 +650,7 @@ mod tests {
         }
 
         let upload = operation_at(value, "/api/v2/imports", "post")?;
+        let read = operation_at(value, "/api/v2/imports", "get")?;
         let commit = operation_at(value, "/api/v2/imports/{import_id}/actions/commit", "post")?;
         let discard = operation_at(value, "/api/v2/imports/{import_id}/actions/discard", "post")?;
         if nested_value(
@@ -641,6 +659,20 @@ mod tests {
         )
         .and_then(Value::as_str)
             != Some("string")
+            || read.get("requestBody").is_some()
+            || nested_value(
+                read,
+                &[
+                    "responses",
+                    "200",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/ImportPendingResponse")
             || nested_value(
                 commit,
                 &[
@@ -688,9 +720,67 @@ mod tests {
 
     fn assert_import_schemas(value: &Value) -> Result<(), TestFailure> {
         assert_import_preview_schema(value)?;
+        assert_import_pending_schemas(value)?;
         assert_import_diff_schema(value)?;
         assert_import_mapping_schemas(value)?;
         assert_import_commit_schemas(value)
+    }
+
+    fn assert_import_pending_schemas(value: &Value) -> Result<(), TestFailure> {
+        let response = schema_object(value, "ImportPendingResponse")?;
+        let response_properties = schema_properties(response)?;
+        if property_names(response_properties) != BTreeSet::from(["pending"])
+            || required_property_names(response)? != BTreeSet::from(["pending"])
+            || response
+                .get("additionalProperties")
+                .and_then(Value::as_bool)
+                != Some(false)
+            || !value_contains_string(
+                response_properties
+                    .get("pending")
+                    .ok_or(TestFailure::ImportContractChanged)?,
+                "null",
+            )
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
+
+        let summary = schema_object(value, "ImportPendingSummary")?;
+        let properties = schema_properties(summary)?;
+        if property_names(properties)
+            != BTreeSet::from([
+                "baseline_binding_revision",
+                "baseline_configuration_revision",
+                "candidate_id",
+                "diff",
+                "expires_at",
+            ])
+            || required_property_names(summary)? != property_names(properties)
+            || summary.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || properties
+                .get("candidate_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || properties
+                .get("baseline_configuration_revision")
+                .and_then(|property| property.get("format"))
+                .and_then(Value::as_str)
+                != Some("int64")
+            || properties
+                .get("baseline_binding_revision")
+                .and_then(|property| property.get("format"))
+                .and_then(Value::as_str)
+                != Some("int64")
+            || properties
+                .get("diff")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/ImportRedactedDiff")
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
+        Ok(())
     }
 
     fn assert_import_preview_schema(value: &Value) -> Result<(), TestFailure> {

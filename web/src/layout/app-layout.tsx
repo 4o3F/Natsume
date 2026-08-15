@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navigation = [
+  { to: "/preparation", label: "Preparation" },
   { to: "/seats", label: "Seats" },
   { to: "/accounts", label: "Accounts" },
   { to: "/devices", label: "Devices" },

@@ -304,6 +304,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
         (Method::GET, "/api/v2/accounts", StatusCode::UNAUTHORIZED),
         (Method::GET, "/api/v2/devices", StatusCode::UNAUTHORIZED),
         (Method::GET, "/api/v2/bindings", StatusCode::UNAUTHORIZED),
+        (Method::GET, "/api/v2/imports", StatusCode::UNAUTHORIZED),
         (
             Method::POST,
             "/api/v2/devices/01900000-0000-7000-8000-000000000399/actions/revoke",
@@ -370,6 +371,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             "deleteSession",
             "disableDevice",
             "discardCsvImport",
+            "getCsvImport",
             "getHealth",
             "getSession",
             "listAccounts",
@@ -385,7 +387,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             .pointer("/info/description")
             .and_then(Value::as_str),
         Some(
-            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         )
     );
 }

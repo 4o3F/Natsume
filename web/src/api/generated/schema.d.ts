@@ -144,7 +144,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    get: operations["getCsvImport"];
     put?: never;
     post: operations["createCsvImport"];
     delete?: never;
@@ -269,6 +269,22 @@ export interface components {
       candidate_domjudge_username: string;
       current_domjudge_username: string | null;
       seat_code: string;
+    };
+    ImportPendingResponse: {
+      pending: null | components["schemas"]["ImportPendingSummary"];
+    };
+    ImportPendingSummary: {
+      /** Format: int64 */
+      baseline_binding_revision: number;
+      /** Format: int64 */
+      baseline_configuration_revision: number;
+      candidate_id: components["schemas"]["CanonicalUuidV7"];
+      diff: components["schemas"]["ImportRedactedDiff"];
+      /**
+       * Format: date-time
+       * @description RFC 3339 UTC timestamp with a trailing Z.
+       */
+      expires_at: string;
     };
     ImportPreviewResponse: {
       /** Format: int64 */
@@ -762,6 +778,61 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getCsvImport: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current pending CSV import candidate */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ImportPendingResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
         };
       };
       /** @description Internal failure */

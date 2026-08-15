@@ -60,6 +60,7 @@ test("successful login reaches the authenticated shell", async ({ page }) => {
   await page.getByLabel("Password").fill("correct password");
   await page.getByRole("button", { name: "Sign in" }).click();
 
+  await expect(page.getByRole("link", { name: "Preparation" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Seats" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Accounts" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Devices" })).toBeVisible();

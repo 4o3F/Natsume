@@ -178,6 +178,9 @@ describe("Natsume V2 browser OpenAPI contract", () => {
         .operationId,
     ).toBe("disableDevice");
 
+    expect(openapi.paths["/api/v2/imports"].get.operationId).toBe(
+      "getCsvImport",
+    );
     expect(openapi.paths["/api/v2/imports"].post.operationId).toBe(
       "createCsvImport",
     );
@@ -242,6 +245,12 @@ describe("Natsume V2 browser OpenAPI contract", () => {
   });
 
   it("freezes the mounted import and Panel-owned Command resources", () => {
+    expectResponseSet(openapi.paths["/api/v2/imports"].get, [
+      "200",
+      "401",
+      "403",
+      "500",
+    ]);
     expectResponseSet(openapi.paths["/api/v2/imports"].post, [
       "201",
       "400",

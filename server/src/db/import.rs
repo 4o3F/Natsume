@@ -37,6 +37,14 @@ pub(crate) struct CreatedCandidateFacts {
     pub(crate) diff: RedactedImportPreview,
 }
 
+pub(crate) struct PendingCandidateFacts {
+    pub(crate) candidate_id: Uuid,
+    pub(crate) expires_at: String,
+    pub(crate) baseline_configuration_revision: i64,
+    pub(crate) baseline_binding_revision: i64,
+    pub(crate) diff: RedactedImportPreview,
+}
+
 pub(crate) async fn create_import_candidate(
     database: &Database,
     candidate_rows: Vec<CandidateRowFacts>,
@@ -227,6 +235,62 @@ pub(crate) async fn read_commit_candidate(
         CandidateReadOutcome::Available(payload) => Ok(payload),
         CandidateReadOutcome::Unavailable => Err(ImportError::CandidateUnavailable),
     }
+}
+
+pub(crate) async fn read_pending_import_candidate(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<Option<PendingCandidateFacts>, ImportError> {
+    read_pending_import_candidate_with_id(
+        database,
+        correlation_id,
+        AuditEventId::from_uuid(Uuid::now_v7()),
+    )
+    .await
+    .map_err(ImportError::from)
+}
+
+async fn read_pending_import_candidate_with_id(
+    database: &Database,
+    correlation_id: CorrelationId,
+    expiry_audit_event_id: AuditEventId,
+) -> Result<Option<PendingCandidateFacts>, ImportStoreError> {
+    database
+        .interact(move |connection| {
+            connection.immediate_transaction(|connection| {
+                let Some(pending) = read_pending_candidate(connection)? else {
+                    return Ok(None);
+                };
+                let candidate_id = canonical_uuid_v7(&pending.candidate_id)?;
+                match pending.expiry_state {
+                    1 => {
+                        expire_pending_candidate_tolerant(
+                            connection,
+                            &pending,
+                            candidate_id,
+                            correlation_id,
+                            expiry_audit_event_id,
+                        )?;
+                        Ok(None)
+                    }
+                    0 => {
+                        let diff = serde_json::from_str(&pending.redacted_preview_json)
+                            .map_err(|_| ImportStoreError::InvalidPersistedFacts)?;
+                        Ok(Some(PendingCandidateFacts {
+                            candidate_id,
+                            expires_at: pending.expires_at,
+                            baseline_configuration_revision: pending
+                                .baseline_configuration_revision,
+                            baseline_binding_revision: pending.baseline_binding_revision,
+                            diff,
+                        }))
+                    }
+                    _ => Err(ImportStoreError::InvalidPersistedFacts),
+                }
+            })
+        })
+        .await
+        .map_err(|_| ImportStoreError::AcquireFailed)?
 }
 
 enum CandidateReadOutcome {
@@ -580,6 +644,8 @@ struct PendingCandidateRow {
     #[diesel(sql_type = Text)]
     candidate_id: String,
     #[diesel(sql_type = Text)]
+    expires_at: String,
+    #[diesel(sql_type = Text)]
     payload_vault_record_id: String,
     #[diesel(sql_type = BigInt)]
     baseline_configuration_revision: i64,
@@ -587,6 +653,8 @@ struct PendingCandidateRow {
     baseline_binding_revision: i64,
     #[diesel(sql_type = diesel::sql_types::Binary)]
     preview_token_hash: Vec<u8>,
+    #[diesel(sql_type = Text)]
+    redacted_preview_json: String,
     #[diesel(sql_type = BigInt)]
     expiry_state: i64,
 }
@@ -595,8 +663,9 @@ fn read_pending_candidate(
     connection: &mut SqliteConnection,
 ) -> Result<Option<PendingCandidateRow>, ImportStoreError> {
     diesel::sql_query(
-        "SELECT candidate_id, payload_vault_record_id, \
+        "SELECT candidate_id, expires_at, payload_vault_record_id, \
          baseline_configuration_revision, baseline_binding_revision, preview_token_hash, \
+         redacted_preview_json, \
          CASE \
            WHEN strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS NULL \
              OR expires_at <> strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) THEN -1 \

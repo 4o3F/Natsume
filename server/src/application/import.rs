@@ -259,7 +259,7 @@ pub(crate) struct CommitCandidatePayload {
     pub(crate) ciphertext: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ImportMappingChange {
     seat_code: String,
     current_domjudge_username: Option<String>,
@@ -295,7 +295,7 @@ impl ImportMappingChange {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ImportBindingImpact {
     seat_code: String,
     device_id: String,
@@ -320,7 +320,7 @@ impl ImportBindingImpact {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RedactedImportPreview {
     seats_added: Vec<String>,
     seats_removed: Vec<String>,
@@ -417,6 +417,14 @@ pub(crate) struct CreatedImportCandidate {
     diff: RedactedImportPreview,
 }
 
+pub(crate) struct PendingImportCandidate {
+    candidate_id: Uuid,
+    expires_at: String,
+    baseline_configuration_revision: i64,
+    baseline_binding_revision: i64,
+    diff: RedactedImportPreview,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CommittedImportFacts {
     configuration_revision: i64,
@@ -451,6 +459,33 @@ impl CreatedImportCandidate {
     #[must_use]
     pub(crate) const fn preview_token(&self) -> &PreviewToken {
         &self.preview_token
+    }
+
+    #[must_use]
+    pub(crate) fn expires_at(&self) -> &str {
+        &self.expires_at
+    }
+
+    #[must_use]
+    pub(crate) const fn baseline_configuration_revision(&self) -> i64 {
+        self.baseline_configuration_revision
+    }
+
+    #[must_use]
+    pub(crate) const fn baseline_binding_revision(&self) -> i64 {
+        self.baseline_binding_revision
+    }
+
+    #[must_use]
+    pub(crate) const fn diff(&self) -> &RedactedImportPreview {
+        &self.diff
+    }
+}
+
+impl PendingImportCandidate {
+    #[must_use]
+    pub(crate) const fn candidate_id(&self) -> Uuid {
+        self.candidate_id
     }
 
     #[must_use]
@@ -547,6 +582,23 @@ pub(crate) async fn audit_invalid_import_upload(
     correlation_id: CorrelationId,
 ) -> Result<(), ImportError> {
     db::import::audit_invalid_import_upload(database, correlation_id).await
+}
+
+pub(crate) async fn read_pending_import_candidate(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<Option<PendingImportCandidate>, ImportError> {
+    db::import::read_pending_import_candidate(database, correlation_id)
+        .await
+        .map(|pending| {
+            pending.map(|pending| PendingImportCandidate {
+                candidate_id: pending.candidate_id,
+                expires_at: pending.expires_at,
+                baseline_configuration_revision: pending.baseline_configuration_revision,
+                baseline_binding_revision: pending.baseline_binding_revision,
+                diff: pending.diff,
+            })
+        })
 }
 
 pub(crate) async fn commit_import(

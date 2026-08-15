@@ -6,6 +6,7 @@ import { AccountsPage } from "@/pages/accounts-page";
 import { BindingsPage } from "@/pages/bindings-page";
 import { DevicesPage } from "@/pages/devices-page";
 import { LoginPage } from "@/pages/login-page";
+import { PreparationPage } from "@/pages/preparation-page";
 import { SeatsPage } from "@/pages/seats-page";
 
 export function App() {
@@ -15,6 +16,7 @@ export function App() {
       <Route element={<RequireSession />}>
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/seats" replace />} />
+          <Route path="/preparation" element={<PreparationPage />} />
           <Route path="/seats" element={<SeatsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/devices" element={<DevicesPage />} />

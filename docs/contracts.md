@@ -75,6 +75,7 @@ HTTP 错误响应的 media type 固定为 `application/json`。wire body 只包�
 
 | Method | Path | 角色 | 语义 |
 |---|---|---|---|
+| `GET` | `/api/v2/imports` | `admin` | 返回 singleton pending candidate 的 redacted summary；不返回 preview token，读取时 lazy-expire |
 | `POST` | `/api/v2/imports` | `admin` | 严格解析 CSV、加密 staging 并创建 singleton redacted preview candidate |
 | `POST` | `/api/v2/imports/{import_id}/actions/commit` | `admin` | 校验 canonical ID、preview token 与双 revision CAS 后原子替换 confirmed configuration |
 | `POST` | `/api/v2/imports/{import_id}/actions/discard` | `admin` | 删除 pending candidate 与其 encrypted payload，不改变 confirmed truth |
@@ -114,6 +115,10 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 - 错误映射（复用 error-code registry 既有冻结码；随 route 挂载登入 §3.6.5 表）：解析失败、结构错误、candidate 内重复 account、空或仅 header → `400 IMPORT_CANDIDATE_INVALID`；存在 pending 时的再次 upload → `409 IMPORT_CANDIDATE_PENDING`；未知、已过期或已 discard 的 `import_id`，以及 **`preview_token` 不匹配** → `404 IMPORT_CANDIDATE_UNAVAILABLE`（token 不匹配与 candidate 不存在必须不可区分，不给未持 token 方提供 candidate 存在性 oracle；audit 内部以 `reason_code` 区分真相）；baseline 任一前移 → `409 IMPORT_PREVIEW_STALE`。
 - 过期为 lazy 清理（与 expired session row 同原则）：首个观察到 expired candidate 的 import surface 请求在同一事务内删除 candidate 与 payload vault row 并审计一次，不运行 background cleaner。
 - 审计词汇已按 §3.6.4「先注册后写入器」纪律登记；四个 import 写入器与 HTTP 层 rejected-upload 的 `candidate_invalid` 写入器均已落地（已实现）。
+
+**2026-08-16 修订（Phase 2 补全：pending 读取面）**：
+
+- Pending read：`GET /api/v2/imports`，`admin` only；成功 `200` 返回 `ImportPendingResponse { pending: ImportPendingSummary | null }`，其中 summary 恰含 `candidate_id`（canonical UUIDv7）、`expires_at`、`baseline_configuration_revision`（int64）、`baseline_binding_revision`（int64）与 `diff`。该 surface **绝不返回 `preview_token`**；页面刷新后 operator 可查看并 discard，但必须重新上传才能 commit。读取时观察到 expired candidate 必须在同一事务执行 tolerant lazy expiry 与 `expire_import_candidate` 审计，并返回 `pending: null`；不存在 candidate 时同样返回 null 且零写入。
 
 ### 3.5 Direct Command creation
 
@@ -176,7 +181,7 @@ read route 返回 bounded 集合；Phase 1 不提供任意 filter、sort、query
 
 Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全部九个 Phase 1 operator operation；每个 operation 都有真实 handler，不提供 placeholder handler 或 placeholder schema。
 
-**2026-08-16 修订**：Phase 2 在上述 Stage 术语下新增挂载 `createCsvImport`、`commitCsvImport` 与 `discardCsvImport`，三者均为真实 handler。OpenAPI 除已挂载 surface 外，现只声明但不挂载 `approveEnrollment`、`putCommand`；`info.description` 必须列出这一 declared-but-unmounted 集合，防止 schema 声明被误读为可调用 route。
+**2026-08-16 修订**：Phase 2 在上述 Stage 术语下新增挂载 `getCsvImport`、`createCsvImport`、`commitCsvImport` 与 `discardCsvImport`，四者均为真实 handler。OpenAPI 除已挂载 surface 外，现只声明但不挂载 `approveEnrollment`、`putCommand`；`info.description` 必须列出这一 declared-but-unmounted 集合，防止 schema 声明被误读为可调用 route。
 
 #### 3.6.3 建立与查询
 

@@ -6,7 +6,7 @@ use axum::{
     middleware as axum_middleware,
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
@@ -16,15 +16,15 @@ use uuid::Uuid;
 use crate::{
     application::{
         import::{
-            self, ImportBindingImpact, ImportError, ImportMappingChange, PreviewToken,
-            RedactedImportPreview,
+            self, ImportBindingImpact, ImportError, ImportMappingChange, PendingImportCandidate,
+            PreviewToken, RedactedImportPreview,
         },
         operator::{self, OperatorIdentity},
     },
     audit::CorrelationId,
 };
 
-use super::super::{AppState, error::ApiError, middleware};
+use super::super::{AppState, error::ApiError, middleware, not_found};
 
 pub(crate) const CSV_IMPORT_BODY_LIMIT_BYTES: usize = 4_194_304;
 pub(crate) const IMPORT_COMMIT_BODY_LIMIT_BYTES: usize = 4_096;
@@ -45,8 +45,12 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         .layer(DefaultBodyLimit::max(IMPORT_COMMIT_BODY_LIMIT_BYTES))
         .route_layer(axum_middleware::from_fn(require_admin_role));
     let discard = post(discard_import).route_layer(axum_middleware::from_fn(require_admin_role));
+    let read = get(get_import)
+        .route_layer(axum_middleware::from_fn(require_admin_role))
+        .head(not_found);
+    let imports = upload.merge(middleware::require_operator(state.clone(), read));
     Router::new()
-        .route("/imports", upload)
+        .route("/imports", imports)
         .route(
             "/imports/{import_id}/actions/commit",
             middleware::require_operator(state.clone(), commit),
@@ -139,6 +143,25 @@ pub(crate) struct ImportPreviewResponse {
     diff: ImportRedactedDiff,
 }
 
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportPendingSummary {
+    candidate_id: Uuid,
+    /// RFC 3339 UTC timestamp with a trailing Z.
+    #[schema(value_type = String, format = DateTime)]
+    expires_at: String,
+    baseline_configuration_revision: i64,
+    baseline_binding_revision: i64,
+    diff: ImportRedactedDiff,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportPendingResponse {
+    #[schema(required = true)]
+    pending: Option<ImportPendingSummary>,
+}
+
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportCommitRequest {
@@ -216,6 +239,34 @@ pub(crate) async fn create_import(
                 }
             }
         }
+        Err(error) => ApiError::from_import(error, correlation_id).into_response(),
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v2/imports",
+    operation_id = "getCsvImport",
+    security(("sessionCookie" = [])),
+    responses(
+        (status = 200, description = "Current pending CSV import candidate", body = ImportPendingResponse),
+        (status = 401, description = "Session authentication failed"),
+        (status = 403, description = "Administrator role required"),
+        (status = 500, description = "Internal failure")
+    )
+)]
+pub(crate) async fn get_import(
+    State(state): State<AppState>,
+    Extension(correlation_id): Extension<CorrelationId>,
+) -> Response {
+    match import::read_pending_import_candidate(&state.database, correlation_id).await {
+        Ok(pending) => json_response(
+            StatusCode::OK,
+            &ImportPendingResponse {
+                pending: pending.as_ref().map(ImportPendingSummary::from),
+            },
+            correlation_id,
+        ),
         Err(error) => ApiError::from_import(error, correlation_id).into_response(),
     }
 }
@@ -349,6 +400,18 @@ impl From<&ImportBindingImpact> for ImportBindingImpactResponse {
         Self {
             seat_code: impact.seat_code().to_owned(),
             device_id: impact.device_id().to_owned(),
+        }
+    }
+}
+
+impl From<&PendingImportCandidate> for ImportPendingSummary {
+    fn from(pending: &PendingImportCandidate) -> Self {
+        Self {
+            candidate_id: pending.candidate_id(),
+            expires_at: pending.expires_at().to_owned(),
+            baseline_configuration_revision: pending.baseline_configuration_revision(),
+            baseline_binding_revision: pending.baseline_binding_revision(),
+            diff: ImportRedactedDiff::from(pending.diff()),
         }
     }
 }
@@ -522,6 +585,170 @@ mod tests {
                 "Forbidden",
                 "AUTHORIZATION_DENIED",
             )?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_read_is_null_and_read_only_when_no_candidate_exists() -> Result<(), TestFailure>
+    {
+        let fixture = ImportHttpFixture::new().await?;
+        fixture
+            .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
+            .await?;
+        let admin_cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
+        let application = fixture.router();
+        let mut observer = test_observer(&fixture.database.path)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        let before = import_snapshot(&fixture.database.database).await?;
+        let data_version_before =
+            test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+
+        let response = read_pending(&application, &admin_cookie).await?;
+        assert_pending_null(&response)?;
+
+        let after = import_snapshot(&fixture.database.database).await?;
+        let data_version_after =
+            test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        if before != after || data_version_before != data_version_after {
+            return Err(TestFailure::RejectedBoundaryWroteData);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_read_replays_the_exact_redacted_summary_without_the_token()
+    -> Result<(), TestFailure> {
+        let fixture = ImportHttpFixture::new().await?;
+        fixture
+            .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
+            .await?;
+        let admin_cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
+        let application = fixture.router();
+        let created = upload(
+            &application,
+            &admin_cookie,
+            &format!(
+                "seat,account,password\nB-02,team-b,{CSV_PASSWORD_B}\nA-01,team-a,{CSV_PASSWORD_A}"
+            ),
+        )
+        .await?;
+        let preview = assert_preview(&created)?;
+
+        let response = read_pending(&application, &admin_cookie).await?;
+        let pending = assert_pending_summary(&response)?;
+        if pending.candidate_id != preview.candidate_id
+            || pending.expires_at != preview.expires_at
+            || pending.baseline_configuration_revision != preview.baseline_configuration_revision
+            || pending.baseline_binding_revision != preview.baseline_binding_revision
+            || serde_json::to_vec(&pending.diff).map_err(|_| TestFailure::ResponseJsonInvalid)?
+                != serde_json::to_vec(&preview.diff)
+                    .map_err(|_| TestFailure::ResponseJsonInvalid)?
+        {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        let body = response_body_text(&response)?;
+        if body.contains("preview_token") || body.contains(&preview.preview_token) {
+            return Err(TestFailure::SecretEscaped);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_read_tolerates_unknown_stored_preview_fields() -> Result<(), TestFailure> {
+        let fixture = ImportHttpFixture::new().await?;
+        fixture
+            .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
+            .await?;
+        let admin_cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
+        let application = fixture.router();
+        let created = upload(
+            &application,
+            &admin_cookie,
+            "seat,account,password\nA-01,team-a,forward-compatible-password-canary",
+        )
+        .await?;
+        let preview = assert_preview(&created)?;
+        add_unknown_pending_preview_field(&fixture.database.database, &preview.candidate_id)
+            .await?;
+
+        let response = read_pending(&application, &admin_cookie).await?;
+        let pending = assert_pending_summary(&response)?;
+        if pending.candidate_id != preview.candidate_id
+            || serde_json::to_vec(&pending.diff).map_err(|_| TestFailure::ResponseJsonInvalid)?
+                != serde_json::to_vec(&preview.diff)
+                    .map_err(|_| TestFailure::ResponseJsonInvalid)?
+        {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_read_lazily_expires_and_audits_an_expired_candidate() -> Result<(), TestFailure>
+    {
+        let fixture = ImportHttpFixture::new().await?;
+        fixture
+            .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
+            .await?;
+        let admin_cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
+        let application = fixture.router();
+        let created = upload(
+            &application,
+            &admin_cookie,
+            "seat,account,password\nA-01,team-a,expiry-password-canary",
+        )
+        .await?;
+        let preview = assert_preview(&created)?;
+        age_pending_candidate(&fixture.database.database, &preview.candidate_id).await?;
+
+        let response = read_pending(&application, &admin_cookie).await?;
+        assert_pending_null(&response)?;
+        let snapshot = import_snapshot(&fixture.database.database).await?;
+        if snapshot.candidates != 0 || snapshot.vault != 0 || snapshot.audits != 2 {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        assert_expiry_audit(&fixture.database.database, &preview.candidate_id).await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn corrupt_pending_preview_is_a_read_only_internal_failure() -> Result<(), TestFailure> {
+        let fixture = ImportHttpFixture::new().await?;
+        fixture
+            .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
+            .await?;
+        let admin_cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
+        let application = fixture.router();
+        let created = upload(
+            &application,
+            &admin_cookie,
+            "seat,account,password\nA-01,team-a,corrupt-preview-password-canary",
+        )
+        .await?;
+        let preview = assert_preview(&created)?;
+        corrupt_pending_preview(&fixture.database.database, &preview.candidate_id).await?;
+        let mut observer = test_observer(&fixture.database.path)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        let before = import_snapshot(&fixture.database.database).await?;
+        let data_version_before =
+            test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+
+        let response = read_pending(&application, &admin_cookie).await?;
+        check_error_response(
+            &response,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal Server Error",
+            "INTERNAL_ERROR",
+        )?;
+        let after = import_snapshot(&fixture.database.database).await?;
+        let data_version_after =
+            test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        if before != after || data_version_before != data_version_after {
+            return Err(TestFailure::RejectedBoundaryWroteData);
+        }
+        if response_body_text(&response)?.contains(&preview.preview_token) {
+            return Err(TestFailure::SecretEscaped);
         }
         Ok(())
     }
@@ -823,16 +1050,20 @@ mod tests {
 
     #[derive(Clone, Copy)]
     enum ImportOperation {
+        Read,
         Upload,
         Commit,
         Discard,
     }
 
     impl ImportOperation {
-        const ALL: [Self; 3] = [Self::Upload, Self::Commit, Self::Discard];
+        const ALL: [Self; 4] = [Self::Read, Self::Upload, Self::Commit, Self::Discard];
 
         fn request(self, cookie: Option<&str>) -> Result<Request<Body>, TestFailure> {
             match self {
+                Self::Read => {
+                    request_with_cookie(Method::GET, "/api/v2/imports", cookie, None, Body::empty())
+                }
                 Self::Upload => request_with_cookie(
                     Method::POST,
                     "/api/v2/imports",
@@ -939,6 +1170,17 @@ mod tests {
         drive(application, request).await.map_err(TestFailure::from)
     }
 
+    async fn read_pending(application: &Router, cookie: &str) -> Result<Captured, TestFailure> {
+        let request = request_with_cookie(
+            Method::GET,
+            "/api/v2/imports",
+            Some(cookie),
+            None,
+            Body::empty(),
+        )?;
+        drive(application, request).await.map_err(TestFailure::from)
+    }
+
     async fn commit(
         application: &Router,
         cookie: &str,
@@ -1040,6 +1282,29 @@ mod tests {
             return Err(TestFailure::PreviewResponseChanged);
         }
         Ok(preview)
+    }
+
+    fn assert_pending_null(response: &Captured) -> Result<(), TestFailure> {
+        if response.status != StatusCode::OK {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        canonical_correlation_id(&response.headers)?;
+        let value: PendingResponseEvidence =
+            serde_json::from_slice(&response.body).map_err(|_| TestFailure::ResponseJsonInvalid)?;
+        if value.pending.is_some() || response.body.as_slice() != br#"{"pending":null}"# {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        Ok(())
+    }
+
+    fn assert_pending_summary(response: &Captured) -> Result<PendingSummaryEvidence, TestFailure> {
+        if response.status != StatusCode::OK {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        canonical_correlation_id(&response.headers)?;
+        let value: PendingResponseEvidence =
+            serde_json::from_slice(&response.body).map_err(|_| TestFailure::ResponseJsonInvalid)?;
+        value.pending.ok_or(TestFailure::PendingResponseChanged)
     }
 
     fn is_rfc3339_utc(value: &str) -> bool {
@@ -1172,6 +1437,108 @@ mod tests {
             .map_err(|_| TestFailure::FixtureFailed)
     }
 
+    async fn age_pending_candidate(
+        database: &Database,
+        candidate_id: &str,
+    ) -> Result<(), TestFailure> {
+        let candidate_id = candidate_id.to_owned();
+        database
+            .interact(move |connection| {
+                diesel::sql_query(
+                    "UPDATE pending_import_candidate \
+                     SET expires_at = '2000-01-01T00:00:00.000Z' \
+                     WHERE candidate_id = ?",
+                )
+                .bind::<Text, _>(candidate_id)
+                .execute(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map(|_| ())
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn corrupt_pending_preview(
+        database: &Database,
+        candidate_id: &str,
+    ) -> Result<(), TestFailure> {
+        let candidate_id = candidate_id.to_owned();
+        database
+            .interact(move |connection| {
+                diesel::sql_query("PRAGMA ignore_check_constraints = ON").execute(connection)?;
+                let update = diesel::sql_query(
+                    "UPDATE pending_import_candidate \
+                     SET redacted_preview_json = '{not-json' \
+                     WHERE candidate_id = ?",
+                )
+                .bind::<Text, _>(candidate_id)
+                .execute(connection);
+                let reset =
+                    diesel::sql_query("PRAGMA ignore_check_constraints = OFF").execute(connection);
+                update.and(reset)
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map(|_| ())
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn add_unknown_pending_preview_field(
+        database: &Database,
+        candidate_id: &str,
+    ) -> Result<(), TestFailure> {
+        let candidate_id = candidate_id.to_owned();
+        database
+            .interact(move |connection| {
+                diesel::sql_query(
+                    "UPDATE pending_import_candidate \
+                     SET redacted_preview_json = json_set( \
+                       redacted_preview_json, '$.future_preview_evidence', json('{\"version\":1}')) \
+                     WHERE candidate_id = ?",
+                )
+                .bind::<Text, _>(candidate_id)
+                .execute(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map(|_| ())
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn assert_expiry_audit(
+        database: &Database,
+        candidate_id: &str,
+    ) -> Result<(), TestFailure> {
+        let candidate_id = candidate_id.to_owned();
+        let audit = database
+            .interact(move |connection| {
+                diesel::sql_query(
+                    "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
+                     redacted_detail_json, \
+                     (SELECT COUNT(*) FROM audit_events \
+                       WHERE action_kind = 'expire_import_candidate') AS count \
+                     FROM audit_events \
+                     WHERE action_kind = 'expire_import_candidate'",
+                )
+                .get_result::<InvalidAuditEvidence>(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        if audit.count != 1
+            || audit.actor != "system:expiry"
+            || audit.action_kind != "expire_import_candidate"
+            || audit.resource_type != "import_candidate"
+            || audit.resource_id.as_deref() != Some(candidate_id.as_str())
+            || audit.result != "succeeded"
+            || audit.reason_code.as_deref() != Some("absolute_expiry_observed")
+            || audit.redacted_detail_json != "{}"
+        {
+            return Err(TestFailure::ExpiryAuditChanged);
+        }
+        Ok(())
+    }
+
     async fn assert_invalid_upload_audit(database: &Database) -> Result<(), TestFailure> {
         let audit = database
             .interact(|connection| {
@@ -1245,6 +1612,20 @@ mod tests {
         diff: Value,
     }
 
+    #[derive(Deserialize)]
+    struct PendingResponseEvidence {
+        pending: Option<PendingSummaryEvidence>,
+    }
+
+    #[derive(Deserialize)]
+    struct PendingSummaryEvidence {
+        candidate_id: String,
+        expires_at: String,
+        baseline_configuration_revision: i64,
+        baseline_binding_revision: i64,
+        diff: Value,
+    }
+
     #[derive(QueryableByName)]
     struct InvalidAuditEvidence {
         #[diesel(sql_type = Text)]
@@ -1294,6 +1675,8 @@ mod tests {
         ResponseJsonInvalid,
         #[snafu(display("the import preview response changed"))]
         PreviewResponseChanged,
+        #[snafu(display("the pending import response changed"))]
+        PendingResponseChanged,
         #[snafu(display("the import commit response changed"))]
         CommitResponseChanged,
         #[snafu(display("the import discard response changed"))]
@@ -1306,6 +1689,8 @@ mod tests {
         DatabaseEvidenceFailed,
         #[snafu(display("the invalid-upload audit changed"))]
         InvalidAuditChanged,
+        #[snafu(display("the expiry audit changed"))]
+        ExpiryAuditChanged,
         #[snafu(display("a rejected import boundary wrote data"))]
         RejectedBoundaryWroteData,
         #[snafu(display("an import secret escaped the HTTP or audit boundary"))]
