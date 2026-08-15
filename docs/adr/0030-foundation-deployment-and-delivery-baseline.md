@@ -22,7 +22,7 @@ Natsume 同时包含 Rust Server/Client、TypeScript Web、Debian packaging 与�
 - `just` 只分发原生命令，不成为第二个依赖解析器、workspace 抽象或 build graph。
 - nFPM 只把已构建的固定路径产物映射为 Server/Client Deb；package lifecycle 不编译产品代码、不下载运行时组件、不生成 CA 或私钥。
 - package 内容、权限、systemd、D-Bus、XDG 与 Caddy 产物必须能从 manifest 和固定构建输出审计。
-- **2026-08-15 修订**：Server 以单监听器同源托管打包面板（`/usr/share/natsume-server/web`，SPA fallback 到 `index.html`，静态响应一律 `no-cache`）；未知 `/api/v2` 路径仍返回 JSON 404。二进制内嵌资产被否决——那会让 Cargo 构建依赖 Web 产物，制造本 ADR 拒绝的第二套构建图耦合。
+- **2026-08-15 修订**：Server 以单监听器同源托管打包面板（`/usr/share/natsume-server/web`，SPA fallback 到 `index.html`，静态响应一律 `no-cache`）；未知 `/api/v2` 路径仍返回 JSON 404。二进制内嵌资产被否决——那会让 Cargo 构建依赖 Web 产物，制造本 ADR 拒绝的第二套构建图耦合。资产路径是代码内固定常量而非配置键：`/usr/share` 下的包所有只读内容与二进制同类（二进制路径同样不可配置），且在单 deb 固定 FHS 部署模型下该值不存在第二个合法取值，而 `config|noreplace` 语义使每个新增必填配置键都成为升级破坏点；测试注入缝在 `router()` 的 `web_root` 参数上。重开条件：出现需要以自定义资产路径运行完整 `serve` 的 compose 测试。
 
 ### 单赛事生命周期
 
