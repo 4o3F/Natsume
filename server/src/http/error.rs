@@ -2,11 +2,17 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use natsume_error_code::{ErrorCode, common::CommonErrorCode};
+use natsume_error_code::{
+    ErrorCode, common::CommonErrorCode, operator::OperatorErrorCode as PublicOperatorErrorCode,
+};
 use serde::Serialize;
 
 use crate::{
-    application::{contest::ContestError, operator::OperatorError},
+    application::{
+        contest::ContestError,
+        import::{CsvImportErrorCategory, ImportError},
+        operator::OperatorError,
+    },
     audit::CorrelationId,
 };
 
@@ -157,6 +163,87 @@ impl ApiError {
         }
     }
 
+    pub(super) fn from_import(error: ImportError, correlation_id: CorrelationId) -> Self {
+        match error {
+            ImportError::InvalidCsv(error) => {
+                let cause = match error.category() {
+                    CsvImportErrorCategory::InvalidUtf8 => "import_csv_invalid_utf8",
+                    CsvImportErrorCategory::InvalidHeader => "import_csv_invalid_header",
+                    CsvImportErrorCategory::WrongColumnCount => "import_csv_wrong_column_count",
+                    CsvImportErrorCategory::EmptyField => "import_csv_empty_field",
+                    CsvImportErrorCategory::FieldTooLong => "import_csv_field_too_long",
+                    CsvImportErrorCategory::ControlCharacter => "import_csv_control_character",
+                    CsvImportErrorCategory::DuplicateSeatCode => "import_csv_duplicate_seat_code",
+                    CsvImportErrorCategory::DuplicateAccountUsername => {
+                        "import_csv_duplicate_account_username"
+                    }
+                    CsvImportErrorCategory::TooManyRows => "import_csv_too_many_rows",
+                    CsvImportErrorCategory::ZeroDataRows => "import_csv_zero_data_rows",
+                };
+                Self::import_error(
+                    StatusCode::BAD_REQUEST,
+                    "Bad Request",
+                    PublicOperatorErrorCode::ImportCandidateInvalid,
+                    cause,
+                    correlation_id,
+                )
+            }
+            ImportError::CandidateInvalid => Self::import_error(
+                StatusCode::BAD_REQUEST,
+                "Bad Request",
+                PublicOperatorErrorCode::ImportCandidateInvalid,
+                "import_candidate_invalid",
+                correlation_id,
+            ),
+            ImportError::CandidatePending => Self::import_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                PublicOperatorErrorCode::ImportCandidatePending,
+                "import_candidate_pending",
+                correlation_id,
+            ),
+            ImportError::CandidateUnavailable => Self::import_error(
+                StatusCode::NOT_FOUND,
+                "Not Found",
+                PublicOperatorErrorCode::ImportCandidateUnavailable,
+                "import_candidate_unavailable",
+                correlation_id,
+            ),
+            ImportError::PreviewStale => Self::import_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                PublicOperatorErrorCode::ImportPreviewStale,
+                "import_preview_stale",
+                correlation_id,
+            ),
+            ImportError::EntropyUnavailable => {
+                Self::internal_error("import_entropy_unavailable", correlation_id)
+            }
+            ImportError::VaultFailure => {
+                Self::internal_error("import_vault_failure", correlation_id)
+            }
+            ImportError::PersistenceFailure => {
+                Self::internal_error("import_persistence_failure", correlation_id)
+            }
+        }
+    }
+
+    fn import_error(
+        status: StatusCode,
+        title: &'static str,
+        code: PublicOperatorErrorCode,
+        cause: &'static str,
+        correlation_id: CorrelationId,
+    ) -> Self {
+        Self {
+            status,
+            title,
+            code: ErrorCode::from(code).as_str(),
+            cause,
+            correlation_id,
+        }
+    }
+
     fn new(
         status: StatusCode,
         title: &'static str,
@@ -225,6 +312,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
+        application::import::{ImportError, parse_csv},
         config::LogLevel,
         logging::tests::{CapturedLogs, SubscriberTestGuard},
     };
@@ -252,6 +340,11 @@ mod tests {
             }
             for (error, cause, status) in contest_causes() {
                 let rendered = ApiError::from_contest(error, correlation_id);
+                assert_cause_stays_internal(rendered, cause, status).await?;
+                causes.push(cause);
+            }
+            for (error, cause, status) in import_causes() {
+                let rendered = ApiError::from_import(error, correlation_id);
                 assert_cause_stays_internal(rendered, cause, status).await?;
                 causes.push(cause);
             }
@@ -436,6 +529,54 @@ mod tests {
             (
                 ContestError::PersistenceFailed,
                 "contest_persistence_failed",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ]
+    }
+
+    fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
+        let Err(parse_error) = parse_csv(&[]) else {
+            panic!("empty import unexpectedly parsed");
+        };
+        [
+            (
+                ImportError::InvalidCsv(parse_error),
+                "import_csv_zero_data_rows",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ImportError::CandidateInvalid,
+                "import_candidate_invalid",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                ImportError::CandidatePending,
+                "import_candidate_pending",
+                StatusCode::CONFLICT,
+            ),
+            (
+                ImportError::CandidateUnavailable,
+                "import_candidate_unavailable",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                ImportError::PreviewStale,
+                "import_preview_stale",
+                StatusCode::CONFLICT,
+            ),
+            (
+                ImportError::EntropyUnavailable,
+                "import_entropy_unavailable",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ImportError::VaultFailure,
+                "import_vault_failure",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ImportError::PersistenceFailure,
+                "import_persistence_failure",
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ]

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice.\nDeclared but not mounted in Stage 5B operation IDs: createCsvImport, commitCsvImport, approveEnrollment, putCommand.",
+    "description": "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.",
     "version": "2.0.0"
   },
   "paths": {
@@ -737,11 +737,20 @@
     },
     "/api/v2/imports": {
       "post": {
-        "summary": "Create a CSV import preview",
         "operationId": "createCsvImport",
+        "requestBody": {
+          "content": {
+            "text/csv": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
-          "202": {
-            "description": "CSV import accepted for preview",
+          "201": {
+            "description": "CSV import candidate created",
             "headers": {
               "X-Correlation-Id": {
                 "schema": {
@@ -749,6 +758,120 @@
                   "format": "uuid"
                 },
                 "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportPreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid CSV import or request media type",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An import candidate is already pending",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "CSV request body exceeds the import ingress limit",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
@@ -762,18 +885,28 @@
     },
     "/api/v2/imports/{import_id}/actions/commit": {
       "post": {
-        "summary": "Commit a validated CSV import",
         "operationId": "commitCsvImport",
         "parameters": [
           {
             "name": "import_id",
             "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
             "required": true,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/CanonicalUuidV7"
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ImportCommitRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
             "description": "CSV import committed",
@@ -784,6 +917,269 @@
                   "format": "uuid"
                 },
                 "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ImportCommitResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid import ID or closed request",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Import candidate unavailable",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Import preview baseline is stale",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Commit request body exceeds the import ingress limit",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/imports/{import_id}/actions/discard": {
+      "post": {
+        "operationId": "discardCsvImport",
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "CSV import candidate discarded",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid import ID",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Import candidate unavailable",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
@@ -1166,6 +1562,153 @@
         "properties": {
           "status": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportBindingImpactResponse": {
+        "type": "object",
+        "required": ["seat_code", "device_id"],
+        "properties": {
+          "device_id": {
+            "type": "string"
+          },
+          "seat_code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportCommitRequest": {
+        "type": "object",
+        "required": ["preview_token"],
+        "properties": {
+          "preview_token": {
+            "type": "string",
+            "writeOnly": true,
+            "maxLength": 43,
+            "minLength": 43,
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportCommitResponse": {
+        "type": "object",
+        "required": ["configuration_revision", "binding_revision"],
+        "properties": {
+          "binding_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "configuration_revision": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportMappingChangeResponse": {
+        "type": "object",
+        "required": [
+          "seat_code",
+          "current_domjudge_username",
+          "candidate_domjudge_username"
+        ],
+        "properties": {
+          "candidate_domjudge_username": {
+            "type": "string"
+          },
+          "current_domjudge_username": {
+            "type": ["string", "null"]
+          },
+          "seat_code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportPreviewResponse": {
+        "type": "object",
+        "required": [
+          "candidate_id",
+          "preview_token",
+          "expires_at",
+          "baseline_configuration_revision",
+          "baseline_binding_revision",
+          "diff"
+        ],
+        "properties": {
+          "baseline_binding_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "baseline_configuration_revision": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "candidate_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "diff": {
+            "$ref": "#/components/schemas/ImportRedactedDiff"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC 3339 UTC timestamp with a trailing Z."
+          },
+          "preview_token": {
+            "type": "string",
+            "maxLength": 43,
+            "minLength": 43,
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportRedactedDiff": {
+        "type": "object",
+        "required": [
+          "seats_added",
+          "seats_removed",
+          "mappings_changed",
+          "unchanged_count",
+          "affected_account_count",
+          "binding_impacts"
+        ],
+        "properties": {
+          "affected_account_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "binding_impacts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportBindingImpactResponse"
+            }
+          },
+          "mappings_changed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportMappingChangeResponse"
+            }
+          },
+          "seats_added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "seats_removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "unchanged_count": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "additionalProperties": false

@@ -68,7 +68,11 @@ where
     .map_err(|_| AppError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let router = http::router(database, Path::new(WEB_ASSETS_PATH));
+    let router = http::router(
+        database,
+        config.vault_master_key_path(),
+        Path::new(WEB_ASSETS_PATH),
+    );
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
     let shutdown = async move {

@@ -61,6 +61,7 @@ pub enum AuditDetail {
         mappings_changed_count: usize,
         binding_impact_count: usize,
     },
+    ImportCandidateRejected {},
     ImportCandidateExpired {},
     ImportCommitted {
         seats_added_count: usize,
@@ -281,6 +282,25 @@ impl AuditEvent {
                 mappings_changed_count,
                 binding_impact_count,
             },
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn import_candidate_rejected(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "operator:self",
+            action_kind: "create_import_candidate",
+            resource_type: "import_candidate",
+            resource_id: None,
+            result: "rejected",
+            reason_code: Some("candidate_invalid"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::ImportCandidateRejected {},
         }
     }
 

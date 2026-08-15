@@ -43,7 +43,7 @@
 | 3 | TLS 1.3-only、HTTP/1.1-only listener 与未认证 `GET /api/v2/health`（`server/README.md`）；启动配置校验（`server/src/config.rs`） | 其真实 TLS 测试被 `G0-IN-006` 消费，计入 G0 证据（[平台支持](supported-platform.md) §6）；Stage 3 本身未与任何 Phase 绑定 |
 | 4 | 保留 `axum::serve` 的 listener/shutdown 路径；header count/size 与 slow-header protection 仍未关闭，connection capacity 保持 `ENV-UNFROZEN`（[契约](contracts.md) §3.6.5、`server/README.md`） | 仓库内无任何出处声明，待仓库所有者确认 |
 | 5 | 实现 §3.6.1 冻结的 operator surface；错误映射表的 Device-specific row 在其真实 handler 挂载后才生效（[契约](contracts.md) §3.6.1、§3.6.5） | 与 Phase 1 实现同一 surface（[契约](contracts.md) §3.6.1） |
-| 5B | 已挂载 `GET /api/v2/health` 与全部九个 Phase 1 operator operation；`createCsvImport`、`commitCsvImport`、`approveEnrollment`、`putCommand` 只声明不挂载（[契约](contracts.md) §3.6.2、`server/src/openapi.rs`） | 挂载九个 Phase 1 operator operation（[契约](contracts.md) §3.6.2）；不表示 G1 已关闭 |
+| 5B | 已挂载 `GET /api/v2/health` 与全部九个 Phase 1 operator operation；Phase 2 已挂载 `createCsvImport`、`commitCsvImport`、`discardCsvImport` import surface，现仅 `approveEnrollment`、`putCommand` 声明不挂载（[契约](contracts.md) §3.6.2、`server/src/openapi.rs`） | 挂载九个 Phase 1 operator operation（[契约](contracts.md) §3.6.2）；不表示 G1 已关闭 |
 
 `Stage 1`、`Stage 2` 与 `Stage 5A` 在仓库中**没有任何出处**，本表不为它们编造条目；是否存在及其含义由仓库所有者确认后再补入。
 

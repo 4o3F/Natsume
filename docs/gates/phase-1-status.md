@@ -41,3 +41,4 @@ Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 �
 - **`record_type` 封闭枚举强制**（2026-08-15，WP1 审查项，归 Phase 2）：**仍开放**；WP2 已落 Rust `VaultRecordType` 封闭枚举，但这只是写入器约定，不构成数据库强制；当前既无 DDL CHECK，也无拒绝未注册值的 schema test，enforcement 采用哪一种仍待决定。
 - **diesel 生成列 Integer/BigInt 类型地雷**（2026-08-15，WP1 审查项，归 Phase 2）：WP2 upheld the explicit-cast discipline（verified）；the generated-i32 truncation landmine for FUTURE readers remains open until a diesel patch-file or schema test lands。
 - **`InvalidPersistedFacts` 卡死态恢复**（2026-08-15，WP1 审查项，归 Phase 2）：**已解决（Phase 2 WP2）**；该态在 `foreign_keys=ON` 下仅经带外操作（备份恢复/DBA）可达；测试以 `PRAGMA foreign_keys=OFF` 人工制造，discard 对 payload vault row 的 0/1 计数容忍清理，缺失 payload 时仍删除 candidate 并审计成功。
+- **canonical UUIDv7 variant guard 缺口**（2026-08-16，归 Phase 3+）：import/contest/device 的 canonical UUIDv7 guard 不校验 variant nibble，published schema 拒绝而服务端接受；作为后续 hardening 项登记，本 WP 不修改 guard。

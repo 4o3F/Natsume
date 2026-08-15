@@ -7,6 +7,10 @@ const ENROLLMENT_APPROVE_PATH =
 const COMMAND_PATH = "/api/v2/commands/{command_id}";
 const SESSION_REQUEST_PASSWORD_PATH =
   "/components/schemas/SessionRequest/properties/password";
+const IMPORT_COMMIT_TOKEN_PATH =
+  "/components/schemas/ImportCommitRequest/properties/preview_token";
+const IMPORT_PREVIEW_TOKEN_PATH =
+  "/components/schemas/ImportPreviewResponse/properties/preview_token";
 const SESSION_REQUEST_REFERENCE = "#/components/schemas/SessionRequest";
 const CANONICAL_UUID_V7_REFERENCE = "#/components/schemas/CanonicalUuidV7";
 const UUID_V7_PATTERN =
@@ -142,6 +146,7 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       "/api/v2/health",
       "/api/v2/imports",
       "/api/v2/imports/{import_id}/actions/commit",
+      "/api/v2/imports/{import_id}/actions/discard",
       "/api/v2/seats",
       "/api/v2/session",
     ]);
@@ -180,6 +185,10 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       openapi.paths["/api/v2/imports/{import_id}/actions/commit"].post
         .operationId,
     ).toBe("commitCsvImport");
+    expect(
+      openapi.paths["/api/v2/imports/{import_id}/actions/discard"].post
+        .operationId,
+    ).toBe("discardCsvImport");
     expect(openapi.paths[ENROLLMENT_APPROVE_PATH].post.operationId).toBe(
       "approveEnrollment",
     );
@@ -232,14 +241,24 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     ).not.toHaveProperty("credential_vault_record_id");
   });
 
-  it("preserves imports and freezes the Panel-owned Command resource", () => {
-    expect(openapi.paths["/api/v2/imports"].post.operationId).toBe(
-      "createCsvImport",
+  it("freezes the mounted import and Panel-owned Command resources", () => {
+    expectResponseSet(openapi.paths["/api/v2/imports"].post, [
+      "201",
+      "400",
+      "401",
+      "403",
+      "409",
+      "413",
+      "500",
+    ]);
+    expectResponseSet(
+      openapi.paths["/api/v2/imports/{import_id}/actions/commit"].post,
+      ["200", "400", "401", "403", "404", "409", "413", "500"],
     );
-    expect(
-      openapi.paths["/api/v2/imports/{import_id}/actions/commit"].post
-        .operationId,
-    ).toBe("commitCsvImport");
+    expectResponseSet(
+      openapi.paths["/api/v2/imports/{import_id}/actions/discard"].post,
+      ["204", "400", "401", "403", "404", "500"],
+    );
 
     const command = openapi.paths[COMMAND_PATH].put;
     expect(command.operationId).toBe("putCommand");
@@ -295,13 +314,22 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     );
   });
 
-  it("permits only the write-only session request password credential key", () => {
+  it("permits only the frozen session and import credential keys", () => {
     const forbiddenKeys = collectObjectKeys(openapi).filter(({ key }) =>
       FORBIDDEN_CREDENTIAL_KEY.test(key),
     );
     expect(forbiddenKeys).toEqual([
+      { key: "preview_token", path: IMPORT_COMMIT_TOKEN_PATH },
+      { key: "preview_token", path: IMPORT_PREVIEW_TOKEN_PATH },
       { key: "password", path: SESSION_REQUEST_PASSWORD_PATH },
     ]);
+
+    const commitToken =
+      openapi.components.schemas.ImportCommitRequest.properties.preview_token;
+    expect(commitToken.writeOnly).toBe(true);
+    const previewToken =
+      openapi.components.schemas.ImportPreviewResponse.properties.preview_token;
+    expect(previewToken).not.toHaveProperty("writeOnly");
 
     const password =
       openapi.components.schemas.SessionRequest.properties.password;

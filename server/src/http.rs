@@ -3,7 +3,7 @@ mod error;
 pub(crate) mod handler;
 mod middleware;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use axum::{
     Extension, Router,
@@ -23,11 +23,15 @@ use self::error::ApiError;
 #[derive(Clone)]
 pub(crate) struct AppState {
     database: Database,
+    vault_master_key_path: PathBuf,
 }
 
 /// Builds the mounted Server HTTP surface over an already-migrated database.
-pub fn router(database: Database, web_root: &Path) -> Router {
-    let state = AppState { database };
+pub fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
+    let state = AppState {
+        database,
+        vault_master_key_path: vault_master_key_path.to_owned(),
+    };
     let static_service =
         any_service(ServeDir::new(web_root).fallback(ServeFile::new(web_root.join("index.html"))))
             .layer(SetResponseHeaderLayer::overriding(
@@ -44,7 +48,8 @@ pub fn router(database: Database, web_root: &Path) -> Router {
 fn api_v2(state: AppState) -> Router<AppState> {
     let authenticated = Router::new()
         .merge(handler::session::protected_routes(state.clone()))
-        .merge(handler::contest::routes(state));
+        .merge(handler::contest::routes(state.clone()))
+        .merge(handler::import::routes(state));
     Router::new()
         .merge(handler::health::routes())
         .merge(handler::session::public_routes())

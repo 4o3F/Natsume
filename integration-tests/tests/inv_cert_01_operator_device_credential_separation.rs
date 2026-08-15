@@ -292,6 +292,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
     let fixture = TestDatabase::new().await;
     let application = router(
         fixture.database.clone(),
+        Path::new("/natsume-integration-test-unused-vault-master-key"),
         Path::new("/natsume-integration-test-unused-web-root"),
     );
     let mounted = [
@@ -313,17 +314,23 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             "/api/v2/devices/01900000-0000-7000-8000-000000000399/actions/disable",
             StatusCode::UNAUTHORIZED,
         ),
+        (Method::POST, "/api/v2/imports", StatusCode::UNAUTHORIZED),
+        (
+            Method::POST,
+            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/commit",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/discard",
+            StatusCode::UNAUTHORIZED,
+        ),
     ];
     for (method, path, expected) in mounted {
         assert_eq!(drive(&application, method, path).await, expected, "{path}");
     }
 
     for (method, path) in [
-        (Method::POST, "/api/v2/imports"),
-        (
-            Method::POST,
-            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/commit",
-        ),
         (
             Method::POST,
             "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000399/actions/approve",
@@ -362,6 +369,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             "createSession",
             "deleteSession",
             "disableDevice",
+            "discardCsvImport",
             "getHealth",
             "getSession",
             "listAccounts",
@@ -377,7 +385,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             .pointer("/info/description")
             .and_then(Value::as_str),
         Some(
-            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice.\nDeclared but not mounted in Stage 5B operation IDs: createCsvImport, commitCsvImport, approveEnrollment, putCommand."
+            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         )
     );
 }

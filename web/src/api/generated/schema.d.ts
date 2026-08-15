@@ -146,7 +146,6 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Create a CSV import preview */
     post: operations["createCsvImport"];
     delete?: never;
     options?: never;
@@ -163,8 +162,23 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Commit a validated CSV import */
     post: operations["commitCsvImport"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/imports/{import_id}/actions/discard": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["discardCsvImport"];
     delete?: never;
     options?: never;
     head?: never;
@@ -237,6 +251,46 @@ export interface components {
     };
     HealthResponse: {
       status: string;
+    };
+    ImportBindingImpactResponse: {
+      device_id: string;
+      seat_code: string;
+    };
+    ImportCommitRequest: {
+      preview_token: string;
+    };
+    ImportCommitResponse: {
+      /** Format: int64 */
+      binding_revision: number;
+      /** Format: int64 */
+      configuration_revision: number;
+    };
+    ImportMappingChangeResponse: {
+      candidate_domjudge_username: string;
+      current_domjudge_username: string | null;
+      seat_code: string;
+    };
+    ImportPreviewResponse: {
+      /** Format: int64 */
+      baseline_binding_revision: number;
+      /** Format: int64 */
+      baseline_configuration_revision: number;
+      candidate_id: components["schemas"]["CanonicalUuidV7"];
+      diff: components["schemas"]["ImportRedactedDiff"];
+      /**
+       * Format: date-time
+       * @description RFC 3339 UTC timestamp with a trailing Z.
+       */
+      expires_at: string;
+      preview_token: string;
+    };
+    ImportRedactedDiff: {
+      affected_account_count: number;
+      binding_impacts: components["schemas"]["ImportBindingImpactResponse"][];
+      mappings_changed: components["schemas"]["ImportMappingChangeResponse"][];
+      seats_added: string[];
+      seats_removed: string[];
+      unchanged_count: number;
     };
     PutCommandRequest: {
       device_id: components["schemas"]["CanonicalUuidV7"];
@@ -730,16 +784,86 @@ export interface operations {
       path?: never;
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody: {
+      content: {
+        "text/csv": string;
+      };
+    };
     responses: {
-      /** @description CSV import accepted for preview */
-      202: {
+      /** @description CSV import candidate created */
+      201: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ImportPreviewResponse"];
+        };
+      };
+      /** @description Invalid CSV import or request media type */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description An import candidate is already pending */
+      409: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description CSV request body exceeds the import ingress limit */
+      413: {
         headers: {
           /** @description Server-generated canonical UUIDv7 correlation ID */
           "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
       };
     };
   };
@@ -748,11 +872,16 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        import_id: string;
+        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
+        import_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ImportCommitRequest"];
+      };
+    };
     responses: {
       /** @description CSV import committed */
       200: {
@@ -761,7 +890,162 @@ export interface operations {
           "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["ImportCommitResponse"];
+        };
+      };
+      /** @description Invalid import ID or closed request */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Import candidate unavailable */
+      404: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Import preview baseline is stale */
+      409: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Commit request body exceeds the import ingress limit */
+      413: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
         content?: never;
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  discardCsvImport: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
+        import_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description CSV import candidate discarded */
+      204: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid import ID */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Import candidate unavailable */
+      404: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
       };
     };
   };

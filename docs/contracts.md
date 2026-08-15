@@ -71,6 +71,14 @@ HTTP 错误响应的 media type 固定为 `application/json`。wire body 只包�
 
 允许：上传 CSV 到受限 staging；人工触发 `SYNC_SECRET`；展示 credential revision 和 redacted result；展示 opaque `preview_token`、baseline revision、redacted import summary 与 binding impacts。preview evidence 只有非秘密 diff 与受影响 account 计数，**不包含密码内容是否变化的任何分类或布尔证据**（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）。
 
+**2026-08-16 修订**：Phase 2 已挂载以下 import route：
+
+| Method | Path | 角色 | 语义 |
+|---|---|---|---|
+| `POST` | `/api/v2/imports` | `admin` | 严格解析 CSV、加密 staging 并创建 singleton redacted preview candidate |
+| `POST` | `/api/v2/imports/{import_id}/actions/commit` | `admin` | 校验 canonical ID、preview token 与双 revision CAS 后原子替换 confirmed configuration |
+| `POST` | `/api/v2/imports/{import_id}/actions/discard` | `admin` | 删除 pending candidate 与其 encrypted payload，不改变 confirmed truth |
+
 **禁止**：
 
 - 返回 password 值；
@@ -96,6 +104,7 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 **2026-08-15 修订（Phase 2 启动冻结：import HTTP 面与 preview evidence 字段）**：
 
 - 传输：`POST /api/v2/imports`，`Content-Type: text/csv`（UTF-8，允许 BOM），`admin` only。request body 是硬编码 route 级安全常量 `CSV_IMPORT_BODY_LIMIT_BYTES = 4_194_304`（4 MiB，约为 500 席位 CSV 的 80 倍余量），只施加于 imports `MethodRouter`，不入 `config.toml`；超限在解析与任何数据库访问前返回 `413`。
+- Commit request body 使用 route 级硬编码安全常量 `IMPORT_COMMIT_BODY_LIMIT_BYTES = 4_096`（实际 JSON 约 60 字节），只施加于 `commitCsvImport` 的 `MethodRouter`，不入 `config.toml`；超限作为 transport-level `413` 拒绝。
 - 字段长度上限为硬编码常量：seat ≤ 64、account ≤ 64、password ≤ 512 字节；数据行数上限为硬编码常量 `MAX_IMPORT_ROWS = 10_000`（约为 500 席位假设的 20 倍）；超限拒绝归类为 `IMPORT_CANDIDATE_INVALID`；均不入 `config.toml`。
 - 上传同步完成严格解析、加密 staging、diff 分类与 candidate 落库，成功返回 `201` 与 `ImportPreviewResponse`：`candidate_id`（canonical UUIDv7）、`preview_token`（opaque，仅在本响应呈现一次）、`expires_at`（RFC 3339 UTC）、`baseline_configuration_revision`、`baseline_binding_revision`、`diff`。TTL 冻结为常量 `IMPORT_CANDIDATE_TTL_SECONDS = 1_800`（30 分钟），不入 `config.toml`。
 - `preview_token` 为 32 字节 CSPRNG，以无填充 URL-safe base64 呈现；数据库只存其 SHA-256；比较必须常量时间。
@@ -104,7 +113,7 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 - Discard：`POST /api/v2/imports/{import_id}/actions/discard`，无 body，`admin` only；成功 `204`。**不要求 `preview_token`**——token 只存在于浏览器内存，页面刷新即丢失；若 discard 也要求 token，operator 将被锁死至过期而无法重传。discard 是零业务变更操作，admin session 已是足够授权；commit 保持 token 必需（第二次显式确认，并把提交绑定到已审阅的 preview）。
 - 错误映射（复用 error-code registry 既有冻结码；随 route 挂载登入 §3.6.5 表）：解析失败、结构错误、candidate 内重复 account、空或仅 header → `400 IMPORT_CANDIDATE_INVALID`；存在 pending 时的再次 upload → `409 IMPORT_CANDIDATE_PENDING`；未知、已过期或已 discard 的 `import_id`，以及 **`preview_token` 不匹配** → `404 IMPORT_CANDIDATE_UNAVAILABLE`（token 不匹配与 candidate 不存在必须不可区分，不给未持 token 方提供 candidate 存在性 oracle；audit 内部以 `reason_code` 区分真相）；baseline 任一前移 → `409 IMPORT_PREVIEW_STALE`。
 - 过期为 lazy 清理（与 expired session row 同原则）：首个观察到 expired candidate 的 import surface 请求在同一事务内删除 candidate 与 payload vault row 并审计一次，不运行 background cleaner。
-- 审计词汇已按 §3.6.4「先注册后写入器」纪律登记；四个 import 写入器均已落地（已实现）；仅 HTTP 层 rejected-upload 的 `candidate_invalid` 审计保持 RESERVED，归后续 HTTP package。
+- 审计词汇已按 §3.6.4「先注册后写入器」纪律登记；四个 import 写入器与 HTTP 层 rejected-upload 的 `candidate_invalid` 写入器均已落地（已实现）。
 
 ### 3.5 Direct Command creation
 
@@ -167,7 +176,7 @@ read route 返回 bounded 集合；Phase 1 不提供任意 filter、sort、query
 
 Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全部九个 Phase 1 operator operation；每个 operation 都有真实 handler，不提供 placeholder handler 或 placeholder schema。
 
-Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImport`、`commitCsvImport`、`approveEnrollment`、`putCommand`；`info.description` 必须列出这一 declared-but-unmounted 集合，防止 schema 声明被误读为可调用 route。
+**2026-08-16 修订**：Phase 2 在上述 Stage 术语下新增挂载 `createCsvImport`、`commitCsvImport` 与 `discardCsvImport`，三者均为真实 handler。OpenAPI 除已挂载 surface 外，现只声明但不挂载 `approveEnrollment`、`putCommand`；`info.description` 必须列出这一 declared-but-unmounted 集合，防止 schema 声明被误读为可调用 route。
 
 #### 3.6.3 建立与查询
 
@@ -223,7 +232,7 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（已实现） |
 | `target_already_satisfied` | `revoke_device` / `disable_device` 的 `noop` 结果 |
-| `candidate_invalid` | **RESERVED**：`create_import_candidate` 的 `rejected` 结果 |
+| `candidate_invalid` | `create_import_candidate` 的 `rejected` 结果（已实现） |
 | `baseline_stale` | `commit_import` 的 `rejected` 结果 |
 | `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
 
@@ -251,8 +260,15 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `AUTHENTICATION_FAILED` | `401` | 凭证错误、无 session、session 已过期或已失效 |
 | `AUTHORIZATION_DENIED` | `403` | `viewer` 请求 `admin` action |
 | `INVALID_REQUEST` | `400` | 封闭结构或参数校验失败，包含非 canonical `device_id` |
+| `IMPORT_CANDIDATE_INVALID` | `400` | import CSV 解析、结构或安全上限校验失败 |
 | `RESOURCE_NOT_FOUND` | `404` | request 结构合法，但目标 Device 不存在 |
+| `IMPORT_CANDIDATE_UNAVAILABLE` | `404` | import candidate 未知、已过期、已删除或 preview token 不匹配 |
+| `IMPORT_CANDIDATE_PENDING` | `409` | singleton pending import candidate 已存在 |
+| `IMPORT_PREVIEW_STALE` | `409` | import preview 的 configuration 或 binding baseline 已前移 |
+| — | `413` | `POST /api/v2/imports` 或 `commitCsvImport` request body 超过对应 route 级上限，由 transport 层拒绝 |
 | `INTERNAL_ERROR` | `500` | 穷举 mapping 后仍没有更安全公开分类的内部失败 |
+
+该 `413` 是 transport-level rejection：响应携带 `X-Correlation-Id` header，但**不**使用 §3.2 的 JSON error body（沿用既有 session precedent）。
 
 输入分类的冻结规则是：**malformed 或非 canonical 输入 → `400` / `INVALID_REQUEST`；结构良好但引用了不存在的当前事实 → `404` / `RESOURCE_NOT_FOUND`。** 映射必须在 adapter 中按 typed cause 逐项显式构造；不得提供全局 `ErrorCode -> StatusCode` 函数，不得 catch-all，不得根据 `Display` 或 source chain 分支，也不得回显非法输入。运行时该表只覆盖已挂载 route：当前 mounted subset 以 §3.6.2 为准；Device-specific row 只在 Stage 5 对应真实 handler 挂载后生效。新增已挂载 route 时只加入真实可达的组合，不为未挂载 operation 预设 status。
 

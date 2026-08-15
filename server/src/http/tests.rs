@@ -296,11 +296,19 @@ pub(crate) fn unused_web_root() -> &'static Path {
     Path::new("/natsume-server-test-unused-web-root")
 }
 
+pub(crate) fn unused_vault_master_key() -> &'static Path {
+    Path::new("/natsume-server-test-unused-vault-master-key")
+}
+
 #[tokio::test]
 async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestFailure> {
     let web_root = TestWebRoot::new()?;
     let fixture = TestDatabase::new().await?;
-    let application = router(fixture.database.clone(), web_root.path());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        web_root.path(),
+    );
 
     for (path, expected_body) in [
         ("/", INDEX_HTML),
@@ -333,7 +341,11 @@ async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestF
 #[tokio::test]
 async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), TestFailure> {
     let closed_fixture = TestDatabase::new().await?;
-    let health_router = router(closed_fixture.database.clone(), unused_web_root());
+    let health_router = router(
+        closed_fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let _database_lock = test_lock_database(&closed_fixture.path)
         .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
     let health_response =
@@ -347,7 +359,11 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
     let first_correlation = canonical_correlation_id(&health_response.headers)?;
 
     let fixture = TestDatabase::new().await?;
-    let application = router(fixture.database.clone(), unused_web_root());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let supplied = "00000000-0000-7000-8000-000000000000";
     let supplied_request = Request::builder()
         .method(Method::GET)
@@ -367,41 +383,14 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from("{}"))
         .map_err(|_| TestFailure::RequestBuildFailed)?;
-    let mounted = [
-        drive(&application, post_request).await?,
-        drive(&application, request(Method::GET, "/api/v2/session", "")?).await?,
-        drive(
-            &application,
-            request(Method::DELETE, "/api/v2/session", "")?,
-        )
-        .await?,
-        drive(&application, request(Method::GET, "/api/v2/seats", "")?).await?,
-        drive(&application, request(Method::GET, "/api/v2/accounts", "")?).await?,
-        drive(&application, request(Method::GET, "/api/v2/devices", "")?).await?,
-        drive(&application, request(Method::GET, "/api/v2/bindings", "")?).await?,
-        drive(
-            &application,
-            request(
-                Method::POST,
-                "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/revoke",
-                "",
-            )?,
-        )
-        .await?,
-        drive(
-            &application,
-            request(
-                Method::POST,
-                "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/disable",
-                "",
-            )?,
-        )
-        .await?,
-    ];
+    let mounted = mounted_route_responses(&application, post_request).await?;
     let expected_statuses = [
         StatusCode::BAD_REQUEST,
         StatusCode::UNAUTHORIZED,
         StatusCode::NO_CONTENT,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::UNAUTHORIZED,
+        StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
@@ -416,13 +405,10 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         canonical_correlation_id(&response.headers)?;
     }
 
-    for (method, path) in [
-        (Method::POST, "/api/v2/imports"),
-        (
-            Method::PUT,
-            "/api/v2/commands/01900000-0000-7000-8000-000000000000",
-        ),
-    ] {
+    for (method, path) in [(
+        Method::PUT,
+        "/api/v2/commands/01900000-0000-7000-8000-000000000000",
+    )] {
         let response = drive(&application, request(method, path, "")?).await?;
         check_error_response(
             &response,
@@ -434,11 +420,76 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
     Ok(())
 }
 
+async fn mounted_route_responses(
+    application: &Router,
+    session_post: Request<Body>,
+) -> Result<Vec<Captured>, SupportFailure> {
+    Ok(vec![
+        drive(application, session_post).await?,
+        drive(application, request(Method::GET, "/api/v2/session", "")?).await?,
+        drive(application, request(Method::DELETE, "/api/v2/session", "")?).await?,
+        drive(application, request(Method::GET, "/api/v2/seats", "")?).await?,
+        drive(application, request(Method::GET, "/api/v2/accounts", "")?).await?,
+        drive(application, request(Method::GET, "/api/v2/devices", "")?).await?,
+        drive(application, request(Method::GET, "/api/v2/bindings", "")?).await?,
+        drive(
+            application,
+            request(
+                Method::POST,
+                "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/revoke",
+                "",
+            )?,
+        )
+        .await?,
+        drive(
+            application,
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v2/imports")
+                .header(header::CONTENT_TYPE, "text/csv")
+                .body(Body::empty())
+                .map_err(|_| SupportFailure::HelperRequestBuildFailed)?,
+        )
+        .await?,
+        drive(
+            application,
+            request(
+                Method::POST,
+                "/api/v2/imports/01900000-0000-7000-8000-000000000000/actions/commit",
+                "",
+            )?,
+        )
+        .await?,
+        drive(
+            application,
+            request(
+                Method::POST,
+                "/api/v2/imports/01900000-0000-7000-8000-000000000000/actions/discard",
+                "",
+            )?,
+        )
+        .await?,
+        drive(
+            application,
+            request(
+                Method::POST,
+                "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/disable",
+                "",
+            )?,
+        )
+        .await?,
+    ])
+}
+
 #[tokio::test]
 async fn completed_request_log_is_single_bounded_and_correlated() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let fixture = TestDatabase::new().await?;
-    let application = router(fixture.database.clone(), unused_web_root());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Info);
     let response = async { drive(&application, request(Method::GET, "/api/v2/health", "")?).await }
@@ -472,7 +523,11 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
         LOG_PASSWORD,
     )
     .await?;
-    let application = router(fixture.database.clone(), unused_web_root());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
     let (credential, authentication_correlation, internal_correlation) = async {
@@ -556,7 +611,11 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(fixture.database.clone(), unused_web_root());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -606,7 +665,11 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(fixture.database.clone(), unused_web_root());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -672,7 +735,11 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(fixture.database.clone(), unused_web_root());
+    let application = router(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+    );
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);

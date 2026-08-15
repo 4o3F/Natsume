@@ -15,7 +15,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice.\nDeclared but not mounted in Stage 5B operation IDs: createCsvImport, commitCsvImport, approveEnrollment, putCommand.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -43,7 +43,10 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::contest::list_devices,
         crate::http::handler::contest::list_bindings,
         crate::http::handler::contest::revoke_device,
-        crate::http::handler::contest::disable_device
+        crate::http::handler::contest::disable_device,
+        crate::http::handler::import::create_import,
+        crate::http::handler::import::commit_import,
+        crate::http::handler::import::discard_import
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -52,7 +55,13 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::application::contest::SeatFacts,
         crate::application::contest::AccountFacts,
         crate::application::contest::DeviceFacts,
-        crate::application::contest::BindingFacts
+        crate::application::contest::BindingFacts,
+        crate::http::handler::import::ImportMappingChangeResponse,
+        crate::http::handler::import::ImportBindingImpactResponse,
+        crate::http::handler::import::ImportRedactedDiff,
+        crate::http::handler::import::ImportPreviewResponse,
+        crate::http::handler::import::ImportCommitRequest,
+        crate::http::handler::import::ImportCommitResponse
     ))
 )]
 struct MountedDocument;
@@ -77,12 +86,22 @@ pub fn document() -> OpenApi {
         SESSION_COOKIE_SECURITY_SCHEME,
         SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(SESSION_COOKIE_NAME))),
     );
+    if let Some(RefOr::T(Schema::Object(schema))) =
+        components.schemas.get_mut("ImportPreviewResponse")
+    {
+        schema.properties.insert(
+            "candidate_id".to_owned(),
+            Ref::from_schema_name("CanonicalUuidV7").into(),
+        );
+    }
 
     let mut paths = mounted.paths;
     paths.merge(declared_but_unmounted_paths());
-    for path in [
-        "/api/v2/devices/{device_id}/actions/revoke",
-        "/api/v2/devices/{device_id}/actions/disable",
+    for (path, parameter_name) in [
+        ("/api/v2/devices/{device_id}/actions/revoke", "device_id"),
+        ("/api/v2/devices/{device_id}/actions/disable", "device_id"),
+        ("/api/v2/imports/{import_id}/actions/commit", "import_id"),
+        ("/api/v2/imports/{import_id}/actions/discard", "import_id"),
     ] {
         let Some(parameters) = paths
             .paths
@@ -92,13 +111,13 @@ pub fn document() -> OpenApi {
         else {
             continue;
         };
-        let Some(device_id) = parameters
+        let Some(parameter) = parameters
             .iter_mut()
-            .find(|parameter| parameter.name == "device_id")
+            .find(|parameter| parameter.name == parameter_name)
         else {
             continue;
         };
-        device_id.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
+        parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
     }
     remove_operation_tags(&mut paths);
     enrich_responses(&mut paths);
@@ -138,30 +157,6 @@ fn remove_operation_tags(paths: &mut Paths) {
 
 fn declared_but_unmounted_paths() -> utoipa::openapi::path::Paths {
     PathsBuilder::new()
-        .path(
-            "/api/v2/imports",
-            PathItem::new(
-                HttpMethod::Post,
-                simple_operator_operation(
-                    "createCsvImport",
-                    "Create a CSV import preview",
-                    ("202", "CSV import accepted for preview"),
-                    None,
-                ),
-            ),
-        )
-        .path(
-            "/api/v2/imports/{import_id}/actions/commit",
-            PathItem::new(
-                HttpMethod::Post,
-                simple_operator_operation(
-                    "commitCsvImport",
-                    "Commit a validated CSV import",
-                    ("200", "CSV import committed"),
-                    Some("import_id"),
-                ),
-            ),
-        )
         .path(
             "/api/v2/enrollment-requests/{request_id}/actions/approve",
             PathItem::new(
@@ -372,7 +367,12 @@ mod tests {
     const UNMOUNTED_DESCRIPTION_PREFIX: &str =
         "Declared but not mounted in Stage 5B operation IDs: ";
     const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
-    const ALLOWED_PASSWORD_PATH: &str = "/components/schemas/SessionRequest/properties/password";
+    const ALLOWED_CREDENTIAL_PATHS: [&str; 3] = [
+        "/components/schemas/SessionRequest/properties/password",
+        "/components/schemas/ImportPreviewResponse/properties/preview_token",
+        "/components/schemas/ImportCommitRequest/properties/preview_token",
+    ];
+    type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
 
     #[test]
     fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
@@ -387,92 +387,104 @@ mod tests {
                 )
             })
             .collect::<BTreeMap<_, _>>();
-        let expected = BTreeMap::from([
-            (
-                ("delete".to_owned(), "/api/v2/session".to_owned()),
-                ("deleteSession".to_owned(), string_set(["204", "500"])),
-            ),
-            (
-                ("get".to_owned(), "/api/v2/health".to_owned()),
-                ("getHealth".to_owned(), string_set(["200", "500"])),
-            ),
-            (
-                ("get".to_owned(), "/api/v2/session".to_owned()),
-                ("getSession".to_owned(), string_set(["200", "401", "500"])),
-            ),
-            (
-                ("get".to_owned(), "/api/v2/seats".to_owned()),
-                ("listSeats".to_owned(), string_set(["200", "401", "500"])),
-            ),
-            (
-                ("get".to_owned(), "/api/v2/accounts".to_owned()),
-                ("listAccounts".to_owned(), string_set(["200", "401", "500"])),
-            ),
-            (
-                ("get".to_owned(), "/api/v2/devices".to_owned()),
-                ("listDevices".to_owned(), string_set(["200", "401", "500"])),
-            ),
-            (
-                ("get".to_owned(), "/api/v2/bindings".to_owned()),
-                ("listBindings".to_owned(), string_set(["200", "401", "500"])),
-            ),
-            (
-                (
-                    "post".to_owned(),
-                    "/api/v2/devices/{device_id}/actions/revoke".to_owned(),
-                ),
-                (
-                    "revokeDevice".to_owned(),
-                    string_set(["200", "400", "401", "403", "404", "500"]),
-                ),
-            ),
-            (
-                (
-                    "post".to_owned(),
-                    "/api/v2/devices/{device_id}/actions/disable".to_owned(),
-                ),
-                (
-                    "disableDevice".to_owned(),
-                    string_set(["200", "400", "401", "403", "404", "500"]),
-                ),
-            ),
-            (
-                ("post".to_owned(), "/api/v2/session".to_owned()),
-                (
-                    "createSession".to_owned(),
-                    string_set(["200", "400", "401", "413", "500"]),
-                ),
-            ),
-            (
-                ("post".to_owned(), "/api/v2/imports".to_owned()),
-                ("createCsvImport".to_owned(), string_set(["202"])),
-            ),
-            (
-                (
-                    "post".to_owned(),
-                    "/api/v2/imports/{import_id}/actions/commit".to_owned(),
-                ),
-                ("commitCsvImport".to_owned(), string_set(["200"])),
-            ),
-            (
-                (
-                    "post".to_owned(),
-                    "/api/v2/enrollment-requests/{request_id}/actions/approve".to_owned(),
-                ),
-                ("approveEnrollment".to_owned(), string_set(["202"])),
-            ),
-            (
-                ("put".to_owned(), "/api/v2/commands/{command_id}".to_owned()),
-                (
-                    "putCommand".to_owned(),
-                    string_set(["200", "201", "400", "401", "403", "404", "409", "500"]),
-                ),
-            ),
-        ]);
+        let expected = expected_operation_table();
         if actual != expected {
             return Err(TestFailure::OperationTableChanged);
         }
         Ok(())
+    }
+
+    fn expected_operation_table() -> OperationTable {
+        let rows: &[(&str, &str, &str, &[&str])] = &[
+            (
+                "delete",
+                "/api/v2/session",
+                "deleteSession",
+                &["204", "500"],
+            ),
+            ("get", "/api/v2/health", "getHealth", &["200", "500"]),
+            (
+                "get",
+                "/api/v2/session",
+                "getSession",
+                &["200", "401", "500"],
+            ),
+            ("get", "/api/v2/seats", "listSeats", &["200", "401", "500"]),
+            (
+                "get",
+                "/api/v2/accounts",
+                "listAccounts",
+                &["200", "401", "500"],
+            ),
+            (
+                "get",
+                "/api/v2/devices",
+                "listDevices",
+                &["200", "401", "500"],
+            ),
+            (
+                "get",
+                "/api/v2/bindings",
+                "listBindings",
+                &["200", "401", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/devices/{device_id}/actions/revoke",
+                "revokeDevice",
+                &["200", "400", "401", "403", "404", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/devices/{device_id}/actions/disable",
+                "disableDevice",
+                &["200", "400", "401", "403", "404", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/session",
+                "createSession",
+                &["200", "400", "401", "413", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/imports",
+                "createCsvImport",
+                &["201", "400", "401", "403", "409", "413", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/imports/{import_id}/actions/commit",
+                "commitCsvImport",
+                &["200", "400", "401", "403", "404", "409", "413", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/imports/{import_id}/actions/discard",
+                "discardCsvImport",
+                &["204", "400", "401", "403", "404", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/enrollment-requests/{request_id}/actions/approve",
+                "approveEnrollment",
+                &["202"],
+            ),
+            (
+                "put",
+                "/api/v2/commands/{command_id}",
+                "putCommand",
+                &["200", "201", "400", "401", "403", "404", "409", "500"],
+            ),
+        ];
+        rows.iter()
+            .map(|(method, path, operation_id, statuses)| {
+                (
+                    ((*method).to_owned(), (*path).to_owned()),
+                    ((*operation_id).to_owned(), string_set(statuses)),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -544,7 +556,7 @@ mod tests {
             .and_then(Value::as_str)
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         if description
-            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice.\nDeclared but not mounted in Stage 5B operation IDs: createCsvImport, commitCsvImport, approveEnrollment, putCommand."
+            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         {
             return Err(TestFailure::InfoDescriptionChanged);
         }
@@ -586,6 +598,227 @@ mod tests {
             {
                 return Err(TestFailure::LifecyclePathContractChanged);
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn import_paths_and_schemas_are_closed_and_exact() -> Result<(), TestFailure> {
+        let value = serialized_document()?;
+        assert_import_operations(&value)?;
+        assert_import_schemas(&value)
+    }
+
+    fn assert_import_operations(value: &Value) -> Result<(), TestFailure> {
+        for path in [
+            "/api/v2/imports/{import_id}/actions/commit",
+            "/api/v2/imports/{import_id}/actions/discard",
+        ] {
+            let parameter = operation_at(value, path, "post")?
+                .get("parameters")
+                .and_then(Value::as_array)
+                .and_then(|parameters| {
+                    parameters.iter().find(|parameter| {
+                        parameter.get("name").and_then(Value::as_str) == Some("import_id")
+                    })
+                })
+                .ok_or(TestFailure::ImportContractChanged)?;
+            if parameter.get("in").and_then(Value::as_str) != Some("path")
+                || parameter.get("required").and_then(Value::as_bool) != Some(true)
+                || parameter.pointer("/schema/$ref").and_then(Value::as_str)
+                    != Some("#/components/schemas/CanonicalUuidV7")
+            {
+                return Err(TestFailure::ImportContractChanged);
+            }
+        }
+
+        let upload = operation_at(value, "/api/v2/imports", "post")?;
+        let commit = operation_at(value, "/api/v2/imports/{import_id}/actions/commit", "post")?;
+        let discard = operation_at(value, "/api/v2/imports/{import_id}/actions/discard", "post")?;
+        if nested_value(
+            upload,
+            &["requestBody", "content", "text/csv", "schema", "type"],
+        )
+        .and_then(Value::as_str)
+            != Some("string")
+            || nested_value(
+                commit,
+                &[
+                    "requestBody",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/ImportCommitRequest")
+            || discard.get("requestBody").is_some()
+            || nested_value(
+                upload,
+                &[
+                    "responses",
+                    "201",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/ImportPreviewResponse")
+            || nested_value(
+                commit,
+                &[
+                    "responses",
+                    "200",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/ImportCommitResponse")
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
+        Ok(())
+    }
+
+    fn assert_import_schemas(value: &Value) -> Result<(), TestFailure> {
+        assert_import_preview_schema(value)?;
+        assert_import_diff_schema(value)?;
+        assert_import_mapping_schemas(value)?;
+        assert_import_commit_schemas(value)
+    }
+
+    fn assert_import_preview_schema(value: &Value) -> Result<(), TestFailure> {
+        let preview = schema_object(value, "ImportPreviewResponse")?;
+        let preview_properties = schema_properties(preview)?;
+        if property_names(preview_properties)
+            != BTreeSet::from([
+                "baseline_binding_revision",
+                "baseline_configuration_revision",
+                "candidate_id",
+                "diff",
+                "expires_at",
+                "preview_token",
+            ])
+            || preview.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || preview_properties
+                .get("candidate_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || preview_properties
+                .get("baseline_configuration_revision")
+                .and_then(|property| property.get("format"))
+                .and_then(Value::as_str)
+                != Some("int64")
+            || preview_properties
+                .get("baseline_binding_revision")
+                .and_then(|property| property.get("format"))
+                .and_then(Value::as_str)
+                != Some("int64")
+            || preview_properties
+                .get("preview_token")
+                .and_then(|property| property.get("pattern"))
+                .and_then(Value::as_str)
+                != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
+            || preview_properties
+                .get("expires_at")
+                .and_then(|property| property.get("description"))
+                .and_then(Value::as_str)
+                != Some("RFC 3339 UTC timestamp with a trailing Z.")
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
+        Ok(())
+    }
+
+    fn assert_import_diff_schema(value: &Value) -> Result<(), TestFailure> {
+        let diff = schema_object(value, "ImportRedactedDiff")?;
+        let properties = schema_properties(diff)?;
+        if property_names(properties)
+            != BTreeSet::from([
+                "affected_account_count",
+                "binding_impacts",
+                "mappings_changed",
+                "seats_added",
+                "seats_removed",
+                "unchanged_count",
+            ])
+            || diff.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
+        for name in ["unchanged_count", "affected_account_count"] {
+            let property = properties
+                .get(name)
+                .ok_or(TestFailure::ImportContractChanged)?;
+            if property.get("type").and_then(Value::as_str) != Some("integer")
+                || property.get("minimum").and_then(Value::as_u64) != Some(0)
+            {
+                return Err(TestFailure::ImportContractChanged);
+            }
+        }
+        Ok(())
+    }
+
+    fn assert_import_mapping_schemas(value: &Value) -> Result<(), TestFailure> {
+        let mapping = schema_object(value, "ImportMappingChangeResponse")?;
+        let mapping_properties = schema_properties(mapping)?;
+        let binding = schema_object(value, "ImportBindingImpactResponse")?;
+        if property_names(mapping_properties)
+            != BTreeSet::from([
+                "candidate_domjudge_username",
+                "current_domjudge_username",
+                "seat_code",
+            ])
+            || required_property_names(mapping)?
+                != BTreeSet::from([
+                    "candidate_domjudge_username",
+                    "current_domjudge_username",
+                    "seat_code",
+                ])
+            || property_names(schema_properties(binding)?)
+                != BTreeSet::from(["device_id", "seat_code"])
+            || !value_contains_string(
+                mapping_properties
+                    .get("current_domjudge_username")
+                    .ok_or(TestFailure::ImportContractChanged)?,
+                "null",
+            )
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
+        Ok(())
+    }
+
+    fn assert_import_commit_schemas(value: &Value) -> Result<(), TestFailure> {
+        for (schema_name, expected_properties) in [
+            ("ImportCommitRequest", BTreeSet::from(["preview_token"])),
+            (
+                "ImportCommitResponse",
+                BTreeSet::from(["binding_revision", "configuration_revision"]),
+            ),
+        ] {
+            let schema = schema_object(value, schema_name)?;
+            if property_names(schema_properties(schema)?) != expected_properties
+                || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            {
+                return Err(TestFailure::ImportContractChanged);
+            }
+        }
+        let commit_request = schema_properties(schema_object(value, "ImportCommitRequest")?)?;
+        if commit_request
+            .get("preview_token")
+            .and_then(|property| property.get("pattern"))
+            .and_then(Value::as_str)
+            != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
+        {
+            return Err(TestFailure::ImportContractChanged);
         }
         Ok(())
     }
@@ -886,6 +1119,46 @@ mod tests {
             .ok_or(TestFailure::DocumentShapeInvalid)
     }
 
+    fn schema_object<'a>(
+        value: &'a Value,
+        name: &str,
+    ) -> Result<&'a Map<String, Value>, TestFailure> {
+        value
+            .get("components")
+            .and_then(|components| components.get("schemas"))
+            .and_then(|schemas| schemas.get(name))
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::ImportContractChanged)
+    }
+
+    fn schema_properties(schema: &Map<String, Value>) -> Result<&Map<String, Value>, TestFailure> {
+        schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::ImportContractChanged)
+    }
+
+    fn property_names(properties: &Map<String, Value>) -> BTreeSet<&str> {
+        properties.keys().map(String::as_str).collect()
+    }
+
+    fn required_property_names(schema: &Map<String, Value>) -> Result<BTreeSet<&str>, TestFailure> {
+        schema
+            .get("required")
+            .and_then(Value::as_array)
+            .and_then(|required| required.iter().map(Value::as_str).collect())
+            .ok_or(TestFailure::ImportContractChanged)
+    }
+
+    fn nested_value<'a>(object: &'a Map<String, Value>, path: &[&str]) -> Option<&'a Value> {
+        let (first, rest) = path.split_first()?;
+        let mut value = object.get(*first)?;
+        for key in rest {
+            value = value.as_object()?.get(*key)?;
+        }
+        Some(value)
+    }
+
     fn described_unmounted_ids(value: &Value) -> Result<BTreeSet<String>, TestFailure> {
         let description = value
             .pointer("/info/description")
@@ -903,7 +1176,11 @@ mod tests {
         records: &[OperationRecord],
     ) -> Result<BTreeSet<(String, String)>, TestFailure> {
         let fixture = TestDatabase::new().await?;
-        let application = http::router(fixture.database.clone(), http::tests::unused_web_root());
+        let application = http::router(
+            fixture.database.clone(),
+            http::tests::unused_vault_master_key(),
+            http::tests::unused_web_root(),
+        );
         let mut paths = records
             .iter()
             .map(|record| record.path.clone())
@@ -981,7 +1258,9 @@ mod tests {
                 for (key, value) in object {
                     let path = format!("{parent_path}/{key}");
                     let normalized = key.replace('-', "_");
-                    if pattern.is_match(&normalized) && path != ALLOWED_PASSWORD_PATH {
+                    if pattern.is_match(&normalized)
+                        && !ALLOWED_CREDENTIAL_PATHS.contains(&path.as_str())
+                    {
                         return Err(TestFailure::SecretKeyEscaped);
                     }
                     scan_credential_keys(value, &path, pattern)?;
@@ -1018,8 +1297,8 @@ mod tests {
         }
     }
 
-    fn string_set<const N: usize>(values: [&str; N]) -> BTreeSet<String> {
-        values.into_iter().map(str::to_owned).collect()
+    fn string_set(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_owned()).collect()
     }
 
     struct OperationRecord {
@@ -1081,6 +1360,8 @@ mod tests {
         InfoDescriptionChanged,
         #[snafu(display("the Device lifecycle path parameter contract changed"))]
         LifecyclePathContractChanged,
+        #[snafu(display("the import OpenAPI contract changed"))]
+        ImportContractChanged,
         #[snafu(display("the Command description changed"))]
         CommandDescriptionChanged,
         #[snafu(display("the Command ID contract changed"))]

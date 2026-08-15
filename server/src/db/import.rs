@@ -62,6 +62,36 @@ pub(crate) async fn create_import_candidate(
     .map_err(ImportError::from)
 }
 
+pub(crate) async fn audit_invalid_import_upload(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<(), ImportError> {
+    audit_invalid_import_upload_with_id(
+        database,
+        correlation_id,
+        AuditEventId::from_uuid(Uuid::now_v7()),
+    )
+    .await
+    .map_err(ImportError::from)
+}
+
+async fn audit_invalid_import_upload_with_id(
+    database: &Database,
+    correlation_id: CorrelationId,
+    audit_event_id: AuditEventId,
+) -> Result<(), ImportStoreError> {
+    database
+        .interact(move |connection| {
+            connection.immediate_transaction(|connection| {
+                let event = AuditEvent::import_candidate_rejected(audit_event_id, correlation_id);
+                audit::insert_diesel(connection, &event)
+                    .map_err(|_| ImportStoreError::AuditInsertFailed)
+            })
+        })
+        .await
+        .map_err(|_| ImportStoreError::AcquireFailed)?
+}
+
 struct CandidateCreationRequest {
     candidate_rows: Vec<CandidateRowFacts>,
     preview_token_hash: [u8; 32],

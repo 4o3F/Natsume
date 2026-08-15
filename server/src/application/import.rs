@@ -278,6 +278,21 @@ impl ImportMappingChange {
             candidate_domjudge_username,
         }
     }
+
+    #[must_use]
+    pub(crate) fn seat_code(&self) -> &str {
+        &self.seat_code
+    }
+
+    #[must_use]
+    pub(crate) fn current_domjudge_username(&self) -> Option<&str> {
+        self.current_domjudge_username.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) fn candidate_domjudge_username(&self) -> &str {
+        &self.candidate_domjudge_username
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -292,6 +307,16 @@ impl ImportBindingImpact {
             seat_code,
             device_id,
         }
+    }
+
+    #[must_use]
+    pub(crate) fn seat_code(&self) -> &str {
+        &self.seat_code
+    }
+
+    #[must_use]
+    pub(crate) fn device_id(&self) -> &str {
+        &self.device_id
     }
 }
 
@@ -515,6 +540,13 @@ pub(crate) async fn create_import_candidate(
         baseline_binding_revision: created.baseline_binding_revision,
         diff: created.diff,
     })
+}
+
+pub(crate) async fn audit_invalid_import_upload(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<(), ImportError> {
+    db::import::audit_invalid_import_upload(database, correlation_id).await
 }
 
 pub(crate) async fn commit_import(
