@@ -664,7 +664,7 @@ mod tests {
         operator_id: Uuid,
     ) -> Result<String, TestFailure> {
         let response_correlation = canonical_correlation_id(&response.headers)?;
-        let credential = session_cookie_value(response, 28_800)?;
+        let credential = session_cookie_value(response, 57_600)?;
         if credential.len() != 64
             || !credential
                 .bytes()

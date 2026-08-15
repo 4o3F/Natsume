@@ -373,7 +373,7 @@ fn create_session_in_transaction(
             operator_sessions::session_credential_hash.eq(credential_hash),
             operator_sessions::operator_id.eq(identity.operator_id().to_string()),
             operator_sessions::expires_at.eq(sql::<Text>(
-                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+28800 seconds')",
+                "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+57600 seconds')",
             )),
         ))
         .execute(connection)
@@ -842,8 +842,8 @@ pub(crate) mod tests {
             .interact(move |connection| {
                 diesel::sql_query(
                     "SELECT COUNT(*) > 0 AND MIN(\
-                     expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+28800 seconds') \
-                     AND expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+28800 seconds')\
+                     expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+57600 seconds') \
+                     AND expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+57600 seconds')\
                  ) AS value FROM operator_sessions",
                 )
                 .bind::<Text, _>(before_insert)
@@ -1180,8 +1180,8 @@ pub(crate) mod tests {
             .interact(move |connection| {
                 diesel::sql_query(
                     "SELECT session_credential_hash AS credential_hash, operator_id, expires_at, \
-                     expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+28800 seconds') \
-                     AND expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+28800 seconds') \
+                     expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+57600 seconds') \
+                     AND expires_at <= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+57600 seconds') \
                          AS ttl_valid FROM operator_sessions",
                 )
                 .bind::<Text, _>(before_insert)

@@ -9,7 +9,7 @@ use crate::application::operator::SessionCredentialHex;
 
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const SESSION_COOKIE_PATH: &str = "/api/v2";
-const SESSION_COOKIE_MAX_AGE_SECONDS: i64 = 28_800;
+const SESSION_COOKIE_MAX_AGE_SECONDS: i64 = 57_600;
 
 pub(super) fn issue_session_credential(wire_credential: &str) -> Result<HeaderValue, ()> {
     let value =
