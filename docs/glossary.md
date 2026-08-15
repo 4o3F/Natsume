@@ -41,7 +41,7 @@
 | **AuditEvent** | 具有 `audit_event_id`、由 audited guarded operation 自行插入并与敏感领域 mutation 原子提交的 redacted 证据；fresh ID 可作为 typed operation input，但已持久化的同 ID 或预插入 audit row 不能重放为新 mutation 的依据。其 envelope 只有 occurred-at、actor、action kind、resource type/optional ID、result、optional reason code、correlation ID、optional group correlation ID 和 typed `redacted_detail_json`；revision/count 等 event-specific detail 只在该 JSON 内。 |
 | **guarded operation** | 具有显式 guard，并在一个 transaction 内原子提交敏感领域 mutation 与其 typed `AuditEvent` 的领域操作。 |
 | **`system:recovery`** | [审计词汇注册表](contracts.md#当前-auditevent-词汇注册表)中表示启动或恢复路径的系统 actor 值。 |
-| **`system:password-reset`** | [审计词汇注册表](contracts.md#当前-auditevent-词汇注册表)中为离线 operator password reset 声明保留的系统 actor 值。 |
+| **`system:password-reset`** | [审计词汇注册表](contracts.md#当前-auditevent-词汇注册表)中表示离线 operator password reset 路径的系统 actor 值。 |
 | **LKG** | Last Known Good，本地最后一次已验证可用的配置或证书集合。 |
 | **Caddy BLOCKED** | Caddy 仅提供有限本地状态页，不代理 DOMjudge 的 fail-closed 状态。 |
 | **Caddy READY** | Gateway 证书、配置和目标 upstream 都通过验证后激活的数据面状态。 |

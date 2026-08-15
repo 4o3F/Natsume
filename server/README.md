@@ -3,8 +3,8 @@
 Stage 3 provides a TLS 1.3-only, HTTP/1.1-only listener with the unauthenticated
 `GET /api/v2/health` process-liveness route.
 
-The single `natsume-server` binary has exactly two mandatory modes and no custom
-arguments or flags. Both load only `/etc/natsume-server/config.toml`; argv never
+The single `natsume-server` binary has exactly three mandatory modes and no custom
+arguments or flags. All three load only `/etc/natsume-server/config.toml`; argv never
 carries configuration, paths, or secrets.
 
 - `natsume-server serve` opens an existing database, runs migrations and
@@ -16,6 +16,12 @@ carries configuration, paths, or secrets.
   (password twice without echo), atomically creates the single first admin with
   its typed audit row, and exits without TLS preflight or a listener. Repeating
   it makes zero business writes and exits non-zero.
+- `natsume-server reset-operator-password` opens the existing database, runs
+  migrations, and reads the target login name and new password from a TTY
+  (password twice without echo). In one transaction it replaces that operator's
+  PHC string, purges all of that operator's current sessions, and writes one
+  `system:password-reset` audit row. It never creates accounts or touches the
+  vault master key. An unknown login name exits non-zero with zero writes.
 
 The server embeds and runs its Diesel migrations at runtime; deployed packages
 and production hosts do not require Diesel CLI. Developers and CI use exactly
@@ -36,6 +42,20 @@ Enter the login name and the same password twice at the prompts, then start the
 package `postinstall` must not run it because install-time secret handling and a
 packaging-script TTY prompt are forbidden. The service always invokes
 `natsume-server serve`.
+
+For offline operator credential recovery, open an interactive TTY and run:
+
+```console
+sudo -u natsume-server -- /usr/bin/natsume-server reset-operator-password
+```
+
+Enter the target login name and the same new password twice at the prompts. The
+command replaces that operator's PHC string, purges all of that operator's
+current sessions, writes one `system:password-reset` audit row, and exits. It
+never creates an account and never touches the vault master key; an unknown
+login name exits non-zero with zero writes. Never run it as root or from
+automation. The package `postinstall` must not call it because install-time
+secret handling and a packaging-script TTY prompt are forbidden.
 
 Known Gate limitations: the 4096-byte session body limit is closed. Header
 count/size and slow-header handling remain open while Stage 4 retains

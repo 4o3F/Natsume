@@ -40,13 +40,13 @@ Server TLS leaf 与私钥从 Server 私有状态目录读取，分别固定为 X
 
 ### 2.1 Server 运行模式
 
-单一 runtime binary `natsume-server` 使用 clap derive 只分派三个必选 subcommand：`serve`、`bootstrap` 与 `reset-operator-password`（后者已声明、尚未实现，见下）。三者均无自定义参数与自定义 flag；argv 不承载配置、路径或秘密，唯一配置源保持 package-owned 固定文件 `/etc/natsume-server/config.toml`。缺少或未知 subcommand、或出现额外参数时，必须在接触文件系统前 fail closed。
+单一 runtime binary `natsume-server` 使用 clap derive 只分派三个必选 subcommand：`serve`、`bootstrap` 与 `reset-operator-password`。三者均无自定义参数与自定义 flag；argv 不承载配置、路径或秘密，唯一配置源保持 package-owned 固定文件 `/etc/natsume-server/config.toml`。缺少或未知 subcommand、或出现额外参数时，必须在接触文件系统前 fail closed。
 
 `natsume-server serve` 的固定启动序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration 与 provisioning close-once recovery；只读取并校验**已经存在**的 vault 主密钥，缺失即失败且绝不创建；校验 TLS identity；最后才 bind 并 serve。`serve` 不创建数据库、vault 主密钥或 operator account，也不提示输入。
 
 `natsume-server bootstrap` 的固定离线序列为：加载固定配置；以 `create_if_missing = true` 创建或打开并 migrate 数据库；vault 主密钥缺失时创建，已存在时只读取并校验；从 TTY 读取 login name，并以不回显方式读取两次 password；仅当 `operator_accounts` 为空时，把唯一 first admin 与其 typed audit row 在同一事务内创建，然后退出。它不做 TLS preflight、不 bind、不启动 listener。重复执行 `bootstrap` 必须保持零业务写入并以非零状态退出。
 
-`natsume-server reset-operator-password` 是 first admin 密码遗失时唯一的非破坏性恢复路径（[ADR-0037](adr/0037-operator-identity-and-server-runtime-secrets.md)）。其固定离线序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration；从 TTY 读取目标 login name，并以不回显方式读取两次新 password，使用与 §3.6.3 完全相同的 Argon2id profile。随后在**同一事务**内更新该 operator 的 PHC string、删除该 operator 当前全部 session row，并插入 actor 为 `system:password-reset` 的 typed audit row。login name 未知时以非零状态退出且零写入。它不做 TLS preflight、不 bind、不启动 listener；**它绝不创建账户，也绝不接触 vault 主密钥。** **声明保留，实现归 Phase 1 收尾；当前二进制只有 `serve` / `bootstrap`。**
+`natsume-server reset-operator-password` 是 first admin 密码遗失时唯一的非破坏性恢复路径（[ADR-0037](adr/0037-operator-identity-and-server-runtime-secrets.md)）。其固定离线序列为：加载固定配置；以 `create_if_missing = false` 打开**已经存在**的数据库，缺失即失败；运行 migration；从 TTY 读取目标 login name，并以不回显方式读取两次新 password，使用与 §3.6.3 完全相同的 Argon2id profile。随后在**同一事务**内更新该 operator 的 PHC string、删除该 operator 当前全部 session row，并插入 actor 为 `system:password-reset` 的 typed audit row。login name 未知时以非零状态退出且零写入。它不做 TLS preflight、不 bind、不启动 listener；**它绝不创建账户，也绝不接触 vault 主密钥。** **2026-08-15 修订**：已实现；审计词汇（actor `system:password-reset`、action `reset_operator_password`、reason `credential_recovery`、detail `removed_session_count`）已在 §3.6.4 注册表登记。
 
 `postinstall` 不得调用需要交互式 TTY 的 `bootstrap` 或 `reset-operator-password`，安装期不得处理 operator secret；operator 必须在 TTY 上以 `natsume-server` 用户手工运行它们。
 
@@ -172,7 +172,7 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 - `DELETE /api/v2/session` 对 credential state 的结果保持 repeat-safe：有效 session 只删除并审计一次；missing、malformed、unknown 或已删除 credential 是零写入 no-op；这些成功或 no-op 结果都返回 `204`。无论结果为 `204` 或下述 `500`，响应都发送同名、同 `Path=/api/v2` scope 与同安全属性的 clearing cookie。
 - 真正的 persistence 或 infrastructure failure 返回 `500` / `INTERNAL_ERROR`，不得以 `204` 掩盖仍可能存活的 session。这不构成可利用的 credential-state oracle：termination path 对 live session 与 no-row path 都先开启 `BEGIN IMMEDIATE` transaction、读取并 commit，因此连接获取、事务开启与读取阶段的失败不与 session 是否存在相关联。写执行阶段的失败只可能出现在 live path（no-row path 零写入），但到达任一分支都必须先呈递结构合法的 32-byte credential，其猜测代价使该差异不可利用。
 - expired session 只做 lazy cleanup：首个观察到仍存在 expired row 的请求在同一事务内删除并审计一次，后续请求为零写入；不运行 background cleaner。不做 GC 的前提是累积量已被这些事实限死：单实例只服务单场 contest、operator 账户是个位数、session 绝对 TTL 为 16 小时，且[领域模型](domain-model.md) §14 的 single-lifetime reset 会按场次清空业务状态。
-- 只审计 bootstrap first-admin creation、session established、首次 session termination、首次 observed expiry 与 §3.6.5 的失败登录限流触发。单次失败登录本身不审计（flood control）；但限流阈值被跨越时，每个 limiter window 写一条 audit row：actor 是非人类 system actor，`redacted_detail_json` 以 typed field 承载失败计数与来源 IP。**尝试使用的 login name 绝不进入 audit 或日志**——它可能是误输入到该字段的密码。
+- 只审计 bootstrap first-admin creation、离线 operator password reset、session established、首次 session termination、首次 observed expiry 与 §3.6.5 的失败登录限流触发。单次失败登录本身不审计（flood control）；但限流阈值被跨越时，每个 limiter window 写一条 audit row：actor 是非人类 system actor，`redacted_detail_json` 以 typed field 承载失败计数与来源 IP。**尝试使用的 login name 绝不进入 audit 或日志**——它可能是误输入到该字段的密码。
 
 ##### 当前 AuditEvent 词汇注册表
 
@@ -184,12 +184,13 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `system:bootstrap` | 已实现 |
 | `system:expiry` | 已实现 |
 | `system:recovery` | 已实现 |
-| `system:password-reset` | **RESERVED**；仅供 §2.1 已声明但尚未实现的 `reset-operator-password` |
+| `system:password-reset` | 已实现 |
 
 | `action_kind` |
 |---|
 | `close_provisioning_window` |
 | `create_first_admin` |
+| `reset_operator_password` |
 | `establish_session` |
 | `terminate_session` |
 | `expire_session` |
@@ -200,6 +201,7 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 |---|---|
 | `startup_recovery` | `close_provisioning_window` |
 | `initial_provisioning` | `create_first_admin` |
+| `credential_recovery` | `reset_operator_password` |
 | `credentials_verified` | `establish_session` |
 | `operator_requested` | `terminate_session`；`revoke_device` / `disable_device` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session` |
@@ -209,6 +211,7 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 |---|---|
 | `close_provisioning_window` | `previous_revision`、`new_revision` |
 | `create_first_admin` | `role` |
+| `reset_operator_password` | `removed_session_count` |
 | `establish_session` | `role` |
 | `terminate_session` | 无（`{}`） |
 | `expire_session` | 无（`{}`） |

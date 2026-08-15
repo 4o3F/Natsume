@@ -178,13 +178,13 @@ impl SignedInSession {
     }
 }
 
-pub(crate) struct FirstAdminCredentials {
+pub(crate) struct OperatorCredentials {
     login_name: String,
     password: OperatorPassword,
 }
 
-impl FirstAdminCredentials {
-    /// Validates the non-interactive portion of bootstrap input.
+impl OperatorCredentials {
+    /// Validates non-interactive operator credential input.
     ///
     /// # Errors
     ///
@@ -484,11 +484,10 @@ pub(crate) mod tests {
     };
 
     use super::{
-        DUMMY_PASSWORD_PHC, FirstAdminCredentials, OperatorError, OperatorIdentity,
-        OperatorPassword, OperatorRole, PASSWORD_VERIFICATION_CONCURRENCY,
-        PASSWORD_VERIFICATION_GATE, SESSION_CREDENTIAL_LENGTH, SessionCredential,
-        SessionCredentialHash, authenticate_session, decode_lower_hex, hash_password,
-        require_admin, sign_in, verify_password_once,
+        DUMMY_PASSWORD_PHC, OperatorCredentials, OperatorError, OperatorIdentity, OperatorPassword,
+        OperatorRole, PASSWORD_VERIFICATION_CONCURRENCY, PASSWORD_VERIFICATION_GATE,
+        SESSION_CREDENTIAL_LENGTH, SessionCredential, SessionCredentialHash, authenticate_session,
+        decode_lower_hex, hash_password, require_admin, sign_in, verify_password_once,
     };
 
     const GATE_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
@@ -541,7 +540,7 @@ pub(crate) mod tests {
     fn bootstrap_input_errors_are_redacted() -> Result<(), TestFailure> {
         let login_canary = "bootstrap-login-canary";
         let password_canary = "bootstrap-password-canary";
-        let Err(error) = FirstAdminCredentials::new(
+        let Err(error) = OperatorCredentials::new(
             login_canary.to_owned(),
             password_canary.to_owned(),
             "different-password-canary".to_owned(),
@@ -559,12 +558,9 @@ pub(crate) mod tests {
     #[test]
     fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailure> {
         let password = "correct horse battery staple";
-        let credentials = FirstAdminCredentials::new(
-            "admin".to_owned(),
-            password.to_owned(),
-            password.to_owned(),
-        )
-        .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
+        let credentials =
+            OperatorCredentials::new("admin".to_owned(), password.to_owned(), password.to_owned())
+                .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
         let encoded = hash_password(credentials.password())
             .map_err(|_| TestFailure::PasswordHashingFailed)?;
         let parsed =
@@ -990,7 +986,7 @@ pub(crate) mod tests {
     }
 
     fn password_phc(login_name: &str, password: &str) -> Result<String, TestFailure> {
-        let credentials = FirstAdminCredentials::new(
+        let credentials = OperatorCredentials::new(
             login_name.to_owned(),
             password.to_owned(),
             password.to_owned(),

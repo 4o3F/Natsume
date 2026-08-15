@@ -19,7 +19,7 @@ use uuid::Uuid;
 
 use crate::{
     application::operator::{
-        FirstAdminCredentials, OperatorRole, hash_password, tests::PasswordVerificationTestGuard,
+        OperatorCredentials, OperatorRole, hash_password, tests::PasswordVerificationTestGuard,
     },
     audit::CorrelationId,
     config::LogLevel,
@@ -251,7 +251,7 @@ pub(super) async fn seed_operator(
     role: OperatorRole,
     password: &str,
 ) -> Result<Uuid, SupportFailure> {
-    let credentials = FirstAdminCredentials::new(
+    let credentials = OperatorCredentials::new(
         login_name.to_owned(),
         password.to_owned(),
         password.to_owned(),

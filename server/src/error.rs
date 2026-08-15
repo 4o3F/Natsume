@@ -23,4 +23,6 @@ pub enum AppError {
     Signal,
     #[snafu(display("server bootstrap failed"))]
     Bootstrap,
+    #[snafu(display("operator password reset failed"))]
+    PasswordReset,
 }

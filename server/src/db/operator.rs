@@ -136,6 +136,150 @@ impl From<CreateFirstAdminError> for OperatorError {
     }
 }
 
+/// Updates one existing operator password, removes every current session for
+/// that operator, and persists the recovery audit evidence atomically.
+///
+/// # Errors
+///
+/// Returns a redacted [`OperatorError`] when the login name is unknown or any
+/// transaction stage fails.
+pub(crate) async fn reset_operator_password(
+    database: &Database,
+    login_name: &str,
+    password_hash: &str,
+) -> Result<(), OperatorError> {
+    let audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
+    reset_operator_password_with_ids(
+        database,
+        login_name,
+        password_hash,
+        audit_event_id,
+        correlation_id,
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(
+            cause = error.cause(),
+            correlation_id = %correlation_id.as_text(),
+            "operator password reset failed"
+        );
+        OperatorError::from(error)
+    })
+}
+
+async fn reset_operator_password_with_ids(
+    database: &Database,
+    login_name: &str,
+    password_hash: &str,
+    audit_event_id: AuditEventId,
+    correlation_id: CorrelationId,
+) -> Result<(), ResetOperatorPasswordError> {
+    let login_name = login_name.to_owned();
+    let password_hash = password_hash.to_owned();
+    database
+        .interact(move |connection| {
+            connection.immediate_transaction(|connection| {
+                reset_operator_password_in_transaction(
+                    connection,
+                    &login_name,
+                    &password_hash,
+                    audit_event_id,
+                    correlation_id,
+                )
+            })
+        })
+        .await
+        .map_err(|_| ResetOperatorPasswordError::DatabaseAcquireFailed)?
+}
+
+fn reset_operator_password_in_transaction(
+    connection: &mut SqliteConnection,
+    login_name: &str,
+    password_hash: &str,
+    audit_event_id: AuditEventId,
+    correlation_id: CorrelationId,
+) -> Result<(), ResetOperatorPasswordError> {
+    let operator_id = operator_accounts::table
+        .filter(operator_accounts::login_name.eq(login_name))
+        .select(operator_accounts::operator_id)
+        .first::<String>(connection)
+        .optional()
+        .map_err(|_| ResetOperatorPasswordError::TargetReadFailed)?
+        .ok_or(ResetOperatorPasswordError::TargetNotFound)?;
+
+    let updated = diesel::update(
+        operator_accounts::table.filter(operator_accounts::operator_id.eq(&operator_id)),
+    )
+    .set(operator_accounts::password_hash.eq(password_hash))
+    .execute(connection)
+    .map_err(|_| ResetOperatorPasswordError::PasswordUpdateFailed)?;
+    if updated != 1 {
+        return Err(ResetOperatorPasswordError::PasswordUpdateConflict);
+    }
+
+    let removed_session_count = diesel::delete(
+        operator_sessions::table.filter(operator_sessions::operator_id.eq(&operator_id)),
+    )
+    .execute(connection)
+    .map_err(|_| ResetOperatorPasswordError::SessionsPurgeFailed)?;
+    let event = AuditEvent::operator_password_reset(
+        audit_event_id,
+        correlation_id,
+        operator_id,
+        removed_session_count,
+    );
+    audit::insert_diesel(connection, &event)
+        .map_err(|_| ResetOperatorPasswordError::AuditPersistenceFailed)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+enum ResetOperatorPasswordError {
+    #[snafu(display("the password-reset database connection could not be acquired"))]
+    DatabaseAcquireFailed,
+    #[snafu(display("the password-reset transaction failed"))]
+    TransactionControlFailed,
+    #[snafu(display("the password-reset operator account could not be read"))]
+    TargetReadFailed,
+    #[snafu(display("the password-reset operator account does not exist"))]
+    TargetNotFound,
+    #[snafu(display("the operator password could not be updated"))]
+    PasswordUpdateFailed,
+    #[snafu(display("the operator password update changed an unexpected number of rows"))]
+    PasswordUpdateConflict,
+    #[snafu(display("the operator sessions could not be removed"))]
+    SessionsPurgeFailed,
+    #[snafu(display("the password-reset audit could not be persisted"))]
+    AuditPersistenceFailed,
+}
+
+impl From<diesel::result::Error> for ResetOperatorPasswordError {
+    fn from(_source: diesel::result::Error) -> Self {
+        Self::TransactionControlFailed
+    }
+}
+
+impl ResetOperatorPasswordError {
+    const fn cause(self) -> &'static str {
+        match self {
+            Self::DatabaseAcquireFailed => "password_reset_database_acquire_failed",
+            Self::TransactionControlFailed => "password_reset_transaction_failed",
+            Self::TargetReadFailed => "password_reset_account_read_failed",
+            Self::TargetNotFound => "password_reset_account_not_found",
+            Self::PasswordUpdateFailed => "password_reset_account_update_failed",
+            Self::PasswordUpdateConflict => "password_reset_account_update_conflict",
+            Self::SessionsPurgeFailed => "password_reset_session_delete_failed",
+            Self::AuditPersistenceFailed => "password_reset_audit_insert_failed",
+        }
+    }
+}
+
+impl From<ResetOperatorPasswordError> for OperatorError {
+    fn from(_source: ResetOperatorPasswordError) -> Self {
+        Self::PersistenceFailed
+    }
+}
+
 /// Reads the minimal persisted facts for one exact login name.
 ///
 /// # Errors
@@ -560,7 +704,7 @@ pub(crate) mod tests {
 
     use crate::{
         application::operator::{
-            FirstAdminCredentials, OperatorError, OperatorIdentity, OperatorRole,
+            OperatorCredentials, OperatorError, OperatorIdentity, OperatorRole,
             SessionCredentialHex, authenticate_session, hash_password,
             terminate_session as terminate_application_session,
             tests::{operator_identity, session_credential_hash},
@@ -574,9 +718,9 @@ pub(crate) mod tests {
     };
 
     use super::{
-        CreateFirstAdminError, OperatorStoreError, create_first_admin, create_first_admin_with_ids,
-        create_session, create_session_with_audit_id, read_session,
-        terminate_session_with_audit_id,
+        CreateFirstAdminError, OperatorStoreError, ResetOperatorPasswordError, create_first_admin,
+        create_first_admin_with_ids, create_session, create_session_with_audit_id, read_session,
+        reset_operator_password_with_ids, terminate_session_with_audit_id,
     };
 
     // The fixture helpers below are called from outside `db`, so they speak the
@@ -946,6 +1090,65 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn password_reset_audit_failure_rolls_back_phc_and_session_purge()
+    -> Result<(), TestFailure> {
+        let fixture = TestDatabase::new().await?;
+        let operator_id = test_insert_account(
+            &fixture.database,
+            "atomic-reset-admin",
+            OperatorRole::Admin,
+            "old-reset-phc",
+        )
+        .await
+        .map_err(|_| TestFailure::OperatorFixtureInsertFailed)?;
+        let credential_hash = session_credential_hash(&[0x2a_u8; 32]);
+        create_session(
+            &fixture.database,
+            &credential_hash,
+            operator_identity(operator_id, OperatorRole::Admin),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionCreationFailed)?;
+        let duplicate_audit_id = AuditEventId::from_uuid(Uuid::now_v7());
+        insert_existing_audit(&fixture.database, duplicate_audit_id).await?;
+        let password_hash_before = test_password_hash(&fixture.database)
+            .await
+            .map_err(|_| TestFailure::OperatorAccountWasNotReadable)?;
+        let sessions_before = test_session_hashes(&fixture.database)
+            .await
+            .map_err(|_| TestFailure::SessionRowWasNotReadable)?;
+        let audit_count_before = audit_count(&fixture.database).await?;
+
+        let error = reset_operator_password_with_ids(
+            &fixture.database,
+            "atomic-reset-admin",
+            "new-reset-phc",
+            duplicate_audit_id,
+            correlation_id(),
+        )
+        .await
+        .err()
+        .ok_or(TestFailure::DuplicatePasswordResetAuditCommitted)?;
+        if error != ResetOperatorPasswordError::AuditPersistenceFailed {
+            return Err(TestFailure::PasswordResetAuditFailureWasNotTyped);
+        }
+        let password_hash_after = test_password_hash(&fixture.database)
+            .await
+            .map_err(|_| TestFailure::OperatorAccountWasNotReadable)?;
+        let sessions_after = test_session_hashes(&fixture.database)
+            .await
+            .map_err(|_| TestFailure::SessionRowWasNotReadable)?;
+        if password_hash_after != password_hash_before
+            || sessions_after != sessions_before
+            || audit_count(&fixture.database).await? != audit_count_before
+        {
+            return Err(TestFailure::PasswordResetAuditFailureDidNotRollBack);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn session_creation_persists_raw_hash_frozen_ttl_and_exact_audit()
     -> Result<(), TestFailure> {
         let fixture = TestDatabase::new().await?;
@@ -1167,6 +1370,33 @@ pub(crate) mod tests {
             OperatorStoreError::AuditInsertFailed,
         ]
         .map(OperatorStoreError::cause);
+        if causes.iter().collect::<BTreeSet<_>>().len() != causes.len() {
+            return Err(TestFailure::StoreCauseWasNotDistinct);
+        }
+        if causes.iter().any(|cause| {
+            cause.is_empty()
+                || !cause
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
+        }) {
+            return Err(TestFailure::StoreCauseWasNotAStaticDiscriminant);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn every_password_reset_failure_has_a_distinct_static_cause() -> Result<(), TestFailure> {
+        let causes = [
+            ResetOperatorPasswordError::DatabaseAcquireFailed,
+            ResetOperatorPasswordError::TransactionControlFailed,
+            ResetOperatorPasswordError::TargetReadFailed,
+            ResetOperatorPasswordError::TargetNotFound,
+            ResetOperatorPasswordError::PasswordUpdateFailed,
+            ResetOperatorPasswordError::PasswordUpdateConflict,
+            ResetOperatorPasswordError::SessionsPurgeFailed,
+            ResetOperatorPasswordError::AuditPersistenceFailed,
+        ]
+        .map(ResetOperatorPasswordError::cause);
         if causes.iter().collect::<BTreeSet<_>>().len() != causes.len() {
             return Err(TestFailure::StoreCauseWasNotDistinct);
         }
@@ -1690,8 +1920,8 @@ pub(crate) mod tests {
         data_version: i64,
     }
 
-    fn credentials(login_name: &str, password: &str) -> Result<FirstAdminCredentials, TestFailure> {
-        FirstAdminCredentials::new(
+    fn credentials(login_name: &str, password: &str) -> Result<OperatorCredentials, TestFailure> {
+        OperatorCredentials::new(
             login_name.to_owned(),
             password.to_owned(),
             password.to_owned(),
@@ -1852,6 +2082,12 @@ pub(crate) mod tests {
         AuditInsertFailureWasNotTyped,
         #[snafu(display("the audit insert failure did not roll back the account"))]
         AuditInsertFailureDidNotRollBackAccount,
+        #[snafu(display("a duplicate password-reset audit ID was committed"))]
+        DuplicatePasswordResetAuditCommitted,
+        #[snafu(display("the password-reset audit failure returned the wrong typed error"))]
+        PasswordResetAuditFailureWasNotTyped,
+        #[snafu(display("the password-reset audit failure did not roll back its mutations"))]
+        PasswordResetAuditFailureDidNotRollBack,
         #[snafu(display("the application table names could not be read"))]
         TableNamesWereNotReadable,
         #[snafu(display("an application table's columns could not be read"))]

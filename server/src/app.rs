@@ -8,7 +8,7 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::{
     application::{
-        operator::{FirstAdminCredentials, hash_password},
+        operator::{OperatorCredentials, hash_password},
         provisioning,
     },
     config::ServerConfig,
@@ -100,13 +100,27 @@ pub async fn bootstrap(config: ServerConfig) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Resets one existing operator password and invalidates all of that
+/// operator's sessions without constructing any HTTP, TLS, or vault state.
+///
+/// # Errors
+///
+/// Returns a redacted [`AppError`] when password reset fails.
+pub async fn reset_operator_password(config: ServerConfig) -> Result<(), AppError> {
+    logging::initialize(config.log_level()).map_err(|_| AppError::Logging)?;
+    log_mode("reset-operator-password");
+    reset_operator_password_with(config, read_reset_credentials_from_tty).await?;
+    tracing::info!("operator password reset completed");
+    Ok(())
+}
+
 fn log_mode(mode: &'static str) {
     tracing::info!(mode, "server mode running");
 }
 
 async fn bootstrap_with<F>(config: ServerConfig, read_credentials: F) -> Result<(), AppError>
 where
-    F: FnOnce() -> Result<FirstAdminCredentials, AppError>,
+    F: FnOnce() -> Result<OperatorCredentials, AppError>,
 {
     let database_config = DatabaseConfig::new(config.database_path(), true);
     let database = Database::connect_and_migrate(&database_config)
@@ -123,29 +137,57 @@ where
     Ok(())
 }
 
-fn read_bootstrap_credentials_from_tty() -> Result<FirstAdminCredentials, AppError> {
+async fn reset_operator_password_with<F>(
+    config: ServerConfig,
+    read_credentials: F,
+) -> Result<(), AppError>
+where
+    F: FnOnce() -> Result<OperatorCredentials, AppError>,
+{
+    let database_config = DatabaseConfig::new(config.database_path(), false);
+    let database = Database::connect_and_migrate(&database_config)
+        .await
+        .map_err(|_| AppError::Database)?;
+    tracing::info!("database ready");
+    let credentials = read_credentials()?;
+    let password_hash =
+        hash_password(credentials.password()).map_err(|_| AppError::PasswordReset)?;
+    db::operator::reset_operator_password(&database, credentials.login_name(), &password_hash)
+        .await
+        .map_err(|_| AppError::PasswordReset)
+}
+
+fn read_bootstrap_credentials_from_tty() -> Result<OperatorCredentials, AppError> {
+    read_credentials_from_tty(AppError::Bootstrap)
+}
+
+fn read_reset_credentials_from_tty() -> Result<OperatorCredentials, AppError> {
+    read_credentials_from_tty(AppError::PasswordReset)
+}
+
+fn read_credentials_from_tty(credential_error: AppError) -> Result<OperatorCredentials, AppError> {
     let mut terminal = OpenOptions::new()
         .read(true)
         .write(true)
         .open("/dev/tty")
-        .map_err(|_| AppError::Bootstrap)?;
+        .map_err(|_| credential_error)?;
     terminal
         .write_all(LOGIN_NAME_PROMPT)
         .and_then(|()| terminal.flush())
-        .map_err(|_| AppError::Bootstrap)?;
+        .map_err(|_| credential_error)?;
     let mut login_name = String::new();
     BufReader::new(terminal)
         .read_line(&mut login_name)
-        .map_err(|_| AppError::Bootstrap)?;
+        .map_err(|_| credential_error)?;
     while login_name.ends_with(['\r', '\n']) {
         login_name.pop();
     }
 
-    let password = rpassword::prompt_password(PASSWORD_PROMPT).map_err(|_| AppError::Bootstrap)?;
-    let password_confirmation = rpassword::prompt_password(PASSWORD_CONFIRMATION_PROMPT)
-        .map_err(|_| AppError::Bootstrap)?;
-    FirstAdminCredentials::new(login_name, password, password_confirmation)
-        .map_err(|_| AppError::Bootstrap)
+    let password = rpassword::prompt_password(PASSWORD_PROMPT).map_err(|_| credential_error)?;
+    let password_confirmation =
+        rpassword::prompt_password(PASSWORD_CONFIRMATION_PROMPT).map_err(|_| credential_error)?;
+    OperatorCredentials::new(login_name, password, password_confirmation)
+        .map_err(|_| credential_error)
 }
 
 fn shutdown_signal() -> Result<impl Future<Output = ()>, AppError> {
@@ -175,7 +217,7 @@ mod tests {
     use argon2::password_hash::PasswordHash;
     use diesel::{
         Connection, QueryableByName, RunQueryDsl,
-        sql_types::{BigInt, Text},
+        sql_types::{BigInt, Binary, Text},
         sqlite::SqliteConnection,
     };
     use snafu::Snafu;
@@ -183,7 +225,8 @@ mod tests {
     use zeroize::Zeroizing;
 
     use crate::{
-        application::operator::FirstAdminCredentials,
+        application::operator::{OperatorCredentials, OperatorRole, hash_password, sign_in},
+        audit::CorrelationId,
         config::{LogLevel, ServerConfig},
         db::{
             Database, DatabaseConfig, operator as db_operator,
@@ -195,7 +238,7 @@ mod tests {
         vault::ensure_master_key,
     };
 
-    use super::{bootstrap_with, log_mode, run_until};
+    use super::{bootstrap_with, log_mode, reset_operator_password_with, run_until};
 
     const LOCALHOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
 
@@ -364,6 +407,443 @@ mod tests {
         {
             return Err(TestFailure::BootstrapRanServeRecovery);
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_reset_updates_phc_removes_all_sessions_and_audits() -> Result<(), TestFailure>
+    {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let (config_path, database_path, _) =
+            bootstrap_password_reset_fixture(&identity, "reset-admin", "old-password").await?;
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        let first_session = sign_in(
+            &database,
+            correlation_id(),
+            "reset-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        let operator_id = first_session.identity().operator_id();
+        let second_session = sign_in(
+            &database,
+            correlation_id(),
+            "reset-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        if second_session.identity() != first_session.identity() {
+            return Err(TestFailure::SessionFixtureFailed);
+        }
+        let counts_before = db_operator::tests::test_session_and_audit_counts(&database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        reset_operator_password_with(config, || {
+            reset_credentials("reset-admin", "new-password", "new-password")
+        })
+        .await
+        .map_err(|_| TestFailure::PasswordResetFailed)?;
+
+        let counts_after = db_operator::tests::test_session_and_audit_counts(&database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        if counts_before.0 != 2 || counts_after != (0, counts_before.1 + 1) {
+            return Err(TestFailure::PasswordResetStateWasNotExact);
+        }
+        let mut observer =
+            test_observer(&database_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let audits = password_reset_audits(&mut observer)?;
+        if audits.len() != 1
+            || audits[0].actor != "system:password-reset"
+            || audits[0].action_kind != "reset_operator_password"
+            || audits[0].resource_type != "operator_account"
+            || audits[0].resource_id != operator_id.to_string()
+            || audits[0].result != "succeeded"
+            || audits[0].reason_code != "credential_recovery"
+            || audits[0].redacted_detail_json != r#"{"removed_session_count":2}"#
+        {
+            return Err(TestFailure::PasswordResetAuditWasNotExact);
+        }
+
+        if sign_in(
+            &database,
+            correlation_id(),
+            "reset-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .is_ok()
+        {
+            return Err(TestFailure::OldPasswordWasAccepted);
+        }
+        let signed_in = sign_in(
+            &database,
+            correlation_id(),
+            "reset-admin",
+            "new-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::NewPasswordWasRejected)?;
+        if signed_in.identity() != first_session.identity() {
+            return Err(TestFailure::NewPasswordWasRejected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_reset_preserves_every_other_operator_session_and_phc()
+    -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let (config_path, database_path, _) =
+            bootstrap_password_reset_fixture(&identity, "isolation-admin-a", "password-a").await?;
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        let other_credentials = OperatorCredentials::new(
+            "isolation-operator-b".to_owned(),
+            "password-b".to_owned(),
+            "password-b".to_owned(),
+        )
+        .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let other_password_hash = hash_password(other_credentials.password())
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let other_id = db_operator::tests::test_insert_account(
+            &database,
+            "isolation-operator-b",
+            OperatorRole::Viewer,
+            &other_password_hash,
+        )
+        .await
+        .map_err(|_| TestFailure::FixtureCreationFailed)?;
+
+        let target_session = sign_in(
+            &database,
+            correlation_id(),
+            "isolation-admin-a",
+            "password-a".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        sign_in(
+            &database,
+            correlation_id(),
+            "isolation-admin-a",
+            "password-a".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        for _ in 0..2 {
+            let session = sign_in(
+                &database,
+                correlation_id(),
+                "isolation-operator-b",
+                "password-b".to_owned(),
+            )
+            .await
+            .map_err(|_| TestFailure::SessionFixtureFailed)?;
+            if session.identity().operator_id() != other_id {
+                return Err(TestFailure::PasswordResetOperatorIsolationFailed);
+            }
+        }
+        let target_id = target_session.identity().operator_id();
+        let mut observer =
+            test_observer(&database_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let preserved_password_hash = operator_password_hash(&mut observer, other_id)?;
+        let target_session_hashes = operator_session_hashes(&mut observer, target_id)?;
+        let preserved_session_hashes = operator_session_hashes(&mut observer, other_id)?;
+        if preserved_password_hash != other_password_hash
+            || target_session_hashes.len() != 2
+            || preserved_session_hashes.len() != 2
+        {
+            return Err(TestFailure::PasswordResetOperatorIsolationFailed);
+        }
+
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        reset_operator_password_with(config, || {
+            reset_credentials("isolation-admin-a", "new-password-a", "new-password-a")
+        })
+        .await
+        .map_err(|_| TestFailure::PasswordResetFailed)?;
+
+        let observed_password_hash = operator_password_hash(&mut observer, other_id)?;
+        let remaining_target_sessions = operator_session_hashes(&mut observer, target_id)?;
+        let surviving_other_sessions = operator_session_hashes(&mut observer, other_id)?;
+        let audits = password_reset_audits(&mut observer)?;
+        let expected_detail = format!(
+            "{{\"removed_session_count\":{}}}",
+            target_session_hashes.len()
+        );
+        if observed_password_hash != preserved_password_hash
+            || surviving_other_sessions != preserved_session_hashes
+            || !remaining_target_sessions.is_empty()
+            || audits.len() != 1
+            || audits[0].resource_id != target_id.to_string()
+            || audits[0].redacted_detail_json != expected_detail
+        {
+            return Err(TestFailure::PasswordResetOperatorIsolationFailed);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_reset_unknown_login_is_a_zero_write_rejection() -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let (config_path, database_path, _) =
+            bootstrap_password_reset_fixture(&identity, "known-reset-admin", "old-password")
+                .await?;
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        sign_in(
+            &database,
+            correlation_id(),
+            "known-reset-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        let state_before = password_reset_state(&database).await?;
+        let mut observer =
+            test_observer(&database_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let version_before =
+            test_data_version(&mut observer).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let login_canary = "unknown-reset-login-canary";
+        let password_canary = "unknown-reset-password-canary";
+
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let error = reset_operator_password_with(config, || {
+            reset_credentials(login_canary, password_canary, password_canary)
+        })
+        .await
+        .err()
+        .ok_or(TestFailure::ExpectedPasswordResetFailure)?;
+        if error != AppError::PasswordReset {
+            return Err(TestFailure::UnexpectedPasswordResetFailure);
+        }
+        for encoded in [error.to_string(), format!("{error:?}")] {
+            if encoded.contains(login_canary) || encoded.contains(password_canary) {
+                return Err(TestFailure::PasswordResetErrorExposedCredentials);
+            }
+        }
+
+        let version_after =
+            test_data_version(&mut observer).map_err(|_| TestFailure::FixtureIoFailed)?;
+        if password_reset_state(&database).await? != state_before
+            || version_after != version_before
+            || !password_reset_audits(&mut observer)?.is_empty()
+        {
+            return Err(TestFailure::RejectedPasswordResetWroteState);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_reset_missing_database_creates_no_sqlite_artifacts() -> Result<(), TestFailure>
+    {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let key_directory = identity.directory_path().join("keys");
+        create_private_directory(&key_directory)?;
+        let database_path = identity.directory_path().join("absent-reset.db");
+        let master_key_path = key_directory.join("absent-root.key");
+        let config_path = write_config(
+            &identity,
+            SocketAddr::from((LOCALHOST, 0)),
+            &database_path,
+            &master_key_path,
+            &identity.directory_path().join("missing-certificate.der"),
+            &identity.directory_path().join("missing-private-key.pk8"),
+        )?;
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let credentials_read = std::cell::Cell::new(false);
+
+        assert_startup_error(
+            reset_operator_password_with(config, || {
+                credentials_read.set(true);
+                reset_credentials("reset-admin", "new-password", "new-password")
+            })
+            .await,
+            AppError::Database,
+        )?;
+        if credentials_read.get() {
+            return Err(TestFailure::CredentialsReadBeforeDatabase);
+        }
+        for path in [
+            database_path.clone(),
+            sqlite_sidecar(&database_path, "wal"),
+            sqlite_sidecar(&database_path, "shm"),
+        ] {
+            if path.exists() {
+                return Err(TestFailure::PasswordResetCreatedDatabaseArtifact);
+            }
+        }
+        if master_key_path.exists() || master_key_path.with_extension("tmp").exists() {
+            return Err(TestFailure::PasswordResetTouchedVault);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_reset_confirmation_mismatch_precedes_every_business_write()
+    -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let (config_path, database_path, _) =
+            bootstrap_password_reset_fixture(&identity, "mismatch-reset-admin", "old-password")
+                .await?;
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        sign_in(
+            &database,
+            correlation_id(),
+            "mismatch-reset-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        let state_before = password_reset_state(&database).await?;
+        let mut observer =
+            test_observer(&database_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let version_before =
+            test_data_version(&mut observer).map_err(|_| TestFailure::FixtureIoFailed)?;
+
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        assert_startup_error(
+            reset_operator_password_with(config, || {
+                reset_credentials("mismatch-reset-admin", "new-password", "different-password")
+            })
+            .await,
+            AppError::PasswordReset,
+        )?;
+
+        let version_after =
+            test_data_version(&mut observer).map_err(|_| TestFailure::FixtureIoFailed)?;
+        if password_reset_state(&database).await? != state_before
+            || version_after != version_before
+            || !password_reset_audits(&mut observer)?.is_empty()
+        {
+            return Err(TestFailure::RejectedPasswordResetWroteState);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn password_reset_succeeds_without_the_vault_master_key() -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let (config_path, database_path, master_key_path) =
+            bootstrap_password_reset_fixture(&identity, "vault-independent-admin", "old-password")
+                .await?;
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        sign_in(
+            &database,
+            correlation_id(),
+            "vault-independent-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        fs::remove_file(&master_key_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        reset_operator_password_with(config, || {
+            reset_credentials("vault-independent-admin", "new-password", "new-password")
+        })
+        .await
+        .map_err(|_| TestFailure::PasswordResetFailed)?;
+        if master_key_path.exists() || master_key_path.with_extension("tmp").exists() {
+            return Err(TestFailure::PasswordResetTouchedVault);
+        }
+        let counts = db_operator::tests::test_session_and_audit_counts(&database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        let mut observer =
+            test_observer(&database_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        if counts.0 != 0 || password_reset_audits(&mut observer)?.len() != 1 {
+            return Err(TestFailure::PasswordResetStateWasNotExact);
+        }
+        sign_in(
+            &database,
+            correlation_id(),
+            "vault-independent-admin",
+            "new-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::NewPasswordWasRejected)?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repeated_password_reset_with_the_same_input_succeeds() -> Result<(), TestFailure> {
+        let identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let (config_path, database_path, _) =
+            bootstrap_password_reset_fixture(&identity, "repeat-reset-admin", "old-password")
+                .await?;
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&database_path, false))
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        sign_in(
+            &database,
+            correlation_id(),
+            "repeat-reset-admin",
+            "old-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::SessionFixtureFailed)?;
+        let counts_before = db_operator::tests::test_session_and_audit_counts(&database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+
+        for _ in 0..2 {
+            let config = ServerConfig::load_from(&config_path)
+                .map_err(|_| TestFailure::FixtureCreationFailed)?;
+            reset_operator_password_with(config, || {
+                reset_credentials("repeat-reset-admin", "new-password", "new-password")
+            })
+            .await
+            .map_err(|_| TestFailure::PasswordResetFailed)?;
+        }
+
+        let counts_after = db_operator::tests::test_session_and_audit_counts(&database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        let mut observer =
+            test_observer(&database_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let audits = password_reset_audits(&mut observer)?;
+        if counts_after != (0, counts_before.1 + 2)
+            || audits.len() != 2
+            || audits[0].redacted_detail_json != r#"{"removed_session_count":1}"#
+            || audits[1].redacted_detail_json != r#"{"removed_session_count":0}"#
+        {
+            return Err(TestFailure::RepeatedPasswordResetWasNotExact);
+        }
+        sign_in(
+            &database,
+            correlation_id(),
+            "repeat-reset-admin",
+            "new-password".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::NewPasswordWasRejected)?;
         Ok(())
     }
 
@@ -736,13 +1216,110 @@ mod tests {
             .ok_or(TestFailure::InvalidPasswordHash)
     }
 
-    fn credentials(login_name: &str, password: &str) -> Result<FirstAdminCredentials, AppError> {
-        FirstAdminCredentials::new(
+    fn credentials(login_name: &str, password: &str) -> Result<OperatorCredentials, AppError> {
+        OperatorCredentials::new(
             login_name.to_owned(),
             password.to_owned(),
             password.to_owned(),
         )
         .map_err(|_| AppError::Bootstrap)
+    }
+
+    fn reset_credentials(
+        login_name: &str,
+        password: &str,
+        password_confirmation: &str,
+    ) -> Result<OperatorCredentials, AppError> {
+        OperatorCredentials::new(
+            login_name.to_owned(),
+            password.to_owned(),
+            password_confirmation.to_owned(),
+        )
+        .map_err(|_| AppError::PasswordReset)
+    }
+
+    async fn bootstrap_password_reset_fixture(
+        identity: &TestIdentity,
+        login_name: &str,
+        password: &str,
+    ) -> Result<(PathBuf, PathBuf, PathBuf), TestFailure> {
+        let key_directory = identity.directory_path().join("keys");
+        create_private_directory(&key_directory)?;
+        let database_path = identity.directory_path().join("server.db");
+        let master_key_path = key_directory.join("server-root.key");
+        let config_path = write_config(
+            identity,
+            SocketAddr::from((LOCALHOST, 0)),
+            &database_path,
+            &master_key_path,
+            &identity.directory_path().join("missing-certificate.der"),
+            &identity.directory_path().join("missing-private-key.pk8"),
+        )?;
+        let config = ServerConfig::load_from(&config_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        bootstrap_with(config, || credentials(login_name, password))
+            .await
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        Ok((config_path, database_path, master_key_path))
+    }
+
+    async fn password_reset_state(
+        database: &Database,
+    ) -> Result<(String, Vec<Vec<u8>>, i64), TestFailure> {
+        let password_hash = db_operator::tests::test_password_hash(database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        let mut session_hashes = db_operator::tests::test_session_hashes(database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        session_hashes.sort();
+        let (_, audit_count) = db_operator::tests::test_session_and_audit_counts(database)
+            .await
+            .map_err(|_| TestFailure::FixtureIoFailed)?;
+        Ok((password_hash, session_hashes, audit_count))
+    }
+
+    fn password_reset_audits(
+        connection: &mut SqliteConnection,
+    ) -> Result<Vec<PasswordResetAuditRow>, TestFailure> {
+        diesel::sql_query(
+            "SELECT actor, action_kind, resource_type, COALESCE(resource_id, '') AS resource_id, \
+             result, COALESCE(reason_code, '') AS reason_code, redacted_detail_json \
+             FROM audit_events WHERE action_kind = 'reset_operator_password' ORDER BY rowid",
+        )
+        .load(connection)
+        .map_err(|_| TestFailure::FixtureIoFailed)
+    }
+
+    fn operator_password_hash(
+        connection: &mut SqliteConnection,
+        operator_id: uuid::Uuid,
+    ) -> Result<String, TestFailure> {
+        diesel::sql_query(
+            "SELECT password_hash AS value FROM operator_accounts WHERE operator_id = ?",
+        )
+        .bind::<Text, _>(operator_id.to_string())
+        .get_result::<TextValueRow>(connection)
+        .map(|row| row.value)
+        .map_err(|_| TestFailure::FixtureIoFailed)
+    }
+
+    fn operator_session_hashes(
+        connection: &mut SqliteConnection,
+        operator_id: uuid::Uuid,
+    ) -> Result<Vec<Vec<u8>>, TestFailure> {
+        diesel::sql_query(
+            "SELECT session_credential_hash AS value FROM operator_sessions \
+             WHERE operator_id = ? ORDER BY session_credential_hash",
+        )
+        .bind::<Text, _>(operator_id.to_string())
+        .load::<BinaryValueRow>(connection)
+        .map(|rows| rows.into_iter().map(|row| row.value).collect())
+        .map_err(|_| TestFailure::FixtureIoFailed)
+    }
+
+    fn correlation_id() -> CorrelationId {
+        CorrelationId::from_uuid(uuid::Uuid::now_v7())
     }
 
     async fn create_database(path: &Path) -> Result<(), TestFailure> {
@@ -843,6 +1420,36 @@ mod tests {
         value: i64,
     }
 
+    #[derive(QueryableByName)]
+    struct PasswordResetAuditRow {
+        #[diesel(sql_type = Text)]
+        actor: String,
+        #[diesel(sql_type = Text)]
+        action_kind: String,
+        #[diesel(sql_type = Text)]
+        resource_type: String,
+        #[diesel(sql_type = Text)]
+        resource_id: String,
+        #[diesel(sql_type = Text)]
+        result: String,
+        #[diesel(sql_type = Text)]
+        reason_code: String,
+        #[diesel(sql_type = Text)]
+        redacted_detail_json: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct TextValueRow {
+        #[diesel(sql_type = Text)]
+        value: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct BinaryValueRow {
+        #[diesel(sql_type = Binary)]
+        value: Vec<u8>,
+    }
+
     #[derive(Debug, Snafu)]
     enum TestFailure {
         #[snafu(display("the startup fixture could not be created"))]
@@ -881,5 +1488,35 @@ mod tests {
         InvalidPasswordHash,
         #[snafu(display("independent bootstraps reused a password salt"))]
         PasswordSaltsMatched,
+        #[snafu(display("the password-reset session fixture failed"))]
+        SessionFixtureFailed,
+        #[snafu(display("operator password reset failed unexpectedly"))]
+        PasswordResetFailed,
+        #[snafu(display("an operator password reset failure was expected"))]
+        ExpectedPasswordResetFailure,
+        #[snafu(display("operator password reset returned an unexpected failure"))]
+        UnexpectedPasswordResetFailure,
+        #[snafu(display("operator password reset exposed rejected credentials"))]
+        PasswordResetErrorExposedCredentials,
+        #[snafu(display("operator password reset did not make the exact state transition"))]
+        PasswordResetStateWasNotExact,
+        #[snafu(display("the operator password-reset audit was not exact"))]
+        PasswordResetAuditWasNotExact,
+        #[snafu(display("the old operator password was accepted after reset"))]
+        OldPasswordWasAccepted,
+        #[snafu(display("the new operator password was rejected after reset"))]
+        NewPasswordWasRejected,
+        #[snafu(display("a rejected operator password reset wrote state"))]
+        RejectedPasswordResetWroteState,
+        #[snafu(display("operator password reset read credentials before opening the database"))]
+        CredentialsReadBeforeDatabase,
+        #[snafu(display("operator password reset created a database artifact"))]
+        PasswordResetCreatedDatabaseArtifact,
+        #[snafu(display("operator password reset touched the vault master key"))]
+        PasswordResetTouchedVault,
+        #[snafu(display("repeated operator password reset was not exact"))]
+        RepeatedPasswordResetWasNotExact,
+        #[snafu(display("operator password reset crossed the target-operator boundary"))]
+        PasswordResetOperatorIsolationFailed,
     }
 }
