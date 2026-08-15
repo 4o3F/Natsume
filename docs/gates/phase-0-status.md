@@ -38,7 +38,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 | G0-IN-001 | Server/Client OS、architecture、systemd | `ENV-PROPOSED`（2026-08-14：Client 精确值已提供——Ubuntu 24.04.3/6.14.0-29/x86_64/glibc 2.39/systemd 255；Server 变更为 Ubuntu 26 官方镜像，精确值待补；见[支持平台](../supported-platform.md) §4.2） |
 | G0-IN-002 | Server endpoint 与单 TCP 端口 | `RESOLVED`：地址按部署配置，不需要仓库 IP literal；端口固定 `8443` |
 | G0-IN-003 | Caddy version/modules/source/checksum | `RESOLVED`：2.11.4 标准发行版已固定并由 `just ci-packages` 校验 |
-| G0-IN-004 | Browser、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | 大部分推进：桌面 Xfce + X11（2026-08-14 变更自 GNOME）；xheaders 协议契约已确认，认证语义核实为 password-verifying；Browser 由所有者豁免至 Web Panel 阶段；upstream 必须 TLS（origin CA 签发）与版本策略已定（[支持平台](../supported-platform.md) §4.2）。剩余 DOMjudge lab（upstream 不可访问）、Slint closure、lock API 定案 |
+| G0-IN-004 | Browser、DOMjudge（xheaders/brotli/TLS）、当期桌面、XDG、Slint、lock API | 大部分推进：桌面 Xfce + X11（2026-08-14 变更自 GNOME）；xheaders 协议契约已确认，认证语义核实为 password-verifying；Browser 由所有者豁免至 Web Panel 阶段；upstream 必须 TLS（origin CA 签发）与版本策略已定；Slint runtime closure 已实测（均见[支持平台](../supported-platform.md) §4.2）。剩余 DOMjudge lab（upstream 不可访问）、lock API 定案、镜像加装中文 IME（新发现缺口） |
 | G0-IN-005 | 硬件 fixture 集（v1 事故 + 代表性异构） | `BLOCKED-INPUT`：所需字段与场景清单见 [支持平台](../supported-platform.md) §4.1 |
 | G0-IN-006 | PKI test material（control CA / origin CA）与 owner | `RESOLVED`：两根均自签；test material 由 `rcgen` 运行时生成 |
 | G0-IN-007 | v2.8 current-fact、BindingRevision、provisioning recovery、Panel Command ID 与 frozen-payload 文档/术语签收 | `RESOLVED`（2026-08-14）：五主题 23 项悬项由仓库所有者逐项决议；术语与冻结面实施于 commit `cbe7d46` 与 `b457e7f`，含 fingerprint v1 算法、命令族七族收敛、Identifier 契约、审计词汇注册表与 18 表清单 |
@@ -50,6 +50,7 @@ Phase 0 工程基线尚未完成。本文件手写追踪 G0 进度。条目通�
 已执行记录：
 
 - 条目 12（client 半）首次运行（2026-08-14，deb 构建于 `294aa87`，client 镜像 VM `icpc`）：**带已知限制，不作为通过证据**——VM 带 V1 残留（`/etc/natsume/config.toml`），安装走 conffile 冲突分支，干净首装路径未验证；owner 确认 fleet 无 V1 残留、仅此测试 VM 有。该次运行暴露 harness 开场静默 purge 掩盖脏状态的缺陷，已以干净 VM 守卫修复（`4ee6195`）。
+- 条目 11 首次执行（2026-08-14，VM `icpc` 图形会话，deb 构建于 `435b819`/`7b096f4`）：**已覆盖并通过**——XDG 直启同一 binary（autostart 实例 `pgrep` 参数恰为 `--autostart`）、初始 resident + hidden（进程在、零窗口）、typed trigger 后 lazy Slint window（`ui_probe` 全部屏形态）、CJK 渲染、HiDPI 缩放、focus result 可观察、无 systemd user unit（计数 0）；冷启动至 resident marker 59 ms。**镜像缺口**——中文 IME：当期镜像不带中文输入法，输入项未验证（`G0-IN-004` 已登记，加装后复验）。**Phase 6 接线后复跑**——lock/unlock、terminate/replacement、display lost 与 crash recovery、logind 识别、lock/unlock 的 Caddy 调用数。**观察项**——XDG autostart 实例的 stderr 未落于 `~/.xsession-errors`/lightdm 日志（agent 日志路由归 Phase 6）；probe confirm 回路因 example 缺日志初始化未能观察，已修复待复验。条目保持 `OPEN` 至 IME 复验与 Phase 6 项闭合。
 - 条目 12（client 半）干净 VM 运行（2026-08-14 15:15–15:17 UTC，VM `icpc`：`6.14.0-29-generic`/`x86_64`/systemd `255.4-1ubuntu8.10`/glibc `2.39-0ubuntu8.5`；deb 构建于 `294aa87`，harness 含 `4ee6195` 守卫）：干净首装无 conffile 提示；**post-reboot 结论行原样在录**——`phase0-lifecycle: install/reinstall/upgrade/reconfigure/reboot/remove/purge passed`，`COMMAND_EXIT_CODE=0`。已知限制：pre-reboot 自身结论行因 `script` 缓冲随 reboot 丢失未被捕获，其完成性由 post-reboot 的 state-file 前置门（仅在 pre-reboot 末步写入）与全量断言结构性证明。运行中在干净 VM 复现 debconf `$action` 警告，根因为 postinst 函数内懒加载 confmodule 致 frontend 重执行丢参，已修复（`68213a8`），运行时复核并入下一次 VM 运行。client 半证据至此完整；条目关闭待 Server 半（Ubuntu 26 镜像）。
 
 每次验证记录：主题、`COMMIT_SHA`、精确环境或硬件标识、步骤、正向与负向结果、artifact 路径、日期、已知限制。部分通过记为未通过。
