@@ -12,6 +12,7 @@ use crate::{
         contest::ContestError,
         import::{CsvImportErrorCategory, ImportError},
         operator::OperatorError,
+        provisioning::ProvisioningError,
     },
     audit::CorrelationId,
 };
@@ -228,6 +229,20 @@ impl ApiError {
         }
     }
 
+    pub(super) fn from_provisioning(
+        error: ProvisioningError,
+        correlation_id: CorrelationId,
+    ) -> Self {
+        match error {
+            ProvisioningError::RevisionOverflow => {
+                Self::internal_error("provisioning_revision_overflow", correlation_id)
+            }
+            ProvisioningError::PersistenceFailed => {
+                Self::internal_error("provisioning_persistence_failed", correlation_id)
+            }
+        }
+    }
+
     fn import_error(
         status: StatusCode,
         title: &'static str,
@@ -312,7 +327,10 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        application::import::{ImportError, parse_csv},
+        application::{
+            import::{ImportError, parse_csv},
+            provisioning::ProvisioningError,
+        },
         config::LogLevel,
         logging::tests::{CapturedLogs, SubscriberTestGuard},
     };
@@ -345,6 +363,11 @@ mod tests {
             }
             for (error, cause, status) in import_causes() {
                 let rendered = ApiError::from_import(error, correlation_id);
+                assert_cause_stays_internal(rendered, cause, status).await?;
+                causes.push(cause);
+            }
+            for (error, cause, status) in provisioning_causes() {
+                let rendered = ApiError::from_provisioning(error, correlation_id);
                 assert_cause_stays_internal(rendered, cause, status).await?;
                 causes.push(cause);
             }
@@ -504,6 +527,21 @@ mod tests {
             (
                 OperatorError::PasswordMismatch,
                 "operator_password_mismatch",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+        ]
+    }
+
+    fn provisioning_causes() -> [(ProvisioningError, &'static str, StatusCode); 2] {
+        [
+            (
+                ProvisioningError::RevisionOverflow,
+                "provisioning_revision_overflow",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            (
+                ProvisioningError::PersistenceFailed,
+                "provisioning_persistence_failed",
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ]

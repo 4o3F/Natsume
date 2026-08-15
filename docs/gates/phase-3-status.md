@@ -15,9 +15,11 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 | WP3 | Client：privileged raw collectors（DMI/disk 实读）、identity file 原子写、identity-first startup、凭据文件 | `OPEN` |
 | WP4 | Client enrollment 流程接线 + 替换语义 | `OPEN` |
 
+- WP2a（provisioning window operator API：open / close / read）已随本变更落地；WP2 总体状态保持 `OPEN`。
+
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 
-- provisioning window open/close 的 operator HTTP 面（§3.3 表无此端点；audit 词汇 `close_provisioning_window` 已注册，open 侧需按纪律先注册）
+- provisioning window open/close 的 operator HTTP 面（启动时待冻结；现由上述 WP2a 按 §3.3 route 与 §3.6.4 audit registry 落地，保留本项作为启动记录）
 - enrollment request 的 device 侧 wire（路径、`202` + 轮询语义、与 `approveEnrollment` 的资源关系）
 - Gateway leaf 签发的服务端 CA 材料来源与存放（ADR-0033 权威；G0-IN-006：双根自签）
 

@@ -1,7 +1,7 @@
 use snafu::Snafu;
 
 use crate::{
-    audit::AuditEventId,
+    audit::{AuditEventId, CorrelationId},
     db::{self, Database},
 };
 
@@ -21,6 +21,12 @@ pub enum RecoveryOutcome {
 pub enum ProvisioningWindowState {
     Closed,
     Open,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProvisioningWindowAction {
+    Open,
+    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +71,46 @@ pub(crate) fn recovered_provisioning_window(
 /// persistence failure.
 pub async fn recover_on_startup(database: &Database) -> Result<RecoveryOutcome, ProvisioningError> {
     db::provisioning::recover_provisioning_window(database).await
+}
+
+/// Reads the current provisioning-window fact.
+///
+/// # Errors
+///
+/// Returns [`ProvisioningError::PersistenceFailed`] when the singleton cannot
+/// be read or contains invalid facts.
+pub(crate) async fn read_window(
+    database: &Database,
+) -> Result<ProvisioningWindow, ProvisioningError> {
+    db::provisioning::read_window(database).await
+}
+
+/// Applies the repeat-safe operator open action and its audit atomically.
+///
+/// # Errors
+///
+/// Returns [`ProvisioningError::RevisionOverflow`] when an effective transition
+/// cannot advance the revision, or [`ProvisioningError::PersistenceFailed`] for
+/// any persistence failure.
+pub(crate) async fn open_window(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<ProvisioningWindow, ProvisioningError> {
+    db::provisioning::open_window(database, correlation_id).await
+}
+
+/// Applies the repeat-safe operator close action and its audit atomically.
+///
+/// # Errors
+///
+/// Returns [`ProvisioningError::RevisionOverflow`] when an effective transition
+/// cannot advance the revision, or [`ProvisioningError::PersistenceFailed`] for
+/// any persistence failure.
+pub(crate) async fn close_window(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<ProvisioningWindow, ProvisioningError> {
+    db::provisioning::close_window(database, correlation_id).await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]

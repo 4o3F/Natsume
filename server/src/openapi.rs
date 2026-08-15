@@ -15,7 +15,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -47,7 +47,10 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
         crate::http::handler::import::commit_import,
-        crate::http::handler::import::discard_import
+        crate::http::handler::import::discard_import,
+        crate::http::handler::provisioning::get_provisioning_window,
+        crate::http::handler::provisioning::open_provisioning_window,
+        crate::http::handler::provisioning::close_provisioning_window
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -64,7 +67,8 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::import::ImportPendingSummary,
         crate::http::handler::import::ImportPendingResponse,
         crate::http::handler::import::ImportCommitRequest,
-        crate::http::handler::import::ImportCommitResponse
+        crate::http::handler::import::ImportCommitResponse,
+        crate::http::handler::provisioning::ProvisioningWindowResponse
     ))
 )]
 struct MountedDocument;
@@ -384,6 +388,26 @@ mod tests {
         "/components/schemas/ImportCommitRequest/properties/preview_token",
     ];
     type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
+    const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
+        (
+            "get",
+            "/api/v2/provisioning-window",
+            "getProvisioningWindow",
+            &["200", "401", "500"],
+        ),
+        (
+            "post",
+            "/api/v2/provisioning-window/actions/open",
+            "openProvisioningWindow",
+            &["200", "401", "403", "500"],
+        ),
+        (
+            "post",
+            "/api/v2/provisioning-window/actions/close",
+            "closeProvisioningWindow",
+            &["200", "401", "403", "500"],
+        ),
+    ];
 
     #[test]
     fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
@@ -495,6 +519,7 @@ mod tests {
             ),
         ];
         rows.iter()
+            .chain(PROVISIONING_OPERATION_ROWS.iter())
             .map(|(method, path, operation_id, statuses)| {
                 (
                     ((*method).to_owned(), (*path).to_owned()),
@@ -573,7 +598,7 @@ mod tests {
             .and_then(Value::as_str)
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         if description
-            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         {
             return Err(TestFailure::InfoDescriptionChanged);
         }
@@ -615,6 +640,91 @@ mod tests {
             {
                 return Err(TestFailure::LifecyclePathContractChanged);
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn provisioning_window_operations_and_response_schema_are_closed_and_exact()
+    -> Result<(), TestFailure> {
+        let value = serialized_document()?;
+        for (path, method) in [
+            ("/api/v2/provisioning-window", "get"),
+            ("/api/v2/provisioning-window/actions/open", "post"),
+            ("/api/v2/provisioning-window/actions/close", "post"),
+        ] {
+            let operation = operation_at(&value, path, method)?;
+            if operation.get("requestBody").is_some()
+                || nested_value(
+                    operation,
+                    &[
+                        "responses",
+                        "200",
+                        "content",
+                        "application/json",
+                        "schema",
+                        "$ref",
+                    ],
+                )
+                .and_then(Value::as_str)
+                    != Some("#/components/schemas/ProvisioningWindowResponse")
+            {
+                return Err(TestFailure::ProvisioningWindowContractChanged);
+            }
+        }
+
+        let response = value
+            .pointer("/components/schemas/ProvisioningWindowResponse")
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        let properties = response
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        let required = response
+            .get("required")
+            .and_then(Value::as_array)
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<BTreeSet<_>>>()
+            })
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        let states = properties
+            .get("state")
+            .and_then(|state| state.get("enum"))
+            .and_then(Value::as_array)
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<BTreeSet<_>>>()
+            })
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        if properties
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != BTreeSet::from(["revision", "state"])
+            || required != BTreeSet::from(["revision", "state"])
+            || states != BTreeSet::from(["closed", "open"])
+            || properties
+                .get("state")
+                .and_then(|state| state.get("type"))
+                .and_then(Value::as_str)
+                != Some("string")
+            || properties
+                .get("revision")
+                .and_then(|revision| revision.get("format"))
+                .and_then(Value::as_str)
+                != Some("int64")
+            || response
+                .get("additionalProperties")
+                .and_then(Value::as_bool)
+                != Some(false)
+        {
+            return Err(TestFailure::ProvisioningWindowContractChanged);
         }
         Ok(())
     }
@@ -1452,6 +1562,8 @@ mod tests {
         LifecyclePathContractChanged,
         #[snafu(display("the import OpenAPI contract changed"))]
         ImportContractChanged,
+        #[snafu(display("the provisioning-window OpenAPI contract changed"))]
+        ProvisioningWindowContractChanged,
         #[snafu(display("the Command description changed"))]
         CommandDescriptionChanged,
         #[snafu(display("the Command ID contract changed"))]

@@ -185,6 +185,54 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/provisioning-window": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getProvisioningWindow"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/provisioning-window/actions/close": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["closeProvisioningWindow"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/provisioning-window/actions/open": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["openProvisioningWindow"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/seats": {
     parameters: {
       query?: never;
@@ -307,6 +355,12 @@ export interface components {
       seats_added: string[];
       seats_removed: string[];
       unchanged_count: number;
+    };
+    ProvisioningWindowResponse: {
+      /** Format: int64 */
+      revision: number;
+      /** @enum {string} */
+      state: "closed" | "open";
     };
     PutCommandRequest: {
       device_id: components["schemas"]["CanonicalUuidV7"];
@@ -1098,6 +1152,160 @@ export interface operations {
       };
       /** @description Import candidate unavailable */
       404: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getProvisioningWindow: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current provisioning-window fact */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProvisioningWindowResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  closeProvisioningWindow: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Provisioning window closed or already closed */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProvisioningWindowResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  openProvisioningWindow: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Provisioning window opened or already open */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProvisioningWindowResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
         headers: {
           /** @description Server-generated canonical UUIDv7 correlation ID */
           "X-Correlation-Id"?: string;

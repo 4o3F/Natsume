@@ -5,6 +5,11 @@ import openapi from "../../openapi/natsume.openapi.json";
 const ENROLLMENT_APPROVE_PATH =
   "/api/v2/enrollment-requests/{request_id}/actions/approve";
 const COMMAND_PATH = "/api/v2/commands/{command_id}";
+const PROVISIONING_WINDOW_PATH = "/api/v2/provisioning-window";
+const OPEN_PROVISIONING_WINDOW_PATH =
+  "/api/v2/provisioning-window/actions/open";
+const CLOSE_PROVISIONING_WINDOW_PATH =
+  "/api/v2/provisioning-window/actions/close";
 const SESSION_REQUEST_PASSWORD_PATH =
   "/components/schemas/SessionRequest/properties/password";
 const IMPORT_COMMIT_TOKEN_PATH =
@@ -147,6 +152,9 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       "/api/v2/imports",
       "/api/v2/imports/{import_id}/actions/commit",
       "/api/v2/imports/{import_id}/actions/discard",
+      PROVISIONING_WINDOW_PATH,
+      CLOSE_PROVISIONING_WINDOW_PATH,
+      OPEN_PROVISIONING_WINDOW_PATH,
       "/api/v2/seats",
       "/api/v2/session",
     ]);
@@ -192,6 +200,15 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       openapi.paths["/api/v2/imports/{import_id}/actions/discard"].post
         .operationId,
     ).toBe("discardCsvImport");
+    expect(openapi.paths[PROVISIONING_WINDOW_PATH].get.operationId).toBe(
+      "getProvisioningWindow",
+    );
+    expect(openapi.paths[OPEN_PROVISIONING_WINDOW_PATH].post.operationId).toBe(
+      "openProvisioningWindow",
+    );
+    expect(openapi.paths[CLOSE_PROVISIONING_WINDOW_PATH].post.operationId).toBe(
+      "closeProvisioningWindow",
+    );
     expect(openapi.paths[ENROLLMENT_APPROVE_PATH].post.operationId).toBe(
       "approveEnrollment",
     );
@@ -321,6 +338,31 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     expect(JSON.stringify(openapi).toLowerCase()).not.toContain(
       "idempotency-key",
     );
+  });
+
+  it("freezes the mounted provisioning-window operations and response sets", () => {
+    const read = openapi.paths[PROVISIONING_WINDOW_PATH].get;
+    expect(read.operationId).toBe("getProvisioningWindow");
+    expectResponseSet(read, ["200", "401", "500"]);
+
+    for (const [path, operationId] of [
+      [OPEN_PROVISIONING_WINDOW_PATH, "openProvisioningWindow"],
+      [CLOSE_PROVISIONING_WINDOW_PATH, "closeProvisioningWindow"],
+    ] as const) {
+      const operation = openapi.paths[path].post;
+      expect(operation.operationId).toBe(operationId);
+      expectResponseSet(operation, ["200", "401", "403", "500"]);
+    }
+
+    expect(openapi.components.schemas.ProvisioningWindowResponse).toEqual({
+      type: "object",
+      required: ["state", "revision"],
+      properties: {
+        revision: { type: "integer", format: "int64" },
+        state: { type: "string", enum: ["closed", "open"] },
+      },
+      additionalProperties: false,
+    });
   });
 
   it("permits only the frozen session and import credential keys", () => {

@@ -80,6 +80,14 @@ HTTP 错误响应的 media type 固定为 `application/json`。wire body 只包�
 | `POST` | `/api/v2/imports/{import_id}/actions/commit` | `admin` | 校验 canonical ID、preview token 与双 revision CAS 后原子替换 confirmed configuration |
 | `POST` | `/api/v2/imports/{import_id}/actions/discard` | `admin` | 删除 pending candidate 与其 encrypted payload，不改变 confirmed truth |
 
+**2026-08-16 修订（Phase 3 WP2a）**：挂载以下 provisioning-window operator route：
+
+| Method | Path | 角色 | 语义 |
+|---|---|---|---|
+| `POST` | `/api/v2/provisioning-window/actions/open` | `admin` | 按 [ADR-0033](adr/0033-enrollment-and-device-control-boundary.md) 打开当前 provisioning window；目标已满足时 repeat-safe `noop` |
+| `POST` | `/api/v2/provisioning-window/actions/close` | `admin` | 按 [ADR-0033](adr/0033-enrollment-and-device-control-boundary.md) 关闭当前 provisioning window；目标已满足时 repeat-safe `noop` |
+| `GET` | `/api/v2/provisioning-window` | `admin` / `viewer` | 按 [ADR-0033](adr/0033-enrollment-and-device-control-boundary.md) 返回当前 `{state, revision}` fact |
+
 **禁止**：
 
 - 返回 password 值；
@@ -183,6 +191,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 **2026-08-16 修订**：Phase 2 在上述 Stage 术语下新增挂载 `getCsvImport`、`createCsvImport`、`commitCsvImport` 与 `discardCsvImport`，四者均为真实 handler。OpenAPI 除已挂载 surface 外，现只声明但不挂载 `approveEnrollment`、`putCommand`；`info.description` 必须列出这一 declared-but-unmounted 集合，防止 schema 声明被误读为可调用 route。
 
+**2026-08-16 修订（Phase 3 WP2a）**：新增挂载 `getProvisioningWindow`、`openProvisioningWindow` 与 `closeProvisioningWindow`，三者均为真实 handler；前者允许 `admin` / `viewer`，后两者仅允许 `admin`。
+
 #### 3.6.3 建立与查询
 
 - `POST /api/v2/session` 只接受恰好含 `login_name` 与 `password` 的封闭 JSON object，未知字段必须拒绝。成功同时发送 session cookie 并返回 `200`，响应体只含 `operator_id` 与 `role`。
@@ -215,7 +225,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 | `action_kind` |
 |---|
-| `close_provisioning_window` |
+| `open_provisioning_window`（**已实现**；`operator:self` operator action） |
+| `close_provisioning_window`（**已实现**；`operator:self` operator action 与 `system:recovery` startup recovery） |
 | `create_first_admin` |
 | `reset_operator_password` |
 | `establish_session` |
@@ -234,15 +245,16 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `initial_provisioning` | `create_first_admin` |
 | `credential_recovery` | `reset_operator_password` |
 | `credentials_verified` | `establish_session` |
-| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
+| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（已实现） |
-| `target_already_satisfied` | `revoke_device` / `disable_device` 的 `noop` 结果 |
+| `target_already_satisfied` | `revoke_device` / `disable_device` 与 `open_provisioning_window` / `close_provisioning_window` 的 `noop` 结果 |
 | `candidate_invalid` | `create_import_candidate` 的 `rejected` 结果（已实现） |
 | `baseline_stale` | `commit_import` 的 `rejected` 结果 |
 | `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
 
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
+| `open_provisioning_window` | `previous_revision`、`new_revision` |
 | `close_provisioning_window` | `previous_revision`、`new_revision` |
 | `create_first_admin` | `role` |
 | `reset_operator_password` | `removed_session_count` |

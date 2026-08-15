@@ -295,39 +295,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
         Path::new("/natsume-integration-test-unused-vault-master-key"),
         Path::new("/natsume-integration-test-unused-web-root"),
     );
-    let mounted = [
-        (Method::GET, "/api/v2/health", StatusCode::OK),
-        (Method::POST, "/api/v2/session", StatusCode::BAD_REQUEST),
-        (Method::GET, "/api/v2/session", StatusCode::UNAUTHORIZED),
-        (Method::DELETE, "/api/v2/session", StatusCode::NO_CONTENT),
-        (Method::GET, "/api/v2/seats", StatusCode::UNAUTHORIZED),
-        (Method::GET, "/api/v2/accounts", StatusCode::UNAUTHORIZED),
-        (Method::GET, "/api/v2/devices", StatusCode::UNAUTHORIZED),
-        (Method::GET, "/api/v2/bindings", StatusCode::UNAUTHORIZED),
-        (Method::GET, "/api/v2/imports", StatusCode::UNAUTHORIZED),
-        (
-            Method::POST,
-            "/api/v2/devices/01900000-0000-7000-8000-000000000399/actions/revoke",
-            StatusCode::UNAUTHORIZED,
-        ),
-        (
-            Method::POST,
-            "/api/v2/devices/01900000-0000-7000-8000-000000000399/actions/disable",
-            StatusCode::UNAUTHORIZED,
-        ),
-        (Method::POST, "/api/v2/imports", StatusCode::UNAUTHORIZED),
-        (
-            Method::POST,
-            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/commit",
-            StatusCode::UNAUTHORIZED,
-        ),
-        (
-            Method::POST,
-            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/discard",
-            StatusCode::UNAUTHORIZED,
-        ),
-    ];
-    for (method, path, expected) in mounted {
+    for (method, path, expected) in mounted_operator_routes() {
         assert_eq!(drive(&application, method, path).await, expected, "{path}");
     }
 
@@ -365,6 +333,7 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
         operation_ids,
         [
             "approveEnrollment",
+            "closeProvisioningWindow",
             "commitCsvImport",
             "createCsvImport",
             "createSession",
@@ -373,11 +342,13 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             "discardCsvImport",
             "getCsvImport",
             "getHealth",
+            "getProvisioningWindow",
             "getSession",
             "listAccounts",
             "listBindings",
             "listDevices",
             "listSeats",
+            "openProvisioningWindow",
             "putCommand",
             "revokeDevice",
         ]
@@ -387,9 +358,59 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             .pointer("/info/description")
             .and_then(Value::as_str),
         Some(
-            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
         )
     );
+}
+
+fn mounted_operator_routes() -> [(Method, &'static str, StatusCode); 17] {
+    [
+        (Method::GET, "/api/v2/health", StatusCode::OK),
+        (Method::POST, "/api/v2/session", StatusCode::BAD_REQUEST),
+        (Method::GET, "/api/v2/session", StatusCode::UNAUTHORIZED),
+        (Method::DELETE, "/api/v2/session", StatusCode::NO_CONTENT),
+        (Method::GET, "/api/v2/seats", StatusCode::UNAUTHORIZED),
+        (Method::GET, "/api/v2/accounts", StatusCode::UNAUTHORIZED),
+        (Method::GET, "/api/v2/devices", StatusCode::UNAUTHORIZED),
+        (Method::GET, "/api/v2/bindings", StatusCode::UNAUTHORIZED),
+        (Method::GET, "/api/v2/imports", StatusCode::UNAUTHORIZED),
+        (
+            Method::GET,
+            "/api/v2/provisioning-window",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/devices/01900000-0000-7000-8000-000000000399/actions/revoke",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/devices/01900000-0000-7000-8000-000000000399/actions/disable",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (Method::POST, "/api/v2/imports", StatusCode::UNAUTHORIZED),
+        (
+            Method::POST,
+            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/commit",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/imports/01900000-0000-7000-8000-000000000399/actions/discard",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/provisioning-window/actions/open",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/provisioning-window/actions/close",
+            StatusCode::UNAUTHORIZED,
+        ),
+    ]
 }
 
 async fn drive(application: &Router, method: Method, path: &str) -> StatusCode {
