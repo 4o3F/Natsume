@@ -93,6 +93,18 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 - 任何 invalid、stale、expiry、discard、authorization failure 或 transaction failure **均不得改变 confirmed truth、binding 或相关 revision**；
 - 清空 confirmed configuration 只能通过独立 single-lifetime reset，不得由 import 隐式完成。
 
+**2026-08-15 修订（Phase 2 启动冻结：import HTTP 面与 preview evidence 字段）**：
+
+- 传输：`POST /api/v2/imports`，`Content-Type: text/csv`（UTF-8，允许 BOM），`admin` only。request body 是硬编码 route 级安全常量 `CSV_IMPORT_BODY_LIMIT_BYTES = 4_194_304`（4 MiB，约为 500 席位 CSV 的 80 倍余量），只施加于 imports `MethodRouter`，不入 `config.toml`；超限在解析与任何数据库访问前返回 `413`。
+- 上传同步完成严格解析、加密 staging、diff 分类与 candidate 落库，成功返回 `201` 与 `ImportPreviewResponse`：`candidate_id`（canonical UUIDv7）、`preview_token`（opaque，仅在本响应呈现一次）、`expires_at`（RFC 3339 UTC）、`baseline_configuration_revision`、`baseline_binding_revision`、`diff`。TTL 冻结为常量 `IMPORT_CANDIDATE_TTL_SECONDS = 1_800`（30 分钟），不入 `config.toml`。
+- `preview_token` 为 32 字节 CSPRNG，以无填充 URL-safe base64 呈现；数据库只存其 SHA-256；比较必须常量时间。
+- `diff`（redacted，Server 唯一权威）字段冻结为：`seats_added[]`（seat_code）、`seats_removed[]`（seat_code）、`mappings_changed[]`（`{seat_code, current_domjudge_username|null, candidate_domjudge_username}`，只含存续 Seat）、`unchanged_count`（存续且 mapping 不变的 Seat 数）、`affected_account_count`（candidate 配置内全部 Account 数——commit 后其 `credential_revision` 无条件推进的对象）、`binding_impacts[]`（`{seat_code, device_id}`，被移除且当前有 Binding 的 Seat）。全部列表按 `seat_code` 升序，保证 golden 可比。密码内容是否变化不分类、不出现（既有冻结）。
+- Commit：`POST /api/v2/imports/{import_id}/actions/commit`，body `{preview_token}`，`admin` only；`import_id` 必须与 `candidate_id` canonical 逐字符相等。成功 `200` 返回 `{configuration_revision, binding_revision}`（提交后现值）。
+- Discard：`POST /api/v2/imports/{import_id}/actions/discard`，无 body，`admin` only；成功 `204`。**不要求 `preview_token`**——token 只存在于浏览器内存，页面刷新即丢失；若 discard 也要求 token，operator 将被锁死至过期而无法重传。discard 是零业务变更操作，admin session 已是足够授权；commit 保持 token 必需（第二次显式确认，并把提交绑定到已审阅的 preview）。
+- 错误映射（复用 error-code registry 既有冻结码；随 route 挂载登入 §3.6.5 表）：解析失败、结构错误、candidate 内重复 account、空或仅 header → `400 IMPORT_CANDIDATE_INVALID`；存在 pending 时的再次 upload → `409 IMPORT_CANDIDATE_PENDING`；未知、已过期或已 discard 的 `import_id`，以及 **`preview_token` 不匹配** → `404 IMPORT_CANDIDATE_UNAVAILABLE`（token 不匹配与 candidate 不存在必须不可区分，不给未持 token 方提供 candidate 存在性 oracle；audit 内部以 `reason_code` 区分真相）；baseline 任一前移 → `409 IMPORT_PREVIEW_STALE`。
+- 过期为 lazy 清理（与 expired session row 同原则）：首个观察到 expired candidate 的 import surface 请求在同一事务内删除 candidate 与 payload vault row 并审计一次，不运行 background cleaner。
+- 审计词汇已按 §3.6.4「先注册后写入器」纪律登记（RESERVED 直至对应写入器落地）。
+
 ### 3.5 Direct Command creation
 
 Command create/replay 的唯一 HTTP 资源契约为：
@@ -196,6 +208,10 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `expire_session` |
 | `revoke_device` |
 | `disable_device` |
+| `create_import_candidate`（**RESERVED**，§3.4 Phase 2） |
+| `commit_import`（**RESERVED**，§3.4 Phase 2） |
+| `discard_import_candidate`（**RESERVED**，§3.4 Phase 2） |
+| `expire_import_candidate`（**RESERVED**，§3.4 Phase 2） |
 
 | `reason_code` | 当前使用处 |
 |---|---|
@@ -203,9 +219,12 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `initial_provisioning` | `create_first_admin` |
 | `credential_recovery` | `reset_operator_password` |
 | `credentials_verified` | `establish_session` |
-| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device` 的 `succeeded` 结果 |
-| `absolute_expiry_observed` | `expire_session` |
+| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device` 的 `succeeded` 结果；**RESERVED**：`create_import_candidate` / `commit_import` 的 `succeeded` 与 `discard_import_candidate` |
+| `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（**RESERVED**） |
 | `target_already_satisfied` | `revoke_device` / `disable_device` 的 `noop` 结果 |
+| `candidate_invalid` | **RESERVED**：`create_import_candidate` 的 `rejected` 结果 |
+| `baseline_stale` | **RESERVED**：`commit_import` 的 `rejected` 结果 |
+| `preview_token_mismatch` | **RESERVED**：`commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
 
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
@@ -215,6 +234,10 @@ Stage 5B OpenAPI 除已挂载 surface 外，只声明但不挂载 `createCsvImpo
 | `establish_session` | `role` |
 | `terminate_session` | 无（`{}`） |
 | `expire_session` | 无（`{}`） |
+| `create_import_candidate`（RESERVED） | `succeeded`：`seats_added_count`、`seats_removed_count`、`mappings_changed_count`、`binding_impact_count`；`rejected`：无（`{}`） |
+| `commit_import`（RESERVED） | `succeeded`：前四计数 + `credential_revision_advanced_count`、`configuration_revision_advanced`、`binding_revision_advanced`；`rejected`：无（`{}`） |
+| `discard_import_candidate`（RESERVED） | 无（`{}`） |
+| `expire_import_candidate`（RESERVED） | 无（`{}`） |
 | `revoke_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 | `disable_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 
