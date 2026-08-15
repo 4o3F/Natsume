@@ -33,7 +33,7 @@
 
 ### Stage 与 Phase 的关系
 
-仓库同时使用两套编号，它们是**正交的两条轴**，编号相同不表示同一件事：`Phase` 是本文件拥有的结果/Gate 轴（Phase 0–7 与 G0–G7）；`Stage` 是实现交付增量轴，只出现在 [契约](contracts.md)、Server 代码与 `server/README.md` 中。正交性的直接证据是 [契约](contracts.md) §3.6.2 自身的表述：**Stage 5B 挂载的是九个 Phase 1 operator operation**，因此「Stage 5B」不表示项目已进入 Phase 5。当前 Phase 与 Gate 状态只以本文件与 [`gates/phase-0-status.md`](gates/phase-0-status.md) 为准。
+仓库同时使用两套编号，它们是**正交的两条轴**，编号相同不表示同一件事：`Phase` 是本文件拥有的结果/Gate 轴（Phase 0–7 与 G0–G7）；`Stage` 是实现交付增量轴，只出现在 [契约](contracts.md)、Server 代码与 `server/README.md` 中。正交性的直接证据是 [契约](contracts.md) §3.6.2 自身的表述：**Stage 5B 挂载的是九个 Phase 1 operator operation**，因此「Stage 5B」不表示项目已进入 Phase 5。当前 Phase 与 Gate 状态只以本文件、[`gates/phase-0-status.md`](gates/phase-0-status.md) 与 [`gates/phase-1-status.md`](gates/phase-1-status.md) 为准。
 
 下表只登记仓库中**实际出现**的 Stage 编号，每行给出可定位出处；它**不是穷举的 Stage 序列**：
 
@@ -98,7 +98,7 @@ clean checkout 的 mandatory CI 真实运行；toolchain/artifact pin 可审计�
 | 镜像晚到/大版本变化 | `G0-IN-001/004` 输入门禁 + 重验清单（ADR-0035） |
 | package 拓扑只在文档 | install/upgrade/reboot smoke |
 
-当前 Gate 与输入门禁状态见 [`gates/phase-0-status.md`](gates/phase-0-status.md)。
+当前 Gate 与输入门禁状态见 [`gates/phase-0-status.md`](gates/phase-0-status.md) 与 [`gates/phase-1-status.md`](gates/phase-1-status.md)。
 
 ## 5. Phase 1–7：结果与 Gate 主题
 
