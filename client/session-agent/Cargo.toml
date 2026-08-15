@@ -12,6 +12,7 @@ build = "build.rs"
 natsume-local-control-api = { path = "../../crates/local-control-api" }
 serde.workspace = true
 slint.workspace = true
+tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zbus.workspace = true

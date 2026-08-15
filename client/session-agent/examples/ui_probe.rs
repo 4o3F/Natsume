@@ -99,6 +99,16 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Same ambient-runtime requirement as the product binary: the winit
+    // backend's XDG portal client is tokio-flavored zbus.
+    let runtime = match tokio::runtime::Runtime::new() {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            write_error(&format!("failed to start the tokio runtime: {error}"));
+            return ExitCode::FAILURE;
+        }
+    };
+    let _runtime_guard = runtime.enter();
     if let Err(error) = ui::apply(&snapshot(screen)) {
         write_error(&format!("failed to apply snapshot: {error}"));
         return ExitCode::FAILURE;

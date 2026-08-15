@@ -13,6 +13,7 @@ const EVENT_LOOP_FAILURE_REASON: &str = "slint_event_loop_failed";
 enum RunError {
     Invocation(&'static str),
     Platform(slint::PlatformError),
+    Runtime(io::Error),
 }
 
 fn run() -> Result<(), RunError> {
@@ -26,6 +27,12 @@ fn run() -> Result<(), RunError> {
             // BEFORE the backend/event-loop initialization below (ADR-0035
             // orders session validation ahead of serving local UI).
             //
+            // The workspace zbus is tokio-flavored, and Slint's winit backend
+            // talks to the XDG desktop portal through zbus, so an ambient
+            // tokio runtime must exist before the event loop starts or the
+            // first portal call panics on the real desktop image.
+            let runtime = tokio::runtime::Runtime::new().map_err(RunError::Runtime)?;
+            let _runtime_guard = runtime.enter();
             // The residency marker must only fire once the loop is actually
             // pumping. invoke_from_event_loop rejects until the loop exists,
             // so a helper thread retries the enqueue with a bounded budget: on
@@ -75,6 +82,14 @@ fn main() -> ExitCode {
                 reason = EVENT_LOOP_FAILURE_REASON,
                 error = %error,
                 "session agent event loop failed"
+            );
+            ExitCode::from(3)
+        }
+        Err(RunError::Runtime(error)) => {
+            tracing::error!(
+                reason = EVENT_LOOP_FAILURE_REASON,
+                error = %error,
+                "session agent runtime initialization failed"
             );
             ExitCode::from(3)
         }

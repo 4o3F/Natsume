@@ -3403,6 +3403,7 @@ dependencies = [
  "serde",
  "slint",
  "slint-build",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "zbus",
