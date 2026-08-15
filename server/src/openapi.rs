@@ -903,7 +903,7 @@ mod tests {
         records: &[OperationRecord],
     ) -> Result<BTreeSet<(String, String)>, TestFailure> {
         let fixture = TestDatabase::new().await?;
-        let application = http::router(fixture.database.clone());
+        let application = http::router(fixture.database.clone(), http::tests::unused_web_root());
         let mut paths = records
             .iter()
             .map(|record| record.path.clone())

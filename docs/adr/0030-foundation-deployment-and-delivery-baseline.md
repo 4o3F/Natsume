@@ -22,6 +22,7 @@ Natsume 同时包含 Rust Server/Client、TypeScript Web、Debian packaging 与�
 - `just` 只分发原生命令，不成为第二个依赖解析器、workspace 抽象或 build graph。
 - nFPM 只把已构建的固定路径产物映射为 Server/Client Deb；package lifecycle 不编译产品代码、不下载运行时组件、不生成 CA 或私钥。
 - package 内容、权限、systemd、D-Bus、XDG 与 Caddy 产物必须能从 manifest 和固定构建输出审计。
+- **2026-08-15 修订**：Server 以单监听器同源托管打包面板（`/usr/share/natsume-server/web`，SPA fallback 到 `index.html`，静态响应一律 `no-cache`）；未知 `/api/v2` 路径仍返回 JSON 404。二进制内嵌资产被否决——那会让 Cargo 构建依赖 Web 产物，制造本 ADR 拒绝的第二套构建图耦合。
 
 ### 单赛事生命周期
 

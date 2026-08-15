@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use axum::{
     Router,
@@ -290,7 +290,10 @@ async fn schema_enforces_device_issuance_identity_and_single_active_certificate(
 #[tokio::test]
 async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() {
     let fixture = TestDatabase::new().await;
-    let application = router(fixture.database.clone());
+    let application = router(
+        fixture.database.clone(),
+        Path::new("/natsume-integration-test-unused-web-root"),
+    );
     let mounted = [
         (Method::GET, "/api/v2/health", StatusCode::OK),
         (Method::POST, "/api/v2/session", StatusCode::BAD_REQUEST),

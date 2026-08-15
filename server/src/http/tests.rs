@@ -1,4 +1,7 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use axum::{
     Router,
@@ -214,6 +217,34 @@ impl Drop for TestDatabase {
     }
 }
 
+struct TestWebRoot {
+    path: PathBuf,
+}
+
+impl TestWebRoot {
+    fn new() -> Result<Self, SupportFailure> {
+        let path = std::env::temp_dir().join(format!("natsume-server-web-test-{}", Uuid::now_v7()));
+        fs::create_dir(&path).map_err(|_| SupportFailure::FixtureFailed)?;
+        let web_root = Self { path };
+        fs::create_dir(web_root.path.join("assets")).map_err(|_| SupportFailure::FixtureFailed)?;
+        fs::write(web_root.path.join("index.html"), INDEX_HTML)
+            .map_err(|_| SupportFailure::FixtureFailed)?;
+        fs::write(web_root.path.join("assets/app.js"), APP_JS)
+            .map_err(|_| SupportFailure::FixtureFailed)?;
+        Ok(web_root)
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TestWebRoot {
+    fn drop(&mut self) {
+        let _cleanup_result = fs::remove_dir_all(&self.path);
+    }
+}
+
 pub(super) async fn seed_operator(
     database: &Database,
     login_name: &str,
@@ -259,11 +290,50 @@ const LOGIN_NAME: &str = "http-admin";
 const PASSWORD: &str = "http-password-canary";
 const LOG_LOGIN_NAME: &str = "structured-log-login-name-canary";
 const LOG_PASSWORD: &str = "structured-log-password-canary";
+const INDEX_HTML: &str = "<!doctype html><p>packaged-panel-marker</p>";
+const APP_JS: &str = "globalThis.natsumePanelMarker = true;\n";
+pub(crate) fn unused_web_root() -> &'static Path {
+    Path::new("/natsume-server-test-unused-web-root")
+}
+
+#[tokio::test]
+async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestFailure> {
+    let web_root = TestWebRoot::new()?;
+    let fixture = TestDatabase::new().await?;
+    let application = router(fixture.database.clone(), web_root.path());
+
+    for (path, expected_body) in [
+        ("/", INDEX_HTML),
+        ("/seats", INDEX_HTML),
+        ("/assets/app.js", APP_JS),
+    ] {
+        let response = drive(&application, request(Method::GET, path, "")?).await?;
+        if response.status != StatusCode::OK
+            || response.body != expected_body.as_bytes()
+            || header_text(&response.headers, &header::CACHE_CONTROL)? != "no-cache"
+        {
+            return Err(TestFailure::StaticPanelContractChanged);
+        }
+    }
+
+    let api_not_found = drive(
+        &application,
+        request(Method::GET, "/api/v2/nonexistent", "")?,
+    )
+    .await?;
+    check_error_response(
+        &api_not_found,
+        StatusCode::NOT_FOUND,
+        "Not Found",
+        "INVALID_REQUEST",
+    )?;
+    Ok(())
+}
 
 #[tokio::test]
 async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), TestFailure> {
     let closed_fixture = TestDatabase::new().await?;
-    let health_router = router(closed_fixture.database.clone());
+    let health_router = router(closed_fixture.database.clone(), unused_web_root());
     let _database_lock = test_lock_database(&closed_fixture.path)
         .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
     let health_response =
@@ -277,7 +347,7 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
     let first_correlation = canonical_correlation_id(&health_response.headers)?;
 
     let fixture = TestDatabase::new().await?;
-    let application = router(fixture.database.clone());
+    let application = router(fixture.database.clone(), unused_web_root());
     let supplied = "00000000-0000-7000-8000-000000000000";
     let supplied_request = Request::builder()
         .method(Method::GET)
@@ -368,7 +438,7 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
 async fn completed_request_log_is_single_bounded_and_correlated() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let fixture = TestDatabase::new().await?;
-    let application = router(fixture.database.clone());
+    let application = router(fixture.database.clone(), unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Info);
     let response = async { drive(&application, request(Method::GET, "/api/v2/health", "")?).await }
@@ -402,7 +472,7 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
         LOG_PASSWORD,
     )
     .await?;
-    let application = router(fixture.database.clone());
+    let application = router(fixture.database.clone(), unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
     let (credential, authentication_correlation, internal_correlation) = async {
@@ -486,7 +556,7 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(fixture.database.clone());
+    let application = router(fixture.database.clone(), unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -536,7 +606,7 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(fixture.database.clone());
+    let application = router(fixture.database.clone(), unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -602,7 +672,7 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(fixture.database.clone());
+    let application = router(fixture.database.clone(), unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -688,6 +758,8 @@ enum TestFailure {
     RequestBuildFailed,
     #[snafu(display("the health contract changed"))]
     HealthContractChanged,
+    #[snafu(display("the static Panel serving contract changed"))]
+    StaticPanelContractChanged,
     #[snafu(display("a client correlation ID was accepted"))]
     CorrelationIdWasNotServerOwned,
     #[snafu(display("a mounted HTTP route was unreachable"))]

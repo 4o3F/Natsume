@@ -247,7 +247,7 @@ mod tests {
         router,
         tests::{
             Captured, SupportFailure, TestDatabase, drive, header_text, response_contains,
-            seed_operator,
+            seed_operator, unused_web_root,
         },
     };
 
@@ -279,7 +279,7 @@ mod tests {
         seed_contest_operator(&fixture.database, "contest-viewer", OperatorRole::Viewer).await?;
         let admin_cookie = session_cookie(&fixture.database, "contest-admin").await?;
         let viewer_cookie = session_cookie(&fixture.database, "contest-viewer").await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         let mut observer = db_contest::tests::test_observer(&fixture.path)
             .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
         let before = db_contest::tests::test_snapshot(&fixture.database, &mut observer)
@@ -306,7 +306,7 @@ mod tests {
         let fixture = TestDatabase::new().await?;
         seed_contest_operator(&fixture.database, "empty-admin", OperatorRole::Admin).await?;
         let cookie = session_cookie(&fixture.database, "empty-admin").await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         for path in ROUTES {
             let response = drive(&application, request(path, Some(&cookie))?).await?;
             if response.status != StatusCode::OK
@@ -330,7 +330,7 @@ mod tests {
         db_contest::tests::test_expire_all_sessions(&fixture.database)
             .await
             .map_err(|_| TestFailure::FixtureFailed)?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         let mut expected = None;
 
         for (path, expired_cookie) in ROUTES.into_iter().zip(expired_cookies) {
@@ -374,7 +374,7 @@ mod tests {
         }
         seed_contest_operator(&fixture.database, "action-admin", OperatorRole::Admin).await?;
         let cookie = session_cookie(&fixture.database, "action-admin").await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
 
         let revoke = drive(
             &application,
@@ -432,7 +432,7 @@ mod tests {
         seed_contest_operator(&fixture.database, "boundary-viewer", OperatorRole::Viewer).await?;
         let admin_cookie = session_cookie(&fixture.database, "boundary-admin").await?;
         let viewer_cookie = session_cookie(&fixture.database, "boundary-viewer").await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         let before = db_contest::tests::test_lifecycle_snapshot(&fixture.database, ACTION_DEVICE)
             .await
             .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;

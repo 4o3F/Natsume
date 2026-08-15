@@ -13,6 +13,8 @@ pub enum AppError {
     ProvisioningRevisionOverflow,
     #[snafu(display("vault startup failed"))]
     Vault,
+    #[snafu(display("web assets startup failed"))]
+    WebAssets,
     #[snafu(display("TLS startup failed"))]
     Tls,
     #[snafu(display("HTTP serving failed"))]

@@ -2,6 +2,7 @@ use std::{
     fs::OpenOptions,
     future::Future,
     io::{BufRead, BufReader, Write},
+    path::Path,
 };
 use tracing::instrument::WithSubscriber as _;
 
@@ -18,6 +19,7 @@ use crate::{
     vault::{ensure_master_key, require_master_key},
 };
 
+const WEB_ASSETS_PATH: &str = "/usr/share/natsume-server/web";
 const LOGIN_NAME_PROMPT: &[u8] = b"Login name: ";
 const PASSWORD_PROMPT: &str = "Password: ";
 const PASSWORD_CONFIRMATION_PROMPT: &str = "Confirm password: ";
@@ -30,6 +32,9 @@ const PASSWORD_CONFIRMATION_PROMPT: &str = "Confirm password: ";
 pub async fn serve(config: ServerConfig) -> Result<(), AppError> {
     logging::initialize(config.log_level()).map_err(|_| AppError::Logging)?;
     log_mode("serve");
+    if !Path::new(WEB_ASSETS_PATH).join("index.html").is_file() {
+        return Err(AppError::WebAssets);
+    }
     let shutdown = shutdown_signal()?;
     run_until(config, shutdown).await
 }
@@ -63,7 +68,7 @@ where
     .map_err(|_| AppError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let router = http::router(database);
+    let router = http::router(database, Path::new(WEB_ASSETS_PATH));
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
     let shutdown = async move {

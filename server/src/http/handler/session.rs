@@ -218,7 +218,7 @@ mod tests {
         tests::{
             Captured, SupportFailure, TestDatabase, canonical_correlation_id, check_error_response,
             cookie_request, drive, header_text, login_request, normalized_error_response_body,
-            request, response_body_text, response_contains, seed_operator,
+            request, response_body_text, response_contains, seed_operator, unused_web_root,
         },
     };
 
@@ -231,7 +231,7 @@ mod tests {
     async fn request_rejections_and_invalid_cookies_are_uniform_and_redacted()
     -> Result<(), TestFailure> {
         let fixture = TestDatabase::new().await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         for (content_type, body, canary) in [
             (
                 "application/json",
@@ -322,7 +322,7 @@ mod tests {
         let fixture = TestDatabase::new().await?;
         let operator_id =
             seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
 
         let login = login_request(LOGIN_NAME, PASSWORD)?;
         let login_response = drive(&application, login).await?;
@@ -429,7 +429,7 @@ mod tests {
         let fixture = TestDatabase::new().await?;
         let operator_id =
             seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie_pair =
             validate_login_response(&fixture.database, &login_response, operator_id).await?;
@@ -459,7 +459,7 @@ mod tests {
             .await
             .map_err(|_| TestFailure::DatabaseEvidenceFailed)?
             .0;
-        let retry_application = router(reopened);
+        let retry_application = router(reopened, unused_web_root());
         let authenticated = drive(
             &retry_application,
             cookie_request(Method::GET, "/api/v2/session", &cookie_pair)?,
@@ -478,7 +478,7 @@ mod tests {
     async fn body_limit_precedes_password_and_database_work() -> Result<(), TestFailure> {
         let _verification_guard = PasswordVerificationTestGuard::acquire().await;
         let fixture = TestDatabase::new().await?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
 
         let exact_request = Request::builder()
             .method(Method::POST)
@@ -542,7 +542,7 @@ mod tests {
             .await
             .map_err(|_| TestFailure::DatabaseEvidenceFailed)?
             .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         let responses = [
             drive(
                 &application,
@@ -591,7 +591,7 @@ mod tests {
         .await
         .map_err(|_| TestFailure::TlsFixtureFailed)?;
         let address = Listener::local_addr(&listener).map_err(|_| TestFailure::TlsFixtureFailed)?;
-        let application = router(fixture.database.clone());
+        let application = router(fixture.database.clone(), unused_web_root());
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
         let server = tokio::spawn(async move {
             axum::serve(listener, application)

@@ -3,7 +3,18 @@ mod error;
 pub(crate) mod handler;
 mod middleware;
 
-use axum::{Extension, Router, middleware as axum_middleware};
+use std::path::Path;
+
+use axum::{
+    Extension, Router,
+    http::{HeaderValue, header::CACHE_CONTROL},
+    middleware as axum_middleware,
+    routing::any_service,
+};
+use tower_http::{
+    services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
+};
 
 use crate::{audit::CorrelationId, db::Database};
 
@@ -15,11 +26,17 @@ pub(crate) struct AppState {
 }
 
 /// Builds the mounted Server HTTP surface over an already-migrated database.
-pub fn router(database: Database) -> Router {
+pub fn router(database: Database, web_root: &Path) -> Router {
     let state = AppState { database };
+    let static_service =
+        any_service(ServeDir::new(web_root).fallback(ServeFile::new(web_root.join("index.html"))))
+            .layer(SetResponseHeaderLayer::overriding(
+                CACHE_CONTROL,
+                HeaderValue::from_static("no-cache"),
+            ));
     Router::new()
-        .nest("/api/v2", api_v2(state.clone()))
-        .fallback(not_found)
+        .nest("/api/v2", api_v2(state.clone()).fallback(not_found))
+        .fallback_service(static_service)
         .with_state(state)
         .layer(axum_middleware::from_fn(middleware::correlation_id))
 }
