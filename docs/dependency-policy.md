@@ -151,6 +151,19 @@ Web 只通过 pnpm workspace 管理。Dependency lifecycle script 默认不得�
 
 最终 Slint feature set、version 和 runtime closure 必须在当期冻结镜像与单一桌面环境的 capability 清单上实测后冻结；每次镜像 bump 重新验证，不维持永久双桌面矩阵。
 
+### 8.1 Session Agent Slint 1.15 准入记录
+
+- 使用模块：`client/session-agent`。`slint` 是生产依赖，`slint-build` 仅在构建期把受审查的 `ui/session_agent.slint` 编译为 Rust；开发用 `ui_probe` example 不进入 nFPM 映射。
+- 解决的问题：为 resident-hidden Session Agent 提供 typed `SessionUiSnapshot` 到 lazy window 的最小实测路径，并为目标 VM 的 CJK、HiDPI、X11 映射与 Skia 渲染测量提供构建期固定的 probe。标准库和现有依赖不提供窗口、文字布局或渲染能力。
+- enabled features：关闭 default features，仅启用 `compat-1-2`、`std`、`backend-winit-x11`、`renderer-skia`；锁文件解析为 Slint `1.15.1`。不启用 runtime interpreter、Qt backend、Wayland backend 或其他 renderer。
+- transitive/runtime closure：运行时进入 Slint core、winit X11 backend、Skia renderer、X11/GL 装载、Fontconfig/Freetype，以及 `image`（jpeg/png 解码）、`resvg`/`usvg`/`tiny-skia` SVG 栈、`rustybuzz`/`ttf-parser` 文字整形与 `softbuffer`；仅 avif/exr/`rav1e` 等编码器与编译器解析工具停留在构建宿主侧（`slint-build`、`i-slint-compiler`）。二进制的直接 ELF NEEDED 集冻结于 `packaging/client/session-agent.needed` 并由 package smoke 断言，对应 Deb 依赖已在 nFPM manifest 声明。Skia 静态 archive 链入 Session Agent，系统动态库闭包须以当期目标 VM 的 `ldd` 和 package lifecycle 结果为准；本记录不把开发机结果提升为目标证据。运行时、安装期与 first boot 均不得下载 UI 或 renderer 组件。
+- 安全和许可证影响：选择 Slint 的 `GPL-3.0-only` 分支，与本项目 `AGPL-3.0-or-later` 发布条件兼容；新增的 `BSD-2-Clause` 来自 Slint 图片/SVG closure。GUI、字体与 native renderer 扩大 unsafe/native 攻击面，继续受 locked build、`cargo deny`、package smoke 和目标 VM probe 约束。generated-UI module 是唯一的 `allow(unsafe_code)` 位置，crate root 保持 `deny(unsafe_code)`；该例外只因 Slint 生成的 `ItemTreeVTable` 代码需要 unsafe，边界等同于上游依赖内部的 unsafe。Slint 1.15 closure 当前还精确忽略三个“停止维护”公告：`paste` 的 `RUSTSEC-2024-0436`、`ttf-parser` 的 `RUSTSEC-2026-0192`、`rustybuzz` 的 `RUSTSEC-2026-0206`；它们不是通用 advisory 放宽，升级 closure 消除对应 crate 时必须删除。
+- 替代方案：按 ADR-0035 已拒绝直接拼装低层 GUI 栈、Qt/GTK/Web runtime、外部 GUI helper、runtime `.slint` 解释和第二套 launcher；这些方案不重新开放。
+- 删除条件：Session Agent 不再承担本地 typed presentation，或新的 ADR 明确替换 GUI 边界时，连同 build script、Slint workspace dependency、probe 和对应 deny 例外一起删除；仅完成 probe 不能作为保留闲置依赖的理由。
+- 例外登记：本节的 `allow(unsafe_code)` 生成代码边界与三条 RUSTSEC 停止维护忽略的 owner 均为仓库所有者，登记日 2026-08-14，复查触发为每次 Slint closure 版本变更；过期未复查按 §14 视为构建失败处理。
+
+已知供应链项：`skia-bindings 0.90.0` 在构建期会从 rust-skia release 下载预编译 Skia 二进制 archive。`Cargo.lock` 只固定 crate source/checksum，不等同于固定该外部 archive；在形成目标发布证据前，必须补充 archive URL/release pin、SHA-256 固定与 CI 校验，并验证离线重建或受控缓存路径。该项不得延伸为安装期、first boot 或运行时下载。
+
 ## 9. Machine identity
 
 遵循 library-first 与固定配方（[ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)）：

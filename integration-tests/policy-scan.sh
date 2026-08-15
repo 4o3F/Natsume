@@ -78,6 +78,13 @@ web_title_branch_pattern='\.title[[:space:]]*[!=]==?|\.title\.(includes|startsWi
 for canary in 'if (error.title === "boom") {' 'error.title.includes("boom")'; do
   printf '%s\n' "${canary}" | grep -Eq "${web_title_branch_pattern}" || fail 'Web title-branch canary was not detected'
 done
+low_level_gui_dependency_pattern='(^|[^[:alnum:]_])(winit|softbuffer|tiny-skia|cosmic-text)([^[:alnum:]_]|$)'
+slint_winit_feature_allow_pattern='^Cargo\.toml:[0-9]+:slint = \{ version = "1\.15", default-features = false, features = \["compat-1-2", "std", "backend-winit-x11", "renderer-skia"\] \}$'
+printf '%s\n' 'Cargo.toml:1:winit = "0.30"' | grep -Eq "${low_level_gui_dependency_pattern}" || fail 'low-level GUI dependency canary was not detected'
+printf '%s\n' 'Cargo.toml:1:slint = { version = "1.15", default-features = false, features = ["compat-1-2", "std", "backend-winit-x11", "renderer-skia"] }' | grep -Eq "${slint_winit_feature_allow_pattern}" || fail 'Slint winit feature allow canary was not detected'
+if printf '%s\n' 'Cargo.toml:1:winit = "0.30"' | grep -Eq "${slint_winit_feature_allow_pattern}"; then
+  fail 'Slint winit feature allow pattern accepted a bare winit dependency'
+fi
 
 while IFS= read -r usage; do
   reference="${usage##*@}"
@@ -95,7 +102,7 @@ reject_matches 'SQLx dependency or first-party Rust source usage is present' "${
   Cargo.toml server/Cargo.toml server/src client/*/Cargo.toml client/*/src \
   crates/*/Cargo.toml crates/*/src integration-tests/Cargo.toml integration-tests/tests
 reject_matches 'first-party Rust source uses direct print macros instead of tracing or an explicit writer' \
-  "${print_macro_pattern}" server/src client/*/src crates/*/src integration-tests/*.rs integration-tests/tests
+  "${print_macro_pattern}" server/src client/*/src client/*/examples crates/*/src integration-tests/*.rs integration-tests/tests
 reject_matches 'test support is split from its owning tests module' \
   "${test_support_pattern}" server/src client/*/src crates/*/src integration-tests/tests
 reject_matches 'database rollback result is discarded' \
@@ -141,8 +148,8 @@ require_desktop='packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAg
 [[ -f ${require_desktop} ]] || fail 'Session Agent XDG Autostart entry is missing'
 grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${require_desktop}" ||
   fail 'Session Agent XDG Autostart Exec is incorrect'
-reject_matches 'direct low-level GUI stack dependency is present in production manifests' \
-  '(^|[^[:alnum:]_])(winit|softbuffer|tiny-skia|cosmic-text)([^[:alnum:]_]|$)' \
+reject_matches_except 'direct low-level GUI stack dependency is present in production manifests' \
+  "${low_level_gui_dependency_pattern}" "${slint_winit_feature_allow_pattern}" \
   Cargo.toml client/*/Cargo.toml server/Cargo.toml crates/*/Cargo.toml
 reject_matches 'systemd-user Session Agent launcher is referenced' \
   'systemctl[[:space:]]+--user|systemd-run[[:space:]]+--user|graphical-session\.target' \

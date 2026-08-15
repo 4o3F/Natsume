@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-            gettext-base libudev-dev pkg-config shellcheck
+            gettext-base libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config shellcheck
 
       - name: Setup pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0

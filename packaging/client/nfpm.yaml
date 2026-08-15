@@ -14,6 +14,9 @@ depends:
   - ca-certificates
   - dbus
   - debconf
+  - libfontconfig1
+  - libfreetype6
+  - libstdc++6
   - libsystemd0
   - libudev1
   - systemd

@@ -19,7 +19,7 @@ download() {
     "$1" --output "$2"
 }
 
-for command in cargo curl cut dpkg-deb envsubst grep node openssl pnpm python3 sed sha256sum shellcheck systemd-analyze tar; do
+for command in cargo curl cut dpkg-deb envsubst grep node openssl pnpm python3 readelf sed sha256sum shellcheck systemd-analyze tar; do
   require_command "${command}"
 done
 
@@ -223,6 +223,19 @@ grep -E '^-rwxr-xr-x .*\./usr/lib/natsume/caddy$' "${work_root}/client.contents"
 grep -E '^-rw-r--r-- .*\./etc/xdg/autostart/org.natsume.SessionAgent.desktop$' \
   "${work_root}/client.contents" >/dev/null ||
   fail 'XDG Autostart entry package mode is not 0644'
+
+# The Session Agent links the Slint/Skia closure; its direct ELF NEEDED set is
+# frozen in session-agent.needed and every non-baseline library must be a
+# declared Deb dependency, or the binary dies in ld.so before main.
+readelf -d target/release/natsume-session-agent |
+  sed -nE 's/.*\(NEEDED\).*\[(.*)\].*/\1/p' | sort >"${work_root}/session-agent.needed.actual"
+diff -u packaging/client/session-agent.needed "${work_root}/session-agent.needed.actual" ||
+  fail 'Session Agent ELF NEEDED set drifted from packaging/client/session-agent.needed'
+client_depends="$(dpkg-deb --field "${client_deb}" Depends)"
+for package in libfontconfig1 libfreetype6 libstdc++6; do
+  printf '%s\n' "${client_depends}" | grep -Fq "${package}" ||
+    fail "client package does not declare required dependency: ${package}"
+done
 
 shellcheck -x \
   packaging/client/debconf/config \

@@ -11,4 +11,6 @@ There is no Identity Guard service, installation instance, generic certificate-i
 
 ## Session Agent process ownership
 
+The agent exits 1 with the stable stderr id `NATSUME_SESSION_AGENT_LOGGING_INIT_FAILED` when logging cannot initialize, 2 on an invalid invocation, and 3 when the Slint event loop cannot start or fails.
+
 The authenticated desktop starts `/usr/bin/natsume-session-agent --autostart` directly through XDG Autostart. The current package establishes the resident-and-hidden process boundary and has no Session Agent systemd user service or bootstrap/runtime descriptor. The minimal typed-trigger lazy Slint UI probe is desktop-capability evidence: its acceptance criteria are frozen in [the supported platform](../docs/supported-platform.md) and its status is tracked in [Phase 0 status](../docs/gates/phase-0-status.md); Display Manager lifecycle remains owned by Daemon/Privileged Helper/logind, and the complete production GUI remains Phase 6 work.

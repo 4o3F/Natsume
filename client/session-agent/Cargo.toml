@@ -6,13 +6,18 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+build = "build.rs"
 
 [dependencies]
 natsume-local-control-api = { path = "../../crates/local-control-api" }
 serde.workspace = true
+slint.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zbus.workspace = true
+
+[build-dependencies]
+slint-build = "1.15"
 
 [lints]
 workspace = true

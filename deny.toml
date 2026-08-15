@@ -1,5 +1,10 @@
 [advisories]
 yanked = "deny"
+ignore = [
+  { id = "RUSTSEC-2024-0436", reason = "Slint 1.15's image closure retains unmaintained paste 1.0.15 through exr/rav1e; remove when the frozen Slint line eliminates that dependency; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
+  { id = "RUSTSEC-2026-0192", reason = "Slint 1.15's font and SVG closure retains unmaintained ttf-parser 0.25.1; remove when Slint migrates the remaining consumers to skrifa; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
+  { id = "RUSTSEC-2026-0206", reason = "Slint 1.15's resvg/usvg closure retains unmaintained rustybuzz 0.20.1; remove when the frozen Slint line adopts harfrust throughout; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
+]
 
 [graph]
 targets = [
@@ -37,6 +42,29 @@ skip = [
   { crate = "toml@0.9.12", reason = "migrations_internals 2.3.0, required by diesel_migrations 2.3.2, pins toml 0.9 while first-party configuration uses toml 1.1; remove when Diesel migrations adopts toml 1.x" },
   { crate = "toml_datetime@0.7.5", reason = "only retained by toml 0.9.12 through migrations_internals 2.3.0; remove with the Diesel migrations TOML 0.9 stack" },
   { crate = "winnow@0.7.15", reason = "only retained by toml 0.9.12 through migrations_internals 2.3.0; remove with the Diesel migrations TOML 0.9 stack" },
+
+  # --- Slint 1.15 GUI and Skia closure ---
+  { crate = "bitflags@1.3.2", reason = "tiny-skia 0.11.4 retains png 0.17 and its bitflags 1.x dependency while the workspace graph uses bitflags 2; remove when Slint's resvg/tiny-skia stack adopts png 0.18+" },
+  { crate = "foldhash@0.1.5", reason = "fontdue 0.9.4 in the Slint compiler activates hashbrown 0.15 and foldhash 0.1 while the current hashbrown stack uses foldhash 0.2; remove when fontdue moves off hashbrown 0.15" },
+  { crate = "font-types@0.10.1", reason = "Slint 1.15 fontique 0.7 uses read-fonts 0.35 and font-types 0.10 while swash uses the newer fontations stack; remove when Slint's text stack converges" },
+  { crate = "hashbrown@0.14.5", reason = "rowan 0.16 in the Slint compiler retains hashbrown 0.14 while the workspace uses newer hashbrown versions; remove when rowan upgrades" },
+  { crate = "hashbrown@0.16.1", reason = "Slint 1.15 fontique/clru retain hashbrown 0.16 while the workspace uses hashbrown 0.17; remove when the Slint text stack adopts hashbrown 0.17" },
+  { crate = "itertools@0.13.0", reason = "bindgen 0.72 in skia-bindings retains itertools 0.13 while the image stack uses itertools 0.14; remove when bindgen upgrades" },
+  { crate = "linux-raw-sys@0.4.15", reason = "winit 0.30 retains rustix 0.38 and linux-raw-sys 0.4 while the rest of the graph uses rustix 1 and linux-raw-sys 0.12; remove when winit upgrades its rustix stack" },
+  { crate = "nom@7.1.3", reason = "bindgen's cexpr dependency retains nom 7 while the Slint image closure uses nom 8; remove when cexpr upgrades" },
+  { crate = "png@0.17.16", reason = "tiny-skia 0.11.4 in Slint's SVG closure retains png 0.17 while image uses png 0.18; remove when tiny-skia upgrades" },
+  { crate = "read-fonts@0.35.0", reason = "Slint 1.15 fontique uses read-fonts 0.35 while swash uses read-fonts 0.41; remove when the Slint text stack converges" },
+  { crate = "roxmltree@0.21.1", reason = "Slint's usvg 0.46 uses roxmltree 0.21 while the workspace contract parser is pinned to 0.20; remove when those consumers converge" },
+  { crate = "rustc-hash@1.1.0", reason = "rowan 0.16 in the Slint compiler retains rustc-hash 1 while bindgen and current tooling use rustc-hash 2; remove when rowan upgrades" },
+  { crate = "rustix@0.38.44", reason = "winit 0.30 retains rustix 0.38 while the workspace graph otherwise uses rustix 1; remove when winit upgrades" },
+  { crate = "shlex@1.3.0", reason = "bindgen 0.72 in skia-bindings retains shlex 1 while cc uses shlex 2; remove when bindgen upgrades" },
+  { crate = "skrifa@0.37.0", reason = "Slint 1.15 core/parley use skrifa 0.37 while swash uses skrifa 0.44; remove when the Slint text stack converges" },
+  { crate = "smol_str@0.2.2", reason = "winit 0.30 retains smol_str 0.2 while the Slint compiler uses smol_str 0.3; remove when winit upgrades" },
+  { crate = "snafu@0.8.9", reason = "rspolib in the Slint compiler retains snafu 0.8 while first-party code uses snafu 0.9; remove when rspolib upgrades" },
+  { crate = "snafu-derive@0.8.9", reason = "only retained by snafu 0.8.9 through the Slint compiler's rspolib dependency; remove with snafu 0.8" },
+  { crate = "thiserror@1.0.69", reason = "calloop 0.13 through winit retains thiserror 1 while the current graph uses thiserror 2; remove when winit/calloop upgrade" },
+  { crate = "thiserror-impl@1.0.69", reason = "only retained by thiserror 1.0.69 through winit's calloop dependency; remove with thiserror 1" },
+  { crate = "toml_edit@0.24.1+spec-1.1.0", reason = "slint-build 1.15 uses toml_edit 0.24 while current proc-macro tooling uses toml_edit 0.25; remove when slint-build upgrades" },
 ]
 
 [licenses]
@@ -44,7 +72,9 @@ confidence-threshold = 0.8
 allow = [
   "AGPL-3.0-or-later",
   "Apache-2.0",
+  "BSD-2-Clause",
   "BSD-3-Clause",
+  "GPL-3.0-only",
   "ISC",
   "MIT",
   "Unicode-3.0",
