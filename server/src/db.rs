@@ -33,6 +33,8 @@ const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'/');
 
 pub(crate) mod contest;
+#[allow(dead_code)]
+pub(crate) mod import;
 pub(crate) mod operator;
 pub mod provisioning;
 pub(crate) mod schema;

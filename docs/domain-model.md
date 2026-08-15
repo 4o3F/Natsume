@@ -73,7 +73,7 @@ wire 上的 `binding_revision`（`TargetAssignment` / `SyncSecret` / `BindingRes
 - Import Commit 不创建 Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O；
 - 清空 confirmed configuration 只能通过独立的 single-lifetime reset，不得由 import 隐式完成。
 
-Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code rename 表示 `REMOVED + ADDED`，没有 generic instance state、历史 Seat universe 或 history-based rollback。完整 import lifecycle、preview evidence 与 diff taxonomy 的具体字段在 Phase 2 实现时定义。
+Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code rename 表示 `REMOVED + ADDED`，没有 generic instance state、历史 Seat universe 或 history-based rollback。import HTTP 面、preview evidence 与 diff taxonomy 的具体字段已由[契约](contracts.md) §3.4 的 2026-08-15 修订冻结。
 
 ## 4. Device 与 provisioning
 

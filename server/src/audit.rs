@@ -55,6 +55,13 @@ pub enum AuditDetail {
     },
     SessionTerminated {},
     SessionExpired {},
+    ImportCandidateCreated {
+        seats_added_count: usize,
+        seats_removed_count: usize,
+        mappings_changed_count: usize,
+        binding_impact_count: usize,
+    },
+    ImportCandidateExpired {},
     DeviceLifecycle {
         resulting_state: &'static str,
         removed_token_count: i64,
@@ -208,6 +215,57 @@ impl AuditEvent {
             correlation_id,
             group_correlation_id: None,
             detail: AuditDetail::SessionExpired {},
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn import_candidate_created(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        candidate_id: Uuid,
+        seats_added_count: usize,
+        seats_removed_count: usize,
+        mappings_changed_count: usize,
+        binding_impact_count: usize,
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "operator:self",
+            action_kind: "create_import_candidate",
+            resource_type: "import_candidate",
+            resource_id: Some(candidate_id.to_string()),
+            result: "succeeded",
+            reason_code: Some("operator_requested"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::ImportCandidateCreated {
+                seats_added_count,
+                seats_removed_count,
+                mappings_changed_count,
+                binding_impact_count,
+            },
+        }
+    }
+
+    #[must_use]
+    #[allow(dead_code)]
+    pub(crate) fn import_candidate_expired(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        candidate_id: Uuid,
+    ) -> Self {
+        Self {
+            id: audit_event_id,
+            actor: "system:expiry",
+            action_kind: "expire_import_candidate",
+            resource_type: "import_candidate",
+            resource_id: Some(candidate_id.to_string()),
+            result: "succeeded",
+            reason_code: Some("absolute_expiry_observed"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::ImportCandidateExpired {},
         }
     }
 

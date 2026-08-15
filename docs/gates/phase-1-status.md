@@ -28,7 +28,7 @@ Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 �
 - 条目 2：bootstrap 重复执行零写入、session termination repeat-safe、reset 审计失败回滚（重复 audit ID 注入）与双 operator 作用域隔离、device revoke/disable 三表单事务（`apply_lifecycle_mutations`）用例全绿（ci-rust lane，114 项 server 测试）。**已知限制**：terminate/expire 的多 operator 作用域负向覆盖列于「已登记待办」。
 - 条目 3：结构化日志 login name/password canary（`http/tests.rs`）、store error Display/Debug canary（`db.rs`）、vault pointer canary（`contest.rs`）、reset 未知登录 Display/Debug 双 canary 全绿；policy scan credential 模式扫描同 run 通过。
 - 条目 4：viewer→admin action 稳定 `403 AUTHORIZATION_DENIED`（revoke/disable）、admin/viewer 双角色读矩阵（seats/accounts/devices/bindings redacted current facts）、session 路由双角色用例全绿。
-- 条目 5：全部生产审计写入器（create_first_admin/establish/terminate/expire/revoke/disable/close_provisioning_window/reset_operator_password）经 `AuditEvent`/`insert_diesel` 治理路径与领域 mutation 同事务写入；词汇与 §3.6.4 注册表逐字对齐由测试钉死（2026-08-15 变异探针实证：篡改 action_kind 3 项测试失败）。
+- 条目 5：全部生产审计写入器（create_first_admin/establish/terminate/expire/revoke/disable/close_provisioning_window/reset_operator_password）经 `AuditEvent`/`insert_diesel` 治理路径与领域 mutation 同事务写入；词汇与 §3.6.4 注册表逐字对齐由测试钉死（2026-08-15 变异探针实证：篡改 action_kind 3 项测试失败）。（2026-08-15 后新增的 `create_import_candidate` / `expire_import_candidate` 写入器晚于该 run，其证据归 G2。）
 - 条目 6：`ci-contracts` lane（export-openapi → spectral → api:generate → `git diff --exit-code` → diesel schema golden）全绿。
 - 条目 7：policy scan `module-dependency-scan: ok` 于同 run 真实执行；application/db 单向不变量由编译边界承载（db 的 persisted-fact 类型与 store error enum 对 `db` 私有，向上引用是编译错误）。
 
@@ -38,3 +38,6 @@ Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 �
 - **Web hook 层单测**（2026-08-15）：`useSession`/`useLogin`/`useLogout`/守卫三态目前由 Playwright e2e 行为覆盖；组件级单测需 jsdom + @testing-library，暂缓至有真实回归需求时引入。
 - **Web 深链保留**（2026-08-15，审查 Low 项）：会话过期后登录不回原深链（`path="*"` replace 到 `/`）。体验项，随 Panel 功能页增多时评估。
 - **reset-operator-password 真机 TTY 验证**（2026-08-15）：单测全覆盖；本地 dev 后端上的交互式实跑（改密→浏览器新密码登录闭环）待 owner 时间，非阻断。
+- **`record_type` 封闭枚举强制**（2026-08-15，WP1 审查项，归 Phase 2）：ADR-0037 已冻结 `account_credential` | `import_payload` 枚举，但 migration 列无 CHECK、Rust 侧仅字面量常量；WP2 落 `account_credential` 写入器时一并收敛强制方式。
+- **diesel 生成列 Integer/BigInt 类型地雷**（2026-08-15，WP1 审查项，归 Phase 2）：`revision_counters.*` 与 candidate baseline 列生成为 `Integer`(i32)，现有读写用显式 BigInt cast 规避；后续直接使用生成类型的读者会静默截断（现实值域内不触发）。建议 diesel patch file 改列型；WP2 的 CAS 读写必须沿用显式 cast。
+- **`InvalidPersistedFacts` 卡死态恢复**（2026-08-15，WP1 审查项，归 Phase 2）：pending candidate 与 payload vault row 计数不一致时上传路径 fail closed 且无解锁手段；WP2 的 discard 实现须能清理该态（或登记显式恢复 runbook）。

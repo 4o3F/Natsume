@@ -1,6 +1,13 @@
 // @generated automatically by Diesel CLI.
 
 diesel::table! {
+    account_mappings (seat_id) {
+        seat_id -> Text,
+        account_id -> Text,
+    }
+}
+
+diesel::table! {
     accounts (account_id) {
         account_id -> Text,
         domjudge_username -> Text,
@@ -80,11 +87,32 @@ diesel::table! {
 }
 
 diesel::table! {
+    pending_import_candidate (singleton) {
+        singleton -> Nullable<Integer>,
+        candidate_id -> Text,
+        expires_at -> Text,
+        baseline_configuration_revision -> Integer,
+        baseline_binding_revision -> Integer,
+        preview_token_hash -> Binary,
+        payload_vault_record_id -> Text,
+        redacted_preview_json -> Text,
+    }
+}
+
+diesel::table! {
     provisioning_window (singleton) {
         singleton -> Nullable<Integer>,
         state -> Text,
         revision -> Integer,
         last_audit_event_id -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    revision_counters (singleton) {
+        singleton -> Nullable<Integer>,
+        configuration_revision -> Integer,
+        binding_revision -> Integer,
     }
 }
 
@@ -95,14 +123,29 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    server_vault_records (vault_record_id) {
+        vault_record_id -> Text,
+        record_type -> Text,
+        subject_id -> Text,
+        nonce -> Binary,
+        ciphertext -> Binary,
+    }
+}
+
+diesel::joinable!(account_mappings -> accounts (account_id));
+diesel::joinable!(account_mappings -> seats (seat_id));
+diesel::joinable!(accounts -> server_vault_records (credential_vault_record_id));
 diesel::joinable!(device_bindings -> devices (device_pk));
 diesel::joinable!(device_bindings -> seats (seat_id));
 diesel::joinable!(device_tokens -> devices (device_pk));
 diesel::joinable!(gateway_certificates -> devices (device_pk));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
+diesel::joinable!(pending_import_candidate -> server_vault_records (payload_vault_record_id));
 diesel::joinable!(provisioning_window -> audit_events (last_audit_event_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
+    account_mappings,
     accounts,
     audit_events,
     device_bindings,
@@ -111,6 +154,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     gateway_certificates,
     operator_accounts,
     operator_sessions,
+    pending_import_candidate,
     provisioning_window,
+    revision_counters,
     seats,
+    server_vault_records,
 );

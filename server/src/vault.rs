@@ -5,10 +5,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use chacha20poly1305::{
+    XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit},
+};
 use snafu::Snafu;
 use zeroize::Zeroize;
 
 const MASTER_KEY_LENGTH: usize = 32;
+const RECORD_NONCE_LENGTH: usize = 24;
 const PRIVATE_FILE_FORBIDDEN_BITS: u32 = 0o177;
 const PRIVATE_DIRECTORY_FORBIDDEN_BITS: u32 = 0o077;
 
@@ -46,6 +51,59 @@ pub(crate) fn require_master_key(master_key_path: &Path) -> Result<(), VaultErro
         .map_err(|_| VaultError::InvalidExistingKey)?;
     drop(read_existing_key(file)?);
     Ok(())
+}
+
+/// Encrypts one vault record with a fresh extended nonce.
+///
+/// # Errors
+///
+/// Returns a redacted [`VaultError`] when the key is invalid, entropy is
+/// unavailable, or encryption fails.
+#[allow(dead_code)]
+pub(crate) fn seal(
+    master_key_path: &Path,
+    plaintext: &[u8],
+) -> Result<([u8; RECORD_NONCE_LENGTH], Vec<u8>), VaultError> {
+    validate_private_directory(master_key_path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .open(master_key_path)
+        .map_err(|_| VaultError::InvalidExistingKey)?;
+    let master_key = read_existing_key(file)?;
+    let cipher = XChaCha20Poly1305::new(master_key.expose().into());
+    let mut nonce_bytes = [0_u8; RECORD_NONCE_LENGTH];
+    getrandom::fill(&mut nonce_bytes).map_err(|_| VaultError::EntropyUnavailable)?;
+    let nonce = XNonce::from(nonce_bytes);
+    let ciphertext = cipher
+        .encrypt(&nonce, plaintext)
+        .map_err(|_| VaultError::RecordSealFailed)?;
+    Ok((nonce_bytes, ciphertext))
+}
+
+/// Decrypts one authenticated vault record.
+///
+/// # Errors
+///
+/// Returns a redacted [`VaultError`] when the key or nonce is invalid or
+/// authentication fails.
+#[allow(dead_code)]
+pub(crate) fn open(
+    master_key_path: &Path,
+    nonce: &[u8],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, VaultError> {
+    let nonce_bytes: [u8; RECORD_NONCE_LENGTH] =
+        nonce.try_into().map_err(|_| VaultError::RecordOpenFailed)?;
+    validate_private_directory(master_key_path)?;
+    let file = OpenOptions::new()
+        .read(true)
+        .open(master_key_path)
+        .map_err(|_| VaultError::InvalidExistingKey)?;
+    let master_key = read_existing_key(file)?;
+    let cipher = XChaCha20Poly1305::new(master_key.expose().into());
+    cipher
+        .decrypt(&XNonce::from(nonce_bytes), ciphertext)
+        .map_err(|_| VaultError::RecordOpenFailed)
 }
 
 struct VaultMasterKey {
@@ -199,6 +257,10 @@ pub(crate) enum VaultError {
     EntropyUnavailable,
     #[snafu(display("the vault master key could not be persisted"))]
     PersistenceFailed,
+    #[snafu(display("the vault record could not be sealed"))]
+    RecordSealFailed,
+    #[snafu(display("the vault record could not be opened"))]
+    RecordOpenFailed,
 }
 
 #[cfg(test)]
@@ -223,8 +285,43 @@ mod tests {
 
     use super::{
         MASTER_KEY_LENGTH, TemporaryKeyFile, VaultError, create_master_key, ensure_master_key,
-        require_master_key, temporary_key_path,
+        open, require_master_key, seal, temporary_key_path,
     };
+
+    #[test]
+    fn vault_records_round_trip_and_authenticate_nonce_and_ciphertext() -> Result<(), TestFailure> {
+        let directory = TestDirectory::new(0o700)?;
+        let key_path = directory.path.join("master.key");
+        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        let plaintext = b"vault-record-plaintext-canary";
+
+        let (nonce, ciphertext) =
+            seal(&key_path, plaintext).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        if ciphertext.as_slice() == plaintext {
+            return Err(TestFailure::CiphertextMatchedPlaintext);
+        }
+        let (second_nonce, second_ciphertext) =
+            seal(&key_path, plaintext).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        if second_nonce == nonce || second_ciphertext == ciphertext {
+            return Err(TestFailure::RecordSealWasReused);
+        }
+        let opened = open(&key_path, &nonce, &ciphertext)
+            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        if opened.as_slice() != plaintext {
+            return Err(TestFailure::UnexpectedVaultFailure);
+        }
+
+        let mut wrong_nonce = nonce;
+        wrong_nonce[0] ^= 1;
+        assert_record_open_failure(&key_path, &wrong_nonce, &ciphertext, plaintext)?;
+
+        let mut tampered = ciphertext;
+        let Some(last) = tampered.last_mut() else {
+            return Err(TestFailure::UnexpectedVaultFailure);
+        };
+        *last ^= 1;
+        assert_record_open_failure(&key_path, &nonce, &tampered, plaintext)
+    }
 
     #[test]
     fn first_start_creates_private_key_file() -> Result<(), TestFailure> {
@@ -487,6 +584,27 @@ mod tests {
         Ok(())
     }
 
+    fn assert_record_open_failure(
+        key_path: &Path,
+        nonce: &[u8],
+        ciphertext: &[u8],
+        plaintext_canary: &[u8],
+    ) -> Result<(), TestFailure> {
+        let Err(error) = open(key_path, nonce, ciphertext) else {
+            return Err(TestFailure::ExpectedVaultFailure);
+        };
+        if error != VaultError::RecordOpenFailed {
+            return Err(TestFailure::UnexpectedVaultFailure);
+        }
+        let canary = String::from_utf8_lossy(plaintext_canary);
+        let display = error.to_string();
+        let debug = format!("{error:?}");
+        if display.contains(canary.as_ref()) || debug.contains(canary.as_ref()) {
+            return Err(TestFailure::VaultErrorWasNotRedacted);
+        }
+        Ok(())
+    }
+
     fn install_key_fixture(path: &Path, contents: &[u8], mode: u32) -> Result<(), TestFailure> {
         let mut file = OpenOptions::new()
             .write(true)
@@ -547,6 +665,10 @@ mod tests {
         ThreadFailed,
         #[snafu(display("generated vault master keys failed behavioral checks"))]
         GeneratedKeysWereInvalid,
+        #[snafu(display("vault record ciphertext matched its plaintext"))]
+        CiphertextMatchedPlaintext,
+        #[snafu(display("a vault record seal reused its nonce or ciphertext"))]
+        RecordSealWasReused,
         #[snafu(display("the read-only vault path created a key artifact"))]
         UnexpectedKeyArtifact,
         #[snafu(display("a vault error exposed rejected context"))]

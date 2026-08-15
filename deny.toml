@@ -26,9 +26,6 @@ skip = [
   { crate = "block-buffer@0.10.4", reason = "transitively required by digest 0.10.7 through libsystemd; remove with digest 0.10" },
   { crate = "cpufeatures@0.2.17", reason = "sha2 0.10.9 still requires cpufeatures ^0.2 while chacha20/poly1305/sha2 0.11 need ^0.3; remove when sha2 0.10 leaves the graph" },
 
-  # --- Argon2/password-hash: stable 0.5 retains rand_core 0.6 ---
-  { crate = "rand_core@0.6.4", reason = "password-hash 0.5 (required by stable argon2 0.5) still requires rand_core ^0.6 while the rest of the workspace uses rand_core 0.10; first-party Argon2 salt generation is structurally isolated to the existing getrandom OS CSPRNG plus SaltString::encode_b64 and never calls SaltString::generate; remove when argon2 0.6 reaches a stable release whose password-hash 0.6 closure no longer requires rand_core 0.6" },
-
   # --- hash table stack: petgraph 0.15 vs indexmap 0.17 ---
   { crate = "hashbrown@0.15.5", reason = "petgraph 0.8.3 (via prost-build) requires hashbrown ^0.15 while indexmap 2.14 requires ^0.17; remove when petgraph accepts hashbrown 0.17" },
 

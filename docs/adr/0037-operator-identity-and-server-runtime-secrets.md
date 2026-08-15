@@ -22,6 +22,8 @@ Phase 1 要交付 operator auth 与 audit 原子性，必须先确定这两类�
 
 **vault 主密钥只由显式 `natsume-server bootstrap` 生成。** `bootstrap` 从固定 package config 取得路径；主密钥缺失时以 CSPRNG 生成并用 temp + fsync + rename 原子写入，已存在时只读取并校验，不重写、不轮换、不复制到普通路径。`natsume-server serve` 只读取并校验已经存在的主密钥，缺失时 fail closed，绝不以隐式 first-start detection 创建。
 
+**2026-08-15 修订**：vault record 加密冻结为 XChaCha20-Poly1305（RustCrypto `chacha20poly1305`），密钥为 32 字节主密钥本体，nonce 为每 record 24 字节 CSPRNG，`server_vault_records.record_type` 为封闭枚举 `account_credential` | `import_payload`；主密钥文件格式不变。record 密文不绑定 AAD——主密钥与数据库同属同一 0700 私有状态目录与同一 uid，行身份由 `UNIQUE(record_type, subject_id)` 约束；此为有意立场（与 ADR-0032 不保存 ciphertext format/AAD/key version 一致），若未来出现跨信任边界的密文搬运再重开。
+
 **唯一 first admin 只由离线、交互式 `bootstrap` 创建。** operator 在 TTY 上以 `natsume-server` 用户手工运行该 subcommand；login name 从 TTY 读取，password 不回显地读取两次。account 只在 `operator_accounts` 为空时与 typed audit row 同事务创建；重复 bootstrap 零业务写入并失败。password 不得来自 argv、环境变量、systemd credential、配置文件或 packaging script，`postinstall` 不得调用 `bootstrap`。
 
 **first admin 密码遗失由离线 `reset-operator-password` 恢复。** `bootstrap` 是一次性的：在此之前，唯一 admin 的密码遗失只能走破坏性 single-lifetime reset，代价与故障不相称。因此新增第三个 subcommand，其固定序列由 [契约](../contracts.md) §2.1 冻结：以 `create_if_missing = false` 打开已存在的数据库并运行 migration、从 TTY 读取目标 login name 与两次不回显的新 password、在同一事务内替换该 operator 的 PHC string、删除其全部当前 session row 并写入 `system:password-reset` 的 typed audit row（**2026-08-14 修订**：该 actor 由 `system:recovery` 拆分为专用值，登记于[契约](../contracts.md)审计词汇注册表）。它不创建账户、不生成或轮换 vault 主密钥、不做 TLS preflight、不启动 listener；未知 login name 零写入并以非零状态退出。输入 channel 仍限于交互式 TTY，因此不放宽本 ADR 的 secret-channel 边界。

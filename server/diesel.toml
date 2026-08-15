@@ -2,6 +2,7 @@
 file = "src/db/schema.rs"
 filter.only_tables = [
   "^audit_events$",
+  "^account_mappings$",
   "^operator_accounts$",
   "^operator_sessions$",
   "^seats$",
@@ -11,4 +12,7 @@ filter.only_tables = [
   "^device_tokens$",
   "^gateway_certificates$",
   "^provisioning_window$",
+  "^pending_import_candidate$",
+  "^revision_counters$",
+  "^server_vault_records$",
 ]
