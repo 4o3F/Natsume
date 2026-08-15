@@ -2,7 +2,7 @@
 
 > 状态：`DRAFT-STEP0`
 > 最后更新：2026-08-15
-> G1：`OPEN`（7/7 PASS，gate 关闭裁决待 owner 签署）
+> G1：`CLOSED`（7/7 PASS，owner 于 2026-08-15 签署关闭；已知限制与硬化待办随案挂账）
 
 Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 证据收敛。条目通过需可定位 evidence（CI run / commit / artifact 链接 + 一行结论 + 日期），不得以文档存在、scaffold 或截图替代可复现结果；partial pass 记为未通过。
 
