@@ -208,6 +208,8 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 
 以下由项目所有者提供，状态为 `ENV-PROPOSED`（值已具体，仍缺目标环境上的可复现 evidence）：
 
+三个 anchor literal 现与冻结的 `AnchorKind` label 完全一致（`dmi_system_uuid`、`dmi_board_serial`、`first_disk_serial`）；开发期 collector 位于 `client/privileged-helper/examples/collect_identity_fixture.rs`，以 `cargo build --release -p natsume-privileged-helper --example collect_identity_fixture` 构建，artifact 位于 `target/release/examples/collect_identity_fixture`，以 `--namespace <fleet UUID>` 运行，其输出即合规匿名记录，场景标注由采集人另附；DMI slot 采集需要 root 权限，非 root 运行得到 `permission_denied` 是合法的 fixture 场景。
+
 | 输入 | 提供值 | 假设与后续事项 |
 |---|---|---|
 | Client OS 精确值 | Ubuntu 24.04.3 LTS、kernel `6.14.0-29-generic`、`x86_64`、glibc 2.39（`2.39-0ubuntu8.5`）、systemd 255（`255.4-1ubuntu8.10`） | 生命周期 evidence 待条目 12 在该镜像上执行 |
@@ -219,7 +221,7 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 | DOMjudge 健康检查 | 无专用端点，Natsume 不做主动探测 | `GatewayState` 的 `upstream_unhealthy` 只由被动信号（代理错误）驱动 |
 | 时间同步 | Client 部署时与 Server 做 NTP 校准 | 持续 skew 容差仍 `ENV-UNFROZEN`；时钟消费者（`deadline_at`、证书有效期、UUIDv7 序）在容差冻结前不得假设长期同步 |
 | Operator 浏览器 | 所有者豁免其余 freeze 字段 | 相关事实随 Web Panel 阶段验证，不作为 G0 输入 |
-| 硬件 fixture | 当前不可采集，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
+| 硬件 fixture | 匿名 collector 已就绪；实地采集仍等待物理硬件访问，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
 | Slint runtime closure（实测） | Slint `1.15.1`；features `compat-1-2`/`std`/`backend-winit-x11`/`renderer-skia`；直接 ELF NEEDED 冻结于 `packaging/client/session-agent.needed` 且 target VM `ldd` 全表吻合；二进制 11,734,952 字节；冷启动至 resident marker 59 ms（图形会话内实测） | CJK **渲染**在各屏形态正常；镜像于 2026-08-15 加装中文输入法后 **IME 输入与渲染复验通过**（该次镜像变更仅为加装输入法，接受定向复验）。probe 各屏（binding_prompt/lock_presentation 等）、HiDPI 缩放与焦点观察均通过 |
 | V1 残留 | 仅测试 VM 曾装过 V1；fleet 机器无 V1 部署残留 | V1 与 V2 共用 `/etc/natsume/config.toml` 路径，残留会改变 dpkg 安装分支（conffile 提示、`.dpkg-old`）；lifecycle harness 已加干净 VM 守卫，检测到残留即拒绝 |
 

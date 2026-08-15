@@ -25,5 +25,8 @@ udev = "0.9"
 zbus.workspace = true
 zeroize.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true

@@ -16,6 +16,20 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 
 ### 固定身份配方
 
+**2026-08-15 修订：** 以下 R1–R7 冻结身份配方的实现细节，既有概括条款均按本修订解释。
+
+- **R1（anchor literal 与顺序）：** 三个 slot 依次为 `dmi_system_uuid`、`dmi_board_serial`、`first_disk_serial`，顺序固定；`first_disk_serial` 的语义是「支撑根文件系统的整盘」。
+- **R2（normalization）：** 先去除首尾 ASCII whitespace，再删除分隔字符 `-`、`_`、`:` 与内部空格，随后转为小写；`dmi_system_uuid` slot 还必须解析为 UUID 并规范化，不能解析的值归为 `malformed`。
+- **R3（placeholder）：** placeholder 一律在 normalization 后比较；对初始冻结表的匹配键是 normalized value 的「仅保留字母数字字符」projection，但 R2-normalized value 本身不变，R7 derivation 仍原样使用它；拒绝空值、全 `0`、全 `f`，以及初始冻结表 `{tobefilledbyoem, defaultstring, systemserialnumber, notspecified, none, unknown, na, invalid, 0123456789}`，新发现的厂商 placeholder 只能通过后续带日期的 ADR 修订追加。该 projection 覆盖 `To Be Filled By O.E.M.`、`N/A` 等 R2 有意保留 `.` 或 `/` 的真实厂商写法；若 strong slot 漏过这类 placeholder，会在全 fleet 派生同一个共享 candidate，风险与 v1 事故同构。
+- **R4（quality）：** quality 是 slot 固有且恒定的等级：`DmiSystemUuid=strong`、`DmiBoardSerial=strong`、`FirstDiskSerial=medium`；磁盘会被克隆或迁移（v1 事故即为克隆磁盘），两个主板锚定的 strong source 使 2-of-3 判定保持可靠。
+- **R5（status）：** 有效值映射为 `present`；ENOENT 类映射为 `unavailable`；EACCES 类映射为 `permission_denied`；解析或编码失败映射为 `malformed`；placeholder 映射为 `rejected_placeholder`；平台不存在该 attribute 时映射为 `unsupported`；`conflict` 只属于 claim 层，采集不得产生该状态。
+- **R6（completeness）：** 任一 slot 为 `unsupported` 时整体为 `unsupported`；否则任一 slot 非 `present` 时为 `temporarily_unavailable`；否则为 `complete`。
+- **R7（candidate derivation）：** 在公开且不可变的 Fleet namespace UUID 下派生 UUIDv5，name bytes 严格为 anchor literal、单个 NUL byte（`0x00`）与 normalization 后的 value bytes；该 domain separation 保证不同 slot 的相同原始值产生不同 candidate，且仅 `present` slot 产生 candidate。
+
+**Layering 边界：** R7 只冻结 per-slot candidate derivation；原条款中的 whole-machine ID combination recipe 与 2-of-3 decision 继续由 claim 层拥有，其精确 byte recipe 在 Phase 3 实现时冻结。现有 combined `derive_candidate` / `anchor_priority` vocabulary 属于 claim 层；它与新 slot label 的差异是已知 vocabulary split，将在 Phase 3 wiring 时统一。
+
+开发期匿名 fixture collector 位于 `client/privileged-helper/examples/collect_identity_fixture.rs`，只输出上述匿名化 slot 结果与 completeness，不输出原始硬件值。
+
 - Machine Hardware ID 是 lifecycle identifier，不是 authenticator；网络认证使用 Server-authenticated TLS 与 Device Token。
 - 唯一来源是 DMI system UUID、DMI motherboard serial、第一块 system disk serial；MAC 地址排除。
 - 统一大小写、空白与分隔符，拒绝 placeholder、全零、全 `F` 等无效值；至少需要两个有效来源。
