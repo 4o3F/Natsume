@@ -92,6 +92,18 @@ fn write_error(message: &str) {
 }
 
 fn main() -> ExitCode {
+    // The probe observes the confirm/cancel round-trip through tracing lines
+    // emitted by ui::apply's callbacks, so the subscriber must be installed.
+    if tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .try_init()
+        .is_err()
+    {
+        write_error("failed to initialize logging");
+        return ExitCode::FAILURE;
+    }
     let screen = match argument() {
         Ok(screen) => screen,
         Err(error) => {
