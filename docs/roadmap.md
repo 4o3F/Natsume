@@ -98,7 +98,7 @@ clean checkout 的 mandatory CI 真实运行；toolchain/artifact pin 可审计�
 | 镜像晚到/大版本变化 | `G0-IN-001/004` 输入门禁 + 重验清单（ADR-0035） |
 | package 拓扑只在文档 | install/upgrade/reboot smoke |
 
-当前 Gate 与输入门禁状态见 [`gates/phase-0-status.md`](gates/phase-0-status.md)、[`gates/phase-1-status.md`](gates/phase-1-status.md) 与 [`gates/phase-2-status.md`](gates/phase-2-status.md)。
+当前 Gate 与输入门禁状态见 [`gates/phase-0-status.md`](gates/phase-0-status.md)、[`gates/phase-1-status.md`](gates/phase-1-status.md)、[`gates/phase-2-status.md`](gates/phase-2-status.md) 与 [`gates/phase-3-status.md`](gates/phase-3-status.md)。
 
 ## 5. Phase 1–7：结果与 Gate 主题
 
