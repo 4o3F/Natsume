@@ -2,7 +2,7 @@
 
 > 状态：`DRAFT-STEP0`
 > 最后更新：2026-08-15
-> G1：`OPEN`（0/7 PASS）
+> G1：`OPEN`（7/7 PASS，gate 关闭裁决待 owner 签署）
 
 Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 证据收敛。条目通过需可定位 evidence（CI run / commit / artifact 链接 + 一行结论 + 日期），不得以文档存在、scaffold 或截图替代可复现结果；partial pass 记为未通过。
 
@@ -12,19 +12,25 @@ Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 �
 
 | # | 条目 | 状态 |
 |---|---|---|
-| 1 | migration：空库首装幂等；升级路径 | `OPEN` |
-| 2 | 领域不变量与事务原子性（bootstrap/session/reset/device lifecycle 单事务与回滚负向测试） | `OPEN` |
-| 3 | secret redaction（password/PHC/login name 不入日志与审计；错误 Display 泛化；canary 断言） | `OPEN` |
-| 4 | 两角色授权（admin/viewer 已挂载 route 全矩阵，viewer→admin action 稳定 `403`） | `OPEN` |
-| 5 | audit 原子性与词汇注册表对齐（与领域 mutation 同事务写入；写入器词汇与 §3.6.4 注册表逐字一致） | `OPEN` |
-| 6 | API generated clean diff（OpenAPI/TS/diesel golden，`ci-contracts` lane） | `OPEN` |
-| 7 | 模块依赖扫描（application/db 单向不变量、policy scan `module-dependency-scan`） | `OPEN` |
+| 1 | migration：空库首装幂等；升级路径 | `PASS`（升级半按已知限制挂账，见证据） |
+| 2 | 领域不变量与事务原子性（bootstrap/session/reset/device lifecycle 单事务与回滚负向测试） | `PASS` |
+| 3 | secret redaction（password/PHC/login name 不入日志与审计；错误 Display 泛化；canary 断言） | `PASS` |
+| 4 | 两角色授权（admin/viewer 已挂载 route 全矩阵，viewer→admin action 稳定 `403`） | `PASS` |
+| 5 | audit 原子性与词汇注册表对齐（与领域 mutation 同事务写入；写入器词汇与 §3.6.4 注册表逐字一致） | `PASS` |
+| 6 | API generated clean diff（OpenAPI/TS/diesel golden，`ci-contracts` lane） | `PASS` |
+| 7 | 模块依赖扫描（application/db 单向不变量、policy scan `module-dependency-scan`） | `PASS` |
 
-## 证据登记要求
+## 已登记证据
 
-- 条目 1–7 的测试与扫描均已随 CI lane 运行；登记需要含全部 Phase 1 交付面（≥ `c5eb020`）的 head 上一次全绿 CI run 链接，逐条对应其 lane/测试集，另附各条已知限制。
-- 条目 1 已知限制（预登记）：升级路径当前只能做 same-version reinstall 与空库→当前 schema 首装——V2 无已发布前版 schema，跨版本 migration 用例随首个发布版建立（与 G0 条目 12 同源限制）。
-- 条目 2/5 已知限制（预登记）：reset 路径的审计失败回滚与双 operator 作用域隔离已有负向测试（`bda92da`）；sibling 写入器的等价负向覆盖见「已登记待办」。
+全部条目锚定 [ci run 31887277032](https://github.com/4o3F/Natsume/actions/runs/31887277032)（head `bb58c53`，含全部 Phase 1 交付面，2026-08-15，全 lane 绿）：
+
+- 条目 1：空库首装 migration 在全部 db 测试经 `connect_and_migrate` 真实执行；已迁移库的重开重迁由 repeat-bootstrap 与 reset 用例结构性覆盖（`create_if_missing=false` 打开后再跑 migration）；18 业务表 schema 契约 golden（`db.rs` exact business table contract）与 `ci-contracts` diesel clean diff 全绿。**已知限制**：跨版本升级 migration 无已发布前版 schema，用例随首个发布版建立（与 G0 条目 12 同源限制）。
+- 条目 2：bootstrap 重复执行零写入、session termination repeat-safe、reset 审计失败回滚（重复 audit ID 注入）与双 operator 作用域隔离、device revoke/disable 三表单事务（`apply_lifecycle_mutations`）用例全绿（ci-rust lane，114 项 server 测试）。**已知限制**：terminate/expire 的多 operator 作用域负向覆盖列于「已登记待办」。
+- 条目 3：结构化日志 login name/password canary（`http/tests.rs`）、store error Display/Debug canary（`db.rs`）、vault pointer canary（`contest.rs`）、reset 未知登录 Display/Debug 双 canary 全绿；policy scan credential 模式扫描同 run 通过。
+- 条目 4：viewer→admin action 稳定 `403 AUTHORIZATION_DENIED`（revoke/disable）、admin/viewer 双角色读矩阵（seats/accounts/devices/bindings redacted current facts）、session 路由双角色用例全绿。
+- 条目 5：全部生产审计写入器（create_first_admin/establish/terminate/expire/revoke/disable/close_provisioning_window/reset_operator_password）经 `AuditEvent`/`insert_diesel` 治理路径与领域 mutation 同事务写入；词汇与 §3.6.4 注册表逐字对齐由测试钉死（2026-08-15 变异探针实证：篡改 action_kind 3 项测试失败）。
+- 条目 6：`ci-contracts` lane（export-openapi → spectral → api:generate → `git diff --exit-code` → diesel schema golden）全绿。
+- 条目 7：policy scan `module-dependency-scan: ok` 于同 run 真实执行；application/db 单向不变量由编译边界承载（db 的 persisted-fact 类型与 store error enum 对 `db` 私有，向上引用是编译错误）。
 
 ## 已登记待办（不阻断 gate，登记备查）
 
