@@ -22,7 +22,7 @@ Phase 1（Control Domain）交付面已全部落地，本文件手写追踪 G1 �
 
 ## 已登记证据
 
-全部条目锚定 [ci run 31887277032](https://github.com/4o3F/Natsume/actions/runs/31887277032)（head `bb58c53`，含全部 Phase 1 交付面，2026-08-15，全 lane 绿）：
+全部条目锚定 [ci run 31887277032](https://github.com/4o3F/Natsume/actions/runs/31887277032)（head `c5eb020`，含全部 Phase 1 交付面，2026-08-15，全 lane 绿；2026-08-16 勘误：此前误记 head 为 `bb58c53`——那是该 run 之后的纯文档提交，不在 run 内）：
 
 - 条目 1：空库首装 migration 在全部 db 测试经 `connect_and_migrate` 真实执行；已迁移库的重开重迁由 repeat-bootstrap 与 reset 用例结构性覆盖（`create_if_missing=false` 打开后再跑 migration）；18 业务表 schema 契约 golden（`db.rs` exact business table contract）与 `ci-contracts` diesel clean diff 全绿。**已知限制**：跨版本升级 migration 无已发布前版 schema，用例随首个发布版建立（与 G0 条目 12 同源限制）。
 - 条目 2：bootstrap 重复执行零写入、session termination repeat-safe、reset 审计失败回滚（重复 audit ID 注入）与双 operator 作用域隔离、device revoke/disable 三表单事务（`apply_lifecycle_mutations`）用例全绿（ci-rust lane，114 项 server 测试）。**已知限制**：terminate/expire 的多 operator 作用域负向覆盖列于「已登记待办」。

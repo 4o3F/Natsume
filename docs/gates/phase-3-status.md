@@ -2,7 +2,7 @@
 
 > 状态：`DRAFT-STEP0`
 > 最后更新：2026-08-16
-> G3：`OPEN`（实现推进中；证据随包登记）
+> G3：`OPEN`（WP1–WP4 全部 `DONE`；16 主题条目表见下——14 项 `PASS`、1 项 owner 裁定降级、1 项例外移交 Phase 4；关门待补齐断言 head 的全绿 run 登记）
 
 Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。
 
@@ -38,6 +38,36 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 - **测试策略**：integration-tests 以真实 server（test PKI、localhost TLS listener）端到端驱动 daemon enrollment 库函数——create 同步签发、replace approve-then-claim、rejected 终局、closed-window 轮询等待、finalization 校验失败零落盘；daemon 单测覆盖文件层与状态判定。WP4 终点为凭据落盘 + Enrolled 驻留，WSS 接线属后续 Phase。
 
 - WP4 审查非阻断挂账（3 条已随包修复：body/decode 传输错误归等待态、私钥 fixture 置换为公开 CSR 钉子、keys 目录 setgid 归组使 0640 组读落地；(a)-(d)/(f)-(i) 已随 Phase-4 前置 sweep `1a70127` 处置）：(a) **时钟偏移**——已处置（`1a70127` 服务端 notBefore 回拨 3600s，`GATEWAY_NOT_BEFORE_BACKDATE_SECONDS`）。残余登记：RTC 大幅回退（如电池耗尽落回出厂日期）仍 fail-closed；unit 加 `time-sync.target` 排序在无 NTP 的离线赛场不产生同步保证故不采用；Phase 4 `ServerHello.server_time_unix_ms` 可作大偏移诊断面，随 Phase 4 WP5 评估；(b) webpki 失败分辨——已处置（`1a70127`：过期/未生效 → `LeafValidityWindow`、名称不匹配 → `InvalidHostname`、其余 → `InvalidChain`，各拒绝位点有钉子测试）；(c) `enroll_until_parked` 循环无测试触达——已处置（`1a70127` 真 TLS replacement 收敛场景，实测跨越一次 5s 轮询）；(d) Replace-over-existing 与「201 丢失后同 SPKI 自愈」客户端侧场景——已处置（`1a70127` 两条端到端场景；chain 文件内容按设计恒等于 packaged origin CA DER，无字节差异可断言）；(e) 旧 token rotation 后 inode 残留 + `response.bytes()` 的 token 明文不零化（与 WP3 零化挂账同类，`LimitCORE=0` 缓解）——保持挂账；(f) token presence lstat 一致性——已处置（`1a70127`，symlink fail-closed）；(g) 测试 accessor 门面——已处置（`1a70127` `fixture` cargo feature + ci-rust 默认 features 构建守卫）；(h) token 尾字节钉死——已处置（`1a70127`，与 OpenAPI pattern 对齐，16 个合法尾字符经穷举验证）；(i) `script(1)` 缺失诊断——已处置（`1a70127`）。
+
+## G3 条目（16 主题，引自 roadmap §Phase 3）
+
+| # | 主题 | 状态 | 代表证据（具名测试/断言） |
+|---|---|---|---|
+| 1 | identity 决策表全路径 | `PASS` | `machine-identity::claim_decision_table_covers_all_343_status_combinations` + 15 项决策表/golden + daemon startup 13 项 + helper 12 项 |
+| 2 | configured-disk copy fixture | `DEFERRED-NONBLOCKING` | owner 2026-08-16 裁定随 G0-IN-005 降级：实地采集归首次 provisioning（ADR-0032）；决策函数侧由 `machine_identity_startup.rs::copied_configured_state_on_different_hardware_uses_standard_reset_path` 覆盖 |
+| 3 | 窗口开/关负向 | `PASS` | `db/provisioning/tests.rs::close_open_window_failures_persist_no_partial_effect` 等 |
+| 4 | 正常 open/close audit+CAS | `PASS` | `operator_open_close_open_cycle_advances_revision_and_writes_exact_audits` |
+| 5 | open-window restart/restore close-once 与 closed-window 零写入 | `PASS` | `schema_contract_tests.rs::startup_recovery_closes_an_open_window_exactly_once`；closed-window 零写入见 enrollment intake 测试 |
+| 6 | 联合签发事务原子性 | `PASS` | `db/enrollment/tests.rs::csr_spki_mismatch_and_duplicate_issuance_audit_leave_zero_partial_state` |
+| 7 | CSR SAN ignore | `PASS` | `closed_window_is_zero_write_and_create_issuance_is_secret_safe_and_site_authoritative`（hostile SAN/CN/serial 全弃置） |
+| 8 | create 同步签发与 replacement 审批分支 | `PASS` | `handler/enrollment/tests.rs::operator_approve_claim_and_reject_poll_flows_are_end_to_end` |
+| 9 | `202` 幂等重投轮询返回同一 live request | `PASS` | `pending_replay_conflict_and_rejected_poll_have_exact_device_http_semantics` + `client_enrollment.rs` 真 TLS 场景 |
+| 10 | approval 零签发与 claim 时窗口复检 | `PASS` | 同上端到端流（approve 后零签发、claim 时复检窗口） |
+| 11 | 窗口关闭时未 claim 请求转 `expired` | `PASS` | `expire_enrollment_requests` 写入器测试（operator close 与 recovery close-once 两路径） |
+| 12 | same-SPKI 自动批准重试 | `PASS` | `db/enrollment/tests.rs::same_spki_retry_reissues_once` + 客户端侧 `lost_issue_response_self_heals_with_same_spki_over_real_tls` |
+| 13 | 同 hardware ID 不同 SPKI 稳定拒绝 | `PASS` | `rejected_hardware_blocks_same_and_rotated_spki_until_window_close` |
+| 14 | operator 拒绝的稳定码 | `PASS` | `ENROLLMENT_REQUEST_REJECTED` 端到端（服务端 + 客户端 typed terminal step） |
+| 15 | 替换语义与旧连接异常审计 | `PASS`（替换语义）+ **例外：旧连接 anomaly audit 移交 Phase 4 WP3** | `revoked_and_disabled_devices_require_approval_then_reactivate_on_claim` + `replacement_over_existing_artifacts_converges_via_enroll_until_parked`；anomaly audit 需 WSS connection facts，移交记录见下方待办与 [`phase-4-status.md`](phase-4-status.md) |
+| 16 | package upgrade 保留 identity/凭据 | `PASS`（断言 2026-08-16 补齐） | `hosted-lifecycle.sh` client 半：seed identity/key/token → 重装 → 字节与 mode/owner 不变断言；已知限制：跨版本 upgrade 无已发布前版（与 G0 条目 12 同源） |
+
+## 已登记证据（G3）
+
+- 主题 1、3–14 与 15 前半：[ci run 31932403934](https://github.com/4o3F/Natsume/actions/runs/31932403934)（head `a544b96`，2026-08-16，全 lane 绿，含 WP1–WP4 全部提交 `6b40ab8`/`a288918`/`2907796`/`abb1a1b`/`ab7cae6`/`721e4a9`/`93cd6e2`）。
+- 主题 12 客户端侧与 15 的 enroll_until_parked 场景（`1a70127`）、主题 16 断言（2026-08-16 补齐）：锚定其 head 的全绿 run 后关门。
+
+## 关闭条件
+
+16 主题全部 `PASS` 或有 owner 裁定的降级/移交记录，且证据锚定全绿 CI run；主题 15 的 anomaly-audit 例外随 Phase 4 WP3 回访。
 
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 

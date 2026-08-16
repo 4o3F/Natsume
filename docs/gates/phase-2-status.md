@@ -2,7 +2,7 @@
 
 > 状态：`DRAFT-STEP0`
 > 最后更新：2026-08-16
-> G2：`OPEN`（0/10 PASS，实现全部落地，证据待含 `bbf5fb8` 的全绿 CI run 登记）
+> G2：`OPEN`（8/10 PASS；条目 1–8 已锚定全绿 CI run，条目 9/10 的补强测试已实现、待其 head 的全绿 run 登记后关门）
 
 Phase 2（CSV Preparation）交付面已全部落地，本文件手写追踪 G2 证据收敛。条目通过需可定位 evidence（CI run / commit / artifact 链接 + 一行结论 + 日期）；partial pass 记为未通过。
 
@@ -12,21 +12,22 @@ Phase 2（CSV Preparation）交付面已全部落地，本文件手写追踪 G2 
 
 | # | 条目 | 状态 |
 |---|---|---|
-| 1 | malformed/duplicate/empty candidate 拒绝（解析矩阵 + 行号级脱敏错误） | `OPEN` |
-| 2 | 单 pending mutual exclusion（singleton + 409） | `OPEN` |
-| 3 | 非秘密维度 first/no-op/material 区分（revision 双标志独立性测试） | `OPEN` |
-| 4 | 已提交 import 无条件推进全部 `credential_revision` 且 preview 零密码变化分类 | `OPEN` |
-| 5 | 双 CAS 拒绝与重复提交安全失败（stale 保留 candidate、audit rejected） | `OPEN` |
-| 6 | candidate/payload 终态删除（commit/discard/lazy expiry 三路径 + 容忍恢复） | `OPEN` |
-| 7 | current-fact credential/mapping（账户按 username 存续、全量新 nonce 重封） | `OPEN` |
-| 8 | 事务回滚（重复 audit-ID 注入负向，expire+create 与 commit 两路径） | `OPEN` |
+| 1 | malformed/duplicate/empty candidate 拒绝（解析矩阵 + 行号级脱敏错误） | `PASS` |
+| 2 | 单 pending mutual exclusion（singleton + 409） | `PASS` |
+| 3 | 非秘密维度 first/no-op/material 区分（revision 双标志独立性测试） | `PASS` |
+| 4 | 已提交 import 无条件推进全部 `credential_revision` 且 preview 零密码变化分类 | `PASS` |
+| 5 | 双 CAS 拒绝与重复提交安全失败（stale 保留 candidate、audit rejected） | `PASS` |
+| 6 | candidate/payload 终态删除（commit/discard/lazy expiry 三路径 + 容忍恢复） | `PASS` |
+| 7 | current-fact credential/mapping（账户按 username 存续、全量新 nonce 重封） | `PASS` |
+| 8 | 事务回滚（重复 audit-ID 注入负向，expire+create 与 commit 两路径） | `PASS` |
 | 9 | password 明文不进任何普通 surface（DB+WAL 字节扫描、响应/审计/日志 canary） | `OPEN` |
 | 10 | CSV → Server truth 且零自动 Command（import 零 Device I/O） | `OPEN` |
 
-## 证据登记要求
+## 已登记证据
 
-- 全部条目的测试随 ci-rust / ci-contracts / ci-web lane 真实运行（150 项 server 测试、12 条 Playwright 场景、快照幂等）；登记需要含 `bbf5fb8` 的 head 上一次全绿 CI run 链接。
-- 条目 10 说明：import 路径不触碰 `commands` 表且无任何 Device I/O 面（WSS 未实现，结构性成立）；随 Phase 4 Command 落地后需回访一次负向断言。
+- 条目 1–8：[ci run 31932403934](https://github.com/4o3F/Natsume/actions/runs/31932403934)（head `a544b96`，2026-08-16，全 lane 绿，含交付面锚点 `bbf5fb8` 的全部祖先提交）——各条目的具名测试（解析矩阵、singleton 409、revision 双标志三态、无条件 credential 推进与 preview 零密码分类、双 CAS stale-reject、三路径终态删除、nonce 全量重封、双路径回滚注入）随 ci-rust / ci-contracts / ci-web lane 真实运行全绿。（2026-08-16 勘误：此前「150 项 server 测试、12 条 Playwright」计数失真，证据以 run 内实际执行为准，不再登记手数数字。）
+- 条目 9：字节扫描（DB+WAL）与响应/审计 canary 已在上述 run 内；**日志 canary 与 `-shm`/checkpoint 扫描于 2026-08-16 补齐**，锚定其 head 的全绿 run 后翻 `PASS`。
+- 条目 10：import 快照新增 `commands`/`observed_device_states` 计数与成功 commit 路径零行断言（2026-08-16 补齐，Phase 4 WP1 已落地 `commands` 写入面，负向断言由结构性声明升级为真实测试）；锚定其 head 的全绿 run 后翻 `PASS`。
 
 ## 已登记待办（不阻断，登记备查）
 
