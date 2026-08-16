@@ -13,7 +13,7 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 | WP1 | machine-identity 整机组合配方冻结 + claim 层 2-of-3 + 词表统一（ADR-0032 修订） | `DONE`（`6b40ab8`；26 项决策表/golden 测试，缺失标记字节已钉死） |
 | WP2 | Server enrollment 面：provisioning window open/close operator API（契约需新增冻结）、enrollment request 受理（同端口独立路由族）、`create_device` 同事务联合签发（Token + Gateway leaf）、`replace_device_credentials` approve-then-claim、`202` 幂等重投轮询、same-SPKI 自动批准 | `DONE`（WP2a `a288918`；WP2b `2907796` + `abb1a1b`；WP2c review 面与 Enrollment 页 `ab7cae6`） |
 | WP3 | Client：privileged raw collectors（DMI/disk 实读）、identity file 原子写、identity-first startup、凭据文件 | `DONE`（`721e4a9`；13 针探针/反向探针 + opus 审查 3 项阻断全部修复，凭据写入器按启动分解随 WP4 实数据落地） |
-| WP4 | Client enrollment 流程接线 + 替换语义 | `OPEN` |
+| WP4 | Client enrollment 流程接线 + 替换语义 | `DONE`（`93cd6e2`；5 条真 TLS 端到端场景 + 单一拒绝源静态探针，opus 审查零阻断、3 条非阻断随包修复） |
 
 - WP2a（provisioning window operator API：open / close / read）已随 `a288918` 落地；WP2b（intake + 联合签发 + approve-then-claim writer）随 `2907796` / `abb1a1b` 落地；WP2c（operator list/approve/reject HTTP 面 + Web Enrollment 页 + 5 条 Playwright 场景）随 `ab7cae6` 落地，WP2 关闭。
 
