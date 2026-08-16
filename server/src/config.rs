@@ -39,7 +39,7 @@ impl ServerConfig {
     ///
     /// Returns a redacted [`ConfigError`] when the file cannot be read,
     /// decoded, or validated.
-    pub(crate) fn load_from(path: &Path) -> Result<Self, ConfigError> {
+    pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
         let encoded = fs::read_to_string(path).map_err(|_| ConfigError::ReadFailed)?;
         let raw: RawServerConfig =
             toml::from_str(&encoded).map_err(|_| ConfigError::DecodeFailed)?;

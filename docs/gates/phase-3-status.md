@@ -37,6 +37,8 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 - **状态接线**：identity FirstStart/Matched 后，token 缺失 → enrollment 流程（EnrollmentPending）；token 存在 → Enrolled 驻留；token 存在但 key/leaf 损坏 → fail closed（ADR-0032：不得自动 re-enroll）；token 缺失时的重投属同一 enrollment 的重试（same-SPKI 自愈），非 re-enroll。
 - **测试策略**：integration-tests 以真实 server（test PKI、localhost TLS listener）端到端驱动 daemon enrollment 库函数——create 同步签发、replace approve-then-claim、rejected 终局、closed-window 轮询等待、finalization 校验失败零落盘；daemon 单测覆盖文件层与状态判定。WP4 终点为凭据落盘 + Enrolled 驻留，WSS 接线属后续 Phase。
 
+- WP4 审查非阻断挂账（3 条已随包修复：body/decode 传输错误归等待态、私钥 fixture 置换为公开 CSR 钉子、keys 目录 setgid 归组使 0640 组读落地）：(a) **时钟偏移**——leaf notBefore 不回拨且 unit 无 `time-sync.target` 排序，RTC 走偏首启会 fail-closed 重启循环，Phase 4 前处置（unit 排序或服务端 notBefore 回拨）；(b) webpki 失败一律映射 `InvalidHostname`，过期/链失败诊断误导；(c) `enroll_until_parked` 循环（rejected 驻留、5s 间隔、状态变化才记日志）无测试触达，集成测试直调 `step()`；(d) Replace-over-existing 与「201 丢失后同 SPKI 自愈」无客户端侧端到端场景（服务端侧有）；(e) 旧 token rotation 后 inode 残留 + `response.bytes()` 的 token 明文不零化（与 WP3 零化挂账同类，`LimitCORE=0` 缓解）；(f) `device_token_present` follow-symlink 与 WP3 artifact 扫描 lstat 语义不一致；(g) `request_body_json()`/`endpoint()` 为集成测试而 pub，待 hygiene 收进测试门面；(h) 客户端 token 校验未钉尾字节规范位（宽于 OpenAPI pattern）；(i) 集成测试依赖 util-linux `script(1)`，缺失时报错误导。
+
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 
 - provisioning window open/close 的 operator HTTP 面（启动时待冻结；现由上述 WP2a 按 §3.3 route 与 §3.6.4 audit registry 落地，保留本项作为启动记录）

@@ -9,7 +9,9 @@ publish.workspace = true
 
 [dependencies]
 axum.workspace = true
+base64.workspace = true
 diesel.workspace = true
+natsume-device-daemon = { path = "../client/device-daemon" }
 natsume-device-protocol = { path = "../crates/device-protocol" }
 natsume-error-code = { path = "../crates/error-code" }
 natsume-local-control-api = { path = "../crates/local-control-api" }
@@ -18,18 +20,26 @@ natsume-server = { path = "../server" }
 proc-macro2.workspace = true
 prost.workspace = true
 prost-types.workspace = true
+rcgen.workspace = true
+reqwest.workspace = true
 roxmltree.workspace = true
 serde_json.workspace = true
 snafu.workspace = true
 syn.workspace = true
+tempfile.workspace = true
 tokio.workspace = true
 tower.workspace = true
 uuid.workspace = true
+zeroize.workspace = true
 zbus.workspace = true
 
 [[bin]]
 name = "production-module-scan"
 path = "production-module-scan.rs"
+
+[[bin]]
+name = "server-bootstrap-driver"
+path = "server-bootstrap-driver.rs"
 
 [lints]
 workspace = true

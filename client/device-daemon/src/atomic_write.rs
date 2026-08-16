@@ -8,6 +8,12 @@ use std::{
 use snafu::Snafu;
 use tempfile::NamedTempFile;
 
+#[derive(Clone, Copy)]
+pub(super) enum WritePolicy {
+    CreateOnly,
+    Replace,
+}
+
 #[derive(Debug, Snafu)]
 pub(super) enum AtomicWriteError {
     #[snafu(display("atomic file target has no parent directory"))]
@@ -38,6 +44,7 @@ pub(super) fn atomic_write(
     target: &Path,
     content: &[u8],
     mode: u32,
+    policy: WritePolicy,
 ) -> Result<(), AtomicWriteError> {
     let parent = target.parent().ok_or(AtomicWriteError::Parent)?;
     let mut temporary = NamedTempFile::new_in(parent).map_err(|_| AtomicWriteError::Create)?;
@@ -52,14 +59,19 @@ pub(super) fn atomic_write(
         .as_file()
         .sync_all()
         .map_err(|_| AtomicWriteError::SyncFile)?;
-    rustix::fs::renameat_with(
-        rustix::fs::CWD,
-        temporary.path(),
-        rustix::fs::CWD,
-        target,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(|_| AtomicWriteError::Rename)?;
+    match policy {
+        WritePolicy::CreateOnly => rustix::fs::renameat_with(
+            rustix::fs::CWD,
+            temporary.path(),
+            rustix::fs::CWD,
+            target,
+            rustix::fs::RenameFlags::NOREPLACE,
+        )
+        .map_err(|_| AtomicWriteError::Rename)?,
+        WritePolicy::Replace => {
+            fs::rename(temporary.path(), target).map_err(|_| AtomicWriteError::Rename)?;
+        }
+    }
     File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(|_| AtomicWriteError::SyncDirectory)
@@ -86,7 +98,7 @@ mod tests {
         let target = directory.path().join("record.json");
         let new = vec![b'n'; 64 * 1024];
 
-        if let Err(error) = atomic_write(&target, &new, 0o600) {
+        if let Err(error) = atomic_write(&target, &new, 0o600, WritePolicy::CreateOnly) {
             panic!("atomic write must succeed: {error}");
         }
 
@@ -117,7 +129,7 @@ mod tests {
             panic!("old fixture must be written: {error}");
         }
 
-        let result = atomic_write(&target, &new, 0o600);
+        let result = atomic_write(&target, &new, 0o600, WritePolicy::CreateOnly);
 
         assert!(matches!(result, Err(AtomicWriteError::Rename)));
         let actual = match fs::read(&target) {
@@ -131,5 +143,39 @@ mod tests {
             Err(error) => panic!("test directory must be readable: {error}"),
         };
         assert_eq!(entries, 1, "failed temporary file must be cleaned up");
+    }
+
+    #[test]
+    fn replace_policy_installs_one_complete_new_version() {
+        let directory = tempdir();
+        let target = directory.path().join("record.json");
+        let old = vec![b'o'; 64 * 1024];
+        let new = vec![b'n'; 32 * 1024];
+        if let Err(error) = fs::write(&target, &old) {
+            panic!("old fixture must be written: {error}");
+        }
+
+        if let Err(error) = atomic_write(&target, &new, 0o640, WritePolicy::Replace) {
+            panic!("replacement must succeed: {error}");
+        }
+
+        let actual = match fs::read(&target) {
+            Ok(content) => content,
+            Err(error) => panic!("replacement must be readable: {error}"),
+        };
+        assert_eq!(actual, new);
+        let metadata = match fs::metadata(&target) {
+            Ok(metadata) => metadata,
+            Err(error) => panic!("replacement metadata must be readable: {error}"),
+        };
+        assert_eq!(metadata.mode() & 0o777, 0o640);
+        let entries = match fs::read_dir(directory.path()) {
+            Ok(entries) => entries.count(),
+            Err(error) => panic!("test directory must be readable: {error}"),
+        };
+        assert_eq!(
+            entries, 1,
+            "temporary file must not remain after replacement"
+        );
     }
 }

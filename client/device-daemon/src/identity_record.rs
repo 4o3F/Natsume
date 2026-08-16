@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::atomic_write::{AtomicWriteError, atomic_write};
+use crate::atomic_write::{AtomicWriteError, WritePolicy, atomic_write};
 
 const IDENTITY_RECORD_NAME: &str = "identity.json";
 const IDENTITY_RECORD_MODE: u32 = 0o600;
@@ -94,6 +94,7 @@ pub(super) fn write_first_start(
         &record_path(identity_directory),
         &bytes,
         IDENTITY_RECORD_MODE,
+        WritePolicy::CreateOnly,
     )
     .map_err(|source| IdentityRecordWriteError::Atomic { source })
 }

@@ -1,36 +1,45 @@
 use std::{fs, io, path::Path, path::PathBuf};
 
-use natsume_local_control_api::{Privileged1Proxy, SanitizedHardwareClaim, StartupIdentityState};
+use natsume_local_control_api::{
+    HardwareCandidate, Privileged1Proxy, SanitizedHardwareClaim, StartupIdentityState,
+};
 use natsume_machine_identity::{
-    CollectionCompleteness, LocalIdentityPreflightDecision, MachineIdentityDecision,
-    StartupIdentityDecision, evaluate_local_identity_preflight, evaluate_startup_identity,
+    CollectionCompleteness, EvidenceQuality, LocalIdentityPreflightDecision,
+    MachineIdentityDecision, StartupIdentityDecision, evaluate_local_identity_preflight,
+    evaluate_startup_identity,
 };
 use serde::Deserialize;
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::identity_record::{self, IdentityRecordWriteError};
+use crate::{
+    enrollment::{self, EnrollmentError, EnrollmentPaths},
+    identity_record,
+};
 
 #[derive(Clone)]
-pub(super) struct StartupPaths {
+struct StartupPaths {
     site_config: PathBuf,
     identity_directory: PathBuf,
     keys_directory: PathBuf,
+    enrollment: EnrollmentPaths,
 }
 
 impl StartupPaths {
     #[must_use]
-    pub(super) fn production() -> Self {
+    fn production() -> Self {
         Self {
             site_config: PathBuf::from("/etc/natsume/site.toml"),
             identity_directory: PathBuf::from("/var/lib/natsume/identity"),
             keys_directory: PathBuf::from("/var/lib/natsume/keys"),
+            enrollment: EnrollmentPaths::production(),
         }
     }
 }
 
 #[derive(Debug, Snafu)]
-pub(super) enum StartupError {
+#[snafu(module)]
+pub enum StartupError {
     #[snafu(display("device startup site identity configuration is missing or invalid"))]
     SiteConfiguration,
 
@@ -41,18 +50,35 @@ pub(super) enum StartupError {
     FailClosed { state: StartupIdentityState },
 
     #[snafu(display("device startup could not persist its first identity record"))]
-    IdentityPersistence { source: IdentityRecordWriteError },
+    IdentityPersistence,
+
+    #[snafu(display("device Enrollment startup failed closed"))]
+    Enrollment { source: EnrollmentError },
 }
 
 #[derive(Deserialize)]
 struct SiteIdentityConfig {
     fleet_namespace_uuid: String,
+    gateway_hostname: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct StartupContext {
     configured_namespace: Uuid,
     stored_machine_hardware_id: Option<Uuid>,
+    gateway_hostname: String,
+}
+
+struct SiteIdentity {
+    fleet_namespace_uuid: Uuid,
+    gateway_hostname: String,
+}
+
+struct IdentityReady {
+    state: StartupIdentityState,
+    machine_hardware_id: Uuid,
+    hardware_identity_quality: EvidenceQuality,
+    gateway_hostname: String,
 }
 
 fn state_label(state: StartupIdentityState) -> &'static str {
@@ -86,7 +112,7 @@ fn canonical_uuid(value: &str) -> Option<Uuid> {
         .filter(|uuid| uuid.hyphenated().to_string() == value)
 }
 
-fn read_site_namespace(path: &Path) -> Result<Uuid, StartupError> {
+fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
     let text = fs::read_to_string(path).map_err(|_| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
@@ -101,12 +127,16 @@ fn read_site_namespace(path: &Path) -> Result<Uuid, StartupError> {
         );
         StartupError::SiteConfiguration
     })?;
-    canonical_uuid(&config.fleet_namespace_uuid).ok_or_else(|| {
+    let fleet_namespace_uuid = canonical_uuid(&config.fleet_namespace_uuid).ok_or_else(|| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
             "device startup site namespace is not canonical"
         );
         StartupError::SiteConfiguration
+    })?;
+    Ok(SiteIdentity {
+        fleet_namespace_uuid,
+        gateway_hostname: config.gateway_hostname,
     })
 }
 
@@ -142,7 +172,9 @@ fn identity_bound_artifacts_present(keys_directory: &Path) -> Result<bool, Start
 }
 
 fn preflight(paths: &StartupPaths) -> Result<StartupContext, StartupError> {
-    let configured_namespace = read_site_namespace(&paths.site_config)?;
+    let site = read_site_identity(&paths.site_config)?;
+    let configured_namespace = site.fleet_namespace_uuid;
+    let gateway_hostname = site.gateway_hostname;
     let artifacts_present = identity_bound_artifacts_present(&paths.keys_directory)?;
     let record = identity_record::read(&paths.identity_directory);
 
@@ -150,12 +182,14 @@ fn preflight(paths: &StartupPaths) -> Result<StartupContext, StartupError> {
         LocalIdentityPreflightDecision::CleanFirstStart => Ok(StartupContext {
             configured_namespace,
             stored_machine_hardware_id: None,
+            gateway_hostname,
         }),
         LocalIdentityPreflightDecision::ReadyForHardwareCheck {
             stored_machine_hardware_id,
         } => Ok(StartupContext {
             configured_namespace,
             stored_machine_hardware_id: Some(stored_machine_hardware_id),
+            gateway_hostname,
         }),
         LocalIdentityPreflightDecision::IdentityRecordMissingWithState
         | LocalIdentityPreflightDecision::IdentityRecordCorrupt => Err(fail_closed(
@@ -165,6 +199,47 @@ fn preflight(paths: &StartupPaths) -> Result<StartupContext, StartupError> {
             Err(fail_closed(StartupIdentityState::SiteNamespaceMismatch))
         }
     }
+}
+
+fn candidate_slot(candidate: &HardwareCandidate) -> Option<usize> {
+    match candidate.anchor_kind.as_str() {
+        "dmi_system_uuid" => Some(0),
+        "dmi_board_serial" => Some(1),
+        "first_disk_serial" => Some(2),
+        _ => None,
+    }
+}
+
+fn candidate_quality(candidate: &HardwareCandidate) -> Option<EvidenceQuality> {
+    match candidate.quality.as_str() {
+        "weak" => Some(EvidenceQuality::Weak),
+        "medium" => Some(EvidenceQuality::Medium),
+        "strong" => Some(EvidenceQuality::Strong),
+        _ => None,
+    }
+}
+
+fn whole_machine_quality(claim: &SanitizedHardwareClaim) -> Option<EvidenceQuality> {
+    let present_slot_count = usize::try_from(claim.present_slot_count).ok()?;
+    if claim.candidates.len() != present_slot_count {
+        return None;
+    }
+    let mut seen = [false; 3];
+    let mut minimum: Option<EvidenceQuality> = None;
+    for candidate in &claim.candidates {
+        let slot = candidate_slot(candidate)?;
+        if seen[slot]
+            || canonical_uuid(&candidate.candidate_id)
+                .as_ref()
+                .is_none_or(|candidate_id| candidate_id.get_version_num() != 5)
+        {
+            return None;
+        }
+        seen[slot] = true;
+        let quality = candidate_quality(candidate)?;
+        minimum = Some(minimum.map_or(quality, |current| current.min(quality)));
+    }
+    minimum
 }
 
 fn decision_from_claim(claim: &SanitizedHardwareClaim) -> Option<MachineIdentityDecision> {
@@ -192,9 +267,25 @@ fn apply_claim(
     paths: &StartupPaths,
     context: StartupContext,
     claim: &SanitizedHardwareClaim,
-) -> Result<StartupIdentityState, StartupError> {
+) -> Result<IdentityReady, StartupError> {
     let Some(decision) = decision_from_claim(claim) else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
+    };
+    let machine_hardware_id = match decision {
+        MachineIdentityDecision::Derived {
+            machine_hardware_id,
+            ..
+        } => Some(machine_hardware_id),
+        MachineIdentityDecision::InsufficientSources { .. }
+        | MachineIdentityDecision::Unsupported { .. } => None,
+    };
+    let hardware_identity_quality = match decision {
+        MachineIdentityDecision::Derived { .. } => Some(
+            whole_machine_quality(claim)
+                .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?,
+        ),
+        MachineIdentityDecision::InsufficientSources { .. }
+        | MachineIdentityDecision::Unsupported { .. } => None,
     };
     match evaluate_startup_identity(context.stored_machine_hardware_id, &decision) {
         StartupIdentityDecision::FirstStart {
@@ -205,26 +296,36 @@ fn apply_claim(
                 context.configured_namespace,
                 machine_hardware_id,
             )
-            .map_err(|source| {
+            .map_err(|_error| {
                 tracing::error!(
                     startup_identity_state =
                         state_label(StartupIdentityState::IdentityRecordMissingOrCorrupt),
                     "device startup could not persist the first identity record"
                 );
-                StartupError::IdentityPersistence { source }
+                StartupError::IdentityPersistence
             })?;
             tracing::info!(
                 startup_identity_state = state_label(StartupIdentityState::CleanFirstStart),
                 "device identity established on first start"
             );
-            Ok(StartupIdentityState::CleanFirstStart)
+            identity_ready(
+                StartupIdentityState::CleanFirstStart,
+                Some(machine_hardware_id),
+                hardware_identity_quality,
+                context.gateway_hostname,
+            )
         }
         StartupIdentityDecision::Matched => {
             tracing::info!(
                 startup_identity_state = state_label(StartupIdentityState::Matched),
                 "device identity matched"
             );
-            Ok(StartupIdentityState::Matched)
+            identity_ready(
+                StartupIdentityState::Matched,
+                machine_hardware_id,
+                hardware_identity_quality,
+                context.gateway_hostname,
+            )
         }
         StartupIdentityDecision::Indeterminate => {
             Err(fail_closed(StartupIdentityState::Indeterminate))
@@ -238,9 +339,42 @@ fn apply_claim(
     }
 }
 
-pub(super) async fn run_production(
+fn identity_ready(
+    state: StartupIdentityState,
+    machine_hardware_id: Option<Uuid>,
+    hardware_identity_quality: Option<EvidenceQuality>,
+    gateway_hostname: String,
+) -> Result<IdentityReady, StartupError> {
+    let machine_hardware_id = machine_hardware_id
+        .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?;
+    let hardware_identity_quality = hardware_identity_quality
+        .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?;
+    Ok(IdentityReady {
+        state,
+        machine_hardware_id,
+        hardware_identity_quality,
+        gateway_hostname,
+    })
+}
+
+fn existing_enrollment_state(
     paths: &StartupPaths,
-) -> Result<StartupIdentityState, StartupError> {
+) -> Result<Option<StartupIdentityState>, StartupError> {
+    if !enrollment::device_token_present(&paths.enrollment)
+        .map_err(|source| StartupError::Enrollment { source })?
+    {
+        return Ok(None);
+    }
+    enrollment::validate_enrolled_artifacts(&paths.enrollment)
+        .map_err(|source| StartupError::Enrollment { source })?;
+    tracing::info!(
+        startup_identity_state = state_label(StartupIdentityState::Enrolled),
+        "device Enrollment artifacts are present"
+    );
+    Ok(Some(StartupIdentityState::Enrolled))
+}
+
+async fn run_with_paths(paths: &StartupPaths) -> Result<StartupIdentityState, StartupError> {
     let context = preflight(paths)?;
     let namespace = context.configured_namespace.to_string();
     let Ok(connection) = zbus::Connection::system().await else {
@@ -252,7 +386,39 @@ pub(super) async fn run_production(
     let Ok(claim) = proxy.collect_hardware_candidates(&namespace).await else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
-    apply_claim(paths, context, &claim)
+    let identity = apply_claim(paths, context, &claim)?;
+    if let Some(state) = existing_enrollment_state(paths)? {
+        return Ok(state);
+    }
+    tracing::info!(
+        startup_identity_state = state_label(StartupIdentityState::EnrollmentPending),
+        previous_startup_identity_state = state_label(identity.state),
+        "device Enrollment is pending"
+    );
+    let client = enrollment::EnrollmentClient::prepare(
+        paths.enrollment.clone(),
+        identity.machine_hardware_id,
+        identity.hardware_identity_quality,
+        identity.gateway_hostname,
+    )
+    .map_err(|source| StartupError::Enrollment { source })?;
+    enrollment::enroll_until_parked(&client)
+        .await
+        .map_err(|source| StartupError::Enrollment { source })?;
+    tracing::info!(
+        startup_identity_state = state_label(StartupIdentityState::Enrolled),
+        "device Enrollment completed"
+    );
+    Ok(StartupIdentityState::Enrolled)
+}
+
+/// Runs identity-first production startup through Enrollment finalization.
+///
+/// # Errors
+///
+/// Returns a redacted fail-closed startup error.
+pub async fn run_production() -> Result<StartupIdentityState, StartupError> {
+    run_with_paths(&StartupPaths::production()).await
 }
 
 #[cfg(test)]
@@ -261,7 +427,7 @@ fn run_with_claim(
     claim: &SanitizedHardwareClaim,
 ) -> Result<StartupIdentityState, StartupError> {
     let context = preflight(paths)?;
-    apply_claim(paths, context, claim)
+    apply_claim(paths, context, claim).map(|ready| ready.state)
 }
 
 #[cfg(test)]
@@ -269,6 +435,7 @@ mod tests {
     use std::fs;
 
     use natsume_machine_identity::IdentityRecordState;
+    use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
     use tempfile::TempDir;
 
     use super::*;
@@ -288,6 +455,14 @@ mod tests {
             site_config: directory.path().join("etc/natsume/site.toml"),
             identity_directory: directory.path().join("var/lib/natsume/identity"),
             keys_directory: directory.path().join("var/lib/natsume/keys"),
+            enrollment: EnrollmentPaths::new(
+                directory.path().join("etc/natsume/config.toml"),
+                directory.path().join("etc/natsume/trust/control-ca.crt"),
+                directory
+                    .path()
+                    .join("etc/natsume/trust/local-origin-ca.crt"),
+                directory.path().join("var/lib/natsume/keys"),
+            ),
         };
         for path in [
             paths.site_config.parent(),
@@ -316,7 +491,23 @@ mod tests {
 
     fn derived_claim(machine_hardware_id: Uuid) -> SanitizedHardwareClaim {
         SanitizedHardwareClaim {
-            candidates: Vec::new(),
+            candidates: vec![
+                HardwareCandidate {
+                    anchor_kind: "dmi_system_uuid".to_owned(),
+                    candidate_id: Uuid::new_v5(&NAMESPACE, b"system").to_string(),
+                    quality: "strong".to_owned(),
+                },
+                HardwareCandidate {
+                    anchor_kind: "dmi_board_serial".to_owned(),
+                    candidate_id: Uuid::new_v5(&NAMESPACE, b"board").to_string(),
+                    quality: "strong".to_owned(),
+                },
+                HardwareCandidate {
+                    anchor_kind: "first_disk_serial".to_owned(),
+                    candidate_id: Uuid::new_v5(&NAMESPACE, b"disk").to_string(),
+                    quality: "medium".to_owned(),
+                },
+            ],
             collection_complete: true,
             decision: "derived".to_owned(),
             machine_hardware_id: Some(machine_hardware_id.to_string()),
@@ -326,7 +517,11 @@ mod tests {
 
     fn insufficient_claim() -> SanitizedHardwareClaim {
         SanitizedHardwareClaim {
-            candidates: Vec::new(),
+            candidates: vec![HardwareCandidate {
+                anchor_kind: "dmi_system_uuid".to_owned(),
+                candidate_id: Uuid::new_v5(&NAMESPACE, b"system").to_string(),
+                quality: "strong".to_owned(),
+            }],
             collection_complete: false,
             decision: "insufficient_sources".to_owned(),
             machine_hardware_id: None,
@@ -524,5 +719,122 @@ mod tests {
             run_with_claim(&paths, &claim),
             StartupIdentityState::IdentityUnavailable,
         );
+    }
+
+    #[test]
+    fn reported_whole_machine_quality_is_the_minimum_present_slot_quality() {
+        let mut claim = derived_claim(MACHINE_ID);
+        assert_eq!(whole_machine_quality(&claim), Some(EvidenceQuality::Medium));
+
+        claim.candidates[2].quality = "weak".to_owned();
+        assert_eq!(whole_machine_quality(&claim), Some(EvidenceQuality::Weak));
+
+        claim.candidates.pop();
+        claim.present_slot_count = 2;
+        assert_eq!(whole_machine_quality(&claim), Some(EvidenceQuality::Strong));
+    }
+
+    #[test]
+    fn malformed_candidate_quality_fails_before_first_identity_write() {
+        let directory = tempdir();
+        let paths = fixture_paths(&directory);
+        let mut claim = derived_claim(MACHINE_ID);
+        claim.candidates[0].quality = "unreviewed".to_owned();
+
+        assert_failure_state(
+            run_with_claim(&paths, &claim),
+            StartupIdentityState::IdentityUnavailable,
+        );
+        assert_eq!(
+            identity_record::read(&paths.identity_directory),
+            IdentityRecordState::Absent
+        );
+    }
+
+    fn install_parseable_gateway_key_and_leaf(paths: &StartupPaths) {
+        let key = match KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256) {
+            Ok(key) => key,
+            Err(error) => panic!("Gateway key fixture must be generated: {error}"),
+        };
+        let params = match CertificateParams::new(vec!["gateway.example".to_owned()]) {
+            Ok(params) => params,
+            Err(error) => panic!("Gateway leaf fixture parameters must be created: {error}"),
+        };
+        let leaf = match params.self_signed(&key) {
+            Ok(leaf) => leaf,
+            Err(error) => panic!("Gateway leaf fixture must be signed: {error}"),
+        };
+        if let Err(error) = fs::write(
+            paths.keys_directory.join("gateway-key.pk8"),
+            key.serialize_der(),
+        ) {
+            panic!("Gateway key fixture must be written: {error}");
+        }
+        if let Err(error) = fs::write(
+            paths.keys_directory.join("gateway-leaf.der"),
+            leaf.der().as_ref(),
+        ) {
+            panic!("Gateway leaf fixture must be written: {error}");
+        }
+    }
+
+    #[test]
+    fn token_presence_marks_enrolled_only_with_parseable_key_and_leaf() {
+        let directory = tempdir();
+        let paths = fixture_paths(&directory);
+        install_parseable_gateway_key_and_leaf(&paths);
+        if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
+            panic!("Device Token fixture must be written: {error}");
+        }
+
+        assert!(matches!(
+            existing_enrollment_state(&paths),
+            Ok(Some(StartupIdentityState::Enrolled))
+        ));
+    }
+
+    #[test]
+    fn token_with_absent_or_corrupt_key_fails_closed_without_reenrollment() {
+        let directory = tempdir();
+        let paths = fixture_paths(&directory);
+        if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
+            panic!("Device Token fixture must be written: {error}");
+        }
+        assert!(matches!(
+            existing_enrollment_state(&paths),
+            Err(StartupError::Enrollment { .. })
+        ));
+
+        if let Err(error) = fs::write(paths.keys_directory.join("gateway-key.pk8"), b"corrupt") {
+            panic!("corrupt Gateway key fixture must be written: {error}");
+        }
+        assert!(matches!(
+            existing_enrollment_state(&paths),
+            Err(StartupError::Enrollment { .. })
+        ));
+    }
+
+    #[test]
+    fn token_with_missing_leaf_fails_closed_without_reenrollment() {
+        let directory = tempdir();
+        let paths = fixture_paths(&directory);
+        let key = match KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256) {
+            Ok(key) => key,
+            Err(error) => panic!("Gateway key fixture must be generated: {error}"),
+        };
+        if let Err(error) = fs::write(
+            paths.keys_directory.join("gateway-key.pk8"),
+            key.serialize_der(),
+        ) {
+            panic!("Gateway key fixture must be written: {error}");
+        }
+        if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
+            panic!("Device Token fixture must be written: {error}");
+        }
+
+        assert!(matches!(
+            existing_enrollment_state(&paths),
+            Err(StartupError::Enrollment { .. })
+        ));
     }
 }

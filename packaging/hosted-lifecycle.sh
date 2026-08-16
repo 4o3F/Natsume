@@ -123,7 +123,7 @@ assert_group natsume-caddy
 
 assert_tmpfiles_path /var/lib/natsume 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/identity 'natsume:natsume 750'
-assert_tmpfiles_path /var/lib/natsume/keys 'natsume:natsume 700'
+assert_tmpfiles_path /var/lib/natsume/keys 'natsume:natsume-gateway 2750'
 assert_tmpfiles_path /run/natsume 'natsume:natsume-gateway 770'
 assert_tmpfiles_path /run/natsume/gateway-tls 'natsume:natsume-gateway 750'
 assert_tmpfiles_path /run/natsume/gateway-status 'natsume:natsume-gateway 750'

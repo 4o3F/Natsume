@@ -4,13 +4,9 @@ use std::{
 };
 
 use clap::{ArgGroup, Parser};
-use natsume_device_daemon::{EndpointError, parse_endpoint};
+use natsume_device_daemon::{EndpointError, parse_endpoint, startup};
 use natsume_error_code::ErrorCode;
 use snafu::Snafu;
-
-mod atomic_write;
-mod identity_record;
-mod startup;
 
 #[derive(Debug, Snafu)]
 enum Error {
@@ -105,8 +101,7 @@ async fn run() -> Result<(), Error> {
     match run_args(&args)? {
         RunMode::Completed => Ok(()),
         RunMode::Daemon => {
-            let paths = startup::StartupPaths::production();
-            startup::run_production(&paths)
+            startup::run_production()
                 .await
                 .map_err(|source| Error::Startup { source })?;
             future::pending::<()>().await;

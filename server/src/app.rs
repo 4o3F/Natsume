@@ -40,7 +40,12 @@ pub async fn serve(config: ServerConfig) -> Result<(), AppError> {
     run_until(config, shutdown).await
 }
 
-pub(crate) async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), AppError>
+/// Runs the production Server stack until the supplied shutdown future resolves.
+///
+/// # Errors
+///
+/// Returns a redacted [`AppError`] when a startup or serving stage fails.
+pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), AppError>
 where
     F: Future<Output = ()> + Send + 'static,
 {

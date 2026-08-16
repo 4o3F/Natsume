@@ -1,6 +1,11 @@
 #![forbid(unsafe_code)]
 //! Device Daemon-owned contracts and install-time endpoint validation.
 
+mod atomic_write;
+pub mod enrollment;
+mod identity_record;
+pub mod startup;
+
 use std::{net::IpAddr, num::NonZeroU16, str::FromStr};
 
 use natsume_error_code::{ErrorCode, common::CommonErrorCode};
