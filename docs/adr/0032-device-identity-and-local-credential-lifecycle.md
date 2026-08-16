@@ -51,6 +51,8 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 
 - Device Token 与 Seat credential 文件为 `0600 root:root`；Gateway private material 和含凭据 Caddy 配置为 `0640 root:natsume-gateway`。
 - Client artifact 必须 root-owned，使用 `temp + fsync + rename` 原子写入；secret 不通过 env、argv、普通配置或 system credential delivery。
+
+**2026-08-16 修订（artifact 属主与打包基线调和）**：上两条的 `root` 属主与打包基线不可共存——Device Daemon 以专用 service user `natsume` 运行（packaging sysusers/service，CI 断言），Privileged Helper 被架构禁止持有或读取 Token/私钥，因此 `0600 root:root` 会令唯一合法消费者自身不可读。属主词表调和为 service-user 所有：Device Token、Seat credential 与 identity record 文件为 `0600 natsume:natsume`；Gateway private material 和含凭据 Caddy 配置为 `0640 natsume:natsume-gateway`（`natsume-caddy` 经组读取）。confidentiality boundary 不变：威胁主体是非 root 的 contest user，其对上述文件零可读；原子写入与 zeroization 条款不变。
 - Client 不增加 application-level encryption；其 confidentiality boundary 是 ownership、mode 与当前非 root attacker scope。
 - secret 使用短生命周期、zeroization-aware 类型，不进入通用 `Debug`、serde、日志、指标、audit 或 error chain。
 - Server vault 继续使用 application-level AEAD；`server_vault_records` current row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`，不保存 ciphertext format/AAD/key version、timestamp、rotation 或 migration metadata。Client 文件选择不降低 Server 备份泄露边界。
