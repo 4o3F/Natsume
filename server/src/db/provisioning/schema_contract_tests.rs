@@ -1,14 +1,14 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
+use crate::{
+    application::provisioning::{ProvisioningError, RecoveryOutcome, recover_on_startup},
+    db::{Database, DatabaseConfig, DatabaseError},
+};
 use diesel::{
     Connection, QueryableByName, RunQueryDsl,
     connection::SimpleConnection,
     sql_types::{BigInt, Integer, Nullable, Text},
     sqlite::SqliteConnection,
-};
-use natsume_server::{
-    application::provisioning::{ProvisioningError, RecoveryOutcome, recover_on_startup},
-    db::{Database, DatabaseConfig, DatabaseError},
 };
 use uuid::Uuid;
 

@@ -13,4 +13,4 @@ pub mod openapi;
 mod tls;
 mod vault;
 
-pub use http::router;
+pub use commands::router;

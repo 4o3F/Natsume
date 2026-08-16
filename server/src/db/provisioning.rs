@@ -452,3 +452,6 @@ impl From<ProvisioningStoreError> for ProvisioningError {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod schema_contract_tests;

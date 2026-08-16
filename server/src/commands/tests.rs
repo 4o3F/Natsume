@@ -17,7 +17,10 @@ use tracing::instrument::WithSubscriber as _;
 use zeroize::Zeroizing;
 
 use crate::{
-    application::operator::{OperatorCredentials, OperatorRole, hash_password, sign_in},
+    application::operator::{
+        OperatorCredentials, OperatorRole, hash_password, sign_in,
+        tests::PasswordVerificationTestGuard,
+    },
     audit::CorrelationId,
     config::{
         LogLevel, ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME, ServerConfig,
@@ -207,6 +210,7 @@ async fn repeated_bootstrap_does_not_recover_an_open_provisioning_window() -> Re
 
 #[tokio::test]
 async fn password_reset_updates_phc_removes_all_sessions_and_audits() -> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let (config_path, database_path, _) =
         bootstrap_password_reset_fixture(&identity, "reset-admin", "old-password").await?;
@@ -293,6 +297,7 @@ async fn password_reset_updates_phc_removes_all_sessions_and_audits() -> Result<
 #[tokio::test]
 async fn password_reset_preserves_every_other_operator_session_and_phc() -> Result<(), TestFailure>
 {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let (config_path, database_path, _) =
         bootstrap_password_reset_fixture(&identity, "isolation-admin-a", "password-a").await?;
@@ -387,6 +392,7 @@ async fn password_reset_preserves_every_other_operator_session_and_phc() -> Resu
 
 #[tokio::test]
 async fn password_reset_unknown_login_is_a_zero_write_rejection() -> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let (config_path, database_path, _) =
         bootstrap_password_reset_fixture(&identity, "known-reset-admin", "old-password").await?;
@@ -484,6 +490,7 @@ async fn password_reset_missing_database_creates_no_sqlite_artifacts() -> Result
 #[tokio::test]
 async fn password_reset_confirmation_mismatch_precedes_every_business_write()
 -> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let (config_path, database_path, _) =
         bootstrap_password_reset_fixture(&identity, "mismatch-reset-admin", "old-password").await?;
@@ -526,6 +533,7 @@ async fn password_reset_confirmation_mismatch_precedes_every_business_write()
 
 #[tokio::test]
 async fn password_reset_succeeds_without_the_vault_master_key() -> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let (config_path, database_path, master_key_path) =
         bootstrap_password_reset_fixture(&identity, "vault-independent-admin", "old-password")
@@ -580,6 +588,7 @@ async fn password_reset_succeeds_without_the_vault_master_key() -> Result<(), Te
 
 #[tokio::test]
 async fn repeated_password_reset_with_the_same_input_succeeds() -> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let (config_path, database_path, _) =
         bootstrap_password_reset_fixture(&identity, "repeat-reset-admin", "old-password").await?;

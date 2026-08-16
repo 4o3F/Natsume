@@ -1,11 +1,9 @@
 use std::{
-    ffi::OsStr,
     fs::{self, OpenOptions},
     io::Write as _,
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _},
     path::{Path, PathBuf},
-    process::Stdio,
     time::Duration,
 };
 
@@ -23,8 +21,6 @@ use reqwest::{StatusCode, redirect::Policy};
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 use tokio::{
-    io::AsyncWriteExt as _,
-    process::Command,
     sync::oneshot,
     task::JoinHandle,
     time::{sleep, timeout},
@@ -38,8 +34,10 @@ const TEST_NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_123
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATOR_LOGIN: &str = "wp4-admin";
 const OPERATOR_PASSWORD: &str = "wp4-operator-password";
-const BOOTSTRAP_CONFIG_ENVIRONMENT: &str = "NATSUME_TEST_SERVER_CONFIG";
-const BOOTSTRAP_DRIVER: &str = env!("CARGO_BIN_EXE_server-bootstrap-driver");
+
+mod harness;
+
+use harness::bootstrap_operator;
 
 struct TestServer {
     directory: TempDir,
@@ -140,7 +138,7 @@ impl TestServer {
             ),
             "server configuration must be written",
         );
-        bootstrap_operator(&server_config_path).await;
+        bootstrap_operator(&server_config_path, OPERATOR_LOGIN, OPERATOR_PASSWORD).await;
         let config = require_ok(
             ServerConfig::load_from(&server_config_path),
             "server configuration must load",
@@ -453,42 +451,6 @@ impl Drop for TestServer {
             task.abort();
         }
     }
-}
-
-async fn bootstrap_operator(config_path: &Path) {
-    let command = shell_quote(OsStr::new(BOOTSTRAP_DRIVER));
-    let mut child = require_ok(
-        Command::new("script")
-            .args(["-qefc", &command, "/dev/null"])
-            .env(BOOTSTRAP_CONFIG_ENVIRONMENT, config_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn(),
-        "bootstrap composition process must start",
-    );
-    let mut input = Zeroizing::new(format!(
-        "{OPERATOR_LOGIN}\n{OPERATOR_PASSWORD}\n{OPERATOR_PASSWORD}\n"
-    ));
-    let mut stdin = child
-        .stdin
-        .take()
-        .unwrap_or_else(|| panic!("bootstrap composition stdin must exist"));
-    require_ok(
-        stdin.write_all(input.as_bytes()).await,
-        "bootstrap credentials must be supplied through the PTY",
-    );
-    input.zeroize();
-    drop(stdin);
-    let status = require_ok(
-        child.wait().await,
-        "bootstrap composition process must finish",
-    );
-    assert!(status.success(), "bootstrap composition must succeed");
-}
-
-fn shell_quote(value: &OsStr) -> String {
-    format!("'{}'", value.to_string_lossy().replace('\'', "'\"'\"'"))
 }
 
 fn install_server_pki(directory: &Path) -> ServerPki {

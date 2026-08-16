@@ -1,5 +1,7 @@
 use std::{
+    fs,
     net::SocketAddr,
+    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
 };
 
@@ -15,32 +17,65 @@ use diesel::{
     sql_types::{BigInt, Binary, Nullable, Text},
     sqlite::SqliteConnection,
 };
-use natsume_server::{
-    db::{Database, DatabaseConfig},
-    openapi, router,
-};
+use natsume_server::{config::ServerConfig, openapi, router};
 use serde_json::Value;
+use tempfile::{TempDir, tempdir};
 use tower::ServiceExt;
 use uuid::Uuid;
+
+mod harness;
+
+use harness::bootstrap_operator;
 
 const SESSION_HASH: [u8; 32] = [0x31; 32];
 const DEVICE_A: &str = "01900000-0000-7000-8000-000000000301";
 const DEVICE_B: &str = "01900000-0000-7000-8000-000000000302";
 
 struct TestDatabase {
-    database: Database,
+    _directory: TempDir,
     path: PathBuf,
+    config_path: PathBuf,
 }
 
 impl TestDatabase {
     async fn new() -> Self {
-        let path =
-            std::env::temp_dir().join(format!("natsume-inv-cert-01-{}.sqlite3", Uuid::now_v7()));
-        let database = require_ok(
-            Database::connect_and_migrate(&DatabaseConfig::new(&path, true)).await,
-            "INV-CERT-01 database must migrate",
+        let directory = require_ok(tempdir(), "INV-CERT-01 directory must be created");
+        let path = directory.path().join("server.sqlite3");
+        let key_directory = directory.path().join("keys");
+        require_ok(
+            fs::create_dir(&key_directory),
+            "INV-CERT-01 key directory must be created",
         );
-        Self { database, path }
+        require_ok(
+            fs::set_permissions(&key_directory, fs::Permissions::from_mode(0o700)),
+            "INV-CERT-01 key directory must be private",
+        );
+        let config_path = directory.path().join("server.toml");
+        require_ok(
+            fs::write(
+                &config_path,
+                format!(
+                    "[listen]\nhttps = \"127.0.0.1:0\"\n\
+                     [storage]\ndatabase = \"{}\"\nroot_key = \"{}\"\n\
+                     [tls]\ncertificate = \"{}\"\nprivate_key = \"{}\"\n\
+                     [site]\nconfig = \"{}\"\ncontrol_root = \"{}\"\nlocal_origin_root = \"{}\"\n",
+                    path.display(),
+                    key_directory.join("server-root.key").display(),
+                    directory.path().join("unused-server.der").display(),
+                    key_directory.join("unused-server-key.pk8").display(),
+                    directory.path().join("unused-site.toml").display(),
+                    directory.path().join("unused-control-root.der").display(),
+                    directory.path().join("unused-origin-root.der").display(),
+                ),
+            ),
+            "INV-CERT-01 server configuration must be written",
+        );
+        bootstrap_operator(&config_path, "inv-cert-bootstrap", "inv-cert-password").await;
+        Self {
+            _directory: directory,
+            path,
+            config_path,
+        }
     }
 
     fn observer(&self) -> SqliteConnection {
@@ -57,13 +92,12 @@ impl TestDatabase {
         );
         connection
     }
-}
 
-impl Drop for TestDatabase {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
-        let _ = std::fs::remove_file(format!("{}-wal", self.path.display()));
-        let _ = std::fs::remove_file(format!("{}-shm", self.path.display()));
+    fn config(&self) -> ServerConfig {
+        require_ok(
+            ServerConfig::load_from(&self.config_path),
+            "INV-CERT-01 server configuration must load",
+        )
     }
 }
 
@@ -294,10 +328,13 @@ async fn schema_enforces_device_issuance_identity_and_single_active_certificate(
 #[tokio::test]
 async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() {
     let fixture = TestDatabase::new().await;
-    let application = router(
-        fixture.database.clone(),
-        Path::new("/natsume-integration-test-unused-vault-master-key"),
-        Path::new("/natsume-integration-test-unused-web-root"),
+    let application = require_ok(
+        router(
+            fixture.config(),
+            Path::new("/natsume-integration-test-unused-web-root"),
+        )
+        .await,
+        "INV-CERT-01 router composition must open the bootstrapped database",
     );
     for (method, path, expected) in mounted_routes() {
         assert_eq!(drive(&application, method, path).await, expected, "{path}");

@@ -25,6 +25,23 @@ const LOGIN_NAME_PROMPT: &[u8] = b"Login name: ";
 const PASSWORD_PROMPT: &str = "Password: ";
 const PASSWORD_CONFIRMATION_PROMPT: &str = "Confirm password: ";
 
+/// Builds the mounted Server HTTP surface over an already-bootstrapped database.
+///
+/// # Errors
+///
+/// Returns a redacted [`CommandError`] when the database cannot be opened or migrated.
+pub async fn router(config: ServerConfig, web_root: &Path) -> Result<axum::Router, CommandError> {
+    let database_config = DatabaseConfig::new(config.database_path(), false);
+    let database = Database::connect_and_migrate(&database_config)
+        .await
+        .map_err(|_| CommandError::Database)?;
+    Ok(http::router(
+        database,
+        config.vault_master_key_path(),
+        web_root,
+    ))
+}
+
 /// Runs the Server until SIGINT or SIGTERM requests graceful shutdown.
 ///
 /// # Errors
