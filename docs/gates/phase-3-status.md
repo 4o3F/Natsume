@@ -28,6 +28,15 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 
 - WP3 审查非阻断挂账：(a) **udev DB 就绪竞态**——已处置：daemon unit 增加 `systemd-udev-settle.service` 排序（gating 调用方即 gating 按需激活的 helper），封住首启 2 槽落盘窗口；settle 已弃用但目标镜像（Ubuntu 24.04）仍提供，超时（默认 120s）后的残余窗口记录在案；(b) identity record 首启竞态下 `RENAME_NOREPLACE` 失败返回错误而非 noop（systemd 单例化 + 重启收敛为 `Matched`，可接受；贴合 repeat-safe 惯例可改为重读比对）；(c) `atomic_write` 为 create-only 语义（测试已钉死），WP4 Token 轮换写入器须扩展参数而非复用；(d) artifact 扫描为 lstat 语义不计符号链接，且 SIGKILL 残留的 temp 文件会把 clean first start 翻成 fail-closed；(e) 零化不完整（`FromUtf8Error` buffer、SMBIOS 原始表无零化）——helper unit 已补 `LimitCORE=0` 缓解，值不出进程。
 
+## WP4 启动分解（2026-08-16 冻结）
+
+- **WP4a key 与 CSR**：daemon 生成 ECDSA P-256 keypair（rcgen），私钥 PKCS#8 DER 以 create-only 原子写持久化到 `/var/lib/natsume/keys/gateway-key.pk8`（`0640 natsume:natsume-gateway`）；key 先于首次 POST 落盘，响应丢失后重试保持同 SPKI（自愈路径的前提）；已存在 key 一律复用不再生成。CSR 最小化（空 DN、无 SAN——服务端只验 possession）。
+- **WP4b HTTP client**：reqwest + rustls，信任根仅 `/etc/natsume/trust/control-ca.crt`，端点取 `/etc/natsume/config.toml` 的 `[server] ip/port`，IP URL 走 rustls IP-SAN 校验，禁 TOFU/危险 verifier；wire 按 OpenAPI `createEnrollmentRequest`（CSR base64 标准填充、SPKI 小写 hex、`protocol_version = 1`、`client_version` 取 crate 版本）。
+- **WP4c 轮询语义**：`ENROLLMENT_POLL_INTERVAL_SECONDS = 5` 固定间隔幂等重投；`202` 继续轮询；`ENROLLMENT_REQUEST_REJECTED` 终局——记录后驻留等待现场人员（不重启锤击）；窗口关闭 409 与连接失败/5xx 视为等待态继续轮询；其余 4xx 为自身缺陷 fail closed 非零退出。
+- **WP4d finalization**：收到 `201` 后先全部校验再落盘——leaf SPKI 与本地私钥匹配、chain 恰一张且逐字节等于 packaged `local-origin-ca.crt` 的 DER、leaf 经 webpki 以 site `gateway_hostname` 验证通过；随后按 leaf → chain → token 次序原子持久化（`gateway-leaf.der`、`gateway-chain.der` 为 `0640 natsume:natsume-gateway`，`device-token` 为 `0600 natsume:natsume`）；token 存在即 enrolled 标记，任何校验失败零落盘。`atomic_write` 增加封闭的 create-only/replace 写策略参数（replace 供 claim 重签发换发凭据）。
+- **状态接线**：identity FirstStart/Matched 后，token 缺失 → enrollment 流程（EnrollmentPending）；token 存在 → Enrolled 驻留；token 存在但 key/leaf 损坏 → fail closed（ADR-0032：不得自动 re-enroll）；token 缺失时的重投属同一 enrollment 的重试（same-SPKI 自愈），非 re-enroll。
+- **测试策略**：integration-tests 以真实 server（test PKI、localhost TLS listener）端到端驱动 daemon enrollment 库函数——create 同步签发、replace approve-then-claim、rejected 终局、closed-window 轮询等待、finalization 校验失败零落盘；daemon 单测覆盖文件层与状态判定。WP4 终点为凭据落盘 + Enrolled 驻留，WSS 接线属后续 Phase。
+
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 
 - provisioning window open/close 的 operator HTTP 面（启动时待冻结；现由上述 WP2a 按 §3.3 route 与 §3.6.4 audit registry 落地，保留本项作为启动记录）
