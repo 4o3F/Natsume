@@ -1,8 +1,8 @@
 # Phase 3 状态
 
-> 状态：`DRAFT-STEP0`
+> 状态：`FINAL`
 > 最后更新：2026-08-16
-> G3：`OPEN`（WP1–WP4 全部 `DONE`；16 主题条目表见下——14 项 `PASS`、1 项 owner 裁定降级、1 项例外移交 Phase 4；关门待补齐断言 head 的全绿 run 登记）
+> G3：`CLOSED`（16 主题：14 项 `PASS`、主题 2 owner 裁定降级、主题 15 的 anomaly-audit 半项例外移交 Phase 4 WP3；owner 于 2026-08-16 签署关闭）
 
 Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。
 
@@ -63,11 +63,14 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 ## 已登记证据（G3）
 
 - 主题 1、3–14 与 15 前半：[ci run 31932403934](https://github.com/4o3F/Natsume/actions/runs/31932403934)（head `a544b96`，2026-08-16，全 lane 绿，含 WP1–WP4 全部提交 `6b40ab8`/`a288918`/`2907796`/`abb1a1b`/`ab7cae6`/`721e4a9`/`93cd6e2`）。
-- 主题 12 客户端侧与 15 的 enroll_until_parked 场景（`1a70127`）、主题 16 断言（2026-08-16 补齐）：锚定其 head 的全绿 run 后关门。
+- 主题 12 客户端侧与 15 的 enroll_until_parked 场景（`1a70127`）：[ci run 31943745727](https://github.com/4o3F/Natsume/actions/runs/31943745727)（head `1f96ba2`，2026-08-16，五 job 全绿）。
+- 主题 16：[package-lifecycle run 31943977829](https://github.com/4o3F/Natsume/actions/runs/31943977829)（`workflow_dispatch` on v2 @ `1f96ba2`，2026-08-16，success）——seed → 重装 → 字节/mode/owner 保留断言真实执行通过。
 
 ## 关闭条件
 
 16 主题全部 `PASS` 或有 owner 裁定的降级/移交记录，且证据锚定全绿 CI run；主题 15 的 anomaly-audit 例外随 Phase 4 WP3 回访。
+
+**已满足（2026-08-16）**：证据锚定 run 31932403934 / 31943745727 / 31943977829 三链；主题 2 降级与主题 15 例外均有 owner 裁定留痕。G3 关闭由 owner 于 2026-08-16 签署。
 
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 
