@@ -26,7 +26,7 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 - 属主基线：ADR-0032/0034 已以同日修订调和为 service-user 所有（daemon 以 `natsume` 运行、helper 禁持凭据，`root:root` 令消费者不可读，属被迫调和）。
 - 测试策略：collectors 为薄 I/O adapter（只产 `ReadOutcome`），policy 由纯 crate fixture 穷举；真机全路径证据仍依赖 G0-IN-005（BLOCKED-INPUT）；D-Bus 面用 peer-to-peer socket 做 round-trip 测试，不依赖 CI system bus。
 
-- WP3 审查非阻断挂账：(a) **udev DB 就绪竞态**——首启若 `/run/udev/data` 未就绪，2 槽 ID 落盘后每次重算 3 槽 ID → 永久 `ResetRequired`，unit 未依赖 udev 就绪，WP4 前需处置（排序加固或 FirstStart 完备性策略）；(b) identity record 首启竞态下 `RENAME_NOREPLACE` 失败返回错误而非 noop（systemd 单例化 + 重启收敛为 `Matched`，可接受；贴合 repeat-safe 惯例可改为重读比对）；(c) `atomic_write` 为 create-only 语义（测试已钉死），WP4 Token 轮换写入器须扩展参数而非复用；(d) artifact 扫描为 lstat 语义不计符号链接，且 SIGKILL 残留的 temp 文件会把 clean first start 翻成 fail-closed；(e) 零化不完整（`FromUtf8Error` buffer、SMBIOS 原始表无零化）——helper unit 已补 `LimitCORE=0` 缓解，值不出进程。
+- WP3 审查非阻断挂账：(a) **udev DB 就绪竞态**——已处置：daemon unit 增加 `systemd-udev-settle.service` 排序（gating 调用方即 gating 按需激活的 helper），封住首启 2 槽落盘窗口；settle 已弃用但目标镜像（Ubuntu 24.04）仍提供，超时（默认 120s）后的残余窗口记录在案；(b) identity record 首启竞态下 `RENAME_NOREPLACE` 失败返回错误而非 noop（systemd 单例化 + 重启收敛为 `Matched`，可接受；贴合 repeat-safe 惯例可改为重读比对）；(c) `atomic_write` 为 create-only 语义（测试已钉死），WP4 Token 轮换写入器须扩展参数而非复用；(d) artifact 扫描为 lstat 语义不计符号链接，且 SIGKILL 残留的 temp 文件会把 clean first start 翻成 fail-closed；(e) 零化不完整（`FromUtf8Error` buffer、SMBIOS 原始表无零化）——helper unit 已补 `LimitCORE=0` 缓解，值不出进程。
 
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 

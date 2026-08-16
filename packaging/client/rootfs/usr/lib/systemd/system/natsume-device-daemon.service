@@ -1,8 +1,11 @@
 
 [Unit]
 Description=Natsume V2 Device Daemon
-After=network-online.target dbus.service local-fs.target natsume-privileged-helper.service
-Wants=network-online.target
+# udev-settle gates the first identity collection: the D-Bus-activated helper reads
+# /run/udev/data for the root disk serial, and a first start before the udev database
+# is populated would pin a two-slot identity that later recomputes as three slots.
+After=network-online.target dbus.service local-fs.target systemd-udev-settle.service natsume-privileged-helper.service
+Wants=network-online.target systemd-udev-settle.service
 Requires=natsume-privileged-helper.service
 ConditionPathExists=/etc/natsume/config.toml
 ConditionPathExists=/etc/natsume/site.toml
