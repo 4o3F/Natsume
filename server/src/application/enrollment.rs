@@ -31,13 +31,14 @@ use rustls_pki_types::{
 use sha2::{Digest, Sha256};
 use snafu::Snafu;
 use subtle::ConstantTimeEq;
+use time::OffsetDateTime;
 use uuid::Uuid;
 use x509_parser::{certification_request::X509CertificationRequest, prelude::FromDer as _};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
     audit::CorrelationId,
-    config::{GatewaySiteConfig, UtcDateTimeComponents},
+    config::GatewaySiteConfig,
     db::{self, Database},
     tls,
 };
@@ -175,17 +176,9 @@ impl GatewayIssuer {
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
-        set_certificate_time(
-            &mut params,
-            UtcDateTimeComponents::from_unix_seconds(now)
-                .ok_or(GatewayIssuerError::ClockInvalid)?,
-            CertificateTimeField::NotBefore,
-        )?;
-        set_certificate_time(
-            &mut params,
-            self.0.site.gateway_not_after().components(),
-            CertificateTimeField::NotAfter,
-        )?;
+        params.not_before = OffsetDateTime::from_unix_timestamp(now)
+            .map_err(|_| GatewayIssuerError::ClockInvalid)?;
+        params.not_after = self.0.site.gateway_not_after().timestamp();
         let certificate = params
             .signed_by(public_key, &self.0.issuer)
             .map_err(|_| GatewayIssuerError::SigningFailed)?;
@@ -217,15 +210,12 @@ impl GatewayIssuer {
     ) -> Result<Self, GatewayIssuerError> {
         let not_after = current_unix_seconds()?
             .checked_add(remaining_seconds)
-            .and_then(UtcDateTimeComponents::from_unix_seconds)
             .ok_or(GatewayIssuerError::ClockInvalid)?;
-        let contest_end = current_unix_seconds()?
-            .checked_add(remaining_seconds)
-            .and_then(|value| value.checked_sub(crate::config::GATEWAY_VALIDITY_MARGIN_SECONDS))
-            .and_then(UtcDateTimeComponents::from_unix_seconds)
+        let contest_end = not_after
+            .checked_sub(crate::config::GATEWAY_VALIDITY_MARGIN_SECONDS)
             .ok_or(GatewayIssuerError::ClockInvalid)?;
-        let encoded_not_after = encode_utc_timestamp(not_after);
-        let encoded_contest_end = encode_utc_timestamp(contest_end);
+        let encoded_not_after = encode_utc_timestamp(not_after)?;
+        let encoded_contest_end = encode_utc_timestamp(contest_end)?;
         let site = GatewaySiteConfig::for_test(
             TEST_GATEWAY_HOSTNAME,
             &encoded_not_after,
@@ -292,16 +282,11 @@ fn raw_csr_spki_sha256(csr_der: &[u8]) -> Result<[u8; 32], GatewayIssuerError> {
 }
 
 #[cfg(test)]
-fn encode_utc_timestamp(components: UtcDateTimeComponents) -> String {
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-        components.year,
-        components.month,
-        components.day,
-        components.hour,
-        components.minute,
-        components.second
-    )
+fn encode_utc_timestamp(unix_seconds: i64) -> Result<String, GatewayIssuerError> {
+    OffsetDateTime::from_unix_timestamp(unix_seconds)
+        .map_err(|_| GatewayIssuerError::ClockInvalid)?
+        .format(&time::format_description::well_known::Rfc3339)
+        .map_err(|_| GatewayIssuerError::ClockInvalid)
 }
 
 fn current_unix_seconds() -> Result<i64, GatewayIssuerError> {
@@ -309,30 +294,6 @@ fn current_unix_seconds() -> Result<i64, GatewayIssuerError> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| GatewayIssuerError::ClockInvalid)?;
     i64::try_from(elapsed.as_secs()).map_err(|_| GatewayIssuerError::ClockInvalid)
-}
-
-#[derive(Clone, Copy)]
-enum CertificateTimeField {
-    NotBefore,
-    NotAfter,
-}
-
-fn set_certificate_time(
-    params: &mut CertificateParams,
-    components: UtcDateTimeComponents,
-    field: CertificateTimeField,
-) -> Result<(), GatewayIssuerError> {
-    let timestamp = rcgen::date_time_ymd(components.year, components.month, components.day)
-        .replace_hour(components.hour)
-        .and_then(|value| value.replace_minute(components.minute))
-        .and_then(|value| value.replace_second(components.second))
-        .and_then(|value| value.replace_nanosecond(components.nanosecond))
-        .map_err(|_| GatewayIssuerError::ClockInvalid)?;
-    match field {
-        CertificateTimeField::NotBefore => params.not_before = timestamp,
-        CertificateTimeField::NotAfter => params.not_after = timestamp,
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
@@ -832,7 +793,6 @@ mod tests {
     use crate::{
         config::{
             GatewaySiteConfig, ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME,
-            UtcDateTimeComponents,
         },
         tls::tests::TestIdentity,
     };
@@ -964,17 +924,14 @@ mod tests {
         let now = current_unix_seconds().map_err(|_| TestFailure::FixtureFailed)?;
         let not_after = now
             .checked_add(GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS - 1)
-            .and_then(UtcDateTimeComponents::from_unix_seconds)
             .ok_or(TestFailure::FixtureFailed)?;
-        let contest_end = now
-            .checked_add(GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS - 1)
-            .and_then(|value| value.checked_sub(crate::config::GATEWAY_VALIDITY_MARGIN_SECONDS))
-            .and_then(UtcDateTimeComponents::from_unix_seconds)
+        let contest_end = not_after
+            .checked_sub(crate::config::GATEWAY_VALIDITY_MARGIN_SECONDS)
             .ok_or(TestFailure::FixtureFailed)?;
         let site = GatewaySiteConfig::for_test(
             "gateway.contest.example",
-            &encode_utc_timestamp(not_after),
-            &encode_utc_timestamp(contest_end),
+            &encode_utc_timestamp(not_after).map_err(|_| TestFailure::FixtureFailed)?,
+            &encode_utc_timestamp(contest_end).map_err(|_| TestFailure::FixtureFailed)?,
         )
         .map_err(|_| TestFailure::FixtureFailed)?;
         assert_preflight_error(

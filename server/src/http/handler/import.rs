@@ -1253,50 +1253,14 @@ mod tests {
     }
 
     fn is_rfc3339_utc(value: &str) -> bool {
+        // Same strict shell as the site-config parser: uppercase separators and a
+        // literal trailing Z on top of the library's RFC 3339 grammar.
         let bytes = value.as_bytes();
-        if bytes.len() < 20
-            || bytes[4] != b'-'
-            || bytes[7] != b'-'
-            || bytes[10] != b'T'
-            || bytes[13] != b':'
-            || bytes[16] != b':'
-            || bytes.last() != Some(&b'Z')
-        {
-            return false;
-        }
-        let fractional = &bytes[19..bytes.len() - 1];
-        if !fractional.is_empty()
-            && (fractional[0] != b'.'
-                || fractional.len() == 1
-                || !fractional[1..].iter().all(u8::is_ascii_digit))
-        {
-            return false;
-        }
-        let parse = |start, end| {
-            value
-                .get(start..end)
-                .and_then(|part| part.parse::<u32>().ok())
-        };
-        let (Some(year), Some(month), Some(day), Some(hour), Some(minute), Some(second)) = (
-            parse(0, 4),
-            parse(5, 7),
-            parse(8, 10),
-            parse(11, 13),
-            parse(14, 16),
-            parse(17, 19),
-        ) else {
-            return false;
-        };
-        let leap_year =
-            year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
-        let maximum_day = match month {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            2 if leap_year => 29,
-            2 => 28,
-            _ => return false,
-        };
-        (1..=maximum_day).contains(&day) && hour < 24 && minute < 60 && second < 60
+        bytes.len() >= 20
+            && bytes.get(10) == Some(&b'T')
+            && bytes.last() == Some(&b'Z')
+            && time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+                .is_ok()
     }
 
     fn assert_transport_payload_too_large(response: &Captured) -> Result<(), TestFailure> {

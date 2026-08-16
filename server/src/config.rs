@@ -2,6 +2,7 @@ use std::{fs, net::SocketAddr, path::Path, path::PathBuf};
 
 use serde::Deserialize;
 use snafu::Snafu;
+use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 const CONFIG_PATH: &str = "/etc/natsume-server/config.toml";
 pub(crate) const ORIGIN_CA_CERTIFICATE_FILENAME: &str = "origin-ca.der";
@@ -287,13 +288,10 @@ fn validate_gateway_validity_coverage(
     contest_end: &GatewayNotAfter,
 ) -> Result<(), SiteConfigError> {
     let required_not_after = contest_end
-        .unix_seconds()
-        .checked_add(GATEWAY_VALIDITY_MARGIN_SECONDS)
+        .timestamp()
+        .checked_add(Duration::seconds(GATEWAY_VALIDITY_MARGIN_SECONDS))
         .ok_or(SiteConfigError::GatewayValidityCoverageTooShort)?;
-    if gateway_not_after.unix_seconds() < required_not_after
-        || (gateway_not_after.unix_seconds() == required_not_after
-            && gateway_not_after.components().nanosecond < contest_end.components().nanosecond)
-    {
+    if gateway_not_after.timestamp() < required_not_after {
         return Err(SiteConfigError::GatewayValidityCoverageTooShort);
     }
     Ok(())
@@ -331,71 +329,35 @@ fn is_canonical_dns_hostname(value: &str) -> bool {
 #[derive(Clone)]
 pub(crate) struct GatewayNotAfter {
     encoded: String,
-    unix_seconds: i64,
-    components: UtcDateTimeComponents,
+    timestamp: OffsetDateTime,
 }
 
 impl GatewayNotAfter {
     fn parse(encoded: String) -> Option<Self> {
+        // Strict shell over the library parser. The frozen contract is narrower than
+        // RFC 3339 and than the library's leniency: an uppercase `T` separator, a
+        // literal trailing `Z` (no numeric offsets, which also excludes lowercase
+        // `z`), at most nine fractional digits (the library silently truncates
+        // longer fractions), no leap second (the library folds `:60` to
+        // 59.999999999), and years 1970..=9999.
         let bytes = encoded.as_bytes();
         if bytes.len() < 20
-            || bytes.get(4) != Some(&b'-')
-            || bytes.get(7) != Some(&b'-')
             || bytes.get(10) != Some(&b'T')
-            || bytes.get(13) != Some(&b':')
-            || bytes.get(16) != Some(&b':')
             || bytes.last() != Some(&b'Z')
+            || bytes.get(17..19) == Some(b"60")
         {
             return None;
         }
-        let year = parse_decimal(bytes.get(0..4)?)?;
-        let month = parse_decimal(bytes.get(5..7)?)?;
-        let day = parse_decimal(bytes.get(8..10)?)?;
-        let hour = parse_decimal(bytes.get(11..13)?)?;
-        let minute = parse_decimal(bytes.get(14..16)?)?;
-        let second = parse_decimal(bytes.get(17..19)?)?;
-        let nanosecond = match bytes.len() {
-            20 => 0,
-            22..=30 if bytes.get(19) == Some(&b'.') => {
-                let digits = bytes.get(20..bytes.len() - 1)?;
-                if digits.is_empty() || digits.len() > 9 {
-                    return None;
-                }
-                let fraction = parse_decimal(digits)?;
-                let digit_count = u32::try_from(digits.len()).ok()?;
-                fraction.checked_mul(10_u32.pow(9_u32.checked_sub(digit_count)?))?
-            }
-            _ => return None,
-        };
-        let year = i32::try_from(year).ok()?;
-        let month = u8::try_from(month).ok()?;
-        let day = u8::try_from(day).ok()?;
-        let hour = u8::try_from(hour).ok()?;
-        let minute = u8::try_from(minute).ok()?;
-        let second = u8::try_from(second).ok()?;
-        let components = UtcDateTimeComponents {
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-            nanosecond,
-        };
-        if !components.is_valid() || year < 1970 {
+        if let Some(digits) = bytes.get(20..bytes.len() - 1)
+            && (bytes.get(19) != Some(&b'.') || digits.is_empty() || digits.len() > 9)
+        {
             return None;
         }
-        let days = days_from_civil(year, month, day)?;
-        let unix_seconds = days
-            .checked_mul(86_400)?
-            .checked_add(i64::from(hour) * 3_600)?
-            .checked_add(i64::from(minute) * 60)?
-            .checked_add(i64::from(second))?;
-        Some(Self {
-            encoded,
-            unix_seconds,
-            components,
-        })
+        let timestamp = OffsetDateTime::parse(&encoded, &Rfc3339).ok()?;
+        if !(1970..=9999).contains(&timestamp.year()) {
+            return None;
+        }
+        Some(Self { encoded, timestamp })
     }
 
     pub(crate) fn encoded(&self) -> &str {
@@ -403,105 +365,12 @@ impl GatewayNotAfter {
     }
 
     pub(crate) const fn unix_seconds(&self) -> i64 {
-        self.unix_seconds
+        self.timestamp.unix_timestamp()
     }
 
-    pub(crate) const fn components(&self) -> UtcDateTimeComponents {
-        self.components
+    pub(crate) const fn timestamp(&self) -> OffsetDateTime {
+        self.timestamp
     }
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct UtcDateTimeComponents {
-    pub(crate) year: i32,
-    pub(crate) month: u8,
-    pub(crate) day: u8,
-    pub(crate) hour: u8,
-    pub(crate) minute: u8,
-    pub(crate) second: u8,
-    pub(crate) nanosecond: u32,
-}
-
-impl UtcDateTimeComponents {
-    pub(crate) fn from_unix_seconds(unix_seconds: i64) -> Option<Self> {
-        if unix_seconds < 0 {
-            return None;
-        }
-        let days = unix_seconds.div_euclid(86_400);
-        let seconds_of_day = unix_seconds.rem_euclid(86_400);
-        let (year, month, day) = civil_from_days(days)?;
-        Some(Self {
-            year,
-            month,
-            day,
-            hour: u8::try_from(seconds_of_day / 3_600).ok()?,
-            minute: u8::try_from((seconds_of_day % 3_600) / 60).ok()?,
-            second: u8::try_from(seconds_of_day % 60).ok()?,
-            nanosecond: 0,
-        })
-    }
-
-    fn is_valid(self) -> bool {
-        (1970..=9999).contains(&self.year)
-            && (1..=12).contains(&self.month)
-            && (1..=days_in_month(self.year, self.month)).contains(&self.day)
-            && self.hour <= 23
-            && self.minute <= 59
-            && self.second <= 59
-            && self.nanosecond <= 999_999_999
-    }
-}
-
-fn parse_decimal(bytes: &[u8]) -> Option<u32> {
-    bytes.iter().try_fold(0_u32, |value, byte| {
-        byte.is_ascii_digit()
-            .then_some(())
-            .and_then(|()| value.checked_mul(10))
-            .and_then(|value| value.checked_add(u32::from(byte - b'0')))
-    })
-}
-
-const fn is_leap_year(year: i32) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
-}
-
-const fn days_in_month(year: i32, month: u8) -> u8 {
-    match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => 0,
-    }
-}
-
-fn days_from_civil(year: i32, month: u8, day: u8) -> Option<i64> {
-    let adjusted_year = year.checked_sub(i32::from(month <= 2))?;
-    let era = adjusted_year.div_euclid(400);
-    let year_of_era = adjusted_year - era * 400;
-    let shifted_month = i32::from(month) + if month > 2 { -3 } else { 9 };
-    let day_of_year = (153 * shifted_month + 2) / 5 + i32::from(day) - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    Some(i64::from(era) * 146_097 + i64::from(day_of_era) - 719_468)
-}
-
-fn civil_from_days(days: i64) -> Option<(i32, u8, u8)> {
-    let shifted = days.checked_add(719_468)?;
-    let era = shifted.div_euclid(146_097);
-    let day_of_era = shifted - era * 146_097;
-    let year_of_era =
-        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
-    let mut year = year_of_era + era * 400;
-    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
-    let month_prime = (5 * day_of_year + 2) / 153;
-    let day = day_of_year - (153 * month_prime + 2) / 5 + 1;
-    let month = month_prime + if month_prime < 10 { 3 } else { -9 };
-    year += i64::from(month <= 2);
-    Some((
-        i32::try_from(year).ok()?,
-        u8::try_from(month).ok()?,
-        u8::try_from(day).ok()?,
-    ))
 }
 
 /// Redacted shared-site configuration failure.
@@ -560,8 +429,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ConfigError, GatewaySiteConfig, LogLevel, ServerConfig, SiteConfigError,
-        UtcDateTimeComponents,
+        ConfigError, GatewaySiteConfig, LogLevel, OffsetDateTime, ServerConfig, SiteConfigError,
     };
 
     const VALID_CONFIG: &str = r#"
@@ -631,26 +499,19 @@ control_root_sha256 = "ignored-by-server"
         let fixture = ConfigFixture::new(VALID_SITE_CONFIG)?;
         let site = GatewaySiteConfig::load_from(fixture.path())
             .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
-        let components = site.gateway_not_after().components();
+        let timestamp = site.gateway_not_after().timestamp();
         if site.gateway_hostname() != "gateway.contest.example"
             || site.gateway_not_after().encoded() != "2028-02-29T23:59:58.123456789Z"
             || site.contest_end().encoded() != "2028-02-28T23:59:58.123456789Z"
-            || components.year != 2028
-            || components.month != 2
-            || components.day != 29
-            || components.hour != 23
-            || components.minute != 59
-            || components.second != 58
-            || components.nanosecond != 123_456_789
-            || UtcDateTimeComponents::from_unix_seconds(site.gateway_not_after().unix_seconds())
-                .is_none_or(|round_trip| {
-                    round_trip.year != components.year
-                        || round_trip.month != components.month
-                        || round_trip.day != components.day
-                        || round_trip.hour != components.hour
-                        || round_trip.minute != components.minute
-                        || round_trip.second != components.second
-                })
+            || timestamp.year() != 2028
+            || u8::from(timestamp.month()) != 2
+            || timestamp.day() != 29
+            || timestamp.hour() != 23
+            || timestamp.minute() != 59
+            || timestamp.second() != 58
+            || timestamp.nanosecond() != 123_456_789
+            || OffsetDateTime::from_unix_timestamp(site.gateway_not_after().unix_seconds()).ok()
+                != Some(timestamp - time::Duration::nanoseconds(123_456_789))
         {
             return Err(TestFailure::SitePolicyChanged);
         }
@@ -703,6 +564,43 @@ control_root_sha256 = "ignored-by-server"
                     "2028-02-28T23:59:58.223456789Z",
                 ),
                 SiteConfigError::GatewayValidityCoverageTooShort,
+                "gateway.contest.example",
+            ),
+            // The strict shell is narrower than RFC 3339: numeric offsets, lowercase
+            // separators, pre-epoch years, over-long fractions, and leap seconds are
+            // all rejected even where the grammar or the library would accept them.
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-29T23:59:58.123456789Z",
+                    "2028-02-29T23:59:58.123456789+00:00",
+                ),
+                SiteConfigError::InvalidGatewayNotAfter,
+                "gateway.contest.example",
+            ),
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-29T23:59:58.123456789Z",
+                    "2028-02-29t23:59:58.123456789Z",
+                ),
+                SiteConfigError::InvalidGatewayNotAfter,
+                "gateway.contest.example",
+            ),
+            (
+                VALID_SITE_CONFIG.replace("2028-02-29T23:59:58.123456789Z", "1969-12-31T23:59:59Z"),
+                SiteConfigError::InvalidGatewayNotAfter,
+                "gateway.contest.example",
+            ),
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-29T23:59:58.123456789Z",
+                    "2028-02-29T23:59:58.1234567891Z",
+                ),
+                SiteConfigError::InvalidGatewayNotAfter,
+                "gateway.contest.example",
+            ),
+            (
+                VALID_SITE_CONFIG.replace("2028-02-29T23:59:58.123456789Z", "2028-02-29T23:59:60Z"),
+                SiteConfigError::InvalidGatewayNotAfter,
                 "gateway.contest.example",
             ),
         ] {
