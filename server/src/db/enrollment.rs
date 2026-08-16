@@ -1075,8 +1075,6 @@ enum EnrollmentStoreError {
     LiveRequestCapacityExceeded,
     #[snafu(display("the Device identity conflicts with a live request"))]
     DeviceIdentityConflict,
-    #[snafu(display("the Enrollment request does not exist"))]
-    RequestNotFound,
     #[snafu(display("the Enrollment request is not pending"))]
     RequestNotPending,
     #[snafu(display("Enrollment entropy is unavailable"))]
@@ -1106,7 +1104,6 @@ impl EnrollmentStoreError {
             | EnrollmentError::ProvisioningWindowClosed
             | EnrollmentError::RequestRejected
             | EnrollmentError::DeviceIdentityConflict
-            | EnrollmentError::RequestNotFound
             | EnrollmentError::RequestNotPending
             | EnrollmentError::InvalidPersistedFacts
             | EnrollmentError::PersistenceFailed => Self::SigningFailed,
@@ -1127,7 +1124,6 @@ impl From<EnrollmentStoreError> for EnrollmentError {
             EnrollmentStoreError::RequestRejected => Self::RequestRejected,
             EnrollmentStoreError::LiveRequestCapacityExceeded => Self::LiveRequestCapacityExceeded,
             EnrollmentStoreError::DeviceIdentityConflict => Self::DeviceIdentityConflict,
-            EnrollmentStoreError::RequestNotFound => Self::RequestNotFound,
             EnrollmentStoreError::RequestNotPending => Self::RequestNotPending,
             EnrollmentStoreError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
             EnrollmentStoreError::EntropyUnavailable => Self::EntropyUnavailable,

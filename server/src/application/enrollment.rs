@@ -851,8 +851,6 @@ pub(crate) enum EnrollmentError {
     LiveRequestCapacityExceeded,
     #[snafu(display("the device identity conflicts with a live Enrollment request"))]
     DeviceIdentityConflict,
-    #[snafu(display("the Enrollment request does not exist"))]
-    RequestNotFound,
     #[snafu(display("the Enrollment request is not pending"))]
     RequestNotPending,
     #[snafu(display("the persisted Enrollment facts are invalid"))]

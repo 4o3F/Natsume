@@ -782,6 +782,15 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
         ("/api/v2/bindings", StatusCode::NOT_FOUND),
         ("/api/v2/imports", StatusCode::NOT_FOUND),
         ("/api/v2/provisioning-window", StatusCode::NOT_FOUND),
+        ("/api/v2/enrollment-requests", StatusCode::NOT_FOUND),
+        (
+            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000000/actions/approve",
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000000/actions/reject",
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
         (
             "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/revoke",
             StatusCode::METHOD_NOT_ALLOWED,

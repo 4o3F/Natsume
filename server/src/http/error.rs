@@ -158,9 +158,6 @@ impl ApiError {
                 "enrollment_request_not_actionable",
                 correlation_id,
             ),
-            EnrollmentError::RequestNotFound => {
-                Self::not_found("enrollment_request_not_found", correlation_id)
-            }
             EnrollmentError::InvalidPersistedFacts => {
                 Self::internal_error("enrollment_invalid_persisted_facts", correlation_id)
             }
@@ -696,7 +693,7 @@ mod tests {
         ]
     }
 
-    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 20] {
+    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 19] {
         [
             INVALID_ENROLLMENT_REQUEST_ID_CAUSE,
             (
@@ -758,11 +755,6 @@ mod tests {
                 EnrollmentError::DeviceIdentityConflict,
                 "enrollment_device_identity_conflict",
                 StatusCode::CONFLICT,
-            ),
-            (
-                EnrollmentError::RequestNotFound,
-                "enrollment_request_not_found",
-                StatusCode::NOT_FOUND,
             ),
             (
                 EnrollmentError::RequestNotPending,

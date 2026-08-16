@@ -1084,6 +1084,18 @@ mod tests {
             GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
         );
 
+        let simple_alias_path = format!(
+            "/api/v2/enrollment-requests/{}/actions/approve",
+            LIST_TIE_LOW_REQUEST_ID.replace('-', "")
+        );
+        assert_not_actionable_without_writes(
+            &application,
+            &fixture,
+            &simple_alias_path,
+            &admin_cookie,
+        )
+        .await?;
+
         let approve_path =
             format!("/api/v2/enrollment-requests/{LIST_TIE_LOW_REQUEST_ID}/actions/approve");
         let approval = drive(
