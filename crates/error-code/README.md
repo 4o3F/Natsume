@@ -4,7 +4,7 @@ Shared value-only registry for stable Natsume public error identifiers.
 
 ## Responsibilities
 
-- define 32 stable codes in the `common`, `operator`, `enrollment`, `control`, `device`, `session`, and `home` categories;
+- define 34 stable codes in the `common`, `operator`, `enrollment`, `control`, `device`, `session`, and `home` categories;
 - give every category variant an explicit stable wire string and Serde representation;
 - provide the unified `ErrorCode` value for boundaries that carry codes from multiple categories;
 - keep the registry independent of domain errors and transport runtimes.

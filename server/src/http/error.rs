@@ -140,6 +140,10 @@ impl ApiError {
                 "enrollment_request_rejected",
                 correlation_id,
             ),
+            EnrollmentError::LiveRequestCapacityExceeded => Self::invalid_enrollment_request(
+                "enrollment_live_request_capacity_exceeded",
+                correlation_id,
+            ),
             EnrollmentError::DeviceIdentityConflict => Self::enrollment_error(
                 StatusCode::CONFLICT,
                 "Conflict",
@@ -147,11 +151,8 @@ impl ApiError {
                 "enrollment_device_identity_conflict",
                 correlation_id,
             ),
-            EnrollmentError::RequestNotPending => Self::enrollment_error(
-                StatusCode::CONFLICT,
-                "Conflict",
-                PublicEnrollmentErrorCode::DeviceIdentityConflict,
-                "enrollment_request_not_pending",
+            EnrollmentError::RequestNotPending => Self::invalid_enrollment_request(
+                "enrollment_request_not_actionable",
                 correlation_id,
             ),
             EnrollmentError::RequestNotFound => {
@@ -433,6 +434,7 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use axum::body::to_bytes;
+    use serde_json::Value;
     use snafu::Snafu;
     use tracing::instrument::WithSubscriber as _;
     use uuid::Uuid;
@@ -453,6 +455,28 @@ mod tests {
 
     const CAUSE_CANARY: &str = "internal_cause_canary";
     const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
+
+    #[tokio::test]
+    async fn non_pending_enrollment_decision_is_invalid_not_identity_conflict()
+    -> Result<(), TestFailure> {
+        let response = ApiError::from_enrollment(
+            EnrollmentError::RequestNotPending,
+            CorrelationId::from_uuid(Uuid::now_v7()),
+        )
+        .into_response();
+        if response.status() != StatusCode::BAD_REQUEST {
+            return Err(TestFailure::EnrollmentDecisionMappingChanged);
+        }
+        let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
+            .await
+            .map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
+        let body: Value =
+            serde_json::from_slice(&body).map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
+        if body.get("code").and_then(Value::as_str) != Some("ENROLLMENT_REQUEST_INVALID") {
+            return Err(TestFailure::EnrollmentDecisionMappingChanged);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result<(), TestFailure>
@@ -664,7 +688,7 @@ mod tests {
         ]
     }
 
-    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 18] {
+    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 19] {
         [
             (
                 EnrollmentError::InvalidMachineHardwareId,
@@ -717,6 +741,11 @@ mod tests {
                 StatusCode::CONFLICT,
             ),
             (
+                EnrollmentError::LiveRequestCapacityExceeded,
+                "enrollment_live_request_capacity_exceeded",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
                 EnrollmentError::DeviceIdentityConflict,
                 "enrollment_device_identity_conflict",
                 StatusCode::CONFLICT,
@@ -728,8 +757,8 @@ mod tests {
             ),
             (
                 EnrollmentError::RequestNotPending,
-                "enrollment_request_not_pending",
-                StatusCode::CONFLICT,
+                "enrollment_request_not_actionable",
+                StatusCode::BAD_REQUEST,
             ),
             (
                 EnrollmentError::InvalidPersistedFacts,
@@ -846,5 +875,7 @@ mod tests {
         CauseWasNotLogged,
         #[snafu(display("an internal failure cause was not a static discriminant"))]
         CauseWasNotAStaticDiscriminant,
+        #[snafu(display("the non-pending Enrollment decision mapping changed"))]
+        EnrollmentDecisionMappingChanged,
     }
 }

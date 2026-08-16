@@ -433,7 +433,6 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     ]);
     expect(openapi.components.schemas.EnrollmentPendingState.enum).toEqual([
       "pending",
-      "approved",
     ]);
   });
 

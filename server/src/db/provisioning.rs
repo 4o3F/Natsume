@@ -378,7 +378,7 @@ fn expire_live_enrollment_requests(
 ) -> Result<i64, ProvisioningStoreError> {
     let expired_count = diesel::sql_query(
         "UPDATE enrollment_requests SET state = 'expired' \
-         WHERE state IN ('pending', 'approved')",
+         WHERE state IN ('pending', 'approved', 'rejected')",
     )
     .execute(connection)
     .map_err(|_| ProvisioningStoreError::EnrollmentExpiryFailed)?;

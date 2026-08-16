@@ -21,6 +21,8 @@ pub enum AppError {
     Tls,
     #[snafu(display("Origin CA startup failed"))]
     OriginCa,
+    #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
+    OriginCaTrustRootMismatch,
     #[snafu(display("HTTP serving failed"))]
     Http,
     #[snafu(display("shutdown signal setup failed"))]

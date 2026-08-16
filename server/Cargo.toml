@@ -37,13 +37,13 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
+x509-parser.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
 regex.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
 tower.workspace = true
-x509-parser.workspace = true
 
 [lints]
 workspace = true

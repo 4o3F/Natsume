@@ -23,6 +23,30 @@ carries configuration, paths, or secrets.
   `system:password-reset` audit row. It never creates accounts or touches the
   vault master key. An unknown login name exits non-zero with zero writes.
 
+## TLS and Origin CA material
+
+Before `natsume-server serve` starts, the deployer must provision the Origin CA
+issuing material exactly as it provisions the Server TLS leaf/key pair. Packaging
+must never generate either CA: [ADR-0030](../docs/adr/0030-foundation-deployment-and-delivery-baseline.md)
+keeps CA creation and custody in the deployer-controlled PKI workflow.
+
+The two Origin CA files have fixed names under the Server private keys directory:
+
+- `/var/lib/natsume-server/keys/origin-ca.der` is one X.509 certificate encoded
+  as DER.
+- `/var/lib/natsume-server/keys/origin-ca-key.pk8` is its matching private key
+  encoded as unencrypted PKCS#8 DER.
+
+The private keys directory must be owned by `natsume-server:natsume-server` with
+mode `0700`; both files must have the same ownership and mode `0600`. `serve`
+validates both encodings, their public-key match, and a probe signature before
+binding. The CA certificate must also be the exact certificate supplied to the
+package as `/etc/natsume/trust/local-origin-ca.crt` for Client trust (PEM there):
+startup decodes that packaged certificate to DER and requires byte-for-byte
+equality with `origin-ca.der`. Missing, malformed, mismatched, or overly broad
+private material fails closed. `bootstrap`, reset, package install, and package
+upgrade never create or rewrite these files.
+
 The server embeds and runs its Diesel migrations at runtime; deployed packages
 and production hosts do not require Diesel CLI. Developers and CI use exactly
 `diesel_cli 2.3.12` only for `just diesel-schema`, which rebuilds the committed

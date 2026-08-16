@@ -324,7 +324,7 @@ export interface components {
       state: components["schemas"]["EnrollmentPendingState"];
     };
     /** @enum {string} */
-    EnrollmentPendingState: "pending" | "approved";
+    EnrollmentPendingState: "pending";
     EnrollmentRequest: {
       client_version: string;
       /** Format: byte */

@@ -99,6 +99,7 @@ pub enum AuditDetail {
         resolution: &'static str,
         certificate_serial: String,
         gateway_spki_sha256: String,
+        previous_device_state: Option<&'static str>,
     },
     EnrollmentRequestApproved {},
     EnrollmentRequestRejected {},
@@ -148,6 +149,14 @@ pub(crate) struct ImportCommitAuditFacts {
     pub(crate) credential_revision_advanced_count: usize,
     pub(crate) configuration_revision_advanced: bool,
     pub(crate) binding_revision_advanced: bool,
+}
+
+pub(crate) struct DeviceCredentialsIssuedAuditFacts {
+    pub(crate) resolution: EnrollmentResolution,
+    pub(crate) reason: IssuanceReason,
+    pub(crate) certificate_serial: String,
+    pub(crate) gateway_spki_sha256: [u8; 32],
+    pub(crate) previous_device_state: Option<&'static str>,
 }
 
 #[derive(Debug)]
@@ -532,10 +541,7 @@ impl AuditEvent {
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         enrollment_request_id: Uuid,
-        resolution: EnrollmentResolution,
-        reason: IssuanceReason,
-        certificate_serial: String,
-        gateway_spki_sha256: [u8; 32],
+        facts: DeviceCredentialsIssuedAuditFacts,
     ) -> Self {
         Self {
             id: audit_event_id,
@@ -544,19 +550,20 @@ impl AuditEvent {
             resource_type: "enrollment_request",
             resource_id: Some(enrollment_request_id.to_string()),
             result: "succeeded",
-            reason_code: Some(reason.as_audit_reason()),
+            reason_code: Some(facts.reason.as_audit_reason()),
             correlation_id,
             group_correlation_id: None,
             detail: AuditDetail::DeviceCredentialsIssued {
-                resolution: resolution.as_persisted(),
-                certificate_serial,
-                gateway_spki_sha256: hex::encode(gateway_spki_sha256),
+                resolution: facts.resolution.as_persisted(),
+                certificate_serial: facts.certificate_serial,
+                gateway_spki_sha256: hex::encode(facts.gateway_spki_sha256),
+                previous_device_state: facts.previous_device_state,
             },
         }
     }
 
     #[must_use]
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
     pub(crate) fn enrollment_request_approved(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
@@ -577,7 +584,7 @@ impl AuditEvent {
     }
 
     #[must_use]
-    #[allow(dead_code)]
+    #[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
     pub(crate) fn enrollment_request_rejected(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,

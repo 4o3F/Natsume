@@ -36,7 +36,9 @@ Server TLS 只启用 TLS 1.3；不得启用 TLS 1.2 或更早版本。
 
 Server TLS leaf 与私钥从 Server 私有状态目录读取，分别固定为 X.509 DER 与 PKCS#8 DER；Server 不接受 PEM 或其他编码。
 
-**2026-08-16 修订（Phase 3 WP2b）**：package-owned `/etc/natsume-server/config.toml` 的 `[site]` section 固定包含 `config = "/etc/natsume/site.toml"`、`control_root = "/etc/natsume/trust/control-ca.crt"` 与 `local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"`；三者均为绝对路径。共享 `/etc/natsume/site.toml` 为 Gateway 签发新增两个必填顶层 key：`gateway_hostname`（canonical lowercase DNS hostname，不允许 IP literal、尾随点、空 label 或非 LDH label）与 `gateway_not_after`（RFC 3339 UTC、尾随 `Z`）。Origin CA issuing material 只从 Server 私有 keys 目录的固定文件 `/var/lib/natsume-server/keys/origin-ca.der`（X.509 DER）和 `/var/lib/natsume-server/keys/origin-ca-key.pk8`（PKCS#8 DER）读取；`serve` 在 bind 前校验证书、私钥及二者匹配，missing/malformed/mismatch 均 fail closed，`bootstrap` 与 `reset-operator-password` 绝不创建、修改或校验这两个文件。Gateway leaf 每次签发仍复检 site `not_after` 至少晚于当前时间硬编码常量 `GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS = 300`；该安全下限不进入配置。
+**2026-08-16 修订（Phase 3 WP2b）**：package-owned `/etc/natsume-server/config.toml` 的 `[site]` section 固定包含 `config = "/etc/natsume/site.toml"`、`control_root = "/etc/natsume/trust/control-ca.crt"` 与 `local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"`；三者均为绝对路径。共享 `/etc/natsume/site.toml` 为 Gateway 签发新增三个必填顶层 key：`gateway_hostname`（canonical lowercase DNS hostname，不允许 IP literal、尾随点、空 label 或非 LDH label）、`gateway_not_after`（RFC 3339 UTC、尾随 `Z`）与 `contest_end`（RFC 3339 UTC、尾随 `Z`）。Origin CA issuing material 只从 Server 私有 keys 目录的固定文件 `/var/lib/natsume-server/keys/origin-ca.der`（X.509 DER）和 `/var/lib/natsume-server/keys/origin-ca-key.pk8`（PKCS#8 DER）读取；`serve` 在 bind 前校验证书、私钥及二者匹配，missing/malformed/mismatch 均 fail closed，`bootstrap` 与 `reset-operator-password` 绝不创建、修改或校验这两个文件。Gateway leaf 每次签发复检 `gateway_not_after` 至少晚于当前时间硬编码 liveness floor `GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS = 300`，且 `gateway_not_after >= contest_end + GATEWAY_VALIDITY_MARGIN_SECONDS`，其中 coverage margin 固定为 `GATEWAY_VALIDITY_MARGIN_SECONDS = 86_400`；site startup preflight 校验同一 coverage 关系，两个常量均不进入配置。
+
+**2026-08-16 修订（Phase 3 WP2b Origin CA equality preflight）**：`serve` 还必须把 `[site].local_origin_root` 的 packaged PEM certificate 解码为 DER，并与 `/var/lib/natsume-server/keys/origin-ca.der` 逐字节比较；二者必须是同一 CA certificate，mismatch 以独立静态 startup cause fail closed，且发生在 bind 前。
 
 - `GET /api/v2/health` 是无需认证的进程存活检查，固定返回 HTTP 200 与 JSON `{"status":"ok"}`，不查询数据库，且不表示 readiness 或依赖健康状态。
 
@@ -232,8 +234,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 |---|
 | `create_enrollment_request`（**已实现**；`device:enrollment`） |
 | `issue_device_credentials`（**已实现**；`device:enrollment`） |
-| `approve_enrollment_request`（**已实现**；`operator:self` DB writer；HTTP mounting 归 WP2c） |
-| `reject_enrollment_request`（**已实现**；`operator:self` DB writer；HTTP mounting 归 WP2c） |
+| `approve_enrollment_request`（**已实现（writer 落地，HTTP 挂载随 WP2c）**；`operator:self`） |
+| `reject_enrollment_request`（**已实现（writer 落地，HTTP 挂载随 WP2c）**；`operator:self`） |
 | `expire_enrollment_requests`（**已实现**；`operator:self` close 与 `system:recovery` close-once） |
 | `open_provisioning_window`（**已实现**；`operator:self` operator action） |
 | `close_provisioning_window`（**已实现**；`operator:self` operator action 与 `system:recovery` startup recovery） |
@@ -269,7 +271,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
 | `create_enrollment_request` | `resolution`、`state`、`gateway_spki_sha256` |
-| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`；serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token |
+| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`、`previous_device_state`；首次创建为 `null`，替换为 `enrolled` / `revoked` / `disabled`，serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token |
 | `approve_enrollment_request` | 无（`{}`） |
 | `reject_enrollment_request` | 无（`{}`） |
 | `expire_enrollment_requests` | `expired_count` |
@@ -289,7 +291,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 #### 3.6.5 HTTP adapter、CSRF 与 ingress capacity
 
-下表冻结 Phase 1 operator route 在其真实 handler 已挂载时唯一允许构造的 typed cause → stable code / status 组合；列出冻结 mapping 不表示对应 route 已在当前 Stage 挂载：
+下表冻结已挂载 operator route 与 `createEnrollmentRequest` device route、以及 declared-only future operator route 在真实 handler 中唯一允许构造的 typed cause → stable code / status 组合；列出 declared-only mapping 不表示对应 route 已在当前 Stage 挂载：
 
 | 稳定码 | HTTP | 触发 |
 |---|---|---|
@@ -301,12 +303,16 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `IMPORT_CANDIDATE_UNAVAILABLE` | `404` | import candidate 未知、已过期、已删除或 preview token 不匹配 |
 | `IMPORT_CANDIDATE_PENDING` | `409` | singleton pending import candidate 已存在 |
 | `IMPORT_PREVIEW_STALE` | `409` | import preview 的 configuration 或 binding baseline 已前移 |
-| — | `413` | `POST /api/v2/imports` 或 `commitCsvImport` request body 超过对应 route 级上限，由 transport 层拒绝 |
+| `ENROLLMENT_REQUEST_INVALID` | `400` | `createEnrollmentRequest` 的 closed request / CSR / raw SPKI / protocol 无效，或 live Enrollment 全局 capacity 已满；未来 operator decision 指向已存在但不再 actionable 的 request 也使用此码 |
+| `PROVISIONING_WINDOW_CLOSED` | `409` | `createEnrollmentRequest` 观察到窗口非 `open` |
+| `ENROLLMENT_REQUEST_REJECTED` | `409` | `createEnrollmentRequest` 的 hardware ID 最新 request 在当前窗口已被 operator reject |
+| `DEVICE_IDENTITY_CONFLICT` | `409` | `createEnrollmentRequest` 的 live different-SPKI 或 hardware identity facts 冲突 |
+| — | `413` | `POST /api/v2/imports`、`commitCsvImport` 或 `createEnrollmentRequest` request body 超过对应 route 级上限，由 transport 层拒绝 |
 | `INTERNAL_ERROR` | `500` | 穷举 mapping 后仍没有更安全公开分类的内部失败 |
 
 该 `413` 是 transport-level rejection：响应携带 `X-Correlation-Id` header，但**不**使用 §3.2 的 JSON error body（沿用既有 session precedent）。
 
-输入分类的冻结规则是：**malformed 或非 canonical 输入 → `400` / `INVALID_REQUEST`；结构良好但引用了不存在的当前事实 → `404` / `RESOURCE_NOT_FOUND`。** 映射必须在 adapter 中按 typed cause 逐项显式构造；不得提供全局 `ErrorCode -> StatusCode` 函数，不得 catch-all，不得根据 `Display` 或 source chain 分支，也不得回显非法输入。运行时该表只覆盖已挂载 route：当前 mounted subset 以 §3.6.2 为准；Device-specific row 只在 Stage 5 对应真实 handler 挂载后生效。新增已挂载 route 时只加入真实可达的组合，不为未挂载 operation 预设 status。
+输入分类的冻结规则是：**malformed 或非 canonical 输入 → `400` / `INVALID_REQUEST`（Enrollment 使用其更具体的 `ENROLLMENT_REQUEST_INVALID`）；结构良好但引用了不存在的当前事实 → `404` / `RESOURCE_NOT_FOUND`。** 映射必须在 adapter 中按 typed cause 逐项显式构造；不得提供全局 `ErrorCode -> StatusCode` 函数，不得 catch-all，不得根据 `Display` 或 source chain 分支，也不得回显非法输入。运行时该表只覆盖已挂载 route：当前 mounted subset 以 §3.6.2 为准；上表 device-route rows 已随 `createEnrollmentRequest` 挂载生效。新增已挂载 route 时只加入真实可达的组合，不为未挂载 operation 预设 status。
 
 当前是 same-origin JSON API：不启用 CORS，也不增加 CSRF token 或 CSRF framework；当前防护明确依赖 `Secure` + `HttpOnly` + `SameSite=Strict`。若部署拓扑变为 cross-site，必须在开放 CORS 或 cookie 跨站传递前重开 CSRF 决策。
 
@@ -334,17 +340,19 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 
 **响应**可携带 `device_pk`、Device Token、Gateway leaf + chain；持久化只记录 `devices`、`enrollment_requests`、`device_tokens`、`gateway_certificates` 与 `audit_events` 的 migration-defined facts。`gateway_certificates` 不保存 leaf/chain bytes，失败无半成品。
 
-**签发与审批的非对称语义**（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）：`resolution = 'create_device'`（未知 `machine_hardware_id` 的首次 Enrollment）在窗口内以同一事务同步签发并直接返回结果，**不需要 operator 审批**。`resolution = 'replace_device_credentials'`（该 hardware ID 已存在 Device）必须经 operator 显式审批；唯一例外是请求的 `gateway_spki_sha256` 与该 Device 当前 `issued` request 的 SPKI 相同——此时自动批准，因为持有同一 private key 证明是同一台机器在 finalization 失败后重试。
+**签发与审批的非对称语义**（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）：`resolution = 'create_device'`（未知 `machine_hardware_id` 的首次 Enrollment）在窗口内以同一事务同步签发并直接返回结果，**不需要 operator 审批**。`resolution = 'replace_device_credentials'`（该 hardware ID 已存在 Device）必须经 operator 显式审批；唯一例外是 Device 当前 state 为 `enrolled`，且请求的 `gateway_spki_sha256` 与该 Device 当前 `issued` request 的 SPKI 相同——此时自动批准，因为持有同一 private key 证明是同一台机器在 finalization 失败后重试。`revoked` / `disabled` Device 始终返回待审批 `202`，即使 SPKI 相同也不得走自动批准；operator approve 后的成功 claim 在同一 issuance transaction 将 Device 恢复为 `enrolled`。
 
-**替换语义**：经批准的替换以 `resolution = 'replace_device_credentials'` 关联既有 `device_pk`；替换 `device_tokens.token_hash` 并签发新的 certificate metadata，作为 re-enrollment 审计；若旧连接仍存活，记录异常审计事件。
+**替换语义**：经批准的替换以 `resolution = 'replace_device_credentials'` 关联既有 `device_pk`；替换 `device_tokens.token_hash` 并签发新的 certificate metadata，作为 re-enrollment 审计；`issue_device_credentials` audit 的 `previous_device_state` 精确记录 `enrolled` / `revoked` / `disabled`（首次创建为 `null`）。若旧连接仍存活，记录异常审计事件。
 
-**审批与 claim**：需要审批的 Enrollment 请求以 HTTP `202` 与 typed 非错误 body（request identity 与 state）应答，不携带任何签发结果。Device 通过幂等重投**同一** request 轮询：相同 `machine_hardware_id` + `gateway_spki_sha256` 返回同一条 live request，不新增 row。operator 批准把 state 置为 `approved`，受审计且零签发；operator 拒绝把 state 置为 `rejected`，轮询中的 Device 收到 `ENROLLMENT_REQUEST_REJECTED`，必须停止并等待现场人员介入。观察到 `approved` 的下一次重投在**该次请求内**同步执行签发事务，并在同一响应返回 Device Token 与 Gateway leaf——明文只存在于那一次响应，数据库始终只保存 hash。claim 前必须重新校验窗口仍为 `open`（`INV-CERT-01`：窗口外不存在签发路径）；窗口关闭时未被 claim 的 `pending`/`approved` request 转为 `expired`。claim 响应丢失时 Device 重试，落入 same-SPKI 自动批准路径重新签发。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定 ErrorCode 拒绝，维持每 hardware-ID/SPKI 最多一个 live request 的约束；operator 必须先拒绝现有请求。
+**审批与 claim**：需要审批的 Enrollment 请求以 HTTP `202` 与 typed 非错误 body（request identity 与 state）应答，不携带任何签发结果。Device 通过幂等重投**同一** request 轮询：相同 `machine_hardware_id` + `gateway_spki_sha256` 返回同一条 live request，不新增 row。operator 批准把 persisted state 置为 `approved`，受审计且零签发；该 state 不作为 wire value 返回——观察到 `approved` 的下一次重投立即在**该次请求内**同步执行签发事务并返回 `201`。operator 拒绝把 state 置为 `rejected`；只要该 rejected row 仍是此 hardware ID 的最新 request，同一窗口内该 hardware ID 的任何 SPKI（包括新 key）都返回 `ENROLLMENT_REQUEST_REJECTED` 且零写入。窗口关闭把 `pending` / `approved` / `rejected` 转为 `expired`，因此下一次开窗不再受旧 rejection 阻断；这是无 window-ID column 时冻结的 current-window scoping rule。claim 响应的 Token 与 Gateway leaf 明文只存在于那一次响应，数据库始终只保存 hash。claim 前必须重新校验窗口仍为 `open`（`INV-CERT-01`：窗口外不存在签发路径）。claim 响应丢失时，仍为 `enrolled` 的 Device 重试落入 same-SPKI 自动批准路径重新签发。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定 ErrorCode 拒绝；operator 必须先拒绝现有请求。
+
+**2026-08-16 修订（Phase 3 WP2b intake capacity）**：全局 live Enrollment request（persisted state 为 `pending` / `approved`）上限固定为硬编码 `MAX_LIVE_ENROLLMENT_REQUESTS = 600`，对应 500-seat fleet 加运维余量，不进入配置。检查位于 `BEGIN IMMEDIATE` intake transaction 内、发生在任何新 request row 写入前；达到上限后新的 intake 返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入，已有 live request 的幂等 replay 与 approved claim 仍可返回或排空既有 row。
 
 **Client 收尾**：leaf 与本地私钥 SPKI 匹配、chain 通到预置 origin CA、SAN 等于配置 hostname、本地持久化原子完成后才提交结果；**中途失败不得留下“看似已 Enrollment”的半状态**（重试自然落入替换语义）。
 
-**2026-08-16 修订（Phase 3 WP2b wire precision）**：device intake 固定为 `POST /api/v2/enrollment-requests`、`Content-Type: application/json`，无需 operator session；route 级硬编码上限为 `ENROLLMENT_REQUEST_BODY_LIMIT_BYTES = 65_536`，只作用于该 `MethodRouter`，不进入 `config.toml`，超限在 JSON/CSR 解析与任何数据库访问前返回 transport-level `413`。request 是拒绝未知字段的 closed object；`machine_hardware_id` 为 canonical lowercase hyphenated UUIDv5，`hardware_identity_quality` 只允许 `strong` / `medium` / `weak`，`gateway_csr_der` 为 RFC 4648 padded base64 的 DER CSR，`gateway_spki_sha256` 为 lowercase hex 64，`client_version` 为 1–64 bytes ASCII graphic（`0x21`–`0x7e`），`protocol_version` 当前只允许 `1`。Server 必须验证 CSR signature/structure、从 CSR public key DER 重算 SHA-256 并与 claimed SPKI 常数内容比较；mismatch 返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入。
+**2026-08-16 修订（Phase 3 WP2b wire precision）**：device intake 固定为 `POST /api/v2/enrollment-requests`、`Content-Type: application/json`，无需 operator session；route 级硬编码上限为 `ENROLLMENT_REQUEST_BODY_LIMIT_BYTES = 65_536`，只作用于该 `MethodRouter`，不进入 `config.toml`，超限在 JSON/CSR 解析与任何数据库访问前返回 transport-level `413`。request 是拒绝未知字段的 closed object；`machine_hardware_id` 为 canonical lowercase hyphenated UUIDv5，`hardware_identity_quality` 只允许 `strong` / `medium` / `weak`，`gateway_csr_der` 为 RFC 4648 padded base64 的 DER CSR，`gateway_spki_sha256` 为 lowercase hex 64，`client_version` 为 1–64 bytes ASCII graphic（`0x21`–`0x7e`），`protocol_version` 当前只允许 `1`。Server 必须验证 CSR signature/structure、直接从 parsed CSR 的 raw `SubjectPublicKeyInfo` DER bytes 重算 SHA-256（不得重编码 SPKI）并与 claimed SPKI 常数内容比较；mismatch 或 forged signature 返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入。
 
-成功同步签发返回 `201` 与 closed body `{enrollment_request_id, state:"issued", device_id, device_token, gateway_leaf_der, gateway_chain_der}`：两个 ID 均为 canonical UUIDv7；32-byte Device Token 使用 43-character unpadded base64url，仅该响应携带；leaf 是 RFC 4648 padded base64 DER，chain array 以相同编码从 leaf 的直接 issuer 排到 root，因此与独立 leaf 合并后的验证顺序固定为 leaf→root。待审批或轮询返回 `202` 与 closed body `{enrollment_request_id, state}`，`state` 只允许 `pending` / `approved` 且不携带签发材料。公开失败映射固定为：无效 request/CSR/SPKI/protocol → `400` / `ENROLLMENT_REQUEST_INVALID`；窗口非 open → `409` / `PROVISIONING_WINDOW_CLOSED`；已拒绝轮询 → `409` / `ENROLLMENT_REQUEST_REJECTED`；同 hardware ID 的 live different-SPKI 或其他人工恢复 identity conflict → `409` / `DEVICE_IDENTITY_CONFLICT`；未分类内部/持久化/签发失败 → `500` / `INTERNAL_ERROR`。所有结果含 Server-owned canonical UUIDv7 `X-Correlation-Id`；`201` / `202` body 也不得回显 CSR authority fields。
+成功同步签发返回 `201` 与 closed body `{enrollment_request_id, state:"issued", device_id, device_token, gateway_leaf_der, gateway_chain_der}`：两个 ID 均为 canonical UUIDv7；32-byte Device Token 使用 43-character unpadded base64url，仅该响应携带；leaf 是 RFC 4648 padded base64 DER，chain array 以相同编码从 leaf 的直接 issuer 排到 root，因此与独立 leaf 合并后的验证顺序固定为 leaf→root。待审批或 pending 轮询返回 `202` 与 closed body `{enrollment_request_id, state:"pending"}` 且不携带签发材料；persisted `approved` 由下一次同 request POST 直接消费为 `201`，不是可达 wire value。公开失败映射固定为：无效 request/CSR/SPKI/protocol、live capacity 满或已存在但不可 action 的 decision target → `400` / `ENROLLMENT_REQUEST_INVALID`；窗口非 open → `409` / `PROVISIONING_WINDOW_CLOSED`；hardware ID 当前窗口已拒绝 → `409` / `ENROLLMENT_REQUEST_REJECTED`；同 hardware ID 的 live different-SPKI 或其他人工恢复 identity conflict → `409` / `DEVICE_IDENTITY_CONFLICT`；未分类内部/持久化/签发失败 → `500` / `INTERNAL_ERROR`。所有结果含 Server-owned canonical UUIDv7 `X-Correlation-Id`；`201` / `202` body 也不得回显 CSR authority fields。
 
 ## 5. Device control：WSS
 

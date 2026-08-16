@@ -13,9 +13,11 @@ use crate::{
         GatewayIssuer, IssuanceReason, IssuedEnrollment, IssuedGatewayCertificate,
         PendingEnrollment, ValidatedEnrollmentRequest,
     },
-    audit::{self, AuditEvent, AuditEventId, CorrelationId},
+    audit::{self, AuditEvent, AuditEventId, CorrelationId, DeviceCredentialsIssuedAuditFacts},
     db::Database,
 };
+
+pub(crate) const MAX_LIVE_ENROLLMENT_REQUESTS: i64 = 600;
 
 pub(crate) async fn intake(
     database: &Database,
@@ -73,6 +75,11 @@ fn intake_in_transaction(
 ) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
     require_open_window(connection)?;
     let device = read_device(connection, &request.machine_hardware_id)?;
+    if latest_request_state(connection, &request.machine_hardware_id)?.as_deref()
+        == Some("rejected")
+    {
+        return Err(EnrollmentStoreError::RequestRejected);
+    }
     let live = read_live_requests(connection, &request.machine_hardware_id)?;
     if live.len() > 1 {
         return Err(EnrollmentStoreError::InvalidPersistedFacts);
@@ -88,42 +95,50 @@ fn intake_in_transaction(
                 enrollment_request_id: request_id,
                 state: EnrollmentState::Pending,
             })),
-            "approved" => issue_existing_request(
-                connection,
-                issuer,
-                request,
-                correlation_id,
-                request_id,
-                device.device_id,
-                ids.certificate,
-                ids.audit,
-                IssuanceReason::CredentialReplacement,
-            ),
+            "approved" => {
+                let has_current_credentials =
+                    read_current_credentials(connection, device.device_id)?.is_some();
+                let issuance_context =
+                    issuance_device_context(device.state, has_current_credentials)?;
+                issue_existing_request(
+                    connection,
+                    issuer,
+                    request,
+                    correlation_id,
+                    request_id,
+                    device.device_id,
+                    ids.certificate,
+                    ids.audit,
+                    IssuanceReason::CredentialReplacement,
+                    issuance_context,
+                )
+            }
             _ => Err(EnrollmentStoreError::InvalidPersistedFacts),
         };
     }
 
-    if latest_matching_state(connection, request)?.as_deref() == Some("rejected") {
-        return Err(EnrollmentStoreError::RequestRejected);
-    }
+    require_live_request_capacity(connection)?;
 
     let Some(device) = device else {
         return issue_new_device(connection, issuer, request, correlation_id, ids);
     };
     validate_device_for_replacement(&device, request)?;
     let current = read_current_credentials(connection, device.device_id)?;
-    if let Some(current) = current
-        && same_digest(&current.gateway_spki_sha256, &request.gateway_spki_sha256)?
-    {
-        return issue_new_replacement_request(
-            connection,
-            issuer,
-            request,
-            correlation_id,
-            device.device_id,
-            ids,
-            IssuanceReason::SameSpkiRetry,
-        );
+    validate_current_credentials(device.state, current.as_ref())?;
+    if device.state == ReplacementDeviceState::Enrolled {
+        let current = current
+            .as_ref()
+            .ok_or(EnrollmentStoreError::InvalidPersistedFacts)?;
+        if same_digest(&current.gateway_spki_sha256, &request.gateway_spki_sha256)? {
+            return issue_same_spki_replacement(
+                connection,
+                issuer,
+                request,
+                correlation_id,
+                device.device_id,
+                ids,
+            );
+        }
     }
     create_pending_request(
         connection,
@@ -162,7 +177,7 @@ fn read_device(
         Ok(DeviceRow {
             device_id: canonical_uuid_v7(&row.device_pk)?,
             hardware_identity_quality: row.hardware_identity_quality,
-            state: row.state,
+            state: ReplacementDeviceState::from_persisted(&row.state)?,
         })
     })
     .transpose()
@@ -182,16 +197,15 @@ fn read_live_requests(
     .map_err(|_| EnrollmentStoreError::RequestReadFailed)
 }
 
-fn latest_matching_state(
+fn latest_request_state(
     connection: &mut SqliteConnection,
-    request: &ValidatedEnrollmentRequest,
+    machine_hardware_id: &str,
 ) -> Result<Option<String>, EnrollmentStoreError> {
     diesel::sql_query(
         "SELECT state FROM enrollment_requests WHERE machine_hardware_id = ? \
-         AND gateway_spki_sha256 = ? ORDER BY rowid DESC LIMIT 1",
+         ORDER BY rowid DESC LIMIT 1",
     )
-    .bind::<Text, _>(&request.machine_hardware_id)
-    .bind::<Binary, _>(request.gateway_spki_sha256.as_slice())
+    .bind::<Text, _>(machine_hardware_id)
     .get_result::<StateRow>(connection)
     .optional()
     .map(|row| row.map(|row| row.state))
@@ -218,10 +232,38 @@ fn validate_device_for_replacement(
     device: &DeviceRow,
     request: &ValidatedEnrollmentRequest,
 ) -> Result<(), EnrollmentStoreError> {
-    if device.state != "enrolled"
-        || device.hardware_identity_quality != request.hardware_identity_quality.as_persisted()
-    {
+    if device.hardware_identity_quality != request.hardware_identity_quality.as_persisted() {
         return Err(EnrollmentStoreError::DeviceIdentityConflict);
+    }
+    Ok(())
+}
+
+fn validate_current_credentials(
+    device_state: ReplacementDeviceState,
+    current: Option<&CurrentCredentialsRow>,
+) -> Result<(), EnrollmentStoreError> {
+    match (device_state, current) {
+        (ReplacementDeviceState::Enrolled | ReplacementDeviceState::Disabled, Some(_))
+        | (ReplacementDeviceState::Revoked, None) => Ok(()),
+        (ReplacementDeviceState::Enrolled | ReplacementDeviceState::Disabled, None)
+        | (ReplacementDeviceState::Revoked, Some(_)) => {
+            Err(EnrollmentStoreError::InvalidPersistedFacts)
+        }
+    }
+}
+
+fn require_live_request_capacity(
+    connection: &mut SqliteConnection,
+) -> Result<(), EnrollmentStoreError> {
+    let live_count = diesel::sql_query(
+        "SELECT COUNT(*) AS value FROM enrollment_requests \
+         WHERE state IN ('pending', 'approved')",
+    )
+    .get_result::<CountRow>(connection)
+    .map_err(|_| EnrollmentStoreError::RequestReadFailed)?
+    .value;
+    if live_count >= MAX_LIVE_ENROLLMENT_REQUESTS {
+        return Err(EnrollmentStoreError::LiveRequestCapacityExceeded);
     }
     Ok(())
 }
@@ -382,18 +424,17 @@ fn issue_new_device(
         IssuanceReason::FirstEnrollment,
         material,
         IssuedRequestMode::Insert,
-        false,
+        IssuanceDeviceContext::new_device(),
     )
 }
 
-fn issue_new_replacement_request(
+fn issue_same_spki_replacement(
     connection: &mut SqliteConnection,
     issuer: &GatewayIssuer,
     request: &ValidatedEnrollmentRequest,
     correlation_id: CorrelationId,
     device_id: Uuid,
     ids: IntakeIds,
-    reason: IssuanceReason,
 ) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
     let material = prepare_issuance(issuer, request)?;
     persist_issued_request_and_credentials(
@@ -405,10 +446,10 @@ fn issue_new_replacement_request(
         ids.certificate,
         ids.audit,
         EnrollmentResolution::ReplaceDeviceCredentials,
-        reason,
+        IssuanceReason::SameSpkiRetry,
         material,
         IssuedRequestMode::Insert,
-        true,
+        IssuanceDeviceContext::replacement(ReplacementDeviceState::Enrolled, true),
     )
 }
 
@@ -423,6 +464,7 @@ fn issue_existing_request(
     certificate_id: Uuid,
     audit_event_id: AuditEventId,
     reason: IssuanceReason,
+    issuance_context: IssuanceDeviceContext,
 ) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
     let material = prepare_issuance(issuer, request)?;
     persist_issued_request_and_credentials(
@@ -437,7 +479,7 @@ fn issue_existing_request(
         reason,
         material,
         IssuedRequestMode::ClaimApproved,
-        true,
+        issuance_context,
     )
 }
 
@@ -470,6 +512,48 @@ enum IssuedRequestMode {
     ClaimApproved,
 }
 
+#[derive(Clone, Copy)]
+struct IssuanceDeviceContext {
+    previous_device_state: Option<&'static str>,
+    retire_existing: bool,
+    restore_enrolled: bool,
+}
+
+impl IssuanceDeviceContext {
+    const fn new_device() -> Self {
+        Self {
+            previous_device_state: None,
+            retire_existing: false,
+            restore_enrolled: false,
+        }
+    }
+
+    const fn replacement(state: ReplacementDeviceState, retire_existing: bool) -> Self {
+        Self {
+            previous_device_state: Some(state.as_persisted()),
+            retire_existing,
+            restore_enrolled: !matches!(state, ReplacementDeviceState::Enrolled),
+        }
+    }
+}
+
+fn issuance_device_context(
+    state: ReplacementDeviceState,
+    has_current_credentials: bool,
+) -> Result<IssuanceDeviceContext, EnrollmentStoreError> {
+    match (state, has_current_credentials) {
+        (ReplacementDeviceState::Enrolled | ReplacementDeviceState::Disabled, true)
+        | (ReplacementDeviceState::Revoked, false) => Ok(IssuanceDeviceContext::replacement(
+            state,
+            has_current_credentials,
+        )),
+        (ReplacementDeviceState::Enrolled | ReplacementDeviceState::Disabled, false)
+        | (ReplacementDeviceState::Revoked, true) => {
+            Err(EnrollmentStoreError::InvalidPersistedFacts)
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn persist_issued_request_and_credentials(
     connection: &mut SqliteConnection,
@@ -483,16 +567,19 @@ fn persist_issued_request_and_credentials(
     reason: IssuanceReason,
     material: PreparedIssuance,
     request_mode: IssuedRequestMode,
-    retire_existing: bool,
+    issuance_context: IssuanceDeviceContext,
 ) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
     let event = AuditEvent::device_credentials_issued(
         audit_event_id,
         correlation_id,
         enrollment_request_id,
-        resolution,
-        reason,
-        material.certificate.serial.clone(),
-        request.gateway_spki_sha256,
+        DeviceCredentialsIssuedAuditFacts {
+            resolution,
+            reason,
+            certificate_serial: material.certificate.serial.clone(),
+            gateway_spki_sha256: request.gateway_spki_sha256,
+            previous_device_state: issuance_context.previous_device_state,
+        },
     );
     audit::insert_diesel(connection, &event)
         .map_err(|_| EnrollmentStoreError::AuditInsertFailed)?;
@@ -525,18 +612,7 @@ fn persist_issued_request_and_credentials(
         }
     }
 
-    if retire_existing {
-        let retired = diesel::sql_query(
-            "UPDATE gateway_certificates SET status = 'retired' \
-             WHERE device_pk = ? AND status = 'active'",
-        )
-        .bind::<Text, _>(device_id.to_string())
-        .execute(connection)
-        .map_err(|_| EnrollmentStoreError::CertificateMutationFailed)?;
-        if retired != 1 {
-            return Err(EnrollmentStoreError::InvalidPersistedFacts);
-        }
-    }
+    apply_device_issuance_transition(connection, device_id, issuance_context)?;
 
     diesel::sql_query(
         "INSERT INTO device_tokens (device_pk, enrollment_request_id, token_hash) VALUES (?, ?, ?) \
@@ -571,6 +647,41 @@ fn persist_issued_request_and_credentials(
         gateway_leaf_der: material.certificate.leaf_der,
         gateway_chain_der: material.certificate.chain_der,
     }))
+}
+
+fn apply_device_issuance_transition(
+    connection: &mut SqliteConnection,
+    device_id: Uuid,
+    context: IssuanceDeviceContext,
+) -> Result<(), EnrollmentStoreError> {
+    if context.restore_enrolled {
+        let previous_device_state = context
+            .previous_device_state
+            .ok_or(EnrollmentStoreError::InvalidPersistedFacts)?;
+        let updated = diesel::sql_query(
+            "UPDATE devices SET state = 'enrolled' WHERE device_pk = ? AND state = ?",
+        )
+        .bind::<Text, _>(device_id.to_string())
+        .bind::<Text, _>(previous_device_state)
+        .execute(connection)
+        .map_err(|_| EnrollmentStoreError::DeviceMutationFailed)?;
+        if updated != 1 {
+            return Err(EnrollmentStoreError::CompareAndSwapConflict);
+        }
+    }
+    if context.retire_existing {
+        let retired = diesel::sql_query(
+            "UPDATE gateway_certificates SET status = 'retired' \
+             WHERE device_pk = ? AND status = 'active'",
+        )
+        .bind::<Text, _>(device_id.to_string())
+        .execute(connection)
+        .map_err(|_| EnrollmentStoreError::CertificateMutationFailed)?;
+        if retired != 1 {
+            return Err(EnrollmentStoreError::InvalidPersistedFacts);
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -621,7 +732,7 @@ fn active_certificate_count(
     .map_err(|_| EnrollmentStoreError::CredentialReadFailed)
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn approve_request(
     database: &Database,
     request_id: Uuid,
@@ -638,7 +749,7 @@ pub(crate) async fn approve_request(
     .map_err(EnrollmentError::from)
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn reject_request(
     database: &Database,
     request_id: Uuid,
@@ -655,14 +766,14 @@ pub(crate) async fn reject_request(
     .map_err(EnrollmentError::from)
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 #[derive(Clone, Copy)]
 enum EnrollmentDecision {
     Approve,
     Reject,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 async fn mutate_pending_request(
     database: &Database,
     request_id: Uuid,
@@ -740,7 +851,33 @@ fn canonical_uuid_v7(value: &str) -> Result<Uuid, EnrollmentStoreError> {
 struct DeviceRow {
     device_id: Uuid,
     hardware_identity_quality: String,
-    state: String,
+    state: ReplacementDeviceState,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplacementDeviceState {
+    Enrolled,
+    Revoked,
+    Disabled,
+}
+
+impl ReplacementDeviceState {
+    fn from_persisted(value: &str) -> Result<Self, EnrollmentStoreError> {
+        match value {
+            "enrolled" => Ok(Self::Enrolled),
+            "revoked" => Ok(Self::Revoked),
+            "disabled" => Ok(Self::Disabled),
+            _ => Err(EnrollmentStoreError::InvalidPersistedFacts),
+        }
+    }
+
+    const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Enrolled => "enrolled",
+            Self::Revoked => "revoked",
+            Self::Disabled => "disabled",
+        }
+    }
 }
 
 #[derive(QueryableByName)]
@@ -799,7 +936,7 @@ struct CurrentCredentialFactsRow {
     active_certificate_spki_sha256: Option<Vec<u8>>,
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 #[derive(QueryableByName)]
 struct DecisionRequestRow {
     #[diesel(sql_type = Text)]
@@ -832,6 +969,8 @@ enum EnrollmentStoreError {
     DeviceReadFailed,
     #[snafu(display("the Device could not be inserted"))]
     DeviceInsertFailed,
+    #[snafu(display("the Device could not be reactivated"))]
+    DeviceMutationFailed,
     #[snafu(display("the Enrollment request could not be read"))]
     RequestReadFailed,
     #[snafu(display("the Enrollment request could not be inserted"))]
@@ -854,6 +993,8 @@ enum EnrollmentStoreError {
     InvalidPersistedFacts,
     #[snafu(display("the Enrollment request was rejected"))]
     RequestRejected,
+    #[snafu(display("the live Enrollment request capacity is exhausted"))]
+    LiveRequestCapacityExceeded,
     #[snafu(display("the Device identity conflicts with a live request"))]
     DeviceIdentityConflict,
     #[snafu(display("the Enrollment request does not exist"))]
@@ -873,6 +1014,7 @@ impl EnrollmentStoreError {
         match error {
             EnrollmentError::EntropyUnavailable => Self::EntropyUnavailable,
             EnrollmentError::IssuancePolicyExpired => Self::IssuancePolicyExpired,
+            EnrollmentError::LiveRequestCapacityExceeded => Self::LiveRequestCapacityExceeded,
             EnrollmentError::SigningFailed
             | EnrollmentError::InvalidMachineHardwareId
             | EnrollmentError::InvalidHardwareIdentityQuality
@@ -904,6 +1046,7 @@ impl From<EnrollmentStoreError> for EnrollmentError {
         match error {
             EnrollmentStoreError::ProvisioningWindowClosed => Self::ProvisioningWindowClosed,
             EnrollmentStoreError::RequestRejected => Self::RequestRejected,
+            EnrollmentStoreError::LiveRequestCapacityExceeded => Self::LiveRequestCapacityExceeded,
             EnrollmentStoreError::DeviceIdentityConflict => Self::DeviceIdentityConflict,
             EnrollmentStoreError::RequestNotFound => Self::RequestNotFound,
             EnrollmentStoreError::RequestNotPending => Self::RequestNotPending,
@@ -916,6 +1059,7 @@ impl From<EnrollmentStoreError> for EnrollmentError {
             | EnrollmentStoreError::WindowReadFailed
             | EnrollmentStoreError::DeviceReadFailed
             | EnrollmentStoreError::DeviceInsertFailed
+            | EnrollmentStoreError::DeviceMutationFailed
             | EnrollmentStoreError::RequestReadFailed
             | EnrollmentStoreError::RequestInsertFailed
             | EnrollmentStoreError::RequestMutationFailed
@@ -944,16 +1088,18 @@ mod tests {
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PublicKeyData};
     use rustls::{client::verify_server_name, server::ParsedCertificate};
     use rustls_pki_types::{CertificateDer, ServerName};
+    use serde_json::Value;
     use sha2::{Digest, Sha256};
     use snafu::Snafu;
     use uuid::Uuid;
 
     use crate::{
         application::{
+            contest::{self, DeviceId},
             enrollment::{
                 self, EnrollmentError, EnrollmentOutcome, EnrollmentRequestInput, GatewayIssuer,
-                HardwareIdentityQuality, TEST_GATEWAY_HOSTNAME, TEST_GATEWAY_NOT_AFTER,
-                ValidatedEnrollmentRequest, encode_standard_base64,
+                HardwareIdentityQuality, TEST_CONTEST_END, TEST_GATEWAY_HOSTNAME,
+                TEST_GATEWAY_NOT_AFTER, ValidatedEnrollmentRequest, encode_standard_base64,
             },
             provisioning,
         },
@@ -963,7 +1109,9 @@ mod tests {
     };
     use x509_parser::{extensions::GeneralName, parse_x509_certificate};
 
-    use super::{EnrollmentStoreError, IntakeIds, intake_with_ids};
+    use super::{
+        CountRow, EnrollmentStoreError, IntakeIds, MAX_LIVE_ENROLLMENT_REQUESTS, intake_with_ids,
+    };
 
     const SOURCE_IP: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 44));
     const HOSTILE_CSR_SERIAL_SUGGESTION: [u8; 20] = [0x5a; 20];
@@ -1014,7 +1162,7 @@ mod tests {
         let leaf = issued.gateway_leaf_der.clone();
         let evidence = issuance_evidence(&database).await?;
         let expected_audit_detail = format!(
-            "{{\"resolution\":\"create_device\",\"certificate_serial\":\"{}\",\"gateway_spki_sha256\":\"{}\"}}",
+            "{{\"resolution\":\"create_device\",\"certificate_serial\":\"{}\",\"gateway_spki_sha256\":\"{}\",\"previous_device_state\":null}}",
             evidence.certificate_serial,
             hex::encode(request.spki)
         );
@@ -1157,8 +1305,8 @@ mod tests {
         }
         let poll = enrollment::intake(
             &database,
-            gateway_signer,
-            replacement.input,
+            gateway_signer.clone(),
+            replacement.input.clone(),
             SOURCE_IP,
             correlation_id(),
         )
@@ -1173,8 +1321,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_spki_retry_reissues_once_and_rejected_poll_is_terminal() -> Result<(), TestFailure>
-    {
+    async fn same_spki_retry_reissues_once() -> Result<(), TestFailure> {
         let fixture = DatabaseFixture::new();
         let database = fixture.connect().await?;
         let gateway_signer = GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?;
@@ -1197,7 +1344,7 @@ mod tests {
         let second = expect_issued(
             enrollment::intake(
                 &database,
-                gateway_signer.clone(),
+                gateway_signer,
                 original.input,
                 SOURCE_IP,
                 correlation_id(),
@@ -1218,7 +1365,29 @@ mod tests {
         {
             return Err(TestFailure::SameSpkiRetryChanged);
         }
+        Ok(())
+    }
 
+    #[tokio::test]
+    async fn rejected_hardware_blocks_same_and_rotated_spki_until_window_close()
+    -> Result<(), TestFailure> {
+        let fixture = DatabaseFixture::new();
+        let database = fixture.connect().await?;
+        let gateway_signer = GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?;
+        provisioning::open_window(&database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        let original = RequestFixture::new("ignored.original.example")?;
+        expect_issued(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                original.input,
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
         let replacement = RequestFixture::new("ignored.rejected.example")?;
         let pending = expect_pending(
             enrollment::intake(
@@ -1236,8 +1405,8 @@ mod tests {
             .map_err(|_| TestFailure::DecisionFailed)?;
         let poll = enrollment::intake(
             &database,
-            gateway_signer,
-            replacement.input,
+            gateway_signer.clone(),
+            replacement.input.clone(),
             SOURCE_IP,
             correlation_id(),
         )
@@ -1253,6 +1422,183 @@ mod tests {
                 )
         {
             return Err(TestFailure::RejectedPollChanged);
+        }
+        let rotated = RequestFixture::new("rotated-after-rejection.invalid.example")?;
+        let before_rotated = complete_counts(&database).await?;
+        let rotated_poll = enrollment::intake(
+            &database,
+            gateway_signer.clone(),
+            rotated.input.clone(),
+            SOURCE_IP,
+            correlation_id(),
+        )
+        .await;
+        if rotated_poll.err() != Some(EnrollmentError::RequestRejected)
+            || complete_counts(&database).await? != before_rotated
+        {
+            return Err(TestFailure::RejectedKeyRotationWrote);
+        }
+        provisioning::close_window(&database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        if request_state(&database, pending).await? != "expired" {
+            return Err(TestFailure::RejectedWindowBlockDidNotClear);
+        }
+        provisioning::open_window(&database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        expect_pending(
+            enrollment::intake(
+                &database,
+                gateway_signer,
+                rotated.input,
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn revoked_and_disabled_devices_require_approval_then_reactivate_on_claim()
+    -> Result<(), TestFailure> {
+        let fixture = DatabaseFixture::new();
+        let database = fixture.connect().await?;
+        let gateway_signer = GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?;
+        provisioning::open_window(&database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        let request = RequestFixture::new("ignored-lifecycle.invalid.example")?;
+        let first = expect_issued(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                request.input.clone(),
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        let device_id = DeviceId::parse(&first.device_id.to_string())
+            .map_err(|_| TestFailure::LifecycleMutationFailed)?;
+
+        contest::revoke_device(&database, &device_id, correlation_id())
+            .await
+            .map_err(|_| TestFailure::LifecycleMutationFailed)?;
+        let revoked_credentials = credential_counts(&database).await?;
+        let revoked_pending = expect_pending(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                request.input.clone(),
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        if credential_counts(&database).await? != revoked_credentials
+            || device_state(&database, first.device_id).await? != "revoked"
+        {
+            return Err(TestFailure::LifecycleReplacementAutoApproved);
+        }
+        enrollment::approve_request(&database, revoked_pending, correlation_id())
+            .await
+            .map_err(|_| TestFailure::DecisionFailed)?;
+        if credential_counts(&database).await? != revoked_credentials {
+            return Err(TestFailure::ApprovalIssued);
+        }
+        let after_revoke = expect_issued(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                request.input.clone(),
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        assert_reactivation_issuance(
+            &database,
+            first.device_id,
+            after_revoke.device_id,
+            "revoked",
+        )
+        .await?;
+
+        contest::disable_device(&database, &device_id, correlation_id())
+            .await
+            .map_err(|_| TestFailure::LifecycleMutationFailed)?;
+        let disabled_credentials = credential_counts(&database).await?;
+        let disabled_pending = expect_pending(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                request.input.clone(),
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        if credential_counts(&database).await? != disabled_credentials
+            || device_state(&database, first.device_id).await? != "disabled"
+        {
+            return Err(TestFailure::LifecycleReplacementAutoApproved);
+        }
+        enrollment::approve_request(&database, disabled_pending, correlation_id())
+            .await
+            .map_err(|_| TestFailure::DecisionFailed)?;
+        if credential_counts(&database).await? != disabled_credentials {
+            return Err(TestFailure::ApprovalIssued);
+        }
+        let after_disable = expect_issued(
+            enrollment::intake(
+                &database,
+                gateway_signer,
+                request.input,
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        assert_reactivation_issuance(
+            &database,
+            first.device_id,
+            after_disable.device_id,
+            "disabled",
+        )
+        .await?;
+        if active_certificate_count_for_device(&database, first.device_id).await? != 1 {
+            return Err(TestFailure::ActiveCertificateInvariantChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn live_request_capacity_rejects_the_next_intake_without_writes()
+    -> Result<(), TestFailure> {
+        let fixture = DatabaseFixture::new();
+        let database = fixture.connect().await?;
+        provisioning::open_window(&database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        seed_live_request_capacity(&database).await?;
+        let before = complete_counts(&database).await?;
+        let request = RequestFixture::new("capacity.invalid.example")?;
+        let result = enrollment::intake(
+            &database,
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+            request.input,
+            SOURCE_IP,
+            correlation_id(),
+        )
+        .await;
+        if result.err() != Some(EnrollmentError::LiveRequestCapacityExceeded)
+            || complete_counts(&database).await? != before
+            || live_request_count(&database).await? != MAX_LIVE_ENROLLMENT_REQUESTS
+        {
+            return Err(TestFailure::LiveRequestCapacityWrote);
         }
         Ok(())
     }
@@ -1397,12 +1743,30 @@ mod tests {
             .ok_or(TestFailure::GatewayCertificateProfileChanged)?;
         let exact_server_auth = extended_key_usage.value.server_auth
             && extended_key_usage_extension.value == EXPECTED_SERVER_AUTH_EKU_DER;
-        let site = GatewaySiteConfig::for_test(TEST_GATEWAY_HOSTNAME, TEST_GATEWAY_NOT_AFTER)
-            .map_err(|_| TestFailure::CertificateInvalid)?;
+        let basic_constraints = certificate
+            .basic_constraints()
+            .map_err(|_| TestFailure::CertificateInvalid)?
+            .ok_or(TestFailure::GatewayCertificateProfileChanged)?;
+        let exact_basic_constraints = basic_constraints.critical
+            && !basic_constraints.value.ca
+            && basic_constraints.value.path_len_constraint.is_none();
+        let key_usage = certificate
+            .key_usage()
+            .map_err(|_| TestFailure::CertificateInvalid)?
+            .ok_or(TestFailure::GatewayCertificateProfileChanged)?;
+        let exact_key_usage = key_usage.critical && key_usage.value.flags == 1;
+        let site = GatewaySiteConfig::for_test(
+            TEST_GATEWAY_HOSTNAME,
+            TEST_GATEWAY_NOT_AFTER,
+            TEST_CONTEST_END,
+        )
+        .map_err(|_| TestFailure::CertificateInvalid)?;
         if !exact_site_san
             || subject_common_names.as_slice() != EXPECTED_SUBJECT_COMMON_NAMES
             || certificate.subject().iter_attributes().next().is_some()
             || !exact_server_auth
+            || !exact_basic_constraints
+            || !exact_key_usage
             || certificate.validity().not_after.timestamp()
                 != site.gateway_not_after().unix_seconds()
         {
@@ -1517,6 +1881,116 @@ mod tests {
                 )
                 .bind::<Text, _>(request_id.to_string())
                 .get_result::<StringRow>(connection)
+                .map(|row| row.value)
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn device_state(database: &Database, device_id: Uuid) -> Result<String, TestFailure> {
+        database
+            .interact(move |connection| {
+                diesel::sql_query("SELECT state AS value FROM devices WHERE device_pk = ?")
+                    .bind::<Text, _>(device_id.to_string())
+                    .get_result::<StringRow>(connection)
+                    .map(|row| row.value)
+                    .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn assert_reactivation_issuance(
+        database: &Database,
+        expected_device_id: Uuid,
+        issued_device_id: Uuid,
+        previous_device_state: &'static str,
+    ) -> Result<(), TestFailure> {
+        let (actor, reason, encoded_detail) =
+            audit_shape(database, "issue_device_credentials").await?;
+        let detail: Value =
+            serde_json::from_str(&encoded_detail).map_err(|_| TestFailure::EvidenceFailed)?;
+        let detail = detail.as_object().ok_or(TestFailure::EvidenceFailed)?;
+        if expected_device_id != issued_device_id
+            || device_state(database, expected_device_id).await? != "enrolled"
+            || actor != "device:enrollment"
+            || reason != "credential_replacement"
+            || detail.len() != 4
+            || detail.get("resolution").and_then(Value::as_str)
+                != Some("replace_device_credentials")
+            || detail.get("previous_device_state").and_then(Value::as_str)
+                != Some(previous_device_state)
+            || detail
+                .get("certificate_serial")
+                .and_then(Value::as_str)
+                .is_none_or(|serial| {
+                    serial.len() != 40
+                        || !serial
+                            .bytes()
+                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                })
+            || detail
+                .get("gateway_spki_sha256")
+                .and_then(Value::as_str)
+                .is_none_or(|digest| digest.len() != 64)
+        {
+            return Err(TestFailure::LifecycleClaimDidNotReactivate);
+        }
+        Ok(())
+    }
+
+    async fn active_certificate_count_for_device(
+        database: &Database,
+        device_id: Uuid,
+    ) -> Result<i64, TestFailure> {
+        database
+            .interact(move |connection| {
+                diesel::sql_query(
+                    "SELECT COUNT(*) AS value FROM gateway_certificates \
+                     WHERE device_pk = ? AND status = 'active'",
+                )
+                .bind::<Text, _>(device_id.to_string())
+                .get_result::<CountRow>(connection)
+                .map(|row| row.value)
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn seed_live_request_capacity(database: &Database) -> Result<(), TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "WITH RECURSIVE counter(value) AS ( \
+                         SELECT 1 UNION ALL SELECT value + 1 FROM counter WHERE value < ? \
+                     ) INSERT INTO enrollment_requests (enrollment_request_id, \
+                         machine_hardware_id, hardware_identity_quality, gateway_csr_der, \
+                         gateway_spki_sha256, client_version, protocol_version, source_ip, \
+                         state, resolution, resolved_device_pk, issuance_audit_event_id, created_at) \
+                     SELECT printf('capacity-request-%03d', value), \
+                         printf('capacity-hardware-%03d', value), 'strong', x'01', randomblob(32), \
+                         'capacity-fixture', 1, '192.0.2.200', 'pending', NULL, NULL, NULL, \
+                         strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM counter",
+                )
+                .bind::<BigInt, _>(MAX_LIVE_ENROLLMENT_REQUESTS)
+                .execute(connection)
+                .map(|_| ())
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn live_request_count(database: &Database) -> Result<i64, TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "SELECT COUNT(*) AS value FROM enrollment_requests \
+                     WHERE state IN ('pending', 'approved')",
+                )
+                .get_result::<CountRow>(connection)
                 .map(|row| row.value)
                 .map_err(|_| TestFailure::EvidenceFailed)
             })
@@ -1784,6 +2258,20 @@ mod tests {
         SameSpkiRetryChanged,
         #[snafu(display("rejected polling semantics changed"))]
         RejectedPollChanged,
+        #[snafu(display("a rejected hardware identity bypassed rejection by rotating its SPKI"))]
+        RejectedKeyRotationWrote,
+        #[snafu(display("window close did not clear the rejected hardware block"))]
+        RejectedWindowBlockDidNotClear,
+        #[snafu(display("the Device lifecycle mutation failed"))]
+        LifecycleMutationFailed,
+        #[snafu(display("a revoked or disabled Device used same-SPKI auto-approval"))]
+        LifecycleReplacementAutoApproved,
+        #[snafu(display("the approved lifecycle replacement did not reactivate the Device"))]
+        LifecycleClaimDidNotReactivate,
+        #[snafu(display("the one-active-certificate invariant changed"))]
+        ActiveCertificateInvariantChanged,
+        #[snafu(display("the live Enrollment capacity rejection wrote state"))]
+        LiveRequestCapacityWrote,
         #[snafu(display("the operator decision failed"))]
         DecisionFailed,
         #[snafu(display("a CSR/SPKI mismatch wrote state"))]

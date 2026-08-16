@@ -101,6 +101,7 @@ schema_version = 1
 fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
 gateway_hostname = "gateway.contest.example"
 gateway_not_after = "2030-01-01T00:00:00Z"
+contest_end = "2029-12-31T00:00:00Z"
 
 [trust]
 control_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000001"

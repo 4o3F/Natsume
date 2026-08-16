@@ -1,4 +1,3 @@
-use axum::serve::ListenerExt as _;
 use std::{
     fs::OpenOptions,
     future::Future,
@@ -9,7 +8,7 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::{
     application::{
-        enrollment::GatewayIssuer,
+        enrollment::{GatewayIssuer, GatewayIssuerError},
         operator::{OperatorCredentials, hash_password},
         provisioning,
     },
@@ -17,7 +16,7 @@ use crate::{
     db::{self, Database, DatabaseConfig},
     error::AppError,
     http, logging,
-    tls::TlsListener,
+    tls::{ClientAddress, TlsListener},
     vault::{ensure_master_key, require_master_key},
 };
 
@@ -72,9 +71,13 @@ where
     let gateway_issuer = GatewayIssuer::load(
         &origin_ca_certificate_path,
         &origin_ca_private_key_path,
+        config.local_origin_root_path(),
         site,
     )
-    .map_err(|_| AppError::OriginCa)?;
+    .map_err(|error| match error {
+        GatewayIssuerError::TrustRootMismatch => AppError::OriginCaTrustRootMismatch,
+        _ => AppError::OriginCa,
+    })?;
     tracing::info!("Origin CA issuing material verified");
     let listener = TlsListener::bind(
         config.listen_address(),
@@ -98,10 +101,9 @@ where
         tracing::info!("graceful shutdown initiated");
     }
     .with_subscriber(dispatcher);
-    let listener = listener.tap_io(|_stream| {});
     let result = axum::serve(
         listener,
-        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        router.into_make_service_with_connect_info::<ClientAddress>(),
     )
     .with_graceful_shutdown(shutdown)
     .await
@@ -1075,6 +1077,43 @@ mod tests {
             AppError::OriginCa,
         )?;
 
+        let mismatched_origin_identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let different_origin_identity =
+            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
+        fs::copy(
+            different_origin_identity
+                .directory_path()
+                .join("local-origin-ca.crt"),
+            mismatched_origin_identity
+                .directory_path()
+                .join("local-origin-ca.crt"),
+        )
+        .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let mismatched_key_directory = mismatched_origin_identity.directory_path().join("keys");
+        create_private_directory(&mismatched_key_directory)?;
+        let mismatched_database = mismatched_origin_identity
+            .directory_path()
+            .join("server.db");
+        create_database(&mismatched_database).await?;
+        let mismatched_master_key = mismatched_key_directory.join("root.key");
+        ensure_master_key(&mismatched_master_key)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        let mismatched_origin_path = write_config(
+            &mismatched_origin_identity,
+            SocketAddr::from((LOCALHOST, 0)),
+            &mismatched_database,
+            &mismatched_master_key,
+            mismatched_origin_identity.certificate_path(),
+            mismatched_origin_identity.private_key_path(),
+        )?;
+        let mismatched_origin_config = ServerConfig::load_from(&mismatched_origin_path)
+            .map_err(|_| TestFailure::FixtureCreationFailed)?;
+        assert_startup_error(
+            run_until(mismatched_origin_config, ready(())).await,
+            AppError::OriginCaTrustRootMismatch,
+        )?;
+
         let invalid_tls_identity =
             TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
         let valid_key_directory = invalid_tls_identity.directory_path().join("keys");
@@ -1514,7 +1553,8 @@ mod tests {
         fs::write(
             &site_config_path,
             "gateway_hostname = \"gateway.contest.example\"\n\
-             gateway_not_after = \"4090-01-01T00:00:00Z\"\n",
+             gateway_not_after = \"4090-01-01T00:00:00Z\"\n\
+             contest_end = \"4089-12-31T00:00:00Z\"\n",
         )
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
         let config = format!(

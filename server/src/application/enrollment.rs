@@ -4,12 +4,17 @@
 //! CSR signature proves possession of the current private key, so persisting a
 //! synthetic approval would add no authority and would make response-loss
 //! recovery less direct. Different-SPKI replacement remains approve-then-claim.
+//! A rejected request blocks the hardware identity while it remains that
+//! identity's newest request; window close expires it and therefore clears the
+//! block without adding a window identifier column. A non-pending operator
+//! decision is classified as `ENROLLMENT_REQUEST_INVALID`, because the named
+//! request exists but is no longer actionable.
 
-use std::{net::IpAddr, path::Path, sync::Arc, time::SystemTime};
+use std::{fs, net::IpAddr, path::Path, sync::Arc, time::SystemTime};
 
 use rcgen::{
     CertificateParams, CertificateSigningRequestParams, DistinguishedName, ExtendedKeyUsagePurpose,
-    IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SerialNumber,
+    IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SerialNumber, SubjectPublicKeyInfo,
 };
 use rustls::{
     RootCertStore,
@@ -18,11 +23,13 @@ use rustls::{
 };
 use rustls_pki_types::{
     CertificateDer, CertificateSigningRequestDer, PrivatePkcs8KeyDer, ServerName, UnixTime,
+    pem::PemObject as _,
 };
 use sha2::{Digest, Sha256};
 use snafu::Snafu;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
+use x509_parser::{certification_request::X509CertificationRequest, prelude::FromDer as _};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
@@ -42,6 +49,8 @@ const CERTIFICATE_SERIAL_BYTES: usize = 20;
 pub(crate) const TEST_GATEWAY_HOSTNAME: &str = "gateway.contest.example";
 #[cfg(test)]
 pub(crate) const TEST_GATEWAY_NOT_AFTER: &str = "4090-01-01T00:00:00Z";
+#[cfg(test)]
+pub(crate) const TEST_CONTEST_END: &str = "4089-12-31T00:00:00Z";
 
 #[derive(Clone)]
 pub(crate) struct GatewayIssuer(Arc<GatewayIssuerInner>);
@@ -58,6 +67,7 @@ impl GatewayIssuer {
     pub(crate) fn load(
         certificate_path: &Path,
         private_key_path: &Path,
+        packaged_origin_root_path: &Path,
         site: GatewaySiteConfig,
     ) -> Result<Self, GatewayIssuerError> {
         let certificate_bytes = tls::read_private_file(certificate_path)
@@ -74,6 +84,10 @@ impl GatewayIssuer {
         let certificate_der = CertificateDer::from(certificate_bytes.clone());
         let parsed = ParsedCertificate::try_from(&certificate_der)
             .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let packaged_origin_root = read_packaged_origin_root(packaged_origin_root_path)?;
+        if certificate_der.as_ref() != packaged_origin_root.as_ref() {
+            return Err(GatewayIssuerError::TrustRootMismatch);
+        }
         if parsed.subject_public_key_info().as_ref()
             != key_pair.subject_public_key_info().as_slice()
         {
@@ -122,10 +136,11 @@ impl GatewayIssuer {
         &self,
         csr_der: &[u8],
     ) -> Result<IssuedGatewayCertificate, GatewayIssuerError> {
-        let csr =
-            CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(csr_der))
-                .map_err(|_| GatewayIssuerError::InvalidCsr)?;
-        self.sign_public_key(&csr.public_key)
+        CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(csr_der))
+            .map_err(|_| GatewayIssuerError::InvalidCsr)?;
+        let public_key = SubjectPublicKeyInfo::from_der(raw_csr_spki_der(csr_der)?)
+            .map_err(|_| GatewayIssuerError::InvalidCsr)?;
+        self.sign_public_key(&public_key)
     }
 
     fn sign_public_key(
@@ -133,6 +148,9 @@ impl GatewayIssuer {
         public_key: &impl PublicKeyData,
     ) -> Result<IssuedGatewayCertificate, GatewayIssuerError> {
         let now = current_unix_seconds()?;
+        if !self.0.site.has_required_validity_coverage() {
+            return Err(GatewayIssuerError::ValidityTooShort);
+        }
         let minimum_not_after = now
             .checked_add(GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS)
             .ok_or(GatewayIssuerError::ClockInvalid)?;
@@ -179,8 +197,12 @@ impl GatewayIssuer {
     #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn for_test() -> Result<Self, GatewayIssuerError> {
-        let site = GatewaySiteConfig::for_test(TEST_GATEWAY_HOSTNAME, TEST_GATEWAY_NOT_AFTER)
-            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let site = GatewaySiteConfig::for_test(
+            TEST_GATEWAY_HOSTNAME,
+            TEST_GATEWAY_NOT_AFTER,
+            TEST_CONTEST_END,
+        )
+        .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
         Self::for_test_with_site(site)
     }
 
@@ -194,17 +216,19 @@ impl GatewayIssuer {
             .checked_add(remaining_seconds)
             .and_then(UtcDateTimeComponents::from_unix_seconds)
             .ok_or(GatewayIssuerError::ClockInvalid)?;
-        let encoded_not_after = format!(
-            "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
-            not_after.year,
-            not_after.month,
-            not_after.day,
-            not_after.hour,
-            not_after.minute,
-            not_after.second
-        );
-        let site = GatewaySiteConfig::for_test(TEST_GATEWAY_HOSTNAME, &encoded_not_after)
-            .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
+        let contest_end = current_unix_seconds()?
+            .checked_add(remaining_seconds)
+            .and_then(|value| value.checked_sub(crate::config::GATEWAY_VALIDITY_MARGIN_SECONDS))
+            .and_then(UtcDateTimeComponents::from_unix_seconds)
+            .ok_or(GatewayIssuerError::ClockInvalid)?;
+        let encoded_not_after = encode_utc_timestamp(not_after);
+        let encoded_contest_end = encode_utc_timestamp(contest_end);
+        let site = GatewaySiteConfig::for_test(
+            TEST_GATEWAY_HOSTNAME,
+            &encoded_not_after,
+            &encoded_contest_end,
+        )
+        .map_err(|_| GatewayIssuerError::InvalidMaterial)?;
         Self::for_test_with_site(site)
     }
 
@@ -235,6 +259,46 @@ impl GatewayIssuer {
             site,
         })))
     }
+}
+
+fn read_packaged_origin_root(path: &Path) -> Result<CertificateDer<'static>, GatewayIssuerError> {
+    let encoded = fs::read(path).map_err(|_| GatewayIssuerError::TrustRootUnreadable)?;
+    let mut certificates = CertificateDer::pem_slice_iter(&encoded);
+    let certificate = certificates
+        .next()
+        .ok_or(GatewayIssuerError::InvalidTrustRoot)?
+        .map_err(|_| GatewayIssuerError::InvalidTrustRoot)?;
+    if certificates.next().is_some() {
+        return Err(GatewayIssuerError::InvalidTrustRoot);
+    }
+    ParsedCertificate::try_from(&certificate).map_err(|_| GatewayIssuerError::InvalidTrustRoot)?;
+    Ok(certificate)
+}
+
+fn raw_csr_spki_der(csr_der: &[u8]) -> Result<&[u8], GatewayIssuerError> {
+    let (remainder, csr) =
+        X509CertificationRequest::from_der(csr_der).map_err(|_| GatewayIssuerError::InvalidCsr)?;
+    if !remainder.is_empty() {
+        return Err(GatewayIssuerError::InvalidCsr);
+    }
+    Ok(csr.certification_request_info.subject_pki.raw)
+}
+
+fn raw_csr_spki_sha256(csr_der: &[u8]) -> Result<[u8; 32], GatewayIssuerError> {
+    Ok(Sha256::digest(raw_csr_spki_der(csr_der)?).into())
+}
+
+#[cfg(test)]
+fn encode_utc_timestamp(components: UtcDateTimeComponents) -> String {
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        components.year,
+        components.month,
+        components.day,
+        components.hour,
+        components.minute,
+        components.second
+    )
 }
 
 fn current_unix_seconds() -> Result<i64, GatewayIssuerError> {
@@ -275,6 +339,12 @@ pub(crate) enum GatewayIssuerError {
     MaterialUnreadable,
     #[snafu(display("the Origin CA material is invalid"))]
     InvalidMaterial,
+    #[snafu(display("the packaged Origin CA trust root could not be read"))]
+    TrustRootUnreadable,
+    #[snafu(display("the packaged Origin CA trust root is invalid"))]
+    InvalidTrustRoot,
+    #[snafu(display("the packaged Origin CA trust root does not match the issuing certificate"))]
+    TrustRootMismatch,
     #[snafu(display("the Gateway CSR is invalid"))]
     InvalidCsr,
     #[snafu(display("the system clock is invalid"))]
@@ -427,7 +497,7 @@ pub(crate) async fn intake(
     db::enrollment::intake(database, issuer, request, correlation_id).await
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn approve_request(
     database: &Database,
     request_id: Uuid,
@@ -436,7 +506,7 @@ pub(crate) async fn approve_request(
     db::enrollment::approve_request(database, request_id, correlation_id).await
 }
 
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn reject_request(
     database: &Database,
     request_id: Uuid,
@@ -486,11 +556,12 @@ fn validate_request(
     if gateway_csr_der.is_empty() || gateway_csr_der.len() > MAX_GATEWAY_CSR_DER_BYTES {
         return Err(EnrollmentError::InvalidCsr);
     }
-    let csr = CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(
+    CertificateSigningRequestParams::from_der(&CertificateSigningRequestDer::from(
         gateway_csr_der.as_slice(),
     ))
     .map_err(|_| EnrollmentError::InvalidCsr)?;
-    let recomputed_spki: [u8; 32] = Sha256::digest(csr.public_key.subject_public_key_info()).into();
+    let recomputed_spki =
+        raw_csr_spki_sha256(&gateway_csr_der).map_err(|_| EnrollmentError::InvalidCsr)?;
     if !bool::from(recomputed_spki.ct_eq(&claimed_spki)) {
         return Err(EnrollmentError::SpkiMismatch);
     }
@@ -613,6 +684,8 @@ pub(crate) enum EnrollmentError {
     ProvisioningWindowClosed,
     #[snafu(display("the Enrollment request was rejected"))]
     RequestRejected,
+    #[snafu(display("the live Enrollment request capacity is exhausted"))]
+    LiveRequestCapacityExceeded,
     #[snafu(display("the device identity conflicts with a live Enrollment request"))]
     DeviceIdentityConflict,
     #[snafu(display("the Enrollment request does not exist"))]
@@ -638,6 +711,9 @@ impl From<GatewayIssuerError> for EnrollmentError {
             GatewayIssuerError::EntropyUnavailable => Self::EntropyUnavailable,
             GatewayIssuerError::MaterialUnreadable
             | GatewayIssuerError::InvalidMaterial
+            | GatewayIssuerError::TrustRootUnreadable
+            | GatewayIssuerError::InvalidTrustRoot
+            | GatewayIssuerError::TrustRootMismatch
             | GatewayIssuerError::InvalidCsr
             | GatewayIssuerError::ClockInvalid
             | GatewayIssuerError::SigningFailed => Self::SigningFailed,
@@ -649,16 +725,43 @@ impl From<GatewayIssuerError> for EnrollmentError {
 mod tests {
     use std::{fs, net::Ipv4Addr};
 
+    use rcgen::{CertificateParams, KeyPair};
+    use sha2::{Digest, Sha256};
     use snafu::Snafu;
+    use x509_parser::{certification_request::X509CertificationRequest, prelude::FromDer as _};
 
     use crate::{
         config::{
             GatewaySiteConfig, ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME,
+            UtcDateTimeComponents,
         },
         tls::tests::TestIdentity,
     };
 
-    use super::{GatewayIssuer, GatewayIssuerError};
+    use super::{
+        GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS, GatewayIssuer, GatewayIssuerError,
+        current_unix_seconds, encode_utc_timestamp, raw_csr_spki_sha256,
+    };
+
+    #[test]
+    fn csr_spki_digest_is_computed_over_the_raw_der_slice() -> Result<(), TestFailure> {
+        let key = KeyPair::generate().map_err(|_| TestFailure::FixtureFailed)?;
+        let csr = CertificateParams::new(vec!["ignored.invalid.example".to_owned()])
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .serialize_request(&key)
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        let (remainder, parsed) = X509CertificationRequest::from_der(csr.der())
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        if !remainder.is_empty()
+            || raw_csr_spki_sha256(csr.der()).map_err(|_| TestFailure::FixtureFailed)?
+                != <[u8; 32]>::from(Sha256::digest(
+                    parsed.certification_request_info.subject_pki.raw,
+                ))
+        {
+            return Err(TestFailure::RawSpkiDigestChanged);
+        }
+        Ok(())
+    }
 
     #[test]
     fn origin_ca_preflight_accepts_only_matching_der_material_and_valid_site_policy()
@@ -671,26 +774,60 @@ mod tests {
         let private_key_path = identity
             .directory_path()
             .join(ORIGIN_CA_PRIVATE_KEY_FILENAME);
+        let packaged_root_path = identity.directory_path().join("local-origin-ca.crt");
         let site = valid_site()?;
-        GatewayIssuer::load(&certificate_path, &private_key_path, site)
-            .map_err(|_| TestFailure::ExpectedValidMaterial)?;
+        GatewayIssuer::load(
+            &certificate_path,
+            &private_key_path,
+            &packaged_root_path,
+            site,
+        )
+        .map_err(|_| TestFailure::ExpectedValidMaterial)?;
 
         let other =
             TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let original_packaged_root =
+            fs::read(&packaged_root_path).map_err(|_| TestFailure::FixtureFailed)?;
+        fs::copy(
+            other.directory_path().join("local-origin-ca.crt"),
+            &packaged_root_path,
+        )
+        .map_err(|_| TestFailure::FixtureFailed)?;
+        assert_preflight_error(
+            GatewayIssuer::load(
+                &certificate_path,
+                &private_key_path,
+                &packaged_root_path,
+                valid_site()?,
+            ),
+            GatewayIssuerError::TrustRootMismatch,
+        )?;
+        fs::write(&packaged_root_path, original_packaged_root)
+            .map_err(|_| TestFailure::FixtureFailed)?;
         fs::copy(
             other.directory_path().join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
             &private_key_path,
         )
         .map_err(|_| TestFailure::FixtureFailed)?;
         assert_preflight_error(
-            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuer::load(
+                &certificate_path,
+                &private_key_path,
+                &packaged_root_path,
+                valid_site()?,
+            ),
             GatewayIssuerError::InvalidMaterial,
         )?;
 
         fs::write(&private_key_path, b"malformed-origin-ca-key-canary")
             .map_err(|_| TestFailure::FixtureFailed)?;
         assert_preflight_error(
-            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuer::load(
+                &certificate_path,
+                &private_key_path,
+                &packaged_root_path,
+                valid_site()?,
+            ),
             GatewayIssuerError::InvalidMaterial,
         )?;
         fs::copy(
@@ -701,12 +838,22 @@ mod tests {
         fs::write(&certificate_path, b"malformed-origin-ca-canary")
             .map_err(|_| TestFailure::FixtureFailed)?;
         assert_preflight_error(
-            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuer::load(
+                &certificate_path,
+                &private_key_path,
+                &packaged_root_path,
+                valid_site()?,
+            ),
             GatewayIssuerError::InvalidMaterial,
         )?;
         fs::remove_file(&certificate_path).map_err(|_| TestFailure::FixtureFailed)?;
         assert_preflight_error(
-            GatewayIssuer::load(&certificate_path, &private_key_path, valid_site()?),
+            GatewayIssuer::load(
+                &certificate_path,
+                &private_key_path,
+                &packaged_root_path,
+                valid_site()?,
+            ),
             GatewayIssuerError::MaterialUnreadable,
         )
     }
@@ -715,8 +862,22 @@ mod tests {
     fn issuance_time_margin_fails_closed_during_preflight() -> Result<(), TestFailure> {
         let identity =
             TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
-        let site = GatewaySiteConfig::for_test("gateway.contest.example", "1970-01-01T00:00:00Z")
-            .map_err(|_| TestFailure::FixtureFailed)?;
+        let now = current_unix_seconds().map_err(|_| TestFailure::FixtureFailed)?;
+        let not_after = now
+            .checked_add(GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS - 1)
+            .and_then(UtcDateTimeComponents::from_unix_seconds)
+            .ok_or(TestFailure::FixtureFailed)?;
+        let contest_end = now
+            .checked_add(GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS - 1)
+            .and_then(|value| value.checked_sub(crate::config::GATEWAY_VALIDITY_MARGIN_SECONDS))
+            .and_then(UtcDateTimeComponents::from_unix_seconds)
+            .ok_or(TestFailure::FixtureFailed)?;
+        let site = GatewaySiteConfig::for_test(
+            "gateway.contest.example",
+            &encode_utc_timestamp(not_after),
+            &encode_utc_timestamp(contest_end),
+        )
+        .map_err(|_| TestFailure::FixtureFailed)?;
         assert_preflight_error(
             GatewayIssuer::load(
                 &identity
@@ -725,6 +886,7 @@ mod tests {
                 &identity
                     .directory_path()
                     .join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
+                &identity.directory_path().join("local-origin-ca.crt"),
                 site,
             ),
             GatewayIssuerError::ValidityTooShort,
@@ -732,8 +894,12 @@ mod tests {
     }
 
     fn valid_site() -> Result<GatewaySiteConfig, TestFailure> {
-        GatewaySiteConfig::for_test("gateway.contest.example", "4090-01-01T00:00:00Z")
-            .map_err(|_| TestFailure::FixtureFailed)
+        GatewaySiteConfig::for_test(
+            "gateway.contest.example",
+            "4090-01-01T00:00:00Z",
+            "4089-12-31T00:00:00Z",
+        )
+        .map_err(|_| TestFailure::FixtureFailed)
     }
 
     fn assert_preflight_error(
@@ -772,5 +938,7 @@ mod tests {
         ExpectedFailure,
         #[snafu(display("the Origin CA preflight failure changed"))]
         UnexpectedFailure,
+        #[snafu(display("the CSR SPKI digest no longer uses the raw DER slice"))]
+        RawSpkiDigestChanged,
     }
 }

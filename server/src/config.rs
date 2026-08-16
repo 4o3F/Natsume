@@ -6,6 +6,7 @@ use snafu::Snafu;
 const CONFIG_PATH: &str = "/etc/natsume-server/config.toml";
 pub(crate) const ORIGIN_CA_CERTIFICATE_FILENAME: &str = "origin-ca.der";
 pub(crate) const ORIGIN_CA_PRIVATE_KEY_FILENAME: &str = "origin-ca-key.pk8";
+pub(crate) const GATEWAY_VALIDITY_MARGIN_SECONDS: i64 = 86_400;
 
 /// Validated configuration consumed by the Stage 3 Server startup.
 pub struct ServerConfig {
@@ -122,6 +123,10 @@ impl ServerConfig {
         &self.site_config_path
     }
 
+    pub(crate) fn local_origin_root_path(&self) -> &Path {
+        &self.local_origin_root_path
+    }
+
     pub(crate) fn origin_ca_certificate_path(&self) -> Result<PathBuf, ConfigError> {
         self.private_keys_directory()
             .map(|directory| directory.join(ORIGIN_CA_CERTIFICATE_FILENAME))
@@ -203,10 +208,11 @@ struct RawSitePathsConfig {
 pub(crate) struct GatewaySiteConfig {
     gateway_hostname: String,
     gateway_not_after: GatewayNotAfter,
+    contest_end: GatewayNotAfter,
 }
 
 impl GatewaySiteConfig {
-    /// Loads the shared site file and validates the two issuance-owned keys.
+    /// Loads the shared site file and validates the three issuance-owned keys.
     ///
     /// Other site keys remain owned by their respective Client consumers and
     /// are deliberately ignored by this Server projection.
@@ -219,9 +225,13 @@ impl GatewaySiteConfig {
         }
         let gateway_not_after = GatewayNotAfter::parse(raw.gateway_not_after)
             .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
+        let contest_end =
+            GatewayNotAfter::parse(raw.contest_end).ok_or(SiteConfigError::InvalidContestEnd)?;
+        validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
         Ok(Self {
             gateway_hostname: raw.gateway_hostname,
             gateway_not_after,
+            contest_end,
         })
     }
 
@@ -234,18 +244,33 @@ impl GatewaySiteConfig {
     }
 
     #[cfg(test)]
+    pub(crate) const fn contest_end(&self) -> &GatewayNotAfter {
+        &self.contest_end
+    }
+
+    pub(crate) fn has_required_validity_coverage(&self) -> bool {
+        validate_gateway_validity_coverage(&self.gateway_not_after, &self.contest_end).is_ok()
+    }
+
+    #[cfg(test)]
     #[allow(dead_code)]
     pub(crate) fn for_test(
         gateway_hostname: &str,
         gateway_not_after: &str,
+        contest_end: &str,
     ) -> Result<Self, SiteConfigError> {
         if !is_canonical_dns_hostname(gateway_hostname) {
             return Err(SiteConfigError::InvalidGatewayHostname);
         }
+        let gateway_not_after = GatewayNotAfter::parse(gateway_not_after.to_owned())
+            .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
+        let contest_end = GatewayNotAfter::parse(contest_end.to_owned())
+            .ok_or(SiteConfigError::InvalidContestEnd)?;
+        validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
         Ok(Self {
             gateway_hostname: gateway_hostname.to_owned(),
-            gateway_not_after: GatewayNotAfter::parse(gateway_not_after.to_owned())
-                .ok_or(SiteConfigError::InvalidGatewayNotAfter)?,
+            gateway_not_after,
+            contest_end,
         })
     }
 }
@@ -254,6 +279,24 @@ impl GatewaySiteConfig {
 struct RawGatewaySiteConfig {
     gateway_hostname: String,
     gateway_not_after: String,
+    contest_end: String,
+}
+
+fn validate_gateway_validity_coverage(
+    gateway_not_after: &GatewayNotAfter,
+    contest_end: &GatewayNotAfter,
+) -> Result<(), SiteConfigError> {
+    let required_not_after = contest_end
+        .unix_seconds()
+        .checked_add(GATEWAY_VALIDITY_MARGIN_SECONDS)
+        .ok_or(SiteConfigError::GatewayValidityCoverageTooShort)?;
+    if gateway_not_after.unix_seconds() < required_not_after
+        || (gateway_not_after.unix_seconds() == required_not_after
+            && gateway_not_after.components().nanosecond < contest_end.components().nanosecond)
+    {
+        return Err(SiteConfigError::GatewayValidityCoverageTooShort);
+    }
+    Ok(())
 }
 
 // The Server endpoint is parsed as `SocketAddr`, so it has no reusable DNS
@@ -473,6 +516,10 @@ pub(crate) enum SiteConfigError {
     InvalidGatewayHostname,
     #[snafu(display("the Gateway certificate not-after policy is invalid"))]
     InvalidGatewayNotAfter,
+    #[snafu(display("the contest end policy is invalid"))]
+    InvalidContestEnd,
+    #[snafu(display("the Gateway certificate validity does not cover the contest margin"))]
+    GatewayValidityCoverageTooShort,
 }
 
 /// Redacted Server configuration failure.
@@ -540,6 +587,7 @@ schema_version = 1
 fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
 gateway_hostname = "gateway.contest.example"
 gateway_not_after = "2028-02-29T23:59:58.123456789Z"
+contest_end = "2028-02-28T23:59:58.123456789Z"
 
 [trust]
 control_root_sha256 = "ignored-by-server"
@@ -586,6 +634,7 @@ control_root_sha256 = "ignored-by-server"
         let components = site.gateway_not_after().components();
         if site.gateway_hostname() != "gateway.contest.example"
             || site.gateway_not_after().encoded() != "2028-02-29T23:59:58.123456789Z"
+            || site.contest_end().encoded() != "2028-02-28T23:59:58.123456789Z"
             || components.year != 2028
             || components.month != 2
             || components.day != 29
@@ -626,6 +675,35 @@ control_root_sha256 = "ignored-by-server"
                 ),
                 SiteConfigError::InvalidGatewayNotAfter,
                 "not-after-canary",
+            ),
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-28T23:59:58.123456789Z",
+                    "2028-02-30T23:59:58Z-contest-end-canary",
+                ),
+                SiteConfigError::InvalidContestEnd,
+                "contest-end-canary",
+            ),
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-28T23:59:58.123456789Z",
+                    "2028-02-29T00:00:00Z-coverage-canary",
+                ),
+                SiteConfigError::InvalidContestEnd,
+                "coverage-canary",
+            ),
+            (
+                VALID_SITE_CONFIG.replace("2028-02-28T23:59:58.123456789Z", "2028-02-29T00:00:00Z"),
+                SiteConfigError::GatewayValidityCoverageTooShort,
+                "gateway.contest.example",
+            ),
+            (
+                VALID_SITE_CONFIG.replace(
+                    "2028-02-28T23:59:58.123456789Z",
+                    "2028-02-28T23:59:58.223456789Z",
+                ),
+                SiteConfigError::GatewayValidityCoverageTooShort,
+                "gateway.contest.example",
             ),
         ] {
             let fixture = ConfigFixture::new(&contents)?;

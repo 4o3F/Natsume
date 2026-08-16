@@ -905,7 +905,7 @@ mod tests {
             || value
                 .pointer("/components/schemas/EnrollmentPendingState/enum")
                 .and_then(Value::as_array)
-                != Some(&vec![Value::from("pending"), Value::from("approved")])
+                != Some(&vec![Value::from("pending")])
         {
             return Err(TestFailure::EnrollmentContractChanged);
         }

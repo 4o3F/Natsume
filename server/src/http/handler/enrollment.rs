@@ -1,8 +1,6 @@
-use std::net::SocketAddr;
-
 use axum::{
     Extension, Json, Router,
-    extract::{ConnectInfo, DefaultBodyLimit, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -16,6 +14,7 @@ use crate::{
         self, EnrollmentOutcome, EnrollmentRequestInput, EnrollmentState, encode_standard_base64,
     },
     audit::CorrelationId,
+    tls::ClientAddress,
 };
 
 use super::super::{AppState, error::ApiError};
@@ -105,10 +104,8 @@ pub(crate) struct EnrollmentPendingResponse {
 
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code)]
 pub(crate) enum EnrollmentPendingState {
     Pending,
-    Approved,
 }
 
 #[utoipa::path(
@@ -128,7 +125,7 @@ pub(crate) enum EnrollmentPendingState {
 pub(crate) async fn create_enrollment_request(
     State(state): State<AppState>,
     Extension(correlation_id): Extension<CorrelationId>,
-    ConnectInfo(remote_address): ConnectInfo<SocketAddr>,
+    remote_address: ClientAddress,
     request: Result<Json<EnrollmentRequest>, JsonRejection>,
 ) -> Response {
     let Json(request) = match request {
@@ -226,13 +223,13 @@ fn json_response<T: Serialize>(
     body: &T,
     correlation_id: CorrelationId,
 ) -> Response {
-    let encoded = serde_json::to_vec(body).unwrap_or_else(|_| {
-        tracing::error!(
-            correlation_id = %correlation_id.as_text(),
-            "Enrollment response serialization invariant failed"
-        );
-        panic!("Enrollment response serialization invariant failed");
-    });
+    let Ok(encoded) = serde_json::to_vec(body) else {
+        return ApiError::internal_error(
+            "enrollment_response_serialization_failed",
+            correlation_id,
+        )
+        .into_response();
+    };
     (
         status,
         [(header::CONTENT_TYPE, "application/json")],
@@ -269,6 +266,8 @@ mod tests {
             provisioning,
         },
         audit::CorrelationId,
+        db::enrollment::MAX_LIVE_ENROLLMENT_REQUESTS,
+        tls::ClientAddress,
     };
 
     use super::{
@@ -465,7 +464,7 @@ mod tests {
         )
         .await
         .map_err(|_| TestFailure::PendingFlowChanged)?;
-        let rejected = drive(&application, enrollment_request(replacement_body)?).await?;
+        let rejected = drive(&application, enrollment_request(valid_request_body()?)?).await?;
         check_error_response(
             &rejected,
             StatusCode::CONFLICT,
@@ -509,6 +508,63 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn forged_csr_signature_is_invalid_and_zero_write() -> Result<(), TestFailure> {
+        let fixture = TestDatabase::new().await?;
+        provisioning::open_window(&fixture.database, CorrelationId::from_uuid(Uuid::now_v7()))
+            .await
+            .map_err(|_| TestFailure::WindowFailed)?;
+        let before = enrollment_write_counts(&fixture).await?;
+        let application = router_with_enrollment(
+            fixture.database.clone(),
+            unused_vault_master_key(),
+            unused_web_root(),
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+        );
+        let response = drive(
+            &application,
+            enrollment_request(forged_signature_request_body()?)?,
+        )
+        .await?;
+        check_error_response(
+            &response,
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            "ENROLLMENT_REQUEST_INVALID",
+        )?;
+        if enrollment_write_counts(&fixture).await? != before {
+            return Err(TestFailure::ForgedCsrWrote);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn live_request_capacity_is_a_stable_invalid_zero_write() -> Result<(), TestFailure> {
+        let fixture = TestDatabase::new().await?;
+        provisioning::open_window(&fixture.database, CorrelationId::from_uuid(Uuid::now_v7()))
+            .await
+            .map_err(|_| TestFailure::WindowFailed)?;
+        seed_live_request_capacity(&fixture).await?;
+        let before = enrollment_write_counts(&fixture).await?;
+        let application = router_with_enrollment(
+            fixture.database.clone(),
+            unused_vault_master_key(),
+            unused_web_root(),
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+        );
+        let response = drive(&application, enrollment_request(valid_request_body()?)?).await?;
+        check_error_response(
+            &response,
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            "ENROLLMENT_REQUEST_INVALID",
+        )?;
+        if enrollment_write_counts(&fixture).await? != before {
+            return Err(TestFailure::LiveCapacityWrote);
+        }
+        Ok(())
+    }
+
     fn valid_request_body() -> Result<String, TestFailure> {
         let key = KeyPair::generate().map_err(|_| TestFailure::RequestFailed)?;
         let params = CertificateParams::new(vec!["hostile.request.example".to_owned()])
@@ -528,6 +584,29 @@ mod tests {
         .to_string())
     }
 
+    fn forged_signature_request_body() -> Result<String, TestFailure> {
+        let key = KeyPair::generate().map_err(|_| TestFailure::RequestFailed)?;
+        let params = CertificateParams::new(vec!["hostile.request.example".to_owned()])
+            .map_err(|_| TestFailure::RequestFailed)?;
+        let mut csr_der = params
+            .serialize_request(&key)
+            .map_err(|_| TestFailure::RequestFailed)?
+            .der()
+            .to_vec();
+        let signature_byte = csr_der.last_mut().ok_or(TestFailure::RequestFailed)?;
+        *signature_byte ^= 0x01;
+        let spki: [u8; 32] = Sha256::digest(key.subject_public_key_info()).into();
+        Ok(serde_json::json!({
+            "machine_hardware_id": Uuid::new_v5(&Uuid::NAMESPACE_OID, b"http-forged-csr-machine").to_string(),
+            "hardware_identity_quality": "strong",
+            "gateway_csr_der": encode_standard_base64(&csr_der),
+            "gateway_spki_sha256": hex::encode(spki),
+            "client_version": "2.0.0-test",
+            "protocol_version": 1
+        })
+        .to_string())
+    }
+
     fn enrollment_request(body: String) -> Result<Request<Body>, TestFailure> {
         let mut request = Request::builder()
             .method(Method::POST)
@@ -535,7 +614,9 @@ mod tests {
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .map_err(|_| TestFailure::RequestFailed)?;
-        request.extensions_mut().insert(ConnectInfo(REMOTE_ADDRESS));
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(ClientAddress::new(REMOTE_ADDRESS)));
         Ok(request)
     }
 
@@ -597,6 +678,31 @@ mod tests {
             .map_err(|_| TestFailure::EvidenceFailed)?
     }
 
+    async fn seed_live_request_capacity(fixture: &TestDatabase) -> Result<(), TestFailure> {
+        fixture
+            .database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "WITH RECURSIVE counter(value) AS ( \
+                         SELECT 1 UNION ALL SELECT value + 1 FROM counter WHERE value < ? \
+                     ) INSERT INTO enrollment_requests (enrollment_request_id, \
+                         machine_hardware_id, hardware_identity_quality, gateway_csr_der, \
+                         gateway_spki_sha256, client_version, protocol_version, source_ip, \
+                         state, resolution, resolved_device_pk, issuance_audit_event_id, created_at) \
+                     SELECT printf('http-capacity-request-%03d', value), \
+                         printf('http-capacity-hardware-%03d', value), 'strong', x'01', \
+                         randomblob(32), 'capacity-fixture', 1, '192.0.2.201', 'pending', \
+                         NULL, NULL, NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now') FROM counter",
+                )
+                .bind::<BigInt, _>(MAX_LIVE_ENROLLMENT_REQUESTS)
+                .execute(connection)
+                .map(|_| ())
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
     #[derive(QueryableByName)]
     struct CountRow {
         #[diesel(sql_type = BigInt)]
@@ -645,6 +751,10 @@ mod tests {
         PendingFlowChanged,
         #[snafu(display("the issuance-time validity failure wrote state"))]
         ValidityMarginFailureWrote,
+        #[snafu(display("a forged CSR signature wrote Enrollment state"))]
+        ForgedCsrWrote,
+        #[snafu(display("the live Enrollment capacity response wrote state"))]
+        LiveCapacityWrote,
         #[snafu(display("Enrollment database evidence failed"))]
         EvidenceFailed,
     }

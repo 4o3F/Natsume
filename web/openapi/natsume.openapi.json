@@ -2054,7 +2054,7 @@
       },
       "EnrollmentPendingState": {
         "type": "string",
-        "enum": ["pending", "approved"]
+        "enum": ["pending"]
       },
       "EnrollmentRequest": {
         "type": "object",

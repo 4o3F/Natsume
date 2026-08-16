@@ -2,7 +2,11 @@ use std::{
     fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration,
 };
 
-use axum::serve::Listener;
+use axum::{
+    extract::{ConnectInfo, FromRequestParts, connect_info::Connected},
+    http::{StatusCode, request::Parts},
+    serve::{IncomingStream, Listener},
+};
 use rustls::sign::{CertifiedKey, SigningKey};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use snafu::Snafu;
@@ -25,6 +29,45 @@ pub(crate) struct TlsListener {
     tcp_listener: TcpListener,
     tls_acceptor: TlsAcceptor,
     handshakes: JoinSet<Option<(TlsStream<TcpStream>, SocketAddr)>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ClientAddress(SocketAddr);
+
+impl ClientAddress {
+    #[cfg(test)]
+    pub(crate) const fn new(address: SocketAddr) -> Self {
+        Self(address)
+    }
+
+    pub(crate) const fn ip(self) -> std::net::IpAddr {
+        self.0.ip()
+    }
+}
+
+impl Connected<IncomingStream<'_, TlsListener>> for ClientAddress {
+    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+        Self(*stream.remote_addr())
+    }
+}
+
+impl<S> FromRequestParts<S> for ClientAddress
+where
+    S: Send + Sync,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        if let Some(ConnectInfo(address)) = parts.extensions.get::<ConnectInfo<Self>>() {
+            return Ok(*address);
+        }
+        parts
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map_or(Err(StatusCode::INTERNAL_SERVER_ERROR), |address| {
+                Ok(Self(address.0))
+            })
+    }
 }
 
 impl TlsListener {
@@ -177,6 +220,7 @@ pub(crate) mod tests {
     use zeroize::Zeroize;
 
     use crate::{
+        application::enrollment::encode_standard_base64,
         config::{ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME},
         http,
     };
@@ -210,6 +254,10 @@ pub(crate) mod tests {
                 .map_err(|_| TestSupportError)?;
             install_der(
                 &directory.path.join(ORIGIN_CA_CERTIFICATE_FILENAME),
+                ca_certificate.der().as_ref(),
+            )?;
+            install_certificate_pem(
+                &directory.path.join("local-origin-ca.crt"),
                 ca_certificate.der().as_ref(),
             )?;
             let mut origin_private_key_der = ca_key.serialize_der();
@@ -306,6 +354,17 @@ pub(crate) mod tests {
             .open(path)
             .map_err(|_| TestSupportError)?;
         file.write_all(contents).map_err(|_| TestSupportError)
+    }
+
+    fn install_certificate_pem(path: &Path, der: &[u8]) -> Result<(), TestSupportError> {
+        let base64 = encode_standard_base64(der);
+        let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
+        for line in base64.as_bytes().chunks(64) {
+            pem.push_str(std::str::from_utf8(line).map_err(|_| TestSupportError)?);
+            pem.push('\n');
+        }
+        pem.push_str("-----END CERTIFICATE-----\n");
+        install_der(path, pem.as_bytes())
     }
 
     struct TestDirectory {
