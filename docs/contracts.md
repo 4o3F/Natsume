@@ -285,7 +285,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
 | `create_enrollment_request` | `resolution`、`state`、`gateway_spki_sha256` |
-| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`、`previous_device_state`；首次创建为 `null`，替换为 `enrolled` / `revoked` / `disabled`，serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token |
+| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`、`previous_device_state`；首次创建为 `null`，替换为 `enrolled` / `revoked` / `disabled`，serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token。**2026-08-16 修订（Phase 4 WP3）**：新增 `evicted_live_connection`（bool）——replacement 签发时该 Device 存在 live WSS 连接即为 `true`（旧凭据连接被驱逐的 anomaly evidence，Phase 3 移交项） |
 | `approve_enrollment_request` | 无（`{}`） |
 | `reject_enrollment_request` | 无（`{}`） |
 | `expire_enrollment_requests` | `expired_count` |
@@ -342,6 +342,8 @@ connection count 是 availability capacity，不是可脱离部署证据硬编�
 password-verification 并发是独立资源，不属于上述 capacity：Device Enrollment 与 Device WSS 都不执行 password verification（见 [架构 §5](architecture.md)），故 device fleet 规模不改变其上界；它由已冻结常量完全确定（§3.6.3 的 `m=19456 KiB` 与本节记述的约 3 个 operator browser）。因此它与 session body limit 同级，是硬编码 security limit：Rust 常量 `PASSWORD_VERIFICATION_CONCURRENCY = 4`，以进程内 semaphore 施加于 Argon2 verification，不进入 `config.toml`。
 
 因此 Gate 4 不能标记为完整 `PASS`：session body limit 与 password-verification 并发已关闭，header/slow-header 与 connection capacity 仍开放。
+
+**2026-08-16 修订（Phase 4 WP2 定案）**：上段 gap 以选项一关闭——Server 以 `hyper::server::conn::http1::Builder` 自建 accept loop（保留既有 TLS listener 与 graceful shutdown 语义，`with_upgrades` 为 Device WSS 预留同一 loop）。冻结的硬编码常量：`HTTP_MAX_HEADER_COUNT = 64`、`HTTP_HEADER_READ_TIMEOUT_SECONDS = 10`（slow-header 防护）、`HTTP_MAX_BUF_SIZE_BYTES = 65_536`（request-line/header 缓冲上限）、`MAX_CONCURRENT_CONNECTIONS = 2_048`（accept 级 semaphore，permit 先于 accept——满载时停止 accept 而非 accept 后关闭）。四者按本节既有纪律不进 `config.toml`。行为边界：超 header 数与超 header 缓冲均由 hyper 返回 `431` 后关闭连接；header 读超时为 transport 级连接关闭——三者与 oversized WSS frame 同类，不进稳定 ErrorCode 表。派生语义：hyper 对每个 message head 武装该读超时，因此它同时构成约 10 秒的 keep-alive idle 超时（客户端连接池自愈；WSS upgrade 完成后脱离 HTTP/1 连接语义，不受影响）。排空无上界（与先前 `axum::serve` 语义对等），进程级兜底为 systemd `TimeoutStopSec`。容量值由 500 台 fleet + 重连风暴 + 约 3 operator browser 推得（约 4× 余量）；缩比验证归 G4 容量探针，完整 500 台验证仍在 G7。至此本节五项 ingress 决策（session body limit、password-verification 并发、header count/size、slow-header timeout、connection capacity）全部关闭，上段「Gate 4 不能标记为完整 PASS」的旧结论随本修订作废。
 
 与 §12 oversized WSS frame 的规则相同，oversized session body 是 transport ingress resource-limit failure：body-limit layer 在 HTTP adapter 前直接返回 `413`，不进入 stable ErrorCode mapping table。
 

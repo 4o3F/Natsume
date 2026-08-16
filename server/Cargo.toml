@@ -18,6 +18,8 @@ diesel.workspace = true
 diesel_migrations.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
 natsume-error-code = { path = "../crates/error-code" }
 percent-encoding.workspace = true
 rcgen = { workspace = true, features = ["x509-parser"] }
@@ -35,6 +37,7 @@ time.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
 toml.workspace = true
+tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -46,7 +49,6 @@ zeroize.workspace = true
 [dev-dependencies]
 regex.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
-tower.workspace = true
 
 [lints]
 workspace = true

@@ -3376,6 +3376,8 @@ dependencies = [
  "diesel_migrations",
  "getrandom 0.4.3",
  "hex",
+ "hyper",
+ "hyper-util",
  "natsume-error-code",
  "percent-encoding",
  "rcgen",

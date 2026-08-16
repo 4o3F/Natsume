@@ -11,7 +11,7 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 | WP | 内容 | 状态 |
 |---|---|---|
 | WP1 | Command 持久化与 PUT HTTP 面：RFC 8785 JCS（`serde_json_canonicalizer`）+ fingerprint v1 实现与 golden 向量、per-kind payload schema v1 冻结、`db::command` + `application::command`、`commands.state` CHECK 收口 + 调度索引（直接改初始 migration）、`PUT /api/v2/commands/{command_id}` handler（`201/200/400/409`、同事务创建审计、conflict 审计）、OpenAPI 挂载与 descriptor/TS golden 再生成 | `DONE`（见下方 WP1 落地记录） |
-| WP2 | Ingress hardening 定案落地：以 `hyper::server::conn::http1::Builder` 自建 accept loop（`max_headers`、header read timeout、`with_upgrades`、graceful shutdown、保留 `ClientAddress` connect info），连接容量常量与 accept 层 semaphore，431/slow-header 负向测试，[契约](../contracts.md) §3.6.5 以 dated revision 收口该 gap | `OPEN` |
+| WP2 | Ingress hardening 定案落地：以 `hyper::server::conn::http1::Builder` 自建 accept loop（`max_headers`、header read timeout、`with_upgrades`、graceful shutdown、保留 `ClientAddress` connect info），连接容量常量与 accept 层 semaphore，431/slow-header 负向测试，[契约](../contracts.md) §3.6.5 以 dated revision 收口该 gap | `DONE`（见下方 WP2 落地记录） |
 | WP3 | WSS 服务端：upgrade 路由 `/api/v2/device/control`、subprotocol `natsume.v1` 协商失败拒绝、Bearer Device Token 常数时间认证（401-before-decode）、失败认证 IP 限流、Hello 交换（connection_epoch、协商 limits）、连接注册表（同 device 新连接置换旧连接、token 吊销即断、credential replacement 旧连接 anomaly audit——吸收 Phase 3 WP2b 挂账）、oversized frame/未知版本/非法 oneof 关闭连接 | `OPEN` |
 | WP4 | Dispatcher 与 CommandStatus 回写：frozen payload → wire Command 确定性渲染（byte-identical golden）、创建与重连双触发投递、状态机单调回写（terminal 不可被 transport error 覆写、重复 terminal 合并安全）、same-ID replay 全链 | `OPEN` |
 | WP5 | Device 客户端运行时：WSS client（tokio-tungstenite + rustls，信任根同 enrollment）、Enrolled 驻留点接入连接循环与重连收敛、durable journal（文件式、同 ID frame bytes 比对、不同即 `COMMAND_PAYLOAD_CONFLICT`）、receipt-after-durable、Observed snapshot（变化触发 + 低频兜底、单调 sequence 原子持久化） | `OPEN` |
@@ -35,6 +35,13 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 - 三条 fingerprint golden 向量经带外（Python 独立实现）逐字节复算吻合；opus 对抗审查 2 阻断均为契约登记滞后（本次随包补齐），代码零阻断。
 - **`deadline_at` 由 NOT NULL 放宽为可空**：Phase 0 的 DDL（NOT NULL）与 Phase 0 冻结的 PUT 面（无 deadline 字段）互相矛盾，Phase 4 无 deadline 写者，向可空解决并由插入路径钉死 NULL。
 - 审查非阻断挂账：(a) conflict 审计行顶层列回显请求的 `group_correlation_id`（契约允许——分组即其用途；禁令作用域为 `redacted_detail_json`），待 owner 如认为不妥再收紧；(b) golden 向量 (c) 的非 ASCII JCS 分支在生产不可达（payload 全字段 printable-ASCII 校验），属理论加固；(c) 嵌套层重复键无独立用例（结构上由每层 serde struct 的 `duplicate_field` 保证，7 kind 全部字段为 typed struct、无 `Value` 子树）；(d) `deadline_at` 可空性仅由插入路径隐式钉住（schema 契约测试不 pin notnull 维度，全表一致）；(e) 未认证 + 超大 body 返 `401` 而非 `413`（与 import commit 路由层序逐字一致，认证短路先于 body 读取，资源上更优）；(f) fingerprint v2 引入时须按「旧版本永久有效」重审 replay 判定中的版本比较。
+
+## WP2 落地记录（2026-08-16）
+
+- 交付：`server/src/serve.rs`（四常量 + permit-先于-accept semaphore + 饱和 `warn!` + hyper http1 Builder limits + `with_upgrades` + 排空前释放 listener + graceful 排空）；`commands::run_until` 换用该 loop；三条真 TLS 负向/回归测试（431 超 header 且新连接恢复、slow-header 关闭上界钉至 15s、graceful shutdown 排空在飞请求）。回归网 = `client_enrollment`（7 条真 TLS 场景，经 `commands::run_until` 驱动新 loop）+ `commands` 套件；`tls.rs` 单测 harness 仍走 `axum::serve`，不覆盖新 loop（登记为已知界限）。
+- hyper-util 0.1.20 未为 http1 `UpgradeableConnection` 实现 `GracefulConnection`，以每任务 `GracefulShutdown::watcher()` guard + watch 通道显式触发 hyper 排空替代，语义等价。
+- 契约 [§3.6.5](../contracts.md) 已以 dated revision 收口五项 ingress 决策（含超缓冲 431、10s 派生 keep-alive idle、排空无界依赖 systemd 三条行为边界）。
+- 审查非阻断挂账：(a) `source_ip` 落库值链路无端到端回归（仅单测 harness 注入）；(b) graceful-drain 测试以 250ms/100ms sleep 硬等在飞状态，负载下有 flake 风险，事件化改造登记待办；(c) 容量 semaphore 无 e2e（2048 连接不宜在 CI 制造），行为由代码审查 + G4 缩比探针（WP6）背书。
 
 ## 已登记待办
 

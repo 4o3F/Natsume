@@ -6,6 +6,9 @@ use std::{
 };
 use tracing::instrument::WithSubscriber as _;
 
+#[path = "serve.rs"]
+pub(crate) mod serve;
+
 pub use crate::error::CommandError;
 
 use crate::{
@@ -17,7 +20,7 @@ use crate::{
     config::{GatewaySiteConfig, ServerConfig},
     db::{self, Database, DatabaseConfig},
     http, logging,
-    tls::{ClientAddress, TlsListener},
+    tls::TlsListener,
     vault::{ensure_master_key, require_master_key},
 };
 
@@ -124,13 +127,9 @@ where
         tracing::info!("graceful shutdown initiated");
     }
     .with_subscriber(dispatcher);
-    let result = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<ClientAddress>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
-    .map_err(|_| CommandError::Http);
+    let result = serve::serve_until(listener, router, shutdown)
+        .await
+        .map_err(|_| CommandError::Http);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }
