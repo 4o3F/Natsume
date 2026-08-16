@@ -124,7 +124,12 @@ mod candidate_tests {
         if evidence.preview_token_hash.as_slice() != expected_hash.as_slice() {
             return Err(TestFailure::PreviewTokenHashChanged);
         }
-        assert_database_files_exclude(&fixture.database_path, created.preview_token().as_bytes())?;
+        assert_database_files_exclude(
+            &fixture.database,
+            &fixture.database_path,
+            created.preview_token().as_bytes(),
+        )
+        .await?;
 
         let opened = open(
             &fixture.master_key_path,
@@ -137,7 +142,8 @@ mod candidate_tests {
         {
             return Err(TestFailure::PayloadEvidenceChanged);
         }
-        assert_database_files_exclude(&fixture.database_path, expected_staging)?;
+        assert_database_files_exclude(&fixture.database, &fixture.database_path, expected_staging)
+            .await?;
 
         let audit = audit_for_resource(&fixture.database, &evidence.candidate_id).await?;
         if audit.actor != "operator:self"
@@ -347,6 +353,7 @@ mod candidate_tests {
         .await
         .map_err(|_| TestFailure::CommitFailed)?;
         let state = committed_state(&fixture.database).await?;
+        let persistence = persistence_snapshot(&fixture.database).await?;
         let old_b = account_for_username(&state.accounts, "old-b")?;
         let same_a = account_for_username(&state.accounts, "same-a")?;
         let new_f = account_for_username(&state.accounts, "new-f")?;
@@ -369,6 +376,8 @@ mod candidate_tests {
             || state.accounts.len() != 3
             || !account_nonces_are_pairwise_distinct(&state.accounts)
             || state.candidate_count != 0
+            || persistence.command_count != 0
+            || persistence.observed_device_state_count != 0
             || vault_record_count(&fixture.database, &candidate.payload_vault_record_id).await? != 0
         {
             return Err(TestFailure::MaterialCommitChanged);
@@ -409,6 +418,7 @@ mod candidate_tests {
 
         assert_material_commit_audit(&fixture.database, &candidate.candidate_id).await?;
         assert_database_files_exclude_all(
+            &fixture.database,
             &fixture.database_path,
             &[
                 b"material-password-old-b",
@@ -416,7 +426,8 @@ mod candidate_tests {
                 b"material-password-new-f",
                 token_bytes.as_slice(),
             ],
-        )?;
+        )
+        .await?;
         Ok(())
     }
 
@@ -444,12 +455,15 @@ mod candidate_tests {
         .await
         .map_err(|_| TestFailure::CommitFailed)?;
         let state = committed_state(&fixture.database).await?;
+        let persistence = persistence_snapshot(&fixture.database).await?;
         if committed != super::CommittedImportFacts::new(7, 9)
             || state.revisions != RevisionEvidence::new(7, 9)
             || account_for_username(&state.accounts, "team-a")?.credential_revision != 4
             || account_for_username(&state.accounts, "team-b")?.credential_revision != 5
             || state.bindings != vec![BindingEvidence::new("A-01", DEVICE_A, 9)]
             || state.candidate_count != 0
+            || persistence.command_count != 0
+            || persistence.observed_device_state_count != 0
         {
             return Err(TestFailure::NoOpCommitChanged);
         }
@@ -493,6 +507,7 @@ mod candidate_tests {
         .await
         .map_err(|_| TestFailure::CommitFailed)?;
         let state = committed_state(&fixture.database).await?;
+        let persistence = persistence_snapshot(&fixture.database).await?;
         if committed != super::CommittedImportFacts::new(8, 9)
             || state.revisions != RevisionEvidence::new(8, 9)
             || state.seats
@@ -512,6 +527,8 @@ mod candidate_tests {
                 ]
             || state.bindings != vec![BindingEvidence::new("A-01", DEVICE_A, 9)]
             || state.candidate_count != 0
+            || persistence.command_count != 0
+            || persistence.observed_device_state_count != 0
         {
             return Err(TestFailure::MappingOnlyCommitChanged);
         }
@@ -1197,6 +1214,9 @@ mod candidate_tests {
                      (SELECT COUNT(*) FROM pending_import_candidate) AS candidate_count, \
                      (SELECT COUNT(*) FROM server_vault_records) AS vault_count, \
                      (SELECT COUNT(*) FROM audit_events) AS audit_count, \
+                     (SELECT COUNT(*) FROM commands) AS command_count, \
+                     (SELECT COUNT(*) FROM observed_device_states) \
+                       AS observed_device_state_count, \
                      (SELECT candidate_id FROM pending_import_candidate WHERE singleton = 1) \
                        AS candidate_id",
                 )
@@ -1213,7 +1233,36 @@ mod candidate_tests {
             .map_err(|_| TestFailure::EvidenceFailed)
     }
 
-    fn assert_database_files_exclude(path: &Path, canary: &[u8]) -> Result<(), TestFailure> {
+    async fn assert_database_files_exclude(
+        database: &Database,
+        path: &Path,
+        canary: &[u8],
+    ) -> Result<(), TestFailure> {
+        checkpoint_database(database).await?;
+        assert_database_file_set_excludes(path, canary)
+    }
+
+    async fn assert_database_files_exclude_all(
+        database: &Database,
+        path: &Path,
+        canaries: &[&[u8]],
+    ) -> Result<(), TestFailure> {
+        checkpoint_database(database).await?;
+        for canary in canaries {
+            assert_database_file_set_excludes(path, canary)?;
+        }
+        Ok(())
+    }
+
+    async fn checkpoint_database(database: &Database) -> Result<(), TestFailure> {
+        database
+            .interact(|connection| connection.batch_execute("PRAGMA wal_checkpoint(TRUNCATE)"))
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+            .map_err(|_| TestFailure::EvidenceFailed)
+    }
+
+    fn assert_database_file_set_excludes(path: &Path, canary: &[u8]) -> Result<(), TestFailure> {
         let database_bytes = fs::read(path).map_err(|_| TestFailure::EvidenceFailed)?;
         if contains_bytes(&database_bytes, canary) {
             return Err(TestFailure::DatabaseLeakedSecret);
@@ -1225,15 +1274,12 @@ mod candidate_tests {
                 return Err(TestFailure::DatabaseLeakedSecret);
             }
         }
-        Ok(())
-    }
-
-    fn assert_database_files_exclude_all(
-        path: &Path,
-        canaries: &[&[u8]],
-    ) -> Result<(), TestFailure> {
-        for canary in canaries {
-            assert_database_files_exclude(path, canary)?;
+        let shm_path = PathBuf::from(format!("{}-shm", path.display()));
+        if shm_path.exists() {
+            let shm_bytes = fs::read(shm_path).map_err(|_| TestFailure::EvidenceFailed)?;
+            if contains_bytes(&shm_bytes, canary) {
+                return Err(TestFailure::DatabaseLeakedSecret);
+            }
         }
         Ok(())
     }
@@ -1479,6 +1525,10 @@ mod candidate_tests {
         vault_count: i64,
         #[diesel(sql_type = BigInt)]
         audit_count: i64,
+        #[diesel(sql_type = BigInt)]
+        command_count: i64,
+        #[diesel(sql_type = BigInt)]
+        observed_device_state_count: i64,
         #[diesel(sql_type = Nullable<Text>)]
         candidate_id: Option<String>,
     }

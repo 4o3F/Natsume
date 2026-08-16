@@ -377,6 +377,12 @@ async fn full_rollback_snapshot(database: &Database) -> Result<FullRollbackSnaps
                 .order(audit_events::audit_event_id)
                 .select((audit_events::audit_event_id, audit_events::action_kind))
                 .load::<(String, String)>(connection)?;
+            let runtime_counts = diesel::sql_query(
+                "SELECT \
+                 (SELECT COUNT(*) FROM commands) AS command_count, \
+                 (SELECT COUNT(*) FROM observed_device_states) AS observed_device_state_count",
+            )
+            .get_result::<RuntimeTableCounts>(connection)?;
             Ok::<FullRollbackSnapshot, diesel::result::Error>(FullRollbackSnapshot {
                 revisions,
                 seat_rows,
@@ -386,6 +392,8 @@ async fn full_rollback_snapshot(database: &Database) -> Result<FullRollbackSnaps
                 vault_rows,
                 candidate_rows,
                 audit_rows,
+                command_count: runtime_counts.command_count,
+                observed_device_state_count: runtime_counts.observed_device_state_count,
             })
         })
         .await
@@ -519,6 +527,14 @@ struct RollbackSnapshot {
 
 type VaultSnapshotRow = (String, String, String, Vec<u8>, Vec<u8>);
 
+#[derive(QueryableByName)]
+struct RuntimeTableCounts {
+    #[diesel(sql_type = BigInt)]
+    command_count: i64,
+    #[diesel(sql_type = BigInt)]
+    observed_device_state_count: i64,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct FullRollbackSnapshot {
     revisions: Vec<(i64, i64)>,
@@ -529,6 +545,8 @@ struct FullRollbackSnapshot {
     vault_rows: Vec<VaultSnapshotRow>,
     candidate_rows: Vec<(String, String, Vec<u8>)>,
     audit_rows: Vec<(String, String)>,
+    command_count: i64,
+    observed_device_state_count: i64,
 }
 
 #[derive(Debug, Snafu)]

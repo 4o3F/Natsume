@@ -66,6 +66,17 @@ assert_tmpfiles_path() {
     fail "tmpfiles path ${path} metadata is ${actual}, expected ${expected}"
 }
 
+assert_preserved_file() {
+  local path=$1 expected_hash=$2 expected_metadata=$3 actual_hash actual_metadata
+  [[ -f ${path} ]] || fail "preserved file is missing: ${path}"
+  actual_hash=$(sha256sum "${path}" | cut -d' ' -f1)
+  [[ ${actual_hash} == "${expected_hash}" ]] ||
+    fail "reinstall changed preserved file content: ${path}"
+  actual_metadata=$(stat --format='%U:%G %a' "${path}")
+  [[ ${actual_metadata} == "${expected_metadata}" ]] ||
+    fail "preserved file ${path} metadata is ${actual_metadata}, expected ${expected_metadata}"
+}
+
 # Both packages register /etc/natsume/site.toml and the two trust roots as
 # conffiles, so the server cycle must fully purge before the client installs.
 DEBIAN_FRONTEND=noninteractive apt-get install --yes "${server_deb}"
@@ -134,12 +145,38 @@ systemd-analyze --recursive-errors=no verify \
   /usr/lib/systemd/system/natsume-caddy.service \
   /usr/lib/systemd/system/natsume-caddy.path
 
+identity_file=/var/lib/natsume/identity/identity.json
+gateway_key_file=/var/lib/natsume/keys/gateway-key.pk8
+device_token_file=/var/lib/natsume/keys/device-token
+for path in "${identity_file}" "${gateway_key_file}" "${device_token_file}"; do
+  [[ ! -e ${path} ]] || fail "client lifecycle seed path already exists: ${path}"
+done
+printf '%s' '{"identity":"hosted-lifecycle-fixed"}' >"${identity_file}"
+printf '%s' 'hosted-lifecycle-fixed-gateway-key' >"${gateway_key_file}"
+printf '%s' 'hosted-lifecycle-fixed-device-token' >"${device_token_file}"
+chown natsume:natsume "${identity_file}" "${device_token_file}"
+chown natsume:natsume-gateway "${gateway_key_file}"
+chmod 0600 "${identity_file}" "${device_token_file}"
+chmod 0640 "${gateway_key_file}"
+identity_hash_before=$(sha256sum "${identity_file}" | cut -d' ' -f1)
+gateway_key_hash_before=$(sha256sum "${gateway_key_file}" | cut -d' ' -f1)
+device_token_hash_before=$(sha256sum "${device_token_file}" | cut -d' ' -f1)
+identity_metadata_before=$(stat --format='%U:%G %a' "${identity_file}")
+gateway_key_metadata_before=$(stat --format='%U:%G %a' "${gateway_key_file}")
+device_token_metadata_before=$(stat --format='%U:%G %a' "${device_token_file}")
+
 before_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${client_deb}"
 after_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
 [[ ${before_reinstall} == "${after_reinstall}" ]] ||
   fail 'reinstall changed the existing endpoint config'
 assert_config_metadata
+assert_preserved_file "${identity_file}" "${identity_hash_before}" "${identity_metadata_before}"
+assert_preserved_file \
+  "${gateway_key_file}" "${gateway_key_hash_before}" "${gateway_key_metadata_before}"
+assert_preserved_file \
+  "${device_token_file}" "${device_token_hash_before}" "${device_token_metadata_before}"
+rm -f -- "${identity_file}" "${gateway_key_file}" "${device_token_file}"
 
 printf 'natsume-client natsume-client/server-ip string %s\n' "${reconfigure_ip}" |
   debconf-set-selections

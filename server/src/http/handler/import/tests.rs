@@ -9,15 +9,18 @@ use diesel::{QueryableByName, RunQueryDsl, sql_types::Text};
 use serde::Deserialize;
 use serde_json::Value;
 use snafu::Snafu;
+use tracing::instrument::WithSubscriber as _;
 use uuid::Uuid;
 
 use crate::{
     application::operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
     audit::CorrelationId,
+    config::LogLevel,
     db::{
         Database,
         tests::{test_data_version, test_observer},
     },
+    logging::tests::{CapturedLogs, SubscriberTestGuard},
     vault::ensure_master_key,
 };
 
@@ -394,6 +397,7 @@ async fn upload_commit_stale_repreview_commit_and_discard_flow_is_exact() -> Res
     )
     .await?;
     assert_commit_success(&committed, 2, 0)?;
+    assert_zero_device_io(&fixture.database.database).await?;
 
     let discard_preview = upload(&application, &admin_cookie, &csv).await?;
     let discard_preview = assert_preview(&discard_preview)?;
@@ -421,6 +425,63 @@ async fn upload_commit_stale_repreview_commit_and_discard_flow_is_exact() -> Res
         || audit_json.contains(&first_preview.preview_token)
         || audit_json.contains(&fresh_preview.preview_token)
     {
+        return Err(TestFailure::SecretEscaped);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn upload_preview_commit_logs_exclude_csv_plaintext_passwords() -> Result<(), TestFailure> {
+    const LOG_PASSWORD_A: &str = "g2-log-secret-alpha-7a8e1f42-canary";
+    const LOG_PASSWORD_B: &str = "g2-log-secret-beta-93c4d605-canary";
+
+    let _subscriber_guard = SubscriberTestGuard::acquire();
+    let fixture = ImportHttpFixture::new().await?;
+    fixture
+        .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
+        .await?;
+    let admin_cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
+    let application = fixture.router();
+    let csv = format!(
+        "seat,account,password\nA-01,team-a,{LOG_PASSWORD_A}\nB-02,team-b,{LOG_PASSWORD_B}"
+    );
+    let captured = CapturedLogs::default();
+    let subscriber = captured.subscriber(LogLevel::Trace);
+
+    async {
+        let created = upload(&application, &admin_cookie, &csv).await?;
+        let preview = assert_preview(&created)?;
+        let pending = read_pending(&application, &admin_cookie).await?;
+        let pending = assert_pending_summary(&pending)?;
+        if pending.candidate_id != preview.candidate_id {
+            return Err(TestFailure::PendingResponseChanged);
+        }
+        let committed = commit(
+            &application,
+            &admin_cookie,
+            &preview.candidate_id,
+            &preview.preview_token,
+        )
+        .await?;
+        assert_commit_success(&committed, 1, 0)?;
+        assert_zero_device_io(&fixture.database.database).await
+    }
+    .with_subscriber(subscriber)
+    .await?;
+
+    let output = captured
+        .text()
+        .map_err(|()| TestFailure::LogCaptureFailed)?;
+    if output.matches("HTTP request completed").count() != 3 {
+        return Err(TestFailure::ImportFlowLogChanged);
+    }
+    if output.lines().any(|line| {
+        [LOG_PASSWORD_A, LOG_PASSWORD_B].iter().any(|password| {
+            line.as_bytes()
+                .windows(password.len())
+                .any(|window| window == password.as_bytes())
+        })
+    }) {
         return Err(TestFailure::SecretEscaped);
     }
     Ok(())
@@ -999,13 +1060,23 @@ async fn import_snapshot(database: &Database) -> Result<ImportSnapshot, TestFail
                  (SELECT COUNT(*) FROM pending_import_candidate) AS candidates, \
                  (SELECT COUNT(*) FROM server_vault_records) AS vault, \
                  (SELECT COUNT(*) FROM audit_events \
-                   WHERE action_kind LIKE '%import%') AS audits",
+                   WHERE action_kind LIKE '%import%') AS audits, \
+                 (SELECT COUNT(*) FROM commands) AS commands, \
+                 (SELECT COUNT(*) FROM observed_device_states) AS observed_device_states",
             )
             .get_result::<ImportSnapshot>(connection)
         })
         .await
         .map_err(|_| TestFailure::DatabaseEvidenceFailed)?
         .map_err(|_| TestFailure::DatabaseEvidenceFailed)
+}
+
+async fn assert_zero_device_io(database: &Database) -> Result<(), TestFailure> {
+    let snapshot = import_snapshot(database).await?;
+    if snapshot.commands != 0 || snapshot.observed_device_states != 0 {
+        return Err(TestFailure::ImportTouchedDeviceRuntime);
+    }
+    Ok(())
 }
 
 async fn import_audit_json(database: &Database) -> Result<String, TestFailure> {
@@ -1075,6 +1146,10 @@ struct ImportSnapshot {
     vault: i64,
     #[diesel(sql_type = diesel::sql_types::BigInt)]
     audits: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    commands: i64,
+    #[diesel(sql_type = diesel::sql_types::BigInt)]
+    observed_device_states: i64,
 }
 
 #[derive(QueryableByName)]
@@ -1100,6 +1175,8 @@ enum TestFailure {
     PendingResponseChanged,
     #[snafu(display("the import commit response changed"))]
     CommitResponseChanged,
+    #[snafu(display("the import touched command or observed-device state"))]
+    ImportTouchedDeviceRuntime,
     #[snafu(display("the import discard response changed"))]
     DiscardResponseChanged,
     #[snafu(display("the import body limit changed"))]
@@ -1116,4 +1193,8 @@ enum TestFailure {
     RejectedBoundaryWroteData,
     #[snafu(display("an import secret escaped the HTTP or audit boundary"))]
     SecretEscaped,
+    #[snafu(display("structured import logs could not be captured"))]
+    LogCaptureFailed,
+    #[snafu(display("the structured import flow log changed"))]
+    ImportFlowLogChanged,
 }

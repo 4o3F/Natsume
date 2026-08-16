@@ -67,6 +67,11 @@ jobs:
       - name: Documentation tests
         run: cargo test --workspace --all-features --locked --doc
 
+      - name: Default-features daemon build
+        run: |
+          # `--all-features` enables `fixture`, so this is the only lane proving the daemon builds without its integration-test fixture surface.
+          cargo build -p natsume-device-daemon --locked
+
       - name: Dependency policy and advisories
         run: cargo deny check
 
@@ -251,8 +256,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo test -p natsume-integration-tests --locked \
-            --test protocol_contract \
-            --test schema_contract
+            --test protocol_contract
+          cargo test -p natsume-server --locked db::provisioning::schema_contract_tests
 
   packages:
     name: packages
