@@ -1,6 +1,6 @@
 use std::{env, path::PathBuf};
 
-use natsume_server::{app, config::ServerConfig};
+use natsume_server::{commands, config::ServerConfig};
 use snafu::Snafu;
 
 const CONFIG_PATH_ENVIRONMENT: &str = "NATSUME_TEST_SERVER_CONFIG";
@@ -24,5 +24,7 @@ async fn main() -> Result<(), Error> {
         .map(PathBuf::from)
         .ok_or(Error::Arguments)?;
     let config = ServerConfig::load_from(&config_path).map_err(|_| Error::Configuration)?;
-    app::bootstrap(config).await.map_err(|_| Error::Bootstrap)
+    commands::bootstrap(config)
+        .await
+        .map_err(|_| Error::Bootstrap)
 }

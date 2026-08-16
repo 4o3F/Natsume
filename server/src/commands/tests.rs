@@ -26,7 +26,7 @@ use crate::{
         Database, DatabaseConfig, operator as db_operator,
         tests::{test_data_version, test_observer},
     },
-    error::AppError,
+    error::CommandError,
     logging::tests::{CapturedLogs, SubscriberTestGuard},
     tls::tests::TestIdentity,
     vault::ensure_master_key,
@@ -93,7 +93,7 @@ async fn bootstrap_creates_artifacts_and_repeat_is_zero_write() -> Result<(), Te
             credentials("second-admin-canary", "second-password-canary")
         })
         .await,
-        AppError::Bootstrap,
+        CommandError::Bootstrap,
     )?;
     let content_after =
         Zeroizing::new(fs::read(&master_key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
@@ -178,7 +178,7 @@ async fn repeated_bootstrap_does_not_recover_an_open_provisioning_window() -> Re
             credentials("second-admin", "second-password")
         })
         .await,
-        AppError::Bootstrap,
+        CommandError::Bootstrap,
     )?;
 
     let counts_after = bootstrap_business_counts(&mut observer)?;
@@ -416,7 +416,7 @@ async fn password_reset_unknown_login_is_a_zero_write_rejection() -> Result<(), 
     .await
     .err()
     .ok_or(TestFailure::ExpectedPasswordResetFailure)?;
-    if error != AppError::PasswordReset {
+    if error != CommandError::PasswordReset {
         return Err(TestFailure::UnexpectedPasswordResetFailure);
     }
     for encoded in [error.to_string(), format!("{error:?}")] {
@@ -461,7 +461,7 @@ async fn password_reset_missing_database_creates_no_sqlite_artifacts() -> Result
             reset_credentials("reset-admin", "new-password", "new-password")
         })
         .await,
-        AppError::Database,
+        CommandError::Database,
     )?;
     if credentials_read.get() {
         return Err(TestFailure::CredentialsReadBeforeDatabase);
@@ -510,7 +510,7 @@ async fn password_reset_confirmation_mismatch_precedes_every_business_write()
             reset_credentials("mismatch-reset-admin", "new-password", "different-password")
         })
         .await,
-        AppError::PasswordReset,
+        CommandError::PasswordReset,
     )?;
 
     let version_after =
@@ -651,7 +651,7 @@ async fn serve_missing_database_creates_no_sqlite_artifacts() -> Result<(), Test
     let config =
         ServerConfig::load_from(&config_path).map_err(|_| TestFailure::FixtureCreationFailed)?;
 
-    assert_startup_error(run_until(config, ready(())).await, AppError::Database)?;
+    assert_startup_error(run_until(config, ready(())).await, CommandError::Database)?;
     for path in [
         database_path.clone(),
         sqlite_sidecar(&database_path, "wal"),
@@ -684,7 +684,7 @@ async fn serve_missing_vault_key_creates_no_key_artifacts() -> Result<(), TestFa
     let config =
         ServerConfig::load_from(&config_path).map_err(|_| TestFailure::FixtureCreationFailed)?;
 
-    assert_startup_error(run_until(config, ready(())).await, AppError::Vault)?;
+    assert_startup_error(run_until(config, ready(())).await, CommandError::Vault)?;
     if master_key_path.exists() || master_key_path.with_extension("tmp").exists() {
         return Err(TestFailure::UnexpectedKeyArtifact);
     }
@@ -728,7 +728,7 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
     assert_startup_error(
         run_until(invalid_site_config, ready(())).await,
-        AppError::SiteConfiguration,
+        CommandError::SiteConfiguration,
     )?;
 
     let invalid_database_identity =
@@ -753,7 +753,7 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
     assert_startup_error(
         run_until(invalid_database_config, ready(())).await,
-        AppError::Database,
+        CommandError::Database,
     )?;
     drop(invalid_database_guard);
 
@@ -782,7 +782,7 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
     assert_startup_error(
         run_until(invalid_vault_config, ready(())).await,
-        AppError::Vault,
+        CommandError::Vault,
     )?;
     drop(invalid_vault_guard);
 
@@ -812,7 +812,7 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
     assert_startup_error(
         run_until(missing_origin_config, ready(())).await,
-        AppError::OriginCa,
+        CommandError::OriginCa,
     )?;
 
     let mismatched_origin_identity =
@@ -848,7 +848,7 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
     assert_startup_error(
         run_until(mismatched_origin_config, ready(())).await,
-        AppError::OriginCaTrustRootMismatch,
+        CommandError::OriginCaTrustRootMismatch,
     )?;
 
     let invalid_tls_identity =
@@ -876,7 +876,7 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
         .map_err(|_| TestFailure::FixtureCreationFailed)?;
     assert_startup_error(
         run_until(invalid_tls_config, ready(())).await,
-        AppError::Tls,
+        CommandError::Tls,
     )
 }
 
@@ -1123,26 +1123,26 @@ async fn bootstrap_and_read_salt(
         .ok_or(TestFailure::InvalidPasswordHash)
 }
 
-fn credentials(login_name: &str, password: &str) -> Result<OperatorCredentials, AppError> {
+fn credentials(login_name: &str, password: &str) -> Result<OperatorCredentials, CommandError> {
     OperatorCredentials::new(
         login_name.to_owned(),
         password.to_owned(),
         password.to_owned(),
     )
-    .map_err(|_| AppError::Bootstrap)
+    .map_err(|_| CommandError::Bootstrap)
 }
 
 fn reset_credentials(
     login_name: &str,
     password: &str,
     password_confirmation: &str,
-) -> Result<OperatorCredentials, AppError> {
+) -> Result<OperatorCredentials, CommandError> {
     OperatorCredentials::new(
         login_name.to_owned(),
         password.to_owned(),
         password_confirmation.to_owned(),
     )
-    .map_err(|_| AppError::PasswordReset)
+    .map_err(|_| CommandError::PasswordReset)
 }
 
 async fn bootstrap_password_reset_fixture(
@@ -1312,8 +1312,8 @@ fn create_private_directory(path: &Path) -> Result<(), TestFailure> {
 }
 
 fn assert_startup_error(
-    result: Result<(), AppError>,
-    expected: AppError,
+    result: Result<(), CommandError>,
+    expected: CommandError,
 ) -> Result<(), TestFailure> {
     match result {
         Err(error) if error == expected => Ok(()),

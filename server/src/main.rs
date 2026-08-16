@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use natsume_server::{app, config::ServerConfig, error::AppError};
+use natsume_server::{commands, config::ServerConfig, error::CommandError};
 
 #[derive(Parser)]
 struct Cli {
@@ -15,13 +15,13 @@ enum Command {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), AppError> {
+async fn main() -> Result<(), CommandError> {
     let cli = Cli::parse();
-    let config = ServerConfig::load().map_err(|_| AppError::Configuration)?;
+    let config = ServerConfig::load().map_err(|_| CommandError::Configuration)?;
     match cli.command {
-        Command::Serve => app::serve(config).await,
-        Command::Bootstrap => app::bootstrap(config).await,
-        Command::ResetOperatorPassword => app::reset_operator_password(config).await,
+        Command::Serve => commands::serve(config).await,
+        Command::Bootstrap => commands::bootstrap(config).await,
+        Command::ResetOperatorPassword => commands::reset_operator_password(config).await,
     }
 }
 

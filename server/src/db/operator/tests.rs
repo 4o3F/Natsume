@@ -336,7 +336,7 @@ async fn repeated_first_admin_creation_is_a_zero_write_rejection() -> Result<(),
 
     // The typed first-admin vocabulary stops at the module boundary, so the
     // rejection is asserted against the ID-injecting inner function the public
-    // wrapper delegates to. `app::tests` covers the wrapper's own rejection.
+    // wrapper delegates to. `commands::tests` covers the wrapper's own rejection.
     let Err(error) = create_first_admin_with_ids(
         &fixture.database,
         "second-admin-login-canary",

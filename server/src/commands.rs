@@ -14,7 +14,7 @@ use crate::{
     },
     config::{GatewaySiteConfig, ServerConfig},
     db::{self, Database, DatabaseConfig},
-    error::AppError,
+    error::CommandError,
     http, logging,
     tls::{ClientAddress, TlsListener},
     vault::{ensure_master_key, require_master_key},
@@ -29,12 +29,12 @@ const PASSWORD_CONFIRMATION_PROMPT: &str = "Confirm password: ";
 ///
 /// # Errors
 ///
-/// Returns a redacted [`AppError`] when a startup stage fails.
-pub async fn serve(config: ServerConfig) -> Result<(), AppError> {
-    logging::initialize(config.log_level()).map_err(|_| AppError::Logging)?;
+/// Returns a redacted [`CommandError`] when a startup stage fails.
+pub async fn serve(config: ServerConfig) -> Result<(), CommandError> {
+    logging::initialize(config.log_level()).map_err(|_| CommandError::Logging)?;
     log_mode("serve");
     if !Path::new(WEB_ASSETS_PATH).join("index.html").is_file() {
-        return Err(AppError::WebAssets);
+        return Err(CommandError::WebAssets);
     }
     let shutdown = shutdown_signal()?;
     run_until(config, shutdown).await
@@ -44,35 +44,35 @@ pub async fn serve(config: ServerConfig) -> Result<(), AppError> {
 ///
 /// # Errors
 ///
-/// Returns a redacted [`AppError`] when a startup or serving stage fails.
-pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), AppError>
+/// Returns a redacted [`CommandError`] when a startup or serving stage fails.
+pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), CommandError>
 where
     F: Future<Output = ()> + Send + 'static,
 {
     let site = GatewaySiteConfig::load_from(config.site_config_path())
-        .map_err(|_| AppError::SiteConfiguration)?;
+        .map_err(|_| CommandError::SiteConfiguration)?;
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
-        .map_err(|_| AppError::Database)?;
+        .map_err(|_| CommandError::Database)?;
     provisioning::recover_on_startup(&database)
         .await
         .map_err(|error| match error {
             provisioning::ProvisioningError::RevisionOverflow => {
                 tracing::error!("provisioning window revision overflow prevented startup");
-                AppError::ProvisioningRevisionOverflow
+                CommandError::ProvisioningRevisionOverflow
             }
-            provisioning::ProvisioningError::PersistenceFailed => AppError::Database,
+            provisioning::ProvisioningError::PersistenceFailed => CommandError::Database,
         })?;
     tracing::info!("database ready");
-    require_master_key(config.vault_master_key_path()).map_err(|_| AppError::Vault)?;
+    require_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
     tracing::info!("vault key verified");
     let origin_ca_certificate_path = config
         .origin_ca_certificate_path()
-        .map_err(|_| AppError::Configuration)?;
+        .map_err(|_| CommandError::Configuration)?;
     let origin_ca_private_key_path = config
         .origin_ca_private_key_path()
-        .map_err(|_| AppError::Configuration)?;
+        .map_err(|_| CommandError::Configuration)?;
     let gateway_issuer = GatewayIssuer::load(
         &origin_ca_certificate_path,
         &origin_ca_private_key_path,
@@ -80,8 +80,8 @@ where
         site,
     )
     .map_err(|error| match error {
-        GatewayIssuerError::TrustRootMismatch => AppError::OriginCaTrustRootMismatch,
-        _ => AppError::OriginCa,
+        GatewayIssuerError::TrustRootMismatch => CommandError::OriginCaTrustRootMismatch,
+        _ => CommandError::OriginCa,
     })?;
     tracing::info!("Origin CA issuing material verified");
     let listener = TlsListener::bind(
@@ -90,7 +90,7 @@ where
         config.tls_private_key_path(),
     )
     .await
-    .map_err(|_| AppError::Tls)?;
+    .map_err(|_| CommandError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
     let router = http::router_with_enrollment(
@@ -112,7 +112,7 @@ where
     )
     .with_graceful_shutdown(shutdown)
     .await
-    .map_err(|_| AppError::Http);
+    .map_err(|_| CommandError::Http);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }
@@ -124,9 +124,9 @@ where
 ///
 /// # Errors
 ///
-/// Returns a redacted [`AppError`] when bootstrap fails.
-pub async fn bootstrap(config: ServerConfig) -> Result<(), AppError> {
-    logging::initialize(config.log_level()).map_err(|_| AppError::Logging)?;
+/// Returns a redacted [`CommandError`] when bootstrap fails.
+pub async fn bootstrap(config: ServerConfig) -> Result<(), CommandError> {
+    logging::initialize(config.log_level()).map_err(|_| CommandError::Logging)?;
     log_mode("bootstrap");
     bootstrap_with(config, read_bootstrap_credentials_from_tty).await?;
     tracing::info!("bootstrap completed");
@@ -138,9 +138,9 @@ pub async fn bootstrap(config: ServerConfig) -> Result<(), AppError> {
 ///
 /// # Errors
 ///
-/// Returns a redacted [`AppError`] when password reset fails.
-pub async fn reset_operator_password(config: ServerConfig) -> Result<(), AppError> {
-    logging::initialize(config.log_level()).map_err(|_| AppError::Logging)?;
+/// Returns a redacted [`CommandError`] when password reset fails.
+pub async fn reset_operator_password(config: ServerConfig) -> Result<(), CommandError> {
+    logging::initialize(config.log_level()).map_err(|_| CommandError::Logging)?;
     log_mode("reset-operator-password");
     reset_operator_password_with(config, read_reset_credentials_from_tty).await?;
     tracing::info!("operator password reset completed");
@@ -151,54 +151,57 @@ fn log_mode(mode: &'static str) {
     tracing::info!(mode, "server mode running");
 }
 
-async fn bootstrap_with<F>(config: ServerConfig, read_credentials: F) -> Result<(), AppError>
+async fn bootstrap_with<F>(config: ServerConfig, read_credentials: F) -> Result<(), CommandError>
 where
-    F: FnOnce() -> Result<OperatorCredentials, AppError>,
+    F: FnOnce() -> Result<OperatorCredentials, CommandError>,
 {
     let database_config = DatabaseConfig::new(config.database_path(), true);
     let database = Database::connect_and_migrate(&database_config)
         .await
-        .map_err(|_| AppError::Database)?;
+        .map_err(|_| CommandError::Database)?;
     tracing::info!("database ready");
-    ensure_master_key(config.vault_master_key_path()).map_err(|_| AppError::Vault)?;
+    ensure_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
     tracing::info!("vault key verified");
     let credentials = read_credentials()?;
-    let password_hash = hash_password(credentials.password()).map_err(|_| AppError::Bootstrap)?;
+    let password_hash =
+        hash_password(credentials.password()).map_err(|_| CommandError::Bootstrap)?;
     db::operator::create_first_admin(&database, credentials.login_name(), &password_hash)
         .await
-        .map_err(|_| AppError::Bootstrap)?;
+        .map_err(|_| CommandError::Bootstrap)?;
     Ok(())
 }
 
 async fn reset_operator_password_with<F>(
     config: ServerConfig,
     read_credentials: F,
-) -> Result<(), AppError>
+) -> Result<(), CommandError>
 where
-    F: FnOnce() -> Result<OperatorCredentials, AppError>,
+    F: FnOnce() -> Result<OperatorCredentials, CommandError>,
 {
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
-        .map_err(|_| AppError::Database)?;
+        .map_err(|_| CommandError::Database)?;
     tracing::info!("database ready");
     let credentials = read_credentials()?;
     let password_hash =
-        hash_password(credentials.password()).map_err(|_| AppError::PasswordReset)?;
+        hash_password(credentials.password()).map_err(|_| CommandError::PasswordReset)?;
     db::operator::reset_operator_password(&database, credentials.login_name(), &password_hash)
         .await
-        .map_err(|_| AppError::PasswordReset)
+        .map_err(|_| CommandError::PasswordReset)
 }
 
-fn read_bootstrap_credentials_from_tty() -> Result<OperatorCredentials, AppError> {
-    read_credentials_from_tty(AppError::Bootstrap)
+fn read_bootstrap_credentials_from_tty() -> Result<OperatorCredentials, CommandError> {
+    read_credentials_from_tty(CommandError::Bootstrap)
 }
 
-fn read_reset_credentials_from_tty() -> Result<OperatorCredentials, AppError> {
-    read_credentials_from_tty(AppError::PasswordReset)
+fn read_reset_credentials_from_tty() -> Result<OperatorCredentials, CommandError> {
+    read_credentials_from_tty(CommandError::PasswordReset)
 }
 
-fn read_credentials_from_tty(credential_error: AppError) -> Result<OperatorCredentials, AppError> {
+fn read_credentials_from_tty(
+    credential_error: CommandError,
+) -> Result<OperatorCredentials, CommandError> {
     let mut terminal = OpenOptions::new()
         .read(true)
         .write(true)
@@ -223,11 +226,11 @@ fn read_credentials_from_tty(credential_error: AppError) -> Result<OperatorCrede
         .map_err(|_| credential_error)
 }
 
-fn shutdown_signal() -> Result<impl Future<Output = ()>, AppError> {
+fn shutdown_signal() -> Result<impl Future<Output = ()>, CommandError> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .map_err(|_| AppError::Signal)?;
+        .map_err(|_| CommandError::Signal)?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|_| AppError::Signal)?;
+        .map_err(|_| CommandError::Signal)?;
     Ok(async move {
         tokio::select! {
             Some(()) = interrupt.recv() => {}

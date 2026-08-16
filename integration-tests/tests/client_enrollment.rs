@@ -14,7 +14,7 @@ use natsume_device_daemon::enrollment::{
     EnrollmentClient, EnrollmentError, EnrollmentPaths, EnrollmentStep, EnrollmentWaitState,
 };
 use natsume_machine_identity::EvidenceQuality;
-use natsume_server::{app, config::ServerConfig};
+use natsume_server::{commands, config::ServerConfig};
 use rcgen::{
     BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose, PKCS_ECDSA_P256_SHA256,
@@ -147,7 +147,7 @@ impl TestServer {
         );
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
-            app::run_until(config, async move {
+            commands::run_until(config, async move {
                 let _result = shutdown_signal.await;
             })
             .await

@@ -2,7 +2,7 @@ use snafu::Snafu;
 
 /// Redacted failure while starting the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-pub enum AppError {
+pub enum CommandError {
     #[snafu(display("server configuration failed"))]
     Configuration,
     #[snafu(display("structured logging startup failed"))]
