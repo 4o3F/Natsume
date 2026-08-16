@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -26,9 +27,6 @@ use crate::{
 use super::super::{AppState, error::ApiError, middleware};
 
 pub(crate) const ENROLLMENT_REQUEST_BODY_LIMIT_BYTES: usize = 65_536;
-const DEVICE_TOKEN_WIRE_LENGTH: usize = 43;
-const BASE64_URL_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     let intake = post(create_enrollment_request)
@@ -459,25 +457,7 @@ pub(crate) async fn create_enrollment_request(
 }
 
 fn encode_device_token(token: &[u8; 32]) -> String {
-    let mut encoded = String::with_capacity(DEVICE_TOKEN_WIRE_LENGTH);
-    let mut buffer = 0_u32;
-    let mut buffered_bits = 0_u32;
-    for byte in token {
-        buffer = (buffer << 8) | u32::from(*byte);
-        buffered_bits += 8;
-        while buffered_bits >= 6 {
-            buffered_bits -= 6;
-            encoded.push(char::from(
-                BASE64_URL_ALPHABET[((buffer >> buffered_bits) & 0x3f) as usize],
-            ));
-        }
-    }
-    if buffered_bits > 0 {
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((buffer << (6 - buffered_bits)) & 0x3f) as usize],
-        ));
-    }
-    encoded
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token)
 }
 
 fn json_response<T: Serialize>(

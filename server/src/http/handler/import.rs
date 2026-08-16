@@ -8,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{IntoParams, ToSchema};
@@ -31,8 +32,6 @@ pub(crate) const IMPORT_COMMIT_BODY_LIMIT_BYTES: usize = 4_096;
 
 const PREVIEW_TOKEN_BYTES: usize = 32;
 const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
-const BASE64_URL_ALPHABET: &[u8; 64] =
-    b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     let upload = post(create_import)
@@ -422,74 +421,20 @@ fn canonical_uuid_v7(value: &str) -> Option<Uuid> {
 }
 
 fn encode_preview_token(token: &[u8; PREVIEW_TOKEN_BYTES]) -> String {
-    let mut encoded = String::with_capacity(PREVIEW_TOKEN_WIRE_LENGTH);
-    let mut index = 0;
-    while index + 3 <= token.len() {
-        let chunk = (u32::from(token[index]) << 16)
-            | (u32::from(token[index + 1]) << 8)
-            | u32::from(token[index + 2]);
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((chunk >> 18) & 0x3f) as usize],
-        ));
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((chunk >> 12) & 0x3f) as usize],
-        ));
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((chunk >> 6) & 0x3f) as usize],
-        ));
-        encoded.push(char::from(BASE64_URL_ALPHABET[(chunk & 0x3f) as usize]));
-        index += 3;
-    }
-    let remaining = token.len() - index;
-    if remaining == 2 {
-        let chunk = (u32::from(token[index]) << 16) | (u32::from(token[index + 1]) << 8);
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((chunk >> 18) & 0x3f) as usize],
-        ));
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((chunk >> 12) & 0x3f) as usize],
-        ));
-        encoded.push(char::from(
-            BASE64_URL_ALPHABET[((chunk >> 6) & 0x3f) as usize],
-        ));
-    }
-    encoded
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token)
 }
 
 fn decode_preview_token(value: &str) -> Option<[u8; PREVIEW_TOKEN_BYTES]> {
+    // The explicit wire-length guard stays in front of the engine: it pins the frozen
+    // 43-character token shape independently of the decoder's own length arithmetic.
     if value.len() != PREVIEW_TOKEN_WIRE_LENGTH {
         return None;
     }
-    let mut decoded = [0_u8; PREVIEW_TOKEN_BYTES];
-    let mut decoded_index = 0;
-    let mut buffer = 0_u32;
-    let mut buffered_bits = 0_u32;
-    for byte in value.bytes() {
-        let sextet = decode_base64_url_byte(byte)?;
-        buffer = (buffer << 6) | u32::from(sextet);
-        buffered_bits += 6;
-        while buffered_bits >= 8 {
-            buffered_bits -= 8;
-            if decoded_index == decoded.len() {
-                return None;
-            }
-            decoded[decoded_index] = ((buffer >> buffered_bits) & 0xff) as u8;
-            decoded_index += 1;
-            buffer &= (1_u32 << buffered_bits) - 1;
-        }
-    }
-    (decoded_index == decoded.len() && buffered_bits == 2 && buffer == 0).then_some(decoded)
-}
-
-fn decode_base64_url_byte(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'-' => Some(62),
-        b'_' => Some(63),
-        _ => None,
-    }
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .ok()?
+        .try_into()
+        .ok()
 }
 
 fn json_response<T: Serialize>(

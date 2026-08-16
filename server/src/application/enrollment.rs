@@ -14,6 +14,7 @@
 
 use std::{fs, net::IpAddr, path::Path, sync::Arc, time::SystemTime};
 
+use base64::Engine as _;
 use rcgen::{
     CertificateParams, CertificateSigningRequestParams, DistinguishedName, ExtendedKeyUsagePurpose,
     IsCa, Issuer, KeyPair, KeyUsagePurpose, PublicKeyData, SerialNumber, SubjectPublicKeyInfo,
@@ -738,30 +739,12 @@ fn validate_request(
 }
 
 pub(crate) fn encode_standard_base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let first = u32::from(chunk[0]);
-        let second = u32::from(*chunk.get(1).unwrap_or(&0));
-        let third = u32::from(*chunk.get(2).unwrap_or(&0));
-        let value = (first << 16) | (second << 8) | third;
-        encoded.push(char::from(ALPHABET[((value >> 18) & 0x3f) as usize]));
-        encoded.push(char::from(ALPHABET[((value >> 12) & 0x3f) as usize]));
-        if chunk.len() >= 2 {
-            encoded.push(char::from(ALPHABET[((value >> 6) & 0x3f) as usize]));
-        } else {
-            encoded.push('=');
-        }
-        if chunk.len() == 3 {
-            encoded.push(char::from(ALPHABET[(value & 0x3f) as usize]));
-        } else {
-            encoded.push('=');
-        }
-    }
-    encoded
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 fn decode_standard_base64(value: &str) -> Option<Vec<u8>> {
+    // The empty-input and pre-decode length checks stay in front of the engine so the
+    // encoding-vs-content error classes keep their frozen boundaries.
     let bytes = value.as_bytes();
     if bytes.is_empty() || !bytes.len().is_multiple_of(4) {
         return None;
@@ -775,52 +758,7 @@ fn decode_standard_base64(value: &str) -> Option<Vec<u8>> {
     if decoded_len > MAX_GATEWAY_CSR_DER_BYTES {
         return None;
     }
-    let mut decoded = Vec::with_capacity(decoded_len);
-    for (index, chunk) in bytes.chunks_exact(4).enumerate() {
-        let last = index + 1 == bytes.len() / 4;
-        let a = decode_standard_base64_byte(chunk[0])?;
-        let b = decode_standard_base64_byte(chunk[1])?;
-        let c = if chunk[2] == b'=' {
-            if !last || chunk[3] != b'=' || b & 0x0f != 0 {
-                return None;
-            }
-            0
-        } else {
-            decode_standard_base64_byte(chunk[2])?
-        };
-        let d = if chunk[3] == b'=' {
-            if !last || (chunk[2] != b'=' && c & 0x03 != 0) {
-                return None;
-            }
-            0
-        } else {
-            if chunk[2] == b'=' {
-                return None;
-            }
-            decode_standard_base64_byte(chunk[3])?
-        };
-        let aggregate =
-            (u32::from(a) << 18) | (u32::from(b) << 12) | (u32::from(c) << 6) | u32::from(d);
-        decoded.push(((aggregate >> 16) & 0xff) as u8);
-        if chunk[2] != b'=' {
-            decoded.push(((aggregate >> 8) & 0xff) as u8);
-        }
-        if chunk[3] != b'=' {
-            decoded.push((aggregate & 0xff) as u8);
-        }
-    }
-    (decoded.len() == decoded_len).then_some(decoded)
-}
-
-const fn decode_standard_base64_byte(byte: u8) -> Option<u8> {
-    match byte {
-        b'A'..=b'Z' => Some(byte - b'A'),
-        b'a'..=b'z' => Some(byte - b'a' + 26),
-        b'0'..=b'9' => Some(byte - b'0' + 52),
-        b'+' => Some(62),
-        b'/' => Some(63),
-        _ => None,
-    }
+    base64::engine::general_purpose::STANDARD.decode(bytes).ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
