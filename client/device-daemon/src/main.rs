@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, future,
     io::{self, Write as _},
 };
 
@@ -7,6 +7,10 @@ use clap::{ArgGroup, Parser};
 use natsume_device_daemon::{EndpointError, parse_endpoint};
 use natsume_error_code::ErrorCode;
 use snafu::Snafu;
+
+mod atomic_write;
+mod identity_record;
+mod startup;
 
 #[derive(Debug, Snafu)]
 enum Error {
@@ -26,6 +30,15 @@ enum Error {
 
     #[snafu(display("structured logging could not be initialized"))]
     Logging,
+
+    #[snafu(display("{source}"))]
+    Startup { source: startup::StartupError },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunMode {
+    Daemon,
+    Completed,
 }
 
 #[derive(Parser)]
@@ -60,30 +73,26 @@ fn endpoint_error(error: EndpointError) -> Error {
     }
 }
 
-fn run_args(args: &[String]) -> Result<(), Error> {
+fn run_args(args: &[String]) -> Result<RunMode, Error> {
     let full_args: Vec<String> = std::iter::once("natsume-device-daemon".to_owned())
         .chain(args.iter().cloned())
         .collect();
     let cli = Args::try_parse_from(&full_args).map_err(|_| Error::Arguments)?;
 
     match (cli.validate_endpoint, cli.print_canonical_endpoint) {
-        (None, None) => {
-            tracing::info!(concat!(
-                "natsume-device-daemon blueprint: identity check -> vault -> ",
-                "provisioning-window Enrollment -> install Gateway certificate -> ",
-                "Device Token-authenticated WSS control"
-            ));
-            Ok(())
-        }
+        (None, None) => Ok(RunMode::Daemon),
         (Some(values), None) => match values.as_slice() {
-            [ip, port] => parse_endpoint(ip, port).map(|_| ()).map_err(endpoint_error),
+            [ip, port] => parse_endpoint(ip, port)
+                .map(|_| RunMode::Completed)
+                .map_err(endpoint_error),
             _ => Err(Error::Arguments),
         },
         (None, Some(values)) => match values.as_slice() {
             [ip, port] => {
                 let endpoint = parse_endpoint(ip, port).map_err(endpoint_error)?;
                 writeln!(io::stdout().lock(), "{} {}", endpoint.ip(), endpoint.port())
-                    .map_err(|_| Error::Output)
+                    .map_err(|_| Error::Output)?;
+                Ok(RunMode::Completed)
             }
             _ => Err(Error::Arguments),
         },
@@ -91,9 +100,19 @@ fn run_args(args: &[String]) -> Result<(), Error> {
     }
 }
 
-fn run() -> Result<(), Error> {
+async fn run() -> Result<(), Error> {
     let args = env::args().skip(1).collect::<Vec<_>>();
-    run_args(&args)
+    match run_args(&args)? {
+        RunMode::Completed => Ok(()),
+        RunMode::Daemon => {
+            let paths = startup::StartupPaths::production();
+            startup::run_production(&paths)
+                .await
+                .map_err(|source| Error::Startup { source })?;
+            future::pending::<()>().await;
+            Ok(())
+        }
+    }
 }
 
 fn initialize_logging() -> Result<(), Error> {
@@ -105,10 +124,11 @@ fn initialize_logging() -> Result<(), Error> {
         .map_err(|_| Error::Logging)
 }
 
+#[tokio::main]
 #[snafu::report]
-fn main() -> Result<(), Error> {
+async fn main() -> Result<(), Error> {
     initialize_logging()?;
-    run()
+    run().await
 }
 
 #[cfg(test)]
@@ -160,9 +180,9 @@ mod tests {
     }
 
     #[test]
-    fn no_args_is_blueprint() {
+    fn no_args_selects_identity_first_daemon_startup() {
         let result = run_args(&[]);
-        assert!(result.is_ok(), "no-args blueprint must succeed");
+        assert!(matches!(result, Ok(RunMode::Daemon)));
     }
 
     #[test]
@@ -173,7 +193,7 @@ mod tests {
             "8443".to_owned(),
         ];
         assert!(
-            run_args(&args).is_ok(),
+            matches!(run_args(&args), Ok(RunMode::Completed)),
             "valid --validate-endpoint must succeed"
         );
     }
@@ -186,7 +206,7 @@ mod tests {
             "8443".to_owned(),
         ];
         assert!(
-            run_args(&args).is_ok(),
+            matches!(run_args(&args), Ok(RunMode::Completed)),
             "valid --print-canonical-endpoint must succeed"
         );
     }

@@ -2,7 +2,8 @@
 <node name="/org/natsume/Privileged1">
   <interface name="org.natsume.Privileged1">
     <method name="CollectHardwareCandidates">
-      <arg name="claim" type="(a(sss)b)" direction="out"/>
+      <arg name="fleet_namespace_uuid" type="s" direction="in"/>
+      <arg name="claim" type="(a(sss)bsasu)" direction="out"/>
     </method>
     <method name="PrepareHomeInstance">
       <arg name="target" type="(st)" direction="in"/>

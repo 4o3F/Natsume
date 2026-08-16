@@ -1,26 +1,25 @@
 // Development-only anonymized hardware fixture collector; never packaged.
+//
+// G0-IN-005 field evidence must characterize the shipped collectors, so this example
+// delegates to the production `hardware_identity::collect` pipeline and only owns the
+// anonymized serialization. It never prints raw hardware values.
 
 use std::{
     env,
     ffi::{OsStr, OsString},
-    fs,
-    io::{self, ErrorKind, Write as _},
+    io::{self, Write as _},
     path::Path,
     process::ExitCode,
 };
 
 use natsume_machine_identity::{
-    ANCHOR_ORDER, CollectionCompleteness, EvidenceQuality, EvidenceStatus, ReadOutcome,
-    collection_completeness, evaluate_slot,
+    ANCHOR_ORDER, CollectionCompleteness, EvidenceQuality, EvidenceStatus, collection_completeness,
+    evaluate_slot,
 };
-use procfs::process::Process;
+use natsume_privileged_helper::hardware_identity;
 use serde::Serialize;
-use udev::{Device, DeviceType};
 
 const USAGE: &str = "usage: collect_identity_fixture --namespace <uuid>";
-const DMI_ID_DIRECTORY: &str = "/sys/class/dmi/id";
-const DMI_SYSTEM_UUID: &str = "/sys/class/dmi/id/product_uuid";
-const DMI_BOARD_SERIAL: &str = "/sys/class/dmi/id/board_serial";
 
 #[derive(Serialize)]
 struct FixtureSlot {
@@ -55,119 +54,6 @@ fn namespace_argument() -> Option<OsString> {
     }
 }
 
-fn map_io_error(error: &io::Error) -> ReadOutcome {
-    match error.kind() {
-        ErrorKind::PermissionDenied => ReadOutcome::PermissionDenied,
-        ErrorKind::Unsupported => ReadOutcome::Unsupported,
-        // This includes ErrorKind::NotFound (the ENOENT class) and other transient I/O errors.
-        _ => ReadOutcome::Unavailable,
-    }
-}
-
-fn bytes_as_value(bytes: Vec<u8>) -> String {
-    match String::from_utf8(bytes) {
-        Ok(value) => value,
-        Err(error) => {
-            // ReadOutcome has no encoding-error variant. Lossy conversion preserves a U+FFFD
-            // marker, which the pure evaluator classifies as malformed instead of deriving an ID.
-            String::from_utf8_lossy(error.as_bytes()).into_owned()
-        }
-    }
-}
-
-fn read_value(path: &Path) -> ReadOutcome {
-    match fs::read(path) {
-        Ok(bytes) => ReadOutcome::Value(bytes_as_value(bytes)),
-        Err(error) => map_io_error(&error),
-    }
-}
-
-fn dmi_readings() -> [ReadOutcome; 2] {
-    // A missing DMI directory means the platform does not expose DMI at all. Once the directory
-    // exists, a missing individual attribute is an unavailable reading rather than unsupported.
-    match fs::metadata(DMI_ID_DIRECTORY) {
-        Ok(metadata) if metadata.is_dir() => [
-            read_value(Path::new(DMI_SYSTEM_UUID)),
-            read_value(Path::new(DMI_BOARD_SERIAL)),
-        ],
-        Ok(_) => [ReadOutcome::Unsupported, ReadOutcome::Unsupported],
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            [ReadOutcome::Unsupported, ReadOutcome::Unsupported]
-        }
-        Err(error) if error.kind() == ErrorKind::PermissionDenied => {
-            [ReadOutcome::PermissionDenied, ReadOutcome::PermissionDenied]
-        }
-        Err(_) => [ReadOutcome::Unavailable, ReadOutcome::Unavailable],
-    }
-}
-
-fn parse_device_number(value: &str) -> Option<(u32, u32)> {
-    let (major, minor) = value.split_once(':')?;
-    Some((major.parse().ok()?, minor.parse().ok()?))
-}
-
-fn is_virtual_block_syspath(path: &Path) -> bool {
-    path.starts_with("/sys/devices/virtual/block")
-}
-
-fn whole_disk_device(device: Device) -> Option<Device> {
-    let is_disk = device.devtype() == Some(OsStr::new("disk"));
-    let is_partition = device.devtype() == Some(OsStr::new("partition"));
-    let disk = if is_disk {
-        device
-    } else if is_partition {
-        device
-            .parent_with_subsystem_devtype("block", "disk")
-            .ok()
-            .flatten()?
-    } else {
-        return None;
-    };
-
-    (disk.subsystem() == Some(OsStr::new("block"))
-        && disk.devtype() == Some(OsStr::new("disk"))
-        && !is_virtual_block_syspath(disk.syspath())
-        && disk.property_value("DM_UUID").is_none()
-        && disk.property_value("MD_UUID").is_none())
-    .then_some(disk)
-}
-
-fn root_whole_disk_device() -> Option<Device> {
-    let process = Process::myself().ok()?;
-    let mounts = process.mountinfo().ok()?;
-    let root_mount = mounts
-        .into_iter()
-        .rev()
-        .find(|mount| mount.mount_point == Path::new("/"))?;
-    if root_mount.fs_type == "overlay" {
-        return None;
-    }
-    let (major, minor) = parse_device_number(&root_mount.majmin)?;
-    let device = Device::from_devnum(DeviceType::Block, rustix::fs::makedev(major, minor)).ok()?;
-    whole_disk_device(device)
-}
-
-fn disk_serial(device: &Device) -> Option<OsString> {
-    device
-        .property_value("ID_SERIAL_SHORT")
-        .or_else(|| device.attribute_value("serial"))
-        .or_else(|| device.attribute_value("device/serial"))
-        .map(OsStr::to_owned)
-}
-
-fn first_disk_serial() -> ReadOutcome {
-    let Some(device) = root_whole_disk_device() else {
-        return ReadOutcome::Unavailable;
-    };
-    let Some(serial) = disk_serial(&device) else {
-        return ReadOutcome::Unavailable;
-    };
-    match serial.into_string() {
-        Ok(value) => ReadOutcome::Value(value),
-        Err(value) => ReadOutcome::Value(value.to_string_lossy().into_owned()),
-    }
-}
-
 fn main() -> ExitCode {
     let Some(namespace_argument) = namespace_argument() else {
         write_usage();
@@ -182,8 +68,7 @@ fn main() -> ExitCode {
         return ExitCode::from(2);
     };
 
-    let [system_uuid, board_serial] = dmi_readings();
-    let readings = [system_uuid, board_serial, first_disk_serial()];
+    let readings = hardware_identity::collect(Path::new("/"));
     let evaluations = [
         evaluate_slot(ANCHOR_ORDER[0], &readings[0], fleet_namespace),
         evaluate_slot(ANCHOR_ORDER[1], &readings[1], fleet_namespace),
@@ -213,35 +98,4 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn device_numbers_are_parsed_without_parsing_mountinfo_text() {
-        assert_eq!(parse_device_number("8:2"), Some((8, 2)));
-        assert_eq!(parse_device_number("259:12"), Some((259, 12)));
-        assert_eq!(parse_device_number("not-a-device"), None);
-        assert_eq!(parse_device_number("8:2:1"), None);
-    }
-
-    #[test]
-    fn physical_disk_paths_are_distinct_from_virtual_block_stacks() {
-        for path in [
-            "/sys/devices/pci0000:00/host0/target0:0:0/0:0:0:0/block/sda",
-            "/sys/devices/pci0000:00/nvme/nvme0/nvme0n1",
-            "/sys/devices/pci0000:00/virtio1/block/vda",
-        ] {
-            assert!(!is_virtual_block_syspath(Path::new(path)));
-        }
-        for path in [
-            "/sys/devices/virtual/block/dm-0",
-            "/sys/devices/virtual/block/md0",
-            "/sys/devices/virtual/block/loop0",
-        ] {
-            assert!(is_virtual_block_syspath(Path::new(path)));
-        }
-    }
 }

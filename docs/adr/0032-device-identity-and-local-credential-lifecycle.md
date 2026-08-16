@@ -39,6 +39,8 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 - startup 重算结果必须与 persisted ID 完全一致；不得选择“最接近”候选或猜测设备仍是同一台。
 - `machine-identity` crate 只拥有 normalization、placeholder filtering、2-of-3 decision 与 derivation；raw hardware collection 留在 privileged adapter，raw serial 不进入 Server surface 或普通日志。
 
+**2026-08-16 修订（派生管线执行位置）**：整机纯管线（slot evaluate → 2-of-3 decide）在 privileged helper **进程内**执行，helper 经 D-Bus 只返回 sanitized claim（per-slot 匿名 candidate、决策类别与派生出的 `machine_hardware_id`），normalized 硬件值因此不跨进程。这不与「privileged Helper 直接返回最终 ID」的被拒方案冲突：被拒的是把 policy 的**所有权**放进 root boundary；policy 与其纯测试面仍完整归 `machine-identity` crate 所有，helper 仅作为调用方。Daemon 由 sanitized claim 重建决策用于 startup 比对。
+
 ### Identity-first startup 与 Device lifecycle
 
 - Device Daemon 的第一个应用流程是 identity decision；所有 identity-bound adapter 和 credential read 都必须位于其后，不新增独立 Identity Guard service。

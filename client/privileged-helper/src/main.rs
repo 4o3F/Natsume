@@ -1,9 +1,20 @@
 use std::{
+    future,
     io::{self, Write as _},
     process::ExitCode,
 };
 
+use natsume_local_control_api::{PRIVILEGED1_PATH, PRIVILEGED1_SERVICE};
+use natsume_privileged_helper::PrivilegedService;
+use snafu::Snafu;
+
 const LOGGING_FAILURE_ID: &str = "NATSUME_PRIVILEGED_HELPER_LOGGING_INIT_FAILED";
+
+#[derive(Debug, Snafu)]
+enum ServiceError {
+    #[snafu(display("privileged helper could not acquire its system D-Bus service"))]
+    Bus,
+}
 
 fn initialize_logging() -> Result<(), ()> {
     tracing_subscriber::fmt()
@@ -14,11 +25,31 @@ fn initialize_logging() -> Result<(), ()> {
         .map_err(|_| ())
 }
 
-fn main() -> ExitCode {
+async fn serve() -> Result<(), ServiceError> {
+    let builder = zbus::connection::Builder::system().map_err(|_| ServiceError::Bus)?;
+    let builder = builder
+        .name(PRIVILEGED1_SERVICE)
+        .map_err(|_| ServiceError::Bus)?;
+    let builder = builder
+        .serve_at(PRIVILEGED1_PATH, PrivilegedService::production())
+        .map_err(|_| ServiceError::Bus)?;
+    let _connection = builder.build().await.map_err(|_| ServiceError::Bus)?;
+    tracing::info!(service = PRIVILEGED1_SERVICE, "privileged helper ready");
+    future::pending::<()>().await;
+    Ok(())
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
     if initialize_logging().is_err() {
         let _write_result = writeln!(io::stderr().lock(), "{LOGGING_FAILURE_ID}");
         return ExitCode::FAILURE;
     }
-    tracing::info!("natsume-privileged-helper architecture blueprint");
-    ExitCode::SUCCESS
+    match serve().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            tracing::error!(error = %error, "privileged helper stopped");
+            ExitCode::FAILURE
+        }
+    }
 }

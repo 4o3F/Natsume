@@ -19,12 +19,14 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 
 ## WP3 启动分解（2026-08-16 冻结）
 
-- **WP3a helper 采集与派生**：`hardware_identity::collect()` 按模块文档冻结次序实读（sysinfo Product/Motherboard → smbios-lib 补缺/冲突校验 → raw-cpuid 仅真实 PSN leaf → procfs MountInfo + udev 唯一根盘）；`[ReadOutcome; 3]` → slot evaluate → 整机 decide 的纯 pipeline 全部在 helper 进程内执行，normalized 值不跨进程；system D-Bus `org.natsume.Privileged1.CollectHardwareCandidates` 返回 sanitized claim，wire 类型与 introspection XML 扩展整机决策字段（decision kind、`machine_hardware_id`、present slot 数），daemon 由此重建 `MachineIdentityDecision` 供 startup 比对。
+- **WP3a helper 采集与派生**：`hardware_identity::collect()` 按模块文档冻结次序实读（sysfs `/sys/class/dmi/id` 直读为首选 → smbios-lib 补缺/冲突校验 → raw-cpuid 仅真实 PSN leaf → procfs MountInfo + sysfs 上溯 + `/run/udev/data` 唯一根整盘）；`[ReadOutcome; 3]` → slot evaluate → 整机 decide 的纯 pipeline 全部在 helper 进程内执行，normalized 值不跨进程；system D-Bus `org.natsume.Privileged1.CollectHardwareCandidates` 返回 sanitized claim，wire 类型与 introspection XML 扩展整机决策字段（decision kind、`machine_hardware_id`、present slot 数），daemon 由此重建 `MachineIdentityDecision` 供 startup 比对。
 - **WP3b identity record**：路径 `/var/lib/natsume/identity/identity.json`（目录已由 tmpfiles CI 断言）；内容为严格 JSON `{fleet_namespace_uuid, machine_hardware_id}`（deny unknown fields、canonical lowercase UUID）；`0600 natsume:natsume`；`temp + fsync + rename` 原子写；读取严格分类 Absent / Corrupt / Valid。
 - **WP3c identity-first startup**：daemon 启动序 = site.toml 读 `fleet_namespace_uuid` → identity-bound artifact presence 扫描 → `evaluate_local_identity_preflight` → helper 采集 → `evaluate_startup_identity`；`FirstStart` 原子持久化 identity record，`Matched` 通过，其余（Indeterminate / IdentityUnavailable / ResetRequired / record Corrupt / namespace mismatch）fail closed 为 typed 稳定终态；WP3 不触网，终止于 identity decided。
 - **WP3d 凭据文件原语**：共享原子写原语（mode/ownership 参数封闭），identity record 为现行消费者；Token / Seat / Gateway 写入器待 WP4 实数据落地，本包不预建。
 - 属主基线：ADR-0032/0034 已以同日修订调和为 service-user 所有（daemon 以 `natsume` 运行、helper 禁持凭据，`root:root` 令消费者不可读，属被迫调和）。
 - 测试策略：collectors 为薄 I/O adapter（只产 `ReadOutcome`），policy 由纯 crate fixture 穷举；真机全路径证据仍依赖 G0-IN-005（BLOCKED-INPUT）；D-Bus 面用 peer-to-peer socket 做 round-trip 测试，不依赖 CI system bus。
+
+- WP3 审查非阻断挂账：(a) **udev DB 就绪竞态**——首启若 `/run/udev/data` 未就绪，2 槽 ID 落盘后每次重算 3 槽 ID → 永久 `ResetRequired`，unit 未依赖 udev 就绪，WP4 前需处置（排序加固或 FirstStart 完备性策略）；(b) identity record 首启竞态下 `RENAME_NOREPLACE` 失败返回错误而非 noop（systemd 单例化 + 重启收敛为 `Matched`，可接受；贴合 repeat-safe 惯例可改为重读比对）；(c) `atomic_write` 为 create-only 语义（测试已钉死），WP4 Token 轮换写入器须扩展参数而非复用；(d) artifact 扫描为 lstat 语义不计符号链接，且 SIGKILL 残留的 temp 文件会把 clean first start 翻成 fail-closed；(e) 零化不完整（`FromUtf8Error` buffer、SMBIOS 原始表无零化）——helper unit 已补 `LimitCORE=0` 缓解，值不出进程。
 
 ## WP2 启动待冻结面（设计项，非 owner 决策）
 

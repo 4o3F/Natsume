@@ -90,6 +90,22 @@ fn xml_method_output_signatures(xml: &str, method_name: &str) -> Vec<String> {
         .collect()
 }
 
+fn xml_method_input_signatures(xml: &str, method_name: &str) -> Vec<String> {
+    let document = parse_xml(xml);
+    let Some(method) = document
+        .descendants()
+        .find(|node| node.has_tag_name("method") && node.attribute("name") == Some(method_name))
+    else {
+        panic!("D-Bus method must exist: {method_name}");
+    };
+    method
+        .children()
+        .filter(|node| node.has_tag_name("arg") && node.attribute("direction") == Some("in"))
+        .filter_map(|node| node.attribute("type"))
+        .map(str::to_owned)
+        .collect()
+}
+
 fn assert_xml_contains_signature<T: zbus::zvariant::Type>(xml: &str) {
     let signature = T::SIGNATURE.to_string();
     assert!(
@@ -159,6 +175,14 @@ fn privileged1_introspection_and_package_policies_are_consistent() {
     assert!(PRIVILEGED1_INTROSPECTION_XML.contains(PRIVILEGED1_INTERFACE));
     assert_eq!(PRIVILEGED1_SERVICE, PRIVILEGED1_INTERFACE);
     assert!(PRIVILEGED1_INTROSPECTION_XML.contains(PRIVILEGED1_PATH));
+    assert_eq!(
+        xml_method_input_signatures(PRIVILEGED1_INTROSPECTION_XML, "CollectHardwareCandidates"),
+        vec!["s"]
+    );
+    assert_eq!(
+        xml_method_output_signatures(PRIVILEGED1_INTROSPECTION_XML, "CollectHardwareCandidates"),
+        vec![<SanitizedHardwareClaim as zbus::zvariant::Type>::SIGNATURE.to_string()]
+    );
 
     assert_xml_contains_signature::<SanitizedHardwareClaim>(PRIVILEGED1_INTROSPECTION_XML);
     assert_xml_contains_signature::<SessionTarget>(PRIVILEGED1_INTROSPECTION_XML);

@@ -3,13 +3,16 @@
 use serde::{Deserialize, Serialize};
 use zbus::zvariant::Type;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SanitizedHardwareClaim {
     pub candidates: Vec<HardwareCandidate>,
     pub collection_complete: bool,
+    pub decision: String,
+    pub machine_hardware_id: Option<String>,
+    pub present_slot_count: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct HardwareCandidate {
     pub anchor_kind: String,
     pub candidate_id: String,
@@ -365,7 +368,10 @@ pub trait Device1 {
 )]
 pub trait Privileged1 {
     #[zbus(name = "CollectHardwareCandidates")]
-    fn collect_hardware_candidates(&self) -> zbus::Result<SanitizedHardwareClaim>;
+    fn collect_hardware_candidates(
+        &self,
+        fleet_namespace_uuid: &str,
+    ) -> zbus::Result<SanitizedHardwareClaim>;
 
     #[zbus(name = "PrepareHomeInstance")]
     fn prepare_home_instance(
