@@ -35,9 +35,7 @@ const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const OPERATOR_LOGIN: &str = "wp4-admin";
 const OPERATOR_PASSWORD: &str = "wp4-operator-password";
 
-mod harness;
-
-use harness::bootstrap_operator;
+use natsume_integration_tests::harness::bootstrap_operator;
 
 struct TestServer {
     directory: TempDir,
@@ -138,7 +136,13 @@ impl TestServer {
             ),
             "server configuration must be written",
         );
-        bootstrap_operator(&server_config_path, OPERATOR_LOGIN, OPERATOR_PASSWORD).await;
+        bootstrap_operator(
+            env!("CARGO_BIN_EXE_server-bootstrap-driver"),
+            &server_config_path,
+            OPERATOR_LOGIN,
+            OPERATOR_PASSWORD,
+        )
+        .await;
         let config = require_ok(
             ServerConfig::load_from(&server_config_path),
             "server configuration must load",

@@ -11,6 +11,7 @@ use snafu::Snafu;
 use syn::{
     Attribute, Ident, Item, LitStr, Meta, Token, UseTree, Visibility,
     parse::{Parse, ParseStream},
+    spanned::Spanned as _,
     visit::{self, Visit},
 };
 
@@ -321,7 +322,47 @@ fn scan_public_visibility_source(
 ) -> Result<Vec<Violation>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let mut violations = Vec::new();
-    for item in &syntax.items {
+    scan_public_visibility_items(file, &syntax.items, allowlist, &mut violations);
+    Ok(violations)
+}
+
+fn scan_public_visibility_items(
+    file: &str,
+    items: &[Item],
+    allowlist: &[PublicVisibilityAllowance],
+    violations: &mut Vec<Violation>,
+) {
+    for item in items {
+        // Inline modules cap effective visibility, but a bare `pub` inside them is
+        // still one re-export away from escaping, so the rule recurses.
+        if let Item::Mod(module) = item
+            && let Some((_, nested)) = &module.content
+        {
+            scan_public_visibility_items(file, nested, allowlist, violations);
+        }
+        // `#[macro_export]` hoists to the crate root regardless of module
+        // visibility, so it is a bare-public surface in its own right.
+        if let Item::Macro(value) = item
+            && value
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("macro_export"))
+        {
+            let name = value
+                .ident
+                .as_ref()
+                .map_or_else(|| "macro".to_owned(), ToString::to_string);
+            if !public_visibility_is_allowed(file, "macro", &name, allowlist) {
+                let LineColumn { line, .. } = value.mac.path.span().start();
+                violations.push(Violation {
+                    file: file.to_owned(),
+                    line,
+                    symbol: format!("macro {name}"),
+                    rule: ViolationRule::BarePublicVisibility,
+                });
+            }
+            continue;
+        }
         let Some((Visibility::Public(public), item_kind, item_name)) = item_visibility(item) else {
             continue;
         };
@@ -336,7 +377,6 @@ fn scan_public_visibility_source(
             rule: ViolationRule::BarePublicVisibility,
         });
     }
-    Ok(violations)
 }
 
 fn rust_files(root: &Path, relative: &Path) -> Result<Vec<PathBuf>, ScanError> {

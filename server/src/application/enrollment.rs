@@ -28,7 +28,7 @@ use crate::{
 
 mod issuer;
 
-#[allow(unused_imports)]
+#[cfg(test)]
 pub(crate) use self::issuer::GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS;
 use self::issuer::{
     CertificateSigningRequestDer, CertificateSigningRequestParams, raw_csr_spki_sha256,

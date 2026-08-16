@@ -23,9 +23,7 @@ use tempfile::{TempDir, tempdir};
 use tower::ServiceExt;
 use uuid::Uuid;
 
-mod harness;
-
-use harness::bootstrap_operator;
+use natsume_integration_tests::harness::bootstrap_operator;
 
 const SESSION_HASH: [u8; 32] = [0x31; 32];
 const DEVICE_A: &str = "01900000-0000-7000-8000-000000000301";
@@ -70,7 +68,13 @@ impl TestDatabase {
             ),
             "INV-CERT-01 server configuration must be written",
         );
-        bootstrap_operator(&config_path, "inv-cert-bootstrap", "inv-cert-password").await;
+        bootstrap_operator(
+            env!("CARGO_BIN_EXE_server-bootstrap-driver"),
+            &config_path,
+            "inv-cert-bootstrap",
+            "inv-cert-password",
+        )
+        .await;
         Self {
             _directory: directory,
             path,
@@ -142,8 +146,10 @@ fn insert_operator_session(connection: &mut SqliteConnection) {
         "operator account fixture must insert",
     );
     let operator_id = require_ok(
-        diesel::sql_query("SELECT operator_id FROM operator_accounts")
-            .get_result::<OperatorIdRow>(connection),
+        diesel::sql_query(
+            "SELECT operator_id FROM operator_accounts WHERE login_name = 'inv-cert-operator'",
+        )
+        .get_result::<OperatorIdRow>(connection),
         "operator account fixture must be readable",
     )
     .operator_id;

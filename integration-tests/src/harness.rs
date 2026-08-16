@@ -4,10 +4,22 @@ use tokio::{io::AsyncWriteExt as _, process::Command};
 use zeroize::{Zeroize as _, Zeroizing};
 
 const BOOTSTRAP_CONFIG_ENVIRONMENT: &str = "NATSUME_TEST_SERVER_CONFIG";
-const BOOTSTRAP_DRIVER: &str = env!("CARGO_BIN_EXE_server-bootstrap-driver");
 
-pub(crate) async fn bootstrap_operator(config_path: &Path, login_name: &str, password: &str) {
-    let command = shell_quote(OsStr::new(BOOTSTRAP_DRIVER));
+/// Drives the PTY bootstrap composition once.
+///
+/// `driver` is the test target's `env!("CARGO_BIN_EXE_server-bootstrap-driver")` —
+/// that variable exists only while compiling test targets, so the caller supplies it.
+///
+/// # Panics
+///
+/// Panics when the composition process cannot be started, fed, or does not succeed.
+pub async fn bootstrap_operator(
+    driver: &str,
+    config_path: &Path,
+    login_name: &str,
+    password: &str,
+) {
+    let command = shell_quote(OsStr::new(driver));
     let mut child = require_ok(
         Command::new("script")
             .args(["-qefc", &command, "/dev/null"])
