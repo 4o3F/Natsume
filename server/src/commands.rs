@@ -6,6 +6,8 @@ use std::{
 };
 use tracing::instrument::WithSubscriber as _;
 
+pub use crate::error::CommandError;
+
 use crate::{
     application::{
         enrollment::{GatewayIssuer, GatewayIssuerError},
@@ -14,7 +16,6 @@ use crate::{
     },
     config::{GatewaySiteConfig, ServerConfig},
     db::{self, Database, DatabaseConfig},
-    error::CommandError,
     http, logging,
     tls::{ClientAddress, TlsListener},
     vault::{ensure_master_key, require_master_key},

@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
-use natsume_server::{commands, config::ServerConfig, error::CommandError};
+use natsume_server::{
+    commands::{self, CommandError},
+    config::ServerConfig,
+};
 
 #[derive(Parser)]
 struct Cli {

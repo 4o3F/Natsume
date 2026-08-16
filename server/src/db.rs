@@ -37,17 +37,17 @@ pub(crate) mod enrollment;
 #[allow(dead_code)]
 pub(crate) mod import;
 pub(crate) mod operator;
-pub mod provisioning;
+pub(crate) mod provisioning;
 pub(crate) mod schema;
 
-pub struct DatabaseConfig {
+pub(crate) struct DatabaseConfig {
     database_path: PathBuf,
     create_if_missing: bool,
 }
 
 impl DatabaseConfig {
     #[must_use]
-    pub fn new(database_path: impl Into<PathBuf>, create_if_missing: bool) -> Self {
+    pub(crate) fn new(database_path: impl Into<PathBuf>, create_if_missing: bool) -> Self {
         Self {
             database_path: database_path.into(),
             create_if_missing,
@@ -60,7 +60,7 @@ impl DatabaseConfig {
 }
 
 #[derive(Clone)]
-pub struct Database {
+pub(crate) struct Database {
     pool: Pool<ConnectionManager<SqliteConnection>>,
 }
 
@@ -71,7 +71,9 @@ impl Database {
     ///
     /// Returns a redacted [`DatabaseError`] when configuration, connection,
     /// or migration fails.
-    pub async fn connect_and_migrate(config: &DatabaseConfig) -> Result<Self, DatabaseError> {
+    pub(crate) async fn connect_and_migrate(
+        config: &DatabaseConfig,
+    ) -> Result<Self, DatabaseError> {
         if !config.is_valid() {
             return Err(DatabaseError::InvalidConfiguration);
         }
@@ -179,7 +181,7 @@ fn sqlite_pragma_values(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-pub enum DatabaseError {
+pub(crate) enum DatabaseError {
     #[snafu(display("the database configuration is invalid"))]
     InvalidConfiguration,
     #[snafu(display("the database connection failed"))]

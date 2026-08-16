@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecoveryOutcome {
+pub(crate) enum RecoveryOutcome {
     AlreadyClosed {
         revision: i64,
     },
@@ -18,7 +18,7 @@ pub enum RecoveryOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProvisioningWindowState {
+pub(crate) enum ProvisioningWindowState {
     Closed,
     Open,
 }
@@ -30,9 +30,9 @@ pub(crate) enum ProvisioningWindowAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProvisioningWindow {
-    pub state: ProvisioningWindowState,
-    pub revision: i64,
+pub(crate) struct ProvisioningWindow {
+    pub(crate) state: ProvisioningWindowState,
+    pub(crate) revision: i64,
 }
 
 /// The current revision cannot be incremented; overflow is the only failure
@@ -69,7 +69,9 @@ pub(crate) fn recovered_provisioning_window(
 /// Returns [`ProvisioningError::RevisionOverflow`] when the open window's
 /// revision cannot advance, or [`ProvisioningError::PersistenceFailed`] for a
 /// persistence failure.
-pub async fn recover_on_startup(database: &Database) -> Result<RecoveryOutcome, ProvisioningError> {
+pub(crate) async fn recover_on_startup(
+    database: &Database,
+) -> Result<RecoveryOutcome, ProvisioningError> {
     db::provisioning::recover_provisioning_window(database).await
 }
 
@@ -114,7 +116,7 @@ pub(crate) async fn close_window(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-pub enum ProvisioningError {
+pub(crate) enum ProvisioningError {
     #[snafu(display("the provisioning window revision cannot be incremented"))]
     RevisionOverflow,
     #[snafu(display("provisioning persistence failed"))]
