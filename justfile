@@ -97,6 +97,9 @@ ci-rust:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test --workspace --all-features --locked --lib --bins --tests
     cargo test --workspace --all-features --locked --doc
+    # Default-features guard: --all-features enables `fixture`, so this is the only lane
+    # proving the daemon builds without its integration-test fixture surface.
+    cargo build -p natsume-device-daemon --locked
     cargo deny check
 
 ci-web: install

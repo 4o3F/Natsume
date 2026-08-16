@@ -13,6 +13,7 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
+    atomic_write::ATOMIC_TEMP_PREFIX,
     enrollment::{self, EnrollmentError, EnrollmentPaths},
     identity_record,
 };
@@ -140,6 +141,9 @@ fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
     })
 }
 
+/// Ignores an orphaned atomic-write temporary because it was never renamed into place and never
+/// became a durable identity-bound artifact; counting it would fail-close a clean first start
+/// after `SIGKILL`.
 fn regular_file_below(directory: &Path) -> io::Result<bool> {
     let entries = match fs::read_dir(directory) {
         Ok(entries) => entries,
@@ -150,6 +154,13 @@ fn regular_file_below(directory: &Path) -> io::Result<bool> {
         let entry = entry?;
         let file_type = entry.file_type()?;
         if file_type.is_file() {
+            if entry
+                .file_name()
+                .as_encoded_bytes()
+                .starts_with(ATOMIC_TEMP_PREFIX.as_bytes())
+            {
+                continue;
+            }
             return Ok(true);
         }
         if file_type.is_dir() && regular_file_below(&entry.path())? {

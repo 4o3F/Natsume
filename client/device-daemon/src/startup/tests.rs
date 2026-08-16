@@ -403,3 +403,29 @@ fn token_with_missing_leaf_fails_closed_without_reenrollment() {
         Err(StartupError::Enrollment { .. })
     ));
 }
+
+#[test]
+fn orphaned_atomic_temporary_is_not_an_identity_bound_artifact() {
+    let directory = tempdir();
+    if let Err(error) = fs::write(directory.path().join(".natsume-tmp-orphan"), b"incomplete") {
+        panic!("orphaned temporary fixture must be written: {error}");
+    }
+
+    assert!(matches!(
+        identity_bound_artifacts_present(directory.path()),
+        Ok(false)
+    ));
+}
+
+#[test]
+fn normal_regular_file_is_an_identity_bound_artifact() {
+    let directory = tempdir();
+    if let Err(error) = fs::write(directory.path().join("gateway-key.pk8"), b"durable") {
+        panic!("identity-bound artifact fixture must be written: {error}");
+    }
+
+    assert!(matches!(
+        identity_bound_artifacts_present(directory.path()),
+        Ok(true)
+    ));
+}

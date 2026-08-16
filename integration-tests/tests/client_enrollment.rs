@@ -10,6 +10,7 @@ use std::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use natsume_device_daemon::enrollment::{
     EnrollmentClient, EnrollmentError, EnrollmentPaths, EnrollmentStep, EnrollmentWaitState,
+    enroll_until_parked,
 };
 use natsume_machine_identity::EvidenceQuality;
 use natsume_server::{commands, config::ServerConfig};
@@ -300,6 +301,15 @@ impl TestServer {
             fs::set_permissions(&keys_directory, fs::Permissions::from_mode(0o700)),
             "client keys directory mode must be set",
         );
+        self.client_in_keys_directory(name, machine_hardware_id, keys_directory)
+    }
+
+    fn client_in_keys_directory(
+        &self,
+        name: &str,
+        machine_hardware_id: Uuid,
+        keys_directory: PathBuf,
+    ) -> ClientFixture {
         let client_config = self.directory.path().join(format!("client-{name}.toml"));
         require_ok(
             fs::write(
@@ -333,7 +343,7 @@ impl TestServer {
         }
     }
 
-    async fn pending_request_id(&self, machine_hardware_id: Uuid) -> Uuid {
+    async fn pending_request_id_if_present(&self, machine_hardware_id: Uuid) -> Option<Uuid> {
         let response = require_ok(
             self.operator_request(reqwest::Method::GET, "/api/v2/enrollment-requests")
                 .send()
@@ -358,9 +368,7 @@ impl TestServer {
                 == Some(machine_hardware_id.as_str())
                 && item.get("state").and_then(Value::as_str) == Some("pending")
         });
-        let item = pending
-            .next()
-            .unwrap_or_else(|| panic!("pending replacement must be listed"));
+        let item = pending.next()?;
         assert!(
             pending.next().is_none(),
             "hardware identity must have one pending request"
@@ -375,11 +383,16 @@ impl TestServer {
             .unwrap_or_else(|| panic!("pending request ID must be present"));
         let parsed = require_ok(Uuid::parse_str(request_id), "pending request ID must parse");
         assert_eq!(parsed.to_string(), request_id);
-        parsed
+        Some(parsed)
     }
 
-    async fn decide(&self, machine_hardware_id: Uuid, approve: bool) -> Uuid {
-        let request_id = self.pending_request_id(machine_hardware_id).await;
+    async fn pending_request_id(&self, machine_hardware_id: Uuid) -> Uuid {
+        self.pending_request_id_if_present(machine_hardware_id)
+            .await
+            .unwrap_or_else(|| panic!("pending replacement must be listed"))
+    }
+
+    async fn decide_request(&self, request_id: Uuid, approve: bool) -> Uuid {
         let (action, expected_state) = if approve {
             ("approve", "approved")
         } else {
@@ -410,6 +423,18 @@ impl TestServer {
             Some(expected_state)
         );
         request_id
+    }
+
+    async fn decide(&self, machine_hardware_id: Uuid, approve: bool) -> Uuid {
+        let request_id = self.pending_request_id(machine_hardware_id).await;
+        self.decide_request(request_id, approve).await
+    }
+
+    async fn decide_if_pending(&self, machine_hardware_id: Uuid, approve: bool) -> Option<Uuid> {
+        let request_id = self
+            .pending_request_id_if_present(machine_hardware_id)
+            .await?;
+        Some(self.decide_request(request_id, approve).await)
     }
 
     async fn raw_post(&self, client: &EnrollmentClient) -> Vec<u8> {
@@ -597,27 +622,25 @@ fn assert_mode(path: &Path, expected: u32) {
 }
 
 fn assert_final_artifacts(client: &ClientFixture, origin_der: &[u8]) {
-    let leaf = require_ok(
-        fs::read(client.gateway_leaf()),
-        "Gateway leaf must be readable",
-    );
+    assert_final_artifacts_in(&client.keys_directory, origin_der);
+}
+
+fn assert_final_artifacts_in(keys_directory: &Path, origin_der: &[u8]) {
+    let gateway_leaf = keys_directory.join("gateway-leaf.der");
+    let gateway_chain = keys_directory.join("gateway-chain.der");
+    let device_token = keys_directory.join("device-token");
+    let leaf = require_ok(fs::read(&gateway_leaf), "Gateway leaf must be readable");
     assert!(!leaf.is_empty());
     assert_eq!(
-        require_ok(
-            fs::read(client.gateway_chain()),
-            "Gateway chain must be readable"
-        ),
+        require_ok(fs::read(&gateway_chain), "Gateway chain must be readable"),
         origin_der
     );
-    let token = require_ok(
-        fs::read(client.device_token()),
-        "Device Token must be readable",
-    );
+    let token = require_ok(fs::read(&device_token), "Device Token must be readable");
     assert_eq!(token.len(), 43);
     assert!(!token.contains(&b'\n'));
-    assert_mode(&client.gateway_leaf(), 0o640);
-    assert_mode(&client.gateway_chain(), 0o640);
-    assert_mode(&client.device_token(), 0o600);
+    assert_mode(&gateway_leaf, 0o640);
+    assert_mode(&gateway_chain, 0o640);
+    assert_mode(&device_token, 0o600);
 }
 
 fn assert_no_final_artifacts(client: &ClientFixture) {
@@ -691,6 +714,95 @@ async fn different_spki_replace_is_approve_then_claim_over_real_tls() {
         EnrollmentStep::Enrolled
     );
     assert_final_artifacts(&replacement, &server.origin_certificate_der);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn replacement_over_existing_artifacts_converges_via_enroll_until_parked() {
+    let server = TestServer::start().await;
+    server.open_window().await;
+    let hardware_id = machine_id(b"park-replacement");
+    let original = server.client("park-original", hardware_id);
+    assert_eq!(
+        require_ok(
+            original.client.step().await,
+            "initial Enrollment must issue"
+        ),
+        EnrollmentStep::Enrolled
+    );
+    let old_leaf = require_ok(
+        fs::read(original.gateway_leaf()),
+        "original Gateway leaf must be readable",
+    );
+    let old_token = require_ok(
+        fs::read(original.device_token()),
+        "original Device Token must be readable",
+    );
+    require_ok(
+        fs::remove_file(original.gateway_key()),
+        "original Gateway key must be removed",
+    );
+    let replacement = server.client_in_keys_directory(
+        "park-replacement",
+        hardware_id,
+        original.keys_directory.clone(),
+    );
+    let keys_directory = replacement.keys_directory.clone();
+    let enrollment_task =
+        tokio::spawn(async move { enroll_until_parked(&replacement.client).await });
+
+    let _reviewed_request_id = require_ok(
+        timeout(Duration::from_secs(30), async {
+            loop {
+                if let Some(request_id) = server.decide_if_pending(hardware_id, true).await {
+                    break request_id;
+                }
+                sleep(Duration::from_millis(100)).await;
+            }
+        })
+        .await,
+        "replacement request must become pending and be approved",
+    );
+    let joined = require_ok(
+        timeout(Duration::from_mins(1), enrollment_task).await,
+        "enroll_until_parked must finish within 60 seconds",
+    );
+    let enrollment_result = require_ok(joined, "enroll_until_parked task must join");
+    require_ok(
+        enrollment_result,
+        "enroll_until_parked must converge after approval",
+    );
+
+    assert_final_artifacts_in(&keys_directory, &server.origin_certificate_der);
+    let new_leaf = require_ok(
+        fs::read(keys_directory.join("gateway-leaf.der")),
+        "replacement Gateway leaf must be readable",
+    );
+    let new_token = require_ok(
+        fs::read(keys_directory.join("device-token")),
+        "replacement Device Token must be readable",
+    );
+    assert_ne!(new_leaf, old_leaf);
+    assert_ne!(new_token, old_token);
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn lost_issue_response_self_heals_with_same_spki_over_real_tls() {
+    let server = TestServer::start().await;
+    server.open_window().await;
+    let client = server.client("lost-issue-response", machine_id(b"lost-issue-response"));
+
+    let _ = server.raw_post(&client.client).await;
+    assert_no_final_artifacts(&client);
+
+    let step = require_ok(
+        client.client.step().await,
+        "same-SPKI Enrollment retry must issue",
+    );
+
+    assert_eq!(step, EnrollmentStep::Enrolled);
+    assert_final_artifacts(&client, &server.origin_certificate_der);
     server.shutdown().await;
 }
 

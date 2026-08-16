@@ -11,7 +11,7 @@ publish.workspace = true
 axum.workspace = true
 base64.workspace = true
 diesel.workspace = true
-natsume-device-daemon = { path = "../client/device-daemon" }
+natsume-device-daemon = { path = "../client/device-daemon", features = ["fixture"] }
 natsume-device-protocol = { path = "../crates/device-protocol" }
 natsume-error-code = { path = "../crates/error-code" }
 natsume-local-control-api = { path = "../crates/local-control-api" }

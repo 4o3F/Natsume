@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, path::Path, process::Stdio};
+use std::{ffi::OsStr, io::ErrorKind, path::Path, process::Stdio};
 
 use tokio::{io::AsyncWriteExt as _, process::Command};
 use zeroize::{Zeroize as _, Zeroizing};
@@ -20,16 +20,23 @@ pub async fn bootstrap_operator(
     password: &str,
 ) {
     let command = shell_quote(OsStr::new(driver));
-    let mut child = require_ok(
-        Command::new("script")
-            .args(["-qefc", &command, "/dev/null"])
-            .env(BOOTSTRAP_CONFIG_ENVIRONMENT, config_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn(),
-        "bootstrap composition process must start",
-    );
+    let mut child = match Command::new("script")
+        .args(["-qefc", &command, "/dev/null"])
+        .env(BOOTSTRAP_CONFIG_ENVIRONMENT, config_path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            panic!("util-linux script(1) is a required integration-test dependency")
+        }
+        Err(error) => {
+            drop(error);
+            panic!("bootstrap composition process must start");
+        }
+    };
     let mut input = Zeroizing::new(format!("{login_name}\n{password}\n{password}\n"));
     let mut stdin = child
         .stdin

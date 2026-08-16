@@ -23,6 +23,11 @@ use zeroize::Zeroize as _;
 use crate::{config::GatewaySiteConfig, tls};
 
 pub(crate) const GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS: i64 = 300;
+/// The contest network is offline and has no NTP, so a device RTC behind the server must not
+/// fail-close fresh-leaf finalization with webpki `NotValidYet`. One hour covers realistic RTC
+/// drift; a clock that is years behind (dead RTC battery) still fails closed and stays a
+/// registered residual in the Phase 3 ledger.
+pub(crate) const GATEWAY_NOT_BEFORE_BACKDATE_SECONDS: i64 = 3600;
 
 pub(super) const CERTIFICATE_SERIAL_BYTES: usize = 20;
 #[cfg(test)]
@@ -152,7 +157,10 @@ impl GatewayIssuer {
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
         params.serial_number = Some(SerialNumber::from_slice(&serial_bytes));
-        params.not_before = OffsetDateTime::from_unix_timestamp(now)
+        let not_before = now
+            .checked_sub(GATEWAY_NOT_BEFORE_BACKDATE_SECONDS)
+            .ok_or(GatewayIssuerError::ClockInvalid)?;
+        params.not_before = OffsetDateTime::from_unix_timestamp(not_before)
             .map_err(|_| GatewayIssuerError::ClockInvalid)?;
         params.not_after = self.0.site.gateway_not_after().timestamp();
         let certificate = params
@@ -304,4 +312,50 @@ pub(crate) struct IssuedGatewayCertificate {
     pub(crate) chain_der: Vec<Vec<u8>>,
     pub(crate) serial: String,
     pub(crate) not_after: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use rcgen::KeyPair;
+    use x509_parser::{certificate::X509Certificate, prelude::FromDer as _};
+
+    use super::*;
+
+    #[test]
+    fn gateway_leaf_not_before_is_backdated_one_hour() {
+        let before = match current_unix_seconds() {
+            Ok(before) => before,
+            Err(error) => panic!("current time must be available: {error}"),
+        };
+        let signer = match GatewayIssuer::for_test() {
+            Ok(signer) => signer,
+            Err(error) => panic!("test issuer must be created: {error}"),
+        };
+        let key = match KeyPair::generate() {
+            Ok(key) => key,
+            Err(error) => panic!("test key must be generated: {error}"),
+        };
+        let certificate = match signer.sign_public_key(&key) {
+            Ok(certificate) => certificate,
+            Err(error) => panic!("Gateway leaf must be issued: {error}"),
+        };
+        let (remainder, leaf) = match X509Certificate::from_der(&certificate.leaf_der) {
+            Ok(parsed) => parsed,
+            Err(error) => panic!("issued Gateway leaf must parse: {error}"),
+        };
+        assert!(
+            remainder.is_empty(),
+            "issued Gateway leaf must be exact DER"
+        );
+        let not_before_unix = leaf.validity().not_before.timestamp();
+        let after = match current_unix_seconds() {
+            Ok(after) => after,
+            Err(error) => panic!("current time must be available: {error}"),
+        };
+
+        assert!(
+            before - GATEWAY_NOT_BEFORE_BACKDATE_SECONDS <= not_before_unix
+                && not_before_unix <= after - GATEWAY_NOT_BEFORE_BACKDATE_SECONDS
+        );
+    }
 }

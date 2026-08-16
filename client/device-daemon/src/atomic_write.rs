@@ -6,7 +6,9 @@ use std::{
 };
 
 use snafu::Snafu;
-use tempfile::NamedTempFile;
+use tempfile::Builder;
+
+pub(crate) const ATOMIC_TEMP_PREFIX: &str = ".natsume-tmp";
 
 #[derive(Clone, Copy)]
 pub(super) enum WritePolicy {
@@ -47,7 +49,10 @@ pub(super) fn atomic_write(
     policy: WritePolicy,
 ) -> Result<(), AtomicWriteError> {
     let parent = target.parent().ok_or(AtomicWriteError::Parent)?;
-    let mut temporary = NamedTempFile::new_in(parent).map_err(|_| AtomicWriteError::Create)?;
+    let mut temporary = Builder::new()
+        .prefix(ATOMIC_TEMP_PREFIX)
+        .tempfile_in(parent)
+        .map_err(|_| AtomicWriteError::Create)?;
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(mode))

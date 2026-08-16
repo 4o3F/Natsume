@@ -145,6 +145,9 @@ pub enum EnrollmentError {
     #[snafu(display("the issued Gateway certificate chain is invalid"))]
     InvalidChain,
 
+    #[snafu(display("the issued Gateway leaf is outside its validity window"))]
+    LeafValidityWindow,
+
     #[snafu(display("the issued Gateway leaf is not valid for the configured hostname"))]
     InvalidHostname,
 
@@ -277,13 +280,17 @@ impl EnrollmentClient {
         }
     }
 
-    /// Returns the exact JSON bytes reused by every idempotent POST.
+    /// Integration-test fixture surface returning the exact JSON bytes reused by every POST;
+    /// this is not daemon API.
+    #[cfg(feature = "fixture")]
     #[must_use]
     pub fn request_body_json(&self) -> Vec<u8> {
         self.request_body.clone()
     }
 
-    /// Returns the configured HTTPS Enrollment endpoint.
+    /// Integration-test fixture surface returning the configured HTTPS Enrollment endpoint;
+    /// this is not daemon API.
+    #[cfg(feature = "fixture")]
     #[must_use]
     pub fn endpoint(&self) -> &str {
         &self.endpoint
@@ -339,7 +346,7 @@ pub async fn enroll_until_parked(client: &EnrollmentClient) -> Result<(), Enroll
 }
 
 pub(crate) fn device_token_present(paths: &EnrollmentPaths) -> Result<bool, EnrollmentError> {
-    match fs::metadata(paths.device_token()) {
+    match fs::symlink_metadata(paths.device_token()) {
         Ok(metadata) if metadata.is_file() => Ok(true),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
         Ok(_) | Err(_) => Err(EnrollmentError::EnrolledArtifacts),
@@ -645,16 +652,26 @@ fn verify_server_certificate(
     .map_err(|_| EnrollmentError::InvalidChain)?;
     let server_name = ServerName::try_from(gateway_hostname.to_owned())
         .map_err(|_| EnrollmentError::InvalidHostname)?;
-    verifier
-        .verify_server_cert(
-            &CertificateDer::from(leaf_der),
-            &[],
-            &server_name,
-            &[],
-            UnixTime::now(),
-        )
-        .map_err(|_| EnrollmentError::InvalidHostname)?;
-    Ok(())
+    match verifier.verify_server_cert(
+        &CertificateDer::from(leaf_der),
+        &[],
+        &server_name,
+        &[],
+        UnixTime::now(),
+    ) {
+        Ok(_) => Ok(()),
+        Err(rustls::Error::InvalidCertificate(
+            rustls::CertificateError::Expired
+            | rustls::CertificateError::ExpiredContext { .. }
+            | rustls::CertificateError::NotValidYet
+            | rustls::CertificateError::NotValidYetContext { .. },
+        )) => Err(EnrollmentError::LeafValidityWindow),
+        Err(rustls::Error::InvalidCertificate(
+            rustls::CertificateError::NotValidForName
+            | rustls::CertificateError::NotValidForNameContext { .. },
+        )) => Err(EnrollmentError::InvalidHostname),
+        Err(_) => Err(EnrollmentError::InvalidChain),
+    }
 }
 
 fn valid_device_token(token: &str) -> bool {
@@ -662,6 +679,10 @@ fn valid_device_token(token: &str) -> bool {
         && token
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+        && token
+            .as_bytes()
+            .last()
+            .is_some_and(|byte| b"AEIMQUYcgkosw048".contains(byte))
 }
 
 fn persist_verified_artifacts(
@@ -724,7 +745,11 @@ fn log_wait_state(state: EnrollmentWaitState) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::MetadataExt as _, path::Path};
+    use std::{
+        fs,
+        os::unix::fs::{MetadataExt as _, symlink},
+        path::Path,
+    };
 
     use rcgen::{BasicConstraints, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyUsagePurpose};
     use serde_json::json;
@@ -792,6 +817,16 @@ mod tests {
     }
 
     fn require_leaf(key: &KeyPair, issuer: &Issuer<'_, KeyPair>, hostname: &str) -> Vec<u8> {
+        require_leaf_with_validity(key, issuer, hostname, 2020, 4090)
+    }
+
+    fn require_leaf_with_validity(
+        key: &KeyPair,
+        issuer: &Issuer<'_, KeyPair>,
+        hostname: &str,
+        not_before_year: i32,
+        not_after_year: i32,
+    ) -> Vec<u8> {
         let mut params = match CertificateParams::new(vec![hostname.to_owned()]) {
             Ok(params) => params,
             Err(error) => panic!("Gateway leaf parameters must be created: {error}"),
@@ -800,8 +835,8 @@ mod tests {
         params.is_ca = IsCa::ExplicitNoCa;
         params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-        params.not_before = rcgen::date_time_ymd(2020, 1, 1);
-        params.not_after = rcgen::date_time_ymd(4090, 1, 1);
+        params.not_before = rcgen::date_time_ymd(not_before_year, 1, 1);
+        params.not_after = rcgen::date_time_ymd(not_after_year, 1, 1);
         match params.signed_by(key, issuer) {
             Ok(certificate) => certificate.der().to_vec(),
             Err(error) => panic!("Gateway leaf must be signed: {error}"),
@@ -909,6 +944,23 @@ mod tests {
     }
 
     #[test]
+    fn token_symlink_fails_closed_as_enrolled_artifacts() {
+        let directory = require_tempdir();
+        let paths = fixture_paths(&directory);
+        let target = directory.path().join("token-target");
+        if let Err(error) = fs::write(&target, VALID_TOKEN) {
+            panic!("Device Token target fixture must be written: {error}");
+        }
+        if let Err(error) = symlink(&target, paths.device_token()) {
+            panic!("Device Token symlink fixture must be created: {error}");
+        }
+
+        let result = device_token_present(&paths);
+
+        assert!(matches!(result, Err(EnrollmentError::EnrolledArtifacts)));
+    }
+
+    #[test]
     fn csr_raw_spki_derivation_is_pinned_to_the_public_csr_fixture() {
         // The fixture is a public CSR (public key + signature, no private material) so
         // the raw-SPKI extraction and hashing stay pinned across implementations
@@ -993,6 +1045,28 @@ mod tests {
     }
 
     #[test]
+    fn finalization_rejects_leaf_signed_by_foreign_ca_before_any_write() {
+        let directory = require_tempdir();
+        let paths = fixture_paths(&directory);
+        let (_, origin) = require_origin();
+        let (foreign_issuer, _) = require_origin();
+        let key = require_key();
+        let leaf = require_leaf(&key, &foreign_issuer, GATEWAY_HOSTNAME);
+        let response = issued_response(&leaf, &[origin.as_ref()], VALID_TOKEN);
+
+        let result = finalize_fixture(
+            &paths,
+            response,
+            &key.subject_public_key_info(),
+            &origin,
+            GATEWAY_HOSTNAME,
+        );
+
+        assert!(matches!(result, Err(EnrollmentError::InvalidChain)));
+        assert_no_finalization_writes(&paths);
+    }
+
+    #[test]
     fn finalization_rejects_wrong_hostname_before_any_write() {
         let directory = require_tempdir();
         let paths = fixture_paths(&directory);
@@ -1010,6 +1084,48 @@ mod tests {
         );
 
         assert!(matches!(result, Err(EnrollmentError::InvalidHostname)));
+        assert_no_finalization_writes(&paths);
+    }
+
+    #[test]
+    fn finalization_rejects_expired_leaf_before_any_write() {
+        let directory = require_tempdir();
+        let paths = fixture_paths(&directory);
+        let (issuer, origin) = require_origin();
+        let key = require_key();
+        let leaf = require_leaf_with_validity(&key, &issuer, GATEWAY_HOSTNAME, 2020, 2021);
+        let response = issued_response(&leaf, &[origin.as_ref()], VALID_TOKEN);
+
+        let result = finalize_fixture(
+            &paths,
+            response,
+            &key.subject_public_key_info(),
+            &origin,
+            GATEWAY_HOSTNAME,
+        );
+
+        assert!(matches!(result, Err(EnrollmentError::LeafValidityWindow)));
+        assert_no_finalization_writes(&paths);
+    }
+
+    #[test]
+    fn finalization_rejects_not_yet_valid_leaf_before_any_write() {
+        let directory = require_tempdir();
+        let paths = fixture_paths(&directory);
+        let (issuer, origin) = require_origin();
+        let key = require_key();
+        let leaf = require_leaf_with_validity(&key, &issuer, GATEWAY_HOSTNAME, 4090, 4091);
+        let response = issued_response(&leaf, &[origin.as_ref()], VALID_TOKEN);
+
+        let result = finalize_fixture(
+            &paths,
+            response,
+            &key.subject_public_key_info(),
+            &origin,
+            GATEWAY_HOSTNAME,
+        );
+
+        assert!(matches!(result, Err(EnrollmentError::LeafValidityWindow)));
         assert_no_finalization_writes(&paths);
     }
 
@@ -1032,6 +1148,14 @@ mod tests {
 
         assert!(matches!(result, Err(EnrollmentError::InvalidToken)));
         assert_no_finalization_writes(&paths);
+    }
+
+    #[test]
+    fn device_token_shape_pins_the_32_byte_base64url_tail() {
+        let invalid_tail = format!("{}B", &VALID_TOKEN[..DEVICE_TOKEN_LENGTH - 1]);
+
+        assert!(valid_device_token(VALID_TOKEN));
+        assert!(!valid_device_token(&invalid_tail));
     }
 
     #[test]
