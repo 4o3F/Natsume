@@ -98,6 +98,9 @@ impl ApiError {
 
     pub(super) fn from_enrollment(error: EnrollmentError, correlation_id: CorrelationId) -> Self {
         match error {
+            EnrollmentError::InvalidRequestId => {
+                Self::invalid_enrollment_request("enrollment_request_id_invalid", correlation_id)
+            }
             EnrollmentError::InvalidMachineHardwareId => Self::invalid_enrollment_request(
                 "enrollment_machine_hardware_id_invalid",
                 correlation_id,
@@ -455,6 +458,11 @@ mod tests {
 
     const CAUSE_CANARY: &str = "internal_cause_canary";
     const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
+    const INVALID_ENROLLMENT_REQUEST_ID_CAUSE: (EnrollmentError, &str, StatusCode) = (
+        EnrollmentError::InvalidRequestId,
+        "enrollment_request_id_invalid",
+        StatusCode::BAD_REQUEST,
+    );
 
     #[tokio::test]
     async fn non_pending_enrollment_decision_is_invalid_not_identity_conflict()
@@ -688,8 +696,9 @@ mod tests {
         ]
     }
 
-    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 19] {
+    fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 20] {
         [
+            INVALID_ENROLLMENT_REQUEST_ID_CAUSE,
             (
                 EnrollmentError::InvalidMachineHardwareId,
                 "enrollment_machine_hardware_id_invalid",

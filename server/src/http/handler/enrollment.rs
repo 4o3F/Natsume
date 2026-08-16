@@ -1,35 +1,65 @@
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
+    extract::{DefaultBodyLimit, Path, Request, State, rejection::JsonRejection},
     http::{StatusCode, header},
+    middleware as axum_middleware,
+    middleware::Next,
     response::{IntoResponse, Response},
     routing::post,
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::{
     application::enrollment::{
-        self, EnrollmentOutcome, EnrollmentRequestInput, EnrollmentState, encode_standard_base64,
+        self, EnrollmentDecisionOutcome, EnrollmentDecisionState as DomainEnrollmentDecisionState,
+        EnrollmentOutcome, EnrollmentRequestId, EnrollmentRequestInput,
+        EnrollmentRequestSummary as EnrollmentRequestSummaryFacts, EnrollmentResolution,
+        EnrollmentReviewState, EnrollmentState, HardwareIdentityQuality, encode_standard_base64,
     },
+    application::operator::{self, OperatorIdentity},
     audit::CorrelationId,
     tls::ClientAddress,
 };
 
-use super::super::{AppState, error::ApiError};
+use super::super::{AppState, error::ApiError, middleware};
 
 pub(crate) const ENROLLMENT_REQUEST_BODY_LIMIT_BYTES: usize = 65_536;
 const DEVICE_TOKEN_WIRE_LENGTH: usize = 43;
 const BASE64_URL_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-pub(in crate::http) fn routes() -> Router<AppState> {
-    Router::new().route(
-        "/enrollment-requests",
-        post(create_enrollment_request)
-            .layer(DefaultBodyLimit::max(ENROLLMENT_REQUEST_BODY_LIMIT_BYTES)),
-    )
+pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
+    let intake = post(create_enrollment_request)
+        .layer(DefaultBodyLimit::max(ENROLLMENT_REQUEST_BODY_LIMIT_BYTES));
+    let list = middleware::operator_get(state.clone(), list_enrollment_requests);
+    let approve =
+        post(approve_enrollment_request).route_layer(axum_middleware::from_fn(require_admin_role));
+    let reject =
+        post(reject_enrollment_request).route_layer(axum_middleware::from_fn(require_admin_role));
+    Router::new()
+        .route("/enrollment-requests", intake.merge(list))
+        .route(
+            "/enrollment-requests/{request_id}/actions/approve",
+            middleware::require_operator(state.clone(), approve),
+        )
+        .route(
+            "/enrollment-requests/{request_id}/actions/reject",
+            middleware::require_operator(state, reject),
+        )
+}
+
+async fn require_admin_role(
+    Extension(correlation_id): Extension<CorrelationId>,
+    Extension(identity): Extension<OperatorIdentity>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err(error) = operator::require_admin(identity.role()) {
+        return ApiError::from_operator(error, correlation_id).into_response();
+    }
+    next.run(request).await
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -54,7 +84,7 @@ pub(crate) struct EnrollmentRequest {
     protocol_version: u32,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Clone, Copy, Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum EnrollmentHardwareIdentityQuality {
     Strong,
@@ -62,8 +92,18 @@ pub(crate) enum EnrollmentHardwareIdentityQuality {
     Weak,
 }
 
+impl From<HardwareIdentityQuality> for EnrollmentHardwareIdentityQuality {
+    fn from(quality: HardwareIdentityQuality) -> Self {
+        match quality {
+            HardwareIdentityQuality::Strong => Self::Strong,
+            HardwareIdentityQuality::Medium => Self::Medium,
+            HardwareIdentityQuality::Weak => Self::Weak,
+        }
+    }
+}
+
 impl EnrollmentHardwareIdentityQuality {
-    const fn as_str(&self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Strong => "strong",
             Self::Medium => "medium",
@@ -106,6 +146,228 @@ pub(crate) struct EnrollmentPendingResponse {
 #[serde(rename_all = "lowercase")]
 pub(crate) enum EnrollmentPendingState {
     Pending,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum EnrollmentReviewResponseState {
+    Pending,
+    Approved,
+}
+
+impl From<EnrollmentReviewState> for EnrollmentReviewResponseState {
+    fn from(state: EnrollmentReviewState) -> Self {
+        match state {
+            EnrollmentReviewState::Pending => Self::Pending,
+            EnrollmentReviewState::Approved => Self::Approved,
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum EnrollmentResolutionResponse {
+    CreateDevice,
+    ReplaceDeviceCredentials,
+}
+
+impl From<EnrollmentResolution> for EnrollmentResolutionResponse {
+    fn from(resolution: EnrollmentResolution) -> Self {
+        match resolution {
+            EnrollmentResolution::CreateDevice => Self::CreateDevice,
+            EnrollmentResolution::ReplaceDeviceCredentials => Self::ReplaceDeviceCredentials,
+        }
+    }
+}
+
+/// Redacted live Enrollment facts exposed to authenticated operators.
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+#[schema(as = EnrollmentRequestSummary)]
+pub(crate) struct EnrollmentRequestSummaryResponse {
+    enrollment_request_id: Uuid,
+    #[schema(pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")]
+    machine_hardware_id: Uuid,
+    #[schema(inline)]
+    hardware_identity_quality: EnrollmentHardwareIdentityQuality,
+    #[schema(min_length = 64, max_length = 64, pattern = "^[0-9a-f]{64}$")]
+    gateway_spki_sha256: String,
+    client_version: String,
+    protocol_version: u32,
+    #[schema(inline)]
+    state: EnrollmentReviewResponseState,
+    #[schema(required = true, inline)]
+    resolution: Option<EnrollmentResolutionResponse>,
+    #[schema(required = true)]
+    resolved_device_id: Option<Uuid>,
+    /// RFC 3339 UTC timestamp with a trailing Z.
+    #[schema(value_type = String, format = DateTime)]
+    created_at: String,
+    source_ip: String,
+}
+
+impl From<EnrollmentRequestSummaryFacts> for EnrollmentRequestSummaryResponse {
+    fn from(facts: EnrollmentRequestSummaryFacts) -> Self {
+        Self {
+            enrollment_request_id: facts.enrollment_request_id,
+            machine_hardware_id: facts.machine_hardware_id,
+            hardware_identity_quality: facts.hardware_identity_quality.into(),
+            gateway_spki_sha256: facts.gateway_spki_sha256,
+            client_version: facts.client_version,
+            protocol_version: facts.protocol_version,
+            state: facts.state.into(),
+            resolution: facts.resolution.map(EnrollmentResolutionResponse::from),
+            resolved_device_id: facts.resolved_device_id,
+            created_at: facts.created_at,
+            source_ip: facts.source_ip,
+        }
+    }
+}
+
+#[derive(Deserialize, IntoParams)]
+#[into_params(parameter_in = Path)]
+pub(crate) struct EnrollmentActionPath {
+    /// Canonical lowercase hyphenated `UUIDv7` Enrollment request ID.
+    request_id: String,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct EnrollmentActionResponse {
+    enrollment_request_id: Uuid,
+    #[schema(inline)]
+    state: EnrollmentActionResponseState,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum EnrollmentActionResponseState {
+    Approved,
+    Rejected,
+}
+
+impl From<DomainEnrollmentDecisionState> for EnrollmentActionResponseState {
+    fn from(state: DomainEnrollmentDecisionState) -> Self {
+        match state {
+            DomainEnrollmentDecisionState::Approved => Self::Approved,
+            DomainEnrollmentDecisionState::Rejected => Self::Rejected,
+        }
+    }
+}
+
+impl From<EnrollmentDecisionOutcome> for EnrollmentActionResponse {
+    fn from(outcome: EnrollmentDecisionOutcome) -> Self {
+        Self {
+            enrollment_request_id: outcome.enrollment_request_id,
+            state: outcome.state.into(),
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v2/enrollment-requests",
+    operation_id = "listEnrollmentRequests",
+    security(("sessionCookie" = [])),
+    responses(
+        (status = 200, description = "Live Enrollment request set", body = [EnrollmentRequestSummaryResponse]),
+        (status = 401, description = "Session authentication failed"),
+        (status = 500, description = "Internal failure")
+    )
+)]
+pub(crate) async fn list_enrollment_requests(
+    State(state): State<AppState>,
+    Extension(correlation_id): Extension<CorrelationId>,
+) -> Response {
+    match enrollment::list_requests(&state.database).await {
+        Ok(requests) => json_response(
+            StatusCode::OK,
+            &requests
+                .into_iter()
+                .map(EnrollmentRequestSummaryResponse::from)
+                .collect::<Vec<_>>(),
+            correlation_id,
+        ),
+        Err(error) => ApiError::from_enrollment(error, correlation_id).into_response(),
+    }
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v2/enrollment-requests/{request_id}/actions/approve",
+    operation_id = "approveEnrollment",
+    params(EnrollmentActionPath),
+    security(("sessionCookie" = [])),
+    responses(
+        (status = 200, description = "Enrollment request approved or already approved", body = EnrollmentActionResponse),
+        (status = 400, description = "Request ID is invalid or the request is not actionable"),
+        (status = 401, description = "Session authentication failed"),
+        (status = 403, description = "Administrator role required"),
+        (status = 500, description = "Internal failure")
+    )
+)]
+pub(crate) async fn approve_enrollment_request(
+    State(state): State<AppState>,
+    Extension(correlation_id): Extension<CorrelationId>,
+    Path(path): Path<EnrollmentActionPath>,
+) -> Response {
+    apply_enrollment_decision(&state, correlation_id, path, EnrollmentDecision::Approve).await
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v2/enrollment-requests/{request_id}/actions/reject",
+    operation_id = "rejectEnrollment",
+    params(EnrollmentActionPath),
+    security(("sessionCookie" = [])),
+    responses(
+        (status = 200, description = "Enrollment request rejected or already rejected", body = EnrollmentActionResponse),
+        (status = 400, description = "Request ID is invalid or the request is not actionable"),
+        (status = 401, description = "Session authentication failed"),
+        (status = 403, description = "Administrator role required"),
+        (status = 500, description = "Internal failure")
+    )
+)]
+pub(crate) async fn reject_enrollment_request(
+    State(state): State<AppState>,
+    Extension(correlation_id): Extension<CorrelationId>,
+    Path(path): Path<EnrollmentActionPath>,
+) -> Response {
+    apply_enrollment_decision(&state, correlation_id, path, EnrollmentDecision::Reject).await
+}
+
+#[derive(Clone, Copy)]
+enum EnrollmentDecision {
+    Approve,
+    Reject,
+}
+
+async fn apply_enrollment_decision(
+    state: &AppState,
+    correlation_id: CorrelationId,
+    path: EnrollmentActionPath,
+    decision: EnrollmentDecision,
+) -> Response {
+    let request_id = match EnrollmentRequestId::parse(&path.request_id) {
+        Ok(request_id) => request_id,
+        Err(error) => return ApiError::from_enrollment(error, correlation_id).into_response(),
+    };
+    let outcome = match decision {
+        EnrollmentDecision::Approve => {
+            enrollment::approve_request(&state.database, &request_id, correlation_id).await
+        }
+        EnrollmentDecision::Reject => {
+            enrollment::reject_request(&state.database, &request_id, correlation_id).await
+        }
+    };
+    match outcome {
+        Ok(outcome) => json_response(
+            StatusCode::OK,
+            &EnrollmentActionResponse::from(outcome),
+            correlation_id,
+        ),
+        Err(error) => ApiError::from_enrollment(error, correlation_id).into_response(),
+    }
 }
 
 #[utoipa::path(
@@ -243,13 +505,14 @@ mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
     use axum::{
+        Router,
         body::Body,
         extract::ConnectInfo,
         http::{Method, Request, StatusCode, header},
     };
     use diesel::{
         QueryableByName, RunQueryDsl,
-        sql_types::{BigInt, Text},
+        sql_types::{BigInt, Binary, Nullable, Text},
     };
     use rcgen::{CertificateParams, KeyPair, PublicKeyData};
     use serde_json::Value;
@@ -260,13 +523,14 @@ mod tests {
     use crate::{
         application::{
             enrollment::{
-                self, GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS, GatewayIssuer,
-                encode_standard_base64,
+                self, EnrollmentRequestId, GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS,
+                GatewayIssuer, encode_standard_base64,
             },
+            operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
             provisioning,
         },
         audit::CorrelationId,
-        db::enrollment::MAX_LIVE_ENROLLMENT_REQUESTS,
+        db::{Database, enrollment::MAX_LIVE_ENROLLMENT_REQUESTS},
         tls::ClientAddress,
     };
 
@@ -274,8 +538,9 @@ mod tests {
         super::super::{
             router_with_enrollment,
             tests::{
-                SupportFailure, TestDatabase, canonical_correlation_id, check_error_response,
-                drive, unused_vault_master_key, unused_web_root,
+                Captured, SupportFailure, TestDatabase, canonical_correlation_id,
+                check_error_response, drive, seed_operator, unused_vault_master_key,
+                unused_web_root,
             },
         },
         ENROLLMENT_REQUEST_BODY_LIMIT_BYTES,
@@ -283,6 +548,11 @@ mod tests {
 
     const REMOTE_ADDRESS: SocketAddr =
         SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::new(198, 51, 100, 27)), 45123);
+    const REVIEW_PASSWORD: &str = "enrollment-review-password-canary";
+    const LIST_EARLY_REQUEST_ID: &str = "01900000-0000-7000-8000-000000000302";
+    const LIST_TIE_LOW_REQUEST_ID: &str = "01900000-0000-7000-8000-000000000301";
+    const LIST_TIE_HIGH_REQUEST_ID: &str = "01900000-0000-7000-8000-000000000303";
+    const LIST_TERMINAL_REQUEST_ID: &str = "01900000-0000-7000-8000-000000000304";
 
     #[tokio::test]
     async fn route_is_role_free_correlated_window_gated_and_synchronously_issues()
@@ -459,7 +729,7 @@ mod tests {
 
         enrollment::reject_request(
             &fixture.database,
-            pending_uuid,
+            &EnrollmentRequestId::for_test(pending_uuid),
             CorrelationId::from_uuid(Uuid::now_v7()),
         )
         .await
@@ -565,7 +835,377 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn operator_list_is_redacted_ordered_role_shared_and_mutations_are_admin_only()
+    -> Result<(), TestFailure> {
+        let fixture = TestDatabase::new().await?;
+        let rows = review_seed_rows();
+        seed_review_requests(&fixture.database, &rows).await?;
+        seed_operator(
+            &fixture.database,
+            "enrollment-list-admin",
+            OperatorRole::Admin,
+            REVIEW_PASSWORD,
+        )
+        .await?;
+        seed_operator(
+            &fixture.database,
+            "enrollment-list-viewer",
+            OperatorRole::Viewer,
+            REVIEW_PASSWORD,
+        )
+        .await?;
+        let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+        let admin_cookie = operator_cookie(&fixture.database, "enrollment-list-admin").await?;
+        let viewer_cookie = operator_cookie(&fixture.database, "enrollment-list-viewer").await?;
+        let application = router_with_enrollment(
+            fixture.database.clone(),
+            unused_vault_master_key(),
+            unused_web_root(),
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+        );
+
+        let unauthenticated = drive(
+            &application,
+            operator_request(Method::GET, "/api/v2/enrollment-requests", None)?,
+        )
+        .await?;
+        check_error_response(
+            &unauthenticated,
+            StatusCode::UNAUTHORIZED,
+            "Unauthorized",
+            "AUTHENTICATION_FAILED",
+        )?;
+        for path in [
+            format!("/api/v2/enrollment-requests/{LIST_TIE_LOW_REQUEST_ID}/actions/approve"),
+            format!("/api/v2/enrollment-requests/{LIST_TIE_LOW_REQUEST_ID}/actions/reject"),
+        ] {
+            let unauthenticated =
+                drive(&application, operator_request(Method::POST, &path, None)?).await?;
+            check_error_response(
+                &unauthenticated,
+                StatusCode::UNAUTHORIZED,
+                "Unauthorized",
+                "AUTHENTICATION_FAILED",
+            )?;
+            let viewer = drive(
+                &application,
+                operator_request(Method::POST, &path, Some(&viewer_cookie))?,
+            )
+            .await?;
+            check_error_response(
+                &viewer,
+                StatusCode::FORBIDDEN,
+                "Forbidden",
+                "AUTHORIZATION_DENIED",
+            )?;
+        }
+
+        let admin = drive(
+            &application,
+            operator_request(
+                Method::GET,
+                "/api/v2/enrollment-requests",
+                Some(&admin_cookie),
+            )?,
+        )
+        .await?;
+        let viewer = drive(
+            &application,
+            operator_request(
+                Method::GET,
+                "/api/v2/enrollment-requests",
+                Some(&viewer_cookie),
+            )?,
+        )
+        .await?;
+        if admin.status != StatusCode::OK
+            || viewer.status != StatusCode::OK
+            || admin.body != viewer.body
+            || admin
+                .body
+                .windows("csr-private-canary".len())
+                .any(|window| window == "csr-private-canary".as_bytes())
+            || admin
+                .body
+                .windows("gateway_csr_der".len())
+                .any(|window| window == "gateway_csr_der".as_bytes())
+        {
+            return Err(TestFailure::ReviewListChanged);
+        }
+        let listed: Value =
+            serde_json::from_slice(&admin.body).map_err(|_| TestFailure::ReviewListChanged)?;
+        let listed = listed.as_array().ok_or(TestFailure::ReviewListChanged)?;
+        let expected_ids = [
+            LIST_EARLY_REQUEST_ID,
+            LIST_TIE_LOW_REQUEST_ID,
+            LIST_TIE_HIGH_REQUEST_ID,
+        ];
+        if listed.len() != expected_ids.len() {
+            return Err(TestFailure::ReviewListChanged);
+        }
+        for (item, expected_id) in listed.iter().zip(expected_ids) {
+            let object = item.as_object().ok_or(TestFailure::ReviewListChanged)?;
+            let seed = rows
+                .iter()
+                .find(|row| row.request_id == expected_id)
+                .ok_or(TestFailure::ReviewListChanged)?;
+            if object.len() != 11
+                || object.get("enrollment_request_id").and_then(Value::as_str) != Some(expected_id)
+                || object.get("machine_hardware_id").and_then(Value::as_str)
+                    != Some(seed.machine_hardware_id.as_str())
+                || object
+                    .get("hardware_identity_quality")
+                    .and_then(Value::as_str)
+                    != Some(seed.quality)
+                || object.get("gateway_spki_sha256").and_then(Value::as_str)
+                    != Some(hex::encode([seed.spki_byte; 32]).as_str())
+                || object.get("client_version").and_then(Value::as_str) != Some(seed.client_version)
+                || object.get("protocol_version").and_then(Value::as_u64) != Some(1)
+                || object.get("state").and_then(Value::as_str) != Some(seed.state)
+                || object.get("resolution").and_then(Value::as_str)
+                    != Some("replace_device_credentials")
+                || object.get("resolved_device_id").and_then(Value::as_str) != Some(seed.device_id)
+                || object.get("created_at").and_then(Value::as_str) != Some(seed.created_at)
+                || object.get("source_ip").and_then(Value::as_str) != Some(seed.source_ip)
+            {
+                return Err(TestFailure::ReviewListChanged);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn operator_approve_claim_and_reject_poll_flows_are_end_to_end() -> Result<(), TestFailure>
+    {
+        let fixture = TestDatabase::new().await?;
+        seed_operator(
+            &fixture.database,
+            "enrollment-flow-admin",
+            OperatorRole::Admin,
+            REVIEW_PASSWORD,
+        )
+        .await?;
+        let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+        let admin_cookie = operator_cookie(&fixture.database, "enrollment-flow-admin").await?;
+        provisioning::open_window(&fixture.database, CorrelationId::from_uuid(Uuid::now_v7()))
+            .await
+            .map_err(|_| TestFailure::WindowFailed)?;
+        let application = router_with_enrollment(
+            fixture.database.clone(),
+            unused_vault_master_key(),
+            unused_web_root(),
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+        );
+
+        let approve_original = valid_request_body_for(b"approve-flow-machine")?;
+        let approve_replacement = valid_request_body_for(b"approve-flow-machine")?;
+        expect_status(
+            &drive(&application, enrollment_request(approve_original)?).await?,
+            StatusCode::CREATED,
+        )?;
+        let approve_pending = drive(
+            &application,
+            enrollment_request(approve_replacement.clone())?,
+        )
+        .await?;
+        let approve_id = pending_response_id(&approve_pending)?;
+        let credentials_before_approval = credential_row_counts(&fixture.database).await?;
+        let approval = drive(
+            &application,
+            operator_request(
+                Method::POST,
+                &format!("/api/v2/enrollment-requests/{approve_id}/actions/approve"),
+                Some(&admin_cookie),
+            )?,
+        )
+        .await?;
+        assert_action_response(&approval, &approve_id, "approved")?;
+        if credential_row_counts(&fixture.database).await? != credentials_before_approval {
+            return Err(TestFailure::ReviewApprovalIssued);
+        }
+        let claim = drive(&application, enrollment_request(approve_replacement)?).await?;
+        expect_status(&claim, StatusCode::CREATED)?;
+
+        let reject_original = valid_request_body_for(b"reject-flow-machine")?;
+        let reject_replacement = valid_request_body_for(b"reject-flow-machine")?;
+        expect_status(
+            &drive(&application, enrollment_request(reject_original)?).await?,
+            StatusCode::CREATED,
+        )?;
+        let reject_pending = drive(
+            &application,
+            enrollment_request(reject_replacement.clone())?,
+        )
+        .await?;
+        let reject_id = pending_response_id(&reject_pending)?;
+        let rejection = drive(
+            &application,
+            operator_request(
+                Method::POST,
+                &format!("/api/v2/enrollment-requests/{reject_id}/actions/reject"),
+                Some(&admin_cookie),
+            )?,
+        )
+        .await?;
+        assert_action_response(&rejection, &reject_id, "rejected")?;
+        let rejected_poll = drive(&application, enrollment_request(reject_replacement)?).await?;
+        check_error_response(
+            &rejected_poll,
+            StatusCode::CONFLICT,
+            "Conflict",
+            "ENROLLMENT_REQUEST_REJECTED",
+        )?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)]
+    async fn decision_repeats_are_noops_and_cross_terminal_unknown_and_invalid_ids_are_closed()
+    -> Result<(), TestFailure> {
+        let fixture = TestDatabase::new().await?;
+        let rows = review_seed_rows();
+        seed_review_requests(&fixture.database, &rows).await?;
+        seed_operator(
+            &fixture.database,
+            "enrollment-decision-admin",
+            OperatorRole::Admin,
+            REVIEW_PASSWORD,
+        )
+        .await?;
+        let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+        let admin_cookie = operator_cookie(&fixture.database, "enrollment-decision-admin").await?;
+        let application = router_with_enrollment(
+            fixture.database.clone(),
+            unused_vault_master_key(),
+            unused_web_root(),
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+        );
+
+        let approve_path =
+            format!("/api/v2/enrollment-requests/{LIST_TIE_LOW_REQUEST_ID}/actions/approve");
+        let approval = drive(
+            &application,
+            operator_request(Method::POST, &approve_path, Some(&admin_cookie))?,
+        )
+        .await?;
+        assert_action_response(&approval, LIST_TIE_LOW_REQUEST_ID, "approved")?;
+        let before_approve_repeat = review_business_facts(&fixture.database).await?;
+        let approval_repeat = drive(
+            &application,
+            operator_request(Method::POST, &approve_path, Some(&admin_cookie))?,
+        )
+        .await?;
+        assert_action_response(&approval_repeat, LIST_TIE_LOW_REQUEST_ID, "approved")?;
+        if review_business_facts(&fixture.database).await? != before_approve_repeat {
+            return Err(TestFailure::ReviewNoopChangedBusinessFacts);
+        }
+        assert_not_actionable_without_writes(
+            &application,
+            &fixture,
+            &format!("/api/v2/enrollment-requests/{LIST_TIE_LOW_REQUEST_ID}/actions/reject"),
+            &admin_cookie,
+        )
+        .await?;
+
+        let reject_path =
+            format!("/api/v2/enrollment-requests/{LIST_TIE_HIGH_REQUEST_ID}/actions/reject");
+        let rejection = drive(
+            &application,
+            operator_request(Method::POST, &reject_path, Some(&admin_cookie))?,
+        )
+        .await?;
+        assert_action_response(&rejection, LIST_TIE_HIGH_REQUEST_ID, "rejected")?;
+        let before_reject_repeat = review_business_facts(&fixture.database).await?;
+        let rejection_repeat = drive(
+            &application,
+            operator_request(Method::POST, &reject_path, Some(&admin_cookie))?,
+        )
+        .await?;
+        assert_action_response(&rejection_repeat, LIST_TIE_HIGH_REQUEST_ID, "rejected")?;
+        if review_business_facts(&fixture.database).await? != before_reject_repeat {
+            return Err(TestFailure::ReviewNoopChangedBusinessFacts);
+        }
+        for path in [
+            format!("/api/v2/enrollment-requests/{LIST_TIE_HIGH_REQUEST_ID}/actions/approve"),
+            format!("/api/v2/enrollment-requests/{LIST_TERMINAL_REQUEST_ID}/actions/approve"),
+            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000999/actions/reject"
+                .to_owned(),
+            "/api/v2/enrollment-requests/not-a-canonical-uuid/actions/approve".to_owned(),
+        ] {
+            assert_not_actionable_without_writes(&application, &fixture, &path, &admin_cookie)
+                .await?;
+        }
+
+        let already_approved = drive(
+            &application,
+            operator_request(
+                Method::POST,
+                &format!("/api/v2/enrollment-requests/{LIST_EARLY_REQUEST_ID}/actions/approve"),
+                Some(&admin_cookie),
+            )?,
+        )
+        .await?;
+        assert_action_response(&already_approved, LIST_EARLY_REQUEST_ID, "approved")?;
+        let audits = enrollment_decision_audits(&fixture.database).await?;
+        let expected = [
+            (
+                LIST_TIE_LOW_REQUEST_ID,
+                "approve_enrollment_request",
+                "succeeded",
+                "operator_requested",
+            ),
+            (
+                LIST_TIE_LOW_REQUEST_ID,
+                "approve_enrollment_request",
+                "noop",
+                "target_already_satisfied",
+            ),
+            (
+                LIST_TIE_HIGH_REQUEST_ID,
+                "reject_enrollment_request",
+                "succeeded",
+                "operator_requested",
+            ),
+            (
+                LIST_TIE_HIGH_REQUEST_ID,
+                "reject_enrollment_request",
+                "noop",
+                "target_already_satisfied",
+            ),
+            (
+                LIST_EARLY_REQUEST_ID,
+                "approve_enrollment_request",
+                "noop",
+                "target_already_satisfied",
+            ),
+        ];
+        if audits.len() != expected.len() {
+            return Err(TestFailure::ReviewAuditChanged);
+        }
+        for (audit, expected) in audits.iter().zip(expected) {
+            if audit.actor != "operator:self"
+                || audit.resource_type != "enrollment_request"
+                || audit.resource_id.as_deref() != Some(expected.0)
+                || audit.action_kind != expected.1
+                || audit.result != expected.2
+                || audit.reason_code.as_deref() != Some(expected.3)
+                || audit.group_correlation_id.is_some()
+                || audit.redacted_detail_json != "{}"
+            {
+                return Err(TestFailure::ReviewAuditChanged);
+            }
+        }
+        Ok(())
+    }
+
     fn valid_request_body() -> Result<String, TestFailure> {
+        valid_request_body_for(b"http-enrollment-machine")
+    }
+
+    fn valid_request_body_for(machine_seed: &[u8]) -> Result<String, TestFailure> {
         let key = KeyPair::generate().map_err(|_| TestFailure::RequestFailed)?;
         let params = CertificateParams::new(vec!["hostile.request.example".to_owned()])
             .map_err(|_| TestFailure::RequestFailed)?;
@@ -574,7 +1214,7 @@ mod tests {
             .map_err(|_| TestFailure::RequestFailed)?;
         let spki: [u8; 32] = Sha256::digest(key.subject_public_key_info()).into();
         Ok(serde_json::json!({
-            "machine_hardware_id": Uuid::new_v5(&Uuid::NAMESPACE_OID, b"http-enrollment-machine").to_string(),
+            "machine_hardware_id": Uuid::new_v5(&Uuid::NAMESPACE_OID, machine_seed).to_string(),
             "hardware_identity_quality": "strong",
             "gateway_csr_der": encode_standard_base64(csr.der()),
             "gateway_spki_sha256": hex::encode(spki),
@@ -618,6 +1258,289 @@ mod tests {
             .extensions_mut()
             .insert(ConnectInfo(ClientAddress::new(REMOTE_ADDRESS)));
         Ok(request)
+    }
+
+    fn operator_request(
+        method: Method,
+        path: &str,
+        cookie: Option<&str>,
+    ) -> Result<Request<Body>, TestFailure> {
+        let mut request = Request::builder().method(method).uri(path);
+        if let Some(cookie) = cookie {
+            request = request.header(header::COOKIE, cookie);
+        }
+        request
+            .body(Body::empty())
+            .map_err(|_| TestFailure::RequestFailed)
+    }
+
+    async fn operator_cookie(database: &Database, login_name: &str) -> Result<String, TestFailure> {
+        let session = sign_in(
+            database,
+            CorrelationId::from_uuid(Uuid::now_v7()),
+            login_name,
+            REVIEW_PASSWORD.to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::OperatorFixtureFailed)?;
+        Ok(format!(
+            "__Secure-natsume_session={}",
+            session.credential().to_wire().expose()
+        ))
+    }
+
+    fn pending_response_id(response: &Captured) -> Result<String, TestFailure> {
+        if response.status != StatusCode::ACCEPTED {
+            return Err(TestFailure::ReviewFlowChanged);
+        }
+        let value: Value =
+            serde_json::from_slice(&response.body).map_err(|_| TestFailure::ReviewFlowChanged)?;
+        let object = value.as_object().ok_or(TestFailure::ReviewFlowChanged)?;
+        let request_id = object
+            .get("enrollment_request_id")
+            .and_then(Value::as_str)
+            .ok_or(TestFailure::ReviewFlowChanged)?;
+        if object.len() != 2
+            || object.get("state").and_then(Value::as_str) != Some("pending")
+            || !canonical_uuid_v7(request_id)
+        {
+            return Err(TestFailure::ReviewFlowChanged);
+        }
+        Ok(request_id.to_owned())
+    }
+
+    fn assert_action_response(
+        response: &Captured,
+        request_id: &str,
+        expected_state: &str,
+    ) -> Result<(), TestFailure> {
+        if response.status != StatusCode::OK
+            || canonical_correlation_id(&response.headers)?.is_empty()
+        {
+            return Err(TestFailure::ReviewActionResponseChanged);
+        }
+        let value: Value = serde_json::from_slice(&response.body)
+            .map_err(|_| TestFailure::ReviewActionResponseChanged)?;
+        let object = value
+            .as_object()
+            .ok_or(TestFailure::ReviewActionResponseChanged)?;
+        if object.len() != 2
+            || object.get("enrollment_request_id").and_then(Value::as_str) != Some(request_id)
+            || object.get("state").and_then(Value::as_str) != Some(expected_state)
+        {
+            return Err(TestFailure::ReviewActionResponseChanged);
+        }
+        Ok(())
+    }
+
+    fn expect_status(response: &Captured, expected: StatusCode) -> Result<(), TestFailure> {
+        if response.status != expected {
+            return Err(TestFailure::ReviewFlowChanged);
+        }
+        Ok(())
+    }
+
+    async fn assert_not_actionable_without_writes(
+        application: &Router,
+        fixture: &TestDatabase,
+        path: &str,
+        cookie: &str,
+    ) -> Result<(), TestFailure> {
+        let before = enrollment_write_counts(fixture).await?;
+        let response = drive(
+            application,
+            operator_request(Method::POST, path, Some(cookie))?,
+        )
+        .await?;
+        check_error_response(
+            &response,
+            StatusCode::BAD_REQUEST,
+            "Bad Request",
+            "ENROLLMENT_REQUEST_INVALID",
+        )?;
+        if enrollment_write_counts(fixture).await? != before {
+            return Err(TestFailure::ReviewInvalidDecisionWrote);
+        }
+        Ok(())
+    }
+
+    #[derive(Clone)]
+    struct ReviewSeed {
+        request_id: &'static str,
+        device_id: &'static str,
+        machine_hardware_id: String,
+        quality: &'static str,
+        spki_byte: u8,
+        client_version: &'static str,
+        state: &'static str,
+        created_at: &'static str,
+        source_ip: &'static str,
+    }
+
+    fn review_seed_rows() -> Vec<ReviewSeed> {
+        [
+            (
+                LIST_EARLY_REQUEST_ID,
+                "01900000-0000-7000-8000-000000000402",
+                "weak",
+                0x22,
+                "review-client-early",
+                "approved",
+                "2026-08-16T00:00:00.000Z",
+                "192.0.2.22",
+            ),
+            (
+                LIST_TIE_LOW_REQUEST_ID,
+                "01900000-0000-7000-8000-000000000401",
+                "strong",
+                0x11,
+                "review-client-low",
+                "pending",
+                "2026-08-16T00:00:01.000Z",
+                "192.0.2.11",
+            ),
+            (
+                LIST_TIE_HIGH_REQUEST_ID,
+                "01900000-0000-7000-8000-000000000403",
+                "medium",
+                0x33,
+                "review-client-high",
+                "pending",
+                "2026-08-16T00:00:01.000Z",
+                "2001:db8::33",
+            ),
+            (
+                LIST_TERMINAL_REQUEST_ID,
+                "01900000-0000-7000-8000-000000000404",
+                "strong",
+                0x44,
+                "review-client-terminal",
+                "expired",
+                "2026-08-15T23:59:59.000Z",
+                "192.0.2.44",
+            ),
+        ]
+        .into_iter()
+        .map(
+            |(
+                request_id,
+                device_id,
+                quality,
+                spki_byte,
+                client_version,
+                state,
+                created_at,
+                source_ip,
+            )| ReviewSeed {
+                request_id,
+                device_id,
+                machine_hardware_id: Uuid::new_v5(&Uuid::NAMESPACE_OID, request_id.as_bytes())
+                    .to_string(),
+                quality,
+                spki_byte,
+                client_version,
+                state,
+                created_at,
+                source_ip,
+            },
+        )
+        .collect()
+    }
+
+    async fn seed_review_requests(
+        database: &Database,
+        rows: &[ReviewSeed],
+    ) -> Result<(), TestFailure> {
+        let rows = rows.to_vec();
+        database
+            .interact(move |connection| -> Result<(), TestFailure> {
+                for row in rows {
+                    diesel::sql_query(
+                        "INSERT INTO devices (device_pk, machine_hardware_id, \
+                         hardware_identity_quality, state) VALUES (?, ?, ?, 'enrolled')",
+                    )
+                    .bind::<Text, _>(row.device_id)
+                    .bind::<Text, _>(&row.machine_hardware_id)
+                    .bind::<Text, _>(row.quality)
+                    .execute(connection)
+                    .map_err(|_| TestFailure::EvidenceFailed)?;
+                    let csr = format!("csr-private-canary-{}", row.request_id).into_bytes();
+                    let spki = [row.spki_byte; 32];
+                    diesel::sql_query(
+                        "INSERT INTO enrollment_requests (enrollment_request_id, \
+                         machine_hardware_id, hardware_identity_quality, gateway_csr_der, \
+                         gateway_spki_sha256, client_version, protocol_version, source_ip, state, \
+                         resolution, resolved_device_pk, issuance_audit_event_id, created_at) \
+                         VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 'replace_device_credentials', ?, \
+                         NULL, ?)",
+                    )
+                    .bind::<Text, _>(row.request_id)
+                    .bind::<Text, _>(&row.machine_hardware_id)
+                    .bind::<Text, _>(row.quality)
+                    .bind::<Binary, _>(csr)
+                    .bind::<Binary, _>(spki.as_slice())
+                    .bind::<Text, _>(row.client_version)
+                    .bind::<Text, _>(row.source_ip)
+                    .bind::<Text, _>(row.state)
+                    .bind::<Text, _>(row.device_id)
+                    .bind::<Text, _>(row.created_at)
+                    .execute(connection)
+                    .map_err(|_| TestFailure::EvidenceFailed)?;
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn credential_row_counts(
+        database: &Database,
+    ) -> Result<CredentialRowCounts, TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "SELECT (SELECT COUNT(*) FROM device_tokens) AS tokens, \
+                     (SELECT COUNT(*) FROM gateway_certificates) AS certificates",
+                )
+                .get_result(connection)
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn review_business_facts(
+        database: &Database,
+    ) -> Result<Vec<ReviewBusinessFact>, TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "SELECT enrollment_request_id, state FROM enrollment_requests \
+                     ORDER BY enrollment_request_id",
+                )
+                .load(connection)
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+    }
+
+    async fn enrollment_decision_audits(
+        database: &Database,
+    ) -> Result<Vec<EnrollmentDecisionAuditRow>, TestFailure> {
+        database
+            .interact(|connection| {
+                diesel::sql_query(
+                    "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
+                     group_correlation_id, redacted_detail_json FROM audit_events \
+                     WHERE action_kind IN ('approve_enrollment_request', \
+                     'reject_enrollment_request') ORDER BY rowid",
+                )
+                .load(connection)
+                .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
     }
 
     fn canonical_uuid_v7(value: &str) -> bool {
@@ -729,6 +1652,42 @@ mod tests {
         audits: i64,
     }
 
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    struct CredentialRowCounts {
+        #[diesel(sql_type = BigInt)]
+        tokens: i64,
+        #[diesel(sql_type = BigInt)]
+        certificates: i64,
+    }
+
+    #[derive(Debug, PartialEq, Eq, QueryableByName)]
+    struct ReviewBusinessFact {
+        #[diesel(sql_type = Text)]
+        enrollment_request_id: String,
+        #[diesel(sql_type = Text)]
+        state: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct EnrollmentDecisionAuditRow {
+        #[diesel(sql_type = Text)]
+        actor: String,
+        #[diesel(sql_type = Text)]
+        action_kind: String,
+        #[diesel(sql_type = Text)]
+        resource_type: String,
+        #[diesel(sql_type = Nullable<Text>)]
+        resource_id: Option<String>,
+        #[diesel(sql_type = Text)]
+        result: String,
+        #[diesel(sql_type = Nullable<Text>)]
+        reason_code: Option<String>,
+        #[diesel(sql_type = Nullable<Text>)]
+        group_correlation_id: Option<String>,
+        #[diesel(sql_type = Text)]
+        redacted_detail_json: String,
+    }
+
     #[derive(Debug, Snafu)]
     enum TestFailure {
         #[snafu(context(false))]
@@ -755,6 +1714,22 @@ mod tests {
         ForgedCsrWrote,
         #[snafu(display("the live Enrollment capacity response wrote state"))]
         LiveCapacityWrote,
+        #[snafu(display("the operator fixture failed"))]
+        OperatorFixtureFailed,
+        #[snafu(display("the Enrollment review list changed"))]
+        ReviewListChanged,
+        #[snafu(display("the Enrollment review flow changed"))]
+        ReviewFlowChanged,
+        #[snafu(display("the Enrollment review action response changed"))]
+        ReviewActionResponseChanged,
+        #[snafu(display("Enrollment approval issued credentials"))]
+        ReviewApprovalIssued,
+        #[snafu(display("an Enrollment decision noop changed business facts"))]
+        ReviewNoopChangedBusinessFacts,
+        #[snafu(display("an invalid Enrollment decision wrote state"))]
+        ReviewInvalidDecisionWrote,
+        #[snafu(display("the Enrollment decision audit changed"))]
+        ReviewAuditChanged,
         #[snafu(display("Enrollment database evidence failed"))]
         EvidenceFailed,
     }

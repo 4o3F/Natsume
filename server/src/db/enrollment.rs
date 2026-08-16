@@ -9,15 +9,45 @@ use uuid::Uuid;
 
 use crate::{
     application::enrollment::{
-        DeviceToken, EnrollmentError, EnrollmentOutcome, EnrollmentResolution, EnrollmentState,
-        GatewayIssuer, IssuanceReason, IssuedEnrollment, IssuedGatewayCertificate,
-        PendingEnrollment, ValidatedEnrollmentRequest,
+        DeviceToken, EnrollmentDecisionOutcome, EnrollmentDecisionState, EnrollmentError,
+        EnrollmentOutcome, EnrollmentRequestId, EnrollmentRequestSummary, EnrollmentResolution,
+        EnrollmentState, GatewayIssuer, IssuanceReason, IssuedEnrollment, IssuedGatewayCertificate,
+        PendingEnrollment, PersistedEnrollmentRequestSummary, ValidatedEnrollmentRequest,
     },
-    audit::{self, AuditEvent, AuditEventId, CorrelationId, DeviceCredentialsIssuedAuditFacts},
+    audit::{
+        self, AuditEvent, AuditEventId, CorrelationId, DeviceCredentialsIssuedAuditFacts,
+        EnrollmentDecisionAuditResult,
+    },
     db::Database,
 };
 
 pub(crate) const MAX_LIVE_ENROLLMENT_REQUESTS: i64 = 600;
+
+pub(crate) async fn list_requests(
+    database: &Database,
+) -> Result<Vec<EnrollmentRequestSummary>, EnrollmentError> {
+    database
+        .interact(|connection| {
+            diesel::sql_query(
+                "SELECT enrollment_request_id, machine_hardware_id, hardware_identity_quality, \
+                 gateway_spki_sha256, client_version, protocol_version, state, resolution, \
+                 resolved_device_pk AS resolved_device_id, created_at, source_ip \
+                 FROM enrollment_requests WHERE state IN ('pending', 'approved') \
+                 ORDER BY created_at, enrollment_request_id",
+            )
+            .load::<EnrollmentRequestSummaryRow>(connection)
+            .map_err(|_| EnrollmentStoreError::RequestReadFailed)?
+            .into_iter()
+            .map(|row| {
+                EnrollmentRequestSummary::from_persisted(row.into_persisted())
+                    .map_err(|_| EnrollmentStoreError::InvalidPersistedFacts)
+            })
+            .collect::<Result<Vec<_>, EnrollmentStoreError>>()
+        })
+        .await
+        .map_err(|_| EnrollmentStoreError::AcquireFailed)?
+        .map_err(EnrollmentError::from)
+}
 
 pub(crate) async fn intake(
     database: &Database,
@@ -732,15 +762,14 @@ fn active_certificate_count(
     .map_err(|_| EnrollmentStoreError::CredentialReadFailed)
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn approve_request(
     database: &Database,
-    request_id: Uuid,
+    request_id: &EnrollmentRequestId,
     correlation_id: CorrelationId,
-) -> Result<(), EnrollmentError> {
+) -> Result<EnrollmentDecisionOutcome, EnrollmentError> {
     mutate_pending_request(
         database,
-        request_id,
+        request_id.value(),
         correlation_id,
         EnrollmentDecision::Approve,
         AuditEventId::from_uuid(Uuid::now_v7()),
@@ -749,15 +778,14 @@ pub(crate) async fn approve_request(
     .map_err(EnrollmentError::from)
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn reject_request(
     database: &Database,
-    request_id: Uuid,
+    request_id: &EnrollmentRequestId,
     correlation_id: CorrelationId,
-) -> Result<(), EnrollmentError> {
+) -> Result<EnrollmentDecisionOutcome, EnrollmentError> {
     mutate_pending_request(
         database,
-        request_id,
+        request_id.value(),
         correlation_id,
         EnrollmentDecision::Reject,
         AuditEventId::from_uuid(Uuid::now_v7()),
@@ -766,21 +794,19 @@ pub(crate) async fn reject_request(
     .map_err(EnrollmentError::from)
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 #[derive(Clone, Copy)]
 enum EnrollmentDecision {
     Approve,
     Reject,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 async fn mutate_pending_request(
     database: &Database,
     request_id: Uuid,
     correlation_id: CorrelationId,
     decision: EnrollmentDecision,
     audit_event_id: AuditEventId,
-) -> Result<(), EnrollmentStoreError> {
+) -> Result<EnrollmentDecisionOutcome, EnrollmentStoreError> {
     database
         .interact(move |connection| {
             connection.immediate_transaction(|connection| {
@@ -792,48 +818,57 @@ async fn mutate_pending_request(
                 .get_result::<DecisionRequestRow>(connection)
                 .optional()
                 .map_err(|_| EnrollmentStoreError::RequestReadFailed)?
-                .ok_or(EnrollmentStoreError::RequestNotFound)?;
-                if row.state != "pending" {
-                    return Err(EnrollmentStoreError::RequestNotPending);
-                }
+                .ok_or(EnrollmentStoreError::RequestNotPending)?;
+                let target_state = match decision {
+                    EnrollmentDecision::Approve => EnrollmentDecisionState::Approved,
+                    EnrollmentDecision::Reject => EnrollmentDecisionState::Rejected,
+                };
+                let audit_result = match row.state.as_str() {
+                    "pending" => EnrollmentDecisionAuditResult::Succeeded,
+                    current if current == target_state.as_persisted() => {
+                        EnrollmentDecisionAuditResult::Noop
+                    }
+                    _ => return Err(EnrollmentStoreError::RequestNotPending),
+                };
                 if row.resolution.as_deref() != Some("replace_device_credentials")
                     || row.resolved_device_pk.is_none()
                     || row.issuance_audit_event_id.is_some()
                 {
                     return Err(EnrollmentStoreError::InvalidPersistedFacts);
                 }
-                let (target_state, event) = match decision {
-                    EnrollmentDecision::Approve => (
-                        "approved",
-                        AuditEvent::enrollment_request_approved(
-                            audit_event_id,
-                            correlation_id,
-                            request_id,
-                        ),
+                let event = match decision {
+                    EnrollmentDecision::Approve => AuditEvent::enrollment_request_approved(
+                        audit_event_id,
+                        correlation_id,
+                        request_id,
+                        audit_result,
                     ),
-                    EnrollmentDecision::Reject => (
-                        "rejected",
-                        AuditEvent::enrollment_request_rejected(
-                            audit_event_id,
-                            correlation_id,
-                            request_id,
-                        ),
+                    EnrollmentDecision::Reject => AuditEvent::enrollment_request_rejected(
+                        audit_event_id,
+                        correlation_id,
+                        request_id,
+                        audit_result,
                     ),
                 };
                 audit::insert_diesel(connection, &event)
                     .map_err(|_| EnrollmentStoreError::AuditInsertFailed)?;
-                let updated = diesel::sql_query(
-                    "UPDATE enrollment_requests SET state = ? \
-                     WHERE enrollment_request_id = ? AND state = 'pending'",
-                )
-                .bind::<Text, _>(target_state)
-                .bind::<Text, _>(request_id.to_string())
-                .execute(connection)
-                .map_err(|_| EnrollmentStoreError::RequestMutationFailed)?;
-                if updated != 1 {
-                    return Err(EnrollmentStoreError::CompareAndSwapConflict);
+                if matches!(audit_result, EnrollmentDecisionAuditResult::Succeeded) {
+                    let updated = diesel::sql_query(
+                        "UPDATE enrollment_requests SET state = ? \
+                         WHERE enrollment_request_id = ? AND state = 'pending'",
+                    )
+                    .bind::<Text, _>(target_state.as_persisted())
+                    .bind::<Text, _>(request_id.to_string())
+                    .execute(connection)
+                    .map_err(|_| EnrollmentStoreError::RequestMutationFailed)?;
+                    if updated != 1 {
+                        return Err(EnrollmentStoreError::CompareAndSwapConflict);
+                    }
                 }
-                Ok(())
+                Ok(EnrollmentDecisionOutcome {
+                    enrollment_request_id: request_id,
+                    state: target_state,
+                })
             })
         })
         .await
@@ -936,7 +971,6 @@ struct CurrentCredentialFactsRow {
     active_certificate_spki_sha256: Option<Vec<u8>>,
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 #[derive(QueryableByName)]
 struct DecisionRequestRow {
     #[diesel(sql_type = Text)]
@@ -947,6 +981,50 @@ struct DecisionRequestRow {
     resolved_device_pk: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     issuance_audit_event_id: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct EnrollmentRequestSummaryRow {
+    #[diesel(sql_type = Text)]
+    enrollment_request_id: String,
+    #[diesel(sql_type = Text)]
+    machine_hardware_id: String,
+    #[diesel(sql_type = Text)]
+    hardware_identity_quality: String,
+    #[diesel(sql_type = Binary)]
+    gateway_spki_sha256: Vec<u8>,
+    #[diesel(sql_type = Text)]
+    client_version: String,
+    #[diesel(sql_type = BigInt)]
+    protocol_version: i64,
+    #[diesel(sql_type = Text)]
+    state: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    resolution: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    resolved_device_id: Option<String>,
+    #[diesel(sql_type = Text)]
+    created_at: String,
+    #[diesel(sql_type = Text)]
+    source_ip: String,
+}
+
+impl EnrollmentRequestSummaryRow {
+    fn into_persisted(self) -> PersistedEnrollmentRequestSummary {
+        PersistedEnrollmentRequestSummary {
+            enrollment_request_id: self.enrollment_request_id,
+            machine_hardware_id: self.machine_hardware_id,
+            hardware_identity_quality: self.hardware_identity_quality,
+            gateway_spki_sha256: self.gateway_spki_sha256,
+            client_version: self.client_version,
+            protocol_version: self.protocol_version,
+            state: self.state,
+            resolution: self.resolution,
+            resolved_device_id: self.resolved_device_id,
+            created_at: self.created_at,
+            source_ip: self.source_ip,
+        }
+    }
 }
 
 #[derive(QueryableByName)]
@@ -1016,6 +1094,7 @@ impl EnrollmentStoreError {
             EnrollmentError::IssuancePolicyExpired => Self::IssuancePolicyExpired,
             EnrollmentError::LiveRequestCapacityExceeded => Self::LiveRequestCapacityExceeded,
             EnrollmentError::SigningFailed
+            | EnrollmentError::InvalidRequestId
             | EnrollmentError::InvalidMachineHardwareId
             | EnrollmentError::InvalidHardwareIdentityQuality
             | EnrollmentError::InvalidClientVersion
@@ -1097,9 +1176,10 @@ mod tests {
         application::{
             contest::{self, DeviceId},
             enrollment::{
-                self, EnrollmentError, EnrollmentOutcome, EnrollmentRequestInput, GatewayIssuer,
-                HardwareIdentityQuality, TEST_CONTEST_END, TEST_GATEWAY_HOSTNAME,
-                TEST_GATEWAY_NOT_AFTER, ValidatedEnrollmentRequest, encode_standard_base64,
+                self, EnrollmentError, EnrollmentOutcome, EnrollmentRequestId,
+                EnrollmentRequestInput, GatewayIssuer, HardwareIdentityQuality, TEST_CONTEST_END,
+                TEST_GATEWAY_HOSTNAME, TEST_GATEWAY_NOT_AFTER, ValidatedEnrollmentRequest,
+                encode_standard_base64,
             },
             provisioning,
         },
@@ -1280,9 +1360,13 @@ mod tests {
         }
 
         let credential_counts_before = credential_counts(&database).await?;
-        enrollment::approve_request(&database, first_pending, correlation_id())
-            .await
-            .map_err(|_| TestFailure::DecisionFailed)?;
+        enrollment::approve_request(
+            &database,
+            &EnrollmentRequestId::for_test(first_pending),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::DecisionFailed)?;
         if credential_counts(&database).await? != credential_counts_before
             || request_state(&database, first_pending).await? != "approved"
             || audit_shape(&database, "approve_enrollment_request").await?
@@ -1400,9 +1484,13 @@ mod tests {
             .await,
         )?;
         let credentials_before = credential_counts(&database).await?;
-        enrollment::reject_request(&database, pending, correlation_id())
-            .await
-            .map_err(|_| TestFailure::DecisionFailed)?;
+        enrollment::reject_request(
+            &database,
+            &EnrollmentRequestId::for_test(pending),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::DecisionFailed)?;
         let poll = enrollment::intake(
             &database,
             gateway_signer.clone(),
@@ -1503,9 +1591,13 @@ mod tests {
         {
             return Err(TestFailure::LifecycleReplacementAutoApproved);
         }
-        enrollment::approve_request(&database, revoked_pending, correlation_id())
-            .await
-            .map_err(|_| TestFailure::DecisionFailed)?;
+        enrollment::approve_request(
+            &database,
+            &EnrollmentRequestId::for_test(revoked_pending),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::DecisionFailed)?;
         if credential_counts(&database).await? != revoked_credentials {
             return Err(TestFailure::ApprovalIssued);
         }
@@ -1546,9 +1638,13 @@ mod tests {
         {
             return Err(TestFailure::LifecycleReplacementAutoApproved);
         }
-        enrollment::approve_request(&database, disabled_pending, correlation_id())
-            .await
-            .map_err(|_| TestFailure::DecisionFailed)?;
+        enrollment::approve_request(
+            &database,
+            &EnrollmentRequestId::for_test(disabled_pending),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::DecisionFailed)?;
         if credential_counts(&database).await? != disabled_credentials {
             return Err(TestFailure::ApprovalIssued);
         }

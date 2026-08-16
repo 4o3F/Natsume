@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.",
+    "description": "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand.",
     "version": "2.0.0"
   },
   "paths": {
@@ -656,6 +656,76 @@
       }
     },
     "/api/v2/enrollment-requests": {
+      "get": {
+        "operationId": "listEnrollmentRequests",
+        "responses": {
+          "200": {
+            "description": "Live Enrollment request set",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnrollmentRequestSummary"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
       "post": {
         "operationId": "createEnrollmentRequest",
         "requestBody": {
@@ -781,21 +851,21 @@
     },
     "/api/v2/enrollment-requests/{request_id}/actions/approve": {
       "post": {
-        "summary": "Approve a Device enrollment request",
         "operationId": "approveEnrollment",
         "parameters": [
           {
             "name": "request_id",
             "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Enrollment request ID.",
             "required": true,
             "schema": {
-              "type": "string"
+              "$ref": "#/components/schemas/CanonicalUuidV7"
             }
           }
         ],
         "responses": {
-          "202": {
-            "description": "Device enrollment approval accepted",
+          "200": {
+            "description": "Enrollment request approved or already approved",
             "headers": {
               "X-Correlation-Id": {
                 "schema": {
@@ -803,6 +873,207 @@
                   "format": "uuid"
                 },
                 "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request ID is invalid or the request is not actionable",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/enrollment-requests/{request_id}/actions/reject": {
+      "post": {
+        "operationId": "rejectEnrollment",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Enrollment request ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Enrollment request rejected or already rejected",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EnrollmentActionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request ID is invalid or the request is not actionable",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "headers": {
+              "X-Correlation-Id": {
+                "schema": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "description": "Server-generated canonical UUIDv7 correlation ID"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
               }
             }
           }
@@ -1991,6 +2262,20 @@
         },
         "additionalProperties": false
       },
+      "EnrollmentActionResponse": {
+        "type": "object",
+        "required": ["enrollment_request_id", "state"],
+        "properties": {
+          "enrollment_request_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["approved", "rejected"]
+          }
+        },
+        "additionalProperties": false
+      },
       "EnrollmentHardwareIdentityQuality": {
         "type": "string",
         "enum": ["strong", "medium", "weak"]
@@ -2099,6 +2384,85 @@
             "format": "int32",
             "maximum": 1,
             "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentRequestSummary": {
+        "type": "object",
+        "description": "Redacted live Enrollment facts exposed to authenticated operators.",
+        "required": [
+          "enrollment_request_id",
+          "machine_hardware_id",
+          "hardware_identity_quality",
+          "gateway_spki_sha256",
+          "client_version",
+          "protocol_version",
+          "state",
+          "resolution",
+          "resolved_device_id",
+          "created_at",
+          "source_ip"
+        ],
+        "properties": {
+          "client_version": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "RFC 3339 UTC timestamp with a trailing Z."
+          },
+          "enrollment_request_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "gateway_spki_sha256": {
+            "type": "string",
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "hardware_identity_quality": {
+            "type": "string",
+            "enum": ["strong", "medium", "weak"]
+          },
+          "machine_hardware_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "resolution": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string",
+                "enum": ["create_device", "replace_device_credentials"]
+              }
+            ]
+          },
+          "resolved_device_id": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CanonicalUuidV7"
+              }
+            ]
+          },
+          "source_ip": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": ["pending", "approved"]
           }
         },
         "additionalProperties": false

@@ -127,6 +127,12 @@ pub(crate) enum EnrollmentExpiryActor {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollmentDecisionAuditResult {
+    Succeeded,
+    Noop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImportCommitRejectionReason {
     PreviewTokenMismatch,
     BaselineStale,
@@ -563,20 +569,24 @@ impl AuditEvent {
     }
 
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
     pub(crate) fn enrollment_request_approved(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         enrollment_request_id: Uuid,
+        audit_result: EnrollmentDecisionAuditResult,
     ) -> Self {
+        let (result, reason_code) = match audit_result {
+            EnrollmentDecisionAuditResult::Succeeded => ("succeeded", "operator_requested"),
+            EnrollmentDecisionAuditResult::Noop => ("noop", "target_already_satisfied"),
+        };
         Self {
             id: audit_event_id,
             actor: "operator:self",
             action_kind: "approve_enrollment_request",
             resource_type: "enrollment_request",
             resource_id: Some(enrollment_request_id.to_string()),
-            result: "succeeded",
-            reason_code: Some("operator_requested"),
+            result,
+            reason_code: Some(reason_code),
             correlation_id,
             group_correlation_id: None,
             detail: AuditDetail::EnrollmentRequestApproved {},
@@ -584,20 +594,24 @@ impl AuditEvent {
     }
 
     #[must_use]
-    #[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
     pub(crate) fn enrollment_request_rejected(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         enrollment_request_id: Uuid,
+        audit_result: EnrollmentDecisionAuditResult,
     ) -> Self {
+        let (result, reason_code) = match audit_result {
+            EnrollmentDecisionAuditResult::Succeeded => ("succeeded", "operator_requested"),
+            EnrollmentDecisionAuditResult::Noop => ("noop", "target_already_satisfied"),
+        };
         Self {
             id: audit_event_id,
             actor: "operator:self",
             action_kind: "reject_enrollment_request",
             resource_type: "enrollment_request",
             resource_id: Some(enrollment_request_id.to_string()),
-            result: "succeeded",
-            reason_code: Some("operator_requested"),
+            result,
+            reason_code: Some(reason_code),
             correlation_id,
             group_correlation_id: None,
             detail: AuditDetail::EnrollmentRequestRejected {},

@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 
 const navigation = [
   { to: "/preparation", label: "Preparation" },
+  { to: "/enrollment", label: "Enrollment" },
   { to: "/seats", label: "Seats" },
   { to: "/accounts", label: "Accounts" },
   { to: "/devices", label: "Devices" },

@@ -5,6 +5,7 @@ import { AppLayout } from "@/layout/app-layout";
 import { AccountsPage } from "@/pages/accounts-page";
 import { BindingsPage } from "@/pages/bindings-page";
 import { DevicesPage } from "@/pages/devices-page";
+import { EnrollmentPage } from "@/pages/enrollment-page";
 import { LoginPage } from "@/pages/login-page";
 import { PreparationPage } from "@/pages/preparation-page";
 import { SeatsPage } from "@/pages/seats-page";
@@ -17,6 +18,7 @@ export function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Navigate to="/seats" replace />} />
           <Route path="/preparation" element={<PreparationPage />} />
+          <Route path="/enrollment" element={<EnrollmentPage />} />
           <Route path="/seats" element={<SeatsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
           <Route path="/devices" element={<DevicesPage />} />

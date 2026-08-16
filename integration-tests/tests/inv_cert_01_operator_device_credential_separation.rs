@@ -303,16 +303,10 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
         assert_eq!(drive(&application, method, path).await, expected, "{path}");
     }
 
-    for (method, path) in [
-        (
-            Method::POST,
-            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000399/actions/approve",
-        ),
-        (
-            Method::PUT,
-            "/api/v2/commands/01900000-0000-7000-8000-000000000399",
-        ),
-    ] {
+    for (method, path) in [(
+        Method::PUT,
+        "/api/v2/commands/01900000-0000-7000-8000-000000000399",
+    )] {
         assert_eq!(
             drive(&application, method, path).await,
             StatusCode::NOT_FOUND,
@@ -352,9 +346,11 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             "listAccounts",
             "listBindings",
             "listDevices",
+            "listEnrollmentRequests",
             "listSeats",
             "openProvisioningWindow",
             "putCommand",
+            "rejectEnrollment",
             "revokeDevice",
         ]
     );
@@ -363,12 +359,12 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             .pointer("/info/description")
             .and_then(Value::as_str),
         Some(
-            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand."
         )
     );
 }
 
-fn mounted_routes() -> [(Method, &'static str, StatusCode); 18] {
+fn mounted_routes() -> [(Method, &'static str, StatusCode); 21] {
     [
         (Method::GET, "/api/v2/health", StatusCode::OK),
         (Method::POST, "/api/v2/session", StatusCode::BAD_REQUEST),
@@ -419,6 +415,21 @@ fn mounted_routes() -> [(Method, &'static str, StatusCode); 18] {
             Method::POST,
             "/api/v2/enrollment-requests",
             StatusCode::BAD_REQUEST,
+        ),
+        (
+            Method::GET,
+            "/api/v2/enrollment-requests",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000399/actions/approve",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::POST,
+            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000399/actions/reject",
+            StatusCode::UNAUTHORIZED,
         ),
     ]
 }

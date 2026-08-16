@@ -111,7 +111,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get?: never;
+    get: operations["listEnrollmentRequests"];
     put?: never;
     post: operations["createEnrollmentRequest"];
     delete?: never;
@@ -129,8 +129,23 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** Approve a Device enrollment request */
     post: operations["approveEnrollment"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/enrollment-requests/{request_id}/actions/reject": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["rejectEnrollment"];
     delete?: never;
     options?: never;
     head?: never;
@@ -306,6 +321,11 @@ export interface components {
       /** @enum {string} */
       state: "enrolled" | "revoked" | "disabled";
     };
+    EnrollmentActionResponse: {
+      enrollment_request_id: components["schemas"]["CanonicalUuidV7"];
+      /** @enum {string} */
+      state: "approved" | "rejected";
+    };
     /** @enum {string} */
     EnrollmentHardwareIdentityQuality: "strong" | "medium" | "weak";
     EnrollmentIssuedResponse: {
@@ -335,6 +355,28 @@ export interface components {
       machine_hardware_id: string;
       /** Format: int32 */
       protocol_version: number;
+    };
+    /** @description Redacted live Enrollment facts exposed to authenticated operators. */
+    EnrollmentRequestSummary: {
+      client_version: string;
+      /**
+       * Format: date-time
+       * @description RFC 3339 UTC timestamp with a trailing Z.
+       */
+      created_at: string;
+      enrollment_request_id: components["schemas"]["CanonicalUuidV7"];
+      gateway_spki_sha256: string;
+      /** @enum {string} */
+      hardware_identity_quality: "strong" | "medium" | "weak";
+      /** Format: uuid */
+      machine_hardware_id: string;
+      /** Format: int32 */
+      protocol_version: number;
+      resolution: null | ("create_device" | "replace_device_credentials");
+      resolved_device_id: null | components["schemas"]["CanonicalUuidV7"];
+      source_ip: string;
+      /** @enum {string} */
+      state: "pending" | "approved";
     };
     ErrorResponse: {
       code: string;
@@ -838,6 +880,50 @@ export interface operations {
       };
     };
   };
+  listEnrollmentRequests: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Live Enrollment request set */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EnrollmentRequestSummary"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
   createEnrollmentRequest: {
     parameters: {
       query?: never;
@@ -922,20 +1008,136 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        request_id: string;
+        /** @description Canonical lowercase hyphenated `UUIDv7` Enrollment request ID. */
+        request_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };
     requestBody?: never;
     responses: {
-      /** @description Device enrollment approval accepted */
-      202: {
+      /** @description Enrollment request approved or already approved */
+      200: {
         headers: {
           /** @description Server-generated canonical UUIDv7 correlation ID */
           "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
-        content?: never;
+        content: {
+          "application/json": components["schemas"]["EnrollmentActionResponse"];
+        };
+      };
+      /** @description Request ID is invalid or the request is not actionable */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  rejectEnrollment: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Enrollment request ID. */
+        request_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Enrollment request rejected or already rejected */
+      200: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EnrollmentActionResponse"];
+        };
+      };
+      /** @description Request ID is invalid or the request is not actionable */
+      400: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          /** @description Server-generated canonical UUIDv7 correlation ID */
+          "X-Correlation-Id"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
       };
     };
   };

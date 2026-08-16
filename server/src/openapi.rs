@@ -10,12 +10,15 @@ use utoipa::{
         path::{Paths, PathsBuilder},
         request_body::RequestBodyBuilder,
         response::Response,
-        schema::{AdditionalProperties, ArrayItems, KnownFormat, ObjectBuilder, Schema, Type},
+        schema::{
+            AdditionalProperties, ArrayItems, KnownFormat, ObjectBuilder, OneOfBuilder, Schema,
+            Type,
+        },
         security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme},
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -51,7 +54,10 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::provisioning::get_provisioning_window,
         crate::http::handler::provisioning::open_provisioning_window,
         crate::http::handler::provisioning::close_provisioning_window,
-        crate::http::handler::enrollment::create_enrollment_request
+        crate::http::handler::enrollment::create_enrollment_request,
+        crate::http::handler::enrollment::list_enrollment_requests,
+        crate::http::handler::enrollment::approve_enrollment_request,
+        crate::http::handler::enrollment::reject_enrollment_request
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -75,7 +81,9 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::enrollment::EnrollmentIssuedResponse,
         crate::http::handler::enrollment::EnrollmentIssuedState,
         crate::http::handler::enrollment::EnrollmentPendingResponse,
-        crate::http::handler::enrollment::EnrollmentPendingState
+        crate::http::handler::enrollment::EnrollmentPendingState,
+        crate::http::handler::enrollment::EnrollmentRequestSummaryResponse,
+        crate::http::handler::enrollment::EnrollmentActionResponse
     ))
 )]
 struct MountedDocument;
@@ -85,6 +93,28 @@ struct MountedDocument;
 pub fn document() -> OpenApi {
     let mut mounted = MountedDocument::openapi();
     let mut components = mounted.components.take().unwrap_or_default();
+    configure_components(&mut components);
+
+    let mut paths = mounted.paths;
+    paths.merge(declared_but_unmounted_paths());
+    canonicalize_path_parameters(&mut paths);
+    remove_operation_tags(&mut paths);
+    enrich_responses(&mut paths);
+
+    OpenApiBuilder::new()
+        .info(
+            InfoBuilder::new()
+                .title("Natsume V2 Server API")
+                .version("2.0.0")
+                .description(Some(INFO_DESCRIPTION))
+                .build(),
+        )
+        .paths(paths)
+        .components(Some(components))
+        .build()
+}
+
+fn configure_components(components: &mut utoipa::openapi::Components) {
     components.schemas.insert(
         "PutCommandRequest".to_owned(),
         put_command_request_schema().into(),
@@ -116,7 +146,12 @@ pub fn document() -> OpenApi {
             Ref::from_schema_name("CanonicalUuidV7").into(),
         );
     }
-    for schema_name in ["EnrollmentIssuedResponse", "EnrollmentPendingResponse"] {
+    for schema_name in [
+        "EnrollmentIssuedResponse",
+        "EnrollmentPendingResponse",
+        "EnrollmentActionResponse",
+        "EnrollmentRequestSummary",
+    ] {
         if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
             schema.properties.insert(
                 "enrollment_request_id".to_owned(),
@@ -138,14 +173,33 @@ pub fn document() -> OpenApi {
             item.format = Some(SchemaFormat::KnownFormat(KnownFormat::Byte));
         }
     }
+    if let Some(RefOr::T(Schema::Object(schema))) =
+        components.schemas.get_mut("EnrollmentRequestSummary")
+    {
+        schema.properties.insert(
+            "resolved_device_id".to_owned(),
+            OneOfBuilder::new()
+                .item(ObjectBuilder::new().schema_type(Type::Null))
+                .item(Ref::from_schema_name("CanonicalUuidV7"))
+                .into(),
+        );
+    }
+}
 
-    let mut paths = mounted.paths;
-    paths.merge(declared_but_unmounted_paths());
+fn canonicalize_path_parameters(paths: &mut Paths) {
     for (path, parameter_name) in [
         ("/api/v2/devices/{device_id}/actions/revoke", "device_id"),
         ("/api/v2/devices/{device_id}/actions/disable", "device_id"),
         ("/api/v2/imports/{import_id}/actions/commit", "import_id"),
         ("/api/v2/imports/{import_id}/actions/discard", "import_id"),
+        (
+            "/api/v2/enrollment-requests/{request_id}/actions/approve",
+            "request_id",
+        ),
+        (
+            "/api/v2/enrollment-requests/{request_id}/actions/reject",
+            "request_id",
+        ),
     ] {
         let Some(parameters) = paths
             .paths
@@ -163,20 +217,6 @@ pub fn document() -> OpenApi {
         };
         parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
     }
-    remove_operation_tags(&mut paths);
-    enrich_responses(&mut paths);
-
-    OpenApiBuilder::new()
-        .info(
-            InfoBuilder::new()
-                .title("Natsume V2 Server API")
-                .version("2.0.0")
-                .description(Some(INFO_DESCRIPTION))
-                .build(),
-        )
-        .paths(paths)
-        .components(Some(components))
-        .build()
 }
 
 fn remove_operation_tags(paths: &mut Paths) {
@@ -202,48 +242,10 @@ fn remove_operation_tags(paths: &mut Paths) {
 fn declared_but_unmounted_paths() -> utoipa::openapi::path::Paths {
     PathsBuilder::new()
         .path(
-            "/api/v2/enrollment-requests/{request_id}/actions/approve",
-            PathItem::new(
-                HttpMethod::Post,
-                simple_operator_operation(
-                    "approveEnrollment",
-                    "Approve a Device enrollment request",
-                    ("202", "Device enrollment approval accepted"),
-                    Some("request_id"),
-                ),
-            ),
-        )
-        .path(
             "/api/v2/commands/{command_id}",
             PathItem::new(HttpMethod::Put, put_command_operation()),
         )
         .build()
-}
-
-fn simple_operator_operation(
-    operation_id: &'static str,
-    summary: &'static str,
-    response: (&'static str, &'static str),
-    path_parameter: Option<&'static str>,
-) -> Operation {
-    let operation = OperationBuilder::new()
-        .operation_id(Some(operation_id))
-        .summary(Some(summary))
-        .security(session_cookie_requirement())
-        .response(response.0, Response::new(response.1));
-    match path_parameter {
-        Some(name) => operation
-            .parameter(
-                ParameterBuilder::new()
-                    .name(name)
-                    .parameter_in(ParameterIn::Path)
-                    .required(Required::True)
-                    .schema(Some(ObjectBuilder::new().schema_type(Type::String)))
-                    .build(),
-            )
-            .build(),
-        None => operation.build(),
-    }
 }
 
 fn put_command_operation() -> Operation {
@@ -537,6 +539,12 @@ mod tests {
                 &["204", "400", "401", "403", "404", "500"],
             ),
             (
+                "get",
+                "/api/v2/enrollment-requests",
+                "listEnrollmentRequests",
+                &["200", "401", "500"],
+            ),
+            (
                 "post",
                 "/api/v2/enrollment-requests",
                 "createEnrollmentRequest",
@@ -546,7 +554,13 @@ mod tests {
                 "post",
                 "/api/v2/enrollment-requests/{request_id}/actions/approve",
                 "approveEnrollment",
-                &["202"],
+                &["200", "400", "401", "403", "500"],
+            ),
+            (
+                "post",
+                "/api/v2/enrollment-requests/{request_id}/actions/reject",
+                "rejectEnrollment",
+                &["200", "400", "401", "403", "500"],
             ),
             (
                 "put",
@@ -635,7 +649,7 @@ mod tests {
             .and_then(Value::as_str)
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         if description
-            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest.\nDeclared but not mounted in Stage 5B operation IDs: approveEnrollment, putCommand."
+            != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand."
         {
             return Err(TestFailure::InfoDescriptionChanged);
         }
@@ -906,6 +920,137 @@ mod tests {
                 .pointer("/components/schemas/EnrollmentPendingState/enum")
                 .and_then(Value::as_array)
                 != Some(&vec![Value::from("pending")])
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
+        }
+
+        let list = operation_at(&value, "/api/v2/enrollment-requests", "get")?;
+        if list.get("requestBody").is_some()
+            || list
+                .get("security")
+                .and_then(Value::as_array)
+                .and_then(|security| security.first())
+                .and_then(Value::as_object)
+                .and_then(|requirement| requirement.get("sessionCookie"))
+                .and_then(Value::as_array)
+                .is_none_or(|scopes| !scopes.is_empty())
+            || nested_value(
+                list,
+                &[
+                    "responses",
+                    "200",
+                    "content",
+                    "application/json",
+                    "schema",
+                    "items",
+                    "$ref",
+                ],
+            )
+            .and_then(Value::as_str)
+                != Some("#/components/schemas/EnrollmentRequestSummary")
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
+        }
+        for path in [
+            "/api/v2/enrollment-requests/{request_id}/actions/approve",
+            "/api/v2/enrollment-requests/{request_id}/actions/reject",
+        ] {
+            let action = operation_at(&value, path, "post")?;
+            let parameter = action
+                .get("parameters")
+                .and_then(Value::as_array)
+                .and_then(|parameters| {
+                    parameters.iter().find(|parameter| {
+                        parameter.get("name").and_then(Value::as_str) == Some("request_id")
+                    })
+                })
+                .ok_or(TestFailure::EnrollmentContractChanged)?;
+            if action.get("requestBody").is_some()
+                || action
+                    .get("security")
+                    .and_then(Value::as_array)
+                    .and_then(|security| security.first())
+                    .and_then(Value::as_object)
+                    .and_then(|requirement| requirement.get("sessionCookie"))
+                    .and_then(Value::as_array)
+                    .is_none_or(|scopes| !scopes.is_empty())
+                || parameter.pointer("/schema/$ref").and_then(Value::as_str)
+                    != Some("#/components/schemas/CanonicalUuidV7")
+                || nested_value(
+                    action,
+                    &[
+                        "responses",
+                        "200",
+                        "content",
+                        "application/json",
+                        "schema",
+                        "$ref",
+                    ],
+                )
+                .and_then(Value::as_str)
+                    != Some("#/components/schemas/EnrollmentActionResponse")
+            {
+                return Err(TestFailure::EnrollmentContractChanged);
+            }
+        }
+
+        let summary = schema_object(&value, "EnrollmentRequestSummary")?;
+        let summary_properties = schema_properties(summary)?;
+        if property_names(summary_properties)
+            != BTreeSet::from([
+                "client_version",
+                "created_at",
+                "enrollment_request_id",
+                "gateway_spki_sha256",
+                "hardware_identity_quality",
+                "machine_hardware_id",
+                "protocol_version",
+                "resolution",
+                "resolved_device_id",
+                "source_ip",
+                "state",
+            ])
+            || required_property_names(summary)? != property_names(summary_properties)
+            || summary.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || summary_properties
+                .get("enrollment_request_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || summary_properties
+                .get("gateway_spki_sha256")
+                .and_then(|property| property.get("pattern"))
+                .and_then(Value::as_str)
+                != Some("^[0-9a-f]{64}$")
+            || summary_properties
+                .get("state")
+                .and_then(|property| property.get("enum"))
+                .and_then(Value::as_array)
+                != Some(&vec![Value::from("pending"), Value::from("approved")])
+            || summary_properties
+                .get("resolved_device_id")
+                .and_then(|property| property.pointer("/oneOf/1/$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || summary_properties.contains_key("gateway_csr_der")
+        {
+            return Err(TestFailure::EnrollmentContractChanged);
+        }
+        let action = schema_object(&value, "EnrollmentActionResponse")?;
+        let action_properties = schema_properties(action)?;
+        if property_names(action_properties) != BTreeSet::from(["enrollment_request_id", "state"])
+            || required_property_names(action)? != property_names(action_properties)
+            || action.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+            || action_properties
+                .get("enrollment_request_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV7")
+            || action_properties
+                .get("state")
+                .and_then(|property| property.get("enum"))
+                .and_then(Value::as_array)
+                != Some(&vec![Value::from("approved"), Value::from("rejected")])
         {
             return Err(TestFailure::EnrollmentContractChanged);
         }

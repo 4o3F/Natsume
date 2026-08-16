@@ -64,22 +64,22 @@ fn router_inner(
                 HeaderValue::from_static("no-cache"),
             ));
     Router::new()
-        .nest("/api/v2", api_v2(state.clone()).fallback(not_found))
+        .nest("/api/v2", api_v2(&state).fallback(not_found))
         .fallback_service(static_service)
         .with_state(state)
         .layer(axum_middleware::from_fn(middleware::correlation_id))
 }
 
-fn api_v2(state: AppState) -> Router<AppState> {
+fn api_v2(state: &AppState) -> Router<AppState> {
     let authenticated = Router::new()
         .merge(handler::session::protected_routes(state.clone()))
         .merge(handler::contest::routes(state.clone()))
         .merge(handler::import::routes(state.clone()))
-        .merge(handler::provisioning::routes(state));
+        .merge(handler::provisioning::routes(state.clone()));
     Router::new()
         .merge(handler::health::routes())
         .merge(handler::session::public_routes())
-        .merge(handler::enrollment::routes())
+        .merge(handler::enrollment::routes(state.clone()))
         .merge(authenticated)
 }
 

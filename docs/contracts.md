@@ -92,6 +92,14 @@ HTTP 错误响应的 media type 固定为 `application/json`。wire body 只包�
 | `POST` | `/api/v2/provisioning-window/actions/close` | `admin` | 按 [ADR-0033](adr/0033-enrollment-and-device-control-boundary.md) 关闭当前 provisioning window；目标已满足时 repeat-safe `noop` |
 | `GET` | `/api/v2/provisioning-window` | `admin` / `viewer` | 按 [ADR-0033](adr/0033-enrollment-and-device-control-boundary.md) 返回当前 `{state, revision}` fact |
 
+**2026-08-16 修订（Phase 3 WP2c）**：挂载以下 Enrollment review operator route；list 为 current-fact read，绝不返回 CSR bytes：
+
+| Method | Path | 角色 | 语义 |
+|---|---|---|---|
+| `GET` | `/api/v2/enrollment-requests` | `admin` / `viewer` | 按 `created_at`、`enrollment_request_id` 返回 live `pending` / `approved` request 的 redacted review facts |
+| `POST` | `/api/v2/enrollment-requests/{request_id}/actions/approve` | `admin` | 审批 pending replacement；不签发凭据，Device 下次 claim POST 才签发 |
+| `POST` | `/api/v2/enrollment-requests/{request_id}/actions/reject` | `admin` | 拒绝 pending replacement；Device polling 观察 `ENROLLMENT_REQUEST_REJECTED` |
+
 **禁止**：
 
 - 返回 password 值；
@@ -199,6 +207,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 **2026-08-16 修订（Phase 3 WP2b）**：新增挂载无需 operator session 的 device operation `createEnrollmentRequest`（`POST /api/v2/enrollment-requests`）；`approveEnrollment` 仍只声明、不挂载，operator approve/reject HTTP 均归 WP2c。`info.description` 的 mounted 与 declared-but-unmounted 集合必须同步反映该边界。
 
+**2026-08-16 修订（Phase 3 WP2c）**：新增挂载 `listEnrollmentRequests`、`approveEnrollment` 与 `rejectEnrollment`；list 允许 `admin` / `viewer`，两个 action 仅允许 `admin`。OpenAPI declared-but-unmounted 集合现在只剩 `putCommand`。
+
 #### 3.6.3 建立与查询
 
 - `POST /api/v2/session` 只接受恰好含 `login_name` 与 `password` 的封闭 JSON object，未知字段必须拒绝。成功同时发送 session cookie 并返回 `200`，响应体只含 `operator_id` 与 `role`。
@@ -234,8 +244,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 |---|
 | `create_enrollment_request`（**已实现**；`device:enrollment`） |
 | `issue_device_credentials`（**已实现**；`device:enrollment`） |
-| `approve_enrollment_request`（**已实现（writer 落地，HTTP 挂载随 WP2c）**；`operator:self`） |
-| `reject_enrollment_request`（**已实现（writer 落地，HTTP 挂载随 WP2c）**；`operator:self`） |
+| `approve_enrollment_request`（**已实现（writer 与 HTTP 已挂载）**；`operator:self`） |
+| `reject_enrollment_request`（**已实现（writer 与 HTTP 已挂载）**；`operator:self`） |
 | `expire_enrollment_requests`（**已实现**；`operator:self` close 与 `system:recovery` close-once） |
 | `open_provisioning_window`（**已实现**；`operator:self` operator action） |
 | `close_provisioning_window`（**已实现**；`operator:self` operator action 与 `system:recovery` startup recovery） |
@@ -263,7 +273,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `credentials_verified` | `establish_session` |
 | `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window`、`approve_enrollment_request` / `reject_enrollment_request`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（已实现） |
-| `target_already_satisfied` | `revoke_device` / `disable_device` 与 `open_provisioning_window` / `close_provisioning_window` 的 `noop` 结果 |
+| `target_already_satisfied` | `revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window` 与 `approve_enrollment_request` / `reject_enrollment_request` 的 `noop` 结果 |
 | `candidate_invalid` | `create_import_candidate` 的 `rejected` 结果（已实现） |
 | `baseline_stale` | `commit_import` 的 `rejected` 结果 |
 | `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
@@ -303,7 +313,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `IMPORT_CANDIDATE_UNAVAILABLE` | `404` | import candidate 未知、已过期、已删除或 preview token 不匹配 |
 | `IMPORT_CANDIDATE_PENDING` | `409` | singleton pending import candidate 已存在 |
 | `IMPORT_PREVIEW_STALE` | `409` | import preview 的 configuration 或 binding baseline 已前移 |
-| `ENROLLMENT_REQUEST_INVALID` | `400` | `createEnrollmentRequest` 的 closed request / CSR / raw SPKI / protocol 无效，或 live Enrollment 全局 capacity 已满；未来 operator decision 指向已存在但不再 actionable 的 request 也使用此码 |
+| `ENROLLMENT_REQUEST_INVALID` | `400` | `createEnrollmentRequest` 的 closed request / CSR / raw SPKI / protocol 无效，或 live Enrollment 全局 capacity 已满；approve/reject 的 request ID 非 canonical UUIDv7，或 request 未知、terminal、处于相反 decision state 时也使用此码 |
 | `PROVISIONING_WINDOW_CLOSED` | `409` | `createEnrollmentRequest` 观察到窗口非 `open` |
 | `ENROLLMENT_REQUEST_REJECTED` | `409` | `createEnrollmentRequest` 的 hardware ID 最新 request 在当前窗口已被 operator reject |
 | `DEVICE_IDENTITY_CONFLICT` | `409` | `createEnrollmentRequest` 的 live different-SPKI 或 hardware identity facts 冲突 |
@@ -345,6 +355,8 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 **替换语义**：经批准的替换以 `resolution = 'replace_device_credentials'` 关联既有 `device_pk`；替换 `device_tokens.token_hash` 并签发新的 certificate metadata，作为 re-enrollment 审计；`issue_device_credentials` audit 的 `previous_device_state` 精确记录 `enrolled` / `revoked` / `disabled`（首次创建为 `null`）。若旧连接仍存活，记录异常审计事件。
 
 **审批与 claim**：需要审批的 Enrollment 请求以 HTTP `202` 与 typed 非错误 body（request identity 与 state）应答，不携带任何签发结果。Device 通过幂等重投**同一** request 轮询：相同 `machine_hardware_id` + `gateway_spki_sha256` 返回同一条 live request，不新增 row。operator 批准把 persisted state 置为 `approved`，受审计且零签发；该 state 不作为 wire value 返回——观察到 `approved` 的下一次重投立即在**该次请求内**同步执行签发事务并返回 `201`。operator 拒绝把 state 置为 `rejected`；只要该 rejected row 仍是此 hardware ID 的最新 request，同一窗口内该 hardware ID 的任何 SPKI（包括新 key）都返回 `ENROLLMENT_REQUEST_REJECTED` 且零写入。窗口关闭把 `pending` / `approved` / `rejected` 转为 `expired`，因此下一次开窗不再受旧 rejection 阻断；这是无 window-ID column 时冻结的 current-window scoping rule。claim 响应的 Token 与 Gateway leaf 明文只存在于那一次响应，数据库始终只保存 hash。claim 前必须重新校验窗口仍为 `open`（`INV-CERT-01`：窗口外不存在签发路径）。claim 响应丢失时，仍为 `enrolled` 的 Device 重试落入 same-SPKI 自动批准路径重新签发。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定 ErrorCode 拒绝；operator 必须先拒绝现有请求。
+
+**2026-08-16 修订（Phase 3 WP2c operator decision precision）**：approve/reject path 的 `request_id` 必须是 canonical lowercase hyphenated UUIDv7。`pending → approved` 与 `pending → rejected` 写 `result = 'succeeded'` / `reason_code = 'operator_requested'` audit；已为目标 state 的 re-approve / re-reject 是零业务写入的 repeat-safe `noop`，仍写一行 `reason_code = 'target_already_satisfied'` audit 并返回 `200 {enrollment_request_id,state}`。`approved → reject`、`rejected → approve`、任意 terminal request、未知 request 或非 canonical ID 都不是 noop，统一返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入，避免 actionability / existence oracle。operator list 只返回 `pending` / `approved`，字段固定为 request ID、hardware ID/quality、SPKI digest、client/protocol、state、nullable resolution/resolved Device、created-at 与 source IP；不得返回 `gateway_csr_der`。
 
 **2026-08-16 修订（Phase 3 WP2b intake capacity）**：全局 live Enrollment request（persisted state 为 `pending` / `approved`）上限固定为硬编码 `MAX_LIVE_ENROLLMENT_REQUESTS = 600`，对应 500-seat fleet 加运维余量，不进入配置。检查位于 `BEGIN IMMEDIATE` intake transaction 内、发生在任何新 request row 写入前；达到上限后新的 intake 返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入，已有 live request 的幂等 replay 与 approved claim 仍可返回或排空既有 row。
 

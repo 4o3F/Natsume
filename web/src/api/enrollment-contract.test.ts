@@ -4,6 +4,8 @@ import openapi from "../../openapi/natsume.openapi.json";
 
 const ENROLLMENT_APPROVE_PATH =
   "/api/v2/enrollment-requests/{request_id}/actions/approve";
+const ENROLLMENT_REJECT_PATH =
+  "/api/v2/enrollment-requests/{request_id}/actions/reject";
 const ENROLLMENT_CREATE_PATH = "/api/v2/enrollment-requests";
 const COMMAND_PATH = "/api/v2/commands/{command_id}";
 const PROVISIONING_WINDOW_PATH = "/api/v2/provisioning-window";
@@ -131,11 +133,16 @@ function expectResponseSet(
 }
 
 describe("Natsume V2 browser OpenAPI contract", () => {
-  it("contains the Device Enrollment approval operation", () => {
-    const enrollment = openapi.paths[ENROLLMENT_APPROVE_PATH];
-
-    expect(enrollment.post.operationId).toBe("approveEnrollment");
-    expect(enrollment.post.summary.toLowerCase()).toContain("device");
+  it("contains the mounted Enrollment review operations", () => {
+    expect(openapi.paths[ENROLLMENT_CREATE_PATH].get.operationId).toBe(
+      "listEnrollmentRequests",
+    );
+    expect(openapi.paths[ENROLLMENT_APPROVE_PATH].post.operationId).toBe(
+      "approveEnrollment",
+    );
+    expect(openapi.paths[ENROLLMENT_REJECT_PATH].post.operationId).toBe(
+      "rejectEnrollment",
+    );
   });
 
   it("contains the Rust-owned health operation", () => {
@@ -152,6 +159,7 @@ describe("Natsume V2 browser OpenAPI contract", () => {
       "/api/v2/devices/{device_id}/actions/revoke",
       ENROLLMENT_CREATE_PATH,
       "/api/v2/enrollment-requests/{request_id}/actions/approve",
+      "/api/v2/enrollment-requests/{request_id}/actions/reject",
       "/api/v2/health",
       "/api/v2/imports",
       "/api/v2/imports/{import_id}/actions/commit",
@@ -216,8 +224,14 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     expect(openapi.paths[ENROLLMENT_CREATE_PATH].post.operationId).toBe(
       "createEnrollmentRequest",
     );
+    expect(openapi.paths[ENROLLMENT_CREATE_PATH].get.operationId).toBe(
+      "listEnrollmentRequests",
+    );
     expect(openapi.paths[ENROLLMENT_APPROVE_PATH].post.operationId).toBe(
       "approveEnrollment",
+    );
+    expect(openapi.paths[ENROLLMENT_REJECT_PATH].post.operationId).toBe(
+      "rejectEnrollment",
     );
     expect(openapi.paths[COMMAND_PATH].put.operationId).toBe("putCommand");
   });
@@ -434,6 +448,73 @@ describe("Natsume V2 browser OpenAPI contract", () => {
     expect(openapi.components.schemas.EnrollmentPendingState.enum).toEqual([
       "pending",
     ]);
+  });
+
+  it("freezes the operator Enrollment review responses and redacted schemas", () => {
+    const list = openapi.paths[ENROLLMENT_CREATE_PATH].get;
+    expect(list.operationId).toBe("listEnrollmentRequests");
+    expectResponseSet(list, ["200", "401", "500"]);
+    expect(list.responses["200"].content["application/json"].schema).toEqual({
+      type: "array",
+      items: { $ref: "#/components/schemas/EnrollmentRequestSummary" },
+    });
+
+    for (const [path, operationId] of [
+      [ENROLLMENT_APPROVE_PATH, "approveEnrollment"],
+      [ENROLLMENT_REJECT_PATH, "rejectEnrollment"],
+    ] as const) {
+      const operation = openapi.paths[path].post;
+      expect(operation.operationId).toBe(operationId);
+      expectResponseSet(operation, ["200", "400", "401", "403", "500"]);
+      const requestId = operation.parameters?.find(
+        (parameter) => "name" in parameter && parameter.name === "request_id",
+      );
+      expect(requestId).toMatchObject({
+        in: "path",
+        required: true,
+        schema: { $ref: CANONICAL_UUID_V7_REFERENCE },
+      });
+      expect(
+        operation.responses["200"].content["application/json"].schema,
+      ).toEqual({
+        $ref: "#/components/schemas/EnrollmentActionResponse",
+      });
+    }
+
+    const summary = openapi.components.schemas.EnrollmentRequestSummary;
+    expect(summary.additionalProperties).toBe(false);
+    expect([...summary.required].sort()).toEqual(
+      Object.keys(summary.properties).sort(),
+    );
+    expect(Object.keys(summary.properties).sort()).toEqual([
+      "client_version",
+      "created_at",
+      "enrollment_request_id",
+      "gateway_spki_sha256",
+      "hardware_identity_quality",
+      "machine_hardware_id",
+      "protocol_version",
+      "resolution",
+      "resolved_device_id",
+      "source_ip",
+      "state",
+    ]);
+    expect(summary.properties).not.toHaveProperty("gateway_csr_der");
+    expect(summary.properties.enrollment_request_id).toEqual({
+      $ref: CANONICAL_UUID_V7_REFERENCE,
+    });
+    expect(summary.properties.state.enum).toEqual(["pending", "approved"]);
+
+    const action = openapi.components.schemas.EnrollmentActionResponse;
+    expect(action).toEqual({
+      type: "object",
+      required: ["enrollment_request_id", "state"],
+      properties: {
+        enrollment_request_id: { $ref: CANONICAL_UUID_V7_REFERENCE },
+        state: { type: "string", enum: ["approved", "rejected"] },
+      },
+      additionalProperties: false,
+    });
   });
 
   it("permits only the frozen session and import credential keys", () => {

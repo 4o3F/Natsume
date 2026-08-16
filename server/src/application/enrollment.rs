@@ -8,7 +8,9 @@
 //! identity's newest request; window close expires it and therefore clears the
 //! block without adding a window identifier column. A non-pending operator
 //! decision is classified as `ENROLLMENT_REQUEST_INVALID`, because the named
-//! request exists but is no longer actionable.
+//! request exists but is no longer actionable. Approval/rejection repeats are
+//! noops only when the persisted state already equals the requested target;
+//! cross-target and terminal transitions use the same not-actionable class.
 
 use std::{fs, net::IpAddr, path::Path, sync::Arc, time::SystemTime};
 
@@ -417,6 +419,160 @@ pub(crate) enum EnrollmentResolution {
 }
 
 impl EnrollmentResolution {
+    fn from_persisted(value: &str) -> Result<Self, EnrollmentError> {
+        match value {
+            "create_device" => Ok(Self::CreateDevice),
+            "replace_device_credentials" => Ok(Self::ReplaceDeviceCredentials),
+            _ => Err(EnrollmentError::InvalidPersistedFacts),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollmentReviewState {
+    Pending,
+    Approved,
+}
+
+impl EnrollmentReviewState {
+    fn from_persisted(value: &str) -> Result<Self, EnrollmentError> {
+        match value {
+            "pending" => Ok(Self::Pending),
+            "approved" => Ok(Self::Approved),
+            _ => Err(EnrollmentError::InvalidPersistedFacts),
+        }
+    }
+}
+
+/// Redacted live Enrollment facts exposed to authenticated operators.
+pub(crate) struct EnrollmentRequestSummary {
+    pub(crate) enrollment_request_id: Uuid,
+    pub(crate) machine_hardware_id: Uuid,
+    pub(crate) hardware_identity_quality: HardwareIdentityQuality,
+    pub(crate) gateway_spki_sha256: String,
+    pub(crate) client_version: String,
+    pub(crate) protocol_version: u32,
+    pub(crate) state: EnrollmentReviewState,
+    pub(crate) resolution: Option<EnrollmentResolution>,
+    pub(crate) resolved_device_id: Option<Uuid>,
+    pub(crate) created_at: String,
+    pub(crate) source_ip: String,
+}
+
+pub(crate) struct PersistedEnrollmentRequestSummary {
+    pub(crate) enrollment_request_id: String,
+    pub(crate) machine_hardware_id: String,
+    pub(crate) hardware_identity_quality: String,
+    pub(crate) gateway_spki_sha256: Vec<u8>,
+    pub(crate) client_version: String,
+    pub(crate) protocol_version: i64,
+    pub(crate) state: String,
+    pub(crate) resolution: Option<String>,
+    pub(crate) resolved_device_id: Option<String>,
+    pub(crate) created_at: String,
+    pub(crate) source_ip: String,
+}
+
+impl EnrollmentRequestSummary {
+    pub(crate) fn from_persisted(
+        facts: PersistedEnrollmentRequestSummary,
+    ) -> Result<Self, EnrollmentError> {
+        let enrollment_request_id = parse_canonical_uuid(&facts.enrollment_request_id, 7)?;
+        let machine_hardware_id = parse_canonical_uuid(&facts.machine_hardware_id, 5)?;
+        if facts.gateway_spki_sha256.len() != 32
+            || facts.client_version.is_empty()
+            || !facts
+                .client_version
+                .bytes()
+                .all(|byte| byte.is_ascii_graphic())
+            || facts.created_at.is_empty()
+        {
+            return Err(EnrollmentError::InvalidPersistedFacts);
+        }
+        let source_ip = facts
+            .source_ip
+            .parse::<IpAddr>()
+            .map_err(|_| EnrollmentError::InvalidPersistedFacts)?
+            .to_string();
+        let resolved_device_id = facts
+            .resolved_device_id
+            .as_deref()
+            .map(|value| parse_canonical_uuid(value, 7))
+            .transpose()?;
+        Ok(Self {
+            enrollment_request_id,
+            machine_hardware_id,
+            hardware_identity_quality: HardwareIdentityQuality::parse(
+                &facts.hardware_identity_quality,
+            )
+            .map_err(|_| EnrollmentError::InvalidPersistedFacts)?,
+            gateway_spki_sha256: hex::encode(facts.gateway_spki_sha256),
+            client_version: facts.client_version,
+            protocol_version: u32::try_from(facts.protocol_version)
+                .map_err(|_| EnrollmentError::InvalidPersistedFacts)?,
+            state: EnrollmentReviewState::from_persisted(&facts.state)?,
+            resolution: facts
+                .resolution
+                .as_deref()
+                .map(EnrollmentResolution::from_persisted)
+                .transpose()?,
+            resolved_device_id,
+            created_at: facts.created_at,
+            source_ip,
+        })
+    }
+}
+
+fn parse_canonical_uuid(value: &str, version: usize) -> Result<Uuid, EnrollmentError> {
+    let parsed = Uuid::parse_str(value).map_err(|_| EnrollmentError::InvalidPersistedFacts)?;
+    if parsed.get_version_num() != version || parsed.hyphenated().to_string() != value {
+        return Err(EnrollmentError::InvalidPersistedFacts);
+    }
+    Ok(parsed)
+}
+
+pub(crate) struct EnrollmentRequestId(Uuid);
+
+impl EnrollmentRequestId {
+    pub(crate) fn parse(value: &str) -> Result<Self, EnrollmentError> {
+        let parsed = Uuid::parse_str(value).map_err(|_| EnrollmentError::InvalidRequestId)?;
+        if parsed.get_version_num() != 7 || parsed.hyphenated().to_string() != value {
+            return Err(EnrollmentError::InvalidRequestId);
+        }
+        Ok(Self(parsed))
+    }
+
+    pub(crate) const fn value(&self) -> Uuid {
+        self.0
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn for_test(value: Uuid) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EnrollmentDecisionState {
+    Approved,
+    Rejected,
+}
+
+impl EnrollmentDecisionState {
+    pub(crate) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+pub(crate) struct EnrollmentDecisionOutcome {
+    pub(crate) enrollment_request_id: Uuid,
+    pub(crate) state: EnrollmentDecisionState,
+}
+
+impl EnrollmentResolution {
     pub(crate) const fn as_persisted(self) -> &'static str {
         match self {
             Self::CreateDevice => "create_device",
@@ -497,21 +653,26 @@ pub(crate) async fn intake(
     db::enrollment::intake(database, issuer, request, correlation_id).await
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
+/// Reads all live (`pending` / `approved`) requests in stable creation order.
+pub(crate) async fn list_requests(
+    database: &Database,
+) -> Result<Vec<EnrollmentRequestSummary>, EnrollmentError> {
+    db::enrollment::list_requests(database).await
+}
+
 pub(crate) async fn approve_request(
     database: &Database,
-    request_id: Uuid,
+    request_id: &EnrollmentRequestId,
     correlation_id: CorrelationId,
-) -> Result<(), EnrollmentError> {
+) -> Result<EnrollmentDecisionOutcome, EnrollmentError> {
     db::enrollment::approve_request(database, request_id, correlation_id).await
 }
 
-#[cfg_attr(not(test), expect(dead_code, reason = "HTTP mounting lands in WP2c"))]
 pub(crate) async fn reject_request(
     database: &Database,
-    request_id: Uuid,
+    request_id: &EnrollmentRequestId,
     correlation_id: CorrelationId,
-) -> Result<(), EnrollmentError> {
+) -> Result<EnrollmentDecisionOutcome, EnrollmentError> {
     db::enrollment::reject_request(database, request_id, correlation_id).await
 }
 
@@ -664,6 +825,8 @@ const fn decode_standard_base64_byte(byte: u8) -> Option<u8> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum EnrollmentError {
+    #[snafu(display("the Enrollment request ID is invalid"))]
+    InvalidRequestId,
     #[snafu(display("the machine hardware ID is invalid"))]
     InvalidMachineHardwareId,
     #[snafu(display("the hardware identity quality is invalid"))]
