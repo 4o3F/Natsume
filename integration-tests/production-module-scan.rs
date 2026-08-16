@@ -9,7 +9,7 @@ use std::{
 use proc_macro2::{LineColumn, TokenStream, TokenTree};
 use snafu::Snafu;
 use syn::{
-    Attribute, Ident, Item, LitStr, Meta, Token,
+    Attribute, Ident, Item, LitStr, Meta, Token, UseTree, Visibility,
     parse::{Parse, ParseStream},
     visit::{self, Visit},
 };
@@ -27,6 +27,24 @@ const PRODUCTION_CANARY: &str = "use sqlx::Row;
 struct Response;
 fn production() { diesel::sql_query(); pool.get(); r2d2::Pool; sqlx::query(); }
 ";
+const PUBLIC_VISIBILITY_CANARY: &str = "pub struct PublicItem;
+pub mod public_module {}
+pub(crate) struct CrateItem;
+pub(super) struct ParentItem;
+pub(in crate) struct ScopedItem;
+struct PrivateItem;
+";
+
+#[derive(Clone, Copy)]
+struct PublicVisibilityAllowance {
+    file: &'static str,
+    item_kind: &'static str,
+    item_name: &'static str,
+}
+
+// Deliberately empty: any future exception must name its file, item kind, and
+// item in this reviewed list rather than weakening the rule for a whole tree.
+const PUBLIC_VISIBILITY_ALLOWLIST: &[PublicVisibilityAllowance] = &[];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TriBool {
@@ -173,6 +191,7 @@ impl<'a> Scanner<'a> {
                 file: self.file.clone(),
                 line,
                 symbol,
+                rule: ViolationRule::ForbiddenProductionSymbol,
             });
         }
     }
@@ -207,18 +226,31 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ViolationRule {
+    ForbiddenProductionSymbol,
+    BarePublicVisibility,
+}
+
 struct Violation {
     file: String,
     line: usize,
     symbol: String,
+    rule: ViolationRule,
 }
 
 impl Violation {
     fn message(&self) -> String {
-        format!(
-            "{}:{}: forbidden production symbol {}",
-            self.file, self.line, self.symbol
-        )
+        match self.rule {
+            ViolationRule::ForbiddenProductionSymbol => format!(
+                "{}:{}: forbidden production symbol {}",
+                self.file, self.line, self.symbol
+            ),
+            ViolationRule::BarePublicVisibility => format!(
+                "{}:{}: forbidden bare pub visibility on {}",
+                self.file, self.line, self.symbol
+            ),
+        }
     }
 }
 
@@ -231,6 +263,80 @@ fn scan_source(
     let mut scanner = Scanner::new(file, forbidden);
     scanner.visit_file(&syntax);
     Ok(scanner.violations)
+}
+
+fn use_tree_name(tree: &UseTree) -> String {
+    match tree {
+        UseTree::Path(path) => format!("{}::{}", path.ident, use_tree_name(&path.tree)),
+        UseTree::Name(name) => name.ident.to_string(),
+        UseTree::Rename(rename) => format!("{} as {}", rename.ident, rename.rename),
+        UseTree::Glob(_) => "*".to_owned(),
+        UseTree::Group(group) => {
+            let names = group
+                .items
+                .iter()
+                .map(use_tree_name)
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{names}}}")
+        }
+    }
+}
+
+fn item_visibility(item: &Item) -> Option<(&Visibility, &'static str, String)> {
+    match item {
+        Item::Const(value) => Some((&value.vis, "const", value.ident.to_string())),
+        Item::Enum(value) => Some((&value.vis, "enum", value.ident.to_string())),
+        Item::ExternCrate(value) => Some((&value.vis, "extern crate", value.ident.to_string())),
+        Item::Fn(value) => Some((&value.vis, "fn", value.sig.ident.to_string())),
+        Item::Mod(value) => Some((&value.vis, "mod", value.ident.to_string())),
+        Item::Static(value) => Some((&value.vis, "static", value.ident.to_string())),
+        Item::Struct(value) => Some((&value.vis, "struct", value.ident.to_string())),
+        Item::Trait(value) => Some((&value.vis, "trait", value.ident.to_string())),
+        Item::TraitAlias(value) => Some((&value.vis, "trait alias", value.ident.to_string())),
+        Item::Type(value) => Some((&value.vis, "type", value.ident.to_string())),
+        Item::Union(value) => Some((&value.vis, "union", value.ident.to_string())),
+        Item::Use(value) => Some((&value.vis, "use", use_tree_name(&value.tree))),
+        Item::ForeignMod(_) | Item::Impl(_) | Item::Macro(_) | Item::Verbatim(_) | _ => None,
+    }
+}
+
+fn public_visibility_is_allowed(
+    file: &str,
+    item_kind: &str,
+    item_name: &str,
+    allowlist: &[PublicVisibilityAllowance],
+) -> bool {
+    allowlist.iter().any(|allowance| {
+        allowance.file == file
+            && allowance.item_kind == item_kind
+            && allowance.item_name == item_name
+    })
+}
+
+fn scan_public_visibility_source(
+    file: &str,
+    source: &str,
+    allowlist: &[PublicVisibilityAllowance],
+) -> Result<Vec<Violation>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut violations = Vec::new();
+    for item in &syntax.items {
+        let Some((Visibility::Public(public), item_kind, item_name)) = item_visibility(item) else {
+            continue;
+        };
+        if public_visibility_is_allowed(file, item_kind, &item_name, allowlist) {
+            continue;
+        }
+        let LineColumn { line, .. } = public.span.start();
+        violations.push(Violation {
+            file: file.to_owned(),
+            line,
+            symbol: format!("{item_kind} {item_name}"),
+            rule: ViolationRule::BarePublicVisibility,
+        });
+    }
+    Ok(violations)
 }
 
 fn rust_files(root: &Path, relative: &Path) -> Result<Vec<PathBuf>, ScanError> {
@@ -297,6 +403,31 @@ fn scan_rule(
     Ok(violations)
 }
 
+fn scan_public_visibility_rule(
+    root: &Path,
+    files: &[PathBuf],
+    allowlist: &[PublicVisibilityAllowance],
+) -> Result<Vec<Violation>, ScanError> {
+    let mut violations = Vec::new();
+    for relative in files {
+        let source =
+            fs::read_to_string(root.join(relative)).map_err(|source| ScanError::ReadSource {
+                path: relative.clone(),
+                source,
+            })?;
+        let file = relative.display().to_string();
+        violations.extend(
+            scan_public_visibility_source(&file, &source, allowlist).map_err(|source| {
+                ScanError::ParseSource {
+                    path: relative.clone(),
+                    source,
+                }
+            })?,
+        );
+    }
+    Ok(violations)
+}
+
 fn forbidden(symbols: &'static [&'static str]) -> HashSet<&'static str> {
     symbols.iter().copied().collect()
 }
@@ -324,6 +455,20 @@ fn run_canaries() -> Result<(), ScanError> {
             return Err(ScanError::CanaryFailed);
         }
     }
+
+    let public_visibility_violations =
+        scan_public_visibility_source("<visibility-canary>", PUBLIC_VISIBILITY_CANARY, &[])
+            .map_err(|_| ScanError::CanaryFailed)?;
+    if public_visibility_violations.len() != 2
+        || !public_visibility_violations
+            .iter()
+            .any(|violation| violation.symbol == "struct PublicItem")
+        || !public_visibility_violations
+            .iter()
+            .any(|violation| violation.symbol == "mod public_module")
+    {
+        return Err(ScanError::CanaryFailed);
+    }
     Ok(())
 }
 
@@ -342,6 +487,10 @@ fn run() -> Result<Vec<Violation>, ScanError> {
 
     let mut application_files = rust_files(&root, Path::new("server/src/application.rs"))?;
     application_files.extend(rust_files(&root, Path::new("server/src/application"))?);
+    let mut db_files = rust_files(&root, Path::new("server/src/db.rs"))?;
+    db_files.extend(rust_files(&root, Path::new("server/src/db"))?);
+    let mut visibility_files = application_files.clone();
+    visibility_files.extend(db_files.iter().cloned());
     let schema_application_file = Path::new("server/src/application/contest.rs");
     let (schema_application_files, application_files): (Vec<PathBuf>, Vec<PathBuf>) =
         application_files
@@ -351,6 +500,7 @@ fn run() -> Result<Vec<Violation>, ScanError> {
     if http_files.is_empty()
         || audit_vault_files.is_empty()
         || application_files.is_empty()
+        || db_files.is_empty()
         || schema_application_files.is_empty()
     {
         return Err(ScanError::RuleSourcesMissing);
@@ -396,6 +546,11 @@ fn run() -> Result<Vec<Violation>, ScanError> {
             "r2d2",
             "sqlx",
         ]),
+    )?);
+    violations.extend(scan_public_visibility_rule(
+        &root,
+        &visibility_files,
+        PUBLIC_VISIBILITY_ALLOWLIST,
     )?);
     Ok(violations)
 }
@@ -536,5 +691,44 @@ mod tests {
     #[test]
     fn parse_failures_are_not_clean_results() {
         assert!(scan_source("fixture.rs", "fn {", &forbidden(&["diesel"])).is_err());
+    }
+
+    #[test]
+    fn bare_public_visibility_is_forbidden_but_restricted_visibility_is_allowed() {
+        let source = "pub struct PublicItem;
+pub mod public_module {}
+pub(crate) fn crate_item() {}
+pub(super) const PARENT_ITEM: usize = 1;
+pub(in crate) type ScopedItem = usize;
+fn private_item() {}
+";
+        let violations = match scan_public_visibility_source("fixture.rs", source, &[]) {
+            Ok(violations) => violations,
+            Err(error) => panic!("fixture did not parse: {error}"),
+        };
+        assert_eq!(violations.len(), 2);
+        assert!(
+            violations
+                .iter()
+                .all(|violation| matches!(violation.rule, ViolationRule::BarePublicVisibility))
+        );
+    }
+
+    #[test]
+    fn public_visibility_allowlist_is_exact() {
+        let source = "pub struct Allowed;
+pub struct Rejected;
+";
+        let allowlist = [PublicVisibilityAllowance {
+            file: "fixture.rs",
+            item_kind: "struct",
+            item_name: "Allowed",
+        }];
+        let violations = match scan_public_visibility_source("fixture.rs", source, &allowlist) {
+            Ok(violations) => violations,
+            Err(error) => panic!("fixture did not parse: {error}"),
+        };
+        assert_eq!(violations.len(), 1);
+        assert_eq!(violations[0].symbol, "struct Rejected");
     }
 }
