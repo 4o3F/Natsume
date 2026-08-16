@@ -12,7 +12,7 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 |---|---|---|
 | WP1 | Command 持久化与 PUT HTTP 面：RFC 8785 JCS（`serde_json_canonicalizer`）+ fingerprint v1 实现与 golden 向量、per-kind payload schema v1 冻结、`db::command` + `application::command`、`commands.state` CHECK 收口 + 调度索引（直接改初始 migration）、`PUT /api/v2/commands/{command_id}` handler（`201/200/400/409`、同事务创建审计、conflict 审计）、OpenAPI 挂载与 descriptor/TS golden 再生成 | `DONE`（见下方 WP1 落地记录） |
 | WP2 | Ingress hardening 定案落地：以 `hyper::server::conn::http1::Builder` 自建 accept loop（`max_headers`、header read timeout、`with_upgrades`、graceful shutdown、保留 `ClientAddress` connect info），连接容量常量与 accept 层 semaphore，431/slow-header 负向测试，[契约](../contracts.md) §3.6.5 以 dated revision 收口该 gap | `DONE`（见下方 WP2 落地记录） |
-| WP3 | WSS 服务端：upgrade 路由 `/api/v2/device/control`、subprotocol `natsume.v1` 协商失败拒绝、Bearer Device Token 常数时间认证（401-before-decode）、失败认证 IP 限流、Hello 交换（connection_epoch、协商 limits）、连接注册表（同 device 新连接置换旧连接、token 吊销即断、credential replacement 旧连接 anomaly audit——吸收 Phase 3 WP2b 挂账）、oversized frame/未知版本/非法 oneof 关闭连接 | `OPEN` |
+| WP3 | WSS 服务端：upgrade 路由 `/api/v2/device/control`、subprotocol `natsume.v1` 协商失败拒绝、Bearer Device Token 常数时间认证（401-before-decode）、失败认证 IP 限流、Hello 交换（connection_epoch、协商 limits）、连接注册表（同 device 新连接置换旧连接、token 吊销即断、credential replacement 旧连接 anomaly audit——吸收 Phase 3 WP2b 挂账）、oversized frame/未知版本/非法 oneof 关闭连接 | `DONE`（见下方 WP3 落地记录） |
 | WP4 | Dispatcher 与 CommandStatus 回写：frozen payload → wire Command 确定性渲染（byte-identical golden）、创建与重连双触发投递、状态机单调回写（terminal 不可被 transport error 覆写、重复 terminal 合并安全）、same-ID replay 全链 | `OPEN` |
 | WP5 | Device 客户端运行时：WSS client（tokio-tungstenite + rustls，信任根同 enrollment）、Enrolled 驻留点接入连接循环与重连收敛、durable journal（文件式、同 ID frame bytes 比对、不同即 `COMMAND_PAYLOAD_CONFLICT`）、receipt-after-durable、Observed snapshot（变化触发 + 低频兜底、单调 sequence 原子持久化） | `OPEN` |
 | WP6 | G4 证据收口：缩比容量探针（≥50–100 条模拟 WSS 连接携 Observed 上报压 SQLite 单写者路径）、INV-CERT-01 WSS 条款（operator session 不可建立 WSS）激活为真实测试、ErrorCode 跨 transport 一致性、G4 evidence 登记 | `OPEN` |
@@ -42,6 +42,14 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 - hyper-util 0.1.20 未为 http1 `UpgradeableConnection` 实现 `GracefulConnection`，以每任务 `GracefulShutdown::watcher()` guard + watch 通道显式触发 hyper 排空替代，语义等价。
 - 契约 [§3.6.5](../contracts.md) 已以 dated revision 收口五项 ingress 决策（含超缓冲 431、10s 派生 keep-alive idle、排空无界依赖 systemd 三条行为边界）。
 - 审查非阻断挂账：(a) `source_ip` 落库值链路无端到端回归（仅单测 harness 注入）；(b) graceful-drain 测试以 250ms/100ms sleep 硬等在飞状态，负载下有 flake 风险，事件化改造登记待办；(c) 容量 semaphore 无 e2e（2048 连接不宜在 CI 制造），行为由代码审查 + G4 缩比探针（WP6）背书。
+
+## WP3 落地记录（2026-08-16）
+
+- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.v1` 强制选择、Hello 交换与稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）；`contest.rs` 的 revoke/disable 在 DB 变更成功后驱逐；enrollment replacement 路径接线 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；五条真 TLS + 真 WS 客户端测试。
+- **认证顺序**：limiter → shape gate → SHA-256 → DB 查找 → `ConstantTimeEq` 复核，全部先于 upgrade 与任何 protobuf decode；缺失/格式错/未知/已吊销四路 401 同码同体，无 oracle。
+- **注册时机（审查后修正）**：连接在 hello 等待**之前**注册，使「已认证未 hello」的连接对撤销/替换驱逐可见；原实现在 ServerHello 之后注册，存在最长 10s 的撤销绕过窗口（WP4 dispatch 挂同一 registry 后将成为静默绕过）。同时 hello 窗口放行 Ping/Pong 而非判为协议错误。
+- **依赖事实（须知晓）**：启用 axum `ws` 后，`tungstenite 0.29` 的 `rand 0.9` / `getrandom 0.3` 熵栈与 `sha1`（RFC 6455 `Sec-WebSocket-Accept` 用，非安全原语）进入**生产 server 二进制**（daemon 不受影响）；`deny.toml` 两条精确版本 skip 因此必需。
+- 审查非阻断挂账：(a) eviction 发生在签发事务内、commit 之前（`device_pk` 只有进入事务读到 device 行后才可知，application 层无法先问 registry；回滚时表现为一次多余断连，安全侧 fail-safe，审计 bool 与凭据行仍同事务原子）；(b) 「missing pong」未强制——任何入站帧刷新 idle 计时，持续发 Heartbeat 但从不回 pong 的客户端可长存（真正静默者仍 60s 关闭）；(c) 「无 token + 无 subprotocol」这一唯一能证明认证优先于协商的组合无测试（顺序由 `route_layer` 结构性保证）；(d) 限流测试不能证明限流早于 DB 查询；(e) hello timeout / idle timeout / ping 周期三项无测试；(f) token 零化装饰性（SHA-256 中间值与 HeaderMap 原字节不清，与其他路由现状一致）。
 
 ## 已登记待办
 

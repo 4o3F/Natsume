@@ -1,8 +1,13 @@
-use diesel::RunQueryDsl;
+use diesel::{
+    OptionalExtension, QueryableByName, RunQueryDsl,
+    sql_types::{Binary, Text},
+};
 use snafu::Snafu;
 
 use crate::{
-    application::enrollment::{EnrollmentError, EnrollmentRequestSummary},
+    application::enrollment::{
+        DeviceTokenAuthenticationFacts, EnrollmentError, EnrollmentRequestSummary,
+    },
     db::Database,
 };
 
@@ -49,6 +54,44 @@ pub(crate) async fn list_requests(
         .await
         .map_err(|_| EnrollmentStoreError::AcquireFailed)?
         .map_err(EnrollmentError::from)
+}
+
+pub(crate) async fn device_token_authentication_facts(
+    database: &Database,
+    token_hash: [u8; 32],
+) -> Result<Option<DeviceTokenAuthenticationFacts>, EnrollmentError> {
+    database
+        .interact(move |connection| {
+            diesel::sql_query(
+                "SELECT dt.device_pk AS device_pk, d.machine_hardware_id AS machine_hardware_id, \
+                 dt.token_hash AS token_hash FROM device_tokens dt JOIN devices d \
+                 ON d.device_pk = dt.device_pk WHERE dt.token_hash = ?",
+            )
+            .bind::<Binary, _>(token_hash.as_slice())
+            .get_result::<DeviceTokenAuthenticationRow>(connection)
+            .optional()
+            .map(|row| {
+                row.map(|row| DeviceTokenAuthenticationFacts {
+                    device_pk: row.device_pk,
+                    machine_hardware_id: row.machine_hardware_id,
+                    token_hash: row.token_hash,
+                })
+            })
+            .map_err(|_| EnrollmentStoreError::CredentialReadFailed)
+        })
+        .await
+        .map_err(|_| EnrollmentStoreError::AcquireFailed)?
+        .map_err(EnrollmentError::from)
+}
+
+#[derive(QueryableByName)]
+struct DeviceTokenAuthenticationRow {
+    #[diesel(sql_type = Text)]
+    device_pk: String,
+    #[diesel(sql_type = Text)]
+    machine_hardware_id: String,
+    #[diesel(sql_type = Binary)]
+    token_hash: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]

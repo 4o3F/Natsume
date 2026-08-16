@@ -85,7 +85,7 @@ async fn closed_window_is_zero_write_and_create_issuance_is_secret_safe_and_site
     let leaf = issued.gateway_leaf_der.clone();
     let evidence = issuance_evidence(&database).await?;
     let expected_audit_detail = format!(
-        "{{\"resolution\":\"create_device\",\"certificate_serial\":\"{}\",\"gateway_spki_sha256\":\"{}\",\"previous_device_state\":null}}",
+        "{{\"resolution\":\"create_device\",\"certificate_serial\":\"{}\",\"gateway_spki_sha256\":\"{}\",\"previous_device_state\":null,\"evicted_live_connection\":false}}",
         evidence.certificate_serial,
         hex::encode(request.spki)
     );
@@ -848,10 +848,14 @@ async fn assert_reactivation_issuance(
         || device_state(database, expected_device_id).await? != "enrolled"
         || actor != "device:enrollment"
         || reason != "credential_replacement"
-        || detail.len() != 4
+        || detail.len() != 5
         || detail.get("resolution").and_then(Value::as_str) != Some("replace_device_credentials")
         || detail.get("previous_device_state").and_then(Value::as_str)
             != Some(previous_device_state)
+        || detail
+            .get("evicted_live_connection")
+            .and_then(Value::as_bool)
+            != Some(false)
         || detail
             .get("certificate_serial")
             .and_then(Value::as_str)

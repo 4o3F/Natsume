@@ -171,7 +171,10 @@ pub(crate) async fn revoke_device(
         Err(error) => return ApiError::from_contest(error, correlation_id).into_response(),
     };
     match contest::revoke_device(&state.database, &device_id, correlation_id).await {
-        Ok(()) => StatusCode::OK.into_response(),
+        Ok(()) => {
+            state.device_connections.evict(&device_id.as_text());
+            StatusCode::OK.into_response()
+        }
         Err(error) => ApiError::from_contest(error, correlation_id).into_response(),
     }
 }
@@ -205,7 +208,10 @@ pub(crate) async fn disable_device(
         Err(error) => return ApiError::from_contest(error, correlation_id).into_response(),
     };
     match contest::disable_device(&state.database, &device_id, correlation_id).await {
-        Ok(()) => StatusCode::OK.into_response(),
+        Ok(()) => {
+            state.device_connections.evict(&device_id.as_text());
+            StatusCode::OK.into_response()
+        }
         Err(error) => ApiError::from_contest(error, correlation_id).into_response(),
     }
 }

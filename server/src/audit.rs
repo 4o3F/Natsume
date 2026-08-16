@@ -103,6 +103,7 @@ pub enum AuditDetail {
         certificate_serial: String,
         gateway_spki_sha256: String,
         previous_device_state: Option<&'static str>,
+        evicted_live_connection: bool,
     },
     EnrollmentRequestApproved {},
     EnrollmentRequestRejected {},
@@ -174,6 +175,7 @@ pub(crate) struct DeviceCredentialsIssuedAuditFacts {
     pub(crate) certificate_serial: String,
     pub(crate) gateway_spki_sha256: [u8; 32],
     pub(crate) previous_device_state: Option<&'static str>,
+    pub(crate) evicted_live_connection: bool,
 }
 
 #[derive(Debug)]

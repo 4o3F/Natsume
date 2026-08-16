@@ -33,6 +33,11 @@ uuid.workspace = true
 zeroize.workspace = true
 zbus.workspace = true
 
+[dev-dependencies]
+futures-util.workspace = true
+rustls.workspace = true
+tokio-tungstenite = { version = "=0.29.0", default-features = false, features = ["connect", "__rustls-tls"] }
+
 [[bin]]
 name = "production-module-scan"
 path = "production-module-scan.rs"

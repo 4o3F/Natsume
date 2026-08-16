@@ -44,6 +44,27 @@ pub(crate) const MAX_GATEWAY_CSR_DER_BYTES: usize = 32 * 1024;
 const MAX_CLIENT_VERSION_BYTES: usize = 64;
 const DEVICE_TOKEN_BYTES: usize = 32;
 
+pub(crate) trait DeviceConnectionEvictor: Send + Sync + 'static {
+    fn evict_device_connection(&self, device_pk: &str) -> bool;
+}
+
+pub(crate) struct DeviceTokenAuthenticationFacts {
+    pub(crate) device_pk: String,
+    pub(crate) machine_hardware_id: String,
+    pub(crate) token_hash: Vec<u8>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+pub(crate) struct NoLiveDeviceConnections;
+
+#[cfg(test)]
+impl DeviceConnectionEvictor for NoLiveDeviceConnections {
+    fn evict_device_connection(&self, _device_pk: &str) -> bool {
+        false
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct EnrollmentRequestInput {
     pub(crate) machine_hardware_id: String,
@@ -320,6 +341,7 @@ pub(crate) struct PendingEnrollment {
 
 /// Validates a device request completely before any database access, then lets
 /// the store perform the window gate and state transition atomically.
+#[cfg(test)]
 pub(crate) async fn intake(
     database: &Database,
     issuer: GatewayIssuer,
@@ -327,8 +349,37 @@ pub(crate) async fn intake(
     source_ip: IpAddr,
     correlation_id: CorrelationId,
 ) -> Result<EnrollmentOutcome, EnrollmentError> {
+    intake_with_connection_eviction(
+        database,
+        issuer,
+        input,
+        source_ip,
+        correlation_id,
+        NoLiveDeviceConnections,
+    )
+    .await
+}
+
+pub(crate) async fn intake_with_connection_eviction<E>(
+    database: &Database,
+    issuer: GatewayIssuer,
+    input: EnrollmentRequestInput,
+    source_ip: IpAddr,
+    correlation_id: CorrelationId,
+    connection_evictor: E,
+) -> Result<EnrollmentOutcome, EnrollmentError>
+where
+    E: DeviceConnectionEvictor,
+{
     let request = validate_request(input, source_ip)?;
-    db::enrollment::intake(database, issuer, request, correlation_id).await
+    db::enrollment::intake(
+        database,
+        issuer,
+        request,
+        correlation_id,
+        connection_evictor,
+    )
+    .await
 }
 
 /// Reads all live (`pending` / `approved`) requests in stable creation order.
@@ -336,6 +387,13 @@ pub(crate) async fn list_requests(
     database: &Database,
 ) -> Result<Vec<EnrollmentRequestSummary>, EnrollmentError> {
     db::enrollment::list_requests(database).await
+}
+
+pub(crate) async fn device_token_authentication_facts(
+    database: &Database,
+    token_hash: [u8; 32],
+) -> Result<Option<DeviceTokenAuthenticationFacts>, EnrollmentError> {
+    db::enrollment::device_token_authentication_facts(database, token_hash).await
 }
 
 pub(crate) async fn approve_request(

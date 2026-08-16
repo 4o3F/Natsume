@@ -1,4 +1,5 @@
 mod cookie;
+mod device_control;
 mod error;
 pub(crate) mod handler;
 mod middleware;
@@ -25,6 +26,8 @@ pub(crate) struct AppState {
     database: Database,
     vault_master_key_path: PathBuf,
     gateway_issuer: Option<GatewayIssuer>,
+    device_connections: device_control::DeviceConnectionRegistry,
+    device_control_auth_failures: device_control::DeviceControlAuthFailureLimiter,
 }
 
 /// Builds the mounted Server HTTP surface over an already-migrated database.
@@ -56,6 +59,8 @@ fn router_inner(
         database,
         vault_master_key_path: vault_master_key_path.to_owned(),
         gateway_issuer,
+        device_connections: device_control::DeviceConnectionRegistry::new(),
+        device_control_auth_failures: device_control::DeviceControlAuthFailureLimiter::new(),
     };
     let static_service =
         any_service(ServeDir::new(web_root).fallback(ServeFile::new(web_root.join("index.html"))))
@@ -81,6 +86,7 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .merge(handler::health::routes())
         .merge(handler::session::public_routes())
         .merge(handler::enrollment::routes(state.clone()))
+        .merge(device_control::routes(state.clone()))
         .merge(authenticated)
 }
 

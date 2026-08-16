@@ -4,8 +4,9 @@ use uuid::Uuid;
 
 use crate::{
     application::enrollment::{
-        EnrollmentError, EnrollmentOutcome, EnrollmentResolution, EnrollmentState, GatewayIssuer,
-        IssuanceReason, PendingEnrollment, ValidatedEnrollmentRequest,
+        DeviceConnectionEvictor, EnrollmentError, EnrollmentOutcome, EnrollmentResolution,
+        EnrollmentState, GatewayIssuer, IssuanceReason, PendingEnrollment,
+        ValidatedEnrollmentRequest,
     },
     audit::{self, AuditEvent, AuditEventId, CorrelationId},
     db::Database,
@@ -23,13 +24,17 @@ use super::{
     },
 };
 
-pub(crate) async fn intake(
+pub(crate) async fn intake<E>(
     database: &Database,
     issuer: GatewayIssuer,
     request: ValidatedEnrollmentRequest,
     correlation_id: CorrelationId,
-) -> Result<EnrollmentOutcome, EnrollmentError> {
-    intake_with_ids(
+    connection_evictor: E,
+) -> Result<EnrollmentOutcome, EnrollmentError>
+where
+    E: DeviceConnectionEvictor,
+{
+    intake_with_ids_and_connection_eviction(
         database,
         issuer,
         request,
@@ -40,6 +45,7 @@ pub(crate) async fn intake(
             certificate: Uuid::now_v7(),
             audit: AuditEventId::from_uuid(Uuid::now_v7()),
         },
+        connection_evictor,
     )
     .await
     .map_err(EnrollmentError::from)
@@ -53,6 +59,7 @@ pub(super) struct IntakeIds {
     pub(super) audit: AuditEventId,
 }
 
+#[cfg(test)]
 pub(super) async fn intake_with_ids(
     database: &Database,
     issuer: GatewayIssuer,
@@ -60,23 +67,56 @@ pub(super) async fn intake_with_ids(
     correlation_id: CorrelationId,
     ids: IntakeIds,
 ) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
+    intake_with_ids_and_connection_eviction(
+        database,
+        issuer,
+        request,
+        correlation_id,
+        ids,
+        crate::application::enrollment::NoLiveDeviceConnections,
+    )
+    .await
+}
+
+async fn intake_with_ids_and_connection_eviction<E>(
+    database: &Database,
+    issuer: GatewayIssuer,
+    request: ValidatedEnrollmentRequest,
+    correlation_id: CorrelationId,
+    ids: IntakeIds,
+    connection_evictor: E,
+) -> Result<EnrollmentOutcome, EnrollmentStoreError>
+where
+    E: DeviceConnectionEvictor,
+{
     database
         .interact(move |connection| {
             connection.immediate_transaction(|connection| {
-                intake_in_transaction(connection, &issuer, &request, correlation_id, ids)
+                intake_in_transaction(
+                    connection,
+                    &issuer,
+                    &request,
+                    correlation_id,
+                    ids,
+                    &connection_evictor,
+                )
             })
         })
         .await
         .map_err(|_| EnrollmentStoreError::AcquireFailed)?
 }
 
-pub(super) fn intake_in_transaction(
+fn intake_in_transaction<E>(
     connection: &mut SqliteConnection,
     issuer: &GatewayIssuer,
     request: &ValidatedEnrollmentRequest,
     correlation_id: CorrelationId,
     ids: IntakeIds,
-) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
+    connection_evictor: &E,
+) -> Result<EnrollmentOutcome, EnrollmentStoreError>
+where
+    E: DeviceConnectionEvictor,
+{
     require_open_window(connection)?;
     let device = read_device(connection, &request.machine_hardware_id)?;
     if latest_request_state(connection, &request.machine_hardware_id)?.as_deref()
@@ -115,6 +155,7 @@ pub(super) fn intake_in_transaction(
                     ids.audit,
                     IssuanceReason::CredentialReplacement,
                     issuance_context,
+                    connection_evictor,
                 )
             }
             _ => Err(EnrollmentStoreError::InvalidPersistedFacts),
@@ -141,6 +182,7 @@ pub(super) fn intake_in_transaction(
                 correlation_id,
                 device.device_id,
                 ids,
+                connection_evictor,
             );
         }
     }

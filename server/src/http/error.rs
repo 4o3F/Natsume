@@ -84,6 +84,16 @@ impl ApiError {
         )
     }
 
+    pub(super) fn device_control_subprotocol_unsupported(correlation_id: CorrelationId) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            title: "Bad Request",
+            code: ErrorCode::from(ControlErrorCode::ProtocolVersionUnsupported).as_str(),
+            cause: "device_control_subprotocol_unsupported",
+            correlation_id,
+        }
+    }
+
     pub(super) fn invalid_enrollment_request(
         cause: &'static str,
         correlation_id: CorrelationId,

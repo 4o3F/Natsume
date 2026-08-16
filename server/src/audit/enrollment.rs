@@ -56,6 +56,7 @@ impl AuditEvent {
                 certificate_serial: facts.certificate_serial,
                 gateway_spki_sha256: hex::encode(facts.gateway_spki_sha256),
                 previous_device_state: facts.previous_device_state,
+                evicted_live_connection: facts.evicted_live_connection,
             },
         }
     }

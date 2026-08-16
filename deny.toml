@@ -31,6 +31,8 @@ skip = [
 
   # --- getrandom: ring still on 0.2, rest of graph on 0.4 ---
   { crate = "getrandom@0.2.17", reason = "ring 0.17 (rustls) still requires getrandom ^0.2 while uuid/rand/crypto-common use 0.4; remove when ring adopts getrandom 0.3+/0.4" },
+  { crate = "getrandom@0.3.4", reason = "tungstenite 0.29 requires rand 0.9 and its getrandom 0.3 stack while first-party entropy uses getrandom 0.4; remove when tungstenite's rand stack adopts getrandom 0.4" },
+  { crate = "rand_core@0.9.5", reason = "tungstenite 0.29 requires rand 0.9 while Argon2's password-hash 0.5 retains rand_core 0.6; remove when those mandatory transitive stacks converge" },
 
   # --- syn major split during ecosystem migration to syn 3 ---
   { crate = "syn@2.0.119", reason = "serde_derive/thiserror-impl/async-trait/serde_repr already on syn 3, but Diesel/tokio/futures/prost/zbus/ICU/zeroize derives still require syn 2; remove when those proc-macros migrate to syn 3" },

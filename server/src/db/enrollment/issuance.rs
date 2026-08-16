@@ -7,8 +7,9 @@ use uuid::Uuid;
 
 use crate::{
     application::enrollment::{
-        DeviceToken, EnrollmentError, EnrollmentOutcome, EnrollmentResolution, GatewayIssuer,
-        IssuanceReason, IssuedEnrollment, IssuedGatewayCertificate, ValidatedEnrollmentRequest,
+        DeviceConnectionEvictor, DeviceToken, EnrollmentError, EnrollmentOutcome,
+        EnrollmentResolution, GatewayIssuer, IssuanceReason, IssuedEnrollment,
+        IssuedGatewayCertificate, ValidatedEnrollmentRequest,
     },
     audit::{self, AuditEvent, AuditEventId, CorrelationId, DeviceCredentialsIssuedAuditFacts},
 };
@@ -50,18 +51,25 @@ pub(super) fn issue_new_device(
         material,
         IssuedRequestMode::Insert,
         IssuanceDeviceContext::new_device(),
+        false,
     )
 }
 
-pub(super) fn issue_same_spki_replacement(
+pub(super) fn issue_same_spki_replacement<E>(
     connection: &mut SqliteConnection,
     issuer: &GatewayIssuer,
     request: &ValidatedEnrollmentRequest,
     correlation_id: CorrelationId,
     device_id: Uuid,
     ids: IntakeIds,
-) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
+    connection_evictor: &E,
+) -> Result<EnrollmentOutcome, EnrollmentStoreError>
+where
+    E: DeviceConnectionEvictor,
+{
     let material = prepare_issuance(issuer, request)?;
+    let evicted_live_connection =
+        connection_evictor.evict_device_connection(&device_id.to_string());
     persist_issued_request_and_credentials(
         connection,
         request,
@@ -75,11 +83,12 @@ pub(super) fn issue_same_spki_replacement(
         material,
         IssuedRequestMode::Insert,
         IssuanceDeviceContext::replacement(ReplacementDeviceState::Enrolled, true),
+        evicted_live_connection,
     )
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn issue_existing_request(
+pub(super) fn issue_existing_request<E>(
     connection: &mut SqliteConnection,
     issuer: &GatewayIssuer,
     request: &ValidatedEnrollmentRequest,
@@ -90,8 +99,14 @@ pub(super) fn issue_existing_request(
     audit_event_id: AuditEventId,
     reason: IssuanceReason,
     issuance_context: IssuanceDeviceContext,
-) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
+    connection_evictor: &E,
+) -> Result<EnrollmentOutcome, EnrollmentStoreError>
+where
+    E: DeviceConnectionEvictor,
+{
     let material = prepare_issuance(issuer, request)?;
+    let evicted_live_connection =
+        connection_evictor.evict_device_connection(&device_id.to_string());
     persist_issued_request_and_credentials(
         connection,
         request,
@@ -105,6 +120,7 @@ pub(super) fn issue_existing_request(
         material,
         IssuedRequestMode::ClaimApproved,
         issuance_context,
+        evicted_live_connection,
     )
 }
 
@@ -193,6 +209,7 @@ pub(super) fn persist_issued_request_and_credentials(
     material: PreparedIssuance,
     request_mode: IssuedRequestMode,
     issuance_context: IssuanceDeviceContext,
+    evicted_live_connection: bool,
 ) -> Result<EnrollmentOutcome, EnrollmentStoreError> {
     let event = AuditEvent::device_credentials_issued(
         audit_event_id,
@@ -204,6 +221,7 @@ pub(super) fn persist_issued_request_and_credentials(
             certificate_serial: material.certificate.serial.clone(),
             gateway_spki_sha256: request.gateway_spki_sha256,
             previous_device_state: issuance_context.previous_device_state,
+            evicted_live_connection,
         },
     );
     audit::insert_diesel(connection, &event)

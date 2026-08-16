@@ -414,12 +414,13 @@ pub(crate) async fn create_enrollment_request(
         client_version: request.client_version,
         protocol_version: request.protocol_version,
     };
-    match enrollment::intake(
+    match enrollment::intake_with_connection_eviction(
         &state.database,
         gateway_signer,
         input,
         source_ip,
         correlation_id,
+        state.device_connections.clone(),
     )
     .await
     {
