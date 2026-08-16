@@ -401,6 +401,7 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
+        StatusCode::UNAUTHORIZED,
     ];
     for (response, expected_status) in mounted.iter().zip(expected_statuses) {
         if response.status != expected_status {
@@ -409,18 +410,6 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         canonical_correlation_id(&response.headers)?;
     }
 
-    for (method, path) in [(
-        Method::PUT,
-        "/api/v2/commands/01900000-0000-7000-8000-000000000000",
-    )] {
-        let response = drive(&application, request(method, path, "")?).await?;
-        check_error_response(
-            &response,
-            StatusCode::NOT_FOUND,
-            "Not Found",
-            "RESOURCE_NOT_FOUND",
-        )?;
-    }
     Ok(())
 }
 
@@ -498,6 +487,15 @@ async fn mounted_route_responses(
             request(
                 Method::POST,
                 "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/disable",
+                "",
+            )?,
+        )
+        .await?,
+        drive(
+            application,
+            request(
+                Method::PUT,
+                "/api/v2/commands/01900000-0000-7000-8000-000000000000",
                 "",
             )?,
         )

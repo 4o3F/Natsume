@@ -232,7 +232,10 @@ CREATE TABLE commands (
         'sync_state', 'sync_secret', 'open_binding_prompt', 'lock_session',
         'unlock_session', 'terminate_session', 'reset_home'
     )),
-    state TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN (
+        'created', 'received', 'running', 'succeeded', 'failed', 'cancelled',
+        'expired', 'manual_intervention_required'
+    )),
     request_fingerprint_version INTEGER NOT NULL CHECK (request_fingerprint_version >= 1),
     request_fingerprint_sha256 BLOB NOT NULL CHECK (length(request_fingerprint_sha256) = 32),
     group_correlation_id TEXT,
@@ -240,7 +243,7 @@ CREATE TABLE commands (
     frozen_payload_json TEXT NOT NULL
         CHECK (json_valid(frozen_payload_json) AND json_type(frozen_payload_json) = 'object'),
     created_at TEXT NOT NULL,
-    deadline_at TEXT NOT NULL,
+    deadline_at TEXT,
     terminal_error_code TEXT,
     redacted_terminal_result_json TEXT
         CHECK (
@@ -252,6 +255,7 @@ CREATE TABLE commands (
         ),
     created_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id)
 ) STRICT;
+CREATE INDEX commands_device_pk_state_index ON commands(device_pk, state);
 INSERT INTO revision_counters(singleton, configuration_revision, binding_revision)
 VALUES (1, 0, 0);
 

@@ -209,6 +209,8 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 **2026-08-16 修订（Phase 3 WP2c）**：新增挂载 `listEnrollmentRequests`、`approveEnrollment` 与 `rejectEnrollment`；list 允许 `admin` / `viewer`，两个 action 仅允许 `admin`。OpenAPI declared-but-unmounted 集合现在只剩 `putCommand`。
 
+**2026-08-16 修订（Phase 4 WP1）**：新增挂载 `putCommand`（§3.5 的 `PUT /api/v2/commands/{command_id}`，真实 handler，仅允许 `admin`）。OpenAPI declared-but-unmounted 集合现为空，`info.description` 同步反映。
+
 #### 3.6.3 建立与查询
 
 - `POST /api/v2/session` 只接受恰好含 `login_name` 与 `password` 的封闭 JSON object，未知字段必须拒绝。成功同时发送 session cookie 并返回 `200`，响应体只含 `operator_id` 与 `role`。
@@ -229,7 +231,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 ##### 当前 AuditEvent 词汇注册表
 
-以下四张注册表只收录当前生产写入器已冻结的词汇；测试夹具中用于造数的 actor/action 不属于生产契约。任何新的审计行形状都必须先在这里注册其 `actor`、`action_kind`、`reason_code` 与对应 action 的 `redacted_detail_json` 键，之后才能增加写入器与测试。本契约另已声明但尚未实现两个审计行形状——§3.5 的 `COMMAND_REQUEST_CONFLICT` 冲突行与 §3.6.4 的失败登录限流行——其完整词汇必须在写入器落地前先在此注册。
+以下四张注册表只收录当前生产写入器已冻结的词汇；测试夹具中用于造数的 actor/action 不属于生产契约。任何新的审计行形状都必须先在这里注册其 `actor`、`action_kind`、`reason_code` 与对应 action 的 `redacted_detail_json` 键，之后才能增加写入器与测试。本契约另已声明但尚未实现一个审计行形状——§3.6.4 的失败登录限流行——其完整词汇必须在写入器落地前先在此注册（§3.5 的 `COMMAND_REQUEST_CONFLICT` 冲突行已随 Phase 4 WP1 注册并实现）。
 
 | `actor` | 状态 |
 |---|---|
@@ -260,6 +262,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `commit_import`（**已实现**，§3.4 Phase 2） |
 | `discard_import_candidate`（**已实现**，§3.4 Phase 2） |
 | `expire_import_candidate`（**已实现**，§3.4 Phase 2） |
+| `command_create`（**已实现**，§3.5 Phase 4 WP1；`operator:self`；`succeeded` 创建与 `rejected` conflict 共用此 action_kind） |
 
 | `reason_code` | 当前使用处 |
 |---|---|
@@ -271,12 +274,13 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `initial_provisioning` | `create_first_admin` |
 | `credential_recovery` | `reset_operator_password` |
 | `credentials_verified` | `establish_session` |
-| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window`、`approve_enrollment_request` / `reject_enrollment_request`、`create_import_candidate`、`commit_import` 与 `discard_import_candidate` 的 `succeeded` 结果 |
+| `operator_requested` | `terminate_session`；`revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window`、`approve_enrollment_request` / `reject_enrollment_request`、`create_import_candidate`、`commit_import`、`discard_import_candidate` 与 `command_create` 的 `succeeded` 结果 |
 | `absolute_expiry_observed` | `expire_session`；`expire_import_candidate`（已实现） |
 | `target_already_satisfied` | `revoke_device` / `disable_device`、`open_provisioning_window` / `close_provisioning_window` 与 `approve_enrollment_request` / `reject_enrollment_request` 的 `noop` 结果 |
 | `candidate_invalid` | `create_import_candidate` 的 `rejected` 结果（已实现） |
 | `baseline_stale` | `commit_import` 的 `rejected` 结果 |
 | `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
+| `COMMAND_REQUEST_CONFLICT` | `command_create` 的 `rejected` 结果（§3.5 固定该 reason_code 值） |
 
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
@@ -298,6 +302,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `expire_import_candidate`（已实现） | 无（`{}`） |
 | `revoke_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 | `disable_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
+| `command_create`（已实现） | `succeeded`：`kind`、`payload_version`、`request_fingerprint_version`；`rejected`：`request_fingerprint_version`（绝不含 fingerprint 值或 request 回显，§3.5） |
 
 #### 3.6.5 HTTP adapter、CSRF 与 ingress capacity
 
@@ -317,7 +322,9 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `PROVISIONING_WINDOW_CLOSED` | `409` | `createEnrollmentRequest` 观察到窗口非 `open` |
 | `ENROLLMENT_REQUEST_REJECTED` | `409` | `createEnrollmentRequest` 的 hardware ID 最新 request 在当前窗口已被 operator reject |
 | `DEVICE_IDENTITY_CONFLICT` | `409` | `createEnrollmentRequest` 的 live different-SPKI 或 hardware identity facts 冲突 |
-| — | `413` | `POST /api/v2/imports`、`commitCsvImport` 或 `createEnrollmentRequest` request body 超过对应 route 级上限，由 transport 层拒绝 |
+| `COMMAND_ID_INVALID` | `400` | `putCommand` 的 path `command_id` 非 canonical lowercase UUIDv7（§3.5；Phase 4 WP1 挂载后生效） |
+| `COMMAND_REQUEST_CONFLICT` | `409` | `putCommand` 的 same-ID/different-fingerprint conflict（§3.5） |
+| — | `413` | `POST /api/v2/imports`、`commitCsvImport`、`createEnrollmentRequest` 或 `putCommand` request body 超过对应 route 级上限，由 transport 层拒绝 |
 | `INTERNAL_ERROR` | `500` | 穷举 mapping 后仍没有更安全公开分类的内部失败 |
 
 该 `413` 是 transport-level rejection：响应携带 `X-Correlation-Id` header，但**不**使用 §3.2 的 JSON error body（沿用既有 session precedent）。
@@ -326,7 +333,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 当前是 same-origin JSON API：不启用 CORS，也不增加 CSRF token 或 CSRF framework；当前防护明确依赖 `Secure` + `HttpOnly` + `SameSite=Strict`。若部署拓扑变为 cross-site，必须在开放 CORS 或 cookie 跨站传递前重开 CSRF 决策。
 
-session request body 是硬编码 security limit：Rust 常量 `SESSION_REQUEST_BODY_LIMIT_BYTES = 4096`，只通过 axum `DefaultBodyLimit::max` 应用于 session `MethodRouter`，不得成为全局 router default，也不得进入 `config.toml`。真实 login body 约 100 bytes，4 KiB 提供约 40 倍余量；超限必须在 Argon2 verification 与任何数据库访问前返回 `413`。未来 CSV import 等 route 必须声明自己的 limit，不继承此值；把 security limit 配置化会产生例如放宽到 1 GiB 的 fail-open surface。
+session request body 是硬编码 security limit：Rust 常量 `SESSION_REQUEST_BODY_LIMIT_BYTES = 4096`，只通过 axum `DefaultBodyLimit::max` 应用于 session `MethodRouter`，不得成为全局 router default，也不得进入 `config.toml`。`putCommand` 按同一纪律声明自己的 route 级常量 `COMMAND_REQUEST_BODY_LIMIT_BYTES = 16_384`（2026-08-16，Phase 4 WP1；payload 族均为数百字节级 typed 对象，16 KiB 提供充分余量）。真实 login body 约 100 bytes，4 KiB 提供约 40 倍余量；超限必须在 Argon2 verification 与任何数据库访问前返回 `413`。未来 CSV import 等 route 必须声明自己的 limit，不继承此值；把 security limit 配置化会产生例如放宽到 1 GiB 的 fail-open surface。
 
 header count/size 与 slow-header protection 在 Stage 4 **仍未关闭**。已核实 axum `Serve` 只暴露 `local_addr` 与 `with_graceful_shutdown`，不能取得 hyper HTTP/1 builder；`max_headers`、`max_buf_size`、`header_read_timeout` 只存在于 `hyper::server::conn::http1::Builder`。设置它们需要自建 accept loop、graceful shutdown，并直接增加 `hyper` / `hyper-util`；Stage 4 保留已有 evidence 的 `axum::serve` listener/shutdown 路径。hyper 当前的 transport implementation property 是 `max_headers` 默认 100、`max_buf_size` 约 400 KB、超限返回 `431`，但 hyper 明示这些默认值不稳定，因此它们**不是**冻结的 Natsume contract；slow-header read timeout 同属此 gap。该 gap 不得无限期携带：header count/size、slow-header timeout 与 connection capacity 必须在 **Phase 4 显式定案**——或以 `hyper::server::conn::http1::Builder` 的 limit 自建 accept loop，或记录一份带部署证据的、经评审的接受结论。
 

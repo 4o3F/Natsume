@@ -3,22 +3,19 @@
 use utoipa::{
     OpenApi as OpenApiTrait,
     openapi::{
-        Content, OpenApi, OpenApiBuilder, Ref, RefOr, Required, SchemaFormat,
+        Content, OpenApi, OpenApiBuilder, Ref, RefOr, SchemaFormat,
         header::HeaderBuilder,
         info::InfoBuilder,
-        path::{HttpMethod, Operation, OperationBuilder, ParameterBuilder, ParameterIn, PathItem},
-        path::{Paths, PathsBuilder},
-        request_body::RequestBodyBuilder,
-        response::Response,
+        path::{Operation, Paths},
         schema::{
             AdditionalProperties, ArrayItems, KnownFormat, ObjectBuilder, OneOfBuilder, Schema,
             Type,
         },
-        security::{ApiKey, ApiKeyValue, SecurityRequirement, SecurityScheme},
+        security::{ApiKey, ApiKeyValue, SecurityScheme},
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -32,7 +29,7 @@ const COMMAND_KIND_VALUES: [&str; 7] = [
     "terminate_session",
     "reset_home",
 ];
-const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.";
+pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.";
 
 #[derive(utoipa::OpenApi)]
 #[openapi(
@@ -47,6 +44,7 @@ const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyph
         crate::http::handler::contest::list_bindings,
         crate::http::handler::contest::revoke_device,
         crate::http::handler::contest::disable_device,
+        crate::http::handler::command::put_command,
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
         crate::http::handler::import::commit_import,
@@ -96,7 +94,6 @@ pub fn document() -> OpenApi {
     configure_components(&mut components);
 
     let mut paths = mounted.paths;
-    paths.merge(declared_but_unmounted_paths());
     canonicalize_path_parameters(&mut paths);
     remove_operation_tags(&mut paths);
     enrich_responses(&mut paths);
@@ -217,6 +214,20 @@ fn canonicalize_path_parameters(paths: &mut Paths) {
         };
         parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
     }
+    let Some(parameter) = paths
+        .paths
+        .get_mut("/api/v2/commands/{command_id}")
+        .and_then(|path_item| path_item.put.as_mut())
+        .and_then(|operation| operation.parameters.as_mut())
+        .and_then(|parameters| {
+            parameters
+                .iter_mut()
+                .find(|parameter| parameter.name == "command_id")
+        })
+    else {
+        return;
+    };
+    parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
 }
 
 fn remove_operation_tags(paths: &mut Paths) {
@@ -237,56 +248,6 @@ fn remove_operation_tags(paths: &mut Paths) {
             operation.tags = None;
         }
     }
-}
-
-fn declared_but_unmounted_paths() -> utoipa::openapi::path::Paths {
-    PathsBuilder::new()
-        .path(
-            "/api/v2/commands/{command_id}",
-            PathItem::new(HttpMethod::Put, put_command_operation()),
-        )
-        .build()
-}
-
-fn put_command_operation() -> Operation {
-    OperationBuilder::new()
-        .operation_id(Some("putCommand"))
-        .summary(Some("Create or replay a direct Device Command"))
-        .description(Some(COMMAND_DESCRIPTION))
-        .parameter(
-            ParameterBuilder::new()
-                .name("command_id")
-                .parameter_in(ParameterIn::Path)
-                .required(Required::True)
-                .description(Some(
-                    "Canonical lowercase hyphenated UUIDv7 supplied by the Panel",
-                ))
-                .schema(Some(Ref::from_schema_name("CanonicalUuidV7")))
-                .build(),
-        )
-        .request_body(Some(
-            RequestBodyBuilder::new()
-                .required(Some(Required::True))
-                .content(
-                    "application/json",
-                    Content::new(Some(Ref::from_schema_name("PutCommandRequest"))),
-                )
-                .build(),
-        ))
-        .security(session_cookie_requirement())
-        .response("200", Response::new("Identical Command request replayed"))
-        .response("201", Response::new("Command created"))
-        .response("400", Response::new("Command ID is not canonical UUIDv7"))
-        .response("401", Response::new("Session authentication failed"))
-        .response("403", Response::new("Administrator role required"))
-        .response("404", Response::new("Device does not exist"))
-        .response("409", Response::new("Command request conflicts"))
-        .response("500", Response::new("Internal failure"))
-        .build()
-}
-
-fn session_cookie_requirement() -> SecurityRequirement {
-    SecurityRequirement::new(SESSION_COOKIE_SECURITY_SCHEME, Vec::<String>::new())
 }
 
 fn canonical_uuid_v7_schema() -> ObjectBuilder {

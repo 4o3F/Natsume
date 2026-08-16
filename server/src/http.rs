@@ -74,6 +74,7 @@ fn api_v2(state: &AppState) -> Router<AppState> {
     let authenticated = Router::new()
         .merge(handler::session::protected_routes(state.clone()))
         .merge(handler::contest::routes(state.clone()))
+        .merge(handler::command::routes(state.clone()))
         .merge(handler::import::routes(state.clone()))
         .merge(handler::provisioning::routes(state.clone()));
     Router::new()

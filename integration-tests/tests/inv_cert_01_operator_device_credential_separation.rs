@@ -346,17 +346,6 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
         assert_eq!(drive(&application, method, path).await, expected, "{path}");
     }
 
-    for (method, path) in [(
-        Method::PUT,
-        "/api/v2/commands/01900000-0000-7000-8000-000000000399",
-    )] {
-        assert_eq!(
-            drive(&application, method, path).await,
-            StatusCode::NOT_FOUND,
-            "{path}"
-        );
-    }
-
     let document = require_ok(
         serde_json::to_value(openapi::document()),
         "OpenAPI document must serialize",
@@ -402,12 +391,12 @@ async fn mounted_and_declared_only_route_sets_are_distinct_on_the_real_router() 
             .pointer("/info/description")
             .and_then(Value::as_str),
         Some(
-            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand."
+            "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none."
         )
     );
 }
 
-fn mounted_routes() -> [(Method, &'static str, StatusCode); 21] {
+fn mounted_routes() -> [(Method, &'static str, StatusCode); 22] {
     [
         (Method::GET, "/api/v2/health", StatusCode::OK),
         (Method::POST, "/api/v2/session", StatusCode::BAD_REQUEST),
@@ -472,6 +461,11 @@ fn mounted_routes() -> [(Method, &'static str, StatusCode); 21] {
         (
             Method::POST,
             "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000399/actions/reject",
+            StatusCode::UNAUTHORIZED,
+        ),
+        (
+            Method::PUT,
+            "/api/v2/commands/01900000-0000-7000-8000-000000000399",
             StatusCode::UNAUTHORIZED,
         ),
     ]

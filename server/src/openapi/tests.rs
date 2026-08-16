@@ -259,7 +259,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment.\nDeclared but not mounted in Stage 5B operation IDs: putCommand."
+        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -1300,7 +1300,11 @@ fn described_unmounted_ids(value: &Value) -> Result<BTreeSet<String>, TestFailur
         .find_map(|line| line.strip_prefix(UNMOUNTED_DESCRIPTION_PREFIX))
         .and_then(|line| line.strip_suffix('.'))
         .ok_or(TestFailure::DocumentShapeInvalid)?;
-    Ok(line.split(", ").map(str::to_owned).collect())
+    if line == "none" {
+        Ok(BTreeSet::new())
+    } else {
+        Ok(line.split(", ").map(str::to_owned).collect())
+    }
 }
 
 async fn probe_live_router(

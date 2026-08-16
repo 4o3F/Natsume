@@ -3,7 +3,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use natsume_error_code::{
-    ErrorCode, common::CommonErrorCode,
+    ErrorCode, common::CommonErrorCode, control::ControlErrorCode,
     enrollment::EnrollmentErrorCode as PublicEnrollmentErrorCode,
     operator::OperatorErrorCode as PublicOperatorErrorCode,
 };
@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use crate::{
     application::{
+        command::CommandError,
         contest::ContestError,
         enrollment::EnrollmentError,
         import::{CsvImportErrorCategory, ImportError},
@@ -256,6 +257,52 @@ impl ApiError {
             }
             ContestError::PersistenceFailed => {
                 Self::internal_error("contest_persistence_failed", correlation_id)
+            }
+        }
+    }
+
+    pub(super) fn from_command(error: CommandError, correlation_id: CorrelationId) -> Self {
+        match error {
+            CommandError::CommandIdInvalid => Self {
+                status: StatusCode::BAD_REQUEST,
+                title: "Bad Request",
+                code: ErrorCode::from(ControlErrorCode::CommandIdInvalid).as_str(),
+                cause: "command_id_invalid",
+                correlation_id,
+            },
+            CommandError::RequestInvalid => {
+                Self::invalid_request("command_request_invalid", correlation_id)
+            }
+            CommandError::DeviceIdInvalid => {
+                Self::invalid_request("command_device_id_invalid", correlation_id)
+            }
+            CommandError::KindInvalid => {
+                Self::invalid_request("command_kind_invalid", correlation_id)
+            }
+            CommandError::PayloadInvalid => {
+                Self::invalid_request("command_payload_invalid", correlation_id)
+            }
+            CommandError::ReasonCodeInvalid => {
+                Self::invalid_request("command_reason_code_invalid", correlation_id)
+            }
+            CommandError::GroupCorrelationIdInvalid => {
+                Self::invalid_request("command_group_correlation_id_invalid", correlation_id)
+            }
+            CommandError::DeviceNotFound => {
+                Self::not_found("command_device_not_found", correlation_id)
+            }
+            CommandError::RequestConflict => Self {
+                status: StatusCode::CONFLICT,
+                title: "Conflict",
+                code: ErrorCode::from(ControlErrorCode::CommandRequestConflict).as_str(),
+                cause: "command_request_conflict",
+                correlation_id,
+            },
+            CommandError::CanonicalizationFailed => {
+                Self::internal_error("command_canonicalization_failed", correlation_id)
+            }
+            CommandError::PersistenceFailed => {
+                Self::internal_error("command_persistence_failed", correlation_id)
             }
         }
     }

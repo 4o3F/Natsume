@@ -279,6 +279,19 @@ fn index_properties(database: &TestDatabase, table: &str, index: &str) -> (bool,
     (row.is_unique == 1, row.is_partial == 1)
 }
 
+fn index_columns(database: &TestDatabase, index: &str) -> Vec<String> {
+    let mut connection = database.observer();
+    require_ok(
+        diesel::sql_query("SELECT name AS value FROM pragma_index_info(?) ORDER BY seqno")
+            .bind::<Text, _>(index)
+            .load::<TextRow>(&mut connection),
+        "index columns must be queryable",
+    )
+    .into_iter()
+    .map(|row| row.value)
+    .collect()
+}
+
 const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
     ("account_mappings", &["seat_id", "account_id"]),
     (
@@ -701,6 +714,66 @@ fn assert_closed_enums(database: &TestDatabase) {
         "UPDATE provisioning_window SET state = 'unknown' WHERE singleton = 1",
         "provisioning_window.state",
     );
+    assert_command_state_domain(database);
+}
+
+fn insert_command_with_state(
+    database: &TestDatabase,
+    label: &str,
+    state: &str,
+) -> diesel::QueryResult<usize> {
+    let mut connection = database.observer();
+    let audit_id = format!("command-state-audit-{label}");
+    let command_id = format!("command-state-{label}");
+    require_ok(
+        diesel::sql_query(
+            "INSERT INTO audit_events VALUES \
+             (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'operator:test', \
+              'command_create', 'command', ?, 'succeeded', NULL, \
+              'command-state-correlation', NULL, '{}')",
+        )
+        .bind::<Text, _>(&audit_id)
+        .bind::<Text, _>(&command_id)
+        .execute(&mut connection),
+        "command state audit prerequisite must insert",
+    );
+    diesel::sql_query(
+        "INSERT INTO commands VALUES \
+         (?, 'device-1', 'lock_session', ?, 1, zeroblob(32), NULL, 1, '{}', \
+          '2026-01-01T00:00:00.000Z', NULL, NULL, NULL, ?)",
+    )
+    .bind::<Text, _>(command_id)
+    .bind::<Text, _>(state)
+    .bind::<Text, _>(audit_id)
+    .execute(&mut connection)
+}
+
+fn assert_command_state_domain(database: &TestDatabase) {
+    for (index, state) in [
+        "created",
+        "received",
+        "running",
+        "succeeded",
+        "failed",
+        "cancelled",
+        "expired",
+        "manual_intervention_required",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        require_ok(
+            insert_command_with_state(database, &format!("accepted-{index}"), state),
+            "a frozen command state must be accepted",
+        );
+    }
+
+    for (index, state) in ["CREATED", "done", "", "delivered"].into_iter().enumerate() {
+        assert!(
+            insert_command_with_state(database, &format!("rejected-{index}"), state).is_err(),
+            "commands.state accepted an out-of-domain value",
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1395,10 +1468,19 @@ fn assert_invariant_index_contract(database: &TestDatabase) {
     assert_eq!(
         explicit_indexes,
         vec![
+            "commands_device_pk_state_index",
             "device_pk_machine_hardware_identity",
             "one_active_gateway_certificate",
             "one_live_enrollment_per_machine_and_gateway_spki",
         ]
+    );
+    assert_eq!(
+        index_properties(database, "commands", "commands_device_pk_state_index"),
+        (false, false)
+    );
+    assert_eq!(
+        index_columns(database, "commands_device_pk_state_index"),
+        ["device_pk", "state"]
     );
     assert_eq!(
         index_properties(database, "devices", "device_pk_machine_hardware_identity"),

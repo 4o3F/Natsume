@@ -1,3 +1,4 @@
+pub(crate) mod command;
 pub(crate) mod contest;
 pub(crate) mod enrollment;
 #[allow(dead_code)]

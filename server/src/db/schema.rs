@@ -33,6 +33,25 @@ diesel::table! {
 }
 
 diesel::table! {
+    commands (command_id) {
+        command_id -> Text,
+        device_pk -> Text,
+        kind -> Text,
+        state -> Text,
+        request_fingerprint_version -> Integer,
+        request_fingerprint_sha256 -> Binary,
+        group_correlation_id -> Nullable<Text>,
+        payload_version -> Integer,
+        frozen_payload_json -> Text,
+        created_at -> Text,
+        deadline_at -> Nullable<Text>,
+        terminal_error_code -> Nullable<Text>,
+        redacted_terminal_result_json -> Nullable<Text>,
+        created_audit_event_id -> Text,
+    }
+}
+
+diesel::table! {
     device_bindings (seat_id) {
         seat_id -> Text,
         device_pk -> Text,
@@ -136,6 +155,8 @@ diesel::table! {
 diesel::joinable!(account_mappings -> accounts (account_id));
 diesel::joinable!(account_mappings -> seats (seat_id));
 diesel::joinable!(accounts -> server_vault_records (credential_vault_record_id));
+diesel::joinable!(commands -> audit_events (created_audit_event_id));
+diesel::joinable!(commands -> devices (device_pk));
 diesel::joinable!(device_bindings -> devices (device_pk));
 diesel::joinable!(device_bindings -> seats (seat_id));
 diesel::joinable!(device_tokens -> devices (device_pk));
@@ -148,6 +169,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     account_mappings,
     accounts,
     audit_events,
+    commands,
     device_bindings,
     device_tokens,
     devices,

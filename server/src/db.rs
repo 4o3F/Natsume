@@ -32,6 +32,7 @@ const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'@')
     .remove(b'/');
 
+pub(crate) mod command;
 pub(crate) mod contest;
 pub(crate) mod enrollment;
 #[allow(dead_code)]

@@ -8,6 +8,7 @@ use crate::{
     db::schema::audit_events,
 };
 
+mod command;
 mod contest;
 mod enrollment;
 mod import;
@@ -108,6 +109,14 @@ pub enum AuditDetail {
     EnrollmentRequestsExpired {
         expired_count: i64,
     },
+    CommandCreated {
+        kind: &'static str,
+        payload_version: i32,
+        request_fingerprint_version: i32,
+    },
+    CommandRequestConflict {
+        request_fingerprint_version: i32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,7 +186,7 @@ pub struct AuditEvent {
     pub(super) result: &'static str,
     pub(super) reason_code: Option<&'static str>,
     pub(super) correlation_id: CorrelationId,
-    pub(super) group_correlation_id: Option<&'static str>,
+    pub(super) group_correlation_id: Option<String>,
     pub(super) detail: AuditDetail,
 }
 
@@ -210,7 +219,7 @@ pub(crate) fn insert_diesel(
             audit_events::result.eq(event.result),
             audit_events::reason_code.eq(event.reason_code),
             audit_events::correlation_id.eq(event.correlation_id.as_text()),
-            audit_events::group_correlation_id.eq(event.group_correlation_id),
+            audit_events::group_correlation_id.eq(event.group_correlation_id.as_deref()),
             audit_events::redacted_detail_json.eq(detail_json),
         ))
         .execute(connection)
