@@ -113,7 +113,15 @@ pub(crate) async fn put_command(
         reason_code: request.reason_code,
         group_correlation_id: request.group_correlation_id,
     };
-    match command::put_command(&state.database, &command_id, input, correlation_id).await {
+    match command::put_command(
+        &state.database,
+        &command_id,
+        input,
+        correlation_id,
+        &state.device_connections,
+    )
+    .await
+    {
         Ok(CommandOutcome::Created) => StatusCode::CREATED.into_response(),
         Ok(CommandOutcome::Replayed) => StatusCode::OK.into_response(),
         Err(error) => ApiError::from_command(error, correlation_id).into_response(),

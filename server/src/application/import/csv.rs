@@ -43,6 +43,7 @@ impl CsvImportError {
         Self { line, category }
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) const fn line(&self) -> usize {
         self.line
@@ -71,16 +72,19 @@ pub(crate) struct ImportRow {
 }
 
 impl ImportRow {
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn seat_code(&self) -> &str {
         &self.seat_code
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn domjudge_username(&self) -> &str {
         &self.domjudge_username
     }
 
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn password(&self) -> &str {
         &self.password
@@ -93,6 +97,7 @@ pub(crate) struct ParsedImport {
 }
 
 impl ParsedImport {
+    #[cfg(test)]
     #[must_use]
     pub(crate) fn rows(&self) -> &[ImportRow] {
         &self.rows

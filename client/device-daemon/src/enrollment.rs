@@ -8,6 +8,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use natsume_device_protocol::is_valid_device_token;
 use natsume_machine_identity::EvidenceQuality;
 use rcgen::{
     CertificateParams, DistinguishedName, KeyPair, PKCS_ECDSA_P256_SHA256, PublicKeyData as _,
@@ -17,9 +18,7 @@ use rustls::{
     RootCertStore,
     client::{WebPkiServerVerifier, danger::ServerCertVerifier as _},
 };
-use rustls_pki_types::{
-    CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime, pem::PemObject as _,
-};
+use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use snafu::Snafu;
@@ -33,7 +32,10 @@ use zeroize::{Zeroize as _, Zeroizing};
 use crate::{
     CanonicalEndpoint,
     atomic_write::{WritePolicy, atomic_write},
-    parse_endpoint,
+    client_configuration::{
+        CLIENT_CONFIG_PATH, CONTROL_ROOT_PATH, DEVICE_TOKEN_NAME, KEYS_DIRECTORY_PATH,
+        read_endpoint, read_single_pem_certificate,
+    },
 };
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -44,10 +46,8 @@ const ENROLLMENT_PROTOCOL_VERSION: u32 = 1;
 const GATEWAY_KEY_NAME: &str = "gateway-key.pk8";
 const GATEWAY_LEAF_NAME: &str = "gateway-leaf.der";
 const GATEWAY_CHAIN_NAME: &str = "gateway-chain.der";
-const DEVICE_TOKEN_NAME: &str = "device-token";
 const GATEWAY_ARTIFACT_MODE: u32 = 0o640;
 const DEVICE_TOKEN_MODE: u32 = 0o600;
-const DEVICE_TOKEN_LENGTH: usize = 43;
 
 #[derive(Clone)]
 pub struct EnrollmentPaths {
@@ -61,10 +61,10 @@ impl EnrollmentPaths {
     #[must_use]
     pub fn production() -> Self {
         Self {
-            client_config: PathBuf::from("/etc/natsume/config.toml"),
-            control_root: PathBuf::from("/etc/natsume/trust/control-ca.crt"),
+            client_config: PathBuf::from(CLIENT_CONFIG_PATH),
+            control_root: PathBuf::from(CONTROL_ROOT_PATH),
             local_origin_root: PathBuf::from("/etc/natsume/trust/local-origin-ca.crt"),
-            keys_directory: PathBuf::from("/var/lib/natsume/keys"),
+            keys_directory: PathBuf::from(KEYS_DIRECTORY_PATH),
         }
     }
 
@@ -198,11 +198,12 @@ impl EnrollmentClient {
         hardware_identity_quality: EvidenceQuality,
         gateway_hostname: String,
     ) -> Result<Self, EnrollmentError> {
-        let endpoint = read_endpoint(&paths.client_config)?;
-        let control_certificate =
-            read_single_pem_certificate(&paths.control_root, TrustRootKind::Control)?;
-        let origin_certificate =
-            read_single_pem_certificate(&paths.local_origin_root, TrustRootKind::Origin)?;
+        let endpoint = read_endpoint(&paths.client_config)
+            .map_err(|_| EnrollmentError::EndpointConfiguration)?;
+        let control_certificate = read_single_pem_certificate(&paths.control_root)
+            .map_err(|_| EnrollmentError::ControlTrustRoot)?;
+        let origin_certificate = read_single_pem_certificate(&paths.local_origin_root)
+            .map_err(|_| EnrollmentError::OriginTrustRoot)?;
         let http = build_http_client(&control_certificate)?;
         let key_pair = load_or_create_gateway_key(&paths.gateway_key())?;
         let (csr_der, expected_spki_der) = build_csr(&key_pair)?;
@@ -420,55 +421,12 @@ struct VerifiedArtifacts {
     device_token: Zeroizing<String>,
 }
 
-#[derive(Clone, Copy)]
-enum TrustRootKind {
-    Control,
-    Origin,
-}
-
-#[derive(Deserialize)]
-struct ClientConfig {
-    server: ServerEndpointConfig,
-}
-
-#[derive(Deserialize)]
-struct ServerEndpointConfig {
-    ip: String,
-    port: u16,
-}
-
-fn read_endpoint(path: &Path) -> Result<CanonicalEndpoint, EnrollmentError> {
-    let encoded = fs::read_to_string(path).map_err(|_| EnrollmentError::EndpointConfiguration)?;
-    let config = toml::from_str::<ClientConfig>(&encoded)
-        .map_err(|_| EnrollmentError::EndpointConfiguration)?;
-    parse_endpoint(&config.server.ip, &config.server.port.to_string())
-        .map_err(|_| EnrollmentError::EndpointConfiguration)
-}
-
 fn enrollment_url(endpoint: CanonicalEndpoint) -> String {
     let authority = match endpoint.ip() {
         IpAddr::V4(ip) => ip.to_string(),
         IpAddr::V6(ip) => format!("[{ip}]"),
     };
     format!("https://{authority}:{}{ENROLLMENT_PATH}", endpoint.port())
-}
-
-fn read_single_pem_certificate(
-    path: &Path,
-    kind: TrustRootKind,
-) -> Result<CertificateDer<'static>, EnrollmentError> {
-    let invalid = || match kind {
-        TrustRootKind::Control => EnrollmentError::ControlTrustRoot,
-        TrustRootKind::Origin => EnrollmentError::OriginTrustRoot,
-    };
-    let encoded = fs::read(path).map_err(|_| invalid())?;
-    let mut certificates = CertificateDer::pem_slice_iter(&encoded);
-    let certificate = certificates.next().ok_or_else(invalid)?;
-    let certificate = certificate.map_err(|_| invalid())?;
-    if certificates.next().is_some() || raw_certificate_spki_der(certificate.as_ref()).is_err() {
-        return Err(invalid());
-    }
-    Ok(certificate)
 }
 
 fn build_http_client(
@@ -625,7 +583,7 @@ fn verify_issued_response(
         return Err(EnrollmentError::InvalidChain);
     }
     verify_server_certificate(&leaf_der, origin_certificate, gateway_hostname)?;
-    if !valid_device_token(&device_token) {
+    if !is_valid_device_token(device_token.as_bytes()) {
         return Err(EnrollmentError::InvalidToken);
     }
     Ok(VerifiedArtifacts {
@@ -672,17 +630,6 @@ fn verify_server_certificate(
         )) => Err(EnrollmentError::InvalidHostname),
         Err(_) => Err(EnrollmentError::InvalidChain),
     }
-}
-
-fn valid_device_token(token: &str) -> bool {
-    token.len() == DEVICE_TOKEN_LENGTH
-        && token
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        && token
-            .as_bytes()
-            .last()
-            .is_some_and(|byte| b"AEIMQUYcgkosw048".contains(byte))
 }
 
 fn persist_verified_artifacts(
@@ -1152,10 +1099,13 @@ mod tests {
 
     #[test]
     fn device_token_shape_pins_the_32_byte_base64url_tail() {
-        let invalid_tail = format!("{}B", &VALID_TOKEN[..DEVICE_TOKEN_LENGTH - 1]);
+        let invalid_tail = format!(
+            "{}B",
+            &VALID_TOKEN[..natsume_device_protocol::DEVICE_TOKEN_ENCODED_LENGTH - 1]
+        );
 
-        assert!(valid_device_token(VALID_TOKEN));
-        assert!(!valid_device_token(&invalid_tail));
+        assert!(is_valid_device_token(VALID_TOKEN.as_bytes()));
+        assert!(!is_valid_device_token(invalid_tail.as_bytes()));
     }
 
     #[test]

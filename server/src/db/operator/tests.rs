@@ -16,8 +16,11 @@ use uuid::Uuid;
 
 use crate::{
     application::operator::{
-        OperatorCredentials, OperatorError, OperatorIdentity, OperatorRole, SessionCredentialHex,
-        authenticate_session, hash_password, terminate_session as terminate_application_session,
+        OperatorCredentials, OperatorError, OperatorIdentity, OperatorRole, SessionCredentialHash,
+        SessionCredentialHex, SessionFacts, authenticate_session, create_first_admin,
+        create_first_admin_with_ids, create_session, create_session_with_audit_id, hash_password,
+        reset_operator_password_with_ids, terminate_session as terminate_application_session,
+        terminate_session_with_audit_id,
         tests::{operator_identity, session_credential_hash},
     },
     audit::{self, AuditEvent, AuditEventId, CorrelationId},
@@ -28,18 +31,14 @@ use crate::{
     },
 };
 
-use super::{
-    CreateFirstAdminError, OperatorStoreError, ResetOperatorPasswordError, create_first_admin,
-    create_first_admin_with_ids, create_session, create_session_with_audit_id, read_session,
-    reset_operator_password_with_ids, terminate_session_with_audit_id,
-};
+use super::{OperatorStoreError, query};
 
 // The fixture helpers below are called from outside `db`, so they speak the
 // application error. Every caller collapses the failure into one
 // `TestFailure`, so the store vocabulary would add nothing.
 pub(crate) async fn test_business_counts(database: &Database) -> Result<(i64, i64), OperatorError> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             let accounts = operator_accounts::table
                 .count()
                 .get_result(connection)
@@ -56,7 +55,7 @@ pub(crate) async fn test_business_counts(database: &Database) -> Result<(i64, i6
 
 pub(crate) async fn test_password_hash(database: &Database) -> Result<String, OperatorError> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             operator_accounts::table
                 .select(operator_accounts::password_hash)
                 .first(connection)
@@ -76,7 +75,7 @@ pub(crate) async fn test_insert_account(
     let login_name = login_name.to_owned();
     let password_hash = password_hash.to_owned();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::insert_into(operator_accounts::table)
                 .values((
                     operator_accounts::operator_id.eq(operator_id.to_string()),
@@ -96,7 +95,7 @@ pub(crate) async fn test_session_hashes(
     database: &Database,
 ) -> Result<Vec<Vec<u8>>, OperatorError> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             operator_sessions::table
                 .select(operator_sessions::session_credential_hash)
                 .load(connection)
@@ -110,7 +109,7 @@ pub(crate) async fn test_session_and_audit_counts(
     database: &Database,
 ) -> Result<(i64, i64), OperatorError> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             let sessions = operator_sessions::table
                 .count()
                 .get_result(connection)
@@ -128,7 +127,7 @@ pub(crate) async fn test_session_and_audit_counts(
 /// Reads the database clock so callers can bracket an insert.
 pub(crate) async fn test_now(database: &Database) -> Result<String, OperatorError> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             diesel::sql_query("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS value")
                 .get_result::<TestTextRow>(connection)
                 .map(|row| row.value)
@@ -148,7 +147,7 @@ pub(crate) async fn test_sessions_have_eight_hour_ttl(
     let before_insert = before_insert.to_owned();
     let after_insert = after_insert.to_owned();
     database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             diesel::sql_query(
                 "SELECT COUNT(*) > 0 AND MIN(\
                  expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+57600 seconds') \
@@ -171,7 +170,7 @@ pub(crate) async fn test_database_contains_credential_canary(
 ) -> Result<bool, OperatorError> {
     let wire_credential = wire_credential.to_owned();
     database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             let table_names = diesel::sql_query(
                 "SELECT name AS value FROM pragma_table_list WHERE schema = 'main' \
              AND name NOT LIKE 'sqlite_%' ORDER BY name",
@@ -244,7 +243,7 @@ async fn first_admin_is_persisted_with_frozen_hash_and_redacted_audit() -> Resul
     }
     let account = fixture
         .database
-        .interact(|connection| {
+        .test_read(|connection| {
             operator_accounts::table
                 .select((
                     operator_accounts::operator_id,
@@ -287,7 +286,7 @@ async fn first_admin_is_persisted_with_frozen_hash_and_redacted_audit() -> Resul
 
     let audit = fixture
         .database
-        .interact(|connection| {
+        .test_read(|connection| {
             audit_events::table
                 .select((
                     audit_events::actor,
@@ -350,7 +349,7 @@ async fn repeated_first_admin_creation_is_a_zero_write_rejection() -> Result<(),
         return Err(TestFailure::RepeatedFirstAdminCreationSucceeded);
     };
 
-    if error != CreateFirstAdminError::AccountAlreadyExists {
+    if error != OperatorError::PersistenceFailed {
         return Err(TestFailure::RepeatedFirstAdminErrorWasNotTyped);
     }
     if counts(&fixture.database).await? != before {
@@ -384,7 +383,7 @@ async fn audit_insert_failure_rolls_back_the_account() -> Result<(), TestFailure
     else {
         return Err(TestFailure::DuplicateAuditIdCommitted);
     };
-    if error != CreateFirstAdminError::AuditInsertFailed {
+    if error != OperatorError::PersistenceFailed {
         return Err(TestFailure::AuditInsertFailureWasNotTyped);
     }
     if counts(&fixture.database).await? != (0, 1) {
@@ -434,7 +433,7 @@ async fn password_reset_audit_failure_rolls_back_phc_and_session_purge() -> Resu
     .await
     .err()
     .ok_or(TestFailure::DuplicatePasswordResetAuditCommitted)?;
-    if error != ResetOperatorPasswordError::AuditPersistenceFailed {
+    if error != OperatorError::PersistenceFailed {
         return Err(TestFailure::PasswordResetAuditFailureWasNotTyped);
     }
     let password_hash_after = test_password_hash(&fixture.database)
@@ -480,7 +479,7 @@ async fn session_creation_persists_raw_hash_frozen_ttl_and_exact_audit() -> Resu
 
     let row = fixture
         .database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             diesel::sql_query(
                 "SELECT session_credential_hash AS credential_hash, operator_id, expires_at, \
                  expires_at >= strftime('%Y-%m-%dT%H:%M:%fZ', ?, '+57600 seconds') \
@@ -557,14 +556,14 @@ async fn session_reads_do_not_renew_and_expiry_is_lazy_once() -> Result<(), Test
 
     let expires_before = session_expiry(&fixture.database).await?;
     let snapshot_before = snapshot(&fixture.database, &mut observer).await?;
-    let Some(facts) = read_session(&fixture.database, &credential_hash, correlation_id())
+    let Some(facts) = read_session_facts(&fixture.database, &credential_hash)
         .await
         .map_err(|_| TestFailure::SessionReadFailed)?
     else {
         return Err(TestFailure::LiveSessionWasNotActive);
     };
-    if facts.operator_id != identity.operator_id().to_string()
-        || facts.role != "admin"
+    if facts.identity != identity
+        || facts.expired
         || session_expiry(&fixture.database).await? != expires_before
         || snapshot(&fixture.database, &mut observer).await? != snapshot_before
     {
@@ -573,7 +572,7 @@ async fn session_reads_do_not_renew_and_expiry_is_lazy_once() -> Result<(), Test
 
     fixture
         .database
-        .interact(|connection| {
+        .test_write(|connection| {
             diesel::update(operator_sessions::table)
                 .set(operator_sessions::expires_at.eq(diesel::dsl::sql::<Text>(
                     "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second')",
@@ -615,13 +614,75 @@ async fn session_reads_do_not_renew_and_expiry_is_lazy_once() -> Result<(), Test
     }
 
     let before_second_read = snapshot(&fixture.database, &mut observer).await?;
-    if read_session(&fixture.database, &credential_hash, correlation_id())
+    if read_session_facts(&fixture.database, &credential_hash)
         .await
         .map_err(|_| TestFailure::SessionReadFailed)?
         .is_some()
         || snapshot(&fixture.database, &mut observer).await? != before_second_read
     {
         return Err(TestFailure::SecondExpiryReadWroteState);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_expired_session_cleanup_deletes_and_audits_once() -> Result<(), TestFailure> {
+    let fixture = TestDatabase::new().await?;
+    let identity = insert_operator(
+        &fixture.database,
+        "concurrent-expiry-admin",
+        OperatorRole::Admin,
+    )
+    .await?;
+    let credential_hash = session_credential_hash(&[0x8d_u8; 32]);
+    create_session(
+        &fixture.database,
+        &credential_hash,
+        identity,
+        correlation_id(),
+    )
+    .await
+    .map_err(|_| TestFailure::SessionCreationFailed)?;
+    fixture
+        .database
+        .test_write(|connection| {
+            diesel::update(operator_sessions::table)
+                .set(operator_sessions::expires_at.eq(diesel::dsl::sql::<Text>(
+                    "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second')",
+                )))
+                .execute(connection)
+        })
+        .await
+        .map_err(|_| TestFailure::SessionExpiryFixtureFailed)?
+        .map_err(|_| TestFailure::SessionExpiryFixtureFailed)?;
+    let audits_before = audit_count(&fixture.database).await?;
+    let wire = "8d".repeat(32);
+
+    let (first, second) = tokio::join!(
+        authenticate_session(
+            &fixture.database,
+            correlation_id(),
+            SessionCredentialHex::new(wire.clone()),
+        ),
+        authenticate_session(
+            &fixture.database,
+            correlation_id(),
+            SessionCredentialHex::new(wire),
+        ),
+    );
+    for result in [first, second] {
+        if result != Err(OperatorError::SessionAuthenticationFailed) {
+            return Err(TestFailure::SessionAuthenticationErrorWasNotUnified);
+        }
+    }
+    if session_count(&fixture.database).await? != 0
+        || audit_count(&fixture.database).await? != audits_before + 1
+    {
+        return Err(TestFailure::FirstExpiryReadWasNotOneTransition);
+    }
+    let audit = latest_audit(&fixture.database).await?;
+    if audit.action != "expire_session" || audit.resource_id != identity.operator_id().to_string() {
+        return Err(TestFailure::SessionExpiredAuditWasNotExact);
     }
     Ok(())
 }
@@ -642,13 +703,13 @@ async fn live_session_reads_do_not_take_the_write_lock() -> Result<(), TestFailu
     .map_err(|_| TestFailure::SessionCreationFailed)?;
     let _write_lock = fixture.write_lock()?;
 
-    let Some(facts) = read_session(&fixture.database, &credential_hash, correlation_id())
+    let Some(facts) = read_session_facts(&fixture.database, &credential_hash)
         .await
         .map_err(|_| TestFailure::LiveSessionReadTookTheWriteLock)?
     else {
         return Err(TestFailure::LiveSessionWasNotActive);
     };
-    if facts.operator_id != identity.operator_id().to_string() || facts.role != "admin" {
+    if facts.identity != identity || facts.expired {
         return Err(TestFailure::LiveSessionWasNotActive);
     }
     Ok(())
@@ -660,45 +721,16 @@ async fn live_session_reads_do_not_take_the_write_lock() -> Result<(), TestFailu
 #[test]
 fn every_store_failure_has_a_distinct_static_cause() -> Result<(), TestFailure> {
     let causes = [
-        OperatorStoreError::AcquireFailed,
-        OperatorStoreError::TransactionFailed,
         OperatorStoreError::AccountReadFailed,
+        OperatorStoreError::AccountInsertFailed,
+        OperatorStoreError::AccountUpdateFailed,
+        OperatorStoreError::AccountUpdateConflict,
         OperatorStoreError::SessionReadFailed,
-        OperatorStoreError::ExpiredSessionCleanupFailed,
         OperatorStoreError::InvalidPersistedFacts,
         OperatorStoreError::SessionInsertFailed,
         OperatorStoreError::SessionDeleteFailed,
-        OperatorStoreError::SessionDeleteConflict,
-        OperatorStoreError::AuditInsertFailed,
     ]
     .map(OperatorStoreError::cause);
-    if causes.iter().collect::<BTreeSet<_>>().len() != causes.len() {
-        return Err(TestFailure::StoreCauseWasNotDistinct);
-    }
-    if causes.iter().any(|cause| {
-        cause.is_empty()
-            || !cause
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte == b'_')
-    }) {
-        return Err(TestFailure::StoreCauseWasNotAStaticDiscriminant);
-    }
-    Ok(())
-}
-
-#[test]
-fn every_password_reset_failure_has_a_distinct_static_cause() -> Result<(), TestFailure> {
-    let causes = [
-        ResetOperatorPasswordError::DatabaseAcquireFailed,
-        ResetOperatorPasswordError::TransactionControlFailed,
-        ResetOperatorPasswordError::TargetReadFailed,
-        ResetOperatorPasswordError::TargetNotFound,
-        ResetOperatorPasswordError::PasswordUpdateFailed,
-        ResetOperatorPasswordError::PasswordUpdateConflict,
-        ResetOperatorPasswordError::SessionsPurgeFailed,
-        ResetOperatorPasswordError::AuditPersistenceFailed,
-    ]
-    .map(ResetOperatorPasswordError::cause);
     if causes.iter().collect::<BTreeSet<_>>().len() != causes.len() {
         return Err(TestFailure::StoreCauseWasNotDistinct);
     }
@@ -741,7 +773,7 @@ async fn expired_cleanup_failure_is_indistinguishable_from_an_unknown_credential
     let expired_hash_bytes = *expired_hash.as_bytes();
     fixture
         .database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::update(operator_sessions::table.filter(
                 operator_sessions::session_credential_hash.eq(expired_hash_bytes.as_slice()),
             ))
@@ -813,7 +845,7 @@ async fn malformed_and_boundary_expiry_facts_fail_closed() -> Result<(), TestFai
     let malformed_hash_bytes = *malformed_hash.as_bytes();
     fixture
         .database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             connection.batch_execute("PRAGMA ignore_check_constraints = ON;")?;
             diesel::update(operator_sessions::table.filter(
                 operator_sessions::session_credential_hash.eq(malformed_hash_bytes.as_slice()),
@@ -852,7 +884,7 @@ async fn malformed_and_boundary_expiry_facts_fail_closed() -> Result<(), TestFai
     let boundary_hash_bytes = *boundary_hash.as_bytes();
     fixture
         .database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::update(operator_sessions::table.filter(
                 operator_sessions::session_credential_hash.eq(boundary_hash_bytes.as_slice()),
             ))
@@ -1026,7 +1058,7 @@ async fn session_audit_failures_roll_back_creation_and_termination() -> Result<(
     .await
     .err()
     .ok_or(TestFailure::DuplicateSessionAuditCommitted)?;
-    if creation_error != OperatorStoreError::AuditInsertFailed
+    if creation_error != OperatorError::PersistenceFailed
         || session_count(&fixture.database).await? != 0
     {
         return Err(TestFailure::CreationAuditFailureDidNotRollBack);
@@ -1051,7 +1083,7 @@ async fn session_audit_failures_roll_back_creation_and_termination() -> Result<(
     .await
     .err()
     .ok_or(TestFailure::DuplicateSessionAuditCommitted)?;
-    if termination_error != OperatorStoreError::AuditInsertFailed
+    if termination_error != OperatorError::PersistenceFailed
         || session_count(&fixture.database).await? != 1
         || audit_count(&fixture.database).await? != audit_count_before
     {
@@ -1071,12 +1103,22 @@ async fn insert_operator(
     Ok(operator_identity(operator_id, role))
 }
 
+async fn read_session_facts(
+    database: &Database,
+    credential_hash: &SessionCredentialHash,
+) -> Result<Option<SessionFacts>, OperatorError> {
+    let credential_hash = *credential_hash.as_bytes();
+    database
+        .read(move |transaction| query::find_session(transaction, &credential_hash))
+        .await
+}
+
 async fn insert_existing_audit(
     database: &Database,
     audit_event_id: AuditEventId,
 ) -> Result<(), TestFailure> {
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             let event =
                 AuditEvent::first_admin_created(audit_event_id, correlation_id(), Uuid::now_v7());
             audit::insert_diesel(connection, &event)
@@ -1088,7 +1130,7 @@ async fn insert_existing_audit(
 
 async fn latest_audit(database: &Database) -> Result<AuditRow, TestFailure> {
     let row = database
-        .interact(|connection| {
+        .test_read(|connection| {
             diesel::sql_query(
                 "SELECT actor, action_kind AS action, resource_type, resource_id, result, \
                  reason_code AS reason, redacted_detail_json AS detail \
@@ -1114,7 +1156,7 @@ async fn latest_audit(database: &Database) -> Result<AuditRow, TestFailure> {
 
 async fn session_expiry(database: &Database) -> Result<String, TestFailure> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             operator_sessions::table
                 .select(operator_sessions::expires_at)
                 .first(connection)
@@ -1126,7 +1168,7 @@ async fn session_expiry(database: &Database) -> Result<String, TestFailure> {
 
 async fn session_count(database: &Database) -> Result<i64, TestFailure> {
     database
-        .interact(|connection| operator_sessions::table.count().get_result(connection))
+        .test_read(|connection| operator_sessions::table.count().get_result(connection))
         .await
         .map_err(|_| TestFailure::SessionRowWasNotReadable)?
         .map_err(|_| TestFailure::SessionRowWasNotReadable)
@@ -1134,7 +1176,7 @@ async fn session_count(database: &Database) -> Result<i64, TestFailure> {
 
 async fn audit_count(database: &Database) -> Result<i64, TestFailure> {
     database
-        .interact(|connection| audit_events::table.count().get_result(connection))
+        .test_read(|connection| audit_events::table.count().get_result(connection))
         .await
         .map_err(|_| TestFailure::SessionAuditWasNotReadable)?
         .map_err(|_| TestFailure::SessionAuditWasNotReadable)
@@ -1241,7 +1283,7 @@ async fn assert_database_excludes_canaries(
         .map(|canary| (*canary).to_owned())
         .collect::<Vec<_>>();
     database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             let table_names = diesel::sql_query(
                 "SELECT name AS value FROM pragma_table_list WHERE schema = 'main' \
                  AND name NOT LIKE 'sqlite_%' AND name <> 'operator_accounts' ORDER BY name",

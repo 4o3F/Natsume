@@ -8,17 +8,15 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    application::provisioning::{ProvisioningWindow, ProvisioningWindowState},
-    audit::{AuditEvent, AuditEventId, CorrelationId},
+    application::provisioning::{
+        ProvisioningError, ProvisioningWindow, ProvisioningWindowState, close_window,
+        close_window_with_ids, open_window, open_window_with_ids, read_window,
+    },
+    audit::{AuditEventId, CorrelationId},
     db::{
         Database, DatabaseConfig,
         tests::{test_data_version, test_observer},
     },
-};
-
-use super::{
-    ProvisioningStoreError, close_open_window, close_window, close_window_with_ids, open_window,
-    open_window_with_ids, read_window,
 };
 
 #[tokio::test]
@@ -239,7 +237,7 @@ async fn duplicate_operator_audit_ids_leave_state_revision_and_pointer_unchanged
         AuditEventId::from_uuid(duplicate_open_id),
     )
     .await;
-    if open_result != Err(ProvisioningStoreError::AuditFailed)
+    if open_result != Err(ProvisioningError::PersistenceFailed)
         || persistence_snapshot(&database).await? != before_open
         || test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?
             != version_before_open
@@ -260,7 +258,7 @@ async fn duplicate_operator_audit_ids_leave_state_revision_and_pointer_unchanged
         AuditEventId::from_uuid(Uuid::now_v7()),
     )
     .await;
-    if close_result != Err(ProvisioningStoreError::AuditFailed)
+    if close_result != Err(ProvisioningError::PersistenceFailed)
         || persistence_snapshot(&database).await? != before_close
     {
         return Err(TestFailure::OperatorAuditFailureDidNotRollBack);
@@ -268,118 +266,66 @@ async fn duplicate_operator_audit_ids_leave_state_revision_and_pointer_unchanged
     Ok(())
 }
 
-/// The caller owns the only transaction, so a typed inner failure must abort
-/// it and leave neither the audit nor the window change persisted.
 #[tokio::test]
-async fn close_open_window_failures_persist_no_partial_effect() -> Result<(), TestFailure> {
+async fn cas_failure_rolls_back_enrollment_expiry_and_both_audits() -> Result<(), TestFailure> {
     let fixture = DatabaseFixture::new();
     let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
         .await
         .map_err(|_| TestFailure::DatabaseCreationFailed)?;
     let opening_audit_id = Uuid::now_v7();
     seed_open_window(&database, opening_audit_id).await?;
-
-    // A duplicate audit event ID fails the audit insert.
-    expect_rolled_back_failure(
-        &database,
-        opening_audit_id,
-        1,
-        ProvisioningStoreError::AuditFailed,
-        TestFailure::DuplicateAuditFailureWasNotTyped,
-    )
-    .await?;
-
-    // A stale expected revision loses the compare-and-swap.
-    let stale_audit_id = Uuid::now_v7();
-    expect_rolled_back_failure(
-        &database,
-        stale_audit_id,
-        0,
-        ProvisioningStoreError::CompareAndSwapConflict,
-        TestFailure::CompareAndSwapConflictWasNotTyped,
-    )
-    .await?;
-
-    let stale_audit_id_text = stale_audit_id.to_string();
-    let (window, stale_audit_count) = database
-        .interact(move |connection| {
-            let window = diesel::sql_query(
-                "SELECT state, revision, last_audit_event_id \
-                 FROM provisioning_window WHERE singleton = 1",
+    database
+        .test_write(move |connection| {
+            diesel::sql_query(
+                "INSERT INTO enrollment_requests \
+                 (enrollment_request_id, machine_hardware_id, hardware_identity_quality, \
+                  gateway_csr_der, gateway_spki_sha256, client_version, protocol_version, \
+                  source_ip, state, created_at) VALUES \
+                 ('cas-rollback-request', 'cas-rollback-machine', 'strong', x'01', \
+                  zeroblob(32), 'test-client', 1, '192.0.2.1', 'pending', \
+                  '2026-08-17T00:00:00.000Z')",
             )
-            .get_result::<WindowRow>(connection)
-            .map_err(|_| TestFailure::WindowWasNotReadable)?;
-            let stale_audit_count = diesel::sql_query(
-                "SELECT COUNT(*) AS value FROM audit_events WHERE audit_event_id = ?",
+            .execute(connection)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+            diesel::sql_query(
+                "CREATE TRIGGER ignore_provisioning_window_cas \
+                 BEFORE UPDATE ON provisioning_window \
+                 BEGIN SELECT RAISE(IGNORE); END",
             )
-            .bind::<Text, _>(&stale_audit_id_text)
-            .get_result::<CountRow>(connection)
-            .map_err(|_| TestFailure::AuditWasNotReadable)?
-            .value;
-            Ok((window, stale_audit_count))
+            .execute(connection)
+            .map(|_| ())
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)
         })
         .await
         .map_err(|_| TestFailure::DieselInteractionFailed)??;
-    if window.state != "open"
-        || window.revision != 1
-        || window.last_audit_event_id != opening_audit_id.to_string()
+    let before = persistence_snapshot(&database).await?;
+
+    let result = close_window(&database, CorrelationId::from_uuid(Uuid::now_v7())).await;
+    let after = persistence_snapshot(&database).await?;
+    let request_state = database
+        .test_read(|connection| {
+            diesel::sql_query(
+                "SELECT state AS value FROM enrollment_requests \
+                 WHERE enrollment_request_id = 'cas-rollback-request'",
+            )
+            .get_result::<TextRow>(connection)
+            .map(|row| row.value)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)
+        })
+        .await
+        .map_err(|_| TestFailure::DieselInteractionFailed)??;
+    if result != Err(ProvisioningError::PersistenceFailed)
+        || after != before
+        || request_state != "pending"
     {
-        return Err(TestFailure::WindowChangedAfterFailure);
-    }
-    if stale_audit_count != 0 {
-        return Err(TestFailure::StaleAuditWasWritten);
+        return Err(TestFailure::CompareAndSwapRollbackFailed);
     }
     Ok(())
 }
 
-/// Drives one failing close inside a caller-owned transaction and rolls it
-/// back, exactly as `recover_provisioning_window` does.
-async fn expect_rolled_back_failure(
-    database: &Database,
-    audit_event_id: Uuid,
-    expected_revision: i64,
-    expected_error: ProvisioningStoreError,
-    typed_failure: TestFailure,
-) -> Result<(), TestFailure> {
-    let next_revision = expected_revision + 1;
-    let event = AuditEvent::recovery_close(
-        AuditEventId::from_uuid(audit_event_id),
-        CorrelationId::from_uuid(Uuid::now_v7()),
-        expected_revision,
-        next_revision,
-    );
-    database
-        .interact(move |connection| {
-            // The typed inner failure is returned out of the closure, so the
-            // transaction rolls back exactly as the recovery path does.
-            let result = connection.immediate_transaction(|connection| {
-                close_open_window(
-                    connection,
-                    ProvisioningWindow {
-                        state: ProvisioningWindowState::Open,
-                        revision: expected_revision,
-                    },
-                    ProvisioningWindow {
-                        state: ProvisioningWindowState::Closed,
-                        revision: next_revision,
-                    },
-                    &event,
-                    CorrelationId::from_uuid(Uuid::now_v7()),
-                    AuditEventId::from_uuid(Uuid::now_v7()),
-                )
-            });
-            if result != Err(expected_error) {
-                return Err(typed_failure);
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|_| TestFailure::DieselInteractionFailed)?
-}
-
 async fn persistence_snapshot(database: &Database) -> Result<PersistenceSnapshot, TestFailure> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             let window = diesel::sql_query(
                 "SELECT state, revision, last_audit_event_id \
                  FROM provisioning_window WHERE singleton = 1",
@@ -413,7 +359,7 @@ async fn reserve_audit_id(database: &Database, audit_event_id: Uuid) -> Result<(
     let audit_event_id = audit_event_id.to_string();
     let correlation_id = Uuid::now_v7().to_string();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::sql_query(
                 "INSERT INTO audit_events (audit_event_id, occurred_at, actor, action_kind, \
                  resource_type, resource_id, result, reason_code, correlation_id, \
@@ -462,7 +408,7 @@ async fn seed_open_window(database: &Database, audit_event_id: Uuid) -> Result<(
     let audit_event_id = audit_event_id.to_string();
     let correlation_id = Uuid::now_v7().to_string();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::sql_query(
                 "INSERT INTO audit_events (audit_event_id, occurred_at, actor, action_kind, \
                  resource_type, resource_id, result, reason_code, correlation_id, \
@@ -533,19 +479,15 @@ struct OperatorAuditRow {
 }
 
 #[derive(QueryableByName)]
-struct WindowRow {
-    #[diesel(sql_type = Text)]
-    state: String,
-    #[diesel(sql_type = BigInt)]
-    revision: i64,
-    #[diesel(sql_type = Text)]
-    last_audit_event_id: String,
-}
-
-#[derive(QueryableByName)]
 struct CountRow {
     #[diesel(sql_type = BigInt)]
     value: i64,
+}
+
+#[derive(QueryableByName)]
+struct TextRow {
+    #[diesel(sql_type = Text)]
+    value: String,
 }
 
 #[derive(Debug, Snafu)]
@@ -560,18 +502,12 @@ enum TestFailure {
     WindowFixtureUpdateFailed,
     #[snafu(display("the test provisioning window update was not exact"))]
     WindowFixtureUpdateWasNotExact,
-    #[snafu(display("the duplicate audit failure was not typed"))]
-    DuplicateAuditFailureWasNotTyped,
-    #[snafu(display("the compare-and-swap conflict was not typed"))]
-    CompareAndSwapConflictWasNotTyped,
     #[snafu(display("the provisioning window was not readable"))]
     WindowWasNotReadable,
-    #[snafu(display("the provisioning window changed after a rolled-back failure"))]
-    WindowChangedAfterFailure,
     #[snafu(display("the audit evidence was not readable"))]
     AuditWasNotReadable,
-    #[snafu(display("the stale audit event was written"))]
-    StaleAuditWasWritten,
+    #[snafu(display("a provisioning CAS failure did not roll back expiry and audits"))]
+    CompareAndSwapRollbackFailed,
     #[snafu(display("the operator provisioning-window cycle changed"))]
     OperatorCycleChanged,
     #[snafu(display("the operator provisioning-window mutation failed"))]

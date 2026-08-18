@@ -1,6 +1,6 @@
 use super::{
     CommittedImportFacts, CsvImportErrorCategory, ImportError, PreviewToken, commit_import,
-    create_import_candidate, discard_import,
+    create_import_candidate, discard_import, read_pending_import_candidate,
 };
 
 #[cfg(test)]
@@ -9,10 +9,11 @@ mod candidate_tests {
         fs,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
+        time::Duration,
     };
 
     use diesel::{
-        Connection, QueryableByName, RunQueryDsl,
+        Connection, QueryDsl, QueryableByName, RunQueryDsl,
         connection::SimpleConnection,
         sql_types::{BigInt, Binary, Nullable, Text},
         sqlite::SqliteConnection,
@@ -22,14 +23,22 @@ mod candidate_tests {
     use uuid::Uuid;
 
     use crate::{
+        application::import::candidate::read_pending_import_candidate_after_expired_observation,
         audit::CorrelationId,
-        db::{Database, DatabaseConfig},
-        vault::{ensure_master_key, open},
+        db::{
+            Database, DatabaseConfig,
+            schema::{
+                account_mappings, accounts, audit_events, device_bindings,
+                pending_import_candidate, revision_counters, seats, server_vault_records,
+            },
+            tests::{test_lock_database, test_observer},
+        },
+        vault::{ensure_master_key, open, seal},
     };
 
     use super::{
         CsvImportErrorCategory, ImportError, PreviewToken, commit_import, create_import_candidate,
-        discard_import,
+        discard_import, read_pending_import_candidate,
     };
 
     const DEVICE_C: &str = "01900000-0000-7000-8000-000000000201";
@@ -815,9 +824,620 @@ mod candidate_tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn create_audit_failure_rolls_back_expiry_and_replacement() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let original = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,original-create-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let original_candidate_id = original.candidate_id().to_string();
+        expire_current_candidate(&fixture.database).await?;
+        install_audit_failure_trigger(
+            &fixture.database,
+            "fail_import_create_audit",
+            "create_import_candidate",
+            "succeeded",
+        )
+        .await?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before = data_version(&mut observer)?;
+
+        let Err(error) = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nB-02,team-b,replacement-create-password",
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::ExpectedPersistenceFailure);
+        };
+        let after = full_rollback_snapshot(&fixture.database).await?;
+        if error != ImportError::PersistenceFailure
+            || before != after
+            || data_version(&mut observer)? != version_before
+            || after.candidate_rows.first().map(|row| row.0.as_str())
+                != Some(original_candidate_id.as_str())
+        {
+            return Err(TestFailure::CreateRollbackChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn commit_audit_failure_rolls_back_every_business_mutation() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        seed_golden_current_facts(&fixture.database).await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,same-a,new-a-password\nF-06,new-f,new-f-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        install_audit_failure_trigger(
+            &fixture.database,
+            "fail_import_commit_audit",
+            "commit_import",
+            "succeeded",
+        )
+        .await?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before = data_version(&mut observer)?;
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::ExpectedPersistenceFailure);
+        };
+        if error != ImportError::PersistenceFailure
+            || full_rollback_snapshot(&fixture.database).await? != before
+            || data_version(&mut observer)? != version_before
+        {
+            return Err(TestFailure::CommitRollbackChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn token_mismatch_audit_failure_preserves_unavailable_classification()
+    -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,token-rejection-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        install_audit_failure_trigger(
+            &fixture.database,
+            "fail_token_rejection_audit",
+            "commit_import",
+            "rejected",
+        )
+        .await?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before = data_version(&mut observer)?;
+        let wrong_token = PreviewToken::from_bytes([0xa5; 32]);
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            &wrong_token,
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::MismatchedTokenSucceeded);
+        };
+        if error != ImportError::CandidateUnavailable
+            || full_rollback_snapshot(&fixture.database).await? != before
+            || data_version(&mut observer)? != version_before
+        {
+            return Err(TestFailure::RejectedAuditClassificationChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_audit_failure_preserves_stale_classification() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,stale-rejection-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        bump_configuration_revision(&fixture.database).await?;
+        install_audit_failure_trigger(
+            &fixture.database,
+            "fail_stale_rejection_audit",
+            "commit_import",
+            "rejected",
+        )
+        .await?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before = data_version(&mut observer)?;
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::StaleCommitSucceeded);
+        };
+        if error != ImportError::PreviewStale
+            || full_rollback_snapshot(&fixture.database).await? != before
+            || data_version(&mut observer)? != version_before
+        {
+            return Err(TestFailure::RejectedAuditClassificationChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn revision_cas_failure_rolls_back_all_import_tables() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,cas-password-a\nB-02,team-b,cas-password-b",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        install_revision_failure_trigger(&fixture.database).await?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before = data_version(&mut observer)?;
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::ExpectedPersistenceFailure);
+        };
+        if error != ImportError::PersistenceFailure
+            || full_rollback_snapshot(&fixture.database).await? != before
+            || data_version(&mut observer)? != version_before
+        {
+            return Err(TestFailure::CasRollbackChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn invalid_staged_payload_remains_persistence_classified_and_read_only()
+    -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,invalid-stage-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let candidate = candidate_evidence(&fixture.database).await?;
+        let (nonce, ciphertext) =
+            seal(&fixture.master_key_path, b"[]").map_err(|_| TestFailure::FixtureFailed)?;
+        let payload_id = candidate.payload_vault_record_id.clone();
+        fixture
+            .database
+            .test_write(move |connection| {
+                diesel::sql_query(
+                    "UPDATE server_vault_records SET nonce = ?, ciphertext = ? \
+                     WHERE vault_record_id = ? AND record_type = 'import_payload'",
+                )
+                .bind::<Binary, _>(nonce.as_slice())
+                .bind::<Binary, _>(ciphertext)
+                .bind::<Text, _>(payload_id)
+                .execute(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let mut observer = fixture.observer()?;
+        let version_before = data_version(&mut observer)?;
+
+        let Err(error) = commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            created.candidate_id(),
+            created.preview_token(),
+            correlation_id(),
+        )
+        .await
+        else {
+            return Err(TestFailure::ExpectedPersistenceFailure);
+        };
+        if error != ImportError::PersistenceFailure
+            || full_rollback_snapshot(&fixture.database).await? != before
+            || data_version(&mut observer)? != version_before
+        {
+            return Err(TestFailure::InvalidCommitClassificationChanged);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn terminal_paths_delete_exact_candidate_and_payload_rows() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let committed_candidate = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,terminal-commit-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let committed_evidence = candidate_evidence(&fixture.database).await?;
+        assert_terminal_rows_present(&fixture.database, &committed_evidence).await?;
+        commit_import(
+            &fixture.database,
+            &fixture.master_key_path,
+            committed_candidate.candidate_id(),
+            committed_candidate.preview_token(),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CommitFailed)?;
+        assert_terminal_rows_absent(&fixture.database, &committed_evidence).await?;
+
+        let discarded_candidate = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,terminal-discard-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let discarded_evidence = candidate_evidence(&fixture.database).await?;
+        assert_terminal_rows_present(&fixture.database, &discarded_evidence).await?;
+        discard_import(
+            &fixture.database,
+            discarded_candidate.candidate_id(),
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::DiscardFailed)?;
+        assert_terminal_rows_absent(&fixture.database, &discarded_evidence).await
+    }
+
+    #[tokio::test]
+    async fn nonexpired_candidate_read_does_not_obtain_the_write_lock() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let created = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,read-lock-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let before = full_rollback_snapshot(&fixture.database).await?;
+        let writer =
+            test_lock_database(&fixture.database_path).map_err(|_| TestFailure::FixtureFailed)?;
+        let read = tokio::time::timeout(
+            Duration::from_millis(750),
+            read_pending_import_candidate(&fixture.database, correlation_id()),
+        )
+        .await;
+        drop(writer);
+        let pending = read
+            .map_err(|_| TestFailure::NonexpiredReadTookWriteLock)?
+            .map_err(|_| TestFailure::NonexpiredReadTookWriteLock)?
+            .ok_or(TestFailure::NonexpiredReadTookWriteLock)?;
+        if pending.candidate_id() != created.candidate_id()
+            || full_rollback_snapshot(&fixture.database).await? != before
+        {
+            return Err(TestFailure::NonexpiredReadTookWriteLock);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_cleanup_reread_preserves_a_racing_replacement() -> Result<(), TestFailure> {
+        let fixture = ImportFixture::new().await?;
+        let original = create_import_candidate(
+            &fixture.database,
+            &fixture.master_key_path,
+            b"seat,account,password\nA-01,team-a,race-original-password",
+            correlation_id(),
+        )
+        .await
+        .map_err(|_| TestFailure::CandidateCreationFailed)?;
+        let original_evidence = candidate_evidence(&fixture.database).await?;
+        expire_current_candidate(&fixture.database).await?;
+
+        let replacement_candidate_id = Uuid::now_v7();
+        let replacement_payload_id = Uuid::now_v7();
+        let mut writer = fixture.observer()?;
+        stage_racing_replacement(
+            &mut writer,
+            &original_evidence,
+            replacement_candidate_id,
+            replacement_payload_id,
+        )?;
+        let database = fixture.database.clone();
+        let (observed_sender, observed_receiver) = tokio::sync::oneshot::channel();
+        let cleanup = tokio::spawn(async move {
+            read_pending_import_candidate_after_expired_observation(
+                &database,
+                correlation_id(),
+                move || {
+                    let _ = observed_sender.send(());
+                },
+            )
+            .await
+        });
+        if tokio::time::timeout(Duration::from_secs(2), observed_receiver)
+            .await
+            .is_err()
+        {
+            let _ = writer.batch_execute("ROLLBACK");
+            return Err(TestFailure::ExpiredRaceWasNotObserved);
+        }
+        writer
+            .batch_execute("COMMIT")
+            .map_err(|_| TestFailure::FixtureFailed)?;
+        let pending = cleanup
+            .await
+            .map_err(|_| TestFailure::ExpiredRaceWasNotObserved)?
+            .map_err(|_| TestFailure::ExpiredRaceWasNotObserved)?
+            .ok_or(TestFailure::ExpiredRaceWasNotObserved)?;
+        if pending.candidate_id() != replacement_candidate_id
+            || original.candidate_id().to_string() != original_evidence.candidate_id
+            || vault_record_count(&fixture.database, &replacement_payload_id.to_string()).await?
+                != 1
+            || expiry_audit_count_for(&fixture.database, &original_evidence.candidate_id).await?
+                != 0
+        {
+            return Err(TestFailure::ExpiredRaceDeletedReplacement);
+        }
+        let reread = read_pending_import_candidate(&fixture.database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::ExpiredRaceDeletedReplacement)?
+            .ok_or(TestFailure::ExpiredRaceDeletedReplacement)?;
+        if reread.candidate_id() != replacement_candidate_id {
+            return Err(TestFailure::ExpiredRaceDeletedReplacement);
+        }
+        Ok(())
+    }
+
+    async fn install_audit_failure_trigger(
+        database: &Database,
+        trigger_name: &'static str,
+        action_kind: &'static str,
+        result: &'static str,
+    ) -> Result<(), TestFailure> {
+        database
+            .test_write(move |connection| {
+                connection.batch_execute(&format!(
+                    "CREATE TRIGGER {trigger_name} \
+                     BEFORE INSERT ON audit_events \
+                     WHEN NEW.action_kind = '{action_kind}' AND NEW.result = '{result}' \
+                     BEGIN SELECT RAISE(ABORT, 'forced import audit failure'); END;"
+                ))
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn install_revision_failure_trigger(database: &Database) -> Result<(), TestFailure> {
+        database
+            .test_write(|connection| {
+                connection.batch_execute(
+                    "CREATE TRIGGER fail_import_revision_advance \
+                     BEFORE UPDATE OF configuration_revision, binding_revision \
+                     ON revision_counters \
+                     BEGIN SELECT RAISE(ABORT, 'forced revision CAS failure'); END;",
+                )
+            })
+            .await
+            .map_err(|_| TestFailure::FixtureFailed)?
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn assert_terminal_rows_present(
+        database: &Database,
+        candidate: &CandidateEvidence,
+    ) -> Result<(), TestFailure> {
+        let snapshot = persistence_snapshot(database).await?;
+        if snapshot.candidate_count != 1
+            || snapshot.candidate_id.as_deref() != Some(candidate.candidate_id.as_str())
+            || vault_record_count(database, &candidate.payload_vault_record_id).await? != 1
+        {
+            return Err(TestFailure::TerminalDeleteCountChanged);
+        }
+        Ok(())
+    }
+
+    async fn assert_terminal_rows_absent(
+        database: &Database,
+        candidate: &CandidateEvidence,
+    ) -> Result<(), TestFailure> {
+        let snapshot = persistence_snapshot(database).await?;
+        if snapshot.candidate_count != 0
+            || snapshot.candidate_id.is_some()
+            || vault_record_count(database, &candidate.payload_vault_record_id).await? != 0
+        {
+            return Err(TestFailure::TerminalDeleteCountChanged);
+        }
+        Ok(())
+    }
+
+    fn stage_racing_replacement(
+        writer: &mut SqliteConnection,
+        original: &CandidateEvidence,
+        replacement_candidate_id: Uuid,
+        replacement_payload_id: Uuid,
+    ) -> Result<(), TestFailure> {
+        let preview_hash = "5a".repeat(32);
+        writer
+            .batch_execute(&format!(
+                "PRAGMA foreign_keys = ON; \
+                 BEGIN IMMEDIATE; \
+                 DELETE FROM pending_import_candidate WHERE singleton = 1; \
+                 DELETE FROM server_vault_records \
+                   WHERE vault_record_id = '{}'; \
+                 INSERT INTO server_vault_records \
+                   (vault_record_id, record_type, subject_id, nonce, ciphertext) VALUES \
+                   ('{replacement_payload_id}', 'import_payload', \
+                    '{replacement_candidate_id}', x'01', x'02'); \
+                 INSERT INTO pending_import_candidate \
+                   (singleton, candidate_id, expires_at, baseline_configuration_revision, \
+                    baseline_binding_revision, preview_token_hash, payload_vault_record_id, \
+                    redacted_preview_json) VALUES \
+                   (1, '{replacement_candidate_id}', \
+                    strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1800 seconds'), 0, 0, \
+                    x'{preview_hash}', '{replacement_payload_id}', \
+                    '{{\"seats_added\":[],\"seats_removed\":[],\"mappings_changed\":[],\
+                       \"unchanged_count\":0,\"affected_account_count\":1,\"binding_impacts\":[]}}');",
+                original.payload_vault_record_id,
+            ))
+            .map_err(|_| TestFailure::FixtureFailed)
+    }
+
+    async fn expiry_audit_count_for(
+        database: &Database,
+        candidate_id: &str,
+    ) -> Result<i64, TestFailure> {
+        let candidate_id = candidate_id.to_owned();
+        database
+            .test_read(move |connection| {
+                diesel::sql_query(
+                    "SELECT COUNT(*) AS value FROM audit_events \
+                     WHERE action_kind = 'expire_import_candidate' AND resource_id = ?",
+                )
+                .bind::<Text, _>(candidate_id)
+                .get_result::<CountRow>(connection)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+            .map(|row| row.value)
+            .map_err(|_| TestFailure::EvidenceFailed)
+    }
+
+    async fn full_rollback_snapshot(
+        database: &Database,
+    ) -> Result<FullRollbackSnapshot, TestFailure> {
+        database
+            .test_read(|connection| {
+                let revisions = revision_counters::table
+                    .order(revision_counters::singleton)
+                    .select((
+                        diesel::dsl::sql::<BigInt>("configuration_revision"),
+                        diesel::dsl::sql::<BigInt>("binding_revision"),
+                    ))
+                    .load::<(i64, i64)>(connection)?;
+                let seat_rows = seats::table
+                    .order(seats::seat_id)
+                    .select((seats::seat_id, seats::seat_code))
+                    .load::<(String, String)>(connection)?;
+                let account_rows = accounts::table
+                    .order(accounts::account_id)
+                    .select((
+                        accounts::account_id,
+                        accounts::domjudge_username,
+                        accounts::credential_vault_record_id,
+                        diesel::dsl::sql::<BigInt>("credential_revision"),
+                    ))
+                    .load::<(String, String, String, i64)>(connection)?;
+                let mapping_rows = account_mappings::table
+                    .order(account_mappings::seat_id)
+                    .select((account_mappings::seat_id, account_mappings::account_id))
+                    .load::<(String, String)>(connection)?;
+                let binding_rows = device_bindings::table
+                    .order(device_bindings::seat_id)
+                    .select((
+                        device_bindings::seat_id,
+                        device_bindings::device_pk,
+                        diesel::dsl::sql::<BigInt>("binding_revision"),
+                    ))
+                    .load::<(String, String, i64)>(connection)?;
+                let vault_rows = server_vault_records::table
+                    .order(server_vault_records::vault_record_id)
+                    .select((
+                        server_vault_records::vault_record_id,
+                        server_vault_records::record_type,
+                        server_vault_records::subject_id,
+                        server_vault_records::nonce,
+                        server_vault_records::ciphertext,
+                    ))
+                    .load::<VaultSnapshotRow>(connection)?;
+                let candidate_rows = pending_import_candidate::table
+                    .order(pending_import_candidate::singleton)
+                    .select((
+                        pending_import_candidate::candidate_id,
+                        pending_import_candidate::payload_vault_record_id,
+                        pending_import_candidate::preview_token_hash,
+                    ))
+                    .load::<(String, String, Vec<u8>)>(connection)?;
+                let audit_rows = audit_events::table
+                    .order(audit_events::audit_event_id)
+                    .select((audit_events::audit_event_id, audit_events::action_kind))
+                    .load::<(String, String)>(connection)?;
+                let runtime_counts = diesel::sql_query(
+                    "SELECT \
+                     (SELECT COUNT(*) FROM commands) AS command_count, \
+                     (SELECT COUNT(*) FROM observed_device_states) \
+                       AS observed_device_state_count",
+                )
+                .get_result::<RuntimeTableCounts>(connection)?;
+                Ok::<FullRollbackSnapshot, diesel::result::Error>(FullRollbackSnapshot {
+                    revisions,
+                    seat_rows,
+                    account_rows,
+                    mapping_rows,
+                    binding_rows,
+                    vault_rows,
+                    candidate_rows,
+                    audit_rows,
+                    command_count: runtime_counts.command_count,
+                    observed_device_state_count: runtime_counts.observed_device_state_count,
+                })
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)?
+            .map_err(|_| TestFailure::EvidenceFailed)
+    }
+
     async fn seed_golden_current_facts(database: &Database) -> Result<(), TestFailure> {
         database
-            .interact(|connection| {
+            .test_write(|connection| {
                 connection.batch_execute(&format!(
                     "UPDATE revision_counters \
                      SET configuration_revision = 23, binding_revision = 31 WHERE singleton = 1; \
@@ -856,7 +1476,7 @@ mod candidate_tests {
 
     async fn seed_identical_current_facts(database: &Database) -> Result<(), TestFailure> {
         database
-            .interact(|connection| {
+            .test_write(|connection| {
                 connection.batch_execute(&format!(
                     "UPDATE revision_counters \
                      SET configuration_revision = 7, binding_revision = 9 WHERE singleton = 1; \
@@ -886,7 +1506,7 @@ mod candidate_tests {
 
     async fn seed_surviving_binding(database: &Database) -> Result<(), TestFailure> {
         database
-            .interact(|connection| {
+            .test_write(|connection| {
                 connection.batch_execute(&format!(
                     "INSERT INTO devices \
                      (device_pk, machine_hardware_id, hardware_identity_quality, state) VALUES \
@@ -902,7 +1522,7 @@ mod candidate_tests {
 
     async fn bump_configuration_revision(database: &Database) -> Result<(), TestFailure> {
         database
-            .interact(|connection| {
+            .test_write(|connection| {
                 diesel::sql_query(
                     "UPDATE revision_counters SET configuration_revision = \
                      configuration_revision + 1 WHERE singleton = 1",
@@ -932,7 +1552,7 @@ mod candidate_tests {
 
     async fn committed_state(database: &Database) -> Result<CommittedState, TestFailure> {
         database
-            .interact(|connection| {
+            .test_read(|connection| {
                 let revisions = diesel::sql_query(
                     "SELECT configuration_revision, binding_revision \
                      FROM revision_counters WHERE singleton = 1",
@@ -1025,7 +1645,7 @@ mod candidate_tests {
         let action_kind = action_kind.to_owned();
         let result = result.to_owned();
         database
-            .interact(move |connection| {
+            .test_read(move |connection| {
                 diesel::sql_query(
                     "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
                      correlation_id, redacted_detail_json FROM audit_events \
@@ -1079,7 +1699,7 @@ mod candidate_tests {
 
     async fn audit_count(database: &Database) -> Result<i64, TestFailure> {
         database
-            .interact(|connection| {
+            .test_read(|connection| {
                 diesel::sql_query("SELECT COUNT(*) AS value FROM audit_events")
                     .get_result::<CountRow>(connection)
             })
@@ -1091,7 +1711,7 @@ mod candidate_tests {
 
     async fn candidate_evidence(database: &Database) -> Result<CandidateEvidence, TestFailure> {
         database
-            .interact(|connection| {
+            .test_read(|connection| {
                 diesel::sql_query(
                     "SELECT p.candidate_id, p.expires_at, \
                      p.baseline_configuration_revision, p.baseline_binding_revision, \
@@ -1118,7 +1738,7 @@ mod candidate_tests {
     ) -> Result<AuditEvidence, TestFailure> {
         let resource_id = resource_id.to_owned();
         database
-            .interact(move |connection| {
+            .test_read(move |connection| {
                 diesel::sql_query(
                     "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
                      correlation_id, redacted_detail_json \
@@ -1139,7 +1759,7 @@ mod candidate_tests {
     ) -> Result<ExpiryAuditEvidence, TestFailure> {
         let resource_id = resource_id.to_owned();
         database
-            .interact(move |connection| {
+            .test_read(move |connection| {
                 diesel::sql_query(
                     "SELECT COUNT(*) AS count, actor, action_kind, resource_type, resource_id, \
                      result, reason_code, correlation_id, redacted_detail_json \
@@ -1156,7 +1776,7 @@ mod candidate_tests {
 
     async fn expire_current_candidate(database: &Database) -> Result<(), TestFailure> {
         database
-            .interact(|connection| {
+            .test_write(|connection| {
                 diesel::sql_query(
                     "UPDATE pending_import_candidate \
                      SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-1 second') \
@@ -1176,7 +1796,7 @@ mod candidate_tests {
     ) -> Result<i64, TestFailure> {
         let vault_record_id = vault_record_id.to_owned();
         database
-            .interact(move |connection| {
+            .test_read(move |connection| {
                 diesel::sql_query(
                     "SELECT COUNT(*) AS value FROM server_vault_records \
                      WHERE vault_record_id = ?",
@@ -1192,7 +1812,7 @@ mod candidate_tests {
 
     async fn import_audit_count(database: &Database) -> Result<i64, TestFailure> {
         database
-            .interact(|connection| {
+            .test_read(|connection| {
                 diesel::sql_query(
                     "SELECT COUNT(*) AS value FROM audit_events \
                      WHERE action_kind IN \
@@ -1208,7 +1828,7 @@ mod candidate_tests {
 
     async fn persistence_snapshot(database: &Database) -> Result<PersistenceSnapshot, TestFailure> {
         database
-            .interact(|connection| {
+            .test_read(|connection| {
                 diesel::sql_query(
                     "SELECT \
                      (SELECT COUNT(*) FROM pending_import_candidate) AS candidate_count, \
@@ -1234,32 +1854,36 @@ mod candidate_tests {
     }
 
     async fn assert_database_files_exclude(
-        database: &Database,
+        _database: &Database,
         path: &Path,
         canary: &[u8],
     ) -> Result<(), TestFailure> {
-        checkpoint_database(database).await?;
+        checkpoint_database(path).await?;
         assert_database_file_set_excludes(path, canary)
     }
 
     async fn assert_database_files_exclude_all(
-        database: &Database,
+        _database: &Database,
         path: &Path,
         canaries: &[&[u8]],
     ) -> Result<(), TestFailure> {
-        checkpoint_database(database).await?;
+        checkpoint_database(path).await?;
         for canary in canaries {
             assert_database_file_set_excludes(path, canary)?;
         }
         Ok(())
     }
 
-    async fn checkpoint_database(database: &Database) -> Result<(), TestFailure> {
-        database
-            .interact(|connection| connection.batch_execute("PRAGMA wal_checkpoint(TRUNCATE)"))
-            .await
-            .map_err(|_| TestFailure::EvidenceFailed)?
-            .map_err(|_| TestFailure::EvidenceFailed)
+    async fn checkpoint_database(path: &Path) -> Result<(), TestFailure> {
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut connection = test_observer(&path).map_err(|_| TestFailure::EvidenceFailed)?;
+            connection
+                .batch_execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                .map_err(|_| TestFailure::EvidenceFailed)
+        })
+        .await
+        .map_err(|_| TestFailure::EvidenceFailed)?
     }
 
     fn assert_database_file_set_excludes(path: &Path, canary: &[u8]) -> Result<(), TestFailure> {
@@ -1517,6 +2141,30 @@ mod candidate_tests {
         value: i64,
     }
 
+    type VaultSnapshotRow = (String, String, String, Vec<u8>, Vec<u8>);
+
+    #[derive(QueryableByName)]
+    struct RuntimeTableCounts {
+        #[diesel(sql_type = BigInt)]
+        command_count: i64,
+        #[diesel(sql_type = BigInt)]
+        observed_device_state_count: i64,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct FullRollbackSnapshot {
+        revisions: Vec<(i64, i64)>,
+        seat_rows: Vec<(String, String)>,
+        account_rows: Vec<(String, String, String, i64)>,
+        mapping_rows: Vec<(String, String)>,
+        binding_rows: Vec<(String, String, i64)>,
+        vault_rows: Vec<VaultSnapshotRow>,
+        candidate_rows: Vec<(String, String, Vec<u8>)>,
+        audit_rows: Vec<(String, String)>,
+        command_count: i64,
+        observed_device_state_count: i64,
+    }
+
     #[derive(Debug, PartialEq, Eq, QueryableByName)]
     struct PersistenceSnapshot {
         #[diesel(sql_type = BigInt)]
@@ -1607,5 +2255,25 @@ mod candidate_tests {
         DiscardAuditChanged,
         #[snafu(display("discard did not recover a wedged import candidate"))]
         WedgedDiscardFailed,
+        #[snafu(display("an injected import persistence failure was expected"))]
+        ExpectedPersistenceFailure,
+        #[snafu(display("create audit failure did not roll back expiry and replacement"))]
+        CreateRollbackChanged,
+        #[snafu(display("commit audit failure did not roll back every business mutation"))]
+        CommitRollbackChanged,
+        #[snafu(display("a rejected-audit failure changed its external classification"))]
+        RejectedAuditClassificationChanged,
+        #[snafu(display("revision CAS failure did not roll back all import tables"))]
+        CasRollbackChanged,
+        #[snafu(display("invalid staged payload classification or read-only behavior changed"))]
+        InvalidCommitClassificationChanged,
+        #[snafu(display("terminal candidate or payload deletion count changed"))]
+        TerminalDeleteCountChanged,
+        #[snafu(display("a nonexpired candidate read obtained or waited for the write lock"))]
+        NonexpiredReadTookWriteLock,
+        #[snafu(display("the expired candidate race was not observed deterministically"))]
+        ExpiredRaceWasNotObserved,
+        #[snafu(display("expired lazy cleanup deleted a racing replacement"))]
+        ExpiredRaceDeletedReplacement,
     }
 }

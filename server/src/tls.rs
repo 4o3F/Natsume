@@ -220,7 +220,7 @@ pub(crate) mod tests {
     use zeroize::Zeroize;
 
     use crate::{
-        application::enrollment::encode_standard_base64,
+        application::device::enrollment::encode_standard_base64,
         config::{ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME},
         http,
     };

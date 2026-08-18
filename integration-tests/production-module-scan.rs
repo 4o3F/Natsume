@@ -1,5 +1,5 @@
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     io::{self, Write as _},
     path::{Path, PathBuf},
@@ -46,6 +46,55 @@ struct PublicVisibilityAllowance {
 // Deliberately empty: any future exception must name its file, item kind, and
 // item in this reviewed list rather than weakening the rule for a whole tree.
 const PUBLIC_VISIBILITY_ALLOWLIST: &[PublicVisibilityAllowance] = &[];
+
+const DB_DIRECT_TABLE_CANARY: &str = "use crate::db::schema::{commands, devices};
+fn direct_tables() { let _commands = commands::table; let _devices = devices::table; }
+";
+const DB_ALIAS_TABLE_CANARY: &str =
+    "use crate::db::schema::{commands as queued, devices as owners};
+fn aliased_mutations() {
+    diesel::update(queued::table);
+    diesel::delete(owners::table);
+}
+";
+const DB_SQL_JOIN_CANARY: &str = "fn sql_join() {
+    diesel::sql_query(\"SELECT * FROM commands c JOIN devices d ON d.device_pk = c.device_pk\");
+}
+";
+const DB_CFG_TEST_CANARY: &str = "use crate::db::schema::{commands, devices};
+#[cfg(test)] fn test_only(connection: &mut Connection) {
+    diesel::update(commands::table);
+    diesel::delete(devices::table);
+    connection.transaction(|_| Ok(()));
+}
+";
+const DB_READ_MODEL_WRITE_CANARY: &str = "fn query() {
+    diesel::sql_query(\"UPDATE commands SET state = 'created'\");
+}
+";
+const DB_TRANSACTION_CANARY: &str =
+    "fn owns_transaction(connection: &mut Connection) { connection.transaction(|_| Ok(())); }";
+
+#[derive(Clone, Copy)]
+struct DatabaseBoundaryAllowance {
+    file: &'static str,
+    function: &'static str,
+    rule: ViolationRule,
+    tables: &'static [&'static str],
+}
+
+// The transition is complete; this constant is asserted empty and transition exceptions are not
+// permitted.
+const DATABASE_BOUNDARY_ALLOWLIST: &[DatabaseBoundaryAllowance] = &[];
+
+// Multi-table reads are permitted only in modules explicitly reviewed as query/read-model
+// adapters. The classifier is module-path based; it never grants function-level exceptions.
+const READ_MODEL_MODULE_ALLOWLIST: &[&str] = &[
+    "server/src/db/device/query.rs",
+    "server/src/db/device/enrollment/query.rs",
+    "server/src/db/import/query.rs",
+    "server/src/db/operator/query.rs",
+];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TriBool {
@@ -192,6 +241,7 @@ impl<'a> Scanner<'a> {
                 file: self.file.clone(),
                 line,
                 symbol,
+                tables: Vec::new(),
                 rule: ViolationRule::ForbiddenProductionSymbol,
             });
         }
@@ -227,16 +277,20 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ViolationRule {
     ForbiddenProductionSymbol,
     BarePublicVisibility,
+    MultipleDatabaseTables,
+    ReadModelWrite,
+    TransactionOpening,
 }
 
 struct Violation {
     file: String,
     line: usize,
     symbol: String,
+    tables: Vec<String>,
     rule: ViolationRule,
 }
 
@@ -249,6 +303,28 @@ impl Violation {
             ),
             ViolationRule::BarePublicVisibility => format!(
                 "{}:{}: forbidden bare pub visibility on {}",
+                self.file, self.line, self.symbol
+            ),
+            ViolationRule::MultipleDatabaseTables => format!(
+                "{}:{}: db function {} references multiple tables: {}",
+                self.file,
+                self.line,
+                self.symbol,
+                self.tables.join(", ")
+            ),
+            ViolationRule::ReadModelWrite => format!(
+                "{}:{}: read-model function {} contains a database write{}",
+                self.file,
+                self.line,
+                self.symbol,
+                if self.tables.is_empty() {
+                    String::new()
+                } else {
+                    format!(" involving: {}", self.tables.join(", "))
+                }
+            ),
+            ViolationRule::TransactionOpening => format!(
+                "{}:{}: db function {} opens a transaction outside db.rs infrastructure",
                 self.file, self.line, self.symbol
             ),
         }
@@ -358,6 +434,7 @@ fn scan_public_visibility_items(
                     file: file.to_owned(),
                     line,
                     symbol: format!("macro {name}"),
+                    tables: Vec::new(),
                     rule: ViolationRule::BarePublicVisibility,
                 });
             }
@@ -374,9 +451,482 @@ fn scan_public_visibility_items(
             file: file.to_owned(),
             line,
             symbol: format!("{item_kind} {item_name}"),
+            tables: Vec::new(),
             rule: ViolationRule::BarePublicVisibility,
         });
     }
+}
+
+fn schema_table_names(root: &Path) -> Result<HashSet<String>, ScanError> {
+    let relative = PathBuf::from("server/src/db/schema.rs");
+    let source =
+        fs::read_to_string(root.join(&relative)).map_err(|source| ScanError::ReadSource {
+            path: relative.clone(),
+            source,
+        })?;
+    let syntax = syn::parse_file(&source).map_err(|source| ScanError::ParseSource {
+        path: relative,
+        source,
+    })?;
+    let tables = syntax
+        .items
+        .into_iter()
+        .filter_map(|item| {
+            let Item::Macro(item) = item else {
+                return None;
+            };
+            if item
+                .mac
+                .path
+                .segments
+                .last()
+                .is_none_or(|segment| segment.ident != "table")
+            {
+                return None;
+            }
+            item.mac.tokens.into_iter().find_map(|token| match token {
+                TokenTree::Ident(identifier) => Some(identifier.to_string()),
+                TokenTree::Group(_) | TokenTree::Literal(_) | TokenTree::Punct(_) => None,
+            })
+        })
+        .collect::<HashSet<_>>();
+    if tables.is_empty() {
+        return Err(ScanError::RuleSourcesMissing);
+    }
+    Ok(tables)
+}
+
+fn schema_aliases(syntax: &syn::File, schema_tables: &HashSet<String>) -> HashMap<String, String> {
+    let mut aliases = HashMap::new();
+    for item in &syntax.items {
+        let Item::Use(item_use) = item else {
+            continue;
+        };
+        if disabled_in_production(&item_use.attrs) {
+            continue;
+        }
+        collect_schema_aliases(&item_use.tree, &mut Vec::new(), schema_tables, &mut aliases);
+    }
+    aliases
+}
+
+fn collect_schema_aliases(
+    tree: &UseTree,
+    prefix: &mut Vec<String>,
+    schema_tables: &HashSet<String>,
+    aliases: &mut HashMap<String, String>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            prefix.push(path.ident.to_string());
+            collect_schema_aliases(&path.tree, prefix, schema_tables, aliases);
+            prefix.pop();
+        }
+        UseTree::Name(name) => {
+            let original = name.ident.to_string();
+            prefix.push(original.clone());
+            record_schema_alias(prefix, &original, schema_tables, aliases);
+            prefix.pop();
+        }
+        UseTree::Rename(rename) => {
+            prefix.push(rename.ident.to_string());
+            record_schema_alias(prefix, &rename.rename.to_string(), schema_tables, aliases);
+            prefix.pop();
+        }
+        UseTree::Glob(_) => {
+            if prefix.last().is_some_and(|segment| segment == "schema") {
+                for table in schema_tables {
+                    aliases.insert(table.clone(), table.clone());
+                }
+            }
+        }
+        UseTree::Group(group) => {
+            for child in &group.items {
+                collect_schema_aliases(child, prefix, schema_tables, aliases);
+            }
+        }
+    }
+}
+
+fn record_schema_alias(
+    path: &[String],
+    local_name: &str,
+    schema_tables: &HashSet<String>,
+    aliases: &mut HashMap<String, String>,
+) {
+    let Some(schema_index) = path.iter().position(|segment| segment == "schema") else {
+        return;
+    };
+    let Some(table) = path.get(schema_index.saturating_add(1)) else {
+        return;
+    };
+    if schema_tables.contains(table) {
+        aliases.insert(local_name.to_owned(), table.clone());
+    }
+}
+
+struct DatabaseFunctionScanner<'a> {
+    aliases: &'a HashMap<String, String>,
+    schema_tables: &'a HashSet<String>,
+    tables: BTreeSet<String>,
+    first_write_line: Option<usize>,
+    first_transaction_line: Option<usize>,
+}
+
+impl<'a> DatabaseFunctionScanner<'a> {
+    fn new(aliases: &'a HashMap<String, String>, schema_tables: &'a HashSet<String>) -> Self {
+        Self {
+            aliases,
+            schema_tables,
+            tables: BTreeSet::new(),
+            first_write_line: None,
+            first_transaction_line: None,
+        }
+    }
+
+    fn record_path(&mut self, path: &syn::Path) {
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        if let Some(first) = segments.first()
+            && let Some(table) = self.aliases.get(first)
+        {
+            self.tables.insert(table.clone());
+        }
+        if let Some(schema_index) = segments.iter().position(|segment| segment == "schema")
+            && let Some(table) = segments.get(schema_index.saturating_add(1))
+            && self.schema_tables.contains(table)
+        {
+            self.tables.insert(table.clone());
+        }
+        let Some(last) = segments.last() else {
+            return;
+        };
+        if matches!(
+            last.as_str(),
+            "delete" | "insert_into" | "replace_into" | "update"
+        ) {
+            let LineColumn { line, .. } = path.span().start();
+            self.first_write_line.get_or_insert(line);
+        }
+    }
+
+    fn record_sql(&mut self, literal: &LitStr) {
+        let words = sql_words(&literal.value());
+        let LineColumn { line, .. } = literal.span().start();
+        for (index, word) in words.iter().enumerate() {
+            let table_start = match word.as_str() {
+                "from" | "join" | "update" => Some(index.saturating_add(1)),
+                "into"
+                    if index > 0 && matches!(words[index - 1].as_str(), "insert" | "replace") =>
+                {
+                    Some(index.saturating_add(1))
+                }
+                _ => None,
+            };
+            if let Some(table_start) = table_start
+                && let Some(table) = sql_table_after(&words, table_start, self.schema_tables)
+            {
+                self.tables.insert(table);
+            }
+            if matches!(
+                word.as_str(),
+                "alter" | "create" | "drop" | "insert" | "replace" | "update"
+            ) || (word == "delete"
+                && words
+                    .get(index.saturating_add(1))
+                    .is_some_and(|v| v == "from"))
+            {
+                self.first_write_line.get_or_insert(line);
+            }
+            if matches!(word.as_str(), "begin" | "savepoint") {
+                self.first_transaction_line.get_or_insert(line);
+            }
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for DatabaseFunctionScanner<'_> {
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        self.record_path(path);
+        visit::visit_path(self, path);
+    }
+
+    fn visit_lit_str(&mut self, literal: &'ast LitStr) {
+        self.record_sql(literal);
+    }
+
+    fn visit_expr_method_call(&mut self, expression: &'ast syn::ExprMethodCall) {
+        if matches!(
+            expression.method.to_string().as_str(),
+            "exclusive_transaction" | "immediate_transaction" | "transaction"
+        ) {
+            let LineColumn { line, .. } = expression.method.span().start();
+            self.first_transaction_line.get_or_insert(line);
+        }
+        visit::visit_expr_method_call(self, expression);
+    }
+
+    // A nested item is its own function boundary and must never inherit the outer function's
+    // table set. The item walker scans it separately.
+    fn visit_item_fn(&mut self, _function: &'ast syn::ItemFn) {}
+}
+
+fn sql_words(sql: &str) -> Vec<String> {
+    sql.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .filter(|word| !word.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect()
+}
+
+fn sql_table_after(
+    words: &[String],
+    start: usize,
+    schema_tables: &HashSet<String>,
+) -> Option<String> {
+    words
+        .iter()
+        .skip(start)
+        .take(3)
+        .find(|candidate| schema_tables.contains(candidate.as_str()))
+        .cloned()
+}
+
+fn is_read_model_module(file: &str, allowlist: &[&str]) -> bool {
+    allowlist.contains(&file)
+}
+
+struct DatabaseScanContext<'a> {
+    file: &'a str,
+    aliases: &'a HashMap<String, String>,
+    schema_tables: &'a HashSet<String>,
+    read_model: bool,
+}
+
+fn scan_database_function(
+    context: &DatabaseScanContext<'_>,
+    function_name: &str,
+    function_line: usize,
+    block: &syn::Block,
+    violations: &mut Vec<Violation>,
+) {
+    let mut scanner = DatabaseFunctionScanner::new(context.aliases, context.schema_tables);
+    scanner.visit_block(block);
+    let tables = scanner.tables.into_iter().collect::<Vec<_>>();
+    if context.read_model {
+        if let Some(line) = scanner.first_write_line {
+            violations.push(Violation {
+                file: context.file.to_owned(),
+                line,
+                symbol: function_name.to_owned(),
+                tables: tables.clone(),
+                rule: ViolationRule::ReadModelWrite,
+            });
+        }
+    } else if tables.len() > 1 {
+        violations.push(Violation {
+            file: context.file.to_owned(),
+            line: function_line,
+            symbol: function_name.to_owned(),
+            tables: tables.clone(),
+            rule: ViolationRule::MultipleDatabaseTables,
+        });
+    }
+    if context.file != "server/src/db.rs"
+        && let Some(line) = scanner.first_transaction_line
+    {
+        violations.push(Violation {
+            file: context.file.to_owned(),
+            line,
+            symbol: function_name.to_owned(),
+            tables: Vec::new(),
+            rule: ViolationRule::TransactionOpening,
+        });
+    }
+}
+
+fn scan_database_items(
+    context: &DatabaseScanContext<'_>,
+    items: &[Item],
+    violations: &mut Vec<Violation>,
+) {
+    for item in items {
+        if disabled_in_production(item_attributes(item)) {
+            continue;
+        }
+        match item {
+            Item::Fn(function) => {
+                let LineColumn { line, .. } = function.sig.ident.span().start();
+                scan_database_function(
+                    context,
+                    &function.sig.ident.to_string(),
+                    line,
+                    &function.block,
+                    violations,
+                );
+            }
+            Item::Impl(item_impl) => {
+                for implementation_item in &item_impl.items {
+                    let syn::ImplItem::Fn(function) = implementation_item else {
+                        continue;
+                    };
+                    if disabled_in_production(&function.attrs) {
+                        continue;
+                    }
+                    let LineColumn { line, .. } = function.sig.ident.span().start();
+                    scan_database_function(
+                        context,
+                        &function.sig.ident.to_string(),
+                        line,
+                        &function.block,
+                        violations,
+                    );
+                }
+            }
+            Item::Mod(module) => {
+                if let Some((_, nested)) = &module.content {
+                    scan_database_items(context, nested, violations);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn scan_database_boundary_source(
+    file: &str,
+    source: &str,
+    schema_tables: &HashSet<String>,
+    read_model_modules: &[&str],
+) -> Result<Vec<Violation>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let aliases = schema_aliases(&syntax, schema_tables);
+    let mut violations = Vec::new();
+    let context = DatabaseScanContext {
+        file,
+        aliases: &aliases,
+        schema_tables,
+        read_model: is_read_model_module(file, read_model_modules),
+    };
+    scan_database_items(&context, &syntax.items, &mut violations);
+    Ok(violations)
+}
+
+fn database_boundary_violation_is_allowed(
+    violation: &Violation,
+    allowlist: &[DatabaseBoundaryAllowance],
+) -> bool {
+    allowlist.iter().any(|allowance| {
+        allowance.file == violation.file
+            && allowance.function == violation.symbol
+            && allowance.rule == violation.rule
+            && allowance
+                .tables
+                .iter()
+                .copied()
+                .eq(violation.tables.iter().map(String::as_str))
+    })
+}
+
+fn module_directory(path: &Path) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new(""));
+    if path.file_stem().is_some_and(|stem| stem == "mod") {
+        parent.to_path_buf()
+    } else {
+        path.file_stem()
+            .map_or_else(|| parent.to_path_buf(), |stem| parent.join(stem))
+    }
+}
+
+fn collect_test_only_module_paths(
+    root: &Path,
+    files: &[PathBuf],
+) -> Result<HashSet<PathBuf>, ScanError> {
+    let mut test_only = HashSet::new();
+    for relative in files {
+        let source =
+            fs::read_to_string(root.join(relative)).map_err(|source| ScanError::ReadSource {
+                path: relative.clone(),
+                source,
+            })?;
+        let syntax = syn::parse_file(&source).map_err(|source| ScanError::ParseSource {
+            path: relative.clone(),
+            source,
+        })?;
+        collect_test_only_modules(
+            root,
+            &syntax.items,
+            &module_directory(relative),
+            &mut test_only,
+        );
+    }
+    Ok(test_only)
+}
+
+fn collect_test_only_modules(
+    root: &Path,
+    items: &[Item],
+    module_directory: &Path,
+    test_only: &mut HashSet<PathBuf>,
+) {
+    for item in items {
+        let Item::Mod(module) = item else {
+            continue;
+        };
+        let child_directory = module_directory.join(module.ident.to_string());
+        if let Some((_, nested)) = &module.content {
+            if !disabled_in_production(&module.attrs) {
+                collect_test_only_modules(root, nested, &child_directory, test_only);
+            }
+            continue;
+        }
+        if !disabled_in_production(&module.attrs) {
+            continue;
+        }
+        let flat = module_directory.join(format!("{}.rs", module.ident));
+        let nested = child_directory.join("mod.rs");
+        if root.join(&flat).is_file() {
+            test_only.insert(flat);
+        } else if root.join(&nested).is_file() {
+            test_only.insert(nested);
+        }
+    }
+}
+
+fn scan_database_boundary_rule(
+    root: &Path,
+    files: &[PathBuf],
+    schema_tables: &HashSet<String>,
+) -> Result<Vec<Violation>, ScanError> {
+    let mut violations = Vec::new();
+    let test_only_modules = collect_test_only_module_paths(root, files)?;
+    for relative in files {
+        if test_only_modules.contains(relative) {
+            continue;
+        }
+        let source =
+            fs::read_to_string(root.join(relative)).map_err(|source| ScanError::ReadSource {
+                path: relative.clone(),
+                source,
+            })?;
+        let file = relative.display().to_string();
+        let scanned = scan_database_boundary_source(
+            &file,
+            &source,
+            schema_tables,
+            READ_MODEL_MODULE_ALLOWLIST,
+        )
+        .map_err(|source| ScanError::ParseSource {
+            path: relative.clone(),
+            source,
+        })?;
+        violations.extend(scanned.into_iter().filter(|violation| {
+            !database_boundary_violation_is_allowed(violation, DATABASE_BOUNDARY_ALLOWLIST)
+        }));
+    }
+    Ok(violations)
 }
 
 fn rust_files(root: &Path, relative: &Path) -> Result<Vec<PathBuf>, ScanError> {
@@ -473,6 +1023,10 @@ fn forbidden(symbols: &'static [&'static str]) -> HashSet<&'static str> {
 }
 
 fn run_canaries() -> Result<(), ScanError> {
+    if !DATABASE_BOUNDARY_ALLOWLIST.is_empty() {
+        return Err(ScanError::CanaryFailed);
+    }
+
     let test_symbols = forbidden(&["axum", "diesel", "pool", "r2d2", "sqlx"]);
     let test_violations = scan_source("<test-canary>", TEST_ONLY_CANARY, &test_symbols)
         .map_err(|_| ScanError::CanaryFailed)?;
@@ -509,6 +1063,69 @@ fn run_canaries() -> Result<(), ScanError> {
     {
         return Err(ScanError::CanaryFailed);
     }
+
+    let schema_tables = ["audit_events", "commands", "devices"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<HashSet<_>>();
+    for source in [
+        DB_DIRECT_TABLE_CANARY,
+        DB_ALIAS_TABLE_CANARY,
+        DB_SQL_JOIN_CANARY,
+    ] {
+        let violations =
+            scan_database_boundary_source("server/src/db/canary.rs", source, &schema_tables, &[])
+                .map_err(|_| ScanError::CanaryFailed)?;
+        if violations.len() != 1
+            || violations[0].rule != ViolationRule::MultipleDatabaseTables
+            || violations[0].tables != ["commands", "devices"]
+        {
+            return Err(ScanError::CanaryFailed);
+        }
+    }
+    if !scan_database_boundary_source(
+        "server/src/db/canary.rs",
+        DB_CFG_TEST_CANARY,
+        &schema_tables,
+        &[],
+    )
+    .map_err(|_| ScanError::CanaryFailed)?
+    .is_empty()
+    {
+        return Err(ScanError::CanaryFailed);
+    }
+    let read_model_file = "server/src/db/query.rs";
+    if !scan_database_boundary_source(
+        read_model_file,
+        DB_SQL_JOIN_CANARY,
+        &schema_tables,
+        &[read_model_file],
+    )
+    .map_err(|_| ScanError::CanaryFailed)?
+    .is_empty()
+    {
+        return Err(ScanError::CanaryFailed);
+    }
+    let read_model_write = scan_database_boundary_source(
+        read_model_file,
+        DB_READ_MODEL_WRITE_CANARY,
+        &schema_tables,
+        &[read_model_file],
+    )
+    .map_err(|_| ScanError::CanaryFailed)?;
+    if read_model_write.len() != 1 || read_model_write[0].rule != ViolationRule::ReadModelWrite {
+        return Err(ScanError::CanaryFailed);
+    }
+    let transaction = scan_database_boundary_source(
+        "server/src/db/canary.rs",
+        DB_TRANSACTION_CANARY,
+        &schema_tables,
+        &[],
+    )
+    .map_err(|_| ScanError::CanaryFailed)?;
+    if transaction.len() != 1 || transaction[0].rule != ViolationRule::TransactionOpening {
+        return Err(ScanError::CanaryFailed);
+    }
     Ok(())
 }
 
@@ -520,8 +1137,9 @@ fn run() -> Result<Vec<Violation>, ScanError> {
     http_files.extend(rust_files(&root, Path::new("server/src/http"))?);
     http_files.retain(|file| file.file_name().is_none_or(|name| name != "tests.rs"));
 
-    let mut audit_vault_files = rust_files(&root, Path::new("server/src/audit.rs"))?;
-    audit_vault_files.extend(rust_files(&root, Path::new("server/src/audit"))?);
+    let mut audit_files = rust_files(&root, Path::new("server/src/audit.rs"))?;
+    audit_files.extend(rust_files(&root, Path::new("server/src/audit"))?);
+    let mut audit_vault_files = audit_files.clone();
     audit_vault_files.extend(rust_files(&root, Path::new("server/src/vault.rs"))?);
     audit_vault_files.extend(rust_files(&root, Path::new("server/src/vault"))?);
 
@@ -529,19 +1147,16 @@ fn run() -> Result<Vec<Violation>, ScanError> {
     application_files.extend(rust_files(&root, Path::new("server/src/application"))?);
     let mut db_files = rust_files(&root, Path::new("server/src/db.rs"))?;
     db_files.extend(rust_files(&root, Path::new("server/src/db"))?);
+    let schema_tables = schema_table_names(&root)?;
     let mut visibility_files = application_files.clone();
     visibility_files.extend(db_files.iter().cloned());
-    let schema_application_file = Path::new("server/src/application/contest.rs");
-    let (schema_application_files, application_files): (Vec<PathBuf>, Vec<PathBuf>) =
-        application_files
-            .into_iter()
-            .partition(|file| file == schema_application_file);
+    visibility_files.extend(http_files.iter().cloned());
+    visibility_files.extend(audit_files);
 
     if http_files.is_empty()
         || audit_vault_files.is_empty()
         || application_files.is_empty()
         || db_files.is_empty()
-        || schema_application_files.is_empty()
     {
         return Err(ScanError::RuleSourcesMissing);
     }
@@ -566,31 +1181,15 @@ fn run() -> Result<Vec<Violation>, ScanError> {
             "utoipa",
         ]),
     )?);
-    // `utoipa` is absent from this one file's set on purpose. The sub-point under
-    // rule 2 of `docs/architecture.md` section 6 lets an application read-only
-    // value object carry schema-descriptive derives, which describe shape rather
-    // than depend on a framework or a persistence adapter. The relaxation is
-    // scoped to the only file that needs it because the sibling files hold
-    // secret-bearing types, which must never gain a published schema. `axum`
-    // stays forbidden everywhere, so the transport framework itself still cannot
-    // reach application code.
-    violations.extend(scan_rule(
-        &root,
-        &schema_application_files,
-        &forbidden(&[
-            "axum",
-            "diesel",
-            "natsume_error_code",
-            "pool",
-            "prost",
-            "r2d2",
-            "sqlx",
-        ]),
-    )?);
     violations.extend(scan_public_visibility_rule(
         &root,
         &visibility_files,
         PUBLIC_VISIBILITY_ALLOWLIST,
+    )?);
+    violations.extend(scan_database_boundary_rule(
+        &root,
+        &db_files,
+        &schema_tables,
     )?);
     Ok(violations)
 }

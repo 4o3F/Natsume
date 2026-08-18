@@ -1,4 +1,98 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
+
+use crate::application::device::DeviceId;
+
+use super::{CandidateRowFacts, ImportError};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentSeatProjection {
+    seat_id: String,
+    seat_code: String,
+    current_domjudge_username: Option<String>,
+    device_id: Option<DeviceId>,
+}
+
+impl CurrentSeatProjection {
+    pub(crate) fn new(
+        seat_id: String,
+        seat_code: String,
+        current_domjudge_username: Option<String>,
+        device_id: Option<DeviceId>,
+    ) -> Self {
+        Self {
+            seat_id,
+            seat_code,
+            current_domjudge_username,
+            device_id,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn seat_id(&self) -> &str {
+        &self.seat_id
+    }
+
+    #[must_use]
+    pub(crate) fn seat_code(&self) -> &str {
+        &self.seat_code
+    }
+
+    #[must_use]
+    pub(crate) fn current_domjudge_username(&self) -> Option<&str> {
+        self.current_domjudge_username.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) const fn device_id(&self) -> Option<&DeviceId> {
+        self.device_id.as_ref()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentAccountProjection {
+    account_id: String,
+    domjudge_username: String,
+    credential_vault_record_id: String,
+    credential_revision: i64,
+}
+
+impl CurrentAccountProjection {
+    pub(crate) fn new(
+        account_id: String,
+        domjudge_username: String,
+        credential_vault_record_id: String,
+        credential_revision: i64,
+    ) -> Self {
+        Self {
+            account_id,
+            domjudge_username,
+            credential_vault_record_id,
+            credential_revision,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn account_id(&self) -> &str {
+        &self.account_id
+    }
+
+    #[must_use]
+    pub(crate) fn domjudge_username(&self) -> &str {
+        &self.domjudge_username
+    }
+
+    #[must_use]
+    pub(crate) fn credential_vault_record_id(&self) -> &str {
+        &self.credential_vault_record_id
+    }
+
+    #[must_use]
+    pub(crate) const fn credential_revision(&self) -> i64 {
+        self.credential_revision
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ImportMappingChange {
@@ -119,4 +213,72 @@ impl RedactedImportPreview {
     pub(crate) fn binding_impacts(&self) -> &[ImportBindingImpact] {
         &self.binding_impacts
     }
+}
+
+pub(super) fn compute_diff(
+    current_rows: &[CurrentSeatProjection],
+    candidate_rows: &[CandidateRowFacts],
+) -> Result<RedactedImportPreview, ImportError> {
+    let mut current = BTreeMap::new();
+    for row in current_rows {
+        if current.insert(row.seat_code(), row).is_some() {
+            return Err(ImportError::PersistenceFailure);
+        }
+    }
+
+    let mut candidate = BTreeMap::new();
+    let mut candidate_accounts = BTreeSet::new();
+    for row in candidate_rows {
+        if candidate
+            .insert(row.seat_code(), row.domjudge_username())
+            .is_some()
+            || !candidate_accounts.insert(row.domjudge_username())
+        {
+            return Err(ImportError::CandidateInvalid);
+        }
+    }
+    if candidate.is_empty() {
+        return Err(ImportError::CandidateInvalid);
+    }
+
+    let seats_added = candidate
+        .keys()
+        .filter(|seat_code| !current.contains_key(**seat_code))
+        .map(|seat_code| (*seat_code).to_owned())
+        .collect();
+    let mut seats_removed = Vec::new();
+    let mut mappings_changed = Vec::new();
+    let mut unchanged_count = 0;
+    let mut binding_impacts = Vec::new();
+
+    for (seat_code, facts) in current {
+        let Some(candidate_username) = candidate.get(seat_code) else {
+            seats_removed.push(seat_code.to_owned());
+            if let Some(device_id) = facts.device_id() {
+                binding_impacts.push(ImportBindingImpact::new(
+                    seat_code.to_owned(),
+                    device_id.as_text(),
+                ));
+            }
+            continue;
+        };
+        if facts.current_domjudge_username() == Some(*candidate_username) {
+            unchanged_count += 1;
+        } else {
+            mappings_changed.push(ImportMappingChange::new(
+                seat_code.to_owned(),
+                facts.current_domjudge_username().map(str::to_owned),
+                (*candidate_username).to_owned(),
+            ));
+        }
+    }
+
+    Ok(RedactedImportPreview::new(
+        seats_added,
+        seats_removed,
+        mappings_changed,
+        unchanged_count,
+        candidate_accounts.len(),
+        binding_impacts,
+    ))
 }

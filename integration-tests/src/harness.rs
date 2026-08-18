@@ -3,6 +3,15 @@ use std::{ffi::OsStr, io::ErrorKind, path::Path, process::Stdio};
 use tokio::{io::AsyncWriteExt as _, process::Command};
 use zeroize::{Zeroize as _, Zeroizing};
 
+mod client;
+mod pki;
+mod server;
+
+pub use self::{
+    client::ClientFixture,
+    server::{OperatorSession, TestServer},
+};
+
 const BOOTSTRAP_CONFIG_ENVIRONMENT: &str = "NATSUME_TEST_SERVER_CONFIG";
 
 /// Drives the PTY bootstrap composition once.
@@ -59,7 +68,12 @@ fn shell_quote(value: &OsStr) -> String {
     format!("'{}'", value.to_string_lossy().replace('\'', "'\"'\"'"))
 }
 
-fn require_ok<T, E>(result: Result<T, E>, message: &str) -> T {
+/// Unwraps a fixture result without allowing its possibly secret-bearing error into panic output.
+///
+/// # Panics
+///
+/// Panics with `message` when `result` is an error.
+pub fn require_ok<T, E>(result: Result<T, E>, message: &str) -> T {
     match result {
         Ok(value) => value,
         Err(error) => {

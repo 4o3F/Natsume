@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     application::{
-        enrollment::EnrollmentError,
+        device::{DeviceError, enrollment::EnrollmentError},
         import::{ImportError, parse_csv},
         provisioning::ProvisioningError,
     },
@@ -61,6 +61,11 @@ async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result
         }
         for (error, cause, status) in contest_causes() {
             let rendered = ApiError::from_contest(error, correlation_id);
+            assert_cause_stays_internal(rendered, cause, status).await?;
+            causes.push(cause);
+        }
+        for (error, cause, status) in device_causes() {
+            let rendered = ApiError::from_device(error, correlation_id);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
@@ -350,25 +355,33 @@ fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 19] {
     ]
 }
 
-fn contest_causes() -> [(ContestError, &'static str, StatusCode); 4] {
+fn contest_causes() -> [(ContestError, &'static str, StatusCode); 1] {
+    [(
+        ContestError::PersistenceFailed,
+        "contest_persistence_failed",
+        StatusCode::INTERNAL_SERVER_ERROR,
+    )]
+}
+
+fn device_causes() -> [(DeviceError, &'static str, StatusCode); 4] {
     [
         (
-            ContestError::InvalidDeviceId,
+            DeviceError::InvalidDeviceId,
             "contest_invalid_device_id",
             StatusCode::BAD_REQUEST,
         ),
         (
-            ContestError::DeviceNotFound,
+            DeviceError::DeviceNotFound,
             "contest_device_not_found",
             StatusCode::NOT_FOUND,
         ),
         (
-            ContestError::InvalidPersistedFacts,
+            DeviceError::InvalidPersistedFacts,
             "contest_invalid_persisted_facts",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            ContestError::PersistenceFailed,
+            DeviceError::PersistenceFailed,
             "contest_persistence_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),

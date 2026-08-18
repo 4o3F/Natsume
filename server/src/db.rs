@@ -32,10 +32,10 @@ const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'@')
     .remove(b'/');
 
+pub(crate) mod audit;
 pub(crate) mod command;
 pub(crate) mod contest;
-pub(crate) mod enrollment;
-#[allow(dead_code)]
+pub(crate) mod device;
 pub(crate) mod import;
 pub(crate) mod operator;
 pub(crate) mod provisioning;
@@ -63,6 +63,28 @@ impl DatabaseConfig {
 #[derive(Clone)]
 pub(crate) struct Database {
     pool: Pool<ConnectionManager<SqliteConnection>>,
+}
+
+/// An application-owned transaction boundary with the Diesel connection kept opaque.
+pub(crate) struct Transaction<'a> {
+    connection: &'a mut SqliteConnection,
+}
+
+impl Transaction<'_> {
+    fn connection(&mut self) -> &mut SqliteConnection {
+        self.connection
+    }
+}
+
+enum TransactionFailure<E> {
+    Operation(E),
+    Diesel,
+}
+
+impl<E> From<diesel::result::Error> for TransactionFailure<E> {
+    fn from(_source: diesel::result::Error) -> Self {
+        Self::Diesel
+    }
 }
 
 impl Database {
@@ -95,10 +117,11 @@ impl Database {
         Ok(Self { pool })
     }
 
-    pub(crate) async fn interact<T, F>(&self, operation: F) -> Result<T, DatabaseError>
+    pub(crate) async fn read<T, E, F>(&self, operation: F) -> Result<T, E>
     where
         T: Send + 'static,
-        F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
+        E: From<DatabaseError> + Send + 'static,
+        F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
         let pool = self.pool.clone();
         // A blocking thread does not inherit a scoped dispatcher, so without
@@ -107,12 +130,78 @@ impl Database {
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
-                let mut connection = pool.get().map_err(|_| DatabaseError::ConnectionFailed)?;
-                Ok(operation(&mut connection))
+                let mut connection = pool
+                    .get()
+                    .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
+                let outcome = connection.transaction::<T, TransactionFailure<E>, _>(|connection| {
+                    let mut transaction = Transaction { connection };
+                    operation(&mut transaction).map_err(TransactionFailure::Operation)
+                });
+                match outcome {
+                    Ok(value) => Ok(value),
+                    Err(TransactionFailure::Operation(error)) => Err(error),
+                    Err(TransactionFailure::Diesel) => {
+                        Err(E::from(DatabaseError::TransactionFailed))
+                    }
+                }
             })
         })
         .await
-        .map_err(|_| DatabaseError::ConnectionFailed)?
+        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?
+    }
+
+    pub(crate) async fn write<T, E, F>(&self, operation: F) -> Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<DatabaseError> + Send + 'static,
+        F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
+    {
+        let pool = self.pool.clone();
+        // A blocking thread does not inherit a scoped dispatcher, so without
+        // this every event emitted inside `operation` would be dropped. In
+        // production the captured dispatcher is the installed global one.
+        let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+        tokio::task::spawn_blocking(move || {
+            tracing::dispatcher::with_default(&dispatcher, || {
+                let mut connection = pool
+                    .get()
+                    .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
+                let outcome =
+                    connection.immediate_transaction::<T, TransactionFailure<E>, _>(|connection| {
+                        let mut transaction = Transaction { connection };
+                        operation(&mut transaction).map_err(TransactionFailure::Operation)
+                    });
+                match outcome {
+                    Ok(value) => Ok(value),
+                    Err(TransactionFailure::Operation(error)) => Err(error),
+                    Err(TransactionFailure::Diesel) => {
+                        Err(E::from(DatabaseError::TransactionFailed))
+                    }
+                }
+            })
+        })
+        .await
+        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_read<T, F>(&self, operation: F) -> Result<T, DatabaseError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
+    {
+        self.read(move |transaction| Ok(operation(transaction.connection())))
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_write<T, F>(&self, operation: F) -> Result<T, DatabaseError>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
+    {
+        self.write(move |transaction| Ok(operation(transaction.connection())))
+            .await
     }
 }
 
@@ -189,6 +278,8 @@ pub(crate) enum DatabaseError {
     ConnectionFailed,
     #[snafu(display("the database migration failed"))]
     MigrationFailed,
+    #[snafu(display("the database transaction failed"))]
+    TransactionFailed,
 }
 
 #[cfg(test)]
@@ -269,7 +360,7 @@ pub(crate) mod tests {
             .await
             .map_err(|_| TestFailure::DatabaseCreationFailed)?;
         let pragmas = database
-            .interact(sqlite_pragma_values)
+            .test_read(sqlite_pragma_values)
             .await
             .map_err(|_| TestFailure::DieselInteractionFailed)?
             .map_err(|_| TestFailure::PragmasWereNotReadable)?;

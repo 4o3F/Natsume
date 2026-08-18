@@ -912,7 +912,7 @@ fn assert_secret_absent(responses: &[&Captured], preview_token: &str) -> Result<
 
 async fn bump_configuration_revision(database: &Database) -> Result<(), TestFailure> {
     database
-        .interact(|connection| {
+        .test_write(|connection| {
             diesel::sql_query(
                 "UPDATE revision_counters SET configuration_revision = \
                  configuration_revision + 1 WHERE singleton = 1",
@@ -928,7 +928,7 @@ async fn bump_configuration_revision(database: &Database) -> Result<(), TestFail
 async fn age_pending_candidate(database: &Database, candidate_id: &str) -> Result<(), TestFailure> {
     let candidate_id = candidate_id.to_owned();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::sql_query(
                 "UPDATE pending_import_candidate \
                  SET expires_at = '2000-01-01T00:00:00.000Z' \
@@ -949,7 +949,7 @@ async fn corrupt_pending_preview(
 ) -> Result<(), TestFailure> {
     let candidate_id = candidate_id.to_owned();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::sql_query("PRAGMA ignore_check_constraints = ON").execute(connection)?;
             let update = diesel::sql_query(
                 "UPDATE pending_import_candidate \
@@ -974,7 +974,7 @@ async fn add_unknown_pending_preview_field(
 ) -> Result<(), TestFailure> {
     let candidate_id = candidate_id.to_owned();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::sql_query(
                 "UPDATE pending_import_candidate \
                  SET redacted_preview_json = json_set( \
@@ -993,7 +993,7 @@ async fn add_unknown_pending_preview_field(
 async fn assert_expiry_audit(database: &Database, candidate_id: &str) -> Result<(), TestFailure> {
     let candidate_id = candidate_id.to_owned();
     let audit = database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             diesel::sql_query(
                 "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
                  redacted_detail_json, \
@@ -1023,7 +1023,7 @@ async fn assert_expiry_audit(database: &Database, candidate_id: &str) -> Result<
 
 async fn assert_invalid_upload_audit(database: &Database) -> Result<(), TestFailure> {
     let audit = database
-        .interact(|connection| {
+        .test_read(|connection| {
             diesel::sql_query(
                 "SELECT actor, action_kind, resource_type, resource_id, result, reason_code, \
                  redacted_detail_json, \
@@ -1054,7 +1054,7 @@ async fn assert_invalid_upload_audit(database: &Database) -> Result<(), TestFail
 
 async fn import_snapshot(database: &Database) -> Result<ImportSnapshot, TestFailure> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             diesel::sql_query(
                 "SELECT \
                  (SELECT COUNT(*) FROM pending_import_candidate) AS candidates, \
@@ -1081,7 +1081,7 @@ async fn assert_zero_device_io(database: &Database) -> Result<(), TestFailure> {
 
 async fn import_audit_json(database: &Database) -> Result<String, TestFailure> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             diesel::sql_query(
                 "SELECT COALESCE(group_concat(redacted_detail_json, ''), '') AS value \
                  FROM audit_events WHERE action_kind LIKE '%import%'",

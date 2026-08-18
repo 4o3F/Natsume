@@ -1,7 +1,11 @@
 use snafu::Snafu;
+use uuid::Uuid;
 
 use crate::{
-    audit::{AuditEventId, CorrelationId},
+    audit::{
+        AuditEvent, AuditEventId, CorrelationId, EnrollmentExpiryActor,
+        ProvisioningWindowAuditResult,
+    },
     db::{self, Database},
 };
 
@@ -35,84 +39,218 @@ pub(crate) struct ProvisioningWindow {
     pub(crate) revision: i64,
 }
 
-/// The current revision cannot be incremented; overflow is the only failure
-/// the pure recovery transition can produce, and callers map it into their
-/// own error vocabulary immediately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RevisionOverflow;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProvisioningWindowDecision {
+    next: ProvisioningWindow,
+    applies: bool,
+}
+
 /// Computes the close-once recovery transition from current facts.
-///
-/// # Errors
-///
-/// Returns [`RevisionOverflow`] when the current revision cannot be
-/// incremented.
 pub(crate) fn recovered_provisioning_window(
     current: ProvisioningWindow,
 ) -> Result<Option<ProvisioningWindow>, RevisionOverflow> {
     if current.state == ProvisioningWindowState::Closed {
         return Ok(None);
     }
-
     let revision = current.revision.checked_add(1).ok_or(RevisionOverflow)?;
-
     Ok(Some(ProvisioningWindow {
         state: ProvisioningWindowState::Closed,
         revision,
     }))
 }
 
-/// Runs the idempotent startup recovery against the connected database.
-///
-/// # Errors
-///
-/// Returns [`ProvisioningError::RevisionOverflow`] when the open window's
-/// revision cannot advance, or [`ProvisioningError::PersistenceFailed`] for a
-/// persistence failure.
+fn decide_operator_window(
+    action: ProvisioningWindowAction,
+    current: ProvisioningWindow,
+) -> Result<ProvisioningWindowDecision, RevisionOverflow> {
+    let target = match action {
+        ProvisioningWindowAction::Open => ProvisioningWindowState::Open,
+        ProvisioningWindowAction::Close => ProvisioningWindowState::Closed,
+    };
+    if current.state == target {
+        return Ok(ProvisioningWindowDecision {
+            next: current,
+            applies: false,
+        });
+    }
+    let revision = current.revision.checked_add(1).ok_or(RevisionOverflow)?;
+    Ok(ProvisioningWindowDecision {
+        next: ProvisioningWindow {
+            state: target,
+            revision,
+        },
+        applies: true,
+    })
+}
+
+/// Runs startup recovery. An already-closed window completes after only a
+/// deferred read; an observed open window is re-read under the write lock.
 pub(crate) async fn recover_on_startup(
     database: &Database,
 ) -> Result<RecoveryOutcome, ProvisioningError> {
-    db::provisioning::recover_provisioning_window(database).await
+    let snapshot = read_window(database).await?;
+    let Some(_) = recovered_provisioning_window(snapshot)
+        .map_err(|RevisionOverflow| ProvisioningError::RevisionOverflow)?
+    else {
+        return Ok(RecoveryOutcome::AlreadyClosed {
+            revision: snapshot.revision,
+        });
+    };
+
+    let audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
+    database
+        .write(move |transaction| {
+            let current = db::provisioning::read_window(transaction)?;
+            let Some(next) = recovered_provisioning_window(current)
+                .map_err(|RevisionOverflow| ProvisioningError::RevisionOverflow)?
+            else {
+                return Ok(RecoveryOutcome::AlreadyClosed {
+                    revision: current.revision,
+                });
+            };
+
+            let event = AuditEvent::recovery_close(
+                audit_event_id,
+                correlation_id,
+                current.revision,
+                next.revision,
+            );
+            db::audit::insert_provisioning(transaction, &event)?;
+            let expired_count = db::device::enrollment::request::expire_live_requests(transaction)?;
+            let expiry_event = AuditEvent::enrollment_requests_expired(
+                expiry_audit_event_id,
+                correlation_id,
+                EnrollmentExpiryActor::Recovery,
+                expired_count,
+            );
+            db::audit::insert_provisioning(transaction, &expiry_event)?;
+            db::provisioning::compare_and_swap_window(transaction, current, next, audit_event_id)?;
+            Ok(RecoveryOutcome::Closed {
+                previous_revision: current.revision,
+                new_revision: next.revision,
+                audit_event_id,
+            })
+        })
+        .await
 }
 
-/// Reads the current provisioning-window fact.
-///
-/// # Errors
-///
-/// Returns [`ProvisioningError::PersistenceFailed`] when the singleton cannot
-/// be read or contains invalid facts.
 pub(crate) async fn read_window(
     database: &Database,
 ) -> Result<ProvisioningWindow, ProvisioningError> {
-    db::provisioning::read_window(database).await
+    database.read(db::provisioning::read_window).await
 }
 
-/// Applies the repeat-safe operator open action and its audit atomically.
-///
-/// # Errors
-///
-/// Returns [`ProvisioningError::RevisionOverflow`] when an effective transition
-/// cannot advance the revision, or [`ProvisioningError::PersistenceFailed`] for
-/// any persistence failure.
 pub(crate) async fn open_window(
     database: &Database,
     correlation_id: CorrelationId,
 ) -> Result<ProvisioningWindow, ProvisioningError> {
-    db::provisioning::open_window(database, correlation_id).await
+    open_window_with_ids(
+        database,
+        correlation_id,
+        AuditEventId::from_uuid(Uuid::now_v7()),
+    )
+    .await
 }
 
-/// Applies the repeat-safe operator close action and its audit atomically.
-///
-/// # Errors
-///
-/// Returns [`ProvisioningError::RevisionOverflow`] when an effective transition
-/// cannot advance the revision, or [`ProvisioningError::PersistenceFailed`] for
-/// any persistence failure.
+pub(crate) async fn open_window_with_ids(
+    database: &Database,
+    correlation_id: CorrelationId,
+    audit_event_id: AuditEventId,
+) -> Result<ProvisioningWindow, ProvisioningError> {
+    mutate_window_with_ids(
+        database,
+        ProvisioningWindowAction::Open,
+        correlation_id,
+        audit_event_id,
+        None,
+    )
+    .await
+}
+
 pub(crate) async fn close_window(
     database: &Database,
     correlation_id: CorrelationId,
 ) -> Result<ProvisioningWindow, ProvisioningError> {
-    db::provisioning::close_window(database, correlation_id).await
+    close_window_with_ids(
+        database,
+        correlation_id,
+        AuditEventId::from_uuid(Uuid::now_v7()),
+        AuditEventId::from_uuid(Uuid::now_v7()),
+    )
+    .await
+}
+
+pub(crate) async fn close_window_with_ids(
+    database: &Database,
+    correlation_id: CorrelationId,
+    audit_event_id: AuditEventId,
+    expiry_audit_event_id: AuditEventId,
+) -> Result<ProvisioningWindow, ProvisioningError> {
+    mutate_window_with_ids(
+        database,
+        ProvisioningWindowAction::Close,
+        correlation_id,
+        audit_event_id,
+        Some(expiry_audit_event_id),
+    )
+    .await
+}
+
+async fn mutate_window_with_ids(
+    database: &Database,
+    action: ProvisioningWindowAction,
+    correlation_id: CorrelationId,
+    audit_event_id: AuditEventId,
+    expiry_audit_event_id: Option<AuditEventId>,
+) -> Result<ProvisioningWindow, ProvisioningError> {
+    database
+        .write(move |transaction| {
+            let current = db::provisioning::read_window(transaction)?;
+            let decision = decide_operator_window(action, current)
+                .map_err(|RevisionOverflow| ProvisioningError::RevisionOverflow)?;
+            let audit_result = if decision.applies {
+                ProvisioningWindowAuditResult::Succeeded
+            } else {
+                ProvisioningWindowAuditResult::Noop
+            };
+            let event = AuditEvent::operator_provisioning_window(
+                audit_event_id,
+                correlation_id,
+                action,
+                audit_result,
+                current.revision,
+                decision.next.revision,
+            );
+            db::audit::insert_provisioning(transaction, &event)?;
+
+            if !decision.applies {
+                return Ok(decision.next);
+            }
+            if action == ProvisioningWindowAction::Close {
+                let expired_count =
+                    db::device::enrollment::request::expire_live_requests(transaction)?;
+                let expiry_event = AuditEvent::enrollment_requests_expired(
+                    expiry_audit_event_id.ok_or(ProvisioningError::PersistenceFailed)?,
+                    correlation_id,
+                    EnrollmentExpiryActor::Operator,
+                    expired_count,
+                );
+                db::audit::insert_provisioning(transaction, &expiry_event)?;
+            }
+            db::provisioning::compare_and_swap_window(
+                transaction,
+                current,
+                decision.next,
+                audit_event_id,
+            )?;
+            Ok(decision.next)
+        })
+        .await
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]

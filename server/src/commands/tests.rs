@@ -146,7 +146,7 @@ async fn repeated_bootstrap_does_not_recover_an_open_provisioning_window() -> Re
     let correlation_id = uuid::Uuid::now_v7().to_string();
     let opening_audit_id_for_seed = opening_audit_id.clone();
     database
-        .interact(move |connection| {
+        .test_write(move |connection| {
             diesel::sql_query(
                 "INSERT INTO audit_events (audit_event_id, occurred_at, actor, action_kind, \
                  resource_type, resource_id, result, reason_code, correlation_id, \

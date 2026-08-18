@@ -1,0 +1,68 @@
+use axum::{
+    Extension, Router,
+    extract::State,
+    response::{IntoResponse, Response},
+};
+use serde::Serialize;
+use utoipa::ToSchema;
+
+use crate::{
+    application::{
+        contest::{self, BindingFacts},
+        operator::OperatorIdentity,
+    },
+    audit::CorrelationId,
+};
+
+use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
+
+pub(super) fn routes(state: AppState) -> Router<AppState> {
+    Router::new().route("/bindings", middleware::operator_get(state, list_bindings))
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BindingResponse {
+    seat_id: String,
+    device_id: String,
+    binding_revision: i64,
+}
+
+impl From<BindingFacts> for BindingResponse {
+    fn from(facts: BindingFacts) -> Self {
+        let (seat_id, device_id, binding_revision) = facts.into_parts();
+        Self {
+            seat_id,
+            device_id: device_id.as_text(),
+            binding_revision,
+        }
+    }
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v2/bindings",
+    operation_id = "listBindings",
+    security(("sessionCookie" = [])),
+    responses(
+        (status = 200, description = "Current Seat-to-Device Binding set", body = [BindingResponse]),
+        (status = 401, description = "Session authentication failed"),
+        (status = 500, description = "Internal failure")
+    )
+)]
+pub(crate) async fn list_bindings(
+    State(state): State<AppState>,
+    Extension(correlation_id): Extension<CorrelationId>,
+    Extension(_identity): Extension<OperatorIdentity>,
+) -> Response {
+    match contest::list_bindings(&state.database).await {
+        Ok(facts) => {
+            let response = facts
+                .into_iter()
+                .map(BindingResponse::from)
+                .collect::<Vec<_>>();
+            current_facts_response(&response, correlation_id)
+        }
+        Err(error) => ApiError::from_contest(error, correlation_id).into_response(),
+    }
+}

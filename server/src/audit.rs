@@ -1,40 +1,41 @@
-use diesel::{ExpressionMethods, RunQueryDsl, dsl::sql, sql_types::Text, sqlite::SqliteConnection};
 use serde::Serialize;
-use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::{
-    application::enrollment::{EnrollmentResolution, IssuanceReason},
-    db::schema::audit_events,
-};
+#[cfg(test)]
+use diesel::{ExpressionMethods, RunQueryDsl, dsl::sql, sql_types::Text, sqlite::SqliteConnection};
+#[cfg(test)]
+use snafu::Snafu;
+
+use crate::application::device::enrollment::{EnrollmentResolution, IssuanceReason};
+#[cfg(test)]
+use crate::db::schema::audit_events;
 
 mod command;
-mod contest;
-mod enrollment;
+mod device;
 mod import;
 mod operator;
 mod provisioning;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AuditEventId(Uuid);
+pub(crate) struct AuditEventId(Uuid);
 
 impl AuditEventId {
     #[must_use]
-    pub const fn from_uuid(value: Uuid) -> Self {
+    pub(crate) const fn from_uuid(value: Uuid) -> Self {
         Self(value)
     }
 
-    fn as_text(&self) -> String {
+    pub(crate) fn as_text(&self) -> String {
         self.0.to_string()
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CorrelationId(Uuid);
+pub(crate) struct CorrelationId(Uuid);
 
 impl CorrelationId {
     #[must_use]
-    pub const fn from_uuid(value: Uuid) -> Self {
+    pub(crate) const fn from_uuid(value: Uuid) -> Self {
         Self(value)
     }
 
@@ -49,7 +50,7 @@ impl CorrelationId {
 /// zero-field variant encodes as `{}`.
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
-pub enum AuditDetail {
+pub(crate) enum AuditDetail {
     RecoveryClose {
         previous_revision: i64,
         new_revision: i64,
@@ -118,6 +119,12 @@ pub enum AuditDetail {
     CommandRequestConflict {
         request_fingerprint_version: i32,
     },
+    CommandTerminal {
+        kind: String,
+        terminal_state: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        terminal_error_code: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,7 +186,7 @@ pub(crate) struct DeviceCredentialsIssuedAuditFacts {
 }
 
 #[derive(Debug)]
-pub struct AuditEvent {
+pub(crate) struct AuditEvent {
     pub(super) id: AuditEventId,
     pub(super) actor: &'static str,
     pub(super) action_kind: &'static str,
@@ -198,6 +205,7 @@ impl AuditEvent {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn insert_diesel(
     connection: &mut SqliteConnection,
     event: &AuditEvent,
@@ -230,8 +238,9 @@ pub(crate) fn insert_diesel(
     Ok(())
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-pub enum AuditError {
+pub(crate) enum AuditError {
     #[snafu(display("the audit event could not be persisted"))]
     InsertFailed,
 }

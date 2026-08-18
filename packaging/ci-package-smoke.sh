@@ -122,18 +122,40 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   >/dev/null 2>&1
 rm -f "${input_root}/control-ca.key" "${input_root}/local-origin-ca.key"
 
-cargo build --workspace --release --locked
-canonical_endpoint="$(target/release/natsume-device-daemon --print-canonical-endpoint '2001:0db8:0:0:0:0:0:10' '8443')"
+# Build only the binaries that enter the packages, in an isolated target directory. A
+# workspace-wide build unifies integration-tests' `fixture` feature into the daemon and would
+# ship test counters/watch channels in the production deb.
+production_target="${work_root}/cargo-target-production"
+production_release="${production_target}/release"
+daemon_cfg="${work_root}/natsume-device-daemon.cfg"
+CARGO_TARGET_DIR="${production_target}" cargo rustc \
+  -p natsume-device-daemon \
+  --bin natsume-device-daemon \
+  --release \
+  --locked \
+  -- \
+  --print cfg >"${daemon_cfg}"
+if grep -Fxq 'feature="fixture"' "${daemon_cfg}"; then
+  fail 'production Device Daemon unexpectedly enabled the fixture feature'
+fi
+CARGO_TARGET_DIR="${production_target}" cargo build \
+  --release \
+  --locked \
+  -p natsume-device-daemon \
+  -p natsume-privileged-helper \
+  -p natsume-session-agent \
+  -p natsume-server
+canonical_endpoint="$("${production_release}/natsume-device-daemon" --print-canonical-endpoint '2001:0db8:0:0:0:0:0:10' '8443')"
 [[ ${canonical_endpoint} == '2001:db8::10 8443' ]] ||
   fail 'Device Daemon did not emit the canonical IPv6 endpoint'
-if target/release/natsume-device-daemon --print-canonical-endpoint 'server.example' '8443' >/dev/null 2>&1; then
+if "${production_release}/natsume-device-daemon" --print-canonical-endpoint 'server.example' '8443' >/dev/null 2>&1; then
   fail 'Device Daemon accepted a hostname as an install endpoint'
 fi
 pnpm --filter @natsume/web build
 
 export VERSION="${VERSION:-2.0.0~ci1}"
 export ARCH="${ARCH:-amd64}"
-export RUST_RELEASE_DIR="${repository_root}/target/release"
+export RUST_RELEASE_DIR="${production_release}"
 export CADDY_BIN="${caddy_binary}"
 export SITE_CONFIG="${input_root}/site.toml"
 export CONTROL_CA_CERT="${input_root}/control-ca.crt"
@@ -230,7 +252,7 @@ grep -E '^-rw-r--r-- .*\./etc/xdg/autostart/org.natsume.SessionAgent.desktop$' \
 # The Session Agent links the Slint/Skia closure; its direct ELF NEEDED set is
 # frozen in session-agent.needed and every non-baseline library must be a
 # declared Deb dependency, or the binary dies in ld.so before main.
-readelf -d target/release/natsume-session-agent |
+readelf -d "${production_release}/natsume-session-agent" |
   sed -nE 's/.*\(NEEDED\).*\[(.*)\].*/\1/p' | sort >"${work_root}/session-agent.needed.actual"
 diff -u packaging/client/session-agent.needed "${work_root}/session-agent.needed.actual" ||
   fail 'Session Agent ELF NEEDED set drifted from packaging/client/session-agent.needed'

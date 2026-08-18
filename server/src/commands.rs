@@ -13,12 +13,12 @@ pub use crate::error::CommandError;
 
 use crate::{
     application::{
-        enrollment::{GatewayIssuer, GatewayIssuerError},
-        operator::{OperatorCredentials, hash_password},
+        device::enrollment::{GatewayIssuer, GatewayIssuerError},
+        operator::{self, OperatorCredentials, hash_password},
         provisioning,
     },
     config::{GatewaySiteConfig, ServerConfig},
-    db::{self, Database, DatabaseConfig},
+    db::{Database, DatabaseConfig},
     http, logging,
     tls::TlsListener,
     vault::{ensure_master_key, require_master_key},
@@ -182,7 +182,7 @@ where
     let credentials = read_credentials()?;
     let password_hash =
         hash_password(credentials.password()).map_err(|_| CommandError::Bootstrap)?;
-    db::operator::create_first_admin(&database, credentials.login_name(), &password_hash)
+    operator::create_first_admin(&database, credentials.login_name(), &password_hash)
         .await
         .map_err(|_| CommandError::Bootstrap)?;
     Ok(())
@@ -203,7 +203,7 @@ where
     let credentials = read_credentials()?;
     let password_hash =
         hash_password(credentials.password()).map_err(|_| CommandError::PasswordReset)?;
-    db::operator::reset_operator_password(&database, credentials.login_name(), &password_hash)
+    operator::reset_operator_password(&database, credentials.login_name(), &password_hash)
         .await
         .map_err(|_| CommandError::PasswordReset)
 }

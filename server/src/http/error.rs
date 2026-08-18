@@ -13,7 +13,7 @@ use crate::{
     application::{
         command::CommandError,
         contest::ContestError,
-        enrollment::EnrollmentError,
+        device::{DeviceError, enrollment::EnrollmentError},
         import::{CsvImportErrorCategory, ImportError},
         operator::OperatorError,
         provisioning::ProvisioningError,
@@ -256,16 +256,24 @@ impl ApiError {
 
     pub(super) fn from_contest(error: ContestError, correlation_id: CorrelationId) -> Self {
         match error {
-            ContestError::InvalidDeviceId => {
+            ContestError::PersistenceFailed => {
+                Self::internal_error("contest_persistence_failed", correlation_id)
+            }
+        }
+    }
+
+    pub(super) fn from_device(error: DeviceError, correlation_id: CorrelationId) -> Self {
+        match error {
+            DeviceError::InvalidDeviceId => {
                 Self::invalid_request("contest_invalid_device_id", correlation_id)
             }
-            ContestError::DeviceNotFound => {
+            DeviceError::DeviceNotFound => {
                 Self::not_found("contest_device_not_found", correlation_id)
             }
-            ContestError::InvalidPersistedFacts => {
+            DeviceError::InvalidPersistedFacts => {
                 Self::internal_error("contest_invalid_persisted_facts", correlation_id)
             }
-            ContestError::PersistenceFailed => {
+            DeviceError::PersistenceFailed => {
                 Self::internal_error("contest_persistence_failed", correlation_id)
             }
         }

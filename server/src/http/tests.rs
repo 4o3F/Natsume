@@ -623,7 +623,7 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
 }
 
 /// The expired-cleanup warning is the only place an operator store cause
-/// survives, and it is emitted inside a `Database::interact` closure, so this
+/// survives, and it is emitted inside a `Database::read` closure, so this
 /// also proves the blocking thread reaches the scoped subscriber. A write-locked
 /// database blocks the lazy-expiry escalation, and the pool's `busy_timeout` is
 /// 5000 ms, so the request below spends about five seconds blocked.

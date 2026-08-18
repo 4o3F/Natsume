@@ -54,4 +54,36 @@ impl AuditEvent {
             },
         }
     }
+
+    #[must_use]
+    pub(crate) fn command_terminal(
+        audit_event_id: AuditEventId,
+        correlation_id: CorrelationId,
+        command_id: Uuid,
+        kind: String,
+        terminal_state: &'static str,
+        terminal_error_code: Option<String>,
+    ) -> Self {
+        let result = match terminal_state {
+            "succeeded" => "succeeded",
+            "cancelled" | "expired" => "noop",
+            _ => "failed",
+        };
+        Self {
+            id: audit_event_id,
+            actor: "device:control",
+            action_kind: "command_terminal",
+            resource_type: "command",
+            resource_id: Some(command_id.to_string()),
+            result,
+            reason_code: Some("device_reported"),
+            correlation_id,
+            group_correlation_id: None,
+            detail: AuditDetail::CommandTerminal {
+                kind,
+                terminal_state,
+                terminal_error_code,
+            },
+        }
+    }
 }

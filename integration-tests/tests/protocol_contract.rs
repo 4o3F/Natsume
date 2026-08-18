@@ -137,7 +137,11 @@ fn revision_fields_are_numeric_and_field_numbers_are_stable() {
     assert!(!observed.contains("revision_id"));
 
     let assignment = message_body("TargetAssignment");
-    assert!(assignment.contains("reserved 1, 5;"));
+    assert!(
+        !assignment
+            .lines()
+            .any(|line| line.trim_start().starts_with("reserved "))
+    );
     assert!(assignment.contains("uint64 binding_revision = 2;"));
     assert!(assignment.contains("string seat_id = 3;"));
     assert!(assignment.contains("string seat_code = 4;"));
@@ -169,13 +173,14 @@ fn revision_fields_are_numeric_and_field_numbers_are_stable() {
 }
 
 #[test]
-fn command_reserves_removed_surface() {
+fn removed_command_surface_is_absent_without_pre_release_reservations() {
     let command = message_body("Command");
 
-    assert!(command.contains("reserved 4, 5, 13, 14, 15, 16;"));
-    assert!(command.contains(
-        "reserved \"offline_policy\", \"resource_lane\", \"collect_diagnostics\", \"restart_agent\", \"run_local_preflight\", \"clear_local_secret\";"
-    ));
+    assert!(
+        !command
+            .lines()
+            .any(|line| line.trim_start().starts_with("reserved "))
+    );
     for removed_field in [
         "string offline_policy =",
         "string resource_lane =",
@@ -227,7 +232,6 @@ fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
             command_id: command_id.to_owned(),
             state: CommandState::Received as i32,
             stable_error_code: String::new(),
-            terminal_result_cursor: 0,
         })),
     };
 

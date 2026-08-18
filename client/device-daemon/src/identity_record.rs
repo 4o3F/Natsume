@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::atomic_write::{AtomicWriteError, WritePolicy, atomic_write};
+use crate::{
+    atomic_write::{AtomicWriteError, WritePolicy, atomic_write},
+    canonical_uuid,
+};
 
 const IDENTITY_RECORD_NAME: &str = "identity.json";
 const IDENTITY_RECORD_MODE: u32 = 0o600;
@@ -34,12 +37,6 @@ pub(super) enum IdentityRecordWriteError {
 
 fn record_path(identity_directory: &Path) -> std::path::PathBuf {
     identity_directory.join(IDENTITY_RECORD_NAME)
-}
-
-fn canonical_uuid(value: &str) -> Option<Uuid> {
-    Uuid::parse_str(value)
-        .ok()
-        .filter(|uuid| uuid.hyphenated().to_string() == value)
 }
 
 fn decode(bytes: &[u8]) -> Option<(Uuid, Uuid)> {

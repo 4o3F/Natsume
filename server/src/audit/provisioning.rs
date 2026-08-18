@@ -4,7 +4,7 @@ use super::{AuditDetail, AuditEvent, AuditEventId, CorrelationId, ProvisioningWi
 
 impl AuditEvent {
     #[must_use]
-    pub const fn recovery_close(
+    pub(crate) const fn recovery_close(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         previous_revision: i64,

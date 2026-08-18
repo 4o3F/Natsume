@@ -17,7 +17,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::{application::enrollment::GatewayIssuer, audit::CorrelationId, db::Database};
+use crate::{application::device::enrollment::GatewayIssuer, audit::CorrelationId, db::Database};
 
 use self::error::ApiError;
 
@@ -31,7 +31,7 @@ pub(crate) struct AppState {
 }
 
 /// Builds the mounted Server HTTP surface over an already-migrated database.
-pub fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
+pub(crate) fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
     router_inner(database, vault_master_key_path, web_root, None)
 }
 
@@ -77,15 +77,17 @@ fn router_inner(
 
 fn api_v2(state: &AppState) -> Router<AppState> {
     let authenticated = Router::new()
-        .merge(handler::session::protected_routes(state.clone()))
         .merge(handler::contest::routes(state.clone()))
+        .merge(handler::device::protected_routes(state.clone()))
         .merge(handler::command::routes(state.clone()))
         .merge(handler::import::routes(state.clone()))
-        .merge(handler::provisioning::routes(state.clone()));
-    Router::new()
+        .merge(handler::provisioning::routes(state.clone()))
+        .merge(handler::session::protected_routes(state.clone()));
+    let public = Router::new()
+        .merge(handler::device::public_routes(state.clone()))
         .merge(handler::health::routes())
-        .merge(handler::session::public_routes())
-        .merge(handler::enrollment::routes(state.clone()))
+        .merge(handler::session::public_routes());
+    public
         .merge(device_control::routes(state.clone()))
         .merge(authenticated)
 }

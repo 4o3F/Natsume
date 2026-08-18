@@ -111,18 +111,23 @@ fn validate_command(value: &Command) -> Result<(), ProtocolValidationError> {
 }
 
 fn validate_command_id(value: &str) -> Result<(), ProtocolValidationError> {
-    let Ok(uuid) = Uuid::parse_str(value) else {
-        return InvalidCommandIdSnafu.fail();
-    };
-
-    if uuid.get_version() != Some(Version::SortRand)
-        || uuid.get_variant() != Variant::RFC4122
-        || uuid.to_string() != value
-    {
+    if !is_canonical_command_id(value) {
         return InvalidCommandIdSnafu.fail();
     }
-
     Ok(())
+}
+
+/// Returns whether a command ID is one canonical lowercase RFC 4122 `UUIDv7`.
+///
+/// Callers that derive filesystem paths or persistence keys from a command ID must retain a
+/// local check at that boundary and use this predicate instead of copying the wire rule.
+#[must_use]
+pub fn is_canonical_command_id(value: &str) -> bool {
+    Uuid::parse_str(value).is_ok_and(|uuid| {
+        uuid.get_version() == Some(Version::SortRand)
+            && uuid.get_variant() == Variant::RFC4122
+            && uuid.to_string() == value
+    })
 }
 
 fn validate_session_agent(value: &SessionAgentObservation) -> Result<(), ProtocolValidationError> {
@@ -185,13 +190,13 @@ mod tests {
                 command_id: command_id.to_owned(),
                 state: 1,
                 stable_error_code: String::new(),
-                terminal_result_cursor: 0,
             })),
         }
     }
 
     #[test]
     fn canonical_uuidv7_command_and_status_ids_are_accepted() {
+        assert!(is_canonical_command_id(CANONICAL_UUID_V7));
         assert!(validate_envelope(&command_envelope(CANONICAL_UUID_V7)).is_ok());
         assert!(validate_envelope(&command_status_envelope(CANONICAL_UUID_V7)).is_ok());
     }
@@ -213,6 +218,7 @@ mod tests {
         ];
 
         for command_id in invalid_ids {
+            assert!(!is_canonical_command_id(command_id));
             let Err(error) = validate_envelope(&command_envelope(command_id)) else {
                 panic!("noncanonical command ID must be rejected");
             };

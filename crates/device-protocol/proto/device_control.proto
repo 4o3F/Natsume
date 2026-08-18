@@ -26,7 +26,6 @@ message ClientHello {
   uint64 last_observed_sequence = 7;
   uint64 last_applied_generation = 8;
   bytes last_applied_hash = 9;
-  uint64 terminal_result_cursor = 10;
 }
 
 message ServerHello {
@@ -37,7 +36,6 @@ message ServerHello {
   uint32 max_frame_bytes = 5;
   uint64 max_bulk_bytes = 6;
   int64 server_time_unix_ms = 7;
-  uint64 terminal_result_resume_cursor = 8;
   repeated string capabilities = 9;
 }
 
@@ -196,7 +194,6 @@ message ObservedStateSnapshot {
 }
 
 message TargetAssignment {
-  reserved 1, 5;
   uint64 binding_revision = 2;
   string seat_id = 3;
   string seat_code = 4;
@@ -275,8 +272,6 @@ message ResetHome {
 }
 
 message Command {
-  reserved 4, 5, 13, 14, 15, 16;
-  reserved "offline_policy", "resource_lane", "collect_diagnostics", "restart_agent", "run_local_preflight", "clear_local_secret";
   // The Panel owns generation: canonical lowercase hyphenated UUIDv7, preserved end-to-end.
   string command_id = 1;
   int64 created_at_unix_ms = 2;
@@ -308,7 +303,6 @@ message CommandStatus {
   string command_id = 1;
   CommandState state = 2;
   string stable_error_code = 3;
-  uint64 terminal_result_cursor = 4;
 }
 
 message BindingRequest {

@@ -394,7 +394,7 @@ impl CommandHttpFixture {
 
 async fn seed_device(database: &Database) -> Result<(), TestFailure> {
     database
-        .interact(|connection| {
+        .test_write(|connection| {
             diesel::sql_query(
                 "INSERT INTO devices VALUES \
                  ('01900000-0000-7000-8000-000000000302', 'command-http-hardware', \
@@ -476,7 +476,7 @@ fn assert_transport_payload_too_large(response: &Captured) -> Result<(), TestFai
 
 async fn command_snapshot(database: &Database) -> Result<CommandSnapshot, TestFailure> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             diesel::sql_query(
                 "SELECT (SELECT COUNT(*) FROM commands) AS commands, \
                  (SELECT COUNT(*) FROM audit_events WHERE action_kind = 'command_create') \
@@ -494,7 +494,7 @@ async fn command_snapshot(database: &Database) -> Result<CommandSnapshot, TestFa
 async fn command_row(database: &Database, command_id: &str) -> Result<CommandRow, TestFailure> {
     let command_id = command_id.to_owned();
     database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             diesel::sql_query(
                 "SELECT command_id, device_pk, kind, state, request_fingerprint_version, \
                  request_fingerprint_sha256, group_correlation_id, payload_version, \
@@ -532,7 +532,7 @@ async fn command_audit(
     let command_id = command_id.to_owned();
     let result = result.to_owned();
     database
-        .interact(move |connection| {
+        .test_read(move |connection| {
             diesel::sql_query(
                 "SELECT audit_event_id, actor, action_kind, resource_type, resource_id, result, \
                  reason_code, group_correlation_id, redacted_detail_json FROM audit_events \

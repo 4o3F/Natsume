@@ -1,9 +1,7 @@
 use serde_json::{Value, value::RawValue};
 
-use super::{
-    CommandError, CommandKind, CommandRequestInput, fingerprint_v1, validate_payload,
-    validate_request,
-};
+use super::types::{CommandError, CommandKind, CommandRequestInput};
+use super::validate::{fingerprint_v1, validate_payload, validate_request};
 
 const DEVICE_ID: &str = "01900000-0000-7000-8000-000000000101";
 const SEAT_ID: &str = "550e8400-e29b-41d4-a716-446655440001";
@@ -26,13 +24,14 @@ fn fingerprint_v1_matches_three_independent_golden_vectors() {
     });
     // Exact JCS input: {"device_id":"01900000-0000-7000-8000-000000000101","kind":"lock_session","payload":{"requested_lock_epoch":43,"target":{"session_epoch":42,"session_instance_id":"session-a"}},"payload_version":1}
     assert_eq!(
-        hex::encode(&minimal.request_fingerprint_sha256),
+        hex::encode(&minimal.fingerprint.sha256),
         "d2685957cd9ab30ce0bf2832340e31b6d9a1ed9590e99ee2af38684e57bb8a70"
     );
     assert_eq!(
         minimal.frozen_payload_json,
         r#"{"requested_lock_epoch":43,"target":{"session_epoch":42,"session_instance_id":"session-a"}}"#
     );
+    assert_eq!(minimal.device_id.as_text(), DEVICE_ID);
 
     let optional = validated(CommandRequestInput {
         device_id: DEVICE_ID.to_owned(),
@@ -46,7 +45,7 @@ fn fingerprint_v1_matches_three_independent_golden_vectors() {
     });
     // Exact JCS input: {"device_id":"01900000-0000-7000-8000-000000000101","group_correlation_id":"550e8400-e29b-41d4-a716-446655440000","kind":"lock_session","payload":{"requested_lock_epoch":43,"target":{"session_epoch":42,"session_instance_id":"session-a"}},"payload_version":1,"reason_code":"operator_requested"}
     assert_eq!(
-        hex::encode(&optional.request_fingerprint_sha256),
+        hex::encode(&optional.fingerprint.sha256),
         "818fb2fd3b30ec84850e7321e1960394fa5b93465d9c458ef9d31c68ccc590e7"
     );
     assert_eq!(optional.frozen_payload_json, minimal.frozen_payload_json);
@@ -275,4 +274,89 @@ fn raw(value: &str) -> Box<RawValue> {
             panic!("a test payload was not valid JSON");
         }
     }
+}
+
+#[test]
+fn lifecycle_transitions_are_monotonic_and_terminal_states_are_final() {
+    use super::types::{CommandLifecycleState, ReportedCommandState, TransitionDecision};
+
+    const PROGRESS: [ReportedCommandState; 2] = [
+        ReportedCommandState::Received,
+        ReportedCommandState::Running,
+    ];
+    const TERMINALS: [ReportedCommandState; 5] = [
+        ReportedCommandState::Succeeded,
+        ReportedCommandState::Failed,
+        ReportedCommandState::Cancelled,
+        ReportedCommandState::Expired,
+        ReportedCommandState::ManualInterventionRequired,
+    ];
+
+    // A terminal row rejects every later report, including a different terminal: a derived
+    // ordering would have ranked `failed` above `succeeded` and overwritten it.
+    for current in TERMINALS {
+        for reported in PROGRESS.into_iter().chain(TERMINALS) {
+            let expected = if current == reported {
+                TransitionDecision::DuplicateNoop
+            } else {
+                TransitionDecision::Regression
+            };
+            assert_eq!(
+                CommandLifecycleState::Terminal(current).classify(reported),
+                expected
+            );
+        }
+    }
+
+    for reported in PROGRESS.into_iter().chain(TERMINALS) {
+        assert_eq!(
+            CommandLifecycleState::Created.classify(reported),
+            TransitionDecision::Apply
+        );
+    }
+
+    assert_eq!(
+        CommandLifecycleState::Received.classify(ReportedCommandState::Received),
+        TransitionDecision::DuplicateNoop
+    );
+    assert_eq!(
+        CommandLifecycleState::Received.classify(ReportedCommandState::Running),
+        TransitionDecision::Apply
+    );
+    assert_eq!(
+        CommandLifecycleState::Running.classify(ReportedCommandState::Received),
+        TransitionDecision::Regression
+    );
+    assert_eq!(
+        CommandLifecycleState::Running.classify(ReportedCommandState::Running),
+        TransitionDecision::DuplicateNoop
+    );
+    for reported in TERMINALS {
+        assert_eq!(
+            CommandLifecycleState::Received.classify(reported),
+            TransitionDecision::Apply
+        );
+        assert_eq!(
+            CommandLifecycleState::Running.classify(reported),
+            TransitionDecision::Apply
+        );
+    }
+
+    for (text, expected) in [
+        ("created", CommandLifecycleState::Created),
+        ("received", CommandLifecycleState::Received),
+        ("running", CommandLifecycleState::Running),
+    ] {
+        assert_eq!(CommandLifecycleState::parse_persisted(text), Ok(expected));
+    }
+    for terminal in TERMINALS {
+        assert_eq!(
+            CommandLifecycleState::parse_persisted(terminal.as_str()),
+            Ok(CommandLifecycleState::Terminal(terminal))
+        );
+    }
+    assert_eq!(
+        CommandLifecycleState::parse_persisted("delivered"),
+        Err(CommandError::PersistenceFailed)
+    );
 }

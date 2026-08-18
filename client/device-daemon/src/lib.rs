@@ -2,14 +2,24 @@
 //! Device Daemon-owned contracts and install-time endpoint validation.
 
 mod atomic_write;
+mod client_configuration;
+pub mod control;
 pub mod enrollment;
 mod identity_record;
+pub(crate) mod journal;
 pub mod startup;
 
 use std::{net::IpAddr, num::NonZeroU16, str::FromStr};
 
 use natsume_error_code::{ErrorCode, common::CommonErrorCode};
 use snafu::Snafu;
+use uuid::Uuid;
+
+pub(crate) fn canonical_uuid(value: &str) -> Option<Uuid> {
+    Uuid::parse_str(value)
+        .ok()
+        .filter(|uuid| uuid.hyphenated().to_string() == value)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CanonicalEndpoint {

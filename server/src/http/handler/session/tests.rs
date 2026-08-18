@@ -371,7 +371,7 @@ async fn login_failures_are_byte_identical_after_correlation_normalization()
     .await?;
     fixture
         .database
-        .interact(|connection| {
+        .test_write(|connection| {
             diesel::update(
                 operator_accounts::table
                     .filter(operator_accounts::login_name.eq("corrupt-http-login")),
@@ -537,7 +537,7 @@ async fn validate_login_response(
         return Err(TestFailure::SessionResponseContractChanged);
     }
     let audit_correlation = database
-        .interact(|connection| {
+        .test_read(|connection| {
             audit_events::table
                 .filter(audit_events::action_kind.eq("establish_session"))
                 .select(audit_events::correlation_id)
@@ -595,7 +595,7 @@ fn normalized_response(response: &Captured) -> Result<NormalizedResponse, TestFa
 
 async fn session_expiry(database: &Database) -> Result<String, TestFailure> {
     database
-        .interact(|connection| {
+        .test_read(|connection| {
             operator_sessions::table
                 .select(operator_sessions::expires_at)
                 .first(connection)
