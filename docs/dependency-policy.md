@@ -91,6 +91,9 @@ CLI argument parser 只允许分派封闭 runtime mode，不得演变为配置�
 
 测试 helper 不能被 production build 导出为 dangerous verifier。Device Token 比对必须常数时间。
 
+- **2026-08-17 WebSocket 依赖记录**：workspace 对 `tokio-tungstenite 0.29.0` 使用精确 pin，并有意启用其私有 `__rustls-tls` feature，以避开平台 TLS 与公共根证书等不需要的 feature；该私有 feature 变化时必须显式复审后再升级。axum 的服务端 WSS 与 daemon 的客户端 WSS 会把 tungstenite 的 `rand 0.9` / `getrandom 0.3` 以及 RFC 6455 握手所需的 `sha1` 同时链接进**生产 server 与生产 daemon**，因此两边都受 locked CI、`cargo deny` 与 feature closure 审查约束。
+- **2026-08-17 生产 packaging graph**：入包 Rust binary 必须从隔离 target directory 中的显式生产 package 集合构建，因为 workspace-wide build 会把 integration-only feature 统一进生产 artifact；package smoke 必须通过 compiler `cfg` 断言拒绝此类泄漏。
+
 ## 6. SQL 和持久化
 
 - Diesel 与 `diesel_migrations` 仅由数据库 adapter 使用，application、domain 和 transport 不直接依赖；

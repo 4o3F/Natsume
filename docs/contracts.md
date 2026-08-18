@@ -236,6 +236,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `actor` | 状态 |
 |---|---|
 | `device:enrollment` | 已实现（device-initiated intake / claim writers） |
+| `device:control` | 已注册（Phase 4 WP4 的 Device-reported Command 终态写入器；2026-08-16） |
 | `operator:self` | 已实现 |
 | `system:bootstrap` | 已实现 |
 | `system:expiry` | 已实现 |
@@ -263,6 +264,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `discard_import_candidate`（**已实现**，§3.4 Phase 2） |
 | `expire_import_candidate`（**已实现**，§3.4 Phase 2） |
 | `command_create`（**已实现**，§3.5 Phase 4 WP1；`operator:self`；`succeeded` 创建与 `rejected` conflict 共用此 action_kind） |
+| `command_terminal`（**已注册**，§6 Phase 4 WP4；`device:control`；Device 上报的 Command 终态，每个 `command_id` 至多一行——重复终态合并为零写入） |
 
 | `reason_code` | 当前使用处 |
 |---|---|
@@ -281,6 +283,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `baseline_stale` | `commit_import` 的 `rejected` 结果 |
 | `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
 | `COMMAND_REQUEST_CONFLICT` | `command_create` 的 `rejected` 结果（§3.5 固定该 reason_code 值） |
+| `device_reported` | `command_terminal` 的全部结果（终态由 Device 上报，Server 不自行推断） |
 
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
@@ -303,6 +306,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `revoke_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 | `disable_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
 | `command_create`（已实现） | `succeeded`：`kind`、`payload_version`、`request_fingerprint_version`；`rejected`：`request_fingerprint_version`（绝不含 fingerprint 值或 request 回显，§3.5） |
+| `command_terminal`（已注册） | `kind`、`terminal_state`（`succeeded`/`failed`/`cancelled`/`expired`/`manual_intervention_required` 之一）、可选 `terminal_error_code`（稳定码字符串）；**不含 payload、result body、frame bytes 或未脱敏诊断**。audit `result` 取 `succeeded`（终态为 `succeeded`）、`noop`（终态为 `cancelled`/`expired`）或 `failed`（其余） |
 
 #### 3.6.5 HTTP adapter、CSRF 与 ingress capacity
 

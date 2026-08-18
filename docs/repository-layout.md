@@ -60,11 +60,30 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 
 每个有业务逻辑的进程应分离 transport / application / domain / port / adapter 层（见 [架构 §6](architecture.md)）。各进程的内部模块仅给出目标边界；具体 `src/` 结构在对应 Phase 实现时确定。
 
-- **Server（`natsume-server`，composition root）**：内部模块按职责隔离（identity/enrollment（含 provisioning 窗口与 Token/Gateway 签发）、device control（WSS）、contest domain、configuration target、command dispatch、operator API、audit、pki/server-vault）。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。** 已知偏差（当前实现）：Device revoke/disable 落在 contest 模块，`server/src/db/contest.rs` 的 `apply_lifecycle_mutations` 在同一事务内写 `devices.state`、删除 `device_tokens` row 并把 `gateway_certificates.status` 置为 `revoked`；operation 跨这三张表是 [契约](contracts.md) §3.6.1 冻结的语义，偏差只在模块归属——[架构 §7](architecture.md) 把 Device lifecycle 与 Device Token（哈希）归 identity-enrollment，`gateway_certificates` 的签发行与 `revoked` / `retired` 终态保留归 Enrollment（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。Phase 3 引入真实 identity-enrollment/pki 模块时必须迁移；在此之前不预建空模块（[路线图 §6](roadmap.md)）。另一处已知偏差（当前实现）：本节按领域列出 Server 模块，实现按层组织（`server/src/application/`、`server/src/db/`、`server/src/http/`），领域是第二维；本节允许该差异（"具体 `src/` 结构在对应 Phase 实现时确定"），代价是一个领域概念跨三个目录、两半无法共享私有 item，这就是把 persisted-fact 类型推向层边界 crate 级 `pub(crate)` 可见性的压力来源。第三处已知偏差（当前实现）：三个修订计数器的推进/CAS 代码尚不存在（当前只有读路径）；推进规则已由[领域模型 §2](domain-model.md#2-标识和值对象) / [ADR-0031](adr/0031-contest-import-and-secret-evidence.md) 冻结，实现与「每事务至多递增一次」测试分别归 Phase 2（`configuration_revision` / `credential_revision`，随 import commit）与 Phase 2/3（`BindingRevision`，随 binding mutation）。当前不变量：application 与 db 严格单向——db 依赖 application，application 只调用签名中仅出现 application 类型的 db 函数；**db 的 persisted-fact 类型与 store error enum 对 `db` 私有**，所以向上引用是编译错误而不是评审意见。上述 Phase 3 迁移应与 layer-first/domain-first 的取舍一并决定（那批模块本来就要新建）：domain-first 布局能让每个纵向切片把 persisted-fact 类型完全私有，层边界上不再需要任何 `pub(crate)`。
+- **Server（`natsume-server`，composition root）**：实现按层组织（`server/src/application/`、`server/src/db/`、`server/src/http/`、`server/src/audit/`），领域是第二维。最终 Device seam 为 `application/device/{lifecycle,query,credentials,enrollment}`、`db/device/{devices,tokens,certificates,query,enrollment}`、`http/handler/device/{lifecycle,query,enrollment}` 与 `audit/device/{lifecycle,enrollment}`；Device lifecycle、Token、Gateway certificate 终态和 Enrollment request workflow 均由 `device` 拥有，provisioning 窗口由 `provisioning` 拥有。Seat、Account 与当前 Seat↔Device Binding 保留在 `contest`，Binding 不因引用 Device ID 而迁入 Device；WSS transport 仍由 `http/device_control` 承担。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。** 当前不变量：application 与 db 严格单向——db 依赖 application，application 只调用签名中仅出现 application 类型的 db 函数；**db 的 persisted-fact 类型与 store error enum 对 `db` 私有**，所以向上引用是编译错误而不是评审意见。
 - **Device Daemon（`natsume-device-daemon`）**：分离 identity startup、enrollment、control（WSS）、command runtime、target apply、caddy render/activation、session、home、observed、credentials、journal。**WSS handler 不直接操作凭据文件、journal、Caddy 或 D-Bus**；module 间传递 value object，不传递 transport request 或全局 mutable context；`identity_startup` 在其他 identity-bound adapter 初始化前运行。
 - **Privileged Helper**：每个 capability 独立可审计（hardware sources、home backend、login session、filesystem policy）。**禁止 `execute(request)` 或 `run_action(name, args)` 一类通用入口**；path/UID 由固定 policy 重新派生，Device Daemon 传入值只作受限 ID。
 - **Session Agent（`natsume-session-agent`）**：分离 platform（logind/session/singleton/desktop）、local_api、presentation、ui。**不得引入 Server client、vault、PKI、Caddy 或 privileged D-Bus client**；由系统级 XDG Autostart 直接启动。
 - **Web（operator Web Panel）**：feature-oriented（api/generated、auth、preparation、devices、bindings、commands、audit、shared/ui）。**Web 只依赖生成 API 和自己的 view model，不复制 Rust domain enum 后自行演进**；`shared/ui` 只含无业务语义的视觉组件。
+
+### 5.1 db mutation 单表规则与 read model 例外（2026-08-17 修订）
+
+- **每个 db mutation 函数只写一张表。** 哪些表必须一起变动是业务知识，属 application 层；db mutation 是表的薄映射。
+- **专用只读 read-model/query 函数允许 JOIN 多表**，因为 SQLite 单条 JOIN 通常比多次 statement + Rust 侧 `HashMap` 拼装更高效，也天然获得单语句快照。例外必须同时满足：纯读（禁止 `INSERT`/`UPDATE`/`DELETE`）、不自行开启事务、只做关系投影不做业务决策、返回 application-owned 类型、放在明确的 `query.rs` / `read_model` 模块，并有索引/query-plan 测试。普通 table adapter 的读函数仍只读一张表。
+- **写事务边界随组合上移。** db 函数不自行开启事务，改为接收 application 打开的不透明事务句柄（`db::Transaction<'_>`，内部包住连接，使 application 永不点名 diesel 类型）。这是本规则的必要条件而非可选项：领域 mutation 与其审计必须同事务原子写入（[安全与恢复](security-recovery.md) §9），若拆开后每个 db 函数各自开事务，application 的组合就变成多个事务，原子性与 `created_audit_event_id` 一类 NOT NULL FK 同时破裂。
+- **附带收益**：组合进同一事务后，`put_command` 的 find→insert TOCTOU 窗口消失，为其补的 UNIQUE 违例救援路径可一并删除。
+- **完成状态（2026-08-17）**：B1–B5 已把全部生产调用统一到 `Database::read` / `Database::write`；application 持有不透明 `db::Transaction<'_>` 并组合单表 adapter，db adapter 不再自开事务，旧 `Database::interact` 已删除。跨表 JOIN 只保留在评审过且各有索引/query-plan 测试的 `db/device/query.rs`、`db/device/enrollment/query.rs`、`db/import/query.rs`、`db/operator/query.rs`；这些模块纯读且不打开事务。
+- **机器强制（2026-08-17 落地）**：`module-dependency-scan` 的 database-boundary transition allowlist 显式为空；普通 db 函数引用多于一张 schema 表即失败，只有上述 read-model 模块可多表，read-model 中出现 SQL/Diesel 写入即失败，`db.rs` 基础设施之外开启事务也即失败。运行时 canary 同时钉住 schema alias 双表 mutation、普通模块 SQL JOIN、read-model SQL write、越界 transaction 与 `cfg(test)` 忽略语义。
+
+### 5.2 类型方向问题（2026-08-17 已解决）
+
+B1–B5 已随 db 签名与事务边界一起解决以下三项，不再保留过渡类型或双向依赖。
+
+- **签名方向已解决**：db 函数只接收/返回 application-owned 类型；SQL row 与 store error 留在 db 私有实现，application import、签名与 render 参数均不再出现 db-private 类型。
+- **近重复已解决**：db-owned `NewCommand` / `PersistedCommandRequest` 与 `InsertCommandOutcome` 已删除；`ValidatedCommandRequest` 直接进入单表绑定，不再逐字段复制到第二个 command 结构。
+- **typed 往返已解决**：`CommandKind` 在数据库持久化路径与 render 中保持 typed，只在 db SQL binding 处编码为 TEXT，并在 db row 读取边界以 `parse_persisted` 恢复；持久化损坏归 `PersistenceFailed`，不再伪装成 payload 输入错误。
+
+**明确不合并**（看似重复，实为正确的区分）：`CommandOutcome` / `CommandStatusWriteOutcome` 描述不同操作的结果，合并会造出不可能组合；`CommandRequestInput` → `ValidatedCommandRequest` 仍是 parse-don't-validate 的「未验证 / 已验证」对，合并会丢掉类型级区分。
 
 ## 6. Tests
 

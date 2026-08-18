@@ -160,6 +160,25 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 | D9 | 本地健康检查定义与 upstream 不健康时的状态归属 | READY 判据 |
 | D10 | `caddy.modules` 是否补登记 transport 模块 | 闭包文档与实际使用面一致 |
 | D11 | Drift/Observed 查询 route 的契约冻结 | 新 wire surface |
+| D12 | Device journal GC 的确认机制（见下方 §6.1） | wire surface + 客户端 journal 生命周期 |
+
+### 6.1 D12：journal GC 确认机制（Phase 4 已删除旧实现，重新设计）
+
+**背景**：Device journal 保存收到的 Command frame bytes 以保证重复投递不产生第二次副作用（[契约](../contracts.md) §6）。条目何时可以删除，取决于设备如何得知「服务端已经durable 记下了这条命令的终态」。Phase 4 曾实现「设备分配单调游标 + 服务端存每设备高水位 + ServerHello 回传 resume 值」，因下述原因整体删除（proto 三字段、`devices.terminal_result_cursor` 列、推进逻辑与相关类型均已移除）。
+
+**任何候选设计必须先回答的判据**：**乱序终态如何不丢**。命令是乱序终态化的（快的 `SESSION_LOCK` 先于慢的 `HOME_RESET` 完成），高水位标记正是在这里失败——设备先报 B（游标 4）、再报 A（游标 3），服务端推到 4；若连接在 A 发出前断开，下次 hello 返回 resume=4，设备据此 GC 掉 A，**A 的终态结果从未上报却被删除**。这是数据丢失，不是不便。
+
+**候选方案对比**：
+
+| 方案 | 帧开销 | 乱序 | 重复终态 | 未知/异属命令 | 备注 |
+|---|---|---|---|---|---|
+| 高水位游标 | 0 | ✗ 静默丢结果 | ✓ | 无解 | **已否决**，Phase 4 已删除 |
+| 按命令确认（服务端记入终态后回一帧） | 每终态 1 帧 | ✓ | ✓（已记入也回确认） | 需额外区分，而区分即 existence oracle | 若采用，倾向新增专用消息而非反向复用 `CommandStatus`——后者含义随方向而变，且会把「执行权威在设备、记录权威在服务端」两者混同 |
+| **首批投递完成标记（倾向）** | 每连接 1 帧 | ✓ | ✓ 天然 | ✓ 天然 | 从服务端已有状态派生确认而非另建通道：可投递集为 `state ∈ (created, received, running)`，记入终态即永不再投递，故「不再投递」本身就是记录声明；加一个 hello 后首批结束标记即可让缺席可观测。**注意批次被 `DISPATCH_BATCH_LIMIT` 截断时不得发送该标记**，否则设备会误 GC 尚未投递的条目 |
+
+**为何不在 Phase 4 定案**：Phase 4 没有终态生产者，任何机制都无法端到端验证——被删除的游标正是这样溜过去的（它的真实缺陷对当时能写的每个测试都不可见）。Phase 5 第一个真实执行器落地后才会知道命令是否并发执行、长命令是否跨连接、批次截断多常见，而这些正好决定标记方案是否够用。
+
+**命名连带项**：若最终引入服务端→设备的记录消息，同时把现有 `CommandStatus`（设备→服务端的执行上报）一并对称命名；Phase 4 不单方面改名。
 
 ## 7. 跨切风险
 
@@ -171,12 +190,21 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 | Observed 与 SYNC_STATE 竞争 SQLite 单写者 | E2 缩比探针；WP4 后复跑 |
 | 新增 HTTP 面绕过契约纪律 | D11 先冻结再实现；审计词表先注册 |
 
-## 8. 无归属挂账认领（Phase 5 一并处置）
+## 8. 已否决的备选方案（勿重新翻案）
+
+**把 payload 校验约束放进 proto（custom options）并从描述符全量 codegen，或改用「描述符驱动的通用 walker + 字段策略表」替换手写校验结构体**——2026-08-16 评估后否决。
+
+理由：(a) **治理周期不匹配**——`.proto` 是受 §13 兼容性规则与 golden descriptor 治理的冻结 wire 契约，而校验策略是服务端可自由调整的策略，把后者塞进前者会让每次策略微调都触碰受管契约；(b) **真源本身几乎不动**，「自动同步」的边际收益很低；(c) 代价确切——operator 输入这一安全边界从编译期类型降级为测试期断言，12 个独立校验器（单点故障只影响一个 kind）合并成通用 walker（一处出错七个 kind 全漏），并需手写严格反序列化才能补回 serde derive 白送的重复键拒绝；(d) **现有防护已足够**：`protocol_contract.rs` 的描述符 golden 使任何 proto 改动立刻红灯，`render.rs` 的穷举结构体字面量使增删字段编译失败，未覆盖的仅剩「改 proto + 同步 golden 却漏改 JSON schema」，而那一刻本就在评审一次受管 wire 变更。
+
+维持现状：proto 管 wire 形状，服务端手写结构体管入参校验，`render.rs` 管两者间的类型化映射。
+
+## 9. 无归属挂账认领（Phase 5 一并处置）
+
+`apply_lifecycle_mutations` 与 Device revoke/disable 的模块迁移已由 Device-first Batch 5 闭环：lifecycle 编排及其 DB、HTTP、audit seam 均归 `device`，不再是无归属挂账。
 
 | 项 | 来源 | 建议 |
 |---|---|---|
 | canonical UUIDv7 variant nibble guard | 登记「归 Phase 3+」，Phase 3 已 CLOSED | 随 WP2 的 ID 校验一并硬化 |
 | `record_type` 封闭枚举的 DB 强制 | 登记「归 Phase 2」，Phase 2 已 CLOSED | 若仍缺，随 WP2 触碰 schema 时补 CHECK |
-| `apply_lifecycle_mutations` 与 Device revoke/disable 的模块迁移 | [仓库布局](../repository-layout.md) §5 要求「Phase 3 必须迁移」，从未登记移交 | Phase 5 开包时显式认领或作废；同时决定 layer-first vs domain-first 布局 |
 | Web 深链保留、首页落点 | Phase 1/2 登记「随 Panel 页面增多再定」 | WP7 触发，一并定案 |
 | `GET /api/v2/imports` 轮询取写锁 | Phase 2 登记 | 若 operator tab 数上升，随 WP7 改先 deferred 读 |

@@ -267,8 +267,7 @@ database / credential / protocol / OS adapters
 规则：
 
 1. domain 不依赖 Axum、具体持久化 adapter、zbus、Slint 或 Caddy；
-2. application 不暴露数据库 row、Protobuf message 或 D-Bus object；
-   - application 的只读 value object 可以携带 schema 描述性 derive（`serde::Serialize`、`utoipa::ToSchema`）——它们描述形状，不引入对 framework 或持久化 adapter 的依赖。此放宽仅在传输形状与应用形状完全一致时适用；一旦二者分叉，必须重新引入独立的 adapter 类型，由 adapter 承担转换。
+2. application 不暴露数据库 row、Protobuf message、D-Bus object 或 HTTP schema；HTTP adapter 持有 `serde` / `utoipa` DTO 并负责与 application value object 转换；
 3. adapter 负责结构转换和公开错误映射；
 4. transport handler 只完成认证、解码、调用 use case 和编码；
 5. 跨模块调用使用明确 port 或 command，不直接跨表写入；
@@ -282,8 +281,10 @@ database / credential / protocol / OS adapters
 | confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV；无 Seat-universe freeze 或业务 snapshot history |
 | account 标识与当前 Seat→Account mapping | contest-domain | Target、Web；`account_mappings` 属于 `revision_counters.configuration_revision` |
 | password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 每个 subject 仅当前 ciphertext |
-| Device lifecycle 与 provisioning 窗口 | identity-enrollment | Web、Target |
-| Device Token（哈希） | identity-enrollment | WSS 认证 adapter；`device_tokens` 仅保存 device/request/hash |
+| Device lifecycle | device | Web、Target |
+| Device Token（哈希）与 Gateway certificate 终态 | device | WSS 认证与 Enrollment adapter；`device_tokens` 仅保存 device/request/hash |
+| Enrollment request workflow | device | Enrollment HTTP、operator review、凭据签发 |
+| provisioning 窗口 | provisioning | Enrollment、Web |
 | 当前 Seat↔Device Binding | contest-domain | Target、session；Binding-set mutation 以全局 `BindingRevision` CAS |
 | Target | configuration-target | dispatcher、Web |
 | Observed snapshot | device-control | Drift、Web；按 `device_pk` 的 current row |
