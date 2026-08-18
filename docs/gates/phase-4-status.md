@@ -1,7 +1,7 @@
 # Phase 4 状态
 
 > 状态：`DRAFT-STEP0`
-> 最后更新：2026-08-16
+> 最后更新：2026-08-17
 > G4：`OPEN`（启动分解已冻结；实现未开始）
 
 Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。范围以 [roadmap](../roadmap.md) §Phase 4、[契约](../contracts.md) §3.5/§3.6.5/§5/§6/§9/§12、[状态与执行模型](../state-and-execution.md) §2 与 [ADR-0033](../adr/0033-enrollment-and-device-control-boundary.md)/[ADR-0034](../adr/0034-state-execution-and-data-plane-boundary.md) 为准；wire 契约（proto envelope、`commands`/`observed_device_states` DDL、putCommand OpenAPI 声明、控制类稳定码）已全部在 Phase 0 冻结，本阶段是为冻结面接入真实 runtime，不再新增 wire surface。
@@ -13,8 +13,8 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 | WP1 | Command 持久化与 PUT HTTP 面：RFC 8785 JCS（`serde_json_canonicalizer`）+ fingerprint v1 实现与 golden 向量、per-kind payload schema v1 冻结、`db::command` + `application::command`、`commands.state` CHECK 收口 + 调度索引（直接改初始 migration）、`PUT /api/v2/commands/{command_id}` handler（`201/200/400/409`、同事务创建审计、conflict 审计）、OpenAPI 挂载与 descriptor/TS golden 再生成 | `DONE`（见下方 WP1 落地记录） |
 | WP2 | Ingress hardening 定案落地：以 `hyper::server::conn::http1::Builder` 自建 accept loop（`max_headers`、header read timeout、`with_upgrades`、graceful shutdown、保留 `ClientAddress` connect info），连接容量常量与 accept 层 semaphore，431/slow-header 负向测试，[契约](../contracts.md) §3.6.5 以 dated revision 收口该 gap | `DONE`（见下方 WP2 落地记录） |
 | WP3 | WSS 服务端：upgrade 路由 `/api/v2/device/control`、subprotocol `natsume.v1` 协商失败拒绝、Bearer Device Token 常数时间认证（401-before-decode）、失败认证 IP 限流、Hello 交换（connection_epoch、协商 limits）、连接注册表（同 device 新连接置换旧连接、token 吊销即断、credential replacement 旧连接 anomaly audit——吸收 Phase 3 WP2b 挂账）、oversized frame/未知版本/非法 oneof 关闭连接 | `DONE`（见下方 WP3 落地记录） |
-| WP4 | Dispatcher 与 CommandStatus 回写：frozen payload → wire Command 确定性渲染（byte-identical golden）、创建与重连双触发投递、状态机单调回写（terminal 不可被 transport error 覆写、重复 terminal 合并安全）、same-ID replay 全链 | `OPEN` |
-| WP5 | Device 客户端运行时：WSS client（tokio-tungstenite + rustls，信任根同 enrollment）、Enrolled 驻留点接入连接循环与重连收敛、durable journal（文件式、同 ID frame bytes 比对、不同即 `COMMAND_PAYLOAD_CONFLICT`）、receipt-after-durable、Observed snapshot（变化触发 + 低频兜底、单调 sequence 原子持久化） | `OPEN` |
+| WP4 | Dispatcher 与 CommandStatus 回写：frozen payload → wire Command 确定性渲染（byte-identical golden）、创建与重连双触发投递、状态机单调回写（terminal 不可被 transport error 覆写、重复 terminal 合并安全）、same-ID replay 全链 | `DONE`（见下方 WP4 落地记录） |
+| WP5 | Device 客户端运行时：WSS client（tokio-tungstenite + rustls，信任根同 enrollment）、Enrolled 驻留点接入连接循环与重连收敛、durable journal（文件式、同 ID frame bytes 比对、不同即 `COMMAND_PAYLOAD_CONFLICT`）、receipt-after-durable、Observed snapshot（变化触发 + 低频兜底、单调 sequence 原子持久化） | `IN PROGRESS`（WP5a 已完成，见下方记录；Observed 尚未落地） |
 | WP6 | G4 证据收口：缩比容量探针（≥50–100 条模拟 WSS 连接携 Observed 上报压 SQLite 单写者路径）、INV-CERT-01 WSS 条款（operator session 不可建立 WSS）激活为真实测试、ErrorCode 跨 transport 一致性、G4 evidence 登记 | `OPEN` |
 
 依赖序：WP1 → WP2 → WP3 → WP4 → WP5 → WP6（WP2 先于 WP3 是因为 WSS upgrade 必须运行在最终 accept loop 上，避免 listener 路径二次返工）。沿 Phase 3 惯例，每个 WP 开包时冻结启动细目，本文件只冻结边界与跨切决策。
@@ -45,11 +45,41 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 
 ## WP3 落地记录（2026-08-16）
 
-- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.v1` 强制选择、Hello 交换与稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）；`contest.rs` 的 revoke/disable 在 DB 变更成功后驱逐；enrollment replacement 路径接线 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；五条真 TLS + 真 WS 客户端测试。
+- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.v1` 强制选择、Hello 交换与稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）；Device lifecycle handler 的 revoke/disable 在 DB 变更成功后驱逐；enrollment replacement 路径接线 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；五条真 TLS + 真 WS 客户端测试。
 - **认证顺序**：limiter → shape gate → SHA-256 → DB 查找 → `ConstantTimeEq` 复核，全部先于 upgrade 与任何 protobuf decode；缺失/格式错/未知/已吊销四路 401 同码同体，无 oracle。
 - **注册时机（审查后修正）**：连接在 hello 等待**之前**注册，使「已认证未 hello」的连接对撤销/替换驱逐可见；原实现在 ServerHello 之后注册，存在最长 10s 的撤销绕过窗口（WP4 dispatch 挂同一 registry 后将成为静默绕过）。同时 hello 窗口放行 Ping/Pong 而非判为协议错误。
-- **依赖事实（须知晓）**：启用 axum `ws` 后，`tungstenite 0.29` 的 `rand 0.9` / `getrandom 0.3` 熵栈与 `sha1`（RFC 6455 `Sec-WebSocket-Accept` 用，非安全原语）进入**生产 server 二进制**（daemon 不受影响）；`deny.toml` 两条精确版本 skip 因此必需。
+- **依赖事实（2026-08-17 修正）**：启用 axum `ws` 与 daemon 客户端 WSS 后，`tungstenite 0.29` 的 `rand 0.9` / `getrandom 0.3` 熵栈与 `sha1`（RFC 6455 `Sec-WebSocket-Accept` 用，非安全原语）进入**生产 server 与生产 daemon 二进制**；workspace 精确 pin 有意使用私有 `__rustls-tls` feature 以避开平台 TLS / 公共根 feature，`deny.toml` 两条精确版本 skip 因此必需。
 - 审查非阻断挂账：(a) eviction 发生在签发事务内、commit 之前（`device_pk` 只有进入事务读到 device 行后才可知，application 层无法先问 registry；回滚时表现为一次多余断连，安全侧 fail-safe，审计 bool 与凭据行仍同事务原子）；(b) 「missing pong」未强制——任何入站帧刷新 idle 计时，持续发 Heartbeat 但从不回 pong 的客户端可长存（真正静默者仍 60s 关闭）；(c) 「无 token + 无 subprotocol」这一唯一能证明认证优先于协商的组合无测试（顺序由 `route_layer` 结构性保证）；(d) 限流测试不能证明限流早于 DB 查询；(e) hello timeout / idle timeout / ping 周期三项无测试；(f) token 零化装饰性（SHA-256 中间值与 HeaderMap 原字节不清，与其他路由现状一致）。
+
+## WP4 落地记录（2026-08-16）
+
+- 交付：`application/command/render.rs`（frozen payload → wire Command 的全函数确定性渲染，全部穷举结构体字面量——proto 增删字段会编译失败；时间戳走 `time` crate RFC 3339）；`db::command::list_dispatchable_commands`（DB-as-truth，无内存队列，`(created_at, command_id)` 定序，`DISPATCH_BATCH_LIMIT = 256`）；创建与重连双触发投递（trait 定义在 application 层，db/application 不引用 WSS 类型）；`writeback_command_status` 单调状态机（事务内重读、终态不可覆写、重复终态零写入）与 `command_terminal` 终态审计（词汇先注册后写入器）。**游标已删除**：WP4 曾实现 `devices.terminal_result_cursor`（journal GC ack），因 Phase 4 无终态生产者且高水位标记在乱序终态下会静默丢结果而整体移除（proto 三字段、列、推进逻辑与类型），替代设计登记为 [Phase 5 计划](../planning/phase-5-plan.md) §6.1 的 D12。
+- **投递不改变 state**：状态只随 Device 上报的 CommandStatus 前进；`sync_secret` 在渲染前按 kind 跳过（Phase 4 零 wire 效果，密码属 Phase 5 vault 注入）。
+- 审查后修正：(1) 游标相关的越界修正随游标整体删除而作废（见上）；(2) 投递批次内每帧发送与驱逐信号做 `select`，避免设备停住 TCP 接收窗把「token 吊销即断」推迟到 TCP 超时；(3) 终态写回成功后触发一次重新投递，使批次上限之后排队的行立即可见，不必等下一次 PUT 或重连；(4) 投递**查询**失败不再杀连接（冻结规范只要求 send 失败结束连接）。
+- 审查非阻断挂账：(a) 每次唤醒重发全部可派发行而非增量（契约允许 byte-identical 重投递，存在操作面放大）；(b) 同一设备 ≥256 条长期处于 `running` 时，第 257 条在其中之一终态化前不可见（FIFO 窗口的容量边界，非停滞）；(c) `command_terminal` 审计的 `result` 由 `&'static str` 重新推导且带兜底分支，正确性依赖唯一调用点，建议改接 typed 状态；(d) 冻结规格的文件清单曾漏列当时的 Enrollment application/DB facade 与 `handler/command/tests.rs` 三处机械改动（游标随 token lookup 取回、通知器穿线、positional INSERT 列数）；Device-first 迁移后的对应路径为 `application/device/enrollment.rs` 与 `db/device/enrollment.rs`。原 (e) 测试热轮询已于 WP5a harness 收口为有界 interval poll。
+- **db 层单表偏差**：已由下方 2026-08-17 的 B1–B5 专项重构记录闭环，不再保留 transition exception。
+
+## WP5a 落地与对抗审查记录（2026-08-17）
+
+- 交付：daemon 以 rustls + WSS 在 Enrolled 驻留点运行控制循环，Command 先写文件 journal 再回 `received`，同 ID 不同 frame 回 `COMMAND_PAYLOAD_CONFLICT`；Unauthorized 保留现有凭据、不触发自动 re-enrollment，并仅按最大 backoff 重试。控制客户端按 connect / hello / session / backoff / fixture seam 拆分，测试 harness 按 server / client / PKI seam 拆分。
+- 三项阻断修正：(1) `ServerDrain` 的对端时间戳钳制到 30s reconnect 上限并记录 debug；(2) 稳态拒绝原因均以 typed、redacted warning 诊断，协商 frame 下限拒绝协议漂移陷阱，backoff 只在真实 Command 进展后复位；(3) `/var/lib/natsume/journal` 进入 tmpfiles 清单，runtime fallback 以 `0750` 原子创建目录。
+- dead-connection 收口：协商 idle timeout 经闭区间钳制后成为稳态 read deadline；Pong 与 CommandStatus 两条稳态 send 同样以不大于该 idle timeout 的 deadline 包裹。静默真实 socket 覆盖 read deadline；send deadline 由可控不读 sink + paused Tokio time 覆盖，不宣称真实 TCP 满窗端到端覆盖。
+- 共享面：subprotocol、wire version、frame limit、hello timeout、canonical command-id predicate 与 Device Token encoded-shape predicate 统一由 `device-protocol` 提供；server 仍独立完成 token base64url decode、32-byte 长度检查与不可区分 401。生产 client 配置/信任根读取移入 daemon 共享模块，控制面不再依赖 enrollment domain。
+- **生产 feature 隔离**：workspace-wide release build 曾把 integration crate 的 `fixture` feature 统一进生产 daemon。package smoke 现只在隔离的 `CARGO_TARGET_DIR` 中显式构建四个入包 Rust package，把该 release 目录交给 nFPM，并以 `cargo rustc --bin natsume-device-daemon -- --print cfg` 回归断言拒绝 `feature="fixture"`。
+- 剩余非阻断项：WP5 的 Observed snapshot、sequence 持久化与后续执行面仍未落地；send timeout 尚无真实 TCP 接收窗耗尽测试。以上不改变 WP5a receipt/reconnect 边界，也不提前关闭完整 WP5。
+
+## DB 单表重构完成记录（2026-08-17）
+
+- 专项重构按 B1–B5 五批完成：生产数据库入口统一为 `Database::read` / `Database::write`，application 组合不透明 `db::Transaction<'_>` 上的单表 adapter；旧 `Database::interact`、db 自开事务与跨表 mutation 函数均已删除。
+- `module-dependency-scan` 的 database-boundary transition allowlist 为零。多表 JOIN 只允许在四个已评审的纯读 query/read-model 模块中；每个模块都有索引/query-plan 测试，read-model 写入和 `db.rs` 外开启事务均由 canary 与全树扫描拒绝。
+- 回滚证据覆盖 Command、Operator、Device lifecycle、Enrollment、Provisioning 与 Import：注入 audit/table/CAS 失败后，业务行、审计行、凭据与 revision 的前后 snapshot 保持相等，证明事务组合上移后原子性未退化。
+- Enrollment 的证书签名目前仍在 write lock 内完成；这是保持原子 guard 的安全实现，不阻断本次架构闭环。把签名移出写锁只登记为非阻断性能优化，必须另行设计并复核重验证窗口。
+
+## Device-first 架构闭环记录（2026-08-17）
+
+- Device lifecycle、query、Token/Gateway credential 与 Enrollment request workflow 的 application、DB、HTTP、audit seam 已统一归入 `device`；provisioning 窗口独立归 `provisioning`，Seat、Account 与 Binding 继续归 `contest`。
+- 旧顶层 enrollment 与 contest-owned Device compatibility surface 已删除；application 不再携带 `utoipa` schema，公开 DTO 由 HTTP adapter 持有。
+- 本次仅移动内部 owner 与类型转换边界；HTTP operationId、status/component、内部 cause string、audit vocabulary、OpenAPI/TypeScript snapshot与 protocol golden 均保持不变，无 wire behavior change。
 
 ## 已登记待办
 

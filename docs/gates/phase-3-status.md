@@ -45,19 +45,19 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 |---|---|---|---|
 | 1 | identity 决策表全路径 | `PASS` | `machine-identity::claim_decision_table_covers_all_343_status_combinations` + 15 项决策表/golden + daemon startup 13 项 + helper 12 项 |
 | 2 | configured-disk copy fixture | `DEFERRED-NONBLOCKING` | owner 2026-08-16 裁定随 G0-IN-005 降级：实地采集归首次 provisioning（ADR-0032）；决策函数侧由 `machine_identity_startup.rs::copied_configured_state_on_different_hardware_uses_standard_reset_path` 覆盖 |
-| 3 | 窗口开/关负向 | `PASS` | `db/provisioning/tests.rs::close_open_window_failures_persist_no_partial_effect` 等 |
-| 4 | 正常 open/close audit+CAS | `PASS` | `operator_open_close_open_cycle_advances_revision_and_writes_exact_audits` |
-| 5 | open-window restart/restore close-once 与 closed-window 零写入 | `PASS` | `schema_contract_tests.rs::startup_recovery_closes_an_open_window_exactly_once`；closed-window 零写入见 enrollment intake 测试 |
-| 6 | 联合签发事务原子性 | `PASS` | `db/enrollment/tests.rs::csr_spki_mismatch_and_duplicate_issuance_audit_leave_zero_partial_state` |
-| 7 | CSR SAN ignore | `PASS` | `closed_window_is_zero_write_and_create_issuance_is_secret_safe_and_site_authoritative`（hostile SAN/CN/serial 全弃置） |
-| 8 | create 同步签发与 replacement 审批分支 | `PASS` | `handler/enrollment/tests.rs::operator_approve_claim_and_reject_poll_flows_are_end_to_end` |
-| 9 | `202` 幂等重投轮询返回同一 live request | `PASS` | `pending_replay_conflict_and_rejected_poll_have_exact_device_http_semantics` + `client_enrollment.rs` 真 TLS 场景 |
+| 3 | 窗口开/关负向 | `PASS` | `db/provisioning/tests.rs::duplicate_operator_audit_ids_leave_state_revision_and_pointer_unchanged`、`db/provisioning/tests.rs::cas_failure_rolls_back_enrollment_expiry_and_both_audits` |
+| 4 | 正常 open/close audit+CAS | `PASS` | `db/provisioning/tests.rs::operator_open_close_open_cycle_advances_revision_and_writes_exact_audits` |
+| 5 | open-window restart/restore close-once 与 closed-window 零写入 | `PASS` | `db/provisioning/schema_contract_tests.rs::startup_recovery_closes_an_open_window_exactly_once`；closed-window 零写入见 `application/device/enrollment/intake/tests.rs::closed_window_is_zero_write_and_create_issuance_is_secret_safe_and_site_authoritative` |
+| 6 | 联合签发事务原子性 | `PASS` | `application/device/enrollment/intake/tests.rs::csr_spki_mismatch_and_duplicate_issuance_audit_leave_zero_partial_state` |
+| 7 | CSR SAN ignore | `PASS` | `application/device/enrollment/intake/tests.rs::closed_window_is_zero_write_and_create_issuance_is_secret_safe_and_site_authoritative`（hostile SAN/CN/serial 全弃置） |
+| 8 | create 同步签发与 replacement 审批分支 | `PASS` | `http/handler/device/enrollment/tests.rs::operator_approve_claim_and_reject_poll_flows_are_end_to_end` |
+| 9 | `202` 幂等重投轮询返回同一 live request | `PASS` | `http/handler/device/enrollment/tests.rs::pending_replay_conflict_and_rejected_poll_have_exact_device_http_semantics` + `integration-tests/tests/client_enrollment.rs` 真 TLS 场景 |
 | 10 | approval 零签发与 claim 时窗口复检 | `PASS` | 同上端到端流（approve 后零签发、claim 时复检窗口） |
-| 11 | 窗口关闭时未 claim 请求转 `expired` | `PASS` | `expire_enrollment_requests` 写入器测试（operator close 与 recovery close-once 两路径） |
-| 12 | same-SPKI 自动批准重试 | `PASS` | `db/enrollment/tests.rs::same_spki_retry_reissues_once` + 客户端侧 `lost_issue_response_self_heals_with_same_spki_over_real_tls` |
-| 13 | 同 hardware ID 不同 SPKI 稳定拒绝 | `PASS` | `rejected_hardware_blocks_same_and_rotated_spki_until_window_close` |
+| 11 | 窗口关闭时未 claim 请求转 `expired` | `PASS` | `application/device/enrollment/intake/tests.rs::pending_poll_is_idempotent_conflict_is_zero_write_and_close_expires_approved_claim`（operator close）+ `db/provisioning/schema_contract_tests.rs::startup_recovery_closes_an_open_window_exactly_once`（recovery close-once） |
+| 12 | same-SPKI 自动批准重试 | `PASS` | `application/device/enrollment/intake/tests.rs::same_spki_retry_reissues_once` + 客户端侧 `lost_issue_response_self_heals_with_same_spki_over_real_tls` |
+| 13 | 同 hardware ID 不同 SPKI 稳定拒绝 | `PASS` | `application/device/enrollment/intake/tests.rs::rejected_hardware_blocks_same_and_rotated_spki_until_window_close` |
 | 14 | operator 拒绝的稳定码 | `PASS` | `ENROLLMENT_REQUEST_REJECTED` 端到端（服务端 + 客户端 typed terminal step） |
-| 15 | 替换语义与旧连接异常审计 | `PASS`（替换语义）+ **例外：旧连接 anomaly audit 移交 Phase 4 WP3** | `revoked_and_disabled_devices_require_approval_then_reactivate_on_claim` + `replacement_over_existing_artifacts_converges_via_enroll_until_parked`；anomaly audit 需 WSS connection facts，移交记录见下方待办与 [`phase-4-status.md`](phase-4-status.md) |
+| 15 | 替换语义与旧连接异常审计 | `PASS`（替换语义）+ **例外：旧连接 anomaly audit 移交 Phase 4 WP3** | `application/device/enrollment/intake/tests.rs::revoked_and_disabled_devices_require_approval_then_reactivate_on_claim` + `replacement_over_existing_artifacts_converges_via_enroll_until_parked`；anomaly audit 需 WSS connection facts，移交记录见下方待办与 [`phase-4-status.md`](phase-4-status.md) |
 | 16 | package upgrade 保留 identity/凭据 | `PASS`（断言 2026-08-16 补齐） | `hosted-lifecycle.sh` client 半：seed identity/key/token → 重装 → 字节与 mode/owner 不变断言；已知限制：跨版本 upgrade 无已发布前版（与 G0 条目 12 同源） |
 
 ## 已登记证据（G3）
