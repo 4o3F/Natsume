@@ -65,11 +65,15 @@ pub(crate) async fn revoke_device(
     let Some(device_id) = DeviceId::parse(&path.device_id) else {
         return ApiError::from_device(DeviceError::InvalidDeviceId, correlation_id).into_response();
     };
-    match device::revoke_device(&state.database, &device_id, correlation_id).await {
-        Ok(()) => {
-            state.device_connections.evict(&device_id.as_text());
-            StatusCode::OK.into_response()
-        }
+    match device::revoke_device(
+        &state.database,
+        &device_id,
+        correlation_id,
+        &state.device_connections,
+    )
+    .await
+    {
+        Ok(()) => StatusCode::OK.into_response(),
         Err(error) => ApiError::from_device(error, correlation_id).into_response(),
     }
 }
@@ -101,11 +105,15 @@ pub(crate) async fn disable_device(
     let Some(device_id) = DeviceId::parse(&path.device_id) else {
         return ApiError::from_device(DeviceError::InvalidDeviceId, correlation_id).into_response();
     };
-    match device::disable_device(&state.database, &device_id, correlation_id).await {
-        Ok(()) => {
-            state.device_connections.evict(&device_id.as_text());
-            StatusCode::OK.into_response()
-        }
+    match device::disable_device(
+        &state.database,
+        &device_id,
+        correlation_id,
+        &state.device_connections,
+    )
+    .await
+    {
+        Ok(()) => StatusCode::OK.into_response(),
         Err(error) => ApiError::from_device(error, correlation_id).into_response(),
     }
 }

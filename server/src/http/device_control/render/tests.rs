@@ -3,7 +3,6 @@ use natsume_device_protocol::generated::{
     TargetGateway, TargetSession, TargetStateSnapshot, TerminateSession, UnlockSession, command,
     control_envelope,
 };
-#[cfg(test)]
 use prost::Message as _;
 
 use crate::application::command::{CommandKind, DispatchableCommand};

@@ -14,7 +14,7 @@ use reqwest::{StatusCode, redirect::Policy};
 use serde_json::Value;
 use tempfile::{TempDir, tempdir};
 use tokio::{
-    sync::oneshot,
+    sync::{Mutex, oneshot},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
@@ -27,6 +27,7 @@ pub(super) const LOCALHOST: Ipv4Addr = Ipv4Addr::LOCALHOST;
 const SERVER_EVENT_TIMEOUT: Duration = Duration::from_secs(5);
 const SERVER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 const TEST_GATEWAY_HOSTNAME: &str = "gateway.contest.example";
+static SERVER_BIND_HANDOFF: Mutex<()> = Mutex::const_new(());
 
 pub struct TestServer {
     directory: TempDir,
@@ -89,7 +90,6 @@ impl TestServer {
             reservation.local_addr(),
             "server reserved address must be readable",
         );
-        drop(reservation);
         let server_config_path = directory.path().join("server.toml");
         require_ok(
             fs::write(
@@ -121,6 +121,10 @@ impl TestServer {
             ServerConfig::load_from(&server_config_path),
             "server configuration must load",
         );
+        // Parallel fixtures keep their own ephemeral port reserved through bootstrap. Serialize
+        // only the drop-to-listen handoff so another fixture cannot claim this port in between.
+        let bind_handoff = SERVER_BIND_HANDOFF.lock().await;
+        drop(reservation);
         let (shutdown, shutdown_signal) = oneshot::channel();
         let task = tokio::spawn(async move {
             commands::run_until(config, async move {
@@ -142,6 +146,7 @@ impl TestServer {
             task: Some(task),
         };
         server.wait_until_ready().await;
+        drop(bind_handoff);
         server.operator = Some(
             server
                 .login_operator(operator_login, operator_password)

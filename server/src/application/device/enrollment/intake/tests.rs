@@ -14,7 +14,6 @@ mod orchestration_tests {
     use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair, PublicKeyData};
     use rustls::{client::verify_server_name, server::ParsedCertificate};
     use rustls_pki_types::{CertificateDer, ServerName};
-    use serde_json::Value;
     use sha2::{Digest, Sha256};
     use snafu::Snafu;
     use uuid::Uuid;
@@ -22,7 +21,7 @@ mod orchestration_tests {
     use crate::{
         application::{
             device::{
-                self, DeviceId, HardwareIdentityQuality,
+                self, DeviceId, HardwareIdentityQuality, NoLiveDeviceConnections,
                 enrollment::{
                     self as enrollment, EnrollmentError, EnrollmentOutcome, EnrollmentRequestId,
                     EnrollmentRequestInput, GatewayIssuer, IntakeIds, MAX_LIVE_ENROLLMENT_REQUESTS,
@@ -128,6 +127,62 @@ mod orchestration_tests {
         let database_bytes = fixture.database_bytes()?;
         if contains_bytes(&database_bytes, &token) || contains_bytes(&database_bytes, &leaf) {
             return Err(TestFailure::PlaintextPersisted);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provisioning_read_failures_keep_invalid_facts_and_storage_failures_distinct()
+    -> Result<(), TestFailure> {
+        let invalid_fixture = DatabaseFixture::new();
+        let invalid_database = invalid_fixture.connect().await?;
+        invalid_database
+            .test_write(|connection| {
+                connection
+                    .batch_execute(
+                        "PRAGMA ignore_check_constraints = ON; \
+                         UPDATE provisioning_window SET revision = -1 WHERE singleton = 1; \
+                         PRAGMA ignore_check_constraints = OFF;",
+                    )
+                    .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)??;
+        let invalid_request = RequestFixture::new("invalid-window-facts.invalid.example")?;
+        let invalid_result = enrollment::intake(
+            &invalid_database,
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+            invalid_request.input,
+            SOURCE_IP,
+            correlation_id(),
+        )
+        .await;
+        if invalid_result.err() != Some(EnrollmentError::InvalidPersistedFacts) {
+            return Err(TestFailure::ProvisioningReadClassificationChanged);
+        }
+
+        let failed_fixture = DatabaseFixture::new();
+        let failed_database = failed_fixture.connect().await?;
+        failed_database
+            .test_write(|connection| {
+                diesel::sql_query("DELETE FROM provisioning_window")
+                    .execute(connection)
+                    .map(|_| ())
+                    .map_err(|_| TestFailure::EvidenceFailed)
+            })
+            .await
+            .map_err(|_| TestFailure::EvidenceFailed)??;
+        let failed_request = RequestFixture::new("failed-window-read.invalid.example")?;
+        let failed_result = enrollment::intake(
+            &failed_database,
+            GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+            failed_request.input,
+            SOURCE_IP,
+            correlation_id(),
+        )
+        .await;
+        if failed_result.err() != Some(EnrollmentError::PersistenceFailed) {
+            return Err(TestFailure::ProvisioningReadClassificationChanged);
         }
         Ok(())
     }
@@ -396,124 +451,272 @@ mod orchestration_tests {
     }
 
     #[tokio::test]
-    #[allow(clippy::too_many_lines)]
-    async fn revoked_and_disabled_devices_require_approval_then_reactivate_on_claim()
+    async fn disabled_and_revoked_devices_are_zero_write_identity_conflicts()
     -> Result<(), TestFailure> {
+        for state in [NonEnrolledState::Disabled, NonEnrolledState::Revoked] {
+            assert_new_intakes_conflict(state).await?;
+            assert_pending_replay_and_approval_are_gated(state).await?;
+            assert_approved_claim_is_gated(state).await?;
+        }
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
+    enum NonEnrolledState {
+        Disabled,
+        Revoked,
+    }
+
+    impl NonEnrolledState {
+        const fn as_persisted(self) -> &'static str {
+            match self {
+                Self::Disabled => "disabled",
+                Self::Revoked => "revoked",
+            }
+        }
+    }
+
+    async fn assert_new_intakes_conflict(state: NonEnrolledState) -> Result<(), TestFailure> {
         let fixture = DatabaseFixture::new();
         let database = fixture.connect().await?;
         let gateway_signer = GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?;
         provisioning::open_window(&database, correlation_id())
             .await
             .map_err(|_| TestFailure::WindowMutationFailed)?;
-        let request = RequestFixture::new("ignored-lifecycle.invalid.example")?;
-        let first = expect_issued(
+        let same_spki = RequestFixture::new("non-enrolled-same.invalid.example")?;
+        let issued = expect_issued(
             enrollment::intake(
                 &database,
                 gateway_signer.clone(),
-                request.input.clone(),
+                same_spki.input.clone(),
                 SOURCE_IP,
                 correlation_id(),
             )
             .await,
         )?;
-        let device_id = DeviceId::parse(&first.device_id.to_string())
-            .ok_or(TestFailure::LifecycleMutationFailed)?;
+        let device_id = parsed_device_id(issued.device_id)?;
+        apply_non_enrolled_state(&database, &device_id, state).await?;
+        let different_spki = RequestFixture::new("non-enrolled-different.invalid.example")?;
+        let before = rollback_snapshot(&database).await?;
 
-        device::revoke_device(&database, &device_id, correlation_id())
+        for input in [same_spki.input, different_spki.input] {
+            let result = enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                input,
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await;
+            if result.err() != Some(EnrollmentError::DeviceIdentityConflict)
+                || rollback_snapshot(&database).await? != before
+            {
+                return Err(TestFailure::NonEnrolledIdentityGateChangedFacts);
+            }
+        }
+        assert_non_enrolled_state(&database, issued.device_id, state).await
+    }
+
+    async fn assert_pending_replay_and_approval_are_gated(
+        state: NonEnrolledState,
+    ) -> Result<(), TestFailure> {
+        let fixture = DatabaseFixture::new();
+        let database = fixture.connect().await?;
+        let gateway_signer = GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?;
+        provisioning::open_window(&database, correlation_id())
             .await
-            .map_err(|_| TestFailure::LifecycleMutationFailed)?;
-        let revoked_credentials = credential_counts(&database).await?;
-        let revoked_pending = expect_pending(
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        let original = RequestFixture::new("pending-original.invalid.example")?;
+        let issued = expect_issued(
             enrollment::intake(
                 &database,
                 gateway_signer.clone(),
-                request.input.clone(),
+                original.input,
                 SOURCE_IP,
                 correlation_id(),
             )
             .await,
         )?;
-        if credential_counts(&database).await? != revoked_credentials
-            || device_state(&database, first.device_id).await? != "revoked"
-        {
-            return Err(TestFailure::LifecycleReplacementAutoApproved);
-        }
-        enrollment::approve_request(
+        let replacement = RequestFixture::new("pending-replacement.invalid.example")?;
+        let pending_id = expect_pending(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                replacement.input.clone(),
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
+        let device_id = parsed_device_id(issued.device_id)?;
+        apply_non_enrolled_state(&database, &device_id, state).await?;
+        let before = rollback_snapshot(&database).await?;
+
+        let replay = enrollment::intake(
             &database,
-            &EnrollmentRequestId::for_test(revoked_pending),
+            gateway_signer.clone(),
+            replacement.input.clone(),
+            SOURCE_IP,
+            correlation_id(),
+        )
+        .await;
+        if replay.err() != Some(EnrollmentError::DeviceIdentityConflict)
+            || rollback_snapshot(&database).await? != before
+        {
+            return Err(TestFailure::NonEnrolledIdentityGateChangedFacts);
+        }
+        let approval = enrollment::approve_request(
+            &database,
+            &EnrollmentRequestId::for_test(pending_id),
+            correlation_id(),
+        )
+        .await;
+        if approval.err() != Some(EnrollmentError::RequestNotPending)
+            || rollback_snapshot(&database).await? != before
+            || request_state(&database, pending_id).await? != "pending"
+        {
+            return Err(TestFailure::NonEnrolledApprovalChangedFacts);
+        }
+        enrollment::reject_request(
+            &database,
+            &EnrollmentRequestId::for_test(pending_id),
             correlation_id(),
         )
         .await
         .map_err(|_| TestFailure::DecisionFailed)?;
-        if credential_counts(&database).await? != revoked_credentials {
-            return Err(TestFailure::ApprovalIssued);
+        if request_state(&database, pending_id).await? != "rejected" {
+            return Err(TestFailure::NonEnrolledApprovalChangedFacts);
         }
-        let after_revoke = expect_issued(
-            enrollment::intake(
-                &database,
-                gateway_signer.clone(),
-                request.input.clone(),
-                SOURCE_IP,
-                correlation_id(),
-            )
-            .await,
-        )?;
-        assert_reactivation_issuance(
+        let after_reject = rollback_snapshot(&database).await?;
+        let rejected_poll = enrollment::intake(
             &database,
-            first.device_id,
-            after_revoke.device_id,
-            "revoked",
+            gateway_signer.clone(),
+            replacement.input.clone(),
+            SOURCE_IP,
+            correlation_id(),
         )
-        .await?;
-
-        device::disable_device(&database, &device_id, correlation_id())
+        .await;
+        if rejected_poll.err() != Some(EnrollmentError::RequestRejected)
+            || rollback_snapshot(&database).await? != after_reject
+        {
+            return Err(TestFailure::NonEnrolledIdentityGateChangedFacts);
+        }
+        provisioning::close_window(&database, correlation_id())
             .await
-            .map_err(|_| TestFailure::LifecycleMutationFailed)?;
-        let disabled_credentials = credential_counts(&database).await?;
-        let disabled_pending = expect_pending(
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        let after_close = rollback_snapshot(&database).await?;
+        let closed_poll = enrollment::intake(
+            &database,
+            gateway_signer,
+            replacement.input,
+            SOURCE_IP,
+            correlation_id(),
+        )
+        .await;
+        if closed_poll.err() != Some(EnrollmentError::ProvisioningWindowClosed)
+            || rollback_snapshot(&database).await? != after_close
+        {
+            return Err(TestFailure::NonEnrolledIdentityGateChangedFacts);
+        }
+        assert_non_enrolled_state(&database, issued.device_id, state).await
+    }
+
+    async fn assert_approved_claim_is_gated(state: NonEnrolledState) -> Result<(), TestFailure> {
+        let fixture = DatabaseFixture::new();
+        let database = fixture.connect().await?;
+        let gateway_signer = GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?;
+        provisioning::open_window(&database, correlation_id())
+            .await
+            .map_err(|_| TestFailure::WindowMutationFailed)?;
+        let original = RequestFixture::new("approved-original.invalid.example")?;
+        let issued = expect_issued(
             enrollment::intake(
                 &database,
                 gateway_signer.clone(),
-                request.input.clone(),
+                original.input,
                 SOURCE_IP,
                 correlation_id(),
             )
             .await,
         )?;
-        if credential_counts(&database).await? != disabled_credentials
-            || device_state(&database, first.device_id).await? != "disabled"
-        {
-            return Err(TestFailure::LifecycleReplacementAutoApproved);
-        }
+        let replacement = RequestFixture::new("approved-replacement.invalid.example")?;
+        let pending_id = expect_pending(
+            enrollment::intake(
+                &database,
+                gateway_signer.clone(),
+                replacement.input.clone(),
+                SOURCE_IP,
+                correlation_id(),
+            )
+            .await,
+        )?;
         enrollment::approve_request(
             &database,
-            &EnrollmentRequestId::for_test(disabled_pending),
+            &EnrollmentRequestId::for_test(pending_id),
             correlation_id(),
         )
         .await
         .map_err(|_| TestFailure::DecisionFailed)?;
-        if credential_counts(&database).await? != disabled_credentials {
-            return Err(TestFailure::ApprovalIssued);
-        }
-        let after_disable = expect_issued(
-            enrollment::intake(
-                &database,
-                gateway_signer,
-                request.input,
-                SOURCE_IP,
-                correlation_id(),
-            )
-            .await,
-        )?;
-        assert_reactivation_issuance(
+        let device_id = parsed_device_id(issued.device_id)?;
+        apply_non_enrolled_state(&database, &device_id, state).await?;
+        let before = rollback_snapshot(&database).await?;
+
+        let claim = enrollment::intake(
             &database,
-            first.device_id,
-            after_disable.device_id,
-            "disabled",
+            gateway_signer,
+            replacement.input,
+            SOURCE_IP,
+            correlation_id(),
         )
-        .await?;
-        if active_certificate_count_for_device(&database, first.device_id).await? != 1 {
-            return Err(TestFailure::ActiveCertificateInvariantChanged);
+        .await;
+        if claim.err() != Some(EnrollmentError::DeviceIdentityConflict)
+            || rollback_snapshot(&database).await? != before
+            || request_state(&database, pending_id).await? != "approved"
+        {
+            return Err(TestFailure::NonEnrolledIdentityGateChangedFacts);
+        }
+        assert_non_enrolled_state(&database, issued.device_id, state).await
+    }
+
+    fn parsed_device_id(device_id: Uuid) -> Result<DeviceId, TestFailure> {
+        DeviceId::parse(&device_id.to_string()).ok_or(TestFailure::LifecycleMutationFailed)
+    }
+
+    async fn apply_non_enrolled_state(
+        database: &Database,
+        device_id: &DeviceId,
+        state: NonEnrolledState,
+    ) -> Result<(), TestFailure> {
+        let result = match state {
+            NonEnrolledState::Disabled => {
+                device::disable_device(
+                    database,
+                    device_id,
+                    correlation_id(),
+                    &NoLiveDeviceConnections,
+                )
+                .await
+            }
+            NonEnrolledState::Revoked => {
+                device::revoke_device(
+                    database,
+                    device_id,
+                    correlation_id(),
+                    &NoLiveDeviceConnections,
+                )
+                .await
+            }
+        };
+        result.map_err(|_| TestFailure::LifecycleMutationFailed)
+    }
+
+    async fn assert_non_enrolled_state(
+        database: &Database,
+        device_id: Uuid,
+        expected: NonEnrolledState,
+    ) -> Result<(), TestFailure> {
+        if device_state(database, device_id).await? != expected.as_persisted() {
+            return Err(TestFailure::NonEnrolledIdentityGateChangedFacts);
         }
         Ok(())
     }
@@ -991,68 +1194,6 @@ mod orchestration_tests {
             .map_err(|_| TestFailure::EvidenceFailed)?
     }
 
-    async fn assert_reactivation_issuance(
-        database: &Database,
-        expected_device_id: Uuid,
-        issued_device_id: Uuid,
-        previous_device_state: &'static str,
-    ) -> Result<(), TestFailure> {
-        let (actor, reason, encoded_detail) =
-            audit_shape(database, "issue_device_credentials").await?;
-        let detail: Value =
-            serde_json::from_str(&encoded_detail).map_err(|_| TestFailure::EvidenceFailed)?;
-        let detail = detail.as_object().ok_or(TestFailure::EvidenceFailed)?;
-        if expected_device_id != issued_device_id
-            || device_state(database, expected_device_id).await? != "enrolled"
-            || actor != "device:enrollment"
-            || reason != "credential_replacement"
-            || detail.len() != 5
-            || detail.get("resolution").and_then(Value::as_str)
-                != Some("replace_device_credentials")
-            || detail.get("previous_device_state").and_then(Value::as_str)
-                != Some(previous_device_state)
-            || detail
-                .get("evicted_live_connection")
-                .and_then(Value::as_bool)
-                != Some(false)
-            || detail
-                .get("certificate_serial")
-                .and_then(Value::as_str)
-                .is_none_or(|serial| {
-                    serial.len() != 40
-                        || !serial
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                })
-            || detail
-                .get("gateway_spki_sha256")
-                .and_then(Value::as_str)
-                .is_none_or(|digest| digest.len() != 64)
-        {
-            return Err(TestFailure::LifecycleClaimDidNotReactivate);
-        }
-        Ok(())
-    }
-
-    async fn active_certificate_count_for_device(
-        database: &Database,
-        device_id: Uuid,
-    ) -> Result<i64, TestFailure> {
-        database
-            .test_read(move |connection| {
-                diesel::sql_query(
-                    "SELECT COUNT(*) AS value FROM gateway_certificates \
-                 WHERE device_pk = ? AND status = 'active'",
-                )
-                .bind::<Text, _>(device_id.to_string())
-                .get_result::<CountRow>(connection)
-                .map(|row| row.value)
-                .map_err(|_| TestFailure::EvidenceFailed)
-            })
-            .await
-            .map_err(|_| TestFailure::EvidenceFailed)?
-    }
-
     async fn seed_live_request_capacity(database: &Database) -> Result<(), TestFailure> {
         database
             .test_write(|connection| {
@@ -1477,12 +1618,10 @@ mod orchestration_tests {
         RejectedWindowBlockDidNotClear,
         #[snafu(display("the Device lifecycle mutation failed"))]
         LifecycleMutationFailed,
-        #[snafu(display("a revoked or disabled Device used same-SPKI auto-approval"))]
-        LifecycleReplacementAutoApproved,
-        #[snafu(display("the approved lifecycle replacement did not reactivate the Device"))]
-        LifecycleClaimDidNotReactivate,
-        #[snafu(display("the one-active-certificate invariant changed"))]
-        ActiveCertificateInvariantChanged,
+        #[snafu(display("a non-enrolled Device identity gate changed persisted facts"))]
+        NonEnrolledIdentityGateChangedFacts,
+        #[snafu(display("a non-enrolled Device approval changed persisted facts"))]
+        NonEnrolledApprovalChangedFacts,
         #[snafu(display("the live Enrollment capacity rejection wrote state"))]
         LiveRequestCapacityWrote,
         #[snafu(display("the operator decision failed"))]
@@ -1497,6 +1636,8 @@ mod orchestration_tests {
         ClaimCasFailureDidNotRollBack,
         #[snafu(display("current credential corruption caused an Enrollment write"))]
         CredentialCorruptionWrote,
+        #[snafu(display("the provisioning read error classification changed"))]
+        ProvisioningReadClassificationChanged,
         #[snafu(display("database evidence failed"))]
         EvidenceFailed,
     }

@@ -5,15 +5,17 @@ use diesel::{
 };
 
 use crate::{
-    application::provisioning::{ProvisioningError, ProvisioningWindow, ProvisioningWindowState},
+    application::provisioning::{
+        ProvisioningPersistenceError, ProvisioningWindow, ProvisioningWindowState,
+    },
     audit::AuditEventId,
     db::{DatabaseError, Transaction, schema::provisioning_window},
 };
 
 pub(crate) fn read_window(
     transaction: &mut Transaction<'_>,
-) -> Result<ProvisioningWindow, ProvisioningError> {
-    read_window_persisted(transaction).map_err(ProvisioningError::from)
+) -> Result<ProvisioningWindow, ProvisioningPersistenceError> {
+    read_window_persisted(transaction).map_err(ProvisioningPersistenceError::from)
 }
 
 fn read_window_persisted(
@@ -40,7 +42,7 @@ pub(crate) fn compare_and_swap_window(
     expected: ProvisioningWindow,
     next: ProvisioningWindow,
     audit_event_id: AuditEventId,
-) -> Result<(), ProvisioningError> {
+) -> Result<(), ProvisioningPersistenceError> {
     let updated = diesel::update(
         provisioning_window::table
             .filter(provisioning_window::singleton.eq(Some(1_i32)))
@@ -78,20 +80,21 @@ enum ProvisioningStoreError {
     CompareAndSwapConflict,
 }
 
-impl From<ProvisioningStoreError> for ProvisioningError {
-    fn from(source: ProvisioningStoreError) -> Self {
-        match source {
-            ProvisioningStoreError::ReadFailed
-            | ProvisioningStoreError::InvalidCurrentFacts
-            | ProvisioningStoreError::MutationFailed
-            | ProvisioningStoreError::CompareAndSwapConflict => Self::PersistenceFailed,
+impl From<ProvisioningStoreError> for ProvisioningPersistenceError {
+    fn from(error: ProvisioningStoreError) -> Self {
+        match error {
+            ProvisioningStoreError::ReadFailed | ProvisioningStoreError::MutationFailed => {
+                Self::PersistenceFailed
+            }
+            ProvisioningStoreError::InvalidCurrentFacts
+            | ProvisioningStoreError::CompareAndSwapConflict => Self::InvalidPersistedFacts,
         }
     }
 }
 
-impl From<DatabaseError> for ProvisioningError {
-    fn from(source: DatabaseError) -> Self {
-        match source {
+impl From<DatabaseError> for ProvisioningPersistenceError {
+    fn from(error: DatabaseError) -> Self {
+        match error {
             DatabaseError::InvalidConfiguration
             | DatabaseError::ConnectionFailed
             | DatabaseError::MigrationFailed

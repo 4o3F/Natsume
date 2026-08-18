@@ -1,4 +1,7 @@
-use crate::db::{self, Database};
+use crate::{
+    application::device::DeviceId,
+    db::{self, Database},
+};
 
 use super::ContestError;
 
@@ -17,11 +20,58 @@ impl SeatFacts {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentSeatProjection {
+    seat_id: String,
+    seat_code: String,
+    current_domjudge_username: Option<String>,
+    device_id: Option<DeviceId>,
+}
+
+impl CurrentSeatProjection {
+    pub(crate) fn new(
+        seat_id: String,
+        seat_code: String,
+        current_domjudge_username: Option<String>,
+        device_id: Option<DeviceId>,
+    ) -> Self {
+        Self {
+            seat_id,
+            seat_code,
+            current_domjudge_username,
+            device_id,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn seat_id(&self) -> &str {
+        &self.seat_id
+    }
+
+    #[must_use]
+    pub(crate) fn seat_code(&self) -> &str {
+        &self.seat_code
+    }
+
+    #[must_use]
+    pub(crate) fn current_domjudge_username(&self) -> Option<&str> {
+        self.current_domjudge_username.as_deref()
+    }
+
+    #[must_use]
+    pub(crate) const fn device_id(&self) -> Option<&DeviceId> {
+        self.device_id.as_ref()
+    }
+}
+
 /// Reads the current Seat set in deterministic natural-key order.
 ///
 /// # Errors
 ///
 /// Returns a redacted [`ContestError`] when persistence fails.
 pub(crate) async fn list_seats(database: &Database) -> Result<Vec<SeatFacts>, ContestError> {
-    database.read(db::contest::seats::list).await
+    database
+        .read(db::contest::seats::list)
+        .await
+        .map_err(ContestError::from_persistence)
 }

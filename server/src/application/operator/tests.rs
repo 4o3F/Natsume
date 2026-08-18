@@ -10,7 +10,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use crate::{
-    audit::CorrelationId,
+    audit::{AuditPersistenceError, CorrelationId},
     db::{Database, DatabaseConfig, operator as db_operator},
 };
 
@@ -25,6 +25,14 @@ const GATE_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_s
 const GATE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 static PASSWORD_VERIFICATION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+#[test]
+fn audit_persistence_mapping_covers_every_neutral_variant() {
+    assert_eq!(
+        OperatorError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+        OperatorError::PersistenceFailed
+    );
+}
 
 pub(crate) struct PasswordVerificationTestGuard {
     _guard: tokio::sync::MutexGuard<'static, ()>,

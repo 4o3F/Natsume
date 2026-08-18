@@ -3,6 +3,25 @@ use super::{
     create_import_candidate, discard_import, read_pending_import_candidate,
 };
 
+#[test]
+fn persistence_mappings_cover_every_neutral_variant() {
+    use crate::{application::contest::ContestPersistenceError, audit::AuditPersistenceError};
+
+    for error in [
+        ContestPersistenceError::InvalidPersistedFacts,
+        ContestPersistenceError::PersistenceFailed,
+    ] {
+        assert_eq!(
+            ImportError::from_contest_persistence(error),
+            ImportError::PersistenceFailure
+        );
+    }
+    assert_eq!(
+        ImportError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+        ImportError::PersistenceFailure
+    );
+}
+
 #[cfg(test)]
 mod candidate_tests {
     use std::{

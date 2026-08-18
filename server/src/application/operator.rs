@@ -1,6 +1,8 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
+use crate::audit::AuditPersistenceError;
+
 mod account;
 mod password;
 mod session;
@@ -127,6 +129,14 @@ pub(crate) enum OperatorError {
     SaltEncodingFailed,
     #[snafu(display("the operator password could not be hashed"))]
     PasswordHashingFailed,
+}
+
+impl OperatorError {
+    pub(crate) const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
+        match error {
+            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
 }
 
 #[cfg(test)]

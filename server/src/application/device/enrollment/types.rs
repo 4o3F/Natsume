@@ -5,7 +5,7 @@ use crate::application::device::{HardwareIdentityQuality, credentials::DeviceTok
 mod error;
 mod projections;
 
-pub(crate) use self::error::EnrollmentError;
+pub(crate) use self::error::{EnrollmentError, EnrollmentRequestPersistenceError};
 pub(crate) use self::projections::{
     EnrollmentDecisionProjection, EnrollmentRequestSummary, LatestEnrollmentRequestProjection,
     LiveEnrollmentRequestProjection,

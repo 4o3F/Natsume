@@ -114,7 +114,7 @@ Device 启动必须先验证当前 Machine Hardware ID，再读取或使用任�
 ```text
 server-auth TLS（全部入口，预置 trust + IP-SAN 验证）
   → provisioning 窗口内 Enrollment：签发 { Device Token + Gateway certificate }
-  → WSS 控制面（token 认证）；SYNC_STATE / SYNC_SECRET 不签发任何东西
+  → WSS 控制面（token + resolved Device state=`enrolled` 认证）；SYNC_STATE / SYNC_SECRET 不签发任何东西
 ```
 
 窗口关闭时不存在任何签发路径。`provisioning_window` 是一个当前 singleton，只含 `state`（`open`/`closed`）、单调 `revision` 与 `last_audit_event_id`；正常 open/close 与其 redacted audit 以同一 transaction 的 guarded operation CAS 提交；AuditEvent 是证据历史，不保留逐次 provisioning revision 状态行。restart/restore 绝不自动开启：已 `closed` 时零写入，只有已 `open` 时才以 `system:recovery` audit 原子 close 并将 revision 加一；成功后再次恢复不产生第二条 close audit（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。Enrollment 之外、operator API 与任何 Command 都不能获得 token 或证书。
@@ -127,7 +127,7 @@ server-auth TLS（全部入口，预置 trust + IP-SAN 验证）
 
 Gateway SAN、hostname、profile、EKU 和 validity 必须由 Server 站点配置与冻结 policy 派生。CSR 自报字段不授予权限，只证明 possession 与公钥结构。
 
-同一 `MachineHardwareId` 窗口内重复 Enrollment 为受审计的替换：旧 token 失效、新产物签发。
+同一 `MachineHardwareId` 窗口内重复 Enrollment 只有在既有 Device 当前为 `enrolled` 时才可成为受审计的替换：旧 token 失效、新产物签发。`disabled` / `revoked` Device 的 intake、live replay 与 approved claim 全部以 identity conflict 零写入拒绝，approval 也在 audit/CAS 前拒绝；重开窗口不构成 enable/reactivate 权限。
 
 **验证入口：** CSR SAN ignore test、替换语义与审计测试、certificate inspection。
 
@@ -240,7 +240,7 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 - 全部原子写（temp + fsync + rename），半写不可见；
 - 最小版本头，不预建迁移框架；
 - identity-before-credentials（`INV-IDENTITY-02`）；
-- 损坏不自动重建；恢复 = 窗口重开 re-enrollment / 重新 `SYNC_SECRET`。
+- 损坏不自动重建；窗口重开后的 re-enrollment 只适用于 Server 当前仍为 `enrolled` 的既有 Device。`disabled` / `revoked` Device 没有 Enrollment 恢复捷径；恢复必须走另行评审的显式、受审计 lifecycle/runbook，当前不提供 enable/reactivate API。重新 `SYNC_SECRET` 同样不改变 Device state。
 
 ### 5.3 内存
 
@@ -275,7 +275,7 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 | 故障 | 允许继续 | 禁止 |
 |---|---|---|
 | Server 暂时离线 | 使用已验证本地 LKG | 新签发、新 binding、新 secret |
-| Device Token 被吊销/失效 | 本地有限 BLOCKED 页面 | 控制面连接 |
+| Device Token 被吊销/失效，或 resolved Device 非 `enrolled` | 本地有限 BLOCKED 页面 | 控制面连接 |
 | Gateway cert 无效 | 旧有效 LKG 或 BLOCKED | 未验证 READY |
 | Machine ID 不可用/冲突 | 诊断和人工恢复 | 使用本地凭据、Enrollment |
 | 凭据文件损坏 | 诊断、备份、人工恢复 | 自动重建凭据 |
@@ -298,6 +298,7 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 7. 恢复后用 Observed、Drift、certificate inspection 和 audit 验证，而不是只看服务进程已启动。
 8. 无法证明旧状态安全时进入 BLOCKED，而不是尝试“最大可用性”。
 9. runbook 中的每个 destructive step 必须有备份/rollback 条件。
+10. 重开 provisioning window、重投 Enrollment 或保留 disabled Device 的 token/certificate row 都不得被 runbook 解释为重新启用；只有 `enrolled` Device 可进入 re-enrollment issuance。
 
 具体恢复步骤在对应 Phase 实现后编写；当前不保留未建系统的目标操作流程。
 

@@ -4,7 +4,9 @@ use axum::{
 };
 use natsume_device_protocol::{
     CONTROL_MAX_FRAME_BYTES,
-    generated::{ControlEnvelope, ProtocolError, ServerDrain, control_envelope},
+    generated::{
+        CommandState, CommandStatus, ControlEnvelope, ProtocolError, ServerDrain, control_envelope,
+    },
     validate_envelope,
 };
 use natsume_error_code::{ErrorCode, control::ControlErrorCode};
@@ -12,7 +14,10 @@ use prost::Message as _;
 use tokio::sync::Notify;
 
 use crate::{
-    application::command::{self, CommandError, CommandStatusWriteOutcome},
+    application::command::{
+        self, CommandError, CommandId, CommandStatusWrite, CommandStatusWriteOutcome,
+        ReportedCommandState,
+    },
     db::Database,
 };
 
@@ -41,12 +46,12 @@ pub(super) async fn handle_steady_binary(
     match envelope.body {
         Some(control_envelope::Body::Heartbeat(_)) => ConnectionFlow::Continue,
         Some(control_envelope::Body::CommandStatus(status)) => {
-            if !is_known_stable_error_code(&status.stable_error_code) {
+            let Some(status) = map_command_status(status) else {
                 let code = ControlErrorCode::ProtocolInvalidEnvelope;
                 reject_protocol(socket, code).await;
                 return ConnectionFlow::Close(ConnectionCloseReason::ProtocolRejected(code));
-            }
-            match command::writeback_command_status(database, device_pk, &status).await {
+            };
+            match command::writeback_command_status(database, device_pk, status).await {
                 Ok(CommandStatusWriteOutcome::IgnoredUnknownCommand) => {
                     tracing::debug!(
                         connection_epoch,
@@ -94,6 +99,7 @@ pub(super) async fn handle_steady_binary(
                     | CommandError::ReasonCodeInvalid
                     | CommandError::GroupCorrelationIdInvalid
                     | CommandError::DeviceNotFound
+                    | CommandError::DeviceNotEnrolled
                     | CommandError::RequestConflict
                     | CommandError::CanonicalizationFailed,
                 ) => {
@@ -119,6 +125,32 @@ pub(super) async fn handle_steady_binary(
             ConnectionFlow::Close(ConnectionCloseReason::ProtocolRejected(code))
         }
     }
+}
+
+fn map_command_status(status: CommandStatus) -> Option<CommandStatusWrite> {
+    if !is_known_stable_error_code(&status.stable_error_code) {
+        return None;
+    }
+    let command_id = CommandId::parse(&status.command_id).ok()?.value();
+    let state = match CommandState::try_from(status.state) {
+        Ok(CommandState::Received) => ReportedCommandState::Received,
+        Ok(CommandState::Running) => ReportedCommandState::Running,
+        Ok(CommandState::Succeeded) => ReportedCommandState::Succeeded,
+        Ok(CommandState::Failed) => ReportedCommandState::Failed,
+        Ok(CommandState::Cancelled) => ReportedCommandState::Cancelled,
+        Ok(CommandState::Expired) => ReportedCommandState::Expired,
+        Ok(CommandState::ManualInterventionRequired) => {
+            ReportedCommandState::ManualInterventionRequired
+        }
+        Ok(CommandState::Unspecified) | Err(_) => return None,
+    };
+    let terminal_error_code =
+        (!status.stable_error_code.is_empty()).then_some(status.stable_error_code);
+    Some(CommandStatusWrite {
+        command_id,
+        state,
+        terminal_error_code,
+    })
 }
 
 pub(in crate::http::device_control) fn is_known_stable_error_code(value: &str) -> bool {

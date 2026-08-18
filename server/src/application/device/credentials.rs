@@ -11,18 +11,32 @@ use super::{
 
 const DEVICE_TOKEN_BYTES: usize = 32;
 
-pub(crate) trait DeviceConnectionEvictor: Send + Sync + 'static {
-    fn evict_device_connection(&self, device_pk: &str) -> bool;
+/// Device-owned facts required to persist a newly issued Gateway credential.
+pub(crate) struct NewGatewayCertificate {
+    serial: String,
+    not_after: String,
+    spki_sha256: [u8; 32],
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy)]
-pub(in crate::application::device) struct NoLiveDeviceConnections;
+impl NewGatewayCertificate {
+    pub(crate) fn new(serial: String, not_after: String, spki_sha256: [u8; 32]) -> Self {
+        Self {
+            serial,
+            not_after,
+            spki_sha256,
+        }
+    }
 
-#[cfg(test)]
-impl DeviceConnectionEvictor for NoLiveDeviceConnections {
-    fn evict_device_connection(&self, _device_pk: &str) -> bool {
-        false
+    pub(crate) fn serial(&self) -> &str {
+        &self.serial
+    }
+
+    pub(crate) fn not_after(&self) -> &str {
+        &self.not_after
+    }
+
+    pub(crate) const fn spki_sha256(&self) -> &[u8; 32] {
+        &self.spki_sha256
     }
 }
 
@@ -49,6 +63,7 @@ pub(crate) struct DeviceTokenAuthenticationFacts {
     pub(crate) device_pk: DeviceId,
     pub(crate) machine_hardware_id: Uuid,
     pub(crate) token_hash: [u8; 32],
+    pub(crate) state: DeviceState,
 }
 
 impl DeviceTokenAuthenticationFacts {
@@ -56,6 +71,7 @@ impl DeviceTokenAuthenticationFacts {
         device_pk: &str,
         machine_hardware_id: &str,
         token_hash: Vec<u8>,
+        state: &str,
     ) -> Result<Self, DevicePersistenceError> {
         Ok(Self {
             device_pk: DeviceId::parse(device_pk)
@@ -65,6 +81,8 @@ impl DeviceTokenAuthenticationFacts {
             token_hash: token_hash
                 .try_into()
                 .map_err(|_| DevicePersistenceError::InvalidPersistedFacts)?,
+            state: DeviceState::from_persisted(state)
+                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
         })
     }
 }
@@ -159,7 +177,6 @@ impl CurrentCredentialConsistencyProjection {
 pub(crate) struct IssuanceDeviceContext {
     pub(in crate::application::device) previous_device_state: Option<DeviceState>,
     pub(in crate::application::device) retire_existing: bool,
-    pub(in crate::application::device) restore_enrolled: bool,
 }
 
 impl IssuanceDeviceContext {
@@ -167,18 +184,13 @@ impl IssuanceDeviceContext {
         Self {
             previous_device_state: None,
             retire_existing: false,
-            restore_enrolled: false,
         }
     }
 
-    pub(in crate::application::device) const fn replacement(
-        state: DeviceState,
-        retire_existing: bool,
-    ) -> Self {
+    pub(in crate::application::device) const fn replacement() -> Self {
         Self {
-            previous_device_state: Some(state),
-            retire_existing,
-            restore_enrolled: !matches!(state, DeviceState::Enrolled),
+            previous_device_state: Some(DeviceState::Enrolled),
+            retire_existing: true,
         }
     }
 }

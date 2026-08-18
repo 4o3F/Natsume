@@ -2,14 +2,15 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigI
 
 use crate::{
     application::{
-        contest::{BindingFacts, ContestError},
+        contest::{BindingFacts, ContestPersistenceError},
         device::DeviceId,
-        import::ImportError,
     },
     db::{Transaction, schema::device_bindings},
 };
 
-pub(crate) fn list(transaction: &mut Transaction<'_>) -> Result<Vec<BindingFacts>, ContestError> {
+pub(crate) fn list(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<BindingFacts>, ContestPersistenceError> {
     let rows = device_bindings::table
         .select((
             device_bindings::seat_id,
@@ -18,10 +19,11 @@ pub(crate) fn list(transaction: &mut Transaction<'_>) -> Result<Vec<BindingFacts
         ))
         .order(device_bindings::seat_id)
         .load::<(String, String, i64)>(transaction.connection())
-        .map_err(|_| ContestError::PersistenceFailed)?;
+        .map_err(|_| ContestPersistenceError::PersistenceFailed)?;
     rows.into_iter()
         .map(|(seat_id, device_id, binding_revision)| {
-            let device_id = DeviceId::parse(&device_id).ok_or(ContestError::PersistenceFailed)?;
+            let device_id = DeviceId::parse(&device_id)
+                .ok_or(ContestPersistenceError::InvalidPersistedFacts)?;
             Ok(BindingFacts::new(seat_id, device_id, binding_revision))
         })
         .collect()
@@ -30,8 +32,8 @@ pub(crate) fn list(transaction: &mut Transaction<'_>) -> Result<Vec<BindingFacts
 pub(crate) fn delete_by_seat(
     transaction: &mut Transaction<'_>,
     seat_id: &str,
-) -> Result<usize, ImportError> {
+) -> Result<usize, ContestPersistenceError> {
     diesel::delete(device_bindings::table.filter(device_bindings::seat_id.eq(seat_id)))
         .execute(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| ContestPersistenceError::PersistenceFailed)
 }

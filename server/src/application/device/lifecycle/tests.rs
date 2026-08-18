@@ -1,6 +1,10 @@
 #[cfg(test)]
 mod orchestration_tests {
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Mutex, MutexGuard},
+    };
 
     use diesel::{
         RunQueryDsl,
@@ -11,26 +15,118 @@ mod orchestration_tests {
     use uuid::Uuid;
 
     use crate::{
-        application::device::{DeviceError, DeviceId, DeviceLifecycleAction},
-        audit::{AuditEventId, CorrelationId},
+        application::device::{
+            DeviceConnectionEvictor, DeviceError, DeviceId, DeviceLifecycleAction,
+            NoLiveDeviceConnections, disable_device, revoke_device,
+        },
+        audit::CorrelationId,
         db::{
             Database, DatabaseConfig,
             device::tests::{
                 TestLifecycleAudit, TestLifecycleSnapshot, test_latest_lifecycle_audit,
-                test_lifecycle_audit_count, test_lifecycle_snapshot, test_reserve_audit_id,
-                test_seed_lifecycle_device,
+                test_lifecycle_audit_count, test_lifecycle_snapshot, test_seed_lifecycle_device,
             },
             tests::{test_data_version, test_observer},
         },
     };
-
-    use super::super::apply_device_lifecycle;
 
     const ENROLLED_DEVICE: &str = "01900000-0000-7000-8000-000000000101";
     const DISABLED_DEVICE: &str = "01900000-0000-7000-8000-000000000102";
     const REVOKED_DEVICE: &str = "01900000-0000-7000-8000-000000000103";
     const PARTIAL_DEVICE: &str = "01900000-0000-7000-8000-000000000104";
     const CERTIFICATE_PARTIAL_DEVICE: &str = "01900000-0000-7000-8000-000000000105";
+
+    #[tokio::test]
+    async fn successful_and_noop_lifecycle_calls_each_evict_exactly_once() -> Result<(), TestFailure>
+    {
+        let fixture = TestDatabase::new().await?;
+        for id in [ENROLLED_DEVICE, DISABLED_DEVICE] {
+            test_seed_lifecycle_device(&fixture.database, id, "enrolled", true, "active")
+                .await
+                .map_err(|_| TestFailure::FixtureFailed)?;
+        }
+
+        let revoke_id = device_id(ENROLLED_DEVICE)?;
+        let revoke_success = CountingEvictor::default();
+        revoke_device(
+            &fixture.database,
+            &revoke_id,
+            correlation_id(),
+            &revoke_success,
+        )
+        .await
+        .map_err(|_| TestFailure::LifecycleFailed)?;
+        assert_single_eviction(&revoke_success, ENROLLED_DEVICE)?;
+        let revoke_noop = CountingEvictor::default();
+        revoke_device(
+            &fixture.database,
+            &revoke_id,
+            correlation_id(),
+            &revoke_noop,
+        )
+        .await
+        .map_err(|_| TestFailure::LifecycleFailed)?;
+        assert_single_eviction(&revoke_noop, ENROLLED_DEVICE)?;
+
+        let disable_id = device_id(DISABLED_DEVICE)?;
+        let disable_success = CountingEvictor::default();
+        disable_device(
+            &fixture.database,
+            &disable_id,
+            correlation_id(),
+            &disable_success,
+        )
+        .await
+        .map_err(|_| TestFailure::LifecycleFailed)?;
+        assert_single_eviction(&disable_success, DISABLED_DEVICE)?;
+        let disable_noop = CountingEvictor::default();
+        disable_device(
+            &fixture.database,
+            &disable_id,
+            correlation_id(),
+            &disable_noop,
+        )
+        .await
+        .map_err(|_| TestFailure::LifecycleFailed)?;
+        assert_single_eviction(&disable_noop, DISABLED_DEVICE)
+    }
+
+    #[tokio::test]
+    async fn missing_device_errors_leave_the_database_unchanged_and_never_evict()
+    -> Result<(), TestFailure> {
+        let fixture = TestDatabase::new().await?;
+        let missing = device_id(ENROLLED_DEVICE)?;
+        let mut observer = test_observer(&fixture.path).map_err(|_| TestFailure::EvidenceFailed)?;
+        let version_before =
+            test_data_version(&mut observer).map_err(|_| TestFailure::EvidenceFailed)?;
+        let revoke_evictor = CountingEvictor::default();
+        let revoke_result = revoke_device(
+            &fixture.database,
+            &missing,
+            correlation_id(),
+            &revoke_evictor,
+        )
+        .await;
+        let disable_evictor = CountingEvictor::default();
+        let disable_result = disable_device(
+            &fixture.database,
+            &missing,
+            correlation_id(),
+            &disable_evictor,
+        )
+        .await;
+        let version_after =
+            test_data_version(&mut observer).map_err(|_| TestFailure::EvidenceFailed)?;
+        if revoke_result != Err(DeviceError::DeviceNotFound)
+            || disable_result != Err(DeviceError::DeviceNotFound)
+            || !revoke_evictor.evictions().is_empty()
+            || !disable_evictor.evictions().is_empty()
+            || version_after != version_before
+        {
+            return Err(TestFailure::FailedLifecycleEvictedConnection);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn revoke_converges_then_records_a_business_zero_write_noop() -> Result<(), TestFailure> {
@@ -237,9 +333,20 @@ mod orchestration_tests {
         )
         .await
         .map_err(|_| TestFailure::FixtureFailed)?;
-        let duplicate_audit_id = AuditEventId::from_uuid(Uuid::now_v7());
-        test_reserve_audit_id(&fixture.database, duplicate_audit_id)
+        fixture
+            .database
+            .test_write(|connection| {
+                diesel::sql_query(
+                    "CREATE TRIGGER fail_lifecycle_audit BEFORE INSERT ON audit_events \
+                     WHEN NEW.action_kind = 'revoke_device' \
+                     BEGIN SELECT RAISE(ABORT, 'injected lifecycle audit failure'); END",
+                )
+                .execute(connection)
+                .map(|_| ())
+                .map_err(|_| DeviceError::PersistenceFailed)
+            })
             .await
+            .map_err(|_| TestFailure::FixtureFailed)?
             .map_err(|_| TestFailure::FixtureFailed)?;
         let before = test_lifecycle_snapshot(&fixture.database, ENROLLED_DEVICE)
             .await
@@ -247,12 +354,12 @@ mod orchestration_tests {
         let before_audits = test_lifecycle_audit_count(&fixture.database, ENROLLED_DEVICE)
             .await
             .map_err(|_| TestFailure::EvidenceFailed)?;
-        let result = apply_device_lifecycle(
+        let evictor = CountingEvictor::default();
+        let result = revoke_device(
             &fixture.database,
             &device_id(ENROLLED_DEVICE)?,
-            DeviceLifecycleAction::Revoke,
             correlation_id(),
-            duplicate_audit_id,
+            &evictor,
         )
         .await;
         let after = test_lifecycle_snapshot(&fixture.database, ENROLLED_DEVICE)
@@ -264,6 +371,7 @@ mod orchestration_tests {
         if result != Err(DeviceError::PersistenceFailed)
             || after != before
             || after_audits != before_audits
+            || !evictor.evictions().is_empty()
         {
             return Err(TestFailure::AuditFailureDidNotRollBack);
         }
@@ -318,12 +426,12 @@ mod orchestration_tests {
             .await
             .map_err(|_| TestFailure::EvidenceFailed)?;
 
-        let result = apply_device_lifecycle(
+        let evictor = CountingEvictor::default();
+        let result = revoke_device(
             &fixture.database,
             &device_id(ENROLLED_DEVICE)?,
-            DeviceLifecycleAction::Revoke,
             correlation_id(),
-            AuditEventId::from_uuid(Uuid::now_v7()),
+            &evictor,
         )
         .await;
         let after = test_lifecycle_snapshot(&fixture.database, ENROLLED_DEVICE)
@@ -335,6 +443,7 @@ mod orchestration_tests {
         if result != Err(DeviceError::PersistenceFailed)
             || after != before
             || audits_after != audits_before
+            || !evictor.evictions().is_empty()
         {
             return Err(TestFailure::MutationFailureDidNotRollBack);
         }
@@ -372,12 +481,12 @@ mod orchestration_tests {
             .await
             .map_err(|_| TestFailure::EvidenceFailed)?;
 
-        let result = apply_device_lifecycle(
+        let evictor = CountingEvictor::default();
+        let result = revoke_device(
             &fixture.database,
             &device_id(ENROLLED_DEVICE)?,
-            DeviceLifecycleAction::Revoke,
             correlation_id(),
-            AuditEventId::from_uuid(Uuid::now_v7()),
+            &evictor,
         )
         .await;
         let after = test_lifecycle_snapshot(&fixture.database, ENROLLED_DEVICE)
@@ -389,6 +498,7 @@ mod orchestration_tests {
         if result != Err(DeviceError::PersistenceFailed)
             || after != before
             || audits_after != audits_before
+            || !evictor.evictions().is_empty()
         {
             return Err(TestFailure::MutationFailureDidNotRollBack);
         }
@@ -522,15 +632,61 @@ mod orchestration_tests {
         device_id: &DeviceId,
         action: DeviceLifecycleAction,
     ) -> Result<(), TestFailure> {
-        apply_device_lifecycle(
-            database,
-            device_id,
-            action,
-            correlation_id(),
-            AuditEventId::from_uuid(Uuid::now_v7()),
-        )
-        .await
+        match action {
+            DeviceLifecycleAction::Revoke => {
+                revoke_device(
+                    database,
+                    device_id,
+                    correlation_id(),
+                    &NoLiveDeviceConnections,
+                )
+                .await
+            }
+            DeviceLifecycleAction::Disable => {
+                disable_device(
+                    database,
+                    device_id,
+                    correlation_id(),
+                    &NoLiveDeviceConnections,
+                )
+                .await
+            }
+        }
         .map_err(|_| TestFailure::LifecycleFailed)
+    }
+
+    fn assert_single_eviction(
+        evictor: &CountingEvictor,
+        expected_device_id: &str,
+    ) -> Result<(), TestFailure> {
+        if evictor.evictions() != [expected_device_id] {
+            return Err(TestFailure::LifecycleEvictionChanged);
+        }
+        Ok(())
+    }
+
+    #[derive(Default)]
+    struct CountingEvictor {
+        device_ids: Mutex<Vec<String>>,
+    }
+
+    impl CountingEvictor {
+        fn evictions(&self) -> Vec<String> {
+            self.lock_device_ids().clone()
+        }
+
+        fn lock_device_ids(&self) -> MutexGuard<'_, Vec<String>> {
+            self.device_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+        }
+    }
+
+    impl DeviceConnectionEvictor for CountingEvictor {
+        fn evict_device_connection(&self, device_pk: &str) -> bool {
+            self.lock_device_ids().push(device_pk.to_owned());
+            true
+        }
     }
 
     fn correlation_id() -> CorrelationId {
@@ -569,6 +725,10 @@ mod orchestration_tests {
         FixtureFailed,
         #[snafu(display("the lifecycle operation failed"))]
         LifecycleFailed,
+        #[snafu(display("successful lifecycle connection eviction changed"))]
+        LifecycleEvictionChanged,
+        #[snafu(display("a failed lifecycle operation evicted a connection"))]
+        FailedLifecycleEvictedConnection,
         #[snafu(display("lifecycle persistence evidence could not be read"))]
         EvidenceFailed,
         #[snafu(display("the revoke effect changed"))]

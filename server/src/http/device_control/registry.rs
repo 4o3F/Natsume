@@ -5,9 +5,7 @@ use std::{
 
 use tokio::sync::{Notify, watch};
 
-use crate::application::{
-    command::DeviceCommandDispatchNotifier, device::credentials::DeviceConnectionEvictor,
-};
+use crate::application::{command::DeviceCommandDispatchNotifier, device::DeviceConnectionEvictor};
 
 #[derive(Clone)]
 pub(crate) struct DeviceConnectionRegistry {

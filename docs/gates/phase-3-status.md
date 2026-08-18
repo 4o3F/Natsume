@@ -1,7 +1,7 @@
 # Phase 3 状态
 
 > 状态：`FINAL`
-> 最后更新：2026-08-16
+> 最后更新：2026-08-18
 > G3：`CLOSED`（16 主题：14 项 `PASS`、主题 2 owner 裁定降级、主题 15 的 anomaly-audit 半项例外移交 Phase 4 WP3；owner 于 2026-08-16 签署关闭）
 
 Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。
@@ -57,8 +57,10 @@ Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 eviden
 | 12 | same-SPKI 自动批准重试 | `PASS` | `application/device/enrollment/intake/tests.rs::same_spki_retry_reissues_once` + 客户端侧 `lost_issue_response_self_heals_with_same_spki_over_real_tls` |
 | 13 | 同 hardware ID 不同 SPKI 稳定拒绝 | `PASS` | `application/device/enrollment/intake/tests.rs::rejected_hardware_blocks_same_and_rotated_spki_until_window_close` |
 | 14 | operator 拒绝的稳定码 | `PASS` | `ENROLLMENT_REQUEST_REJECTED` 端到端（服务端 + 客户端 typed terminal step） |
-| 15 | 替换语义与旧连接异常审计 | `PASS`（替换语义）+ **例外：旧连接 anomaly audit 移交 Phase 4 WP3** | `application/device/enrollment/intake/tests.rs::revoked_and_disabled_devices_require_approval_then_reactivate_on_claim` + `replacement_over_existing_artifacts_converges_via_enroll_until_parked`；anomaly audit 需 WSS connection facts，移交记录见下方待办与 [`phase-4-status.md`](phase-4-status.md) |
+| 15 | 替换语义与旧连接异常审计 | `PASS`（2026-08-18 owner override：仅 `enrolled` 可替换）+ **例外：旧连接 anomaly audit 移交 Phase 4 WP3** | `application/device/enrollment/intake/tests.rs::disabled_and_revoked_devices_are_zero_write_identity_conflicts` + `http/handler/device/enrollment/tests.rs::disabled_device_post_is_zero_write_identity_conflict` 钉死 non-enrolled intake/replay/approve/claim 零写入；`replacement_over_existing_artifacts_converges_via_enroll_until_parked` 保留 enrolled replacement；anomaly audit 见 [`phase-4-status.md`](phase-4-status.md) |
 | 16 | package upgrade 保留 identity/凭据 | `PASS`（断言 2026-08-16 补齐） | `hosted-lifecycle.sh` client 半：seed identity/key/token → 重装 → 字节与 mode/owner 不变断言；已知限制：跨版本 upgrade 无已发布前版（与 G0 条目 12 同源） |
+
+**2026-08-18 owner override**：主题 15 先前允许 approved claim 把 `disabled` / `revoked` Device 隐式恢复为 `enrolled` 的语义已撤销；non-enrolled Device 现在没有签名面或 restore 分支。该安全收紧由上表 zero-write tests 与 Phase 4 WSS state-gate evidence 覆盖，不新增 G3 交付范围，也不重开已签署的 G3；G3 保持 `CLOSED`。
 
 ## 已登记证据（G3）
 

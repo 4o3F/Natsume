@@ -47,7 +47,7 @@ const fn current_credential_consistency_sql() -> &'static str {
 
 const fn device_token_authentication_sql() -> &'static str {
     "SELECT dt.device_pk AS device_pk, d.machine_hardware_id AS machine_hardware_id, \
-     dt.token_hash AS token_hash FROM device_tokens dt JOIN devices d \
+     dt.token_hash AS token_hash, d.state AS state FROM device_tokens dt JOIN devices d \
      ON d.device_pk = dt.device_pk WHERE dt.token_hash = ?"
 }
 
@@ -196,6 +196,8 @@ struct DeviceTokenAuthenticationRow {
     machine_hardware_id: String,
     #[diesel(sql_type = Binary)]
     token_hash: Vec<u8>,
+    #[diesel(sql_type = Text)]
+    state: String,
 }
 
 impl DeviceTokenAuthenticationRow {
@@ -204,6 +206,7 @@ impl DeviceTokenAuthenticationRow {
             &self.device_pk,
             &self.machine_hardware_id,
             self.token_hash,
+            &self.state,
         )
     }
 }
@@ -344,6 +347,7 @@ mod tests {
             device_pk: MACHINE_ID.to_owned(),
             machine_hardware_id: MACHINE_ID.to_owned(),
             token_hash: vec![0_u8; 32],
+            state: "enrolled".to_owned(),
         }
         .into_facts();
         assert!(matches!(
@@ -358,6 +362,7 @@ mod tests {
             device_pk: DEVICE_ID.to_owned(),
             machine_hardware_id: MACHINE_ID.to_uppercase(),
             token_hash: vec![0_u8; 32],
+            state: "enrolled".to_owned(),
         }
         .into_facts();
         assert!(matches!(
@@ -372,6 +377,22 @@ mod tests {
             device_pk: DEVICE_ID.to_owned(),
             machine_hardware_id: MACHINE_ID.to_owned(),
             token_hash: vec![0_u8; 31],
+            state: "enrolled".to_owned(),
+        }
+        .into_facts();
+        assert!(matches!(
+            result,
+            Err(DevicePersistenceError::InvalidPersistedFacts)
+        ));
+    }
+
+    #[test]
+    fn invalid_persisted_authentication_device_state_fails_at_the_read_boundary() {
+        let result = DeviceTokenAuthenticationRow {
+            device_pk: DEVICE_ID.to_owned(),
+            machine_hardware_id: MACHINE_ID.to_owned(),
+            token_hash: vec![0_u8; 32],
+            state: "quarantined".to_owned(),
         }
         .into_facts();
         assert!(matches!(
@@ -404,6 +425,7 @@ mod tests {
             device_pk: NON_RFC4122_DEVICE_ID.to_owned(),
             machine_hardware_id: MACHINE_ID.to_owned(),
             token_hash: vec![0_u8; 32],
+            state: "enrolled".to_owned(),
         }
         .into_facts();
         let by_hardware = DeviceByHardwareRow {

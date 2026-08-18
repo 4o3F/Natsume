@@ -54,7 +54,8 @@ pub(crate) async fn create_first_admin_with_ids(
             )?;
             let event =
                 AuditEvent::first_admin_created(audit_event_id, correlation_id, operator_id);
-            db::audit::insert_operator(transaction, &event)?;
+            db::audit::insert(transaction, &event)
+                .map_err(OperatorError::from_audit_persistence)?;
             Ok(operator_id)
         })
         .await
@@ -113,7 +114,7 @@ pub(crate) async fn reset_operator_password_with_ids(
                 account.identity.operator_id(),
                 removed_session_count,
             );
-            db::audit::insert_operator(transaction, &event)
+            db::audit::insert(transaction, &event).map_err(OperatorError::from_audit_persistence)
         })
         .await
 }

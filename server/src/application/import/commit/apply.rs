@@ -1,45 +1,13 @@
 use std::collections::BTreeMap;
 
-use uuid::Uuid;
-
 use crate::{
+    application::contest::{CurrentSeatProjection, NewAccountFacts},
     audit::ImportCommitAuditFacts,
     db::{self},
 };
 
-use super::super::{ImportError, SealedCommitRow, diff::CurrentSeatProjection};
+use super::super::{ImportError, SealedCommitRow};
 use super::plan::CommitPlan;
-
-pub(crate) struct NewAccountFacts {
-    account_id: Uuid,
-    domjudge_username: String,
-    credential_vault_record_id: Uuid,
-}
-
-impl NewAccountFacts {
-    fn new(domjudge_username: String) -> Self {
-        Self {
-            account_id: Uuid::now_v7(),
-            domjudge_username,
-            credential_vault_record_id: Uuid::now_v7(),
-        }
-    }
-
-    #[must_use]
-    pub(crate) const fn account_id(&self) -> Uuid {
-        self.account_id
-    }
-
-    #[must_use]
-    pub(crate) fn domjudge_username(&self) -> &str {
-        &self.domjudge_username
-    }
-
-    #[must_use]
-    pub(crate) const fn credential_vault_record_id(&self) -> Uuid {
-        self.credential_vault_record_id
-    }
-}
 
 pub(super) fn apply_commit_plan(
     transaction: &mut db::Transaction<'_>,
@@ -70,7 +38,8 @@ fn delete_current_mappings(
     transaction: &mut db::Transaction<'_>,
     plan: &CommitPlan,
 ) -> Result<(), ImportError> {
-    let removed_mapping_count = db::contest::account_mappings::delete_all(transaction)?;
+    let removed_mapping_count = db::contest::account_mappings::delete_all(transaction)
+        .map_err(ImportError::from_contest_persistence)?;
     let expected_mapping_count = plan
         .current_seats
         .values()
@@ -92,20 +61,23 @@ fn apply_seat_mutations(
             .get(seat_code)
             .ok_or(ImportError::PersistenceFailure)?;
         let removed_binding = if current.device_id().is_some() {
-            db::contest::device_bindings::delete_by_seat(transaction, current.seat_id())?
+            db::contest::device_bindings::delete_by_seat(transaction, current.seat_id())
+                .map_err(ImportError::from_contest_persistence)?
         } else {
             0
         };
         if removed_binding != usize::from(current.device_id().is_some()) {
             return Err(ImportError::PersistenceFailure);
         }
-        let removed_seat = db::contest::seats::delete_exact(transaction, current)?;
+        let removed_seat = db::contest::seats::delete_exact(transaction, current)
+            .map_err(ImportError::from_contest_persistence)?;
         if removed_seat != 1 {
             return Err(ImportError::PersistenceFailure);
         }
     }
     for seat_code in plan.diff.seats_added() {
-        let inserted = db::contest::seats::insert(transaction, seat_code, seat_code)?;
+        let inserted = db::contest::seats::insert(transaction, seat_code, seat_code)
+            .map_err(ImportError::from_contest_persistence)?;
         if inserted != 1 {
             return Err(ImportError::PersistenceFailure);
         }
@@ -121,7 +93,8 @@ fn remove_absent_accounts(
         if plan.candidate_usernames.contains(username) {
             continue;
         }
-        let removed_account = db::contest::accounts::delete_exact(transaction, current)?;
+        let removed_account = db::contest::accounts::delete_exact(transaction, current)
+            .map_err(ImportError::from_contest_persistence)?;
         let removed_vault =
             db::import::server_vault_records::delete_account_credential(transaction, current)?;
         if removed_account != 1 || removed_vault != 1 {
@@ -153,7 +126,8 @@ fn upsert_account_credentials(
                 transaction,
                 current,
                 next_revision,
-            )?;
+            )
+            .map_err(ImportError::from_contest_persistence)?;
             if updated_vault != 1 || updated_account != 1 {
                 return Err(ImportError::PersistenceFailure);
             }
@@ -165,7 +139,8 @@ fn upsert_account_credentials(
                 &new_account,
                 row,
             )?;
-            let inserted_account = db::contest::accounts::insert(transaction, &new_account)?;
+            let inserted_account = db::contest::accounts::insert(transaction, &new_account)
+                .map_err(ImportError::from_contest_persistence)?;
             if inserted_vault != 1 || inserted_account != 1 {
                 return Err(ImportError::PersistenceFailure);
             }
@@ -190,7 +165,8 @@ fn insert_final_mappings(
         let account_id = final_account_ids
             .get(row.domjudge_username())
             .ok_or(ImportError::PersistenceFailure)?;
-        let inserted = db::contest::account_mappings::insert(transaction, seat_id, account_id)?;
+        let inserted = db::contest::account_mappings::insert(transaction, seat_id, account_id)
+            .map_err(ImportError::from_contest_persistence)?;
         if inserted != 1 {
             return Err(ImportError::PersistenceFailure);
         }
@@ -209,7 +185,8 @@ fn advance_revisions(
             plan.baseline_binding_revision,
             plan.next_configuration_revision,
             plan.next_binding_revision,
-        )?;
+        )
+        .map_err(ImportError::from_contest_persistence)?;
         if advanced != 1 {
             return Err(ImportError::PersistenceFailure);
         }

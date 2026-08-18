@@ -1,5 +1,7 @@
 use serde_json::{Value, value::RawValue};
 
+use crate::{application::device::DevicePersistenceError, audit::AuditPersistenceError};
+
 use super::types::{CommandError, CommandKind, CommandRequestInput};
 use super::validate::{fingerprint_v1, validate_payload, validate_request};
 
@@ -8,6 +10,23 @@ const SEAT_ID: &str = "550e8400-e29b-41d4-a716-446655440001";
 const ACCOUNT_ID: &str = "550e8400-e29b-41d4-a716-446655440002";
 const LOCK_COMMAND_ID: &str = "01900000-0000-7000-8000-000000000103";
 const LOWER_HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+#[test]
+fn persistence_mappings_cover_every_neutral_variant() {
+    for error in [
+        DevicePersistenceError::InvalidPersistedFacts,
+        DevicePersistenceError::PersistenceFailed,
+    ] {
+        assert_eq!(
+            CommandError::from_device_persistence(error),
+            CommandError::PersistenceFailed
+        );
+    }
+    assert_eq!(
+        CommandError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+        CommandError::PersistenceFailed
+    );
+}
 
 #[test]
 fn fingerprint_v1_matches_three_independent_golden_vectors() {

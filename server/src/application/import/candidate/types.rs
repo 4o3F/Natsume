@@ -7,6 +7,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+use crate::{application::contest::ContestPersistenceError, audit::AuditPersistenceError};
+
 use super::super::{csv::CsvImportError, diff::RedactedImportPreview};
 
 pub(crate) const IMPORT_CANDIDATE_TTL_SECONDS: i64 = 1_800;
@@ -363,3 +365,22 @@ impl Display for ImportError {
 }
 
 impl Error for ImportError {}
+
+impl ImportError {
+    pub(in crate::application::import) const fn from_contest_persistence(
+        error: ContestPersistenceError,
+    ) -> Self {
+        match error {
+            ContestPersistenceError::InvalidPersistedFacts
+            | ContestPersistenceError::PersistenceFailed => Self::PersistenceFailure,
+        }
+    }
+
+    pub(in crate::application::import) const fn from_audit_persistence(
+        error: AuditPersistenceError,
+    ) -> Self {
+        match error {
+            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailure,
+        }
+    }
+}

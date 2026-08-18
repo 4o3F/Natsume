@@ -8,16 +8,23 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    application::operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
+    application::{
+        device::{DeviceId, NoLiveDeviceConnections, disable_device},
+        operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
+    },
     audit::CorrelationId,
-    db::Database,
+    db::{
+        Database,
+        tests::{test_data_version, test_observer},
+    },
 };
 
 use super::super::super::{
     router,
     tests::{
         Captured, SupportFailure, TestDatabase, canonical_correlation_id, check_error_response,
-        drive, header_text, seed_operator, unused_vault_master_key, unused_web_root,
+        drive, header_text, normalized_error_response_body, seed_operator, unused_vault_master_key,
+        unused_web_root,
     },
 };
 use super::COMMAND_REQUEST_BODY_LIMIT_BYTES;
@@ -27,14 +34,16 @@ const VIEWER_LOGIN: &str = "command-http-viewer";
 const PASSWORD: &str = "command-http-password-canary";
 const COMMAND_ID: &str = "0190abcd-ef01-7abc-8def-0123456789ab";
 const DEVICE_ID: &str = "01900000-0000-7000-8000-000000000302";
+const DISABLED_DEVICE_ID: &str = "01900000-0000-7000-8000-000000000303";
+const REVOKED_DEVICE_ID: &str = "01900000-0000-7000-8000-000000000304";
 const UNKNOWN_DEVICE_ID: &str = "01900000-0000-7000-8000-000000000399";
 const GROUP_CORRELATION_ID: &str = "550e8400-e29b-41d4-a716-446655440000";
 const FROZEN_PAYLOAD: &str = r#"{"requested_lock_epoch":43,"target":{"session_epoch":42,"session_instance_id":"session-a"}}"#;
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn first_put_replay_and_optional_field_conflict_preserve_rows_and_audits()
--> Result<(), TestFailure> {
+async fn first_put_then_disable_replay_and_conflict_preserve_the_command() -> Result<(), TestFailure>
+{
     let fixture = CommandHttpFixture::new().await?;
     fixture
         .seed_operator(ADMIN_LOGIN, OperatorRole::Admin)
@@ -101,6 +110,20 @@ async fn first_put_replay_and_optional_field_conflict_preserve_rows_and_audits()
         return Err(TestFailure::CreatedPersistenceChanged);
     }
 
+    let device_id = DeviceId::parse(DEVICE_ID).ok_or(TestFailure::FixtureFailed)?;
+    disable_device(
+        &fixture.database.database,
+        &device_id,
+        CorrelationId::from_uuid(Uuid::now_v7()),
+        &NoLiveDeviceConnections,
+    )
+    .await
+    .map_err(|_| TestFailure::FixtureFailed)?;
+    let mut observer =
+        test_observer(&fixture.database.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    let version_before_replay =
+        test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+
     let replayed = put_command(
         &application,
         Some(&cookie),
@@ -109,8 +132,11 @@ async fn first_put_replay_and_optional_field_conflict_preserve_rows_and_audits()
     )
     .await?;
     assert_empty_success(&replayed, StatusCode::OK)?;
+    let version_after_replay =
+        test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
     if command_snapshot(&fixture.database.database).await? != after_created
         || command_row(&fixture.database.database, COMMAND_ID).await? != created_row
+        || version_after_replay != version_before_replay
     {
         return Err(TestFailure::ReplayWroteData);
     }
@@ -202,7 +228,7 @@ async fn command_id_is_validated_before_body_and_invalid_forms_write_nothing()
 }
 
 #[tokio::test]
-async fn unknown_device_and_closed_request_violations_are_zero_write_errors()
+async fn missing_and_non_enrolled_devices_and_closed_requests_are_zero_write_errors()
 -> Result<(), TestFailure> {
     let fixture = CommandHttpFixture::new().await?;
     fixture
@@ -211,20 +237,34 @@ async fn unknown_device_and_closed_request_violations_are_zero_write_errors()
     let cookie = fixture.session_cookie(ADMIN_LOGIN).await?;
     let application = fixture.router();
     let before = command_snapshot(&fixture.database.database).await?;
+    let mut observer =
+        test_observer(&fixture.database.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    let version_before =
+        test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
 
-    let unknown = put_command(
-        &application,
-        Some(&cookie),
-        COMMAND_ID,
-        Body::from(command_body(UNKNOWN_DEVICE_ID, None, None)),
-    )
-    .await?;
-    check_error_response(
-        &unknown,
-        StatusCode::NOT_FOUND,
-        "Not Found",
-        "RESOURCE_NOT_FOUND",
-    )?;
+    let mut normalized_not_found = Vec::new();
+    for device_id in [UNKNOWN_DEVICE_ID, DISABLED_DEVICE_ID, REVOKED_DEVICE_ID] {
+        let response = put_command(
+            &application,
+            Some(&cookie),
+            COMMAND_ID,
+            Body::from(command_body(device_id, None, None)),
+        )
+        .await?;
+        check_error_response(
+            &response,
+            StatusCode::NOT_FOUND,
+            "Not Found",
+            "RESOURCE_NOT_FOUND",
+        )?;
+        normalized_not_found.push(normalized_error_response_body(&response)?);
+    }
+    if normalized_not_found[1..]
+        .iter()
+        .any(|body| body != &normalized_not_found[0])
+    {
+        return Err(TestFailure::DeviceEligibilityResponseChanged);
+    }
 
     for invalid_body in [
         format!(
@@ -254,7 +294,11 @@ async fn unknown_device_and_closed_request_violations_are_zero_write_errors()
             "INVALID_REQUEST",
         )?;
     }
-    if command_snapshot(&fixture.database.database).await? != before {
+    let version_after =
+        test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    if command_snapshot(&fixture.database.database).await? != before
+        || version_after != version_before
+    {
         return Err(TestFailure::RejectedBoundaryWroteData);
     }
     Ok(())
@@ -398,7 +442,11 @@ async fn seed_device(database: &Database) -> Result<(), TestFailure> {
             diesel::sql_query(
                 "INSERT INTO devices VALUES \
                  ('01900000-0000-7000-8000-000000000302', 'command-http-hardware', \
-                  'strong', 'enrolled')",
+                  'strong', 'enrolled'), \
+                 ('01900000-0000-7000-8000-000000000303', \
+                  'command-http-disabled-hardware', 'strong', 'disabled'), \
+                 ('01900000-0000-7000-8000-000000000304', \
+                  'command-http-revoked-hardware', 'strong', 'revoked')",
             )
             .execute(connection)
         })
@@ -634,6 +682,8 @@ enum TestFailure {
     FingerprintOrRequestEscaped,
     #[snafu(display("a rejected command boundary wrote data"))]
     RejectedBoundaryWroteData,
+    #[snafu(display("missing and non-enrolled Device responses diverged"))]
+    DeviceEligibilityResponseChanged,
     #[snafu(display("the command body limit changed"))]
     BodyLimitChanged,
     #[snafu(display("command database evidence could not be read"))]

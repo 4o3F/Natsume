@@ -16,12 +16,14 @@ use sha2::{Digest, Sha256};
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::application::device::enrollment::MAX_LIVE_ENROLLMENT_REQUESTS;
 use crate::{
     application::{
-        device::enrollment::{
-            self, EnrollmentRequestId, GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS, GatewayIssuer,
-            encode_standard_base64,
+        device::{
+            self, DeviceId, NoLiveDeviceConnections,
+            enrollment::{
+                self, EnrollmentRequestId, GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS,
+                GatewayIssuer, MAX_LIVE_ENROLLMENT_REQUESTS, encode_standard_base64,
+            },
         },
         operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
         provisioning,
@@ -36,7 +38,8 @@ use super::{
         router_with_enrollment,
         tests::{
             Captured, SupportFailure, TestDatabase, canonical_correlation_id, check_error_response,
-            drive, seed_operator, unused_vault_master_key, unused_web_root,
+            drive, normalized_error_response_body, seed_operator, unused_vault_master_key,
+            unused_web_root,
         },
     },
     ENROLLMENT_REQUEST_BODY_LIMIT_BYTES,
@@ -238,6 +241,103 @@ async fn pending_replay_conflict_and_rejected_poll_have_exact_device_http_semant
     )?;
     if business_count(&fixture, "enrollment_requests").await? != request_count {
         return Err(TestFailure::PendingFlowChanged);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabled_device_post_is_zero_write_identity_conflict() -> Result<(), TestFailure> {
+    let fixture = TestDatabase::new().await?;
+    provisioning::open_window(&fixture.database, CorrelationId::from_uuid(Uuid::now_v7()))
+        .await
+        .map_err(|_| TestFailure::WindowFailed)?;
+    let application = router_with_enrollment(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+        GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+    );
+    let body = valid_request_body_for(b"disabled-http-machine")?;
+    let issued = drive(&application, enrollment_request(body.clone())?).await?;
+    let issued_json: Value =
+        serde_json::from_slice(&issued.body).map_err(|_| TestFailure::PendingFlowChanged)?;
+    let device_id = issued_json
+        .get("device_id")
+        .and_then(Value::as_str)
+        .and_then(DeviceId::parse)
+        .ok_or(TestFailure::PendingFlowChanged)?;
+    device::disable_device(
+        &fixture.database,
+        &device_id,
+        CorrelationId::from_uuid(Uuid::now_v7()),
+        &NoLiveDeviceConnections,
+    )
+    .await
+    .map_err(|_| TestFailure::EvidenceFailed)?;
+    let before = enrollment_write_counts(&fixture).await?;
+    let device_before = enrollment_device_snapshot(&fixture.database, &device_id).await?;
+
+    let disabled = drive(&application, enrollment_request(body)?).await?;
+    check_error_response(
+        &disabled,
+        StatusCode::CONFLICT,
+        "Conflict",
+        "DEVICE_IDENTITY_CONFLICT",
+    )?;
+    if enrollment_write_counts(&fixture).await? != before
+        || enrollment_device_snapshot(&fixture.database, &device_id).await? != device_before
+        || normalized_error_response_body(&disabled)? != normalized_identity_conflict_body()
+    {
+        return Err(TestFailure::DisabledDeviceConflictWrote);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn revoked_device_post_has_the_same_normalized_zero_write_identity_conflict()
+-> Result<(), TestFailure> {
+    let fixture = TestDatabase::new().await?;
+    provisioning::open_window(&fixture.database, CorrelationId::from_uuid(Uuid::now_v7()))
+        .await
+        .map_err(|_| TestFailure::WindowFailed)?;
+    let application = router_with_enrollment(
+        fixture.database.clone(),
+        unused_vault_master_key(),
+        unused_web_root(),
+        GatewayIssuer::for_test().map_err(|_| TestFailure::IssuerFailed)?,
+    );
+    let body = valid_request_body_for(b"revoked-http-machine")?;
+    let issued = drive(&application, enrollment_request(body.clone())?).await?;
+    let issued_json: Value =
+        serde_json::from_slice(&issued.body).map_err(|_| TestFailure::PendingFlowChanged)?;
+    let device_id = issued_json
+        .get("device_id")
+        .and_then(Value::as_str)
+        .and_then(DeviceId::parse)
+        .ok_or(TestFailure::PendingFlowChanged)?;
+    device::revoke_device(
+        &fixture.database,
+        &device_id,
+        CorrelationId::from_uuid(Uuid::now_v7()),
+        &NoLiveDeviceConnections,
+    )
+    .await
+    .map_err(|_| TestFailure::EvidenceFailed)?;
+    let before = enrollment_write_counts(&fixture).await?;
+    let device_before = enrollment_device_snapshot(&fixture.database, &device_id).await?;
+
+    let revoked = drive(&application, enrollment_request(body)?).await?;
+    check_error_response(
+        &revoked,
+        StatusCode::CONFLICT,
+        "Conflict",
+        "DEVICE_IDENTITY_CONFLICT",
+    )?;
+    if enrollment_write_counts(&fixture).await? != before
+        || enrollment_device_snapshot(&fixture.database, &device_id).await? != device_before
+        || normalized_error_response_body(&revoked)? != normalized_identity_conflict_body()
+    {
+        return Err(TestFailure::RevokedDeviceConflictChangedFacts);
     }
     Ok(())
 }
@@ -1072,6 +1172,69 @@ async fn source_ip(fixture: &TestDatabase) -> Result<String, TestFailure> {
         .map_err(|_| TestFailure::EvidenceFailed)?
 }
 
+async fn enrollment_device_snapshot(
+    database: &Database,
+    device_id: &DeviceId,
+) -> Result<EnrollmentDeviceSnapshot, TestFailure> {
+    let device_id = device_id.as_text();
+    database
+        .test_read(move |connection| {
+            diesel::sql_query(
+                "SELECT \
+                 (SELECT state FROM devices WHERE device_pk = ?) AS state, \
+                 (SELECT json_group_array(json_object( \
+                    'enrollment_request_id', enrollment_request_id, \
+                    'token_hash', hex(token_hash))) \
+                  FROM (SELECT enrollment_request_id, token_hash FROM device_tokens \
+                        WHERE device_pk = ? ORDER BY enrollment_request_id)) AS tokens, \
+                 (SELECT json_group_array(json_object( \
+                    'certificate_id', certificate_id, \
+                    'enrollment_request_id', enrollment_request_id, 'serial', serial, \
+                    'spki_sha256', hex(spki_sha256), 'not_after', not_after, 'status', status)) \
+                  FROM (SELECT certificate_id, enrollment_request_id, serial, spki_sha256, \
+                               not_after, status FROM gateway_certificates \
+                        WHERE device_pk = ? ORDER BY certificate_id)) AS certificates, \
+                 (SELECT json_group_array(json_object( \
+                    'enrollment_request_id', enrollment_request_id, 'state', state, \
+                    'resolution', resolution, \
+                    'issuance_audit_event_id', issuance_audit_event_id)) \
+                  FROM (SELECT enrollment_request_id, state, resolution, issuance_audit_event_id \
+                        FROM enrollment_requests WHERE resolved_device_pk = ? \
+                        ORDER BY enrollment_request_id)) AS issuance_links, \
+                 (SELECT json_group_array(json_object( \
+                    'audit_event_id', audit_event_id, 'occurred_at', occurred_at, \
+                    'actor', actor, 'resource_id', resource_id, 'result', result, \
+                    'reason_code', reason_code, 'correlation_id', correlation_id, \
+                    'redacted_detail_json', redacted_detail_json)) \
+                  FROM (SELECT audit_event_id, occurred_at, actor, resource_id, result, \
+                               reason_code, correlation_id, redacted_detail_json \
+                        FROM audit_events WHERE action_kind = 'issue_device_credentials' \
+                          AND resource_id IN (SELECT enrollment_request_id \
+                              FROM enrollment_requests WHERE resolved_device_pk = ?) \
+                        ORDER BY audit_event_id)) AS issuance_audits",
+            )
+            .bind::<Text, _>(&device_id)
+            .bind::<Text, _>(&device_id)
+            .bind::<Text, _>(&device_id)
+            .bind::<Text, _>(&device_id)
+            .bind::<Text, _>(&device_id)
+            .get_result::<EnrollmentDeviceSnapshot>(connection)
+            .map_err(|_| TestFailure::EvidenceFailed)
+        })
+        .await
+        .map_err(|_| TestFailure::EvidenceFailed)?
+}
+
+fn normalized_identity_conflict_body() -> String {
+    serde_json::json!({
+        "title": "Conflict",
+        "status": 409,
+        "code": "DEVICE_IDENTITY_CONFLICT",
+        "correlation_id": "NORMALIZED",
+    })
+    .to_string()
+}
+
 async fn enrollment_write_counts(
     fixture: &TestDatabase,
 ) -> Result<EnrollmentWriteCounts, TestFailure> {
@@ -1144,6 +1307,20 @@ struct EnrollmentWriteCounts {
 }
 
 #[derive(Debug, PartialEq, Eq, QueryableByName)]
+struct EnrollmentDeviceSnapshot {
+    #[diesel(sql_type = Text)]
+    state: String,
+    #[diesel(sql_type = Text)]
+    tokens: String,
+    #[diesel(sql_type = Text)]
+    certificates: String,
+    #[diesel(sql_type = Text)]
+    issuance_links: String,
+    #[diesel(sql_type = Text)]
+    issuance_audits: String,
+}
+
+#[derive(Debug, PartialEq, Eq, QueryableByName)]
 struct CredentialRowCounts {
     #[diesel(sql_type = BigInt)]
     tokens: i64,
@@ -1199,6 +1376,10 @@ enum TestFailure {
     BodyLimitChanged,
     #[snafu(display("the Enrollment pending HTTP flow changed"))]
     PendingFlowChanged,
+    #[snafu(display("a disabled Device HTTP conflict wrote state"))]
+    DisabledDeviceConflictWrote,
+    #[snafu(display("a revoked Device HTTP conflict changed persisted facts"))]
+    RevokedDeviceConflictChangedFacts,
     #[snafu(display("the issuance-time validity failure wrote state"))]
     ValidityMarginFailureWrote,
     #[snafu(display("a forged CSR signature wrote Enrollment state"))]

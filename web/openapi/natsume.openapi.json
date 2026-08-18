@@ -259,7 +259,7 @@
             }
           },
           "404": {
-            "description": "Device does not exist",
+            "description": "Device does not exist or is not enrolled",
             "headers": {
               "X-Correlation-Id": {
                 "schema": {

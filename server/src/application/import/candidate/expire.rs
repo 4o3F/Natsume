@@ -89,7 +89,7 @@ pub(crate) async fn discard_import(
                 correlation_id,
                 import_id,
             );
-            db::audit::insert_import(transaction, &event)?;
+            db::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)?;
             Ok(DiscardOutcome::Discarded)
         })
         .await?;
@@ -186,7 +186,10 @@ pub(in crate::application::import) async fn audit_preview_token_mismatch(
                 ImportCommitRejectionReason::PreviewTokenMismatch,
             );
             // A failed rejection audit must not become an existence oracle.
-            if db::audit::insert_import(transaction, &event).is_err() {
+            if db::audit::insert(transaction, &event)
+                .map_err(ImportError::from_audit_persistence)
+                .is_err()
+            {
                 tracing::warn!(
                     discriminant = "preview_token_mismatch_audit_write_failed",
                     "import rejection audit write failed"
@@ -266,7 +269,7 @@ pub(in crate::application::import) fn expire_candidate(
         correlation_id,
         candidate.candidate_id(),
     );
-    db::audit::insert_import(transaction, &event)
+    db::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)
 }
 
 enum CandidateReadOutcome {

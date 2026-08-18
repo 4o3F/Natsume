@@ -2,8 +2,8 @@ use uuid::Uuid;
 
 use crate::{
     application::device::{
-        DeviceId, DeviceState,
-        credentials::{DeviceConnectionEvictor, DeviceToken, IssuanceDeviceContext},
+        DeviceConnectionEvictor, DeviceId, DeviceState,
+        credentials::{DeviceToken, IssuanceDeviceContext, NewGatewayCertificate},
     },
     audit::{AuditEvent, AuditEventId, CorrelationId, DeviceCredentialsIssuedAuditFacts},
     db::{self},
@@ -30,7 +30,7 @@ pub(super) fn create_pending_request(
         EnrollmentResolution::ReplaceDeviceCredentials,
         request.gateway_spki_sha256,
     );
-    db::audit::insert_enrollment(transaction, &event)?;
+    db::audit::insert(transaction, &event).map_err(EnrollmentError::from_audit_persistence)?;
     db::device::enrollment::request::insert(
         transaction,
         request,
@@ -39,7 +39,8 @@ pub(super) fn create_pending_request(
         Some(EnrollmentResolution::ReplaceDeviceCredentials),
         Some(device_id.value()),
         None,
-    )?;
+    )
+    .map_err(EnrollmentError::from_request_persistence)?;
     Ok(EnrollmentOutcome::Pending(PendingEnrollment {
         enrollment_request_id,
         state: EnrollmentState::Pending,
@@ -54,8 +55,15 @@ pub(super) fn issue_new_device(
     ids: IntakeIds,
 ) -> Result<EnrollmentOutcome, EnrollmentError> {
     let material = prepare_issuance(issuer, request)?;
-    db::device::devices::insert(transaction, ids.device, request)
-        .map_err(EnrollmentError::from_device_persistence)?;
+    let device_id =
+        DeviceId::from_uuid(ids.device).ok_or(EnrollmentError::InvalidPersistedFacts)?;
+    db::device::devices::insert(
+        transaction,
+        &device_id,
+        &request.machine_hardware_id,
+        request.hardware_identity_quality,
+    )
+    .map_err(EnrollmentError::from_device_persistence)?;
     persist_issued_request_and_credentials(
         transaction,
         request,
@@ -99,7 +107,7 @@ where
         IssuanceReason::SameSpkiRetry,
         material,
         IssuedRequestMode::Insert,
-        IssuanceDeviceContext::replacement(DeviceState::Enrolled, true),
+        IssuanceDeviceContext::replacement(),
         evicted_live_connection,
     )
 }
@@ -193,18 +201,21 @@ fn persist_issued_request_and_credentials(
             evicted_live_connection,
         },
     );
-    db::audit::insert_enrollment(transaction, &event)?;
+    db::audit::insert(transaction, &event).map_err(EnrollmentError::from_audit_persistence)?;
     let audit_event_id_text = event.audit_event_id_text();
     match request_mode {
-        IssuedRequestMode::Insert => db::device::enrollment::request::insert(
-            transaction,
-            request,
-            enrollment_request_id,
-            EnrollmentRequestStatus::Issued,
-            Some(resolution),
-            Some(device_id),
-            Some(&audit_event_id_text),
-        )?,
+        IssuedRequestMode::Insert => {
+            db::device::enrollment::request::insert(
+                transaction,
+                request,
+                enrollment_request_id,
+                EnrollmentRequestStatus::Issued,
+                Some(resolution),
+                Some(device_id),
+                Some(&audit_event_id_text),
+            )
+            .map_err(EnrollmentError::from_request_persistence)?;
+        }
         IssuedRequestMode::ClaimApproved => {
             db::device::enrollment::request::compare_and_swap_approved_to_issued(
                 transaction,
@@ -212,17 +223,11 @@ fn persist_issued_request_and_credentials(
                 resolution,
                 device_id,
                 &audit_event_id_text,
-            )?;
+            )
+            .map_err(EnrollmentError::from_request_persistence)?;
         }
     }
 
-    if issuance_context.restore_enrolled {
-        let previous_device_state = issuance_context
-            .previous_device_state
-            .ok_or(EnrollmentError::InvalidPersistedFacts)?;
-        db::device::devices::restore_enrolled(transaction, device_id, previous_device_state)
-            .map_err(EnrollmentError::from_device_persistence)?;
-    }
     if issuance_context.retire_existing {
         let retired = db::device::certificates::retire_active(transaction, device_id)
             .map_err(EnrollmentError::from_device_persistence)?;
@@ -238,13 +243,17 @@ fn persist_issued_request_and_credentials(
         material.token_hash,
     )
     .map_err(EnrollmentError::from_device_persistence)?;
+    let certificate_facts = NewGatewayCertificate::new(
+        material.certificate.serial.clone(),
+        material.certificate.not_after.clone(),
+        request.gateway_spki_sha256,
+    );
     db::device::certificates::insert(
         transaction,
         certificate_id,
         device_id,
         enrollment_request_id,
-        &material.certificate,
-        request.gateway_spki_sha256,
+        &certificate_facts,
     )
     .map_err(EnrollmentError::from_device_persistence)?;
     if db::device::certificates::active_count(transaction, device_id)

@@ -121,7 +121,7 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 
 ## 10. Command
 
-**Command** 是面向单台 Device 的 direct durable intent。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}`；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。首次 `201`、replay `200`、invalid ID `400`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
+**Command** 是面向单台 Device 的 direct durable intent。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}`；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。只有当前 `DeviceState::Enrolled` 可首次持久化 Command；不存在或 non-enrolled target 对外同为 `404 RESOURCE_NOT_FOUND`，且资格拒绝零 Command、零 audit、零 notifier。Command 已创建后，Device 的 disable/revoke 不改变该 ID 的 replay/conflict 事实。首次 `201`、replay `200`、invalid ID `400`、missing/non-enrolled `404`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
 
 `commands` current row 只有 `command_id`、`device_pk`、`kind`、`state`、两个 request fingerprint field、可选 `group_correlation_id`、`payload_version`、typed object `frozen_payload_json`、`created_at`、`deadline_at`、可选 `terminal_error_code`/`redacted_terminal_result_json` 与 `created_audit_event_id`。**Command receipt 在 Device 持久化前不得确认；相同 Command ID 不得重复副作用。** 每 Command 的 frozen content 只由 `frozen_payload_json` 表达，而不是许多 frozen top-level columns 或 dispatcher metadata；陈旧时用稳定错误拒绝，不“尽量兼容”地部分应用。相同 ID 必须原样贯穿 Server、WSS、Device journal、CommandStatus 与审计 correlation。终态行（`terminal_error_code` / `redacted_terminal_result_json`）予以保留；其消费者是 Panel 状态查询与审计回溯，清理与赛后导出归 Phase 7。
 
@@ -144,7 +144,7 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 - Operator 是 `audit_events.actor` 的来源之一；`system:recovery` 等非人类 actor 不对应 Operator 行。
 - Operator 身份**不参与 Device 认证**：不能取得 Device Token、Gateway certificate 或 WSS 控制面身份（`INV-CERT-01`）。
 
-Device lifecycle 的 operator 动作（转 `revoked` / `disabled`，以及移除当前 `device_tokens` row、将关联 `gateway_certificates` 状态行转为 `revoked` 后保留）是 repeat-safe 的当前事实 mutation：目标状态已达成时零业务写入，只记录 `result = 'noop'` 的 audit。它们**不创建 Command、不产生 Device I/O、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
+Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：disable 只把 `enrolled` 转为 `disabled`，**保留当前 Device Token 与 active Gateway certificate**；revoke 收敛到 `revoked`，移除当前 `device_tokens` row，并将关联的 non-revoked `gateway_certificates` 状态行转为 `revoked` 后保留。目标状态已达成时零业务写入，只记录 `result = 'noop'` 的 audit。application lifecycle use case 在事务成功提交后（包括 noop）必须对准确 `device_pk` 调用一次 live-connection evictor；事务或查找失败时零 eviction。这样 disable/revoke 立即排空既有 WSS，而 WSS 新认证仍只允许 `enrolled`。它们**不创建 Command、不发送远端 Command、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
 
 ## 13. 本地运行时领域
 

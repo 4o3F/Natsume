@@ -58,7 +58,7 @@ pub(super) fn require_open_window(
     transaction: &mut db::Transaction<'_>,
 ) -> Result<(), EnrollmentError> {
     let window = db::provisioning::read_window(transaction)
-        .map_err(|_| EnrollmentError::PersistenceFailed)?;
+        .map_err(EnrollmentError::from_provisioning_persistence)?;
     match window.state {
         ProvisioningWindowState::Open => Ok(()),
         ProvisioningWindowState::Closed => Err(EnrollmentError::ProvisioningWindowClosed),
@@ -123,6 +123,9 @@ pub(super) fn validate_device_for_replacement(
     if device.hardware_identity_quality != request.hardware_identity_quality {
         return Err(EnrollmentError::DeviceIdentityConflict);
     }
+    if device.state != DeviceState::Enrolled {
+        return Err(EnrollmentError::DeviceIdentityConflict);
+    }
     Ok(())
 }
 
@@ -182,28 +185,23 @@ pub(super) fn validate_current_credentials(
     current: Option<&CurrentCredentials>,
 ) -> Result<(), EnrollmentError> {
     match (device_state, current) {
-        (DeviceState::Enrolled | DeviceState::Disabled, Some(_)) | (DeviceState::Revoked, None) => {
-            Ok(())
-        }
-        (DeviceState::Enrolled | DeviceState::Disabled, None) | (DeviceState::Revoked, Some(_)) => {
-            Err(EnrollmentError::InvalidPersistedFacts)
+        (DeviceState::Enrolled, Some(_)) => Ok(()),
+        (DeviceState::Enrolled, None) => Err(EnrollmentError::InvalidPersistedFacts),
+        (DeviceState::Disabled | DeviceState::Revoked, _) => {
+            Err(EnrollmentError::DeviceIdentityConflict)
         }
     }
 }
 
 pub(super) fn issuance_device_context(
     state: DeviceState,
-    has_current_credentials: bool,
+    current: Option<&CurrentCredentials>,
 ) -> Result<IssuanceDeviceContext, EnrollmentError> {
-    match (state, has_current_credentials) {
-        (DeviceState::Enrolled | DeviceState::Disabled, true) | (DeviceState::Revoked, false) => {
-            Ok(IssuanceDeviceContext::replacement(
-                state,
-                has_current_credentials,
-            ))
-        }
-        (DeviceState::Enrolled | DeviceState::Disabled, false) | (DeviceState::Revoked, true) => {
-            Err(EnrollmentError::InvalidPersistedFacts)
+    match (state, current) {
+        (DeviceState::Enrolled, Some(_)) => Ok(IssuanceDeviceContext::replacement()),
+        (DeviceState::Enrolled, None) => Err(EnrollmentError::InvalidPersistedFacts),
+        (DeviceState::Disabled | DeviceState::Revoked, _) => {
+            Err(EnrollmentError::DeviceIdentityConflict)
         }
     }
 }
@@ -239,10 +237,12 @@ pub(super) fn same_digest(persisted: &[u8; 32], presented: &[u8; 32]) -> bool {
 mod tests {
     use super::{
         ClassifiedDeviceFacts, CurrentCredentials, LatestRequestPath, NewRequestPath,
-        classify_latest_request, classify_new_request_path,
+        classify_latest_request, classify_new_request_path, issuance_device_context,
+        validate_current_credentials, validate_device_for_replacement,
     };
     use crate::application::device::{
-        DeviceId, DeviceState, HardwareIdentityQuality, enrollment::EnrollmentRequestStatus,
+        DeviceId, DeviceState, HardwareIdentityQuality,
+        enrollment::{EnrollmentError, EnrollmentRequestStatus, ValidatedEnrollmentRequest},
     };
 
     const DEVICE_ID: &str = "01900000-0000-7000-8000-000000000001";
@@ -253,7 +253,7 @@ mod tests {
         let other_spki = [8_u8; 32];
         let device_id =
             DeviceId::parse(DEVICE_ID).unwrap_or_else(|| panic!("test Device ID must be valid"));
-        let device = ClassifiedDeviceFacts {
+        let mut device = ClassifiedDeviceFacts {
             device_id,
             hardware_identity_quality: HardwareIdentityQuality::Strong,
             state: DeviceState::Enrolled,
@@ -281,5 +281,38 @@ mod tests {
             classify_latest_request(Some(EnrollmentRequestStatus::Rejected)),
             LatestRequestPath::Rejected
         );
+
+        let request = ValidatedEnrollmentRequest {
+            machine_hardware_id: "550e8400-e29b-51d4-a716-446655440000".to_owned(),
+            hardware_identity_quality: HardwareIdentityQuality::Strong,
+            gateway_csr_der: Vec::new(),
+            gateway_spki_sha256: presented_spki,
+            client_version: "classification-test".to_owned(),
+            protocol_version: 1,
+            source_ip: "192.0.2.1".to_owned(),
+        };
+        for state in [DeviceState::Disabled, DeviceState::Revoked] {
+            device.state = state;
+            assert_eq!(
+                validate_device_for_replacement(&device, &request),
+                Err(EnrollmentError::DeviceIdentityConflict)
+            );
+            assert_eq!(
+                validate_current_credentials(state, Some(&same)),
+                Err(EnrollmentError::DeviceIdentityConflict)
+            );
+            assert!(matches!(
+                issuance_device_context(state, Some(&same)),
+                Err(EnrollmentError::DeviceIdentityConflict)
+            ));
+        }
+        assert_eq!(
+            validate_current_credentials(DeviceState::Enrolled, None),
+            Err(EnrollmentError::InvalidPersistedFacts)
+        );
+        assert!(matches!(
+            issuance_device_context(DeviceState::Enrolled, None),
+            Err(EnrollmentError::InvalidPersistedFacts)
+        ));
     }
 }

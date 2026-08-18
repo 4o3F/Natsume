@@ -4,7 +4,10 @@ use uuid::Uuid;
 
 use natsume_device_protocol::is_canonical_command_id;
 
-use crate::application::device::DeviceId;
+use crate::{
+    application::device::{DeviceId, DevicePersistenceError},
+    audit::AuditPersistenceError,
+};
 
 pub(crate) const COMMAND_REQUEST_FINGERPRINT_DOMAIN: &[u8] = b"natsume:command-request:v1";
 pub(crate) const REQUEST_FINGERPRINT_VERSION: i32 = 1;
@@ -247,12 +250,29 @@ pub(crate) enum CommandError {
     GroupCorrelationIdInvalid,
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
+    #[snafu(display("the Device is not enrolled"))]
+    DeviceNotEnrolled,
     #[snafu(display("the Command request conflicts with persisted facts"))]
     RequestConflict,
     #[snafu(display("the Command request could not be canonicalized"))]
     CanonicalizationFailed,
     #[snafu(display("Command persistence failed"))]
     PersistenceFailed,
+}
+
+impl CommandError {
+    pub(super) const fn from_device_persistence(error: DevicePersistenceError) -> Self {
+        match error {
+            DevicePersistenceError::InvalidPersistedFacts
+            | DevicePersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
+    pub(super) const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
+        match error {
+            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
 }
 
 pub(super) fn parse_canonical_uuid_v7(value: &str) -> Result<Uuid, ()> {

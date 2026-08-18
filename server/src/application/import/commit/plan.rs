@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::application::contest::{CurrentAccountProjection, CurrentSeatProjection};
+
 use super::super::{
     CandidateRowFacts, ImportError, SealedCommitRow,
     csv::{ACCOUNT_USERNAME_LENGTH_LIMIT, MAX_IMPORT_ROWS, SEAT_CODE_LENGTH_LIMIT},
-    diff::{CurrentAccountProjection, CurrentSeatProjection, RedactedImportPreview, compute_diff},
+    diff::{RedactedImportPreview, compute_diff},
 };
 
 pub(super) struct CommitPlan {

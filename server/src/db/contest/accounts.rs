@@ -5,14 +5,15 @@ use diesel::{
 };
 
 use crate::{
-    application::{
-        contest::{AccountFacts, ContestError},
-        import::{CurrentAccountProjection, ImportError, NewAccountFacts},
+    application::contest::{
+        AccountFacts, ContestPersistenceError, CurrentAccountProjection, NewAccountFacts,
     },
     db::{Transaction, schema::accounts},
 };
 
-pub(crate) fn list(transaction: &mut Transaction<'_>) -> Result<Vec<AccountFacts>, ContestError> {
+pub(crate) fn list(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<AccountFacts>, ContestPersistenceError> {
     accounts::table
         .select((
             accounts::account_id,
@@ -28,13 +29,13 @@ pub(crate) fn list(transaction: &mut Transaction<'_>) -> Result<Vec<AccountFacts
                 })
                 .collect()
         })
-        .map_err(|_| ContestError::PersistenceFailed)
+        .map_err(|_| ContestPersistenceError::PersistenceFailed)
 }
 
 pub(crate) fn insert(
     transaction: &mut Transaction<'_>,
     account: &NewAccountFacts,
-) -> Result<usize, ImportError> {
+) -> Result<usize, ContestPersistenceError> {
     diesel::insert_into(accounts::table)
         .values((
             accounts::account_id.eq(account.account_id().to_string()),
@@ -45,13 +46,13 @@ pub(crate) fn insert(
                 .eq(diesel::dsl::sql::<Integer>("").bind::<BigInt, _>(1_i64)),
         ))
         .execute(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| ContestPersistenceError::PersistenceFailed)
 }
 
 pub(crate) fn delete_exact(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
-) -> Result<usize, ImportError> {
+) -> Result<usize, ContestPersistenceError> {
     diesel::delete(
         accounts::table
             .filter(accounts::account_id.eq(account.account_id()))
@@ -62,14 +63,14 @@ pub(crate) fn delete_exact(
             )),
     )
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| ContestPersistenceError::PersistenceFailed)
 }
 
 pub(crate) fn advance_credential_revision(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
     next_credential_revision: i64,
-) -> Result<usize, ImportError> {
+) -> Result<usize, ContestPersistenceError> {
     diesel::update(
         accounts::table
             .filter(accounts::account_id.eq(account.account_id()))
@@ -84,5 +85,5 @@ pub(crate) fn advance_credential_revision(
             .eq(diesel::dsl::sql::<Integer>("").bind::<BigInt, _>(next_credential_revision)),
     )
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| ContestPersistenceError::PersistenceFailed)
 }

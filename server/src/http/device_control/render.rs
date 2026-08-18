@@ -6,21 +6,23 @@ use natsume_device_protocol::generated::{
 use serde::de::DeserializeOwned;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::validate::{
-    LockSessionPayload, OpenBindingPromptPayload, PAYLOAD_VERSION, ResetHomePayload,
-    SyncStatePayload, TerminateSessionPayload, UnlockSessionPayload, ValidatePayload,
+use crate::application::command::{
+    CommandKind, DispatchableCommand,
+    validate::{
+        LockSessionPayload, OpenBindingPromptPayload, PAYLOAD_VERSION, ResetHomePayload,
+        SyncStatePayload, TerminateSessionPayload, UnlockSessionPayload, ValidatePayload,
+    },
 };
-use super::{CommandKind, DispatchableCommand};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RenderError {
+pub(super) enum RenderError {
     PayloadVersionUnsupported,
     PayloadCorrupt,
     TimestampCorrupt,
     HeldByPhasePolicy,
 }
 
-pub(crate) fn render_wire_command(
+pub(super) fn render_wire_command(
     row: &DispatchableCommand,
 ) -> Result<ControlEnvelope, RenderError> {
     if row.payload_version != PAYLOAD_VERSION {

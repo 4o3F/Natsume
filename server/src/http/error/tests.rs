@@ -6,6 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     application::{
+        command::CommandError,
         device::{DeviceError, enrollment::EnrollmentError},
         import::{ImportError, parse_csv},
         provisioning::ProvisioningError,
@@ -47,6 +48,44 @@ async fn non_pending_enrollment_decision_is_invalid_not_identity_conflict()
 }
 
 #[tokio::test]
+async fn from_command_maps_every_error_and_hides_non_enrollment_like_missing_device()
+-> Result<(), TestFailure> {
+    let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
+    let mut missing_device_body = None;
+    for (error, cause, expected_status, expected_code) in command_causes() {
+        let response = ApiError::from_command(error, correlation_id).into_response();
+        if response.status() != expected_status {
+            return Err(TestFailure::CommandMappingChanged);
+        }
+        let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
+            .await
+            .map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
+        let value: Value =
+            serde_json::from_slice(&body).map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
+        let object = value
+            .as_object()
+            .ok_or(TestFailure::CommandMappingChanged)?;
+        if object.len() != 4
+            || object.get("status").and_then(Value::as_u64)
+                != Some(u64::from(expected_status.as_u16()))
+            || object.get("code").and_then(Value::as_str) != Some(expected_code)
+            || std::str::from_utf8(&body)
+                .map_err(|_| TestFailure::ResponseBodyWasNotReadable)?
+                .contains(cause)
+        {
+            return Err(TestFailure::CommandMappingChanged);
+        }
+        if error == CommandError::DeviceNotFound {
+            missing_device_body = Some(body.clone());
+        }
+        if error == CommandError::DeviceNotEnrolled && missing_device_body.as_ref() != Some(&body) {
+            return Err(TestFailure::CommandMappingChanged);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let captured = CapturedLogs::default();
@@ -66,6 +105,11 @@ async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result
         }
         for (error, cause, status) in device_causes() {
             let rendered = ApiError::from_device(error, correlation_id);
+            assert_cause_stays_internal(rendered, cause, status).await?;
+            causes.push(cause);
+        }
+        for (error, cause, status, _code) in command_causes() {
+            let rendered = ApiError::from_command(error, correlation_id);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
@@ -388,6 +432,83 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 4] {
     ]
 }
 
+fn command_causes() -> [(CommandError, &'static str, StatusCode, &'static str); 12] {
+    [
+        (
+            CommandError::CommandIdInvalid,
+            "command_id_invalid",
+            StatusCode::BAD_REQUEST,
+            "COMMAND_ID_INVALID",
+        ),
+        (
+            CommandError::RequestInvalid,
+            "command_request_invalid",
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+        ),
+        (
+            CommandError::DeviceIdInvalid,
+            "command_device_id_invalid",
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+        ),
+        (
+            CommandError::KindInvalid,
+            "command_kind_invalid",
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+        ),
+        (
+            CommandError::PayloadInvalid,
+            "command_payload_invalid",
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+        ),
+        (
+            CommandError::ReasonCodeInvalid,
+            "command_reason_code_invalid",
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+        ),
+        (
+            CommandError::GroupCorrelationIdInvalid,
+            "command_group_correlation_id_invalid",
+            StatusCode::BAD_REQUEST,
+            "INVALID_REQUEST",
+        ),
+        (
+            CommandError::DeviceNotFound,
+            "command_device_not_found",
+            StatusCode::NOT_FOUND,
+            "RESOURCE_NOT_FOUND",
+        ),
+        (
+            CommandError::DeviceNotEnrolled,
+            "command_device_not_enrolled",
+            StatusCode::NOT_FOUND,
+            "RESOURCE_NOT_FOUND",
+        ),
+        (
+            CommandError::RequestConflict,
+            "command_request_conflict",
+            StatusCode::CONFLICT,
+            "COMMAND_REQUEST_CONFLICT",
+        ),
+        (
+            CommandError::CanonicalizationFailed,
+            "command_canonicalization_failed",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+        ),
+        (
+            CommandError::PersistenceFailed,
+            "command_persistence_failed",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "INTERNAL_ERROR",
+        ),
+    ]
+}
+
 fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
     let Err(parse_error) = parse_csv(&[]) else {
         panic!("empty import unexpectedly parsed");
@@ -452,4 +573,6 @@ enum TestFailure {
     CauseWasNotAStaticDiscriminant,
     #[snafu(display("the non-pending Enrollment decision mapping changed"))]
     EnrollmentDecisionMappingChanged,
+    #[snafu(display("the exhaustive Command error mapping changed"))]
+    CommandMappingChanged,
 }

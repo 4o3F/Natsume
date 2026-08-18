@@ -2,12 +2,13 @@ use axum::extract::ws::{Message as WebSocketMessage, WebSocket};
 use prost::Message as _;
 use tokio::sync::watch;
 
-use crate::{
-    application::command::{self, render::RenderError},
-    db::Database,
-};
+use crate::{application::command, db::Database};
 
-use super::{ConnectionCloseReason, ConnectionFlow, session::send_server_drain};
+use super::{
+    ConnectionCloseReason, ConnectionFlow,
+    render::{self, RenderError},
+    session::send_server_drain,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DispatchRetry {
@@ -111,7 +112,7 @@ async fn dispatch_commands(
         return DispatchOutcome::RetryOwed;
     };
     for row in rows {
-        let envelope = match command::render::render_wire_command(&row) {
+        let envelope = match render::render_wire_command(&row) {
             Ok(envelope) => envelope,
             Err(RenderError::HeldByPhasePolicy) => {
                 tracing::debug!(

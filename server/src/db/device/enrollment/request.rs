@@ -5,12 +5,9 @@ use diesel::{
 use uuid::Uuid;
 
 use crate::{
-    application::{
-        device::enrollment::{
-            EnrollmentDecisionState, EnrollmentError, EnrollmentRequestStatus,
-            EnrollmentResolution, ValidatedEnrollmentRequest,
-        },
-        provisioning::ProvisioningError,
+    application::device::enrollment::{
+        EnrollmentDecisionState, EnrollmentRequestPersistenceError, EnrollmentRequestStatus,
+        EnrollmentResolution, ValidatedEnrollmentRequest,
     },
     db::Transaction,
 };
@@ -24,7 +21,7 @@ pub(crate) fn insert(
     resolution: Option<EnrollmentResolution>,
     resolved_device_id: Option<Uuid>,
     issuance_audit_event_id: Option<&str>,
-) -> Result<(), EnrollmentError> {
+) -> Result<(), EnrollmentRequestPersistenceError> {
     let inserted = diesel::sql_query(
         "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
          hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
@@ -58,7 +55,7 @@ pub(crate) fn compare_and_swap_approved_to_issued(
     resolution: EnrollmentResolution,
     resolved_device_id: Uuid,
     issuance_audit_event_id: &str,
-) -> Result<(), EnrollmentError> {
+) -> Result<(), EnrollmentRequestPersistenceError> {
     let updated = diesel::sql_query(
         "UPDATE enrollment_requests SET state = 'issued', resolution = ?, \
          resolved_device_pk = ?, issuance_audit_event_id = ? \
@@ -80,7 +77,7 @@ pub(crate) fn compare_and_swap_pending_to_decision(
     transaction: &mut Transaction<'_>,
     enrollment_request_id: Uuid,
     target_state: EnrollmentDecisionState,
-) -> Result<(), EnrollmentError> {
+) -> Result<(), EnrollmentRequestPersistenceError> {
     let updated = diesel::sql_query(
         "UPDATE enrollment_requests SET state = ? \
          WHERE enrollment_request_id = ? AND state = 'pending'",
@@ -97,7 +94,7 @@ pub(crate) fn compare_and_swap_pending_to_decision(
 
 pub(crate) fn expire_live_requests(
     transaction: &mut Transaction<'_>,
-) -> Result<i64, ProvisioningError> {
+) -> Result<i64, EnrollmentRequestPersistenceError> {
     let expired = diesel::sql_query(
         "UPDATE enrollment_requests SET state = 'expired' \
          WHERE state IN ('pending', 'approved', 'rejected')",
@@ -106,7 +103,7 @@ pub(crate) fn expire_live_requests(
     .map_err(|_| EnrollmentRequestStoreError::MutationFailed)?;
     i64::try_from(expired)
         .map_err(|_| EnrollmentRequestStoreError::AffectedRowCountInvalid)
-        .map_err(ProvisioningError::from)
+        .map_err(EnrollmentRequestPersistenceError::from)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,20 +114,9 @@ enum EnrollmentRequestStoreError {
     AffectedRowCountInvalid,
 }
 
-impl From<EnrollmentRequestStoreError> for EnrollmentError {
-    fn from(source: EnrollmentRequestStoreError) -> Self {
-        match source {
-            EnrollmentRequestStoreError::InsertFailed
-            | EnrollmentRequestStoreError::MutationFailed
-            | EnrollmentRequestStoreError::CompareAndSwapConflict
-            | EnrollmentRequestStoreError::AffectedRowCountInvalid => Self::PersistenceFailed,
-        }
-    }
-}
-
-impl From<EnrollmentRequestStoreError> for ProvisioningError {
-    fn from(source: EnrollmentRequestStoreError) -> Self {
-        match source {
+impl From<EnrollmentRequestStoreError> for EnrollmentRequestPersistenceError {
+    fn from(error: EnrollmentRequestStoreError) -> Self {
+        match error {
             EnrollmentRequestStoreError::InsertFailed
             | EnrollmentRequestStoreError::MutationFailed
             | EnrollmentRequestStoreError::CompareAndSwapConflict

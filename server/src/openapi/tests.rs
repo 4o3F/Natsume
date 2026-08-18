@@ -965,6 +965,8 @@ fn put_command_contract_is_closed_and_exact() -> Result<(), TestFailure> {
         != Some(
             "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.",
         )
+        || nested_value(operation, &["responses", "404", "description"]).and_then(Value::as_str)
+            != Some("Device does not exist or is not enrolled")
     {
         return Err(TestFailure::CommandDescriptionChanged);
     }

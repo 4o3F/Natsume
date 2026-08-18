@@ -1,6 +1,8 @@
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
 
+use crate::audit::AuditPersistenceError;
+
 /// Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeviceId(Uuid);
@@ -8,13 +10,18 @@ pub(crate) struct DeviceId(Uuid);
 impl DeviceId {
     pub(crate) fn parse(value: &str) -> Option<Self> {
         let parsed = Uuid::parse_str(value).ok()?;
-        if parsed.get_version() != Some(Version::SortRand)
-            || parsed.get_variant() != Variant::RFC4122
-            || parsed.hyphenated().to_string() != value
+        if parsed.hyphenated().to_string() != value {
+            return None;
+        }
+        Self::from_uuid(parsed)
+    }
+
+    pub(crate) fn from_uuid(value: Uuid) -> Option<Self> {
+        if value.get_version() != Some(Version::SortRand) || value.get_variant() != Variant::RFC4122
         {
             return None;
         }
-        Some(Self(parsed))
+        Some(Self(value))
     }
 
     pub(crate) const fn value(&self) -> Uuid {
@@ -50,6 +57,12 @@ impl DeviceError {
         match error {
             DevicePersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
             DevicePersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
+    pub(crate) const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
+        match error {
+            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
         }
     }
 }
@@ -159,7 +172,27 @@ impl DeviceFacts {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceId, DeviceState, HardwareIdentityQuality};
+    use crate::audit::AuditPersistenceError;
+
+    use super::{
+        DeviceError, DeviceId, DevicePersistenceError, DeviceState, HardwareIdentityQuality,
+    };
+
+    #[test]
+    fn persistence_mappings_cover_every_neutral_variant() {
+        assert_eq!(
+            DeviceError::from_persistence(DevicePersistenceError::InvalidPersistedFacts),
+            DeviceError::InvalidPersistedFacts
+        );
+        assert_eq!(
+            DeviceError::from_persistence(DevicePersistenceError::PersistenceFailed),
+            DeviceError::PersistenceFailed
+        );
+        assert_eq!(
+            DeviceError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+            DeviceError::PersistenceFailed
+        );
+    }
 
     #[test]
     fn device_id_accepts_only_canonical_uuid_v7_text() {

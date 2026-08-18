@@ -12,7 +12,6 @@ use crate::{
 mod apply;
 mod plan;
 
-pub(crate) use self::apply::NewAccountFacts;
 use self::{apply::apply_commit_plan, plan::prepare_commit_plan};
 use super::{
     CommittedImportFacts, ImportError, PreviewToken, SealedCommitRow,
@@ -119,7 +118,8 @@ fn commit_import_in_transaction(
     }
 
     let (configuration_revision, binding_revision) =
-        db::import::revision_counters::read(transaction)?;
+        db::import::revision_counters::read(transaction)
+            .map_err(ImportError::from_contest_persistence)?;
     if configuration_revision != candidate.baseline_configuration_revision()
         || binding_revision != candidate.baseline_binding_revision()
     {
@@ -130,7 +130,10 @@ fn commit_import_in_transaction(
             ImportCommitRejectionReason::BaselineStale,
         );
         // The stale classification is externally frozen even when its audit fails.
-        if db::audit::insert_import(transaction, &event).is_err() {
+        if db::audit::insert(transaction, &event)
+            .map_err(ImportError::from_audit_persistence)
+            .is_err()
+        {
             tracing::warn!(
                 discriminant = "baseline_stale_audit_write_failed",
                 "import rejection audit write failed"
@@ -163,7 +166,7 @@ fn commit_import_in_transaction(
         request.candidate_id,
         &mutation.audit_facts(),
     );
-    db::audit::insert_import(transaction, &event)?;
+    db::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)?;
     Ok(CommitOutcome::Committed(CommittedImportFacts::new(
         mutation.configuration_revision,
         mutation.binding_revision,

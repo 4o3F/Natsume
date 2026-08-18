@@ -28,6 +28,25 @@ const PRODUCTION_CANARY: &str = "use sqlx::Row;
 struct Response;
 fn production() { diesel::sql_query(); pool.get(); r2d2::Pool; sqlx::query(); }
 ";
+const APPLICATION_WIRE_CANARY: &str = "use natsume_device_protocol::generated::{
+    CommandState, CommandStatus, ControlEnvelope, control_envelope,
+};
+use prost::Message;
+fn wire() { let _: Option<command::Body> = None; }
+";
+const APPLICATION_DOMAIN_PROTOCOL_CANARY: &str =
+    "use natsume_device_protocol::is_canonical_command_id;
+fn domain(value: &str) { let _canonical = is_canonical_command_id(value); }
+";
+const APPLICATION_WIRE_FORBIDDEN: &[&str] = &[
+    "CommandState",
+    "CommandStatus",
+    "ControlEnvelope",
+    "command::Body",
+    "control_envelope",
+    "generated",
+    "prost",
+];
 const PUBLIC_VISIBILITY_CANARY: &str = "pub struct PublicItem;
 pub mod public_module {}
 pub(crate) struct CrateItem;
@@ -74,6 +93,68 @@ const DB_READ_MODEL_WRITE_CANARY: &str = "fn query() {
 ";
 const DB_TRANSACTION_CANARY: &str =
     "fn owns_transaction(connection: &mut Connection) { connection.transaction(|_| Ok(())); }";
+
+const CONTEST_ADAPTER_ERROR_CANARY: &str = "fn production() {
+    let _: Option<ImportError> = None;
+    let _: Option<ContestError> = None;
+    let _: Option<ContestPersistenceError> = None;
+}
+#[cfg(test)] fn fixture() {
+    let _: Option<ImportError> = None;
+    let _: Option<ContestError> = None;
+}
+";
+const CONTEST_ADAPTER_IMPORT_PATH_CANARY: &str = "use crate::{
+    application::import::{
+        CurrentAccountProjection, CurrentSeatProjection, ImportError, NewAccountFacts,
+    },
+};
+fn production() {
+    let _: Option<crate::application::import::CurrentSeatProjection> = None;
+}
+#[cfg(test)] mod tests {
+    use crate::application::import::{
+        CurrentAccountProjection, CurrentSeatProjection, ImportError, NewAccountFacts,
+    };
+}
+";
+const AUDIT_ADAPTER_ERROR_CANARY: &str = "fn production() {
+    let _: Option<CommandError> = None;
+    let _: Option<OperatorError> = None;
+    let _: Option<DeviceError> = None;
+    let _: Option<ProvisioningError> = None;
+    let _: Option<ImportError> = None;
+    let _: Option<EnrollmentError> = None;
+    let _: Option<AuditPersistenceError> = None;
+}
+#[cfg(test)] fn fixture() { let _: Option<CommandError> = None; }
+";
+const ENROLLMENT_REQUEST_ADAPTER_ERROR_CANARY: &str = "fn production() {
+    let _: Option<ProvisioningError> = None;
+    let _: Option<EnrollmentError> = None;
+    let _: Option<EnrollmentRequestPersistenceError> = None;
+}
+#[cfg(test)] fn fixture() { let _: Option<EnrollmentError> = None; }
+";
+const PROVISIONING_ADAPTER_ERROR_CANARY: &str = "fn production() {
+    let _: Option<ProvisioningError> = None;
+    let _: Option<ProvisioningPersistenceError> = None;
+}
+#[cfg(test)] fn fixture() { let _: Option<ProvisioningError> = None; }
+";
+
+const CONTEST_ADAPTER_CALLER_ERRORS: &[&str] = &["ImportError", "ContestError"];
+const CONTEST_ADAPTER_IMPORT_PATH: &[&str] = &["crate", "application", "import"];
+const AUDIT_ADAPTER_CALLER_ERRORS: &[&str] = &[
+    "CommandError",
+    "OperatorError",
+    "DeviceError",
+    "ProvisioningError",
+    "ImportError",
+    "EnrollmentError",
+];
+const ENROLLMENT_REQUEST_ADAPTER_CALLER_ERRORS: &[&str] = &["ProvisioningError", "EnrollmentError"];
+const PROVISIONING_ADAPTER_CALLER_ERRORS: &[&str] = &["ProvisioningError"];
 
 #[derive(Clone, Copy)]
 struct DatabaseBoundaryAllowance {
@@ -269,6 +350,26 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
         self.record(identifier);
     }
 
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        if self.forbidden.contains("command::Body")
+            && path
+                .segments
+                .iter()
+                .zip(path.segments.iter().skip(1))
+                .any(|(module, item)| module.ident == "command" && item.ident == "Body")
+        {
+            let LineColumn { line, .. } = path.span().start();
+            self.violations.push(Violation {
+                file: self.file.clone(),
+                line,
+                symbol: "command::Body".to_owned(),
+                tables: Vec::new(),
+                rule: ViolationRule::ForbiddenProductionSymbol,
+            });
+        }
+        visit::visit_path(self, path);
+    }
+
     /// Every raw token stream syn reaches routes through here, and its default is
     /// a no-op. Overriding it covers macro invocations and attribute token
     /// streams alike, so a fully qualified `#[derive(...)]` cannot evade a rule.
@@ -277,9 +378,105 @@ impl<'ast> Visit<'ast> for Scanner<'_> {
     }
 }
 
+struct ProductionPathScanner<'a> {
+    forbidden_path: &'a [&'static str],
+    file: String,
+    violations: Vec<Violation>,
+}
+
+impl<'a> ProductionPathScanner<'a> {
+    fn new(file: impl Into<String>, forbidden_path: &'a [&'static str]) -> Self {
+        Self {
+            forbidden_path,
+            file: file.into(),
+            violations: Vec::new(),
+        }
+    }
+
+    fn record(&mut self, identifier: &Ident) {
+        let LineColumn { line, .. } = identifier.span().start();
+        self.violations.push(Violation {
+            file: self.file.clone(),
+            line,
+            symbol: self.forbidden_path.join("::"),
+            tables: Vec::new(),
+            rule: ViolationRule::ForbiddenProductionPath,
+        });
+    }
+
+    fn is_forbidden(&self, segments: &[String]) -> bool {
+        segments.len() >= self.forbidden_path.len()
+            && segments
+                .iter()
+                .zip(self.forbidden_path)
+                .all(|(segment, forbidden)| segment == forbidden)
+    }
+
+    fn scan_use_tree(&mut self, tree: &UseTree, prefix: &mut Vec<String>) {
+        match tree {
+            UseTree::Path(path) => {
+                prefix.push(path.ident.to_string());
+                if self.is_forbidden(prefix) {
+                    self.record(&path.ident);
+                } else {
+                    self.scan_use_tree(&path.tree, prefix);
+                }
+                prefix.pop();
+            }
+            UseTree::Name(name) => {
+                prefix.push(name.ident.to_string());
+                if self.is_forbidden(prefix) {
+                    self.record(&name.ident);
+                }
+                prefix.pop();
+            }
+            UseTree::Rename(rename) => {
+                prefix.push(rename.ident.to_string());
+                if self.is_forbidden(prefix) {
+                    self.record(&rename.ident);
+                }
+                prefix.pop();
+            }
+            UseTree::Group(group) => {
+                for tree in &group.items {
+                    self.scan_use_tree(tree, prefix);
+                }
+            }
+            UseTree::Glob(_) => {}
+        }
+    }
+}
+
+impl<'ast> Visit<'ast> for ProductionPathScanner<'_> {
+    fn visit_item(&mut self, item: &'ast Item) {
+        if !disabled_in_production(item_attributes(item)) {
+            visit::visit_item(self, item);
+        }
+    }
+
+    fn visit_item_use(&mut self, item: &'ast syn::ItemUse) {
+        self.scan_use_tree(&item.tree, &mut Vec::new());
+    }
+
+    fn visit_path(&mut self, path: &'ast syn::Path) {
+        let segments = path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        if self.is_forbidden(&segments)
+            && let Some(segment) = path.segments.iter().nth(self.forbidden_path.len() - 1)
+        {
+            self.record(&segment.ident);
+        }
+        visit::visit_path(self, path);
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ViolationRule {
     ForbiddenProductionSymbol,
+    ForbiddenProductionPath,
     BarePublicVisibility,
     MultipleDatabaseTables,
     ReadModelWrite,
@@ -299,6 +496,10 @@ impl Violation {
         match self.rule {
             ViolationRule::ForbiddenProductionSymbol => format!(
                 "{}:{}: forbidden production symbol {}",
+                self.file, self.line, self.symbol
+            ),
+            ViolationRule::ForbiddenProductionPath => format!(
+                "{}:{}: forbidden production path {}",
                 self.file, self.line, self.symbol
             ),
             ViolationRule::BarePublicVisibility => format!(
@@ -338,6 +539,17 @@ fn scan_source(
 ) -> Result<Vec<Violation>, syn::Error> {
     let syntax = syn::parse_file(source)?;
     let mut scanner = Scanner::new(file, forbidden);
+    scanner.visit_file(&syntax);
+    Ok(scanner.violations)
+}
+
+fn scan_production_path_source(
+    file: &str,
+    source: &str,
+    forbidden_path: &[&'static str],
+) -> Result<Vec<Violation>, syn::Error> {
+    let syntax = syn::parse_file(source)?;
+    let mut scanner = ProductionPathScanner::new(file, forbidden_path);
     scanner.visit_file(&syntax);
     Ok(scanner.violations)
 }
@@ -993,6 +1205,55 @@ fn scan_rule(
     Ok(violations)
 }
 
+fn scan_production_symbol_rule(
+    root: &Path,
+    files: &[PathBuf],
+    test_only_modules: &HashSet<PathBuf>,
+    forbidden: &HashSet<&'static str>,
+) -> Result<Vec<Violation>, ScanError> {
+    let production_files = files
+        .iter()
+        .filter(|relative| !test_only_modules.contains(*relative))
+        .cloned()
+        .collect::<Vec<_>>();
+    if production_files.is_empty() {
+        return Err(ScanError::RuleSourcesMissing);
+    }
+    scan_rule(root, &production_files, forbidden)
+}
+
+fn scan_production_path_rule(
+    root: &Path,
+    files: &[PathBuf],
+    test_only_modules: &HashSet<PathBuf>,
+    forbidden_path: &[&'static str],
+) -> Result<Vec<Violation>, ScanError> {
+    let production_files = files
+        .iter()
+        .filter(|relative| !test_only_modules.contains(*relative))
+        .collect::<Vec<_>>();
+    if production_files.is_empty() {
+        return Err(ScanError::RuleSourcesMissing);
+    }
+
+    let mut violations = Vec::new();
+    for relative in production_files {
+        let source =
+            fs::read_to_string(root.join(relative)).map_err(|source| ScanError::ReadSource {
+                path: relative.clone(),
+                source,
+            })?;
+        violations.extend(
+            scan_production_path_source(&relative.display().to_string(), &source, forbidden_path)
+                .map_err(|source| ScanError::ParseSource {
+                path: relative.clone(),
+                source,
+            })?,
+        );
+    }
+    Ok(violations)
+}
+
 fn scan_public_visibility_rule(
     root: &Path,
     files: &[PathBuf],
@@ -1022,10 +1283,96 @@ fn forbidden(symbols: &'static [&'static str]) -> HashSet<&'static str> {
     symbols.iter().copied().collect()
 }
 
-fn run_canaries() -> Result<(), ScanError> {
+fn require_empty_transition_allowlists() -> Result<(), ScanError> {
     if !DATABASE_BOUNDARY_ALLOWLIST.is_empty() {
         return Err(ScanError::CanaryFailed);
     }
+    Ok(())
+}
+
+fn run_application_wire_canaries() -> Result<(), ScanError> {
+    let application_wire_symbols = forbidden(APPLICATION_WIRE_FORBIDDEN);
+    let application_wire_violations = scan_source(
+        "<application-wire-canary>",
+        APPLICATION_WIRE_CANARY,
+        &application_wire_symbols,
+    )
+    .map_err(|_| ScanError::CanaryFailed)?;
+    for symbol in application_wire_symbols {
+        if !application_wire_violations
+            .iter()
+            .any(|violation| violation.symbol == symbol)
+        {
+            return Err(ScanError::CanaryFailed);
+        }
+    }
+    if !scan_source(
+        "<application-domain-protocol-canary>",
+        APPLICATION_DOMAIN_PROTOCOL_CANARY,
+        &forbidden(APPLICATION_WIRE_FORBIDDEN),
+    )
+    .map_err(|_| ScanError::CanaryFailed)?
+    .is_empty()
+    {
+        return Err(ScanError::CanaryFailed);
+    }
+    Ok(())
+}
+
+fn run_shared_adapter_error_canaries() -> Result<(), ScanError> {
+    for (source, symbols) in [
+        (CONTEST_ADAPTER_ERROR_CANARY, CONTEST_ADAPTER_CALLER_ERRORS),
+        (AUDIT_ADAPTER_ERROR_CANARY, AUDIT_ADAPTER_CALLER_ERRORS),
+        (
+            ENROLLMENT_REQUEST_ADAPTER_ERROR_CANARY,
+            ENROLLMENT_REQUEST_ADAPTER_CALLER_ERRORS,
+        ),
+        (
+            PROVISIONING_ADAPTER_ERROR_CANARY,
+            PROVISIONING_ADAPTER_CALLER_ERRORS,
+        ),
+    ] {
+        let violations = scan_source("<shared-adapter-error-canary>", source, &forbidden(symbols))
+            .map_err(|_| ScanError::CanaryFailed)?;
+        if violations.len() != symbols.len()
+            || symbols.iter().any(|symbol| {
+                !violations
+                    .iter()
+                    .any(|violation| violation.symbol == *symbol)
+            })
+        {
+            return Err(ScanError::CanaryFailed);
+        }
+    }
+    Ok(())
+}
+
+fn run_contest_adapter_ownership_canary() -> Result<(), ScanError> {
+    let violations = scan_production_path_source(
+        "<contest-adapter-import-path-canary>",
+        CONTEST_ADAPTER_IMPORT_PATH_CANARY,
+        CONTEST_ADAPTER_IMPORT_PATH,
+    )
+    .map_err(|_| ScanError::CanaryFailed)?;
+    if violations.len() != 2
+        || violations.iter().any(|violation| {
+            violation.rule != ViolationRule::ForbiddenProductionPath
+                || violation.symbol != CONTEST_ADAPTER_IMPORT_PATH.join("::")
+        })
+    {
+        return Err(ScanError::CanaryFailed);
+    }
+    Ok(())
+}
+
+fn run_dependency_canaries() -> Result<(), ScanError> {
+    run_application_wire_canaries()?;
+    run_shared_adapter_error_canaries()?;
+    run_contest_adapter_ownership_canary()
+}
+
+fn run_canaries() -> Result<(), ScanError> {
+    require_empty_transition_allowlists()?;
 
     let test_symbols = forbidden(&["axum", "diesel", "pool", "r2d2", "sqlx"]);
     let test_violations = scan_source("<test-canary>", TEST_ONLY_CANARY, &test_symbols)
@@ -1049,6 +1396,8 @@ fn run_canaries() -> Result<(), ScanError> {
             return Err(ScanError::CanaryFailed);
         }
     }
+
+    run_dependency_canaries()?;
 
     let public_visibility_violations =
         scan_public_visibility_source("<visibility-canary>", PUBLIC_VISIBILITY_CANARY, &[])
@@ -1147,6 +1496,7 @@ fn run() -> Result<Vec<Violation>, ScanError> {
     application_files.extend(rust_files(&root, Path::new("server/src/application"))?);
     let mut db_files = rust_files(&root, Path::new("server/src/db.rs"))?;
     db_files.extend(rust_files(&root, Path::new("server/src/db"))?);
+    let test_only_db_modules = collect_test_only_module_paths(&root, &db_files)?;
     let schema_tables = schema_table_names(&root)?;
     let mut visibility_files = application_files.clone();
     visibility_files.extend(db_files.iter().cloned());
@@ -1172,7 +1522,13 @@ fn run() -> Result<Vec<Violation>, ScanError> {
         &application_files,
         &forbidden(&[
             "axum",
+            "CommandState",
+            "CommandStatus",
+            "ControlEnvelope",
+            "command::Body",
+            "control_envelope",
             "diesel",
+            "generated",
             "natsume_error_code",
             "pool",
             "prost",
@@ -1190,6 +1546,41 @@ fn run() -> Result<Vec<Violation>, ScanError> {
         &root,
         &db_files,
         &schema_tables,
+    )?);
+    let mut contest_adapter_files = rust_files(&root, Path::new("server/src/db/contest.rs"))?;
+    contest_adapter_files.extend(rust_files(&root, Path::new("server/src/db/contest"))?);
+    violations.extend(scan_production_symbol_rule(
+        &root,
+        &contest_adapter_files,
+        &test_only_db_modules,
+        &forbidden(CONTEST_ADAPTER_CALLER_ERRORS),
+    )?);
+    violations.extend(scan_production_path_rule(
+        &root,
+        &contest_adapter_files,
+        &test_only_db_modules,
+        CONTEST_ADAPTER_IMPORT_PATH,
+    )?);
+    violations.extend(scan_production_symbol_rule(
+        &root,
+        &rust_files(&root, Path::new("server/src/db/audit.rs"))?,
+        &test_only_db_modules,
+        &forbidden(AUDIT_ADAPTER_CALLER_ERRORS),
+    )?);
+    violations.extend(scan_production_symbol_rule(
+        &root,
+        &rust_files(
+            &root,
+            Path::new("server/src/db/device/enrollment/request.rs"),
+        )?,
+        &test_only_db_modules,
+        &forbidden(ENROLLMENT_REQUEST_ADAPTER_CALLER_ERRORS),
+    )?);
+    violations.extend(scan_production_symbol_rule(
+        &root,
+        &rust_files(&root, Path::new("server/src/db/provisioning.rs"))?,
+        &test_only_db_modules,
+        &forbidden(PROVISIONING_ADAPTER_CALLER_ERRORS),
     )?);
     Ok(violations)
 }

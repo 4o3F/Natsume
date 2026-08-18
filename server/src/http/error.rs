@@ -309,6 +309,9 @@ impl ApiError {
             CommandError::DeviceNotFound => {
                 Self::not_found("command_device_not_found", correlation_id)
             }
+            CommandError::DeviceNotEnrolled => {
+                Self::not_found("command_device_not_enrolled", correlation_id)
+            }
             CommandError::RequestConflict => Self {
                 status: StatusCode::CONFLICT,
                 title: "Conflict",

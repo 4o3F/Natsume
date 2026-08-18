@@ -1,27 +1,24 @@
-use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl};
-use uuid::Uuid;
-
 use crate::{
     application::device::{
         DeviceFacts, DeviceId, DevicePersistenceError, DeviceState, HardwareIdentityQuality,
-        enrollment::ValidatedEnrollmentRequest,
     },
     db::{Transaction, schema::devices},
 };
+use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl};
 
-pub(crate) fn find_device_pk(
+pub(crate) fn find_state(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
-) -> Result<Option<DeviceId>, DevicePersistenceError> {
-    let persisted_device_id = devices::table
-        .select(devices::device_pk)
+) -> Result<Option<DeviceState>, DevicePersistenceError> {
+    let persisted_state = devices::table
+        .select(devices::state)
         .filter(devices::device_pk.eq(device_id.as_text()))
         .first::<String>(transaction.connection())
         .optional()
         .map_err(|_| DevicePersistenceError::PersistenceFailed)?;
-    persisted_device_id
-        .map(|device_id| {
-            DeviceId::parse(&device_id).ok_or(DevicePersistenceError::InvalidPersistedFacts)
+    persisted_state
+        .map(|state| {
+            DeviceState::from_persisted(&state).ok_or(DevicePersistenceError::InvalidPersistedFacts)
         })
         .transpose()
 }
@@ -58,38 +55,20 @@ pub(crate) fn list(
 
 pub(crate) fn insert(
     transaction: &mut Transaction<'_>,
-    device_id: Uuid,
-    request: &ValidatedEnrollmentRequest,
+    device_id: &DeviceId,
+    machine_hardware_id: &str,
+    hardware_identity_quality: HardwareIdentityQuality,
 ) -> Result<(), DevicePersistenceError> {
     diesel::insert_into(devices::table)
         .values((
-            devices::device_pk.eq(device_id.to_string()),
-            devices::machine_hardware_id.eq(&request.machine_hardware_id),
-            devices::hardware_identity_quality.eq(request.hardware_identity_quality.as_persisted()),
+            devices::device_pk.eq(device_id.as_text()),
+            devices::machine_hardware_id.eq(machine_hardware_id),
+            devices::hardware_identity_quality.eq(hardware_identity_quality.as_persisted()),
             devices::state.eq(DeviceState::Enrolled.as_persisted()),
         ))
         .execute(transaction.connection())
         .map(|_| ())
         .map_err(|_| DevicePersistenceError::PersistenceFailed)
-}
-
-pub(crate) fn restore_enrolled(
-    transaction: &mut Transaction<'_>,
-    device_id: Uuid,
-    expected_state: DeviceState,
-) -> Result<(), DevicePersistenceError> {
-    let updated = diesel::update(
-        devices::table
-            .filter(devices::device_pk.eq(device_id.to_string()))
-            .filter(devices::state.eq(expected_state.as_persisted())),
-    )
-    .set(devices::state.eq(DeviceState::Enrolled.as_persisted()))
-    .execute(transaction.connection())
-    .map_err(|_| DevicePersistenceError::PersistenceFailed)?;
-    if updated != 1 {
-        return Err(DevicePersistenceError::PersistenceFailed);
-    }
-    Ok(())
 }
 
 pub(crate) fn update_state_guarded(

@@ -5,7 +5,7 @@ use crate::{
     db::{self, Database},
 };
 
-use super::{DeviceError, DeviceId, DeviceState};
+use super::{DeviceConnectionEvictor, DeviceError, DeviceId, DeviceState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeviceLifecycleAction {
@@ -74,11 +74,15 @@ pub(crate) const fn decide_device_lifecycle(
     }
 }
 
-pub(crate) async fn revoke_device(
+pub(crate) async fn revoke_device<E>(
     database: &Database,
     device_id: &DeviceId,
     correlation_id: CorrelationId,
-) -> Result<(), DeviceError> {
+    connection_evictor: &E,
+) -> Result<(), DeviceError>
+where
+    E: DeviceConnectionEvictor + ?Sized,
+{
     apply_device_lifecycle(
         database,
         device_id,
@@ -86,14 +90,20 @@ pub(crate) async fn revoke_device(
         correlation_id,
         AuditEventId::from_uuid(Uuid::now_v7()),
     )
-    .await
+    .await?;
+    let _evicted = connection_evictor.evict_device_connection(&device_id.as_text());
+    Ok(())
 }
 
-pub(crate) async fn disable_device(
+pub(crate) async fn disable_device<E>(
     database: &Database,
     device_id: &DeviceId,
     correlation_id: CorrelationId,
-) -> Result<(), DeviceError> {
+    connection_evictor: &E,
+) -> Result<(), DeviceError>
+where
+    E: DeviceConnectionEvictor + ?Sized,
+{
     apply_device_lifecycle(
         database,
         device_id,
@@ -101,7 +111,9 @@ pub(crate) async fn disable_device(
         correlation_id,
         AuditEventId::from_uuid(Uuid::now_v7()),
     )
-    .await
+    .await?;
+    let _evicted = connection_evictor.evict_device_connection(&device_id.as_text());
+    Ok(())
 }
 
 async fn apply_device_lifecycle(
@@ -135,7 +147,7 @@ async fn apply_device_lifecycle(
                     revoked_certificate_count: outcome.revoked_certificate_count,
                 },
             );
-            db::audit::insert_device(transaction, &event)?;
+            db::audit::insert(transaction, &event).map_err(DeviceError::from_audit_persistence)?;
 
             if !outcome.applies {
                 return Ok(());

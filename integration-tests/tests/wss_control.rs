@@ -1,11 +1,9 @@
 use std::time::Duration;
 
-use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use diesel::connection::SimpleConnection;
 use futures_util::SinkExt as _;
-use natsume_device_daemon::enrollment::{EnrollmentStep, EnrollmentWaitState};
 use natsume_device_protocol::{
-    CONTROL_MAX_FRAME_BYTES, CONTROL_SUBPROTOCOL, CONTROL_WIRE_VERSION,
+    CONTROL_MAX_FRAME_BYTES, CONTROL_WIRE_VERSION,
     generated::{
         CommandState, CommandStatus, ControlEnvelope, GatewayState, Heartbeat, HomeState,
         ObservedStateSnapshot, SecretState, SessionLockState, SessionState, StateApplyStatus,
@@ -14,11 +12,11 @@ use natsume_device_protocol::{
 };
 use natsume_integration_tests::harness::{TestServer, require_ok};
 use serde_json::Value;
-use tokio_tungstenite::tungstenite::{
-    Error as WebSocketError, Message as WebSocketMessage, http::header as ws_header,
-};
+use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 use uuid::Uuid;
 
+#[path = "wss_control/auth.rs"]
+mod auth;
 #[path = "wss_control/fixture.rs"]
 mod fixture;
 #[path = "wss_control/wire.rs"]
@@ -45,110 +43,6 @@ async fn start_server() -> TestServer {
         OPERATOR_PASSWORD,
     )
     .await
-}
-
-#[tokio::test]
-async fn upgrade_auth_subprotocol_revocation_and_operator_separation_are_exact() {
-    let server = start_server().await;
-    server.open_window().await;
-    let hardware_id = machine_id(b"upgrade-auth");
-    let client = server.client("upgrade-auth", hardware_id);
-    client.enroll().await;
-    let token = client.token();
-    let wrong_token = URL_SAFE_NO_PAD.encode([0xa5_u8; 32]);
-
-    assert_upgrade_rejected(
-        &server,
-        None,
-        Some(CONTROL_SUBPROTOCOL),
-        None,
-        401,
-        Some("AUTHENTICATION_FAILED"),
-    )
-    .await;
-    assert_upgrade_rejected(
-        &server,
-        Some(&wrong_token),
-        Some(CONTROL_SUBPROTOCOL),
-        None,
-        401,
-        Some("AUTHENTICATION_FAILED"),
-    )
-    .await;
-    assert_upgrade_rejected(
-        &server,
-        None,
-        Some(CONTROL_SUBPROTOCOL),
-        Some(server.operator().cookie()),
-        401,
-        Some("AUTHENTICATION_FAILED"),
-    )
-    .await;
-    assert_upgrade_rejected(
-        &server,
-        Some(&token),
-        None,
-        None,
-        400,
-        Some("PROTOCOL_VERSION_UNSUPPORTED"),
-    )
-    .await;
-    assert_upgrade_rejected(
-        &server,
-        Some(&token),
-        Some("wrong.v1"),
-        None,
-        400,
-        Some("PROTOCOL_VERSION_UNSUPPORTED"),
-    )
-    .await;
-
-    // Neither token nor subprotocol: only an auth-before-negotiation server answers 401 here,
-    // so this combination is what pins the ordering the other cases cannot distinguish.
-    assert_upgrade_rejected(
-        &server,
-        None,
-        None,
-        None,
-        401,
-        Some("AUTHENTICATION_FAILED"),
-    )
-    .await;
-
-    let (mut socket, _epoch) = connect_and_hello(&server, &token, hardware_id).await;
-    let device_id = server.only_device_id().await;
-    server.revoke_device(&device_id).await;
-    expect_server_drain_and_close(&mut socket).await;
-    assert_upgrade_rejected(
-        &server,
-        Some(&token),
-        Some(CONTROL_SUBPROTOCOL),
-        None,
-        401,
-        Some("AUTHENTICATION_FAILED"),
-    )
-    .await;
-    server.shutdown().await;
-}
-
-/// A connection that authenticated but has not sent its hello yet must still be reachable by
-/// revocation: registering only after the hello exchange would leave a window in which a
-/// revoked token keeps a live socket.
-#[tokio::test]
-async fn revocation_before_client_hello_still_evicts_the_authenticated_connection() {
-    let server = start_server().await;
-    server.open_window().await;
-    let hardware_id = machine_id(b"pre-hello-revoke");
-    let client = server.client("pre-hello-revoke", hardware_id);
-    client.enroll().await;
-    let token = client.token();
-
-    let mut socket = open_websocket(&server, &token).await;
-    let device_id = server.only_device_id().await;
-    server.revoke_device(&device_id).await;
-
-    expect_server_drain_and_close(&mut socket).await;
-    server.shutdown().await;
 }
 
 #[tokio::test]
@@ -197,33 +91,6 @@ async fn hello_registry_protocol_and_frame_boundaries_are_exact() {
         "oversized client frame must be written",
     );
     expect_closed(&mut oversized).await;
-    server.shutdown().await;
-}
-
-#[tokio::test]
-async fn replacement_claim_evicts_old_connection_and_audits_true_while_first_issue_audits_false() {
-    let server = start_server().await;
-    server.open_window().await;
-    let hardware_id = machine_id(b"replacement-audit");
-    let original = server.client("replacement-original", hardware_id);
-    original.enroll().await;
-    assert_eq!(server.issuance_eviction_flags(), vec![false]);
-    let original_token = original.token();
-    let (mut old_connection, _epoch) =
-        connect_and_hello(&server, &original_token, hardware_id).await;
-
-    let replacement = server.client("replacement-new", hardware_id);
-    let pending = require_ok(
-        replacement.enrollment().step().await,
-        "replacement request must become pending",
-    );
-    let request_id = pending_request_id(pending);
-    server.approve_request(request_id).await;
-    replacement.enroll().await;
-
-    expect_server_drain_and_close(&mut old_connection).await;
-    assert_ne!(replacement.token(), original_token);
-    assert_eq!(server.issuance_eviction_flags(), vec![false, true]);
     server.shutdown().await;
 }
 
@@ -477,15 +344,14 @@ async fn command_status_merge_ownership_audit_and_error_code_are_exact() {
 /// Rejecting the frame on a command that is still `created` proves zero persistence from the
 /// row itself, instead of leaning on the monotonic guard of an already-terminal command.
 #[tokio::test]
-async fn an_unknown_stable_error_code_closes_the_connection_and_persists_nothing() {
+async fn invalid_command_status_fields_close_the_connection_and_persist_nothing() {
     let server = start_server().await;
     server.open_window().await;
-    let hardware_id = machine_id(b"unknown-code");
-    let client = server.client("unknown-code", hardware_id);
+    let hardware_id = machine_id(b"invalid-command-status");
+    let client = server.client("invalid-command-status", hardware_id);
     client.enroll().await;
     let token = client.token();
     let device_id = server.device_id_for_hardware(hardware_id);
-    let (mut socket, _epoch) = connect_and_hello(&server, &token, hardware_id).await;
 
     let command_id = Uuid::now_v7();
     server
@@ -493,20 +359,45 @@ async fn an_unknown_stable_error_code_closes_the_connection_and_persists_nothing
             command_id,
             &device_id,
             "lock_session",
-            lock_session_payload("unknown-code", 5, 6),
+            lock_session_payload("invalid-command-status", 5, 6),
         )
         .await;
-    assert_command_id(&receive_envelope(&mut socket).await, command_id);
 
-    send_envelope(
-        &mut socket,
-        command_status_envelope(command_id, CommandState::Failed, "ATTACKER_CHOSEN_CODE"),
-    )
-    .await;
-
-    expect_protocol_error(&mut socket, "PROTOCOL_INVALID_ENVELOPE").await;
-    assert_eq!(server.command_state(command_id), "created");
-    assert!(server.terminal_audits(command_id).is_empty());
+    for status in [
+        CommandStatus {
+            command_id: command_id.to_string(),
+            state: CommandState::Unspecified as i32,
+            stable_error_code: String::new(),
+        },
+        CommandStatus {
+            command_id: command_id.to_string(),
+            state: i32::MAX,
+            stable_error_code: String::new(),
+        },
+        CommandStatus {
+            command_id: command_id.to_string().to_uppercase(),
+            state: CommandState::Failed as i32,
+            stable_error_code: String::new(),
+        },
+        CommandStatus {
+            command_id: command_id.to_string(),
+            state: CommandState::Failed as i32,
+            stable_error_code: "ATTACKER_CHOSEN_CODE".to_owned(),
+        },
+    ] {
+        let (mut socket, _epoch) = connect_and_hello(&server, &token, hardware_id).await;
+        assert_command_id(&receive_envelope(&mut socket).await, command_id);
+        send_envelope(
+            &mut socket,
+            ControlEnvelope {
+                body: Some(control_envelope::Body::CommandStatus(status)),
+            },
+        )
+        .await;
+        expect_protocol_error(&mut socket, "PROTOCOL_INVALID_ENVELOPE").await;
+        assert_eq!(server.command_state(command_id), "created");
+        assert!(server.terminal_audits(command_id).is_empty());
+    }
     server.shutdown().await;
 }
 
@@ -530,83 +421,6 @@ fn assert_terminal_audit(server: &TestServer, command_id: Uuid) {
         audit.redacted_detail_json,
         r#"{"kind":"lock_session","terminal_state":"succeeded"}"#
     );
-}
-
-#[tokio::test]
-async fn failed_authentication_rate_limit_returns_transport_429_after_ten_failures() {
-    let server = start_server().await;
-    let wrong_token = URL_SAFE_NO_PAD.encode([0x5a_u8; 32]);
-    for _ in 0..10 {
-        assert_upgrade_rejected(
-            &server,
-            Some(&wrong_token),
-            Some(CONTROL_SUBPROTOCOL),
-            None,
-            401,
-            Some("AUTHENTICATION_FAILED"),
-        )
-        .await;
-    }
-    assert_upgrade_rejected(
-        &server,
-        Some(&wrong_token),
-        Some(CONTROL_SUBPROTOCOL),
-        None,
-        429,
-        None,
-    )
-    .await;
-    server.shutdown().await;
-}
-
-async fn assert_upgrade_rejected(
-    server: &TestServer,
-    token: Option<&str>,
-    subprotocol: Option<&str>,
-    cookie: Option<&str>,
-    expected_status: u16,
-    expected_code: Option<&str>,
-) {
-    let error = match server.websocket_attempt(token, subprotocol, cookie).await {
-        Err(error) => error,
-        Ok((socket, _response)) => {
-            drop(socket);
-            panic!("WebSocket upgrade must be rejected");
-        }
-    };
-    let WebSocketError::Http(response) = error else {
-        panic!("WebSocket rejection must carry the HTTP response");
-    };
-    assert_eq!(response.status().as_u16(), expected_status);
-    assert!(response.headers().contains_key("x-correlation-id"));
-    if let Some(expected_code) = expected_code {
-        let body = response
-            .body()
-            .as_deref()
-            .unwrap_or_else(|| panic!("stable HTTP error body must be present"));
-        let value: Value = require_ok(serde_json::from_slice(body), "HTTP error body must be JSON");
-        assert_eq!(
-            value.get("status").and_then(Value::as_u64),
-            Some(u64::from(expected_status))
-        );
-        assert_eq!(
-            value.get("code").and_then(Value::as_str),
-            Some(expected_code)
-        );
-        let body_correlation = value
-            .get("correlation_id")
-            .and_then(Value::as_str)
-            .unwrap_or_else(|| panic!("HTTP error correlation ID must be present"));
-        let header_correlation = response
-            .headers()
-            .get("x-correlation-id")
-            .and_then(|value| value.to_str().ok())
-            .unwrap_or_else(|| panic!("correlation header must be text"));
-        assert_eq!(body_correlation, header_correlation);
-    } else {
-        assert!(response.body().as_deref().is_none_or(<[u8]>::is_empty));
-        assert!(!response.headers().contains_key(ws_header::CONTENT_TYPE));
-    }
 }
 
 fn command_status_envelope(
@@ -659,21 +473,6 @@ fn observed_envelope() -> ControlEnvelope {
                 ..ObservedStateSnapshot::default()
             },
         )),
-    }
-}
-
-fn pending_request_id(step: EnrollmentStep) -> Uuid {
-    match step {
-        EnrollmentStep::Waiting(EnrollmentWaitState::ApprovalPending {
-            enrollment_request_id,
-        }) => enrollment_request_id,
-        EnrollmentStep::Enrolled
-        | EnrollmentStep::Rejected
-        | EnrollmentStep::Waiting(
-            EnrollmentWaitState::ProvisioningWindowClosed
-            | EnrollmentWaitState::NetworkUnavailable
-            | EnrollmentWaitState::ServerUnavailable,
-        ) => panic!("replacement Enrollment step must be approval-pending"),
     }
 }
 

@@ -19,7 +19,7 @@ use subtle::ConstantTimeEq as _;
 use zeroize::Zeroize as _;
 
 use crate::{
-    application::device::{DeviceId, credentials},
+    application::device::{DeviceId, DeviceState, credentials},
     audit::CorrelationId,
     tls::ClientAddress,
 };
@@ -92,12 +92,11 @@ pub(super) async fn authenticate_device_control(
     }
 
     let Some(mut token) = parse_bearer_token(&headers) else {
-        state.device_control_auth_failures.record_failure(source_ip);
-        return ApiError::authentication_failed(
-            "device_control_authentication_failed",
+        return authentication_failed(
+            &state.device_control_auth_failures,
+            source_ip,
             correlation_id,
-        )
-        .into_response();
+        );
     };
     let token_hash: [u8; 32] = Sha256::digest(token).into();
     token.zeroize();
@@ -106,30 +105,39 @@ pub(super) async fn authenticate_device_control(
     let row = match lookup {
         Ok(Some(row)) => row,
         Ok(None) => {
-            state.device_control_auth_failures.record_failure(source_ip);
-            return ApiError::authentication_failed(
-                "device_control_authentication_failed",
+            return authentication_failed(
+                &state.device_control_auth_failures,
+                source_ip,
                 correlation_id,
-            )
-            .into_response();
+            );
         }
         Err(error) => {
             return ApiError::from_device(error, correlation_id).into_response();
         }
     };
-    if !bool::from(row.token_hash.ct_eq(&token_hash)) {
-        state.device_control_auth_failures.record_failure(source_ip);
-        return ApiError::authentication_failed(
-            "device_control_authentication_failed",
+    let token_matches = bool::from(row.token_hash.ct_eq(&token_hash));
+    if row.state != DeviceState::Enrolled || !token_matches {
+        return authentication_failed(
+            &state.device_control_auth_failures,
+            source_ip,
             correlation_id,
-        )
-        .into_response();
+        );
     }
     request.extensions_mut().insert(AuthenticatedDevice {
         device_pk: row.device_pk,
         machine_hardware_id: row.machine_hardware_id.hyphenated().to_string(),
     });
     next.run(request).await
+}
+
+fn authentication_failed(
+    limiter: &DeviceControlAuthFailureLimiter,
+    source_ip: IpAddr,
+    correlation_id: CorrelationId,
+) -> Response {
+    limiter.record_failure(source_ip);
+    ApiError::authentication_failed("device_control_authentication_failed", correlation_id)
+        .into_response()
 }
 
 pub(super) fn parse_bearer_token(headers: &HeaderMap) -> Option<[u8; 32]> {

@@ -1,9 +1,9 @@
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl};
 
 use crate::{
-    application::import::{
-        CandidateRecord, CurrentAccountProjection, ImportError, ImportPayloadFacts,
-        NewAccountFacts, SealedCommitRow,
+    application::{
+        contest::{CurrentAccountProjection, NewAccountFacts},
+        import::{CandidateRecord, ImportError, ImportPayloadFacts, SealedCommitRow},
     },
     db::{Transaction, schema::server_vault_records},
     vault::VaultRecordType,

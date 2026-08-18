@@ -2,7 +2,7 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::{
-    application::device::{DevicePersistenceError, enrollment::IssuedGatewayCertificate},
+    application::device::{DevicePersistenceError, credentials::NewGatewayCertificate},
     db::{Transaction, schema::gateway_certificates},
 };
 
@@ -11,17 +11,16 @@ pub(crate) fn insert(
     certificate_id: Uuid,
     device_id: Uuid,
     enrollment_request_id: Uuid,
-    certificate: &IssuedGatewayCertificate,
-    spki_sha256: [u8; 32],
+    certificate: &NewGatewayCertificate,
 ) -> Result<(), DevicePersistenceError> {
     let inserted = diesel::insert_into(gateway_certificates::table)
         .values((
             gateway_certificates::certificate_id.eq(certificate_id.to_string()),
             gateway_certificates::device_pk.eq(device_id.to_string()),
             gateway_certificates::enrollment_request_id.eq(enrollment_request_id.to_string()),
-            gateway_certificates::serial.eq(&certificate.serial),
-            gateway_certificates::spki_sha256.eq(spki_sha256.as_slice()),
-            gateway_certificates::not_after.eq(&certificate.not_after),
+            gateway_certificates::serial.eq(certificate.serial()),
+            gateway_certificates::spki_sha256.eq(certificate.spki_sha256().as_slice()),
+            gateway_certificates::not_after.eq(certificate.not_after()),
             gateway_certificates::status.eq("active"),
         ))
         .execute(transaction.connection())

@@ -1,8 +1,21 @@
 use snafu::Snafu;
 
-use crate::application::device::DevicePersistenceError;
+use crate::{
+    application::{device::DevicePersistenceError, provisioning::ProvisioningPersistenceError},
+    audit::AuditPersistenceError,
+};
 
 use super::super::GatewayIssuerError;
+
+/// Redacted persistence boundary shared by Enrollment-request adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[snafu(module)]
+pub(crate) enum EnrollmentRequestPersistenceError {
+    #[snafu(display("persisted Enrollment request facts are invalid"))]
+    InvalidPersistedFacts,
+    #[snafu(display("Enrollment request persistence failed"))]
+    PersistenceFailed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum EnrollmentError {
@@ -47,6 +60,32 @@ pub(crate) enum EnrollmentError {
 }
 
 impl EnrollmentError {
+    pub(in crate::application::device::enrollment) const fn from_request_persistence(
+        error: EnrollmentRequestPersistenceError,
+    ) -> Self {
+        match error {
+            EnrollmentRequestPersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
+            EnrollmentRequestPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
+    pub(in crate::application::device::enrollment) const fn from_provisioning_persistence(
+        error: ProvisioningPersistenceError,
+    ) -> Self {
+        match error {
+            ProvisioningPersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
+            ProvisioningPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
+    pub(in crate::application::device::enrollment) const fn from_audit_persistence(
+        error: AuditPersistenceError,
+    ) -> Self {
+        match error {
+            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
     pub(in crate::application::device::enrollment) const fn from_device_persistence(
         error: DevicePersistenceError,
     ) -> Self {
@@ -71,5 +110,55 @@ impl From<GatewayIssuerError> for EnrollmentError {
             | GatewayIssuerError::ClockInvalid
             | GatewayIssuerError::SigningFailed => Self::SigningFailed,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        application::{device::DevicePersistenceError, provisioning::ProvisioningPersistenceError},
+        audit::AuditPersistenceError,
+    };
+
+    use super::{EnrollmentError, EnrollmentRequestPersistenceError};
+
+    #[test]
+    fn persistence_mappings_cover_every_neutral_variant() {
+        assert_eq!(
+            EnrollmentError::from_request_persistence(
+                EnrollmentRequestPersistenceError::InvalidPersistedFacts
+            ),
+            EnrollmentError::InvalidPersistedFacts
+        );
+        assert_eq!(
+            EnrollmentError::from_request_persistence(
+                EnrollmentRequestPersistenceError::PersistenceFailed
+            ),
+            EnrollmentError::PersistenceFailed
+        );
+        assert_eq!(
+            EnrollmentError::from_provisioning_persistence(
+                ProvisioningPersistenceError::InvalidPersistedFacts
+            ),
+            EnrollmentError::InvalidPersistedFacts
+        );
+        assert_eq!(
+            EnrollmentError::from_provisioning_persistence(
+                ProvisioningPersistenceError::PersistenceFailed
+            ),
+            EnrollmentError::PersistenceFailed
+        );
+        assert_eq!(
+            EnrollmentError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+            EnrollmentError::PersistenceFailed
+        );
+        assert_eq!(
+            EnrollmentError::from_device_persistence(DevicePersistenceError::InvalidPersistedFacts),
+            EnrollmentError::InvalidPersistedFacts
+        );
+        assert_eq!(
+            EnrollmentError::from_device_persistence(DevicePersistenceError::PersistenceFailed),
+            EnrollmentError::PersistenceFailed
+        );
     }
 }

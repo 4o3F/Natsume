@@ -80,7 +80,7 @@ pub(crate) struct PutCommandRequest {
         (status = 400, description = "Command ID is not canonical UUIDv7"),
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Device does not exist"),
+        (status = 404, description = "Device does not exist or is not enrolled"),
         (status = 409, description = "Command request conflicts"),
         (status = 500, description = "Internal failure")
     )

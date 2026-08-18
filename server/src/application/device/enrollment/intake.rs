@@ -1,9 +1,9 @@
 use uuid::Uuid;
 
 #[cfg(test)]
-use crate::application::device::credentials::NoLiveDeviceConnections;
+use crate::application::device::NoLiveDeviceConnections;
 use crate::{
-    application::device::credentials::DeviceConnectionEvictor,
+    application::device::DeviceConnectionEvictor,
     audit::{AuditEventId, CorrelationId},
     db::{self, Database},
 };
@@ -140,17 +140,15 @@ where
                 state: EnrollmentState::Pending,
             })),
             EnrollmentRequestStatus::Approved => {
-                let has_current_credentials = current_credentials(
+                let current = current_credentials(
                     db::device::query::current_credential_consistency(
                         transaction,
                         &device.device_id,
                     )
                     .map_err(EnrollmentError::from_device_persistence)?,
                     &device.device_id,
-                )?
-                .is_some();
-                let issuance_context =
-                    issuance_device_context(device.state, has_current_credentials)?;
+                )?;
+                let issuance_context = issuance_device_context(device.state, current.as_ref())?;
                 issue_existing_request(
                     transaction,
                     issuer,
@@ -172,13 +170,16 @@ where
         };
     }
 
+    if let Some(device) = device.as_ref() {
+        validate_device_for_replacement(device, request)?;
+    }
+
     let live_count = db::device::enrollment::query::live_request_count(transaction)?;
     if live_count >= MAX_LIVE_ENROLLMENT_REQUESTS {
         return Err(EnrollmentError::LiveRequestCapacityExceeded);
     }
 
     let current = if let Some(device) = device.as_ref() {
-        validate_device_for_replacement(device, request)?;
         let current = current_credentials(
             db::device::query::current_credential_consistency(transaction, &device.device_id)
                 .map_err(EnrollmentError::from_device_persistence)?,

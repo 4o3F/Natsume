@@ -4,11 +4,13 @@ use diesel::{
 };
 
 use crate::{
-    application::import::ImportError,
+    application::contest::ContestPersistenceError,
     db::{Transaction, schema::revision_counters},
 };
 
-pub(crate) fn read(transaction: &mut Transaction<'_>) -> Result<(i64, i64), ImportError> {
+pub(crate) fn read(
+    transaction: &mut Transaction<'_>,
+) -> Result<(i64, i64), ContestPersistenceError> {
     let (configuration_revision, binding_revision) = revision_counters::table
         .filter(revision_counters::singleton.eq(Some(1_i32)))
         .select((
@@ -16,9 +18,9 @@ pub(crate) fn read(transaction: &mut Transaction<'_>) -> Result<(i64, i64), Impo
             diesel::dsl::sql::<BigInt>("binding_revision"),
         ))
         .first::<(i64, i64)>(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)?;
+        .map_err(|_| ContestPersistenceError::PersistenceFailed)?;
     if configuration_revision < 0 || binding_revision < 0 {
-        return Err(ImportError::PersistenceFailure);
+        return Err(ContestPersistenceError::InvalidPersistedFacts);
     }
     Ok((configuration_revision, binding_revision))
 }
@@ -29,7 +31,7 @@ pub(crate) fn advance(
     baseline_binding_revision: i64,
     next_configuration_revision: i64,
     next_binding_revision: i64,
-) -> Result<usize, ImportError> {
+) -> Result<usize, ContestPersistenceError> {
     diesel::update(
         revision_counters::table
             .filter(revision_counters::singleton.eq(Some(1_i32)))
@@ -49,5 +51,5 @@ pub(crate) fn advance(
             .eq(diesel::dsl::sql::<Integer>("").bind::<BigInt, _>(next_binding_revision)),
     ))
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| ContestPersistenceError::PersistenceFailed)
 }

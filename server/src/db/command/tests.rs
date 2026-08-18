@@ -13,17 +13,20 @@ use diesel::{
     connection::SimpleConnection,
     sql_types::{BigInt, Nullable, Text},
 };
-use natsume_device_protocol::generated::{CommandState, CommandStatus};
 use serde_json::value::RawValue;
 use snafu::Snafu;
 use tokio::time::timeout;
 use uuid::Uuid;
 
 use crate::{
-    application::command::{
-        CommandError, CommandId, CommandKind, CommandOutcome, CommandRequestInput,
-        CommandStatusWriteOutcome, DeviceCommandDispatchNotifier, list_dispatchable_commands,
-        put_command, writeback_command_status,
+    application::{
+        command::{
+            CommandError, CommandId, CommandKind, CommandOutcome, CommandRequestInput,
+            CommandStatusWrite, CommandStatusWriteOutcome, DeviceCommandDispatchNotifier,
+            ReportedCommandState, list_dispatchable_commands, put_command,
+            writeback_command_status,
+        },
+        device::{DeviceId, NoLiveDeviceConnections, disable_device},
     },
     audit::CorrelationId,
     db::{Database, DatabaseConfig, tests as db_tests},
@@ -63,6 +66,15 @@ async fn created_command_and_audit_are_linked_atomically_and_replay_is_zero_writ
         return Err(TestFailure::CreatedAuditLinkageChanged);
     }
 
+    disable_device(
+        &fixture.database,
+        &device_id(DEVICE_ID)?,
+        CorrelationId::from_uuid(Uuid::now_v7()),
+        &NoLiveDeviceConnections,
+    )
+    .await
+    .map_err(|_| TestFailure::DeviceDisableFailed)?;
+
     let mut observer =
         db_tests::test_observer(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
     let before_replay = db_tests::test_data_version(&mut observer)
@@ -97,6 +109,99 @@ async fn created_command_and_audit_are_linked_atomically_and_replay_is_zero_writ
         return Err(TestFailure::ConflictAuditChanged);
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn disabled_and_revoked_devices_cannot_first_persist_a_command() -> Result<(), TestFailure> {
+    for state in ["disabled", "revoked"] {
+        let fixture = TestDatabase::new().await?;
+        seed_device_with_state(&fixture.database, state).await?;
+        let notifier = CountingNotifier::default();
+        let mut observer = db_tests::test_observer(&fixture.path)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        let version_before = db_tests::test_data_version(&mut observer)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+
+        let result = create_command(&fixture.database, COMMAND_ID, None, &notifier).await;
+        let version_after = db_tests::test_data_version(&mut observer)
+            .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        if result != Err(CommandError::DeviceNotEnrolled)
+            || notifier.count() != 0
+            || created_evidence(&fixture.database).await? != CreatedEvidence::default()
+            || version_after != version_before
+        {
+            return Err(TestFailure::IneligibleDeviceCreatedCommand);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unknown_device_remains_a_zero_write_device_not_found_error() -> Result<(), TestFailure> {
+    let fixture = TestDatabase::new().await?;
+    let notifier = CountingNotifier::default();
+    let mut observer =
+        db_tests::test_observer(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    let version_before = db_tests::test_data_version(&mut observer)
+        .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+
+    let result = create_command(&fixture.database, COMMAND_ID, None, &notifier).await;
+    let version_after = db_tests::test_data_version(&mut observer)
+        .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    if result != Err(CommandError::DeviceNotFound)
+        || notifier.count() != 0
+        || created_evidence(&fixture.database).await? != CreatedEvidence::default()
+        || version_after != version_before
+    {
+        return Err(TestFailure::UnknownDeviceClassificationChanged);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_disable_and_new_command_have_only_serial_outcomes() -> Result<(), TestFailure> {
+    let fixture = TestDatabase::new().await?;
+    seed_device(&fixture.database).await?;
+    let notifier = CountingNotifier::default();
+    let parsed_device_id = device_id(DEVICE_ID)?;
+    let no_live_connections = NoLiveDeviceConnections;
+
+    let (put_result, disable_result) = timeout(Duration::from_secs(10), async {
+        tokio::join!(
+            create_command(&fixture.database, SECOND_COMMAND_ID, None, &notifier),
+            disable_device(
+                &fixture.database,
+                &parsed_device_id,
+                CorrelationId::from_uuid(Uuid::now_v7()),
+                &no_live_connections,
+            )
+        )
+    })
+    .await
+    .map_err(|_| TestFailure::ConcurrentPutTimedOut)?;
+    if disable_result.is_err() || persisted_device_state(&fixture.database).await? != "disabled" {
+        return Err(TestFailure::ConcurrentLifecycleClassificationChanged);
+    }
+    let evidence = created_evidence(&fixture.database).await?;
+    match put_result {
+        Ok(CommandOutcome::Created)
+            if notifier.count() == 1
+                && evidence
+                    == (CreatedEvidence {
+                        commands: 1,
+                        created_audits: 1,
+                        linked: 1,
+                    }) =>
+        {
+            Ok(())
+        }
+        Err(CommandError::DeviceNotEnrolled)
+            if notifier.count() == 0 && evidence == CreatedEvidence::default() =>
+        {
+            Ok(())
+        }
+        _ => Err(TestFailure::ConcurrentLifecycleClassificationChanged),
+    }
 }
 
 #[tokio::test]
@@ -197,7 +302,7 @@ async fn status_writeback_is_monotonic_owned_terminal_and_exactly_audited()
         &fixture.database,
         FOREIGN_DEVICE_ID,
         COMMAND_ID,
-        CommandState::Running,
+        ReportedCommandState::Running,
         "",
     )
     .await?;
@@ -205,7 +310,7 @@ async fn status_writeback_is_monotonic_owned_terminal_and_exactly_audited()
         &fixture.database,
         DEVICE_ID,
         SECOND_COMMAND_ID,
-        CommandState::Running,
+        ReportedCommandState::Running,
         "",
     )
     .await?;
@@ -236,20 +341,51 @@ async fn status_writeback_is_monotonic_owned_terminal_and_exactly_audited()
 }
 
 async fn exercise_monotonic_status_transitions(database: &Database) -> Result<(), TestFailure> {
-    let received =
-        write_status(database, DEVICE_ID, COMMAND_ID, CommandState::Received, "").await?;
-    let running = write_status(database, DEVICE_ID, COMMAND_ID, CommandState::Running, "").await?;
-    let backwards =
-        write_status(database, DEVICE_ID, COMMAND_ID, CommandState::Received, "").await?;
-    let terminal =
-        write_status(database, DEVICE_ID, COMMAND_ID, CommandState::Succeeded, "").await?;
-    let duplicate =
-        write_status(database, DEVICE_ID, COMMAND_ID, CommandState::Succeeded, "").await?;
+    let received = write_status(
+        database,
+        DEVICE_ID,
+        COMMAND_ID,
+        ReportedCommandState::Received,
+        "",
+    )
+    .await?;
+    let running = write_status(
+        database,
+        DEVICE_ID,
+        COMMAND_ID,
+        ReportedCommandState::Running,
+        "",
+    )
+    .await?;
+    let backwards = write_status(
+        database,
+        DEVICE_ID,
+        COMMAND_ID,
+        ReportedCommandState::Received,
+        "",
+    )
+    .await?;
+    let terminal = write_status(
+        database,
+        DEVICE_ID,
+        COMMAND_ID,
+        ReportedCommandState::Succeeded,
+        "",
+    )
+    .await?;
+    let duplicate = write_status(
+        database,
+        DEVICE_ID,
+        COMMAND_ID,
+        ReportedCommandState::Succeeded,
+        "",
+    )
+    .await?;
     let overwrite = write_status(
         database,
         DEVICE_ID,
         COMMAND_ID,
-        CommandState::Failed,
+        ReportedCommandState::Failed,
         "HOME_OPERATION_FAILED",
     )
     .await?;
@@ -275,7 +411,7 @@ async fn terminal_audit_failure_rolls_command_state_back_to_running() -> Result<
         &fixture.database,
         DEVICE_ID,
         COMMAND_ID,
-        CommandState::Running,
+        ReportedCommandState::Running,
         "",
     )
     .await?;
@@ -285,7 +421,7 @@ async fn terminal_audit_failure_rolls_command_state_back_to_running() -> Result<
         &fixture.database,
         DEVICE_ID,
         COMMAND_ID,
-        CommandState::Failed,
+        ReportedCommandState::Failed,
         "HOME_OPERATION_FAILED",
     )
     .await;
@@ -366,6 +502,10 @@ fn command_id(value: &str) -> Result<CommandId, CommandError> {
     CommandId::parse(value)
 }
 
+fn device_id(value: &str) -> Result<DeviceId, TestFailure> {
+    DeviceId::parse(value).ok_or(TestFailure::FixtureFailed)
+}
+
 fn command_request(reason_code: Option<&str>) -> CommandRequestInput {
     CommandRequestInput {
         device_id: DEVICE_ID.to_owned(),
@@ -391,16 +531,20 @@ async fn write_status(
     database: &Database,
     device_pk: &str,
     command_id: &str,
-    state: CommandState,
+    state: ReportedCommandState,
     stable_error_code: &str,
 ) -> Result<CommandStatusWriteOutcome, TestFailure> {
+    let command_id = CommandId::parse(command_id)
+        .map_err(|_| TestFailure::StatusWritebackFailed)?
+        .value();
     writeback_command_status(
         database,
         device_pk,
-        &CommandStatus {
-            command_id: command_id.to_owned(),
-            state: state as i32,
-            stable_error_code: stable_error_code.to_owned(),
+        CommandStatusWrite {
+            command_id,
+            state,
+            terminal_error_code: (!stable_error_code.is_empty())
+                .then(|| stable_error_code.to_owned()),
         },
     )
     .await
@@ -408,19 +552,39 @@ async fn write_status(
 }
 
 async fn seed_device(database: &Database) -> Result<(), TestFailure> {
+    seed_device_with_state(database, "enrolled").await
+}
+
+async fn seed_device_with_state(
+    database: &Database,
+    state: &'static str,
+) -> Result<(), TestFailure> {
     database
-        .test_write(|connection| {
+        .test_write(move |connection| {
             diesel::sql_query(
                 "INSERT INTO devices VALUES \
                  ('01900000-0000-7000-8000-000000000201', 'command-db-hardware', \
-                  'strong', 'enrolled')",
+                  'strong', ?)",
             )
+            .bind::<Text, _>(state)
             .execute(connection)
         })
         .await
         .map_err(|_| TestFailure::FixtureFailed)?
         .map(|_| ())
         .map_err(|_| TestFailure::FixtureFailed)
+}
+
+async fn persisted_device_state(database: &Database) -> Result<String, TestFailure> {
+    database
+        .test_read(|connection| {
+            diesel::sql_query("SELECT state FROM devices WHERE device_pk = '01900000-0000-7000-8000-000000000201'")
+                .get_result::<DeviceStateEvidence>(connection)
+        })
+        .await
+        .map_err(|_| TestFailure::DatabaseEvidenceFailed)?
+        .map(|evidence| evidence.state)
+        .map_err(|_| TestFailure::DatabaseEvidenceFailed)
 }
 
 async fn install_created_audit_failure(database: &Database) -> Result<(), TestFailure> {
@@ -528,6 +692,12 @@ struct StatusEvidence {
     redacted_detail_json: Option<String>,
 }
 
+#[derive(QueryableByName)]
+struct DeviceStateEvidence {
+    #[diesel(sql_type = Text)]
+    state: String,
+}
+
 #[derive(Clone, Default)]
 struct CountingNotifier {
     notifications: Arc<AtomicUsize>,
@@ -581,6 +751,12 @@ enum TestFailure {
     FixtureFailed,
     #[snafu(display("the command create failed"))]
     CommandCreateFailed,
+    #[snafu(display("the Device disable fixture failed"))]
+    DeviceDisableFailed,
+    #[snafu(display("a non-enrolled Device first-persisted a Command"))]
+    IneligibleDeviceCreatedCommand,
+    #[snafu(display("an unknown Device did not remain DeviceNotFound"))]
+    UnknownDeviceClassificationChanged,
     #[snafu(display("the created command/audit linkage changed"))]
     CreatedAuditLinkageChanged,
     #[snafu(display("a replay wrote data"))]
@@ -597,6 +773,8 @@ enum TestFailure {
     ConcurrentConflictClassificationChanged,
     #[snafu(display("concurrent command PUTs timed out"))]
     ConcurrentPutTimedOut,
+    #[snafu(display("a concurrent Device disable and Command PUT was not serializable"))]
+    ConcurrentLifecycleClassificationChanged,
     #[snafu(display("the command could not be read"))]
     CommandReadFailed,
     #[snafu(display("CommandStatus writeback failed"))]

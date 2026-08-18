@@ -1,63 +1,14 @@
 use diesel::{ExpressionMethods, RunQueryDsl, dsl::sql, sql_types::Text};
 
 use crate::{
-    application::{
-        command::CommandError,
-        device::{DeviceError, enrollment::EnrollmentError},
-        import::ImportError,
-        operator::OperatorError,
-        provisioning::ProvisioningError,
-    },
-    audit::AuditEvent,
+    audit::{AuditEvent, AuditPersistenceError},
     db::{Transaction, schema::audit_events},
 };
 
 pub(crate) fn insert(
     transaction: &mut Transaction<'_>,
     event: &AuditEvent,
-) -> Result<(), CommandError> {
-    insert_persisted(transaction, event).map_err(CommandError::from)
-}
-
-pub(crate) fn insert_operator(
-    transaction: &mut Transaction<'_>,
-    event: &AuditEvent,
-) -> Result<(), OperatorError> {
-    insert_persisted(transaction, event).map_err(OperatorError::from)
-}
-
-pub(crate) fn insert_device(
-    transaction: &mut Transaction<'_>,
-    event: &AuditEvent,
-) -> Result<(), DeviceError> {
-    insert_persisted(transaction, event).map_err(DeviceError::from)
-}
-
-pub(crate) fn insert_provisioning(
-    transaction: &mut Transaction<'_>,
-    event: &AuditEvent,
-) -> Result<(), ProvisioningError> {
-    insert_persisted(transaction, event).map_err(ProvisioningError::from)
-}
-
-pub(crate) fn insert_import(
-    transaction: &mut Transaction<'_>,
-    event: &AuditEvent,
-) -> Result<(), ImportError> {
-    insert_persisted(transaction, event).map_err(|_| ImportError::PersistenceFailure)
-}
-
-pub(crate) fn insert_enrollment(
-    transaction: &mut Transaction<'_>,
-    event: &AuditEvent,
-) -> Result<(), EnrollmentError> {
-    insert_persisted(transaction, event).map_err(EnrollmentError::from)
-}
-
-fn insert_persisted(
-    transaction: &mut Transaction<'_>,
-    event: &AuditEvent,
-) -> Result<(), AuditStoreError> {
+) -> Result<(), AuditPersistenceError> {
     let detail_json = serde_json::to_string(&event.detail).unwrap_or_else(|_| {
         tracing::error!(
             correlation_id = %event.correlation_id.as_text(),
@@ -82,50 +33,5 @@ fn insert_persisted(
         ))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| AuditStoreError::InsertFailed)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AuditStoreError {
-    InsertFailed,
-}
-
-impl From<AuditStoreError> for CommandError {
-    fn from(source: AuditStoreError) -> Self {
-        match source {
-            AuditStoreError::InsertFailed => Self::PersistenceFailed,
-        }
-    }
-}
-
-impl From<AuditStoreError> for OperatorError {
-    fn from(source: AuditStoreError) -> Self {
-        match source {
-            AuditStoreError::InsertFailed => Self::PersistenceFailed,
-        }
-    }
-}
-
-impl From<AuditStoreError> for DeviceError {
-    fn from(source: AuditStoreError) -> Self {
-        match source {
-            AuditStoreError::InsertFailed => Self::PersistenceFailed,
-        }
-    }
-}
-
-impl From<AuditStoreError> for ProvisioningError {
-    fn from(source: AuditStoreError) -> Self {
-        match source {
-            AuditStoreError::InsertFailed => Self::PersistenceFailed,
-        }
-    }
-}
-
-impl From<AuditStoreError> for EnrollmentError {
-    fn from(source: AuditStoreError) -> Self {
-        match source {
-            AuditStoreError::InsertFailed => Self::PersistenceFailed,
-        }
-    }
+        .map_err(|_| AuditPersistenceError::PersistenceFailed)
 }

@@ -10,10 +10,7 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    application::device::{DeviceError, DeviceLifecycleAction, list_devices},
-    audit::{
-        self, AuditDetail, AuditEvent, AuditEventId, CorrelationId, DeviceLifecycleAuditResult,
-    },
+    application::device::{DeviceError, list_devices},
     db::{Database, DatabaseConfig},
 };
 
@@ -259,30 +256,6 @@ pub(crate) async fn test_lifecycle_audit_count(
             .get_result::<TestIntegerRow>(connection)
             .map(|row| row.value)
             .map_err(|_| DeviceError::PersistenceFailed)
-        })
-        .await
-        .map_err(|_| DeviceError::PersistenceFailed)?
-}
-
-pub(crate) async fn test_reserve_audit_id(
-    database: &Database,
-    audit_event_id: AuditEventId,
-) -> Result<(), DeviceError> {
-    database
-        .test_write(move |connection| {
-            let event = AuditEvent::device_lifecycle(
-                audit_event_id,
-                CorrelationId::from_uuid(Uuid::now_v7()),
-                "reserved-device".to_owned(),
-                DeviceLifecycleAction::Disable,
-                DeviceLifecycleAuditResult::Noop,
-                AuditDetail::DeviceLifecycle {
-                    resulting_state: "disabled",
-                    removed_token_count: 0,
-                    revoked_certificate_count: 0,
-                },
-            );
-            audit::insert_diesel(connection, &event).map_err(|_| DeviceError::PersistenceFailed)
         })
         .await
         .map_err(|_| DeviceError::PersistenceFailed)?

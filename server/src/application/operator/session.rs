@@ -144,7 +144,7 @@ pub(crate) async fn create_session_with_audit_id(
                 identity.operator_id(),
                 identity.role().as_persisted(),
             );
-            db::audit::insert_operator(transaction, &event)
+            db::audit::insert(transaction, &event).map_err(OperatorError::from_audit_persistence)
         })
         .await
 }
@@ -193,7 +193,8 @@ pub(crate) async fn authenticate_session(
                 correlation_id,
                 current.identity.operator_id(),
             );
-            db::audit::insert_operator(transaction, &event)?;
+            db::audit::insert(transaction, &event)
+                .map_err(OperatorError::from_audit_persistence)?;
             Ok(ExpiredSessionCleanup::Deleted)
         })
         .await;
@@ -270,7 +271,7 @@ pub(crate) async fn terminate_session_with_audit_id(
                     current.identity.operator_id(),
                 )
             };
-            db::audit::insert_operator(transaction, &event)
+            db::audit::insert(transaction, &event).map_err(OperatorError::from_audit_persistence)
         })
         .await
 }

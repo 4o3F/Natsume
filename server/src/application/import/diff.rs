@@ -2,97 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::application::device::DeviceId;
+use crate::application::contest::CurrentSeatProjection;
 
 use super::{CandidateRowFacts, ImportError};
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CurrentSeatProjection {
-    seat_id: String,
-    seat_code: String,
-    current_domjudge_username: Option<String>,
-    device_id: Option<DeviceId>,
-}
-
-impl CurrentSeatProjection {
-    pub(crate) fn new(
-        seat_id: String,
-        seat_code: String,
-        current_domjudge_username: Option<String>,
-        device_id: Option<DeviceId>,
-    ) -> Self {
-        Self {
-            seat_id,
-            seat_code,
-            current_domjudge_username,
-            device_id,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn seat_id(&self) -> &str {
-        &self.seat_id
-    }
-
-    #[must_use]
-    pub(crate) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    #[must_use]
-    pub(crate) fn current_domjudge_username(&self) -> Option<&str> {
-        self.current_domjudge_username.as_deref()
-    }
-
-    #[must_use]
-    pub(crate) const fn device_id(&self) -> Option<&DeviceId> {
-        self.device_id.as_ref()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CurrentAccountProjection {
-    account_id: String,
-    domjudge_username: String,
-    credential_vault_record_id: String,
-    credential_revision: i64,
-}
-
-impl CurrentAccountProjection {
-    pub(crate) fn new(
-        account_id: String,
-        domjudge_username: String,
-        credential_vault_record_id: String,
-        credential_revision: i64,
-    ) -> Self {
-        Self {
-            account_id,
-            domjudge_username,
-            credential_vault_record_id,
-            credential_revision,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn account_id(&self) -> &str {
-        &self.account_id
-    }
-
-    #[must_use]
-    pub(crate) fn domjudge_username(&self) -> &str {
-        &self.domjudge_username
-    }
-
-    #[must_use]
-    pub(crate) fn credential_vault_record_id(&self) -> &str {
-        &self.credential_vault_record_id
-    }
-
-    #[must_use]
-    pub(crate) const fn credential_revision(&self) -> i64 {
-        self.credential_revision
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ImportMappingChange {

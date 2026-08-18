@@ -645,7 +645,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Device does not exist */
+      /** @description Device does not exist or is not enrolled */
       404: {
         headers: {
           /** @description Server-generated canonical UUIDv7 correlation ID */

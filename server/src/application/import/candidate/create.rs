@@ -62,7 +62,8 @@ pub(crate) async fn create_import_candidate(
             }
 
             let (baseline_configuration_revision, baseline_binding_revision) =
-                db::import::revision_counters::read(transaction)?;
+                db::import::revision_counters::read(transaction)
+                    .map_err(ImportError::from_contest_persistence)?;
             let current_seats = db::import::query::read_current_seats(transaction)?;
             let diff = compute_diff(&current_seats, &candidate_rows)?;
             let expires_at = db::import::pending_import_candidate::calculate_expiry(transaction)?;
@@ -104,7 +105,7 @@ pub(crate) async fn create_import_candidate(
                 candidate.diff().mappings_changed().len(),
                 candidate.diff().binding_impacts().len(),
             );
-            db::audit::insert_import(transaction, &event)?;
+            db::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)?;
             Ok(candidate.into_created(preview_token))
         })
         .await
@@ -118,7 +119,7 @@ pub(crate) async fn audit_invalid_import_upload(
     database
         .write(move |transaction| {
             let event = AuditEvent::import_candidate_rejected(audit_event_id, correlation_id);
-            db::audit::insert_import(transaction, &event)
+            db::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)
         })
         .await
 }

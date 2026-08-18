@@ -1,8 +1,8 @@
 # Phase 4 状态
 
-> 状态：`DRAFT-STEP0`
-> 最后更新：2026-08-17
-> G4：`OPEN`（启动分解已冻结；实现未开始）
+> 状态：`ACTIVE IMPLEMENTATION`
+> 最后更新：2026-08-18
+> G4：`OPEN`（WP1–WP4 已完成；WP5 部分完成；WP6 尚未收口）
 
 Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。范围以 [roadmap](../roadmap.md) §Phase 4、[契约](../contracts.md) §3.5/§3.6.5/§5/§6/§9/§12、[状态与执行模型](../state-and-execution.md) §2 与 [ADR-0033](../adr/0033-enrollment-and-device-control-boundary.md)/[ADR-0034](../adr/0034-state-execution-and-data-plane-boundary.md) 为准；wire 契约（proto envelope、`commands`/`observed_device_states` DDL、putCommand OpenAPI 声明、控制类稳定码）已全部在 Phase 0 冻结，本阶段是为冻结面接入真实 runtime，不再新增 wire surface。
 
@@ -31,7 +31,7 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 
 ## WP1 落地记录（2026-08-16）
 
-- 交付：`application::command`（校验 + JCS + fingerprint v1）、`db::command`（BEGIN IMMEDIATE 同事务创建审计 + UniqueViolation 竞态救援重分类）、`audit::command`（`command_create` 词汇已先行注册于契约 §3.6.4 三表）、`http::handler::command`（admin-only、路径先于 body 校验、16 KiB route 上限、typed cause 逐项映射）、`putCommand` OpenAPI 挂载（path object 与 Phase 0 声明逐项相等，仅 mounted 簿记变化）。
+- 交付：`application::command`（校验 + JCS + fingerprint v1 + 首次持久化 `DeviceState::Enrolled` gate）、`db::command`（BEGIN IMMEDIATE 同事务创建审计 + lifecycle 竞态串行化）、`audit::command`（`command_create` 词汇已先行注册于契约 §3.6.4 三表）、`http::handler::command`（admin-only、路径先于 body 校验、16 KiB route 上限、typed cause 逐项映射）、`putCommand` OpenAPI 挂载（operation/status/component 不变，404 description 覆盖 missing 或 non-enrolled Device）。
 - 三条 fingerprint golden 向量经带外（Python 独立实现）逐字节复算吻合；opus 对抗审查 2 阻断均为契约登记滞后（本次随包补齐），代码零阻断。
 - **`deadline_at` 由 NOT NULL 放宽为可空**：Phase 0 的 DDL（NOT NULL）与 Phase 0 冻结的 PUT 面（无 deadline 字段）互相矛盾，Phase 4 无 deadline 写者，向可空解决并由插入路径钉死 NULL。
 - 审查非阻断挂账：(a) conflict 审计行顶层列回显请求的 `group_correlation_id`（契约允许——分组即其用途；禁令作用域为 `redacted_detail_json`），待 owner 如认为不妥再收紧；(b) golden 向量 (c) 的非 ASCII JCS 分支在生产不可达（payload 全字段 printable-ASCII 校验），属理论加固；(c) 嵌套层重复键无独立用例（结构上由每层 serde struct 的 `duplicate_field` 保证，7 kind 全部字段为 typed struct、无 `Value` 子树）；(d) `deadline_at` 可空性仅由插入路径隐式钉住（schema 契约测试不 pin notnull 维度，全表一致）；(e) 未认证 + 超大 body 返 `401` 而非 `413`（与 import commit 路由层序逐字一致，认证短路先于 body 读取，资源上更优）；(f) fingerprint v2 引入时须按「旧版本永久有效」重审 replay 判定中的版本比较。
@@ -45,15 +45,16 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 
 ## WP3 落地记录（2026-08-16）
 
-- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.v1` 强制选择、Hello 交换与稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）；Device lifecycle handler 的 revoke/disable 在 DB 变更成功后驱逐；enrollment replacement 路径接线 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；五条真 TLS + 真 WS 客户端测试。
-- **认证顺序**：limiter → shape gate → SHA-256 → DB 查找 → `ConstantTimeEq` 复核，全部先于 upgrade 与任何 protobuf decode；缺失/格式错/未知/已吊销四路 401 同码同体，无 oracle。
+- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.v1` 强制选择、Hello 交换与稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）；Device lifecycle application use case 的 revoke/disable 在 DB 变更成功后（包括 noop）恰调用一次显式 evictor，HTTP handler 只传入 registry、不再直接驱逐；enrollment replacement 路径维持事务内驱逐与 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；五条真 TLS + 真 WS 客户端测试。
+- **认证顺序**：limiter → shape gate → SHA-256 → DB 查找（含 resolved Device state）→ `ConstantTimeEq` 复核，全部先于 upgrade 与任何 protobuf decode；缺失/格式错/未知/no-row/disabled/revoked 走同一 401 body/cause 与同一 IP limiter，无 oracle。只有 `DeviceState::Enrolled` 可建立 WSS；非法持久化 state 保持 500 corruption。
 - **注册时机（审查后修正）**：连接在 hello 等待**之前**注册，使「已认证未 hello」的连接对撤销/替换驱逐可见；原实现在 ServerHello 之后注册，存在最长 10s 的撤销绕过窗口（WP4 dispatch 挂同一 registry 后将成为静默绕过）。同时 hello 窗口放行 Ping/Pong 而非判为协议错误。
+- **2026-08-18 state-gate 证据**：`integration-tests/tests/wss_control/auth.rs::disabled_and_revoked_tokens_share_the_normalized_wss_authentication_failure` 以真 TLS + 真 WS 覆盖 enrolled 成功、hello 后 disable 驱逐、保留 token=1/active cert、同 token 重连 401、第二台 enrolled Device 不受影响、五类失败归一化与合并 limiter 计数、零 auth audit；`invalid_persisted_device_state_remains_an_internal_wss_failure` 钉死 corruption 500。
 - **依赖事实（2026-08-17 修正）**：启用 axum `ws` 与 daemon 客户端 WSS 后，`tungstenite 0.29` 的 `rand 0.9` / `getrandom 0.3` 熵栈与 `sha1`（RFC 6455 `Sec-WebSocket-Accept` 用，非安全原语）进入**生产 server 与生产 daemon 二进制**；workspace 精确 pin 有意使用私有 `__rustls-tls` feature 以避开平台 TLS / 公共根 feature，`deny.toml` 两条精确版本 skip 因此必需。
-- 审查非阻断挂账：(a) eviction 发生在签发事务内、commit 之前（`device_pk` 只有进入事务读到 device 行后才可知，application 层无法先问 registry；回滚时表现为一次多余断连，安全侧 fail-safe，审计 bool 与凭据行仍同事务原子）；(b) 「missing pong」未强制——任何入站帧刷新 idle 计时，持续发 Heartbeat 但从不回 pong 的客户端可长存（真正静默者仍 60s 关闭）；(c) 「无 token + 无 subprotocol」这一唯一能证明认证优先于协商的组合无测试（顺序由 `route_layer` 结构性保证）；(d) 限流测试不能证明限流早于 DB 查询；(e) hello timeout / idle timeout / ping 周期三项无测试；(f) token 零化装饰性（SHA-256 中间值与 HeaderMap 原字节不清，与其他路由现状一致）。
+- 审查非阻断挂账：(a) eviction 发生在签发事务内、commit 之前（`device_pk` 只有进入事务读到 device 行后才可知，application 层无法先问 registry；回滚时表现为一次多余断连，安全侧 fail-safe，审计 bool 与凭据行仍同事务原子）；(b) 「missing pong」未强制——任何入站帧刷新 idle 计时，持续发 Heartbeat 但从不回 pong 的客户端可长存（真正静默者仍 60s 关闭）；(c) 限流测试不能证明限流早于 DB 查询；(d) hello timeout / idle timeout / ping 周期三项无测试；(e) token 零化装饰性（SHA-256 中间值与 HeaderMap 原字节不清，与其他路由现状一致）。认证先于协商的「无 token + 无 subprotocol」组合已由 `upgrade_authentication_precedes_subprotocol_and_excludes_operator_sessions` 补齐。
 
 ## WP4 落地记录（2026-08-16）
 
-- 交付：`application/command/render.rs`（frozen payload → wire Command 的全函数确定性渲染，全部穷举结构体字面量——proto 增删字段会编译失败；时间戳走 `time` crate RFC 3339）；`db::command::list_dispatchable_commands`（DB-as-truth，无内存队列，`(created_at, command_id)` 定序，`DISPATCH_BATCH_LIMIT = 256`）；创建与重连双触发投递（trait 定义在 application 层，db/application 不引用 WSS 类型）；`writeback_command_status` 单调状态机（事务内重读、终态不可覆写、重复终态零写入）与 `command_terminal` 终态审计（词汇先注册后写入器）。**游标已删除**：WP4 曾实现 `devices.terminal_result_cursor`（journal GC ack），因 Phase 4 无终态生产者且高水位标记在乱序终态下会静默丢结果而整体移除（proto 三字段、列、推进逻辑与类型），替代设计登记为 [Phase 5 计划](../planning/phase-5-plan.md) §6.1 的 D12。
+- 交付：`http/device_control/render.rs`（frozen payload → wire Command 的全函数确定性渲染，全部穷举结构体字面量——proto 增删字段会编译失败；时间戳走 `time` crate RFC 3339）；`db::command::list_dispatchable_commands`（DB-as-truth，无内存队列，`(created_at, command_id)` 定序，`DISPATCH_BATCH_LIMIT = 256`）；创建与重连双触发投递（trait 定义在 application 层，db/application 不引用 WSS 类型）；`writeback_command_status` 单调状态机（事务内重读、终态不可覆写、重复终态零写入）与 `command_terminal` 终态审计（词汇先注册后写入器）。**游标已删除**：WP4 曾实现 `devices.terminal_result_cursor`（journal GC ack），因 Phase 4 无终态生产者且高水位标记在乱序终态下会静默丢结果而整体移除（proto 三字段、列、推进逻辑与类型），替代设计登记为 [Phase 5 计划](../planning/phase-5-plan.md) §6.1 的 D12。
 - **投递不改变 state**：状态只随 Device 上报的 CommandStatus 前进；`sync_secret` 在渲染前按 kind 跳过（Phase 4 零 wire 效果，密码属 Phase 5 vault 注入）。
 - 审查后修正：(1) 游标相关的越界修正随游标整体删除而作废（见上）；(2) 投递批次内每帧发送与驱逐信号做 `select`，避免设备停住 TCP 接收窗把「token 吊销即断」推迟到 TCP 超时；(3) 终态写回成功后触发一次重新投递，使批次上限之后排队的行立即可见，不必等下一次 PUT 或重连；(4) 投递**查询**失败不再杀连接（冻结规范只要求 send 失败结束连接）。
 - 审查非阻断挂账：(a) 每次唤醒重发全部可派发行而非增量（契约允许 byte-identical 重投递，存在操作面放大）；(b) 同一设备 ≥256 条长期处于 `running` 时，第 257 条在其中之一终态化前不可见（FIFO 窗口的容量边界，非停滞）；(c) `command_terminal` 审计的 `result` 由 `&'static str` 重新推导且带兜底分支，正确性依赖唯一调用点，建议改接 typed 状态；(d) 冻结规格的文件清单曾漏列当时的 Enrollment application/DB facade 与 `handler/command/tests.rs` 三处机械改动（游标随 token lookup 取回、通知器穿线、positional INSERT 列数）；Device-first 迁移后的对应路径为 `application/device/enrollment.rs` 与 `db/device/enrollment.rs`。原 (e) 测试热轮询已于 WP5a harness 收口为有界 interval poll。
@@ -80,6 +81,12 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 - Device lifecycle、query、Token/Gateway credential 与 Enrollment request workflow 的 application、DB、HTTP、audit seam 已统一归入 `device`；provisioning 窗口独立归 `provisioning`，Seat、Account 与 Binding 继续归 `contest`。
 - 旧顶层 enrollment 与 contest-owned Device compatibility surface 已删除；application 不再携带 `utoipa` schema，公开 DTO 由 HTTP adapter 持有。
 - 本次仅移动内部 owner 与类型转换边界；HTTP operationId、status/component、内部 cause string、audit vocabulary、OpenAPI/TypeScript snapshot与 protocol golden 均保持不变，无 wire behavior change。
+
+## Command eligibility 与 lifecycle eviction ownership 加固（2026-08-18）
+
+- `putCommand` 现在按 `validate → BEGIN IMMEDIATE → typed DeviceState lookup → existing fingerprint → first-persist eligibility → created audit + insert` 的固定顺序执行。只有 `enrolled` 可首次持久化；disabled/revoked 返回内部 `DeviceNotEnrolled`，公开面与 missing Device 同为 `404 RESOURCE_NOT_FOUND` 且零写入/审计/通知。既有 ID 的 replay/conflict 在之后 disable/revoke 仍保持 `200`/`409`，conflict 继续使用既有独立 audit，无新稳定码、route、schema 或 proto。
+- `DeviceConnectionEvictor` 与 test-only crate-visible `NoLiveDeviceConnections` 从 credential owner 移到 `application::device::connections` 并由 device parent re-export。`revoke_device` / `disable_device` 的 canonical signature 强制显式 evictor reference；成功（含 noop）一次驱逐，任意错误零驱逐。HTTP lifecycle handler 已移除直接 `.evict()`，Enrollment replacement 的事务内时机与 audit bool 不变。
+- 回归覆盖 disabled/revoked first PUT、unknown Device、post-disable replay/conflict、disable-vs-new-ID 并发串行结果、HTTP 公开归一化、`from_command`/WSS frame 穷举 match，以及 lifecycle success/noop 与 notfound/audit/token/certificate/CAS failure 的 eviction 次数和回滚事实。
 
 ## 已登记待办
 

@@ -1,20 +1,26 @@
 use serde::Serialize;
-use uuid::Uuid;
-
-#[cfg(test)]
-use diesel::{ExpressionMethods, RunQueryDsl, dsl::sql, sql_types::Text, sqlite::SqliteConnection};
-#[cfg(test)]
 use snafu::Snafu;
+use uuid::Uuid;
 
 use crate::application::device::enrollment::{EnrollmentResolution, IssuanceReason};
 #[cfg(test)]
 use crate::db::schema::audit_events;
+#[cfg(test)]
+use diesel::{ExpressionMethods, RunQueryDsl, dsl::sql, sql_types::Text, sqlite::SqliteConnection};
 
 mod command;
 mod device;
 mod import;
 mod operator;
 mod provisioning;
+
+/// Redacted persistence boundary shared by the Audit adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[snafu(module)]
+pub(crate) enum AuditPersistenceError {
+    #[snafu(display("audit persistence failed"))]
+    PersistenceFailed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AuditEventId(Uuid);
@@ -209,7 +215,7 @@ impl AuditEvent {
 pub(crate) fn insert_diesel(
     connection: &mut SqliteConnection,
     event: &AuditEvent,
-) -> Result<(), AuditError> {
+) -> Result<(), AuditPersistenceError> {
     let detail_json = serde_json::to_string(&event.detail).unwrap_or_else(|_| {
         tracing::error!(
             correlation_id = %event.correlation_id.as_text(),
@@ -233,14 +239,7 @@ pub(crate) fn insert_diesel(
             audit_events::redacted_detail_json.eq(detail_json),
         ))
         .execute(connection)
-        .map_err(|_| AuditError::InsertFailed)?;
+        .map_err(|_| AuditPersistenceError::PersistenceFailed)?;
 
     Ok(())
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-pub(crate) enum AuditError {
-    #[snafu(display("the audit event could not be persisted"))]
-    InsertFailed,
 }

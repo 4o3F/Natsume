@@ -151,7 +151,9 @@ PUT /api/v2/commands/{command_id}
 - **Panel 在发起请求前生成 `command_id`**。它必须是 canonical lowercase hyphenated UUIDv7：可解析、version 为 7，且其 canonical string 与 path 输入逐字符相同。Server 不生成、重写或为同一意图替换这个 ID。
 - request 的持久化 target 是 `device_pk`，并使用封闭 `kind`、`payload_version`、`payload`、可选 `reason_code` 与可选 `group_correlation_id`；持久化 row 只为 `group_correlation_id` 保留对应 top-level column，`reason_code` 不另设 top-level column。
 - Server 对 canonical request 计算 versioned、domain-separated SHA-256 fingerprint，并持久化为 `request_fingerprint_version` 和 `request_fingerprint_sha256`；算法由下述 v1 小节冻结。
+- **只有当前 state 为 `enrolled` 的 Device 才有资格首次持久化 Command。** 精确顺序为：事务外完成 request 校验；进入 `Database::write` / `BEGIN IMMEDIATE`；以 typed `DeviceState` 查找 target（不存在即 `DeviceNotFound`）；再查同 ID fingerprint（相同即 replay，不同即 conflict，均忽略当前 Device state）；仅在同 ID 尚不存在时检查 state，非 `enrolled` 即 `DeviceNotEnrolled` 且零 Command、零 audit、零 notifier；最后才为 `enrolled` target 在同一事务插入 created audit 与 Command。Command PUT 与 lifecycle mutation 共用 `BEGIN IMMEDIATE`，因此 disable/revoke 与新 ID PUT 的竞态只能得到以上两个串行结果，不能产生 `DeviceNotEnrolled` 与新 Command row 同时成立的结果。
 - 没有该 ID 时，Server 原子持久化 Command 与 `created_audit_event_id` 指向的创建 audit，返回 `201`。已有该 ID 且 fingerprint 相同，返回同一个已持久化 Command，返回 `200`，不再写 audit 或重复任何副作用。已有该 ID 且 fingerprint 不同，返回 `409` / `COMMAND_REQUEST_CONFLICT`。
+- Device 在 Command 创建后被 disable 或 revoke 不改变该 ID 的幂等事实：same-ID/same-fingerprint 仍返回 `200` 且零写入，same-ID/different-fingerprint 仍返回 `409` 并写既有的独立 conflict audit。只有首次持久化受 `enrolled` gate 约束。
 - `409` conflict 路径写一行 audit：`resource_id` 为 `command_id`、`result` 为 rejected、`reason_code` 为 `COMMAND_REQUEST_CONFLICT`；`redacted_detail_json` 可含 fingerprint **version** 与计数，**绝不含 fingerprint 值或 request 回显**。conflict 是低频异常信号（client 缺陷或攻击），与既有 import stale-reject 审计同一原则。same-ID/same-fingerprint replay 仍然零 audit 写入。
 - 非 canonical UUIDv7 返回 `400` / `COMMAND_ID_INVALID`。错误不得回显原始 request、fingerprint、secret 或未脱敏诊断。
 - 每个 bulk target 使用一个独立 `command_id`。可选 `group_correlation_id` 只用于查询和审计分组；即使它参与 fingerprint，也不表达顺序、原子性、重试或跨 Device lifecycle。
@@ -183,13 +185,13 @@ Operator 身份与会话是 Server 持久化事实（[ADR-0037](adr/0037-operato
 | `GET` | `/api/v2/devices` | `admin` / `viewer` | 返回当前 Device 集合与 state |
 | `GET` | `/api/v2/bindings` | `admin` / `viewer` | 返回当前 Seat↔Device Binding 集合；响应行 = `{seat_id, device_id, binding_revision}`，其中 `binding_revision` 为行级 stamp，供 Panel 做变更感知 |
 | `POST` | `/api/v2/devices/{device_id}/actions/revoke` | `admin` | Device 转为 `revoked`、移除当前 Device Token，并将关联 Gateway certificate 状态行转为 `revoked` 后保留 |
-| `POST` | `/api/v2/devices/{device_id}/actions/disable` | `admin` | Device 转为 `disabled` |
+| `POST` | `/api/v2/devices/{device_id}/actions/disable` | `admin` | Device 转为 `disabled`；保留当前 Device Token row 与 active Gateway certificate row |
 
 两个 Device lifecycle action 是 **repeat-safe** 的 current-fact mutation：目标 state 已达到时零业务写入，写一行 `result = 'noop'` 的 audit，并返回 HTTP `200`；首次实际生效同样返回 HTTP `200`，audit 为 `result = 'succeeded'`。
 
 transition matrix 固定如下：`revoke` 可从任意当前 state 应用；从 `enrolled` 或 `disabled` 执行完整 revoke effect，从 `revoked` 进入 convergence 检查。只有 `devices.state = 'revoked'`、不存在当前 `device_tokens` row，且该 Device 不存在任何状态不为 `revoked` 的保留 `gateway_certificates` row 时，`revoke` 才是 `noop`；任一部分尚未收敛都必须补全剩余 effect，并记录 `result = 'succeeded'`。
 
-`disable` 从 `enrolled` 转为 `disabled`；对已经 `disabled` 的 Device 是 repeat-safe `noop`。对 `revoked` Device 同样是零业务写入的 `noop`：`revoked` 已包含比 `disabled` 更强的限制，并额外移除了 Device Token、将关联 certificate 状态行转为 `revoked` 后保留；不得把它降级回 `disabled` 而静默削弱安全状态，也不为此引入新的 stable ErrorCode。
+`disable` 从 `enrolled` 转为 `disabled`，保留当前 Device Token row 与 active Gateway certificate row；保留是 lifecycle 与审计证据语义，**不授权 Device WSS**，因为 WSS 还要求 resolved Device state 为 `enrolled`。对已经 `disabled` 的 Device 是 repeat-safe `noop`。对 `revoked` Device 同样是零业务写入的 `noop`：`revoked` 已包含比 `disabled` 更强的限制，并额外移除了 Device Token、将关联 certificate 状态行转为 `revoked` 后保留；不得把它降级回 `disabled` 而静默削弱安全状态，也不为此引入新的 stable ErrorCode。
 
 二者都不创建 Command、不产生 Device I/O、不改变 Binding 集合，也不推进任何 revision。解绑是独立的 Binding-set mutation，绝不由 Device state transition 隐含触发。
 
@@ -288,7 +290,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `action_kind` | `redacted_detail_json` keys |
 |---|---|
 | `create_enrollment_request` | `resolution`、`state`、`gateway_spki_sha256` |
-| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`、`previous_device_state`；首次创建为 `null`，替换为 `enrolled` / `revoked` / `disabled`，serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token。**2026-08-16 修订（Phase 4 WP3）**：新增 `evicted_live_connection`（bool）——replacement 签发时该 Device 存在 live WSS 连接即为 `true`（旧凭据连接被驱逐的 anomaly evidence，Phase 3 移交项） |
+| `issue_device_credentials` | `resolution`、`certificate_serial`、`gateway_spki_sha256`、`previous_device_state`；首次创建为 `null`，既有 Device 的替换只可为 `enrolled`，serial 与 SPKI digest 均为 certificate-public evidence，禁止 Device Token。**2026-08-16 修订（Phase 4 WP3）**：新增 `evicted_live_connection`（bool）——replacement 签发时该 Device 存在 live WSS 连接即为 `true`（旧凭据连接被驱逐的 anomaly evidence，Phase 3 移交项） |
 | `approve_enrollment_request` | 无（`{}`） |
 | `reject_enrollment_request` | 无（`{}`） |
 | `expire_enrollment_requests` | `expired_count` |
@@ -318,14 +320,14 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `AUTHORIZATION_DENIED` | `403` | `viewer` 请求 `admin` action |
 | `INVALID_REQUEST` | `400` | 封闭结构或参数校验失败，包含非 canonical `device_id` |
 | `IMPORT_CANDIDATE_INVALID` | `400` | import CSV 解析、结构或安全上限校验失败 |
-| `RESOURCE_NOT_FOUND` | `404` | request 结构合法，但目标 Device 不存在 |
+| `RESOURCE_NOT_FOUND` | `404` | request 结构合法，但目标 Device 不存在；`putCommand` 的目标存在但 state 不是 `enrolled` 时也使用完全相同的公开 body |
 | `IMPORT_CANDIDATE_UNAVAILABLE` | `404` | import candidate 未知、已过期、已删除或 preview token 不匹配 |
 | `IMPORT_CANDIDATE_PENDING` | `409` | singleton pending import candidate 已存在 |
 | `IMPORT_PREVIEW_STALE` | `409` | import preview 的 configuration 或 binding baseline 已前移 |
 | `ENROLLMENT_REQUEST_INVALID` | `400` | `createEnrollmentRequest` 的 closed request / CSR / raw SPKI / protocol 无效，或 live Enrollment 全局 capacity 已满；approve/reject 的 request ID 非 canonical UUIDv7，或 request 未知、terminal、处于相反 decision state 时也使用此码 |
 | `PROVISIONING_WINDOW_CLOSED` | `409` | `createEnrollmentRequest` 观察到窗口非 `open` |
 | `ENROLLMENT_REQUEST_REJECTED` | `409` | `createEnrollmentRequest` 的 hardware ID 最新 request 在当前窗口已被 operator reject |
-| `DEVICE_IDENTITY_CONFLICT` | `409` | `createEnrollmentRequest` 的 live different-SPKI 或 hardware identity facts 冲突 |
+| `DEVICE_IDENTITY_CONFLICT` | `409` | `createEnrollmentRequest` 的 live different-SPKI、hardware identity facts 冲突，或 resolved Device state 不是 `enrolled` |
 | `COMMAND_ID_INVALID` | `400` | `putCommand` 的 path `command_id` 非 canonical lowercase UUIDv7（§3.5；Phase 4 WP1 挂载后生效） |
 | `COMMAND_REQUEST_CONFLICT` | `409` | `putCommand` 的 same-ID/different-fingerprint conflict（§3.5） |
 | — | `413` | `POST /api/v2/imports`、`commitCsvImport`、`createEnrollmentRequest` 或 `putCommand` request body 超过对应 route 级上限，由 transport 层拒绝 |
@@ -333,7 +335,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 
 该 `413` 是 transport-level rejection：响应携带 `X-Correlation-Id` header，但**不**使用 §3.2 的 JSON error body（沿用既有 session precedent）。
 
-输入分类的冻结规则是：**malformed 或非 canonical 输入 → `400` / `INVALID_REQUEST`（Enrollment 使用其更具体的 `ENROLLMENT_REQUEST_INVALID`）；结构良好但引用了不存在的当前事实 → `404` / `RESOURCE_NOT_FOUND`。** 映射必须在 adapter 中按 typed cause 逐项显式构造；不得提供全局 `ErrorCode -> StatusCode` 函数，不得 catch-all，不得根据 `Display` 或 source chain 分支，也不得回显非法输入。运行时该表只覆盖已挂载 route：当前 mounted subset 以 §3.6.2 为准；上表 device-route rows 已随 `createEnrollmentRequest` 挂载生效。新增已挂载 route 时只加入真实可达的组合，不为未挂载 operation 预设 status。
+输入分类的冻结规则是：**malformed 或非 canonical 输入 → `400` / `INVALID_REQUEST`（Enrollment 使用其更具体的 `ENROLLMENT_REQUEST_INVALID`）；结构良好但引用了不存在的当前事实 → `404` / `RESOURCE_NOT_FOUND`。** `putCommand` 的 typed `DeviceNotEnrolled` 使用内部 cause `command_device_not_enrolled`，但其公开 status、stable code 与四字段 body schema 必须与 `DeviceNotFound` 完全相同；不新增稳定码。映射必须在 adapter 中按 typed cause 逐项显式构造；不得提供全局 `ErrorCode -> StatusCode` 函数，不得 catch-all，不得根据 `Display` 或 source chain 分支，也不得回显非法输入。运行时该表只覆盖已挂载 route：当前 mounted subset 以 §3.6.2 为准；上表 device-route rows 已随 `createEnrollmentRequest` 挂载生效。新增已挂载 route 时只加入真实可达的组合，不为未挂载 operation 预设 status。
 
 当前是 same-origin JSON API：不启用 CORS，也不增加 CSRF token 或 CSRF framework；当前防护明确依赖 `Secure` + `HttpOnly` + `SameSite=Strict`。若部署拓扑变为 cross-site，必须在开放 CORS 或 cookie 跨站传递前重开 CSRF 决策。
 
@@ -363,11 +365,11 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 
 **响应**可携带 `device_pk`、Device Token、Gateway leaf + chain；持久化只记录 `devices`、`enrollment_requests`、`device_tokens`、`gateway_certificates` 与 `audit_events` 的 migration-defined facts。`gateway_certificates` 不保存 leaf/chain bytes，失败无半成品。
 
-**签发与审批的非对称语义**（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）：`resolution = 'create_device'`（未知 `machine_hardware_id` 的首次 Enrollment）在窗口内以同一事务同步签发并直接返回结果，**不需要 operator 审批**。`resolution = 'replace_device_credentials'`（该 hardware ID 已存在 Device）必须经 operator 显式审批；唯一例外是 Device 当前 state 为 `enrolled`，且请求的 `gateway_spki_sha256` 与该 Device 当前 `issued` request 的 SPKI 相同——此时自动批准，因为持有同一 private key 证明是同一台机器在 finalization 失败后重试。`revoked` / `disabled` Device 始终返回待审批 `202`，即使 SPKI 相同也不得走自动批准；operator approve 后的成功 claim 在同一 issuance transaction 将 Device 恢复为 `enrolled`。
+**签发与审批的非对称语义**（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）：`resolution = 'create_device'`（未知 `machine_hardware_id` 的首次 Enrollment）在窗口内以同一事务同步签发并直接返回结果，**不需要 operator 审批**。`resolution = 'replace_device_credentials'` 只适用于当前 state 为 `enrolled` 的既有 Device，且 different-SPKI 必须经 operator 显式审批；唯一例外是请求的 `gateway_spki_sha256` 与该 Device 当前 `issued` request 的 SPKI 相同——此时自动批准，因为持有同一 private key 证明是同一台机器在 finalization 失败后重试。窗口关闭与 hardware ID 最新 request 已 rejected 的门禁保持既有优先级；通过这两项后，`disabled` / `revoked` Device 的 same-SPKI、different-SPKI 新 intake、live replay 与 approved claim 均返回 `409` / `DEVICE_IDENTITY_CONFLICT`，零写入、零签名、零审计，且 state 不变；Enrollment 不再隐式恢复 Device。
 
-**替换语义**：经批准的替换以 `resolution = 'replace_device_credentials'` 关联既有 `device_pk`；替换 `device_tokens.token_hash` 并签发新的 certificate metadata，作为 re-enrollment 审计；`issue_device_credentials` audit 的 `previous_device_state` 精确记录 `enrolled` / `revoked` / `disabled`（首次创建为 `null`）。若旧连接仍存活，记录异常审计事件。
+**替换语义**：经批准的替换只可关联 state 为 `enrolled` 的既有 `device_pk`；替换 `device_tokens.token_hash` 并签发新的 certificate metadata，作为 re-enrollment 审计；`issue_device_credentials` audit 的 `previous_device_state` 只可为 `enrolled`（首次创建为 `null`）。若旧连接仍存活，记录异常审计事件。不存在 Enrollment-owned enable/reactivate API 或 state restore 分支。
 
-**审批与 claim**：需要审批的 Enrollment 请求以 HTTP `202` 与 typed 非错误 body（request identity 与 state）应答，不携带任何签发结果。Device 通过幂等重投**同一** request 轮询：相同 `machine_hardware_id` + `gateway_spki_sha256` 返回同一条 live request，不新增 row。operator 批准把 persisted state 置为 `approved`，受审计且零签发；该 state 不作为 wire value 返回——观察到 `approved` 的下一次重投立即在**该次请求内**同步执行签发事务并返回 `201`。operator 拒绝把 state 置为 `rejected`；只要该 rejected row 仍是此 hardware ID 的最新 request，同一窗口内该 hardware ID 的任何 SPKI（包括新 key）都返回 `ENROLLMENT_REQUEST_REJECTED` 且零写入。窗口关闭把 `pending` / `approved` / `rejected` 转为 `expired`，因此下一次开窗不再受旧 rejection 阻断；这是无 window-ID column 时冻结的 current-window scoping rule。claim 响应的 Token 与 Gateway leaf 明文只存在于那一次响应，数据库始终只保存 hash。claim 前必须重新校验窗口仍为 `open`（`INV-CERT-01`：窗口外不存在签发路径）。claim 响应丢失时，仍为 `enrolled` 的 Device 重试落入 same-SPKI 自动批准路径重新签发。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定 ErrorCode 拒绝；operator 必须先拒绝现有请求。
+**审批与 claim**：需要审批的 Enrollment 请求以 HTTP `202` 与 typed 非错误 body（request identity 与 state）应答，不携带任何签发结果。Device 通过幂等重投**同一** request 轮询：相同 `machine_hardware_id` + `gateway_spki_sha256` 返回同一条 live request，不新增 row。operator 批准前重新读取 request resolved Device 的当前 state；非 `enrolled` 时在 audit/CAS 之前返回现有 `RequestNotPending` 分类（HTTP `400` / `ENROLLMENT_REQUEST_INVALID`），零写入。operator reject 不读取 Device state，残留 `pending` request 仍可被拒绝。成功批准把 persisted state 置为 `approved`，受审计且零签发；该 state 不作为 wire value 返回——观察到 `approved` 的下一次重投仅在 Device 仍为 `enrolled` 时同步执行签发事务并返回 `201`，否则按上段返回 identity conflict。只要 rejected row 仍是此 hardware ID 的最新 request，同一窗口内该 hardware ID 的任何 SPKI（包括新 key）都返回 `ENROLLMENT_REQUEST_REJECTED` 且零写入。窗口关闭把 `pending` / `approved` / `rejected` 转为 `expired`，因此下一次开窗不再受旧 rejection 阻断；这是无 window-ID column 时冻结的 current-window scoping rule。claim 响应的 Token 与 Gateway leaf 明文只存在于那一次响应，数据库始终只保存 hash。claim 前必须重新校验窗口仍为 `open`（`INV-CERT-01`：窗口外不存在签发路径）。claim 响应丢失时，仍为 `enrolled` 的 Device 重试落入 same-SPKI 自动批准路径重新签发。live `pending`/`approved` request 存在期间，同一 hardware ID 上 SPKI **不同**的提交以稳定 ErrorCode 拒绝；operator 必须先拒绝现有请求。
 
 **2026-08-16 修订（Phase 3 WP2c operator decision precision）**：approve/reject path 的 `request_id` 必须是 canonical lowercase hyphenated UUIDv7。`pending → approved` 与 `pending → rejected` 写 `result = 'succeeded'` / `reason_code = 'operator_requested'` audit；已为目标 state 的 re-approve / re-reject 是零业务写入的 repeat-safe `noop`，仍写一行 `reason_code = 'target_already_satisfied'` audit 并返回 `200 {enrollment_request_id,state}`。`approved → reject`、`rejected → approve`、任意 terminal request、未知 request 或非 canonical ID 都不是 noop，统一返回 `400` / `ENROLLMENT_REQUEST_INVALID` 且零写入，避免 actionability / existence oracle。operator list 只返回 `pending` / `approved`，字段固定为 request ID、hardware ID/quality、SPKI digest、client/protocol、state、nullable resolution/resolved Device、created-at 与 source IP；不得返回 `gateway_csr_der`。
 
@@ -379,12 +381,12 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 
 **2026-08-16 修订（Phase 3 WP4 device quality claim）**：device 报告的 `hardware_identity_quality` 冻结为 sanitized claim 中全部 present 槽 quality 的最小值（序 `weak < medium < strong`）；该值仅供 operator review 展示，不参与任何服务端门控（与 ADR-0032 R4 的 per-slot quality 及 claim 层「quality 不参与判定」一致）。
 
-成功同步签发返回 `201` 与 closed body `{enrollment_request_id, state:"issued", device_id, device_token, gateway_leaf_der, gateway_chain_der}`：两个 ID 均为 canonical UUIDv7；32-byte Device Token 使用 43-character unpadded base64url，仅该响应携带；leaf 是 RFC 4648 padded base64 DER，chain array 以相同编码从 leaf 的直接 issuer 排到 root，因此与独立 leaf 合并后的验证顺序固定为 leaf→root。待审批或 pending 轮询返回 `202` 与 closed body `{enrollment_request_id, state:"pending"}` 且不携带签发材料；persisted `approved` 由下一次同 request POST 直接消费为 `201`，不是可达 wire value。公开失败映射固定为：无效 request/CSR/SPKI/protocol、live capacity 满或已存在但不可 action 的 decision target → `400` / `ENROLLMENT_REQUEST_INVALID`；窗口非 open → `409` / `PROVISIONING_WINDOW_CLOSED`；hardware ID 当前窗口已拒绝 → `409` / `ENROLLMENT_REQUEST_REJECTED`；同 hardware ID 的 live different-SPKI 或其他人工恢复 identity conflict → `409` / `DEVICE_IDENTITY_CONFLICT`；未分类内部/持久化/签发失败 → `500` / `INTERNAL_ERROR`。所有结果含 Server-owned canonical UUIDv7 `X-Correlation-Id`；`201` / `202` body 也不得回显 CSR authority fields。
+成功同步签发返回 `201` 与 closed body `{enrollment_request_id, state:"issued", device_id, device_token, gateway_leaf_der, gateway_chain_der}`：两个 ID 均为 canonical UUIDv7；32-byte Device Token 使用 43-character unpadded base64url，仅该响应携带；leaf 是 RFC 4648 padded base64 DER，chain array 以相同编码从 leaf 的直接 issuer 排到 root，因此与独立 leaf 合并后的验证顺序固定为 leaf→root。待审批或 pending 轮询返回 `202` 与 closed body `{enrollment_request_id, state:"pending"}` 且不携带签发材料；persisted `approved` 由下一次同 request POST 直接消费为 `201`，不是可达 wire value。公开失败映射固定为：无效 request/CSR/SPKI/protocol、live capacity 满或已存在但不可 action 的 decision target → `400` / `ENROLLMENT_REQUEST_INVALID`；窗口非 open → `409` / `PROVISIONING_WINDOW_CLOSED`；hardware ID 当前窗口已拒绝 → `409` / `ENROLLMENT_REQUEST_REJECTED`；同 hardware ID 的 live different-SPKI、其他 identity facts 冲突或 resolved Device state 非 `enrolled` → `409` / `DEVICE_IDENTITY_CONFLICT`；未分类内部/持久化/签发失败 → `500` / `INTERNAL_ERROR`。所有结果含 Server-owned canonical UUIDv7 `X-Correlation-Id`；`201` / `202` body 也不得回显 CSR authority fields。
 
 ## 5. Device control：WSS
 
 - **传输**：WebSocket over server-auth TLS；Protobuf 消息作为 WS binary frame（一帧一消息，无自定义 length-prefix framing）；协议版本经 `Sec-WebSocket-Protocol`（如 `natsume.v1`）协商，不匹配在 upgrade 拒绝；
-- **认证**：Device Token 必须由 CSPRNG 生成 32 bytes；upgrade 时经 `Authorization: Bearer <Device Token>` 提交；Server 常数时间比对 `device_tokens.token_hash` 并映射 `device_pk`；**无 token / 错误 token / 不再有对应 token row → 401，发生在任何 Protobuf 解码之前**；
+- **认证**：Device Token 必须由 CSPRNG 生成 32 bytes；upgrade 时经 `Authorization: Bearer <Device Token>` 提交；Server 常数时间比对 `device_tokens.token_hash`，并在同一 typed read model 中解析 resolved `devices.state`；只有 state 为 `enrolled` 才可继续。**无 token / malformed token / 错误 token / 不再有对应 token row / token row 对应 Device state 非 `enrolled` → 同一 `401` body 与内部 cause，发生在任何 Protobuf 解码之前并计入同一 IP limiter**；非法持久化 state 是 corruption，保持 `500`；
 - TLS early data（0-RTT）保持关闭；认证失败按 IP 限流；
 - Frame 必须有明确最大长度、封闭 envelope kind 和 command/correlation ID；超限 frame、未知版本、非法 oneof 必须关闭连接，**不得猜测**；
 - `Command.command_id` 和 `CommandStatus.command_id` 必须验证为 canonical UUIDv7，并将 HTTP path 的同一字符序列原样带入和带回；WSS/Device 不得另行生成或格式化 ID，且 validation error 不回显原 ID；
@@ -447,7 +449,7 @@ Device Daemon **不发送任意 Caddyfile、不使用 Caddy Admin API**。控制
 | common | `INTERNAL_ERROR` | adapter 穷举分类后仍无法安全公开具体语义的内部失败；`detail` 默认缺失，不回显 source chain。 |
 | common | `INVALID_REQUEST` | 未被更具体稳定码覆盖的闭合结构或参数校验失败。 |
 | common | `RESOURCE_NOT_FOUND` | request 结构合法，但其引用的当前事实（Device、candidate、Enrollment request、Command 等）不存在。对全部资源使用同一个通用码，resource type 由 route/上下文决定；可跨 HTTP/Protobuf/D-Bus/CommandStatus 使用。 |
-| common | `AUTHENTICATION_FAILED` | Operator session 或 Device Token 认证失败；不得公开区分 missing、wrong、revoked 等可形成 oracle 的原因。Device WSS upgrade 在解码前返回 `401`。 |
+| common | `AUTHENTICATION_FAILED` | Operator session 或 Device Token 认证失败；不得公开区分 missing、malformed、wrong、no-row、disabled、revoked 等可形成 oracle 的原因。Device WSS upgrade 在解码前返回同体 `401`；保留 token row 的 disabled Device 也不获得 WSS authority。 |
 | common | `AUTHORIZATION_DENIED` | 已识别调用方无权执行操作，包括 Operator role 与本地 Helper policy 拒绝。 |
 | operator | `IMPORT_CANDIDATE_INVALID` | Import candidate 结构无效、重复 account、为空或仅含 header；不得持久化 candidate 或改变 confirmed truth。 |
 | operator | `IMPORT_CANDIDATE_PENDING` | singleton pending candidate 已存在，新 upload 必须先显式终止或完成既有 candidate。 |

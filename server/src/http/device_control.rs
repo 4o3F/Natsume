@@ -15,6 +15,7 @@ use super::{AppState, error::ApiError};
 mod auth;
 mod dispatch;
 mod registry;
+mod render;
 mod session;
 
 pub(in crate::http) use self::auth::DeviceControlAuthFailureLimiter;

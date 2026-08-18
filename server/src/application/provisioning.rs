@@ -6,8 +6,18 @@ use crate::{
         AuditEvent, AuditEventId, CorrelationId, EnrollmentExpiryActor,
         ProvisioningWindowAuditResult,
     },
-    db::{self, Database},
+    db::{self, Database, DatabaseError},
 };
+
+/// Redacted persistence boundary shared by Provisioning-owned adapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[snafu(module)]
+pub(crate) enum ProvisioningPersistenceError {
+    #[snafu(display("persisted provisioning facts are invalid"))]
+    InvalidPersistedFacts,
+    #[snafu(display("provisioning persistence failed"))]
+    PersistenceFailed,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryOutcome {
@@ -105,7 +115,8 @@ pub(crate) async fn recover_on_startup(
     let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
     database
         .write(move |transaction| {
-            let current = db::provisioning::read_window(transaction)?;
+            let current = db::provisioning::read_window(transaction)
+                .map_err(ProvisioningError::from_provisioning_persistence)?;
             let Some(next) = recovered_provisioning_window(current)
                 .map_err(|RevisionOverflow| ProvisioningError::RevisionOverflow)?
             else {
@@ -120,16 +131,20 @@ pub(crate) async fn recover_on_startup(
                 current.revision,
                 next.revision,
             );
-            db::audit::insert_provisioning(transaction, &event)?;
-            let expired_count = db::device::enrollment::request::expire_live_requests(transaction)?;
+            db::audit::insert(transaction, &event)
+                .map_err(ProvisioningError::from_audit_persistence)?;
+            let expired_count = db::device::enrollment::request::expire_live_requests(transaction)
+                .map_err(ProvisioningError::from_enrollment_request_persistence)?;
             let expiry_event = AuditEvent::enrollment_requests_expired(
                 expiry_audit_event_id,
                 correlation_id,
                 EnrollmentExpiryActor::Recovery,
                 expired_count,
             );
-            db::audit::insert_provisioning(transaction, &expiry_event)?;
-            db::provisioning::compare_and_swap_window(transaction, current, next, audit_event_id)?;
+            db::audit::insert(transaction, &expiry_event)
+                .map_err(ProvisioningError::from_audit_persistence)?;
+            db::provisioning::compare_and_swap_window(transaction, current, next, audit_event_id)
+                .map_err(ProvisioningError::from_provisioning_persistence)?;
             Ok(RecoveryOutcome::Closed {
                 previous_revision: current.revision,
                 new_revision: next.revision,
@@ -142,7 +157,10 @@ pub(crate) async fn recover_on_startup(
 pub(crate) async fn read_window(
     database: &Database,
 ) -> Result<ProvisioningWindow, ProvisioningError> {
-    database.read(db::provisioning::read_window).await
+    database
+        .read(db::provisioning::read_window)
+        .await
+        .map_err(ProvisioningError::from_provisioning_persistence)
 }
 
 pub(crate) async fn open_window(
@@ -210,7 +228,8 @@ async fn mutate_window_with_ids(
 ) -> Result<ProvisioningWindow, ProvisioningError> {
     database
         .write(move |transaction| {
-            let current = db::provisioning::read_window(transaction)?;
+            let current = db::provisioning::read_window(transaction)
+                .map_err(ProvisioningError::from_provisioning_persistence)?;
             let decision = decide_operator_window(action, current)
                 .map_err(|RevisionOverflow| ProvisioningError::RevisionOverflow)?;
             let audit_result = if decision.applies {
@@ -226,28 +245,32 @@ async fn mutate_window_with_ids(
                 current.revision,
                 decision.next.revision,
             );
-            db::audit::insert_provisioning(transaction, &event)?;
+            db::audit::insert(transaction, &event)
+                .map_err(ProvisioningError::from_audit_persistence)?;
 
             if !decision.applies {
                 return Ok(decision.next);
             }
             if action == ProvisioningWindowAction::Close {
                 let expired_count =
-                    db::device::enrollment::request::expire_live_requests(transaction)?;
+                    db::device::enrollment::request::expire_live_requests(transaction)
+                        .map_err(ProvisioningError::from_enrollment_request_persistence)?;
                 let expiry_event = AuditEvent::enrollment_requests_expired(
                     expiry_audit_event_id.ok_or(ProvisioningError::PersistenceFailed)?,
                     correlation_id,
                     EnrollmentExpiryActor::Operator,
                     expired_count,
                 );
-                db::audit::insert_provisioning(transaction, &expiry_event)?;
+                db::audit::insert(transaction, &expiry_event)
+                    .map_err(ProvisioningError::from_audit_persistence)?;
             }
             db::provisioning::compare_and_swap_window(
                 transaction,
                 current,
                 decision.next,
                 audit_event_id,
-            )?;
+            )
+            .map_err(ProvisioningError::from_provisioning_persistence)?;
             Ok(decision.next)
         })
         .await
@@ -259,4 +282,77 @@ pub(crate) enum ProvisioningError {
     RevisionOverflow,
     #[snafu(display("provisioning persistence failed"))]
     PersistenceFailed,
+}
+
+impl ProvisioningError {
+    pub(crate) const fn from_provisioning_persistence(error: ProvisioningPersistenceError) -> Self {
+        match error {
+            ProvisioningPersistenceError::InvalidPersistedFacts
+            | ProvisioningPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
+    pub(crate) const fn from_enrollment_request_persistence(
+        error: crate::application::device::enrollment::EnrollmentRequestPersistenceError,
+    ) -> Self {
+        match error {
+            crate::application::device::enrollment::EnrollmentRequestPersistenceError::InvalidPersistedFacts
+            | crate::application::device::enrollment::EnrollmentRequestPersistenceError::PersistenceFailed => {
+                Self::PersistenceFailed
+            }
+        }
+    }
+
+    pub(crate) const fn from_audit_persistence(error: crate::audit::AuditPersistenceError) -> Self {
+        match error {
+            crate::audit::AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+}
+
+impl From<DatabaseError> for ProvisioningError {
+    fn from(error: DatabaseError) -> Self {
+        match error {
+            DatabaseError::InvalidConfiguration
+            | DatabaseError::ConnectionFailed
+            | DatabaseError::MigrationFailed
+            | DatabaseError::TransactionFailed => Self::PersistenceFailed,
+        }
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use crate::{
+        application::device::enrollment::EnrollmentRequestPersistenceError,
+        audit::AuditPersistenceError,
+    };
+
+    use super::{ProvisioningError, ProvisioningPersistenceError};
+
+    #[test]
+    fn persistence_mappings_cover_every_neutral_variant() {
+        for error in [
+            ProvisioningPersistenceError::InvalidPersistedFacts,
+            ProvisioningPersistenceError::PersistenceFailed,
+        ] {
+            assert_eq!(
+                ProvisioningError::from_provisioning_persistence(error),
+                ProvisioningError::PersistenceFailed
+            );
+        }
+        for error in [
+            EnrollmentRequestPersistenceError::InvalidPersistedFacts,
+            EnrollmentRequestPersistenceError::PersistenceFailed,
+        ] {
+            assert_eq!(
+                ProvisioningError::from_enrollment_request_persistence(error),
+                ProvisioningError::PersistenceFailed
+            );
+        }
+        assert_eq!(
+            ProvisioningError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+            ProvisioningError::PersistenceFailed
+        );
+    }
 }

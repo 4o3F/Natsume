@@ -13,7 +13,7 @@ mod fingerprint;
 
 pub(super) use self::fingerprint::fingerprint_v1;
 
-pub(super) const PAYLOAD_VERSION: i32 = 1;
+pub(crate) const PAYLOAD_VERSION: i32 = 1;
 const MAX_JCS_SAFE_U64: u64 = 9_007_199_254_740_991;
 const MAX_JCS_SAFE_I64: i64 = 9_007_199_254_740_991;
 
@@ -80,7 +80,7 @@ pub(super) fn validate_payload(kind: CommandKind, raw: &RawValue) -> Result<Valu
     serde_json::from_str(raw.get()).map_err(|_| CommandError::PayloadInvalid)
 }
 
-pub(super) trait ValidatePayload {
+pub(crate) trait ValidatePayload {
     fn validate(&self) -> bool;
 }
 
@@ -97,10 +97,10 @@ where
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SyncStatePayload {
-    pub(super) generation: u64,
-    pub(super) canonical_hash: String,
-    pub(super) snapshot: TargetStateSnapshotPayload,
+pub(crate) struct SyncStatePayload {
+    pub(crate) generation: u64,
+    pub(crate) canonical_hash: String,
+    pub(crate) snapshot: TargetStateSnapshotPayload,
 }
 
 impl ValidatePayload for SyncStatePayload {
@@ -113,11 +113,11 @@ impl ValidatePayload for SyncStatePayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TargetStateSnapshotPayload {
-    pub(super) schema_version: u32,
-    pub(super) assignment: TargetAssignmentPayload,
-    pub(super) gateway: TargetGatewayPayload,
-    pub(super) session: TargetSessionPayload,
+pub(crate) struct TargetStateSnapshotPayload {
+    pub(crate) schema_version: u32,
+    pub(crate) assignment: TargetAssignmentPayload,
+    pub(crate) gateway: TargetGatewayPayload,
+    pub(crate) session: TargetSessionPayload,
 }
 
 impl ValidatePayload for TargetStateSnapshotPayload {
@@ -133,12 +133,12 @@ impl ValidatePayload for TargetStateSnapshotPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TargetAssignmentPayload {
-    pub(super) binding_revision: u64,
-    pub(super) seat_id: String,
-    pub(super) seat_code: String,
-    pub(super) account_id: String,
-    pub(super) domjudge_username: String,
+pub(crate) struct TargetAssignmentPayload {
+    pub(crate) binding_revision: u64,
+    pub(crate) seat_id: String,
+    pub(crate) seat_code: String,
+    pub(crate) account_id: String,
+    pub(crate) domjudge_username: String,
 }
 
 impl ValidatePayload for TargetAssignmentPayload {
@@ -153,13 +153,13 @@ impl ValidatePayload for TargetAssignmentPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TargetGatewayPayload {
-    pub(super) gateway_configuration_revision: u64,
-    pub(super) local_origin_hostname: String,
-    pub(super) fixed_upstream_profile_id: String,
-    pub(super) exact_login_policy_id: String,
-    pub(super) gateway_certificate_profile_id: String,
-    pub(super) gateway_certificate_min_valid_until_unix_ms: i64,
+pub(crate) struct TargetGatewayPayload {
+    pub(crate) gateway_configuration_revision: u64,
+    pub(crate) local_origin_hostname: String,
+    pub(crate) fixed_upstream_profile_id: String,
+    pub(crate) exact_login_policy_id: String,
+    pub(crate) gateway_certificate_profile_id: String,
+    pub(crate) gateway_certificate_min_valid_until_unix_ms: i64,
 }
 
 impl ValidatePayload for TargetGatewayPayload {
@@ -175,9 +175,9 @@ impl ValidatePayload for TargetGatewayPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TargetSessionPayload {
-    pub(super) browser_policy_revision: String,
-    pub(super) home_template_revision: String,
+pub(crate) struct TargetSessionPayload {
+    pub(crate) browser_policy_revision: String,
+    pub(crate) home_template_revision: String,
 }
 
 impl ValidatePayload for TargetSessionPayload {
@@ -207,9 +207,9 @@ impl ValidatePayload for SyncSecretPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OpenBindingPromptPayload {
-    pub(super) expires_at_unix_ms: i64,
-    pub(super) prompt_message_id: String,
+pub(crate) struct OpenBindingPromptPayload {
+    pub(crate) expires_at_unix_ms: i64,
+    pub(crate) prompt_message_id: String,
 }
 
 impl ValidatePayload for OpenBindingPromptPayload {
@@ -220,9 +220,9 @@ impl ValidatePayload for OpenBindingPromptPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct SessionTargetPayload {
-    pub(super) session_instance_id: String,
-    pub(super) session_epoch: u64,
+pub(crate) struct SessionTargetPayload {
+    pub(crate) session_instance_id: String,
+    pub(crate) session_epoch: u64,
 }
 
 impl ValidatePayload for SessionTargetPayload {
@@ -233,9 +233,9 @@ impl ValidatePayload for SessionTargetPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LockSessionPayload {
-    pub(super) target: SessionTargetPayload,
-    pub(super) requested_lock_epoch: u64,
+pub(crate) struct LockSessionPayload {
+    pub(crate) target: SessionTargetPayload,
+    pub(crate) requested_lock_epoch: u64,
 }
 
 impl ValidatePayload for LockSessionPayload {
@@ -246,10 +246,10 @@ impl ValidatePayload for LockSessionPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct UnlockSessionPayload {
-    pub(super) target: SessionTargetPayload,
-    pub(super) expected_lock_epoch: u64,
-    pub(super) expected_lock_command_id: String,
+pub(crate) struct UnlockSessionPayload {
+    pub(crate) target: SessionTargetPayload,
+    pub(crate) expected_lock_epoch: u64,
+    pub(crate) expected_lock_command_id: String,
 }
 
 impl ValidatePayload for UnlockSessionPayload {
@@ -262,8 +262,8 @@ impl ValidatePayload for UnlockSessionPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct TerminateSessionPayload {
-    pub(super) target: SessionTargetPayload,
+pub(crate) struct TerminateSessionPayload {
+    pub(crate) target: SessionTargetPayload,
 }
 
 impl ValidatePayload for TerminateSessionPayload {
@@ -274,9 +274,9 @@ impl ValidatePayload for TerminateSessionPayload {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ResetHomePayload {
-    pub(super) home_template_revision: String,
-    pub(super) home_epoch: u64,
+pub(crate) struct ResetHomePayload {
+    pub(crate) home_template_revision: String,
+    pub(crate) home_epoch: u64,
 }
 
 impl ValidatePayload for ResetHomePayload {

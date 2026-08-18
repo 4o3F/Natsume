@@ -19,9 +19,9 @@ use crate::{
     db::{self, Database},
 };
 
-use super::credentials::DeviceConnectionEvictor;
+use super::DeviceConnectionEvictor;
 #[cfg(test)]
-use super::credentials::NoLiveDeviceConnections;
+use super::NoLiveDeviceConnections;
 
 mod decision;
 pub(in crate::application::device) mod identifier;
@@ -43,11 +43,11 @@ use self::issuer::{current_unix_seconds, encode_utc_timestamp, raw_csr_spki_sha2
 pub(crate) use self::types::{
     ENROLLMENT_PROTOCOL_VERSION, EnrollmentDecisionOutcome, EnrollmentDecisionProjection,
     EnrollmentDecisionState, EnrollmentError, EnrollmentOutcome, EnrollmentRequestId,
-    EnrollmentRequestInput, EnrollmentRequestStatus, EnrollmentRequestSummary,
-    EnrollmentResolution, EnrollmentReviewState, EnrollmentState, IntakeIds, IssuanceReason,
-    IssuedEnrollment, IssuedRequestMode, LatestEnrollmentRequestProjection,
-    LiveEnrollmentRequestProjection, MAX_GATEWAY_CSR_DER_BYTES, MAX_LIVE_ENROLLMENT_REQUESTS,
-    PendingEnrollment, ValidatedEnrollmentRequest,
+    EnrollmentRequestInput, EnrollmentRequestPersistenceError, EnrollmentRequestStatus,
+    EnrollmentRequestSummary, EnrollmentResolution, EnrollmentReviewState, EnrollmentState,
+    IntakeIds, IssuanceReason, IssuedEnrollment, IssuedRequestMode,
+    LatestEnrollmentRequestProjection, LiveEnrollmentRequestProjection, MAX_GATEWAY_CSR_DER_BYTES,
+    MAX_LIVE_ENROLLMENT_REQUESTS, PendingEnrollment, ValidatedEnrollmentRequest,
 };
 pub(crate) use self::validate::encode_standard_base64;
 use self::validate::validate_request;

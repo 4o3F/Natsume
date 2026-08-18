@@ -5,8 +5,9 @@ use diesel::{
 
 use crate::{
     application::{
+        contest::{CurrentAccountProjection, CurrentSeatProjection},
         device::DeviceId,
-        import::{CurrentAccountProjection, CurrentSeatProjection, ImportError},
+        import::ImportError,
     },
     db::{
         Transaction,
