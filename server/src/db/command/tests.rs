@@ -562,7 +562,8 @@ async fn seed_device_with_state(
     database
         .test_write(move |connection| {
             diesel::sql_query(
-                "INSERT INTO devices VALUES \
+                "INSERT INTO devices (device_pk, machine_hardware_id, \
+                 hardware_identity_quality, state) VALUES \
                  ('01900000-0000-7000-8000-000000000201', 'command-db-hardware', \
                   'strong', ?)",
             )

@@ -6,11 +6,11 @@
 
 ## 0. 当前实现与已接受目标
 
-**当前实现**继续使用公开 HTTPS Enrollment、Device Token、Bearer-before-101、`natsume.v1`、单文件 production Proto 与当前 migration/OpenAPI；下文未标注为目标的条款仍是现行法律。
+**当前 authority**继续使用公开 HTTPS Enrollment、Device Token 与 Bearer-before-101。Production Proto 已按预发布 BC 原位拆为六个文件，单一 package 为 `natsume.device.control`，双端 subprotocol 为 `natsume.control`；当前 socket 仍只消费既有 `ControlEnvelope`。Migration 已包含 dormant control-key/bundle/transitional columns，但 Token application 不读写它们。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：普通 WSS 内的 standalone Challenge/Proof/ClientInit、Ed25519 control key、动态 DeviceActor 与同 socket CredentialAck activation。Batch 0 的 private feasibility listener 不构成 route、wire、descriptor 或兼容性承诺。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：普通 WSS 内的 standalone Challenge/Proof/ClientInit、Ed25519 control key、动态 DeviceActor 与同 socket CredentialAck activation。对应 generated messages、Prost decode/semantic validation、typed canonical re-encoding 与 transcript foundation 已存在，但尚无 runtime authority consumer。
 
-只有 atomic flag-day batch 可同时改写 production Proto、migration、OpenAPI、Server、daemon 与本文件现行条款；在此之前禁止混合 Token/key authority。
+项目预发布阶段允许原位 breaking change，不建立 `control_v2`、第二 descriptor 或旧/新 package 兼容层。只有 atomic authority flag day 可同时删除 Token/public Enrollment HTTP、启用新 Server/daemon 状态机并收紧本文件现行认证条款；在此之前禁止混合 Token/key authority。
 
 本文件定义稳定语义，不复制完整 schema。字段名、编号和路由必须从机器 schema 生成或验证。未实现行为的完整字段表与 wire 结构延迟到对应 Phase 实现时由机器 schema 定义。
 
@@ -393,7 +393,7 @@ Enrollment 使用 server-auth HTTPS：Client 必须验证预配置 Server trust 
 
 ## 5. Device control：WSS
 
-- **传输**：WebSocket over server-auth TLS；Protobuf 消息作为 WS binary frame（一帧一消息，无自定义 length-prefix framing）；协议版本经 `Sec-WebSocket-Protocol`（如 `natsume.v1`）协商，不匹配在 upgrade 拒绝；
+- **传输**：WebSocket over server-auth TLS；Protobuf 消息作为 tungstenite 重组后的 WS binary message（无自定义 length-prefix framing）；单一 `Sec-WebSocket-Protocol` 为 `natsume.control`，不匹配在 upgrade 拒绝；
 - **认证**：Device Token 必须由 CSPRNG 生成 32 bytes；upgrade 时经 `Authorization: Bearer <Device Token>` 提交；Server 常数时间比对 `device_tokens.token_hash`，并在同一 typed read model 中解析 resolved `devices.state`；只有 state 为 `enrolled` 才可继续。**无 token / malformed token / 错误 token / 不再有对应 token row / token row 对应 Device state 非 `enrolled` → 同一 `401` body 与内部 cause，发生在任何 Protobuf 解码之前并计入同一 IP limiter**；非法持久化 state 是 corruption，保持 `500`；
 - TLS early data（0-RTT）保持关闭；认证失败按 IP 限流；
 - Frame 必须有明确最大长度、封闭 envelope kind 和 command/correlation ID；超限 frame、未知版本、非法 oneof 必须关闭连接，**不得猜测**；

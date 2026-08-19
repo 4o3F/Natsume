@@ -19,12 +19,12 @@ allow-wildcard-paths = true
 # Exact-version skips only. Prefer deleting entries when upstream converges.
 # Do not use skip-tree or multiple-versions = "allow".
 skip = [
-  # --- RustCrypto 0.10 retained by current production crates and the isolated Ed25519 probe ---
-  { crate = "digest@0.10.7", reason = "argon2/blake2, WebSocket sha1, and integration-only Dalek/sha2 0.10 require digest 0.10 while first-party sha2 uses digest 0.11; remove when all older consumers converge" },
+  # --- RustCrypto 0.10 retained by current production crates and control identity ---
+  { crate = "digest@0.10.7", reason = "argon2/blake2, WebSocket sha1, and production control-identity Dalek/sha2 0.10 require digest 0.10 while first-party sha2 uses digest 0.11; remove when all older consumers converge" },
   { crate = "crypto-common@0.1.7", reason = "transitively required by the retained digest 0.10 consumers; remove when digest 0.10 leaves the graph" },
   { crate = "block-buffer@0.10.4", reason = "transitively required by retained digest 0.10 hash implementations; remove when digest 0.10 leaves the graph" },
-  { crate = "cpufeatures@0.2.17", reason = "argon2, WebSocket sha1, and integration-only curve25519/sha2 use cpufeatures 0.2 while current sha2 0.11 uses cpufeatures 0.3; remove when older consumers converge" },
-  { crate = "sha2@0.10.9", reason = "integration-only ed25519-dalek 2.2 requires sha2 0.10 while first-party production code uses sha2 0.11; remove when Dalek adopts sha2 0.11 or the isolated probe is deleted" },
+  { crate = "cpufeatures@0.2.17", reason = "argon2, WebSocket sha1, and production control-identity curve25519/sha2 use cpufeatures 0.2 while current sha2 0.11 uses cpufeatures 0.3; remove when older consumers converge" },
+  { crate = "sha2@0.10.9", reason = "ed25519-dalek 2.2 in the production control-identity boundary requires sha2 0.10 while first-party hashing uses sha2 0.11; remove when Dalek adopts sha2 0.11 or control identity is removed" },
 
   # --- hash table stack: petgraph 0.15 vs indexmap 0.17 ---
   { crate = "hashbrown@0.15.5", reason = "petgraph 0.8.3 (via prost-build) requires hashbrown ^0.15 while indexmap 2.14 requires ^0.17; remove when petgraph accepts hashbrown 0.17" },

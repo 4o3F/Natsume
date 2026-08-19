@@ -6,11 +6,11 @@
 
 ## 0. 模型版本边界
 
-**当前实现**仍由当前 migration 的 `devices`、`enrollment_requests`、`device_tokens` 与 `gateway_certificates` 表达；下文 Device Token、HTTP Enrollment 与 lifecycle 语义继续生效。
+**当前 authority**仍由 `devices`、Token-era `enrollment_requests`、`device_tokens` 与 `gateway_certificates` 表达；下文 Device Token、HTTP Enrollment 与 lifecycle 语义继续生效。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 冻结，但 Batch 0 不增加 production row：未来由 control authority revision、control-key history、live FIRST reservation、immutable CredentialBundle 与动态 DeviceActor 表达统一 authority lifecycle。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 冻结。Migration 已原位加入 nullable `control_authority_revision`、control request fields、`device_control_keys` 与 `credential_bundles` foundation，但当前 Token application 不读写这些事实；它们不是第二套 authority。
 
-目标表、状态和事务只有在 atomic flag-day schema/application 同批落地后才替代当前模型。
+Control-key history、live FIRST reservation、immutable CredentialBundle 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。届时删除 Token-era states/rows并收紧 transitional NULL，而不是维持兼容双模型。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
 

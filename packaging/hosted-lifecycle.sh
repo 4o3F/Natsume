@@ -133,6 +133,7 @@ assert_user natsume-caddy
 assert_group natsume-caddy
 
 assert_tmpfiles_path /var/lib/natsume 'natsume:natsume 750'
+assert_tmpfiles_path /var/lib/natsume/control 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/identity 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/journal 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/keys 'natsume:natsume-gateway 2750'
@@ -147,22 +148,32 @@ systemd-analyze --recursive-errors=no verify \
   /usr/lib/systemd/system/natsume-caddy.path
 
 identity_file=/var/lib/natsume/identity/identity.json
+control_key_file=/var/lib/natsume/control/control-key-1.pk8
+control_manifest_file=/var/lib/natsume/control/manifest.json
 gateway_key_file=/var/lib/natsume/keys/gateway-key.pk8
 device_token_file=/var/lib/natsume/keys/device-token
-for path in "${identity_file}" "${gateway_key_file}" "${device_token_file}"; do
+for path in "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${gateway_key_file}" "${device_token_file}"; do
   [[ ! -e ${path} ]] || fail "client lifecycle seed path already exists: ${path}"
 done
 printf '%s' '{"identity":"hosted-lifecycle-fixed"}' >"${identity_file}"
+printf '%s' 'hosted-lifecycle-fixed-control-key' >"${control_key_file}"
+printf '%s' '{"control":"hosted-lifecycle-fixed"}' >"${control_manifest_file}"
 printf '%s' 'hosted-lifecycle-fixed-gateway-key' >"${gateway_key_file}"
 printf '%s' 'hosted-lifecycle-fixed-device-token' >"${device_token_file}"
-chown natsume:natsume "${identity_file}" "${device_token_file}"
+chown natsume:natsume \
+  "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${device_token_file}"
 chown natsume:natsume-gateway "${gateway_key_file}"
-chmod 0600 "${identity_file}" "${device_token_file}"
+chmod 0600 \
+  "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${device_token_file}"
 chmod 0640 "${gateway_key_file}"
 identity_hash_before=$(sha256sum "${identity_file}" | cut -d' ' -f1)
+control_key_hash_before=$(sha256sum "${control_key_file}" | cut -d' ' -f1)
+control_manifest_hash_before=$(sha256sum "${control_manifest_file}" | cut -d' ' -f1)
 gateway_key_hash_before=$(sha256sum "${gateway_key_file}" | cut -d' ' -f1)
 device_token_hash_before=$(sha256sum "${device_token_file}" | cut -d' ' -f1)
 identity_metadata_before=$(stat --format='%U:%G %a' "${identity_file}")
+control_key_metadata_before=$(stat --format='%U:%G %a' "${control_key_file}")
+control_manifest_metadata_before=$(stat --format='%U:%G %a' "${control_manifest_file}")
 gateway_key_metadata_before=$(stat --format='%U:%G %a' "${gateway_key_file}")
 device_token_metadata_before=$(stat --format='%U:%G %a' "${device_token_file}")
 
@@ -174,10 +185,16 @@ after_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
 assert_config_metadata
 assert_preserved_file "${identity_file}" "${identity_hash_before}" "${identity_metadata_before}"
 assert_preserved_file \
+  "${control_key_file}" "${control_key_hash_before}" "${control_key_metadata_before}"
+assert_preserved_file \
+  "${control_manifest_file}" "${control_manifest_hash_before}" "${control_manifest_metadata_before}"
+assert_preserved_file \
   "${gateway_key_file}" "${gateway_key_hash_before}" "${gateway_key_metadata_before}"
 assert_preserved_file \
   "${device_token_file}" "${device_token_hash_before}" "${device_token_metadata_before}"
-rm -f -- "${identity_file}" "${gateway_key_file}" "${device_token_file}"
+rm -f -- \
+  "${identity_file}" "${control_key_file}" "${control_manifest_file}" \
+  "${gateway_key_file}" "${device_token_file}"
 
 printf 'natsume-client natsume-client/server-ip string %s\n' "${reconfigure_ip}" |
   debconf-set-selections

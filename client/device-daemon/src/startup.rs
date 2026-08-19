@@ -16,7 +16,7 @@ use crate::{
     atomic_write::ATOMIC_TEMP_PREFIX,
     canonical_uuid,
     client_configuration::KEYS_DIRECTORY_PATH,
-    control::{ControlClient, ControlError, ControlPaths},
+    control::{self, ControlClient, ControlError, ControlPaths, DormantControlIdentityError},
     enrollment::{self, EnrollmentError, EnrollmentPaths},
     identity_record,
 };
@@ -25,6 +25,7 @@ use crate::{
 struct StartupPaths {
     site_config: PathBuf,
     identity_directory: PathBuf,
+    control_directory: PathBuf,
     keys_directory: PathBuf,
     enrollment: EnrollmentPaths,
 }
@@ -35,6 +36,7 @@ impl StartupPaths {
         Self {
             site_config: PathBuf::from("/etc/natsume/site.toml"),
             identity_directory: PathBuf::from("/var/lib/natsume/identity"),
+            control_directory: PathBuf::from("/var/lib/natsume/control"),
             keys_directory: PathBuf::from(KEYS_DIRECTORY_PATH),
             enrollment: EnrollmentPaths::production(),
         }
@@ -58,6 +60,9 @@ pub enum StartupError {
 
     #[snafu(display("device Enrollment startup failed closed"))]
     Enrollment { source: EnrollmentError },
+
+    #[snafu(display("device dormant control identity startup failed closed"))]
+    DormantControlIdentity { source: DormantControlIdentityError },
 
     #[snafu(display("device control startup failed closed"))]
     Control { source: ControlError },
@@ -170,10 +175,8 @@ fn regular_file_below(directory: &Path) -> io::Result<bool> {
     Ok(false)
 }
 
-fn identity_bound_artifacts_present(keys_directory: &Path) -> Result<bool, StartupError> {
-    // WP3 binds regular files below the keys directory. Future Client databases, LKGs, and
-    // initialization journals extend this closed startup scan when their writers are introduced.
-    regular_file_below(keys_directory).map_err(|_| {
+fn scan_identity_bound_directory(directory: &Path) -> Result<bool, StartupError> {
+    regular_file_below(directory).map_err(|_| {
         tracing::error!(
             startup_identity_state = "identity_bound_artifact_scan_failed",
             "device startup could not scan identity-bound artifacts"
@@ -182,11 +185,23 @@ fn identity_bound_artifacts_present(keys_directory: &Path) -> Result<bool, Start
     })
 }
 
+fn identity_bound_artifacts_present(
+    keys_directory: &Path,
+    control_directory: &Path,
+) -> Result<bool, StartupError> {
+    // Identity-bound regular files include the current Token/Gateway keys and the dormant
+    // Device control identity. Future stores extend this closed scan with their first writer.
+    let keys_present = scan_identity_bound_directory(keys_directory)?;
+    let control_present = scan_identity_bound_directory(control_directory)?;
+    Ok(keys_present || control_present)
+}
+
 fn preflight(paths: &StartupPaths) -> Result<StartupContext, StartupError> {
     let site = read_site_identity(&paths.site_config)?;
     let configured_namespace = site.fleet_namespace_uuid;
     let gateway_hostname = site.gateway_hostname;
-    let artifacts_present = identity_bound_artifacts_present(&paths.keys_directory)?;
+    let artifacts_present =
+        identity_bound_artifacts_present(&paths.keys_directory, &paths.control_directory)?;
     let record = identity_record::read(&paths.identity_directory);
 
     match evaluate_local_identity_preflight(configured_namespace, record, artifacts_present) {
@@ -401,6 +416,16 @@ fn persisted_machine_hardware_id(
     }
 }
 
+fn ensure_dormant_control_identity(
+    paths: &StartupPaths,
+    expected: Uuid,
+) -> Result<Uuid, StartupError> {
+    let machine_hardware_id = persisted_machine_hardware_id(paths, expected)?;
+    control::ensure_dormant_identity(&paths.control_directory, machine_hardware_id)
+        .map_err(|source| StartupError::DormantControlIdentity { source })?;
+    Ok(machine_hardware_id)
+}
+
 async fn run_with_paths(paths: &StartupPaths) -> Result<Uuid, StartupError> {
     let context = preflight(paths)?;
     let namespace = context.configured_namespace.to_string();
@@ -414,7 +439,7 @@ async fn run_with_paths(paths: &StartupPaths) -> Result<Uuid, StartupError> {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
     let identity = apply_claim(paths, context, &claim)?;
-    let machine_hardware_id = persisted_machine_hardware_id(paths, identity.machine_hardware_id)?;
+    let machine_hardware_id = ensure_dormant_control_identity(paths, identity.machine_hardware_id)?;
     if existing_enrollment_state(paths)?.is_some() {
         return Ok(machine_hardware_id);
     }

@@ -8,11 +8,11 @@
 
 ## 0. 当前拓扑与目标拓扑
 
-正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 是当前实现拓扑，在 atomic cutover 前保持权威且字节兼容。
+正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 仍是当前 authority 拓扑，在 atomic cutover 前保持权威。
 
-[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 接受但尚未实现的目标是：普通 server-auth TLS/WSS 内完成 Challenge/Proof/ClientInit，由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 完成 Enrollment、CredentialBundle、CredentialAck 与 Active transition。
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，Challenge/direction messages、strict signature transcript、Prost semantic canonicalizer 与 transitional persistence facts 已存在但无 runtime authority consumer。项目不维护旧/新 package 兼容层。
 
-Batch 0 只增加决策、依赖准入和 private feasibility listener，不改变 production listener/router、daemon、descriptor、database 或公开 API。
+尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 Challenge/Proof/ClientInit，由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 完成 Enrollment、CredentialBundle、CredentialAck 与 Active transition。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
 
 ## 1. 目标
 

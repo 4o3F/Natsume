@@ -440,7 +440,8 @@ async fn seed_device(database: &Database) -> Result<(), TestFailure> {
     database
         .test_write(|connection| {
             diesel::sql_query(
-                "INSERT INTO devices VALUES \
+                "INSERT INTO devices (device_pk, machine_hardware_id, \
+                 hardware_identity_quality, state) VALUES \
                  ('01900000-0000-7000-8000-000000000302', 'command-http-hardware', \
                   'strong', 'enrolled'), \
                  ('01900000-0000-7000-8000-000000000303', \

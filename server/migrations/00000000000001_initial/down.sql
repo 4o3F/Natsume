@@ -2,6 +2,8 @@ DROP TABLE commands;
 DROP TABLE pending_import_candidate;
 DROP TABLE gateway_certificates;
 DROP TABLE device_tokens;
+DROP TABLE credential_bundles;
+DROP TABLE device_control_keys;
 DROP TABLE enrollment_requests;
 DROP TABLE provisioning_window;
 DROP TABLE observed_device_states;

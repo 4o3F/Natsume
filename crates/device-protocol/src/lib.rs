@@ -1,14 +1,28 @@
 #![forbid(unsafe_code)]
 //! Generated control protocol and semantic validation.
 
+mod handshake;
 pub mod validation;
 
+pub use handshake::{
+    ControlKeyId, HandshakeError, canonical_client_init_sha256, decode_client_init,
+    encode_client_init_canonical, proof_transcript, validate_client_init, verify_proof_strict,
+};
+
 /// Exact WebSocket subprotocol selected by both control peers.
-pub const CONTROL_SUBPROTOCOL: &str = "natsume.v1";
+pub const CONTROL_SUBPROTOCOL: &str = "natsume.control";
+/// Exact HTTP route carrying Device control WebSocket upgrades.
+pub const CONTROL_ROUTE: &str = "/api/v2/device/control";
 /// Current Device control wire version.
 pub const CONTROL_WIRE_VERSION: u32 = 1;
 /// Maximum encoded control-envelope frame accepted by either peer.
 pub const CONTROL_MAX_FRAME_BYTES: usize = 65_536;
+/// Maximum standalone `ClientProof` message size.
+pub const CONTROL_MAX_PROOF_BYTES: usize = 1_024;
+/// Maximum standalone `ClientInit` message size.
+pub const CONTROL_MAX_CLIENT_INIT_BYTES: usize = 48 * 1_024;
+/// Maximum active control message size.
+pub const CONTROL_MAX_ACTIVE_MESSAGE_BYTES: usize = 64 * 1_024;
 /// Deadline shared by the TCP, TLS, WebSocket, and hello exchanges.
 pub const CONTROL_HELLO_TIMEOUT_SECONDS: u64 = 10;
 /// Canonical unpadded base64url length of one 32-byte Device Token.
@@ -34,7 +48,7 @@ pub fn is_valid_device_token(token: &[u8]) -> bool {
     clippy::must_use_candidate
 )]
 pub mod generated {
-    include!(concat!(env!("OUT_DIR"), "/natsume.device.v2.rs"));
+    include!(concat!(env!("OUT_DIR"), "/natsume.device.control.rs"));
 }
 
 impl std::fmt::Debug for generated::SecretBytes {
@@ -45,7 +59,7 @@ impl std::fmt::Debug for generated::SecretBytes {
 
 pub use validation::{ProtocolValidationError, is_canonical_command_id, validate_envelope};
 
-/// Returns the exact descriptor generated from `proto/device_control.proto`.
+/// Returns the exact descriptor generated from the split Device control schema.
 #[must_use]
 pub const fn file_descriptor_set() -> &'static [u8] {
     include_bytes!(concat!(env!("OUT_DIR"), "/device_control.pb"))
@@ -55,7 +69,7 @@ pub const fn file_descriptor_set() -> &'static [u8] {
 mod tests {
     use super::{
         DEVICE_TOKEN_ENCODED_LENGTH,
-        generated::{EnrollDeviceResponse, SecretBytes, SyncSecret},
+        generated::{SecretBytes, SyncSecret},
         is_valid_device_token,
     };
 
@@ -91,19 +105,10 @@ mod tests {
             binding_revision: 1,
             account_id: "account-1".to_owned(),
             credential_revision: 1,
-            password: Some(secret.clone()),
+            password: Some(secret),
         };
-        let response = EnrollDeviceResponse {
-            device_id: "device-1".to_owned(),
-            device_token: Some(secret),
-            gateway_leaf_der: Vec::new(),
-            gateway_chain_der: Vec::new(),
-            state: 0,
-            stable_error_code: String::new(),
-        };
-        for containing_debug in [format!("{sync:?}"), format!("{response:?}")] {
-            assert!(containing_debug.contains("SecretBytes([REDACTED])"));
-            assert!(!containing_debug.contains(&raw_debug));
-        }
+        let containing_debug = format!("{sync:?}");
+        assert!(containing_debug.contains("SecretBytes([REDACTED])"));
+        assert!(!containing_debug.contains(&raw_debug));
     }
 }

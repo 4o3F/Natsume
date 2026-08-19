@@ -1,0 +1,28 @@
+syntax = "proto3";
+package natsume.device.control;
+
+message BindingRequest {
+  string request_id = 1;
+  string machine_hardware_id = 2;
+  string seat_code = 3;
+  string prompt_command_id = 4;
+  string session_instance_id = 5;
+  uint64 session_epoch = 6;
+  int64 created_at_unix_ms = 7;
+}
+
+enum BindingResultState {
+  BINDING_RESULT_STATE_UNSPECIFIED = 0;
+  BINDING_RESULT_STATE_PENDING = 1;
+  BINDING_RESULT_STATE_APPROVED = 2;
+  BINDING_RESULT_STATE_REJECTED = 3;
+  BINDING_RESULT_STATE_CONFLICT = 4;
+  BINDING_RESULT_STATE_EXPIRED = 5;
+}
+
+message BindingResult {
+  string request_id = 1;
+  BindingResultState state = 2;
+  uint64 binding_revision = 3;
+  string stable_error_code = 4;
+}

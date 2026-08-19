@@ -10,11 +10,18 @@ enum Error {
     #[snafu(display("Cargo did not provide OUT_DIR to the protocol build"))]
     MissingOutDir,
 
-    #[snafu(display(
-        "failed to generate Rust code and descriptor from proto/device_control.proto"
-    ))]
+    #[snafu(display("failed to generate split Device control protocol"))]
     GenerateProtocol { source: std::io::Error },
 }
+
+const PROTOS: [&str; 6] = [
+    "proto/device_control.proto",
+    "proto/device_control_common.proto",
+    "proto/device_control_handshake.proto",
+    "proto/device_control_command.proto",
+    "proto/device_control_observed.proto",
+    "proto/device_control_binding.proto",
+];
 
 #[snafu::report]
 fn main() -> Result<(), Error> {
@@ -24,10 +31,12 @@ fn main() -> Result<(), Error> {
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.file_descriptor_set_path(descriptor_path);
-    config.skip_debug([".natsume.device.v2.SecretBytes"]);
+    config.skip_debug([".natsume.device.control.SecretBytes"]);
     config
-        .compile_protos(&["proto/device_control.proto"], &["proto"])
+        .compile_protos(&PROTOS, &["proto"])
         .context(GenerateProtocolSnafu)?;
-    println!("cargo:rerun-if-changed=proto/device_control.proto");
+    for proto in PROTOS {
+        println!("cargo:rerun-if-changed={proto}");
+    }
     Ok(())
 }

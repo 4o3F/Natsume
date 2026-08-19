@@ -1,115 +1,113 @@
-const PROTO: &str = include_str!("../../crates/device-protocol/proto/device_control.proto");
+const PROTOS: [&str; 6] = [
+    include_str!("../../crates/device-protocol/proto/device_control.proto"),
+    include_str!("../../crates/device-protocol/proto/device_control_common.proto"),
+    include_str!("../../crates/device-protocol/proto/device_control_handshake.proto"),
+    include_str!("../../crates/device-protocol/proto/device_control_command.proto"),
+    include_str!("../../crates/device-protocol/proto/device_control_observed.proto"),
+    include_str!("../../crates/device-protocol/proto/device_control_binding.proto"),
+];
+
+fn protocol_contains(value: &str) -> bool {
+    PROTOS.iter().any(|proto| proto.contains(value))
+}
 
 fn message_body(name: &str) -> &'static str {
     let marker = format!("message {name} {{");
-    let Some(start) = PROTO.find(&marker) else {
-        panic!("message must exist: {name}");
-    };
-    let bytes = PROTO.as_bytes();
-    let mut depth = 0usize;
-    let mut body_start = None;
+    for proto in PROTOS {
+        let Some(start) = proto.find(&marker) else {
+            continue;
+        };
+        let bytes = proto.as_bytes();
+        let mut depth = 0usize;
+        let mut body_start = None;
 
-    for index in start..bytes.len() {
-        match bytes[index] {
-            b'{' => {
-                depth += 1;
-                if body_start.is_none() {
-                    body_start = Some(index + 1);
+        for index in start..bytes.len() {
+            match bytes[index] {
+                b'{' => {
+                    depth += 1;
+                    if body_start.is_none() {
+                        body_start = Some(index + 1);
+                    }
                 }
-            }
-            b'}' => {
-                depth = match depth.checked_sub(1) {
-                    Some(depth) => depth,
-                    None => panic!("message braces must remain balanced: {name}"),
-                };
-                if depth == 0 {
-                    let Some(body_start) = body_start else {
-                        panic!("message body must start: {name}");
+                b'}' => {
+                    depth = match depth.checked_sub(1) {
+                        Some(depth) => depth,
+                        None => panic!("message braces must remain balanced: {name}"),
                     };
-                    return &PROTO[body_start..index];
+                    if depth == 0 {
+                        let Some(body_start) = body_start else {
+                            panic!("message body must start: {name}");
+                        };
+                        return &proto[body_start..index];
+                    }
                 }
+                _ => {}
             }
-            _ => {}
         }
+        panic!("unterminated message {name}");
     }
 
-    panic!("unterminated message {name}");
+    panic!("message must exist: {name}");
 }
 
 #[test]
 fn protocol_uses_explicit_state_and_secret_commands() {
-    assert!(PROTO.contains("message SyncState"));
-    assert!(PROTO.contains("message SyncSecret"));
-    assert!(PROTO.contains("message TargetStateSnapshot"));
-    assert!(!PROTO.contains("GatewayCertificateMode gateway_certificate_mode"));
-    assert!(!PROTO.contains("DesiredStateStatus"));
+    assert!(protocol_contains("message SyncState"));
+    assert!(protocol_contains("message SyncSecret"));
+    assert!(protocol_contains("message TargetStateSnapshot"));
+    assert!(!protocol_contains(
+        "GatewayCertificateMode gateway_certificate_mode"
+    ));
+    assert!(!protocol_contains("DesiredStateStatus"));
 }
 
 #[test]
 fn protocol_has_no_installation_or_token_identity() {
-    assert!(!PROTO.contains("installation_instance"));
-    assert!(!PROTO.contains("bootstrap_token"));
-    assert!(!PROTO.contains("CLONE_DETECTED"));
+    assert!(!protocol_contains("installation_instance"));
+    assert!(!protocol_contains("bootstrap_token"));
+    assert!(!protocol_contains("CLONE_DETECTED"));
 }
 
 #[test]
 fn binding_response_is_named_binding_result() {
-    assert!(PROTO.contains("message BindingResult"));
-    assert!(!PROTO.contains("BindingRequestResult"));
+    assert!(protocol_contains("message BindingResult"));
+    assert!(!protocol_contains("BindingRequestResult"));
 }
 
 #[test]
-fn enrollment_issues_device_token_and_gateway_certificate() {
-    let request = message_body("EnrollDeviceRequest");
-    let response = message_body("EnrollDeviceResponse");
-
-    assert!(request.contains("string machine_hardware_id = 1;"));
-    assert!(request.contains("HardwareClaim hardware_claim = 2;"));
-    assert!(request.contains("bytes gateway_csr_der = 3;"));
-    assert!(request.contains("string client_version = 4;"));
-    assert!(request.contains("uint32 protocol_version = 5;"));
-    assert!(!request.contains("device_identity_csr_der"));
-    assert!(!request.contains("device_spki_sha256"));
-
-    assert!(response.contains("string device_id = 1;"));
-    assert!(response.contains("SecretBytes device_token = 2;"));
-    assert!(response.contains("bytes gateway_leaf_der = 3;"));
-    assert!(response.contains("repeated bytes gateway_chain_der = 4;"));
-    assert!(response.contains("EnrollmentState state = 5;"));
-    assert!(response.contains("string stable_error_code = 6;"));
-
-    assert!(!PROTO.contains("message EnrollmentChallengeRequest"));
-    assert!(!PROTO.contains("message EnrollmentChallengeResponse"));
-    assert!(!PROTO.contains("message EnrollmentPollRequest"));
-    assert!(!PROTO.contains("message EnrollmentPollResult"));
-    assert!(!PROTO.contains("device_identity_csr_der"));
-    assert!(!PROTO.contains("device_spki_sha256"));
-    assert!(!PROTO.contains("device_leaf_der"));
-    assert!(!PROTO.contains("device_chain_der"));
+fn legacy_protobuf_enrollment_surface_is_removed() {
+    assert!(!protocol_contains("message EnrollDeviceRequest"));
+    assert!(!protocol_contains("message EnrollDeviceResponse"));
+    assert!(!protocol_contains("enum EnrollmentState"));
+    assert!(!protocol_contains("device_token"));
+    assert!(!protocol_contains("device_identity_csr_der"));
+    assert!(!protocol_contains("device_spki_sha256"));
 }
 
 #[test]
-fn gateway_certificate_is_issued_only_at_enrollment() {
-    let enrollment_request = message_body("EnrollDeviceRequest");
-    let enrollment_response = message_body("EnrollDeviceResponse");
+fn gateway_certificate_is_scoped_to_typed_credential_messages() {
+    let bundle = message_body("CredentialBundle");
+    let refresh = message_body("GatewayRefreshRequest");
     let sync_state = message_body("SyncState");
     let command = message_body("Command");
 
-    assert!(enrollment_request.contains("gateway_csr_der"));
-    assert!(enrollment_response.contains("gateway_leaf_der"));
-    assert!(enrollment_response.contains("gateway_chain_der"));
-    assert!(!PROTO.contains("message GatewayCertificateRequest"));
-    assert!(!PROTO.contains("message GatewayCertificateResult"));
-    assert!(!PROTO.contains("enum GatewayCertificateResultState"));
-    assert!(!PROTO.contains("enum GatewayCertificateMode"));
-    assert!(!PROTO.contains("STATE_APPLY_STATUS_WAITING_FOR_GATEWAY_CERTIFICATE"));
+    assert!(bundle.contains("bytes gateway_leaf_der = 7;"));
+    assert!(bundle.contains("repeated bytes gateway_chain_der = 8;"));
+    assert!(refresh.contains("bytes gateway_csr_der = 2;"));
+    assert!(!protocol_contains("message GatewayCertificateRequest"));
+    assert!(!protocol_contains("message GatewayCertificateResult"));
+    assert!(!protocol_contains("enum GatewayCertificateResultState"));
+    assert!(!protocol_contains("enum GatewayCertificateMode"));
+    assert!(!protocol_contains(
+        "STATE_APPLY_STATUS_WAITING_FOR_GATEWAY_CERTIFICATE"
+    ));
     assert!(!sync_state.contains("gateway_certificate"));
     assert!(!command.contains("gateway_certificate"));
     assert!(!command.contains("certificate"));
     assert!(!command.contains("install_certificate"));
-    assert!(!PROTO.contains("message InstallCertificate"));
-    assert!(!PROTO.contains("CertificateIssueRequest"));
-    assert!(!PROTO.contains("CertificateIssueResult"));
+    assert!(!protocol_contains("message InstallCertificate"));
+    assert!(!protocol_contains("CertificateIssueRequest"));
+    assert!(!protocol_contains("CertificateIssueResult"));
 }
 
 #[test]
@@ -122,10 +120,12 @@ fn protocol_observes_cross_desktop_session_agent() {
     assert!(agent.contains("DisplayBackend display_backend"));
     assert!(!agent.contains("reserved 4"));
     assert!(agent.contains("UiPresentationState presentation = 4;"));
-    assert!(!PROTO.contains("enum SessionSupervisor"));
+    assert!(!protocol_contains("enum SessionSupervisor"));
     assert!(agent.contains("UiPresentationState presentation"));
     assert!(agent.contains("SessionScreenKind screen"));
-    assert!(PROTO.contains("UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED"));
+    assert!(protocol_contains(
+        "UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED"
+    ));
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn removed_command_surface_is_absent_without_pre_release_reservations() {
         "message RunLocalPreflight {",
         "message ClearLocalSecret {",
     ] {
-        assert!(!PROTO.contains(removed_message));
+        assert!(!protocol_contains(removed_message));
     }
 }
 
@@ -266,7 +266,9 @@ fn command_and_status_require_canonical_lowercase_uuidv7_ids() {
 }
 
 #[test]
-fn generated_descriptor_matches_the_committed_golden() {
+fn generated_descriptor_matches_the_committed_split_golden() {
+    use std::collections::BTreeSet;
+
     use prost::Message;
 
     let generated = natsume_device_protocol::file_descriptor_set();
@@ -276,17 +278,49 @@ fn generated_descriptor_matches_the_committed_golden() {
     let Ok(descriptor) = prost_types::FileDescriptorSet::decode(generated) else {
         panic!("generated descriptor must decode");
     };
-    assert_eq!(descriptor.file.len(), 1);
-    assert_eq!(
-        descriptor.file[0].package.as_deref(),
-        Some("natsume.device.v2")
-    );
+    assert_eq!(descriptor.file.len(), 6);
     assert!(
-        descriptor.file[0]
-            .message_type
+        descriptor
+            .file
             .iter()
-            .any(|message| message.name.as_deref() == Some("ControlEnvelope"))
+            .all(|file| file.package.as_deref() == Some("natsume.device.control"))
     );
+    let names = descriptor
+        .file
+        .iter()
+        .filter_map(|file| file.name.as_deref())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        names,
+        BTreeSet::from([
+            "device_control.proto",
+            "device_control_binding.proto",
+            "device_control_command.proto",
+            "device_control_common.proto",
+            "device_control_handshake.proto",
+            "device_control_observed.proto",
+        ])
+    );
+    let Some(root) = descriptor
+        .file
+        .iter()
+        .find(|file| file.name.as_deref() == Some("device_control.proto"))
+    else {
+        panic!("root control descriptor must exist");
+    };
+    for required in [
+        "ControlEnvelope",
+        "ClientHandshakeEnvelope",
+        "ServerHandshakeEnvelope",
+        "ClientActiveEnvelope",
+        "ServerActiveEnvelope",
+    ] {
+        assert!(
+            root.message_type
+                .iter()
+                .any(|message| message.name.as_deref() == Some(required))
+        );
+    }
 }
 
 #[test]

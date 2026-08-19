@@ -1,7 +1,7 @@
 # ADR-0038: Unified ordinary-WSS Device control authority
 
 > Status: `ACCEPTED`
-> Implementation: `NOT DEPLOYED — PENDING ATOMIC CUTOVER`
+> Implementation: `FOUNDATIONS PRESENT — AUTHORITY PENDING ATOMIC CUTOVER`
 > Scope: Device control identity, unified Enrollment/control WSS, dynamic authority actors, credential activation, and destructive pre-release cutover
 > Consolidates: —
 > Supersedes: [ADR-0033](0033-enrollment-and-device-control-boundary.md)
@@ -9,9 +9,9 @@
 
 ## Implementation boundary
 
-本 ADR 于 2026-08-19 接受为预发布 flag-day 目标，不表示目标已经实现。
+本 ADR 于 2026-08-19 接受为预发布 flag-day authority 目标。Batch 1 已按 owner 的预发布 BC 决策原位拆分 production Proto、把单一 package 改为 `natsume.device.control`、把当前双端 subprotocol 同步改为 `natsume.control`，并加入 dormant Challenge/Proof/ClientInit 与 crypto/schema foundations；不存在 `control_v2`、第二 descriptor 或旧/新 package 兼容层。
 
-在 production schema、descriptor、route、Server 与 daemon 同批切换之前，当前 HTTPS Enrollment、Device Token、Bearer-before-101、`natsume.v1` 与现有恢复流程继续是机器契约。任何中间版本都不得混合 Token/control-key authority、旧/新 registry 或旧/新 Enrollment state。
+这些 foundation 不授予 control-key authority。当前网络认证仍是 HTTPS Enrollment、Device Token 与 Bearer-before-101，当前 socket 仍运行 `ControlEnvelope`；新 handshake/direction messages 尚无 runtime consumer。Atomic flag day 才删除 Token/public Enrollment HTTP、启用 PreAuth/actor/Ack authority 并收紧 transitional schema。任何中间版本都不得同时接受 Token 与 control key 作为 authority。
 
 ## Context
 
@@ -46,7 +46,7 @@ SHA-256(
 
 ```text
 TLS 1.3
-→ HTTP 101 / exact subprotocol natsume.control.v2
+→ HTTP 101 / exact subprotocol natsume.control
 → standalone binary WebSocket message: ServerChallenge
 → standalone binary WebSocket message: ClientProof
 → standalone binary WebSocket message: exact ClientInit
@@ -57,11 +57,11 @@ HTTP 101 只建立 transport。Proof 完成前，连接没有 Device、Enrollmen
 
 每条 WSS connection 拥有一次性随机 challenge ID 与 server nonce；它们只存在于该 connection-local PreAuthSession，并在 proof 成功、失败、timeout、非法 message 或 disconnect 后销毁。不得建立全局 challenge lookup 或允许第二次 proof。
 
-签名 transcript 以固定 domain 分隔，并覆盖固定 route `/api/v2/device/control`、subprotocol `natsume.control.v2`、challenge、双方 nonce、协议版本、intent、control public key、Machine Hardware ID、optional DeviceId、Enrollment attempt ID 与 exact ClientInit hash。Fresh challenge 证明 connection-local freshness 与 key possession；intent、route/subprotocol context 与 exact ClientInit hash 防止跨用途、跨 route 或 ClientInit substitution。该设计**不宣称 TLS channel binding**。
+签名 transcript 以固定 domain 分隔，并覆盖固定 route `/api/v2/device/control`、subprotocol `natsume.control`、challenge、双方 nonce、协议版本、intent、control public key、Machine Hardware ID、optional DeviceId、Enrollment attempt ID 与 exact ClientInit hash。Fresh challenge 证明 connection-local freshness 与 key possession；intent、route/subprotocol context 与 exact ClientInit hash 防止跨用途、跨 route 或 ClientInit substitution。该设计**不宣称 TLS channel binding**。
 
 安全假设明确为：TLS在Natsume Server进程内终止；不存在TLS-terminating proxy或共享TLS identity中介；daemon只签署其当前pinned Server WSS connection收到的challenge，并不暴露任意signing oracle。若这些假设失效，必须重开本ADR并采用channel-bound proof。
 
-ServerChallenge、ClientProof 与 ClientInit 各占一个 standalone binary WebSocket message，不属于 active envelope。这里的 message 是 tungstenite 重组 RFC 6455 fragmentation 后暴露的应用边界；不要求访问 raw frame。`max_message_size` 在 Protobuf decode 前约束重组后的完整消息，`max_frame_size` 独立约束单个 transport fragment。ClientInit 由共享 canonical encoder 一次构造并逐字节发送；未来 wire adapter 必须在 application classification 前拒绝 unknown、duplicate、non-minimal 或非 canonical encoding。
+ServerChallenge、ClientProof 与 ClientInit 各占一个 standalone binary WebSocket message，不属于 active envelope。这里的 message 是 tungstenite 重组 RFC 6455 fragmentation 后暴露的应用边界；不要求访问 raw frame。`max_message_size` 在 Protobuf decode 前约束重组后的完整消息，`max_frame_size` 独立约束单个 transport fragment。Client 与 Server 都把经语义校验的 typed `ClientInit` 交给 pinned Prost `0.14.4` encoder，并以 `SHA-256(encode_to_vec(value))` 作为 proof 中的语义摘要；入站字段顺序、非最短 varint、显式 default、unknown bytes、重复字段的被覆盖值与等价 repeated 布局不进入签名。Server 丢弃收到的 raw bytes，只继续使用并持久化规范再编码结果。切换 Protobuf runtime 或编码版本必须重开本 ADR 并重算全部语义摘要 golden。
 
 ### Unified dynamic actor
 
@@ -113,9 +113,9 @@ Startup只执行 schema/set-based recovery、初始化 quotas 与空 registry，
 
 ### Flag-day rollout
 
-Batch 0 只允许决策、依赖准入、deterministic vectors 与 isolated private feasibility listener；不得修改 production route、AppState、descriptor、migration、OpenAPI、daemon或Token/WSS bytes。
+Batch 0 只建立决策、依赖准入、deterministic vectors 与 isolated private feasibility listener。Batch 1 使用预发布 breaking change 原位拆分唯一 Proto/package/descriptor 并同步现有 peers 的 subprotocol，同时只增加 dormant crypto/schema/client-local foundations；不维护旧 wire 兼容副本。
 
-后续 unreachable/dormant batch可以构建新协议、schema、actor与client，但任何启用的中间版本都不得同时支持旧Token和新control key authority。Atomic cutover同批删除Device Token、public Device Enrollment HTTP、旧Proto/registry，重写初始migration并重建预发布DB与Device image。
+后续 dormant batch可以构建actor与client authority路径，但任何启用的中间版本都不得同时支持Device Token和control key authority。Atomic cutover同批删除Device Token、public Device Enrollment HTTP、旧 `ControlEnvelope`/registry 与 transitional schema state，并重建预发布DB与Device image。
 
 ## Alternatives
 
@@ -146,9 +146,9 @@ Batch 0 只允许决策、依赖准入、deterministic vectors 与 isolated priv
 
 ## Acceptance basis and revisit trigger
 
-Batch 0必须以private isolated listener证明：server-auth TLS 1.3、ordinary WSS 101、random challenge、deterministic Ed25519/PKCS#8 vectors、strict verification、exact ClientInit hash binding与clean close；production surface保持不变。
+Batch 0 的 private isolated listener 已证明 server-auth TLS 1.3、ordinary WSS 101、random challenge、deterministic Ed25519/PKCS#8 vectors、strict verification、exact ClientInit hash binding 与 clean close。Batch 1 将 transcript、Prost decode/semantic validation 与 typed canonical re-encoding纳入唯一production protocol crate，但新proof消息仍未接入runtime authority。
 
-后续还必须证明capacity、crash cuts、actor races、immutable replay、filesystem durability、lifecycle ordering与500–600 Device envelope。Batch 0不关闭G4。
+后续还必须证明 capacity、crash cuts、actor races、immutable replay、filesystem durability、lifecycle ordering 与 500–600 Device envelope。Foundation 落地不关闭 G4。
 
 当TLS在外部终止、provisioning不再物理受控、要求HA、多Server、出现manufacturer Device credential，或无法接受destructive coordinated rollout时重开本ADR。
 

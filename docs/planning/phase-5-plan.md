@@ -5,7 +5,7 @@
 > 权威来源：[路线图](../roadmap.md) §Phase 5 与 G5 覆盖、[契约](../contracts.md) §7/§8/§9/§11/§12、[状态与执行模型](../state-and-execution.md) §3–§6、[ADR-0034](../adr/0034-state-execution-and-data-plane-boundary.md)
 > 前置：Phase 4 全部 WP 关闭；并先关闭 ADR-0038 flag-day sequencing blocker（见 E4）
 
-**2026-08-19 blocker**：本计划按当前 Token Enrollment、daemon credential paths 与当前 WSS client 起草；[ADR-0038](../adr/0038-unified-ordinary-wss-device-control-authority.md) 已接受 destructive destination。Owner 必须先决定 Phase 5 位于 atomic cutover 前还是后，并据此重基线 credential/session inputs；禁止实现混合 Token/control-key compatibility。
+**2026-08-19 blocker**：本计划按当前 Token Enrollment、daemon credential paths 与 Bearer WSS authority 起草；[ADR-0038](../adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 Proto/crypto/schema foundation 已存在，但 runtime cutover 尚未发生。Owner 必须先决定 Phase 5 位于 atomic authority cutover 前还是后，并据此重基线 credential/session inputs；禁止实现混合 Token/control-key compatibility。
 
 本文件是计划，不是完成声明。遵守 [路线图](../roadmap.md) §1 原则 5：细目在 Phase 启动时冻结，本文件提供该冻结的候选基线与决策清单。
 

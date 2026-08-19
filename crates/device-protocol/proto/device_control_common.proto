@@ -1,0 +1,32 @@
+syntax = "proto3";
+package natsume.device.control;
+
+enum SessionLockState {
+  SESSION_LOCK_STATE_UNSPECIFIED = 0;
+  SESSION_LOCK_STATE_NONE = 1;
+  SESSION_LOCK_STATE_LOCKING = 2;
+  SESSION_LOCK_STATE_LOCKED = 3;
+  SESSION_LOCK_STATE_UNLOCKING = 4;
+  SESSION_LOCK_STATE_UNLOCKED = 5;
+  SESSION_LOCK_STATE_TERMINATING = 6;
+  SESSION_LOCK_STATE_ERROR = 7;
+}
+
+message Heartbeat {
+  string boot_id = 1;
+  uint64 observed_sequence = 2;
+  uint64 applied_generation = 3;
+  string session_instance_id = 4;
+  uint64 session_epoch = 5;
+  SessionLockState session_lock_state = 6;
+  uint64 session_lock_epoch = 7;
+  string active_lock_command_id = 8;
+}
+
+message ServerDrain {
+  int64 reconnect_after_unix_ms = 1;
+}
+
+message ProtocolError {
+  string stable_error_code = 1;
+}

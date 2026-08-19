@@ -1,0 +1,114 @@
+syntax = "proto3";
+package natsume.device.control;
+
+message TargetAssignment {
+  uint64 binding_revision = 2;
+  string seat_id = 3;
+  string seat_code = 4;
+  string account_id = 6;
+  string domjudge_username = 7;
+}
+
+message TargetGateway {
+  uint64 gateway_configuration_revision = 1;
+  string local_origin_hostname = 2;
+  string fixed_upstream_profile_id = 3;
+  string exact_login_policy_id = 4;
+  string gateway_certificate_profile_id = 5;
+  int64 gateway_certificate_min_valid_until_unix_ms = 6;
+}
+
+message TargetSession {
+  string browser_policy_revision = 1;
+  string home_template_revision = 2;
+}
+
+message TargetStateSnapshot {
+  uint32 schema_version = 1;
+  TargetAssignment assignment = 2;
+  TargetGateway gateway = 3;
+  TargetSession session = 4;
+}
+
+message SyncState {
+  uint64 generation = 1;
+  bytes canonical_hash = 2;
+  TargetStateSnapshot snapshot = 3;
+}
+
+message SecretBytes {
+  bytes value = 1;
+}
+
+message SyncSecret {
+  string seat_id = 1;
+  uint64 binding_revision = 2;
+  string account_id = 3;
+  uint64 credential_revision = 4;
+  SecretBytes password = 5;
+}
+
+message SessionTarget {
+  string session_instance_id = 1;
+  uint64 session_epoch = 2;
+}
+
+message OpenBindingPrompt {
+  int64 expires_at_unix_ms = 1;
+  string prompt_message_id = 2;
+}
+
+message LockSession {
+  SessionTarget target = 1;
+  uint64 requested_lock_epoch = 2;
+}
+
+message UnlockSession {
+  SessionTarget target = 1;
+  uint64 expected_lock_epoch = 2;
+  string expected_lock_command_id = 3;
+}
+
+message TerminateSession {
+  SessionTarget target = 1;
+}
+
+message ResetHome {
+  string home_template_revision = 1;
+  // The Server assigns a strictly monotonic Home epoch per reset; a non-monotonic value is rejected as HOME_EPOCH_STALE.
+  uint64 home_epoch = 2;
+}
+
+message Command {
+  // The Panel owns generation: canonical lowercase hyphenated UUIDv7, preserved end-to-end.
+  string command_id = 1;
+  int64 created_at_unix_ms = 2;
+  int64 deadline_unix_ms = 3;
+  oneof body {
+    SyncState sync_state = 6;
+    SyncSecret sync_secret = 7;
+    OpenBindingPrompt open_binding_prompt = 8;
+    LockSession lock_session = 9;
+    UnlockSession unlock_session = 10;
+    TerminateSession terminate_session = 11;
+    ResetHome reset_home = 12;
+  }
+}
+
+enum CommandState {
+  COMMAND_STATE_UNSPECIFIED = 0;
+  COMMAND_STATE_RECEIVED = 1;
+  COMMAND_STATE_RUNNING = 2;
+  COMMAND_STATE_SUCCEEDED = 3;
+  COMMAND_STATE_FAILED = 4;
+  COMMAND_STATE_CANCELLED = 5;
+  COMMAND_STATE_EXPIRED = 6;
+  COMMAND_STATE_MANUAL_INTERVENTION_REQUIRED = 7;
+}
+
+message CommandStatus {
+  // Echoes the Panel-owned canonical lowercase hyphenated UUIDv7 from Command.command_id.
+  string command_id = 1;
+  CommandState state = 2;
+  string stable_error_code = 3;
+}

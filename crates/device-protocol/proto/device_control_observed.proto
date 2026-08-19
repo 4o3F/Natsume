@@ -1,0 +1,134 @@
+syntax = "proto3";
+package natsume.device.control;
+
+import "device_control_common.proto";
+
+enum StateApplyStatus {
+  STATE_APPLY_STATUS_UNSPECIFIED = 0;
+  STATE_APPLY_STATUS_IDLE = 1;
+  STATE_APPLY_STATUS_RECEIVED = 2;
+  STATE_APPLY_STATUS_VALIDATING = 3;
+  STATE_APPLY_STATUS_APPLYING = 4;
+  STATE_APPLY_STATUS_APPLIED = 5;
+  STATE_APPLY_STATUS_FAILED = 6;
+  STATE_APPLY_STATUS_RECOVERY_REQUIRED = 7;
+}
+
+enum SecretState {
+  SECRET_STATE_UNSPECIFIED = 0;
+  SECRET_STATE_ABSENT = 1;
+  SECRET_STATE_INSTALLED = 2;
+  SECRET_STATE_STALE = 3;
+  SECRET_STATE_FAILED = 4;
+}
+
+enum GatewayState {
+  GATEWAY_STATE_UNSPECIFIED = 0;
+  GATEWAY_STATE_ABSENT = 1;
+  GATEWAY_STATE_BLOCKED = 2;
+  GATEWAY_STATE_RESTORING = 3;
+  GATEWAY_STATE_READY = 4;
+  GATEWAY_STATE_UPSTREAM_UNHEALTHY = 5;
+  GATEWAY_STATE_RECOVERY_REQUIRED = 6;
+}
+
+enum SessionState {
+  SESSION_STATE_UNSPECIFIED = 0;
+  SESSION_STATE_NONE = 1;
+  SESSION_STATE_STARTING = 2;
+  SESSION_STATE_ACTIVE = 3;
+  SESSION_STATE_LOCKED = 4;
+  SESSION_STATE_TERMINATING = 5;
+  SESSION_STATE_ERROR = 6;
+}
+
+enum GraphicalSessionType {
+  GRAPHICAL_SESSION_TYPE_UNSPECIFIED = 0;
+  GRAPHICAL_SESSION_TYPE_WAYLAND = 1;
+  GRAPHICAL_SESSION_TYPE_X11 = 2;
+}
+
+enum DisplayBackend {
+  DISPLAY_BACKEND_UNSPECIFIED = 0;
+  DISPLAY_BACKEND_WAYLAND = 1;
+  DISPLAY_BACKEND_X11 = 2;
+}
+
+enum UiPresentationState {
+  UI_PRESENTATION_STATE_UNSPECIFIED = 0;
+  UI_PRESENTATION_STATE_HIDDEN = 1;
+  UI_PRESENTATION_STATE_PRESENTING = 2;
+  UI_PRESENTATION_STATE_PRESENTED_FOCUSED = 3;
+  UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED = 4;
+  UI_PRESENTATION_STATE_UNSUPPORTED = 5;
+  UI_PRESENTATION_STATE_FAILED = 6;
+}
+
+enum SessionScreenKind {
+  SESSION_SCREEN_KIND_UNSPECIFIED = 0;
+  SESSION_SCREEN_KIND_HIDDEN = 1;
+  SESSION_SCREEN_KIND_IDLE_STATUS = 2;
+  SESSION_SCREEN_KIND_BINDING_PROMPT = 3;
+  SESSION_SCREEN_KIND_BINDING_PENDING = 4;
+  SESSION_SCREEN_KIND_BINDING_RESULT = 5;
+  SESSION_SCREEN_KIND_RECOVERY_STATUS = 6;
+  SESSION_SCREEN_KIND_LOCK_PRESENTATION = 7;
+  SESSION_SCREEN_KIND_FATAL_LOCAL_ERROR = 8;
+}
+
+enum SessionAgentState {
+  SESSION_AGENT_STATE_UNSPECIFIED = 0;
+  SESSION_AGENT_STATE_ABSENT = 1;
+  SESSION_AGENT_STATE_STARTING = 2;
+  SESSION_AGENT_STATE_READY = 3;
+  SESSION_AGENT_STATE_DEGRADED = 4;
+  SESSION_AGENT_STATE_ERROR = 5;
+}
+
+message SessionAgentObservation {
+  SessionAgentState state = 1;
+  GraphicalSessionType graphical_session_type = 2;
+  DisplayBackend display_backend = 3;
+  UiPresentationState presentation = 4;
+  SessionScreenKind screen = 5;
+  bool notifications_available = 6;
+  bool desktop_lock_supported = 7;
+  bool desktop_unlock_supported = 8;
+  string stable_error_code = 9;
+}
+
+enum HomeState {
+  HOME_STATE_UNSPECIFIED = 0;
+  HOME_STATE_UNMOUNTED = 1;
+  HOME_STATE_READY = 2;
+  HOME_STATE_RESETTING = 3;
+  HOME_STATE_RECOVERY_REQUIRED = 4;
+  HOME_STATE_ERROR = 5;
+}
+
+message ObservedStateSnapshot {
+  uint64 observed_sequence = 1;
+  string boot_id = 2;
+  uint64 received_generation = 3;
+  uint64 applied_generation = 4;
+  bytes applied_hash = 5;
+  StateApplyStatus state_apply_status = 6;
+  string state_error_code = 7;
+  uint64 installed_binding_revision = 8;
+  uint64 installed_credential_revision = 9;
+  SecretState secret_state = 10;
+  GatewayState gateway_state = 11;
+  uint64 gateway_configuration_revision = 12;
+  bytes gateway_certificate_fingerprint = 13;
+  SessionState session_state = 14;
+  string session_instance_id = 15;
+  uint64 session_epoch = 16;
+  SessionLockState session_lock_state = 17;
+  uint64 session_lock_epoch = 18;
+  string active_lock_command_id = 19;
+  HomeState home_state = 20;
+  string stable_component_error_code = 21;
+  int64 observed_at_unix_ms = 22;
+  int64 gateway_certificate_not_after_unix_ms = 23;
+  SessionAgentObservation session_agent = 24;
+}

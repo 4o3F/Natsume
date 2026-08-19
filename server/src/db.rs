@@ -474,7 +474,9 @@ pub(crate) mod tests {
             "accounts",
             "audit_events",
             "commands",
+            "credential_bundles",
             "device_bindings",
+            "device_control_keys",
             "device_tokens",
             "devices",
             "enrollment_requests",
@@ -526,7 +528,7 @@ pub(crate) mod tests {
         if first_up_count != 1
             || down_count != 1
             || second_up_count != 1
-            || business_tables(&mut connection)?.len() != 18
+            || business_tables(&mut connection)?.len() != 20
         {
             return Err(TestFailure::MigrationRoundTripWasNotExact);
         }

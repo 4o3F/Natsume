@@ -73,6 +73,7 @@ diesel::table! {
         machine_hardware_id -> Text,
         hardware_identity_quality -> Text,
         state -> Text,
+        control_authority_revision -> Nullable<Integer>,
     }
 }
 

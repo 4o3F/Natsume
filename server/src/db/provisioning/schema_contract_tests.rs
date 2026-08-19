@@ -339,8 +339,37 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
         ],
     ),
     (
+        "credential_bundles",
+        &[
+            "issuance_id",
+            "enrollment_request_id",
+            "device_pk",
+            "format_version",
+            "canonical_bundle_bytes",
+            "bundle_sha256",
+            "activation_deadline",
+            "created_at",
+        ],
+    ),
+    (
         "device_bindings",
         &["seat_id", "device_pk", "binding_revision"],
+    ),
+    (
+        "device_control_keys",
+        &[
+            "key_id",
+            "public_key",
+            "algorithm",
+            "device_pk",
+            "key_generation",
+            "status",
+            "originating_enrollment_request_id",
+            "activated_audit_event_id",
+            "retired_audit_event_id",
+            "activated_revision",
+            "retired_revision",
+        ],
     ),
     (
         "device_tokens",
@@ -353,6 +382,7 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "machine_hardware_id",
             "hardware_identity_quality",
             "state",
+            "control_authority_revision",
         ],
     ),
     (
@@ -371,6 +401,18 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
             "resolved_device_pk",
             "issuance_audit_event_id",
             "created_at",
+            "control_intent",
+            "proposed_device_pk",
+            "proposed_control_key_id",
+            "proposed_control_public_key",
+            "control_key_generation",
+            "canonical_client_init",
+            "request_fingerprint_version",
+            "request_fingerprint_sha256",
+            "baseline_authority_revision",
+            "expected_active_control_key_id",
+            "activation_deadline",
+            "approval_audit_event_id",
         ],
     ),
     (
@@ -469,9 +511,11 @@ fn expected_columns() -> BTreeMap<&'static str, &'static [&'static str]> {
     EXPECTED_COLUMNS.iter().copied().collect()
 }
 
-fn expected_foreign_keys() -> BTreeMap<&'static str, Vec<(&'static str, &'static str, &'static str)>>
-{
-    BTreeMap::from([
+type ForeignKeyContract = (&'static str, &'static str, &'static str);
+type ForeignKeyContracts = BTreeMap<&'static str, Vec<ForeignKeyContract>>;
+
+fn expected_foreign_keys() -> ForeignKeyContracts {
+    let mut expected = BTreeMap::from([
         (
             "account_mappings",
             vec![
@@ -515,6 +559,7 @@ fn expected_foreign_keys() -> BTreeMap<&'static str, Vec<(&'static str, &'static
         (
             "enrollment_requests",
             vec![
+                ("approval_audit_event_id", "audit_events", "audit_event_id"),
                 ("issuance_audit_event_id", "audit_events", "audit_event_id"),
                 ("machine_hardware_id", "devices", "machine_hardware_id"),
                 // The standalone FK and the first column of the composite FK
@@ -553,6 +598,34 @@ fn expected_foreign_keys() -> BTreeMap<&'static str, Vec<(&'static str, &'static
         (
             "provisioning_window",
             vec![("last_audit_event_id", "audit_events", "audit_event_id")],
+        ),
+    ]);
+    expected.extend(future_control_foreign_keys());
+    expected
+}
+
+fn future_control_foreign_keys() -> ForeignKeyContracts {
+    BTreeMap::from([
+        (
+            "credential_bundles",
+            vec![(
+                "enrollment_request_id",
+                "enrollment_requests",
+                "enrollment_request_id",
+            )],
+        ),
+        (
+            "device_control_keys",
+            vec![
+                ("activated_audit_event_id", "audit_events", "audit_event_id"),
+                ("device_pk", "devices", "device_pk"),
+                (
+                    "originating_enrollment_request_id",
+                    "enrollment_requests",
+                    "enrollment_request_id",
+                ),
+                ("retired_audit_event_id", "audit_events", "audit_event_id"),
+            ],
         ),
     ])
 }
@@ -620,7 +693,8 @@ fn seed_constraint_prerequisites(database: &TestDatabase) {
         "INSERT INTO server_vault_records VALUES \
          ('vault-3', 'account', 'subject-3', x'01', x'02')",
         "INSERT INTO seats VALUES ('seat-1', 'S1')",
-        "INSERT INTO devices VALUES ('device-1', 'hardware-1', 'strong', 'enrolled')",
+        "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES ('device-1', 'hardware-1', 'strong', 'enrolled')",
         "INSERT INTO operator_accounts VALUES ('operator-1', 'admin-1', 'admin', 'work-factor-hash')",
         "INSERT INTO accounts VALUES ('account-1', 'user-1', 'vault-1', 1)",
         "INSERT INTO audit_events VALUES \
@@ -631,7 +705,10 @@ fn seed_constraint_prerequisites(database: &TestDatabase) {
          ('command-audit', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'operator:test', \
           'create_command', 'command', 'command-1', 'succeeded', NULL, \
           'command-correlation', NULL, '{}')",
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('request-1', 'hardware-1', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'pending', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
@@ -653,12 +730,14 @@ fn seed_constraint_prerequisites(database: &TestDatabase) {
 fn assert_closed_enums(database: &TestDatabase) {
     assert_rejected(
         database,
-        "INSERT INTO devices VALUES ('bad-state', 'hardware-2', 'strong', 'unknown')",
+        "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES ('bad-state', 'hardware-2', 'strong', 'unknown')",
         "devices.state",
     );
     assert_rejected(
         database,
-        "INSERT INTO devices VALUES ('bad-quality', 'hardware-3', 'unknown', 'enrolled')",
+        "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES ('bad-quality', 'hardware-3', 'unknown', 'enrolled')",
         "devices.hardware_identity_quality",
     );
     assert_rejected(
@@ -677,14 +756,20 @@ fn assert_closed_enums(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('bad-state-request', 'hardware-2', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'unknown', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z')",
         "enrollment_requests.state",
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('bad-resolution', 'hardware-3', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'pending', 'unknown', NULL, NULL, '2026-01-01T00:00:00.000Z')",
         "enrollment_requests.resolution",
@@ -791,10 +876,13 @@ fn assert_observed_enum_insert_rejected(
     let mut connection = database.observer();
     let hardware_id = format!("hardware-{device_pk}");
     require_ok(
-        diesel::sql_query("INSERT INTO devices VALUES (?, ?, 'strong', 'enrolled')")
-            .bind::<Text, _>(device_pk)
-            .bind::<Text, _>(&hardware_id)
-            .execute(&mut connection),
+        diesel::sql_query(
+            "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES (?, ?, 'strong', 'enrolled')",
+        )
+        .bind::<Text, _>(device_pk)
+        .bind::<Text, _>(&hardware_id)
+        .execute(&mut connection),
         "observed enum prerequisite device must insert",
     );
     let result = diesel::sql_query(
@@ -951,7 +1039,10 @@ fn assert_binary_and_json_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('bad-spki', 'hardware-4', 'strong', x'01', zeroblob(31), 'client', 1, \
           '192.0.2.1', 'pending', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z')",
         "enrollment_requests.gateway_spki_sha256",
@@ -1081,7 +1172,10 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('bad-enrollment-quality', 'hardware-5', 'unknown', x'01', zeroblob(32), \
           'client', 1, '192.0.2.1', 'pending', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
@@ -1089,7 +1183,10 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('empty-csr', 'hardware-6', 'strong', zeroblob(0), zeroblob(32), \
           'client', 1, '192.0.2.1', 'pending', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
@@ -1097,7 +1194,10 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('negative-protocol', 'hardware-7', 'strong', x'01', zeroblob(32), \
           'client', -1, '192.0.2.1', 'pending', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
@@ -1105,7 +1205,10 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('oversized-protocol', 'hardware-8', 'strong', x'01', zeroblob(32), \
           'client', 4294967296, '192.0.2.1', 'pending', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
@@ -1216,7 +1319,10 @@ fn assert_lifecycle_import_and_singleton_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('issued-without-binding', 'hardware-9', 'strong', x'01', zeroblob(32), \
           'client', 1, '192.0.2.1', 'issued', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
@@ -1224,7 +1330,10 @@ fn assert_lifecycle_import_and_singleton_domains(database: &TestDatabase) {
     );
     assert_rejected(
         database,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('pending-with-audit', 'hardware-10', 'strong', x'01', zeroblob(32), \
           'client', 1, '192.0.2.1', 'pending', NULL, NULL, 'command-audit', \
           '2026-01-01T00:00:00.000Z')",
@@ -1340,7 +1449,8 @@ async fn unique_current_fact_constraints_reject_duplicates() {
     );
     assert_rejected(
         &fixture,
-        "INSERT INTO devices VALUES ('device-2', 'hardware-1', 'strong', 'enrolled')",
+        "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES ('device-2', 'hardware-1', 'strong', 'enrolled')",
         "devices.machine_hardware_id",
     );
     assert_rejected(
@@ -1356,14 +1466,20 @@ async fn unique_current_fact_constraints_reject_duplicates() {
     );
     assert_rejected(
         &fixture,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('request-2', 'hardware-1', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'pending', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z')",
         "pending live enrollment hardware and SPKI",
     );
     assert_rejected(
         &fixture,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('request-approved', 'hardware-1', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'approved', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z')",
         "approved live enrollment hardware and SPKI",
@@ -1371,12 +1487,16 @@ async fn unique_current_fact_constraints_reject_duplicates() {
 
     execute_fixture_statement(
         &fixture,
-        "INSERT INTO devices VALUES ('device-2', 'hardware-2', 'strong', 'enrolled')",
+        "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES ('device-2', 'hardware-2', 'strong', 'enrolled')",
         "second device must insert",
     );
     execute_fixture_statement(
         &fixture,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('request-3', 'hardware-2', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'pending', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z')",
         "second enrollment request must insert",
@@ -1398,13 +1518,281 @@ async fn unique_current_fact_constraints_reject_duplicates() {
 }
 
 #[tokio::test]
+async fn legacy_token_fixture_remains_valid_with_null_control_revision() {
+    let fixture = TestDatabase::new();
+    let _database = fixture.connect().await;
+    let mut connection = fixture.observer();
+    require_ok(
+        connection.batch_execute(
+            "INSERT INTO audit_events VALUES \
+             ('legacy-issuance-audit', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+              'operator:test', 'issue_enrollment', 'enrollment', 'legacy-request', \
+              'succeeded', NULL, 'legacy-correlation', NULL, '{}'); \
+             INSERT INTO devices (device_pk, machine_hardware_id, hardware_identity_quality, \
+              state) VALUES ('legacy-device', 'legacy-hardware', 'strong', 'enrolled'); \
+             INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+              hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+              protocol_version, source_ip, state, resolution, resolved_device_pk, \
+              issuance_audit_event_id, created_at) VALUES \
+              ('legacy-request', 'legacy-hardware', 'strong', x'01', zeroblob(32), \
+               'legacy-client', 1, '192.0.2.10', 'issued', 'create_device', 'legacy-device', \
+               'legacy-issuance-audit', '2026-01-01T00:00:00.000Z'); \
+             INSERT INTO device_tokens (device_pk, enrollment_request_id, token_hash) VALUES \
+              ('legacy-device', 'legacy-request', zeroblob(32));",
+        ),
+        "the legacy Token fixture must insert",
+    );
+    let legacy_rows = require_ok(
+        diesel::sql_query(
+            "SELECT COUNT(*) AS value FROM devices \
+             JOIN device_tokens USING (device_pk) \
+             WHERE device_pk = 'legacy-device' AND control_authority_revision IS NULL",
+        )
+        .get_result::<IntegerRow>(&mut connection),
+        "the legacy Token fixture must be queryable",
+    )
+    .value;
+    assert_eq!(legacy_rows, 1);
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn future_control_constraints_accept_coherent_rows_and_reject_mutations() {
+    let fixture = TestDatabase::new();
+    let _database = fixture.connect().await;
+    execute_fixture_statement(
+        &fixture,
+        "INSERT INTO devices (device_pk, machine_hardware_id, hardware_identity_quality, state) \
+         VALUES ('control-device', 'control-hardware', 'strong', 'enrolled'); \
+         INSERT INTO devices (device_pk, machine_hardware_id, hardware_identity_quality, state, \
+          control_authority_revision) VALUES \
+          ('control-device-2', 'control-hardware-2', 'strong', 'enrolled', 1); \
+         INSERT INTO audit_events VALUES \
+          ('control-activation-audit-1', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+           'operator:test', 'control_test', 'device_control_key', 'control-device', \
+           'succeeded', NULL, 'control-correlation-1', NULL, '{}'), \
+          ('control-activation-audit-2', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+           'operator:test', 'control_test', 'device_control_key', 'control-device', \
+           'succeeded', NULL, 'control-correlation-2', NULL, '{}'), \
+          ('control-retirement-audit-2', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+           'operator:test', 'control_test', 'device_control_key', 'control-device', \
+           'succeeded', NULL, 'control-correlation-3', NULL, '{}'), \
+          ('control-invalid-activation-audit', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+           'operator:test', 'control_test', 'device_control_key', 'control-device-2', \
+           'succeeded', NULL, 'control-correlation-4', NULL, '{}'), \
+          ('control-invalid-retirement-audit', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), \
+           'operator:test', 'control_test', 'device_control_key', 'control-device-2', \
+           'succeeded', NULL, 'control-correlation-5', NULL, '{}')",
+        "future control prerequisites must insert",
+    );
+    assert_rejected(
+        &fixture,
+        "UPDATE devices SET control_authority_revision = 0 \
+         WHERE device_pk = 'control-device'",
+        "devices.control_authority_revision",
+    );
+    execute_fixture_statement(
+        &fixture,
+        "UPDATE devices SET control_authority_revision = 1 \
+         WHERE device_pk = 'control-device'",
+        "a positive control authority revision must be accepted",
+    );
+
+    execute_fixture_statement(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolved_device_pk, created_at, control_intent, \
+         proposed_device_pk, proposed_control_key_id, proposed_control_public_key, \
+         control_key_generation, canonical_client_init, request_fingerprint_version, \
+         request_fingerprint_sha256, baseline_authority_revision, \
+         expected_active_control_key_id, activation_deadline) VALUES \
+         ('control-request-1', 'control-hardware', 'strong', x'01', zeroblob(32), \
+          'control-client', 1, '192.0.2.20', 'pending_approval', 'control-device', \
+          '2026-01-01T00:00:00.000Z', 'replace', 'proposed-control-device', zeroblob(32), \
+          x'0101010101010101010101010101010101010101010101010101010101010101', \
+          1, x'01', 1, zeroblob(32), 1, zeroblob(32), '2026-01-01T01:00:00.000Z')",
+        "a coherent future control request must insert",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolved_device_pk, created_at, control_intent) \
+         VALUES ('duplicate-control-request', 'control-hardware', 'strong', x'01', \
+          x'0101010101010101010101010101010101010101010101010101010101010101', \
+          'control-client', 1, '192.0.2.21', 'awaiting_credential_ack', 'control-device', \
+          '2026-01-01T00:00:01.000Z', 'recover')",
+        "one live control request per machine",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, created_at) VALUES \
+         ('missing-control-intent', 'missing-intent-hardware', 'strong', x'01', \
+          zeroblob(32), 'control-client', 1, '192.0.2.22', 'pending_approval', \
+          '2026-01-01T00:00:02.000Z')",
+        "control state discriminator",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, created_at, control_intent) VALUES \
+         ('token-state-with-control-intent', 'token-intent-hardware', 'strong', x'01', \
+          zeroblob(32), 'control-client', 1, '192.0.2.23', 'pending', \
+          '2026-01-01T00:00:03.000Z', 'first')",
+        "Token state discriminator",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, created_at, control_intent) VALUES \
+         ('invalid-control-intent', 'invalid-intent-hardware', 'strong', x'01', zeroblob(32), \
+          'control-client', 1, '192.0.2.24', 'active', '2026-01-01T00:00:04.000Z', 'rotate')",
+        "enrollment_requests.control_intent",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, created_at, control_intent, \
+         proposed_control_key_id) VALUES \
+         ('partial-proposed-key', 'partial-key-hardware', 'strong', x'01', zeroblob(32), \
+          'control-client', 1, '192.0.2.25', 'active', '2026-01-01T00:00:05.000Z', \
+          'first', zeroblob(32))",
+        "proposed control key tuple",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, created_at, control_intent, \
+         request_fingerprint_version) VALUES \
+         ('partial-fingerprint', 'partial-fingerprint-hardware', 'strong', x'01', zeroblob(32), \
+          'control-client', 1, '192.0.2.26', 'active', '2026-01-01T00:00:06.000Z', 'first', 1)",
+        "request fingerprint tuple",
+    );
+    execute_fixture_statement(
+        &fixture,
+        "UPDATE enrollment_requests SET state = 'awaiting_credential_ack' \
+         WHERE enrollment_request_id = 'control-request-1'; \
+         UPDATE enrollment_requests SET state = 'active' \
+         WHERE enrollment_request_id = 'control-request-1'; \
+         INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+          hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+          protocol_version, source_ip, state, created_at, control_intent) VALUES \
+          ('control-terminal-request', 'control-terminal-hardware', 'strong', x'01', \
+           zeroblob(32), 'control-client', 1, '192.0.2.27', 'rejected', \
+           '2026-01-01T00:00:07.000Z', 'recover')",
+        "future control states must be accepted",
+    );
+
+    execute_fixture_statement(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (zeroblob(32), \
+          x'0101010101010101010101010101010101010101010101010101010101010101', \
+          'ed25519', 'control-device', 1, 'active', 'control-request-1', \
+          'control-activation-audit-1', NULL, 1, NULL)",
+        "an active control key must insert",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (x'0202020202020202020202020202020202020202020202020202020202020202', \
+          x'0303030303030303030303030303030303030303030303030303030303030303', \
+          'ed25519', 'control-device', 2, 'active', 'control-request-1', \
+          'control-activation-audit-2', NULL, 1, NULL)",
+        "one active control key per device",
+    );
+    execute_fixture_statement(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (x'0202020202020202020202020202020202020202020202020202020202020202', \
+          x'0303030303030303030303030303030303030303030303030303030303030303', \
+          'ed25519', 'control-device', 2, 'superseded', 'control-request-1', \
+          'control-activation-audit-2', 'control-retirement-audit-2', 1, 2)",
+        "a coherent retired control key must insert",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (x'0404040404040404040404040404040404040404040404040404040404040404', \
+          x'0505050505050505050505050505050505050505050505050505050505050505', \
+          'rsa', 'control-device-2', 1, 'active', 'control-terminal-request', \
+          'control-invalid-activation-audit', NULL, 1, NULL)",
+        "device_control_keys.algorithm",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (x'0404040404040404040404040404040404040404040404040404040404040404', \
+          x'0505050505050505050505050505050505050505050505050505050505050505', \
+          'ed25519', 'control-device-2', 1, 'active', 'control-terminal-request', \
+          'control-invalid-activation-audit', 'control-invalid-retirement-audit', 1, 1)",
+        "active control key retirement tuple",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (x'0404040404040404040404040404040404040404040404040404040404040404', \
+          x'0505050505050505050505050505050505050505050505050505050505050505', \
+          'ed25519', 'control-device-2', 1, 'revoked', 'control-terminal-request', \
+          'control-invalid-activation-audit', NULL, 1, NULL)",
+        "retired control key retirement tuple",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO device_control_keys VALUES \
+         (zeroblob(31), \
+          x'0505050505050505050505050505050505050505050505050505050505050505', \
+          'ed25519', 'control-device-2', 1, 'active', 'control-terminal-request', \
+          'control-invalid-activation-audit', NULL, 1, NULL)",
+        "device_control_keys.key_id",
+    );
+
+    execute_fixture_statement(
+        &fixture,
+        "INSERT INTO credential_bundles VALUES \
+         ('control-issuance-1', 'control-request-1', 'preallocated-device-without-row', \
+          1, x'01', zeroblob(32), '2026-01-01T01:00:00.000Z', \
+          '2026-01-01T00:00:00.000Z')",
+        "a coherent credential bundle with a preallocated Device ID must insert",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO credential_bundles VALUES \
+         ('control-issuance-duplicate', 'control-request-1', NULL, 1, x'02', zeroblob(32), \
+          '2026-01-01T01:00:00.000Z', '2026-01-01T00:00:01.000Z')",
+        "one credential bundle per enrollment request",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO credential_bundles VALUES \
+         ('control-issuance-empty', 'control-terminal-request', NULL, 1, zeroblob(0), \
+          zeroblob(32), '2026-01-01T01:00:00.000Z', '2026-01-01T00:00:02.000Z')",
+        "credential_bundles.canonical_bundle_bytes",
+    );
+    assert_rejected(
+        &fixture,
+        "INSERT INTO credential_bundles VALUES \
+         ('control-issuance-hash', 'control-terminal-request', NULL, 1, x'01', \
+          zeroblob(31), '2026-01-01T01:00:00.000Z', '2026-01-01T00:00:03.000Z')",
+        "credential_bundles.bundle_sha256",
+    );
+}
+#[tokio::test]
 async fn enrollment_resolution_requires_one_composite_device_identity() {
     let fixture = TestDatabase::new();
     let _database = fixture.connect().await;
     seed_constraint_prerequisites(&fixture);
     execute_fixture_statement(
         &fixture,
-        "INSERT INTO devices VALUES ('device-2', 'hardware-2', 'strong', 'enrolled')",
+        "INSERT INTO devices (device_pk, machine_hardware_id, \
+         hardware_identity_quality, state) VALUES ('device-2', 'hardware-2', 'strong', 'enrolled')",
         "second device must insert",
     );
     execute_fixture_statement(
@@ -1417,7 +1805,10 @@ async fn enrollment_resolution_requires_one_composite_device_identity() {
     );
     assert_rejected(
         &fixture,
-        "INSERT INTO enrollment_requests VALUES \
+        "INSERT INTO enrollment_requests (enrollment_request_id, machine_hardware_id, \
+         hardware_identity_quality, gateway_csr_der, gateway_spki_sha256, client_version, \
+         protocol_version, source_ip, state, resolution, resolved_device_pk, \
+         issuance_audit_event_id, created_at) VALUES \
          ('cross-device-request', 'hardware-2', 'strong', x'01', zeroblob(32), 'client', 1, \
           '192.0.2.1', 'issued', 'replace_device_credentials', 'device-1', \
           'issuance-audit', '2026-01-01T00:00:00.000Z')",
@@ -1448,7 +1839,7 @@ fn assert_table_column_and_strict_contract(database: &TestDatabase) {
         .load::<IntegerRow>(&mut connection),
         "strict flags must be queryable",
     );
-    assert_eq!(strict_rows.len(), 18);
+    assert_eq!(strict_rows.len(), 20);
     assert!(strict_rows.iter().all(|row| row.value == 1));
 }
 
@@ -1470,7 +1861,10 @@ fn assert_invariant_index_contract(database: &TestDatabase) {
         vec![
             "commands_device_pk_state_index",
             "device_pk_machine_hardware_identity",
+            "one_active_device_control_key",
             "one_active_gateway_certificate",
+            "one_live_control_enrollment_per_machine",
+            "one_live_control_enrollment_per_resolved_device",
             "one_live_enrollment_per_machine_and_gateway_spki",
         ]
     );
@@ -1489,10 +1883,46 @@ fn assert_invariant_index_contract(database: &TestDatabase) {
     assert_eq!(
         index_properties(
             database,
+            "device_control_keys",
+            "one_active_device_control_key",
+        ),
+        (true, true)
+    );
+    assert_eq!(
+        index_columns(database, "one_active_device_control_key"),
+        ["device_pk"]
+    );
+    assert_eq!(
+        index_properties(
+            database,
             "gateway_certificates",
             "one_active_gateway_certificate",
         ),
         (true, true)
+    );
+    assert_eq!(
+        index_properties(
+            database,
+            "enrollment_requests",
+            "one_live_control_enrollment_per_machine",
+        ),
+        (true, true)
+    );
+    assert_eq!(
+        index_columns(database, "one_live_control_enrollment_per_machine"),
+        ["machine_hardware_id"]
+    );
+    assert_eq!(
+        index_properties(
+            database,
+            "enrollment_requests",
+            "one_live_control_enrollment_per_resolved_device",
+        ),
+        (true, true)
+    );
+    assert_eq!(
+        index_columns(database, "one_live_control_enrollment_per_resolved_device",),
+        ["resolved_device_pk"]
     );
     assert_eq!(
         index_properties(

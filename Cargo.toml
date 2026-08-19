@@ -48,8 +48,8 @@ hyper = { version = "=1.11.0", default-features = false, features = ["http1", "s
 hyper-util = { version = "=0.1.20", default-features = false, features = ["server", "server-graceful", "service", "tokio"] }
 percent-encoding = { version = "2.3", default-features = false, features = ["alloc"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
-prost = "0.14"
-prost-types = "0.14"
+prost = "=0.14.4"
+prost-types = "=0.14.4"
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 roxmltree = "0.20"
 regex = "1"

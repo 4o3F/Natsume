@@ -1,5 +1,11 @@
 syntax = "proto3";
-package natsume.device.v2;
+package natsume.device.control;
+
+import "device_control_common.proto";
+import "device_control_handshake.proto";
+import "device_control_command.proto";
+import "device_control_observed.proto";
+import "device_control_binding.proto";
 
 message ControlEnvelope {
   oneof body {
@@ -16,377 +22,45 @@ message ControlEnvelope {
   }
 }
 
-message ClientHello {
-  string machine_hardware_id = 1;
-  string boot_id = 2;
-  uint32 wire_version = 3;
-  string daemon_version = 4;
-  string agent_version = 5;
-  repeated string capabilities = 6;
-  uint64 last_observed_sequence = 7;
-  uint64 last_applied_generation = 8;
-  bytes last_applied_hash = 9;
-}
-
-message ServerHello {
-  uint32 wire_version = 1;
-  uint64 connection_epoch = 2;
-  uint32 heartbeat_interval_ms = 3;
-  uint32 idle_timeout_ms = 4;
-  uint32 max_frame_bytes = 5;
-  uint64 max_bulk_bytes = 6;
-  int64 server_time_unix_ms = 7;
-  repeated string capabilities = 9;
-}
-
-message Heartbeat {
-  string boot_id = 1;
-  uint64 observed_sequence = 2;
-  uint64 applied_generation = 3;
-  string session_instance_id = 4;
-  uint64 session_epoch = 5;
-  SessionLockState session_lock_state = 6;
-  uint64 session_lock_epoch = 7;
-  string active_lock_command_id = 8;
-}
-
-enum StateApplyStatus {
-  STATE_APPLY_STATUS_UNSPECIFIED = 0;
-  STATE_APPLY_STATUS_IDLE = 1;
-  STATE_APPLY_STATUS_RECEIVED = 2;
-  STATE_APPLY_STATUS_VALIDATING = 3;
-  STATE_APPLY_STATUS_APPLYING = 4;
-  STATE_APPLY_STATUS_APPLIED = 5;
-  STATE_APPLY_STATUS_FAILED = 6;
-  STATE_APPLY_STATUS_RECOVERY_REQUIRED = 7;
-}
-
-enum SecretState {
-  SECRET_STATE_UNSPECIFIED = 0;
-  SECRET_STATE_ABSENT = 1;
-  SECRET_STATE_INSTALLED = 2;
-  SECRET_STATE_STALE = 3;
-  SECRET_STATE_FAILED = 4;
-}
-
-enum GatewayState {
-  GATEWAY_STATE_UNSPECIFIED = 0;
-  GATEWAY_STATE_ABSENT = 1;
-  GATEWAY_STATE_BLOCKED = 2;
-  GATEWAY_STATE_RESTORING = 3;
-  GATEWAY_STATE_READY = 4;
-  GATEWAY_STATE_UPSTREAM_UNHEALTHY = 5;
-  GATEWAY_STATE_RECOVERY_REQUIRED = 6;
-}
-
-enum SessionState {
-  SESSION_STATE_UNSPECIFIED = 0;
-  SESSION_STATE_NONE = 1;
-  SESSION_STATE_STARTING = 2;
-  SESSION_STATE_ACTIVE = 3;
-  SESSION_STATE_LOCKED = 4;
-  SESSION_STATE_TERMINATING = 5;
-  SESSION_STATE_ERROR = 6;
-}
-
-enum SessionLockState {
-  SESSION_LOCK_STATE_UNSPECIFIED = 0;
-  SESSION_LOCK_STATE_NONE = 1;
-  SESSION_LOCK_STATE_LOCKING = 2;
-  SESSION_LOCK_STATE_LOCKED = 3;
-  SESSION_LOCK_STATE_UNLOCKING = 4;
-  SESSION_LOCK_STATE_UNLOCKED = 5;
-  SESSION_LOCK_STATE_TERMINATING = 6;
-  SESSION_LOCK_STATE_ERROR = 7;
-}
-
-
-enum GraphicalSessionType {
-  GRAPHICAL_SESSION_TYPE_UNSPECIFIED = 0;
-  GRAPHICAL_SESSION_TYPE_WAYLAND = 1;
-  GRAPHICAL_SESSION_TYPE_X11 = 2;
-}
-
-enum DisplayBackend {
-  DISPLAY_BACKEND_UNSPECIFIED = 0;
-  DISPLAY_BACKEND_WAYLAND = 1;
-  DISPLAY_BACKEND_X11 = 2;
-}
-
-
-enum UiPresentationState {
-  UI_PRESENTATION_STATE_UNSPECIFIED = 0;
-  UI_PRESENTATION_STATE_HIDDEN = 1;
-  UI_PRESENTATION_STATE_PRESENTING = 2;
-  UI_PRESENTATION_STATE_PRESENTED_FOCUSED = 3;
-  UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED = 4;
-  UI_PRESENTATION_STATE_UNSUPPORTED = 5;
-  UI_PRESENTATION_STATE_FAILED = 6;
-}
-
-enum SessionScreenKind {
-  SESSION_SCREEN_KIND_UNSPECIFIED = 0;
-  SESSION_SCREEN_KIND_HIDDEN = 1;
-  SESSION_SCREEN_KIND_IDLE_STATUS = 2;
-  SESSION_SCREEN_KIND_BINDING_PROMPT = 3;
-  SESSION_SCREEN_KIND_BINDING_PENDING = 4;
-  SESSION_SCREEN_KIND_BINDING_RESULT = 5;
-  SESSION_SCREEN_KIND_RECOVERY_STATUS = 6;
-  SESSION_SCREEN_KIND_LOCK_PRESENTATION = 7;
-  SESSION_SCREEN_KIND_FATAL_LOCAL_ERROR = 8;
-}
-
-enum SessionAgentState {
-  SESSION_AGENT_STATE_UNSPECIFIED = 0;
-  SESSION_AGENT_STATE_ABSENT = 1;
-  SESSION_AGENT_STATE_STARTING = 2;
-  SESSION_AGENT_STATE_READY = 3;
-  SESSION_AGENT_STATE_DEGRADED = 4;
-  SESSION_AGENT_STATE_ERROR = 5;
-}
-
-message SessionAgentObservation {
-  SessionAgentState state = 1;
-  GraphicalSessionType graphical_session_type = 2;
-  DisplayBackend display_backend = 3;
-  UiPresentationState presentation = 4;
-  SessionScreenKind screen = 5;
-  bool notifications_available = 6;
-  bool desktop_lock_supported = 7;
-  bool desktop_unlock_supported = 8;
-  string stable_error_code = 9;
-}
-
-enum HomeState {
-  HOME_STATE_UNSPECIFIED = 0;
-  HOME_STATE_UNMOUNTED = 1;
-  HOME_STATE_READY = 2;
-  HOME_STATE_RESETTING = 3;
-  HOME_STATE_RECOVERY_REQUIRED = 4;
-  HOME_STATE_ERROR = 5;
-}
-
-message ObservedStateSnapshot {
-  uint64 observed_sequence = 1;
-  string boot_id = 2;
-  uint64 received_generation = 3;
-  uint64 applied_generation = 4;
-  bytes applied_hash = 5;
-  StateApplyStatus state_apply_status = 6;
-  string state_error_code = 7;
-  uint64 installed_binding_revision = 8;
-  uint64 installed_credential_revision = 9;
-  SecretState secret_state = 10;
-  GatewayState gateway_state = 11;
-  uint64 gateway_configuration_revision = 12;
-  bytes gateway_certificate_fingerprint = 13;
-  SessionState session_state = 14;
-  string session_instance_id = 15;
-  uint64 session_epoch = 16;
-  SessionLockState session_lock_state = 17;
-  uint64 session_lock_epoch = 18;
-  string active_lock_command_id = 19;
-  HomeState home_state = 20;
-  string stable_component_error_code = 21;
-  int64 observed_at_unix_ms = 22;
-  int64 gateway_certificate_not_after_unix_ms = 23;
-  SessionAgentObservation session_agent = 24;
-}
-
-message TargetAssignment {
-  uint64 binding_revision = 2;
-  string seat_id = 3;
-  string seat_code = 4;
-  string account_id = 6;
-  string domjudge_username = 7;
-}
-
-message TargetGateway {
-  uint64 gateway_configuration_revision = 1;
-  string local_origin_hostname = 2;
-  string fixed_upstream_profile_id = 3;
-  string exact_login_policy_id = 4;
-  string gateway_certificate_profile_id = 5;
-  int64 gateway_certificate_min_valid_until_unix_ms = 6;
-}
-
-message TargetSession {
-  string browser_policy_revision = 1;
-  string home_template_revision = 2;
-}
-
-message TargetStateSnapshot {
-  uint32 schema_version = 1;
-  TargetAssignment assignment = 2;
-  TargetGateway gateway = 3;
-  TargetSession session = 4;
-}
-
-message SyncState {
-  uint64 generation = 1;
-  bytes canonical_hash = 2;
-  TargetStateSnapshot snapshot = 3;
-}
-
-message SecretBytes {
-  bytes value = 1;
-}
-
-message SyncSecret {
-  string seat_id = 1;
-  uint64 binding_revision = 2;
-  string account_id = 3;
-  uint64 credential_revision = 4;
-  SecretBytes password = 5;
-}
-
-message SessionTarget {
-  string session_instance_id = 1;
-  uint64 session_epoch = 2;
-}
-
-message OpenBindingPrompt {
-  int64 expires_at_unix_ms = 1;
-  string prompt_message_id = 2;
-}
-
-message LockSession {
-  SessionTarget target = 1;
-  uint64 requested_lock_epoch = 2;
-}
-
-message UnlockSession {
-  SessionTarget target = 1;
-  uint64 expected_lock_epoch = 2;
-  string expected_lock_command_id = 3;
-}
-
-message TerminateSession {
-  SessionTarget target = 1;
-}
-
-message ResetHome {
-  string home_template_revision = 1;
-  // The Server assigns a strictly monotonic Home epoch per reset; a non-monotonic value is rejected as HOME_EPOCH_STALE.
-  uint64 home_epoch = 2;
-}
-
-message Command {
-  // The Panel owns generation: canonical lowercase hyphenated UUIDv7, preserved end-to-end.
-  string command_id = 1;
-  int64 created_at_unix_ms = 2;
-  int64 deadline_unix_ms = 3;
+message ClientHandshakeEnvelope {
   oneof body {
-    SyncState sync_state = 6;
-    SyncSecret sync_secret = 7;
-    OpenBindingPrompt open_binding_prompt = 8;
-    LockSession lock_session = 9;
-    UnlockSession unlock_session = 10;
-    TerminateSession terminate_session = 11;
-    ResetHome reset_home = 12;
+    CredentialAck credential_ack = 1;
+    EnrollmentHeartbeat enrollment_heartbeat = 2;
   }
 }
 
-enum CommandState {
-  COMMAND_STATE_UNSPECIFIED = 0;
-  COMMAND_STATE_RECEIVED = 1;
-  COMMAND_STATE_RUNNING = 2;
-  COMMAND_STATE_SUCCEEDED = 3;
-  COMMAND_STATE_FAILED = 4;
-  COMMAND_STATE_CANCELLED = 5;
-  COMMAND_STATE_EXPIRED = 6;
-  COMMAND_STATE_MANUAL_INTERVENTION_REQUIRED = 7;
+message ServerHandshakeEnvelope {
+  oneof body {
+    EnrollmentPending enrollment_pending = 1;
+    CredentialBundle credential_bundle = 2;
+    SessionReady session_ready = 3;
+    ProtocolError protocol_error = 4;
+    ServerDrain server_drain = 5;
+  }
 }
 
-message CommandStatus {
-  // Echoes the Panel-owned canonical lowercase hyphenated UUIDv7 from Command.command_id.
-  string command_id = 1;
-  CommandState state = 2;
-  string stable_error_code = 3;
+message ClientActiveEnvelope {
+  bytes session_id = 1;
+  int64 authority_revision = 2;
+  uint64 client_sequence = 3;
+  oneof body {
+    Heartbeat heartbeat = 10;
+    CommandStatus command_status = 11;
+    ObservedStateSnapshot observed_state = 12;
+    BindingResult binding_result = 13;
+    GatewayRefreshRequest gateway_refresh = 14;
+  }
 }
 
-message BindingRequest {
-  string request_id = 1;
-  string machine_hardware_id = 2;
-  string seat_code = 3;
-  string prompt_command_id = 4;
-  string session_instance_id = 5;
-  uint64 session_epoch = 6;
-  int64 created_at_unix_ms = 7;
-}
-
-enum BindingResultState {
-  BINDING_RESULT_STATE_UNSPECIFIED = 0;
-  BINDING_RESULT_STATE_PENDING = 1;
-  BINDING_RESULT_STATE_APPROVED = 2;
-  BINDING_RESULT_STATE_REJECTED = 3;
-  BINDING_RESULT_STATE_CONFLICT = 4;
-  BINDING_RESULT_STATE_EXPIRED = 5;
-}
-
-message BindingResult {
-  string request_id = 1;
-  BindingResultState state = 2;
-  uint64 binding_revision = 3;
-  string stable_error_code = 4;
-}
-
-message ServerDrain {
-  int64 reconnect_after_unix_ms = 1;
-}
-
-message ProtocolError {
-  string stable_error_code = 1;
-}
-
-enum EvidenceQuality {
-  EVIDENCE_QUALITY_UNSPECIFIED = 0;
-  EVIDENCE_QUALITY_WEAK = 1;
-  EVIDENCE_QUALITY_MEDIUM = 2;
-  EVIDENCE_QUALITY_STRONG = 3;
-}
-
-enum CollectionCompleteness {
-  COLLECTION_COMPLETENESS_UNSPECIFIED = 0;
-  COLLECTION_COMPLETENESS_COMPLETE = 1;
-  COLLECTION_COMPLETENESS_TEMPORARILY_UNAVAILABLE = 2;
-  COLLECTION_COMPLETENESS_UNSUPPORTED = 3;
-}
-
-message HardwareCandidate {
-  string anchor_kind = 1;
-  string candidate_id = 2;
-  EvidenceQuality quality = 3;
-}
-
-message HardwareClaim {
-  repeated HardwareCandidate candidates = 1;
-  CollectionCompleteness completeness = 2;
-}
-
-enum EnrollmentState {
-  ENROLLMENT_STATE_UNSPECIFIED = 0;
-  ENROLLMENT_STATE_PENDING = 1;
-  ENROLLMENT_STATE_APPROVED = 2;
-  ENROLLMENT_STATE_REJECTED = 3;
-  ENROLLMENT_STATE_ISSUED = 4;
-  ENROLLMENT_STATE_EXPIRED = 5;
-  ENROLLMENT_STATE_CONFLICT = 6;
-}
-
-message EnrollDeviceRequest {
-  string machine_hardware_id = 1;
-  HardwareClaim hardware_claim = 2;
-  bytes gateway_csr_der = 3;
-  string client_version = 4;
-  uint32 protocol_version = 5;
-}
-
-message EnrollDeviceResponse {
-  string device_id = 1;
-  SecretBytes device_token = 2;
-  bytes gateway_leaf_der = 3;
-  repeated bytes gateway_chain_der = 4;
-  EnrollmentState state = 5;
-  string stable_error_code = 6;
+message ServerActiveEnvelope {
+  bytes session_id = 1;
+  int64 authority_revision = 2;
+  uint64 server_sequence = 3;
+  oneof body {
+    Command command = 10;
+    BindingRequest binding_request = 11;
+    Heartbeat heartbeat = 12;
+    ProtocolError protocol_error = 13;
+    ServerDrain server_drain = 14;
+  }
 }

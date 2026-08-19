@@ -83,12 +83,16 @@ slint_winit_feature_allow_pattern='^Cargo\.toml:[0-9]+:slint = \{ version = "1\.
 mtls_server_verifier_pattern='WebPkiClientVerifier|ClientCertVerifier|with_client_cert_verifier'
 mtls_presenting_client_pattern='with_client_auth_cert'
 ed25519_seed_pattern='SigningKey::(from_bytes|try_from|from_keypair_bytes|from)[[:space:]]*\('
-ed25519_seed_allow_pattern='^integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol\.rs:[0-9]+:[[:space:]]*let (source|key|wrong_key) = SigningKey::from_bytes\(&(CONTROL_KEY_SEED|RFC8032_SEED|\[0x22; 32\])\);$'
+ed25519_seed_allow_pattern='^(client/device-daemon/src/control/key\.rs:[0-9]+:[[:space:]]*let signing_key = SigningKey::from_bytes\(&seed\);|integration-tests/tests/control_protocol_contract/transcript\.rs:[0-9]+:[[:space:]]*let signing_key = SigningKey::from_bytes\(&\[0x11; 32\]\);|integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol\.rs:[0-9]+:[[:space:]]*let (source|key|wrong_key) = SigningKey::from_bytes\(&(CONTROL_KEY_SEED|RFC8032_SEED|\[0x22; 32\])\);)$'
 ed25519_ordinary_verify_pattern='(\.|::)[[:space:]]*verify[[:space:]]*\('
 ed25519_dependency_pattern='ed25519-dalek'
-ed25519_dependency_allow_pattern='^(Cargo\.toml:[0-9]+:ed25519-dalek = \{ version = "2\.2", default-features = false, features = \["alloc", "pkcs8", "zeroize"\] \}|integration-tests/Cargo\.toml:[0-9]+:ed25519-dalek\.workspace = true)$'
+ed25519_dependency_allow_pattern='^(Cargo\.toml:[0-9]+:ed25519-dalek = \{ version = "2\.2", default-features = false, features = \["alloc", "pkcs8", "zeroize"\] \}|crates/device-protocol/Cargo\.toml:[0-9]+:ed25519-dalek\.workspace = true|client/device-daemon/Cargo\.toml:[0-9]+:ed25519-dalek\.workspace = true|integration-tests/Cargo\.toml:[0-9]+:ed25519-dalek\.workspace = true)$'
 ed25519_source_pattern='ed25519_dalek'
-ed25519_source_allow_pattern='^integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol\.rs:[0-9]+:'
+ed25519_source_allow_pattern='^(crates/device-protocol/src/handshake/(client_init|transcript)\.rs|client/device-daemon/src/control/key\.rs|integration-tests/tests/control_protocol_contract/transcript\.rs|integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol\.rs):[0-9]+:'
+process_lock_pattern='(^|[^[:alnum:]_])(ProcessLock|process_lock|FlockOperation|pidfile)([^[:alnum:]_]|$)|flock[[:space:]]*\('
+database_write_lock_pattern='(^|[^[:alnum:]_])(write_permit|Semaphore|Mutex)([^[:alnum:]_]|$)'
+parallel_control_protocol_pattern='control_v2|natsume\.device\.control\.v[0-9]+|natsume\.control\.v[0-9]+'
+protobuf_wire_scanner_pattern='scan_client_init_wire|struct[[:space:]]+WireCursor|ClientInit(UnknownField|WireType|FieldOrder|DuplicateField|NonMinimalVarint|MalformedVarint|Truncated|DefaultValue|ValueRange)'
 printf '%s\n' 'Cargo.toml:1:winit = "0.30"' | grep -Eq "${low_level_gui_dependency_pattern}" || fail 'low-level GUI dependency canary was not detected'
 printf '%s\n' 'Cargo.toml:1:slint = { version = "1.15", default-features = false, features = ["compat-1-2", "std", "backend-winit-x11", "renderer-skia"] }' | grep -Eq "${slint_winit_feature_allow_pattern}" || fail 'Slint winit feature allow canary was not detected'
 if printf '%s\n' 'Cargo.toml:1:winit = "0.30"' | grep -Eq "${slint_winit_feature_allow_pattern}"; then
@@ -113,9 +117,11 @@ fi
 printf '%s\n' 'server/Cargo.toml:1:ed25519-dalek.workspace = true' | grep -Eq "${ed25519_dependency_pattern}" || fail 'Ed25519 dependency canary was not detected'
 for allowed in \
   'Cargo.toml:42:ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }' \
+  'crates/device-protocol/Cargo.toml:12:ed25519-dalek.workspace = true' \
+  'client/device-daemon/Cargo.toml:19:ed25519-dalek.workspace = true' \
   'integration-tests/Cargo.toml:29:ed25519-dalek.workspace = true'; do
   printf '%s\n' "${allowed}" | grep -Eq "${ed25519_dependency_allow_pattern}" ||
-    fail 'Ed25519 dependency allow pattern rejected the exact isolated declaration'
+    fail 'Ed25519 dependency allow pattern rejected an approved declaration'
 done
 for rejected in \
   'server/Cargo.toml:1:ed25519-dalek.workspace = true' \
@@ -135,6 +141,18 @@ done
 if printf '%s\n' 'verifying_key.verify_strict(message, signature)' | grep -Eq "${ed25519_ordinary_verify_pattern}"; then
   fail 'ordinary Ed25519 verify pattern rejected verify_strict'
 fi
+for canary in 'ProcessLock::acquire(path)' 'mod process_lock;' 'FlockOperation::NonBlockingLockExclusive' 'flock(&file, operation)' 'server.pidfile'; do
+  printf '%s\n' "${canary}" | grep -Eq "${process_lock_pattern}" || fail 'process-lock canary was not detected'
+done
+for canary in 'write_permit: Arc<Semaphore>' 'Semaphore::new(1)' 'Mutex::new(database)'; do
+  printf '%s\n' "${canary}" | grep -Eq "${database_write_lock_pattern}" || fail 'database write-lock canary was not detected'
+done
+for canary in 'mod control_v2;' 'package natsume.device.control.v2;' 'natsume.control.v2'; do
+  printf '%s\n' "${canary}" | grep -Eq "${parallel_control_protocol_pattern}" || fail 'parallel control-protocol canary was not detected'
+done
+for canary in 'scan_client_init_wire(bytes)' 'struct WireCursor' 'ClientInitNonMinimalVarint'; do
+  printf '%s\n' "${canary}" | grep -Eq "${protobuf_wire_scanner_pattern}" || fail 'hand-written protobuf scanner canary was not detected'
+done
 
 while IFS= read -r usage; do
   reference="${usage##*@}"
@@ -143,19 +161,34 @@ done < <(grep -RhoE 'uses:[[:space:]]+[^[:space:]#]+@[^[:space:]#]+' .github/wor
 
 reject_matches 'placeholder CI command remains' 'Implementation requirement|run:[[:space:]]*echo[[:space:]].*(placeholder|Pin actions|Run frozen)' .github/workflows
 reject_matches 'private-key material is present in first-party paths' "${private_key_pattern}" .github server client crates integration-tests packaging web docs
-reject_matches_except 'Ed25519 dependency escaped the isolated feasibility probe' \
+reject_matches_except 'Ed25519 dependency escaped the approved control-crypto boundary' \
   "${ed25519_dependency_pattern}" "${ed25519_dependency_allow_pattern}" \
   Cargo.toml server client crates integration-tests packaging web
-reject_matches_except 'Ed25519 source usage escaped the isolated feasibility probe' \
+reject_matches_except 'Ed25519 source usage escaped the approved control-crypto boundary' \
   "${ed25519_source_pattern}" "${ed25519_source_allow_pattern}" \
   server client crates integration-tests packaging web
-reject_matches_except 'Ed25519 signing-key seed construction is outside the isolated public test vector' \
+reject_matches_except 'Ed25519 signing-key seed construction is outside an approved key lifecycle or public test vector' \
   "${ed25519_seed_pattern}" "${ed25519_seed_allow_pattern}" server client crates integration-tests packaging web
 reject_matches 'ordinary Ed25519 verification bypasses strict verification' \
   "${ed25519_ordinary_verify_pattern}" server client crates integration-tests
 strict_verify_file='integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol.rs'
 grep -Fxq '    key.verify_strict(&proof_transcript(challenge, proof), &signature)' "${strict_verify_file}" ||
   fail 'live isolated proof verifier is not pinned to verify_strict'
+shared_strict_verify_file='crates/device-protocol/src/handshake/transcript.rs'
+grep -Fxq '    key.verify_strict(&transcript, &signature)' "${shared_strict_verify_file}" ||
+  fail 'shared control proof verifier is not pinned to verify_strict'
+grep -Fxq 'prost = "=0.14.4"' Cargo.toml || fail 'Prost runtime is not pinned to semantic-digest version 0.14.4'
+grep -Fxq 'prost-types = "=0.14.4"' Cargo.toml || fail 'Prost types are not pinned to version 0.14.4'
+grep -Fxq 'prost-build = "=0.14.4"' crates/device-protocol/Cargo.toml ||
+  fail 'Prost code generation is not pinned to version 0.14.4'
+reject_matches 'process-level lock or pidfile is present' "${process_lock_pattern}" \
+  server client/device-daemon
+reject_matches 'application-level database lock is present' "${database_write_lock_pattern}" \
+  server/src/db.rs
+reject_matches 'parallel versioned control protocol is present' "${parallel_control_protocol_pattern}" \
+  server client crates integration-tests packaging web
+reject_matches 'hand-written ClientInit protobuf wire scanner is present' \
+  "${protobuf_wire_scanner_pattern}" crates/device-protocol/src
 reject_matches 'credential-shaped token is present' 'AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}' .github server client crates integration-tests packaging web docs
 reject_matches 'systemd credential directive is present' 'LoadCredential=|SetCredential=|ImportCredential=' packaging/client/rootfs packaging/server/rootfs
 reject_matches 'Identity Guard product surface is present' 'natsume-identity-guard|identity_guard|IdentityGuard' server client crates integration-tests packaging

@@ -91,16 +91,16 @@ CLI argument parser 只允许分派封闭 runtime mode，不得演变为配置�
 
 测试 helper 不能被 production build 导出为 dangerous verifier。当前 Device Token 比对必须常数时间，直到 atomic flag day 删除该 surface。
 
-### 5.1 Batch 0 Ed25519 feasibility 准入
+### 5.1 Ed25519 control identity 准入
 
-- **consumer**：仅 `integration-tests/tests/ordinary_wss_ed25519_feasibility.rs` 的 private listener；Batch 0 的 Server、daemon、`device-protocol` 与 packaging artifact 均不是 consumer。
-- **问题**：证明普通 server-auth TLS 1.3 + RFC 6455 101 后可以用 PKCS#8 Ed25519 key 完成 connection-local Challenge/Proof、strict verify、exact ClientInit hash binding 与 clean close。
-- **dependency/features**：workspace 准入 `ed25519-dalek 2.2`，关闭 defaults，只启用 `alloc`、`pkcs8`、`zeroize`；key/nonce entropy 继续使用 workspace `getrandom 0.4`，不启用第二套 RNG stack。
-- **closure/licenses**：dev-only closure包含 `curve25519-dalek 4`、`ed25519 2`、`signature 2`、`pkcs8/der/spki/const-oid`、`fiat-crypto` 与 `sha2 0.10`；许可证为既有allowlist内的 BSD-3-Clause / MIT / Apache-2.0 组合。该closure不得因workspace feature unification进入production package，后续production准入需单独复审。
-- **供应链/重复版本**：`deny.toml` 显式启用 `licenses.include-dev` 与 `bans.multiple-versions-include-dev`。除 workspace `cargo deny check` 外，Batch 0 必须运行 `cargo deny --manifest-path integration-tests/Cargo.toml check`，使 dev-only Dalek 闭包进入 advisory/license/source 与 duplicate-version 检查；`sha2 0.10.9` 只允许一个带移除条件的 exact-version skip，不得因该 closure 新增通用放宽。若 production 采用，必须重新登记实际 reverse-dependency 图与移除条件。
-- **边界**：test-private fixed frame不是 production protocol、generated code 或 future wire substitute；listener使用private CA和正常rustls验证，不导出dangerous verifier、feature或环境开关。
-- **替代方案**：手写Ed25519、shell/OpenSSL probe、复用Gateway key均不接受。
-- **迁移条件**：后续production batch若采用该依赖，必须把consumer/owner迁入明确production crate并重新审查feature/closure；若目标否决，则连同isolated test和dependency删除。
+- **consumer/owner**：`natsume-device-protocol` 拥有 ControlKeyId、proof transcript、canonical ClientInit 与 `verify_strict`；`natsume-device-daemon` 仅拥有 daemon-local PKCS#8 control-key lifecycle；isolated ordinary-WSS feasibility 与 protocol contract tests 复用公开向量。Server 不直接调用 Dalek，而是经 protocol crate 使用受审查的 strict verifier。
+- **问题**：为单一原位 Device control 协议提供专用 Ed25519 identity、connection-local Challenge/Proof、exact ClientInit hash binding 与 crash-safe本地 key foundation；当前 Token/Bearer authority 在 flag day 前仍保持，dormant key 不参与认证。
+- **dependency/features**：workspace 准入 `ed25519-dalek 2.2`，关闭 defaults，只启用 `alloc`、`pkcs8`、`zeroize`；key/nonce entropy 继续使用 workspace `getrandom 0.4`，不启用第二套 RNG stack。`prost`、`prost-types` 与 `prost-build` 精确固定 `0.14.4`，因为 `ClientInit` 语义摘要以该版本对已校验 typed value 的确定性 `encode_to_vec` 为规范；升级必须重算 golden 并复审 decode/merge 语义。
+- **closure/licenses**：production closure 包含 `curve25519-dalek 4`、`ed25519 2`、`signature 2`、`pkcs8/der/spki/const-oid`、`fiat-crypto` 与 `sha2 0.10`；许可证为既有 allowlist 内的 BSD-3-Clause / MIT / Apache-2.0 组合。`sha2 0.10` 只由 Dalek closure 保留，第一方 hash 继续使用 `sha2 0.11`。
+- **供应链/重复版本**：`deny.toml` 显式启用 `licenses.include-dev` 与 `bans.multiple-versions-include-dev`；workspace 与 integration manifest 两路 `cargo deny` 都必须通过。`sha2 0.10.9` 只允许带明确移除条件的 exact-version skip，不得增加通用放宽。production packaging 必须继续用显式 package graph，防止 integration-only feature 泄漏。
+- **边界**：普通 `.verify` 全仓禁止；shared proof verifier与isolated verifier都钉死 `verify_strict`。SigningKey seed construction只允许 daemon key lifecycle与公开test vectors；Server、其他 Client模块和通用application不得直接使用Dalek。test-private fixed codec仍不是production wire substitute。
+- **替代方案**：手写Ed25519、shell/OpenSSL核心实现、复用Gateway key、mTLS或TLS exporter均不接受。
+- **移除条件**：若专用control identity目标被新ADR否决，删除protocol/daemon consumers、dormant artifacts、isolated probe、policy allowlist与依赖；Dalek升级必须重跑strict-only、wrong-key、weak-key、PKCS#8 mismatch和tamper vectors。
 
 - **2026-08-17 WebSocket 依赖记录**：workspace 对 `tokio-tungstenite 0.29.0` 使用精确 pin，并有意启用其私有 `__rustls-tls` feature，以避开平台 TLS 与公共根证书等不需要的 feature；该私有 feature 变化时必须显式复审后再升级。axum 的服务端 WSS 与 daemon 的客户端 WSS 会把 tungstenite 的 `rand 0.9` / `getrandom 0.3` 以及 RFC 6455 握手所需的 `sha1` 同时链接进**生产 server 与生产 daemon**，因此两边都受 locked CI、`cargo deny` 与 feature closure 审查约束。
 - **2026-08-17 生产 packaging graph**：入包 Rust binary 必须从隔离 target directory 中的显式生产 package 集合构建，因为 workspace-wide build 会把 integration-only feature 统一进生产 artifact；package smoke 必须通过 compiler `cfg` 断言拒绝此类泄漏。
@@ -110,6 +110,7 @@ CLI argument parser 只允许分派封闭 runtime mode，不得演变为配置�
 - Diesel 与 `diesel_migrations` 仅由数据库 adapter 使用，application、domain 和 transport 不直接依赖；
 - 业务 CRUD 优先使用 Diesel Query DSL；SQLite PRAGMA、schema introspection 和无法清晰表达的专有查询可使用参数绑定的 raw SQL；
 - 同步 Diesel 操作通过共享 r2d2 pool 执行；每个完整数据库 use case 只进入一次 blocking task，事务始终占用同一连接；
+- `Database::write` 直接使用 SQLite `BEGIN IMMEDIATE`；禁止在其外增加 Semaphore、Mutex、permit、应用队列或 reservation，禁止 Server/daemon ProcessLock/flock/pidfile；
 - domain 不依赖 SQL row type；
 - migration 从空库和升级路径测试；
 - 不引入第二个 ORM、SQLite driver 或数据库层；

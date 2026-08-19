@@ -186,12 +186,12 @@ async fn run_client(address: SocketAddr, connector: TlsConnector, mode: Exchange
     assert_eq!(tls.get_ref().1.alpn_protocol(), Some(ALPN_HTTP_1_1));
 
     let mut request = require_ok(
-        format!("wss://{address}{}", protocol::FUTURE_ROUTE).into_client_request(),
+        format!("wss://{address}{}", protocol::CONTROL_ROUTE).into_client_request(),
         "private feasibility WebSocket request must build",
     );
     request.headers_mut().insert(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static(protocol::FUTURE_SUBPROTOCOL),
+        HeaderValue::from_static(protocol::CONTROL_SUBPROTOCOL),
     );
     let (mut socket, response) = require_ok(
         client_async_with_config(request, tls, Some(websocket_config())).await,
@@ -203,7 +203,7 @@ async fn run_client(address: SocketAddr, connector: TlsConnector, mode: Exchange
             .headers()
             .get(header::SEC_WEBSOCKET_PROTOCOL)
             .and_then(|value| value.to_str().ok()),
-        Some(protocol::FUTURE_SUBPROTOCOL)
+        Some(protocol::CONTROL_SUBPROTOCOL)
     );
 
     let challenge_bytes = require_ok(
@@ -306,7 +306,7 @@ fn select_subprotocol(
     request: &Request,
     mut response: Response,
 ) -> Result<Response, ErrorResponse> {
-    assert_eq!(request.uri().path(), protocol::FUTURE_ROUTE);
+    assert_eq!(request.uri().path(), protocol::CONTROL_ROUTE);
     assert!(request.uri().query().is_none());
     assert!(request.headers().get(header::AUTHORIZATION).is_none());
     assert_eq!(
@@ -314,11 +314,11 @@ fn select_subprotocol(
             .headers()
             .get(header::SEC_WEBSOCKET_PROTOCOL)
             .and_then(|value| value.to_str().ok()),
-        Some(protocol::FUTURE_SUBPROTOCOL)
+        Some(protocol::CONTROL_SUBPROTOCOL)
     );
     response.headers_mut().insert(
         header::SEC_WEBSOCKET_PROTOCOL,
-        HeaderValue::from_static(protocol::FUTURE_SUBPROTOCOL),
+        HeaderValue::from_static(protocol::CONTROL_SUBPROTOCOL),
     );
     Ok(response)
 }

@@ -30,7 +30,9 @@ CREATE TABLE devices (
     machine_hardware_id TEXT NOT NULL UNIQUE,
     hardware_identity_quality TEXT NOT NULL
         CHECK (hardware_identity_quality IN ('strong', 'medium', 'weak')),
-    state TEXT NOT NULL CHECK (state IN ('enrolled', 'revoked', 'disabled'))
+    state TEXT NOT NULL CHECK (state IN ('enrolled', 'revoked', 'disabled')),
+    control_authority_revision INTEGER
+        CHECK (control_authority_revision IS NULL OR control_authority_revision >= 1)
 ) STRICT;
 CREATE UNIQUE INDEX device_pk_machine_hardware_identity
     ON devices(device_pk, machine_hardware_id);
@@ -171,12 +173,39 @@ CREATE TABLE enrollment_requests (
     client_version TEXT NOT NULL,
     protocol_version INTEGER NOT NULL CHECK (protocol_version BETWEEN 0 AND 4294967295),
     source_ip TEXT NOT NULL,
-    state TEXT NOT NULL
-        CHECK (state IN ('pending', 'approved', 'rejected', 'issued', 'expired', 'conflict')),
+    state TEXT NOT NULL CHECK (state IN (
+        'pending', 'approved', 'rejected', 'issued', 'expired', 'conflict',
+        'pending_approval', 'awaiting_credential_ack', 'active'
+    )),
     resolution TEXT CHECK (resolution IN ('create_device', 'replace_device_credentials')),
     resolved_device_pk TEXT REFERENCES devices(device_pk),
     issuance_audit_event_id TEXT UNIQUE REFERENCES audit_events(audit_event_id),
     created_at TEXT NOT NULL,
+    control_intent TEXT CHECK (
+        control_intent IS NULL
+        OR control_intent IN ('first', 'replace', 'recover', 'refresh')
+    ),
+    proposed_device_pk TEXT,
+    proposed_control_key_id BLOB
+        CHECK (proposed_control_key_id IS NULL OR length(proposed_control_key_id) = 32),
+    proposed_control_public_key BLOB
+        CHECK (proposed_control_public_key IS NULL OR length(proposed_control_public_key) = 32),
+    control_key_generation INTEGER
+        CHECK (control_key_generation IS NULL OR control_key_generation >= 1),
+    canonical_client_init BLOB
+        CHECK (canonical_client_init IS NULL OR length(canonical_client_init) > 0),
+    request_fingerprint_version INTEGER
+        CHECK (request_fingerprint_version IS NULL OR request_fingerprint_version >= 1),
+    request_fingerprint_sha256 BLOB
+        CHECK (request_fingerprint_sha256 IS NULL OR length(request_fingerprint_sha256) = 32),
+    baseline_authority_revision INTEGER
+        CHECK (baseline_authority_revision IS NULL OR baseline_authority_revision >= 1),
+    expected_active_control_key_id BLOB CHECK (
+        expected_active_control_key_id IS NULL
+        OR length(expected_active_control_key_id) = 32
+    ),
+    activation_deadline TEXT,
+    approval_audit_event_id TEXT UNIQUE REFERENCES audit_events(audit_event_id),
     CHECK (
         state != 'issued'
         OR (
@@ -186,12 +215,100 @@ CREATE TABLE enrollment_requests (
         )
     ),
     CHECK (issuance_audit_event_id IS NULL OR state = 'issued'),
+    CHECK (
+        (
+            control_intent IS NULL
+            AND state IN ('pending', 'approved', 'rejected', 'issued', 'expired', 'conflict')
+        )
+        OR (
+            control_intent IS NOT NULL
+            AND state IN (
+                'pending_approval', 'awaiting_credential_ack', 'active',
+                'rejected', 'expired', 'conflict'
+            )
+        )
+    ),
+    CHECK (
+        (
+            proposed_control_key_id IS NULL
+            AND proposed_control_public_key IS NULL
+            AND control_key_generation IS NULL
+        )
+        OR (
+            proposed_control_key_id IS NOT NULL
+            AND proposed_control_public_key IS NOT NULL
+            AND control_key_generation IS NOT NULL
+        )
+    ),
+    CHECK (
+        (
+            request_fingerprint_version IS NULL
+            AND request_fingerprint_sha256 IS NULL
+        )
+        OR (
+            request_fingerprint_version IS NOT NULL
+            AND request_fingerprint_sha256 IS NOT NULL
+        )
+    ),
     FOREIGN KEY (resolved_device_pk, machine_hardware_id)
         REFERENCES devices(device_pk, machine_hardware_id)
 ) STRICT;
 CREATE UNIQUE INDEX one_live_enrollment_per_machine_and_gateway_spki
     ON enrollment_requests(machine_hardware_id, gateway_spki_sha256)
     WHERE state IN ('pending', 'approved');
+CREATE UNIQUE INDEX one_live_control_enrollment_per_machine
+    ON enrollment_requests(machine_hardware_id)
+    WHERE state IN ('pending_approval', 'awaiting_credential_ack')
+        AND control_intent IS NOT NULL;
+CREATE UNIQUE INDEX one_live_control_enrollment_per_resolved_device
+    ON enrollment_requests(resolved_device_pk)
+    WHERE resolved_device_pk IS NOT NULL
+        AND state IN ('pending_approval', 'awaiting_credential_ack')
+        AND control_intent IS NOT NULL;
+
+CREATE TABLE device_control_keys (
+    key_id BLOB PRIMARY KEY CHECK (length(key_id) = 32),
+    public_key BLOB NOT NULL UNIQUE CHECK (length(public_key) = 32),
+    algorithm TEXT NOT NULL CHECK (algorithm = 'ed25519'),
+    device_pk TEXT NOT NULL REFERENCES devices(device_pk),
+    key_generation INTEGER NOT NULL CHECK (key_generation >= 1),
+    status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'revoked')),
+    originating_enrollment_request_id TEXT NOT NULL
+        REFERENCES enrollment_requests(enrollment_request_id),
+    activated_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id),
+    retired_audit_event_id TEXT UNIQUE REFERENCES audit_events(audit_event_id),
+    activated_revision INTEGER NOT NULL CHECK (activated_revision >= 1),
+    retired_revision INTEGER
+        CHECK (retired_revision IS NULL OR retired_revision >= activated_revision),
+    UNIQUE(device_pk, key_generation),
+    CHECK (
+        (
+            status = 'active'
+            AND retired_audit_event_id IS NULL
+            AND retired_revision IS NULL
+        )
+        OR (
+            status IN ('superseded', 'revoked')
+            AND retired_audit_event_id IS NOT NULL
+            AND retired_revision IS NOT NULL
+        )
+    )
+) STRICT;
+CREATE UNIQUE INDEX one_active_device_control_key
+    ON device_control_keys(device_pk)
+    WHERE status = 'active';
+
+CREATE TABLE credential_bundles (
+    issuance_id TEXT PRIMARY KEY,
+    enrollment_request_id TEXT NOT NULL UNIQUE
+        REFERENCES enrollment_requests(enrollment_request_id),
+    device_pk TEXT,
+    format_version INTEGER NOT NULL CHECK (format_version >= 1),
+    canonical_bundle_bytes BLOB NOT NULL CHECK (length(canonical_bundle_bytes) > 0),
+    bundle_sha256 BLOB NOT NULL CHECK (length(bundle_sha256) = 32),
+    activation_deadline TEXT NOT NULL,
+    created_at TEXT NOT NULL
+) STRICT;
 
 CREATE TABLE device_tokens (
     device_pk TEXT PRIMARY KEY REFERENCES devices(device_pk),

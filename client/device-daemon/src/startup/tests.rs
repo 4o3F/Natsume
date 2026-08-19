@@ -20,6 +20,7 @@ fn fixture_paths(directory: &TempDir) -> StartupPaths {
     let paths = StartupPaths {
         site_config: directory.path().join("etc/natsume/site.toml"),
         identity_directory: directory.path().join("var/lib/natsume/identity"),
+        control_directory: directory.path().join("var/lib/natsume/control"),
         keys_directory: directory.path().join("var/lib/natsume/keys"),
         enrollment: EnrollmentPaths::new(
             directory.path().join("etc/natsume/config.toml"),
@@ -33,6 +34,7 @@ fn fixture_paths(directory: &TempDir) -> StartupPaths {
     for path in [
         paths.site_config.parent(),
         Some(paths.identity_directory.as_path()),
+        Some(paths.control_directory.as_path()),
         Some(paths.keys_directory.as_path()),
     ] {
         let Some(path) = path else {
@@ -232,6 +234,24 @@ fn artifacts_without_a_record_fail_closed_before_identity_claim() {
 }
 
 #[test]
+fn control_artifacts_without_a_record_fail_closed_before_identity_claim() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    let nested = paths.control_directory.join("nested");
+    if let Err(error) = fs::create_dir(&nested) {
+        panic!("nested control fixture directory must be created: {error}");
+    }
+    if let Err(error) = fs::write(nested.join("manifest.json"), b"identity-bound") {
+        panic!("control fixture must be written: {error}");
+    }
+
+    assert_failure_state(
+        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        StartupIdentityState::IdentityRecordMissingOrCorrupt,
+    );
+}
+
+#[test]
 fn first_start_without_two_sources_has_no_identity() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
@@ -405,14 +425,20 @@ fn token_with_missing_leaf_fails_closed_without_reenrollment() {
 }
 
 #[test]
-fn orphaned_atomic_temporary_is_not_an_identity_bound_artifact() {
+fn orphaned_atomic_temporaries_are_not_identity_bound_artifacts() {
     let directory = tempdir();
-    if let Err(error) = fs::write(directory.path().join(".natsume-tmp-orphan"), b"incomplete") {
-        panic!("orphaned temporary fixture must be written: {error}");
+    let paths = fixture_paths(&directory);
+    for path in [
+        paths.keys_directory.join(".natsume-tmp-key"),
+        paths.control_directory.join(".natsume-tmp-manifest"),
+    ] {
+        if let Err(error) = fs::write(path, b"incomplete") {
+            panic!("orphaned temporary fixture must be written: {error}");
+        }
     }
 
     assert!(matches!(
-        identity_bound_artifacts_present(directory.path()),
+        identity_bound_artifacts_present(&paths.keys_directory, &paths.control_directory),
         Ok(false)
     ));
 }
@@ -420,12 +446,68 @@ fn orphaned_atomic_temporary_is_not_an_identity_bound_artifact() {
 #[test]
 fn normal_regular_file_is_an_identity_bound_artifact() {
     let directory = tempdir();
-    if let Err(error) = fs::write(directory.path().join("gateway-key.pk8"), b"durable") {
+    let paths = fixture_paths(&directory);
+    if let Err(error) = fs::write(paths.keys_directory.join("gateway-key.pk8"), b"durable") {
         panic!("identity-bound artifact fixture must be written: {error}");
     }
 
     assert!(matches!(
-        identity_bound_artifacts_present(directory.path()),
+        identity_bound_artifacts_present(&paths.keys_directory, &paths.control_directory),
         Ok(true)
     ));
+}
+
+#[test]
+fn dormant_control_identity_is_created_after_the_gate_even_when_token_exists() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    if let Err(error) =
+        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
+    {
+        panic!("identity fixture must be written: {error}");
+    }
+    if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
+        panic!("Device Token fixture must be written: {error}");
+    }
+
+    let result = ensure_dormant_control_identity(&paths, MACHINE_ID);
+
+    assert!(matches!(
+        result,
+        Ok(machine_hardware_id) if machine_hardware_id == MACHINE_ID
+    ));
+    assert!(paths.control_directory.join("control-key-1.pk8").is_file());
+    assert!(paths.control_directory.join("manifest.json").is_file());
+}
+
+#[test]
+fn absent_or_mismatched_persisted_identity_causes_zero_control_writes() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+
+    let absent = ensure_dormant_control_identity(&paths, MACHINE_ID);
+    assert!(matches!(
+        absent,
+        Err(StartupError::FailClosed {
+            state: StartupIdentityState::IdentityRecordMissingOrCorrupt
+        })
+    ));
+
+    if let Err(error) =
+        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, Uuid::from_u128(2))
+    {
+        panic!("mismatched identity fixture must be written: {error}");
+    }
+    let mismatched = ensure_dormant_control_identity(&paths, MACHINE_ID);
+    assert!(matches!(
+        mismatched,
+        Err(StartupError::FailClosed {
+            state: StartupIdentityState::ResetRequired
+        })
+    ));
+    let entry_count = match fs::read_dir(&paths.control_directory) {
+        Ok(entries) => entries.count(),
+        Err(error) => panic!("control fixture directory must be readable: {error}"),
+    };
+    assert_eq!(entry_count, 0);
 }

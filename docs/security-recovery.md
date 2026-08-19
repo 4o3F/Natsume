@@ -9,7 +9,7 @@
 
 **当前实现**继续由 HTTPS Enrollment 签发 Device Token，并在 WSS 101 前校验 Bearer 与 resolved Device state；现有 Token 文件、吊销、恢复和禁止泄漏条款保持规范性，直到 coordinated flag day。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、standalone Proof/ClientInit、动态 actor、immutable CredentialBundle 与 Ack activation。该目标尚未成为当前恢复路径。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、standalone Proof/ClientInit、动态 actor、immutable CredentialBundle 与 Ack activation。单一 split Proto、strict signature verification、Prost typed canonicalization 与 transitional schema foundation 已存在，但尚未成为当前认证或恢复路径。
 
 恢复脚本、启动逻辑和 operator runbook 不得把旧 Token 转换为 control key、自动生成丢失 key、从 Machine Hardware ID 派生 credential，或提前启用混合认证。
 
@@ -245,6 +245,7 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 
 - service-user-owned 权限文件，无应用层加密；
 - Device Token 与 Seat 凭据 `0600 natsume:natsume`；Gateway key/leaf 与含凭据 Caddy 配置 `0640 natsume:natsume-gateway`；
+- `/var/lib/natsume/control/control-key-1.pk8` 与 `manifest.json` 为 `0600 natsume:natsume` 的 dormant identity-bound foundation：在 Machine Hardware ID 持久化并复核后 create-only 建立，当前不参与 Token/WSS authority；key/manifest 缺失、损坏或不匹配时 fail closed，绝不静默替换；
 - 全部原子写（temp + fsync + rename），半写不可见；
 - 最小版本头，不预建迁移框架；
 - identity-before-credentials（`INV-IDENTITY-02`）；

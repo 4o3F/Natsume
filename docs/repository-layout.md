@@ -5,11 +5,11 @@
 
 ## 0. ADR-0038 分批所有权
 
-当前 production owner 与模块边界保持不变。Batch 0 唯一 executable artifact 是 `integration-tests/tests/ordinary_wss_ed25519_feasibility.rs` 及其同名子目录；它拥有 private listener、test-only frame codec 与 deterministic vectors，production crate 不得 import。
+Batch 0 private listener 仍由 `integration-tests/tests/ordinary_wss_ed25519_feasibility.rs` 及其同名子目录拥有，production crate 不得 import其 fixed codec。
 
-后续目标所有权已接受但尚未创建：`http/device_control` 拥有 PreAuth transport，`application/device/control` 拥有动态 registry/actor/lease，`db/device` 维持单表 adapter，`device-protocol` 拥有拆分后的 future wire adapter，daemon `control` 拥有 key/manifest/session。
+`device-protocol` 已按预发布 breaking change 原位拥有六文件单一 `natsume.device.control` package、current `ControlEnvelope`、dormant direction/handshake messages、ControlKeyId、proof transcript 与 Prost typed ClientInit canonicalizer；不存在 `control_v2`、第二 descriptor 或兼容 generated module。Daemon `control` 已拥有 dormant PKCS#8 key/manifest foundation但不把它接入网络；后续 `http/device_control` 拥有 PreAuth transport，`application/device/control` 拥有动态 registry/actor/lease，`db/device` 维持单表 adapter。
 
-新 Rust 子模块继续使用 `parent.rs + parent/child.rs`，禁止 `mod.rs`。Atomic flag day 前不得创建第二个启用的 production registry、route、proto package 或 daemon connection loop。
+新 Rust 子模块继续使用 `parent.rs + parent/child.rs`，禁止 `mod.rs`。不得创建第二个 production registry、route、proto package 或 daemon connection loop；Server/daemon 同样不得增加 ProcessLock/flock/pidfile，数据库写入不得外包 Semaphore/Mutex/permit。
 
 ## 1. 顶层目录
 
@@ -57,7 +57,7 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 
 | Crate | 责任 | 典型消费者 |
 |---|---|---|
-| `device-protocol` | Protobuf message contract（WS binary frame，一帧一消息）与 envelope value | Server、Device Daemon、integration tests |
+| `device-protocol` | Split Protobuf binary-message contract、envelope value、ControlKeyId、proof transcript 与 Prost typed ClientInit canonicalizer | Server、Device Daemon、integration tests |
 | `error-code` | 公开稳定错误码和值 | Server、Device、Agent/API adapters |
 | `local-control-api` | D-Bus/local IPC value types | Device Daemon、Helper、Agent |
 | `machine-identity` | 纯候选规范化、质量与 UUID 派生 | Device Daemon、Helper/tests |
