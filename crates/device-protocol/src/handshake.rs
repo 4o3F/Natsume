@@ -10,7 +10,7 @@ pub use client_init::{
     canonical_client_init_sha256, decode_client_init, encode_client_init_canonical,
     validate_client_init,
 };
-pub use transcript::{ControlKeyId, proof_transcript, verify_proof_strict};
+pub use transcript::{ControlKeyId, proof_signing_digest, sign_client_proof, verify_proof_strict};
 
 /// Typed failures for control handshake, verification, and canonical wire handling.
 ///
@@ -19,15 +19,6 @@ pub use transcript::{ControlKeyId, proof_transcript, verify_proof_strict};
 pub enum HandshakeError {
     #[snafu(display("control protocol version is invalid"))]
     ProtocolVersion,
-
-    #[snafu(display("control challenge ID is invalid"))]
-    ChallengeId,
-
-    #[snafu(display("control proof does not match its challenge"))]
-    ChallengeMismatch,
-
-    #[snafu(display("control server nonce length is invalid"))]
-    ServerNonceLength,
 
     #[snafu(display("control client nonce length is invalid"))]
     ClientNonceLength,
@@ -53,17 +44,8 @@ pub enum HandshakeError {
     #[snafu(display("Enrollment attempt ID is invalid"))]
     EnrollmentAttemptId,
 
-    #[snafu(display("ClientInit digest length is invalid"))]
-    ClientInitHashLength,
-
-    #[snafu(display("control proof signature length is invalid"))]
-    SignatureLength,
-
     #[snafu(display("control proof signature is invalid"))]
     Signature,
-
-    #[snafu(display("control proof context is invalid"))]
-    TranscriptContext,
 
     #[snafu(display("ClientInit hardware claim is invalid"))]
     HardwareClaim,
@@ -94,16 +76,12 @@ pub(super) fn exact<const N: usize>(
     bytes.try_into().map_err(|_| error)
 }
 
-pub(super) fn proof_intent_byte(value: i32) -> Result<u8, HandshakeError> {
+pub(super) fn proof_intent(value: i32) -> Result<ProofIntent, HandshakeError> {
     let intent = ProofIntent::try_from(value).map_err(|_| HandshakeError::ProofIntent)?;
-    match intent {
-        ProofIntent::Unspecified => Err(HandshakeError::ProofIntent),
-        ProofIntent::FirstEnrollment => Ok(1),
-        ProofIntent::Resume => Ok(2),
-        ProofIntent::RotateControlKey => Ok(3),
-        ProofIntent::RecoverControlKey => Ok(4),
-        ProofIntent::RefreshGatewayCredential => Ok(5),
+    if intent == ProofIntent::Unspecified {
+        return Err(HandshakeError::ProofIntent);
     }
+    Ok(intent)
 }
 
 pub(super) fn canonical_uuid(

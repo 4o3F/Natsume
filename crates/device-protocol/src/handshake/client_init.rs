@@ -3,10 +3,10 @@ use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 use uuid::Version;
 
-use super::{HandshakeError, canonical_uuid, exact, proof_intent_byte, validate_uuid_bytes};
+use super::{HandshakeError, canonical_uuid, exact, proof_intent, validate_uuid_bytes};
 use crate::{
     CONTROL_MAX_CLIENT_INIT_BYTES, CONTROL_WIRE_VERSION,
-    generated::{ClientInit, CollectionCompleteness, EvidenceQuality, HardwareClaim},
+    generated::{ClientInit, CollectionCompleteness, EvidenceQuality, HardwareClaim, ProofIntent},
 };
 
 /// Applies the closed semantic checks shared by `ClientInit` encoders and future consumers.
@@ -23,23 +23,25 @@ pub fn validate_client_init(value: &ClientInit) -> Result<(), HandshakeError> {
     if value.protocol_version != CONTROL_WIRE_VERSION {
         return Err(HandshakeError::ProtocolVersion);
     }
-    let intent = proof_intent_byte(value.intent)?;
+    let intent = proof_intent(value.intent)?;
     canonical_uuid(
         &value.machine_hardware_id,
         Version::Sha1,
         HandshakeError::MachineHardwareId,
     )?;
-    match (intent, value.claimed_device_id.as_deref()) {
-        (1, None) => {}
-        (1, Some(_)) | (2..=5, None) => return Err(HandshakeError::ClaimedDeviceId),
-        (2..=5, Some(device_id)) => {
-            canonical_uuid(
-                device_id,
-                Version::SortRand,
-                HandshakeError::ClaimedDeviceId,
-            )?;
+    if intent == ProofIntent::FirstEnrollment {
+        if value.claimed_device_id.is_some() {
+            return Err(HandshakeError::ClaimedDeviceId);
         }
-        _ => return Err(HandshakeError::ProofIntent),
+    } else {
+        let Some(device_id) = value.claimed_device_id.as_deref() else {
+            return Err(HandshakeError::ClaimedDeviceId);
+        };
+        canonical_uuid(
+            device_id,
+            Version::SortRand,
+            HandshakeError::ClaimedDeviceId,
+        )?;
     }
 
     let public_key = exact::<32>(

@@ -5,7 +5,8 @@ use natsume_device_protocol::{
         HardwareClaim, ProofIntent, ServerChallenge,
     },
 };
-use uuid::Uuid;
+use prost::Message as _;
+use sha2::{Digest as _, Sha256};
 
 pub(super) const MACHINE_HARDWARE_ID: &str = "550e8400-e29b-51d4-a716-446655440000";
 pub(super) const OTHER_MACHINE_HARDWARE_ID: &str = "550e8400-e29b-51d4-a716-446655440001";
@@ -41,15 +42,15 @@ pub(super) const PROTO_CLIENT_INIT_SHA256: [u8; 32] = [
     0x63, 0xf0, 0x8f, 0x13, 0x45, 0xad, 0x2b, 0x84, 0x21, 0x99, 0xcd, 0x1f, 0x3c, 0x42, 0x0c, 0x7c,
     0xee, 0xcc, 0xff, 0xc7, 0xdf, 0xa3, 0xc2, 0x9a, 0x52, 0x58, 0x29, 0x21, 0x12, 0xc4, 0xf8, 0x90,
 ];
-pub(super) const PROTO_TRANSCRIPT_SHA256: [u8; 32] = [
-    0xb6, 0x5b, 0xd5, 0x0d, 0xe2, 0xb5, 0x33, 0xff, 0x74, 0x4b, 0x2b, 0x9b, 0x32, 0xde, 0xe1, 0x92,
-    0xd1, 0xac, 0x06, 0xdf, 0xc7, 0x75, 0x8c, 0x6f, 0xf6, 0x30, 0x89, 0x40, 0x59, 0xc3, 0xc0, 0xf0,
+pub(super) const PROTO_PROOF_DIGEST: [u8; 32] = [
+    0x79, 0xbc, 0x30, 0x9d, 0x67, 0xf3, 0xc3, 0x0c, 0x5b, 0x01, 0x9e, 0x60, 0x0e, 0xa6, 0x18, 0x18,
+    0xec, 0x75, 0xf8, 0xb8, 0x54, 0x1d, 0x68, 0x07, 0x4e, 0x53, 0x7f, 0xd2, 0x10, 0x35, 0x35, 0x03,
 ];
 pub(super) const PROTO_EXPECTED_SIGNATURE: [u8; 64] = [
-    0x26, 0xb8, 0x12, 0xb4, 0x00, 0x20, 0x20, 0x5b, 0xfe, 0x4d, 0xa1, 0xe9, 0x31, 0x9a, 0xb2, 0x48,
-    0x29, 0xa6, 0x3b, 0x3a, 0x58, 0x38, 0x96, 0x12, 0xb4, 0x50, 0x01, 0x39, 0x24, 0x25, 0x0c, 0x7e,
-    0xd5, 0x87, 0x67, 0x5d, 0x79, 0xa1, 0xe2, 0x08, 0xb8, 0x29, 0x00, 0x5b, 0xfd, 0x07, 0x7f, 0x35,
-    0x34, 0xce, 0x98, 0x03, 0x3d, 0xa2, 0x43, 0x78, 0xab, 0xe1, 0x39, 0xb0, 0x3f, 0xa7, 0x16, 0x03,
+    0x34, 0xa0, 0x87, 0xef, 0x96, 0x0e, 0x14, 0x18, 0xf6, 0x9b, 0xa4, 0xe3, 0xe0, 0x1b, 0xce, 0x52,
+    0xce, 0x69, 0x9b, 0x9a, 0x7c, 0x9c, 0xc8, 0x0b, 0x29, 0x5e, 0x1e, 0xfc, 0x49, 0x77, 0x7c, 0x94,
+    0x44, 0xc8, 0xbc, 0x44, 0xdb, 0x10, 0x25, 0xed, 0x13, 0x1e, 0xea, 0x07, 0x90, 0x13, 0x99, 0xe7,
+    0x00, 0x5e, 0x76, 0x00, 0x9f, 0x02, 0xd1, 0x1a, 0x22, 0xed, 0x39, 0x07, 0x02, 0x8a, 0xf6, 0x0d,
 ];
 
 pub(super) fn golden_challenge() -> ServerChallenge {
@@ -112,49 +113,22 @@ pub(super) fn canonical_client_init(claimed_device_id: Option<&str>) -> ClientIn
     }
 }
 
-pub(super) fn independent_transcript(
+pub(super) fn independent_proof_digest(
     challenge: &ServerChallenge,
     proof: &ClientProof,
     route: &str,
     subprotocol: &str,
-) -> Vec<u8> {
-    let Ok(machine_hardware_id) = Uuid::parse_str(&proof.machine_hardware_id) else {
-        panic!("test Machine Hardware ID must parse");
-    };
-    let claimed_device_id = proof.claimed_device_id.as_deref().map(|value| {
-        let Ok(device_id) = Uuid::parse_str(value) else {
-            panic!("test Device ID must parse");
-        };
-        device_id
-    });
-    let Ok(intent) = u8::try_from(proof.intent) else {
-        panic!("test intent must fit one byte");
-    };
+) -> [u8; 32] {
+    let mut unsigned_proof = proof.clone();
+    unsigned_proof.signature.clear();
 
-    let mut transcript = Vec::with_capacity(268);
-    transcript.extend_from_slice(b"NATSUME-WSS-CONTROL-PROOF-v1\0");
-    append_text(&mut transcript, route);
-    append_text(&mut transcript, subprotocol);
-    transcript.extend_from_slice(&challenge.challenge_id);
-    transcript.extend_from_slice(&challenge.server_nonce);
-    transcript.extend_from_slice(&proof.client_nonce);
-    transcript.extend_from_slice(&challenge.protocol_version.to_be_bytes());
-    transcript.push(intent);
-    transcript.extend_from_slice(&proof.control_public_key);
-    transcript.extend_from_slice(machine_hardware_id.as_bytes());
-    transcript.push(u8::from(claimed_device_id.is_some()));
-    if let Some(device_id) = claimed_device_id {
-        transcript.extend_from_slice(device_id.as_bytes());
-    }
-    transcript.extend_from_slice(&proof.enrollment_attempt_id);
-    transcript.extend_from_slice(&proof.client_init_sha256);
-    transcript
-}
-
-fn append_text(output: &mut Vec<u8>, value: &str) {
-    let Ok(length) = u16::try_from(value.len()) else {
-        panic!("test transcript context must fit u16");
-    };
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value.as_bytes());
+    let mut digest = Sha256::new();
+    digest.update(b"NATSUME-WSS-CONTROL-PROOF-v2\0");
+    digest.update(route.as_bytes());
+    digest.update([0]);
+    digest.update(subprotocol.as_bytes());
+    digest.update([0]);
+    digest.update(challenge.encode_length_delimited_to_vec());
+    digest.update(unsigned_proof.encode_length_delimited_to_vec());
+    digest.finalize().into()
 }

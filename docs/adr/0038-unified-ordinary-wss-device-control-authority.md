@@ -57,7 +57,22 @@ HTTP 101 只建立 transport。Proof 完成前，连接没有 Device、Enrollmen
 
 每条 WSS connection 拥有一次性随机 challenge ID 与 server nonce；它们只存在于该 connection-local PreAuthSession，并在 proof 成功、失败、timeout、非法 message 或 disconnect 后销毁。不得建立全局 challenge lookup 或允许第二次 proof。
 
-签名 transcript 以固定 domain 分隔，并覆盖固定 route `/api/v2/device/control`、subprotocol `natsume.control`、challenge、双方 nonce、协议版本、intent、control public key、Machine Hardware ID、optional DeviceId、Enrollment attempt ID 与 exact ClientInit hash。Fresh challenge 证明 connection-local freshness 与 key possession；intent、route/subprotocol context 与 exact ClientInit hash 防止跨用途、跨 route 或 ClientInit substitution。该设计**不宣称 TLS channel binding**。
+Proof crypto 不再逐字段维护第二套 byte schema，也不承担协议语义校验。发送侧 clone typed `ClientProof`、只清空 `signature`，用 pinned Prost `0.14.4` 编码两个完整 typed message，并计算固定摘要：
+
+```text
+canonical_input =
+  "NATSUME-WSS-CONTROL-PROOF-v2\0"
+  || "/api/v2/device/control\0"
+  || "natsume.control\0"
+  || ServerChallenge.encode_length_delimited_to_vec()
+  || ClientProof{signature: empty}.encode_length_delimited_to_vec()
+proof_digest = SHA-256(canonical_input)
+signature = ordinary Ed25519.sign(proof_digest)
+```
+
+SHA-256 通过 `Sha256::update` 按上述 chunks 增量计算，不分配 combined transcript `Vec`。domain、route 与 subprotocol 是固定的 NUL 分隔前缀，两个完整 Protobuf 消息由 Prost 的 length-delimited 编码自定界。这里签的是固定 32-byte digest，仍是普通 Ed25519，不是 Ed25519ph；接收侧使用 ordinary `verify_strict(proof_digest, signature)`。
+
+`verify_proof_strict` 只解析 Ed25519 public key/signature、拒绝 weak key、重算 digest 并做 strict crypto verification；它不检查 Challenge/Proof UUID、nonce、intent、ID、hash 长度、challenge equality 或 max-init。Batch 2 consumer 在字段的实际使用边界执行所需 semantic validation，不提前引入 speculative shared validator。因而任意 typed fields 都可以形成 cryptographically valid proof，但在 consumer validation 通过前不授予 authority。完整消息仍确保任何已签字段变化都会使 digest/signature 失效；`ClientInit` canonical validation 与摘要语义不变。该设计**不宣称TLS channel binding**。
 
 安全假设明确为：TLS在Natsume Server进程内终止；不存在TLS-terminating proxy或共享TLS identity中介；daemon只签署其当前pinned Server WSS connection收到的challenge，并不暴露任意signing oracle。若这些假设失效，必须重开本ADR并采用channel-bound proof。
 

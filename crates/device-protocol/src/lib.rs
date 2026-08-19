@@ -6,7 +6,8 @@ pub mod validation;
 
 pub use handshake::{
     ControlKeyId, HandshakeError, canonical_client_init_sha256, decode_client_init,
-    encode_client_init_canonical, proof_transcript, validate_client_init, verify_proof_strict,
+    encode_client_init_canonical, proof_signing_digest, sign_client_proof, validate_client_init,
+    verify_proof_strict,
 };
 
 /// Exact WebSocket subprotocol selected by both control peers.

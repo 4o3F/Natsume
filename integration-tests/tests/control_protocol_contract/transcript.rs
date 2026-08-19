@@ -1,21 +1,23 @@
-use ed25519_dalek::{Signature, Signer as _, SigningKey};
+use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use natsume_device_protocol::{
     CONTROL_ROUTE, CONTROL_SUBPROTOCOL, ControlKeyId, HandshakeError, canonical_client_init_sha256,
     encode_client_init_canonical,
     generated::{ClientProof, ProofIntent, ServerChallenge},
-    proof_transcript, verify_proof_strict,
+    proof_signing_digest, sign_client_proof, verify_proof_strict,
 };
 use sha2::{Digest as _, Sha256};
 
 use super::fixture::{
-    CLAIMED_DEVICE_ID, CONTROL_KEY_SEED_PUBLIC_KEY, EXPECTED_CONTROL_KEY_ID, MACHINE_HARDWARE_ID,
+    CLAIMED_DEVICE_ID, CONTROL_KEY_SEED_PUBLIC_KEY, EXPECTED_CONTROL_KEY_ID,
     OTHER_MACHINE_HARDWARE_ID, PROTO_CLIENT_INIT_SHA256, PROTO_EXPECTED_SIGNATURE,
-    PROTO_TRANSCRIPT_SHA256, RFC8032_PUBLIC_KEY, canonical_client_init, golden_challenge,
-    golden_proof, independent_transcript,
+    PROTO_PROOF_DIGEST, RFC8032_PUBLIC_KEY, canonical_client_init, golden_challenge, golden_proof,
+    independent_proof_digest,
 };
 
+const OTHER_CLAIMED_DEVICE_ID: &str = "01900000-0000-7000-8000-000000000004";
+
 #[test]
-fn canonical_client_init_hash_transcript_and_signature_goldens_match() {
+fn canonical_client_init_proof_digest_and_signature_goldens_match() {
     let client_init = canonical_client_init(None);
     let Ok(client_init_bytes) = encode_client_init_canonical(&client_init) else {
         panic!("canonical ClientInit must encode");
@@ -34,187 +36,244 @@ fn canonical_client_init_hash_transcript_and_signature_goldens_match() {
     let key_id = ControlKeyId::derive(CONTROL_KEY_SEED_PUBLIC_KEY);
     assert_eq!(key_id.as_bytes(), &EXPECTED_CONTROL_KEY_ID);
 
-    let Ok(transcript) = proof_transcript(&challenge, &proof) else {
-        panic!("golden proof transcript must be valid");
-    };
+    let proof_digest = proof_signing_digest(&challenge, &proof);
+    assert_eq!(proof_digest.len(), 32);
     assert_eq!(
-        transcript,
-        independent_transcript(&challenge, &proof, CONTROL_ROUTE, CONTROL_SUBPROTOCOL)
+        proof_digest,
+        independent_proof_digest(&challenge, &proof, CONTROL_ROUTE, CONTROL_SUBPROTOCOL)
     );
-    assert_eq!(transcript.len(), 252);
-    let digest: [u8; 32] = Sha256::digest(&transcript).into();
-    assert_eq!(digest, PROTO_TRANSCRIPT_SHA256);
+    assert_eq!(proof_digest, PROTO_PROOF_DIGEST);
 
-    let signing_key = SigningKey::from_bytes(&[0x11; 32]);
-    let strict_signature = signing_key.sign(&transcript).to_bytes();
-    assert_eq!(strict_signature, PROTO_EXPECTED_SIGNATURE);
-    let key = signing_key.verifying_key();
-    let signature = Signature::from_bytes(&PROTO_EXPECTED_SIGNATURE);
-    assert!(key.verify_strict(&transcript, &signature).is_ok());
+    let signed = fixture_signed_proof(&challenge, proof.clone());
+    assert_eq!(signed.signature, PROTO_EXPECTED_SIGNATURE);
+    assert_eq!(signed, proof);
+    assert_signature_accepts(&proof, &proof_digest);
     if let Err(error) = verify_proof_strict(&challenge, &proof) {
         panic!("golden proof must verify strictly: {error:?}");
     }
 }
 
 #[test]
-fn route_subprotocol_and_optional_device_slot_are_bound() {
+fn signature_is_omitted_from_the_canonical_digest() {
     let challenge = golden_challenge();
-    let proof = golden_proof();
-    let Ok(base) = proof_transcript(&challenge, &proof) else {
-        panic!("golden proof transcript must be valid");
-    };
+    let signed = golden_proof();
+    let mut unsigned = signed.clone();
+    unsigned.signature.clear();
 
-    let wrong_route =
-        independent_transcript(&challenge, &proof, "/different/route", CONTROL_SUBPROTOCOL);
-    let wrong_subprotocol =
-        independent_transcript(&challenge, &proof, CONTROL_ROUTE, "different.protocol");
-    assert_ne!(base, wrong_route);
-    assert_ne!(base, wrong_subprotocol);
-
-    let mut with_device_id = proof;
-    with_device_id.claimed_device_id = Some(CLAIMED_DEVICE_ID.to_owned());
-    let Ok(with_device_id_transcript) = proof_transcript(&challenge, &with_device_id) else {
-        panic!("canonical optional Device ID must be accepted");
-    };
-    assert_eq!(with_device_id_transcript.len(), base.len() + 16);
     assert_eq!(
-        with_device_id_transcript,
-        independent_transcript(
-            &challenge,
-            &with_device_id,
-            CONTROL_ROUTE,
-            CONTROL_SUBPROTOCOL
-        )
+        proof_signing_digest(&challenge, &signed),
+        proof_signing_digest(&challenge, &unsigned)
     );
-    assert!(verify_proof_strict(&challenge, &with_device_id).is_err());
+    assert_eq!(
+        independent_proof_digest(&challenge, &signed, CONTROL_ROUTE, CONTROL_SUBPROTOCOL),
+        independent_proof_digest(&challenge, &unsigned, CONTROL_ROUTE, CONTROL_SUBPROTOCOL)
+    );
 }
 
 #[test]
-fn strict_verifier_rejects_wrong_and_weak_keys() {
+fn route_and_subprotocol_context_are_bound() {
     let challenge = golden_challenge();
+    let proof = golden_proof();
+    let base = proof_signing_digest(&challenge, &proof);
+
+    for changed in [
+        independent_proof_digest(&challenge, &proof, "/different/route", CONTROL_SUBPROTOCOL),
+        independent_proof_digest(&challenge, &proof, CONTROL_ROUTE, "different.protocol"),
+    ] {
+        assert_ne!(base, changed);
+        assert_signature_rejects(&proof, &changed);
+    }
+}
+
+#[test]
+fn strict_verifier_parses_key_and_signature_and_rejects_weak_keys() {
+    let challenge = golden_challenge();
+
+    let mut malformed_key = golden_proof();
+    malformed_key.control_public_key.pop();
+    assert_eq!(
+        verify_proof_strict(&challenge, &malformed_key),
+        Err(HandshakeError::ControlPublicKey)
+    );
 
     let mut wrong_key = golden_proof();
     wrong_key.control_public_key = RFC8032_PUBLIC_KEY.to_vec();
-    assert!(verify_proof_strict(&challenge, &wrong_key).is_err());
+    assert_eq!(
+        verify_proof_strict(&challenge, &wrong_key),
+        Err(HandshakeError::Signature)
+    );
 
     let mut weak_key = golden_proof();
     weak_key.control_public_key = vec![0; 32];
     weak_key.control_public_key[0] = 1;
-    weak_key.signature = vec![0; 64];
-    weak_key.signature[0] = 1;
-    assert!(verify_proof_strict(&challenge, &weak_key).is_err());
-}
-
-#[test]
-fn strict_verifier_rejects_every_signed_field_mutation() {
-    assert_challenge_field_mutations();
-    assert_proof_field_mutations();
-
-    let challenge = golden_challenge();
-    let proof = golden_proof();
-    let mut changed_version = challenge.clone();
-    changed_version.protocol_version += 1;
-    assert_ne!(
-        independent_transcript(&changed_version, &proof, CONTROL_ROUTE, CONTROL_SUBPROTOCOL),
-        independent_transcript(&challenge, &proof, CONTROL_ROUTE, CONTROL_SUBPROTOCOL)
+    assert_eq!(
+        verify_proof_strict(&challenge, &weak_key),
+        Err(HandshakeError::WeakControlPublicKey)
     );
-    assert_rejected(&changed_version, &proof);
+
+    let mut malformed_signature = golden_proof();
+    malformed_signature.signature.pop();
+    assert_eq!(
+        verify_proof_strict(&challenge, &malformed_signature),
+        Err(HandshakeError::Signature)
+    );
 }
 
 #[test]
-fn transcript_validation_is_closed_and_redacted() {
+fn every_challenge_field_is_bound() {
     let challenge = golden_challenge();
     let proof = golden_proof();
 
-    let mut changed = proof.clone();
-    changed.client_nonce.pop();
-    assert!(proof_transcript(&challenge, &changed).is_err());
-
-    let mut changed = proof.clone();
-    changed.control_public_key.pop();
-    assert!(proof_transcript(&challenge, &changed).is_err());
-
-    let mut changed = proof.clone();
-    changed.enrollment_attempt_id.pop();
-    assert!(proof_transcript(&challenge, &changed).is_err());
-
-    let mut changed = proof.clone();
-    changed.client_init_sha256.pop();
-    assert!(proof_transcript(&challenge, &changed).is_err());
-
-    let mut changed = proof.clone();
-    changed.machine_hardware_id = MACHINE_HARDWARE_ID.to_uppercase();
-    let Err(error) = proof_transcript(&challenge, &changed) else {
-        panic!("noncanonical Machine Hardware ID must fail");
-    };
-    assert_eq!(error, HandshakeError::MachineHardwareId);
-    assert_eq!(error.to_string(), "Machine Hardware ID is invalid");
-
-    let mut changed = proof.clone();
-    changed.claimed_device_id = Some(MACHINE_HARDWARE_ID.to_owned());
-    assert!(proof_transcript(&challenge, &changed).is_err());
-
-    let mut changed = proof.clone();
-    changed.intent = ProofIntent::Unspecified as i32;
-    assert!(proof_transcript(&challenge, &changed).is_err());
-
-    let mut changed = proof;
-    changed.signature.pop();
-    assert!(verify_proof_strict(&challenge, &changed).is_err());
-}
-
-fn assert_challenge_field_mutations() {
-    let challenge = golden_challenge();
-    let proof = golden_proof();
+    let mut changed = challenge.clone();
+    changed.protocol_version += 1;
+    assert_digest_mutation_rejected(&proof, &changed, &proof);
 
     let mut changed_challenge = challenge.clone();
     let mut changed_proof = proof.clone();
     changed_challenge.challenge_id[15] ^= 1;
     changed_proof.challenge_id[15] ^= 1;
-    assert_rejected(&changed_challenge, &changed_proof);
+    assert_digest_mutation_rejected(&proof, &changed_challenge, &changed_proof);
+
+    let mut changed = challenge.clone();
+    changed.server_nonce[0] ^= 1;
+    assert_digest_mutation_rejected(&proof, &changed, &proof);
+
+    let mut changed = challenge.clone();
+    changed.expires_at_unix_ms += 1;
+    assert_digest_mutation_rejected(&proof, &changed, &proof);
 
     let mut changed = challenge;
-    changed.server_nonce[0] ^= 1;
-    assert_rejected(&changed, &proof);
+    changed.max_client_init_bytes += 1;
+    assert_digest_mutation_rejected(&proof, &changed, &proof);
 }
 
-fn assert_proof_field_mutations() {
+#[test]
+fn every_proof_field_and_canonical_init_hash_are_bound() {
     let challenge = golden_challenge();
     let proof = golden_proof();
 
     let mut changed = proof.clone();
+    changed.challenge_id[15] ^= 1;
+    assert_digest_mutation_rejected(&proof, &challenge, &changed);
+
+    let mut changed = proof.clone();
     changed.client_nonce[0] ^= 1;
-    assert_rejected(&challenge, &changed);
+    assert_digest_mutation_rejected(&proof, &challenge, &changed);
 
     let mut changed = proof.clone();
     changed.control_public_key = RFC8032_PUBLIC_KEY.to_vec();
-    assert_rejected(&challenge, &changed);
+    assert_digest_mutation_rejected(&proof, &challenge, &changed);
 
     let mut changed = proof.clone();
     OTHER_MACHINE_HARDWARE_ID.clone_into(&mut changed.machine_hardware_id);
-    assert_rejected(&challenge, &changed);
-
-    let mut changed = proof.clone();
-    changed.intent = ProofIntent::Resume as i32;
-    assert_rejected(&challenge, &changed);
-
-    let mut changed = proof.clone();
-    changed.claimed_device_id = Some(CLAIMED_DEVICE_ID.to_owned());
-    assert_rejected(&challenge, &changed);
+    assert_digest_mutation_rejected(&proof, &challenge, &changed);
 
     let mut changed = proof.clone();
     changed.enrollment_attempt_id[15] ^= 1;
-    assert_rejected(&challenge, &changed);
+    assert_digest_mutation_rejected(&proof, &challenge, &changed);
 
     let mut changed = proof.clone();
     changed.client_init_sha256[0] ^= 1;
-    assert_rejected(&challenge, &changed);
+    assert_digest_mutation_rejected(&proof, &challenge, &changed);
 
-    let mut changed = proof;
+    let mut changed = proof.clone();
     changed.signature[0] ^= 1;
-    assert_rejected(&challenge, &changed);
+    assert_eq!(
+        proof_signing_digest(&challenge, &changed),
+        proof_signing_digest(&challenge, &proof)
+    );
+    assert_eq!(
+        verify_proof_strict(&challenge, &changed),
+        Err(HandshakeError::Signature)
+    );
 }
 
-fn assert_rejected(challenge: &ServerChallenge, proof: &ClientProof) {
-    assert!(verify_proof_strict(challenge, proof).is_err());
+#[test]
+fn typed_intent_and_optional_device_id_are_bound() {
+    let challenge = golden_challenge();
+    let mut resume = golden_proof();
+    resume.intent = ProofIntent::Resume as i32;
+    resume.claimed_device_id = Some(CLAIMED_DEVICE_ID.to_owned());
+    resume.signature.clear();
+    let resume = fixture_signed_proof(&challenge, resume);
+    assert!(verify_proof_strict(&challenge, &resume).is_ok());
+
+    let mut changed = resume.clone();
+    changed.intent = ProofIntent::RotateControlKey as i32;
+    assert_digest_mutation_rejected(&resume, &challenge, &changed);
+
+    let mut changed = resume.clone();
+    changed.claimed_device_id = Some(OTHER_CLAIMED_DEVICE_ID.to_owned());
+    assert_digest_mutation_rejected(&resume, &challenge, &changed);
+}
+
+#[test]
+fn arbitrary_typed_fields_can_be_digested_signed_and_verified() {
+    let mut challenge = golden_challenge();
+    challenge.protocol_version = 0;
+    challenge.challenge_id = vec![0xff];
+    challenge.server_nonce.clear();
+    challenge.expires_at_unix_ms = i64::MIN;
+    challenge.max_client_init_bytes = 0;
+
+    let mut proof = golden_proof();
+    proof.challenge_id = vec![1, 2, 3];
+    proof.client_nonce = vec![4];
+    proof.machine_hardware_id = "not-a-uuid".to_owned();
+    proof.claimed_device_id = Some(String::new());
+    proof.intent = i32::MAX;
+    proof.enrollment_attempt_id.clear();
+    proof.client_init_sha256 = vec![5, 6];
+    proof.signature = vec![0xaa];
+
+    let proof_digest = proof_signing_digest(&challenge, &proof);
+    assert_eq!(proof_digest.len(), 32);
+    assert_eq!(
+        proof_digest,
+        independent_proof_digest(&challenge, &proof, CONTROL_ROUTE, CONTROL_SUBPROTOCOL)
+    );
+
+    let signed = fixture_signed_proof(&challenge, proof);
+    assert_eq!(proof_signing_digest(&challenge, &signed), proof_digest);
+    assert_eq!(signed.signature.len(), 64);
+    assert!(verify_proof_strict(&challenge, &signed).is_ok());
+}
+
+fn fixture_signed_proof(challenge: &ServerChallenge, proof: ClientProof) -> ClientProof {
+    let signing_key = SigningKey::from_bytes(&[0x11; 32]);
+    sign_client_proof(&signing_key, challenge, proof)
+}
+
+fn assert_digest_mutation_rejected(
+    original: &ClientProof,
+    challenge: &ServerChallenge,
+    changed: &ClientProof,
+) {
+    let digest = independent_proof_digest(challenge, changed, CONTROL_ROUTE, CONTROL_SUBPROTOCOL);
+    assert_eq!(proof_signing_digest(challenge, changed), digest);
+    assert_signature_rejects(original, &digest);
+    assert_eq!(
+        verify_proof_strict(challenge, changed),
+        Err(HandshakeError::Signature)
+    );
+}
+
+fn assert_signature_accepts(proof: &ClientProof, proof_digest: &[u8; 32]) {
+    let (key, signature) = verification_material(proof);
+    assert!(key.verify_strict(proof_digest, &signature).is_ok());
+}
+
+fn assert_signature_rejects(proof: &ClientProof, proof_digest: &[u8; 32]) {
+    let (key, signature) = verification_material(proof);
+    assert!(key.verify_strict(proof_digest, &signature).is_err());
+}
+
+fn verification_material(proof: &ClientProof) -> (VerifyingKey, Signature) {
+    let Ok(key) = VerifyingKey::try_from(proof.control_public_key.as_slice()) else {
+        panic!("fixture public key must parse");
+    };
+    let Ok(signature) = Signature::try_from(proof.signature.as_slice()) else {
+        panic!("fixture signature must parse");
+    };
+    (key, signature)
 }

@@ -175,7 +175,7 @@ strict_verify_file='integration-tests/tests/ordinary_wss_ed25519_feasibility/pro
 grep -Fxq '    key.verify_strict(&proof_transcript(challenge, proof), &signature)' "${strict_verify_file}" ||
   fail 'live isolated proof verifier is not pinned to verify_strict'
 shared_strict_verify_file='crates/device-protocol/src/handshake/transcript.rs'
-grep -Fxq '    key.verify_strict(&transcript, &signature)' "${shared_strict_verify_file}" ||
+grep -Fxq '    key.verify_strict(&proof_digest, &signature)' "${shared_strict_verify_file}" ||
   fail 'shared control proof verifier is not pinned to verify_strict'
 grep -Fxq 'prost = "=0.14.4"' Cargo.toml || fail 'Prost runtime is not pinned to semantic-digest version 0.14.4'
 grep -Fxq 'prost-types = "=0.14.4"' Cargo.toml || fail 'Prost types are not pinned to version 0.14.4'
@@ -224,7 +224,9 @@ reject_matches 'first-party Rust code parses Display text for behavior' '\.to_st
 reject_matches 'Web code branches on error title text instead of the stable code' "${web_title_branch_pattern}" web/src
 reject_matches 'quinn dependency or source usage is present' '(^|[^[:alnum:]_])quinn([^[:alnum:]_]|$)' Cargo.toml server client crates integration-tests packaging web
 reject_matches 'QUIC transport surface is present' '([Qq][Uu][Ii][Cc][[:space:]-]+(transport|control|gateway|session|client|listener|endpoint|over)|[Qq][Uu][Ii][Cc][[:space:]]*=|Device[[:space:]]+[Qq][Uu][Ii][Cc]|mTLS[[:space:]-]+[Qq][Uu][Ii][Cc])' server client crates integration-tests packaging web
-reject_matches 'custom length-prefix framing is present' 'encode_frame|decode_frame|length[-_[:space:]]*(prefix|delimited)' server client crates integration-tests packaging web
+reject_matches_except 'custom length-prefix framing is present' \
+  'encode_frame|decode_frame|length[-_[:space:]]*(prefix|delimited)' \
+  '\.encode_length_delimited_to_vec\(\)' server client crates integration-tests packaging web
 reject_matches 'mTLS server-side client-certificate verifier is present' \
   "${mtls_server_verifier_pattern}" server client crates integration-tests packaging web
 reject_matches 'static mTLS client identity is present' \
