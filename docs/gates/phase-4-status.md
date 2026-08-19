@@ -1,8 +1,12 @@
 # Phase 4 状态
 
 > 状态：`ACTIVE IMPLEMENTATION`
-> 最后更新：2026-08-18
+> 最后更新：2026-08-19
 > G4：`OPEN`（WP1–WP4 已完成；WP5 部分完成；WP6 尚未收口）
+
+> **2026-08-19 ADR-0038 Batch 0 note**：ADR-0038 已接受为 destructive flag-day destination，但当前 Phase 4 evidence 仍针对已实现的 Device Token、Bearer-before-101、`natsume.v1` 与当前 descriptor/schema。Private ordinary-WSS listener只证明 TLS 1.3 + 101 + Challenge/Ed25519 Proof/ClientInit seam可行，不补交WP5/WP6 evidence，不关闭G4，也不改写下方历史完成度。
+
+Batch 0 local preflight（**不是 G4 PASS evidence**）必须在本地提交前运行：isolated feasibility test、current protocol/WSS/Enrollment regressions、`just ci-rust`、`just ci-contracts`、direct policy scan、docs/Mermaid validation 与两个 `cargo deny` dependency graph。结果只存在于执行会话，未绑定 commit SHA、CI run 或 retained artifact，不得登记为 Gate 通过。当前开发环境缺少 `shfmt` 与 `gitleaks`，因此 `ci-policy` 聚合 recipe 与 `secret-scan` 必须由后续 CI 补齐。Private probe 不替代 production regression，也不证明 production rejection/capacity/runtime cutover。
 
 Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。范围以 [roadmap](../roadmap.md) §Phase 4、[契约](../contracts.md) §3.5/§3.6.5/§5/§6/§9/§12、[状态与执行模型](../state-and-execution.md) §2 与 [ADR-0033](../adr/0033-enrollment-and-device-control-boundary.md)/[ADR-0034](../adr/0034-state-execution-and-data-plane-boundary.md) 为准；wire 契约（proto envelope、`commands`/`observed_device_states` DDL、putCommand OpenAPI 声明、控制类稳定码）已全部在 Phase 0 冻结，本阶段是为冻结面接入真实 runtime，不再新增 wire surface。
 

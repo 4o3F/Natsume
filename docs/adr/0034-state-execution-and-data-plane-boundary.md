@@ -45,9 +45,7 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 - Device Daemon 从已验证本地材料渲染完整固定配置，validate、atomic activate、reload、local health check，并在失败时恢复 LKG；不确定状态保持 verified LKG 或进入 BLOCKED。
 - READY 需要 current Target/revision、匹配且有效的 Gateway key/certificate/SAN、validate/reload/health 成功、固定 TLS upstream policy 与可恢复 LKG。
 - Caddy 只在 `/login` 注入 `X-DOMjudge-Login` 和 base64 `X-DOMjudge-Pass`；其他 route 不注入。upstream 必须使用 TLS。
-- credential source 为 `0600 root:root`，rendered Caddy secret artifact 为 `0640 root:natsume-gateway`；两者不得进入 Target、Observed、audit diff、metrics、普通日志或 Session Agent。
-
-  **2026-08-16 修订**：属主词表随 [ADR-0032](0032-device-identity-and-local-credential-lifecycle.md) 同日修订调和为 service-user 所有——credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 natsume:natsume-gateway`；禁入清单与其余条款不变。
+- credential source 为 `0600 natsume:natsume`，rendered Caddy secret artifact 为 `0640 natsume:natsume-gateway`；两者不得进入 Target、Observed、audit diff、metrics、普通日志或 Session Agent。该 service-user 属主词表与 [ADR-0032](0032-device-identity-and-local-credential-lifecycle.md) 及 packaging 基线一致。
 - 保持 `Accept-Encoding` transparent，不新增本地 `encode`；upstream brotli 是 deployment contract。
 - session lock/unlock/terminate 不修改 Caddy state 或配置。
 

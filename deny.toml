@@ -13,18 +13,18 @@ targets = [
 
 [bans]
 multiple-versions = "deny"
+multiple-versions-include-dev = true
 wildcards = "deny"
 allow-wildcard-paths = true
 # Exact-version skips only. Prefer deleting entries when upstream converges.
 # Do not use skip-tree or multiple-versions = "allow".
 skip = [
-  # --- RustCrypto 0.10 leftover via libsystemd (workspace is on 0.11) ---
-  { crate = "sha2@0.10.9", reason = "libsystemd 0.7 still requires sha2 ^0.10 while first-party code uses sha2 0.11; remove when libsystemd moves to sha2 0.11" },
-  { crate = "hmac@0.12.1", reason = "libsystemd 0.7 requires hmac ^0.12 while hkdf 0.13 pulls hmac 0.13; remove when libsystemd upgrades" },
-  { crate = "digest@0.10.7", reason = "transitively required by sha2 0.10.9 and hmac 0.12.1 through libsystemd; remove with the libsystemd RustCrypto 0.10 stack" },
-  { crate = "crypto-common@0.1.7", reason = "transitively required by digest 0.10.7 through libsystemd; remove with digest 0.10" },
-  { crate = "block-buffer@0.10.4", reason = "transitively required by digest 0.10.7 through libsystemd; remove with digest 0.10" },
-  { crate = "cpufeatures@0.2.17", reason = "sha2 0.10.9 still requires cpufeatures ^0.2 while chacha20/poly1305/sha2 0.11 need ^0.3; remove when sha2 0.10 leaves the graph" },
+  # --- RustCrypto 0.10 retained by current production crates and the isolated Ed25519 probe ---
+  { crate = "digest@0.10.7", reason = "argon2/blake2, WebSocket sha1, and integration-only Dalek/sha2 0.10 require digest 0.10 while first-party sha2 uses digest 0.11; remove when all older consumers converge" },
+  { crate = "crypto-common@0.1.7", reason = "transitively required by the retained digest 0.10 consumers; remove when digest 0.10 leaves the graph" },
+  { crate = "block-buffer@0.10.4", reason = "transitively required by retained digest 0.10 hash implementations; remove when digest 0.10 leaves the graph" },
+  { crate = "cpufeatures@0.2.17", reason = "argon2, WebSocket sha1, and integration-only curve25519/sha2 use cpufeatures 0.2 while current sha2 0.11 uses cpufeatures 0.3; remove when older consumers converge" },
+  { crate = "sha2@0.10.9", reason = "integration-only ed25519-dalek 2.2 requires sha2 0.10 while first-party production code uses sha2 0.11; remove when Dalek adopts sha2 0.11 or the isolated probe is deleted" },
 
   # --- hash table stack: petgraph 0.15 vs indexmap 0.17 ---
   { crate = "hashbrown@0.15.5", reason = "petgraph 0.8.3 (via prost-build) requires hashbrown ^0.15 while indexmap 2.14 requires ^0.17; remove when petgraph accepts hashbrown 0.17" },
@@ -67,6 +67,7 @@ skip = [
 ]
 
 [licenses]
+include-dev = true
 confidence-threshold = 0.8
 allow = [
   "AGPL-3.0-or-later",

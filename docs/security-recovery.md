@@ -5,6 +5,14 @@
 > 规则：放宽任何 `INV-*` 必须先有已接受 ADR  
 > 校准基线：[ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md) 的部署事实与信任假设
 
+## 0. 认证版本边界
+
+**当前实现**继续由 HTTPS Enrollment 签发 Device Token，并在 WSS 101 前校验 Bearer 与 resolved Device state；现有 Token 文件、吊销、恢复和禁止泄漏条款保持规范性，直到 coordinated flag day。
+
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、standalone Proof/ClientInit、动态 actor、immutable CredentialBundle 与 Ack activation。该目标尚未成为当前恢复路径。
+
+恢复脚本、启动逻辑和 operator runbook 不得把旧 Token 转换为 control key、自动生成丢失 key、从 Machine Hardware ID 派生 credential，或提前启用混合认证。
+
 本文件定义少量稳定不变量。字段级负向案例属于 contract tests、policy scan 和 runbook，不在架构正文中重复枚举。
 
 ## 1. 威胁模型
@@ -39,9 +47,9 @@ Natsume 主要防护：
 |---|---|---|---|
 | Server control private key | Server 受限文件/approved secret store | Server TLS adapter | Web、Device、Helper |
 | Offline control root key | 离线介质 | PKI ceremony | 运行中 Server |
-| Device Token | Server DB（仅哈希）；Client `0600` 凭据文件 | WSS 认证 adapter | Agent、Helper、Caddy、浏览器 |
-| Gateway private key | Client `0640 root:natsume-gateway` 文件 | Caddy | Agent、Helper、Server |
-| DOMjudge password | Server vault（每个 subject 仅当前 ciphertext）；Client `0600` 凭据文件；渲染的 Caddy `/login` 注入配置（`0640`） | secret sync、Daemon 渲染、Caddy `/login` header 注入 | API、Observed、日志、Agent、状态页 |
+| Device Token | Server DB（仅哈希）；Client `0600 natsume:natsume` 凭据文件 | WSS 认证 adapter | Agent、Helper、Caddy、浏览器 |
+| Gateway private key | Client `0640 natsume:natsume-gateway` 文件 | Caddy | Agent、Helper、Server |
+| DOMjudge password | Server vault（每个 subject 仅当前 ciphertext）；Client `0600 natsume:natsume` 凭据文件；渲染的 Caddy `/login` 注入配置（`0640 natsume:natsume-gateway`） | secret sync、Daemon 渲染、Caddy `/login` header 注入 | API、Observed、日志、Agent、状态页 |
 | Fleet namespace UUID | 配置/Server truth | identity derivation | 无秘密属性 |
 | Machine Hardware ID | identity file/Server metadata | identity、Enrollment | 不作为密码或 token |
 | Operator session | Server/Web secure session | operator API | Device control |
@@ -235,8 +243,8 @@ CSV / candidate import 的 password-bearing 材料只进入 encrypted staging �
 
 按 [ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)：
 
-- root-owned 权限文件，无应用层加密；
-- Device Token `0600 root:root`；Gateway key/leaf 与含凭据 Caddy 配置 `0640 root:natsume-gateway`；Seat 凭据 `0600 root:root`；
+- service-user-owned 权限文件，无应用层加密；
+- Device Token 与 Seat 凭据 `0600 natsume:natsume`；Gateway key/leaf 与含凭据 Caddy 配置 `0640 natsume:natsume-gateway`；
 - 全部原子写（temp + fsync + rename），半写不可见；
 - 最小版本头，不预建迁移框架；
 - identity-before-credentials（`INV-IDENTITY-02`）；

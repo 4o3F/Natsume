@@ -80,10 +80,60 @@ for canary in 'if (error.title === "boom") {' 'error.title.includes("boom")'; do
 done
 low_level_gui_dependency_pattern='(^|[^[:alnum:]_])(winit|softbuffer|tiny-skia|cosmic-text)([^[:alnum:]_]|$)'
 slint_winit_feature_allow_pattern='^Cargo\.toml:[0-9]+:slint = \{ version = "1\.15", default-features = false, features = \["compat-1-2", "std", "backend-winit-x11", "renderer-skia"\] \}$'
+mtls_server_verifier_pattern='WebPkiClientVerifier|ClientCertVerifier|with_client_cert_verifier'
+mtls_presenting_client_pattern='with_client_auth_cert'
+ed25519_seed_pattern='SigningKey::(from_bytes|try_from|from_keypair_bytes|from)[[:space:]]*\('
+ed25519_seed_allow_pattern='^integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol\.rs:[0-9]+:[[:space:]]*let (source|key|wrong_key) = SigningKey::from_bytes\(&(CONTROL_KEY_SEED|RFC8032_SEED|\[0x22; 32\])\);$'
+ed25519_ordinary_verify_pattern='(\.|::)[[:space:]]*verify[[:space:]]*\('
+ed25519_dependency_pattern='ed25519-dalek'
+ed25519_dependency_allow_pattern='^(Cargo\.toml:[0-9]+:ed25519-dalek = \{ version = "2\.2", default-features = false, features = \["alloc", "pkcs8", "zeroize"\] \}|integration-tests/Cargo\.toml:[0-9]+:ed25519-dalek\.workspace = true)$'
+ed25519_source_pattern='ed25519_dalek'
+ed25519_source_allow_pattern='^integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol\.rs:[0-9]+:'
 printf '%s\n' 'Cargo.toml:1:winit = "0.30"' | grep -Eq "${low_level_gui_dependency_pattern}" || fail 'low-level GUI dependency canary was not detected'
 printf '%s\n' 'Cargo.toml:1:slint = { version = "1.15", default-features = false, features = ["compat-1-2", "std", "backend-winit-x11", "renderer-skia"] }' | grep -Eq "${slint_winit_feature_allow_pattern}" || fail 'Slint winit feature allow canary was not detected'
 if printf '%s\n' 'Cargo.toml:1:winit = "0.30"' | grep -Eq "${slint_winit_feature_allow_pattern}"; then
   fail 'Slint winit feature allow pattern accepted a bare winit dependency'
+fi
+for canary in 'WebPkiClientVerifier' 'impl ClientCertVerifier' '.with_client_cert_verifier(verifier)'; do
+  printf '%s\n' "${canary}" | grep -Eq "${mtls_server_verifier_pattern}" || fail 'mTLS server-verifier canary was not detected'
+done
+printf '%s\n' '.with_client_auth_cert(certs, key)' | grep -Eq "${mtls_presenting_client_pattern}" ||
+  fail 'static mTLS client-identity canary was not detected'
+for allowed in '.with_no_client_auth()' 'impl ResolvesClientCert for NoCertificateResolver' '.with_client_cert_resolver(Arc::new(NoCertificateResolver))'; do
+  if printf '%s\n' "${allowed}" | grep -Eq "${mtls_server_verifier_pattern}|${mtls_presenting_client_pattern}"; then
+    fail 'mTLS pattern rejected an explicit no-certificate configuration'
+  fi
+done
+for canary in 'SigningKey::from_bytes(&seed)' 'SigningKey::from(&seed)' 'SigningKey::try_from(seed)' 'SigningKey::from_keypair_bytes(&bytes)'; do
+  printf '%s\n' "${canary}" | grep -Eq "${ed25519_seed_pattern}" || fail 'Ed25519 seed construction canary was not detected'
+done
+if printf '%s\n' 'server/src/auth.rs:1:SigningKey::from_bytes(&seed)' | grep -Eq "${ed25519_seed_allow_pattern}"; then
+  fail 'Ed25519 seed allow pattern accepted a production path'
+fi
+printf '%s\n' 'server/Cargo.toml:1:ed25519-dalek.workspace = true' | grep -Eq "${ed25519_dependency_pattern}" || fail 'Ed25519 dependency canary was not detected'
+for allowed in \
+  'Cargo.toml:42:ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }' \
+  'integration-tests/Cargo.toml:29:ed25519-dalek.workspace = true'; do
+  printf '%s\n' "${allowed}" | grep -Eq "${ed25519_dependency_allow_pattern}" ||
+    fail 'Ed25519 dependency allow pattern rejected the exact isolated declaration'
+done
+for rejected in \
+  'server/Cargo.toml:1:ed25519-dalek.workspace = true' \
+  'Cargo.toml:42:ed25519-dalek = { version = "2.2", default-features = true, features = ["alloc", "pkcs8", "zeroize"] }' \
+  'Cargo.toml:42:ed25519-dalek = { version = "2.3", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }'; do
+  if printf '%s\n' "${rejected}" | grep -Eq "${ed25519_dependency_allow_pattern}"; then
+    fail 'Ed25519 dependency allow pattern accepted a non-approved declaration'
+  fi
+done
+printf '%s\n' 'server/src/auth.rs:1:use ed25519_dalek::SigningKey;' | grep -Eq "${ed25519_source_pattern}" || fail 'Ed25519 source canary was not detected'
+if printf '%s\n' 'server/src/auth.rs:1:use ed25519_dalek::SigningKey;' | grep -Eq "${ed25519_source_allow_pattern}"; then
+  fail 'Ed25519 source allow pattern accepted production code'
+fi
+for canary in 'verifying_key.verify(message, signature)' 'verifying_key.verify (message, signature)' 'Verifier::verify(&key, message, signature)' '<VerifyingKey as Verifier<Signature>>::verify(&key, message, signature)'; do
+  printf '%s\n' "${canary}" | grep -Eq "${ed25519_ordinary_verify_pattern}" || fail 'ordinary Ed25519 verify canary was not detected'
+done
+if printf '%s\n' 'verifying_key.verify_strict(message, signature)' | grep -Eq "${ed25519_ordinary_verify_pattern}"; then
+  fail 'ordinary Ed25519 verify pattern rejected verify_strict'
 fi
 
 while IFS= read -r usage; do
@@ -93,6 +143,19 @@ done < <(grep -RhoE 'uses:[[:space:]]+[^[:space:]#]+@[^[:space:]#]+' .github/wor
 
 reject_matches 'placeholder CI command remains' 'Implementation requirement|run:[[:space:]]*echo[[:space:]].*(placeholder|Pin actions|Run frozen)' .github/workflows
 reject_matches 'private-key material is present in first-party paths' "${private_key_pattern}" .github server client crates integration-tests packaging web docs
+reject_matches_except 'Ed25519 dependency escaped the isolated feasibility probe' \
+  "${ed25519_dependency_pattern}" "${ed25519_dependency_allow_pattern}" \
+  Cargo.toml server client crates integration-tests packaging web
+reject_matches_except 'Ed25519 source usage escaped the isolated feasibility probe' \
+  "${ed25519_source_pattern}" "${ed25519_source_allow_pattern}" \
+  server client crates integration-tests packaging web
+reject_matches_except 'Ed25519 signing-key seed construction is outside the isolated public test vector' \
+  "${ed25519_seed_pattern}" "${ed25519_seed_allow_pattern}" server client crates integration-tests packaging web
+reject_matches 'ordinary Ed25519 verification bypasses strict verification' \
+  "${ed25519_ordinary_verify_pattern}" server client crates integration-tests
+strict_verify_file='integration-tests/tests/ordinary_wss_ed25519_feasibility/protocol.rs'
+grep -Fxq '    key.verify_strict(&proof_transcript(challenge, proof), &signature)' "${strict_verify_file}" ||
+  fail 'live isolated proof verifier is not pinned to verify_strict'
 reject_matches 'credential-shaped token is present' 'AKIA[0-9A-Z]{16}|gh[pousr]_[0-9A-Za-z]{20,}' .github server client crates integration-tests packaging web docs
 reject_matches 'systemd credential directive is present' 'LoadCredential=|SetCredential=|ImportCredential=' packaging/client/rootfs packaging/server/rootfs
 reject_matches 'Identity Guard product surface is present' 'natsume-identity-guard|identity_guard|IdentityGuard' server client crates integration-tests packaging
@@ -129,7 +192,10 @@ reject_matches 'Web code branches on error title text instead of the stable code
 reject_matches 'quinn dependency or source usage is present' '(^|[^[:alnum:]_])quinn([^[:alnum:]_]|$)' Cargo.toml server client crates integration-tests packaging web
 reject_matches 'QUIC transport surface is present' '([Qq][Uu][Ii][Cc][[:space:]-]+(transport|control|gateway|session|client|listener|endpoint|over)|[Qq][Uu][Ii][Cc][[:space:]]*=|Device[[:space:]]+[Qq][Uu][Ii][Cc]|mTLS[[:space:]-]+[Qq][Uu][Ii][Cc])' server client crates integration-tests packaging web
 reject_matches 'custom length-prefix framing is present' 'encode_frame|decode_frame|length[-_[:space:]]*(prefix|delimited)' server client crates integration-tests packaging web
-reject_matches_except 'mTLS client-certificate verifier is present' 'WebPkiClientVerifier|ClientCertVerifier|client_auth' '^server/src/tls\.rs:[0-9]+:[[:space:]]*\.with_no_client_auth\(\);?[[:space:]]*$' server client crates integration-tests packaging web
+reject_matches 'mTLS server-side client-certificate verifier is present' \
+  "${mtls_server_verifier_pattern}" server client crates integration-tests packaging web
+reject_matches 'static mTLS client identity is present' \
+  "${mtls_presenting_client_pattern}" server client crates integration-tests packaging web
 reject_matches 'spreadsheet adapter surface is present' '(^|[^[:alnum:]_])(calamine|umya-spreadsheet|exceljs|sheetjs|xlsx-js-style)([^[:alnum:]_]|$)' server client crates integration-tests web package.json Cargo.toml
 reject_matches_except 'generic EXEC command capability is present' '(^|[^A-Za-z])EXEC([^A-Za-z]|$)|(^|[^A-Za-z0-9_])exec([^A-Za-z0-9_]|$)|::[[:space:]]*Exec|(^|[^A-Za-z0-9_])Exec[[:space:]]*[,({]' '(pnpm|npm|npx|yarn|cargo)[[:space:]]+(--filter[[:space:]]+[^[:space:]]+[[:space:]]+)?exec[[:space:]]' server client crates integration-tests packaging web
 reject_matches 'generic RUN_SHELL command capability is present' '(^|[^[:alnum:]_])(RUN_SHELL|RunShell|run_shell)([^[:alnum:]_]|$)' server client crates integration-tests packaging web

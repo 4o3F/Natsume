@@ -39,6 +39,7 @@ clap = { version = "4", default-features = false, features = ["derive", "std", "
 cookie = { version = "=0.18.1", default-features = false }
 diesel = { version = "2.3.12", default-features = false, features = ["sqlite", "r2d2"] }
 diesel_migrations = { version = "2.3.2", default-features = false, features = ["sqlite"] }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["alloc", "pkcs8", "zeroize"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }

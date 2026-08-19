@@ -9,11 +9,12 @@ ADR 记录“为什么选择”，不替代当前规范。当前行为由权威�
 | [0030](0030-foundation-deployment-and-delivery-baseline.md) | Foundation, deployment, and delivery baseline | ACCEPTED | 全局 / P0 / P1 / P7 |
 | [0031](0031-contest-import-and-secret-evidence.md) | Contest import and secret-evidence scope | ACCEPTED | P2 |
 | [0032](0032-device-identity-and-local-credential-lifecycle.md) | Device identity and local credential lifecycle | ACCEPTED | P3 |
-| [0033](0033-enrollment-and-device-control-boundary.md) | Enrollment and Device control boundary | ACCEPTED | P3 / P4 |
+| [0033](0033-enrollment-and-device-control-boundary.md) | Enrollment and Device control boundary | DEPRECATED | P3 / P4 current implementation until flag day |
 | [0034](0034-state-execution-and-data-plane-boundary.md) | State, execution, and data-plane boundary | ACCEPTED | P2 / P4 / P5 |
 | [0035](0035-session-home-and-desktop-cycle.md) | Session, Home, and desktop cycle | ACCEPTED | P0 / P6 |
 | [0036](0036-error-architecture-and-public-codes.md) | Error architecture and public codes | ACCEPTED | 全部 |
 | [0037](0037-operator-identity-and-server-runtime-secrets.md) | Operator identity and Server runtime secret material | ACCEPTED | P1 |
+| [0038](0038-unified-ordinary-wss-device-control-authority.md) | Unified ordinary-WSS Device control authority | ACCEPTED | P3 / P4 flag-day destination |
 
 ADR-0001～ADR-0029 已在一次性 consolidation 中退出 Git。旧 ID、原状态、替代关系和当前去向见 [`history-map.md`](history-map.md)。完整旧正文仅存在于本地 ignored archive，不是 clean clone 或 CI 的依赖。
 

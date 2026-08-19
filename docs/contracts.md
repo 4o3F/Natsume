@@ -4,6 +4,14 @@
 > 适用范围：HTTP、Enrollment、WSS Device control、Protobuf、D-Bus、CommandStatus 和公开错误  
 > 机器结构权威源：OpenAPI、Protobuf descriptor、D-Bus introspection、SQL migration 和生成代码
 
+## 0. 当前实现与已接受目标
+
+**当前实现**继续使用公开 HTTPS Enrollment、Device Token、Bearer-before-101、`natsume.v1`、单文件 production Proto 与当前 migration/OpenAPI；下文未标注为目标的条款仍是现行法律。
+
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：普通 WSS 内的 standalone Challenge/Proof/ClientInit、Ed25519 control key、动态 DeviceActor 与同 socket CredentialAck activation。Batch 0 的 private feasibility listener 不构成 route、wire、descriptor 或兼容性承诺。
+
+只有 atomic flag-day batch 可同时改写 production Proto、migration、OpenAPI、Server、daemon 与本文件现行条款；在此之前禁止混合 Token/key authority。
+
 本文件定义稳定语义，不复制完整 schema。字段名、编号和路由必须从机器 schema 生成或验证。未实现行为的完整字段表与 wire 结构延迟到对应 Phase 实现时由机器 schema 定义。
 
 ## 1. 契约原则
@@ -436,7 +444,7 @@ Device Daemon **不发送任意 Caddyfile、不使用 Caddy Admin API**。控制
   → 本地健康检查；失败回滚 LKG 配置文件
 ```
 
-执行前必须验证证书/私钥匹配与 SAN/有效期；**未验证配置不得激活**。含凭据的渲染配置是 secret artifact（`0640 root:natsume-gateway`）。`Accept-Encoding` 保持透传，不配置 `encode`（brotli 在 upstream 完成，ADR-0030 F5）。Session lock/unlock contract 不包含任何 Caddy 字段。
+执行前必须验证证书/私钥匹配与 SAN/有效期；**未验证配置不得激活**。含凭据的渲染配置是 secret artifact（`0640 natsume:natsume-gateway`）。`Accept-Encoding` 保持透传，不配置 `encode`（brotli 在 upstream 完成，ADR-0030 F5）。Session lock/unlock contract 不包含任何 Caddy 字段。
 
 ## 12. Stable ErrorCode
 

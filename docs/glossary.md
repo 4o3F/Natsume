@@ -2,6 +2,8 @@
 
 本文件只定义术语，不定义行为。行为以对应规范文档为准。
 
+2026-08-19 版本规则：未标注“ADR-0038 目标”的词条描述当前 Token 实现；目标词条只用于规划和评审，不表示 production wire/schema 已存在。
+
 | 术语 | 定义 |
 |---|---|
 | **Server truth** | Server 业务数据库中已经提交的权威领域事实；业务数据只表达当前事实，必要历史证据由 AuditEvent 保存。 |
@@ -17,7 +19,13 @@
 | **`frozen_payload_json`** | `commands` 的 typed object column，保存通过 per-kind schema 验证的 payload 的 JCS（RFC 8785）规范形，并与 `payload_version` 一起构成每 Command 的 frozen payload；它替代多个 frozen top-level columns 或 dispatcher metadata。 |
 | **Group correlation ID** | 可选、仅用于批量 Command 的查询和审计分组的关联值；不定义顺序、原子性、重试或跨 Device lifecycle。 |
 | **Device** | 一台受管理工作站的业务实体；`devices` row 只有 `device_pk`、unique `machine_hardware_id`、`hardware_identity_quality` 与 `state`。 |
-| **Device Token** | Enrollment 时 Server 生成的 32 字节不透明随机凭据；`device_tokens` row 以 `device_pk` 为键，保存唯一 `enrollment_request_id` 和 32-byte `token_hash`，不保存 TTL、timestamp 或 plaintext token。 |
+| **Device Token（当前实现）** | Enrollment 时 Server 生成的 32 字节不透明随机凭据；`device_tokens` row 以 `device_pk` 为键，保存唯一 `enrollment_request_id` 和 32-byte `token_hash`。ADR-0038 flag day 将删除它；Batch 0 不改变其 authority。 |
+| **Control key（ADR-0038 目标）** | Device 专用 Ed25519 control signing key，与 Gateway TLS key 分离；private key 只存在于 daemon-owned PKCS#8 文件，Server 只接收 public key。 |
+| **ServerChallenge（ADR-0038 目标）** | HTTP 101 后由 connection-local PreAuthSession 发送的一次性随机 challenge；不持久化、不跨连接查询。 |
+| **ClientProof（ADR-0038 目标）** | Device 对 Challenge、intent、control public key、Machine Hardware ID、attempt ID 与 exact ClientInit hash 的 Ed25519 proof。 |
+| **ClientInit（ADR-0038 目标）** | Client 在 Proof 前构造并哈希、Proof 后逐字节发送的 standalone 帧；不是 active envelope。 |
+| **CredentialBundle（ADR-0038 目标）** | Server 持久化并逐字节重放的 immutable public credential bundle；client durable CredentialAck 后才可激活对应 authority。 |
+| **DeviceActor（ADR-0038 目标）** | 动态 registry 按需创建、进程内不淘汰的单 Device 排序点；Machine Hardware ID 只负责 shard routing，DeviceId 与 persisted key IDs 是 aliases。 |
 | **Provisioning window** | `provisioning_window` 的当前 singleton 开关：`state`、`revision`、`last_audit_event_id`。开启期间 Enrollment 可签发 Device Token 与 Gateway certificate；关闭后不存在任何签发路径。恢复只会将已打开状态 close-once，不会自动打开。 |
 | **close-once** | provisioning 窗口恢复语义：只关闭一次观察到的 `open` current-fact，后续 `closed` observation 不形成第二次恢复事件。 |
 | **Gateway certificate** | provisioning 窗口内经 Enrollment 签发、供本机 Caddy loopback HTTPS 使用的证书；`gateway_certificates` 保存 `certificate_id`、`device_pk`、`enrollment_request_id`、serial、SPKI hash、not-after、status，而不保存 certificate body；私钥在 Client 本地生成且不离机。 |
@@ -36,7 +44,7 @@
 | **Import Discard** | Operator 显式终止尚未提交的 candidate：在同一事务删除 `pending_import_candidate` 与其引用的 encrypted payload vault row，并保留 redacted audit；不改变 confirmed configuration、binding、revision 或 Target。 |
 | **Session epoch** | 当前受管桌面会话的身份代际；会话操作必须绑定该 epoch。 |
 | **Home epoch** | 每次 `HOME_RESET` 由 Server 分配的严格单调身份代际；不得跨 epoch 复用未证明安全的结果。 |
-| **Client 凭据文件** | Device 本地 root-owned 权限文件（Device Token、Gateway key/leaf、Seat 凭据、LKG），原子写，无应用层加密（ADR-0032）。 |
+| **Client 凭据文件** | Device 本地 service-user-owned 权限文件：Device Token、Seat 凭据与 identity record 为 `0600 natsume:natsume`，Gateway key/leaf 与含凭据 Caddy 配置为 `0640 natsume:natsume-gateway`；全部原子写，无应用层加密（ADR-0032）。 |
 | **Server vault** | `server_vault_records` 中的应用层加密秘密存储。每个 `(record_type, subject_id)` 只有一个 row；row 只有 `vault_record_id`、type/subject、nonce 和 ciphertext，不含 format/key/AAD version 或 timestamp。 |
 | **AuditEvent** | 具有 `audit_event_id`、由 audited guarded operation 自行插入并与敏感领域 mutation 原子提交的 redacted 证据；fresh ID 可作为 typed operation input，但已持久化的同 ID 或预插入 audit row 不能重放为新 mutation 的依据。其 envelope 只有 occurred-at、actor、action kind、resource type/optional ID、result、optional reason code、correlation ID、optional group correlation ID 和 typed `redacted_detail_json`；revision/count 等 event-specific detail 只在该 JSON 内。 |
 | **guarded operation** | 具有显式 guard，并在一个 transaction 内原子提交敏感领域 mutation 与其 typed `AuditEvent` 的领域操作。 |

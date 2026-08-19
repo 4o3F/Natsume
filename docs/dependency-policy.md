@@ -76,7 +76,7 @@ CLI argument parser 只允许分派封闭 runtime mode，不得演变为配置�
 
 ## 5. TLS 与控制通道
 
-全部入口为 server-auth TLS（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）：Operator HTTP、Enrollment 与 Device WSS 共用同一 rustls 栈与同一 TCP 端口，不引入第二个协议栈（无 quinn/QUIC、无独立 HTTP/2 gRPC 栈）。
+当前全部入口为 server-auth TLS；production Token/Enrollment/WSS 仍按 `DEPRECATED` 但有效至 flag day 的 [ADR-0033](adr/0033-enrollment-and-device-control-boundary.md) 运行，[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 只定义尚未生效的 ordinary-WSS Ed25519 目标。Operator HTTP、Enrollment 与 Device WSS 共用同一 rustls 栈与同一 TCP 端口，不引入第二个协议栈。
 
 必须显式：
 
@@ -89,7 +89,18 @@ CLI argument parser 只允许分派封闭 runtime mode，不得演变为配置�
 - max frame/connection limits；
 - 签发侧的 certificate profile 与 key usage（Gateway）。
 
-测试 helper 不能被 production build 导出为 dangerous verifier。Device Token 比对必须常数时间。
+测试 helper 不能被 production build 导出为 dangerous verifier。当前 Device Token 比对必须常数时间，直到 atomic flag day 删除该 surface。
+
+### 5.1 Batch 0 Ed25519 feasibility 准入
+
+- **consumer**：仅 `integration-tests/tests/ordinary_wss_ed25519_feasibility.rs` 的 private listener；Batch 0 的 Server、daemon、`device-protocol` 与 packaging artifact 均不是 consumer。
+- **问题**：证明普通 server-auth TLS 1.3 + RFC 6455 101 后可以用 PKCS#8 Ed25519 key 完成 connection-local Challenge/Proof、strict verify、exact ClientInit hash binding 与 clean close。
+- **dependency/features**：workspace 准入 `ed25519-dalek 2.2`，关闭 defaults，只启用 `alloc`、`pkcs8`、`zeroize`；key/nonce entropy 继续使用 workspace `getrandom 0.4`，不启用第二套 RNG stack。
+- **closure/licenses**：dev-only closure包含 `curve25519-dalek 4`、`ed25519 2`、`signature 2`、`pkcs8/der/spki/const-oid`、`fiat-crypto` 与 `sha2 0.10`；许可证为既有allowlist内的 BSD-3-Clause / MIT / Apache-2.0 组合。该closure不得因workspace feature unification进入production package，后续production准入需单独复审。
+- **供应链/重复版本**：`deny.toml` 显式启用 `licenses.include-dev` 与 `bans.multiple-versions-include-dev`。除 workspace `cargo deny check` 外，Batch 0 必须运行 `cargo deny --manifest-path integration-tests/Cargo.toml check`，使 dev-only Dalek 闭包进入 advisory/license/source 与 duplicate-version 检查；`sha2 0.10.9` 只允许一个带移除条件的 exact-version skip，不得因该 closure 新增通用放宽。若 production 采用，必须重新登记实际 reverse-dependency 图与移除条件。
+- **边界**：test-private fixed frame不是 production protocol、generated code 或 future wire substitute；listener使用private CA和正常rustls验证，不导出dangerous verifier、feature或环境开关。
+- **替代方案**：手写Ed25519、shell/OpenSSL probe、复用Gateway key均不接受。
+- **迁移条件**：后续production batch若采用该依赖，必须把consumer/owner迁入明确production crate并重新审查feature/closure；若目标否决，则连同isolated test和dependency删除。
 
 - **2026-08-17 WebSocket 依赖记录**：workspace 对 `tokio-tungstenite 0.29.0` 使用精确 pin，并有意启用其私有 `__rustls-tls` feature，以避开平台 TLS 与公共根证书等不需要的 feature；该私有 feature 变化时必须显式复审后再升级。axum 的服务端 WSS 与 daemon 的客户端 WSS 会把 tungstenite 的 `rand 0.9` / `getrandom 0.3` 以及 RFC 6455 握手所需的 `sha1` 同时链接进**生产 server 与生产 daemon**，因此两边都受 locked CI、`cargo deny` 与 feature closure 审查约束。
 - **2026-08-17 生产 packaging graph**：入包 Rust binary 必须从隔离 target directory 中的显式生产 package 集合构建，因为 workspace-wide build 会把 integration-only feature 统一进生产 artifact；package smoke 必须通过 compiler `cfg` 断言拒绝此类泄漏。

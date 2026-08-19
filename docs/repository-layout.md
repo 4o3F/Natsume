@@ -3,6 +3,14 @@
 > 状态：`NORMATIVE`  
 > 原则：原生工具拥有各自依赖图；部署进程不等于代码级巨型模块
 
+## 0. ADR-0038 分批所有权
+
+当前 production owner 与模块边界保持不变。Batch 0 唯一 executable artifact 是 `integration-tests/tests/ordinary_wss_ed25519_feasibility.rs` 及其同名子目录；它拥有 private listener、test-only frame codec 与 deterministic vectors，production crate 不得 import。
+
+后续目标所有权已接受但尚未创建：`http/device_control` 拥有 PreAuth transport，`application/device/control` 拥有动态 registry/actor/lease，`db/device` 维持单表 adapter，`device-protocol` 拥有拆分后的 future wire adapter，daemon `control` 拥有 key/manifest/session。
+
+新 Rust 子模块继续使用 `parent.rs + parent/child.rs`，禁止 `mod.rs`。Atomic flag day 前不得创建第二个启用的 production registry、route、proto package 或 daemon connection loop。
+
 ## 1. 顶层目录
 
 ```text

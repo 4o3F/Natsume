@@ -1,10 +1,12 @@
 # ADR-0033: Enrollment and Device control boundary
 
-> Status: `ACCEPTED`
+> Status: `DEPRECATED`
 > Scope: provisioning-window Enrollment, Gateway certificate authority, Device Token lifecycle, and WSS Device control
 > Consolidates: ADR-0012, ADR-0016, ADR-0021, ADR-0023
 > Supersedes: consolidated historical records; see [`history-map.md`](history-map.md)
-> Superseded by: —
+> Superseded by: [ADR-0038](0038-unified-ordinary-wss-device-control-authority.md)
+
+> 2026-08-19 implementation note: production still implements this Token/HTTPS boundary until ADR-0038's atomic flag-day cutover. This record remains the rationale for the current implementation, not the accepted destination.
 
 ## Context
 
@@ -77,7 +79,7 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 ### Negative / trade-offs
 
 - provisioning window 是敏感持久状态，需要严格操作与恢复纪律。
-- Device Token 是 bearer credential，安全依赖正确 TLS 验证和 root-owned local storage。
+- Device Token 是 bearer credential，安全依赖正确 TLS 验证和 `0600 natsume:natsume` service-user local storage。
 - 窗口关闭后不进行常规 Token/leaf rotation，validity 必须赛前正确选择。
 - 当前边界不适用于 cross-internet、multi-site 或第三方 Device identity verification。
 - 更换主板或磁盘导致 SPKI 与 hardware ID 同时变化的真实机器，其重新 Enrollment 仅在既有 Device 仍为 `enrolled` 时可由现场 operator 审批；`disabled` / `revoked` Device 不能借 Enrollment 复活。Device 侧因此必须实现幂等轮询而非一次性请求。

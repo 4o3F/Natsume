@@ -3,7 +3,9 @@
 > 状态：`DRAFT-PLAN`（2026-08-16 起草）
 > 适用：Phase 5 启动时提升为 `docs/gates/phase-5-status.md` 的启动分解基线，届时按最新事实修订
 > 权威来源：[路线图](../roadmap.md) §Phase 5 与 G5 覆盖、[契约](../contracts.md) §7/§8/§9/§11/§12、[状态与执行模型](../state-and-execution.md) §3–§6、[ADR-0034](../adr/0034-state-execution-and-data-plane-boundary.md)
-> 前置：Phase 4 全部 WP 关闭（尤其 WP5 Device 侧 WSS client / journal / Observed——Phase 5 的 Device 侧全部建立其上）
+> 前置：Phase 4 全部 WP 关闭；并先关闭 ADR-0038 flag-day sequencing blocker（见 E4）
+
+**2026-08-19 blocker**：本计划按当前 Token Enrollment、daemon credential paths 与当前 WSS client 起草；[ADR-0038](../adr/0038-unified-ordinary-wss-device-control-authority.md) 已接受 destructive destination。Owner 必须先决定 Phase 5 位于 atomic cutover 前还是后，并据此重基线 credential/session inputs；禁止实现混合 Token/control-key compatibility。
 
 本文件是计划，不是完成声明。遵守 [路线图](../roadmap.md) §1 原则 5：细目在 Phase 启动时冻结，本文件提供该冻结的候选基线与决策清单。
 
@@ -20,6 +22,7 @@
 | E1 | DOMjudge lab 实访复核：snapshot 标识、`auth_methods` 实含 xheaders、brotli 已启用、upstream `/login` TLS 且链可验、该版本仍执行 password verification | G0 条目 9 的 owner 裁定把实访移出 G0 并指定为 Phase 5 入场检查项 | 阻塞 WP5；WP1–WP4 可先行 |
 | E2 | Phase 4 WP5（Device WSS client / journal / Observed）与 WP6（缩比容量探针）关闭 | Device 侧无投递通道则 WP4/WP6 无从执行 | 阻塞全部 Device 侧 WP |
 | E3 | 时钟 skew 容差冻结（当前 `ENV-UNFROZEN`） | [支持平台](../supported-platform.md) 时钟纪律；Target freshness 与证书窗口静默依赖 | 阻塞 WP4 freshness 判定 |
+| E4 | 冻结 ADR-0038 atomic cutover 与 Phase 5 的先后；禁止 Token/key 或 old/new registry 混合路径 | ADR-0038 flag-day约束 | 阻塞本计划提升为Gate status及WP1/WP4/WP6编码 |
 
 ## 3. 已冻结事实（不得重新设计）
 

@@ -6,6 +6,14 @@
 > 校准基线：[ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md)
 > 相关文档：[领域模型](domain-model.md) · [边界契约](contracts.md) · [状态与执行](state-and-execution.md) · [安全与恢复](security-recovery.md)
 
+## 0. 当前拓扑与目标拓扑
+
+正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 是当前实现拓扑，在 atomic cutover 前保持权威且字节兼容。
+
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 接受但尚未实现的目标是：普通 server-auth TLS/WSS 内完成 Challenge/Proof/ClientInit，由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 完成 Enrollment、CredentialBundle、CredentialAck 与 Active transition。
+
+Batch 0 只增加决策、依赖准入和 private feasibility listener，不改变 production listener/router、daemon、descriptor、database 或公开 API。
+
 ## 1. 目标
 
 Natsume 为单场竞赛现场提供以下能力：
