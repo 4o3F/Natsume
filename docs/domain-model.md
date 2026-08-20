@@ -71,11 +71,11 @@ wire 上的 `binding_revision`（`TargetAssignment` / `SyncSecret` / `BindingRes
 
 - 只接受固定三列 UTF-8 CSV（可带 BOM）；不接受额外列、XLSX/ODS、公式、列映射或自动猜测；
 - **全局同一时刻最多一个 encrypted pending candidate**；`pending_import_candidate` singleton row 存在即为 pending，严格解析失败不落库；
-- pending candidate 只保留 `candidate_id`、`expires_at`、`baseline_configuration_revision`、`baseline_binding_revision`、`preview_token_hash`、`payload_vault_record_id` 与 `redacted_preview_json`，不使用 import state/history；
+- pending candidate 只保留 `candidate_id`、`expires_at`、`baseline_configuration_revision`、`preview_token_hash`、`payload_vault_record_id` 与 `redacted_preview_json`，不使用 import state/history，也不保存 Binding baseline；
 - `password` 只进入加密 staging 和 secret commit path，明文不进任何普通 surface；
 - Commit、discard 与 expiry 在其事务中删除 candidate 和 `payload_vault_record_id` 所引用的 `server_vault_records` row，只留下 redacted audit lineage；这不承诺 SQLite/WAL/backup 的取证级物理擦除；
-- Commit 校验为双 CAS：baseline `configuration_revision` + `binding_revision`；任一失配 → 拒绝并重新 preview，**不改变 confirmed configuration、binding、Target truth 或相关 revision**；
-- `configuration_revision` 只在 Seat 集合或 Seat→Account mapping 实际改变时推进——二者都是非秘密事实，无需接触秘密即可比较；`BindingRevision` 只在 Binding 集合实际改变时推进，包括 import 删除已绑定 Seat；
+- Commit 只 CAS baseline `configuration_revision`；失配 → `IMPORT_PREVIEW_STALE` 并重新 preview。CSV 将删除的座位若 commit 时仍有 Binding → `IMPORT_SEATS_STILL_BOUND`。两条拒绝都**不改变 confirmed configuration、binding、Target truth 或相关 revision**。Import 零 `device_bindings` 写入；
+- `configuration_revision` 只在 Seat 集合或 Seat→Account mapping 实际改变时推进——二者都是非秘密事实，无需接触秘密即可比较；`BindingRevision` 只在 bind / unbind / rebind 时推进，Import 不得推进它；
 - **已提交的 Import Commit 无条件替换新确认配置中每个 Account 的 vault ciphertext（新 nonce）并推进其 `credential_revision`**；不做任何明文比较，preview 也不分类或展示密码内容是否变化。因此每次成功 import 之后全部已绑定 Device 的已安装 credential revision 都是陈旧的，操作员必须显式发起批量 `SYNC_SECRET`（N 个独立 Command）；import 本身仍然零 Command、零 Device I/O（`INV-SECRET-02` 不变）；
 - 任何 `INVALID`（结构性错误、candidate 内重复 account、空或仅 header candidate）、expiry 或 discard 同样不改变 confirmed configuration、binding、Target 或 revision；
 - Import Commit 不创建 Command，不自动执行 `SYNC_STATE` 或 `SYNC_SECRET`，不产生 Device I/O；
@@ -99,7 +99,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 - `account_mappings` 是 confirmed contest configuration 内的一对一当前 Seat→Account mapping：`seat_id` 是主键、`account_id` 是 unique；没有 mapping row 表示 Seat 当前无 Account。它属于 `configuration_revision`，不保存 superseded/unassigned/history 行。
 - `device_bindings` 是 Seat↔Device 的一对一当前关系：`seat_id` 是主键、`device_pk` 是 unique、每 row 有正的 `binding_revision`；解绑通过删除当前关系表达。
 - `device_bindings` 只以 foreign key 关联当前 confirmed contest configuration 中的 Seat 与 `devices.device_pk`；允许何种 `devices.state` 的绑定由 domain policy 校验，不另建 schema constraint。
-- bind、unbind、rebind 或 import 删除已绑定 Seat 是 Binding-set mutation，必须以全局 `BindingRevision` CAS 原子提交；保留的 Seat code 上的 Binding 在 Account/password 变化时保持不变。
+- bind、unbind、rebind 是唯一的 Binding-set mutation，必须以全局 `BindingRevision` CAS 原子提交。Import 不得增删改 Binding；将删除且仍绑定的座位使 Import Commit 拒绝。保留的 Seat code 上的 Binding 在 Account/password 变化时保持不变。
 - **binding 修改只改变 Server truth 和 Target，不自动同步 Device；** secret sync 必须绑定发起时的 Seat、Device 和 BindingRevision。
 
 ## 6. Credential

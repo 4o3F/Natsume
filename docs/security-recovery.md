@@ -332,9 +332,9 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 以下动作必须审计：
 
 - CSV upload / preview / Import Commit / discard / expiry，以及 candidate/payload 的终态删除；
-- import stale reject、expiry reject、binding-stale reject；
+- import stale reject、expiry reject、将删座位仍绑定的拒绝；
 - no-op Import Commit（仅 lineage；无 configuration/binding revision bump、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
-- material Import Commit 的 atomic unbind impact（受影响 Seat/Device 计数与允许的 identity）；
+- material Import Commit（零 Binding 写入；`binding_impacts` 只出现在拒绝路径的 redacted 计数）；
 - account/credential revision 变化；
 - provisioning 窗口正常开启/关闭与 `system:recovery` close-once；
 - Device Enrollment（含凭据替换请求的 operator 批准与拒绝、替换语义 re-enrollment 与“旧连接存活时被替换”异常事件）、retire、delete；

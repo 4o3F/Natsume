@@ -293,7 +293,7 @@ database / credential / protocol / OS adapters
 | Device Token（哈希）与 Gateway certificate 终态 | device | WSS 认证与 Enrollment adapter；`device_tokens` 仅保存 device/request/hash |
 | Enrollment request workflow | device | Enrollment HTTP、operator review、凭据签发 |
 | provisioning 窗口 | provisioning | Enrollment、Web |
-| 当前 Seat↔Device Binding | contest-domain | Target、session；Binding-set mutation 以全局 `BindingRevision` CAS |
+| 当前 Seat↔Device Binding | contest-domain | Target、session；Binding-set mutation 仅 bind/unbind/rebind，以全局 `BindingRevision` CAS。Import 不写入 Binding |
 | Target | configuration-target | dispatcher、Web |
 | Observed snapshot | device-control | Drift、Web；按 `device_pk` 的 current row |
 | direct single-Device Command | command-dispatch | Web、audit；Panel-owned UUIDv7 ID，typed content 位于 `frozen_payload_json` |
@@ -316,14 +316,15 @@ upload（全局单 encrypted pending candidate）
   → encrypted staging + current candidate row
   → server-computed redacted preview（opaque preview_token）
   → explicit Import Commit
-  → 对 `revision_counters` 的双 CAS（configuration_revision + binding_revision）
-  → atomic unbind-and-replace（仅当存在待解绑 bound Seat）
+  → CAS `configuration_revision`
+  → 将删座位若仍绑定则拒绝（IMPORT_SEATS_STILL_BOUND，零写入）
+  → 替换 Seat / mapping / credentials（零 Binding 写入）
   → redacted AuditEvent
   → candidate + payload terminal deletion
   → Target 可重算（仅非秘密 material 变化时）
 ```
 
-每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 的变化推进 `revision_counters.configuration_revision`，Binding-set 变化才推进全局 `BindingRevision`。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不提升 configuration/binding revision、不触发 Target churn。material 与 no-op 都只在**非秘密**维度上定义：任何已提交的 import 都无条件以新 nonce 替换每个 Account 的 vault ciphertext 并推进其 `credential_revision`（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)），随后由操作员显式发起批量 `SYNC_SECRET`。commit、discard 和 expiry 终止 candidate 时删除 `pending_import_candidate` 及其引用 payload vault row，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O。任一 CAS 失配须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
+每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 的变化推进 `revision_counters.configuration_revision`，**仅 bind/unbind/rebind** 才推进全局 `BindingRevision`。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不提升 configuration/binding revision、不触发 Target churn。material 与 no-op 都只在**非秘密**维度上定义：任何已提交的 import 都无条件以新 nonce 替换每个 Account 的 vault ciphertext 并推进其 `credential_revision`（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)），随后由操作员显式发起批量 `SYNC_SECRET`。commit、discard 和 expiry 终止 candidate 时删除 `pending_import_candidate` 及其引用 payload vault row，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O，**不修改 Binding**。`configuration_revision` CAS 失配或将删座位仍绑定须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
 
 ### 8.2 Device Enrollment（provisioning 窗口内）
 
