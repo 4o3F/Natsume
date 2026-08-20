@@ -11,7 +11,7 @@
 | **Observed snapshot** | Device 报告的实际可观察状态。它是设备应用状态的唯一业务来源。 |
 | **Drift** | Target 与最新有效 Observed snapshot 的差异。 |
 | **current-fact（当前事实）** | 业务表所保存的当前权威事实；不可替代的历史仅限 redacted `AuditEvent`，以及在所属表段落显式声明了保留理由与消费者的终态行。 |
-| **Identifier（surrogate 标识符）** | Server 或 Panel 生成、对外可见且不承载业务自然语义的标识符；本契约中的 `device_pk`、`operator_id`、`account_id`、`audit_event_id`、`vault_record_id`、`correlation_id`、`group_correlation_id`、`command_id` 与 `enrollment_request_id` 均以 canonical lowercase hyphenated UUIDv7 表示。`seat_id` 与 `machine_hardware_id` 是业务自然键，不属于该术语。 |
+| **Identifier（surrogate 标识符）** | Server 或 Panel 生成、对外可见且不承载业务自然语义的标识符；本契约中的 `device_pk`、`operator_id`、`account_id`、`audit_event_id`、`correlation_id`、`group_correlation_id`、`command_id` 与 `enrollment_request_id` 均以 canonical lowercase hyphenated UUIDv7 表示。`seat_id` 与 `machine_hardware_id` 是业务自然键，不属于该术语。vault 不是独立资源，不存在 `vault_record_id`，按 `account_id` 与 `accounts` join。 |
 | **Command** | 面向单台 Device 的持久化、可重试远端意图。`commands` 只保存一个 current row；相同 ID 的重投递不会变成第二个业务执行。 |
 | **Command ID / `command_id`** | Panel 在提交前生成的 canonical lowercase hyphenated UUIDv7。相同 ID 原样贯穿 HTTP、Server Command、WSS、Device journal、CommandStatus 和 per-Command audit correlation。 |
 | **Canonical request fingerprint** | Server 对经 JCS（RFC 8785）规范化、versioned 且 domain-separated 的 canonical Command request 计算的 SHA-256，并持久化为 `request_fingerprint_version` 与 `request_fingerprint_sha256`；算法由[契约](contracts.md#command-request-fingerprint-v1)的「Command request fingerprint v1」小节冻结。它区分同一 `command_id` 的 replay 与冲突；不包含 frozen timestamps、actor、session 或 retry time。 |
@@ -45,7 +45,7 @@
 | **Session epoch** | 当前受管桌面会话的身份代际；会话操作必须绑定该 epoch。 |
 | **Home epoch** | 每次 `HOME_RESET` 由 Server 分配的严格单调身份代际；不得跨 epoch 复用未证明安全的结果。 |
 | **Client 凭据文件** | Device 本地 service-user-owned 权限文件：Device Token、Seat 凭据、identity record、dormant `control-key-1.pk8` 与 control manifest 为 `0600 natsume:natsume`，Gateway key/leaf 与含凭据 Caddy 配置为 `0640 natsume:natsume-gateway`；全部原子写，无应用层加密（ADR-0032）。 |
-| **Server vault** | `server_vault_records` 中的应用层加密秘密存储，只保存当前 Account 的 DOMjudge 密码。每个 `account_id` 只有一个 row；row 只有 `vault_record_id`、`account_id`、nonce 和 ciphertext，不含 `record_type`/`subject_id`、format/key/AAD version 或 timestamp。 |
+| **Server vault** | `server_vault_records` 中的应用层加密秘密存储，只保存当前 Account 的 DOMjudge 密码。`accounts` 为父表；vault 以 `account_id` 为 PRIMARY KEY 且 `REFERENCES accounts(account_id) ON DELETE CASCADE`，每个 Account 至多一行。row 只有 `account_id`、nonce 和 ciphertext，不含 `vault_record_id`、`record_type`/`subject_id`、format/key/AAD version 或 timestamp。同一事务先插 Account 再插 vault；删除 Account 级联删除 vault。 |
 | **AuditEvent** | 具有 `audit_event_id`、由 audited guarded operation 自行插入并与敏感领域 mutation 原子提交的 redacted 证据；fresh ID 可作为 typed operation input，但已持久化的同 ID 或预插入 audit row 不能重放为新 mutation 的依据。其 envelope 只有 occurred-at、actor、action kind、resource type/optional ID、result、optional reason code、correlation ID、optional group correlation ID 和 typed `redacted_detail_json`；revision/count 等 event-specific detail 只在该 JSON 内。 |
 | **guarded operation** | 具有显式 guard，并在一个 transaction 内原子提交敏感领域 mutation 与其 typed `AuditEvent` 的领域操作。 |
 | **`system:recovery`** | [审计词汇注册表](contracts.md#当前-auditevent-词汇注册表)中表示启动或恢复路径的系统 actor 值。 |

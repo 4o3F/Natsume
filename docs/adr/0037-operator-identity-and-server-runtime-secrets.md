@@ -24,7 +24,7 @@ Phase 1 要交付 operator auth 与 audit 原子性，必须先确定这两类�
 
 **2026-08-15 修订**：vault record 加密冻结为 XChaCha20-Poly1305（RustCrypto `chacha20poly1305`），密钥为 32 字节主密钥本体，nonce 为每 record 24 字节 CSPRNG；主密钥文件格式不变。record 密文不绑定 AAD——主密钥与数据库同属同一 0700 私有状态目录与同一 uid；此为有意立场（与 ADR-0032 不保存 ciphertext format/AAD/key version 一致），若未来出现跨信任边界的密文搬运再重开。
 
-**2026-08-20 修订**：删除 `import_payload` vault type 与 `record_type`/`subject_id` 列。`server_vault_records` 只保存当前 Account 的 DOMjudge 密码；行身份由 unique `account_id` 约束（与 `accounts.account_id` 同值，无指向 accounts 的 FK）。
+**2026-08-20 修订**：删除 `import_payload` vault type 与 `record_type`/`subject_id` 列。`accounts` 为父表，无 `credential_vault_record_id`。`server_vault_records` 只保存当前 Account 的 DOMjudge 密码；以 `account_id` 为 PRIMARY KEY 且 `REFERENCES accounts(account_id) ON DELETE CASCADE`，无独立 `vault_record_id`。同一事务先插 Account 再插 vault；删除 Account 级联删除 vault。
 
 **唯一 first admin 只由离线、交互式 `bootstrap` 创建。** operator 在 TTY 上以 `natsume-server` 用户手工运行该 subcommand；login name 从 TTY 读取，password 不回显地读取两次。account 只在 `operator_accounts` 为空时与 typed audit row 同事务创建；重复 bootstrap 零业务写入并失败。password 不得来自 argv、环境变量、systemd credential、配置文件或 packaging script，`postinstall` 不得调用 `bootstrap`。
 

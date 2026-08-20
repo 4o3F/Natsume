@@ -288,7 +288,7 @@ database / credential / protocol / OS adapters
 |---|---|---|
 | confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV；无 Seat-universe freeze 或业务 snapshot history |
 | account 标识与当前 Seat→Account mapping | contest-domain | Target、Web；`account_mappings` 由 Import Commit 唯一写入 |
-| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 每个 Account 仅当前 ciphertext |
+| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 按 `account_id` 与 `accounts` 一对一 join，每个 Account 仅当前 ciphertext，无独立 `vault_record_id` |
 | Device lifecycle | device | Web、Target |
 | Device Token（哈希）与 Gateway certificate 终态 | device | WSS 认证与 Enrollment adapter；`device_tokens` 仅保存 device/request/hash |
 | Enrollment request workflow | device | Enrollment HTTP、operator review、凭据签发 |

@@ -8,18 +8,6 @@ CREATE TABLE site_identity (
     fleet_namespace_uuid TEXT NOT NULL UNIQUE
 ) STRICT;
 
--- Current-fact AEAD store for Account passwords only. No import staging, no history rows.
-CREATE TABLE server_vault_records (
-    -- Canonical lowercase UUIDv7 identifier for this vault row.
-    vault_record_id TEXT PRIMARY KEY,
-    -- Matches accounts.account_id. No FK: accounts references this row (insert vault first).
-    account_id TEXT NOT NULL UNIQUE,
-    -- AEAD nonce (XChaCha20-Poly1305: 24 bytes in the vault implementation).
-    nonce BLOB NOT NULL CHECK (length(nonce) > 0),
-    -- AEAD ciphertext of the current DOMjudge password; plaintext never stored.
-    ciphertext BLOB NOT NULL CHECK (length(ciphertext) > 0)
-) STRICT;
-
 CREATE TABLE seats (
     seat_id TEXT PRIMARY KEY,
     seat_code TEXT NOT NULL UNIQUE
@@ -68,11 +56,22 @@ CREATE TABLE operator_sessions (
 ) STRICT;
 
 CREATE TABLE accounts (
+    -- Canonical lowercase UUIDv7. Parent of the password vault row.
     account_id TEXT PRIMARY KEY,
+    -- DOMjudge login name in the current confirmed configuration.
     domjudge_username TEXT NOT NULL UNIQUE,
-    credential_vault_record_id TEXT NOT NULL UNIQUE
-        REFERENCES server_vault_records(vault_record_id),
+    -- Current secret generation for SYNC_SECRET fencing. Every successful Import Commit increments it.
     credential_revision INTEGER NOT NULL CHECK (credential_revision >= 1)
+) STRICT;
+
+-- Current-fact AEAD store for Account passwords. Insert account first, then this row.
+CREATE TABLE server_vault_records (
+    -- FK and PK: one ciphertext per Account. Cascades when the Account is deleted.
+    account_id TEXT PRIMARY KEY REFERENCES accounts(account_id) ON DELETE CASCADE,
+    -- AEAD nonce (XChaCha20-Poly1305: 24 bytes in the vault implementation).
+    nonce BLOB NOT NULL CHECK (length(nonce) > 0),
+    -- AEAD ciphertext of the current DOMjudge password; plaintext never stored.
+    ciphertext BLOB NOT NULL CHECK (length(ciphertext) > 0)
 ) STRICT;
 
 CREATE TABLE account_mappings (

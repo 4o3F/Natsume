@@ -28,7 +28,7 @@
 
 ### 1.1 Identifier
 
-以下 Server/Panel 生成的 surrogate public identifier 必须是 canonical lowercase hyphenated UUIDv7：`device_pk`、`operator_id`、`account_id`、`audit_event_id`、`vault_record_id`、`correlation_id`、`group_correlation_id`、`command_id` 与 `enrollment_request_id`。其中 `command_id` 由 Panel 生成，其余由 Server 生成。`device_pk` 在 wire 上的名字是 `device_id`（对应关系见 §3.6.1）。
+以下 Server/Panel 生成的 surrogate public identifier 必须是 canonical lowercase hyphenated UUIDv7：`device_pk`、`operator_id`、`account_id`、`audit_event_id`、`correlation_id`、`group_correlation_id`、`command_id` 与 `enrollment_request_id`。其中 `command_id` 由 Panel 生成，其余由 Server 生成。`device_pk` 在 wire 上的名字是 `device_id`（对应关系见 §3.6.1）。`server_vault_records` 不是独立资源，不存在 `vault_record_id`；按 `account_id` 与 `accounts` join。
 
 业务自然键明确不属于该 Identifier 契约：`seat_id` 是 seat code，`machine_hardware_id` 是按固定配方派生的 hash。该约束的 guard 位于 HTTP/WSS 边界；SQL 列继续使用 `TEXT`，schema tests 会有意插入非 UUID 值。
 
@@ -150,7 +150,7 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 
 **2026-08-20 修订（Import 不修改 Binding，且取消 revision CAS）**：Import Commit 零 `device_bindings` 写入、不铸造 Binding stamp。已删除 `revision_counters`；candidate / preview / pending read 删除 `baseline_configuration_revision` 与 `baseline_binding_revision`；commit 成功体删除 `configuration_revision` 与 `binding_revision`，返回 `{}`。Commit 不对任何 revision 做 CAS；preview→commit 锁是 singleton pending candidate。将删座位在 commit 时仍绑定 → `409 IMPORT_SEATS_STILL_BOUND`。从 live catalog 与 HTTP mapping 删除 `IMPORT_PREVIEW_STALE`（预发布原位 BC；G0 已关闭，但可移除未使用的 import CAS 码）。`binding_impacts[]` 保留为 blocker 预告。实现与 OpenAPI / schema 须同批收口；在此之前不得把旧 unbind-and-replace 或 import revision CAS 行为当作规范。
 
-**2026-08-20 修订（preview 不持久化密码）**：删除 `import_payload` vault type 与 `IMPORT_COMMIT_BODY_LIMIT_BYTES`。preview 只持久化非秘密 pending 草稿并返回 preview，零 vault 写入。commit 请求体改为同一 CSV，`preview_token` 仅经 `Natsume-Preview-Token` header。新增稳定码 `IMPORT_CANDIDATE_MISMATCH` / `409`（audit `reason_code` 为 `nonsecret_mismatch`）；不得折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`。实现与 OpenAPI / schema 须同批收口；在此之前不得把 encrypted whole-CSV staging 或 `{preview_token}` JSON commit body 当作规范。
+**2026-08-20 修订（preview 不持久化密码）**：删除 `import_payload` vault type 与 `IMPORT_COMMIT_BODY_LIMIT_BYTES`。preview 只持久化非秘密 pending 草稿并返回 preview，零 vault 写入。commit 请求体改为同一 CSV，`preview_token` 仅经 `Natsume-Preview-Token` header。新增稳定码 `IMPORT_CANDIDATE_MISMATCH` / `409`（audit `reason_code` 为 `nonsecret_mismatch`）；不得折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`。`accounts` 为父表（`account_id`、`domjudge_username`、`credential_revision`），无 `credential_vault_record_id`。`server_vault_records` 在 `accounts` 之后创建，以 `account_id` 为 PK/FK（`ON DELETE CASCADE`），列为 `nonce`、`ciphertext`，无 `vault_record_id`；同一事务先插 Account 再插 vault。vault 不再列入 Identifier 目录。实现与 OpenAPI / schema 须同批收口；在此之前不得把 encrypted whole-CSV staging、`{preview_token}` JSON commit body、独立 `vault_record_id` 或 accounts→vault 反向 FK 当作规范。
 
 ### 3.5 Direct Command creation
 

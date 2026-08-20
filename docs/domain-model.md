@@ -31,13 +31,13 @@ Control-key history、live FIRST reservation、immutable CredentialBundle 与动
 | 表名 | 职责 |
 |---|---|
 | `site_identity` | 站点身份（fleet namespace UUID） |
-| `server_vault_records` | 当前 Account 的 DOMjudge 密码密文 |
+| `accounts` | 竞赛账户（`server_vault_records` 的父表） |
+| `server_vault_records` | 当前 Account 的 DOMjudge 密码密文（`account_id` PK/FK，随 Account 级联删除） |
 | `seats` | 座位 |
 | `devices` | 设备 |
 | `audit_events` | 审计事件（唯一证据历史） |
 | `operator_accounts` | 操作员账户 |
 | `operator_sessions` | 操作员会话 |
-| `accounts` | 竞赛账户 |
 | `account_mappings` | Seat→Account 映射 |
 | `device_bindings` | Seat↔Device 绑定 |
 | `observed_device_states` | 设备观测状态 |
@@ -103,7 +103,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 ## 6. Credential
 
-密码明文不作为普通 `Account` 字段暴露。`accounts` 只通过 unique `credential_vault_record_id` 关联一个 `server_vault_records` row，并保存 `credential_revision`；vault row 只有 `vault_record_id`、`account_id`（unique，与 `accounts.account_id` 同值，无指向 accounts 的 FK——须先插 vault）、`nonce` 与 `ciphertext`，没有 `record_type`/`subject_id`、format/key/AAD version 或 timestamp。vault 只保存当前 Account 的 DOMjudge 密码。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row。
+密码明文不作为普通 `Account` 字段暴露。`accounts` 是父表，只保存 `account_id`（canonical UUIDv7 PK）、`domjudge_username` 与 `credential_revision`（`>= 1`），无 `credential_vault_record_id`。`server_vault_records` 必须在 `accounts` 之后创建：`account_id` 既是 PRIMARY KEY 也是 `REFERENCES accounts(account_id) ON DELETE CASCADE`，另有 `nonce` 与 `ciphertext`，无 `vault_record_id`、`record_type`/`subject_id`、format/key/AAD version 或 timestamp。vault 不是独立资源，按 `account_id` 与 Account join。同一事务内先插 Account 再插 vault；删除 Account 级联删除 vault。vault 只保存当前 Account 的 DOMjudge 密码。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row。
 
 读取密码的 application use case 必须：
 

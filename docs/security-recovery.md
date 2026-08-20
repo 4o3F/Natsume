@@ -228,7 +228,7 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 ### 5.1 Server vault
 
 - 应用层 AEAD；
-- `server_vault_records` row 只有 `vault_record_id`、`account_id`、`nonce` 和 `ciphertext`；没有 `record_type`/`subject_id`、format/key/AAD version、timestamp 或 rotation metadata；只保存当前 Account 的 DOMjudge 密码；
+- `server_vault_records` row 只有 `account_id`（PRIMARY KEY REFERENCES accounts ON DELETE CASCADE）、`nonce` 和 `ciphertext`；没有 `vault_record_id`、`record_type`/`subject_id`、format/key/AAD version、timestamp 或 rotation metadata；只保存当前 Account 的 DOMjudge 密码；同一事务先插 Account 再插 vault，删除 Account 级联删除 vault；
 - 每个 `account_id` 只有一个当前 ciphertext。已提交的 Import Commit 无条件替换该 record 并推进对应 `credential_revision`，不建立 superseded、active/inactive 或历史 credential 行；
 - DB 备份不应单独恢复出明文；
 - key 不通过 argv、env、日志或 Web；

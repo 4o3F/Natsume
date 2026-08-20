@@ -59,7 +59,7 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 **2026-08-19 ADR-0038 foundation 修订**：当前 Token artifact 继续有效至 atomic flag day。Daemon 已在 identity-first gate 与持久化 ID 复核后，于 `/var/lib/natsume/control` create-only 建立 `control-key-1.pk8` 与 closed dormant manifest；control key 不复用 Gateway key，也不参与当前 Enrollment/WSS authority。任何已有 control artifact 都进入 identity-bound preflight scan；key/manifest 丢失、损坏或不匹配必须 fail closed，不能自动替换或把 Machine Hardware ID 当作恢复 credential。Pending/active authority manifest transition仍属后续cutover。
 - Client 不增加 application-level encryption；其 confidentiality boundary 是 ownership、mode 与当前非 root attacker scope。
 - secret 使用短生命周期、zeroization-aware 类型，不进入通用 `Debug`、serde、日志、指标、audit 或 error chain。
-- Server vault 继续使用 application-level AEAD；`server_vault_records` current row 只有 `vault_record_id`、`account_id`、`nonce` 与 `ciphertext`，不保存 `record_type`/`subject_id`、ciphertext format/AAD/key version、timestamp、rotation 或 migration metadata。Client 文件选择不降低 Server 备份泄露边界。
+- Server vault 继续使用 application-level AEAD；`accounts` 为父表。`server_vault_records` current row 只有 `account_id`（PRIMARY KEY REFERENCES accounts ON DELETE CASCADE）、`nonce` 与 `ciphertext`，不保存 `vault_record_id`、`record_type`/`subject_id`、ciphertext format/AAD/key version、timestamp、rotation 或 migration metadata。同一事务先插 Account 再插 vault。Client 文件选择不降低 Server 备份泄露边界。
 
 ## Alternatives
 
