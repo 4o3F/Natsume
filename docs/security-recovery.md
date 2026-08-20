@@ -49,7 +49,7 @@ Natsume 主要防护：
 | Offline control root key | 离线介质 | PKI ceremony | 运行中 Server |
 | Device Token | Server DB（仅哈希）；Client `0600 natsume:natsume` 凭据文件 | WSS 认证 adapter | Agent、Helper、Caddy、浏览器 |
 | Gateway private key | Client `0640 natsume:natsume-gateway` 文件 | Caddy | Agent、Helper、Server |
-| DOMjudge password | Server vault（每个 subject 仅当前 ciphertext）；Client `0600 natsume:natsume` 凭据文件；渲染的 Caddy `/login` 注入配置（`0640 natsume:natsume-gateway`） | secret sync、Daemon 渲染、Caddy `/login` header 注入 | API、Observed、日志、Agent、状态页 |
+| DOMjudge password | Server vault（每个 Account 仅当前 ciphertext）；Client `0600 natsume:natsume` 凭据文件；渲染的 Caddy `/login` 注入配置（`0640 natsume:natsume-gateway`） | secret sync、Daemon 渲染、Caddy `/login` header 注入 | API、Observed、日志、Agent、状态页 |
 | Fleet namespace UUID | 配置/Server truth | identity derivation | 无秘密属性 |
 | Machine Hardware ID | identity file/Server metadata | identity、Enrollment | 不作为密码或 token |
 | Operator session | Server/Web secure session | operator API | Device control |
@@ -74,7 +74,7 @@ password 明文、private key、Device Token 值**不得**进入：
 - Caddy 状态页；
 - ErrorCode detail 或 source chain。
 
-允许的秘密路径必须使用专用类型、最短生命周期和 redacted 结果。Import 普通边界只使用 opaque `preview_token` 与 redacted 的**非秘密**分类/计数/identity/revision 证据（密码内容本身不产生任何分类证据，见 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）。
+允许的秘密路径必须使用专用类型、最短生命周期和 redacted 结果。Import preview 不持久化密码、不写 vault。普通边界只使用 opaque `preview_token`、非秘密 fingerprint 与 redacted 的**非秘密**分类/计数/identity/revision 证据（密码内容本身不产生任何分类证据，见 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）。
 
 按 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)：password-derived digest/length/fingerprint 不再作为独立禁止类别维护（审计仅面向内部管理员，F9）；工程默认仍不输出这些值。F9 失效时该条必须重审。
 
@@ -228,14 +228,14 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 ### 5.1 Server vault
 
 - 应用层 AEAD；
-- `server_vault_records` row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 和 `ciphertext`；没有 format/key/AAD version、timestamp 或 rotation metadata；
-- 每个 `(record_type, subject_id)` 只有一个当前 ciphertext。已提交的 Import Commit 无条件替换该 record 并推进对应 `credential_revision`，不建立 superseded、active/inactive 或历史 credential 行；
+- `server_vault_records` row 只有 `vault_record_id`、`account_id`、`nonce` 和 `ciphertext`；没有 `record_type`/`subject_id`、format/key/AAD version、timestamp 或 rotation metadata；只保存当前 Account 的 DOMjudge 密码；
+- 每个 `account_id` 只有一个当前 ciphertext。已提交的 Import Commit 无条件替换该 record 并推进对应 `credential_revision`，不建立 superseded、active/inactive 或历史 credential 行；
 - DB 备份不应单独恢复出明文；
 - key 不通过 argv、env、日志或 Web；
 - secret read 只通过专用 use case；
 - audit 记录访问、替换与终止动作但不记录值。
 
-CSV / candidate import 的 password-bearing 材料只进入 encrypted staging 与 secret-safe persistence。全局只有一个 encrypted pending candidate；严格解析成功才写入。candidate row 存在即为 pending，不使用 workflow state/history。commit、discard 或 expiry 在同一事务删除 candidate 与其 payload vault record，并留下 redacted audit lineage；staging 失败、未成功 Import Commit 或终止候选不得把明文残留到普通 surface，也不得改变 confirmed contest configuration。
+CSV / candidate import 的密码只存在于 upload/commit 的 HTTP 请求体解析期内，preview 结束后从内存丢弃。全局只有一个非秘密 pending candidate；严格解析成功才写入草稿行（零 vault 写入）。candidate row 存在即为 pending，不使用 workflow state/history。commit、discard 或 expiry 在同一事务删除 pending 草稿行，并留下 redacted audit lineage；不删除 vault payload row。解析失败、未成功 Import Commit 或终止候选不得把明文残留到普通 surface，也不得改变 confirmed contest configuration。
 
 这里的删除是删除可寻址数据库事实，不承诺 SQLite page、WAL、backup 或底层介质上的取证级物理擦除。备份保留、介质销毁和 destructive reset 属于恢复 runbook，不得以“已经逻辑删除”替代其操作。
 
@@ -331,8 +331,8 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 
 以下动作必须审计：
 
-- CSV upload / preview / Import Commit / discard / expiry，以及 candidate/payload 的终态删除；
-- expiry reject、将删座位仍绑定的拒绝；
+- CSV upload / preview / Import Commit / discard / expiry，以及 pending 草稿的终态删除（无 payload vault 删除）；
+- expiry reject、非秘密 fingerprint 不一致的拒绝、将删座位仍绑定的拒绝；
 - no-op Import Commit（仅 lineage；seats/mappings 未变、无 Binding stamp、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
 - material Import Commit（零 Binding 写入；`binding_impacts` 只出现在拒绝路径的 redacted 计数）；
 - account/credential revision 变化；

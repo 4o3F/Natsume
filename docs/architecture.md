@@ -101,7 +101,7 @@ flowchart LR
 拥有：
 
 - operator 身份、授权（admin/viewer）和 HTTP API；
-- CSV staging、preview、commit；
+- CSV preview 与 commit；
 - Server truth（当前 Seat 集合、Seat→Account mapping、credential 的 current-fact（当前事实）与当前 Binding；无 Seat-universe freeze、generic instance state 或业务 snapshot history）；
 - Target 计算；
 - Device lifecycle 和 binding；
@@ -288,7 +288,7 @@ database / credential / protocol / OS adapters
 |---|---|---|
 | confirmed contest configuration / current Seat collection | contest-domain | Target、Web、CSV；无 Seat-universe freeze 或业务 snapshot history |
 | account 标识与当前 Seat→Account mapping | contest-domain | Target、Web；`account_mappings` 由 Import Commit 唯一写入 |
-| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 每个 subject 仅当前 ciphertext |
+| password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 每个 Account 仅当前 ciphertext |
 | Device lifecycle | device | Web、Target |
 | Device Token（哈希）与 Gateway certificate 终态 | device | WSS 认证与 Enrollment adapter；`device_tokens` 仅保存 device/request/hash |
 | Enrollment request workflow | device | Enrollment HTTP、operator review、凭据签发 |
@@ -311,19 +311,21 @@ database / credential / protocol / OS adapters
 ### 8.1 CSV 到 Server truth
 
 ```text
-upload（全局单 encrypted pending candidate）
-  → strict parse（invalid 不落库）
-  → encrypted staging + current candidate row
+upload（全局单非秘密 pending candidate）
+  → strict parse（invalid 不落库；密码只在请求体解析期内）
+  → 计算 redacted diff 与 nonsecret fingerprint
+  → 持久化 pending 草稿（零 confirmed 写入、零 vault 写入）
   → server-computed redacted preview（opaque preview_token）
-  → explicit Import Commit
+  → explicit Import Commit（同一 CSV + Natsume-Preview-Token）
+  → fingerprint 常量时间比对（IMPORT_CANDIDATE_MISMATCH 则零写入、candidate 保留）
   → 将删座位若仍绑定则拒绝（IMPORT_SEATS_STILL_BOUND，零写入）
   → 替换 Seat / mapping / credentials（零 Binding 写入、零 Binding stamp）
   → redacted AuditEvent
-  → candidate + payload terminal deletion
+  → 删除 pending 草稿
   → Target 可重算（仅非秘密 material 变化时）
 ```
 
-每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 由 Import Commit 唯一写入，**仅 bind/unbind/rebind** 才铸造或更新行级 Binding stamp。不存在全局 configuration 或 binding-set clock。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不铸造 Binding stamp、不触发 Target churn。material 与 no-op 都只在**非秘密**维度上由 seats/mappings diff 定义：任何已提交的 import 都无条件以新 nonce 替换每个 Account 的 vault ciphertext 并推进其 `credential_revision`（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)），随后由操作员显式发起批量 `SYNC_SECRET`。commit、discard 和 expiry 终止 candidate 时删除 `pending_import_candidate` 及其引用 payload vault row，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O，**不修改 Binding**，也不对任何 revision 做 CAS。将删座位仍绑定须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
+每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 由 Import Commit 唯一写入，**仅 bind/unbind/rebind** 才铸造或更新行级 Binding stamp。不存在全局 configuration 或 binding-set clock。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不铸造 Binding stamp、不触发 Target churn。material 与 no-op 都只在**非秘密**维度上由 seats/mappings diff 定义：任何已提交的 import 都无条件以新 nonce 替换每个 Account 的 vault ciphertext 并推进其 `credential_revision`（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)），随后由操作员显式发起批量 `SYNC_SECRET`。preview 不持久化密码、不写 vault。commit、discard 和 expiry 终止 candidate 时只删除 `pending_import_candidate`，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O，**不修改 Binding**，也不对任何 revision 做 CAS。fingerprint 不一致可重试原文件；将删座位仍绑定须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
 
 ### 8.2 Device Enrollment（provisioning 窗口内）
 

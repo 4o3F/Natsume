@@ -31,7 +31,7 @@ Control-key history、live FIRST reservation、immutable CredentialBundle 与动
 | 表名 | 职责 |
 |---|---|
 | `site_identity` | 站点身份（fleet namespace UUID） |
-| `server_vault_records` | 加密 vault 密文 |
+| `server_vault_records` | 当前 Account 的 DOMjudge 密码密文 |
 | `seats` | 座位 |
 | `devices` | 设备 |
 | `audit_events` | 审计事件（唯一证据历史） |
@@ -45,7 +45,7 @@ Control-key history、live FIRST reservation、immutable CredentialBundle 与动
 | `enrollment_requests` | 设备注册请求 |
 | `device_tokens` | 设备令牌 |
 | `gateway_certificates` | 网关证书 |
-| `pending_import_candidate` | 唯一待定 CSV 导入候选 |
+| `pending_import_candidate` | 唯一非秘密 CSV 导入草稿 |
 | `commands` | 命令 current row |
 
 本清单与 schema tests（`integration-tests/tests/schema_contract.rs`、`server/src/db.rs`）相互锁定：新增或删除任何表都必须同步更新两处测试与本清单。`revision_counters` 已从 migration 1 删除（无全局 configuration / binding-set clock）；测试与代码须跟随本清单，不得把旧表当作现行 schema。
@@ -69,11 +69,11 @@ wire 上的 `binding_revision`（`TargetAssignment` / `SyncSecret` / `BindingRes
 每个 `seat,account,password` CSV 都是完整的 contest configuration candidate，不是增量 patch。边界规则（并发模型见 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）：
 
 - 只接受固定三列 UTF-8 CSV（可带 BOM）；不接受额外列、XLSX/ODS、公式、列映射或自动猜测；
-- **全局同一时刻最多一个 encrypted pending candidate**；`pending_import_candidate` singleton row 存在即为 pending，严格解析失败不落库；
-- pending candidate 只保留 `candidate_id`、`expires_at`、`preview_token_hash`、`payload_vault_record_id` 与 `redacted_preview_json`，不使用 import state/history，也不保存 configuration/Binding baseline；
-- `password` 只进入加密 staging 和 secret commit path，明文不进任何普通 surface；
-- Commit、discard 与 expiry 在其事务中删除 candidate 和 `payload_vault_record_id` 所引用的 `server_vault_records` row，只留下 redacted audit lineage；这不承诺 SQLite/WAL/backup 的取证级物理擦除；
-- Commit 不对任何 revision 做 CAS。`seats` / `account_mappings` / Account 密码的唯一写入方是 Import Commit 本身；存在 singleton pending 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate。CSV 将删除的座位若 commit 时仍有 Binding → `IMPORT_SEATS_STILL_BOUND` 并重新 preview。该拒绝**不改变 confirmed configuration、binding、Target truth 或相关 revision**。Import 零 `device_bindings` 写入，不铸造 Binding stamp；
+- **全局同一时刻最多一个非秘密 pending candidate**；`pending_import_candidate` singleton row 存在即为 pending，严格解析失败不落库；
+- pending candidate 只保留 `candidate_id`、`expires_at`、`preview_token_hash`、`nonsecret_fingerprint_version`、`nonsecret_fingerprint_sha256` 与 `redacted_preview_json`，不使用 import state/history，也不保存 configuration/Binding baseline、encrypted CSV 或密码；preview 零 confirmed 写入、零 vault 写入；
+- `password` 只存在于 upload/commit 的 HTTP 请求体解析期内，preview 结束后从内存丢弃；明文不进任何普通 surface，也不进入 pending 行；
+- Commit、discard 与 expiry 在其事务中删除 pending 草稿行，只留下 redacted audit lineage；不删除 vault payload row。这不承诺 SQLite/WAL/backup 的取证级物理擦除；
+- Commit 不对任何 revision 做 CAS。`seats` / `account_mappings` / Account 密码的唯一写入方是 Import Commit 本身；存在 singleton pending 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate。commit 再次提交同一 CSV：非秘密 fingerprint 不一致 → `IMPORT_CANDIDATE_MISMATCH`，零写入、candidate 保留。CSV 将删除的座位若 commit 时仍有 Binding → `IMPORT_SEATS_STILL_BOUND` 并重新 preview。上述拒绝**不改变 confirmed configuration、binding、Target truth 或相关 revision**。Import 零 `device_bindings` 写入，不铸造 Binding stamp；
 - material / no-op 由 diff 判定：Seat 集合或 Seat→Account mapping 是否实际改变——二者都是非秘密事实，无需接触秘密即可比较；不存在 configuration clock。`device_bindings.binding_revision` 只在 bind / unbind / rebind 时由 Binding API 铸造或更新，Import 不得铸造它；
 - **已提交的 Import Commit 无条件替换新确认配置中每个 Account 的 vault ciphertext（新 nonce）并推进其 `credential_revision`**；不做任何明文比较，preview 也不分类或展示密码内容是否变化。因此每次成功 import 之后全部已绑定 Device 的已安装 credential revision 都是陈旧的，操作员必须显式发起批量 `SYNC_SECRET`（N 个独立 Command）；import 本身仍然零 Command、零 Device I/O（`INV-SECRET-02` 不变）；
 - 任何 `INVALID`（结构性错误、candidate 内重复 account、空或仅 header candidate）、expiry 或 discard 同样不改变 confirmed configuration、binding、Target 或 revision；
@@ -103,7 +103,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 ## 6. Credential
 
-密码明文不作为普通 `Account` 字段暴露。`accounts` 只通过 unique `credential_vault_record_id` 关联一个 `server_vault_records` row，并保存 `credential_revision`；vault row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`，没有 format/key/AAD version 或 timestamp。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row。
+密码明文不作为普通 `Account` 字段暴露。`accounts` 只通过 unique `credential_vault_record_id` 关联一个 `server_vault_records` row，并保存 `credential_revision`；vault row 只有 `vault_record_id`、`account_id`（unique，与 `accounts.account_id` 同值，无指向 accounts 的 FK——须先插 vault）、`nonce` 与 `ciphertext`，没有 `record_type`/`subject_id`、format/key/AAD version 或 timestamp。vault 只保存当前 Account 的 DOMjudge 密码。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row。
 
 读取密码的 application use case 必须：
 
@@ -164,7 +164,7 @@ Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：d
 - **Device 删除**：Server 显式授权、停止新 Command、更新 `devices.state`、移除或替换当前 `device_tokens` row、更新关联 `gateway_certificates.status`、解除 binding、记录审计；不复用旧 `device_pk`。
 - **Device 替换**：原 lifecycle 结束、重开 provisioning 窗口、新硬件独立 Enrollment、人工重建 binding、显式 `SYNC_STATE`/`SYNC_SECRET`；不复制凭据文件。
 - **单生命周期竞赛重置**：通过破坏性 runbook 清理业务状态和秘密（含 pending candidate）；下一次 import 走普通 first-import lifecycle。
-- **candidate/credential 替换**：终止 pending candidate 删除其 encrypted payload；密码替换删除可寻址的旧 current ciphertext。两者的 redacted audit 保留，但不承诺存储介质的物理擦除。
+- **candidate/credential 替换**：终止 pending candidate 只删除该非秘密草稿行；密码替换删除可寻址的旧 current ciphertext。两者的 redacted audit 保留，但不承诺存储介质的物理擦除。
 
 ## 15. 领域测试最低要求
 

@@ -81,16 +81,16 @@ HTTP 错误响应的 media type 固定为 `application/json`。wire body 只包�
 
 ### 3.3 Secret API 约束
 
-允许：上传 CSV 到受限 staging；人工触发 `SYNC_SECRET`；展示 credential revision 和 redacted result；展示 opaque `preview_token`、redacted import summary 与 binding impacts。preview evidence 只有非秘密 diff 与受影响 account 计数，**不包含密码内容是否变化的任何分类或布尔证据**（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）。
+允许：上传 CSV 做 redacted preview（密码只存在于请求体解析期内，preview 不写 vault）；人工触发 `SYNC_SECRET`；展示 credential revision 和 redacted result；展示 opaque `preview_token`、redacted import summary 与 binding impacts。preview evidence 只有非秘密 diff 与受影响 account 计数，**不包含密码内容是否变化的任何分类或布尔证据**（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）。
 
 **2026-08-16 修订**：Phase 2 已挂载以下 import route：
 
 | Method | Path | 角色 | 语义 |
 |---|---|---|---|
 | `GET` | `/api/v2/imports` | `admin` | 返回 singleton pending candidate 的 redacted summary；不返回 preview token，读取时 lazy-expire |
-| `POST` | `/api/v2/imports` | `admin` | 严格解析 CSV、加密 staging 并创建 singleton redacted preview candidate |
-| `POST` | `/api/v2/imports/{import_id}/actions/commit` | `admin` | 校验 canonical ID 与 preview token 后原子替换 confirmed configuration；不对任何 revision 做 CAS |
-| `POST` | `/api/v2/imports/{import_id}/actions/discard` | `admin` | 删除 pending candidate 与其 encrypted payload，不改变 confirmed truth |
+| `POST` | `/api/v2/imports` | `admin` | 严格解析 CSV、计算 redacted diff 与非秘密 fingerprint、持久化 singleton 非秘密草稿；零 confirmed 写入、零 vault 写入 |
+| `POST` | `/api/v2/imports/{import_id}/actions/commit` | `admin` | 同一 CSV + `Natsume-Preview-Token`；校验 canonical ID、token 与 fingerprint 后原子替换 confirmed configuration；不对任何 revision 做 CAS |
+| `POST` | `/api/v2/imports/{import_id}/actions/discard` | `admin` | 删除 pending 草稿行，不改变 confirmed truth、不触及 vault |
 
 **2026-08-16 修订（Phase 3 WP2a）**：挂载以下 provisioning-window operator route：
 
@@ -120,28 +120,28 @@ HTTP 错误响应的 media type 固定为 `application/json`。wire body 只包�
 
 Import 是对 confirmed contest configuration 的高影响路径。稳定语义（领域规则以 [领域模型](domain-model.md) 为准，并发模型见 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)）：
 
-- **全局同一时刻最多一个 encrypted pending candidate**；`pending_import_candidate` singleton row 存在即为 pending，新 upload 前需显式终止现有 candidate；
-- candidate 只在严格解析成功后持久化，row 只包含 candidate ID、expiry、`preview_token_hash`、`payload_vault_record_id` 和 `redacted_preview_json`；普通 surface 使用 `candidate_id` 和 opaque `preview_token`，不使用 import state/history、configuration/Binding baseline 或可见 password-bearing snapshot；
+- **全局同一时刻最多一个非秘密 pending candidate**；`pending_import_candidate` singleton row 存在即为 pending，新 upload 前需显式终止现有 candidate；
+- candidate 只在严格解析成功后持久化，row 只包含 candidate ID、expiry、`preview_token_hash`、`nonsecret_fingerprint_version`、`nonsecret_fingerprint_sha256` 和 `redacted_preview_json`；普通 surface 使用 `candidate_id` 和 opaque `preview_token`，不使用 import state/history、configuration/Binding baseline、encrypted CSV 或可见 password-bearing snapshot；preview 零 vault 写入；
 - **Server 是 diff classification 的唯一权威**；client/UI 只渲染结构化结果，不得本地重算分类；
-- preview 绑定 candidate identity、redacted diff 与过期时间；数据库只保存 opaque token 的 hash；不返回 baseline configuration/binding revision；
-- Commit 不对任何 revision 做 CAS。`seats` / `account_mappings` / Account 密码的唯一写入方是 Import Commit 本身；存在 singleton pending 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate。Import **零 Binding 写入**，不铸造 Binding stamp；将删除且 commit 时仍绑定的座位返回 `IMPORT_SEATS_STILL_BOUND`，零 confirmed 变更；
-- Commit、discard 和 expiry 在各自事务中删除 candidate 与其引用的 encrypted payload vault row，仅留下 redacted audit lineage；重复请求不能借由保留 terminal candidate state 取得新的业务结果；
+- preview 绑定 candidate identity、redacted diff、非秘密 fingerprint 与过期时间；数据库只保存 opaque token 的 hash 与 fingerprint；不返回 baseline configuration/binding revision；密码在解析完成后从内存丢弃，commit 时再次提交；
+- Commit 不对任何 revision 做 CAS。`seats` / `account_mappings` / Account 密码的唯一写入方是 Import Commit 本身；存在 singleton pending 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate。Import **零 Binding 写入**，不铸造 Binding stamp；将删除且 commit 时仍绑定的座位返回 `IMPORT_SEATS_STILL_BOUND`，零 confirmed 变更；非秘密 fingerprint 不一致返回 `IMPORT_CANDIDATE_MISMATCH`，零写入且 candidate 保留；
+- Commit、discard 和 expiry 在各自事务中删除 pending 草稿行，仅留下 redacted audit lineage；不删除 vault payload row。重复请求不能借由保留 terminal candidate state 取得新的业务结果；
 - Import Commit 不创建 Command，不自动 `SYNC_STATE`/`SYNC_SECRET`，**不产生 Device I/O**，也不表示 Device 已同步；
-- 任何 invalid、expiry、discard、authorization failure、将删座位仍绑定或 transaction failure **均不得改变 confirmed truth、binding 或相关 revision**；
+- 任何 invalid、expiry、discard、authorization failure、非秘密 fingerprint 不一致、将删座位仍绑定或 transaction failure **均不得改变 confirmed truth、binding 或相关 revision**；
 - 清空 confirmed configuration 只能通过独立 single-lifetime reset，不得由 import 隐式完成。
 
 **2026-08-15 修订（Phase 2 启动冻结：import HTTP 面与 preview evidence 字段）**：
 
-- 传输：`POST /api/v2/imports`，`Content-Type: text/csv`（UTF-8，允许 BOM），`admin` only。request body 是硬编码 route 级安全常量 `CSV_IMPORT_BODY_LIMIT_BYTES = 4_194_304`（4 MiB，约为 500 席位 CSV 的 80 倍余量），只施加于 imports `MethodRouter`，不入 `config.toml`；超限在解析与任何数据库访问前返回 `413`。
-- Commit request body 使用 route 级硬编码安全常量 `IMPORT_COMMIT_BODY_LIMIT_BYTES = 4_096`（实际 JSON 约 60 字节），只施加于 `commitCsvImport` 的 `MethodRouter`，不入 `config.toml`；超限作为 transport-level `413` 拒绝。
+- 传输：`POST /api/v2/imports`，`Content-Type: text/csv`（UTF-8，允许 BOM），`admin` only。request body 是硬编码 route 级安全常量 `CSV_IMPORT_BODY_LIMIT_BYTES = 4_194_304`（4 MiB，约为 500 席位 CSV 的 80 倍余量），施加于 upload 与 `commitCsvImport` 的 `MethodRouter`，不入 `config.toml`；超限在解析与任何数据库访问前返回 `413`。不存在 `IMPORT_COMMIT_BODY_LIMIT_BYTES`。
 - 字段长度上限为硬编码常量：seat ≤ 64、account ≤ 64、password ≤ 512 字节；数据行数上限为硬编码常量 `MAX_IMPORT_ROWS = 10_000`（约为 500 席位假设的 20 倍）；超限拒绝归类为 `IMPORT_CANDIDATE_INVALID`；均不入 `config.toml`。
-- 上传同步完成严格解析、加密 staging、diff 分类与 candidate 落库，成功返回 `201` 与 `ImportPreviewResponse`：`candidate_id`（canonical UUIDv7）、`preview_token`（opaque，仅在本响应呈现一次）、`expires_at`（RFC 3339 UTC）、`diff`。不返回 baseline configuration/binding revision。TTL 冻结为常量 `IMPORT_CANDIDATE_TTL_SECONDS = 1_800`（30 分钟），不入 `config.toml`。
-- `preview_token` 为 32 字节 CSPRNG，以无填充 URL-safe base64 呈现；数据库只存其 SHA-256；比较必须常量时间。
+- 上传同步完成严格解析、diff 分类、非秘密 fingerprint 计算与 candidate 落库，成功返回 `201` 与 `ImportPreviewResponse`：`candidate_id`（canonical UUIDv7）、`preview_token`（opaque，仅在本响应呈现一次）、`expires_at`（RFC 3339 UTC）、`diff`。不返回 baseline configuration/binding revision。零 confirmed 写入、零 vault 写入。TTL 冻结为常量 `IMPORT_CANDIDATE_TTL_SECONDS = 1_800`（30 分钟），不入 `config.toml`。密码在解析完成后从内存丢弃。
+- `preview_token` 为 32 字节 CSPRNG，以无填充 URL-safe base64 呈现；数据库只存其 SHA-256；比较必须常量时间。commit 时作为 HTTP header `Natsume-Preview-Token` 回传，不得放入 query string（会进日志）。
+- Import nonsecret fingerprint v1：`nonsecret_fingerprint_version = 1` 是以下字节序列的 SHA-256：ASCII domain separator `natsume:import-nonsecret:v1`，随后一个 NUL byte（`0x00`），随后 JSON 数组的 JCS（RFC 8785）序列化。数组元素为对象 `{seat_code, domjudge_username}`，按 `seat_code` 升序。password 列不进入该哈希。字段集合或序列化的任何变更都必须使用 `nonsecret_fingerprint_version + 1`。
 - `diff`（redacted，Server 唯一权威）字段冻结为：`seats_added[]`（seat_code）、`seats_removed[]`（seat_code）、`mappings_changed[]`（`{seat_code, current_domjudge_username|null, candidate_domjudge_username}`，只含存续 Seat）、`unchanged_count`（存续且 mapping 不变的 Seat 数）、`affected_account_count`（candidate 配置内全部 Account 数——commit 后其 `credential_revision` 无条件推进的对象）、`binding_impacts[]`（`{seat_code, device_id}`，被移除且**当前**有 Binding 的 Seat）。`binding_impacts` 是 commit blocker 预告，不是解绑计划；非空时 commit 必须失败。全部列表按 `seat_code` 升序，保证 golden 可比。密码内容是否变化不分类、不出现（既有冻结）。
-- Commit：`POST /api/v2/imports/{import_id}/actions/commit`，body `{preview_token}`，`admin` only；`import_id` 必须与 `candidate_id` canonical 逐字符相等。成功 `200` 返回 `{}`（无 `configuration_revision` / `binding_revision`）。commit 在同一 `BEGIN IMMEDIATE` 事务内再次读取将删座位的当前 Binding：任一仍绑定则 `409 IMPORT_SEATS_STILL_BOUND` 且零写入。
-- Discard：`POST /api/v2/imports/{import_id}/actions/discard`，无 body，`admin` only；成功 `204`。**不要求 `preview_token`**——token 只存在于浏览器内存，页面刷新即丢失；若 discard 也要求 token，operator 将被锁死至过期而无法重传。discard 是零业务变更操作，admin session 已是足够授权；commit 保持 token 必需（第二次显式确认，并把提交绑定到已审阅的 preview）。
-- 错误映射（复用 error-code registry 既有冻结码，并登记 `IMPORT_SEATS_STILL_BOUND`；随 route 挂载登入 §3.6.5 表）：解析失败、结构错误、candidate 内重复 account、空或仅 header → `400 IMPORT_CANDIDATE_INVALID`；存在 pending 时的再次 upload → `409 IMPORT_CANDIDATE_PENDING`；未知、已过期或已 discard 的 `import_id`，以及 **`preview_token` 不匹配** → `404 IMPORT_CANDIDATE_UNAVAILABLE`（token 不匹配与 candidate 不存在必须不可区分，不给未持 token 方提供 candidate 存在性 oracle；audit 内部以 `reason_code` 区分真相）；将删除座位在 commit 时仍有 Binding → `409 IMPORT_SEATS_STILL_BOUND`（preview 已列出的 impacts 与空闲期内新绑上的座位同一码；operator 解绑后必须重新 preview，因为座位集合可能已变）。不存在 `IMPORT_PREVIEW_STALE`。
-- 过期为 lazy 清理（与 expired session row 同原则）：首个观察到 expired candidate 的 import surface 请求在同一事务内删除 candidate 与 payload vault row 并审计一次，不运行 background cleaner。
+- Commit：`POST /api/v2/imports/{import_id}/actions/commit`，`Content-Type: text/csv`，body 为**同一 CSV**（同一 `CSV_IMPORT_BODY_LIMIT_BYTES`），`admin` only；`preview_token` 仅经 header `Natsume-Preview-Token` 传递，不使用 `{preview_token}` JSON body。`import_id` 必须与 `candidate_id` canonical 逐字符相等。成功 `200` 返回 `{}`（无 `configuration_revision` / `binding_revision`）。commit 在同一 `BEGIN IMMEDIATE` 事务内：校验 token、重解析 CSV、重算 fingerprint 并与所存哈希常量时间比较；不一致则 `409 IMPORT_CANDIDATE_MISMATCH` 且零写入、candidate 保留。然后再读取将删座位的当前 Binding：任一仍绑定则 `409 IMPORT_SEATS_STILL_BOUND` 且零写入。通过后应用 seats/mappings/Account vault ciphertext，删除 pending 行并审计。
+- Discard：`POST /api/v2/imports/{import_id}/actions/discard`，无 body，`admin` only；成功 `204`。**不要求 `preview_token`**——token 只存在于浏览器内存，页面刷新即丢失；若 discard 也要求 token，operator 将被锁死至过期而无法重传。discard 是零业务变更操作，admin session 已是足够授权；commit 保持 token 必需（第二次显式确认，并把提交绑定到已审阅的 preview）。discard 只删除 pending 草稿行，不触及 vault。
+- 错误映射（复用 error-code registry 既有冻结码，并登记 `IMPORT_SEATS_STILL_BOUND` 与 `IMPORT_CANDIDATE_MISMATCH`；随 route 挂载登入 §3.6.5 表）：解析失败、结构错误、candidate 内重复 account、空或仅 header → `400 IMPORT_CANDIDATE_INVALID`；存在 pending 时的再次 upload → `409 IMPORT_CANDIDATE_PENDING`；未知、已过期或已 discard 的 `import_id`，以及 **`preview_token` 不匹配** → `404 IMPORT_CANDIDATE_UNAVAILABLE`（token 不匹配与 candidate 不存在必须不可区分，不给未持 token 方提供 candidate 存在性 oracle；audit 内部以 `reason_code` 区分真相）；commit 重解析后非秘密部分与所存 fingerprint 不一致 → `409 IMPORT_CANDIDATE_MISMATCH`（candidate 保留至 discard/expiry/成功 commit，operator 可用原文件重试；**不得**折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`）；将删除座位在 commit 时仍有 Binding → `409 IMPORT_SEATS_STILL_BOUND`（preview 已列出的 impacts 与空闲期内新绑上的座位同一码；operator 解绑后必须重新 preview，因为座位集合可能已变）。不存在 `IMPORT_PREVIEW_STALE`。
+- 过期为 lazy 清理（与 expired session row 同原则）：首个观察到 expired candidate 的 import surface 请求在同一事务内删除 pending 草稿行并审计一次，不运行 background cleaner，也不删除 vault row。
 - 审计词汇已按 §3.6.4「先注册后写入器」纪律登记；四个 import 写入器与 HTTP 层 rejected-upload 的 `candidate_invalid` 写入器均已落地（已实现）。
 
 **2026-08-16 修订（Phase 2 补全：pending 读取面）**：
@@ -149,6 +149,8 @@ Import 是对 confirmed contest configuration 的高影响路径。稳定语义�
 - Pending read：`GET /api/v2/imports`，`admin` only；成功 `200` 返回 `ImportPendingResponse { pending: ImportPendingSummary | null }`，其中 summary 恰含 `candidate_id`（canonical UUIDv7）、`expires_at` 与 `diff`。该 surface **绝不返回 `preview_token`**，也不返回 baseline configuration/binding revision；页面刷新后 operator 可查看并 discard，但必须重新上传才能 commit。读取时观察到 expired candidate 必须在同一事务执行 tolerant lazy expiry 与 `expire_import_candidate` 审计，并返回 `pending: null`；不存在 candidate 时同样返回 null 且零写入。
 
 **2026-08-20 修订（Import 不修改 Binding，且取消 revision CAS）**：Import Commit 零 `device_bindings` 写入、不铸造 Binding stamp。已删除 `revision_counters`；candidate / preview / pending read 删除 `baseline_configuration_revision` 与 `baseline_binding_revision`；commit 成功体删除 `configuration_revision` 与 `binding_revision`，返回 `{}`。Commit 不对任何 revision 做 CAS；preview→commit 锁是 singleton pending candidate。将删座位在 commit 时仍绑定 → `409 IMPORT_SEATS_STILL_BOUND`。从 live catalog 与 HTTP mapping 删除 `IMPORT_PREVIEW_STALE`（预发布原位 BC；G0 已关闭，但可移除未使用的 import CAS 码）。`binding_impacts[]` 保留为 blocker 预告。实现与 OpenAPI / schema 须同批收口；在此之前不得把旧 unbind-and-replace 或 import revision CAS 行为当作规范。
+
+**2026-08-20 修订（preview 不持久化密码）**：删除 `import_payload` vault type 与 `IMPORT_COMMIT_BODY_LIMIT_BYTES`。preview 只持久化非秘密 pending 草稿并返回 preview，零 vault 写入。commit 请求体改为同一 CSV，`preview_token` 仅经 `Natsume-Preview-Token` header。新增稳定码 `IMPORT_CANDIDATE_MISMATCH` / `409`（audit `reason_code` 为 `nonsecret_mismatch`）；不得折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`。实现与 OpenAPI / schema 须同批收口；在此之前不得把 encrypted whole-CSV staging 或 `{preview_token}` JSON commit body 当作规范。
 
 ### 3.5 Direct Command creation
 
@@ -294,6 +296,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `candidate_invalid` | `create_import_candidate` 的 `rejected` 结果（已实现） |
 | `seats_still_bound` | `commit_import` 的 `rejected` 结果（将删座位 commit 时仍有 Binding） |
 | `preview_token_mismatch` | `commit_import` 的 `rejected` 结果（对外折叠为 `IMPORT_CANDIDATE_UNAVAILABLE`，见 §3.4） |
+| `nonsecret_mismatch` | `commit_import` 的 `rejected` 结果（对外 `IMPORT_CANDIDATE_MISMATCH`，见 §3.4） |
 | `COMMAND_REQUEST_CONFLICT` | `command_create` 的 `rejected` 结果（§3.5 固定该 reason_code 值） |
 | `device_reported` | `command_terminal` 的全部结果（终态由 Device 上报，Server 不自行推断） |
 
@@ -312,7 +315,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `terminate_session` | 无（`{}`） |
 | `expire_session` | 无（`{}`） |
 | `create_import_candidate`（已实现） | `succeeded`：`seats_added_count`、`seats_removed_count`、`mappings_changed_count`、`binding_impact_count`；`rejected`：无（`{}`） |
-| `commit_import`（已实现） | `succeeded`：`seats_added_count`、`seats_removed_count`、`mappings_changed_count`、`credential_revision_advanced_count`（无 `configuration_revision_advanced` / `binding_revision_advanced`、无 Binding 写入）；`rejected`：`seats_still_bound` 时可含 `binding_impact_count`，其余 `{}` |
+| `commit_import`（已实现） | `succeeded`：`seats_added_count`、`seats_removed_count`、`mappings_changed_count`、`credential_revision_advanced_count`（无 `configuration_revision_advanced` / `binding_revision_advanced`、无 Binding 写入）；`rejected`：`seats_still_bound` 时可含 `binding_impact_count`，`nonsecret_mismatch` 与其余为 `{}` |
 | `discard_import_candidate`（已实现） | 无（`{}`） |
 | `expire_import_candidate`（已实现） | 无（`{}`） |
 | `revoke_device` | `resulting_state`、`removed_token_count`、`revoked_certificate_count` |
@@ -334,6 +337,7 @@ Stage 5B 当前挂载 §2 的 `GET /api/v2/health`，以及 §3.6.1 表中的全
 | `IMPORT_CANDIDATE_UNAVAILABLE` | `404` | import candidate 未知、已过期、已删除或 preview token 不匹配 |
 | `IMPORT_CANDIDATE_PENDING` | `409` | singleton pending import candidate 已存在 |
 | `IMPORT_SEATS_STILL_BOUND` | `409` | CSV 将删除的座位在 commit 时仍有 Binding；须先 unbind 再重新 preview |
+| `IMPORT_CANDIDATE_MISMATCH` | `409` | commit 重解析 CSV 的非秘密部分与 preview 所存 fingerprint 不一致；candidate 保留，可用原文件重试 |
 | `ENROLLMENT_REQUEST_INVALID` | `400` | `createEnrollmentRequest` 的 closed request / CSR / raw SPKI / protocol 无效，或 live Enrollment 全局 capacity 已满；approve/reject 的 request ID 非 canonical UUIDv7，或 request 未知、terminal、处于相反 decision state 时也使用此码 |
 | `PROVISIONING_WINDOW_CLOSED` | `409` | `createEnrollmentRequest` 观察到窗口非 `open` |
 | `ENROLLMENT_REQUEST_REJECTED` | `409` | `createEnrollmentRequest` 的 hardware ID 最新 request 在当前窗口已被 operator reject |
@@ -463,8 +467,9 @@ Device Daemon **不发送任意 Caddyfile、不使用 Caddy Admin API**。控制
 | common | `AUTHORIZATION_DENIED` | 已识别调用方无权执行操作，包括 Operator role 与本地 Helper policy 拒绝。 |
 | operator | `IMPORT_CANDIDATE_INVALID` | Import candidate 结构无效、重复 account、为空或仅含 header；不得持久化 candidate 或改变 confirmed truth。 |
 | operator | `IMPORT_CANDIDATE_PENDING` | singleton pending candidate 已存在，新 upload 必须先显式终止或完成既有 candidate。 |
-| operator | `IMPORT_CANDIDATE_UNAVAILABLE` | candidate 已过期、discard、删除或不再可提交；调用方必须重新创建 candidate。 |
+| operator | `IMPORT_CANDIDATE_UNAVAILABLE` | candidate 已过期、discard、删除或 preview token 不匹配；token 不匹配与不存在必须不可区分。调用方必须重新创建 candidate。不含非秘密 fingerprint 不一致。 |
 | operator | `IMPORT_SEATS_STILL_BOUND` | Import Commit 将删除的座位当前仍有 Binding；拒绝、零 Binding 写入、零 confirmed-state 变更；operator 须先经 Binding API 解绑再重新 preview。 |
+| operator | `IMPORT_CANDIDATE_MISMATCH` | Import Commit 重提交 CSV 的非秘密部分与 pending candidate 的 fingerprint 不一致；拒绝、零写入；candidate 保留至 discard/expiry/成功 commit。不得使用 `IMPORT_CANDIDATE_UNAVAILABLE`（存在性 oracle 折叠）。 |
 | enrollment | `PROVISIONING_WINDOW_CLOSED` | provisioning window 非 open 时拒绝 Enrollment，零签发、零 Server-state 变更。 |
 | enrollment | `ENROLLMENT_REQUEST_INVALID` | Enrollment 的有界 typed request、CSR/SPKI 或协议输入无效；不得留下部分 issuance。 |
 | enrollment | `ENROLLMENT_REQUEST_REJECTED` | operator 显式拒绝了该 Enrollment request；Device 必须停止并等待现场人员介入，零签发。 |

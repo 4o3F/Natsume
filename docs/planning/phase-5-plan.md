@@ -208,6 +208,6 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 | 项 | 来源 | 建议 |
 |---|---|---|
 | canonical UUIDv7 variant nibble guard | 登记「归 Phase 3+」，Phase 3 已 CLOSED | 随 WP2 的 ID 校验一并硬化 |
-| `record_type` 封闭枚举的 DB 强制 | 登记「归 Phase 2」，Phase 2 已 CLOSED | 若仍缺，随 WP2 触碰 schema 时补 CHECK |
+| `record_type` 封闭枚举的 DB 强制 | 登记「归 Phase 2」，Phase 2 已 CLOSED | **2026-08-20 关闭为不再适用**：vault 已删除 `record_type`；勿补 CHECK |
 | Web 深链保留、首页落点 | Phase 1/2 登记「随 Panel 页面增多再定」 | WP7 触发，一并定案 |
 | `GET /api/v2/imports` 轮询取写锁 | Phase 2 登记 | 若 operator tab 数上升，随 WP7 改先 deferred 读 |

@@ -8,13 +8,16 @@ CREATE TABLE site_identity (
     fleet_namespace_uuid TEXT NOT NULL UNIQUE
 ) STRICT;
 
+-- Current-fact AEAD store for Account passwords only. No import staging, no history rows.
 CREATE TABLE server_vault_records (
+    -- Canonical lowercase UUIDv7 identifier for this vault row.
     vault_record_id TEXT PRIMARY KEY,
-    record_type TEXT NOT NULL,
-    subject_id TEXT NOT NULL,
+    -- Matches accounts.account_id. No FK: accounts references this row (insert vault first).
+    account_id TEXT NOT NULL UNIQUE,
+    -- AEAD nonce (XChaCha20-Poly1305: 24 bytes in the vault implementation).
     nonce BLOB NOT NULL CHECK (length(nonce) > 0),
-    ciphertext BLOB NOT NULL CHECK (length(ciphertext) > 0),
-    UNIQUE(record_type, subject_id)
+    -- AEAD ciphertext of the current DOMjudge password; plaintext never stored.
+    ciphertext BLOB NOT NULL CHECK (length(ciphertext) > 0)
 ) STRICT;
 
 CREATE TABLE seats (
@@ -325,13 +328,20 @@ CREATE UNIQUE INDEX one_active_gateway_certificate
     ON gateway_certificates(device_pk)
     WHERE status = 'active';
 
+-- Singleton non-secret import draft. Passwords are not persisted between preview and commit.
 CREATE TABLE pending_import_candidate (
+    -- CHECK(singleton = 1) forces at most one pending candidate.
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    -- Canonical lowercase UUIDv7 for this candidate.
     candidate_id TEXT NOT NULL UNIQUE,
     expires_at TEXT NOT NULL,
+    -- SHA-256 of the opaque preview token; token itself is not stored.
     preview_token_hash BLOB NOT NULL UNIQUE CHECK (length(preview_token_hash) = 32),
-    payload_vault_record_id TEXT NOT NULL UNIQUE
-        REFERENCES server_vault_records(vault_record_id),
+    -- Version of the non-secret seat+account fingerprint algorithm.
+    nonsecret_fingerprint_version INTEGER NOT NULL CHECK (nonsecret_fingerprint_version >= 1),
+    -- SHA-256 of the canonical non-secret candidate (seat_code + username). Commit CSV must match.
+    nonsecret_fingerprint_sha256 BLOB NOT NULL CHECK (length(nonsecret_fingerprint_sha256) = 32),
+    -- Server-authoritative redacted diff JSON; no passwords.
     redacted_preview_json TEXT NOT NULL
         CHECK (json_valid(redacted_preview_json) AND json_type(redacted_preview_json) = 'object')
 ) STRICT;
