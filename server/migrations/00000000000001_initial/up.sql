@@ -1,14 +1,11 @@
 PRAGMA foreign_keys = ON;
 
+-- One-row site identity. Machine Hardware IDs derive from fleet_namespace_uuid.
 CREATE TABLE site_identity (
+    -- CHECK(singleton = 1) forces exactly one row.
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    -- Public immutable fleet UUID; UUIDv5 namespace for Machine Hardware ID (ADR-0032).
     fleet_namespace_uuid TEXT NOT NULL UNIQUE
-) STRICT;
-
-CREATE TABLE revision_counters (
-    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    configuration_revision INTEGER NOT NULL CHECK (configuration_revision >= 0),
-    binding_revision INTEGER NOT NULL CHECK (binding_revision >= 0)
 ) STRICT;
 
 CREATE TABLE server_vault_records (
@@ -267,8 +264,7 @@ CREATE UNIQUE INDEX one_live_control_enrollment_per_resolved_device
         AND control_intent IS NOT NULL;
 
 CREATE TABLE device_control_keys (
-    key_id BLOB PRIMARY KEY CHECK (length(key_id) = 32),
-    public_key BLOB NOT NULL UNIQUE CHECK (length(public_key) = 32),
+    public_key BLOB PRIMARY KEY NOT NULL UNIQUE CHECK (length(public_key) = 32),
     algorithm TEXT NOT NULL CHECK (algorithm = 'ed25519'),
     device_pk TEXT NOT NULL REFERENCES devices(device_pk),
     key_generation INTEGER NOT NULL CHECK (key_generation >= 1),
@@ -333,8 +329,6 @@ CREATE TABLE pending_import_candidate (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     candidate_id TEXT NOT NULL UNIQUE,
     expires_at TEXT NOT NULL,
-    baseline_configuration_revision INTEGER NOT NULL CHECK (baseline_configuration_revision >= 0),
-    baseline_binding_revision INTEGER NOT NULL CHECK (baseline_binding_revision >= 0),
     preview_token_hash BLOB NOT NULL UNIQUE CHECK (length(preview_token_hash) = 32),
     payload_vault_record_id TEXT NOT NULL UNIQUE
         REFERENCES server_vault_records(vault_record_id),
@@ -373,8 +367,6 @@ CREATE TABLE commands (
     created_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id)
 ) STRICT;
 CREATE INDEX commands_device_pk_state_index ON commands(device_pk, state);
-INSERT INTO revision_counters(singleton, configuration_revision, binding_revision)
-VALUES (1, 0, 0);
 
 INSERT INTO provisioning_window(singleton, state, revision, last_audit_event_id)
 VALUES (1, 'closed', 0, NULL);

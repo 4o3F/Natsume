@@ -23,7 +23,7 @@
 |---|---:|---|---|
 | 0. Engineering Baseline（收尾） | W1–W2 | 可重现仓库、真实 CI、current-fact schema 与 Command-ID 契约声明、WSS/token 骨架、空壳 Deb、输入冻结、DOMjudge lab 启动 | G0 |
 | 1. Control Domain | W3–W6 | Server 领域、admin/viewer auth、审计、Command 骨架、Web shell | G1 |
-| 2. CSV Preparation | W7–W9 | 严格 CSV、加密 staging、单 pending + configuration CAS import、Preparation Center | G2 |
+| 2. CSV Preparation | W7–W9 | 严格 CSV、加密 staging、单 pending import（无 revision CAS）、Preparation Center | G2 |
 | 3. Identity & Enrollment | W10–W12 | 固定配方 Machine ID、provisioning 窗口、Token + Gateway 联合签发、凭据文件 | G3 |
 | 4. Control Channel & Command Runtime | W13–W15 | WSS + token 认证、journal、Observed、dispatcher | G4 |
 | 5. State, Data Plane & Secrets | W16–W19 | `SYNC_STATE`、Caddy 渲染/reload/LKG、xheaders 自动登录、`SYNC_SECRET`、Drift 视图 | G5 |
@@ -112,9 +112,9 @@ Server current-fact migration 与模块边界、Seat/account/current-credential 
 
 ### Phase 2：CSV Preparation
 
-`seat,account,password` 固定完整 candidate、encrypted staging、严格解析后唯一 `pending_import_candidate`、Server 权威 redacted diff、`configuration_revision` CAS Import Commit、将删座位仍绑定则拒绝（须先 unbind）、commit/discard/expiry 的 candidate+payload 终态删除、opaque preview token、Preparation Center。Seat→Account mapping 只推进 `revision_counters.configuration_revision`；Seat↔Device Binding-set mutation（仅 bind/unbind/rebind）才推进全局 `BindingRevision`。
+`seat,account,password` 固定完整 candidate、encrypted staging、严格解析后唯一 `pending_import_candidate`、Server 权威 redacted diff、无 revision CAS 的 Import Commit、将删座位仍绑定则拒绝（须先 unbind）、commit/discard/expiry 的 candidate+payload 终态删除、opaque preview token、Preparation Center。Seat→Account mapping 由 Import Commit 唯一写入；Seat↔Device Binding-set mutation（仅 bind/unbind/rebind）才铸造或更新行级 Binding stamp。
 
-**G2 覆盖**：malformed/duplicate/empty candidate 拒绝、单 pending mutual exclusion、非秘密维度上的 first/no-op/material 区分、已提交 import 无条件推进全部 `credential_revision` 且 preview 不含密码变化分类、configuration CAS 拒绝、将删座位仍绑定的零写入拒绝、重复提交安全失败、candidate/payload 终态删除、current-fact credential/mapping、事务回滚、password 明文不进任何普通 surface、CSV → Server truth 且零自动 Command、零 Binding 写入。
+**G2 覆盖**：malformed/duplicate/empty candidate 拒绝、单 pending mutual exclusion、非秘密维度上的 first/no-op/material 区分、已提交 import 无条件推进全部 `credential_revision` 且 preview 不含密码变化分类、将删座位仍绑定的零写入拒绝、重复提交安全失败、candidate/payload 终态删除、current-fact credential/mapping、事务回滚、password 明文不进任何普通 surface、CSV → Server truth 且零自动 Command、零 Binding 写入、Import 不对任何 revision 做 CAS。
 
 ### Phase 3：Identity & Enrollment
 

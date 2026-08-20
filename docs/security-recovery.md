@@ -145,7 +145,7 @@ Target 只含非秘密数据且本身惰性。CSV、binding 或配置变化不�
 
 只有人工发起的 `SYNC_STATE` 可以应用 Target。Observed 是实际状态来源，Drift 是纯比较。
 
-Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表示 Device 已同步。失败、discard、过期、stale baseline、binding-stale 与 transaction rollback **均不得**改变 confirmed configuration、binding、Target truth 或相关 revision。
+Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表示 Device 已同步。失败、discard、过期、将删座位仍绑定与 transaction rollback **均不得**改变 confirmed configuration、binding、Target truth 或相关 revision。
 
 **验证入口：** domain tests、UI authorization、offline Device tests、import non-mutation tests。
 
@@ -332,8 +332,8 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 以下动作必须审计：
 
 - CSV upload / preview / Import Commit / discard / expiry，以及 candidate/payload 的终态删除；
-- import stale reject、expiry reject、将删座位仍绑定的拒绝；
-- no-op Import Commit（仅 lineage；无 configuration/binding revision bump、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
+- expiry reject、将删座位仍绑定的拒绝；
+- no-op Import Commit（仅 lineage；seats/mappings 未变、无 Binding stamp、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
 - material Import Commit（零 Binding 写入；`binding_impacts` 只出现在拒绝路径的 redacted 计数）；
 - account/credential revision 变化；
 - provisioning 窗口正常开启/关闭与 `system:recovery` close-once；

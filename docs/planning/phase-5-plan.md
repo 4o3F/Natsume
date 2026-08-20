@@ -93,7 +93,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 ### WP2：Target 派生与 `SYNC_STATE` 服务端
 
 - 目标：从 Server truth 确定性派生 `TargetStateSnapshot`，产出派生代际 `generation` 与 `canonical_hash`，作为 `sync_state` 的 frozen payload；提供 operator 触发面。
-- 冻结项：派生输入闭包（Seat↔Binding、account mapping、`revision_counters`、site config）；`canonical_hash` 算法（建议与 fingerprint v1 同纪律：独立域分隔符 + NUL + JCS，**D1**）；`generation` 来源（复用现有 revision 组合 vs 新计数器；ADR-0034 明令「不建立独立 mutable counter 或通用 version system」，倾向前者，**D2**）；operator 触发面（新 route vs 直接 `putCommand`，**D3**）。
+- 冻结项：派生输入闭包（Seat↔Binding、account mapping、site config；无 `revision_counters`）；`canonical_hash` 算法（建议与 fingerprint v1 同纪律：独立域分隔符 + NUL + JCS，**D1**）；`generation` 来源（复用现有 revision 组合 vs 新计数器；ADR-0034 明令「不建立独立 mutable counter 或通用 version system」，倾向前者，**D2**）；operator 触发面（新 route vs 直接 `putCommand`，**D3**）。
 - 文件面：`server/src/application/target.rs`（新）、必要的 `db/` 读面、`http/handler/`、OpenAPI（若新增 route 需同步 §3.6.1/§3.6.2/§3.6.5 与审计词表）。
 - 测试：同一 truth 多次派生逐字节一致；任一输入变化改变 hash；secret 不入 Target 的字节扫描；陈旧 baseline 拒绝。
 

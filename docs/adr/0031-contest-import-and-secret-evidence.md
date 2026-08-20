@@ -12,11 +12,11 @@ Venue 输入只有 Seat、account 和 password。支持 spreadsheet、公式、�
 
 首次导入后永久冻结 Seat universe 无法支持同一赛事内的必要修正；增量 patch 又会引入顺序、部分应用和回滚语义。确认配置因此只表示**当前** Seat 集合、Seat→Account mapping 与当前密码材料；不保留通用 instance state、历史 Seat universe、历史 mapping 或历史秘密行。可审计性来自受限的 redacted `AuditEvent`，不是从可恢复的业务快照取得。
 
-[ADR-0030](0030-foundation-deployment-and-delivery-baseline.md) F8/F9 说明导入不存在真实并发操作员，审计仅供受信管理员使用，因此一个全局 pending candidate 加 `configuration_revision` CAS 足够；无需扩展并发工作流或无消费者的秘密派生证据分类。
+[ADR-0030](0030-foundation-deployment-and-delivery-baseline.md) F8/F9 说明导入不存在真实并发操作员，审计仅供受信管理员使用，因此一个全局 pending candidate 足够（preview→commit 串行化只靠该 singleton；Import 不对任何 revision 做 CAS）；无需扩展并发工作流或无消费者的秘密派生证据分类。
 
 ## Decision
 
-**2026-08-20 修订（Import 不修改 Binding）**：Import Commit 零 `device_bindings` 写入、不推进全局 `BindingRevision`。将删除且当前仍绑定的座位使 commit 返回 `IMPORT_SEATS_STILL_BOUND` 且零写入；operator 经 Binding API 解绑后再 preview。Commit 只 CAS `configuration_revision`。`pending_import_candidate` 不再保存 `baseline_binding_revision`。preview `binding_impacts[]` 仍是 redacted 预告（commit blocker），不是解绑计划。
+**2026-08-20 修订（Import 不修改 Binding，且取消 revision CAS）**：Import Commit 零 `device_bindings` 写入、不铸造 Binding stamp。将删除且当前仍绑定的座位使 commit 返回 `IMPORT_SEATS_STILL_BOUND` 且零写入；operator 经 Binding API 解绑后再 preview。已删除 `revision_counters` 表，不存在全局 configuration 或 binding-set clock。Import Commit 不对任何 revision 做 CAS；preview→commit 串行化只靠 singleton pending candidate（存在 pending 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate）。`pending_import_candidate` 不再保存 `baseline_configuration_revision` 或 `baseline_binding_revision`。preview `binding_impacts[]` 仍是 redacted 预告（commit blocker），不是解绑计划。
 
 ### 输入与单一候选
 
@@ -24,28 +24,28 @@ Venue 输入只有 Seat、account 和 password。支持 spreadsheet、公式、�
 - 不接受额外列、XLSX/ODS、公式、可配置列映射、自动推断或 password export。
 - 每次 upload 都是完整 contest-configuration candidate，不是增量 patch。
 - password-bearing 输入只进入加密 staging 和 secret-safe commit path；只有严格解析成功后才创建 candidate。invalid upload 不落库。
-- 全局最多一个加密 pending candidate。它由 `pending_import_candidate` singleton row 表示：row 存在即为 pending，且只保存 `candidate_id`、`expires_at`、`baseline_configuration_revision`、`preview_token_hash`、`payload_vault_record_id` 与 `redacted_preview_json`；不使用 `state` 枚举、workflow history 或 import snapshot 表，也不保存 Binding baseline。
+- 全局最多一个加密 pending candidate。它由 `pending_import_candidate` singleton row 表示：row 存在即为 pending，且只保存 `candidate_id`、`expires_at`、`preview_token_hash`、`payload_vault_record_id` 与 `redacted_preview_json`；不使用 `state` 枚举、workflow history 或 import snapshot 表，也不保存 configuration/Binding baseline。
 - pending 期间 candidate 内容不变。存在 pending row 时拒绝第二个 upload，操作员必须显式 discard 或完成现有 candidate。
 - commit、discard 与 expiry 都在各自的原子事务中删除 `pending_import_candidate` row 和其 `payload_vault_record_id` 所引用的 `server_vault_records` row，并留下 redacted audit lineage。候选终止后没有可寻址的 candidate 或 password-bearing 数据继续保留。
 
 ### Preview 与 Commit
 
 - Server 独占 redacted diff 分类；Client 只展示 typed 结果，不自行重算。
-- 普通 surface 只获得 opaque `preview_token`、`candidate_id`、baseline `configuration_revision`、redacted diff 与过期信息，不获得 password；数据库只保存该 token 的 `preview_token_hash`。
+- 普通 surface 只获得 opaque `preview_token`、`candidate_id`、redacted diff 与过期信息，不获得 password，也不返回任何 baseline configuration/binding revision；数据库只保存该 token 的 `preview_token_hash`。
 - Import Commit 是高影响变更的第二次显式确认；commit 时重新检查授权。
-- Commit 只对 `revision_counters.configuration_revision` 做 CAS，保护 Seat 集合与 Seat→Account mapping。密码写入不由该 CAS 保护，而由全局单一 pending candidate 串行化。Import **零 `device_bindings` 写入**，不推进 `revision_counters.binding_revision`。stale、expired、discarded、unauthorized、仍有已绑定座位待删除、或事务失败时，不得修改 confirmed configuration、binding、Target 或相关 revision；操作员必须重新 preview。
-- candidate 的存在性、configuration CAS、commit 时对将删座位的 Binding 再检查，与 redacted audit 是恢复和冲突边界。
+- Commit 不对任何 revision 做 CAS。`seats` / `account_mappings` / Account 密码的唯一写入方是 Import Commit 本身；存在 singleton pending 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate。这就是 preview→commit 锁。Import **零 `device_bindings` 写入**，不铸造 Binding stamp。expired、discarded、unauthorized、仍有已绑定座位待删除、或事务失败时，不得修改 confirmed configuration、binding、Target 或相关 revision；操作员必须重新 preview。
+- candidate 的存在性、commit 时对将删座位的 Binding 再检查，与 redacted audit 是恢复和冲突边界。
 
 ### 当前状态、替换与修订
 
 - `seats` 只保存当前 Seat 身份。Seat collection 不冻结；Seat code rename 表示 `REMOVED + ADDED`，不建立 rename mapping。
 - `accounts` 只保存 `account_id`、`domjudge_username`、`credential_vault_record_id` 与 `credential_revision`。关联的 `server_vault_records` current row 只有 `vault_record_id`、`record_type`、`subject_id`、`nonce` 与 `ciphertext`；已提交的 Import Commit 无条件以新 nonce 替换当前密文、推进该 Account 的 `credential_revision` 并写 redacted audit，不做明文比较，也不保留旧密码版本。
-- `account_mappings` 只表达当前 Seat→Account mapping：每个 Seat 最多一条、每个 Account 最多属于一个 Seat；没有 row 表示该 Seat 当前无 Account。它属于 confirmed contest configuration；mapping 变化受 `revision_counters.configuration_revision` 保护，而不是 Binding。
-- `device_bindings` 同样只表达当前 Seat↔Device 关系，row 包含 `seat_id`、`device_pk` 与 `binding_revision`。每次 Binding 集合实际变化（**仅** bind、unbind、rebind）以 CAS 推进一次全局 `BindingRevision`（`revision_counters.binding_revision`）；受影响的新增/变更 Binding 记录该值，未变化 Binding 不重写。Import 与 Account mapping / 密码变化不得推进 `BindingRevision`。
-- material Import Commit 在一个 Server transaction 中替换当前配置，并且 `configuration_revision` 在一个事务内最多递增一次。CSV 将删除的座位若在 commit 时仍有 Binding，整单拒绝、零写入，稳定码 `IMPORT_SEATS_STILL_BOUND`；operator 必须先经 Binding API 解绑再重新 preview。只有 Seat 集合或 Seat→Account mapping 实际变化才推进 `revision_counters.configuration_revision`，密码内容不参与；discard、expiry 与失败不推进任一 revision，而**任何已提交的 import 都推进新确认配置中每个 Account 的 `credential_revision`**。
-- 把密码内容移出 CAS 保护范围不损失并发保护：密码的唯一写入方就是 Import Commit 本身，而全局单一 pending candidate 已经把 preview→commit 串行化——存在 pending candidate 时第二次 import 无法提交；single-lifetime reset 会删除 candidate 并清零计数器，使 CAS 无论如何都会失败。
+- `account_mappings` 只表达当前 Seat→Account mapping：每个 Seat 最多一条、每个 Account 最多属于一个 Seat；没有 row 表示该 Seat 当前无 Account。它属于 confirmed contest configuration；mapping 变化由 Import Commit 写入，不是 Binding，也不经全局 configuration clock。
+- `device_bindings` 同样只表达当前 Seat↔Device 关系，row 包含 `seat_id`、`device_pk` 与行级 `binding_revision`（SYNC_SECRET / Target / Observed 的 stamp）。**仅** bind、unbind、rebind 变更受影响行的 stamp；未变化 Binding 不重写。Import 与 Account mapping / 密码变化不得写入 Binding 或铸造 stamp。
+- material Import Commit 在一个 Server transaction 中替换当前配置。material / no-op 由 diff 判定：Seat 集合或 Seat→Account mapping 是否实际改变，而不是任何计数器；密码内容不参与该判定。CSV 将删除的座位若在 commit 时仍有 Binding，整单拒绝、零写入，稳定码 `IMPORT_SEATS_STILL_BOUND`；operator 必须先经 Binding API 解绑再重新 preview。discard、expiry 与失败不改变 confirmed configuration 或 Binding stamp，而**任何已提交的 import 都推进新确认配置中每个 Account 的 `credential_revision`**。
+- 不设 revision CAS 不损失并发保护：`seats` / `account_mappings` / 密码的唯一写入方就是 Import Commit 本身，而全局单一 pending candidate 已经把 preview→commit 串行化——存在 pending candidate 时第二次 upload 被拒绝；single-lifetime reset 删除 candidate。
 - 允许有效 account swap，拒绝 duplicate account、空候选和只有 header 的候选。清空 confirmed configuration 不是 import；必须使用独立的 destructive single-lifetime reset。
-- 「no-op」自此只在非秘密维度上定义：不推进 configuration 或 binding revision、不制造 Target churn，只保留 lineage 与 redacted audit。它**不**表示 credential 未变——已提交的 import 始终推进 credential revision。
+- 「no-op」自此只在非秘密维度上定义：seats/mappings 相对 confirmed 未变、不铸造 Binding stamp、不制造 Target churn，只保留 lineage 与 redacted audit。它**不**表示 credential 未变——已提交的 import 始终推进 credential revision。
 
 ### Effect、审计与秘密边界
 
@@ -71,7 +71,7 @@ Venue 输入只有 Seat、account 和 password。支持 spreadsheet、公式、�
 ### Positive
 
 - 输入面小、确定、适合严格验证和 fuzzing。
-- 完整替换、redacted preview、configuration CAS 与原子 commit 防止部分或静默 stale 变更；Binding 只经显式 bind API 变化。
+- 完整替换、redacted preview、singleton pending 串行化与原子 commit 防止部分或未确认变更；Binding 只经显式 bind API 变化。
 - 当前事实和必要安全证据分离；终止候选及旧秘密不会成为可查询历史。
 - 导入与 Device 可用性、Command 和秘密同步保持解耦。
 
@@ -86,7 +86,7 @@ Venue 输入只有 Seat、account 和 password。支持 spreadsheet、公式、�
 
 ## Acceptance basis and revisit trigger
 
-实现证据必须覆盖 pending mutual exclusion、invalid upload 零落库、candidate/payload 的 commit/discard/expiry 终态删除、所有拒绝路径零 confirmed-state 变更、configuration CAS、将删座位仍绑定的零写入拒绝、material/no-op transaction、bind API 的全局 Binding-set `binding_revision` 语义、plaintext redaction、审计 envelope 原子性和零自动 Device effect。 Import Commit 不得写入 `device_bindings`。
+实现证据必须覆盖 pending mutual exclusion、invalid upload 零落库、candidate/payload 的 commit/discard/expiry 终态删除、所有拒绝路径零 confirmed-state 变更、将删座位仍绑定的零写入拒绝、material/no-op transaction、bind API 的行级 `binding_revision` stamp 语义、plaintext redaction、审计 envelope 原子性和零自动 Device effect。 Import Commit 不得写入 `device_bindings`，也不得对任何 revision 做 CAS。
 
 出现真实并发导入、外部审计消费者、额外输入格式、snapshot rollback、历史秘密保留或自动同步需求时重开；不得通过给现有流程添加零散例外来恢复已移除的复杂度。
 

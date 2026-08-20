@@ -94,7 +94,7 @@ Client/Server 两个 nFPM 包（Client 声明 9 项 depends、4 个 `config|nore
 ### WP9：Rehearsal 与 runbooks
 
 - 目标：clean-site rehearsal（含失败与恢复场景、restore to verified state、offline steady state）+ operator/admin runbook 集合。
-- runbook 至少覆盖 9 个流程：bootstrap 首启（TTY）、`reset-operator-password`、provisioning 窗口开关、Enrollment 审批/拒绝、CSV import commit/discard、`SYNC_STATE`/`SYNC_SECRET` 触发、Home reset（operator-present）、备份/恢复、单生命周期竞赛重置（破坏性，重置后 `configuration_revision = 0`）。
+- runbook 至少覆盖 9 个流程：bootstrap 首启（TTY）、`reset-operator-password`、provisioning 窗口开关、Enrollment 审批/拒绝、CSV import commit/discard、`SYNC_STATE`/`SYNC_SECRET` 触发、Home reset（operator-present）、备份/恢复、单生命周期竞赛重置（破坏性，删除 pending candidate 后下一次 import 走普通 first-import lifecycle）。
 - 冻结项：rehearsal 场地/机器数/时长、签署人与签署文档位置（**D10**）。
 
 ### WP10：Observability 决策
