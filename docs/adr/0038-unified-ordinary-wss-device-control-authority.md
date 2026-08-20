@@ -55,6 +55,16 @@ TLS 1.3
 
 HTTP 101 只建立 transport。Proof 完成前，连接没有 Device、Enrollment、Command、Observed 或 lifecycle authority。
 
+`ClientProof.intent` 是客户端声明，不是权威。服务端在 Proof 验签之后按 HWID、active key 与 `devices.state` 独立分类；声明与分类不一致则拒绝，不得改写。冻结的 intent：
+
+| Intent | 签名 key | `candidate_control_public_key` / `gateway_csr_der` |
+|---|---|---|
+| `FIRST_ENROLLMENT` | 候选新 key | 必带 |
+| `RESUME` | 当前 active key | 禁止 |
+| `REPLACE` | 候选新 key | 必带 |
+
+`UNSPECIFIED` 拒绝。`REPLACE` 覆盖仍为 `enrolled` 的 distinct-key 凭据替换，包括持有旧 key 的轮转与经显式运维授权的重建；daemon 不得因缺文件自动改发 `REPLACE`。
+
 每条 WSS connection 拥有一次性随机 challenge ID 与 server nonce；它们只存在于该 connection-local PreAuthSession，并在 proof 成功、失败、timeout、非法 message 或 disconnect 后销毁。不得建立全局 challenge lookup 或允许第二次 proof。
 
 Proof crypto 不再逐字段维护第二套 byte schema，也不承担协议语义校验。发送侧 clone typed `ClientProof`、只清空 `signature`，用 pinned Prost `0.14.4` 编码两个完整 typed message，并计算固定摘要：
@@ -95,6 +105,55 @@ First Enrollment 在 Ack 前不创建 Device row 或 active control-key row。Ac
 CredentialBundle canonical bytes 与 SHA-256 是可持久化 public data。Response loss 必须重放同一 bytes，禁止为同一 issuance 重新签名、重新分配 DeviceId 或重复推进 revision。
 
 不同 key replacement 中，旧 key 与旧 session 保持 authority，直到新 candidate 对 exact bundle 完成 durable Ack。一个 transaction supersede 旧 key、activate 新 key并推进 ControlAuthorityRevision；commit 后旧 lease失效。Approval operation 直接生成并持久化 bundle，状态从 PendingApproval 进入 AwaitingCredentialAck，不保留独立 Approved/CredentialIssued 阶段。
+
+**2026-08-20 修订（权威状态机）**：下列图冻结 Client 本地权威、Proof 分类与 control `enrollment_requests.state` 的转移。dormant control key 与已落盘但未 Ack 的 CredentialBundle 都不是 enrolled。`SessionReady` 必须携带本连接的 `session_id`；Active 帧只回该值做租约校验。`devices.control_authority_revision` 只在首次 Ack（=1）与替换 Ack（+1）推进，不出现在每帧 Active envelope 上。
+
+本地权威与 Enrollment 请求是不同事实。先落下 identity 与 create-only control key，才能签 Proof；Gateway 证书只存在于 Server 下发的 CredentialBundle 中，Client 在 Ack 前 crash-safe 落盘，Ack 丢失则重放同一 bytes。
+
+```mermaid
+stateDiagram-v2
+    [*] --> NoIdentity
+    NoIdentity --> Dormant: persist identity and create-only control key
+    Dormant --> Dormant: FIRST retry without bundle
+    Dormant --> AwaitingAck: persist exact CredentialBundle
+    AwaitingAck --> AwaitingAck: reconnect and re-Ack same bundle
+    AwaitingAck --> Active: SessionReady
+    Active --> Active: RESUME new lease
+    Active --> AwaitingAck: persist replacement bundle
+```
+
+`NoIdentity` / `Dormant` / `AwaitingAck` 均未 enrolled。缺 key、坏 key 或 identity 不匹配 fail closed，不在本图内自动转移。`REPLACE` 只能由显式运维进入，不能从缺文件推断。
+
+```mermaid
+flowchart TD
+    proof[ClientProof]
+    proof --> intent{ProofIntent}
+    intent -->|FIRST| firstHwid{HWID already stored?}
+    firstHwid -->|no| firstAck[awaiting_credential_ack]
+    firstHwid -->|yes| reject[reject zero writes]
+    intent -->|RESUME| resumeKey{signature key is active?}
+    resumeKey -->|yes| lease[issue session_id]
+    resumeKey -->|no| reject
+    intent -->|REPLACE| replaceGate{enrolled and key distinct?}
+    replaceGate -->|yes| pending[pending_approval]
+    replaceGate -->|no| reject
+```
+
+FIRST 对已有 HWID、REPLACE 对未知 HWID、RESUME 对非 active key、REPLACE 对 `disabled`/`revoked` 或同一把 active key，全部拒绝且零签发。不得把 FIRST 改写成 REPLACE，也不得把 REPLACE 改写成 FIRST。
+
+```mermaid
+stateDiagram-v2
+    [*] --> awaiting_credential_ack: FIRST unknown HWID
+    [*] --> pending_approval: REPLACE enrolled distinct key
+    pending_approval --> awaiting_credential_ack: operator approve and persist bundle
+    pending_approval --> rejected: operator reject
+    pending_approval --> expired: window closed
+    awaiting_credential_ack --> active: durable CredentialAck
+    awaiting_credential_ack --> expired: window or deadline
+    awaiting_credential_ack --> awaiting_credential_ack: replay same bundle
+```
+
+这些 `enrollment_requests.state` 值仅适用于 `control_intent IS NOT NULL`。FIRST 的 Ack 才创建 `devices` row 与 active control key（revision 1）。REPLACE 的 Ack 不新建 Device，只 supersede key 并推进 revision；替换期间旧 lease 仍有效。`devices.state` 的 disable/revoke 由 operator lifecycle 排序，Enrollment / reconnect / Ack 不得隐式复活。
 
 ### Limits, shutdown, and restart
 
