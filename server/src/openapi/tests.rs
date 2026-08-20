@@ -96,12 +96,6 @@ fn expected_operation_table() -> OperationTable {
         ),
         (
             "get",
-            "/api/v2/devices",
-            "listDevices",
-            &["200", "401", "500"],
-        ),
-        (
-            "get",
             "/api/v2/bindings",
             "listBindings",
             &["200", "401", "500"],
@@ -111,18 +105,6 @@ fn expected_operation_table() -> OperationTable {
             "/api/v2/imports",
             "getCsvImport",
             &["200", "401", "403", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/devices/{device_id}/actions/revoke",
-            "revokeDevice",
-            &["200", "400", "401", "403", "404", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/devices/{device_id}/actions/disable",
-            "disableDevice",
-            &["200", "400", "401", "403", "404", "500"],
         ),
         (
             "post",
@@ -147,30 +129,6 @@ fn expected_operation_table() -> OperationTable {
             "/api/v2/imports/{import_id}/actions/discard",
             "discardCsvImport",
             &["204", "400", "401", "403", "404", "500"],
-        ),
-        (
-            "get",
-            "/api/v2/enrollment-requests",
-            "listEnrollmentRequests",
-            &["200", "401", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/enrollment-requests",
-            "createEnrollmentRequest",
-            &["201", "202", "400", "409", "413", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/enrollment-requests/{request_id}/actions/approve",
-            "approveEnrollment",
-            &["200", "400", "401", "403", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/enrollment-requests/{request_id}/actions/reject",
-            "rejectEnrollment",
-            &["200", "400", "401", "403", "500"],
         ),
         (
             "put",
@@ -259,7 +217,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none."
+        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -279,26 +237,6 @@ fn device_lifecycle_path_parameters_are_exact() -> Result<(), TestFailure> {
             != Some("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
     {
         return Err(TestFailure::LifecyclePathContractChanged);
-    }
-    for path in [
-        "/api/v2/devices/{device_id}/actions/revoke",
-        "/api/v2/devices/{device_id}/actions/disable",
-    ] {
-        let parameters = operation_at(&value, path, "post")?
-            .get("parameters")
-            .and_then(Value::as_array)
-            .ok_or(TestFailure::DocumentShapeInvalid)?;
-        let parameter = parameters
-            .iter()
-            .find(|parameter| parameter.get("name").and_then(Value::as_str) == Some("device_id"))
-            .ok_or(TestFailure::LifecyclePathContractChanged)?;
-        if parameter.get("in").and_then(Value::as_str) != Some("path")
-            || parameter.get("required").and_then(Value::as_bool) != Some(true)
-            || parameter.pointer("/schema/$ref").and_then(Value::as_str)
-                != Some("#/components/schemas/CanonicalUuidV7")
-        {
-            return Err(TestFailure::LifecyclePathContractChanged);
-        }
     }
     Ok(())
 }
@@ -388,281 +326,6 @@ fn provisioning_window_operations_and_response_schema_are_closed_and_exact()
     Ok(())
 }
 
-#[test]
-#[allow(clippy::too_many_lines)]
-fn enrollment_operation_and_closed_schemas_are_exact_and_role_free() -> Result<(), TestFailure> {
-    let value = serialized_document()?;
-    let operation = operation_at(&value, "/api/v2/enrollment-requests", "post")?;
-    if operation.get("security").is_some()
-        || nested_value(
-            operation,
-            &[
-                "requestBody",
-                "content",
-                "application/json",
-                "schema",
-                "$ref",
-            ],
-        )
-        .and_then(Value::as_str)
-            != Some("#/components/schemas/EnrollmentRequest")
-        || nested_value(
-            operation,
-            &[
-                "responses",
-                "201",
-                "content",
-                "application/json",
-                "schema",
-                "$ref",
-            ],
-        )
-        .and_then(Value::as_str)
-            != Some("#/components/schemas/EnrollmentIssuedResponse")
-        || nested_value(
-            operation,
-            &[
-                "responses",
-                "202",
-                "content",
-                "application/json",
-                "schema",
-                "$ref",
-            ],
-        )
-        .and_then(Value::as_str)
-            != Some("#/components/schemas/EnrollmentPendingResponse")
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-
-    let request = schema_object(&value, "EnrollmentRequest")?;
-    let request_properties = schema_properties(request)?;
-    if property_names(request_properties)
-        != BTreeSet::from([
-            "client_version",
-            "gateway_csr_der",
-            "gateway_spki_sha256",
-            "hardware_identity_quality",
-            "machine_hardware_id",
-            "protocol_version",
-        ])
-        || required_property_names(request)? != property_names(request_properties)
-        || request.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        || request_properties
-            .get("gateway_csr_der")
-            .and_then(|property| property.get("format"))
-            .and_then(Value::as_str)
-            != Some("byte")
-        || request_properties
-            .get("gateway_spki_sha256")
-            .and_then(|property| property.get("pattern"))
-            .and_then(Value::as_str)
-            != Some("^[0-9a-f]{64}$")
-        || request_properties
-            .get("protocol_version")
-            .and_then(|property| property.get("minimum"))
-            .and_then(Value::as_u64)
-            != Some(1)
-        || request_properties
-            .get("protocol_version")
-            .and_then(|property| property.get("maximum"))
-            .and_then(Value::as_u64)
-            != Some(1)
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-
-    let issued = schema_object(&value, "EnrollmentIssuedResponse")?;
-    let issued_properties = schema_properties(issued)?;
-    if property_names(issued_properties)
-        != BTreeSet::from([
-            "device_id",
-            "device_token",
-            "enrollment_request_id",
-            "gateway_chain_der",
-            "gateway_leaf_der",
-            "state",
-        ])
-        || required_property_names(issued)? != property_names(issued_properties)
-        || issued.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        || issued_properties
-            .get("enrollment_request_id")
-            .and_then(|property| property.get("$ref"))
-            .and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-        || issued_properties
-            .get("device_id")
-            .and_then(|property| property.get("$ref"))
-            .and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-        || issued_properties
-            .get("device_token")
-            .and_then(|property| property.get("pattern"))
-            .and_then(Value::as_str)
-            != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
-        || issued_properties
-            .get("device_token")
-            .is_some_and(|property| property.get("writeOnly").is_some())
-        || issued_properties
-            .get("gateway_leaf_der")
-            .and_then(|property| property.get("format"))
-            .and_then(Value::as_str)
-            != Some("byte")
-        || issued_properties
-            .get("gateway_chain_der")
-            .and_then(|property| property.pointer("/items/format"))
-            .and_then(Value::as_str)
-            != Some("byte")
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-
-    let pending = schema_object(&value, "EnrollmentPendingResponse")?;
-    if property_names(schema_properties(pending)?)
-        != BTreeSet::from(["enrollment_request_id", "state"])
-        || required_property_names(pending)? != property_names(schema_properties(pending)?)
-        || pending.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        || value
-            .pointer("/components/schemas/EnrollmentPendingState/enum")
-            .and_then(Value::as_array)
-            != Some(&vec![Value::from("pending")])
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-
-    let list = operation_at(&value, "/api/v2/enrollment-requests", "get")?;
-    if list.get("requestBody").is_some()
-        || list
-            .get("security")
-            .and_then(Value::as_array)
-            .and_then(|security| security.first())
-            .and_then(Value::as_object)
-            .and_then(|requirement| requirement.get("sessionCookie"))
-            .and_then(Value::as_array)
-            .is_none_or(|scopes| !scopes.is_empty())
-        || nested_value(
-            list,
-            &[
-                "responses",
-                "200",
-                "content",
-                "application/json",
-                "schema",
-                "items",
-                "$ref",
-            ],
-        )
-        .and_then(Value::as_str)
-            != Some("#/components/schemas/EnrollmentRequestSummary")
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-    for path in [
-        "/api/v2/enrollment-requests/{request_id}/actions/approve",
-        "/api/v2/enrollment-requests/{request_id}/actions/reject",
-    ] {
-        let action = operation_at(&value, path, "post")?;
-        let parameter = action
-            .get("parameters")
-            .and_then(Value::as_array)
-            .and_then(|parameters| {
-                parameters.iter().find(|parameter| {
-                    parameter.get("name").and_then(Value::as_str) == Some("request_id")
-                })
-            })
-            .ok_or(TestFailure::EnrollmentContractChanged)?;
-        if action.get("requestBody").is_some()
-            || action
-                .get("security")
-                .and_then(Value::as_array)
-                .and_then(|security| security.first())
-                .and_then(Value::as_object)
-                .and_then(|requirement| requirement.get("sessionCookie"))
-                .and_then(Value::as_array)
-                .is_none_or(|scopes| !scopes.is_empty())
-            || parameter.pointer("/schema/$ref").and_then(Value::as_str)
-                != Some("#/components/schemas/CanonicalUuidV7")
-            || nested_value(
-                action,
-                &[
-                    "responses",
-                    "200",
-                    "content",
-                    "application/json",
-                    "schema",
-                    "$ref",
-                ],
-            )
-            .and_then(Value::as_str)
-                != Some("#/components/schemas/EnrollmentActionResponse")
-        {
-            return Err(TestFailure::EnrollmentContractChanged);
-        }
-    }
-
-    let summary = schema_object(&value, "EnrollmentRequestSummary")?;
-    let summary_properties = schema_properties(summary)?;
-    if property_names(summary_properties)
-        != BTreeSet::from([
-            "client_version",
-            "created_at",
-            "enrollment_request_id",
-            "gateway_spki_sha256",
-            "hardware_identity_quality",
-            "machine_hardware_id",
-            "protocol_version",
-            "resolution",
-            "resolved_device_id",
-            "source_ip",
-            "state",
-        ])
-        || required_property_names(summary)? != property_names(summary_properties)
-        || summary.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        || summary_properties
-            .get("enrollment_request_id")
-            .and_then(|property| property.get("$ref"))
-            .and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-        || summary_properties
-            .get("gateway_spki_sha256")
-            .and_then(|property| property.get("pattern"))
-            .and_then(Value::as_str)
-            != Some("^[0-9a-f]{64}$")
-        || summary_properties
-            .get("state")
-            .and_then(|property| property.get("enum"))
-            .and_then(Value::as_array)
-            != Some(&vec![Value::from("pending"), Value::from("approved")])
-        || summary_properties
-            .get("resolved_device_id")
-            .and_then(|property| property.pointer("/oneOf/1/$ref"))
-            .and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-        || summary_properties.contains_key("gateway_csr_der")
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-    let action = schema_object(&value, "EnrollmentActionResponse")?;
-    let action_properties = schema_properties(action)?;
-    if property_names(action_properties) != BTreeSet::from(["enrollment_request_id", "state"])
-        || required_property_names(action)? != property_names(action_properties)
-        || action.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        || action_properties
-            .get("enrollment_request_id")
-            .and_then(|property| property.get("$ref"))
-            .and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-        || action_properties
-            .get("state")
-            .and_then(|property| property.get("enum"))
-            .and_then(Value::as_array)
-            != Some(&vec![Value::from("approved"), Value::from("rejected")])
-    {
-        return Err(TestFailure::EnrollmentContractChanged);
-    }
-    Ok(())
-}
 
 #[test]
 fn import_paths_and_schemas_are_closed_and_exact() -> Result<(), TestFailure> {
@@ -1325,10 +988,7 @@ async fn probe_live_router(
     paths.extend([
         "/api/v2/seats".to_owned(),
         "/api/v2/accounts".to_owned(),
-        "/api/v2/devices".to_owned(),
         "/api/v2/bindings".to_owned(),
-        "/api/v2/devices/{device_id}/actions/revoke".to_owned(),
-        "/api/v2/devices/{device_id}/actions/disable".to_owned(),
     ]);
 
     let mut mounted = BTreeSet::new();

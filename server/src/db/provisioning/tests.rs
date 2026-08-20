@@ -72,7 +72,7 @@ async fn operator_open_close_open_cycle_advances_revision_and_writes_exact_audit
     let evidence = persistence_snapshot(&database).await?;
     if evidence.window.state != "open"
         || evidence.window.revision != 3
-        || evidence.audit_count != 4
+        || evidence.audit_count != 3
         || evidence.audits.len() != 3
         || evidence.window.last_audit_event_id.as_deref()
             != evidence
@@ -255,7 +255,6 @@ async fn duplicate_operator_audit_ids_leave_state_revision_and_pointer_unchanged
         &database,
         CorrelationId::from_uuid(Uuid::now_v7()),
         AuditEventId::from_uuid(duplicate_close_id),
-        AuditEventId::from_uuid(Uuid::now_v7()),
     )
     .await;
     if close_result != Err(ProvisioningError::PersistenceFailed)

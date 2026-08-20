@@ -795,71 +795,6 @@ async fn startup_failures_preserve_stage_order() -> Result<(), TestFailure> {
     )?;
     drop(invalid_vault_guard);
 
-    let missing_origin_identity =
-        TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
-    let origin_key_directory = missing_origin_identity.directory_path().join("keys");
-    create_private_directory(&origin_key_directory)?;
-    let missing_origin_database = missing_origin_identity.directory_path().join("server.db");
-    create_database(&missing_origin_database).await?;
-    let origin_master_key = origin_key_directory.join("root.key");
-    ensure_master_key(&origin_master_key).map_err(|_| TestFailure::FixtureCreationFailed)?;
-    fs::remove_file(
-        missing_origin_identity
-            .directory_path()
-            .join(ORIGIN_CA_PRIVATE_KEY_FILENAME),
-    )
-    .map_err(|_| TestFailure::FixtureCreationFailed)?;
-    let missing_origin_path = write_config(
-        &missing_origin_identity,
-        SocketAddr::from((LOCALHOST, 0)),
-        &missing_origin_database,
-        &origin_master_key,
-        missing_origin_identity.certificate_path(),
-        missing_origin_identity.private_key_path(),
-    )?;
-    let missing_origin_config = ServerConfig::load_from(&missing_origin_path)
-        .map_err(|_| TestFailure::FixtureCreationFailed)?;
-    assert_startup_error(
-        run_until(missing_origin_config, ready(())).await,
-        CommandError::OriginCa,
-    )?;
-
-    let mismatched_origin_identity =
-        TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
-    let different_origin_identity =
-        TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
-    fs::copy(
-        different_origin_identity
-            .directory_path()
-            .join("local-origin-ca.crt"),
-        mismatched_origin_identity
-            .directory_path()
-            .join("local-origin-ca.crt"),
-    )
-    .map_err(|_| TestFailure::FixtureCreationFailed)?;
-    let mismatched_key_directory = mismatched_origin_identity.directory_path().join("keys");
-    create_private_directory(&mismatched_key_directory)?;
-    let mismatched_database = mismatched_origin_identity
-        .directory_path()
-        .join("server.db");
-    create_database(&mismatched_database).await?;
-    let mismatched_master_key = mismatched_key_directory.join("root.key");
-    ensure_master_key(&mismatched_master_key).map_err(|_| TestFailure::FixtureCreationFailed)?;
-    let mismatched_origin_path = write_config(
-        &mismatched_origin_identity,
-        SocketAddr::from((LOCALHOST, 0)),
-        &mismatched_database,
-        &mismatched_master_key,
-        mismatched_origin_identity.certificate_path(),
-        mismatched_origin_identity.private_key_path(),
-    )?;
-    let mismatched_origin_config = ServerConfig::load_from(&mismatched_origin_path)
-        .map_err(|_| TestFailure::FixtureCreationFailed)?;
-    assert_startup_error(
-        run_until(mismatched_origin_config, ready(())).await,
-        CommandError::OriginCaTrustRootMismatch,
-    )?;
-
     let invalid_tls_identity =
         TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureCreationFailed)?;
     let valid_key_directory = invalid_tls_identity.directory_path().join("keys");
@@ -994,26 +929,7 @@ async fn serve_runs_migrations_and_close_once_recovery() -> Result<(), TestFailu
     .get_result::<CountRow>(&mut observer)
     .map_err(|_| TestFailure::FixtureIoFailed)?
     .value;
-    let request_state = diesel::sql_query(
-        "SELECT state AS value FROM enrollment_requests WHERE enrollment_request_id = ?",
-    )
-    .bind::<Text, _>(&recovery_request_id)
-    .get_result::<TextValueRow>(&mut observer)
-    .map_err(|_| TestFailure::FixtureIoFailed)?
-    .value;
-    let expiry_detail = diesel::sql_query(
-        "SELECT redacted_detail_json AS value FROM audit_events \
-         WHERE actor = 'system:recovery' AND action_kind = 'expire_enrollment_requests'",
-    )
-    .get_result::<TextValueRow>(&mut observer)
-    .map_err(|_| TestFailure::FixtureIoFailed)?
-    .value;
-    if window.state != "closed"
-        || window.revision != 2
-        || recovery_count != 2
-        || request_state != "expired"
-        || expiry_detail != r#"{"expired_count":1}"#
-    {
+    if window.state != "closed" || window.revision != 2 || recovery_count != 1 {
         return Err(TestFailure::RecoveryDidNotRun);
     }
     Ok(())

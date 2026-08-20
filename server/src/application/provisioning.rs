@@ -2,10 +2,7 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    audit::{
-        AuditEvent, AuditEventId, CorrelationId, EnrollmentExpiryActor,
-        ProvisioningWindowAuditResult,
-    },
+    audit::{AuditEvent, AuditEventId, CorrelationId, ProvisioningWindowAuditResult},
     db::{self, Database, DatabaseError},
 };
 
@@ -111,7 +108,6 @@ pub(crate) async fn recover_on_startup(
     };
 
     let audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
-    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
     let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
     database
         .write(move |transaction| {
@@ -132,16 +128,6 @@ pub(crate) async fn recover_on_startup(
                 next.revision,
             );
             db::audit::insert(transaction, &event)
-                .map_err(ProvisioningError::from_audit_persistence)?;
-            let expired_count = db::device::enrollment::request::expire_live_requests(transaction)
-                .map_err(ProvisioningError::from_enrollment_request_persistence)?;
-            let expiry_event = AuditEvent::enrollment_requests_expired(
-                expiry_audit_event_id,
-                correlation_id,
-                EnrollmentExpiryActor::Recovery,
-                expired_count,
-            );
-            db::audit::insert(transaction, &expiry_event)
                 .map_err(ProvisioningError::from_audit_persistence)?;
             db::provisioning::compare_and_swap_window(transaction, current, next, audit_event_id)
                 .map_err(ProvisioningError::from_provisioning_persistence)?;
@@ -185,7 +171,6 @@ pub(crate) async fn open_window_with_ids(
         ProvisioningWindowAction::Open,
         correlation_id,
         audit_event_id,
-        None,
     )
     .await
 }
@@ -198,7 +183,6 @@ pub(crate) async fn close_window(
         database,
         correlation_id,
         AuditEventId::from_uuid(Uuid::now_v7()),
-        AuditEventId::from_uuid(Uuid::now_v7()),
     )
     .await
 }
@@ -207,14 +191,12 @@ pub(crate) async fn close_window_with_ids(
     database: &Database,
     correlation_id: CorrelationId,
     audit_event_id: AuditEventId,
-    expiry_audit_event_id: AuditEventId,
 ) -> Result<ProvisioningWindow, ProvisioningError> {
     mutate_window_with_ids(
         database,
         ProvisioningWindowAction::Close,
         correlation_id,
         audit_event_id,
-        Some(expiry_audit_event_id),
     )
     .await
 }
@@ -224,7 +206,6 @@ async fn mutate_window_with_ids(
     action: ProvisioningWindowAction,
     correlation_id: CorrelationId,
     audit_event_id: AuditEventId,
-    expiry_audit_event_id: Option<AuditEventId>,
 ) -> Result<ProvisioningWindow, ProvisioningError> {
     database
         .write(move |transaction| {
@@ -250,19 +231,6 @@ async fn mutate_window_with_ids(
 
             if !decision.applies {
                 return Ok(decision.next);
-            }
-            if action == ProvisioningWindowAction::Close {
-                let expired_count =
-                    db::device::enrollment::request::expire_live_requests(transaction)
-                        .map_err(ProvisioningError::from_enrollment_request_persistence)?;
-                let expiry_event = AuditEvent::enrollment_requests_expired(
-                    expiry_audit_event_id.ok_or(ProvisioningError::PersistenceFailed)?,
-                    correlation_id,
-                    EnrollmentExpiryActor::Operator,
-                    expired_count,
-                );
-                db::audit::insert(transaction, &expiry_event)
-                    .map_err(ProvisioningError::from_audit_persistence)?;
             }
             db::provisioning::compare_and_swap_window(
                 transaction,
@@ -292,17 +260,6 @@ impl ProvisioningError {
         }
     }
 
-    pub(crate) const fn from_enrollment_request_persistence(
-        error: crate::application::device::enrollment::EnrollmentRequestPersistenceError,
-    ) -> Self {
-        match error {
-            crate::application::device::enrollment::EnrollmentRequestPersistenceError::InvalidPersistedFacts
-            | crate::application::device::enrollment::EnrollmentRequestPersistenceError::PersistenceFailed => {
-                Self::PersistenceFailed
-            }
-        }
-    }
-
     pub(crate) const fn from_audit_persistence(error: crate::audit::AuditPersistenceError) -> Self {
         match error {
             crate::audit::AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
@@ -323,10 +280,7 @@ impl From<DatabaseError> for ProvisioningError {
 
 #[cfg(test)]
 mod mapping_tests {
-    use crate::{
-        application::device::enrollment::EnrollmentRequestPersistenceError,
-        audit::AuditPersistenceError,
-    };
+    use crate::audit::AuditPersistenceError;
 
     use super::{ProvisioningError, ProvisioningPersistenceError};
 
@@ -338,15 +292,6 @@ mod mapping_tests {
         ] {
             assert_eq!(
                 ProvisioningError::from_provisioning_persistence(error),
-                ProvisioningError::PersistenceFailed
-            );
-        }
-        for error in [
-            EnrollmentRequestPersistenceError::InvalidPersistedFacts,
-            EnrollmentRequestPersistenceError::PersistenceFailed,
-        ] {
-            assert_eq!(
-                ProvisioningError::from_enrollment_request_persistence(error),
                 ProvisioningError::PersistenceFailed
             );
         }

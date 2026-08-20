@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{fs, net::SocketAddr, path::Path, path::PathBuf};
 
 use serde::Deserialize;

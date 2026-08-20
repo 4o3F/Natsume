@@ -9,7 +9,6 @@ use uuid::Uuid;
 
 use crate::{
     application::{
-        device::{DeviceId, NoLiveDeviceConnections, disable_device},
         operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
     },
     audit::CorrelationId,
@@ -110,12 +109,10 @@ async fn first_put_then_disable_replay_and_conflict_preserve_the_command() -> Re
         return Err(TestFailure::CreatedPersistenceChanged);
     }
 
-    let device_id = DeviceId::parse(DEVICE_ID).ok_or(TestFailure::FixtureFailed)?;
-    disable_device(
+    crate::db::device::tests::test_set_device_state(
         &fixture.database.database,
-        &device_id,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-        &NoLiveDeviceConnections,
+        DEVICE_ID,
+        "disabled",
     )
     .await
     .map_err(|_| TestFailure::FixtureFailed)?;

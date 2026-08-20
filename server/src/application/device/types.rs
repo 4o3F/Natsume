@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
 

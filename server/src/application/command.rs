@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 mod service;
 mod types;
 pub(crate) mod validate;

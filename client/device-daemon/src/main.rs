@@ -4,7 +4,7 @@ use std::{
 };
 
 use clap::{ArgGroup, Parser};
-use natsume_device_daemon::{EndpointError, control, parse_endpoint, startup};
+use natsume_device_daemon::{EndpointError, parse_endpoint, startup};
 use natsume_error_code::ErrorCode;
 use snafu::Snafu;
 
@@ -29,9 +29,6 @@ enum Error {
 
     #[snafu(display("{source}"))]
     Startup { source: startup::StartupError },
-
-    #[snafu(display("{source}"))]
-    Control { source: control::ControlError },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,13 +101,11 @@ async fn run() -> Result<(), Error> {
     match run_args(&args)? {
         RunMode::Completed => Ok(()),
         RunMode::Daemon => {
-            let control = startup::run_production()
+            startup::run_production()
                 .await
                 .map_err(|source| Error::Startup { source })?;
-            control
-                .run()
-                .await
-                .map_err(|source| Error::Control { source })
+            std::future::pending::<()>().await;
+            Ok(())
         }
     }
 }

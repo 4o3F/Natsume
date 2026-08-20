@@ -118,7 +118,7 @@ pub(crate) async fn put_command(
         &command_id,
         input,
         correlation_id,
-        &state.device_connections,
+        &(),
     )
     .await
     {

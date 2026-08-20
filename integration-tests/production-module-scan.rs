@@ -171,8 +171,6 @@ const DATABASE_BOUNDARY_ALLOWLIST: &[DatabaseBoundaryAllowance] = &[];
 // Multi-table reads are permitted only in modules explicitly reviewed as query/read-model
 // adapters. The classifier is module-path based; it never grants function-level exceptions.
 const READ_MODEL_MODULE_ALLOWLIST: &[&str] = &[
-    "server/src/db/device/query.rs",
-    "server/src/db/device/enrollment/query.rs",
     "server/src/db/import/query.rs",
     "server/src/db/operator/query.rs",
 ];

@@ -399,9 +399,6 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
     ];
     for (response, expected_status) in mounted.iter().zip(expected_statuses) {
         if response.status != expected_status {
@@ -423,21 +420,11 @@ async fn mounted_route_responses(
         drive(application, request(Method::DELETE, "/api/v2/session", "")?).await?,
         drive(application, request(Method::GET, "/api/v2/seats", "")?).await?,
         drive(application, request(Method::GET, "/api/v2/accounts", "")?).await?,
-        drive(application, request(Method::GET, "/api/v2/devices", "")?).await?,
         drive(application, request(Method::GET, "/api/v2/bindings", "")?).await?,
         drive(application, request(Method::GET, "/api/v2/imports", "")?).await?,
         drive(
             application,
             request(Method::GET, "/api/v2/provisioning-window", "")?,
-        )
-        .await?,
-        drive(
-            application,
-            request(
-                Method::POST,
-                "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/revoke",
-                "",
-            )?,
         )
         .await?,
         drive(
@@ -478,15 +465,6 @@ async fn mounted_route_responses(
             request(
                 Method::POST,
                 "/api/v2/imports/01900000-0000-7000-8000-000000000000/actions/discard",
-                "",
-            )?,
-        )
-        .await?,
-        drive(
-            application,
-            request(
-                Method::POST,
-                "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/disable",
                 "",
             )?,
         )
@@ -776,27 +754,9 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
         ("/api/v2/session", StatusCode::NOT_FOUND),
         ("/api/v2/seats", StatusCode::NOT_FOUND),
         ("/api/v2/accounts", StatusCode::NOT_FOUND),
-        ("/api/v2/devices", StatusCode::NOT_FOUND),
         ("/api/v2/bindings", StatusCode::NOT_FOUND),
         ("/api/v2/imports", StatusCode::NOT_FOUND),
         ("/api/v2/provisioning-window", StatusCode::NOT_FOUND),
-        ("/api/v2/enrollment-requests", StatusCode::NOT_FOUND),
-        (
-            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000000/actions/approve",
-            StatusCode::METHOD_NOT_ALLOWED,
-        ),
-        (
-            "/api/v2/enrollment-requests/01900000-0000-7000-8000-000000000000/actions/reject",
-            StatusCode::METHOD_NOT_ALLOWED,
-        ),
-        (
-            "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/revoke",
-            StatusCode::METHOD_NOT_ALLOWED,
-        ),
-        (
-            "/api/v2/devices/01900000-0000-7000-8000-000000000000/actions/disable",
-            StatusCode::METHOD_NOT_ALLOWED,
-        ),
         (
             "/api/v2/provisioning-window/actions/open",
             StatusCode::METHOD_NOT_ALLOWED,

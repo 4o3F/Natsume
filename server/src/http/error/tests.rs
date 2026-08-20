@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     application::{
         command::CommandError,
-        device::{DeviceError, enrollment::EnrollmentError},
+        device::DeviceError,
         import::{ImportError, parse_csv},
         provisioning::ProvisioningError,
     },
@@ -19,33 +19,6 @@ use super::{ApiError, ContestError, CorrelationId, IntoResponse as _, OperatorEr
 
 const CAUSE_CANARY: &str = "internal_cause_canary";
 const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
-const INVALID_ENROLLMENT_REQUEST_ID_CAUSE: (EnrollmentError, &str, StatusCode) = (
-    EnrollmentError::InvalidRequestId,
-    "enrollment_request_id_invalid",
-    StatusCode::BAD_REQUEST,
-);
-
-#[tokio::test]
-async fn non_pending_enrollment_decision_is_invalid_not_identity_conflict()
--> Result<(), TestFailure> {
-    let response = ApiError::from_enrollment(
-        EnrollmentError::RequestNotPending,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-    )
-    .into_response();
-    if response.status() != StatusCode::BAD_REQUEST {
-        return Err(TestFailure::EnrollmentDecisionMappingChanged);
-    }
-    let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
-        .await
-        .map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
-    let body: Value =
-        serde_json::from_slice(&body).map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
-    if body.get("code").and_then(Value::as_str) != Some("ENROLLMENT_REQUEST_INVALID") {
-        return Err(TestFailure::EnrollmentDecisionMappingChanged);
-    }
-    Ok(())
-}
 
 #[tokio::test]
 async fn from_command_maps_every_error_and_hides_non_enrollment_like_missing_device()
@@ -120,11 +93,6 @@ async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result
         }
         for (error, cause, status) in provisioning_causes() {
             let rendered = ApiError::from_provisioning(error, correlation_id);
-            assert_cause_stays_internal(rendered, cause, status).await?;
-            causes.push(cause);
-        }
-        for (error, cause, status) in enrollment_causes() {
-            let rendered = ApiError::from_enrollment(error, correlation_id);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
@@ -298,102 +266,6 @@ fn provisioning_causes() -> [(ProvisioningError, &'static str, StatusCode); 2] {
         (
             ProvisioningError::PersistenceFailed,
             "provisioning_persistence_failed",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
-    ]
-}
-
-fn enrollment_causes() -> [(EnrollmentError, &'static str, StatusCode); 19] {
-    [
-        INVALID_ENROLLMENT_REQUEST_ID_CAUSE,
-        (
-            EnrollmentError::InvalidMachineHardwareId,
-            "enrollment_machine_hardware_id_invalid",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::InvalidHardwareIdentityQuality,
-            "enrollment_hardware_identity_quality_invalid",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::InvalidClientVersion,
-            "enrollment_client_version_invalid",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::UnsupportedProtocolVersion,
-            "enrollment_protocol_version_unsupported",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::InvalidSpki,
-            "enrollment_spki_invalid",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::InvalidCsrEncoding,
-            "enrollment_csr_encoding_invalid",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::InvalidCsr,
-            "enrollment_csr_invalid",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::SpkiMismatch,
-            "enrollment_spki_mismatch",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::ProvisioningWindowClosed,
-            "enrollment_provisioning_window_closed",
-            StatusCode::CONFLICT,
-        ),
-        (
-            EnrollmentError::RequestRejected,
-            "enrollment_request_rejected",
-            StatusCode::CONFLICT,
-        ),
-        (
-            EnrollmentError::LiveRequestCapacityExceeded,
-            "enrollment_live_request_capacity_exceeded",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::DeviceIdentityConflict,
-            "enrollment_device_identity_conflict",
-            StatusCode::CONFLICT,
-        ),
-        (
-            EnrollmentError::RequestNotPending,
-            "enrollment_request_not_actionable",
-            StatusCode::BAD_REQUEST,
-        ),
-        (
-            EnrollmentError::InvalidPersistedFacts,
-            "enrollment_invalid_persisted_facts",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
-        (
-            EnrollmentError::EntropyUnavailable,
-            "enrollment_entropy_unavailable",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
-        (
-            EnrollmentError::IssuancePolicyExpired,
-            "enrollment_issuance_policy_expired",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
-        (
-            EnrollmentError::SigningFailed,
-            "enrollment_signing_failed",
-            StatusCode::INTERNAL_SERVER_ERROR,
-        ),
-        (
-            EnrollmentError::PersistenceFailed,
-            "enrollment_persistence_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
     ]

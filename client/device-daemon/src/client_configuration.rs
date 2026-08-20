@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::{fs, path::Path};
 
 use rustls_pki_types::{CertificateDer, pem::PemObject as _};

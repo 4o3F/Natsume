@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use diesel::{
     ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, dsl::sql, sql_types::Text,
 };

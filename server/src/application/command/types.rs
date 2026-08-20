@@ -54,6 +54,10 @@ pub(crate) trait DeviceCommandDispatchNotifier: Send + Sync {
     fn notify_command_dispatch(&self, device_pk: &str);
 }
 
+impl DeviceCommandDispatchNotifier for () {
+    fn notify_command_dispatch(&self, _device_pk: &str) {}
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CommandOutcome {
     Created,

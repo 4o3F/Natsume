@@ -174,8 +174,6 @@ struct RecoveryAuditRow {
     #[diesel(sql_type = Nullable<Text>)]
     reason_code: Option<String>,
     #[diesel(sql_type = Text)]
-    correlation_id: String,
-    #[diesel(sql_type = Text)]
     redacted_detail_json: String,
 }
 
@@ -2042,19 +2040,18 @@ fn assert_recovery_audit(database: &TestDatabase) -> String {
         "recovery audit count must be queryable",
     )
     .value;
-    assert_eq!(recovery_audit_count, 2);
+    assert_eq!(recovery_audit_count, 1);
     let recovery_audits = require_ok(
         diesel::sql_query(
-            "SELECT audit_event_id, actor, action_kind, result, reason_code, correlation_id, \
+            "SELECT audit_event_id, actor, action_kind, result, reason_code, \
              redacted_detail_json FROM audit_events WHERE actor = 'system:recovery' \
              ORDER BY rowid",
         )
         .load::<RecoveryAuditRow>(&mut connection),
         "recovery audits must be queryable",
     );
-    assert_eq!(recovery_audits.len(), 2);
+    assert_eq!(recovery_audits.len(), 1);
     let recovery_close = &recovery_audits[0];
-    let enrollment_expiry = &recovery_audits[1];
     assert_eq!(recovery_close.actor, "system:recovery");
     assert_eq!(recovery_close.action_kind, "close_provisioning_window");
     assert_eq!(recovery_close.result, "succeeded");
@@ -2070,24 +2067,6 @@ fn assert_recovery_audit(database: &TestDatabase) -> String {
         recovery_detail,
         serde_json::json!({"previous_revision": 1, "new_revision": 2})
     );
-    assert_eq!(enrollment_expiry.actor, "system:recovery");
-    assert_eq!(enrollment_expiry.action_kind, "expire_enrollment_requests");
-    assert_eq!(enrollment_expiry.result, "succeeded");
-    assert_eq!(
-        enrollment_expiry.reason_code.as_deref(),
-        Some("window_closed")
-    );
-    assert_eq!(
-        require_ok(
-            serde_json::from_str::<serde_json::Value>(&enrollment_expiry.redacted_detail_json),
-            "Enrollment expiry audit detail must be valid JSON",
-        ),
-        serde_json::json!({"expired_count": 0})
-    );
-    assert_eq!(
-        enrollment_expiry.correlation_id,
-        recovery_close.correlation_id
-    );
     let canonical_timestamp_count = require_ok(
         diesel::sql_query(
             "SELECT COUNT(*) AS value FROM audit_events WHERE actor = 'system:recovery' \
@@ -2097,7 +2076,7 @@ fn assert_recovery_audit(database: &TestDatabase) -> String {
         "recovery audit timestamps must be queryable",
     )
     .value;
-    assert_eq!(canonical_timestamp_count, 2);
+    assert_eq!(canonical_timestamp_count, 1);
     recovery_close.audit_event_id.clone()
 }
 

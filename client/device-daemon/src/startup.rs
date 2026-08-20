@@ -16,8 +16,7 @@ use crate::{
     atomic_write::ATOMIC_TEMP_PREFIX,
     canonical_uuid,
     client_configuration::KEYS_DIRECTORY_PATH,
-    control::{self, ControlClient, ControlError, ControlPaths, DormantControlIdentityError},
-    enrollment::{self, EnrollmentError, EnrollmentPaths},
+    control::{self, DormantControlIdentityError},
     identity_record,
 };
 
@@ -27,7 +26,6 @@ struct StartupPaths {
     identity_directory: PathBuf,
     control_directory: PathBuf,
     keys_directory: PathBuf,
-    enrollment: EnrollmentPaths,
 }
 
 impl StartupPaths {
@@ -38,7 +36,6 @@ impl StartupPaths {
             identity_directory: PathBuf::from("/var/lib/natsume/identity"),
             control_directory: PathBuf::from("/var/lib/natsume/control"),
             keys_directory: PathBuf::from(KEYS_DIRECTORY_PATH),
-            enrollment: EnrollmentPaths::production(),
         }
     }
 }
@@ -58,14 +55,8 @@ pub enum StartupError {
     #[snafu(display("device startup could not persist its first identity record"))]
     IdentityPersistence,
 
-    #[snafu(display("device Enrollment startup failed closed"))]
-    Enrollment { source: EnrollmentError },
-
     #[snafu(display("device dormant control identity startup failed closed"))]
     DormantControlIdentity { source: DormantControlIdentityError },
-
-    #[snafu(display("device control startup failed closed"))]
-    Control { source: ControlError },
 }
 
 #[derive(Deserialize)]
@@ -87,9 +78,12 @@ struct SiteIdentity {
 }
 
 struct IdentityReady {
+    #[allow(dead_code)]
     state: StartupIdentityState,
     machine_hardware_id: Uuid,
+    #[allow(dead_code)]
     hardware_identity_quality: EvidenceQuality,
+    #[allow(dead_code)]
     gateway_hostname: String,
 }
 
@@ -383,23 +377,6 @@ fn identity_ready(
     })
 }
 
-fn existing_enrollment_state(
-    paths: &StartupPaths,
-) -> Result<Option<StartupIdentityState>, StartupError> {
-    if !enrollment::device_token_present(&paths.enrollment)
-        .map_err(|source| StartupError::Enrollment { source })?
-    {
-        return Ok(None);
-    }
-    enrollment::validate_enrolled_artifacts(&paths.enrollment)
-        .map_err(|source| StartupError::Enrollment { source })?;
-    tracing::info!(
-        startup_identity_state = state_label(StartupIdentityState::Enrolled),
-        "device Enrollment artifacts are present"
-    );
-    Ok(Some(StartupIdentityState::Enrolled))
-}
-
 fn persisted_machine_hardware_id(
     paths: &StartupPaths,
     expected: Uuid,
@@ -426,7 +403,7 @@ fn ensure_dormant_control_identity(
     Ok(machine_hardware_id)
 }
 
-async fn run_with_paths(paths: &StartupPaths) -> Result<Uuid, StartupError> {
+async fn run_with_paths(paths: &StartupPaths) -> Result<(), StartupError> {
     let context = preflight(paths)?;
     let namespace = context.configured_namespace.to_string();
     let Ok(connection) = zbus::Connection::system().await else {
@@ -439,41 +416,18 @@ async fn run_with_paths(paths: &StartupPaths) -> Result<Uuid, StartupError> {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
     let identity = apply_claim(paths, context, &claim)?;
-    let machine_hardware_id = ensure_dormant_control_identity(paths, identity.machine_hardware_id)?;
-    if existing_enrollment_state(paths)?.is_some() {
-        return Ok(machine_hardware_id);
-    }
-    tracing::info!(
-        startup_identity_state = state_label(StartupIdentityState::EnrollmentPending),
-        previous_startup_identity_state = state_label(identity.state),
-        "device Enrollment is pending"
-    );
-    let client = enrollment::EnrollmentClient::prepare(
-        paths.enrollment.clone(),
-        machine_hardware_id,
-        identity.hardware_identity_quality,
-        identity.gateway_hostname,
-    )
-    .map_err(|source| StartupError::Enrollment { source })?;
-    enrollment::enroll_until_parked(&client)
-        .await
-        .map_err(|source| StartupError::Enrollment { source })?;
-    tracing::info!(
-        startup_identity_state = state_label(StartupIdentityState::Enrolled),
-        "device Enrollment completed"
-    );
-    Ok(machine_hardware_id)
+    ensure_dormant_control_identity(paths, identity.machine_hardware_id)?;
+    Ok(())
 }
 
-/// Runs identity-first production startup through Enrollment and prepares Device control.
+/// Runs identity-first production startup and establishes the dormant control key.
 ///
 /// # Errors
 ///
 /// Returns a redacted fail-closed startup error.
-pub async fn run_production() -> Result<ControlClient, StartupError> {
-    let machine_hardware_id = run_with_paths(&StartupPaths::production()).await?;
-    ControlClient::prepare(ControlPaths::production(), machine_hardware_id)
-        .map_err(|source| StartupError::Control { source })
+pub async fn run_production() -> Result<(), StartupError> {
+    run_with_paths(&StartupPaths::production()).await?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,5 +1,4 @@
 mod cookie;
-mod device_control;
 mod error;
 pub(crate) mod handler;
 mod middleware;
@@ -17,7 +16,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::{application::device::enrollment::GatewayIssuer, audit::CorrelationId, db::Database};
+use crate::{audit::CorrelationId, db::Database};
 
 use self::error::ApiError;
 
@@ -25,42 +24,13 @@ use self::error::ApiError;
 pub(crate) struct AppState {
     database: Database,
     vault_master_key_path: PathBuf,
-    gateway_issuer: Option<GatewayIssuer>,
-    device_connections: device_control::DeviceConnectionRegistry,
-    device_control_auth_failures: device_control::DeviceControlAuthFailureLimiter,
 }
 
 /// Builds the mounted Server HTTP surface over an already-migrated database.
 pub(crate) fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
-    router_inner(database, vault_master_key_path, web_root, None)
-}
-
-pub(crate) fn router_with_enrollment(
-    database: Database,
-    vault_master_key_path: &Path,
-    web_root: &Path,
-    gateway_issuer: GatewayIssuer,
-) -> Router {
-    router_inner(
-        database,
-        vault_master_key_path,
-        web_root,
-        Some(gateway_issuer),
-    )
-}
-
-fn router_inner(
-    database: Database,
-    vault_master_key_path: &Path,
-    web_root: &Path,
-    gateway_issuer: Option<GatewayIssuer>,
-) -> Router {
     let state = AppState {
         database,
         vault_master_key_path: vault_master_key_path.to_owned(),
-        gateway_issuer,
-        device_connections: device_control::DeviceConnectionRegistry::new(),
-        device_control_auth_failures: device_control::DeviceControlAuthFailureLimiter::new(),
     };
     let static_service =
         any_service(ServeDir::new(web_root).fallback(ServeFile::new(web_root.join("index.html"))))
@@ -78,18 +48,14 @@ fn router_inner(
 fn api_v2(state: &AppState) -> Router<AppState> {
     let authenticated = Router::new()
         .merge(handler::contest::routes(state.clone()))
-        .merge(handler::device::protected_routes(state.clone()))
         .merge(handler::command::routes(state.clone()))
         .merge(handler::import::routes(state.clone()))
         .merge(handler::provisioning::routes(state.clone()))
         .merge(handler::session::protected_routes(state.clone()));
     let public = Router::new()
-        .merge(handler::device::public_routes(state.clone()))
         .merge(handler::health::routes())
         .merge(handler::session::public_routes());
-    public
-        .merge(device_control::routes(state.clone()))
-        .merge(authenticated)
+    public.merge(authenticated)
 }
 
 async fn not_found(Extension(correlation_id): Extension<CorrelationId>) -> ApiError {

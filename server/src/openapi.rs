@@ -8,14 +8,14 @@ use utoipa::{
         info::InfoBuilder,
         path::{Operation, Paths},
         schema::{
-            AdditionalProperties, ArrayItems, KnownFormat, ObjectBuilder, OneOfBuilder, Schema,
+            AdditionalProperties, KnownFormat, ObjectBuilder, Schema,
             Type,
         },
         security::{ApiKey, ApiKeyValue, SecurityScheme},
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listDevices, listBindings, revokeDevice, disableDevice, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, createEnrollmentRequest, listEnrollmentRequests, approveEnrollment, rejectEnrollment, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -40,10 +40,7 @@ pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical low
         crate::http::handler::session::delete_session,
         crate::http::handler::contest::seat::list_seats,
         crate::http::handler::contest::account::list_accounts,
-        crate::http::handler::device::query::list_devices,
         crate::http::handler::contest::binding::list_bindings,
-        crate::http::handler::device::lifecycle::revoke_device,
-        crate::http::handler::device::lifecycle::disable_device,
         crate::http::handler::command::put_command,
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
@@ -51,11 +48,7 @@ pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical low
         crate::http::handler::import::discard_import,
         crate::http::handler::provisioning::get_provisioning_window,
         crate::http::handler::provisioning::open_provisioning_window,
-        crate::http::handler::provisioning::close_provisioning_window,
-        crate::http::handler::device::enrollment::create_enrollment_request,
-        crate::http::handler::device::enrollment::list_enrollment_requests,
-        crate::http::handler::device::enrollment::approve_enrollment_request,
-        crate::http::handler::device::enrollment::reject_enrollment_request
+        crate::http::handler::provisioning::close_provisioning_window
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -63,7 +56,6 @@ pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical low
         crate::http::handler::session::SessionResponse,
         crate::http::handler::contest::seat::SeatResponse,
         crate::http::handler::contest::account::AccountResponse,
-        crate::http::handler::device::query::DeviceResponse,
         crate::http::handler::contest::binding::BindingResponse,
         crate::http::handler::import::ImportMappingChangeResponse,
         crate::http::handler::import::ImportBindingImpactResponse,
@@ -73,15 +65,7 @@ pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical low
         crate::http::handler::import::ImportPendingResponse,
         crate::http::handler::import::ImportCommitRequest,
         crate::http::handler::import::ImportCommitResponse,
-        crate::http::handler::provisioning::ProvisioningWindowResponse,
-        crate::http::handler::device::enrollment::EnrollmentRequest,
-        crate::http::handler::device::enrollment::EnrollmentHardwareIdentityQuality,
-        crate::http::handler::device::enrollment::EnrollmentIssuedResponse,
-        crate::http::handler::device::enrollment::EnrollmentIssuedState,
-        crate::http::handler::device::enrollment::EnrollmentPendingResponse,
-        crate::http::handler::device::enrollment::EnrollmentPendingState,
-        crate::http::handler::device::enrollment::EnrollmentRequestSummaryResponse,
-        crate::http::handler::device::enrollment::EnrollmentActionResponse
+        crate::http::handler::provisioning::ProvisioningWindowResponse
     ))
 )]
 struct MountedDocument;
@@ -143,60 +127,12 @@ fn configure_components(components: &mut utoipa::openapi::Components) {
             Ref::from_schema_name("CanonicalUuidV7").into(),
         );
     }
-    for schema_name in [
-        "EnrollmentIssuedResponse",
-        "EnrollmentPendingResponse",
-        "EnrollmentActionResponse",
-        "EnrollmentRequestSummary",
-    ] {
-        if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
-            schema.properties.insert(
-                "enrollment_request_id".to_owned(),
-                Ref::from_schema_name("CanonicalUuidV7").into(),
-            );
-        }
-    }
-    if let Some(RefOr::T(Schema::Object(schema))) =
-        components.schemas.get_mut("EnrollmentIssuedResponse")
-    {
-        schema.properties.insert(
-            "device_id".to_owned(),
-            Ref::from_schema_name("CanonicalUuidV7").into(),
-        );
-        if let Some(RefOr::T(Schema::Array(chain))) = schema.properties.get_mut("gateway_chain_der")
-            && let ArrayItems::RefOrSchema(items) = &mut chain.items
-            && let RefOr::T(Schema::Object(item)) = items.as_mut()
-        {
-            item.format = Some(SchemaFormat::KnownFormat(KnownFormat::Byte));
-        }
-    }
-    if let Some(RefOr::T(Schema::Object(schema))) =
-        components.schemas.get_mut("EnrollmentRequestSummary")
-    {
-        schema.properties.insert(
-            "resolved_device_id".to_owned(),
-            OneOfBuilder::new()
-                .item(ObjectBuilder::new().schema_type(Type::Null))
-                .item(Ref::from_schema_name("CanonicalUuidV7"))
-                .into(),
-        );
-    }
 }
 
 fn canonicalize_path_parameters(paths: &mut Paths) {
     for (path, parameter_name) in [
-        ("/api/v2/devices/{device_id}/actions/revoke", "device_id"),
-        ("/api/v2/devices/{device_id}/actions/disable", "device_id"),
         ("/api/v2/imports/{import_id}/actions/commit", "import_id"),
         ("/api/v2/imports/{import_id}/actions/discard", "import_id"),
-        (
-            "/api/v2/enrollment-requests/{request_id}/actions/approve",
-            "request_id",
-        ),
-        (
-            "/api/v2/enrollment-requests/{request_id}/actions/reject",
-            "request_id",
-        ),
     ] {
         let Some(parameters) = paths
             .paths

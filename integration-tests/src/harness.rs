@@ -3,14 +3,6 @@ use std::{ffi::OsStr, io::ErrorKind, path::Path, process::Stdio};
 use tokio::{io::AsyncWriteExt as _, process::Command};
 use zeroize::{Zeroize as _, Zeroizing};
 
-mod client;
-mod pki;
-mod server;
-
-pub use self::{
-    client::ClientFixture,
-    server::{OperatorSession, TestServer},
-};
 
 const BOOTSTRAP_CONFIG_ENVIRONMENT: &str = "NATSUME_TEST_SERVER_CONFIG";
 

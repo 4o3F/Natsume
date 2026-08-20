@@ -64,12 +64,7 @@ mod tests {
     const PASSWORD: &str = "contest-read-password-canary";
     const VAULT_POINTER_CANARY: &str = "vault-pointer-secret-storage-canary";
     const HARDWARE_ID_CANARY: &str = "machine-hardware-id-full-canary-7d58f1";
-    const ROUTES: [&str; 4] = [
-        "/api/v2/seats",
-        "/api/v2/accounts",
-        "/api/v2/devices",
-        "/api/v2/bindings",
-    ];
+    const ROUTES: [&str; 3] = ["/api/v2/seats", "/api/v2/accounts", "/api/v2/bindings"];
 
     #[tokio::test]
     async fn admin_and_viewer_read_exact_redacted_current_facts_without_writes()
@@ -175,7 +170,7 @@ mod tests {
         Ok(())
     }
 
-    fn expected_current_facts() -> [(&'static str, Value); 4] {
+    fn expected_current_facts() -> [(&'static str, Value); 3] {
         [
             (
                 "/api/v2/seats",
@@ -189,13 +184,6 @@ mod tests {
                 serde_json::json!([
                     {"account_id":"account-a","domjudge_username":"team-alpha","credential_revision":3},
                     {"account_id":"account-b","domjudge_username":"team-beta","credential_revision":7}
-                ]),
-            ),
-            (
-                "/api/v2/devices",
-                serde_json::json!([
-                    {"device_id":"01900000-0000-7000-8000-000000000001","state":"enrolled","hardware_identity_quality":"strong"},
-                    {"device_id":"01900000-0000-7000-8000-000000000002","state":"disabled","hardware_identity_quality":"medium"}
                 ]),
             ),
             (

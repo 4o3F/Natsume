@@ -26,7 +26,7 @@ use crate::{
             ReportedCommandState, list_dispatchable_commands, put_command,
             writeback_command_status,
         },
-        device::{DeviceId, NoLiveDeviceConnections, disable_device},
+        device::DeviceId,
     },
     audit::CorrelationId,
     db::{Database, DatabaseConfig, tests as db_tests},
@@ -66,14 +66,9 @@ async fn created_command_and_audit_are_linked_atomically_and_replay_is_zero_writ
         return Err(TestFailure::CreatedAuditLinkageChanged);
     }
 
-    disable_device(
-        &fixture.database,
-        &device_id(DEVICE_ID)?,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-        &NoLiveDeviceConnections,
-    )
-    .await
-    .map_err(|_| TestFailure::DeviceDisableFailed)?;
+    crate::db::device::tests::test_set_device_state(&fixture.database, DEVICE_ID, "disabled")
+        .await
+        .map_err(|_| TestFailure::DeviceDisableFailed)?;
 
     let mut observer =
         db_tests::test_observer(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
@@ -163,17 +158,13 @@ async fn concurrent_disable_and_new_command_have_only_serial_outcomes() -> Resul
     let fixture = TestDatabase::new().await?;
     seed_device(&fixture.database).await?;
     let notifier = CountingNotifier::default();
-    let parsed_device_id = device_id(DEVICE_ID)?;
-    let no_live_connections = NoLiveDeviceConnections;
-
     let (put_result, disable_result) = timeout(Duration::from_secs(10), async {
         tokio::join!(
             create_command(&fixture.database, SECOND_COMMAND_ID, None, &notifier),
-            disable_device(
+            crate::db::device::tests::test_set_device_state(
                 &fixture.database,
-                &parsed_device_id,
-                CorrelationId::from_uuid(Uuid::now_v7()),
-                &no_live_connections,
+                DEVICE_ID,
+                "disabled",
             )
         )
     })

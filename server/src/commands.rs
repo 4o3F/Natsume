@@ -13,7 +13,6 @@ pub use crate::error::CommandError;
 
 use crate::{
     application::{
-        device::enrollment::{GatewayIssuer, GatewayIssuerError},
         operator::{self, OperatorCredentials, hash_password},
         provisioning,
     },
@@ -88,23 +87,7 @@ where
     tracing::info!("database ready");
     require_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
     tracing::info!("vault key verified");
-    let origin_ca_certificate_path = config
-        .origin_ca_certificate_path()
-        .map_err(|_| CommandError::Configuration)?;
-    let origin_ca_private_key_path = config
-        .origin_ca_private_key_path()
-        .map_err(|_| CommandError::Configuration)?;
-    let gateway_issuer = GatewayIssuer::load(
-        &origin_ca_certificate_path,
-        &origin_ca_private_key_path,
-        config.local_origin_root_path(),
-        site,
-    )
-    .map_err(|error| match error {
-        GatewayIssuerError::TrustRootMismatch => CommandError::OriginCaTrustRootMismatch,
-        _ => CommandError::OriginCa,
-    })?;
-    tracing::info!("Origin CA issuing material verified");
+    let _site = site;
     let listener = TlsListener::bind(
         config.listen_address(),
         config.tls_certificate_path(),
@@ -114,11 +97,10 @@ where
     .map_err(|_| CommandError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let router = http::router_with_enrollment(
+    let router = http::router(
         database,
         config.vault_master_key_path(),
         Path::new(WEB_ASSETS_PATH),
-        gateway_issuer,
     );
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);

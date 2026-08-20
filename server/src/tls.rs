@@ -31,15 +31,18 @@ pub(crate) struct TlsListener {
     handshakes: JoinSet<Option<(TlsStream<TcpStream>, SocketAddr)>>,
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy)]
 pub(crate) struct ClientAddress(SocketAddr);
 
 impl ClientAddress {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) const fn new(address: SocketAddr) -> Self {
         Self(address)
     }
 
+    #[allow(dead_code)]
     pub(crate) const fn ip(self) -> std::net::IpAddr {
         self.0.ip()
     }
@@ -220,7 +223,6 @@ pub(crate) mod tests {
     use zeroize::Zeroize;
 
     use crate::{
-        application::device::enrollment::encode_standard_base64,
         config::{ORIGIN_CA_CERTIFICATE_FILENAME, ORIGIN_CA_PRIVATE_KEY_FILENAME},
         http,
     };
@@ -357,7 +359,7 @@ pub(crate) mod tests {
     }
 
     fn install_certificate_pem(path: &Path, der: &[u8]) -> Result<(), TestSupportError> {
-        let base64 = encode_standard_base64(der);
+        let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, der);
         let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
         for line in base64.as_bytes().chunks(64) {
             pem.push_str(std::str::from_utf8(line).map_err(|_| TestSupportError)?);

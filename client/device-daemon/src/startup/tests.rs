@@ -1,7 +1,6 @@
 use std::fs;
 
 use natsume_machine_identity::IdentityRecordState;
-use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256};
 use tempfile::TempDir;
 
 use super::*;
@@ -22,14 +21,6 @@ fn fixture_paths(directory: &TempDir) -> StartupPaths {
         identity_directory: directory.path().join("var/lib/natsume/identity"),
         control_directory: directory.path().join("var/lib/natsume/control"),
         keys_directory: directory.path().join("var/lib/natsume/keys"),
-        enrollment: EnrollmentPaths::new(
-            directory.path().join("etc/natsume/config.toml"),
-            directory.path().join("etc/natsume/trust/control-ca.crt"),
-            directory
-                .path()
-                .join("etc/natsume/trust/local-origin-ca.crt"),
-            directory.path().join("var/lib/natsume/keys"),
-        ),
     };
     for path in [
         paths.site_config.parent(),
@@ -335,93 +326,6 @@ fn malformed_candidate_quality_fails_before_first_identity_write() {
         identity_record::read(&paths.identity_directory),
         IdentityRecordState::Absent
     );
-}
-
-fn install_parseable_gateway_key_and_leaf(paths: &StartupPaths) {
-    let key = match KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256) {
-        Ok(key) => key,
-        Err(error) => panic!("Gateway key fixture must be generated: {error}"),
-    };
-    let params = match CertificateParams::new(vec!["gateway.example".to_owned()]) {
-        Ok(params) => params,
-        Err(error) => panic!("Gateway leaf fixture parameters must be created: {error}"),
-    };
-    let leaf = match params.self_signed(&key) {
-        Ok(leaf) => leaf,
-        Err(error) => panic!("Gateway leaf fixture must be signed: {error}"),
-    };
-    if let Err(error) = fs::write(
-        paths.keys_directory.join("gateway-key.pk8"),
-        key.serialize_der(),
-    ) {
-        panic!("Gateway key fixture must be written: {error}");
-    }
-    if let Err(error) = fs::write(
-        paths.keys_directory.join("gateway-leaf.der"),
-        leaf.der().as_ref(),
-    ) {
-        panic!("Gateway leaf fixture must be written: {error}");
-    }
-}
-
-#[test]
-fn token_presence_marks_enrolled_only_with_parseable_key_and_leaf() {
-    let directory = tempdir();
-    let paths = fixture_paths(&directory);
-    install_parseable_gateway_key_and_leaf(&paths);
-    if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
-        panic!("Device Token fixture must be written: {error}");
-    }
-
-    assert!(matches!(
-        existing_enrollment_state(&paths),
-        Ok(Some(StartupIdentityState::Enrolled))
-    ));
-}
-
-#[test]
-fn token_with_absent_or_corrupt_key_fails_closed_without_reenrollment() {
-    let directory = tempdir();
-    let paths = fixture_paths(&directory);
-    if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
-        panic!("Device Token fixture must be written: {error}");
-    }
-    assert!(matches!(
-        existing_enrollment_state(&paths),
-        Err(StartupError::Enrollment { .. })
-    ));
-
-    if let Err(error) = fs::write(paths.keys_directory.join("gateway-key.pk8"), b"corrupt") {
-        panic!("corrupt Gateway key fixture must be written: {error}");
-    }
-    assert!(matches!(
-        existing_enrollment_state(&paths),
-        Err(StartupError::Enrollment { .. })
-    ));
-}
-
-#[test]
-fn token_with_missing_leaf_fails_closed_without_reenrollment() {
-    let directory = tempdir();
-    let paths = fixture_paths(&directory);
-    let key = match KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256) {
-        Ok(key) => key,
-        Err(error) => panic!("Gateway key fixture must be generated: {error}"),
-    };
-    if let Err(error) = fs::write(
-        paths.keys_directory.join("gateway-key.pk8"),
-        key.serialize_der(),
-    ) {
-        panic!("Gateway key fixture must be written: {error}");
-    }
-    if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
-        panic!("Device Token fixture must be written: {error}");
-    }
-
-    assert!(matches!(
-        existing_enrollment_state(&paths),
-        Err(StartupError::Enrollment { .. })
-    ));
 }
 
 #[test]

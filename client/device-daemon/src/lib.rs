@@ -4,8 +4,8 @@
 mod atomic_write;
 mod client_configuration;
 pub mod control;
-pub mod enrollment;
 mod identity_record;
+#[allow(dead_code)]
 pub(crate) mod journal;
 pub mod startup;
 

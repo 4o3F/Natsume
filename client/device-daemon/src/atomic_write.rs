@@ -13,6 +13,7 @@ pub(crate) const ATOMIC_TEMP_PREFIX: &str = ".natsume-tmp";
 #[derive(Clone, Copy)]
 pub(super) enum WritePolicy {
     CreateOnly,
+    #[allow(dead_code)]
     Replace,
 }
 

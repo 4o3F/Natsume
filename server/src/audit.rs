@@ -1,15 +1,15 @@
+#![allow(dead_code)]
+
 use serde::Serialize;
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::application::device::enrollment::{EnrollmentResolution, IssuanceReason};
 #[cfg(test)]
 use crate::db::schema::audit_events;
 #[cfg(test)]
 use diesel::{ExpressionMethods, RunQueryDsl, dsl::sql, sql_types::Text, sqlite::SqliteConnection};
 
 mod command;
-mod device;
 mod import;
 mod operator;
 mod provisioning;
@@ -180,15 +180,6 @@ pub(crate) struct ImportCommitAuditFacts {
     pub(crate) credential_revision_advanced_count: usize,
     pub(crate) configuration_revision_advanced: bool,
     pub(crate) binding_revision_advanced: bool,
-}
-
-pub(crate) struct DeviceCredentialsIssuedAuditFacts {
-    pub(crate) resolution: EnrollmentResolution,
-    pub(crate) reason: IssuanceReason,
-    pub(crate) certificate_serial: String,
-    pub(crate) gateway_spki_sha256: [u8; 32],
-    pub(crate) previous_device_state: Option<&'static str>,
-    pub(crate) evicted_live_connection: bool,
 }
 
 #[derive(Debug)]

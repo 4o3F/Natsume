@@ -4,7 +4,6 @@ use axum::{
 };
 use natsume_error_code::{
     ErrorCode, common::CommonErrorCode, control::ControlErrorCode,
-    enrollment::EnrollmentErrorCode as PublicEnrollmentErrorCode,
     operator::OperatorErrorCode as PublicOperatorErrorCode,
 };
 use serde::Serialize;
@@ -13,7 +12,7 @@ use crate::{
     application::{
         command::CommandError,
         contest::ContestError,
-        device::{DeviceError, enrollment::EnrollmentError},
+        device::DeviceError,
         import::{CsvImportErrorCategory, ImportError},
         operator::OperatorError,
         provisioning::ProvisioningError,
@@ -82,109 +81,6 @@ impl ApiError {
             cause,
             correlation_id,
         )
-    }
-
-    pub(super) fn device_control_subprotocol_unsupported(correlation_id: CorrelationId) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            title: "Bad Request",
-            code: ErrorCode::from(ControlErrorCode::ProtocolVersionUnsupported).as_str(),
-            cause: "device_control_subprotocol_unsupported",
-            correlation_id,
-        }
-    }
-
-    pub(super) fn invalid_enrollment_request(
-        cause: &'static str,
-        correlation_id: CorrelationId,
-    ) -> Self {
-        Self::enrollment_error(
-            StatusCode::BAD_REQUEST,
-            "Bad Request",
-            PublicEnrollmentErrorCode::EnrollmentRequestInvalid,
-            cause,
-            correlation_id,
-        )
-    }
-
-    pub(super) fn from_enrollment(error: EnrollmentError, correlation_id: CorrelationId) -> Self {
-        match error {
-            EnrollmentError::InvalidRequestId => {
-                Self::invalid_enrollment_request("enrollment_request_id_invalid", correlation_id)
-            }
-            EnrollmentError::InvalidMachineHardwareId => Self::invalid_enrollment_request(
-                "enrollment_machine_hardware_id_invalid",
-                correlation_id,
-            ),
-            EnrollmentError::InvalidHardwareIdentityQuality => Self::invalid_enrollment_request(
-                "enrollment_hardware_identity_quality_invalid",
-                correlation_id,
-            ),
-            EnrollmentError::InvalidClientVersion => Self::invalid_enrollment_request(
-                "enrollment_client_version_invalid",
-                correlation_id,
-            ),
-            EnrollmentError::UnsupportedProtocolVersion => Self::invalid_enrollment_request(
-                "enrollment_protocol_version_unsupported",
-                correlation_id,
-            ),
-            EnrollmentError::InvalidSpki => {
-                Self::invalid_enrollment_request("enrollment_spki_invalid", correlation_id)
-            }
-            EnrollmentError::InvalidCsrEncoding => {
-                Self::invalid_enrollment_request("enrollment_csr_encoding_invalid", correlation_id)
-            }
-            EnrollmentError::InvalidCsr => {
-                Self::invalid_enrollment_request("enrollment_csr_invalid", correlation_id)
-            }
-            EnrollmentError::SpkiMismatch => {
-                Self::invalid_enrollment_request("enrollment_spki_mismatch", correlation_id)
-            }
-            EnrollmentError::ProvisioningWindowClosed => Self::enrollment_error(
-                StatusCode::CONFLICT,
-                "Conflict",
-                PublicEnrollmentErrorCode::ProvisioningWindowClosed,
-                "enrollment_provisioning_window_closed",
-                correlation_id,
-            ),
-            EnrollmentError::RequestRejected => Self::enrollment_error(
-                StatusCode::CONFLICT,
-                "Conflict",
-                PublicEnrollmentErrorCode::EnrollmentRequestRejected,
-                "enrollment_request_rejected",
-                correlation_id,
-            ),
-            EnrollmentError::LiveRequestCapacityExceeded => Self::invalid_enrollment_request(
-                "enrollment_live_request_capacity_exceeded",
-                correlation_id,
-            ),
-            EnrollmentError::DeviceIdentityConflict => Self::enrollment_error(
-                StatusCode::CONFLICT,
-                "Conflict",
-                PublicEnrollmentErrorCode::DeviceIdentityConflict,
-                "enrollment_device_identity_conflict",
-                correlation_id,
-            ),
-            EnrollmentError::RequestNotPending => Self::invalid_enrollment_request(
-                "enrollment_request_not_actionable",
-                correlation_id,
-            ),
-            EnrollmentError::InvalidPersistedFacts => {
-                Self::internal_error("enrollment_invalid_persisted_facts", correlation_id)
-            }
-            EnrollmentError::EntropyUnavailable => {
-                Self::internal_error("enrollment_entropy_unavailable", correlation_id)
-            }
-            EnrollmentError::IssuancePolicyExpired => {
-                Self::internal_error("enrollment_issuance_policy_expired", correlation_id)
-            }
-            EnrollmentError::SigningFailed => {
-                Self::internal_error("enrollment_signing_failed", correlation_id)
-            }
-            EnrollmentError::PersistenceFailed => {
-                Self::internal_error("enrollment_persistence_failed", correlation_id)
-            }
-        }
     }
 
     pub(super) fn internal_error(cause: &'static str, correlation_id: CorrelationId) -> Self {
@@ -262,6 +158,7 @@ impl ApiError {
         }
     }
 
+    #[allow(dead_code)]
     pub(super) fn from_device(error: DeviceError, correlation_id: CorrelationId) -> Self {
         match error {
             DeviceError::InvalidDeviceId => {
@@ -411,22 +308,6 @@ impl ApiError {
         status: StatusCode,
         title: &'static str,
         code: PublicOperatorErrorCode,
-        cause: &'static str,
-        correlation_id: CorrelationId,
-    ) -> Self {
-        Self {
-            status,
-            title,
-            code: ErrorCode::from(code).as_str(),
-            cause,
-            correlation_id,
-        }
-    }
-
-    fn enrollment_error(
-        status: StatusCode,
-        title: &'static str,
-        code: PublicEnrollmentErrorCode,
         cause: &'static str,
         correlation_id: CorrelationId,
     ) -> Self {
