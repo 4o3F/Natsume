@@ -16,7 +16,7 @@ Phase 1 要交付 operator auth 与 audit 原子性，必须先确定这两类�
 
 ## Decision
 
-**Operator 身份是 Server 持久化事实。** operator 账户与会话保存在 Server 数据库，不保存在配置文件、进程内存或 Web。账户持有固定角色；会话在数据库只保存凭证哈希与绝对过期时间，不做滑动续期。登出、过期与撤销走同一失效路径。角色是封闭枚举，系统中不存在任何角色变更操作，因此当前不存在可审计的角色变化事件；未来若引入角色编辑能力，必须先有新 ADR，再为其建立对应审计条款。operator 会话生命周期的审计集合由 [契约](../contracts.md) §3.6.4 冻结——§9 的「Session/Home action」是 [领域模型](../domain-model.md) §13 的本地运行时动作，不覆盖 operator 会话。
+**Operator 身份是 Server 持久化事实。** operator 账户与会话保存在 Server 数据库，不保存在配置文件、进程内存或 Web。账户持有固定角色；会话在数据库只保存凭证哈希与绝对过期时间（`expires_at_unix_ms`），不做滑动续期。登出、过期与撤销走同一失效路径。角色是封闭枚举，系统中不存在任何角色变更操作，因此当前不存在可审计的角色变化事件；未来若引入角色编辑能力，必须先有新 ADR，再为其建立对应审计条款。operator 会话生命周期的审计集合由 [契约](../contracts.md) §3.6.4 冻结——§9 的「Session/Home action」是 [领域模型](../domain-model.md) §13 的本地运行时动作，不覆盖 operator 会话。
 
 **Server 运行时秘密材料位于 Server 私有状态目录，不位于包管理的配置目录。** vault 主密钥与 Server TLS 私钥都是 `natsume-server` 用户私有的受限文件，权限不宽于 `0600`，其目录不宽于 `0700`。包管理的配置目录只保存非秘密站点输入与公开信任根。
 
@@ -25,6 +25,8 @@ Phase 1 要交付 operator auth 与 audit 原子性，必须先确定这两类�
 **2026-08-15 修订**：vault record 加密冻结为 XChaCha20-Poly1305（RustCrypto `chacha20poly1305`），密钥为 32 字节主密钥本体，nonce 为每 record 24 字节 CSPRNG；主密钥文件格式不变。record 密文不绑定 AAD——主密钥与数据库同属同一 0700 私有状态目录与同一 uid；此为有意立场（与 ADR-0032 不保存 ciphertext format/AAD/key version 一致），若未来出现跨信任边界的密文搬运再重开。
 
 **2026-08-20 修订**：删除 `import_payload` vault type 与 `record_type`/`subject_id` 列。`accounts` 为父表，无 `credential_vault_record_id`。`server_vault_records` 只保存当前 Account 的 DOMjudge 密码；以 `account_id` 为 PRIMARY KEY 且 `REFERENCES accounts(account_id) ON DELETE CASCADE`，无独立 `vault_record_id`。同一事务先插 Account 再插 vault；删除 Account 级联删除 vault。
+
+**2026-08-20 修订（会话过期列）**：`operator_sessions` 的绝对过期列为 `expires_at_unix_ms`（INTEGER UTC epoch milliseconds）。删除 RFC 3339 TEXT 与 `strftime` CHECK。HTTP 不暴露该列；cookie 仍用 `Max-Age=57600`，不发送 `Expires`。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
 
 **唯一 first admin 只由离线、交互式 `bootstrap` 创建。** operator 在 TTY 上以 `natsume-server` 用户手工运行该 subcommand；login name 从 TTY 读取，password 不回显地读取两次。account 只在 `operator_accounts` 为空时与 typed audit row 同事务创建；重复 bootstrap 零业务写入并失败。password 不得来自 argv、环境变量、systemd credential、配置文件或 packaging script，`postinstall` 不得调用 `bootstrap`。
 

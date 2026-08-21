@@ -7,6 +7,10 @@
 > Superseded by: [ADR-0038](0038-unified-ordinary-wss-device-control-authority.md)
 
 > 2026-08-19 implementation note: production still implements this Token/HTTPS boundary until ADR-0038's atomic flag-day cutover. This record remains the rationale for the current implementation, not the accepted destination.
+>
+> **2026-08-20 修订（Identifier `device_id`）**：原 `device_pk` 已原位更名为 `device_id`，同一 UUIDv7 surrogate；`device_tokens` / `gateway_certificates` FK 跟随此名。Enrollment 的 `resolved_device_id` / `proposed_device_id` 同此。
+>
+> **2026-08-20 修订（持久化时刻）**：`gateway_certificates.not_after_unix_ms`、`enrollment_requests.created_at_unix_ms` / `activation_deadline_unix_ms`、`credential_bundles.activation_deadline_unix_ms` / `created_at_unix_ms` 均为 INTEGER UTC epoch milliseconds。无 RFC 3339 TEXT。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
 
 ## Context
 
@@ -26,9 +30,9 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 - 正常 open/close 是显式、持久化、受审计的 operator action。guarded operation 接收 fresh `audit_event_id` 作为 typed input，在同一 transaction 内自行插入 redacted `AuditEvent`、以预期 `state + revision` CAS 更新 singleton，并更新 `last_audit_event_id`；已持久化的同 ID 或预插入 audit row 因唯一约束失败，不能重放为新变更的依据。任何 audit、CAS 或 commit 失败都不得留下半个窗口变更。
 - restart、recovery 或 backup restore 不得自动打开窗口。恢复时已 `closed` 的 singleton 零写入、零 recovery audit；只有观察到 `open` 时，Server 才在一个事务内写入 `system:recovery` 的 redacted audit 并 CAS 关闭、`revision + 1`。成功后所有后续恢复都看到 `closed`，因此只关闭并审计一次。
 - 只有窗口内 Enrollment 可以签发 Device Token 或 Gateway certificate；关闭时请求返回稳定错误且 Server state 零变更。
-- issuance transaction 关联 `devices`、`enrollment_requests`、`device_tokens`、`gateway_certificates` 与 `audit_events`：Enrollment request 记录硬件 ID/质量、CSR DER、SPKI hash、client/protocol/source-IP、`state`（`pending`/`approved`/`rejected`/`issued`/`expired`/`conflict`）、可选 `resolution`（`create_device`/`replace_device_credentials`）、resolved Device 和 issuance audit；`issued` request 必须同时具有 resolution、resolved Device 和 issuance audit，且 issuance audit 只可用于 `issued`；同一 hardware-ID/SPKI 最多一个 live `pending`/`approved` request。Device Token row 以 `device_pk` 为键并关联唯一 Enrollment request；certificate row 也关联唯一 Enrollment request。失败不得留下部分 issuance。
+- issuance transaction 关联 `devices`、`enrollment_requests`、`device_tokens`、`gateway_certificates` 与 `audit_events`：Enrollment request 记录硬件 ID/质量、CSR DER、SPKI hash、client/protocol/source-IP、`state`（`pending`/`approved`/`rejected`/`issued`/`expired`/`conflict`）、可选 `resolution`（`create_device`/`replace_device_credentials`）、resolved Device 和 issuance audit；`issued` request 必须同时具有 resolution、resolved Device 和 issuance audit，且 issuance audit 只可用于 `issued`；同一 hardware-ID/SPKI 最多一个 live `pending`/`approved` request。Device Token row 以 `device_id` 为键并关联唯一 Enrollment request；certificate row 也关联唯一 Enrollment request。失败不得留下部分 issuance。
 - **审批是非对称的。** `resolution = 'create_device'`（未知 hardware ID 的首次 Enrollment）在窗口内以同一事务同步签发，不需要 operator 审批；`resolution = 'replace_device_credentials'` 只适用于当前为 `enrolled` 的既有 Device，different-SPKI 必须经 operator 显式审批。不对称的理由：全新的 rogue device 几乎得不到任何东西——它没有 Binding、不接收任何 secret、被审计且可随时 revoke；而 F8 的 1–3 名操作员无法为 500 台设备逐台点击审批。
-- **替换需要审批是 load-bearing 的威胁控制。** `machine_hardware_id` 不是 secret（`INV-IDENTITY-01`）。若替换也同步签发，则在任意开窗期内，LAN 上的攻击者（[ADR-0030](0030-foundation-deployment-and-delivery-baseline.md) T4）伪造某台已绑定 Device 的 hardware ID 即可使受害者的 Token 失效、继承其 Binding 仍然存活的 `device_pk`，并在下一次 `SYNC_SECRET` 时收到该 Seat 的 DOMjudge 密码。
+- **替换需要审批是 load-bearing 的威胁控制。** `machine_hardware_id` 不是 secret（`INV-IDENTITY-01`）。若替换也同步签发，则在任意开窗期内，LAN 上的攻击者（[ADR-0030](0030-foundation-deployment-and-delivery-baseline.md) T4）伪造某台已绑定 Device 的 hardware ID 即可使受害者的 Token 失效、继承其 Binding 仍然存活的 `device_id`，并在下一次 `SYNC_SECRET` 时收到该 Seat 的 DOMjudge 密码。
 
   **2026-08-16 修订（create 抢注序列的论证补全）**：T4 攻击者也可在开窗期以尚未 Enrollment 的真机 hardware ID 抢先 create。该序列不推翻非对称审批：抢注 Device 无 Binding、不接收任何 secret；真机随后的 Enrollment 成为 different-SPKI 替换请求，在 operator review 面上可见，批准后 `device_tokens.token_hash` 替换即令抢注者的 bearer credential 失效并换发 certificate——抢注无法在真机完成 provisioning 后存活。残余风险仅当 Seat Binding 与 `SYNC_SECRET` 在抢注 Device 仍为该 hardware ID 的 resolved Device 期间发生；因此 Seat Binding 必须在 Enrollment 队列清空、Device 数与实物核对一致之后进行。这是 provisioning 的阶段次序纪律，不引入新机制。
 - **same-SPKI 例外自动批准仅属于 `enrolled` Device。** 替换请求的 `gateway_spki_sha256` 与该 Device 当前 `issued` request 的 SPKI 相同时自动批准：持有同一 private key 证明这是同一台机器在 finalization 失败后重试，攻击者无法复现该 SPKI。SPKI 不同则必须人工审批。`disabled` / `revoked` Device 无论 SPKI 是否相同都返回 `DEVICE_IDENTITY_CONFLICT`，零写入、零签名、零审计；Enrollment 没有 restore-to-enrolled 或 enable/reactivate surface。
@@ -43,17 +47,17 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 - hostname、SAN、profile、EKU 与 validity 均由 Server site policy 决定；CSR 中的 CN/SAN/profile 只证明 possession 和结构，不授予 authority。
 - Gateway hostname 是 installation/preseed 输入，使用与 Server endpoint 相同的 canonical parser/validator，不来自 Target。
 - validity 必须覆盖 provisioning-window start 至 contest end 加明确 margin，并在赛事前检查。
-- `gateway_certificates` 只记录 `certificate_id`、`device_pk`、`enrollment_request_id`、`serial`、`spki_sha256`、`not_after` 与 `status`（`active`/`revoked`/`expired`/`retired`）；它不保存 certificate bytes，并以每 Device 最多一张 `active` row 约束当前证书，不承诺 browser-consumed revocation distribution。
+- `gateway_certificates` 只记录 `certificate_id`、`device_id`、`enrollment_request_id`、`serial`、`spki_sha256`、`not_after_unix_ms` 与 `status`（`active`/`revoked`/`expired`/`retired`）；它不保存 certificate bytes，并以每 Device 最多一张 `active` row 约束当前证书，不承诺 browser-consumed revocation distribution。
 - Client 在持久化前验证 private-key/SPKI、origin-CA chain 与 configured-hostname SAN；finalization 失败不得形成“看似已 Enrollment”的本地状态。
 
 ### WSS Device control
 
 - Device control 使用 Server-authenticated TLS 上的 WebSocket；每个 Protobuf message 对应一个 binary frame，版本通过 `Sec-WebSocket-Protocol` 协商。
 - TLS early data 关闭；frame、connection、version 与 envelope limit 由 contract 强制。
-- Device Token 是 Server 使用 CSPRNG 生成的 opaque 32-byte bearer credential；`device_tokens` 只保存 `device_pk`、唯一 `enrollment_request_id` 与 32-byte `token_hash`，Client 用 `Authorization: Bearer` 提交。
+- Device Token 是 Server 使用 CSPRNG 生成的 opaque 32-byte bearer credential；`device_tokens` 只保存 `device_id`、唯一 `enrollment_request_id` 与 32-byte `token_hash`，Client 用 `Authorization: Bearer` 提交。
 - missing、malformed、wrong、不再有对应 `device_tokens` row，或 token row resolved Device state 非 `enrolled`，都在 Protobuf decode 前走同一 `401` body/cause 与同一 IP rate limiter；hash compare 为 constant-time。非法持久化 state 是 corruption，保持内部失败。
 - `device_tokens` 没有 TTL、issued-at 或 plaintext token 列；Token 只通过 operator revocation、audited re-enrollment replacement 或 single-lifetime reset 失效。`disable` 有意保留 token/certificate rows，但 state gate 立即移除其 WSS authority。
-- keep-alive 使用 WebSocket ping/pong；断线不改变 Server truth 或 Command truth，重连通过 direct-Command durable contract 收敛。
+- keep-alive 使用 WebSocket ping/pong（无 Heartbeat protobuf）；断线不改变 Server truth。重连后 Converge 命令仅在领域键仍 drift 时重推同一 payload；Oneshot 不重放。
 
 ## Alternatives
 
@@ -86,7 +90,7 @@ provisioning window 的当前开关和它的审计证据是不同事实。保留
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖正确/错误 Server trust 与 IP-SAN、closed-window 零变更、无窗口外 issuance route、正常 open/close 的 audit+CAS 原子性、open 状态 restart/restore 的 close-once recovery、closed 状态 restart 的零写入、Server transaction 与 Client finalization 原子性、CSR authority rejection、create 路径的同步签发、replacement 的 approve-then-claim（`202` 幂等轮询、approval 零签发、claim 时窗口复检、窗口关闭时未 claim 请求转 `expired`）、仅 `enrolled` Device 的 same-SPKI 自动批准、disabled/revoked intake/replay/approve/claim 的零写入拒绝、同 hardware ID 上不同 SPKI 的稳定拒绝、`rejected` 的稳定码、certificate preflight、包含非 `enrolled` state 的 normalized pre-decode `401`、protocol limit 和断线收敛。
+证据必须覆盖正确/错误 Server trust 与 IP-SAN、closed-window 零变更、无窗口外 issuance route、正常 open/close 的 audit+CAS 原子性、open 状态 restart/restore 的 close-once recovery、closed 状态 restart 的零写入、Server transaction 与 Client finalization 原子性、CSR authority rejection、create 路径的同步签发、replacement 的 approve-then-claim（`202` 幂等轮询、approval 零签发、claim 时窗口复检、窗口关闭时未 claim 请求转 `expired`）、仅 `enrolled` Device 的 same-SPKI 自动批准、disabled/revoked intake/replay/approve/claim 的零写入拒绝、同 hardware ID 上不同 SPKI 的稳定拒绝、`rejected` 的稳定码、certificate preflight、包含非 `enrolled` state 的 normalized pre-decode `401`、protocol limit、WS ping/pong keep-alive 和断线后 Converge 重推 / Oneshot 不重放。
 
 出现 per-Device hostname、多 venue/Internet、失去物理 provisioning window、第三方 Device identity verifier，或 Server trust/network assumption 变化时，先修订 ADR-0030，再用新 ADR 替代本边界。
 

@@ -1,15 +1,7 @@
-mod client_init;
 mod transcript;
 
 use snafu::Snafu;
-use uuid::{Uuid, Variant, Version};
 
-use crate::generated::ProofIntent;
-
-pub use client_init::{
-    canonical_client_init_sha256, decode_client_init, encode_client_init_canonical,
-    validate_client_init,
-};
 pub use transcript::{ControlKeyId, proof_signing_digest, sign_client_proof, verify_proof_strict};
 
 /// Typed failures for control handshake, verification, and canonical wire handling.
@@ -67,46 +59,4 @@ pub enum HandshakeError {
 
     #[snafu(display("ClientInit protobuf decoding failed"))]
     ClientInitDecode,
-}
-
-pub(super) fn exact<const N: usize>(
-    bytes: &[u8],
-    error: HandshakeError,
-) -> Result<[u8; N], HandshakeError> {
-    bytes.try_into().map_err(|_| error)
-}
-
-pub(super) fn proof_intent(value: i32) -> Result<ProofIntent, HandshakeError> {
-    let intent = ProofIntent::try_from(value).map_err(|_| HandshakeError::ProofIntent)?;
-    if intent == ProofIntent::Unspecified {
-        return Err(HandshakeError::ProofIntent);
-    }
-    Ok(intent)
-}
-
-pub(super) fn canonical_uuid(
-    value: &str,
-    version: Version,
-    error: HandshakeError,
-) -> Result<[u8; 16], HandshakeError> {
-    let uuid = Uuid::parse_str(value).map_err(|_| error)?;
-    if uuid.get_version() != Some(version)
-        || uuid.get_variant() != Variant::RFC4122
-        || uuid.to_string() != value
-    {
-        return Err(error);
-    }
-    Ok(*uuid.as_bytes())
-}
-
-pub(super) fn validate_uuid_bytes(
-    value: [u8; 16],
-    version: Version,
-    error: HandshakeError,
-) -> Result<(), HandshakeError> {
-    let uuid = Uuid::from_bytes(value);
-    if uuid.get_version() != Some(version) || uuid.get_variant() != Variant::RFC4122 {
-        return Err(error);
-    }
-    Ok(())
 }

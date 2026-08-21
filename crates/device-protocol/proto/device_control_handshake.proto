@@ -1,141 +1,54 @@
 syntax = "proto3";
 package natsume.device.control;
 
-message ClientHello {
-  string machine_hardware_id = 1;
-  string boot_id = 2;
-  uint32 wire_version = 3;
-  string daemon_version = 4;
-  string agent_version = 5;
-  repeated string capabilities = 6;
-  uint64 last_observed_sequence = 7;
-  uint64 last_applied_generation = 8;
-  bytes last_applied_hash = 9;
-}
-
-message ServerHello {
-  uint32 wire_version = 1;
-  uint64 connection_epoch = 2;
-  uint32 heartbeat_interval_ms = 3;
-  uint32 idle_timeout_ms = 4;
-  uint32 max_frame_bytes = 5;
-  uint64 max_bulk_bytes = 6;
-  int64 server_time_unix_ms = 7;
-  repeated string capabilities = 9;
-}
-
-enum ProofIntent {
-  PROOF_INTENT_UNSPECIFIED = 0;
-  PROOF_INTENT_FIRST_ENROLLMENT = 1;
-  PROOF_INTENT_RESUME = 2;
-  PROOF_INTENT_ROTATE_CONTROL_KEY = 3;
-  PROOF_INTENT_RECOVER_CONTROL_KEY = 4;
-  PROOF_INTENT_REFRESH_GATEWAY_CREDENTIAL = 5;
-}
-
 message ServerChallenge {
   uint32 protocol_version = 1;
+  // Connection-local opaque random id; not a public Identifier UUID.
   bytes challenge_id = 2;
   bytes server_nonce = 3;
+  // Connection-local proof deadline. Not OPEN_BINDING_PROMPT TTL.
   int64 expires_at_unix_ms = 4;
-  uint32 max_client_init_bytes = 5;
-}
-
-message ClientProof {
-  bytes challenge_id = 1;
-  bytes client_nonce = 2;
-  bytes control_public_key = 3;
-  string machine_hardware_id = 4;
-  optional string claimed_device_id = 5;
-  ProofIntent intent = 6;
-  bytes enrollment_attempt_id = 7;
-  bytes client_init_sha256 = 8;
-  bytes signature = 9;
-}
-
-message ClientInit {
-  uint32 protocol_version = 1;
-  ProofIntent intent = 2;
-  string machine_hardware_id = 3;
-  optional string claimed_device_id = 4;
-  bytes control_public_key = 5;
-  bytes client_nonce = 6;
-  bytes enrollment_attempt_id = 7;
-  HardwareClaim hardware_claim = 8;
-  bytes gateway_csr_der = 9;
-  string daemon_version = 10;
-  string agent_version = 11;
-  string boot_id = 12;
-  repeated string capabilities = 13;
-  uint64 last_observed_sequence = 14;
-  uint64 last_applied_generation = 15;
-  bytes last_applied_hash = 16;
-}
-
-message EnrollmentPending {
-  bytes enrollment_request_id = 1;
-  ProofIntent intent = 2;
-  int64 expires_at_unix_ms = 3;
-  uint32 retry_after_ms = 4;
-}
-
-message CredentialBundle {
-  bytes issuance_id = 1;
-  bytes enrollment_request_id = 2;
-  string device_id = 3;
-  uint32 format_version = 4;
-  uint32 control_key_generation = 5;
-  bytes control_key_id = 6;
-  bytes gateway_leaf_der = 7;
-  repeated bytes gateway_chain_der = 8;
-  int64 activation_deadline_unix_ms = 9;
-}
-
-message CredentialAck {
-  bytes issuance_id = 1;
-  bytes bundle_sha256 = 2;
-}
-
-message EnrollmentHeartbeat {
-  bytes enrollment_request_id = 1;
-}
-
-message SessionReady {
-  bytes session_id = 1;
-  int64 authority_revision = 2;
-  uint32 heartbeat_interval_ms = 3;
-  uint32 idle_timeout_ms = 4;
-  uint32 max_active_message_bytes = 5;
-  int64 server_time_unix_ms = 6;
-  repeated string capabilities = 7;
-}
-
-message GatewayRefreshRequest {
-  bytes enrollment_attempt_id = 1;
-  bytes gateway_csr_der = 2;
 }
 
 enum EvidenceQuality {
   EVIDENCE_QUALITY_UNSPECIFIED = 0;
-  EVIDENCE_QUALITY_WEAK = 1;
-  EVIDENCE_QUALITY_MEDIUM = 2;
-  EVIDENCE_QUALITY_STRONG = 3;
+  EVIDENCE_QUALITY_WEAK        = 1;
+  EVIDENCE_QUALITY_MEDIUM      = 2;
+  EVIDENCE_QUALITY_STRONG      = 3;
 }
 
-enum CollectionCompleteness {
-  COLLECTION_COMPLETENESS_UNSPECIFIED = 0;
-  COLLECTION_COMPLETENESS_COMPLETE = 1;
-  COLLECTION_COMPLETENESS_TEMPORARILY_UNAVAILABLE = 2;
-  COLLECTION_COMPLETENESS_UNSUPPORTED = 3;
+enum ProofIntent {
+  PROOF_INTENT_UNSPECIFIED      = 0;
+  PROOF_INTENT_FIRST_ENROLLMENT = 1;
+  PROOF_INTENT_RESUME           = 2;
 }
 
-message HardwareCandidate {
-  string anchor_kind = 1;
-  string candidate_id = 2;
-  EvidenceQuality quality = 3;
+message ClientProof {
+  uint32 protocol_version = 1;
+  // Echo of ServerChallenge.challenge_id; connection-local opaque random id, not Identifier UUID.
+  bytes challenge_id = 2;
+  string daemon_version = 3;
+  string agent_version = 4;
+  ProofIntent intent = 5;
+  // Derived hardware natural key, not Identifier UUID.
+  string machine_hardware_id = 8;
+  bytes signature = 10;
+  // FIRST only.
+  optional bytes candidate_public_key = 6;
+  optional bytes gateway_csr_der = 7;
+  // FIRST only: Device-claimed hardware-identity quality for operator review.
+  optional EvidenceQuality evidence_quality = 9;
 }
 
-message HardwareClaim {
-  repeated HardwareCandidate candidates = 1;
-  CollectionCompleteness completeness = 2;
+message CredentialBundle {
+  bytes gateway_leaf_der = 1;
+}
+
+message CredentialAck {
+  bytes bundle_sha256 = 1;
+}
+
+message SessionReady {
+  // Connection-local lease id; not a public Identifier UUID.
+  bytes session_id = 1;
 }

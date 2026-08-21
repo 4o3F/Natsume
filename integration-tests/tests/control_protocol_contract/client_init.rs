@@ -12,9 +12,15 @@ use super::fixture::{
 };
 
 #[test]
-fn canonical_client_init_round_trips_with_optional_device_presence() {
-    for claimed_device_id in [None, Some(CLAIMED_DEVICE_ID)] {
-        let client_init = canonical_client_init(claimed_device_id);
+fn canonical_client_init_round_trips_for_every_intent() {
+    for intent in [
+        ProofIntent::FirstEnrollment,
+        ProofIntent::Resume,
+        ProofIntent::RotateControlKey,
+        ProofIntent::RecoverControlKey,
+        ProofIntent::RefreshGatewayCredential,
+    ] {
+        let client_init = client_init_for_intent(intent);
         let bytes = canonical_bytes(&client_init);
         let Ok(decoded) = decode_client_init(&bytes) else {
             panic!("canonical ClientInit must decode");
@@ -70,9 +76,10 @@ fn canonical_client_init_field_mutations_change_the_signed_hash() {
     let mut value = baseline.clone();
     value.intent = ProofIntent::Resume as i32;
     value.claimed_device_id = Some(CLAIMED_DEVICE_ID.to_owned());
+    value.proposed_control_public_key = None;
     mutations.push(value);
     let mut value = baseline.clone();
-    value.control_public_key = RFC8032_PUBLIC_KEY.to_vec();
+    value.proposed_control_public_key = Some(RFC8032_PUBLIC_KEY.to_vec());
     mutations.push(value);
     let mut value = baseline.clone();
     value.client_nonce[0] ^= 1;
@@ -117,6 +124,35 @@ fn canonical_client_init_field_mutations_change_the_signed_hash() {
 
     for changed in mutations {
         assert_ne!(canonical_sha256(&changed), PROTO_CLIENT_INIT_SHA256);
+    }
+}
+
+#[test]
+fn proposed_control_key_presence_is_frozen_by_intent() {
+    for (intent, proposed_key_required) in [
+        (ProofIntent::FirstEnrollment, true),
+        (ProofIntent::Resume, false),
+        (ProofIntent::RotateControlKey, true),
+        (ProofIntent::RecoverControlKey, true),
+        (ProofIntent::RefreshGatewayCredential, false),
+    ] {
+        let value = client_init_for_intent(intent);
+        assert_eq!(
+            value.proposed_control_public_key.is_some(),
+            proposed_key_required
+        );
+        assert!(validate_client_init(&value).is_ok());
+
+        let mut wrong_presence = value;
+        wrong_presence.proposed_control_public_key = if proposed_key_required {
+            None
+        } else {
+            Some(RFC8032_PUBLIC_KEY.to_vec())
+        };
+        assert_eq!(
+            validate_client_init(&wrong_presence),
+            Err(HandshakeError::ControlPublicKey)
+        );
     }
 }
 
@@ -186,9 +222,13 @@ fn decoded_but_invalid_semantics_are_rejected() {
     assert!(validate_client_init(&value).is_err());
 
     let mut value = canonical_client_init(None);
-    value.control_public_key = vec![0; 32];
-    value.control_public_key[0] = 1;
-    assert!(validate_client_init(&value).is_err());
+    let mut weak_key = vec![0; 32];
+    weak_key[0] = 1;
+    value.proposed_control_public_key = Some(weak_key);
+    assert_eq!(
+        validate_client_init(&value),
+        Err(HandshakeError::WeakControlPublicKey)
+    );
 
     let mut value = canonical_client_init(None);
     value.client_nonce.pop();
@@ -274,6 +314,20 @@ fn client_init_size_is_bounded_before_decode() {
     let mut value = canonical_client_init(None);
     value.gateway_csr_der = vec![0; CONTROL_MAX_CLIENT_INIT_BYTES];
     assert!(encode_client_init_canonical(&value).is_err());
+}
+
+fn client_init_for_intent(intent: ProofIntent) -> ClientInit {
+    let claimed_device_id = (intent != ProofIntent::FirstEnrollment).then_some(CLAIMED_DEVICE_ID);
+    let mut value = canonical_client_init(claimed_device_id);
+    value.intent = intent as i32;
+    value.proposed_control_public_key = matches!(
+        intent,
+        ProofIntent::FirstEnrollment
+            | ProofIntent::RotateControlKey
+            | ProofIntent::RecoverControlKey
+    )
+    .then(|| RFC8032_PUBLIC_KEY.to_vec());
+    value
 }
 
 fn canonical_bytes(value: &ClientInit) -> Vec<u8> {

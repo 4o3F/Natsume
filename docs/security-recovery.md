@@ -9,7 +9,11 @@
 
 **当前实现**继续由 HTTPS Enrollment 签发 Device Token，并在 WSS 101 前校验 Bearer 与 resolved Device state；现有 Token 文件、吊销、恢复和禁止泄漏条款保持规范性，直到 coordinated flag day。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、standalone Proof/ClientInit、动态 actor、immutable CredentialBundle 与 Ack activation。单一 split Proto、strict signature verification、Prost typed canonicalization 与 transitional schema foundation 已存在，但尚未成为当前认证或恢复路径。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、`ClientProof`（`FIRST_ENROLLMENT` | `RESUME`）、`CredentialBundle{gateway_leaf_der}`、`CredentialAck{bundle_sha256}`、`SessionReady{session_id bytes}` 与动态 actor。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 ProofIntent `REPLACE`。单一 split Proto、strict signature verification、Prost typed canonicalization 与 control-key/bundle schema foundation 已存在，但尚未成为当前认证或恢复路径。
+
+**2026-08-20**：Identifier 与持久化主键统一为 `device_id`。已删除 `devices.control_authority_revision`；当前 control key 由 `device_control_keys.status = 'active'` 表达。Resume 被 supersede 的 key 因 status 拒绝。Active envelope 不携带 `authority_revision`。
+
+**2026-08-20 修订（持久化时刻）**：`audit_events.occurred_at_unix_ms` 为 INTEGER UTC epoch milliseconds。数据库不存 RFC 3339 时间字符串。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
 
 恢复脚本、启动逻辑和 operator runbook 不得把旧 Token 转换为 control key、自动生成丢失 key、从 Machine Hardware ID 派生 credential，或提前启用混合认证。
 
@@ -156,21 +160,24 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 每次 secret sync 必须：
 
 - 由授权操作员明确发起；
-- 绑定当前 Device、Seat、BindingRevision 和 credential revision；
-- 使用 durable Command；
+- 绑定当前 Device、Seat、`binding_id` 和 credential revision；
+- 作为 Converge 命令按 `credential_revision` 幂等（已安装同一 revision 则为 no-op）；
 - 在 Device 写入前再次校验；
 - 返回 redacted 结果；
 - 可审计。
 
 **验证入口：** authorization tests、stale revision tests、secret scan、audit tests。
 
-### `INV-COMMAND-01`：Command durable、identity-stable 且不重复副作用
+### `INV-COMMAND-01`：Command 投递二分、identity-stable 且不重复副作用
 
-Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并通过 `PUT /api/v2/commands/{command_id}` 提交。Server 先持久化 Command 与创建 audit 再投递；Device 先持久化 receipt/journal 再确认。相同 ID 必须原样贯穿 HTTP、WSS、journal、CommandStatus 和 audit correlation，且不得重复副作用。
+七种 Command 不是同一套 Device journal 耐久机。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并通过 `PUT /api/v2/commands/{command_id}` 提交作 operator 审计。Server 先持久化 Command 与创建 audit 再投递。
 
-Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。Device journal 保存收到的 Command frame bytes；同 ID 但 frame bytes 不同必须以 `COMMAND_PAYLOAD_CONFLICT` 拒绝。Server 从已存储的 frozen payload 确定性渲染给定 ID 的 wire Command，使每次重新投递的 frame byte-identical；崩溃和重连后必须能恢复既有状态。每 Command 的 frozen content 只保存在 typed JSON，而不使用一组专用 top-level columns。
+- **Converge**（`sync_state` / `sync_secret` / `reset_home`）：按领域键幂等；Server 在 drift 时重推同一 payload；Device 无 command journal。键分别为 Target `canonical_hash` vs Observed `applied_hash`、`accounts.credential_revision` vs Observed `installed_credential_revision`、`home_epoch`（同 epoch 可重入；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch）。
+- **Oneshot**（lock/unlock/terminate/open_binding_prompt）：仅 live socket；离线丢弃；重连不重放。空 body，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`，确认/拒绝走 `BindingRequest`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。
 
-**验证入口：** UUIDv7 正/反例、`201/200/400/409` contract、same-ID fingerprint conflict、HTTP/WSS/journal/status/audit ID 一致性、crash/fault injection、duplicate delivery、journal durability、reconnect tests。
+Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID HTTP replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。每 Command 的 frozen content 只保存在 typed JSON。`HOME_RESET` 不拆 daemon WSS；中断 reset 经本地状态文件 + RecoverHomeInstance 恢复。
+
+**验证入口：** UUIDv7 正/反例、`201/200/400/409` contract、same-ID fingerprint conflict、Converge 领域键幂等、Oneshot 离线丢弃与不重放、Home 同 epoch 可重入、crash/fault injection。
 
 ### `INV-PRIVILEGE-01`：最小权限
 
@@ -204,13 +211,13 @@ DOMjudge 凭据只通过 Caddy 对 `/login` 路由的 header 注入进入数据�
 
 **验证入口：** 非 TLS upstream 拒绝激活测试、`/login` 之外路由无注入头的负向测试、含凭据配置的权限/日志脱敏检查。
 
-### `INV-SESSION-01`：Session/Home 使用 epoch 且不拥有 Caddy
+### `INV-SESSION-01`：Session/Home 绑定当前实例且不拥有 Caddy
 
-所有 Session/Home 动作绑定当前 epoch。陈旧 Agent、陈旧 UI action、陈旧 Home cleanup 必须拒绝。
+WSS lock/unlock/terminate/open_binding_prompt 是 Oneshot，作用于该 Device 当前 graphical session，空 body，不携带 `SessionTarget` / `session_epoch`。`open_binding_prompt` 打开 screen 即 Command 成功，确认/拒绝走 `BindingRequest`。本地陈旧 Agent、陈旧 UI action 必须拒绝。Home 用 `home_epoch` 作 Converge 键；同 epoch 可重入，陈旧（epoch < 已完成）必须拒绝。
 
-Home 无法证明安全时不得启动受管 session。Session lock/unlock/terminate 不调用 Caddy、不改变 Caddy config/状态。遮罩类 UI（如未来实现）是呈现层，不是完整性边界；完整性依靠 `SESSION_TERMINATE` 与数据面 BLOCKED（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）。
+Home 无法证明安全时不得启动受管 session。`HOME_RESET` 不拆 daemon WSS。Session lock/unlock/terminate 不调用 Caddy、不改变 Caddy config/状态。遮罩类 UI（如未来实现）是呈现层，不是完整性边界；完整性依靠 `terminate_session` 与数据面 BLOCKED（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 
-**验证入口：** 桌面 capability 清单、epoch race tests、Caddy call counter、Home fault recovery。
+**验证入口：** 桌面 capability 清单、stale Agent tests、Caddy call counter、Home 同 epoch 可重入与 RecoverHomeInstance。
 
 ## 4. PKI 结构
 
@@ -221,7 +228,7 @@ Home 无法证明安全时不得启动受管 session。Session lock/unlock/termi
 | control CA → Server TLS leaf | 离线生成，runbook 保管；Server leaf 经批准的离线流程签发 | Device 与操作员浏览器；经 package/debconf 预置 `control-ca.crt` |
 | origin CA → 各 Device Gateway leaf | origin CA key 在 Server 上，provisioning 窗口内经 Enrollment 签发 | 各设备本机浏览器；origin CA 证书经包构建期注入 `local-origin-ca.crt` |
 
-不存在 Device Identity CA（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。每张 Gateway certificate 的 `gateway_certificates` row 只有 `certificate_id`、`device_pk`、`enrollment_request_id`、serial、SPKI hash、not-after、status；不存 certificate body，不建吊销分发机制；`revoked` / `retired` 状态行予以保留，用于撤销语义与审计回溯。
+不存在 Device Identity CA（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。每张 Gateway certificate 的 `gateway_certificates` row 只有 `certificate_id`、`device_id`、`enrollment_request_id`、serial、SPKI hash、not-after、status；不存 certificate body，不建吊销分发机制；`revoked` / `retired` 状态行予以保留，用于撤销语义与审计回溯。
 
 ## 5. 秘密存储
 
@@ -300,7 +307,7 @@ CSV / candidate import 的密码只存在于 upload/commit 的 HTTP 请求体解
 
 1. 先保存证据，再修改状态。
 2. 先确认身份和当前 epoch，再执行恢复。
-3. 不把删除凭据、identity、journal 或数据库行当作首选修复。
+3. 不把删除凭据、identity、本地状态文件或数据库行当作首选修复。
 4. provisioning 恢复只处理当前 singleton：已关闭时零写入；已打开时通过 audited CAS close-once。它绝不从 audit、backup 或启动路径推断应当重新打开窗口。
 5. 恢复动作使用与正常路径相同的校验和权限边界。
 6. 任何身份重建、凭据替换、Device replacement 和 contest reset 都必须人工明确授权（窗口重开本身受审计）。
@@ -317,7 +324,7 @@ CSV / candidate import 的密码只存在于 upload/commit 的 HTTP 请求体解
 
 ```text
 audit_event_id
-occurred_at
+occurred_at_unix_ms          # INTEGER UTC epoch milliseconds
 actor
 action_kind
 resource_type
@@ -333,14 +340,14 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 
 - CSV upload / preview / Import Commit / discard / expiry，以及 pending 草稿的终态删除（无 payload vault 删除）；
 - expiry reject、非秘密 fingerprint 不一致的拒绝、将删座位仍绑定的拒绝；
-- no-op Import Commit（仅 lineage；seats/mappings 未变、无 Binding stamp、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
+- no-op Import Commit（仅 lineage；seats/mappings 未变、不铸造 `binding_id`、无 Target churn；`credential_revision` 仍在每次已提交 import 推进）；
 - material Import Commit（零 Binding 写入；`binding_impacts` 只出现在拒绝路径的 redacted 计数）；
 - account/credential revision 变化；
 - provisioning 窗口正常开启/关闭与 `system:recovery` close-once；
 - Device Enrollment（含凭据替换请求的 operator 批准与拒绝、替换语义 re-enrollment 与“旧连接存活时被替换”异常事件）、retire、delete；
 - Device Token 吊销；
 - binding/unbind；
-- Command create（首次持久化）与同 ID/不同 fingerprint 的 conflict 拒绝、`SYNC_STATE`、`SYNC_SECRET` 与终态；同 ID/同 fingerprint 的 replay **不写**新 audit——它是幂等的读等价结果，为它写审计既违反零副作用 replay 规则，又让重试的 client 得以撑大审计表；
+- Command create（首次持久化）与同 ID/不同 fingerprint 的 conflict 拒绝、Converge（`SYNC_STATE` / `SYNC_SECRET` / `HOME_RESET`）与 Oneshot 意图；同 ID/同 fingerprint 的 HTTP replay **不写**新 audit——它是幂等的读等价结果，为它写审计既违反零副作用 replay 规则，又让重试的 client 得以撑大审计表；
 - certificate issuance 与证书状态行变化（含 `revoked` / `retired` 终态保留）；
 - Session/Home action；
 - operator 登录失败限流触发（每个 limiter window 一条，actor 为非人类 system actor；不记录尝试使用的 login name）；
@@ -354,7 +361,7 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 
 允许：
 
-- `DevicePk` 或截断/散列后的稳定诊断 ID；
+- `device_id` 或截断/散列后的稳定诊断 ID；
 - Command ID；
 - stable ErrorCode；
 - revision/epoch；

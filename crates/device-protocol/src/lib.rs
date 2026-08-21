@@ -5,9 +5,7 @@ mod handshake;
 pub mod validation;
 
 pub use handshake::{
-    ControlKeyId, HandshakeError, canonical_client_init_sha256, decode_client_init,
-    encode_client_init_canonical, proof_signing_digest, sign_client_proof, validate_client_init,
-    verify_proof_strict,
+    ControlKeyId, HandshakeError, proof_signing_digest, sign_client_proof, verify_proof_strict,
 };
 
 /// Exact WebSocket subprotocol selected by both control peers.
@@ -19,7 +17,7 @@ pub const CONTROL_WIRE_VERSION: u32 = 1;
 /// Maximum encoded control-envelope frame accepted by either peer.
 pub const CONTROL_MAX_FRAME_BYTES: usize = 65_536;
 /// Maximum standalone `ClientProof` message size.
-pub const CONTROL_MAX_PROOF_BYTES: usize = 1_024;
+pub const CONTROL_MAX_PROOF_BYTES: usize = 1_024 * 48;
 /// Maximum standalone `ClientInit` message size.
 pub const CONTROL_MAX_CLIENT_INIT_BYTES: usize = 48 * 1_024;
 /// Maximum active control message size.
@@ -103,7 +101,7 @@ mod tests {
 
         let sync = SyncSecret {
             seat_id: "seat-1".to_owned(),
-            binding_revision: 1,
+            binding_id: "01900000-0000-7000-8000-000000000001".to_owned(),
             account_id: "account-1".to_owned(),
             credential_revision: 1,
             password: Some(secret),

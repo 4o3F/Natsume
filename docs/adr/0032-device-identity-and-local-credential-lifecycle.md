@@ -46,7 +46,9 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 - Device Daemon 的第一个应用流程是 identity decision；所有 identity-bound adapter 和 credential read 都必须位于其后，不新增独立 Identity Guard service。
 - 无绑定 artifact 时，只有有效 derivation 才允许首次 Enrollment；已有 artifact 时，证据不足、ID mismatch 或凭据损坏均 fail closed。
 - Daemon 不得通过删除 identity/credential artifact 自动获得 fresh registration，也不得自动 re-enroll。
-- `machine_hardware_id` 在一个 Device lifecycle 内不可编辑；Server `devices.device_pk` 是独立 TEXT primary key，不由硬件数据派生，也不 merge、split 或复用。
+- `machine_hardware_id` 在一个 Device lifecycle 内不可编辑；Server `devices.device_id` 是独立 TEXT primary key（canonical lowercase hyphenated UUIDv7），不由硬件数据派生，也不 merge、split 或复用。
+
+**2026-08-20 修订**：原 `devices.device_pk` 已原位更名为 `device_id`，同一 UUIDv7 surrogate。
 - 硬件替换结束旧 lifecycle，需要显式重开 provisioning window、重新 Enrollment、人工重建 binding，再由显式 Command 同步。
 
 ### Client artifact 与 Server vault
@@ -66,7 +68,7 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 - `/etc/machine-id`、installation ID、单一硬件来源或 MAC：无法同时处理 copied disk、placeholder 和既有冲突。
 - privileged Helper 直接返回最终 ID：把 policy 放入 root boundary，削弱纯测试。
 - 独立 Identity Guard service：增加 ordering、state sharing 与 recovery race。
-- 可编辑 ID、自动 merge 或复用 `DevicePk`：破坏证书、binding 与 audit lifecycle。
+- 可编辑 ID、自动 merge 或复用 `device_id`：破坏证书、binding 与 audit lifecycle。
 - Client AEAD vault、通用 external secret manager 或 hardware trust root：当前 threat model 与 fleet baseline 不支持其复杂度。
 - Server plaintext、permission-only storage 或用 Machine Hardware ID 作为 vault key：不能满足数据库备份泄露边界。
 

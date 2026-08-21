@@ -66,15 +66,19 @@ pub fn sign_client_proof(
 
 /// Cryptographically verifies one control proof without applying protocol semantics.
 ///
+/// The caller must select `authoritative_public_key` from the intent-authoritative source. This
+/// function never infers the verification key from a proof candidate.
+///
 /// # Errors
 ///
 /// Returns a redacted typed error when the public key or signature cannot be parsed, the public
 /// key is weak, or strict Ed25519 verification fails.
 pub fn verify_proof_strict(
+    authoritative_public_key: &[u8],
     challenge: &ServerChallenge,
     proof: &ClientProof,
 ) -> Result<(), HandshakeError> {
-    let key = VerifyingKey::try_from(proof.control_public_key.as_slice())
+    let key = VerifyingKey::try_from(authoritative_public_key)
         .map_err(|_| HandshakeError::ControlPublicKey)?;
     if key.is_weak() {
         return Err(HandshakeError::WeakControlPublicKey);

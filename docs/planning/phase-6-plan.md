@@ -3,13 +3,13 @@
 > 状态：`DRAFT-PLAN`（2026-08-16 起草）
 > 适用：Phase 6 启动时提升为 `docs/gates/phase-6-status.md` 的启动分解基线，届时按最新事实修订
 > 权威来源：[路线图](../roadmap.md) §Phase 6 与 G6 覆盖、[契约](../contracts.md) §10/§12、[状态与执行模型](../state-and-execution.md) §7、[ADR-0035](../adr/0035-session-home-and-desktop-cycle.md)、[支持平台](../supported-platform.md) capability 清单
-> 前置：Phase 5 关闭（Session/Home Command 经同一 WSS/journal 通道投递；Caddy 数据面稳定后才谈会话）
+> 前置：Phase 5 关闭（Caddy 数据面稳定后才谈会话）。Session Oneshot 仅 live socket；`HOME_RESET` 是 Converge（`home_epoch`），不经 Device journal。
 
 本文件是计划，不是完成声明。Phase 6 是**工作量最大的未开工阶段**——`org.natsume.Device1` 服务端 7 method + 2 signal 全缺，`Privileged1` 10 方法只实现 1，Session Agent 只有骨架。
 
 ## 1. 阶段目标与边界
 
-**结果**：包自带的 XDG Autostart 直接拉起常驻隐藏 Session Agent；Agent 经本地 typed D-Bus 与 Daemon 通信，受 logind session 校验、owner-only singleton 与 lease 约束；session epoch 绑定的 lock / unlock / terminate；固定 contest user；选定唯一 Home backend；`HOME_RESET` 事务与连续多次重置。
+**结果**：包自带的 XDG Autostart 直接拉起常驻隐藏 Session Agent；Agent 经本地 typed D-Bus 与 Daemon 通信，受 logind session 校验、owner-only singleton 与 lease 约束；WSS lock / unlock / terminate / open_binding_prompt 为 Oneshot（当前 session，无 SessionTarget）；固定 contest user；选定唯一 Home backend；`HOME_RESET` 按 `home_epoch` Converge，不拆 daemon WSS。
 
 **非目标**：overlay UI（ADR-0035 明令当前不实现，未来需新 ADR）；任何 session 动作触碰 Caddy（G6 以「lock/unlock 的 Caddy 调用数为 0」为通过条件）；systemd user unit（四处 CI 断言禁止）。
 
@@ -24,13 +24,13 @@
 
 ## 3. 已冻结事实（不得重新设计）
 
-### 3.1 Epoch-bound Session（ADR-0035）
+### 3.1 Current-session Oneshot（ADR-0035）
 
-lock / unlock / terminate / Agent UI action / recovery transition **都携带并验证当前 `SessionEpoch`**；Device 同时验证 logind session、UID、boot/session identity 与 Agent lease；stale Agent / stale UI action / stale epoch / expired lease 返回稳定错误。Agent crash 或 lease expiry **不增加 authority**，也不能 unlock 后续 session。session action **不调用 Caddy、不修改 Caddy state/config、不进入数据面状态页**。使用冻结镜像的 **native session lock**；无法取得 focus 时报告可观察结果（如 `VISIBLE_UNFOCUSED`），**不采用 desktop-specific focus bypass**。
+WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 无 TTL、无 `prompt_message_id`；Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认/拒绝绑定不是该 Command 的成功，而是 Device 发起的 `BindingRequest{binding_request_id, seat_code}` → Server `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。本地 Agent UI 仍校验 logind session、UID 与 Agent lease；stale Agent / stale UI action / expired lease 返回稳定错误。Agent crash 或 lease expiry **不增加 authority**，也不能 unlock 后续 session。session action **不调用 Caddy、不修改 Caddy state/config、不进入数据面状态页**。使用冻结镜像的 **native session lock**。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 
 ### 3.2 Home 事务（ADR-0035 的 2026-08-14 修订）
 
-`HOME_PREPARE` + `HOME_CLEAN` 已合并为单一 **`HOME_RESET`**；`HomeEpoch` 由 **Server 分配并严格单调**；本地 `PrepareHomeInstance` / `ActivateHomeInstance` / `RecoverHomeInstance` / `GarbageCollectHomeInstance` 分解**只属实现面，D-Bus surface 不变**。固定 contest user + versioned Home template。每次 reset 获得新 epoch，**证明 mount/copy 与 ownership safety 后才能启动受管图形会话**；中断的 reset 通过显式状态与可重入步骤恢复，不确定时 fail closed；reset 是 **operator-present 受控事件**，不因 session replacement 隐式发生。
+`HOME_PREPARE` + `HOME_CLEAN` 已合并为单一 **`HOME_RESET`**（Converge，键 = `home_epoch`）。本地 Prepare/Activate/Recover/GC 对同一 epoch 必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch。`HOME_RESET` **不拆 daemon WSS**。中断经本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability。证明 mount/copy 与 ownership safety 后才能启动受管图形会话。reset 是 **operator-present 受控事件**，不因 session replacement 隐式发生。
 
 ### 3.3 Agent 形态（ADR-0035）
 
@@ -38,7 +38,7 @@ lock / unlock / terminate / Agent UI action / recovery transition **都携带并
 
 ### 3.4 本地 D-Bus 冻结面（[契约](../contracts.md) §10）
 
-**Daemon ↔ Agent**：UI snapshot 只含展示所需数据，**不含 password、token、certificate private material、Server 凭据或任意 HTML**；view kind 与 action 为封闭 enum；调用校验 UID/PID/logind session 与 current epoch；陈旧 epoch 重放被拒；Agent 退出致 lease 过期，不授予额外权限；**lock/unlock 不调用 Caddy adapter**。
+**Daemon ↔ Agent**：UI snapshot 只含展示所需数据，**不含 password、token、certificate private material、Server 凭据或任意 HTML**；view kind 与 action 为封闭 enum；调用校验 UID/PID/logind session 与当前 session 身份；陈旧 Agent 重放被拒；Agent 退出致 lease 过期，不授予额外权限；**lock/unlock 不调用 Caddy adapter**。
 
 **Daemon ↔ Helper**：方法按 capability 命名，参数必须是封闭 enum、规范化 ID、Helper 内重新派生或 allowlist 校验的路径/UID、明确 epoch，**无 secret**；Helper 不接受 Server/WSS request 的原始对象；**禁止 `execute(request)` / `run_action(name, args)` 一类通用入口**（[仓库布局](../repository-layout.md) §5）。
 
@@ -60,8 +60,8 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 | D-Bus XML | **手工维护**，仅被 roxmltree 测试消费；无 codegen、无服务端 |
 | `Device1` 服务端 | **完全缺失**（全 workspace 无 `#[zbus::interface]`） |
 | `Privileged1` 服务端 | **10 缺 9**：只有 `collect_hardware_candidates` |
-| proto session/home 面 | **已实现**：`SessionTarget`/`LockSession`/`UnlockSession`/`TerminateSession`/`ResetHome`、Heartbeat 五个 session 字段、`SessionAgentObservation` 九字段、`ObservedStateSnapshot` 的 session/home 七维度 |
-| proto 命令体语义校验 | **缺失**：`validate_envelope` 只查 oneof 存在 + canonical `command_id`；`LockSession.target` 可 `None`、`requested_lock_epoch` 可 0、`expected_lock_command_id` 可空 |
+| proto session/home 面 | Oneshot 空 body，无 `SessionTarget`；无 Heartbeat protobuf（WS ping/pong）；`OpenBindingPrompt` 空 body，Seat 在 `BindingRequest.seat_code`。Observed slim：`applied_hash`、`installed_binding_id`、`installed_credential_revision`、`credential_state`、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。 |
+| proto 命令体语义校验 | `LockSession` / `UnlockSession` / `TerminateSession` / `OpenBindingPrompt` 为空 body。校验 `ResetHome.home_epoch`；同 epoch 可重入。 |
 | session 集成测试 | **骨架**：`session_lock_epoch.rs` 仅构造并回读三字段；`session_agent_platform.rs` 五测试全为静态断言 |
 | 打包 | XDG desktop entry、两份 D-Bus policy（`Device1` 由 `natsume` own / `contest` send；`Privileged1` 由 `root` own / `natsume` send，均 default deny）、GUI 启动 runbook（67 行，含 9 个诊断条件与安全禁用清单）、无 user unit 的四处 CI 断言 |
 | Home / browser policy 内容 | **仅占位 README**，实际模板不存在 |
@@ -84,20 +84,20 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 
 ### WP3：Agent UI 接线与生产 GUI
 
-- 目标：typed snapshot → lazy create/present；8 个 `SessionScreenKind` 的真实视图；seat 提交回路走真实 D-Bus。
+- 目标：typed snapshot → lazy create/present；8 个 `SessionScreenKind` 的真实视图；seat 提交回路走真实 D-Bus。`OPEN_BINDING_PROMPT` 在 screen 打开时即以 `CommandStatus` `SUCCEEDED` 结束；seat 提交（确认/拒绝）是 `BindingRequest`，不是该 Command 的成功。
 - 冻结项：每屏布局与文案来源（message-catalog ID，禁任意 HTML）；本地化与主题；`UiPresentationState` 的上报口径（含 `PresentedUnfocused`）。
 - 测试：`ui_probe` 扩展到全部屏形态；CJK 与 HiDPI 回归；focus denied 的可观察结果；display lost 与 crash recovery。
 
 ### WP4：Session lock / unlock / terminate
 
-- 目标：`LockSession` / `UnlockSession` / `TerminateSession` Command 的 Device 执行，经 `Privileged1.RequestDesktopLock/Unlock` 落到 logind `LockSession`/`UnlockSession`。
-- 冻结项：`SESSION_ACTION_UNSUPPORTED` 的触发条件（镜像不支持时）；`expected_lock_epoch` / `expected_lock_command_id` 的比对语义；**Caddy 调用计数器的实现形态**（G6 要求「lock/unlock 的 Caddy 调用数为 0」的可测证据；计数器放哪一层、真实镜像上如何采集，**D6**）。
-- 测试：epoch race（旧 epoch 动作被拒）；replacement session 不被旧 Agent 控制；lock/unlock 全流程 Caddy 调用计数为 0；terminate 后状态收敛。
+- 目标：Oneshot `lock_session` / `unlock_session` / `terminate_session` 的 live-socket Device 执行，经 `Privileged1.RequestDesktopLock/Unlock` 落到 logind `LockSession`/`UnlockSession`。离线丢弃，重连不重放。
+- 冻结项：`SESSION_ACTION_UNSUPPORTED` 的触发条件（镜像不支持时）；Unlock 不以 Observed `active_lock_command_id` 为 fence；**Caddy 调用计数器的实现形态**（G6 要求「lock/unlock 的 Caddy 调用数为 0」的可测证据；计数器放哪一层、真实镜像上如何采集，**D6**）。
+- 测试：stale Agent 动作被拒；Oneshot 离线丢弃；replacement session 不被旧 Agent 控制；lock/unlock 全流程 Caddy 调用计数为 0；terminate 后状态收敛。
 
 ### WP5：proto 命令体语义校验补齐
 
-- 目标：`LockSession.target` 必填、`requested_lock_epoch > 0`、`UnlockSession.expected_lock_command_id` canonical UUIDv7、`ResetHome.home_epoch > 0` 等。
-- 冻结项：校验位置——补进 `device-protocol::validation`（跨进程共享）还是 Device 侧 application 层；注意 Server 侧已有等价 JSON 层校验，两侧会出现双份规则（**D7**）。
+- 目标：wire 已无 `SessionTarget` / lock epoch / `expected_lock_command_id`；`ResetHome.home_epoch` 存在且同 epoch 可重入。
+- 冻结项：校验位置——补进 `device-protocol::validation`（跨进程共享）还是 Device 侧 application 层（**D7**）。
 
 ### WP6：Home backend 与模板
 
@@ -107,9 +107,9 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 
 ### WP7：`HOME_RESET` 事务与多次重置
 
-- 目标：Server 分配单调 `HomeEpoch` → Device 执行 `PrepareHomeInstance` → `ActivateHomeInstance` → 受管会话启动；中断走 `RecoverHomeInstance`；`GarbageCollectHomeInstance` 清理旧实例。
-- 冻结项：`HomeEpoch` 存储与 CAS（E4）；**`ResetHome` 不携带 `SessionTarget`** 而 `INV-SESSION-01` 要求所有 Session/Home 动作绑定当前 epoch——须明确 reset 与 session epoch 的交互（reset 前是否必须先 terminate，由谁保证，**D8**）；reset 完成前不得启动受管会话的强制点。
-- 测试：连续多次重置；中断恢复；非单调 epoch → `HOME_EPOCH_STALE` 且零副作用；无法证明 ownership → `HOME_OPERATION_FAILED` 且不启动会话。
+- 目标：Server 分配 `home_epoch` → Device 执行可重入 Prepare/Activate；中断走 `RecoverHomeInstance`；同 epoch 重试不得 bump；`HOME_RESET` 不拆 daemon WSS。
+- 冻结项：`home_epoch` 存储（E4）；reset 与当前 session 的交互（reset 前是否必须先 terminate，由谁保证，**D8**）；reset 完成前不得启动受管会话的强制点。`ResetHome` 本来就不携带 `SessionTarget`。
+- 测试：连续多次重置；同 epoch 重试为 success/no-op；epoch < 已完成 → `HOME_EPOCH_STALE` 且零副作用；中断经 RecoverHomeInstance；无法证明 ownership → `HOME_OPERATION_FAILED` 且不启动会话；daemon WSS 在 reset 期间保持。
 
 ### WP8：capability 清单复跑与 G6 证据
 
@@ -124,7 +124,7 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 | 中文 IME / HiDPI / focus denied | WP3 + WP8 |
 | display lost 与 Agent crash | WP1（lease）+ WP3 + WP8 |
 | 无 user unit | 既有 CI 断言 + WP8 |
-| epoch race | WP2 + WP4 |
+| stale Agent / Oneshot 离线丢弃 | WP2 + WP4 |
 | lock/unlock 的 Caddy 调用数为 0 | WP4（计数器）+ WP8 |
 | Home reset/fault/reboot 与连续多次重置 | WP6 + WP7 |
 
@@ -139,7 +139,7 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 | D5 | XML↔Rust 同步机制升级（codegen vs 逐方法签名断言） | 契约 §14 一致性要求 |
 | D6 | Caddy 调用计数器形态 | G6 通过判据的可测性 |
 | D7 | proto 命令体语义校验的位置（共享 crate vs 各端） | 双份规则风险 |
-| D8 | `ResetHome` 与 session epoch 的交互 | `INV-SESSION-01` 合规 |
+| D8 | `ResetHome` 与当前 session 的交互（是否先 terminate） | 不引入 SessionTarget |
 | D9 | session 稳定码：把 runbook 的 9 个条件折叠进现有 4 码，还是扩 registry（后者须走 §13 兼容性论证） | 诊断粒度 vs 兼容承诺 |
 | D10 | `slint-build` 版本改走 workspace 继承；`serde`/`zbus` 未使用依赖的去留；`deny`/`forbid(unsafe_code)` 不一致 | 构建卫生 |
 

@@ -67,7 +67,7 @@ pub(super) fn golden_proof() -> ClientProof {
     ClientProof {
         challenge_id: GOLDEN_CHALLENGE_ID.to_vec(),
         client_nonce: CLIENT_NONCE.to_vec(),
-        control_public_key: CONTROL_KEY_SEED_PUBLIC_KEY.to_vec(),
+        candidate_control_public_key: Some(CONTROL_KEY_SEED_PUBLIC_KEY.to_vec()),
         machine_hardware_id: MACHINE_HARDWARE_ID.to_owned(),
         claimed_device_id: None,
         intent: ProofIntent::FirstEnrollment as i32,
@@ -84,7 +84,9 @@ pub(super) fn canonical_client_init(claimed_device_id: Option<&str>) -> ClientIn
             as i32,
         machine_hardware_id: MACHINE_HARDWARE_ID.to_owned(),
         claimed_device_id: claimed_device_id.map(str::to_owned),
-        control_public_key: CONTROL_KEY_SEED_PUBLIC_KEY.to_vec(),
+        proposed_control_public_key: claimed_device_id
+            .is_none()
+            .then(|| CONTROL_KEY_SEED_PUBLIC_KEY.to_vec()),
         client_nonce: CLIENT_NONCE.to_vec(),
         enrollment_attempt_id: ENROLLMENT_ATTEMPT_ID.to_vec(),
         hardware_claim: Some(HardwareClaim {

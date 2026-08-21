@@ -5,6 +5,12 @@
 > Consolidates: ADR-0008, ADR-0013, ADR-0014, ADR-0024, ADR-0029
 > Supersedes: consolidated historical records; see [`history-map.md`](history-map.md)
 > Superseded by: —
+>
+> **2026-08-20 修订（持久化时刻）**：`commands.created_at_unix_ms` / `deadline_at_unix_ms` 为 INTEGER UTC epoch milliseconds；后者可空。`observed_device_states.observed_at_unix_ms` 与 `gateway_certificate_not_after_unix_ms` 同此。无 RFC 3339 TEXT。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
+>
+> **2026-08-20 修订（Command 投递二分）**：七种 Command 不是同一套 Device journal 耐久机。Converge（`sync_state` / `sync_secret` / `reset_home`）按领域键幂等，Server 重推同一 payload；Oneshot（lock/unlock/terminate/open_binding_prompt）仅 live socket。PUT 是 operator 审计。Observed 为 slim snapshot。无 Heartbeat protobuf；keep-alive 为 WS ping/pong。
+>
+> **2026-08-21 修订（OPEN_BINDING_PROMPT 空 body）**：`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`。Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。确认/拒绝绑定是 Device `BindingRequest{binding_request_id, seat_code}` → Server `BindingResult{binding_request_id, state, error_code}`，不是该 Command 的成功。`BindingResult` 不携带 occupancy `binding_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。
 
 ## Context
 
@@ -20,23 +26,23 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 
 - Server truth 是已提交领域事实；其变更不证明 Device 已改变。
 - Target 是从 Server truth 与 frozen policy 确定派生的 non-secret expectation，不包含 password、private key、token、任意 path/UID/unit/upstream/Caddy fragment；Target 变更不联系 Device。
-- Device-facing non-secret generation 是从 current Server truth 派生的 contract artifact，不建立独立 mutable counter 或通用 version system；`observed_device_states` 只保存 Device 报告的 `received_generation`、`applied_generation`，以及可选 `gateway_configuration_revision`。
-- Observed 是最新有效 typed Device snapshot，也是 Device 实际业务状态的唯一来源；stale/unavailable 表示 unknown，不推断为 READY。
+- Device-facing non-secret expectation 由 `SyncState.canonical_hash` 表达，不建立独立 mutable counter 或通用 version system，也不在 `SyncState` 上携带 `generation`。Observed 对应键是 `applied_hash`。
+- Observed 是最新有效 slim typed Device snapshot（`applied_hash`、UUID `installed_binding_id`、`installed_credential_revision`、`credential_state`、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`），也是 Device 实际业务状态的唯一来源；stale/unavailable 表示 unknown，不推断为 READY。不回传 `secret_state`、`session_instance_id`、`active_lock_command_id`、`boot_id`、`observed_sequence`、`apply_status`、session_agent blob 或 `home_state`。`credential_state` 无 `STALE` variant。
 - Drift 是 Target 与最新有效 Observed 的纯比较，不是独立 truth。
-- Command receipt、retry 或 terminal success 只描述该 Command，不能替代 Observed。
+- PUT 持久化、live 投递或 terminal success 只描述该意图，不能替代 Observed。
 
-### Direct durable Command 与 Panel-owned identity
+### Direct Command 投递二分与 Panel-owned identity
 
 - 只有授权 operator 可创建 `SYNC_STATE` 或 `SYNC_SECRET`；import、binding、credential revision 或 Drift 不得隐式创建 Command。
-- **Panel 是 `command_id` 的唯一生成者。** 每次创建前，Panel 生成 canonical lowercase hyphenated UUIDv7；Server、WSS 与 Device 不为同一请求重写、补发或替换该 ID。
-- 创建入口固定为 `PUT /api/v2/commands/{command_id}`。持久化的 `commands` row 使用 `device_pk`、`kind`、`state`、`request_fingerprint_version`、`request_fingerprint_sha256`、可选 `group_correlation_id`、`payload_version`、`frozen_payload_json`、`created_at`、`deadline_at`、可选 terminal fields 和 `created_audit_event_id`；请求中的可选 `reason_code` 参与 request fingerprint（[契约](../contracts.md) fingerprint v1 小节）但不单独持久化；`frozen_payload_json` 只保存经验证 `payload` 的 JCS 规范形，不另设顶层列。
+- **Panel 是 `command_id` 的唯一生成者。** 每次创建前，Panel 生成 canonical lowercase hyphenated UUIDv7；Server 与 WSS 不为同一请求重写、补发或替换该 ID。
+- 创建入口固定为 `PUT /api/v2/commands/{command_id}`，作为 **operator 审计**，不是 Device 执行权威。持久化的 `commands` row 使用 `device_id`、`kind`、`state`、`request_fingerprint_version`、`request_fingerprint_sha256`、可选 `group_correlation_id`、`payload_version`、`frozen_payload_json`、`created_at_unix_ms`、可空 `deadline_at_unix_ms`、可选 terminal fields 和 `created_audit_event_id`；请求中的可选 `reason_code` 参与 request fingerprint（[契约](../contracts.md) fingerprint v1 小节）但不单独持久化；`frozen_payload_json` 只保存经验证 `payload` 的 JCS 规范形，不另设顶层列。
 - Server 对 canonical request 计算 versioned、domain-separated SHA-256 fingerprint，并保存为 `request_fingerprint_version` 与 `request_fingerprint_sha256`。它覆盖通过 schema 验证的 HTTP request 值 `device_id`、`kind`、`payload_version`、`payload`、可选 `reason_code` 与可选 `group_correlation_id`；不覆盖 frozen timestamps、actor、session 或 retry time。相同 ID 且相同 fingerprint 返回既有 `Command`，不重复 audit 或 side effect；相同 ID 且 fingerprint 不同返回稳定 conflict。
-- 首次持久化返回 `201`；相同 canonical request 的 replay 返回 `200`；非 canonical UUIDv7 返回 `400` / `COMMAND_ID_INVALID`；同 ID 不同 request 返回 `409` / `COMMAND_REQUEST_CONFLICT`。这些 response 只证明 Command 已持久化，不证明 Device 已执行。
-- `Command.command_id`、WSS `Command`、Device durable journal、WSS `CommandStatus` 与每 Command 的 audit correlation 必须保留完全相同的 ID 字符串。Device 不得将重复投递变成第二个业务执行；同 ID 而不相同的 `frozen_payload_json` 内容必须 conflict/reject。
-- `SYNC_STATE` 与 `SYNC_SECRET` 都是 direct single-Device durable Command。`SYNC_STATE` 只应用 non-secret Target，绝不签发、携带或安装 certificate/token。每个 Command 的 frozen content 由带 `payload_version` 的 typed `frozen_payload_json` 保存；row 不含独立的 frozen Seat、BindingRevision、credential revision 或 dispatcher-metadata 列。Device 写入前重检适用的当前事实，并只返回 redacted result 与 installed revision。
-- ack 前必须 durable receipt；completed 不重复 side effect，terminal failure 不自动重启，新执行使用新 ID。revision/epoch failure 在部分应用前拒绝。
+- 首次持久化返回 `201`；相同 canonical request 的 replay 返回 `200`；非 canonical UUIDv7 返回 `400` / `COMMAND_ID_INVALID`；同 ID 不同 request 返回 `409` / `COMMAND_REQUEST_CONFLICT`。这些 response 只证明 Server 已记下意图，不证明 Device 已执行。
+- 七种 Command **不是**同一套 Device journal 耐久机。正确性是 payload 幂等 / live delivery，不是 Client journal。
+  - **Converge**：`sync_state`（键 = Target `canonical_hash` vs Observed `applied_hash`）、`sync_secret`（键 = `accounts.credential_revision` vs Observed `installed_credential_revision`）、`reset_home`（键 = `home_epoch`；同 epoch 可重入；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch）。Server 在 drift 时重推同一 payload。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。
+  - **Oneshot**：`lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt`。仅 live socket；离线丢弃；重连不重放。空 body，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`，确认/拒绝走 `BindingRequest`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。
+- `SYNC_STATE` 只应用 non-secret Target，绝不签发、携带或安装 certificate/token。每个 Command 的 frozen content 由带 `payload_version` 的 typed `frozen_payload_json` 保存；row 不含独立的 frozen Seat、BindingRevision、credential revision 或 dispatcher-metadata 列。Device 写入前重检适用的当前事实。
 - bulk action 生成 N 个独立 Command ID。它们可以共享可选 `group_correlation_id`，但该值仅用于查询和审计分组：不表示顺序、原子性、重试策略或跨 Device lifecycle。
-- 本 ADR 冻结 identity、HTTP、WSS 和 journal 语义；Phase 0 的声明不表示已经实现 HTTP listener、authorization、Command repository、dispatcher、WSS journal 或 Panel mutation。
 
 ### Fail-closed Caddy 与 DOMjudge
 
@@ -58,7 +64,7 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 - automatic reconciliation 或保存即同步：掩盖 operator intent，并可能隐式分发 secret。
 - password 放入 Target/`SYNC_STATE`：扩大 secret surface，绕过 `SYNC_SECRET` 授权与 revision 检查。
 - 用 Target、Command success 或 event delta 表示状态：无法表达 local failure、restart、freshness 与 recovery。
-- Server 生成 command ID 或使用 `POST` action endpoint：无法把 Panel 的一次意图稳定地贯穿 HTTP、WSS、journal 与 audit。
+- Server 生成 command ID 或使用 `POST` action endpoint：无法把 Panel 的一次意图稳定地贯穿 HTTP PUT 审计与 WSS 投递。
 - bulk workflow record：为当前没有消费者的跨 Device 生命周期、状态和恢复语义建模。
 - browser failure、Server-hosted/free-form error page：无法在本地 outage 中安全诊断。
 - DOMjudge IP auth、custom Caddy module、form broker 或未验证 Basic auth：DHCP 或额外协议/供应链成本不可接受。
@@ -68,10 +74,10 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 
 ### Positive
 
-- Panel 的一次创建意图、持久化 Command、WSS message、Device journal 和 audit 使用同一个可验证 ID。
+- Panel 的一次创建意图、PUT 审计行、WSS message 和 audit 使用同一个可验证 ID。
 - same-ID replay 不会重复敏感副作用；same-ID/different-request 有稳定而窄的冲突语义。
 - operator intent、secret handling、audit、retry 和 Device reality 分别可观察。
-- crash/offline recovery 通过 direct durable Command 与 Observed 收敛。
+- crash/offline recovery：Converge 靠领域键重推与本地可重入步骤；Oneshot 离线丢弃；Observed 继续提供 slim 实际状态。
 - Caddy activation 收敛为 validate、atomic activate、reload、health 与 LKG 的有限失败模型。
 - DOMjudge credential consumer path 可枚举且窄。
 
@@ -86,7 +92,7 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖无 implicit Command、canonical UUIDv7 正/反例、`PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 契约、same-ID fingerprint replay/conflict、`request_fingerprint_*` 与 `frozen_payload_json` 的持久化规则、Command ID 在 HTTP/WSS/journal/status/audit 的一致性、bulk group 只作查询/审计分组、Command durability/crash/stale revision、Observed freshness/re-report、audit atomicity、Caddy certificate/validate/reload/health/LKG/BLOCKED/CSP/no-secret，以及 DOMjudge X-Headers route scope、upstream TLS 和 brotli passthrough。
+证据必须覆盖无 implicit Command、canonical UUIDv7 正/反例、`PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 契约、same-ID fingerprint replay/conflict、`request_fingerprint_*` 与 `frozen_payload_json` 的持久化规则、Converge 领域键幂等与 Oneshot 离线丢弃/不重放、bulk group 只作查询/审计分组、stale `binding_id`/credential revision、Observed slim freshness/re-report、audit atomicity、Caddy certificate/validate/reload/health/LKG/BLOCKED/CSP/no-secret，以及 DOMjudge X-Headers route scope、upstream TLS 和 brotli passthrough。
 
 出现真实外部 event consumer、cross-Device staged workflow、dynamic Caddy consumer、DOMjudge contract 变化或选手需要拥有 credential 时，用新 ADR 重开相应子边界。
 

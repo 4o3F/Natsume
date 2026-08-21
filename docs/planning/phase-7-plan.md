@@ -59,7 +59,7 @@ Client/Server 两个 nFPM 包（Client 声明 9 项 depends、4 个 `config|nore
 
 - 目标：备份对象、一致性方法、restore-to-verified-state 流程与验证判据；runbook + 集成测试（[依赖策略](../dependency-policy.md)要求 backup/restore 由 runbook 与 integration test 双重验证）。
 - 冻结项：备份对象清单（SQLite DB + WAL、vault 主密钥、origin CA 材料、site.toml、TLS leaf/key）；一致性方法（`VACUUM INTO` / `.backup` / 停服快照，**D3**）；**vault 主密钥是否与 DB 分离保管**（主密钥丢失等同 vault 数据不可恢复，**D4**）；restore 后的验证判据（Observed/Drift/certificate inspection/audit 四路复核）。
-- 约束：[安全与恢复](../security-recovery.md)恢复原则——先存证据再改状态；不把删除凭据/identity/journal/DB 行当首选修复；**每个 destructive step 必须有备份/rollback 条件**；任何身份重建、凭据替换、Device replacement 与 contest reset 必须人工明确授权。
+- 约束：[安全与恢复](../security-recovery.md)恢复原则——先存证据再改状态；不把删除凭据/identity/本地状态文件/DB 行当首选修复；**每个 destructive step 必须有备份/rollback 条件**；任何身份重建、凭据替换、Device replacement 与 contest reset 必须人工明确授权。
 
 ### WP4：赛后审计导出
 
@@ -76,8 +76,8 @@ Client/Server 两个 nFPM 包（Client 声明 9 项 depends、4 个 `config|nore
 
 ### WP6：Gateway validity 赛前校验工具化
 
-- 目标：赛前对全 fleet 已签发证书的 `not_after` 做一次可复现检查并呈现结果。
-- 现状：签发时与 site startup preflight 已校验（`GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS = 300`、`gateway_not_after ≥ contest_end + 86400`），但**无 operator 查询面**（`gateway_certificates` 有 not-after 列）。
+- 目标：赛前对全 fleet 已签发证书的 `not_after_unix_ms` 做一次可复现检查并呈现结果。
+- 现状：签发时与 site startup preflight 已校验（`GATEWAY_MINIMUM_REMAINING_VALIDITY_SECONDS = 300`、`gateway_not_after ≥ contest_end + 86400`），但**无 operator 查询面**（`gateway_certificates.not_after_unix_ms` 为 INTEGER UTC epoch milliseconds）。
 - 冻结项：谁在赛前跑、检查项、结果呈现位置（**D7**：新 route / CLI 子命令 / Panel 视图）。
 
 ### WP7：500 台并发容量验证

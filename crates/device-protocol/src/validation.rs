@@ -95,9 +95,7 @@ pub fn validate_envelope(envelope: &ControlEnvelope) -> Result<(), ProtocolValid
         >(
             result.state, "BindingResult.state"
         ),
-        control_envelope::Body::ClientHello(_)
-        | control_envelope::Body::ServerHello(_)
-        | control_envelope::Body::BindingRequest(_)
+        control_envelope::Body::BindingRequest(_)
         | control_envelope::Body::ServerDrain(_)
         | control_envelope::Body::ProtocolError(_) => Ok(()),
     }

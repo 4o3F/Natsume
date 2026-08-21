@@ -7,6 +7,8 @@
 
 **2026-08-19 blocker**：本计划按当前 Token Enrollment、daemon credential paths 与 Bearer WSS authority 起草；[ADR-0038](../adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 Proto/crypto/schema foundation 已存在，但 runtime cutover 尚未发生。Owner 必须先决定 Phase 5 位于 atomic authority cutover 前还是后，并据此重基线 credential/session inputs；禁止实现混合 Token/control-key compatibility。
 
+**2026-08-20 修订（Command 投递二分）**：`SYNC_STATE` / `SYNC_SECRET` 是 Converge 命令（键分别为 `canonical_hash` vs `applied_hash`、`credential_revision` vs `installed_credential_revision`）。Device 无 command journal；D12 journal GC 关闭为不再适用。Observed 为 slim snapshot（`credential_state`，无 `secret_state` / `STALE`）。`SyncState` 字段为 `canonical_hash`、`binding_id`、`seat_code`、`domjudge_username`，无 `generation`。`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`；Seat 在 `BindingRequest.seat_code`（Phase 6 消费）。
+
 本文件是计划，不是完成声明。遵守 [路线图](../roadmap.md) §1 原则 5：细目在 Phase 启动时冻结，本文件提供该冻结的候选基线与决策清单。
 
 ## 1. 阶段目标与边界
@@ -20,7 +22,7 @@
 | # | 检查项 | 依据 | 阻塞范围 |
 |---|---|---|---|
 | E1 | DOMjudge lab 实访复核：snapshot 标识、`auth_methods` 实含 xheaders、brotli 已启用、upstream `/login` TLS 且链可验、该版本仍执行 password verification | G0 条目 9 的 owner 裁定把实访移出 G0 并指定为 Phase 5 入场检查项 | 阻塞 WP5；WP1–WP4 可先行 |
-| E2 | Phase 4 WP5（Device WSS client / journal / Observed）与 WP6（缩比容量探针）关闭 | Device 侧无投递通道则 WP4/WP6 无从执行 | 阻塞全部 Device 侧 WP |
+| E2 | Phase 4 WP5（Device WSS client / Observed）与 WP6（缩比容量探针）关闭 | Device 侧无投递通道则 WP4/WP6 无从执行 | 阻塞全部 Device 侧 WP |
 | E3 | 时钟 skew 容差冻结（当前 `ENV-UNFROZEN`） | [支持平台](../supported-platform.md) 时钟纪律；Target freshness 与证书窗口静默依赖 | 阻塞 WP4 freshness 判定 |
 | E4 | 冻结 ADR-0038 atomic cutover 与 Phase 5 的先后；禁止 Token/key 或 old/new registry 混合路径 | ADR-0038 flag-day约束 | 阻塞本计划提升为Gate status及WP1/WP4/WP6编码 |
 
@@ -54,7 +56,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### 3.5 Phase 4 已交付、本阶段直接消费
 
-- **payload schema v1 已实现**（`server/src/application/command.rs`）：`SyncStatePayload{generation, canonical_hash(32-hex), snapshot}`、`TargetStateSnapshotPayload{schema_version, assignment, gateway, session}` 及三段子结构、`SyncSecretPayload{seat_id, binding_revision, account_id, credential_revision}`（**不含 password**）。
+- **payload schema v1 已实现**（`server/src/application/command.rs`）：HTTP frozen payload 仍是 Phase 4 交付面。wire `SyncState` 为 `{canonical_hash, binding_id, seat_code, domjudge_username}`，无 `generation`；`SyncSecret` 为 `{binding_id, credential_revision, password}`。Converge 键是 `canonical_hash` / `credential_revision`；occupancy 是 `binding_id` UUIDv7。`generation` 不进入 `SyncState` 或 Observed。无 `TargetAssignment` / `TargetGateway` 消息。
 - `sync_secret` 的 vault→wire `SecretBytes` 注入被 Phase 4 显式登记为 **Phase 5 接线 hook**（Phase 4 接受并持久化但 dispatcher 不渲染不投递）。
 - proto `SecretBytes` 的 `Debug` 经 build 期 `skip_debug` 手写为 `[REDACTED]`。
 
@@ -92,8 +94,8 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### WP2：Target 派生与 `SYNC_STATE` 服务端
 
-- 目标：从 Server truth 确定性派生 `TargetStateSnapshot`，产出派生代际 `generation` 与 `canonical_hash`，作为 `sync_state` 的 frozen payload；提供 operator 触发面。
-- 冻结项：派生输入闭包（Seat↔Binding、account mapping、site config；无 `revision_counters`）；`canonical_hash` 算法（建议与 fingerprint v1 同纪律：独立域分隔符 + NUL + JCS，**D1**）；`generation` 来源（复用现有 revision 组合 vs 新计数器；ADR-0034 明令「不建立独立 mutable counter 或通用 version system」，倾向前者，**D2**）；operator 触发面（新 route vs 直接 `putCommand`，**D3**）。
+- 目标：从 Server truth 确定性派生非秘密 assignment，产出 `canonical_hash`，作为 `sync_state` 的 frozen payload；提供 operator 触发面。wire 不携带 `generation`。
+- 冻结项：派生输入闭包（Seat↔Binding、account mapping、site config；无 `revision_counters`）；`canonical_hash` 算法（建议与 fingerprint v1 同纪律：独立域分隔符 + NUL + JCS，**D1**）；`generation` 不进入 `SyncState` / Observed（**D2** 关闭为不再适用）；operator 触发面（新 route vs 直接 `putCommand`，**D3**）。
 - 文件面：`server/src/application/target.rs`（新）、必要的 `db/` 读面、`http/handler/`、OpenAPI（若新增 route 需同步 §3.6.1/§3.6.2/§3.6.5 与审计词表）。
 - 测试：同一 truth 多次派生逐字节一致；任一输入变化改变 hash；secret 不入 Target 的字节扫描；陈旧 baseline 拒绝。
 
@@ -112,9 +114,9 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### WP4：`SYNC_STATE` Device 执行
 
-- 目标：收到 Command → 校验（target device、baseline revision、派生代际、freshness、本地 identity、payload schema/version、hostname/upstream 属允许集合）→ 调 WP3 管线 → CommandStatus 与 Observed 回报。
+- 目标：收到 Command → 校验（target device、`canonical_hash`、freshness、本地 identity、hostname/upstream 属允许集合）→ 调 WP3 管线 → CommandStatus 与 Observed 回报。wire `SyncState` 无 `generation`。
 - 冻结项：freshness 时钟容差（依赖 E3）；允许集合来源（site.toml + packaged profile ID 映射）；失败到 `COMMAND_STALE` / `COMMAND_PAYLOAD_INVALID` / `GATEWAY_CREDENTIAL_INVALID` / `GATEWAY_ACTIVATION_FAILED` / `GATEWAY_UPSTREAM_TLS_REQUIRED` 的映射表。
-- 测试：全部拒绝路径零副作用；成功路径 Observed 的 `applied_generation`/`applied_hash`/`gateway_state` 精确；中断恢复不重复副作用（journal 幂等）。
+- 测试：全部拒绝路径零副作用；成功路径 Observed 的 `applied_hash`/`gateway_state` 精确；同一 `canonical_hash` 重推为 no-op（无 Device journal）。
 
 ### WP5：xheaders `/login` 注入与 upstream policy
 
@@ -126,7 +128,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 - 目标：operator 触发 → Server 渲染 wire Command 时从 vault 取秘密注入 `SecretBytes` → Device 重检 binding/credential revision → 原子写凭据文件 → 重渲染含凭据配置并激活 → 只报 installed revision。
 - 冻结项：秘密注入发生在**渲染 wire Command 时**（绝不进 `frozen_payload_json`，Phase 4 已冻结）；Device 凭据文件路径与权限；重投递时每次重新取秘密而非缓存；零秘密断言点清单。
-- 测试：password 明文不入 DB/WAL/journal/日志/审计/Observed/metrics 的字节扫描；陈旧 revision 拒绝安装；写入中断保留旧 secret 或明确标记不可用；成功后配置含凭据且权限正确；重复投递不重复不可逆动作。
+- 测试：password 明文不入 DB/WAL/日志/审计/Observed/metrics 的字节扫描；陈旧 revision 拒绝安装；同一 `credential_revision` 重推为 no-op；写入中断保留旧 secret 或明确标记不可用；成功后配置含凭据且权限正确。
 
 ### WP7：Drift 与 operator 视图
 
@@ -153,7 +155,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 | # | 决策 | 影响 |
 |---|---|---|
 | D1 | `canonical_hash` 算法（建议同 fingerprint v1 纪律，独立域串） | 跨 Server/Device 一致性 |
-| D2 | `generation` 来源：复用 revision 组合 vs 新计数器 | ADR-0034 禁止独立 mutable counter，需论证 |
+| D2 | `generation` 不进入 `SyncState` / Observed（已关闭） | wire 无该字段 |
 | D3 | `SYNC_STATE` operator 触发面：新 route vs `putCommand` | OpenAPI 与 Panel 交互 |
 | D4 | 渲染产物与 LKG 路径、权限、保留代数 | 与包管理目录冲突风险 |
 | D5 | Caddy reload 触发机制三选一 | systemd 拓扑与 helper 面 |
@@ -163,25 +165,15 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 | D9 | 本地健康检查定义与 upstream 不健康时的状态归属 | READY 判据 |
 | D10 | `caddy.modules` 是否补登记 transport 模块 | 闭包文档与实际使用面一致 |
 | D11 | Drift/Observed 查询 route 的契约冻结 | 新 wire surface |
-| D12 | Device journal GC 的确认机制（见下方 §6.1） | wire surface + 客户端 journal 生命周期 |
+| D12 | Device journal GC（已关闭，见 §6.1） | 不再适用：无 Device command journal |
 
-### 6.1 D12：journal GC 确认机制（Phase 4 已删除旧实现，重新设计）
+### 6.1 D12：journal GC（2026-08-20 关闭为不再适用）
 
-**背景**：Device journal 保存收到的 Command frame bytes 以保证重复投递不产生第二次副作用（[契约](../contracts.md) §6）。条目何时可以删除，取决于设备如何得知「服务端已经durable 记下了这条命令的终态」。Phase 4 曾实现「设备分配单调游标 + 服务端存每设备高水位 + ServerHello 回传 resume 值」，因下述原因整体删除（proto 三字段、`devices.terminal_result_cursor` 列、推进逻辑与相关类型均已移除）。
+**关闭理由**：七种 Command 不是同一套 Device journal 耐久机。Converge 按领域键幂等，Oneshot 仅 live socket；Device **不**维护 command journal，因此不存在 journal GC / 终态确认通道问题。Phase 4 删除的高水位游标（`devices.terminal_result_cursor`）保持删除，不再设计替代确认机制。
 
-**任何候选设计必须先回答的判据**：**乱序终态如何不丢**。命令是乱序终态化的（快的 `SESSION_LOCK` 先于慢的 `HOME_RESET` 完成），高水位标记正是在这里失败——设备先报 B（游标 4）、再报 A（游标 3），服务端推到 4；若连接在 A 发出前断开，下次 hello 返回 resume=4，设备据此 GC 掉 A，**A 的终态结果从未上报却被删除**。这是数据丢失，不是不便。
+**历史背景（不再实施）**：曾设想 Device journal 保存 Command frame bytes，条目删除依赖服务端终态确认。高水位游标因乱序终态会静默丢结果而被否决。
 
-**候选方案对比**：
-
-| 方案 | 帧开销 | 乱序 | 重复终态 | 未知/异属命令 | 备注 |
-|---|---|---|---|---|---|
-| 高水位游标 | 0 | ✗ 静默丢结果 | ✓ | 无解 | **已否决**，Phase 4 已删除 |
-| 按命令确认（服务端记入终态后回一帧） | 每终态 1 帧 | ✓ | ✓（已记入也回确认） | 需额外区分，而区分即 existence oracle | 若采用，倾向新增专用消息而非反向复用 `CommandStatus`——后者含义随方向而变，且会把「执行权威在设备、记录权威在服务端」两者混同 |
-| **首批投递完成标记（倾向）** | 每连接 1 帧 | ✓ | ✓ 天然 | ✓ 天然 | 从服务端已有状态派生确认而非另建通道：可投递集为 `state ∈ (created, received, running)`，记入终态即永不再投递，故「不再投递」本身就是记录声明；加一个 hello 后首批结束标记即可让缺席可观测。**注意批次被 `DISPATCH_BATCH_LIMIT` 截断时不得发送该标记**，否则设备会误 GC 尚未投递的条目 |
-
-**为何不在 Phase 4 定案**：Phase 4 没有终态生产者，任何机制都无法端到端验证——被删除的游标正是这样溜过去的（它的真实缺陷对当时能写的每个测试都不可见）。Phase 5 第一个真实执行器落地后才会知道命令是否并发执行、长命令是否跨连接、批次截断多常见，而这些正好决定标记方案是否够用。
-
-**命名连带项**：若最终引入服务端→设备的记录消息，同时把现有 `CommandStatus`（设备→服务端的执行上报）一并对称命名；Phase 4 不单方面改名。
+高水位游标、按命令确认帧、首批投递完成标记均不再评估。Oneshot 离线丢弃；Converge 靠领域键重推。
 
 ## 7. 跨切风险
 

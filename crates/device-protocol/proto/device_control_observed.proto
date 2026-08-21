@@ -1,37 +1,39 @@
 syntax = "proto3";
 package natsume.device.control;
 
-import "device_control_common.proto";
-
-enum StateApplyStatus {
-  STATE_APPLY_STATUS_UNSPECIFIED = 0;
-  STATE_APPLY_STATUS_IDLE = 1;
-  STATE_APPLY_STATUS_RECEIVED = 2;
-  STATE_APPLY_STATUS_VALIDATING = 3;
-  STATE_APPLY_STATUS_APPLYING = 4;
-  STATE_APPLY_STATUS_APPLIED = 5;
-  STATE_APPLY_STATUS_FAILED = 6;
-  STATE_APPLY_STATUS_RECOVERY_REQUIRED = 7;
+// Local DOMjudge password file installed by SYNC_SECRET. Not a certificate,
+// control key, or Device Token.
+enum CredentialState {
+  CREDENTIAL_STATE_UNSPECIFIED = 0;
+  // No password file on disk.
+  CREDENTIAL_STATE_ABSENT = 1;
+  // A password file is present and readable. Freshness is
+  // installed_credential_revision vs accounts.credential_revision, not this variant.
+  CREDENTIAL_STATE_INSTALLED = 2;
+  // File is present but unusable (unreadable, corrupt, or apply failed).
+  CREDENTIAL_STATE_FAILED = 3;
 }
 
-enum SecretState {
-  SECRET_STATE_UNSPECIFIED = 0;
-  SECRET_STATE_ABSENT = 1;
-  SECRET_STATE_INSTALLED = 2;
-  SECRET_STATE_STALE = 3;
-  SECRET_STATE_FAILED = 4;
-}
-
+// Caddy data-plane health. Distinct from SYNC_STATE CommandStatus: a succeeded
+// apply does not imply READY.
 enum GatewayState {
   GATEWAY_STATE_UNSPECIFIED = 0;
+  // No gateway config/material activated.
   GATEWAY_STATE_ABSENT = 1;
+  // Intentionally not proxying (contest BLOCKED page).
   GATEWAY_STATE_BLOCKED = 2;
+  // Reload / LKG restore in progress.
   GATEWAY_STATE_RESTORING = 3;
+  // Local origin is serving and policy checks passed.
   GATEWAY_STATE_READY = 4;
+  // Origin is up; fixed upstream is not healthy.
   GATEWAY_STATE_UPSTREAM_UNHEALTHY = 5;
+  // Cannot prove a safe data-plane config; fail closed.
   GATEWAY_STATE_RECOVERY_REQUIRED = 6;
 }
 
+// Coarse current desktop occupancy. Lock/unlock/terminate are oneshot against
+// whatever session this reports; not an occupancy UUID.
 enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_NONE = 1;
@@ -42,93 +44,23 @@ enum SessionState {
   SESSION_STATE_ERROR = 6;
 }
 
-enum GraphicalSessionType {
-  GRAPHICAL_SESSION_TYPE_UNSPECIFIED = 0;
-  GRAPHICAL_SESSION_TYPE_WAYLAND = 1;
-  GRAPHICAL_SESSION_TYPE_X11 = 2;
-}
-
-enum DisplayBackend {
-  DISPLAY_BACKEND_UNSPECIFIED = 0;
-  DISPLAY_BACKEND_WAYLAND = 1;
-  DISPLAY_BACKEND_X11 = 2;
-}
-
-enum UiPresentationState {
-  UI_PRESENTATION_STATE_UNSPECIFIED = 0;
-  UI_PRESENTATION_STATE_HIDDEN = 1;
-  UI_PRESENTATION_STATE_PRESENTING = 2;
-  UI_PRESENTATION_STATE_PRESENTED_FOCUSED = 3;
-  UI_PRESENTATION_STATE_PRESENTED_UNFOCUSED = 4;
-  UI_PRESENTATION_STATE_UNSUPPORTED = 5;
-  UI_PRESENTATION_STATE_FAILED = 6;
-}
-
-enum SessionScreenKind {
-  SESSION_SCREEN_KIND_UNSPECIFIED = 0;
-  SESSION_SCREEN_KIND_HIDDEN = 1;
-  SESSION_SCREEN_KIND_IDLE_STATUS = 2;
-  SESSION_SCREEN_KIND_BINDING_PROMPT = 3;
-  SESSION_SCREEN_KIND_BINDING_PENDING = 4;
-  SESSION_SCREEN_KIND_BINDING_RESULT = 5;
-  SESSION_SCREEN_KIND_RECOVERY_STATUS = 6;
-  SESSION_SCREEN_KIND_LOCK_PRESENTATION = 7;
-  SESSION_SCREEN_KIND_FATAL_LOCAL_ERROR = 8;
-}
-
-enum SessionAgentState {
-  SESSION_AGENT_STATE_UNSPECIFIED = 0;
-  SESSION_AGENT_STATE_ABSENT = 1;
-  SESSION_AGENT_STATE_STARTING = 2;
-  SESSION_AGENT_STATE_READY = 3;
-  SESSION_AGENT_STATE_DEGRADED = 4;
-  SESSION_AGENT_STATE_ERROR = 5;
-}
-
-message SessionAgentObservation {
-  SessionAgentState state = 1;
-  GraphicalSessionType graphical_session_type = 2;
-  DisplayBackend display_backend = 3;
-  UiPresentationState presentation = 4;
-  SessionScreenKind screen = 5;
-  bool notifications_available = 6;
-  bool desktop_lock_supported = 7;
-  bool desktop_unlock_supported = 8;
-  string stable_error_code = 9;
-}
-
-enum HomeState {
-  HOME_STATE_UNSPECIFIED = 0;
-  HOME_STATE_UNMOUNTED = 1;
-  HOME_STATE_READY = 2;
-  HOME_STATE_RESETTING = 3;
-  HOME_STATE_RECOVERY_REQUIRED = 4;
-  HOME_STATE_ERROR = 5;
-}
-
+// Slim Device-authored snapshot. Change + low-frequency periodic. No secrets,
+// paths, or internal error chains. Server receive-time is not a Device field.
 message ObservedStateSnapshot {
-  uint64 observed_sequence = 1;
-  string boot_id = 2;
-  uint64 received_generation = 3;
-  uint64 applied_generation = 4;
+  // SHA-256 of the last successfully applied SyncState assignment; same 32 bytes
+  // as SyncState.canonical_hash. Converge no-op when equal. Hash recipe is
+  // Phase 5 D1 (not frozen).
   bytes applied_hash = 5;
-  StateApplyStatus state_apply_status = 6;
-  string state_error_code = 7;
-  uint64 installed_binding_revision = 8;
+  // Occupancy stamp of the Binding installed on Device; canonical lowercase
+  // hyphenated UUIDv7. Empty = never installed. Not an integer revision.
+  string installed_binding_id = 8;
+  // accounts.credential_revision last written by SYNC_SECRET. 0 = never installed.
   uint64 installed_credential_revision = 9;
-  SecretState secret_state = 10;
+  // Local DOMjudge password file health. Pair with installed_credential_revision.
+  CredentialState credential_state = 10;
   GatewayState gateway_state = 11;
-  uint64 gateway_configuration_revision = 12;
+  // SHA-256 of the raw SubjectPublicKeyInfo DER of the Gateway cert Caddy is
+  // actually using. Empty if none.
   bytes gateway_certificate_fingerprint = 13;
   SessionState session_state = 14;
-  string session_instance_id = 15;
-  uint64 session_epoch = 16;
-  SessionLockState session_lock_state = 17;
-  uint64 session_lock_epoch = 18;
-  string active_lock_command_id = 19;
-  HomeState home_state = 20;
-  string stable_component_error_code = 21;
-  int64 observed_at_unix_ms = 22;
-  int64 gateway_certificate_not_after_unix_ms = 23;
-  SessionAgentObservation session_agent = 24;
 }

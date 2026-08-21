@@ -25,9 +25,9 @@
 | 1. Control Domain | W3–W6 | Server 领域、admin/viewer auth、审计、Command 骨架、Web shell | G1 |
 | 2. CSV Preparation | W7–W9 | 严格 CSV、非秘密 singleton pending、单 pending import（无 revision CAS）、Preparation Center | G2 |
 | 3. Identity & Enrollment | W10–W12 | 固定配方 Machine ID、provisioning 窗口、Token + Gateway 联合签发、凭据文件 | G3 |
-| 4. Control Channel & Command Runtime | W13–W15 | WSS + token 认证、journal、Observed、dispatcher | G4 |
+| 4. Control Channel & Command Runtime | W13–W15 | WSS + token 认证、Converge/Oneshot 投递、Observed slim、dispatcher | G4 |
 | 5. State, Data Plane & Secrets | W16–W19 | `SYNC_STATE`、Caddy 渲染/reload/LKG、xheaders 自动登录、`SYNC_SECRET`、Drift 视图 | G5 |
-| 6. Session & Home | W20–W23 | 当期镜像单桌面 Agent、session epoch、Home transaction | G6 |
+| 6. Session & Home | W20–W23 | 当期镜像单桌面 Agent、Oneshot session、Home Converge | G6 |
 | 7. Production Release | W24–W26 | packaging、升级、备份、演练、发布签收、赛后导出 | G7 |
 | External Buffer | +2–4 weeks | DOMjudge、镜像、硬件和现场依赖 | — |
 
@@ -58,7 +58,7 @@ G0 platform/contract evidence + DOMjudge lab（xheaders/brotli/upstream TLS）
   → Server domain and audit
   → CSV committed truth
   → identity recipe + window + enrollment（token/gateway）
-  → WSS control and durable Command
+  → WSS control and Converge/Oneshot Command
   → explicit state/secret and Caddy autologin
   → Session/Home（当期镜像）
   → production rehearsal and release
@@ -75,7 +75,7 @@ Phase 0 不实现产品功能，而是消除会在后续放大的工具链、契
 - **P0.1 Monorepo 与工具链**：Cargo/pnpm/`just`/nFPM 所有权边界；固定 Rust、Node、pnpm、Mermaid、nFPM、Caddy、protoc；单一 lockfile；禁止占位命令和"工具缺失即跳过"。
 - **P0.2 真实 CI**：PR 执行 Rust（fmt/clippy/test/doc/deny）、Web（frozen install/format/lint/typecheck/test/build）、契约 clean diff、policy scan、package smoke。完整 install/upgrade/remove/purge/reboot 生命周期改为每周与发版前执行。
 - **P0.3 Error model**：第一方 typed SNAFU error；stable ErrorCode registry；HTTP error response body 与 Protobuf/D-Bus/CommandStatus 显式映射；redaction tests；禁止解析 Display 文本。
-- **P0.4 Contract skeleton（v2.8 重定向）**：current-fact SQL 基线（无 Seat-universe freeze、generic instance state 或未消费的 workflow history）；窗口门禁 Enrollment（token + gateway）；Panel-owned canonical UUIDv7 `command_id` 与声明式 `PUT /api/v2/commands/{command_id}`（`201/200/400/409`、same-ID fingerprint conflict、`request_fingerprint_*` 与 `frozen_payload_json`）；WSS envelope（一帧一消息）、Observed/CommandStatus、Local D-Bus、machine-generated golden、`INV-CERT-01` 两段阶梯负向 contract test。该工作包只冻结 migration/schema/contract，不宣称 HTTP listener、Command repository/dispatcher、Device journal 或 Panel mutation 已实现。**删除**：QUIC/framing 骨架、Device Identity CSR 契约、mTLS client verifier 骨架。
+- **P0.4 Contract skeleton（v2.8 重定向）**：current-fact SQL 基线（无 Seat-universe freeze、generic instance state 或未消费的 workflow history）；窗口门禁 Enrollment（token + gateway）；Panel-owned canonical UUIDv7 `command_id` 与声明式 `PUT /api/v2/commands/{command_id}`（`201/200/400/409`、same-ID fingerprint conflict、`request_fingerprint_*` 与 `frozen_payload_json`）；WSS envelope（一帧一消息）、Observed/CommandStatus、Local D-Bus、machine-generated golden、`INV-CERT-01` 两段阶梯负向 contract test。该工作包只冻结 migration/schema/contract，不宣称 HTTP listener、Command repository/dispatcher 或 Panel mutation 已实现。**删除**：QUIC/framing 骨架、Device Identity CSR 契约、mTLS client verifier 骨架。
 - **P0.5 空壳 Deb**：`natsume-server` 与 `natsume-client` 可构建/安装；sysusers/tmpfiles/mode、systemd services、D-Bus policy、package-owned Caddy、XDG Autostart、endpoint/hostname preseed；无 Identity Guard、无 Agent user unit、无 runtime download、无 postinstall CA 生成。
 - **P0.6 目标环境验证（v2.8 收缩）**：在目标 OS（ICPC 派生镜像）与 Server 网络上验证：IP-SAN/endpoint 与单 TCP 端口、窗口签发阶梯 schema 负向断言、**DOMjudge lab：xheaders 登录、brotli 透传、upstream TLS**、identity fixture（v1 事故 + 代表性异构）、当期桌面 capability 清单、package/systemd。结果必须是可复现命令、日志或 artifact。
 
@@ -124,21 +124,21 @@ Server current-fact migration 与模块边界、Seat/account/current-credential 
 
 ### Phase 4：Control Channel & Command Runtime
 
-WSS + Bearer token 认证、subprotocol 版本协商、401-before-decode、durable direct-Command dispatcher、Device journal、receipt/status、Observed snapshot（变化 + 低频兜底）、same-ID replay/conflict、retry/reconnect 收敛。Panel-generated UUIDv7 与 `PUT` create/replay contract 已在 Phase 0 冻结；本阶段实现其 WSS/journal execution，并以 `frozen_payload_json` 表达每 Command 的 frozen typed input。本阶段还必须对 ingress hardening 显式定案（[契约](contracts.md) §3.6.5）：header count/size、slow-header timeout 与 connection capacity，或以 hyper HTTP/1 builder limit 自建 accept loop，或记录带部署证据的评审接受结论；该 gap 不得继续无限期携带。
+WSS + Bearer token 认证、subprotocol 版本协商、401-before-decode、按 Converge/Oneshot 二分的 dispatcher、Observed slim snapshot（变化 + 低频兜底）、PUT same-ID replay/conflict。Panel-generated UUIDv7 与 `PUT` create/replay contract 已在 Phase 0 冻结；本阶段实现 WSS 投递，并以 `frozen_payload_json` 表达每 Command 的 frozen typed input。Device **不**维护 command journal；keep-alive 为 WS ping/pong。本阶段还必须对 ingress hardening 显式定案（[契约](contracts.md) §3.6.5）：header count/size、slow-header timeout 与 connection capacity，或以 hyper HTTP/1 builder limit 自建 accept loop，或记录带部署证据的评审接受结论；该 gap 不得继续无限期携带。
 
-**G4 覆盖**：canonical UUIDv7/`201/200/400/409` contract、HTTP/WSS/journal/status/audit 同 ID、frame size/version/unknown enum、token 吊销即断、duplicate delivery 与 crash recovery、same-ID/different-request conflict、stale/conflict 拒绝、断线重连收敛、ErrorCode 跨 transport 一致、ingress hardening 决策项的可定位落地或评审接受证据、缩比容量探针（≥50–100 条模拟 WSS 连接并携 Observed 上报，压到 SQLite 单写者路径；完整 500 台验证仍在 G7）——写路径风险必须在关键路径结束前暴露。
+**G4 覆盖**：canonical UUIDv7/`201/200/400/409` contract、PUT 审计与 WSS 投递、frame size/version/unknown enum、token 吊销即断、Converge 领域键幂等、Oneshot 离线丢弃/不重放、same-ID/different-request conflict、stale `binding_id`/revision 拒绝、ErrorCode 跨 transport 一致、ingress hardening 决策项的可定位落地或评审接受证据、缩比容量探针（≥50–100 条模拟 WSS 连接并携 Observed 上报，压到 SQLite 单写者路径；完整 500 台验证仍在 G7）——写路径风险必须在关键路径结束前暴露。
 
 ### Phase 5：State, Data Plane & Secrets
 
-Target derivation（派生代际）、explicit `SYNC_STATE`、Caddy 配置渲染/validate/reload/LKG 回滚、BLOCKED/READY、fixed TLS upstream、xheaders `/login` 注入（ADR-0034）、explicit `SYNC_SECRET` 与凭据文件/配置重渲染、Drift 与 operator views。
+Target derivation（`SyncState.canonical_hash`，无 `generation`）、explicit `SYNC_STATE`、Caddy 配置渲染/validate/reload/LKG 回滚、BLOCKED/READY、fixed TLS upstream、xheaders `/login` 注入（ADR-0034）、explicit `SYNC_SECRET` 与凭据文件/配置重渲染、Drift 与 operator views。
 
 **G5 覆盖**：两段签发阶梯负向、Caddy validate/reload/rollback、bad cert/key/SAN 拒绝、offline LKG、upstream 非 TLS 拒绝激活、`/login` 之外无注入头、secret stale/retry/redaction、DOMjudge 契约回归、故障注入。
 
 ### Phase 6：Session & Home
 
-package-owned XDG Autostart、resident hidden Session Agent、build-time Slint、local typed D-Bus、logind session validation、singleton/lease、session epoch lock/unlock/terminate、固定 contest user、选定 Home backend（限时定案）、多次重置流程。
+package-owned XDG Autostart、resident hidden Session Agent、build-time Slint、local typed D-Bus、logind session validation、singleton/lease、Oneshot lock/unlock/terminate、固定 contest user、选定 Home backend（限时定案）、`HOME_RESET` 同 epoch 可重入。
 
-**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、epoch race、lock/unlock 的 Caddy 调用数为 0、Home reset/fault/reboot 与连续多次重置。
+**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、stale Agent、Oneshot 离线丢弃、lock/unlock 的 Caddy 调用数为 0、Home 同 epoch 可重入 / RecoverHomeInstance / 不断 daemon WSS。
 
 ### Phase 7：Production Release
 

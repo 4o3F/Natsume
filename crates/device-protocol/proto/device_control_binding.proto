@@ -1,28 +1,33 @@
 syntax = "proto3";
 package natsume.device.control;
 
+// Device-initiated bind. Client → Server on the live Active socket.
+// Not a Command reply: OPEN_BINDING_PROMPT is answered only with CommandStatus.
 message BindingRequest {
-  string request_id = 1;
-  string machine_hardware_id = 2;
-  string seat_code = 3;
-  string prompt_command_id = 4;
-  string session_instance_id = 5;
-  uint64 session_epoch = 6;
-  int64 created_at_unix_ms = 7;
+  // Device-generated correlation for this attempt. Canonical lowercase
+  // hyphenated UUIDv7. Distinct from occupancy Binding.binding_id.
+  string binding_request_id = 1;
+  // Seat natural key (seat code), not Identifier UUID.
+  string seat_code = 2;
 }
 
+// Server outcome of BindingRequest. UNSPECIFIED is the proto3 default trap:
+// reject after decode; never a business state.
 enum BindingResultState {
   BINDING_RESULT_STATE_UNSPECIFIED = 0;
-  BINDING_RESULT_STATE_PENDING = 1;
-  BINDING_RESULT_STATE_APPROVED = 2;
-  BINDING_RESULT_STATE_REJECTED = 3;
-  BINDING_RESULT_STATE_CONFLICT = 4;
-  BINDING_RESULT_STATE_EXPIRED = 5;
+  // Row inserted; occupancy Binding.binding_id is minted on Server.
+  // Device learns it from the following SYNC_STATE / SYNC_SECRET, not this frame.
+  BINDING_RESULT_STATE_APPROVED = 1;
+  // Policy refusal (unknown seat, window closed, ...). See error_code.
+  BINDING_RESULT_STATE_REJECTED = 2;
+  // Unique occupancy clash (seat or device already bound). See error_code.
+  BINDING_RESULT_STATE_CONFLICT = 3;
 }
 
+// Server → Device. Echoes binding_request_id. No occupancy id on this message.
 message BindingResult {
-  string request_id = 1;
+  string binding_request_id = 1;
   BindingResultState state = 2;
-  uint64 binding_revision = 3;
-  string stable_error_code = 4;
+  // ErrorCode registry token. Empty on APPROVED. Not a human-readable message.
+  string error_code = 4;
 }

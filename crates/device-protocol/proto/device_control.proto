@@ -7,60 +7,38 @@ import "device_control_command.proto";
 import "device_control_observed.proto";
 import "device_control_binding.proto";
 
-message ControlEnvelope {
+message ServerHandshakeEnvelope {
   oneof body {
-    ClientHello client_hello = 1;
-    ServerHello server_hello = 2;
-    Heartbeat heartbeat = 3;
-    ObservedStateSnapshot observed_state = 4;
-    Command command = 5;
-    CommandStatus command_status = 6;
-    BindingRequest binding_request = 7;
-    BindingResult binding_result = 8;
-    ServerDrain server_drain = 9;
-    ProtocolError protocol_error = 10;
+    ServerChallenge  server_challenge  = 1;
+    CredentialBundle credential_bundle = 2;
+    SessionReady     session_ready     = 3;
   }
 }
 
 message ClientHandshakeEnvelope {
   oneof body {
-    CredentialAck credential_ack = 1;
-    EnrollmentHeartbeat enrollment_heartbeat = 2;
-  }
-}
-
-message ServerHandshakeEnvelope {
-  oneof body {
-    EnrollmentPending enrollment_pending = 1;
-    CredentialBundle credential_bundle = 2;
-    SessionReady session_ready = 3;
-    ProtocolError protocol_error = 4;
-    ServerDrain server_drain = 5;
+    ClientProof   client_proof   = 1;
+    CredentialAck credential_ack = 2;
   }
 }
 
 message ClientActiveEnvelope {
+  // Echo of SessionReady.session_id; connection-local lease id, not Identifier UUID.
   bytes session_id = 1;
-  int64 authority_revision = 2;
-  uint64 client_sequence = 3;
   oneof body {
-    Heartbeat heartbeat = 10;
-    CommandStatus command_status = 11;
-    ObservedStateSnapshot observed_state = 12;
-    BindingResult binding_result = 13;
-    GatewayRefreshRequest gateway_refresh = 14;
+    CommandStatus         command_status  = 10;
+    ObservedStateSnapshot observed_state  = 11;
+    BindingRequest        binding_request = 12;
   }
 }
 
 message ServerActiveEnvelope {
+  // Echo of SessionReady.session_id; connection-local lease id, not Identifier UUID.
   bytes session_id = 1;
-  int64 authority_revision = 2;
-  uint64 server_sequence = 3;
   oneof body {
-    Command command = 10;
-    BindingRequest binding_request = 11;
-    Heartbeat heartbeat = 12;
+    Command       command        = 10;
+    BindingResult binding_result = 11;
     ProtocolError protocol_error = 13;
-    ServerDrain server_drain = 14;
+    ServerDrain   server_drain   = 14;
   }
 }

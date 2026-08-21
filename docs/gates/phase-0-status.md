@@ -13,7 +13,7 @@ Phase 0 工程基线已关闭。本文件手写追踪 G0 进度。条目通过�
 | 1 | 工具链与单一 lockfile 可重现（clean checkout） | `PASS` |
 | 2 | 真实 CI：Rust/Web/契约 clean diff/policy scan/package smoke | `PASS` |
 | 3 | SNAFU + stable ErrorCode 边界与 redaction tests | `PASS`（HTTP/Protobuf 两向映射 + redaction 全套已实证；D-Bus/CommandStatus 按 owner 2026-08-16 裁定以契约级声明满足 Phase 0，可执行 adapter 归 Phase 4/6） |
-| 4 | 契约骨架重定向 v2.8：current-fact SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/journal/UI 完成 | `PASS` |
+| 4 | 契约骨架重定向 v2.8：current-fact SQL（无 freeze 或未消费 workflow history）、窗口门禁 Enrollment、Panel UUIDv7 `PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 声明、`request_fingerprint_*`/`frozen_payload_json`、WSS envelope、Observed/CommandStatus、D-Bus、golden clean diff；不以此声明 handler/dispatcher/UI 完成 | `PASS` |
 | 5 | QUIC/framing/mTLS 骨架与测试残留清除（`crates/device-protocol` framing、CI 断言同步） | `PASS` |
 | 6 | Server/Client 空 Deb 构建+安装+权限/preseed 验证 | `PASS` |
 | 7 | 目标环境：IP-SAN/endpoint 与单 TCP 端口验证 | `PASS`（owner 豁免 WSL 规则对本条的适用，2026-08-15；见已执行记录与[支持平台](../supported-platform.md) §4.2） |

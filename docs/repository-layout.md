@@ -7,7 +7,7 @@
 
 Batch 0 private listener 仍由 `integration-tests/tests/ordinary_wss_ed25519_feasibility.rs` 及其同名子目录拥有，production crate 不得 import其 fixed codec。
 
-`device-protocol` 已按预发布 breaking change 原位拥有六文件单一 `natsume.device.control` package、current `ControlEnvelope`、dormant direction/handshake messages、ControlKeyId、proof transcript 与 Prost typed ClientInit canonicalizer；不存在 `control_v2`、第二 descriptor 或兼容 generated module。Daemon `control` 已拥有 dormant PKCS#8 key/manifest foundation但不把它接入网络；后续 `http/device_control` 拥有 PreAuth transport，`application/device/control` 拥有动态 registry/actor/lease，`db/device` 维持单表 adapter。
+`device-protocol` 已按预发布 breaking change 原位拥有六文件单一 `natsume.device.control` package、定向 handshake/Active envelopes（Server Challenge|Bundle|SessionReady；Client Proof|Ack）、proof transcript 与 Prost typed ClientProof canonicalizer；**无 ControlKeyId**（Server natural key 是 `public_key`，daemon manifest pins hex(public_key)）。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。不存在 `control_v2`、第二 descriptor 或兼容 generated module。Daemon `control` 已拥有 dormant PKCS#8 key/manifest foundation但不把它接入网络；后续 `http/device_control` 拥有 PreAuth transport，`application/device/control` 拥有动态 registry/actor/lease，`db/device` 维持单表 adapter。
 
 新 Rust 子模块继续使用 `parent.rs + parent/child.rs`，禁止 `mod.rs`。不得创建第二个 production registry、route、proto package 或 daemon connection loop；Server/daemon 同样不得增加 ProcessLock/flock/pidfile，数据库写入不得外包 Semaphore/Mutex/permit。
 
@@ -57,7 +57,7 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 
 | Crate | 责任 | 典型消费者 |
 |---|---|---|
-| `device-protocol` | Split Protobuf binary-message contract、envelope value、ControlKeyId、proof transcript 与 Prost typed ClientInit canonicalizer | Server、Device Daemon、integration tests |
+| `device-protocol` | Split Protobuf binary-message contract、定向 envelope value、Ed25519 `public_key` identity、proof transcript 与 Prost typed ClientProof canonicalizer | Server、Device Daemon、integration tests |
 | `error-code` | 公开稳定错误码和值 | Server、Device、Agent/API adapters |
 | `local-control-api` | D-Bus/local IPC value types | Device Daemon、Helper、Agent |
 | `machine-identity` | 纯候选规范化、质量与 UUID 派生 | Device Daemon、Helper/tests |
@@ -69,7 +69,7 @@ workspace 成员：`server/`、`client/device-daemon/`、`client/privileged-help
 每个有业务逻辑的进程应分离 transport / application / domain / port / adapter 层（见 [架构 §6](architecture.md)）。各进程的内部模块仅给出目标边界；具体 `src/` 结构在对应 Phase 实现时确定。
 
 - **Server（`natsume-server`，composition root）**：实现按层组织（`server/src/application/`、`server/src/db/`、`server/src/http/`、`server/src/audit/`），领域是第二维。最终 Device seam 为 `application/device/{lifecycle,query,credentials,enrollment}`、`db/device/{devices,tokens,certificates,query,enrollment}`、`http/handler/device/{lifecycle,query,enrollment}` 与 `audit/device/{lifecycle,enrollment}`；Device lifecycle、Token、Gateway certificate 终态和 Enrollment request workflow 均由 `device` 拥有，provisioning 窗口由 `provisioning` 拥有。Seat、Account 与当前 Seat↔Device Binding 保留在 `contest`，Binding 不因引用 Device ID 而迁入 Device；WSS transport 仍由 `http/device_control` 承担。各模块只通过明确 port 交互；**不得直接跨表写入或把 framework 类型泄漏到 domain。** 当前不变量：application 与 db 严格单向——db 依赖 application，application 只调用签名中仅出现 application 类型的 db 函数；**db 的 persisted-fact 类型与 store error enum 对 `db` 私有**，所以向上引用是编译错误而不是评审意见。
-- **Device Daemon（`natsume-device-daemon`）**：分离 identity startup、enrollment、control（WSS）、command runtime、target apply、caddy render/activation、session、home、observed、credentials、journal。**WSS handler 不直接操作凭据文件、journal、Caddy 或 D-Bus**；module 间传递 value object，不传递 transport request 或全局 mutable context；`identity_startup` 在其他 identity-bound adapter 初始化前运行。
+- **Device Daemon（`natsume-device-daemon`）**：分离 identity startup、enrollment、control（WSS）、command runtime、target apply、caddy render/activation、session、home、observed、credentials。**不**维护 Device command journal。**WSS handler 不直接操作凭据文件、Caddy 或 D-Bus**；module 间传递 value object，不传递 transport request 或全局 mutable context；`identity_startup` 在其他 identity-bound adapter 初始化前运行。
 - **Privileged Helper**：每个 capability 独立可审计（hardware sources、home backend、login session、filesystem policy）。**禁止 `execute(request)` 或 `run_action(name, args)` 一类通用入口**；path/UID 由固定 policy 重新派生，Device Daemon 传入值只作受限 ID。
 - **Session Agent（`natsume-session-agent`）**：分离 platform（logind/session/singleton/desktop）、local_api、presentation、ui。**不得引入 Server client、vault、PKI、Caddy 或 privileged D-Bus client**；由系统级 XDG Autostart 直接启动。
 - **Web（operator Web Panel）**：feature-oriented（api/generated、auth、preparation、devices、bindings、commands、audit、shared/ui）。**Web 只依赖生成 API 和自己的 view model，不复制 Rust domain enum 后自行演进**；`shared/ui` 只含无业务语义的视觉组件。
