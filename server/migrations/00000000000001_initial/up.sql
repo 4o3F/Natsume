@@ -8,51 +8,74 @@ CREATE TABLE site_identity (
     fleet_namespace_uuid TEXT NOT NULL UNIQUE
 ) STRICT;
 
+-- Current contest Seat identities. Rename is REMOVED+ADDED, not an in-place code change.
 CREATE TABLE seats (
+    -- Canonical lowercase UUIDv7 surrogate. Stable while this Seat row exists.
     seat_id TEXT PRIMARY KEY,
+    -- Venue-facing label (e.g. A-01). Unique in the current configuration; Import may replace the row.
     seat_code TEXT NOT NULL UNIQUE
 ) STRICT;
 
+-- One workstation. Hardware ID is unique; this row is the durable Device identity.
 CREATE TABLE devices (
-    device_pk TEXT PRIMARY KEY,
+    -- Canonical lowercase UUIDv7 surrogate. Not derived from hardware.
+    device_id TEXT PRIMARY KEY,
+    -- Derived Machine Hardware ID (ADR-0032). Unique; not an authenticator.
     machine_hardware_id TEXT NOT NULL UNIQUE,
+    -- Quality of the derivation evidence: strong | medium | weak.
     hardware_identity_quality TEXT NOT NULL
         CHECK (hardware_identity_quality IN ('strong', 'medium', 'weak')),
-    state TEXT NOT NULL CHECK (state IN ('enrolled', 'revoked', 'disabled')),
-    control_authority_revision INTEGER
-        CHECK (control_authority_revision IS NULL OR control_authority_revision >= 1)
+    -- enrolled | revoked | disabled. WSS/control authority requires enrolled.
+    state TEXT NOT NULL CHECK (state IN ('enrolled', 'revoked', 'disabled'))
 ) STRICT;
-CREATE UNIQUE INDEX device_pk_machine_hardware_identity
-    ON devices(device_pk, machine_hardware_id);
 
+-- Append-only redacted evidence. Event-specific facts live in redacted_detail_json, not extra columns.
 CREATE TABLE audit_events (
+    -- Canonical lowercase UUIDv7. Fresh id may be an input to the guarded operation; stored ids cannot be replayed.
     audit_event_id TEXT PRIMARY KEY,
-    occurred_at TEXT NOT NULL,
+    -- UTC epoch milliseconds of the mutation.
+    occurred_at_unix_ms INTEGER NOT NULL,
+    -- Operator id or system actor (system:recovery, system:password-reset). Not a Device.
     actor TEXT NOT NULL,
+    -- Closed action vocabulary (see contracts audit registry).
     action_kind TEXT NOT NULL,
+    -- Affected resource class (device, import, command, ...).
     resource_type TEXT NOT NULL,
+    -- Optional canonical id of that resource. No FK: parent table depends on resource_type.
     resource_id TEXT,
+    -- succeeded | rejected | failed | noop.
     result TEXT NOT NULL CHECK (result IN ('succeeded', 'rejected', 'failed', 'noop')),
+    -- Optional registered reason for rejected/noop. Empty/NULL when not applicable.
     reason_code TEXT,
+    -- Per-request correlation UUIDv7. Always present.
     correlation_id TEXT NOT NULL,
+    -- Optional bulk grouping UUIDv7 (batch Command). Not ordering or lifecycle.
     group_correlation_id TEXT,
+    -- Typed redacted object: counts, binding_id, revisions. Never secrets or raw CSV.
     redacted_detail_json TEXT NOT NULL
         CHECK (json_valid(redacted_detail_json) AND json_type(redacted_detail_json) = 'object')
 ) STRICT;
+
+-- Control-plane human operators. Not contest DOMjudge accounts.
 CREATE TABLE operator_accounts (
+    -- Canonical lowercase UUIDv7 surrogate.
     operator_id TEXT PRIMARY KEY,
-    login_name TEXT NOT NULL UNIQUE,
+    -- Login handle typed at the panel. Unique. Not a contest account username.
+    username TEXT NOT NULL UNIQUE,
+    -- Closed role: admin | viewer. Not a permission bitset.
     role TEXT NOT NULL CHECK (role IN ('admin', 'viewer')),
+    -- Password hash with work factor. Plaintext never stored.
     password_hash TEXT NOT NULL
 ) STRICT;
 
+-- Opaque operator sessions. Logout and password reset delete rows; no sliding renewal.
 CREATE TABLE operator_sessions (
+    -- SHA-256 of the cookie secret. The secret itself is never stored.
     session_credential_hash BLOB PRIMARY KEY CHECK (length(session_credential_hash) = 32),
+    -- Owning operator. Password reset deletes every row for this id.
     operator_id TEXT NOT NULL REFERENCES operator_accounts(operator_id),
-    expires_at TEXT NOT NULL CHECK (
-        strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) IS NOT NULL
-        AND expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', expires_at)
-    )
+    -- Absolute UTC epoch-ms expiry. No last-activity column, no sliding TTL.
+    expires_at_unix_ms INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE accounts (
@@ -74,81 +97,57 @@ CREATE TABLE server_vault_records (
     ciphertext BLOB NOT NULL CHECK (length(ciphertext) > 0)
 ) STRICT;
 
+-- Current Seat→Account mapping. No row means the Seat currently has no Account.
 CREATE TABLE account_mappings (
+    -- One Account per Seat. Seat deletion must remove this row in the same Import transaction.
     seat_id TEXT PRIMARY KEY REFERENCES seats(seat_id),
+    -- One Seat per Account.
     account_id TEXT NOT NULL UNIQUE REFERENCES accounts(account_id)
 ) STRICT;
 
+-- Current Seat↔Device occupancy. Unbind deletes the row; a later bind mints a new binding_id.
 CREATE TABLE device_bindings (
+    -- One Device per Seat.
     seat_id TEXT PRIMARY KEY REFERENCES seats(seat_id),
-    device_pk TEXT NOT NULL UNIQUE REFERENCES devices(device_pk),
-    binding_revision INTEGER NOT NULL CHECK (binding_revision > 0)
+    -- One Seat per Device.
+    device_id TEXT NOT NULL UNIQUE REFERENCES devices(device_id),
+    -- Canonical lowercase UUIDv7 occupancy stamp. Fresh on every bind; not derived from seats.
+    -- Frozen into SYNC_SECRET / Target; old commands fail if this id changed or the row is gone.
+    binding_id TEXT NOT NULL UNIQUE
 ) STRICT;
 
+-- Latest Device-reported snapshot. One row per Device; not a history table.
+-- Wire fields plus Server receive-time. Empty proto bytes/strings map to NULL here.
 CREATE TABLE observed_device_states (
-    device_pk TEXT PRIMARY KEY REFERENCES devices(device_pk),
-    observed_sequence INTEGER NOT NULL CHECK (observed_sequence >= 0),
-    boot_id TEXT NOT NULL,
-    received_generation INTEGER NOT NULL CHECK (received_generation >= 0),
-    applied_generation INTEGER NOT NULL CHECK (applied_generation >= 0),
+    -- Owning Device. One current snapshot.
+    device_id TEXT PRIMARY KEY REFERENCES devices(device_id),
+    -- SHA-256 of the last successfully applied SyncState assignment; same 32 bytes
+    -- as SyncState.canonical_hash. NULL until first successful apply.
     applied_hash BLOB CHECK (applied_hash IS NULL OR length(applied_hash) = 32),
-    state_apply_status TEXT NOT NULL CHECK (state_apply_status IN (
-        'idle', 'received', 'validating', 'applying', 'applied', 'failed', 'recovery_required'
-    )),
-    state_error_code TEXT,
-    installed_binding_revision INTEGER CHECK (
-        installed_binding_revision IS NULL OR installed_binding_revision >= 0
-    ),
+    -- Occupancy stamp last installed on Device; canonical lowercase hyphenated UUIDv7.
+    -- NULL = never installed.
+    installed_binding_id TEXT,
+    -- accounts.credential_revision last written by SYNC_SECRET. NULL = never installed.
     installed_credential_revision INTEGER CHECK (
         installed_credential_revision IS NULL OR installed_credential_revision >= 0
     ),
-    secret_state TEXT NOT NULL
-        CHECK (secret_state IN ('absent', 'installed', 'stale', 'failed')),
+    -- Local DOMjudge password file: absent | installed | failed.
+    -- Freshness is installed_credential_revision vs accounts.credential_revision, not a stale variant.
+    credential_state TEXT NOT NULL CHECK (credential_state IN ('absent', 'installed', 'failed')),
+    -- Caddy data plane: absent | blocked | restoring | ready | upstream_unhealthy | recovery_required.
     gateway_state TEXT NOT NULL CHECK (gateway_state IN (
         'absent', 'blocked', 'restoring', 'ready', 'upstream_unhealthy', 'recovery_required'
     )),
-    gateway_configuration_revision INTEGER CHECK (
-        gateway_configuration_revision IS NULL OR gateway_configuration_revision >= 0
-    ),
+    -- SHA-256 of the raw SPKI DER of the Gateway cert Caddy is actually using. NULL if none.
     gateway_certificate_fingerprint BLOB CHECK (
         gateway_certificate_fingerprint IS NULL OR length(gateway_certificate_fingerprint) = 32
     ),
-    gateway_certificate_not_after TEXT,
+    -- none | starting | active | locked | terminating | error.
     session_state TEXT NOT NULL CHECK (session_state IN (
         'none', 'starting', 'active', 'locked', 'terminating', 'error'
     )),
-    session_instance_id TEXT,
-    session_epoch INTEGER CHECK (session_epoch IS NULL OR session_epoch >= 0),
-    session_lock_state TEXT CHECK (
-        session_lock_state IS NULL OR session_lock_state IN (
-            'none', 'locking', 'locked', 'unlocking', 'unlocked', 'terminating', 'error'
-        )
-    ),
-    session_lock_epoch INTEGER CHECK (session_lock_epoch IS NULL OR session_lock_epoch >= 0),
-    active_lock_command_id TEXT,
-    session_agent_state TEXT NOT NULL DEFAULT 'absent'
-        CHECK (session_agent_state IN ('absent', 'starting', 'ready', 'degraded', 'error')),
-    graphical_session_type TEXT
-        CHECK (graphical_session_type IS NULL OR graphical_session_type IN ('wayland', 'x11')),
-    display_backend TEXT
-        CHECK (display_backend IS NULL OR display_backend IN ('wayland', 'x11')),
-    ui_presentation_state TEXT NOT NULL DEFAULT 'hidden'
-        CHECK (ui_presentation_state IN (
-            'hidden', 'presenting', 'presented_focused', 'presented_unfocused', 'unsupported', 'failed'
-        )),
-    session_screen_kind TEXT NOT NULL DEFAULT 'hidden'
-        CHECK (session_screen_kind IN (
-            'hidden', 'idle_status', 'binding_prompt', 'binding_pending', 'binding_result',
-            'recovery_status', 'lock_presentation', 'fatal_local_error'
-        )),
-    notifications_available INTEGER NOT NULL DEFAULT 0 CHECK (notifications_available IN (0, 1)),
-    desktop_lock_supported INTEGER NOT NULL DEFAULT 0 CHECK (desktop_lock_supported IN (0, 1)),
-    desktop_unlock_supported INTEGER NOT NULL DEFAULT 0 CHECK (desktop_unlock_supported IN (0, 1)),
-    session_agent_error_code TEXT,
-    home_state TEXT NOT NULL CHECK (home_state IN (
-        'unmounted', 'ready', 'resetting', 'recovery_required', 'error'
-    )),
-    observed_at TEXT NOT NULL
+    -- Server receive-time UTC epoch-ms. Not a Device-authored field.
+    observed_at_unix_ms INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE provisioning_window (
@@ -177,14 +176,14 @@ CREATE TABLE enrollment_requests (
         'pending_approval', 'awaiting_credential_ack', 'active'
     )),
     resolution TEXT CHECK (resolution IN ('create_device', 'replace_device_credentials')),
-    resolved_device_pk TEXT REFERENCES devices(device_pk),
+    resolved_device_id TEXT REFERENCES devices(device_id),
     issuance_audit_event_id TEXT UNIQUE REFERENCES audit_events(audit_event_id),
-    created_at TEXT NOT NULL,
+    created_at_unix_ms INTEGER NOT NULL,
     control_intent TEXT CHECK (
         control_intent IS NULL
         OR control_intent IN ('first', 'replace', 'recover', 'refresh')
     ),
-    proposed_device_pk TEXT,
+    proposed_device_id TEXT,
     proposed_control_key_id BLOB
         CHECK (proposed_control_key_id IS NULL OR length(proposed_control_key_id) = 32),
     proposed_control_public_key BLOB
@@ -203,13 +202,13 @@ CREATE TABLE enrollment_requests (
         expected_active_control_key_id IS NULL
         OR length(expected_active_control_key_id) = 32
     ),
-    activation_deadline TEXT,
+    activation_deadline_unix_ms INTEGER,
     approval_audit_event_id TEXT UNIQUE REFERENCES audit_events(audit_event_id),
     CHECK (
         state != 'issued'
         OR (
             resolution IS NOT NULL
-            AND resolved_device_pk IS NOT NULL
+            AND resolved_device_id IS NOT NULL
             AND issuance_audit_event_id IS NOT NULL
         )
     ),
@@ -248,9 +247,7 @@ CREATE TABLE enrollment_requests (
             request_fingerprint_version IS NOT NULL
             AND request_fingerprint_sha256 IS NOT NULL
         )
-    ),
-    FOREIGN KEY (resolved_device_pk, machine_hardware_id)
-        REFERENCES devices(device_pk, machine_hardware_id)
+    )
 ) STRICT;
 CREATE UNIQUE INDEX one_live_enrollment_per_machine_and_gateway_spki
     ON enrollment_requests(machine_hardware_id, gateway_spki_sha256)
@@ -260,15 +257,15 @@ CREATE UNIQUE INDEX one_live_control_enrollment_per_machine
     WHERE state IN ('pending_approval', 'awaiting_credential_ack')
         AND control_intent IS NOT NULL;
 CREATE UNIQUE INDEX one_live_control_enrollment_per_resolved_device
-    ON enrollment_requests(resolved_device_pk)
-    WHERE resolved_device_pk IS NOT NULL
+    ON enrollment_requests(resolved_device_id)
+    WHERE resolved_device_id IS NOT NULL
         AND state IN ('pending_approval', 'awaiting_credential_ack')
         AND control_intent IS NOT NULL;
 
 CREATE TABLE device_control_keys (
     public_key BLOB PRIMARY KEY NOT NULL UNIQUE CHECK (length(public_key) = 32),
     algorithm TEXT NOT NULL CHECK (algorithm = 'ed25519'),
-    device_pk TEXT NOT NULL REFERENCES devices(device_pk),
+    device_id TEXT NOT NULL REFERENCES devices(device_id),
     key_generation INTEGER NOT NULL CHECK (key_generation >= 1),
     status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'revoked')),
     originating_enrollment_request_id TEXT NOT NULL
@@ -278,7 +275,7 @@ CREATE TABLE device_control_keys (
     activated_revision INTEGER NOT NULL CHECK (activated_revision >= 1),
     retired_revision INTEGER
         CHECK (retired_revision IS NULL OR retired_revision >= activated_revision),
-    UNIQUE(device_pk, key_generation),
+    UNIQUE(device_id, key_generation),
     CHECK (
         (
             status = 'active'
@@ -293,38 +290,38 @@ CREATE TABLE device_control_keys (
     )
 ) STRICT;
 CREATE UNIQUE INDEX one_active_device_control_key
-    ON device_control_keys(device_pk)
+    ON device_control_keys(device_id)
     WHERE status = 'active';
 
 CREATE TABLE credential_bundles (
     issuance_id TEXT PRIMARY KEY,
     enrollment_request_id TEXT NOT NULL UNIQUE
         REFERENCES enrollment_requests(enrollment_request_id),
-    device_pk TEXT,
+    device_id TEXT,
     format_version INTEGER NOT NULL CHECK (format_version >= 1),
     canonical_bundle_bytes BLOB NOT NULL CHECK (length(canonical_bundle_bytes) > 0),
     bundle_sha256 BLOB NOT NULL CHECK (length(bundle_sha256) = 32),
-    activation_deadline TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    activation_deadline_unix_ms INTEGER NOT NULL,
+    created_at_unix_ms INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE device_tokens (
-    device_pk TEXT PRIMARY KEY REFERENCES devices(device_pk),
+    device_id TEXT PRIMARY KEY REFERENCES devices(device_id),
     enrollment_request_id TEXT NOT NULL UNIQUE REFERENCES enrollment_requests(enrollment_request_id),
     token_hash BLOB NOT NULL UNIQUE CHECK (length(token_hash) = 32)
 ) STRICT;
 
 CREATE TABLE gateway_certificates (
     certificate_id TEXT PRIMARY KEY,
-    device_pk TEXT NOT NULL REFERENCES devices(device_pk),
+    device_id TEXT NOT NULL REFERENCES devices(device_id),
     enrollment_request_id TEXT NOT NULL UNIQUE REFERENCES enrollment_requests(enrollment_request_id),
     serial TEXT NOT NULL UNIQUE,
     spki_sha256 BLOB NOT NULL CHECK (length(spki_sha256) = 32),
-    not_after TEXT NOT NULL,
+    not_after_unix_ms INTEGER NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('active', 'revoked', 'expired', 'retired'))
 ) STRICT;
 CREATE UNIQUE INDEX one_active_gateway_certificate
-    ON gateway_certificates(device_pk)
+    ON gateway_certificates(device_id)
     WHERE status = 'active';
 
 -- Singleton non-secret import draft. Passwords are not persisted between preview and commit.
@@ -333,7 +330,8 @@ CREATE TABLE pending_import_candidate (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     -- Canonical lowercase UUIDv7 for this candidate.
     candidate_id TEXT NOT NULL UNIQUE,
-    expires_at TEXT NOT NULL,
+    -- Absolute UTC epoch-ms expiry of this pending draft.
+    expires_at_unix_ms INTEGER NOT NULL,
     -- SHA-256 of the opaque preview token; token itself is not stored.
     preview_token_hash BLOB NOT NULL UNIQUE CHECK (length(preview_token_hash) = 32),
     -- Version of the non-secret seat+account fingerprint algorithm.
@@ -347,7 +345,7 @@ CREATE TABLE pending_import_candidate (
 
 CREATE TABLE commands (
     command_id TEXT PRIMARY KEY,
-    device_pk TEXT NOT NULL REFERENCES devices(device_pk),
+    device_id TEXT NOT NULL REFERENCES devices(device_id),
     kind TEXT NOT NULL CHECK (kind IN (
         'sync_state', 'sync_secret', 'open_binding_prompt', 'lock_session',
         'unlock_session', 'terminate_session', 'reset_home'
@@ -362,8 +360,8 @@ CREATE TABLE commands (
     payload_version INTEGER NOT NULL CHECK (payload_version >= 1),
     frozen_payload_json TEXT NOT NULL
         CHECK (json_valid(frozen_payload_json) AND json_type(frozen_payload_json) = 'object'),
-    created_at TEXT NOT NULL,
-    deadline_at TEXT,
+    created_at_unix_ms INTEGER NOT NULL,
+    deadline_at_unix_ms INTEGER,
     terminal_error_code TEXT,
     redacted_terminal_result_json TEXT
         CHECK (
@@ -375,7 +373,7 @@ CREATE TABLE commands (
         ),
     created_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id)
 ) STRICT;
-CREATE INDEX commands_device_pk_state_index ON commands(device_pk, state);
+CREATE INDEX commands_device_id_state_index ON commands(device_id, state);
 
 INSERT INTO provisioning_window(singleton, state, revision, last_audit_event_id)
 VALUES (1, 'closed', 0, NULL);

@@ -127,7 +127,7 @@ Target 是根据已提交 Server truth 为某台 Device 计算的**非秘密**�
 
 ## 8. DeviceObserved
 
-Observed snapshot 是 Device 对自身实际状态的 slim typed 报告。字段：`applied_hash`、`installed_binding_id`（可空 UUIDv7 字符串；NULL = 从未安装 Binding）、`installed_credential_revision`、`credential_state`（无 `STALE`）、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。**不得**在 Observed 上回传 `secret_state`、`session_instance_id`、`active_lock_command_id`、`boot_id`、`observed_sequence`、`received_generation`、`apply_status`、session_agent blob 或 `home_state`。物理 current row 仍按 `device_id` 唯一。**Observed 不得携带秘密；Device 自报的属性不构成授权。** Observed 可能陈旧；Server 保留接收时间和 freshness 语义，不得用单个 `READY` 覆盖全部维度。上报节奏为变化时上报 + 低频周期兜底。
+Observed snapshot 是 Device 对自身实际状态的 slim typed 报告。字段：`applied_hash`、`installed_binding_id`（可空 UUIDv7 字符串；NULL = 从未安装 Binding）、`installed_credential_revision`、`credential_state`（无 `STALE`）、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。**不得**在 Observed 上回传 `secret_state`、`session_instance_id`、`active_lock_command_id`、`boot_id`、`observed_sequence`、`received_generation`、`apply_status`、session_agent blob 或 `home_state`。物理 current row 即上述字段加 `observed_at_unix_ms`（Server 收包时间），按 `device_id` 唯一。**Observed 不得携带秘密；Device 自报的属性不构成授权。** Observed 可能陈旧；Server 保留接收时间和 freshness 语义，不得用单个 `READY` 覆盖全部维度。上报节奏为变化时上报 + 低频周期兜底。
 
 ## 9. Drift
 

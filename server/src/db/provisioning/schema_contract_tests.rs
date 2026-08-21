@@ -428,38 +428,15 @@ const EXPECTED_COLUMNS: &[(&str, &[&str])] = &[
     (
         "observed_device_states",
         &[
-            "device_pk",
-            "observed_sequence",
-            "boot_id",
-            "received_generation",
-            "applied_generation",
+            "device_id",
             "applied_hash",
-            "state_apply_status",
-            "state_error_code",
-            "installed_binding_revision",
+            "installed_binding_id",
             "installed_credential_revision",
-            "secret_state",
+            "credential_state",
             "gateway_state",
-            "gateway_configuration_revision",
             "gateway_certificate_fingerprint",
-            "gateway_certificate_not_after",
             "session_state",
-            "session_instance_id",
-            "session_epoch",
-            "session_lock_state",
-            "session_lock_epoch",
-            "active_lock_command_id",
-            "session_agent_state",
-            "graphical_session_type",
-            "display_backend",
-            "ui_presentation_state",
-            "session_screen_kind",
-            "notifications_available",
-            "desktop_lock_supported",
-            "desktop_unlock_supported",
-            "session_agent_error_code",
-            "home_state",
-            "observed_at",
+            "observed_at_unix_ms",
         ],
     ),
     (
@@ -579,7 +556,7 @@ fn expected_foreign_keys() -> ForeignKeyContracts {
         ),
         (
             "observed_device_states",
-            vec![("device_pk", "devices", "device_pk")],
+            vec![("device_id", "devices", "device_id")],
         ),
         (
             "operator_sessions",
@@ -711,10 +688,7 @@ fn seed_constraint_prerequisites(database: &TestDatabase) {
           '192.0.2.1', 'pending', NULL, NULL, NULL, \
           '2026-01-01T00:00:00.000Z')",
         "INSERT INTO observed_device_states VALUES \
-         ('device-1', 1, 'boot-1', 1, 1, NULL, 'applied', NULL, NULL, NULL, \
-          'installed', 'ready', NULL, NULL, NULL, 'active', NULL, NULL, NULL, NULL, NULL, \
-          'absent', NULL, NULL, 'hidden', 'hidden', 0, 0, 0, NULL, 'ready', \
-          '2026-01-01T00:00:00.000Z')",
+         ('device-1', NULL, NULL, NULL, 'absent', 'absent', NULL, 'none', 0)",
     ];
     let mut connection = database.observer();
     for statement in statements {
@@ -859,44 +833,34 @@ fn assert_command_state_domain(database: &TestDatabase) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn assert_observed_enum_insert_rejected(
     database: &TestDatabase,
-    device_pk: &str,
-    state_apply_status: &str,
-    secret_state: &str,
+    device_id: &str,
+    credential_state: &str,
     gateway_state: &str,
     session_state: &str,
-    session_lock_state: &str,
-    home_state: &str,
     contract: &'static str,
 ) {
     let mut connection = database.observer();
-    let hardware_id = format!("hardware-{device_pk}");
+    let hardware_id = format!("hardware-{device_id}");
     require_ok(
         diesel::sql_query(
-            "INSERT INTO devices (device_pk, machine_hardware_id, \
+            "INSERT INTO devices (device_id, machine_hardware_id, \
          hardware_identity_quality, state) VALUES (?, ?, 'strong', 'enrolled')",
         )
-        .bind::<Text, _>(device_pk)
+        .bind::<Text, _>(device_id)
         .bind::<Text, _>(&hardware_id)
         .execute(&mut connection),
         "observed enum prerequisite device must insert",
     );
     let result = diesel::sql_query(
-        "INSERT INTO observed_device_states (device_pk, observed_sequence, boot_id, \
-         received_generation, applied_generation, state_apply_status, secret_state, \
-         gateway_state, session_state, session_lock_state, home_state, observed_at) \
-         VALUES (?, 1, 'boot-invalid-enum', 1, 1, ?, ?, ?, ?, ?, ?, \
-         '2026-01-01T00:00:00.000Z')",
+        "INSERT INTO observed_device_states (device_id, credential_state, gateway_state, \
+         session_state, observed_at_unix_ms) VALUES (?, ?, ?, ?, 0)",
     )
-    .bind::<Text, _>(device_pk)
-    .bind::<Text, _>(state_apply_status)
-    .bind::<Text, _>(secret_state)
+    .bind::<Text, _>(device_id)
+    .bind::<Text, _>(credential_state)
     .bind::<Text, _>(gateway_state)
     .bind::<Text, _>(session_state)
-    .bind::<Text, _>(session_lock_state)
-    .bind::<Text, _>(home_state)
     .execute(&mut connection);
     assert!(
         result.is_err(),
@@ -907,99 +871,35 @@ fn assert_observed_enum_insert_rejected(
 fn assert_observed_closed_enums(database: &TestDatabase) {
     assert_observed_enum_insert_rejected(
         database,
-        "bad-state-apply-status",
+        "bad-credential-state",
         "unknown",
-        "installed",
         "ready",
         "active",
-        "none",
-        "ready",
-        "observed_device_states.state_apply_status",
+        "observed_device_states.credential_state",
     );
     assert_observed_enum_insert_rejected(
         database,
-        "bad-secret-state",
-        "applied",
-        "unknown",
+        "bad-credential-stale",
+        "stale",
         "ready",
         "active",
-        "none",
-        "ready",
-        "observed_device_states.secret_state",
+        "observed_device_states.credential_state",
     );
     assert_observed_enum_insert_rejected(
         database,
         "bad-gateway-state",
-        "applied",
         "installed",
         "unknown",
         "active",
-        "none",
-        "ready",
         "observed_device_states.gateway_state",
     );
     assert_observed_enum_insert_rejected(
         database,
         "bad-session-state",
-        "applied",
         "installed",
         "ready",
         "unknown",
-        "none",
-        "ready",
         "observed_device_states.session_state",
-    );
-    assert_observed_enum_insert_rejected(
-        database,
-        "bad-session-lock-state",
-        "applied",
-        "installed",
-        "ready",
-        "active",
-        "unknown",
-        "ready",
-        "observed_device_states.session_lock_state",
-    );
-    assert_observed_enum_insert_rejected(
-        database,
-        "bad-home-state",
-        "applied",
-        "installed",
-        "ready",
-        "active",
-        "none",
-        "unknown",
-        "observed_device_states.home_state",
-    );
-    assert_rejected(
-        database,
-        "UPDATE observed_device_states SET session_agent_state = 'unknown' \
-         WHERE device_pk = 'device-1'",
-        "observed_device_states.session_agent_state",
-    );
-    assert_rejected(
-        database,
-        "UPDATE observed_device_states SET graphical_session_type = 'unknown' \
-         WHERE device_pk = 'device-1'",
-        "observed_device_states.graphical_session_type",
-    );
-    assert_rejected(
-        database,
-        "UPDATE observed_device_states SET display_backend = 'unknown' \
-         WHERE device_pk = 'device-1'",
-        "observed_device_states.display_backend",
-    );
-    assert_rejected(
-        database,
-        "UPDATE observed_device_states SET ui_presentation_state = 'unknown' \
-         WHERE device_pk = 'device-1'",
-        "observed_device_states.ui_presentation_state",
-    );
-    assert_rejected(
-        database,
-        "UPDATE observed_device_states SET session_screen_kind = 'unknown' \
-         WHERE device_pk = 'device-1'",
-        "observed_device_states.session_screen_kind",
     );
 }
 
@@ -1055,13 +955,13 @@ fn assert_binary_and_json_domains(database: &TestDatabase) {
     assert_rejected(
         database,
         "UPDATE observed_device_states SET applied_hash = zeroblob(31) \
-         WHERE device_pk = 'device-1'",
+         WHERE device_id = 'device-1'",
         "observed_device_states.applied_hash",
     );
     assert_rejected(
         database,
         "UPDATE observed_device_states SET gateway_certificate_fingerprint = zeroblob(31) \
-         WHERE device_pk = 'device-1'",
+         WHERE device_id = 'device-1'",
         "observed_device_states.gateway_certificate_fingerprint",
     );
     assert_rejected(
@@ -1231,61 +1131,12 @@ fn assert_nonempty_and_version_domains(database: &TestDatabase) {
 }
 
 fn assert_observed_numeric_and_boolean_domains(database: &TestDatabase) {
-    let checks = [
-        (
-            "UPDATE observed_device_states SET observed_sequence = -1 WHERE device_pk = 'device-1'",
-            "observed_device_states.observed_sequence",
-        ),
-        (
-            "UPDATE observed_device_states SET received_generation = -1 WHERE device_pk = 'device-1'",
-            "observed_device_states.received_generation",
-        ),
-        (
-            "UPDATE observed_device_states SET applied_generation = -1 WHERE device_pk = 'device-1'",
-            "observed_device_states.applied_generation",
-        ),
-        (
-            "UPDATE observed_device_states SET installed_binding_revision = -1 \
-             WHERE device_pk = 'device-1'",
-            "observed_device_states.installed_binding_revision",
-        ),
-        (
-            "UPDATE observed_device_states SET installed_credential_revision = -1 \
-             WHERE device_pk = 'device-1'",
-            "observed_device_states.installed_credential_revision",
-        ),
-        (
-            "UPDATE observed_device_states SET gateway_configuration_revision = -1 \
-             WHERE device_pk = 'device-1'",
-            "observed_device_states.gateway_configuration_revision",
-        ),
-        (
-            "UPDATE observed_device_states SET session_epoch = -1 WHERE device_pk = 'device-1'",
-            "observed_device_states.session_epoch",
-        ),
-        (
-            "UPDATE observed_device_states SET session_lock_epoch = -1 WHERE device_pk = 'device-1'",
-            "observed_device_states.session_lock_epoch",
-        ),
-        (
-            "UPDATE observed_device_states SET notifications_available = 2 \
-             WHERE device_pk = 'device-1'",
-            "observed_device_states.notifications_available",
-        ),
-        (
-            "UPDATE observed_device_states SET desktop_lock_supported = 2 \
-             WHERE device_pk = 'device-1'",
-            "observed_device_states.desktop_lock_supported",
-        ),
-        (
-            "UPDATE observed_device_states SET desktop_unlock_supported = 2 \
-             WHERE device_pk = 'device-1'",
-            "observed_device_states.desktop_unlock_supported",
-        ),
-    ];
-    for (statement, contract) in checks {
-        assert_rejected(database, statement, contract);
-    }
+    assert_rejected(
+        database,
+        "UPDATE observed_device_states SET installed_credential_revision = -1 \
+         WHERE device_id = 'device-1'",
+        "observed_device_states.installed_credential_revision",
+    );
 }
 
 fn assert_lifecycle_import_and_singleton_domains(database: &TestDatabase) {
