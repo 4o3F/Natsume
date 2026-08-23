@@ -10,9 +10,9 @@
 
 正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 仍是当前 authority 拓扑，在 atomic cutover 前保持权威。
 
-[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Challenge|Bundle|SessionReady / Proof|Ack）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Server Challenge|Bundle|Activated|SessionReady；Client Proof|Ack|Ready）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
 
-尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 Challenge/Proof、`CredentialBundle{gateway_leaf_der}`、`CredentialAck{bundle_sha256}` 与 `SessionReady{session_id bytes}`，由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active。无 `ClientInit`、无 Hello、无 `ControlEnvelope`。`ProofIntent` 只有 `FIRST_ENROLLMENT` | `RESUME`。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
+尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 Challenge/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，依次交换 `CredentialBundle`、`CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id bytes}`；Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
 
 ## 1. 目标
 

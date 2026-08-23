@@ -9,16 +9,18 @@ import "device_control_binding.proto";
 
 message ServerHandshakeEnvelope {
   oneof body {
-    ServerChallenge  server_challenge  = 1;
-    CredentialBundle credential_bundle = 2;
-    SessionReady     session_ready     = 3;
+    ServerChallenge     server_challenge     = 1;
+    CredentialBundle    credential_bundle    = 2;
+    SessionReady        session_ready        = 3;
+    EnrollmentActivated enrollment_activated = 4;
   }
 }
 
 message ClientHandshakeEnvelope {
   oneof body {
-    ClientProof   client_proof   = 1;
-    CredentialAck credential_ack = 2;
+    ClientProof     client_proof     = 1;
+    CredentialAck   credential_ack   = 2;
+    EnrollmentReady enrollment_ready = 3;
   }
 }
 

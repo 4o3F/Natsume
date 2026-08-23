@@ -9,7 +9,9 @@
 
 **当前实现**继续由 HTTPS Enrollment 签发 Device Token，并在 WSS 101 前校验 Bearer 与 resolved Device state；现有 Token 文件、吊销、恢复和禁止泄漏条款保持规范性，直到 coordinated flag day。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、`ClientProof`（`FIRST_ENROLLMENT` | `RESUME`）、`CredentialBundle{gateway_leaf_der}`、`CredentialAck{bundle_sha256}`、`SessionReady{session_id bytes}` 与动态 actor。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 ProofIntent `REPLACE`。单一 split Proto、strict signature verification、Prost typed canonicalization 与 control-key/bundle schema foundation 已存在，但尚未成为当前认证或恢复路径。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local Challenge、结构化 `ClientProof.oneof purpose`、durable `enrollment_id`、`CredentialBundle`/`CredentialAck`、`EnrollmentActivated`/`EnrollmentReady` durable barrier、`SessionReady{session_id bytes}` 与动态 actor。Enrollment purpose 可跨连接重放同一 transaction；Active manifest 只使用 Resume purpose。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。单一 split Proto 与 strict signature foundation 已存在，但尚未成为当前认证或恢复路径。
+
+目标恢复不变量：Prepared / BundleInstalled 永远以 exact EnrollmentAttempt 重连；Server 无论 transaction awaiting 或 active 都先重放 exact Bundle，active 状态的 exact Ack 只做校验/no-op，再发 Activated。Client 只有 durable Active manifest 才可改用 Resume。因而 Ack commit 后丢失 Activated，以及 Ready/SessionReady 丢失，分别由 Enrollment replay 与 Resume 收敛，不需要服务端猜测客户端阶段。
 
 **2026-08-20**：Identifier 与持久化主键统一为 `device_id`。已删除 `devices.control_authority_revision`；当前 control key 由 `device_control_keys.status = 'active'` 表达。Resume 被 supersede 的 key 因 status 拒绝。Active envelope 不携带 `authority_revision`。
 

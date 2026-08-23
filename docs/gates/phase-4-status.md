@@ -1,10 +1,10 @@
 # Phase 4 状态
 
 > 状态：`ACTIVE IMPLEMENTATION`
-> 最后更新：2026-08-19
+> 最后更新：2026-08-23
 > G4：`OPEN`（WP1–WP4 已完成；WP5 部分完成；WP6 尚未收口）
 
-> **2026-08-19 ADR-0038 note**：既有 Phase 4 evidence 证明的是 Device Token、Bearer-before-101 runtime。Batch 1 已同步更名 subprotocol 并原位改写 descriptor/schema foundation，因此旧 descriptor hash 不能冒充当前 evidence，必须由本批回归重新验证。当前 wire 为定向 handshake/Active envelopes（Challenge|Bundle|SessionReady / Proof|Ack），无 `ClientInit`、无 `ControlEnvelope`、无 Hello。Private ordinary-WSS listener仍只证明 TLS 1.3 + 101 + Challenge/Ed25519 Proof seam，不补交WP5/WP6 evidence，不关闭G4，也不改写下方历史完成度。
+> **2026-08-19 ADR-0038 note；2026-08-23 transaction 修订**：既有 Phase 4 evidence 证明的是 Device Token、Bearer-before-101 runtime。当前 wire 为定向 handshake/Active envelopes（Server Challenge|Bundle|Activated|SessionReady；Client Proof|Ack|Ready），Proof 使用 EnrollmentAttempt/ResumeSession oneof purpose，并以 durable `enrollment_id` 跨连接重放。旧 descriptor hash 不能冒充当前 evidence，必须重新验证。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。Private ordinary-WSS listener仍只证明 TLS 1.3 + 101 + Challenge/Ed25519 Proof seam，不补交WP5/WP6 evidence，不关闭G4，也不改写下方历史完成度。
 >
 > **2026-08-20 修订（Command 投递二分）**：下方 WP4/WP5 历史记录描述的 Device journal、重连重放全部 7 kind、宽 Observed 不再是目标契约。目标：Converge 按领域键重推；Oneshot 仅 live socket；无 Device command journal；Observed slim；keep-alive 为 WS ping/pong。历史完成度不改写。
 >
@@ -55,7 +55,7 @@ Phase 4（Control Channel & Command Runtime）启动分解。条目通过需可�
 
 ## WP3 落地记录（2026-08-16）
 
-- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.control` 强制选择、稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）。历史落地含 Hello 交换；当前 proto 无 Hello，handshake 为 Challenge|Bundle|SessionReady / Proof|Ack。Device lifecycle application use case 的 revoke/disable 在 DB 变更成功后（包括 noop）恰调用一次显式 evictor，HTTP handler 只传入 registry、不再直接驱逐；enrollment replacement 路径维持事务内驱逐与 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；五条真 TLS + 真 WS 客户端测试。
+- 交付：`server/src/http/device_control.rs`（九项冻结常量、`route_layer` 前置 Bearer 认证与 IP 限流、`natsume.control` 强制选择、稳态循环、进程级单调 `connection_epoch`、连接注册表与驱逐）。历史落地含 Hello 交换；当前 proto 无 Hello，目标 handshake 为 Challenge → Proof → Bundle/Ack → Activated/Ready → SessionReady，或 Challenge → Resume Proof → SessionReady。Device lifecycle application use case 的 revoke/disable 在 DB 变更成功后（包括 noop）恰调用一次显式 evictor，HTTP handler 只传入 registry、不再直接驱逐；enrollment replacement 路径维持事务内驱逐与 `evicted_live_connection` 审计布尔（词汇已先注册于契约 §3.6.4，Phase 3 移交项闭环）；历史真 TLS + 真 WS 客户端测试不构成新 transaction wire 的 evidence。
 - **注册时机（审查后修正）**：连接在首帧等待**之前**注册，使「已认证未完成 handshake」的连接对撤销/替换驱逐可见；原实现在首帧之后注册，存在最长 10s 的撤销绕过窗口（WP4 dispatch 挂同一 registry 后将成为静默绕过）。同时 handshake 窗口放行 Ping/Pong 而非判为协议错误。
 - **认证顺序**：limiter → shape gate → SHA-256 → DB 查找（含 resolved Device state）→ `ConstantTimeEq` 复核，全部先于 upgrade 与任何 protobuf decode；缺失/格式错/未知/no-row/disabled/revoked 走同一 401 body/cause 与同一 IP limiter，无 oracle。只有 `DeviceState::Enrolled` 可建立 WSS；非法持久化 state 保持 500 corruption。
 - **2026-08-18 state-gate 证据**：`integration-tests/tests/wss_control/auth.rs::disabled_and_revoked_tokens_share_the_normalized_wss_authentication_failure` 以真 TLS + 真 WS 覆盖 enrolled 成功、首帧后 disable 驱逐、保留 token=1/active cert、同 token 重连 401、第二台 enrolled Device 不受影响、五类失败归一化与合并 limiter 计数、零 auth audit；`invalid_persisted_device_state_remains_an_internal_wss_failure` 钉死 corruption 500。

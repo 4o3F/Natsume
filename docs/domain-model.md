@@ -16,7 +16,7 @@
 
 **2026-08-21 修订（OPEN_BINDING_PROMPT 空 body）**：`OPEN_BINDING_PROMPT` 是 Oneshot，空 body，无 TTL，无 `prompt_message_id`。打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；确认/拒绝走 `BindingRequest{binding_request_id, seat_code}` → `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。
 
-Control-key history、live FIRST reservation、immutable CredentialBundle 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。届时删除 Token-era states/rows并收紧 transitional NULL，而不是维持兼容双模型。
+Control-key history、durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Device 在首次联网前持久化 canonical UUIDv7 `enrollment_id`、keys 与 exact CSR；Prepared/BundleInstalled 使用结构化 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，而不是维持兼容双模型。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
 

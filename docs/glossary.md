@@ -30,9 +30,11 @@
 | **Device Token（当前实现）** | Enrollment 时 Server 生成的 32 字节不透明随机凭据；`device_tokens` row 以 `device_id` 为键，保存唯一 `enrollment_request_id` 和 32-byte `token_hash`。ADR-0038 flag day 将删除它；dormant control foundation 不改变其当前 authority。 |
 | **Control key（ADR-0038 目标）** | Device 专用 Ed25519 control signing key，与 Gateway TLS key 分离。Server natural key 是 `public_key`（32-byte Ed25519），不存在 ControlKeyId；daemon manifest pins hex(public_key)。Private key 只存在于 daemon-owned PKCS#8 文件。flag day 前不参与 Enrollment/WSS authority。 |
 | **ServerChallenge（ADR-0038 目标）** | HTTP 101 后由 connection-local PreAuthSession 发送的一次性随机 challenge（`challenge_id` bytes + nonce）；不持久化、不跨连接查询。`expires_at_unix_ms` 是 connection-local proof deadline，不是 `OPEN_BINDING_PROMPT` TTL。 |
-| **ClientProof（ADR-0038 目标）** | Device 对 Challenge 的 Ed25519 proof。`ProofIntent` 只有 `FIRST_ENROLLMENT` \| `RESUME`；`candidate_public_key`、`gateway_csr_der` 与 `evidence_quality` 仅 FIRST optional。无 `REPLACE`。 |
-| **CredentialBundle（ADR-0038 目标）** | Server 下发的 Gateway leaf：`gateway_leaf_der`。client durable `CredentialAck{bundle_sha256}` 后才可激活对应 authority。 |
-| **SessionReady（ADR-0038 目标）** | Handshake 完成后的 connection-local lease：`session_id` bytes。Active envelope 只回该值；不是 Identifier UUID。 |
+| **ClientProof（ADR-0038 目标）** | Device 对 Challenge 的 Ed25519 proof。`oneof purpose` 为 `EnrollmentAttempt` 或空 `ResumeSession`；前者必带 durable canonical UUIDv7 `enrollment_id`、candidate public key、exact CSR 与 evidence quality，后者不携带 Enrollment material。无 `ProofIntent` enum。 |
+| **Enrollment transaction（ADR-0038 目标）** | Device 在首次联网前持久化 `enrollment_id`、control/Gateway keys 与 exact CSR；同 ID + exact material 在 awaiting/active 状态都重放 exact Bundle，Ack 分别执行一次 activation/no-op，再返回 Activated；同 ID + 不同 material 为 conflict。 |
+| **CredentialBundle（ADR-0038 目标）** | Server 下发的 `{enrollment_id,gateway_leaf_der}` immutable public bundle。Client durable 保存后回 `CredentialAck{enrollment_id,bundle_sha256}`；Ack 激活 Server authority。 |
+| **EnrollmentActivated / Ready（ADR-0038 目标）** | Server Ack transaction commit 后发送 `{enrollment_id,device_id,bundle_sha256}` Activated；Client 原子写 Active manifest 后以 Ready 完整回显这些 facts。它们分隔 Server durable authority 与 Client durable Active，Ready 后才可签发本连接 SessionReady。 |
+| **SessionReady（ADR-0038 目标）** | 双端 durable Enrollment barrier 完成后的 connection-local lease：`session_id` bytes。Active envelope 只回该值；不是 Enrollment commit receipt 或 Identifier UUID。 |
 | **DeviceActor（ADR-0038 目标）** | 动态 registry 按需创建、进程内不淘汰的单 Device 排序点；Machine Hardware ID 只负责 shard routing，DeviceId 与 `public_key` 是 aliases。无 ControlKeyId。 |
 | **Provisioning window** | `provisioning_window` 的当前 singleton 开关：`state`、`revision`、`last_audit_event_id`。开启期间 Enrollment 可签发 Device Token 与 Gateway certificate；关闭后不存在任何签发路径。恢复只会将已打开状态 close-once，不会自动打开。 |
 | **close-once** | provisioning 窗口恢复语义：只关闭一次观察到的 `open` current-fact，后续 `closed` observation 不形成第二次恢复事件。 |
