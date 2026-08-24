@@ -15,7 +15,8 @@ message CommandStatus {
   // Panel-owned canonical lowercase hyphenated UUIDv7; echo of Command.command_id.
   string       command_id = 1;
   CommandState state      = 2;
-  // ErrorCode registry token. Empty on SUCCEEDED. Not a human-readable message.
+  // Empty on SUCCEEDED; required non-empty ErrorCode registry token on FAILED.
+  // Never a human-readable message.
   string error_code = 3;
 }
 
@@ -72,7 +73,8 @@ message SyncSecret {
   string binding_id = 1;
   // Must match the Account in the Device's current applied assignment.
   string account_id = 2;
-  // accounts.credential_revision. Already installed at this revision → no-op.
+  // accounts.credential_revision in 1..=i64::MAX. Already installed at this
+  // complete binding/account/revision context → no-op.
   uint64 credential_revision = 3;
   // DOMjudge password plaintext. Never log, persist in Observed, or put in Debug.
   SecretBytes password = 4;
@@ -99,5 +101,6 @@ message OpenBindingPrompt {}
 // HOME_EPOCH_STALE only if home_epoch < the completed epoch. Do not bump on retry.
 // Does not drop daemon WSS. Do not start a managed session until Activate succeeds.
 message ResetHome {
+  // Server durable epoch in 1..=i64::MAX.
   uint64 home_epoch = 1;
 }

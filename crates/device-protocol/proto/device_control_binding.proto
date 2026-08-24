@@ -26,6 +26,7 @@ enum BindingResultState {
 // is carried on this message.
 message BindingResult {
   BindingResultState state = 1;
-  // ErrorCode registry token. Empty on APPROVED. Not a human-readable message.
+  // Empty on APPROVED; required non-empty ErrorCode registry token on REJECTED
+  // or CONFLICT. Never a human-readable message.
   string error_code = 2;
 }

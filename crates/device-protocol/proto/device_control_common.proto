@@ -8,16 +8,15 @@ message SecretBytes {
   bytes value = 1;
 }
 
-// Client may reconnect using its ordinary backoff. If retry_after_ms is present,
-// it is an additional relative minimum delay, not a lease or wall-clock
-// deadline. Present zero is invalid; omit the field when no extra delay applies.
-message RetryConnection {
-  optional uint64 retry_after_ms = 1;
+// Client behavior after ServerClose. UNSPECIFIED is the proto3 default trap:
+// reject after decode. RETRY uses the Client's single ordinary backoff policy;
+// STOP ends this local connection intent until locally observable state changes
+// or a local operator explicitly re-arms it.
+enum ServerCloseAction {
+  SERVER_CLOSE_ACTION_UNSPECIFIED = 0;
+  SERVER_CLOSE_ACTION_RETRY       = 1;
+  SERVER_CLOSE_ACTION_STOP        = 2;
 }
-
-// Client must stop automatically retrying the same local intent until software,
-// durable local state, or operator-owned Server state changes.
-message StopConnection {}
 
 // Server → Device terminal outcome, legal in Handshake and Active phases. The
 // Server sends at most one, sends no later business message, and then closes the
@@ -26,9 +25,7 @@ message ServerClose {
   // Required non-empty ErrorCode registry token; never human-readable text or
   // peer-provided detail.
   string error_code = 1;
-  // Required. Client behavior is selected only by this action, not error_code.
-  oneof action {
-    RetryConnection retry = 2;
-    StopConnection stop = 3;
-  }
+  // Must not be UNSPECIFIED. Client behavior is selected only by this value,
+  // never inferred from error_code.
+  ServerCloseAction action = 2;
 }

@@ -27,7 +27,7 @@ message ClientHandshakeEnvelope {
 }
 
 message ClientActiveEnvelope {
-  // Echo of SessionReady.session_id; connection-local lease id, not Identifier UUID.
+  // Exact 16-byte echo of the connection's SessionReady UUIDv7 control lease.
   bytes session_id = 1;
   oneof body {
     CommandStatus         command_status  = 2;
@@ -37,7 +37,8 @@ message ClientActiveEnvelope {
 }
 
 message ServerActiveEnvelope {
-  // Echo of SessionReady.session_id; connection-local lease id, not Identifier UUID.
+  // Exact 16-byte echo of this socket's SessionReady UUIDv7 control lease. A
+  // terminal ServerClose may carry the just-superseded lease for this socket.
   bytes session_id = 1;
   oneof body {
     Command       command        = 2;

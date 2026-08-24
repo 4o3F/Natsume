@@ -18,6 +18,8 @@
 
 **2026-08-24 修订（Observed Home/Gateway）**：Observed 新增可选 `completed_home_epoch` 作为 `HOME_RESET` 的完成侧收敛事实；Gateway 证书观测明确为 Caddy 实际加载完整 leaf DER 的 `gateway_leaf_sha256`。
 
+**2026-08-24 修订（control lease 与数值域）**：每个 DeviceActor 同时至多一个 current control lease；新认证连接用 16-byte UUIDv7 `session_id` 原子替换旧 lease。SQLite INTEGER-backed credential revision 与 Home epoch 的 protobuf 有效域统一为 `1..=i64::MAX`。Gateway state/hash 是独立 evidence，只有 `READY + expected leaf hash` 才收敛。
+
 Control-key history、人工审核的 durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Target transaction state 是 `pending_review` / `awaiting_credential_ack` / `active` / `denied`，无 Enrollment expiry 或 activation deadline。Device Prepared/BundleInstalled 使用 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，不维持双 authority。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
@@ -60,11 +62,11 @@ Control-key history、人工审核的 durable Enrollment transaction、immutable
 
 ## 2. 标识和值对象
 
-领域使用一组稳定值对象区分业务身份与硬件标识。不存在全局 configuration 或 binding-set clock。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`device_bindings.binding_id` 是每次 bind 铸造的 UUIDv7 occupancy stamp。Secret 收敛键必须是完整 `(binding_id,account_id,credential_revision)` 而不是任一子集。`HOME_RESET` 的 Converge 键是 Server Target `home_epoch` 与 Device Observed `completed_home_epoch` 的比较。本地 Agent/logind session 身份不是 WSS Oneshot 字段。
+领域使用一组稳定值对象区分业务身份与硬件标识。不存在全局 configuration 或 binding-set clock。`accounts.credential_revision` 是每个 Account 当前秘密的 `1..=i64::MAX` 修订；`device_bindings.binding_id` 是每次 bind 铸造的 UUIDv7 occupancy stamp。Secret 收敛键必须是完整 `(binding_id,account_id,credential_revision)` 而不是任一子集。`HOME_RESET` 的 Converge 键是 Server Target `home_epoch` 与 Device Observed `completed_home_epoch` 的比较；两者出现值同样限于 `1..=i64::MAX`。本地 Agent/logind session 身份不是 WSS Oneshot 字段。
 
 bind / rebind 铸造新的 `binding_id`；unbind 删除该行；再次 bind 得到新 UUID。未变化 Binding 不重写，因此不因无关绑定变更而成为 secret-sync stale。Account mapping 或密码变化而 Binding 保持时，Import 不得写入 Binding 或铸造 `binding_id`。无 integer bump，无 `seats.binding_generation`。
 
-`SyncState.bound` 冻结 `binding_id`、`account_id`、Seat 与 username；`SyncSecret` 冻结同一 binding/Account 与 revision。`BindingResult` 不携 occupancy `binding_id`；Device 在 secret 写入前若 applied assignment 的 Binding 或 Account 不同，拒绝该 Command。
+`SyncState.bound` 冻结 `binding_id`、`account_id`、Seat 与 username；`SyncSecret` 冻结同一 binding/Account 与 `1..=i64::MAX` revision。`BindingResult` 不携 occupancy `binding_id`；Device 在 secret 写入前若 applied assignment 的 Binding 或 Account 不同，拒绝该 Command。
 
 面向单台 Device 的非秘密期望是 `SyncState.oneof assignment`。`canonical_hash` 是 Server/Device 对 validated assignment 做 domain-separated pinned-Prost canonical encoding 的派生 SHA-256，不在 wire 中传输。Observed 的对应键是 `applied_hash`；无 counter、`generation` 或通用 clock。
 
@@ -112,7 +114,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 ## 6. Credential
 
-密码明文不作为普通 `Account` 字段暴露。`accounts` 是父表，只保存 `account_id`（canonical UUIDv7 PK）、`domjudge_username` 与 `credential_revision`（`>= 1`），无 `credential_vault_record_id`。`server_vault_records` 必须在 `accounts` 之后创建：`account_id` 既是 PRIMARY KEY 也是 `REFERENCES accounts(account_id) ON DELETE CASCADE`，另有 `nonce` 与 `ciphertext`，无 `vault_record_id`、`record_type`/`subject_id`、format/key/AAD version 或 timestamp。vault 不是独立资源，按 `account_id` 与 Account join。同一事务内先插 Account 再插 vault；删除 Account 级联删除 vault。vault 只保存当前 Account 的 DOMjudge 密码。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row。
+密码明文不作为普通 `Account` 字段暴露。`accounts` 是父表，只保存 `account_id`（canonical UUIDv7 PK）、`domjudge_username` 与 `credential_revision`（`1..=i64::MAX`），无 `credential_vault_record_id`。`server_vault_records` 必须在 `accounts` 之后创建：`account_id` 既是 PRIMARY KEY 也是 `REFERENCES accounts(account_id) ON DELETE CASCADE`，另有 `nonce` 与 `ciphertext`，无 `vault_record_id`、`record_type`/`subject_id`、format/key/AAD version 或 timestamp。vault 不是独立资源，按 `account_id` 与 Account join。同一事务内先插 Account 再插 vault；删除 Account 级联删除 vault。vault 只保存当前 Account 的 DOMjudge 密码。已提交的 Import Commit 无条件替换当前密文（新 nonce）并推进该 Account 的 `credential_revision`，不做明文比较，也不建立 history credential/vault row；已达上界时 fail closed，不得 wrap。
 
 读取密码的 application use case 必须：
 
@@ -129,7 +131,7 @@ Target 是根据已提交 Server truth 为某台 Device 计算的**非秘密**�
 
 ## 8. DeviceObserved
 
-Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、可选 `gateway_leaf_sha256`、`session_state`、可选 `completed_home_epoch`。前一字段出现时恰为 32 bytes，是 Caddy 实际加载 leaf certificate 完整 DER 的普通 SHA-256；Server 从 immutable Bundle leaf DER 派生期望值，同 key 重签也视为不同证书。后一字段缺失表示从未完整完成 reset，出现时为正数且只在完整 durable 完成后单调前进；执行/恢复较新 reset 时仍报告上一完成值。不得回传 secret/session instance/sequence/generation/apply blob、通用 Home state 或进度。目标物理 current row 添加这两个可空事实和 Server 收包时间，并按 `device_id` 唯一；本轮只冻结协议/文档，migration 与 Rust 实现在后续 atomic batch 同步。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。无 `observed_sequence` 或 session DB 字段。
+Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、可选 `gateway_leaf_sha256`、`session_state`、可选 `completed_home_epoch`。state 与 leaf hash 是独立 evidence；hash 出现时恰为 32 bytes，是 Caddy 实际加载 leaf certificate 完整 DER 的普通 SHA-256。Server 从 immutable Bundle leaf DER 派生期望值，同 key 重签也视为不同证书；只有 `READY` 且 hash 与期望相等才收敛，其他组合保留为 drift/inconsistency 而不拒绝整份 snapshot。`completed_home_epoch` 缺失表示从未完整完成 reset，出现时在 `1..=i64::MAX`，且只在完整 durable 完成后单调前进；执行/恢复较新 reset 时仍报告上一完成值。不得回传 secret/session instance/sequence/generation/apply blob、通用 Home state 或进度。目标物理 current row 添加这两个可空事实和 Server 收包时间，并按 `device_id` 唯一；本轮只冻结协议/文档，migration 与 Rust 实现在后续 atomic batch 同步。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。无 `observed_sequence` 或 session DB 字段。
 
 ## 9. Drift
 

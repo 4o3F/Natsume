@@ -46,7 +46,7 @@ enum SessionState {
 
 // Complete context of the local DOMjudge password artifact. ABSENT requires
 // empty ids and revision zero. INSTALLED or FAILED requires canonical binding
-// and Account UUIDv7 values and a positive revision.
+// and Account UUIDv7 values and a revision in 1..=i64::MAX.
 message CredentialObservation {
   string binding_id = 1;
   string account_id = 2;
@@ -63,15 +63,18 @@ message ObservedStateSnapshot {
   bytes applied_hash = 1;
   // Required after semantic decode; missing is not equivalent to ABSENT.
   CredentialObservation credential = 2;
+  // Must not be UNSPECIFIED.
   GatewayState gateway_state = 3;
   // SHA-256 of the complete DER encoding of the leaf certificate Caddy is
   // actually using. The Server derives the expected value from the immutable
   // CredentialBundle.gateway_leaf_der. Absent means Caddy is not using a leaf;
-  // present values are exactly 32 bytes.
+  // present values are exactly 32 bytes. Presence is independent of
+  // gateway_state: contradictory samples are drift evidence, not malformed.
   optional bytes gateway_leaf_sha256 = 4;
+  // Must not be UNSPECIFIED.
   SessionState session_state = 5;
   // Latest durably completed HOME_RESET epoch. Absent means no HOME_RESET has
-  // ever completed; present values are positive and never decrease. While a
-  // newer reset is in progress or recovery, report the previous completed epoch.
+  // ever completed; present values are in 1..=i64::MAX and never decrease. While
+  // a newer reset is in progress or recovery, report the previous completed epoch.
   optional uint64 completed_home_epoch = 6;
 }

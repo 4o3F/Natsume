@@ -23,6 +23,8 @@ message EnrollmentAttempt {
   string          enrollment_id        = 1;
   bytes           candidate_public_key = 2;
   bytes           gateway_csr_der      = 3;
+  // Aggregate quality of the accepted 2-of-3 hardware claim: the second-highest
+  // quality among present anchors. Advisory to operator review; never authority.
   EvidenceQuality evidence_quality     = 4;
 }
 
@@ -39,6 +41,7 @@ enum EnrollmentReviewState {
 message EnrollmentReviewStatus {
   string                enrollment_id = 1;
   EnrollmentReviewState state         = 2;
+  // Empty for PENDING_REVIEW; required non-empty registry token for DENIED.
   string                error_code    = 3;
 }
 
@@ -48,7 +51,9 @@ message ResumeSession {}
 
 message ClientProof {
   uint32 protocol_version = 1;
+  // Canonical SemVer of the currently running Device Daemon binary.
   string daemon_version   = 2;
+  // Canonical SemVer of the installed Session Agent, whether or not it is running.
   string agent_version    = 3;
   // Derived hardware natural key, not Identifier UUID.
   string machine_hardware_id = 4;
@@ -96,6 +101,8 @@ message EnrollmentReady {
 }
 
 message SessionReady {
-  // Connection-local lease id; not a public Identifier UUID.
+  // Server-generated UUIDv7 as exactly 16 RFC 9562 network-order bytes. This is
+  // a connection-local, non-persisted control lease, not a public Identifier.
+  // Each Device has at most one current lease; a new connection supersedes it.
   bytes session_id = 1;
 }

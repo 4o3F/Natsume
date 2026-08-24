@@ -185,6 +185,8 @@ MAC 地址明确排除，不要采集。
 
 整机再加一个 `completeness`：`complete` / `temporarily_unavailable` / `unsupported`，对应 `CollectionCompleteness`。
 
+进入 Enrollment 的 aggregate `evidence_quality` 只对已通过 2-of-3 的整机 claim 计算：取 present slots 固有 quality 的第二高值，表示 quorum 的最低质量；它供人工审核与未来 Panel 展示，不替代 per-slot fixture，也不参与 authority。
+
 **禁止提交**：原始 DMI serial、原始磁盘 serial、完整 Machine Hardware ID、private key、真实密码。只提交 slot 分类、quality 与派生候选 UUID。
 
 fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的证据要求，缺项则该项决策仍未被真实硬件证明：

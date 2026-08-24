@@ -20,7 +20,7 @@
 | E1 | **Home backend 定案**（OverlayFS vs staged copy），并把判据与证据写入 platform evidence | ADR-0035：deployment 只选一个、**runtime 不静默 fallback**；roadmap 风险表列「限时定案」 | 阻塞 WP6/WP7 |
 | E2 | `supported-platform.md` 的 lock API 表述与 G0 裁定同步（已定案 logind `LockSession`，该文件两处仍写「Phase 6 限时定案」） | 文档漂移，见 §6 D1 | 阻塞 WP4 |
 | E3 | 固定 contest user 的创建者定案（镜像提供 vs 包创建；UID 策略、home 路径与 backend 的关系） | D-Bus policy 已假定 `user="contest"` 存在，而 `sysusers.d` 不创建它 | 阻塞 WP1/WP6 |
-| E4 | `HomeEpoch` 的 Server Target 分配与 Observed 持久化机制冻结（Target/`completed_home_epoch` 存储位置、单调/回退 guard、与 `commands` 的关系、溢出规则） | ADR-0035 已冻结 wire 收敛事实；DB/Rust 尚未同步 | 阻塞 WP7 |
+| E4 | `HomeEpoch` 的 Server Target 分配与 Observed 持久化机制冻结（Target/`completed_home_epoch` 存储位置、单调/回退 guard、与 `commands` 的关系） | ADR-0035 已冻结 wire 收敛事实和 `1..=i64::MAX` 域；DB/Rust 尚未同步 | 阻塞 WP7 |
 
 ## 3. 已冻结事实（不得重新设计）
 
@@ -30,7 +30,7 @@ WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prom
 
 ### 3.2 Home 事务（ADR-0035 的 2026-08-14 修订）
 
-`HOME_PREPARE` + `HOME_CLEAN` 已合并为单一 **`HOME_RESET`**（Converge，键 = Target `home_epoch` vs Observed 可选 `completed_home_epoch`）。后者缺失表示从未完整完成 reset，出现时为正数且只在 Prepare/Activate/Recover/GC 全部 durable 完成后单调前进；较新 reset 执行/恢复期间继续报告上一个完成值。本地步骤对同一 epoch 必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch；重试不得 bump epoch。Server 对缺失/较小重推同一 epoch，相等收敛，超前或观测回退 fail closed。`HOME_RESET` **不拆 daemon WSS**。中断经本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；曾完成但完成记录缺失/损坏时 fail closed。证明 mount/copy 与 ownership safety 后才能启动受管图形会话。reset 是 **operator-present 受控事件**，不因 session replacement 隐式发生。
+`HOME_PREPARE` + `HOME_CLEAN` 已合并为单一 **`HOME_RESET`**（Converge，键 = Target `home_epoch` vs Observed 可选 `completed_home_epoch`）。两者出现值都在 `1..=i64::MAX`；后者缺失表示从未完整完成 reset，且只在 Prepare/Activate/Recover/GC 全部 durable 完成后单调前进。较新 reset 执行/恢复期间继续报告上一个完成值。本地步骤对同一 epoch 必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch；重试不得 bump epoch；达到上界时 fail closed，不得 wrap。Server 对缺失/较小重推同一 epoch，相等收敛，超前或观测回退 fail closed。`HOME_RESET` **不拆 daemon WSS**。中断经本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；曾完成但完成记录缺失/损坏时 fail closed。证明 mount/copy 与 ownership safety 后才能启动受管图形会话。reset 是 **operator-present 受控事件**，不因 session replacement 隐式发生。
 
 ### 3.3 Agent 形态（ADR-0035）
 
@@ -96,7 +96,7 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 
 ### WP5：proto 命令体语义校验补齐
 
-- 目标：wire 已无 `SessionTarget` / lock epoch / `expected_lock_command_id`；`ResetHome.home_epoch` 与 Observed 可选 `completed_home_epoch` 存在且同 epoch 可重入。
+- 目标：wire 已无 `SessionTarget` / lock epoch / `expected_lock_command_id`；`ResetHome.home_epoch` 与 Observed 可选 `completed_home_epoch` 存在、限 `1..=i64::MAX` 且同 epoch 可重入。
 - 冻结项：校验位置——补进 `device-protocol::validation`（跨进程共享）还是 Device 侧 application 层（**D7**）。
 
 ### WP6：Home backend 与模板
@@ -109,7 +109,7 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 
 - 目标：Server 分配 Target `home_epoch` → Device 执行可重入 Prepare/Activate → 完整 durable 完成后单调推进 Observed `completed_home_epoch`；中断走 `RecoverHomeInstance`；同 epoch 重试不得 bump；`HOME_RESET` 不拆 daemon WSS。
 - 冻结项：Target/Observed epoch 存储与回退 guard（E4）；reset 与当前 session 的交互（reset 前是否必须先 terminate，由谁保证，**D8**）；reset 完成前不得启动受管会话的强制点。`ResetHome` 本来就不携带 `SessionTarget`。
-- 测试：连续多次重置；`completed_home_epoch` absent/positive/monotonic；执行/恢复中保持上一完成值；同 epoch 重试为 success/no-op；epoch < 已完成 → `HOME_EPOCH_STALE` 且零副作用；Observed 超前/回退与完成记录损坏 fail closed；中断经 RecoverHomeInstance；无法证明 ownership → `HOME_OPERATION_FAILED` 且不启动会话；daemon WSS 在 reset 期间保持。
+- 测试：连续多次重置；epoch zero/`i64::MAX`/overflow；`completed_home_epoch` absent/monotonic；执行/恢复中保持上一完成值；同 epoch 重试为 success/no-op；epoch < 已完成 → `HOME_EPOCH_STALE` 且零副作用；Observed 超前/回退与完成记录损坏 fail closed；中断经 RecoverHomeInstance；无法证明 ownership → `HOME_OPERATION_FAILED` 且不启动会话；daemon WSS 在 reset 期间保持。
 
 ### WP8：capability 清单复跑与 G6 证据
 

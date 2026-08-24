@@ -10,7 +10,7 @@
 >
 > **2026-08-24 修订（OPEN_BINDING_PROMPT）**：`open_binding_prompt` 空 body，无 TTL、无 `prompt_message_id`；打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；确认走 `BindingRequest{seat_code}`，每 active session 单 in-flight，连接内顺序关联，无 `binding_request_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。下方「`expired` 无 deadline 写者」仍是 Phase 4 HTTP/DB 历史交付事实，不是 Device `CommandState` 或 Enrollment transaction 目标变体。
 >
-> **2026-08-24 修订（统一关闭与 Observed R1）**：目标 Proto 已以 Handshake/Active 共用 `ServerClose{error_code,retry|stop}` 取代 `ProtocolError` / `ServerDrain`；下方 `ServerDrain` 只保留为 Token-era 已交付历史，不是当前 wire。Observed 新增可选 `completed_home_epoch`，Gateway certificate 字段改为完整 leaf DER 的 `gateway_leaf_sha256`。Rust runtime、DB 与历史 evidence 尚未随本轮协议/文档更新。
+> **2026-08-24 修订（统一关闭与 Observed R1）**：目标 Proto 已以 Handshake/Active 共用 `ServerClose{error_code,ServerCloseAction}` 取代 `ProtocolError` / `ServerDrain`，action 是 `RETRY` / `STOP` enum 且无 retry-delay message；下方 `ServerDrain` 只保留为 Token-era 已交付历史，不是当前 wire。`session_id` 是 16-byte UUIDv7，每台 Device 至多一个 current control lease。Observed 新增可选 `completed_home_epoch`，Gateway certificate 字段改为完整 leaf DER 的 `gateway_leaf_sha256`。Rust runtime、DB 与历史 evidence 尚未随本轮协议/文档更新。
 
 Batch 0 local preflight（**不是 G4 PASS evidence**）必须在本地提交前运行：isolated feasibility test、current protocol/WSS/Enrollment regressions、`just ci-rust`、`just ci-contracts`、direct policy scan、docs/Mermaid validation 与两个 `cargo deny` dependency graph。结果只存在于执行会话，未绑定 commit SHA、CI run 或 retained artifact，不得登记为 Gate 通过。当前开发环境缺少 `shfmt` 与 `gitleaks`，因此 `ci-policy` 聚合 recipe 与 `secret-scan` 必须由后续 CI 补齐。Private probe 不替代 production regression，也不证明 production rejection/capacity/runtime cutover。
 

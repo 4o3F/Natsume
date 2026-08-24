@@ -9,7 +9,7 @@
 
 **当前实现**继续由 HTTPS Enrollment 签发 Device Token，并在 WSS 101 前校验 Bearer 与 resolved Device state；现有 Token 文件、吊销、恢复和禁止泄漏条款保持规范性，直到 coordinated flag day。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local `ServerChallenge{challenge_nonce}`、结构化 `ClientProof.oneof purpose`、durable `enrollment_id`、人工审核的 `pending_review`、不可变 `CredentialBundle`/`CredentialAck`、`EnrollmentActivated`/`EnrollmentReady` durable barrier、`SessionReady{session_id bytes}` 与动态 actor。每个新 Enrollment transaction 都必须经人工批准或拒绝；Server 从现有身份状态派生 create/replacement/recovery 意图，Client 不自报授权意图。Enrollment purpose 可跨连接重放同一 transaction；Active manifest 只使用 Resume purpose。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。单一 split Proto 与 strict signature foundation 已存在，但尚未成为当前认证或恢复路径。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local `ServerChallenge{challenge_nonce}`、结构化 `ClientProof.oneof purpose`、durable `enrollment_id`、人工审核的 `pending_review`、不可变 `CredentialBundle`/`CredentialAck`、`EnrollmentActivated`/`EnrollmentReady` durable barrier、`SessionReady{session_id = 16-byte UUIDv7}` 与动态 actor。每台 Device 同时至多一个 current control lease，新认证连接在 SessionReady 前原子替换旧 lease。每个新 Enrollment transaction 都必须经人工批准或拒绝；Server 从现有身份状态派生 create/replacement/recovery 意图，Client 不自报授权意图。Enrollment purpose 可跨连接重放同一 transaction；Active manifest 只使用 Resume purpose。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。单一 split Proto 与 strict signature foundation 已存在，但尚未成为当前认证或恢复路径。
 
 目标恢复不变量：Prepared client 永远以 exact EnrollmentAttempt 重连。`pending_review` 重放 `EnrollmentReviewStatus{PENDING_REVIEW}`，`awaiting_credential_ack` 与 `active` 都先重放 exact Bundle，`active` 状态的 exact Ack 只做校验/no-op，再发 Activated；`denied` 重放稳定拒绝。Client 只有 durable Active manifest 才可改用 Resume。因而审核等待、Ack commit 后丢失 Activated，以及 Ready/SessionReady 丢失，分别由 Enrollment replay 与 Resume 收敛，不需要服务端猜测客户端阶段。Enrollment transaction 不过期；provisioning window 只约束新 admission 与 operator approve/sign，exact replay、Ack 和最终化在窗口关闭后仍可继续。
 
@@ -153,7 +153,7 @@ Gateway SAN、hostname、profile、EKU 和 validity 必须由 Server 站点配�
 
 Target 只含非秘密数据且本身惰性。CSV、binding 或配置变化不得自动产生远端副作用。
 
-只有人工发起的 `SYNC_STATE` 可以应用 Target。Observed 是实际状态来源，Drift 是纯比较。每次 Resume 成功后，Server actor 必须先进入 `AwaitingInitialObserved`；该连接的第一条 Active packet 必须是 `Observed`，且经过校验和持久化后才能接收 binding traffic 或投递 Command。数据库中的旧 Observed 只是 last-known evidence，不能替代这道连接级 barrier。可选 `gateway_leaf_sha256` 是 Caddy 实际加载 leaf certificate 完整 DER 的 32-byte SHA-256，Server 从 immutable Bundle leaf DER 派生期望值；不比较 PEM 文本、whole chain 或 SPKI。
+只有人工发起的 `SYNC_STATE` 可以应用 Target。Observed 是实际状态来源，Drift 是纯比较。每次 Resume 成功后，Server actor 必须先进入 `AwaitingInitialObserved`；该连接的第一条 Active packet 必须是 `Observed`，且经过校验和持久化后才能接收 binding traffic 或投递 Command。数据库中的旧 Observed 只是 last-known evidence，不能替代这道连接级 barrier。可选 `gateway_leaf_sha256` 是 Caddy 实际加载 leaf certificate 完整 DER 的 32-byte SHA-256，Server 从 immutable Bundle leaf DER 派生期望值；不比较 PEM 文本、whole chain 或 SPKI。`gateway_state` 与 hash presence 独立：恢复/LKG、Caddy down 或采样 race 形成的任意组合都可作为 drift evidence 接受，只有 `READY` 且 hash 等于期望 leaf 才收敛。
 
 Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表示 Device 已同步。失败、discard、过期、将删座位仍绑定与 transaction rollback **均不得**改变 confirmed configuration、binding、Target truth 或相关 revision。
 
@@ -168,7 +168,7 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 - 由授权操作员明确发起；
 - 绑定当前 Device、Seat、`binding_id`、`account_id` 和 credential revision；
 - 使用 `SecretBytes` 承载 password，使 Debug/日志/通用序列化边界默认 redacted；
-- 作为 Converge 命令按完整 `{binding_id, account_id, credential_revision}` 幂等（已安装同一三元组则为 no-op）；
+- 作为 Converge 命令按完整 `{binding_id, account_id, credential_revision}` 幂等（revision 限 `1..=i64::MAX`；已安装同一三元组则为 no-op）；
 - 在 Device 写入前再次校验；
 - 返回 redacted 结果；
 - 可审计。
@@ -182,7 +182,7 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 - **Converge**（`sync_state` / `sync_secret` / `reset_home`）：按领域键幂等；Server 在 drift 时重推同一 payload；Device 无 command journal。键分别为 Target 的完整 typed assignment（`unbound` 或 `{binding_id, account_id, seat_code, domjudge_username}`）及由 canonical protobuf bytes 本地派生的 hash、完整 credential observation `{binding_id, account_id, credential_revision, installed}`、Target `home_epoch` vs Observed `completed_home_epoch`（缺失/较小重推同一 epoch，相等收敛；超前或观测回退 fail closed；同 epoch 可重入；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch）。
 - **Oneshot**（lock/unlock/terminate/open_binding_prompt）：仅 live socket；离线丢弃；重连不重放。空 body，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`；志愿者确认后发送 `BindingRequest`，本地取消不发业务包。`CommandState` 只有 `SUCCEEDED` | `FAILED`。
 
-Server 每个 DeviceActor 只有一个有界 single-consumer mailbox；Client 只有一个有界 single-consumer command executor。每条连接最多一个 in-flight Command，严格按抵达顺序开始和完成；底层 I/O 可以异步，但不得并发执行两条 Command。若 Oneshot 已产生本地副作用而结果在断线中丢失，Server 持久化终态 `outcome_unknown`，不自动重放；wire `CommandState` 仍只有 `SUCCEEDED` / `FAILED`。Converge 则继续依据新的 Observed 比较并重投至收敛。
+Server 每个 DeviceActor 只有一个有界 single-consumer mailbox 和至多一个 current control lease；Client 只有一个有界 single-consumer command executor。每条连接最多一个 in-flight Command，严格按抵达顺序开始和完成；底层 I/O 可以异步，但不得并发执行两条 Command。新连接先使旧 lease 失效，再收到 `SessionReady`；旧 lease 尚未开始的 Command 不执行。若 Oneshot 已产生本地副作用而结果在断线中丢失，Server 持久化终态 `outcome_unknown`，不自动重放；wire `CommandState` 仍只有 `SUCCEEDED` / `FAILED`。Converge 则在新连接通过 initial Observed barrier 后依据 fresh Observed 比较并重投至收敛。
 
 Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID HTTP replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。每 Command 的 frozen content 只保存在 typed JSON。`HOME_RESET` 不拆 daemon WSS；中断 reset 经本地状态文件 + RecoverHomeInstance 恢复。
 
@@ -222,7 +222,7 @@ DOMjudge 凭据只通过 Caddy 对 `/login` 路由的 header 注入进入数据�
 
 ### `INV-SESSION-01`：Session/Home 绑定当前实例且不拥有 Caddy
 
-WSS lock/unlock/terminate/open_binding_prompt 是 Oneshot，作用于该 Device 唯一的当前 graphical session，空 body，不携带 `SessionTarget` / `session_epoch`。Client 在动作开始时从本地 logind 捕获 session identity，并在任何 privileged effect 前重新校验；期间当前 session 被替换时返回 `SESSION_CONTEXT_STALE`，不得把动作 retarget 到新 session。`open_binding_prompt` 打开 screen 即 Command 成功；志愿者确认后发送 `BindingRequest`，本地取消不发业务包。每个 active session 同时最多一个 binding prompt/request，靠连接内顺序关联，不携带 `binding_request_id`。本地陈旧 Agent、陈旧 UI action 必须拒绝。Home 用 Target `home_epoch` 与 Observed `completed_home_epoch` 作 Converge 键；后者可选、正数、只在完整 durable 完成后单调前进，较新 reset 执行/恢复时仍报告上一值。同 epoch 可重入，陈旧（命令 epoch < 本地已完成）必须拒绝；曾完成但完成记录损坏时 fail closed，不报告正常 absent。
+WSS lock/unlock/terminate/open_binding_prompt 是 Oneshot，作用于该 Device 唯一的当前 graphical session，空 body，不携带 `SessionTarget` / `session_epoch`。Client 在动作开始时从本地 logind 捕获 session identity，并在任何 privileged effect 前重新校验；期间当前 session 被替换时返回 `SESSION_CONTEXT_STALE`，不得把动作 retarget 到新 session。`open_binding_prompt` 打开 screen 即 Command 成功；志愿者确认后发送 `BindingRequest`，本地取消不发业务包。每个 active session 同时最多一个 binding prompt/request，靠连接内顺序关联，不携带 `binding_request_id`。本地陈旧 Agent、陈旧 UI action 必须拒绝。Home 用 Target `home_epoch` 与 Observed `completed_home_epoch` 作 Converge 键；两者出现时均限 `1..=i64::MAX`，后者只在完整 durable 完成后单调前进，较新 reset 执行/恢复时仍报告上一值。同 epoch 可重入，陈旧（命令 epoch < 本地已完成）必须拒绝；曾完成但完成记录损坏时 fail closed，不报告正常 absent。
 
 Home 无法证明安全时不得启动受管 session。`HOME_RESET` 不拆 daemon WSS。Session lock/unlock/terminate 不调用 Caddy、不改变 Caddy config/状态。遮罩类 UI（如未来实现）是呈现层，不是完整性边界；完整性依靠 `terminate_session` 与数据面 BLOCKED（[ADR-0035](adr/0035-session-home-and-desktop-cycle.md)）。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 
