@@ -173,7 +173,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 **历史背景（不再实施）**：曾设想 Device journal 保存 Command frame bytes，条目删除依赖服务端终态确认。高水位游标因乱序终态会静默丢结果而被否决。
 
-高水位游标、按命令确认帧、首批投递完成标记均不再评估。Oneshot 离线丢弃；若副作用后断线导致结果丢失，Server 记 `outcome_unknown` 且不重放。Converge 靠完整领域键与 Observed 重推。
+高水位游标、按命令确认帧、首批投递完成标记均不再评估。Server 在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 创建时无 READY lease，或仍 `queued` 时失去所属 lease，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure、断线或 Server restart 才记 `outcome_unknown`。两者均不重放。Converge 断线后由新连接 initial Observed 按完整领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed。
 
 ## 7. 跨切风险
 

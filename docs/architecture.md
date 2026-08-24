@@ -10,7 +10,7 @@
 
 正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 仍是当前 authority 拓扑，在 atomic cutover 前保持权威。
 
-[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady|ServerClose；Client Proof|Ack|Ready；Active Server 同样允许 ServerClose）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，目标 subprotocol 为唯一 wire-generation 权威 `natsume.control.v1`（当前 Token-era Rust runtime 仍使用旧 token，待 flag day 同步），定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady|ServerClose；Client Proof|Ack|Ready；Active Server 同样允许 ServerClose）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
 
 尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 `challenge_nonce`/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，先进入必须人工处置的 `pending_review`，批准时原子固化 `CredentialBundle`，再依次交换 `CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id = 16-byte UUIDv7}`；拒绝由 `EnrollmentReviewStatus{DENIED,error_code}` 表达。Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active；每台 Device 至多一个 current control lease，新连接在 SessionReady 前原子替换旧 lease；SessionReady 后第一条 Active packet 必须是 Observed。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
 
@@ -338,7 +338,7 @@ identity-before-credentials（ADR-0032 配方）
   → server endpoint/trust validation（预置 CA + IP-SAN）
   → Client 准备 create-once control key、Gateway keypair 与 CSR
   → 建立普通 server-auth WSS
-  → ServerChallenge{protocol_version, challenge_nonce}
+  → ServerChallenge{challenge_nonce}（wire generation 已由 exact natsume.control.v1 选定）
   → ClientProof{EnrollmentAttempt{enrollment_id, hardware evidence, control public key, CSR}, signature}
   → Server 校验 proof，并根据当前 Device/key 状态派生 create/replacement/recovery intent
   → 窗口开放时原子接纳为 durable pending_review
@@ -355,6 +355,8 @@ identity-before-credentials（ADR-0032 配方）
 
 每个新 transaction 都需人工审核，不存在按 SPKI 自动批准。Enrollment transaction 不过期；窗口只 gate 新 admission 与 approve/sign，关闭后已存在 pending 保留等待下次窗口，已固化 Bundle 的 exact replay、Ack、Activated/Ready 与 Resume 可以继续。pending 连接可只交换 Ping/Pong 并等待审核，也可用 exact EnrollmentAttempt 重连。`disabled` / `revoked` 不能借 Enrollment 隐式恢复。当前 HTTPS + Device Token 路径只作为 atomic flag day 前的实现现状保留，不再定义目标业务语义。
 
+每个非终态 transaction 同时至多一个 current Handshake attachment。新 exact replay 在 actor 内原子替换旧 attachment；operator review 只向当时的 current attachment 发送，absence/send failure 不回滚 durable transaction。Credential replacement 的新 attachment 与旧 Active lease 可并存，只有 exact Ack activation 才替换旧 key/lease。
+
 ### 8.3 非秘密状态同步
 
 ```text
@@ -369,7 +371,7 @@ operator starts SYNC_STATE
   → Observed slim snapshot（applied_hash / gateway_state）
 ```
 
-`SYNC_STATE` 是 Converge 命令，不涉及任何签发。bound assignment 必须完整携带 `{binding_id, account_id, seat_code, domjudge_username}`；unbound 使用显式 `oneof` variant。Hash 不在 wire 重复传输，双方按 `SHA-256("NATSUME-SYNC-STATE-v1\0" || sync_state.encode_length_delimited_to_vec())` 派生，其中 typed `SyncState` 只含已验证 assignment。PUT 的首次 create/replay/conflict 只表示 Server 已记下意图。断线后若完整 state 仍 drift，Server 重推同一 payload；Device 无 command journal。
+`SYNC_STATE` 是 Converge 命令，不涉及任何签发。bound assignment 必须完整携带 `{binding_id, account_id, seat_code, domjudge_username}`；unbound 使用显式 `oneof` variant。Hash 不在 wire 重复传输，双方按 `SHA-256("NATSUME-SYNC-STATE-v1\0" || sync_state.encode_length_delimited_to_vec())` 派生，其中 typed `SyncState` 只含已验证 assignment。PUT 的首次 create/replay/conflict 只表示 Server 已记下意图。Server 在 socket write 前 durable 提交 `queued → in_flight`；断线后由新连接 initial Observed 推定成功、仍 drift 则退回 `queued` 并重投相同 ID/payload，ahead/regression/无法比较则 fail closed。Device 无 command journal。
 
 ### 8.4 密码同步
 
@@ -403,7 +405,7 @@ current binding and home_epoch
 
 Home 无法证明安全时不得启动受管 session。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。Session lock/unlock/terminate/`open_binding_prompt` 是 Oneshot（空 body，live socket，重连不重放），不改变 Caddy。Client 在动作开始时捕获本地 session identity，并在 privileged effect 前重新校验；session 被替换则返回 `SESSION_CONTEXT_STALE`，不 retarget。`open_binding_prompt` 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；每个 active session 只允许一个 in-flight prompt/request，确认绑定是 Device `BindingRequest{seat_code}` → Server `BindingResult{state,error_code}`，靠连接内顺序关联，不携带 `binding_request_id`。Server 按当前 Binding truth 幂等处理：free+unbound 创建、同一 pair 为 approved no-op、其他 occupancy 为 conflict、缺失或 policy 问题为 rejected；绑定不隐式触发 `SYNC_STATE`/`SYNC_SECRET`。
 
-Server 的 DeviceActor 与 Client command executor 都使用有界 single-consumer channel；每连接最多一个 Command 执行中。Oneshot 的结果若在已发生副作用后因断线丢失，Server 记录 `outcome_unknown` 且不重放；Converge 通过后续 Observed 比较继续收敛。
+Server 的 DeviceActor 与 Client command executor 都使用有界 single-consumer channel；每台 Device 最多一个 `in_flight` Command。Server 在 socket write 前 durable 提交 `queued → in_flight`，且只接受 current lease 上 matching in-flight ID 的 status。Oneshot 在 cut 前没有投递则 `failed/COMMAND_NOT_DELIVERED`；cut 后在 terminal status 前发生 send failure、断线或 Server restart 才记录 `outcome_unknown`，两者均不重放。Converge 在新连接 initial Observed 后按冻结领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed；已明确 terminal 的 Command 不因以后 drift 复活。
 
 ## 9. 部署拓扑
 
@@ -441,5 +443,5 @@ Device 可以在 Server 暂时不可达时继续使用已经验证的本地状�
 - 已安装且未过期的 Gateway certificate 可以继续使用；
 - 当前有效 binding 的本地凭据可以继续使用；
 - 不得在离线时创建新 binding、获得新 token/证书或接受陈旧 revision；
-- 重连后通过 slim Observed 与 Converge 领域键（assignment hash / credential context / Target `home_epoch` vs `completed_home_epoch`）收敛；Oneshot 意图若离线已丢弃，不重放；
+- 重连后通过 slim Observed 与 Converge 领域键（assignment hash / credential context / Target `home_epoch` vs `completed_home_epoch`）收敛；Oneshot 在 durable cut 前未投递为 `COMMAND_NOT_DELIVERED`，cut 后结果不确定为 `outcome_unknown`，均不重放；
 - 本地损坏不能通过"自动重建身份"绕过。

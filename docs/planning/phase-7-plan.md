@@ -20,7 +20,7 @@
 | E1 | 硬件 fixture 实地采集完成（G0-IN-005 已降级为非 G0 阻塞，但[支持平台](../supported-platform.md)要求「首次 provisioning 前完成」） | 物理硬件 fixture 不可由 VM 替代 | 阻塞 rehearsal 与 G7 签署 |
 | E2 | Server 目标 OS（Ubuntu 26）上的 lifecycle 证据（CI runner 与 packaging smoke 当前均 ubuntu-24.04；owner 假设向前兼容，但假设不替代证据） | [支持平台](../supported-platform.md) | 阻塞 WP2/WP9 |
 | E3 | skia 预编译 archive 的 URL/release pin + SHA-256 + CI 校验 + 离线重建路径（[依赖策略](../dependency-policy.md)明写「形成目标发布证据前必须补充」） | 最大剩余供应链缺口 | 阻塞 WP8/WP10 |
-| E4 | 时钟 skew 容差冻结（若 Phase 5 未闭） | Command deadline、证书窗口、UUIDv7 时序均静默依赖 | 阻塞 WP9 rehearsal 判据 |
+| E4 | 时钟 skew 容差冻结（若 Phase 5 未闭） | Observed freshness、证书窗口、UUIDv7 时序均静默依赖；Command 无 deadline | 阻塞 WP9 rehearsal 判据 |
 
 ## 3. 现状盘点（Phase 7 的起点）
 

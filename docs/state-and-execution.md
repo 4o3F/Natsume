@@ -12,20 +12,21 @@ Natsume 同时处理：已提交事实（Server truth）、期望状态（Target
 - **Target**：从 Server truth 派生的非秘密期望。**不含明文密码，确定性派生，不自动联系 Device。**
 - **Observed**：Device 的 typed 实际状态报告。**只接受认证、有界、typed 的 observation；Device 自报属性不构成授权。**
 - **Drift**：`compare(Target, latest valid Observed)` 的纯比较结果，可重算。
-- **Command**：单 Device 显式意图，分 Converge（领域键幂等，Server 重推同一 payload）与 Oneshot（仅 live socket）。Server actor 与 Client executor 以单消费者 channel 串行 Command；`commands` current row 是 operator 审计，不声明 Device journal 或独立 delivery history。
+- **Command**：单 Device 显式意图，分 Converge（领域键幂等，非终态时可重投同一 payload）与 Oneshot（仅 live socket）。Server actor 与 Client executor 以单消费者 channel 串行 Command；`commands` current row 用 `queued → in_flight` 表达 durable delivery cut 与 operator 审计，不声明 Device journal 或独立 delivery history。
 
 ## 2. Command identity、replay 与投递二分
 
 - **ID authority**：Panel 在每次创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`。它使用 `PUT /api/v2/commands/{command_id}`；Server 与 WSS 不生成、重写或替换该 ID。PUT 是 operator 审计入口，不是 Device 执行权威。
 - **canonical request**：Server 以 versioned、domain-separated fingerprint 覆盖通过 schema 验证的 HTTP request 值 `device_id`、`kind`、`payload_version`、`payload`、可选 `reason_code` 与可选 `group_correlation_id`，并保存为 `request_fingerprint_version` 与 `request_fingerprint_sha256`；不覆盖 frozen timestamps、actor、session 或 retry time。同 ID + 同 fingerprint 返回既有 Command；同 ID + 不同 fingerprint 是稳定 conflict。
 - **HTTP outcome**：只有当前 `enrolled` Device 可首次持久化，成功为 `201`；target 不存在或存在但 state 不是 `enrolled` 都返回相同四字段 body 的 `404` / `RESOURCE_NOT_FOUND`；same-ID/same-request replay 为 `200`；非 canonical UUIDv7 为 `400` / `COMMAND_ID_INVALID`；same-ID/different-request 为 `409` / `COMMAND_REQUEST_CONFLICT`。Device 在创建后被 disable/revoke 不改变 replay/conflict 分类；这两个分支先于首次持久化资格检查并忽略当前 state。这些 outcome 只表示 Server 已记下意图，不表示 Device 已执行。
-- **串行边界**：Server DeviceActor 与 Client command executor 各有单消费者有界 channel。Server 同时最多投递一条未终态 Command；Client 完成本地副作用并返回 terminal status 后才开始下一条。WS I/O、ping/pong、Observed 与 disconnect 检测可并发。
-- **Converge vs Oneshot**：Converge（`sync_state` / `sync_secret` / `reset_home`）按领域键幂等，Server 在 drift 时重推同一 payload。Oneshot（`lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt`）仅 live socket；离线丢弃，重连不重放。Device **不**维护 command journal。
+- **串行与 durable cut**：Server DeviceActor 与 Client command executor 各有单消费者有界 channel。Server 同时最多一条 `in_flight` Command，并必须在任何 socket write 前 durable 提交 `queued → in_flight`；转换失败时零 wire 副作用。Client 完成本地副作用并返回 terminal status 后才开始下一条。WS I/O、ping/pong、Observed 与 disconnect 检测可并发。
+- **Converge vs Oneshot**：Converge（`sync_state` / `sync_secret` / `reset_home`）按领域键幂等，只有同一非终态 operator 意图可在 drift 时重投同一 ID/payload。Oneshot（`lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt`）仅 current live socket；不转投 replacement lease，重连不重放。Device **不**维护 command journal。
 - **Converge 键**：`sync_state` = Server-derived assignment hash vs Observed `applied_hash`；`sync_secret` = Target `(binding_id,account_id,credential_revision)` vs Observed credential 完整上下文且 `state=INSTALLED`；`reset_home` = Target `home_epoch` vs Observed 可选 `completed_home_epoch`（缺失/较小未收敛，相等收敛；超前或观测回退 fail closed；同 epoch 可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch）。credential revision 与两个 Home epoch 的出现值统一限 `1..=i64::MAX`。
-- **Oneshot 目标与不确定结果**：命令作用于开始执行时捕获的 current graphical session，不携带 wire session target。已尝试投递却在 terminal status 前断线时，Server 记录 terminal `outcome_unknown`，不自动重放；wire `CommandState` 仍只有 `SUCCEEDED` / `FAILED`。
+- **Oneshot 目标与不确定结果**：命令作用于开始执行时捕获的 current graphical session，不携带 wire session target。创建时无通过 initial Observed barrier 的 current lease，或仍 `queued` 时所属 lease 断开/被替换/Server 重启，确定终止为 `failed/COMMAND_NOT_DELIVERED`。进入 `in_flight` 后在 terminal status 前发生 send failure、disconnect 或 restart 则 terminal `outcome_unknown`。两者都不自动重放；wire `CommandState` 仍只有 `SUCCEEDED` / `FAILED`。
 - **`OPEN_BINDING_PROMPT`**：空 body，无 TTL，无 `prompt_message_id`。Device 打开 screen 即报 `SUCCEEDED`。现场提交是独立 `BindingRequest{seat_code}` → `BindingResult{state,error_code}`；每个 Active session 最多一个 in-flight BindingRequest，不携 request ID 或 occupancy `binding_id`。
 - **binding/account/revision**：Device 在 secret 写入前检查当前 assignment 的 `(binding_id,account_id)` 与 Command 匹配，并校验 revision。任一不同都稳定拒绝，不部分应用。
-- **恢复**：Converge 中断靠领域键重推与本地可重入步骤（Home 用状态文件 + `RecoverHomeInstance`），不靠 Command receipt journal。Oneshot 无离线恢复；已收到的 terminal status 不被后来 transport error 覆盖。
+- **恢复**：Converge `in_flight` 在新连接 initial Observed 后，匹配 frozen convergence key 则推定 `succeeded`，仍 drift 则退回 `queued` 并重投，Observed ahead/regression/无法比较则 fail closed；本地可重入步骤（Home 用状态文件 + `RecoverHomeInstance`）不靠 Command receipt journal。已收到的 terminal status 不被后来 drift 或 transport error 覆盖；重新执行需新 Command。
+- **Status 配对**：Server 只接受 current lease 上与 current `in_flight.command_id` 匹配的 `CommandStatus`。已终态的 exact same status 为零写入 no-op，冲突终态或非 current ID 为 protocol violation。每次 delivery attempt 最多一个 terminal status；Converge 恢复可以同一 ID 开始新 attempt。
 - **bulk**：每个 target 是独立 Command；可选 `group_correlation_id` 仅支持查询和审计分组，不定义跨 Device 顺序、原子性、retry 或 lifecycle。
 
 ## 3. `SYNC_STATE` 的安全 outcome
@@ -79,4 +80,4 @@ Server 与 Device 指标追踪连接、Observed freshness、Drift、enrollment/�
 
 ## 9. 测试模型
 
-必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID fingerprint、Server/Client channel 顺序与单 in-flight、Converge 领域键幂等、Oneshot 离线丢弃/结果丢失 `outcome_unknown`/不重放、assignment hash golden、陈旧 `(binding_id,account_id,credential_revision)`、Account mapping 替换不混用旧密码、revision/epoch zero/上界/overflow、`completed_home_epoch` absent/monotonic/in-progress/recovery/ahead/regression 与 stale、initial Observed barrier、Gateway state/hash 独立组合与 Caddy leaf DER SHA-256/validate/reload 中断、secret redaction/写入中断、session replacement 重检与 Home recovery。具体测试随对应 Phase 实现补全。
+必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID fingerprint、`queued → in_flight` pre-send durable cut、Server/Client channel 顺序与每 Device 单 in-flight、status-current-lease/ID 配对、Converge initial-Observed 推定成功/退队重投/fail-closed、Oneshot `COMMAND_NOT_DELIVERED` / `outcome_unknown` / 不重放、assignment hash golden、陈旧 `(binding_id,account_id,credential_revision)`、Account mapping 替换不混用旧密码、revision/epoch zero/上界/overflow、`completed_home_epoch` absent/monotonic/in-progress/recovery/ahead/regression 与 stale、initial Observed barrier、Gateway state/hash 独立组合与 Caddy leaf DER SHA-256/validate/reload 中断、secret redaction/写入中断、session replacement 重检与 Home recovery。具体测试随对应 Phase 实现补全。

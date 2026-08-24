@@ -12,8 +12,9 @@ message BindingRequest {
 // reject after decode; never a business state.
 enum BindingResultState {
   BINDING_RESULT_STATE_UNSPECIFIED = 0;
-  // Row inserted; occupancy Binding.binding_id is minted on Server.
-  // Device learns it from the following SYNC_STATE / SYNC_SECRET, not this frame.
+  // The same Device↔Seat relation exists after processing: either newly inserted
+  // or an exact zero-write replay. Only insertion mints Binding.binding_id; Device
+  // learns it from the following SYNC_STATE / SYNC_SECRET, not this frame.
   BINDING_RESULT_STATE_APPROVED = 1;
   // Policy refusal (unknown seat, ineligible Device/session, ...). See error_code.
   BINDING_RESULT_STATE_REJECTED = 2;
@@ -26,7 +27,7 @@ enum BindingResultState {
 // is carried on this message.
 message BindingResult {
   BindingResultState state = 1;
-  // Empty on APPROVED; required non-empty ErrorCode registry token on REJECTED
-  // or CONFLICT. Never a human-readable message.
+  // Empty on APPROVED; required non-empty bounded ErrorCode token on REJECTED or
+  // CONFLICT. Unknown well-formed tokens remain opaque; never human-readable.
   string error_code = 2;
 }

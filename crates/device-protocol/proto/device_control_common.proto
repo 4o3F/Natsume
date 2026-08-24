@@ -22,8 +22,8 @@ enum ServerCloseAction {
 // Server sends at most one, sends no later business message, and then closes the
 // socket. This connection-local fact is not a durable Enrollment review result.
 message ServerClose {
-  // Required non-empty ErrorCode registry token; never human-readable text or
-  // peer-provided detail.
+  // Required non-empty bounded ErrorCode token; never human-readable text or
+  // peer-provided detail. Unknown well-formed tokens remain opaque.
   string error_code = 1;
   // Must not be UNSPECIFIED. Client behavior is selected only by this value,
   // never inferred from error_code.

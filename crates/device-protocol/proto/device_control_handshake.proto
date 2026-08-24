@@ -2,10 +2,9 @@ syntax = "proto3";
 package natsume.device.control;
 
 message ServerChallenge {
-  uint32 protocol_version = 1;
   // Exactly 32 CSPRNG bytes, owned only by this connection-local PreAuthSession.
   // The Server's local proof timer is deliberately not represented on the wire.
-  bytes challenge_nonce = 2;
+  bytes challenge_nonce = 1;
 }
 
 enum EvidenceQuality {
@@ -31,7 +30,8 @@ message EnrollmentAttempt {
 // Durable operator-review state. Approval has no separate wire value: receipt
 // of CredentialBundle proves that approval, issuance, and immutable persistence
 // have committed. PENDING_REVIEW has an empty error_code; DENIED has a stable
-// reviewed ErrorCode and is terminal for this enrollment_id.
+// reviewed ErrorCode and is terminal for this enrollment_id. Unknown
+// well-formed ErrorCode tokens remain opaque to the receiver.
 enum EnrollmentReviewState {
   ENROLLMENT_REVIEW_STATE_UNSPECIFIED    = 0;
   ENROLLMENT_REVIEW_STATE_PENDING_REVIEW = 1;
@@ -41,7 +41,7 @@ enum EnrollmentReviewState {
 message EnrollmentReviewStatus {
   string                enrollment_id = 1;
   EnrollmentReviewState state         = 2;
-  // Empty for PENDING_REVIEW; required non-empty registry token for DENIED.
+  // Empty for PENDING_REVIEW; required non-empty bounded ErrorCode token for DENIED.
   string                error_code    = 3;
 }
 
@@ -50,19 +50,18 @@ message EnrollmentReviewStatus {
 message ResumeSession {}
 
 message ClientProof {
-  uint32 protocol_version = 1;
   // Canonical SemVer of the currently running Device Daemon binary.
-  string daemon_version   = 2;
+  string daemon_version   = 1;
   // Canonical SemVer of the installed Session Agent, whether or not it is running.
-  string agent_version    = 3;
+  string agent_version    = 2;
   // Derived hardware natural key, not Identifier UUID.
-  string machine_hardware_id = 4;
-  bytes  signature           = 5;
+  string machine_hardware_id = 3;
+  bytes  signature           = 4;
   // Durable local state selects exactly one purpose. Missing purpose is invalid;
   // the Server never rewrites Enrollment into Resume or vice versa.
   oneof purpose {
-    EnrollmentAttempt enrollment = 6;
-    ResumeSession     resume     = 7;
+    EnrollmentAttempt enrollment = 5;
+    ResumeSession     resume     = 6;
   }
 }
 

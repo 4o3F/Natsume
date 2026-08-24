@@ -65,7 +65,7 @@ Caddy 只有在 source、archive checksum、binary checksum、module closure、�
 | Server OS | **Ubuntu 26（官方 server 镜像）**（`ENV-PROPOSED`，见 §4.2，变更自 24.04 提案）；仍需精确 release/kernel/glibc/systemd 值与 clean install、reboot、包生命周期 evidence |
 | Client OS（ICPC 派生镜像） | **Ubuntu 24.04.3 LTS** 派生镜像（`ENV-PROPOSED`，精确值见 §4.2）；镜像标识按 image build 日期；仍需 Deb 安装、Caddy 执行、D-Bus/logind、当期桌面 evidence |
 | Server 网络 | Server 地址由**部署时配置**，不是仓库冻结的 IP literal：Server 自身监听 `0.0.0.0:8443`（包内配置），Client 端 endpoint 经 debconf 配置并在 `postinstall` 规范化校验；地址在同一部署内必须稳定，变更需重新签发带新 IP-SAN 的 TLS leaf 并重配 Client。Client 为 DHCP 短租期（ADR-0030 F3） |
-| 时间同步 | Server 与全部 500 台工作站的时钟纪律：竞赛 LAN 上的 NTP source（或等效机制）与最大容许 skew（`ENV-UNFROZEN`，待部署证据）。静默依赖时钟的消费者：Command `deadline_at_unix_ms` 与 freshness 判定、Gateway 与 Server 证书的有效期窗口、TLS 有效期校验、UUIDv7 的时间序 |
+| 时间同步 | Server 与全部 500 台工作站的时钟纪律：竞赛 LAN 上的 NTP source（或等效机制）与最大容许 skew（`ENV-UNFROZEN`，待部署证据）。静默依赖时钟的消费者：Observed freshness 判定、Gateway 与 Server 证书的有效期窗口、TLS 有效期校验、UUIDv7 的时间序；Command 无 deadline |
 | Operator 浏览器 | family/version、OS、分辨率/缩放、中文输入、安全 policy、更新窗口 |
 | DOMjudge | 部署 snapshot 标识、upstream scheme/host/port/path；**`auth_methods` 含 `xheaders` 且登录契约验证**；**web server brotli 启用**；**upstream（至少 `/login`）TLS，材料由自签 origin CA 签发**；无健康检查端点，upstream 健康探测为被动（见 §4.2） |
 | Desktop（当期单环境） | **Xfce + X11**（`ENV-PROPOSED`，见 §4.2，变更自 GNOME 提案）；仍需镜像升级重验清单全项（见下） |
@@ -221,7 +221,7 @@ fixture 集必须覆盖下列场景，每种至少一例；这是 ADR-0032 的�
 | DOMjudge 版本策略 | 部署恒为最新 main 分支 snapshot | 所有者断言 xheaders 契约跨版本稳定；条目 9 lab 结论必须登记测试时的实际 snapshot 标识，更换 snapshot 触发 xheaders 语义复核。upstream 当前不可访问，lab 待其可得 |
 | DOMjudge upstream TLS | **必须 TLS**，证书由自签 origin CA（`LOCAL_ORIGIN_CA`）签发 | 维持 ADR-0034 fixed-TLS-upstream 不变量与 G5「非 TLS 拒绝激活」验收，不引入可信链路豁免 |
 | DOMjudge 健康检查 | 无专用端点，Natsume 不做主动探测 | `GatewayState` 的 `upstream_unhealthy` 只由被动信号（代理错误）驱动 |
-| 时间同步 | Client 部署时与 Server 做 NTP 校准 | 持续 skew 容差仍 `ENV-UNFROZEN`；时钟消费者（`deadline_at_unix_ms`、证书有效期、UUIDv7 序）在容差冻结前不得假设长期同步 |
+| 时间同步 | Client 部署时与 Server 做 NTP 校准 | 持续 skew 容差仍 `ENV-UNFROZEN`；时钟消费者（Observed freshness、证书有效期、UUIDv7 序）在容差冻结前不得假设长期同步；Command 无 deadline |
 | Operator 浏览器 | 所有者豁免其余 freeze 字段 | 相关事实随 Web Panel 阶段验证，不作为 G0 输入 |
 | 硬件 fixture | 匿名 collector 已就绪；实地采集仍等待物理硬件访问，`G0-IN-005` 维持 `BLOCKED-INPUT` | 前提澄清：Machine Hardware ID 持久化为身份锚点（`devices.machine_hardware_id` UNIQUE 与 Enrollment 绑定），上线后变更派生逻辑的代价是全 fleet 重新注册；fixture 须在首次 provisioning 前完成采集 |
 | Slint runtime closure（实测） | Slint `1.15.1`；features `compat-1-2`/`std`/`backend-winit-x11`/`renderer-skia`；直接 ELF NEEDED 冻结于 `packaging/client/session-agent.needed` 且 target VM `ldd` 全表吻合；二进制 11,734,952 字节；冷启动至 resident marker 59 ms（图形会话内实测） | CJK **渲染**在各屏形态正常；镜像于 2026-08-15 加装中文输入法后 **IME 输入与渲染复验通过**（该次镜像变更仅为加装输入法，接受定向复验）。probe 各屏（binding_prompt/lock_presentation 等）、HiDPI 缩放与焦点观察均通过 |

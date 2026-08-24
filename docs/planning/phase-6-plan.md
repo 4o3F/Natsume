@@ -26,7 +26,7 @@
 
 ### 3.1 Current-session Oneshot（ADR-0035）
 
-WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 唯一当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Client 在动作开始时捕获本地 logind session identity，并在 privileged effect 前重验；期间 session 被替换则返回 `SESSION_CONTEXT_STALE`，不得 retarget。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 无 TTL、无 `prompt_message_id`；Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认绑定不是该 Command 的成功，而是 Device 发起 `BindingRequest{seat_code}` → Server `BindingResult{state,error_code}`；每个 active session 同时最多一个 prompt/request，以连接内顺序关联，无 `binding_request_id` 或 capability token。`BindingResult` 不携带 occupancy `binding_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`；若副作用后断线丢失结果，Server 终态为 `outcome_unknown`，不重放。本地 Agent UI 仍校验 logind session、UID 与 Agent lease；stale Agent / stale UI action / expired lease 返回稳定错误。Agent crash 或 lease expiry **不增加 authority**，也不能 unlock 后续 session。session action **不调用 Caddy、不修改 Caddy state/config、不进入数据面状态页**。使用冻结镜像的 **native session lock**。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
+WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 current live socket；不转投 replacement lease，重连不重放。目标 = 该 Device 唯一当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Server 在 socket write 前 durable 提交 `queued → in_flight`；创建时无通过 initial Observed barrier 的 current lease，或仍 `queued` 时失去所属 lease/Server restart，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure/disconnect/restart 才为 Server-only `outcome_unknown`。Client 在动作开始时捕获本地 logind session identity，并在 privileged effect 前重验；期间 session 被替换则返回 `SESSION_CONTEXT_STALE`，不得 retarget。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 无 TTL、无 `prompt_message_id`；Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认绑定不是该 Command 的成功，而是 Device 发起 `BindingRequest{seat_code}` → Server `BindingResult{state,error_code}`；每个 active session 同时最多一个 prompt/request，以连接内顺序关联，无 `binding_request_id` 或 capability token。`BindingResult` 不携带 occupancy `binding_id`。Wire `CommandState` 只有 `SUCCEEDED` | `FAILED`；两个 Server 终态都不重放。本地 Agent UI 仍校验 logind session、UID 与 Agent lease；stale Agent / stale UI action / expired lease 返回稳定错误。Agent crash 或 lease expiry **不增加 authority**，也不能 unlock 后续 session。session action **不调用 Caddy、不修改 Caddy state/config、不进入数据面状态页**。使用冻结镜像的 **native session lock**。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 
 ### 3.2 Home 事务（ADR-0035 的 2026-08-14 修订）
 
@@ -90,9 +90,9 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 
 ### WP4：Session lock / unlock / terminate
 
-- 目标：Oneshot `lock_session` / `unlock_session` / `terminate_session` 的 live-socket Device 执行，经唯一有界 single-consumer executor 严格按到达顺序调度，并经 `Privileged1.RequestDesktopLock/Unlock` 落到动作开始时捕获且 effect 前重验的 logind session。离线丢弃，重连不重放。
+- 目标：Oneshot `lock_session` / `unlock_session` / `terminate_session` 的 current-live-socket Device 执行，经唯一有界 single-consumer executor 严格按到达顺序调度，并经 `Privileged1.RequestDesktopLock/Unlock` 落到动作开始时捕获且 effect 前重验的 logind session。Server 在 socket write 前 durable 提交 `queued → in_flight`；pre-cut 无投递为 `COMMAND_NOT_DELIVERED`，post-cut terminal 丢失为 `outcome_unknown`，重连均不重放。
 - 冻结项：`SESSION_ACTION_UNSUPPORTED` 的触发条件（镜像不支持时）；Unlock 不以 Observed `active_lock_command_id` 为 fence；**Caddy 调用计数器的实现形态**（G6 要求「lock/unlock 的 Caddy 调用数为 0」的可测证据；计数器放哪一层、真实镜像上如何采集，**D6**）。
-- 测试：stale Agent 动作被拒；Oneshot 离线丢弃；replacement session 不被旧 Agent 控制且不 retarget；副作用后断线记录 `outcome_unknown`；并发抵达严格串行；lock/unlock 全流程 Caddy 调用计数为 0；terminate 后状态收敛。
+- 测试：stale Agent 动作被拒；Oneshot pre-cut 无投递为 `COMMAND_NOT_DELIVERED`；replacement session 不被旧 Agent 控制且不 retarget；post-cut terminal 丢失记录 `outcome_unknown`；并发抵达严格串行；lock/unlock 全流程 Caddy 调用计数为 0；terminate 后状态收敛。
 
 ### WP5：proto 命令体语义校验补齐
 
@@ -124,7 +124,7 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 | 中文 IME / HiDPI / focus denied | WP3 + WP8 |
 | display lost 与 Agent crash | WP1（lease）+ WP3 + WP8 |
 | 无 user unit | 既有 CI 断言 + WP8 |
-| stale Agent / Oneshot 离线丢弃 | WP2 + WP4 |
+| stale Agent / Oneshot pre-cut 未投递与 post-cut 不确定结果 | WP2 + WP4 |
 | lock/unlock 的 Caddy 调用数为 0 | WP4（计数器）+ WP8 |
 | Home reset/fault/reboot 与连续多次重置 | WP6 + WP7 |
 

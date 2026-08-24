@@ -20,6 +20,8 @@
 
 **2026-08-24 修订（control lease 与数值域）**：每个 DeviceActor 同时至多一个 current control lease；新认证连接用 16-byte UUIDv7 `session_id` 原子替换旧 lease。SQLite INTEGER-backed credential revision 与 Home epoch 的 protobuf 有效域统一为 `1..=i64::MAX`。Gateway state/hash 是独立 evidence，只有 `READY + expected leaf hash` 才收敛。
 
+**2026-08-24 修订（Command durable delivery cut）**：`commands.state` 的非终态为 `queued` / `in_flight`，终态为 `succeeded` / `failed` / `outcome_unknown`。Server 在 socket write 前提交 `queued → in_flight`。Oneshot 在 cut 前失去 live lease 为 `failed/COMMAND_NOT_DELIVERED`，cut 后结果丢失才为 `outcome_unknown`；Converge 由新连接 initial Observed 推定成功、退回 `queued` 重投或 fail closed。Command 无 deadline。
+
 Control-key history、人工审核的 durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Target transaction state 是 `pending_review` / `awaiting_credential_ack` / `active` / `denied`，无 Enrollment expiry 或 activation deadline。Device Prepared/BundleInstalled 使用 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，不维持双 authority。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
@@ -141,7 +143,7 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 
 **Command** 是面向单台 Device 的显式意图，分 Converge 与 Oneshot，不是同一套 Device journal 耐久机。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}` 作为 operator 审计入口；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 HTTP replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。只有当前 `DeviceState::Enrolled` 可首次持久化 Command；不存在或 non-enrolled target 对外同为 `404 RESOURCE_NOT_FOUND`，且资格拒绝零 Command、零 audit、零 notifier。Command 已创建后，Device 的 disable/revoke 不改变该 ID 的 replay/conflict 事实。首次 `201`、replay `200`、invalid ID `400`、missing/non-enrolled `404`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
 
-Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，每台 Device 同时最多一条已投递未终态 Command。Target `commands.state` 为 `queued` / `succeeded` / `failed` / `outcome_unknown`；最后一项是 Oneshot 已尝试投递但 terminal status 前断线的 Server-only 终态，不自动重放。Converge 键是 assignment hash、完整 credential context 或 Target `home_epoch` vs Observed `completed_home_epoch`；Device 无 command journal。Oneshot 无 wire session target，本地开始时捕获 current session 并在特权动作前重检，不改投 replacement session。
+Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，每台 Device 同时最多一条 `in_flight` Command。Target `commands.state` 为非终态 `queued` / `in_flight` 与终态 `succeeded` / `failed` / `outcome_unknown`。`in_flight` 是 Server 在 socket write 前 durable 提交的保守 delivery-attempt cut。Oneshot 创建时无 current READY lease，或仍 `queued` 时所属 lease 断开/被替换/Server 重启，为 `failed/COMMAND_NOT_DELIVERED`；已 `in_flight` 但 terminal status 前 send failure/disconnect/restart 才为 `outcome_unknown`，不自动重放。Converge 键是 assignment hash、完整 credential context 或 Target `home_epoch` vs Observed `completed_home_epoch`；新连接 initial Observed 已匹配则推定 `succeeded`，仍 drift 则退回 `queued` 重投，异常观测 fail closed。已明确终态的 Command 不得因后来 drift 复活。Device 无 command journal；Oneshot 无 wire session target，本地开始时捕获 current session 并在特权动作前重检，不改投 replacement session。
 
 批量操作 = 批量创建 Command，进度视图只由查询聚合；可选 `group_correlation_id` 只用于查询和审计分组，不定义跨 Device 顺序、原子性或 lifecycle。
 

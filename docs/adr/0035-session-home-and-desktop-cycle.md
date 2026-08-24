@@ -10,6 +10,8 @@
 >
 > **2026-08-24 修订（Binding 单 in-flight）**：`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`。打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。志愿者输入座位号并确认后发送 `BindingRequest{seat_code}`，Server 回 `BindingResult{state,error_code}`；本地取消只关闭窗口，不发业务包。每个 Active session 最多一个未完成 BindingRequest，以 channel 顺序配对；不携带 request ID 或 occupancy `binding_id`。
 >
+> **2026-08-24 修订（Oneshot delivery cut）**：Server 在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 在 cut 前失去 live lease 为 `failed/COMMAND_NOT_DELIVERED`；cut 后在 terminal status 前发生 send failure、disconnect 或 restart 才为 Server-only `outcome_unknown`。两者均不自动重放。
+>
 > **2026-08-24 修订（Home R1 收敛）**：Observed 只增加可选 `completed_home_epoch`，表达最近一次完整 durable 完成的 reset；不恢复通用 `home_state`、进度 blob 或 generation。
 
 ## Context
@@ -22,7 +24,7 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 ### Current-session Session actions
 
-- WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`，现场提交是独立 `BindingRequest{seat_code}`。Wire `CommandState` 只有 `SUCCEEDED` | `FAILED`；已尝试投递但终态丢失是 Server-only `outcome_unknown`，不自动重放。
+- WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 current live socket；不转投 replacement lease，重连不重放。目标 = 该 Device 当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`，现场提交是独立 `BindingRequest{seat_code}`。Wire `CommandState` 只有 `SUCCEEDED` | `FAILED`。创建时无通过 initial Observed barrier 的 current lease，或仍为 `queued` 时失去所属 lease/Server restart，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure/disconnect/restart 才是 Server-only `outcome_unknown`。两者均不自动重放。
 - 本地 executor 在 Command 开始时解析并捕获 current logind graphical session，在特权副作用前重检它仍是 current。如 replacement 发生在执行中，返回 `SESSION_CONTEXT_STALE` 而不改投新 session；replacement 若在 Command 开始前已完成，新 current session 是合法目标。Agent UI action 与 recovery 同样校验 UID 与 Agent lease。
 - Agent crash 或 lease expiry 不增加 authority，也不能 unlock 后续 session。
 - session action 不调用 Caddy、不修改 Caddy state/config，也不成为数据面状态页内容。
@@ -81,7 +83,7 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖 stale Agent/UI、Oneshot 离线丢弃、logind replacement、reboot、lease expiry、Caddy-call counter；direct XDG launch、singleton、hidden/lazy UI、typed IPC、IME、HiDPI、focus、display loss 和 crash recovery；Home 同 epoch 可重入、epoch zero/`i64::MAX`/overflow、`completed_home_epoch` absent/monotonic/in-progress/recovery/ahead/regression、完成记录损坏 fail-closed、disk-full/ownership/reboot/repeated reset、HOME_RESET 不断 daemon WSS 与 backend performance；以及 package/Slint runtime closure。
+证据必须覆盖 stale Agent/UI、Oneshot pre-cut `COMMAND_NOT_DELIVERED` / post-cut `outcome_unknown` / 不重放、logind replacement、reboot、lease expiry、Caddy-call counter；direct XDG launch、singleton、hidden/lazy UI、typed IPC、IME、HiDPI、focus、display loss 和 crash recovery；Home 同 epoch 可重入、epoch zero/`i64::MAX`/overflow、`completed_home_epoch` absent/monotonic/in-progress/recovery/ahead/regression、完成记录损坏 fail-closed、disk-full/ownership/reboot/repeated reset、HOME_RESET 不断 daemon WSS 与 backend performance；以及 package/Slint runtime closure。
 
 出现 simultaneous multi-image/multi-desktop requirement、direct Agent capability 不再可行、新 Home backend 或确认的 overlay requirement 时，以新 ADR 重开。
 

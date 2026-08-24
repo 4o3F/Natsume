@@ -32,8 +32,9 @@ enum GatewayState {
   GATEWAY_STATE_RECOVERY_REQUIRED = 6;
 }
 
-// Coarse current desktop occupancy. Lock/unlock/terminate are oneshot against
-// whatever session this reports; not an occupancy UUID.
+// Coarse current desktop occupancy, not a Command target or occupancy UUID.
+// Oneshot execution captures and revalidates the local current session instead
+// of targeting this potentially stale observation.
 enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_NONE = 1;

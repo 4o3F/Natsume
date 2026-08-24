@@ -6,13 +6,15 @@
 > Supersedes: consolidated historical records; see [`history-map.md`](history-map.md)
 > Superseded by: —
 >
-> **2026-08-20 修订（持久化时刻）**：`commands.created_at_unix_ms` / `deadline_at_unix_ms` 为 INTEGER UTC epoch milliseconds；后者可空。`observed_device_states.observed_at_unix_ms` 与 `gateway_certificate_not_after_unix_ms` 同此。无 RFC 3339 TEXT。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
+> **2026-08-20 修订（持久化时刻）**：`commands.created_at_unix_ms`、`observed_device_states.observed_at_unix_ms` 与 `gateway_certificate_not_after_unix_ms` 为 INTEGER UTC epoch milliseconds。无 RFC 3339 TEXT。Command 不使用无写者、无状态转换语义的 deadline；现存 `deadline_at_unix_ms` 属待后续 schema flag day 删除的实现债务。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
 >
 > **2026-08-20 修订（Command 投递二分）**：七种 Command 不是同一套 Device journal 耐久机。Converge（`sync_state` / `sync_secret` / `reset_home`）按领域键幂等，Server 重推同一 payload；Oneshot（lock/unlock/terminate/open_binding_prompt）仅 live socket。PUT 是 operator 审计。Observed 为 slim snapshot。无 Heartbeat protobuf；keep-alive 为 WS ping/pong。
 >
 > **2026-08-24 修订（OPEN_BINDING_PROMPT 空 body）**：`open_binding_prompt` 空 body，无 TTL、无 `prompt_message_id`。Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。志愿者确认后由 Device 发送 `BindingRequest{seat_code}`，Server 回 `BindingResult{state,error_code}`；本地取消不发业务包。该 exchange 不是 Command reply，`BindingResult` 不携带 occupancy `binding_id`。
 >
 > **2026-08-24 修订（串行 Command 与完整 credential context）**：Server DeviceActor 与 Client executor 各用单消费者有界 channel，每台 Device 同时最多一条已投递未终态 Command。`SYNC_STATE` 传 bound/unbound typed assignment，hash 为双端派生值；`SYNC_SECRET` / Observed credential 以 `(binding_id, account_id, credential_revision)` 为完整上下文。Oneshot 投递后丢失结果进入 Server-only `outcome_unknown`，不自动重放。Binding request/result 不再携带 correlation ID，以单 in-flight channel 与当前 Binding 事实幂等收敛。
+>
+> **2026-08-24 修订（durable delivery cut）**：`commands.state` 的非终态为 `queued` / `in_flight`。Server 必须在网络发送前 durable 提交 `queued → in_flight`；它只表示副作用已可能发生，不声称 Device 已收到。Oneshot 未投递就失去 live lease 时为 `failed/COMMAND_NOT_DELIVERED`，`in_flight` 后结果丢失才为 `outcome_unknown`。Converge 断线后由新连接 initial Observed 将它确定地收敛为 `succeeded`、退回 `queued` 重投，或 fail closed。
 >
 > **2026-08-24 修订（Home 与 Gateway 可观察收敛）**：Observed 新增可选、正数、单调的 `completed_home_epoch`，只表达完整 Home reset 已 durable 完成；Gateway 证书观测改为 Caddy 实际加载 leaf certificate 完整 DER 的 `gateway_leaf_sha256`，不再使用含义含混的 fingerprint。
 
@@ -39,13 +41,15 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 
 - 只有授权 operator 可创建 `SYNC_STATE` 或 `SYNC_SECRET`；import、binding、credential revision 或 Drift 不得隐式创建 Command。
 - **Panel 是 `command_id` 的唯一生成者。** 每次创建前，Panel 生成 canonical lowercase hyphenated UUIDv7；Server 与 WSS 不为同一请求重写、补发或替换该 ID。
-- 创建入口固定为 `PUT /api/v2/commands/{command_id}`，作为 **operator 审计**，不是 Device 执行权威。持久化的 `commands` row 使用 `device_id`、`kind`、`state`、`request_fingerprint_version`、`request_fingerprint_sha256`、可选 `group_correlation_id`、`payload_version`、`frozen_payload_json`、`created_at_unix_ms`、可空 `deadline_at_unix_ms`、可选 terminal fields 和 `created_audit_event_id`；请求中的可选 `reason_code` 参与 request fingerprint（[契约](../contracts.md) fingerprint v1 小节）但不单独持久化；`frozen_payload_json` 只保存经验证 `payload` 的 JCS 规范形，不另设顶层列。
+- 创建入口固定为 `PUT /api/v2/commands/{command_id}`，作为 **operator 审计**，不是 Device 执行权威。持久化的 `commands` row 使用 `device_id`、`kind`、`state`、`request_fingerprint_version`、`request_fingerprint_sha256`、可选 `group_correlation_id`、`payload_version`、`frozen_payload_json`、`created_at_unix_ms`、可选 terminal fields 和 `created_audit_event_id`；不保存 deadline。请求中的可选 `reason_code` 参与 request fingerprint（[契约](../contracts.md) fingerprint v1 小节）但不单独持久化；`frozen_payload_json` 只保存经验证 `payload` 的 JCS 规范形，不另设顶层列。
 - Server 对 canonical request 计算 versioned、domain-separated SHA-256 fingerprint，并保存为 `request_fingerprint_version` 与 `request_fingerprint_sha256`。它覆盖通过 schema 验证的 HTTP request 值 `device_id`、`kind`、`payload_version`、`payload`、可选 `reason_code` 与可选 `group_correlation_id`；不覆盖 frozen timestamps、actor、session 或 retry time。相同 ID 且相同 fingerprint 返回既有 `Command`，不重复 audit 或 side effect；相同 ID 且 fingerprint 不同返回稳定 conflict。
 - 首次持久化返回 `201`；相同 canonical request 的 replay 返回 `200`；非 canonical UUIDv7 返回 `400` / `COMMAND_ID_INVALID`；同 ID 不同 request 返回 `409` / `COMMAND_REQUEST_CONFLICT`。这些 response 只证明 Server 已记下意图，不证明 Device 已执行。
-- Server DeviceActor 与 Client command executor 各有一个单消费者有界 channel。Server 同时最多投递一条未终态 Command；Client 严格按出队顺序完成本地副作用与 terminal status，然后才开始下一条。WS I/O、ping/pong、Observed 与 disconnect 检测不被长 Command 阻塞。无 wire sequence、generation 或 Device-wide clock。
+- Server DeviceActor 与 Client command executor 各有一个单消费者有界 channel。Server 同时最多一条 `in_flight` Command；Client 严格按出队顺序完成本地副作用与 terminal status，然后才开始下一条。WS I/O、ping/pong、Observed 与 disconnect 检测不被长 Command 阻塞。无 wire sequence、generation 或 Device-wide clock。
+- `queued → in_flight` 必须先于任何 socket write durable commit；转换失败时零 wire 副作用。`in_flight` 是保守的 delivery-attempt cut：commit 与真正写出 bytes 之间崩溃也不允许把 Oneshot 当作“确定未发送”。
 - 七种 Command **不是**同一套 Device journal 耐久机。正确性是 payload 幂等 / live delivery，不是 Client journal。
-  - **Converge**：`sync_state`（键 = Server-derived assignment hash vs Observed `applied_hash`）、`sync_secret`（键 = Target `(binding_id, account_id, credential_revision)` vs Observed credential 完整上下文且 `state = INSTALLED`）、`reset_home`（键 = Target `home_epoch` vs Observed `completed_home_epoch`；同 epoch 可重入；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch）。SQLite INTEGER-backed revision/epoch 出现值统一限 `1..=i64::MAX`。Server 在 drift 时重推同一 payload。Observed 缺失/较小即未收敛，相等即收敛；Observed 超前或相对已持久化值回退时 Server fail closed，不下发旧 epoch。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。
-  - **Oneshot**：`lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt`。仅 live socket；离线丢弃；重连不重放。空 body，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。明确 terminal status 进入 `succeeded` / `failed`；已尝试投递却在 status 前断线时，Server 终态为 `outcome_unknown`并禁止自动重放。Wire `CommandState` 仍只有 `SUCCEEDED` | `FAILED`。
+  - **Converge**：`sync_state`（键 = Server-derived assignment hash vs Observed `applied_hash`）、`sync_secret`（键 = Target `(binding_id, account_id, credential_revision)` vs Observed credential 完整上下文且 `state = INSTALLED`）、`reset_home`（键 = Target `home_epoch` vs Observed `completed_home_epoch`；同 epoch 可重入；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch）。SQLite INTEGER-backed revision/epoch 出现值统一限 `1..=i64::MAX`。仅当同一 operator 意图仍为非终态时，Server 才可依 drift 重推同一 `command_id` 与 frozen payload；已收到明确 `SUCCEEDED` / `FAILED` 的 Command 不得因后来 drift 复活。`in_flight` 断线后等待新 current lease 的 initial Observed：已匹配 frozen convergence key 则推定 `succeeded`；仍 drift 则退回 `queued` 并重投；Observed 超前、回退或无法安全比较时 fail closed，不下发旧 Target。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。
+  - **Oneshot**：`lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt`。仅 current live socket；不携带 `SessionTarget` / `session_instance_id` / `session_epoch`，也不转投 replacement lease。创建时无通过 initial Observed barrier 的 current lease，或仍为 `queued` 时所属 lease 断开/被替换/Server 重启，都确定终止为 `failed/COMMAND_NOT_DELIVERED`。进入 `in_flight` 后的 send failure、disconnect 或 Server restart 在缺少 terminal status 时保守终止为 `outcome_unknown`，禁止自动重放。明确 terminal status 进入 `succeeded` / `failed`；Wire `CommandState` 仍只有 `SUCCEEDED` | `FAILED`。
+- Server 只接受 current lease 上与 current `in_flight.command_id` 一致的 `CommandStatus`。对已终态 Command 的 exact same terminal status 是零写入 no-op；同 ID 但不同终态或非 current in-flight ID 是 protocol violation。“最多一个 terminal status”的作用域是每次 delivery attempt；Converge 在断线恢复中可以同一 `command_id` 发起新 delivery attempt，Device 无需为此持久化 journal。
 - `SYNC_STATE` 只应用 non-secret Target，绝不签发、携带或安装 certificate/token。Account mapping 变化即使旧 credential context 失效；Device 先应用新 non-secret assignment 并保持 BLOCKED，直到同 `(binding_id,account_id,credential_revision)` 的 `SecretBytes` 原子安装。每个 Command 的 frozen content 只在 typed `frozen_payload_json` 中表示。
 - bulk action 生成 N 个独立 Command ID。它们可以共享可选 `group_correlation_id`，但该值仅用于查询和审计分组：不表示顺序、原子性、重试策略或跨 Device lifecycle。
 
@@ -82,7 +86,7 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 - Panel 的一次创建意图、PUT 审计行、WSS message 和 audit 使用同一个可验证 ID。
 - same-ID replay 不会重复敏感副作用；same-ID/different-request 有稳定而窄的冲突语义。
 - operator intent、secret handling、audit、retry 和 Device reality 分别可观察。
-- crash/offline recovery：Converge 靠领域键重推与本地可重入步骤；Oneshot 离线丢弃，投递后结果丢失如实记为 `outcome_unknown`；Observed 继续提供 slim 实际状态。
+- crash/offline recovery：Converge 的 `in_flight` 由 initial Observed 确定地推定成功或退回 `queued` 重投；Oneshot 在 pre-send `queued` 断点明确为 `COMMAND_NOT_DELIVERED`，进入 `in_flight` 后结果丢失如实记为 `outcome_unknown`；Observed 继续提供 slim 实际状态。
 - Caddy activation 收敛为 validate、atomic activate、reload、health 与 LKG 的有限失败模型。
 - DOMjudge credential consumer path 可枚举且窄。
 
@@ -97,7 +101,7 @@ Command 是单 Device 的明确意图，不是跨设备 workflow。浏览器重�
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖无 implicit Command、canonical UUIDv7 正/反例、`PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 契约、same-ID fingerprint replay/conflict、`request_fingerprint_*` 与 `frozen_payload_json` 的持久化规则、Server/Client channel 单 in-flight 顺序、Converge 领域键幂等、Oneshot 离线丢弃/不重放/结果丢失 `outcome_unknown`、bulk group 只作查询/审计分组、stale `(binding_id,account_id,credential_revision)`、revision/epoch zero/上界/overflow、Observed slim freshness/re-report、`completed_home_epoch` absence/monotonic/recovery/ahead/regression、Gateway state/hash 独立组合与完整 leaf DER SHA-256（含同 key 重签变化）、audit atomicity、Caddy certificate/validate/reload/health/LKG/BLOCKED/CSP/no-secret，以及 DOMjudge X-Headers route scope、upstream TLS 和 brotli passthrough。
+证据必须覆盖无 implicit Command、canonical UUIDv7 正/反例、`PUT /api/v2/commands/{command_id}` 的 `201/200/400/409` 契约、same-ID fingerprint replay/conflict、`request_fingerprint_*` 与 `frozen_payload_json` 的持久化规则、`queued → in_flight` pre-send durable cut、每 Device 单 in-flight、status 与 current lease/ID 配对、Converge initial-Observed 推定成功/退队重投/fail-closed、Oneshot 未投递 `COMMAND_NOT_DELIVERED`、投递不确定 `outcome_unknown` 与不重放、bulk group 只作查询/审计分组、stale `(binding_id,account_id,credential_revision)`、revision/epoch zero/上界/overflow、Observed slim freshness/re-report、`completed_home_epoch` absence/monotonic/recovery/ahead/regression、Gateway state/hash 独立组合与完整 leaf DER SHA-256（含同 key 重签变化）、audit atomicity、Caddy certificate/validate/reload/health/LKG/BLOCKED/CSP/no-secret，以及 DOMjudge X-Headers route scope、upstream TLS 和 brotli passthrough。
 
 出现真实外部 event consumer、cross-Device staged workflow、dynamic Caddy consumer、DOMjudge contract 变化或选手需要拥有 credential 时，用新 ADR 重开相应子边界。
 

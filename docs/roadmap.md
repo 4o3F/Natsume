@@ -128,7 +128,7 @@ Server current-fact migration 与模块边界、Seat/account/current-credential 
 
 WSS + Bearer token 认证、subprotocol 版本协商、401-before-decode、按 Converge/Oneshot 二分的 dispatcher、Observed slim snapshot（变化 + 低频兜底）、PUT same-ID replay/conflict。Panel-generated UUIDv7 与 `PUT` create/replay contract 已在 Phase 0 冻结；本阶段实现 WSS 投递，并以 `frozen_payload_json` 表达每 Command 的 frozen typed input。Device **不**维护 command journal；keep-alive 为 WS ping/pong。本阶段还必须对 ingress hardening 显式定案（[契约](contracts.md) §3.6.5）：header count/size、slow-header timeout 与 connection capacity，或以 hyper HTTP/1 builder limit 自建 accept loop，或记录带部署证据的评审接受结论；该 gap 不得继续无限期携带。
 
-**G4 覆盖**：canonical UUIDv7/`201/200/400/409` contract、PUT 审计与 WSS 投递、frame size/version/unknown enum、token 吊销即断、Converge 领域键幂等、Oneshot 离线丢弃/不重放、same-ID/different-request conflict、stale `binding_id`/revision 拒绝、ErrorCode 跨 transport 一致、ingress hardening 决策项的可定位落地或评审接受证据、缩比容量探针（≥50–100 条模拟 WSS 连接并携 Observed 上报，压到 SQLite 单写者路径；完整 500 台验证仍在 G7）——写路径风险必须在关键路径结束前暴露。
+**G4 覆盖**：canonical UUIDv7/`201/200/400/409` contract、PUT 审计与 `queued → in_flight` pre-send durable cut、每 Device 单 in-flight 与 status-current-lease/ID 配对、frame size/exact-subprotocol version/unknown enum、control lease 替换、Converge initial-Observed 推定成功/退队重投/fail-closed、Oneshot pre-cut `COMMAND_NOT_DELIVERED`/post-cut `outcome_unknown`/不重放、same-ID/different-request conflict、stale `binding_id`/revision 拒绝、ErrorCode 64-byte ASCII grammar 与 unknown-opaque handling、ingress hardening 决策项的可定位落地或评审接受证据、缩比容量探针（≥50–100 条模拟 WSS 连接并携 Observed 上报，压到 SQLite 单写者路径；完整 500 台验证仍在 G7）——写路径风险必须在关键路径结束前暴露。
 
 ### Phase 5：State, Data Plane & Secrets
 
@@ -140,7 +140,7 @@ Target derivation（`SyncState.oneof assignment`，hash 从 canonical protobuf �
 
 package-owned XDG Autostart、resident hidden Session Agent、build-time Slint、local typed D-Bus、logind session validation、singleton/lease、single-consumer 串行 Oneshot lock/unlock/terminate、动作开始捕获/effect 前重验当前 session、无 request ID 的 single-inflight binding prompt、固定 contest user、选定 Home backend（限时定案）、`HOME_RESET` 同 epoch 可重入。
 
-**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、stale Agent、Oneshot 离线丢弃/结果丢失 `outcome_unknown`/不重放、session replacement 不 retarget、严格顺序执行、lock/unlock 的 Caddy 调用数为 0、Home 同 epoch 可重入 / RecoverHomeInstance / 不断 daemon WSS。
+**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、stale Agent、Oneshot pre-cut `COMMAND_NOT_DELIVERED`/post-cut `outcome_unknown`/不重放、session replacement 不 retarget、严格顺序执行、lock/unlock 的 Caddy 调用数为 0、Home 同 epoch 可重入 / RecoverHomeInstance / 不断 daemon WSS。
 
 ### Phase 7：Production Release
 
