@@ -10,7 +10,7 @@
 
 正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 仍是当前 authority 拓扑，在 atomic cutover 前保持权威。
 
-[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady；Client Proof|Ack|Ready）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady|ServerClose；Client Proof|Ack|Ready；Active Server 同样允许 ServerClose）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
 
 尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 `challenge_nonce`/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，先进入必须人工处置的 `pending_review`，批准时原子固化 `CredentialBundle`，再依次交换 `CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id bytes}`；拒绝由 `EnrollmentReviewStatus{DENIED,error_code}` 表达。Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active；SessionReady 后第一条 Active packet 必须是 Observed。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
 
@@ -153,7 +153,7 @@ flowchart LR
 - Enrollment 客户端（含 Gateway CSR）；
 - WSS 控制连接；
 - 单一有界 single-consumer command executor；每连接最多一个 in-flight，严格按抵达顺序执行；
-- Converge 命令的完整领域键幂等执行（typed assignment/hash / `{binding_id,account_id,credential_revision}` / `home_epoch`）与 Oneshot 的 live-socket 执行；**不**维护 Device command journal；
+- Converge 命令的完整领域键幂等执行（typed assignment/hash / `{binding_id,account_id,credential_revision}` / Target `home_epoch` vs Observed `completed_home_epoch`）与 Oneshot 的 live-socket 执行；**不**维护 Device command journal；
 - Target 应用和 Observed 采集；
 - Caddy 配置渲染（含 `/login` 自动登录注入）、validate、原子激活与 LKG 回滚；
 - Session Agent 协调；
@@ -251,7 +251,7 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 | Operator → Server | operator session/固定角色 | 人类控制面 | 拒绝并审计 |
 | Device Enrollment → Server（当前，flag day 前） | server-auth HTTPS + provisioning 窗口 | 硬件身份证据、Gateway CSR | 窗口关闭或校验失败即拒绝，零状态变更 |
 | Device control ↔ Server（当前，flag day 前） | server-auth TLS + Device Token（WSS） | typed protocol、Command、Observed | 认证失败 401（解码前）；协议失败断开 |
-| Unified Device WSS（ADR-0038 目标） | server-auth TLS + connection-local Challenge proof；Enrollment 另经窗口与人工审核 | Enrollment/Resume、Command、Observed、binding | protocol-fatal 最多发一次 ProtocolError 后关闭；业务审核结果走 EnrollmentReviewStatus |
+| Unified Device WSS（ADR-0038 目标） | server-auth TLS + connection-local Challenge proof；Enrollment 另经窗口与人工审核 | Enrollment/Resume、Command、Observed、binding | 101 后可分类终止最多发一次 Handshake/Active 共用 `ServerClose` 后关闭；审核拒绝单独走 durable `EnrollmentReviewStatus(DENIED)` |
 | Device Daemon → Helper | 本地 system D-Bus + OS policy | 封闭特权请求 | 拒绝且不降级 |
 | Agent ↔ Device Daemon | 本地 session-aware typed IPC | UI snapshot 和会话动作 | lease/当前 session 失效 |
 | Browser → Caddy | loopback HTTPS | 页面和 DOMjudge 流量 | BLOCKED/503 |
@@ -305,7 +305,7 @@ database / credential / protocol / OS adapters
 | origin CA key | pki | Enrollment 签发 use case |
 | Gateway certificate/key | Client 凭据文件 | Caddy 配置渲染 |
 | Machine Hardware ID | identity startup | Enrollment、Observed |
-| 本地 session 身份 / `home_epoch` | local runtime domain | Agent/Home adapters；WSS Oneshot 为空 body，不携带 SessionTarget |
+| 本地 session 身份 / `home_epoch` / `completed_home_epoch` | local runtime domain | Agent/Home adapters；WSS Oneshot 为空 body，不携带 SessionTarget；Observed 只报告最近完整完成的 Home epoch |
 | AuditEvent | audit module | operator query/export |
 
 数据库表是模块实现细节。一个模块不得通过任意 SQL 写入另一个模块拥有的状态。
@@ -441,5 +441,5 @@ Device 可以在 Server 暂时不可达时继续使用已经验证的本地状�
 - 已安装且未过期的 Gateway certificate 可以继续使用；
 - 当前有效 binding 的本地凭据可以继续使用；
 - 不得在离线时创建新 binding、获得新 token/证书或接受陈旧 revision；
-- 重连后通过 slim Observed 与 Converge 领域键（hash/revision/home_epoch）收敛；Oneshot 意图若离线已丢弃，不重放；
+- 重连后通过 slim Observed 与 Converge 领域键（assignment hash / credential context / Target `home_epoch` vs `completed_home_epoch`）收敛；Oneshot 意图若离线已丢弃，不重放；
 - 本地损坏不能通过"自动重建身份"绕过。

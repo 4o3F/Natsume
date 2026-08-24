@@ -64,8 +64,14 @@ message ObservedStateSnapshot {
   // Required after semantic decode; missing is not equivalent to ABSENT.
   CredentialObservation credential = 2;
   GatewayState gateway_state = 3;
-  // SHA-256 of the raw SubjectPublicKeyInfo DER of the Gateway cert Caddy is
-  // actually using. Empty if none.
-  bytes gateway_certificate_fingerprint = 4;
+  // SHA-256 of the complete DER encoding of the leaf certificate Caddy is
+  // actually using. The Server derives the expected value from the immutable
+  // CredentialBundle.gateway_leaf_der. Absent means Caddy is not using a leaf;
+  // present values are exactly 32 bytes.
+  optional bytes gateway_leaf_sha256 = 4;
   SessionState session_state = 5;
+  // Latest durably completed HOME_RESET epoch. Absent means no HOME_RESET has
+  // ever completed; present values are positive and never decrease. While a
+  // newer reset is in progress or recovery, report the previous completed epoch.
+  optional uint64 completed_home_epoch = 6;
 }

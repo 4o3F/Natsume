@@ -16,6 +16,8 @@
 
 **2026-08-24 修订（channel/Binding/credential context）**：Command 由 Server actor 与 Client executor 的单消费者 channel 串行执行。`OPEN_BINDING_PROMPT` 打开 screen 即成功；现场提交是单 in-flight `BindingRequest{seat_code}` → `BindingResult{state,error_code}`，无 request ID。`SYNC_STATE.bound`、`SYNC_SECRET` 与 Observed credential 统一使用 `account_id` 防止 mapping 更换时混用旧密码。
 
+**2026-08-24 修订（Observed Home/Gateway）**：Observed 新增可选 `completed_home_epoch` 作为 `HOME_RESET` 的完成侧收敛事实；Gateway 证书观测明确为 Caddy 实际加载完整 leaf DER 的 `gateway_leaf_sha256`。
+
 Control-key history、人工审核的 durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Target transaction state 是 `pending_review` / `awaiting_credential_ack` / `active` / `denied`，无 Enrollment expiry 或 activation deadline。Device Prepared/BundleInstalled 使用 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，不维持双 authority。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
@@ -58,7 +60,7 @@ Control-key history、人工审核的 durable Enrollment transaction、immutable
 
 ## 2. 标识和值对象
 
-领域使用一组稳定值对象区分业务身份与硬件标识。不存在全局 configuration 或 binding-set clock。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`device_bindings.binding_id` 是每次 bind 铸造的 UUIDv7 occupancy stamp。Secret 收敛键必须是完整 `(binding_id,account_id,credential_revision)` 而不是任一子集。`home_epoch` 是 `HOME_RESET` 的 Converge 键。本地 Agent/logind session 身份不是 WSS Oneshot 字段。
+领域使用一组稳定值对象区分业务身份与硬件标识。不存在全局 configuration 或 binding-set clock。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`device_bindings.binding_id` 是每次 bind 铸造的 UUIDv7 occupancy stamp。Secret 收敛键必须是完整 `(binding_id,account_id,credential_revision)` 而不是任一子集。`HOME_RESET` 的 Converge 键是 Server Target `home_epoch` 与 Device Observed `completed_home_epoch` 的比较。本地 Agent/logind session 身份不是 WSS Oneshot 字段。
 
 bind / rebind 铸造新的 `binding_id`；unbind 删除该行；再次 bind 得到新 UUID。未变化 Binding 不重写，因此不因无关绑定变更而成为 secret-sync stale。Account mapping 或密码变化而 Binding 保持时，Import 不得写入 Binding 或铸造 `binding_id`。无 integer bump，无 `seats.binding_generation`。
 
@@ -127,7 +129,7 @@ Target 是根据已提交 Server truth 为某台 Device 计算的**非秘密**�
 
 ## 8. DeviceObserved
 
-Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。不得回传 secret/session instance/sequence/generation/apply blob。物理 current row 添加 Server 收包时间并按 `device_id` 唯一。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。无 `observed_sequence` 或 session DB 字段。
+Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、可选 `gateway_leaf_sha256`、`session_state`、可选 `completed_home_epoch`。前一字段出现时恰为 32 bytes，是 Caddy 实际加载 leaf certificate 完整 DER 的普通 SHA-256；Server 从 immutable Bundle leaf DER 派生期望值，同 key 重签也视为不同证书。后一字段缺失表示从未完整完成 reset，出现时为正数且只在完整 durable 完成后单调前进；执行/恢复较新 reset 时仍报告上一完成值。不得回传 secret/session instance/sequence/generation/apply blob、通用 Home state 或进度。目标物理 current row 添加这两个可空事实和 Server 收包时间，并按 `device_id` 唯一；本轮只冻结协议/文档，migration 与 Rust 实现在后续 atomic batch 同步。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。无 `observed_sequence` 或 session DB 字段。
 
 ## 9. Drift
 
@@ -137,7 +139,7 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 
 **Command** 是面向单台 Device 的显式意图，分 Converge 与 Oneshot，不是同一套 Device journal 耐久机。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}` 作为 operator 审计入口；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 HTTP replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。只有当前 `DeviceState::Enrolled` 可首次持久化 Command；不存在或 non-enrolled target 对外同为 `404 RESOURCE_NOT_FOUND`，且资格拒绝零 Command、零 audit、零 notifier。Command 已创建后，Device 的 disable/revoke 不改变该 ID 的 replay/conflict 事实。首次 `201`、replay `200`、invalid ID `400`、missing/non-enrolled `404`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
 
-Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，每台 Device 同时最多一条已投递未终态 Command。Target `commands.state` 为 `queued` / `succeeded` / `failed` / `outcome_unknown`；最后一项是 Oneshot 已尝试投递但 terminal status 前断线的 Server-only 终态，不自动重放。Converge 键是 assignment hash、完整 credential context 或 `home_epoch`；Device 无 command journal。Oneshot 无 wire session target，本地开始时捕获 current session 并在特权动作前重检，不改投 replacement session。
+Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，每台 Device 同时最多一条已投递未终态 Command。Target `commands.state` 为 `queued` / `succeeded` / `failed` / `outcome_unknown`；最后一项是 Oneshot 已尝试投递但 terminal status 前断线的 Server-only 终态，不自动重放。Converge 键是 assignment hash、完整 credential context 或 Target `home_epoch` vs Observed `completed_home_epoch`；Device 无 command journal。Oneshot 无 wire session target，本地开始时捕获 current session 并在特权动作前重检，不改投 replacement session。
 
 批量操作 = 批量创建 Command，进度视图只由查询聚合；可选 `group_correlation_id` 只用于查询和审计分组，不定义跨 Device 顺序、原子性或 lifecycle。
 
@@ -164,7 +166,7 @@ Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：d
 
 - **Machine identity startup**：identity 检查先于一切 identity-bound 产物使用。决策是封闭枚举（如 `FIRST_BOOT_ALLOWED`、`IDENTITY_MATCH`、`IDENTITY_UNAVAILABLE_FAIL_CLOSED`、`IDENTITY_MISMATCH_FAIL_CLOSED`、`CREDENTIALS_UNREADABLE_FAIL_CLOSED`、`RECOVERY_REQUIRED`）。**不能输出“猜测最可能是同一台机器并继续”。**
 - **Session**：WSS lock/unlock/terminate/open_binding_prompt 作用于当前 graphical session，空 body，不携带 `SessionTarget` / `session_epoch`。`open_binding_prompt` 打开 screen 即 Command 成功；志愿者确认后发送 `BindingRequest`，本地取消不发业务包。本地 Agent/UI 仍校验当前 logind session 与 lease；陈旧 Agent 或陈旧 UI action 被拒绝。
-- **Home**：每次 `HOME_RESET` 由 Server 分配 `home_epoch`；同 epoch 可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch。`HOME_RESET` 不拆 daemon WSS。reset 完成前不启动受管 session；中断的 reset 经本地状态文件 + `RecoverHomeInstance` 恢复；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend**。本地分解只属实现面，D-Bus surface 保持不变。
+- **Home**：每次 `HOME_RESET` 由 Server 分配 Target `home_epoch`；同 epoch 可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 本地已完成 epoch；重试不得 bump epoch。Observed `completed_home_epoch` 只在全部步骤 durable 完成后单调前进，执行/恢复期间保持上一完成值。Server 以缺失/较小、相等、超前或回退分别判定未收敛、已收敛、fail-closed、fail-closed。`HOME_RESET` 不拆 daemon WSS。reset 完成前不启动受管 session；中断的 reset 经本地状态文件 + `RecoverHomeInstance` 恢复；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend**。本地分解只属实现面，D-Bus surface 保持不变。
 
 ## 14. 删除、重置和替换
 

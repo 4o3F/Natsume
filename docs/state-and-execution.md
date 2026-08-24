@@ -21,7 +21,7 @@ Natsume 同时处理：已提交事实（Server truth）、期望状态（Target
 - **HTTP outcome**：只有当前 `enrolled` Device 可首次持久化，成功为 `201`；target 不存在或存在但 state 不是 `enrolled` 都返回相同四字段 body 的 `404` / `RESOURCE_NOT_FOUND`；same-ID/same-request replay 为 `200`；非 canonical UUIDv7 为 `400` / `COMMAND_ID_INVALID`；same-ID/different-request 为 `409` / `COMMAND_REQUEST_CONFLICT`。Device 在创建后被 disable/revoke 不改变 replay/conflict 分类；这两个分支先于首次持久化资格检查并忽略当前 state。这些 outcome 只表示 Server 已记下意图，不表示 Device 已执行。
 - **串行边界**：Server DeviceActor 与 Client command executor 各有单消费者有界 channel。Server 同时最多投递一条未终态 Command；Client 完成本地副作用并返回 terminal status 后才开始下一条。WS I/O、ping/pong、Observed 与 disconnect 检测可并发。
 - **Converge vs Oneshot**：Converge（`sync_state` / `sync_secret` / `reset_home`）按领域键幂等，Server 在 drift 时重推同一 payload。Oneshot（`lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt`）仅 live socket；离线丢弃，重连不重放。Device **不**维护 command journal。
-- **Converge 键**：`sync_state` = Server-derived assignment hash vs Observed `applied_hash`；`sync_secret` = Target `(binding_id,account_id,credential_revision)` vs Observed credential 完整上下文且 `state=INSTALLED`；`reset_home` = `home_epoch`（同 epoch 可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch）。
+- **Converge 键**：`sync_state` = Server-derived assignment hash vs Observed `applied_hash`；`sync_secret` = Target `(binding_id,account_id,credential_revision)` vs Observed credential 完整上下文且 `state=INSTALLED`；`reset_home` = Target `home_epoch` vs Observed 可选 `completed_home_epoch`（缺失/较小未收敛，相等收敛；超前或观测回退 fail closed；同 epoch 可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch）。
 - **Oneshot 目标与不确定结果**：命令作用于开始执行时捕获的 current graphical session，不携带 wire session target。已尝试投递却在 terminal status 前断线时，Server 记录 terminal `outcome_unknown`，不自动重放；wire `CommandState` 仍只有 `SUCCEEDED` / `FAILED`。
 - **`OPEN_BINDING_PROMPT`**：空 body，无 TTL，无 `prompt_message_id`。Device 打开 screen 即报 `SUCCEEDED`。现场提交是独立 `BindingRequest{seat_code}` → `BindingResult{state,error_code}`；每个 Active session 最多一个 in-flight BindingRequest，不携 request ID 或 occupancy `binding_id`。
 - **binding/account/revision**：Device 在 secret 写入前检查当前 assignment 的 `(binding_id,account_id)` 与 Command 匹配，并校验 revision。任一不同都稳定拒绝，不部分应用。
@@ -71,7 +71,7 @@ Caddy 业务状态只需 `BLOCKED` / `READY`。
 ## 7. Session 与 Home
 
 - **Session**：WSS Oneshot 在开始时捕获 current graphical session，特权副作用前重检；replacement 发生在执行中则 `SESSION_CONTEXT_STALE`，不改投新 session。Wire 仍无 `SessionTarget` / `session_epoch`。Agent lease 拒绝陈旧 UI action，Session 动作不改变 Caddy。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
-- **Home**：每次 `HOME_RESET` 由 Server 分配 `home_epoch`；同 epoch 的 Prepare/Activate/Recover/GC 必须可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch。`HOME_RESET` 不拆 daemon WSS。reset 完成前不启动受管 session；中断的 reset 经本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend。** 重置仍是操作员在场的受控事件。本地分解只属实现面，D-Bus surface 保持不变。
+- **Home**：每次 `HOME_RESET` 由 Server 分配 `home_epoch`；Observed 可选 `completed_home_epoch` 缺失表示从未成功完成 reset，出现时必须为正且只在 Prepare/Activate/Recover/GC 全部 durable 完成后单调前进，较新 reset 执行/恢复期间保持上一完成值。同 epoch 的步骤必须可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch；重试不得 bump epoch。曾完成但完成记录缺失/损坏时 fail closed，不报告正常 absent。`HOME_RESET` 不拆 daemon WSS。reset 完成前不启动受管 session；中断的 reset 经本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend。** 重置仍是操作员在场的受控事件。本地分解只属实现面，D-Bus surface 保持不变。
 
 ## 8. 可观测性
 
@@ -79,4 +79,4 @@ Server 与 Device 指标追踪连接、Observed freshness、Drift、enrollment/�
 
 ## 9. 测试模型
 
-必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID fingerprint、Server/Client channel 顺序与单 in-flight、Converge 领域键幂等、Oneshot 离线丢弃/结果丢失 `outcome_unknown`/不重放、assignment hash golden、陈旧 `(binding_id,account_id,credential_revision)`、Account mapping 替换不混用旧密码、`home_epoch` stale、initial Observed barrier、Caddy validate/reload 中断、secret redaction/写入中断、session replacement 重检与 Home recovery。具体测试随对应 Phase 实现补全。
+必须覆盖的安全 fault class：Panel canonical UUIDv7 正/反例、`PUT` 首次 `201` / replay `200` / invalid `400` / conflict `409`、same-ID fingerprint、Server/Client channel 顺序与单 in-flight、Converge 领域键幂等、Oneshot 离线丢弃/结果丢失 `outcome_unknown`/不重放、assignment hash golden、陈旧 `(binding_id,account_id,credential_revision)`、Account mapping 替换不混用旧密码、`completed_home_epoch` absent/positive/monotonic/in-progress/recovery/ahead/regression 与 stale、initial Observed barrier、Caddy leaf DER SHA-256/validate/reload 中断、secret redaction/写入中断、session replacement 重检与 Home recovery。具体测试随对应 Phase 实现补全。

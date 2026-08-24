@@ -14,6 +14,7 @@ message ServerHandshakeEnvelope {
     CredentialBundle       credential_bundle        = 3;
     EnrollmentActivated    enrollment_activated     = 4;
     SessionReady           session_ready            = 5;
+    ServerClose            server_close             = 6;
   }
 }
 
@@ -41,7 +42,6 @@ message ServerActiveEnvelope {
   oneof body {
     Command       command        = 2;
     BindingResult binding_result = 3;
-    ProtocolError protocol_error = 4;
-    ServerDrain   server_drain   = 5;
+    ServerClose   server_close   = 4;
   }
 }

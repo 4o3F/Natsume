@@ -3,20 +3,32 @@ package natsume.device.control;
 
 // Secret-bearing protobuf field wrapper. Generated Rust must suppress ordinary
 // Debug output for this type; its value is never legal in logs, Observed, audit,
-// ProtocolError, or Command terminal details.
+// ServerClose, or Command terminal details.
 message SecretBytes {
   bytes value = 1;
 }
 
-// Server → Device: this socket is going away. retry_after_ms is a relative
-// minimum-delay hint, not a lease or an absolute wall-clock deadline. Zero adds
-// no Server-requested delay; Client's ordinary reconnect backoff still applies.
-message ServerDrain {
-  uint64 retry_after_ms = 1;
+// Client may reconnect using its ordinary backoff. If retry_after_ms is present,
+// it is an additional relative minimum delay, not a lease or wall-clock
+// deadline. Present zero is invalid; omit the field when no extra delay applies.
+message RetryConnection {
+  optional uint64 retry_after_ms = 1;
 }
 
-message ProtocolError {
-  // Fatal protocol failure. At most one is sent, then the socket closes.
-  // ErrorCode registry token; not a human-readable or business-denial message.
+// Client must stop automatically retrying the same local intent until software,
+// durable local state, or operator-owned Server state changes.
+message StopConnection {}
+
+// Server → Device terminal outcome, legal in Handshake and Active phases. The
+// Server sends at most one, sends no later business message, and then closes the
+// socket. This connection-local fact is not a durable Enrollment review result.
+message ServerClose {
+  // Required non-empty ErrorCode registry token; never human-readable text or
+  // peer-provided detail.
   string error_code = 1;
+  // Required. Client behavior is selected only by this action, not error_code.
+  oneof action {
+    RetryConnection retry = 2;
+    StopConnection stop = 3;
+  }
 }

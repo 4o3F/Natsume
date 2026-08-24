@@ -6,9 +6,11 @@
 > Supersedes: consolidated historical records; see [`history-map.md`](history-map.md)
 > Superseded by: —
 >
-> **2026-08-20 修订（Oneshot session 与 Home Converge）**：WSS lock/unlock/terminate/open_binding_prompt 是 Oneshot，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`HOME_RESET` 按 `home_epoch` Converge；同 epoch 可重入；不拆 daemon WSS。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
+> **2026-08-20 修订（Oneshot session 与 Home Converge）**：WSS lock/unlock/terminate/open_binding_prompt 是 Oneshot，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`HOME_RESET` 按 Target `home_epoch` 与完成侧 observation Converge；同 epoch 可重入；不拆 daemon WSS。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 >
 > **2026-08-24 修订（Binding 单 in-flight）**：`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`。打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。志愿者输入座位号并确认后发送 `BindingRequest{seat_code}`，Server 回 `BindingResult{state,error_code}`；本地取消只关闭窗口，不发业务包。每个 Active session 最多一个未完成 BindingRequest，以 channel 顺序配对；不携带 request ID 或 occupancy `binding_id`。
+>
+> **2026-08-24 修订（Home R1 收敛）**：Observed 只增加可选 `completed_home_epoch`，表达最近一次完整 durable 完成的 reset；不恢复通用 `home_state`、进度 blob 或 generation。
 
 ## Context
 
@@ -33,9 +35,9 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 - 使用固定 contest user 与 versioned Home template。
 - deployment 基于 target safety、recovery 与 performance evidence 只选择一个 Home backend（OverlayFS 或 staged copy），并记录到 platform evidence；runtime 不静默 fallback。
-- 每次 `HOME_RESET` 获得由 Server 分配的 `home_epoch`（Converge 键）。同 epoch 的 Prepare/Activate/Recover/GC 必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch。
+- 每次 `HOME_RESET` 获得由 Server 分配的 `home_epoch`。收敛键是 Target `home_epoch` vs Observed 可选 `completed_home_epoch`。后者缺失表示从未成功完成 reset；出现时必须为正数且单调，只在 Prepare/Activate/Recover/GC 全部 durable 完成后前进。较新 reset 执行或恢复期间继续报告上一个完成 epoch。同 epoch 的各步骤必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch；重试不得 bump epoch。
 - `HOME_RESET` 不拆 daemon WSS（contest user home，daemon 是 natsume service）。
-- 中断的 reset 通过本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；不确定时 fail closed。reset 完成并证明 mount/copy 与 ownership safety 后才能启动 managed graphical session。
+- 中断的 reset 通过本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；不确定时 fail closed。曾完成 reset 但本地完成记录缺失或损坏时不得报告正常 absent。Server 看到 Observed 缺失/小于 Target 时重推同一 epoch，相等时收敛；Observed 大于 Server Target 或相对既有持久化观测回退时 fail closed，不发送旧 epoch。reset 完成并证明 mount/copy 与 ownership safety 后才能启动 managed graphical session。
 - reset 是 operator-present controlled event，不因 session replacement 隐式发生。
 
 ### Direct capability-oriented Agent
@@ -79,7 +81,7 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 ## Acceptance basis and revisit trigger
 
-证据必须覆盖 stale Agent/UI、Oneshot 离线丢弃、logind replacement、reboot、lease expiry、Caddy-call counter；direct XDG launch、singleton、hidden/lazy UI、typed IPC、IME、HiDPI、focus、display loss 和 crash recovery；Home 同 epoch 可重入、disk-full/ownership/reboot/repeated reset、HOME_RESET 不断 daemon WSS 与 backend performance；以及 package/Slint runtime closure。
+证据必须覆盖 stale Agent/UI、Oneshot 离线丢弃、logind replacement、reboot、lease expiry、Caddy-call counter；direct XDG launch、singleton、hidden/lazy UI、typed IPC、IME、HiDPI、focus、display loss 和 crash recovery；Home 同 epoch 可重入、`completed_home_epoch` absent/positive/monotonic/in-progress/recovery/ahead/regression、完成记录损坏 fail-closed、disk-full/ownership/reboot/repeated reset、HOME_RESET 不断 daemon WSS 与 backend performance；以及 package/Slint runtime closure。
 
 出现 simultaneous multi-image/multi-desktop requirement、direct Agent capability 不再可行、新 Home backend 或确认的 overlay requirement 时，以新 ADR 重开。
 
