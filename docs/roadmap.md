@@ -1,12 +1,14 @@
 # Natsume V2 实施路线图
 
 > 状态：`ACTIVE-PLAN`
-> 架构基线：Natsume V2 当前主题决策集合（[ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md)–[0037](adr/0037-operator-identity-and-server-runtime-secrets.md)）
+> 架构基线：Natsume V2 当前主题决策集合（[ADR-0030](adr/0030-foundation-deployment-and-delivery-baseline.md)–[0038](adr/0038-unified-ordinary-wss-device-control-authority.md)）
 > 当前阶段：Phase 0（收尾）
 > 计划基线：26 周 + 2–4 周外部缓冲（约 6 个月开发窗口，3 人，ADR-0030 F7）
 > 注意：日期和周数是计划，不是完成声明
 
 本文件定义阶段结果、依赖、Gate 和交付证据。协议语义、证书规则、平台状态和安全不变量分别由 [契约](contracts.md)、[安全与恢复](security-recovery.md) 和 [平台支持](supported-platform.md) 拥有。
+
+**2026-08-24 目标重基线**：Phase 3/4 段落保留的是已经交付的 Token/HTTPS/Bearer 历史工作与 Gate 证据，不得当作 ADR-0038 最终 runtime 语义。atomic cutover 的目标为 ordinary WSS Challenge proof、每个 Enrollment transaction 人工审核、无 Enrollment expiry、SessionReady 后 initial Observed barrier、双端有界 single-consumer Command channel。Phase 5/6 必须按新 Proto 接线，不建立兼容双轨。
 
 ## 1. 计划原则
 
@@ -130,15 +132,15 @@ WSS + Bearer token 认证、subprotocol 版本协商、401-before-decode、按 C
 
 ### Phase 5：State, Data Plane & Secrets
 
-Target derivation（`SyncState.canonical_hash`，无 `generation`）、explicit `SYNC_STATE`、Caddy 配置渲染/validate/reload/LKG 回滚、BLOCKED/READY、fixed TLS upstream、xheaders `/login` 注入（ADR-0034）、explicit `SYNC_SECRET` 与凭据文件/配置重渲染、Drift 与 operator views。
+Target derivation（`SyncState.oneof assignment`，hash 从 canonical protobuf 本地派生，无 `generation`）、explicit `SYNC_STATE`、Caddy 配置渲染/validate/reload/LKG 回滚、BLOCKED/READY、fixed TLS upstream、xheaders `/login` 注入（ADR-0034）、带完整 `{binding_id,account_id,credential_revision}` 的 explicit `SYNC_SECRET`、凭据文件/配置重渲染、Drift 与 operator views。
 
 **G5 覆盖**：两段签发阶梯负向、Caddy validate/reload/rollback、bad cert/key/SAN 拒绝、offline LKG、upstream 非 TLS 拒绝激活、`/login` 之外无注入头、secret stale/retry/redaction、DOMjudge 契约回归、故障注入。
 
 ### Phase 6：Session & Home
 
-package-owned XDG Autostart、resident hidden Session Agent、build-time Slint、local typed D-Bus、logind session validation、singleton/lease、Oneshot lock/unlock/terminate、固定 contest user、选定 Home backend（限时定案）、`HOME_RESET` 同 epoch 可重入。
+package-owned XDG Autostart、resident hidden Session Agent、build-time Slint、local typed D-Bus、logind session validation、singleton/lease、single-consumer 串行 Oneshot lock/unlock/terminate、动作开始捕获/effect 前重验当前 session、无 request ID 的 single-inflight binding prompt、固定 contest user、选定 Home backend（限时定案）、`HOME_RESET` 同 epoch 可重入。
 
-**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、stale Agent、Oneshot 离线丢弃、lock/unlock 的 Caddy 调用数为 0、Home 同 epoch 可重入 / RecoverHomeInstance / 不断 daemon WSS。
+**G6 覆盖**：当期镜像 capability 清单全项（ADR-0035）、中文 IME/HiDPI/focus denied、display lost 与 Agent crash、无 user unit、stale Agent、Oneshot 离线丢弃/结果丢失 `outcome_unknown`/不重放、session replacement 不 retarget、严格顺序执行、lock/unlock 的 Caddy 调用数为 0、Home 同 epoch 可重入 / RecoverHomeInstance / 不断 daemon WSS。
 
 ### Phase 7：Production Release
 

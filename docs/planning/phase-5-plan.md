@@ -7,7 +7,7 @@
 
 **2026-08-19 blocker**：本计划按当前 Token Enrollment、daemon credential paths 与 Bearer WSS authority 起草；[ADR-0038](../adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 Proto/crypto/schema foundation 已存在，但 runtime cutover 尚未发生。Owner 必须先决定 Phase 5 位于 atomic authority cutover 前还是后，并据此重基线 credential/session inputs；禁止实现混合 Token/control-key compatibility。
 
-**2026-08-20 修订（Command 投递二分）**：`SYNC_STATE` / `SYNC_SECRET` 是 Converge 命令（键分别为 `canonical_hash` vs `applied_hash`、`credential_revision` vs `installed_credential_revision`）。Device 无 command journal；D12 journal GC 关闭为不再适用。Observed 为 slim snapshot（`credential_state`，无 `secret_state` / `STALE`）。`SyncState` 字段为 `canonical_hash`、`binding_id`、`seat_code`、`domjudge_username`，无 `generation`。`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`；Seat 在 `BindingRequest.seat_code`（Phase 6 消费）。
+**2026-08-24 修订（统一 Converge context 与串行执行）**：`SYNC_STATE` / `SYNC_SECRET` 是 Converge 命令。前者携带显式 `oneof assignment`（unbound 或完整 `{binding_id,account_id,seat_code,domjudge_username}`），hash 不上 wire，而从 canonical protobuf bytes 按固定 domain-separated SHA-256 配方派生；后者与 Observed 按完整 `{binding_id,account_id,credential_revision}` 收敛，password 使用 `SecretBytes`。Device 无 command journal；D12 journal GC 关闭为不再适用。Server DeviceActor 与 Client executor 都是有界 single-consumer channel，每连接最多一个 in-flight。Observed 为 slim snapshot，且每次 SessionReady 后第一条 Active packet 必须是 Observed。`open_binding_prompt` 空 body；Seat 在 `BindingRequest.seat_code`（Phase 6 消费），无 request ID。
 
 本文件是计划，不是完成声明。遵守 [路线图](../roadmap.md) §1 原则 5：细目在 Phase 启动时冻结，本文件提供该冻结的候选基线与决策清单。
 
@@ -56,7 +56,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### 3.5 Phase 4 已交付、本阶段直接消费
 
-- **payload schema v1 已实现**（`server/src/application/command.rs`）：HTTP frozen payload 仍是 Phase 4 交付面。wire `SyncState` 为 `{canonical_hash, binding_id, seat_code, domjudge_username}`，无 `generation`；`SyncSecret` 为 `{binding_id, credential_revision, password}`。Converge 键是 `canonical_hash` / `credential_revision`；occupancy 是 `binding_id` UUIDv7。`generation` 不进入 `SyncState` 或 Observed。无 `TargetAssignment` / `TargetGateway` 消息。
+- **payload schema v1 当前实现存在 drift**（`server/src/application/command.rs`）：HTTP frozen payload 仍是 Phase 4 交付面，但渲染与执行在 Phase 5 接线前必须适配新 wire。`SyncState` 使用 `oneof assignment`：显式 unbound 或 `BoundAssignment{binding_id,account_id,seat_code,domjudge_username}`；hash 不在 wire，双方按 `SHA-256("NATSUME-SYNC-STATE-v1\0" || sync_state.encode_length_delimited_to_vec())` 派生，typed `SyncState` 只含已验证 assignment。`SyncSecret` 为 `{binding_id,account_id,credential_revision,password: SecretBytes}`。Converge 看完整 assignment/hash 或完整 credential observation；无 `generation`，无 `TargetAssignment` / `TargetGateway` 消息。
 - `sync_secret` 的 vault→wire `SecretBytes` 注入被 Phase 4 显式登记为 **Phase 5 接线 hook**（Phase 4 接受并持久化但 dispatcher 不渲染不投递）。
 - proto `SecretBytes` 的 `Debug` 经 build 期 `skip_debug` 手写为 `[REDACTED]`。
 
@@ -94,8 +94,8 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### WP2：Target 派生与 `SYNC_STATE` 服务端
 
-- 目标：从 Server truth 确定性派生非秘密 assignment，产出 `canonical_hash`，作为 `sync_state` 的 frozen payload；提供 operator 触发面。wire 不携带 `generation`。
-- 冻结项：派生输入闭包（Seat↔Binding、account mapping、site config；无 `revision_counters`）；`canonical_hash` 算法（建议与 fingerprint v1 同纪律：独立域分隔符 + NUL + JCS，**D1**）；`generation` 不进入 `SyncState` / Observed（**D2** 关闭为不再适用）；operator 触发面（新 route vs 直接 `putCommand`，**D3**）。
+- 目标：从 Server truth 确定性派生非秘密 typed assignment，作为 `sync_state` frozen payload；提供 operator 触发面。wire 不携带 hash 或 `generation`。
+- 冻结项：派生输入闭包（Seat↔Binding、account mapping、site config；无 `revision_counters`）；hash 算法已冻结为上述 canonical protobuf 配方（**D1 关闭**）；`generation` 不进入 `SyncState` / Observed（**D2 关闭为不再适用**）；operator 触发面（新 route vs 直接 `putCommand`，**D3**）。
 - 文件面：`server/src/application/target.rs`（新）、必要的 `db/` 读面、`http/handler/`、OpenAPI（若新增 route 需同步 §3.6.1/§3.6.2/§3.6.5 与审计词表）。
 - 测试：同一 truth 多次派生逐字节一致；任一输入变化改变 hash；secret 不入 Target 的字节扫描；陈旧 baseline 拒绝。
 
@@ -114,9 +114,9 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### WP4：`SYNC_STATE` Device 执行
 
-- 目标：收到 Command → 校验（target device、`canonical_hash`、freshness、本地 identity、hostname/upstream 属允许集合）→ 调 WP3 管线 → CommandStatus 与 Observed 回报。wire `SyncState` 无 `generation`。
+- 目标：single-consumer executor 收到 Command → 校验（target device、typed assignment、派生 hash、freshness、本地 identity、hostname/upstream 属允许集合）→ 调 WP3 管线 → CommandStatus 与 Observed 回报。wire `SyncState` 无 hash / `generation`。
 - 冻结项：freshness 时钟容差（依赖 E3）；允许集合来源（site.toml + packaged profile ID 映射）；失败到 `COMMAND_STALE` / `COMMAND_PAYLOAD_INVALID` / `GATEWAY_CREDENTIAL_INVALID` / `GATEWAY_ACTIVATION_FAILED` / `GATEWAY_UPSTREAM_TLS_REQUIRED` 的映射表。
-- 测试：全部拒绝路径零副作用；成功路径 Observed 的 `applied_hash`/`gateway_state` 精确；同一 `canonical_hash` 重推为 no-op（无 Device journal）。
+- 测试：全部拒绝路径零副作用；成功路径 Observed 的 `applied_hash`/`gateway_state` 精确；同一完整 assignment/hash 重推为 no-op（无 Device journal）；并发抵达仍严格按 channel 顺序执行。
 
 ### WP5：xheaders `/login` 注入与 upstream policy
 
@@ -126,9 +126,9 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### WP6：`SYNC_SECRET` 全链
 
-- 目标：operator 触发 → Server 渲染 wire Command 时从 vault 取秘密注入 `SecretBytes` → Device 重检 binding/credential revision → 原子写凭据文件 → 重渲染含凭据配置并激活 → 只报 installed revision。
+- 目标：operator 触发 → Server 渲染 wire Command 时从 vault 取秘密注入 `SecretBytes` → Device 重检完整 `{binding_id,account_id,credential_revision}` → 原子写凭据文件 → 重渲染含凭据配置并激活 → 报告完整 redacted CredentialObservation。
 - 冻结项：秘密注入发生在**渲染 wire Command 时**（绝不进 `frozen_payload_json`，Phase 4 已冻结）；Device 凭据文件路径与权限；重投递时每次重新取秘密而非缓存；零秘密断言点清单。
-- 测试：password 明文不入 DB/WAL/日志/审计/Observed/metrics 的字节扫描；陈旧 revision 拒绝安装；同一 `credential_revision` 重推为 no-op；写入中断保留旧 secret 或明确标记不可用；成功后配置含凭据且权限正确。
+- 测试：password 明文不入 DB/WAL/日志/审计/Observed/metrics 的字节扫描；任一 binding/account/revision 不符都拒绝安装；同一完整三元组重推为 no-op；写入中断保留旧 secret 或明确标记不可用；成功后配置含凭据且权限正确。
 
 ### WP7：Drift 与 operator 视图
 
@@ -154,7 +154,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 | # | 决策 | 影响 |
 |---|---|---|
-| D1 | `canonical_hash` 算法（建议同 fingerprint v1 纪律，独立域串） | 跨 Server/Device 一致性 |
+| D1 | `SyncState` hash 已冻结为 domain-separated canonical protobuf 配方 | **已关闭**；跨 Server/Device golden 固定 |
 | D2 | `generation` 不进入 `SyncState` / Observed（已关闭） | wire 无该字段 |
 | D3 | `SYNC_STATE` operator 触发面：新 route vs `putCommand` | OpenAPI 与 Panel 交互 |
 | D4 | 渲染产物与 LKG 路径、权限、保留代数 | 与包管理目录冲突风险 |
@@ -173,7 +173,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 **历史背景（不再实施）**：曾设想 Device journal 保存 Command frame bytes，条目删除依赖服务端终态确认。高水位游标因乱序终态会静默丢结果而被否决。
 
-高水位游标、按命令确认帧、首批投递完成标记均不再评估。Oneshot 离线丢弃；Converge 靠领域键重推。
+高水位游标、按命令确认帧、首批投递完成标记均不再评估。Oneshot 离线丢弃；若副作用后断线导致结果丢失，Server 记 `outcome_unknown` 且不重放。Converge 靠完整领域键与 Observed 重推。
 
 ## 7. 跨切风险
 

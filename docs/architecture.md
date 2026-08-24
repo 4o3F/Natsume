@@ -10,9 +10,9 @@
 
 正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 仍是当前 authority 拓扑，在 atomic cutover 前保持权威。
 
-[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Server Challenge|Bundle|Activated|SessionReady；Client Proof|Ack|Ready）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，subprotocol 为 `natsume.control`，定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady；Client Proof|Ack|Ready）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
 
-尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 Challenge/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，依次交换 `CredentialBundle`、`CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id bytes}`；Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
+尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 `challenge_nonce`/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，先进入必须人工处置的 `pending_review`，批准时原子固化 `CredentialBundle`，再依次交换 `CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id bytes}`；拒绝由 `EnrollmentReviewStatus{DENIED,error_code}` 表达。Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active；SessionReady 后第一条 Active packet 必须是 Observed。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
 
 ## 1. 目标
 
@@ -21,7 +21,7 @@ Natsume 为单场竞赛现场提供以下能力：
 1. 从固定 CSV 导入 Seat、account 和 password；
 2. 将 Seat 绑定到受管理工作站；
 3. 以显式命令同步非秘密状态和密码；
-4. 在 provisioning 窗口内为 Device 签发 Token 与 Gateway certificate；
+4. 在 provisioning 窗口与人工审核共同约束下为 Device 签发 control credential 与 Gateway certificate；
 5. 在工作站本地提供受控浏览器数据面与 DOMjudge 自动登录；
 6. 编排受管桌面会话和 Home 准备；
 7. 让操作员看到 Target、Observed、Drift、Command 和审计记录；
@@ -44,7 +44,7 @@ Natsume 为单场竞赛现场提供以下能力：
 - 当前单场竞赛的一份可重复 import 的 confirmed contest configuration；
 - `seat,account,password` CSV；
 - Device 注册（provisioning 窗口）、绑定、配置和状态；
-- Device Token 与 Gateway certificate；
+- Device control credential 与 Gateway certificate（flag day 前当前实现仍为 Device Token）；
 - operator Web Panel（admin/viewer 两级角色）；
 - Caddy 到 DOMjudge 的本地 HTTPS 数据面与 `/login` 自动登录注入；
 - Session Agent、受管会话和 Home 准备；
@@ -106,9 +106,9 @@ flowchart LR
 - Target 计算；
 - Device lifecycle 和 binding；
 - provisioning 窗口状态；
-- Enrollment：Device Token 与 Gateway certificate 签发（origin CA key 保管）；
+- Enrollment：durable 人工审核、control credential 与 Gateway certificate 签发（origin CA key 保管）；
 - WSS Device control；
-- direct single-Device Command persistence（`commands` 使用 `frozen_payload_json` 保存 typed frozen content，作 operator 审计）与按 Converge/Oneshot 二分的 dispatcher；
+- direct single-Device Command persistence（`commands` 使用 `frozen_payload_json` 保存 typed frozen content，作 operator 审计）与按 Converge/Oneshot 二分、每 Device 有界 single-consumer channel 串行投递的 dispatcher；
 - Server vault；
 - AuditEvent；
 - Web Panel 静态资源或集成入口。
@@ -118,7 +118,7 @@ flowchart LR
 - 直接访问工作站本地文件、桌面或 Caddy；
 - 把 password 明文、private key 或 Device Token 值加入 Target、Observed、普通 API/Browser 可见响应、日志、指标、audit diff 或导出；
 - 将 Web request 生命周期当作远端副作用完成边界；
-- 在 provisioning 窗口之外签发任何 token 或证书。
+- 在 provisioning 窗口之外接纳新 Enrollment 或批准/签发尚未批准的 transaction；窗口关闭不阻止已固化 Bundle 的 exact replay、Ack 与最终化。
 
 内部模块边界见 [仓库布局](repository-layout.md)。
 
@@ -132,7 +132,7 @@ flowchart LR
 - 在每个 direct Command create 前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并调用 `PUT /api/v2/commands/{command_id}`；
 - 人工触发 `SYNC_STATE`、`SYNC_SECRET`、session/home 操作；
 - provisioning 窗口开关入口；
-- enrollment 凭据替换请求的待审批视图与批准/拒绝动作（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）；
+- 所有 Enrollment transaction 的待审核视图与批准/拒绝动作；Server 派生 create/replacement/recovery 意图，Panel 不接受 Client 自报意图；
 - 可访问性和错误呈现。
 
 不得：
@@ -149,10 +149,11 @@ flowchart LR
 拥有：
 
 - identity-before-credentials 启动检查；
-- Client 凭据文件（Device Token、Gateway key/leaf、Seat 凭据、LKG）；
+- Client 凭据文件（control key/manifest、Gateway key/leaf、Seat 凭据、LKG；flag day 前还包括 Device Token）；
 - Enrollment 客户端（含 Gateway CSR）；
 - WSS 控制连接；
-- Converge 命令的领域键幂等执行（`canonical_hash` / `credential_revision` / `home_epoch`）与 Oneshot 的 live-socket 执行；**不**维护 Device command journal；
+- 单一有界 single-consumer command executor；每连接最多一个 in-flight，严格按抵达顺序执行；
+- Converge 命令的完整领域键幂等执行（typed assignment/hash / `{binding_id,account_id,credential_revision}` / `home_epoch`）与 Oneshot 的 live-socket 执行；**不**维护 Device command journal；
 - Target 应用和 Observed 采集；
 - Caddy 配置渲染（含 `/login` 自动登录注入）、validate、原子激活与 LKG 回滚；
 - Session Agent 协调；
@@ -164,7 +165,8 @@ flowchart LR
 - 直接执行网络输入给出的路径、UID、unit、命令或 upstream；
 - 把一个传输 handler 同时作为凭据、Caddy 和 Home 的业务实现；
 - 将密码返回给 Server、Agent、浏览器或普通日志；
-- 在身份不确定或凭据文件损坏时自动 re-enroll 或重建凭据。
+- 在身份不确定或凭据文件损坏时自动 re-enroll 或重建凭据；
+- 并发执行两条 Command，或在本地 session 已替换后把进行中的动作 retarget 到新 session。
 
 内部必须分离 transport、application、domain、port 和 adapter。见 [仓库布局](repository-layout.md)。
 
@@ -193,7 +195,7 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 - 由系统级 XDG Autostart 在当前图形会话中直接启动；
 - 当前会话资格和 singleton 验证；
 - typed snapshot 的本地展示（view kind 为封闭 enum，可经版本升级扩展）；
-- Seat/binding 提示（`OPEN_BINDING_PROMPT` 空 body，打开 screen 即 Command 成功；现场确认/拒绝走 `BindingRequest.seat_code`）；
+- Seat/binding 提示（`OPEN_BINDING_PROMPT` 空 body，打开 screen 即 Command 成功；志愿者确认后发送 `BindingRequest.seat_code`，本地取消不发业务包）；
 - lock/unlock 等经授权的会话交互；
 - focus-denied 等 UI 结果报告。
 
@@ -247,8 +249,9 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 | 边界 | 认证 | 数据类型 | 失败策略 |
 |---|---|---|---|
 | Operator → Server | operator session/固定角色 | 人类控制面 | 拒绝并审计 |
-| Device Enrollment → Server | server-auth HTTPS + provisioning 窗口 | 硬件身份证据、Gateway CSR | 窗口关闭或校验失败即拒绝，零状态变更 |
-| Device control ↔ Server | server-auth TLS + Device Token（WSS） | typed protocol、Command、Observed | 认证失败 401（解码前）；协议失败断开 |
+| Device Enrollment → Server（当前，flag day 前） | server-auth HTTPS + provisioning 窗口 | 硬件身份证据、Gateway CSR | 窗口关闭或校验失败即拒绝，零状态变更 |
+| Device control ↔ Server（当前，flag day 前） | server-auth TLS + Device Token（WSS） | typed protocol、Command、Observed | 认证失败 401（解码前）；协议失败断开 |
+| Unified Device WSS（ADR-0038 目标） | server-auth TLS + connection-local Challenge proof；Enrollment 另经窗口与人工审核 | Enrollment/Resume、Command、Observed、binding | protocol-fatal 最多发一次 ProtocolError 后关闭；业务审核结果走 EnrollmentReviewStatus |
 | Device Daemon → Helper | 本地 system D-Bus + OS policy | 封闭特权请求 | 拒绝且不降级 |
 | Agent ↔ Device Daemon | 本地 session-aware typed IPC | UI snapshot 和会话动作 | lease/当前 session 失效 |
 | Browser → Caddy | loopback HTTPS | 页面和 DOMjudge 流量 | BLOCKED/503 |
@@ -290,13 +293,14 @@ database / credential / protocol / OS adapters
 | account 标识与当前 Seat→Account mapping | contest-domain | Target、Web；`account_mappings` 由 Import Commit 唯一写入 |
 | password 明文 | Server vault / Client 凭据文件的短生命周期 use case | secret sync、自动登录配置渲染；`server_vault_records` 按 `account_id` 与 `accounts` 一对一 join，每个 Account 仅当前 ciphertext，无独立 `vault_record_id` |
 | Device lifecycle | device | Web、Target |
-| Device Token（哈希）与 Gateway certificate 终态 | device | WSS 认证与 Enrollment adapter；`device_tokens` 仅保存 device/request/hash |
-| Enrollment request workflow | device | Enrollment HTTP、operator review、凭据签发 |
+| Device Token（哈希，flag day 前）与 Gateway certificate 终态 | device | 当前 WSS 认证与 Enrollment adapter；`device_tokens` 仅保存 device/request/hash |
+| Device control key / immutable credential bundle（ADR-0038 目标） | device | unified WSS Enrollment/Resume、operator review |
+| Enrollment transaction workflow | device | unified WSS、operator review、凭据签发；durable state 为 `pending_review` / `awaiting_credential_ack` / `active` / `denied` |
 | provisioning 窗口 | provisioning | Enrollment、Web |
 | 当前 Seat↔Device Binding | contest-domain | Target、session；Binding-set mutation 仅 bind/unbind/rebind，bind 铸造新 `binding_id` occupancy UUID。Import 不写入 Binding、不铸造 `binding_id` |
 | Target | configuration-target | dispatcher、Web |
 | Observed snapshot | device-control | Drift、Web；按 `device_id` 的 current row |
-| direct single-Device Command | command-dispatch | Web、audit；Panel-owned UUIDv7 ID，typed content 位于 `frozen_payload_json` |
+| direct single-Device Command | command-dispatch | Web、audit；Panel-owned UUIDv7 ID，typed content 位于 `frozen_payload_json`；Server terminal 可含 `outcome_unknown` |
 | Server certificate/key | pki | Server TLS adapter |
 | origin CA key | pki | Enrollment 签发 use case |
 | Gateway certificate/key | Client 凭据文件 | Caddy 配置渲染 |
@@ -327,27 +331,29 @@ upload（全局单非秘密 pending candidate）
 
 每个 CSV 都是完整的 contest configuration candidate。Seat collection 不冻结，confirmed configuration 只表示当前 Seat、Seat→Account mapping 与 current credential；`account_mappings` 由 Import Commit 唯一写入，**仅 bind/unbind/rebind** 才铸造或删除 `binding_id` occupancy。不存在全局 configuration 或 binding-set clock。**Material** Import Commit 才替换 confirmed contest configuration；**no-op** 只记录 lineage 与 redacted AuditEvent，不铸造 `binding_id`、不触发 Target churn。material 与 no-op 都只在**非秘密**维度上由 seats/mappings diff 定义：任何已提交的 import 都无条件以新 nonce 替换每个 Account 的 vault ciphertext 并推进其 `credential_revision`（[ADR-0031](adr/0031-contest-import-and-secret-evidence.md)），随后由操作员显式发起批量 `SYNC_SECRET`。preview 不持久化密码、不写 vault。commit、discard 和 expiry 终止 candidate 时只删除 `pending_import_candidate`，只保留 redacted audit。Import Commit 不创建 Command，不产生 Device I/O，**不修改 Binding**，也不对任何 revision 做 CAS。fingerprint 不一致可重试原文件；将删座位仍绑定须重新 preview，且不改变 confirmed truth。权威规则见 [领域模型](domain-model.md) 与 [ADR-0031](adr/0031-contest-import-and-secret-evidence.md)。
 
-### 8.2 Device Enrollment（provisioning 窗口内）
+### 8.2 Device Enrollment（ADR-0038 目标）
 
 ```text
 identity-before-credentials（ADR-0032 配方）
   → server endpoint/trust validation（预置 CA + IP-SAN）
-  → 本地生成 Gateway keypair + CSR
-  → server-auth HTTPS enrollment 请求
-  → Server：窗口门禁 → 校验 → resolution 判定
-      ├─ create_device（未知 hardware ID）
-      │    → 同一事务签发 { Device Token + Gateway leaf } + 审计
-      └─ replace_device_credentials（hardware ID 已有 Device）
-           ├─ 同一 SPKI → 自动批准，同上同步签发
-           └─ 不同 SPKI → 202 pending → operator 审批（零签发）
-                → Device 幂等重投观察到 approved
-                → 该次请求内同步签发 { Device Token + Gateway leaf } + 审计
-  → Client 校验响应（SPKI/chain/SAN）
-  → 本地原子持久化（token 0600、gateway 0640）
-  → WSS 控制连接（Bearer token）
+  → Client 准备 create-once control key、Gateway keypair 与 CSR
+  → 建立普通 server-auth WSS
+  → ServerChallenge{protocol_version, challenge_nonce}
+  → ClientProof{EnrollmentAttempt{enrollment_id, hardware evidence, control public key, CSR}, signature}
+  → Server 校验 proof，并根据当前 Device/key 状态派生 create/replacement/recovery intent
+  → 窗口开放时原子接纳为 durable pending_review
+  → EnrollmentReviewStatus{PENDING_REVIEW}
+  → operator 明确 approve 或 deny
+      ├─ deny：durable denied → EnrollmentReviewStatus{DENIED,error_code}
+      └─ approve（仍在窗口内）：audit + sign + immutable CredentialBundle 原子提交
+           → awaiting_credential_ack → exact CredentialBundle
+           → Client 校验并原子安装 → CredentialAck
+           → Server 激活；replacement 在此刻才原子 supersede 旧 key
+           → EnrollmentActivated → EnrollmentReady → SessionReady
+           → 第一条 Active packet 必须是 Observed
 ```
 
-窗口关闭后 Server 拒绝一切签发，未被 claim 的 `pending`/`approved` request 转为 `expired`。窗口只有一个 current singleton；restart/restore 若发现 `open`，以同事务 audit+CAS close-once，若已 `closed` 则零写入。首次 Enrollment 同步完成且不需要审批；凭据替换是受审计的 operator 审批路径，只有同 SPKI 的重试自动批准（[ADR-0033](adr/0033-enrollment-and-device-control-boundary.md)）。operator 拒绝后 Device 收到稳定码并停止，等待现场人员介入。
+每个新 transaction 都需人工审核，不存在按 SPKI 自动批准。Enrollment transaction 不过期；窗口只 gate 新 admission 与 approve/sign，关闭后已存在 pending 保留等待下次窗口，已固化 Bundle 的 exact replay、Ack、Activated/Ready 与 Resume 可以继续。pending 连接可只交换 Ping/Pong 并等待审核，也可用 exact EnrollmentAttempt 重连。`disabled` / `revoked` 不能借 Enrollment 隐式恢复。当前 HTTPS + Device Token 路径只作为 atomic flag day 前的实现现状保留，不再定义目标业务语义。
 
 ### 8.3 非秘密状态同步
 
@@ -355,14 +361,15 @@ identity-before-credentials（ADR-0032 配方）
 operator starts SYNC_STATE
   → Panel generates canonical UUIDv7 command_id
   → PUT /api/v2/commands/{command_id}（operator 审计；same canonical request = existing Command）
-  → Target snapshot 与 canonical_hash 被冻结
-  → live WSS 投递；若已 applied_hash 相同则 no-op
+  → typed assignment（unbound 或完整 bound context）被冻结
+  → canonical protobuf bytes 本地派生 applied hash
+  → live WSS 串行投递；若 Observed 已匹配完整 assignment/hash 则 no-op
   → Device validates and stages state
   → Caddy 配置渲染 → validate → 原子激活（失败回滚 LKG）
   → Observed slim snapshot（applied_hash / gateway_state）
 ```
 
-`SYNC_STATE` 是 Converge 命令，不涉及任何签发。PUT 的首次 create/replay/conflict 只表示 Server 已记下意图。断线后若 `canonical_hash` 仍 drift，Server 重推同一 payload；Device 无 command journal。
+`SYNC_STATE` 是 Converge 命令，不涉及任何签发。bound assignment 必须完整携带 `{binding_id, account_id, seat_code, domjudge_username}`；unbound 使用显式 `oneof` variant。Hash 不在 wire 重复传输，双方按 `SHA-256("NATSUME-SYNC-STATE-v1\0" || sync_state.encode_length_delimited_to_vec())` 派生，其中 typed `SyncState` 只含已验证 assignment。PUT 的首次 create/replay/conflict 只表示 Server 已记下意图。断线后若完整 state 仍 drift，Server 重推同一 payload；Device 无 command journal。
 
 ### 8.4 密码同步
 
@@ -370,17 +377,17 @@ operator starts SYNC_STATE
 operator starts SYNC_SECRET
   → Panel generates canonical UUIDv7 command_id
   → PUT /api/v2/commands/{command_id}（operator 审计）
-  → current assignment、`binding_id` 与 credential_revision are frozen
+  → current assignment、`binding_id`、`account_id` 与 credential_revision are frozen
   → secret read from current Server vault record
-  → live WSS 投递；installed_credential_revision 已相同则 no-op
-  → Device validates current Binding row and `binding_id`
+  → `SecretBytes` 经 live WSS 串行投递；完整 credential observation 已相同则 no-op
+  → Device validates current `{binding_id, account_id, credential_revision}`
   → 凭据文件原子更新
   → Caddy /login 注入配置重渲染并原子激活
   → secret is discarded from transient buffers
-  → Observed reports installed_binding_id + installed_credential_revision
+  → Observed reports CredentialObservation{binding_id, account_id, credential_revision, state}
 ```
 
-没有自动 secret sync。PUT 相同 ID+相同 canonical request 只返回既有 Command。Converge 正确性看 `credential_revision`，不是 Client journal。
+没有自动 secret sync。PUT 相同 ID+相同 canonical request 只返回既有 Command。Converge 正确性看完整 `{binding_id, account_id, credential_revision, installed}`，不是 Client journal；只有 revision 相同不足以证明安装对象正确。
 
 ### 8.5 Session/Home
 
@@ -390,11 +397,13 @@ current binding and home_epoch
   → prove backend result
   → start/validate graphical session
   → XDG Autostart starts Agent
-  → Agent validates current logind session
+  → Agent validates the one current logind graphical session
   → typed UI snapshots and actions
 ```
 
-Home 无法证明安全时不得启动受管 session。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。Session lock/unlock/terminate/`open_binding_prompt` 是 Oneshot（空 body，live socket，重连不重放），不改变 Caddy。`open_binding_prompt` 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；确认/拒绝绑定是 Device `BindingRequest{binding_request_id, seat_code}` → Server `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。
+Home 无法证明安全时不得启动受管 session。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。Session lock/unlock/terminate/`open_binding_prompt` 是 Oneshot（空 body，live socket，重连不重放），不改变 Caddy。Client 在动作开始时捕获本地 session identity，并在 privileged effect 前重新校验；session 被替换则返回 `SESSION_CONTEXT_STALE`，不 retarget。`open_binding_prompt` 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；每个 active session 只允许一个 in-flight prompt/request，确认绑定是 Device `BindingRequest{seat_code}` → Server `BindingResult{state,error_code}`，靠连接内顺序关联，不携带 `binding_request_id`。Server 按当前 Binding truth 幂等处理：free+unbound 创建、同一 pair 为 approved no-op、其他 occupancy 为 conflict、缺失或 policy 问题为 rejected；绑定不隐式触发 `SYNC_STATE`/`SYNC_SECRET`。
+
+Server 的 DeviceActor 与 Client command executor 都使用有界 single-consumer channel；每连接最多一个 Command 执行中。Oneshot 的结果若在已发生副作用后因断线丢失，Server 记录 `outcome_unknown` 且不重放；Converge 通过后续 Observed 比较继续收敛。
 
 ## 9. 部署拓扑
 

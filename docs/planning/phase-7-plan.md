@@ -107,7 +107,7 @@ Client/Server 两个 nFPM 包（Client 声明 9 项 depends、4 个 `config|nore
 
 - 目标：定案回滚策略并建立首个发布版后的增量 migration 纪律。
 - 冻结项：是否禁止降级；回滚是否依赖「保留前版 deb + DB 备份还原」；**预发布单一 migration 策略在首发后失效**，增量迁移纪律须在本阶段冻结（**D11**）。
-- 约束：[契约](../contracts.md) §13——已发布的 field number / interface name / method / ID 与 revision 语义不复用、不被数据迁移重写；破坏性 wire 变化使用新 WS subprotocol 或 interface version；**不假设 schema 自动回滚**。
+- 约束：[契约](../contracts.md) §13——Phase 7 发布签收的 descriptor 才建立 field-number 兼容基线；在此之前 active-development Proto 删除字段不留 `reserved`、编号按当前结构整理。发布后 field number / interface name / method / ID 与 revision 语义不复用，破坏性 wire 变化使用新 WS subprotocol 或 interface version；**不假设 schema 自动回滚**。
 
 ## 5. G7 覆盖项 → WP 映射
 

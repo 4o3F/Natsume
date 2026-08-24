@@ -1,6 +1,8 @@
 syntax = "proto3";
 package natsume.device.control;
 
+import "device_control_common.proto";
+
 // Device → Server, at most one terminal status per command_id.
 // UNSPECIFIED is the proto3 default trap: reject after decode.
 enum CommandState {
@@ -22,44 +24,58 @@ message Command {
   // Panel-owned canonical lowercase hyphenated UUIDv7, preserved end-to-end.
   string command_id = 1;
   oneof body {
-    // Converge: re-push while Observed.applied_hash != canonical_hash.
-    SyncState sync_state = 6;
-    // Converge: re-push while Observed.installed_credential_revision != credential_revision.
-    SyncSecret sync_secret = 7;
+    // Converge: re-push while Observed.applied_hash differs from the canonical
+    // hash derived from this typed assignment.
+    SyncState sync_state = 2;
+    // Converge on the complete binding/account/revision credential context.
+    SyncSecret sync_secret = 3;
     // Oneshot: SUCCEEDED when the prompt screen is opened, not when bind is confirmed.
-    OpenBindingPrompt open_binding_prompt = 8;
+    OpenBindingPrompt open_binding_prompt = 4;
     // Oneshot: current graphical session only; no reconnect replay.
-    LockSession      lock_session      = 9;
-    UnlockSession    unlock_session    = 10;
-    TerminateSession terminate_session = 11;
+    LockSession      lock_session      = 5;
+    UnlockSession    unlock_session    = 6;
+    TerminateSession terminate_session = 7;
     // Converge: same home_epoch is reentrant; do not bump epoch on retry.
-    ResetHome reset_home = 12;
+    ResetHome reset_home = 8;
   }
 }
 
-// Non-secret assignment. Device recomputes canonical_hash over these fields
-// (recipe D1, not frozen) and no-ops when it matches Observed.applied_hash.
-// No passwords, certs, or packaged profile ids.
+message UnboundAssignment {}
+
+message BoundAssignment {
+  // Current occupancy stamp; canonical lowercase hyphenated UUIDv7.
+  string binding_id = 1;
+  // Canonical Account UUIDv7. Credential revision is scoped to this Account.
+  string account_id = 2;
+  // Seat natural key, not Identifier UUID.
+  string seat_code = 3;
+  // DOMjudge username for /login injection.
+  string domjudge_username = 4;
+}
+
+// Non-secret assignment. Server and Device derive applied_hash by encoding this
+// semantically validated SyncState with pinned Prost length-delimited encoding;
+// the hash is not transmitted as mutable input. No passwords, certs, or
+// packaged profile ids.
 message SyncState {
-  // SHA-256 of this assignment. Same 32 bytes Device stores as applied_hash.
-  bytes canonical_hash = 2;
-  // Occupancy stamp; canonical lowercase hyphenated UUIDv7. Empty = unbound → BLOCKED.
-  string binding_id = 3;
-  // Seat natural key. Empty when unbound.
-  string seat_code = 4;
-  // DOMjudge username for /login injection. Empty when unbound.
-  string domjudge_username = 5;
+  oneof assignment {
+    UnboundAssignment unbound = 1;
+    BoundAssignment bound = 2;
+  }
 }
 
 // Seat password. Operator-triggered; not auto-fired by assignment drift.
-// Device refuses if the current Binding row is missing or binding_id differs.
+// Device refuses unless its applied assignment has the same binding_id and
+// account_id. Convergence compares the complete context plus credential state.
 message SyncSecret {
   // Must match the Device's current occupancy; canonical lowercase hyphenated UUIDv7.
-  string binding_id = 2;
+  string binding_id = 1;
+  // Must match the Account in the Device's current applied assignment.
+  string account_id = 2;
   // accounts.credential_revision. Already installed at this revision → no-op.
-  uint64 credential_revision = 4;
+  uint64 credential_revision = 3;
   // DOMjudge password plaintext. Never log, persist in Observed, or put in Debug.
-  bytes password = 5;
+  SecretBytes password = 4;
 }
 
 // Oneshot: lock the Device's current graphical session. Empty body; no occupancy
@@ -83,5 +99,5 @@ message OpenBindingPrompt {}
 // HOME_EPOCH_STALE only if home_epoch < the completed epoch. Do not bump on retry.
 // Does not drop daemon WSS. Do not start a managed session until Activate succeeds.
 message ResetHome {
-  uint64 home_epoch = 2;
+  uint64 home_epoch = 1;
 }

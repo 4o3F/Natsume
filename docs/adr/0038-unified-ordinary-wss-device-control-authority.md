@@ -13,7 +13,9 @@
 
 这些 foundation 不授予 control-key authority。当前网络认证仍是 HTTPS Enrollment、Device Token 与 Bearer-before-101；wire 已是定向 handshake/Active envelopes，尚无 runtime key-auth consumer。Atomic flag day 才删除 Token/public Enrollment HTTP、启用 PreAuth/actor/Ack authority 并收紧 transitional schema。任何中间版本都不得同时接受 Token 与 control key 作为 authority。
 
-**2026-08-20 修订（持久化时刻）**：`credential_bundles.activation_deadline_unix_ms` / `created_at_unix_ms` 与 `enrollment_requests.created_at_unix_ms` / `activation_deadline_unix_ms` 均为 INTEGER UTC epoch milliseconds。无 RFC 3339 TEXT。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
+**2026-08-24 修订（人工审核、无业务 expiry）**：所有新 Enrollment transaction 先进入 `pending_review`；operator 批准与 Gateway 签发在同一事务进入 `awaiting_credential_ack`，`CredentialBundle` 本身即批准的 wire 证据。新增 `EnrollmentReviewStatus(PENDING_REVIEW|DENIED)`，删除 `approved` wire/state 间隙、Enrollment expiry 与 activation deadline。Provisioning window 只门禁新 admission 与批准/签发，不使既有 transaction 过期。
+
+**2026-08-24 修订（单 nonce 与初始 Observed barrier）**：Challenge 只有 32-byte connection-local `challenge_nonce`，Proof deadline 仅为 Server 本地 PreAuth timer，不上 wire。`SessionReady` 后第一条 Active 消息必须是 fresh Observed；actor 在其校验并持久化前不投递 Command。
 
 **2026-08-20 修订（无 ControlKeyId）**：Server natural key 是 `public_key`；不派生 ControlKeyId。daemon manifest pins hex(public_key)。Enrollment/WSS Token 路径仍按本 ADR 原子 flag day 重写，本记录仍是目标。
 
@@ -42,11 +44,13 @@ TLS 1.3
 → HTTP 101 / exact subprotocol natsume.control
 → ServerHandshakeEnvelope: ServerChallenge
 → ClientHandshakeEnvelope: ClientProof{purpose = EnrollmentAttempt | ResumeSession}
-→ (Enrollment) ServerHandshakeEnvelope: CredentialBundle{enrollment_id, gateway_leaf_der}
+→ (Enrollment) ServerHandshakeEnvelope: EnrollmentReviewStatus{PENDING_REVIEW|DENIED}
+→ (Enrollment, operator approval) ServerHandshakeEnvelope: CredentialBundle{enrollment_id, gateway_leaf_der}
 → (Enrollment) ClientHandshakeEnvelope: CredentialAck{enrollment_id, bundle_sha256}
 → (Enrollment) ServerHandshakeEnvelope: EnrollmentActivated{enrollment_id, device_id, bundle_sha256}
 → (Enrollment) ClientHandshakeEnvelope: EnrollmentReady{enrollment_id, device_id, bundle_sha256}
 → ServerHandshakeEnvelope: SessionReady{session_id bytes}
+→ first ClientActiveEnvelope: ObservedStateSnapshot
 → Active envelopes echo session_id
 ```
 
@@ -61,9 +65,9 @@ HTTP 101 只建立 transport。Proof 完成前，连接没有 Device、Enrollmen
 
 Device 在第一次网络尝试前 crash-safe 持久化 `enrollment_id`、control key、Gateway key 与 exact CSR。处于 Prepared 或 BundleInstalled 的 Device 每次连接都发送完全相同的 `EnrollmentAttempt`；只有本地 Active manifest 已持久化后才发送 `ResumeSession`。Server 不把 Enrollment 改写为 Resume，也不在拒绝后要求 Device 猜测另一 purpose。control-key rotation 不是 handshake。
 
-Server 将 `(machine_hardware_id, enrollment_id, candidate_public_key, gateway_csr_der, evidence_quality)` 视为 immutable Enrollment transaction material；daemon/agent version、connection challenge、signature 与 retry time 不属于该 material。同 `enrollment_id` + exact material 是 replay；同 ID + 不同 material 是稳定 conflict。不同 live ID 对同一 HWID 或候选 key 的占用同样拒绝。一个已经 active 的 transaction 收到其 exact `EnrollmentAttempt` 时仍从 immutable `CredentialBundle` 开始重放；随后 exact Ack 是 no-op，再返回 `EnrollmentActivated`。这保持所有 Enrollment connection 的唯一消息序列，不是把 Enrollment 改写为 Resume。
+Server 将 `(machine_hardware_id, enrollment_id, candidate_public_key, gateway_csr_der, evidence_quality)` 视为 immutable Enrollment transaction material；daemon/agent version、connection challenge、signature 与 retry time 不属于该 material。同 `enrollment_id` + exact material 是 replay；同 ID + 不同 material 是稳定 conflict。不同**非终态** transaction ID 对同一 HWID 或候选 key 的 reservation 同样拒绝；已完成的旧 transaction 不妨碍 Server 为 lifecycle 允许的现有 Device 派生一个新的 replacement/recovery attempt。Server 从当前事实派生 create/replace/recovery 分类，Client 不声明该 intent；只有当前 lifecycle 允许的请求可进入人工审核，`disabled` / `revoked` Device 不得借 Enrollment 隐式恢复。
 
-每条 WSS connection 拥有一次性随机 challenge ID 与 server nonce；它们只存在于该 connection-local PreAuthSession，并在 proof 成功、失败、timeout、非法 message 或 disconnect 后销毁。不得建立全局 challenge lookup 或允许第二次 proof。
+每条 WSS connection 只拥有一个 32-byte CSPRNG `challenge_nonce`；它只存在该 connection-local PreAuthSession，不由 Client 回显，并在 proof 成功、失败、timeout、非法 message 或 disconnect 后销毁。不得建立全局 challenge lookup 或允许第二次 proof。Client 的时间义务只是在 Server 本地 PreAuth timer 内提交唯一 `ClientProof`；人工审核、Bundle、Ack、Activated 与 Ready 不受该 timer 约束。
 
 Proof crypto 不再逐字段维护第二套 byte schema，也不承担协议语义校验。发送侧 clone typed `ClientProof`、只清空 `signature`，用 pinned Prost `0.14.4` 编码两个完整 typed message，并计算固定摘要：
 
@@ -80,7 +84,7 @@ signature = ordinary Ed25519.sign(proof_digest)
 
 SHA-256 通过 `Sha256::update` 按上述 chunks 增量计算，不分配 combined transcript `Vec`。domain、route 与 subprotocol 是固定的 NUL 分隔前缀，两个完整 Protobuf 消息由 Prost 的 length-delimited 编码自定界。这里签的是固定 32-byte digest，仍是普通 Ed25519，不是 Ed25519ph；接收侧使用 ordinary `verify_strict(proof_digest, signature)`。
 
-`verify_proof_strict` 只解析 Ed25519 public key/signature、拒绝 weak key、重算 digest 并做 strict crypto verification；它不检查 Challenge/Proof UUID、nonce、purpose semantics、ID、hash 长度、challenge equality 或 max-init。Batch 2 consumer 在字段的实际使用边界执行所需 semantic validation，不提前引入 speculative shared validator。因而任意 typed fields 都可以形成 cryptographically valid proof，但在 consumer validation 通过前不授予 authority。完整消息仍确保任何已签字段变化都会使 digest/signature 失效。该设计**不宣称TLS channel binding**。
+`verify_proof_strict` 只解析 Ed25519 public key/signature、拒绝 weak key、用本连接实际发出的 typed Challenge 重算 digest 并做 strict crypto verification；它不检查 purpose semantics、Identifier、hash 长度或 admission policy。Consumer 在字段实际使用边界执行 semantic validation。因而任意 typed fields 都可以形成 cryptographically valid proof，但在 consumer validation 通过前不授予 authority。完整消息仍确保任何已签字段变化都会使 digest/signature 失效。该设计**不宣称TLS channel binding**。
 
 安全假设明确为：TLS在Natsume Server进程内终止；不存在TLS-terminating proxy或共享TLS identity中介；daemon只签署其当前pinned Server WSS connection收到的challenge，并不暴露任意signing oracle。若这些假设失效，必须重开本ADR并采用channel-bound proof。
 
@@ -92,27 +96,33 @@ Registry 启动为空，不枚举 persisted Device。只有在 proof、bounded D
 
 Machine Hardware ID 是 primary runtime shard，只负责让 first Enrollment、existing reconnect 与 DeviceId operator action 汇聚同一个 actor，不授予 authority。DeviceId 与 `public_key` 是同一 entry 的 aliases；alias presence 同样不授予 authority。
 
-Actor 是 durable Enrollment transaction、immutable CredentialBundle delivery、CredentialAck、EnrollmentActivated/Ready barrier、Resume、lifecycle、Command dispatch/status、Observed 与 disconnect 的唯一排序点。control-key rotation 不是 handshake。
+Actor 是 durable Enrollment transaction、operator review、immutable CredentialBundle delivery、CredentialAck、EnrollmentActivated/Ready barrier、Resume、lifecycle、Command dispatch/status、Observed 与 disconnect 的唯一排序点。每个 actor 只有一个有界 mailbox；所有 Device-targeted operator action 与 socket event 以 actor 接受顺序串行决策。
 
-全新 `EnrollmentAttempt` 对任何已有 Machine Hardware ID 都必须拒绝且零签发；唯一例外是同 `enrollment_id` + exact material 对既有 awaiting/active transaction 的幂等重放。disabled/revoked Device 不能通过 Enrollment、reconnect、Ack 或 recovery 隐式恢复。control-key rotation 不是 handshake。
+当前为 `enrolled` 的已有 Machine Hardware ID 可以把新 transaction 分类为待审核的 credential replacement/recovery；批准不立即退役旧 key，只在新 transaction 的 exact Ack 激活时原子 supersede 旧 key 并驱逐旧 lease。`disabled` / `revoked` Device 不能通过 Enrollment、reconnect、Ack 或 recovery 隐式恢复；必须先有独立 lifecycle 授权。
 
 ### Credential activation and replay
 
-Enrollment 在 `CredentialAck` 前不创建 Device row 或 active control-key row。Actor 持久化 transaction、preallocated DeviceId 与一个 immutable public CredentialBundle，并在同一 WSS 上发送。Client 完整验证并 crash-safely 持久化 bundle 后发送 CredentialAck；随后一个 application-owned transaction 创建 Device、以 `device_control_keys.status = 'active'` 激活 control key 与 Gateway certificate、写 audit，并将 Enrollment transaction 置为 active。
+所有新 transaction 都先经人工审核。新 `EnrollmentAttempt` 只在 provisioning window open、identity/material 校验通过且容量可用时创建 `pending_review`；该事务只保存 immutable request material、Server 派生 intent、preallocated DeviceId 与审计所需的非秘密事实，不签发证书、不创建 Device row、不激活 control key。持久化成功后 Server 发送 `EnrollmentReviewStatus(PENDING_REVIEW)`。Pending socket 可由 WS ping/pong 保持；断线只要求 Client 以 exact attempt 重连，不改变 transaction。
 
-`CredentialBundle` 只有 `enrollment_id` 与 `gateway_leaf_der`。`bundle_sha256 = SHA-256(CredentialBundle.encode_to_vec())`，输入是经语义校验的 typed message，并使用 proof transcript 同一 pinned Prost 版本。canonical bytes 与 SHA-256 是可持久化 public data；`CredentialAck` 回显 `enrollment_id` 与 `bundle_sha256`。Awaiting 或 active transaction 收到 exact EnrollmentAttempt 都必须重放同一 typed bundle，禁止重新签名、重新分配 DeviceId 或再次激活另一把 key。Awaiting 状态的 exact Ack 执行一次 activation transaction；active 状态的 exact Ack 验证当前 active Device/key/certificate ownership 后是 durable no-op。两者都返回同一 `EnrollmentActivated` facts。
+Operator approve 是唯一 `pending_review → awaiting_credential_ack` 路径。它重新校验 provisioning window、Device lifecycle、HWID/key ownership 与容量，在一个 application transaction 中原子提交 approval audit、Gateway certificate 签发、immutable public `CredentialBundle` 与 candidate reservation。没有独立 `approved` state 或 packet：`CredentialBundle` 本身证明批准、签发与持久化都已提交。Operator reject 将 `pending_review → denied` 并写 audit；Server 发送 `EnrollmentReviewStatus(DENIED)` 后关闭 pending connection。同一 `enrollment_id` 的 exact replay 永远得到相同 denied 结果；未来 open window 可受理一个材料自洽的新 enrollment ID，但不得覆盖旧终态行。
 
-Ack transaction commit 后，Server authority 已 durable active，但连接尚未进入 Active phase。Server 发送 `EnrollmentActivated{enrollment_id, device_id, bundle_sha256}`；Client 验证 transaction/hash，原子写入 Active manifest 后发送 `EnrollmentReady{enrollment_id, device_id, bundle_sha256}`，完整回显 Activated facts。`EnrollmentReady` 只是本连接的 durable-client barrier，不是新的 Server durable state。Server 收到与本连接 Activated facts 完全匹配的 Ready 后才创建并发送 `SessionReady`；同一连接重复的 exact Ready 重放同一个 SessionReady。若 Ready 或 SessionReady 丢失并断线，Client 已持有 Active manifest，下一条连接直接使用 `ResumeSession` 获取新 lease。Resume 一把已被 supersede 的 key 因 `status != 'active'` 被拒绝，不靠 Device 级整数 clock。
+`CredentialBundle` 只有 `enrollment_id` 与 `gateway_leaf_der`。`bundle_sha256 = SHA-256(CredentialBundle.encode_to_vec())`，输入是经语义校验的 typed message，并使用 proof transcript 同一 pinned Prost 版本。canonical bytes 与 SHA-256 是可持久化 public data；`CredentialAck` 回显 `enrollment_id` 与 `bundle_sha256`。`awaiting_credential_ack` 或 active transaction 收到 exact EnrollmentAttempt 都必须重放同一 typed bundle，禁止重新签名、重新分配 DeviceId 或激活另一把 key。
+
+Enrollment 在 exact `CredentialAck` 前不创建首次 Device row 或 active candidate control-key row。`awaiting_credential_ack` 的 exact Ack 执行一次 activation transaction：首次注册创建 Device，replacement/recovery 则在同一事务原子 supersede 旧 key、激活 candidate key/certificate、写 audit、驱逐旧 lease，并把 Enrollment transaction 置为 active。Active transaction 的 exact Ack 验证当前 ownership 后是 durable no-op。两者都返回同一 `EnrollmentActivated` facts。Operator 可在 Ack 前显式撤销已批准 transaction，原子撤销 candidate certificate/material 并进入 `denied`；没有自动 deadline 或 sweeper。
+
+Ack transaction commit 后，Server authority 已 durable active，但连接尚未进入 Active phase。Server 发送 `EnrollmentActivated{enrollment_id, device_id, bundle_sha256}`；Client 验证 transaction/hash，原子写入 Active manifest 后发送 `EnrollmentReady{enrollment_id, device_id,bundle_sha256}`，完整回显 Activated facts。`EnrollmentReady` 只是本连接的 durable-client barrier，不是新的 Server durable state。Server 收到完全匹配的 Ready 后创建并发送 `SessionReady`；同一连接重复的 exact Ready 重放同一 SessionReady。若 Ready 或 SessionReady 丢失并断线，Client 已持有 Active manifest，下一条连接直接使用 `ResumeSession` 获取新 lease。
 
 断线点的恢复结果冻结如下；任何一行都不依赖 Server 猜测 Client phase：
 
-| 断线前最后一个 durable fact | Client 重连 purpose | Server 行为 | 收敛结果 |
+| Server durable state / Client fact | Client 重连 purpose | Server 行为 | 收敛结果 |
 |---|---|---|---|
-| Client 只有 Prepared；Server 尚无 transaction | exact `EnrollmentAttempt` | 创建 awaiting transaction，发送 immutable Bundle | Client 持久化 Bundle 后 Ack |
-| Server 已持久化 awaiting transaction/Bundle；Client 尚未持久化 Bundle | exact `EnrollmentAttempt` | 重放 exact Bundle | Client 持久化 Bundle 后 Ack |
-| Client 已 BundleInstalled；Server 尚未提交 Ack | exact `EnrollmentAttempt` | 重放 exact Bundle；exact Ack 激活一次 | Server 发送 Activated |
-| Server Ack transaction 已提交；Client 尚未持久化 Activated | exact `EnrollmentAttempt` | 重放 exact Bundle；exact Ack no-op | Server 重放 Activated，Client 转 Active |
-| Client 已持久化 Active；Ready 或 SessionReady 丢失 | `ResumeSession` | 校验 active key/Device 后签发新 lease | 新连接收到 SessionReady |
+| 无 transaction / Client Prepared | exact `EnrollmentAttempt` | open window 内创建 `pending_review`，发送 Pending | 等待人工审核 |
+| `pending_review` | exact `EnrollmentAttempt` | 重放 Pending；不签发 | 等待人工审核 |
+| `denied` | exact `EnrollmentAttempt` | 重放 Denied 并关闭 | 等待现场人员处理 |
+| `awaiting_credential_ack` / Client 未持久化 Bundle | exact `EnrollmentAttempt` | 重放 exact Bundle | Client 持久化 Bundle 后 Ack |
+| `awaiting_credential_ack` / Client BundleInstalled | exact `EnrollmentAttempt` | 重放 exact Bundle；exact Ack 激活一次 | Server 发送 Activated |
+| `active` / Client 尚未持久化 Activated | exact `EnrollmentAttempt` | 重放 exact Bundle；exact Ack no-op | Server 重放 Activated，Client 转 Active |
+| Client 已持久化 Active；Ready 或 SessionReady 丢失 | `ResumeSession` | 校验 active key/Device 后创建新 lease | 新连接收到 SessionReady |
 
 **2026-08-23 修订（可恢复 Enrollment transaction）**：下列图冻结 Client 本地权威、Proof purpose 与 control `enrollment_requests.state` 的转移。Prepared 与 BundleInstalled 均未 enrolled；Server transaction active 与 Client manifest Active 是两个明确的 durable barrier。`SessionReady` 只携带本连接的 `session_id`；Active 帧只回该值做租约校验。Active envelope 不携带 `authority_revision`。
 
@@ -138,12 +148,13 @@ flowchart TD
     proof[ClientProof]
     proof --> purpose{oneof purpose}
     purpose -->|EnrollmentAttempt| tx{transaction classification}
-    tx -->|absent, HWID/key free| createTx[create awaiting_credential_ack + immutable bundle]
-    tx -->|same id + exact material, awaiting| replayBundle[replay exact CredentialBundle]
-    tx -->|same id + exact material, active| replayActiveBundle[replay exact CredentialBundle]
-    tx -->|id/material/ownership mismatch| reject[reject zero writes]
-    purpose -->|ResumeSession| resumeKey{signature key is active and Device enrolled?}
-    resumeKey -->|yes| lease[issue session_id]
+    tx -->|absent, window open, admissible| pending[create pending review]
+    tx -->|same exact pending| pendingReply[replay Pending]
+    tx -->|same exact awaiting or active| replayBundle[replay exact Bundle]
+    tx -->|same exact denied| deniedReply[replay Denied]
+    tx -->|material or ownership conflict| reject[reject with zero writes]
+    purpose -->|ResumeSession| resumeKey{key active and Device enrolled?}
+    resumeKey -->|yes| lease[create session lease]
     resumeKey -->|no| reject
 ```
 
@@ -151,15 +162,24 @@ Enrollment 与 Resume 是互斥 purpose。只有 exact transaction replay 可以
 
 ```mermaid
 stateDiagram-v2
-    [*] --> awaiting_credential_ack: new EnrollmentAttempt
-    awaiting_credential_ack --> active: durable CredentialAck
-    awaiting_credential_ack --> expired: window or deadline
-    awaiting_credential_ack --> awaiting_credential_ack: replay same bundle
-    active --> active: exact EnrollmentAttempt replays same bundle
-    active --> active: exact CredentialAck is no-op; send Activated
+    [*] --> pending_review: admitted EnrollmentAttempt
+    pending_review --> pending_review: exact replay returns Pending
+    pending_review --> awaiting_credential_ack: operator approve and issue
+    pending_review --> denied: operator reject
+    awaiting_credential_ack --> awaiting_credential_ack: exact replay returns Bundle
+    awaiting_credential_ack --> active: durable exact CredentialAck
+    awaiting_credential_ack --> denied: operator revokes before activation
+    denied --> denied: exact replay returns Denied
+    active --> active: exact replay Bundle, Ack no-op, Activated
 ```
 
-这些 `enrollment_requests.state` 值仅适用于 durable control Enrollment transaction。CredentialAck 才创建 `devices` row 与 `status = 'active'` 的 control key；EnrollmentActivated/Ready 不重复激活任何 Server authority。`devices.state` 的 disable/revoke 由 operator lifecycle 排序，Enrollment / reconnect / Ack 不得隐式复活。control-key rotation 不是 handshake。
+这些 state 只适用于 durable control Enrollment transaction。Provisioning window 只门禁新 admission 与 `pending_review → awaiting_credential_ack` 的批准/签发；窗口关闭不修改既有 transaction。Pending 留待下次开窗审核，已签发 Bundle 可在关窗后 exact replay 并完成 Ack。不存在 Enrollment `expired`、activation deadline 或自动 sweeper。`devices.state` 的 disable/revoke 由 operator lifecycle 排序，Enrollment / reconnect / Ack 不得隐式复活。
+
+### Active admission and Command ordering
+
+`SessionReady` 只表示认证连接与 lease 已建立。Server actor 随后处于 `AwaitingInitialObserved`：Client 的第一条 Active envelope 必须是 fresh `ObservedStateSnapshot`。Actor 在完成语义校验与持久化前不投递 Command，也不受理 BindingRequest 等其他业务包。非法首包、无效 Observed 或持久化失败都关闭连接。每次重连重新执行该 barrier；SQLite 中上一条 Observed 只是 last-known，不能代替当前 actor 的 fresh barrier。无 `observed_sequence`、`observed_session_id` 或额外 ACK。
+
+Server actor 以单消费者有界 channel 接收 operator action、socket event 与 lifecycle event。Client WS reader 把 Command 放入单消费者有界 command channel；唯一 executor 严格按出队顺序执行。Server 同时最多投递一条尚未终态的 Command，收到终态后才投递下一条。WS I/O、ping/pong、Observed 与 disconnect 检测可并发，但业务 Command 的本地副作用不并发。不增加 wire sequence 或 generation。
 
 ### Limits, shutdown, and restart
 
@@ -178,17 +198,15 @@ TLS handshake、WSS、PreAuth、signature verification、DB classification、pro
 | signature verification concurrency | 16 |
 | PreAuth DB reads | 8 |
 | TLS handshake timeout | 5s |
-| Challenge send / Proof timeout | 各3s |
-| total PreAuth timeout | 10s |
-| Proof binary message | 1024 bytes |
-| Active binary message | 64 KiB |
+| ClientProof receive-and-verify timeout | 10s；从 Challenge 成功发送后开始 |
+| reassembled WSS Protobuf message | 64 KiB |
 | outbound send timeout | 10s |
 
 Permit顺序固定为`TCP accept → global/per-source TLS-handshake permit → spawn handshake → post-TLS HTTP connection permit(2048) → Device-WSS permit(768) → global/per-source PreAuth permit(64/4) → subprotocol → 101`。TLS permit在握手结束释放；HTTP permit持有至Hyper connection结束；Device-WSS permit持有至socket关闭；PreAuth permit持有至actor attach或preauth关闭。任一permit满时在对应阶段立即拒绝，不创建无界waiter。Provisional actor semaphore满时在proof/classification后返回ServerBusy并关闭。Rate state必须bounded，IPv6按`/64`归一。
 
 Fleet capacity由 SQLite 中 Device rows 与 live Enrollment transaction reservations 共同表达。Provisional actors 使用单一 RAII semaphore；Registry 不保存可能漂移的持久化 class 或 budget counter。Registry 只拥有 aliases、actor task state 与 typed Running/ShuttingDown phase。
 
-Startup只执行 schema/set-based recovery、初始化 quotas 与空 registry，然后 listener bind。Restart不恢复 actor、ticket、candidate、session或outbound frame；pending request与immutable bundle从 SQLite按需重放，active key重新 proof。
+Startup只执行 schema/set-based recovery、初始化 quotas 与空 registry，然后 listener bind。Restart不恢复 actor、session 或 outbound frame；`pending_review` / `denied` 与 immutable bundle 从 SQLite 按 exact EnrollmentAttempt 重放，active key 重新 proof。不因 restart 关闭或过期 Enrollment transaction。
 
 ### Flag-day rollout
 
@@ -210,6 +228,7 @@ Batch 0 只建立决策、依赖准入、deterministic vectors 与 isolated priv
 ### Positive
 
 - 一条WSS和一个actor排序全部Device authority transition。
+- 人工审核是明确 durable barrier，批准与签发没有可崩溃的中间态。
 - First Enrollment可在原socket进入Active，不产生Bearer。
 - Immutable bundle replay使response-loss边界确定化。
 - Empty startup与bounded provisional actor避免启动枚举和无界unknown allocation。
@@ -218,6 +237,7 @@ Batch 0 只建立决策、依赖准入、deterministic vectors 与 isolated priv
 ### Negative / trade-offs
 
 - First key来自物理受控窗口而非manufacturer credential；Binding与secret release必须等待inventory reconciliation。
+- 全部新 Enrollment 都需要 operator 审核；50–500 台的批准成本由 Panel 批量操作承担，Server 仍逐 transaction 校验与审计。
 - 未认证peer在proof前已经获得101，因此TLS/WSS/PreAuth limit是load-bearing安全边界。
 - Flag day破坏当前预发布Token状态，需要协调重建DB与Device image。
 - Ed25519/PKCS#8增加经过审查的crypto dependency与本地private-key lifecycle。
@@ -227,7 +247,7 @@ Batch 0 只建立决策、依赖准入、deterministic vectors 与 isolated priv
 
 Batch 0 的 private isolated listener 已证明 server-auth TLS 1.3、ordinary WSS 101、random challenge、deterministic Ed25519/PKCS#8 vectors、strict verification、canonical ClientProof digest 与 clean close。Batch 1 将 transcript、Prost decode/semantic validation 与 typed canonical re-encoding纳入唯一production protocol crate，但新proof消息仍未接入runtime authority。
 
-后续还必须证明 capacity、crash cuts、actor races、immutable replay、filesystem durability、lifecycle ordering 与 500–600 Device envelope。Foundation 落地不关闭 G4。
+后续还必须证明 capacity、manual-review/issuance/Ack crash cuts、actor channel ordering、initial-Observed barrier、immutable replay、filesystem durability、lifecycle ordering 与 500–600 Device envelope。Foundation 落地不关闭 G4。
 
 当TLS在外部终止、provisioning不再物理受控、要求HA、多Server、出现manufacturer Device credential，或无法接受destructive coordinated rollout时重开本ADR。
 

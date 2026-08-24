@@ -6,6 +6,8 @@
 
 Phase 3（Identity & Enrollment）启动分解。条目通过需可定位 evidence；partial pass 记为未通过。
 
+> **2026-08-24 ADR-0038 目标重基线**：本文件的 CLOSED 只证明 flag day 前 HTTPS + Device Token Enrollment 的历史交付，不定义最终 runtime。目标 Enrollment 全部进入人工审核，durable state 为 `pending_review` / `awaiting_credential_ack` / `active` / `denied`，无 transaction expiry；provisioning window 只 gate 新 admission 与 approve/sign。下方 same-SPKI 自动批准、首次同步签发、pending→expired 等文字仅为历史 evidence，迁移时不得复用为目标规则。
+
 ## 工作包分解（启动定义，2026-08-16）
 
 | WP | 内容 | 状态 |

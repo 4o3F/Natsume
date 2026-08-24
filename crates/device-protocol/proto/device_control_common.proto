@@ -1,12 +1,22 @@
 syntax = "proto3";
 package natsume.device.control;
 
-// Server → Device: this socket is going away. reconnect_after is a hint, not a lease.
+// Secret-bearing protobuf field wrapper. Generated Rust must suppress ordinary
+// Debug output for this type; its value is never legal in logs, Observed, audit,
+// ProtocolError, or Command terminal details.
+message SecretBytes {
+  bytes value = 1;
+}
+
+// Server → Device: this socket is going away. retry_after_ms is a relative
+// minimum-delay hint, not a lease or an absolute wall-clock deadline. Zero adds
+// no Server-requested delay; Client's ordinary reconnect backoff still applies.
 message ServerDrain {
-  int64 reconnect_after_unix_ms = 1;
+  uint64 retry_after_ms = 1;
 }
 
 message ProtocolError {
-  // ErrorCode registry token. Not a human-readable message.
+  // Fatal protocol failure. At most one is sent, then the socket closes.
+  // ErrorCode registry token; not a human-readable or business-denial message.
   string error_code = 1;
 }

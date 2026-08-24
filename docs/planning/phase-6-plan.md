@@ -26,7 +26,7 @@
 
 ### 3.1 Current-session Oneshot（ADR-0035）
 
-WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 无 TTL、无 `prompt_message_id`；Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认/拒绝绑定不是该 Command 的成功，而是 Device 发起的 `BindingRequest{binding_request_id, seat_code}` → Server `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。本地 Agent UI 仍校验 logind session、UID 与 Agent lease；stale Agent / stale UI action / expired lease 返回稳定错误。Agent crash 或 lease expiry **不增加 authority**，也不能 unlock 后续 session。session action **不调用 Caddy、不修改 Caddy state/config、不进入数据面状态页**。使用冻结镜像的 **native session lock**。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
+WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 唯一当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Client 在动作开始时捕获本地 logind session identity，并在 privileged effect 前重验；期间 session 被替换则返回 `SESSION_CONTEXT_STALE`，不得 retarget。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 无 TTL、无 `prompt_message_id`；Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认绑定不是该 Command 的成功，而是 Device 发起 `BindingRequest{seat_code}` → Server `BindingResult{state,error_code}`；每个 active session 同时最多一个 prompt/request，以连接内顺序关联，无 `binding_request_id` 或 capability token。`BindingResult` 不携带 occupancy `binding_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`；若副作用后断线丢失结果，Server 终态为 `outcome_unknown`，不重放。本地 Agent UI 仍校验 logind session、UID 与 Agent lease；stale Agent / stale UI action / expired lease 返回稳定错误。Agent crash 或 lease expiry **不增加 authority**，也不能 unlock 后续 session。session action **不调用 Caddy、不修改 Caddy state/config、不进入数据面状态页**。使用冻结镜像的 **native session lock**。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 
 ### 3.2 Home 事务（ADR-0035 的 2026-08-14 修订）
 
@@ -60,7 +60,7 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 | D-Bus XML | **手工维护**，仅被 roxmltree 测试消费；无 codegen、无服务端 |
 | `Device1` 服务端 | **完全缺失**（全 workspace 无 `#[zbus::interface]`） |
 | `Privileged1` 服务端 | **10 缺 9**：只有 `collect_hardware_candidates` |
-| proto session/home 面 | Oneshot 空 body，无 `SessionTarget`；无 Heartbeat protobuf（WS ping/pong）；`OpenBindingPrompt` 空 body，Seat 在 `BindingRequest.seat_code`。Observed slim：`applied_hash`、`installed_binding_id`、`installed_credential_revision`、`credential_state`、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。 |
+| proto session/home 面 | Oneshot 空 body，无 `SessionTarget`；无 Heartbeat protobuf（WS ping/pong）；`OpenBindingPrompt` 空 body，Seat 在无 request ID 的 `BindingRequest.seat_code`。Observed slim：`applied_hash`、完整 `CredentialObservation{binding_id,account_id,credential_revision,state}`、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。 |
 | proto 命令体语义校验 | `LockSession` / `UnlockSession` / `TerminateSession` / `OpenBindingPrompt` 为空 body。校验 `ResetHome.home_epoch`；同 epoch 可重入。 |
 | session 集成测试 | **骨架**：`session_lock_epoch.rs` 仅构造并回读三字段；`session_agent_platform.rs` 五测试全为静态断言 |
 | 打包 | XDG desktop entry、两份 D-Bus policy（`Device1` 由 `natsume` own / `contest` send；`Privileged1` 由 `root` own / `natsume` send，均 default deny）、GUI 启动 runbook（67 行，含 9 个诊断条件与安全禁用清单）、无 user unit 的四处 CI 断言 |
@@ -84,15 +84,15 @@ session：`SESSION_CONTEXT_STALE`、`SESSION_UNAVAILABLE`、`SESSION_ACTION_UNSU
 
 ### WP3：Agent UI 接线与生产 GUI
 
-- 目标：typed snapshot → lazy create/present；8 个 `SessionScreenKind` 的真实视图；seat 提交回路走真实 D-Bus。`OPEN_BINDING_PROMPT` 在 screen 打开时即以 `CommandStatus` `SUCCEEDED` 结束；seat 提交（确认/拒绝）是 `BindingRequest`，不是该 Command 的成功。
+- 目标：typed snapshot → lazy create/present；8 个 `SessionScreenKind` 的真实视图；seat 提交回路走真实 D-Bus。`OPEN_BINDING_PROMPT` 在 screen 打开时即以 `CommandStatus` `SUCCEEDED` 结束；志愿者确认后的 seat 提交是 `BindingRequest`，本地取消只关闭 UI，不是该 Command 的成功。
 - 冻结项：每屏布局与文案来源（message-catalog ID，禁任意 HTML）；本地化与主题；`UiPresentationState` 的上报口径（含 `PresentedUnfocused`）。
 - 测试：`ui_probe` 扩展到全部屏形态；CJK 与 HiDPI 回归；focus denied 的可观察结果；display lost 与 crash recovery。
 
 ### WP4：Session lock / unlock / terminate
 
-- 目标：Oneshot `lock_session` / `unlock_session` / `terminate_session` 的 live-socket Device 执行，经 `Privileged1.RequestDesktopLock/Unlock` 落到 logind `LockSession`/`UnlockSession`。离线丢弃，重连不重放。
+- 目标：Oneshot `lock_session` / `unlock_session` / `terminate_session` 的 live-socket Device 执行，经唯一有界 single-consumer executor 严格按到达顺序调度，并经 `Privileged1.RequestDesktopLock/Unlock` 落到动作开始时捕获且 effect 前重验的 logind session。离线丢弃，重连不重放。
 - 冻结项：`SESSION_ACTION_UNSUPPORTED` 的触发条件（镜像不支持时）；Unlock 不以 Observed `active_lock_command_id` 为 fence；**Caddy 调用计数器的实现形态**（G6 要求「lock/unlock 的 Caddy 调用数为 0」的可测证据；计数器放哪一层、真实镜像上如何采集，**D6**）。
-- 测试：stale Agent 动作被拒；Oneshot 离线丢弃；replacement session 不被旧 Agent 控制；lock/unlock 全流程 Caddy 调用计数为 0；terminate 后状态收敛。
+- 测试：stale Agent 动作被拒；Oneshot 离线丢弃；replacement session 不被旧 Agent 控制且不 retarget；副作用后断线记录 `outcome_unknown`；并发抵达严格串行；lock/unlock 全流程 Caddy 调用计数为 0；terminate 后状态收敛。
 
 ### WP5：proto 命令体语义校验补齐
 

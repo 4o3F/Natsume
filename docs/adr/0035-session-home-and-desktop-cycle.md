@@ -8,7 +8,7 @@
 >
 > **2026-08-20 修订（Oneshot session 与 Home Converge）**：WSS lock/unlock/terminate/open_binding_prompt 是 Oneshot，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`HOME_RESET` 按 `home_epoch` Converge；同 epoch 可重入；不拆 daemon WSS。一台 Device 一名选手、autologin；选手不知道 unlock 密码。
 >
-> **2026-08-21 修订（OPEN_BINDING_PROMPT 空 body）**：`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`。打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认/拒绝是 `BindingRequest{binding_request_id, seat_code}` → `BindingResult{binding_request_id, state, error_code}`，不是该 Command 的成功。`BindingResult` 不携带 occupancy `binding_id`。
+> **2026-08-24 修订（Binding 单 in-flight）**：`open_binding_prompt` 空 body，无 TTL，无 `prompt_message_id`。打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。志愿者输入座位号并确认后发送 `BindingRequest{seat_code}`，Server 回 `BindingResult{state,error_code}`；本地取消只关闭窗口，不发业务包。每个 Active session 最多一个未完成 BindingRequest，以 channel 顺序配对；不携带 request ID 或 occupancy `binding_id`。
 
 ## Context
 
@@ -20,8 +20,8 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 ### Current-session Session actions
 
-- WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 无 TTL、无 `prompt_message_id`；Device 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`。现场确认/拒绝绑定不是该 Command 的成功，而是 Device 发起的 `BindingRequest{binding_request_id, seat_code}` → Server `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。`CommandState` 只有 `SUCCEEDED` | `FAILED`。
-- 本地 Agent UI action 与 recovery 仍校验当前 logind session、UID 与 Agent lease；stale Agent、stale UI action 或 expired lease 返回稳定错误。
+- WSS `lock_session` / `unlock_session` / `terminate_session` / `open_binding_prompt` 是 Oneshot：仅 live socket；离线丢弃；重连不重放。目标 = 该 Device 当前 graphical session。空 body，**不**携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`，现场提交是独立 `BindingRequest{seat_code}`。Wire `CommandState` 只有 `SUCCEEDED` | `FAILED`；已尝试投递但终态丢失是 Server-only `outcome_unknown`，不自动重放。
+- 本地 executor 在 Command 开始时解析并捕获 current logind graphical session，在特权副作用前重检它仍是 current。如 replacement 发生在执行中，返回 `SESSION_CONTEXT_STALE` 而不改投新 session；replacement 若在 Command 开始前已完成，新 current session 是合法目标。Agent UI action 与 recovery 同样校验 UID 与 Agent lease。
 - Agent crash 或 lease expiry 不增加 authority，也不能 unlock 后续 session。
 - session action 不调用 Caddy、不修改 Caddy state/config，也不成为数据面状态页内容。
 - 使用 frozen image 的 native session lock；无法取得 focus 时报告可观察结果（如 `VISIBLE_UNFOCUSED`），不采用 desktop-specific focus bypass。

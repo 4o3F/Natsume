@@ -14,9 +14,9 @@
 
 **2026-08-20 修订（持久化时刻）**：所有持久化瞬间为 INTEGER UTC epoch milliseconds，列后缀 `_unix_ms`。数据库不存 RFC 3339 或其它格式化时间字符串；HTTP JSON 已冻结字段仍用 RFC 3339 UTC（chrono 在边界转换）。`device_id`、`binding_id` UUID occupancy、vault `account_id` PK、无 `revision_counters`、无 `import_payload` 均保持。
 
-**2026-08-21 修订（OPEN_BINDING_PROMPT 空 body）**：`OPEN_BINDING_PROMPT` 是 Oneshot，空 body，无 TTL，无 `prompt_message_id`。打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；确认/拒绝走 `BindingRequest{binding_request_id, seat_code}` → `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。
+**2026-08-24 修订（channel/Binding/credential context）**：Command 由 Server actor 与 Client executor 的单消费者 channel 串行执行。`OPEN_BINDING_PROMPT` 打开 screen 即成功；现场提交是单 in-flight `BindingRequest{seat_code}` → `BindingResult{state,error_code}`，无 request ID。`SYNC_STATE.bound`、`SYNC_SECRET` 与 Observed credential 统一使用 `account_id` 防止 mapping 更换时混用旧密码。
 
-Control-key history、durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Device 在首次联网前持久化 canonical UUIDv7 `enrollment_id`、keys 与 exact CSR；Prepared/BundleInstalled 使用结构化 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，而不是维持兼容双模型。
+Control-key history、人工审核的 durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Target transaction state 是 `pending_review` / `awaiting_credential_ack` / `active` / `denied`，无 Enrollment expiry 或 activation deadline。Device Prepared/BundleInstalled 使用 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，不维持双 authority。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
 
@@ -58,13 +58,13 @@ Control-key history、durable Enrollment transaction、immutable CredentialBundl
 
 ## 2. 标识和值对象
 
-领域使用一组稳定值对象区分业务身份与硬件标识。不存在全局 configuration 或 binding-set clock（已删除 `revision_counters`）。`accounts.credential_revision` 是每个 Account 当前秘密的修订，也是 `SYNC_SECRET` 的 Converge 键；`device_bindings.binding_id` 是每次 bind 铸造的 canonical lowercase hyphenated UUIDv7 occupancy stamp，独立于 Seat，供 `SYNC_SECRET` / Target / Observed 冻结；`home_epoch` 是 `HOME_RESET` 的 Converge 键。本地 Agent/logind session 身份不是 WSS Oneshot 字段。Binding occupancy 用 `binding_id` 相等性判定，不是整数单调比较。
+领域使用一组稳定值对象区分业务身份与硬件标识。不存在全局 configuration 或 binding-set clock。`accounts.credential_revision` 是每个 Account 当前秘密的修订；`device_bindings.binding_id` 是每次 bind 铸造的 UUIDv7 occupancy stamp。Secret 收敛键必须是完整 `(binding_id,account_id,credential_revision)` 而不是任一子集。`home_epoch` 是 `HOME_RESET` 的 Converge 键。本地 Agent/logind session 身份不是 WSS Oneshot 字段。
 
 bind / rebind 铸造新的 `binding_id`；unbind 删除该行；再次 bind 得到新 UUID。未变化 Binding 不重写，因此不因无关绑定变更而成为 secret-sync stale。Account mapping 或密码变化而 Binding 保持时，Import 不得写入 Binding 或铸造 `binding_id`。无 integer bump，无 `seats.binding_generation`。
 
-`SyncState.binding_id` 与 `SyncSecret.binding_id` 冻结该行 occupancy stamp（string UUIDv7）。`BindingResult` 不携带 occupancy `binding_id`；无 `TargetAssignment` / `TargetGateway` 消息。`observed_device_states.installed_binding_id` 为可空 TEXT；NULL 表示从未安装过 Binding。Device 在写入前若当前 Binding 行缺失或 `binding_id` 不同，拒绝该 Command。
+`SyncState.bound` 冻结 `binding_id`、`account_id`、Seat 与 username；`SyncSecret` 冻结同一 binding/Account 与 revision。`BindingResult` 不携 occupancy `binding_id`；Device 在 secret 写入前若 applied assignment 的 Binding 或 Account 不同，拒绝该 Command。
 
-面向单台 Device 的非秘密期望由 `SyncState.canonical_hash` 表达，不创建独立 counter 或通用 version system，也不在 `SyncState` 上携带 `generation`。Observed 的对应键是 `applied_hash`。
+面向单台 Device 的非秘密期望是 `SyncState.oneof assignment`。`canonical_hash` 是 Server/Device 对 validated assignment 做 domain-separated pinned-Prost canonical encoding 的派生 SHA-256，不在 wire 中传输。Observed 的对应键是 `applied_hash`；无 counter、`generation` 或通用 clock。
 
 内部主键（`devices.device_id`，TEXT）是 Server 生成、遵守[契约 Identifier](contracts.md#11-identifier)的 canonical lowercase hyphenated UUIDv7，且不得从硬件数据推导；硬件身份（`machine_hardware_id`，派生配方见 [ADR-0032](adr/0032-device-identity-and-local-credential-lifecycle.md)）不是认证凭据。
 
@@ -93,7 +93,7 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 - `devices.machine_hardware_id` 是 unique，因此一个存储的 `machine_hardware_id` 最多对应一个 `devices` row；该 row 只有 `device_id`、硬件 ID、`hardware_identity_quality`（`strong`/`medium`/`weak`）与 `state`（`enrolled`/`revoked`/`disabled`）。
 - 凭据签发或替换要求其绑定的 Device 当前为 `enrolled`；`revoked` 或 `disabled` Device 必须拒绝签发，恢复使用须经过显式、受审计的 lifecycle 动作，不得由 Enrollment 隐式复活。
 - provisioning window 由 `provisioning_window` current singleton 表示，只有 `state`、`revision` 和 `last_audit_event_id`；不保留逐次 provisioning revision 状态行，历史由审计提供。restart/restore 只会对观察到的 `open` 状态执行一次 audited CAS close；已 `closed` 时零写入。
-- provisioning 窗口内同一 `machine_hardware_id` 的 Enrollment 由 `enrollment_requests` 的 `resolution` 与 `resolved_device_id` 表达受审计的 create/credential-replacement 结果；关联的 `device_tokens` 和 `gateway_certificates` row 提供当前 token/certificate 事实。`enrollment_requests` 的终态行（`rejected` / `expired` / `conflict` 等）予以保留；其消费者是 same-SPKI 重试自动批准判定、同硬件不同 SPKI 稳定拒绝与审计回溯。不设清理规则，赛后导出与清理归 Phase 7。若旧连接仍存活，记录异常审计事件。
+- ADR-0038 target 的每个新 Enrollment transaction 都经人工审核：`pending_review → awaiting_credential_ack → active` 或 `denied`。Server 派生 create/replace/recovery intent；`disabled` / `revoked` Device 在独立 lifecycle 授权前不可 approve。Approve 与 Gateway 签发原子提交，Ack 才激活 candidate key；replacement 的旧 key 在该 Ack 事务中才 supersede。终态行保留供 exact replay 与审计。无 Enrollment `expired`、activation deadline 或自动清理。
 - `gateway_certificates` 的 `revoked` / `retired` 状态行予以保留；其消费者是单活跃证书唯一性判定（partial unique index 只约束 `status = 'active'`）、Enrollment 替换路径对旧证书的处置与审计回溯。
 - 窗口外的硬件身份冲突：**不自动合并、不选择“最近上线者”、不删除凭据**，停止敏感进展并返回稳定错误，要求人工执行恢复 runbook。
 - Device 删除/替换不复用 `device_id` 或凭据文件；替换走窗口重开 + 新 Enrollment 的受审计生命周期，而不是 merge。
@@ -105,8 +105,8 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 - `device_bindings` 是 Seat↔Device 的一对一当前关系：`seat_id` 是主键（FK `seats`）、`device_id` 是 NOT NULL UNIQUE（FK `devices`）、每 row 有 NOT NULL UNIQUE 的 `binding_id`（canonical lowercase hyphenated UUIDv7 occupancy stamp，每次 bind 铸造，独立于 Seat）；解绑通过删除当前关系表达。无 integer bump，无 `seats.binding_generation`，无 `revision_counters`。
 - `device_bindings` 只以 foreign key 关联当前 confirmed contest configuration 中的 Seat 与 `devices.device_id`；允许何种 `devices.state` 的绑定由 domain policy 校验，不另建 schema constraint。
 - bind、unbind、rebind 是唯一的 Binding-set mutation。bind / rebind 铸造新 `binding_id`；unbind 删除行；再次 bind 得到新 UUID。Import 不得增删改 Binding，也不得铸造 `binding_id`；将删除且仍绑定的座位使 Import Commit 拒绝。保留的 Seat code 上的 Binding 在 Account/password 变化时保持不变。
-- `OPEN_BINDING_PROMPT` 只打开封闭 binding-prompt screen：Oneshot，仅 live socket，离线丢弃；空 body，无 TTL，无 `prompt_message_id`。Device 打开该 screen 即 `CommandStatus` `SUCCEEDED`。现场确认/拒绝绑定不是该 Command 的成功，而是 Device 发起的 `BindingRequest{binding_request_id, seat_code}` → Server `BindingResult{binding_request_id, state, error_code}`。`BindingResult` 不携带 occupancy `binding_id`。
-- **binding 修改只改变 Server truth 和 Target，不自动同步 Device；** secret sync 必须绑定发起时的 Seat、Device 和 `binding_id`。
+- `OPEN_BINDING_PROMPT` 只打开封闭 screen；现场提交是单 in-flight `BindingRequest{seat_code}` → `BindingResult{state,error_code}`，按 channel 顺序配对，无 request ID 或 prompt capability。Server 对同一 Device↔Seat 现有关系返回零写入 approved；其他 occupancy 冲突不自动 rebind。
+- **binding 修改只改变 Server truth 和 Target，不自动同步 Device；** secret sync 必须绑定发起时的 Device、`binding_id`、`account_id` 与 credential revision。
 
 ## 6. Credential
 
@@ -123,11 +123,11 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 ## 7. DeviceTarget
 
-Target 是根据已提交 Server truth 为某台 Device 计算的**非秘密**期望状态。Target **不包含** password、private key、token、任意 shell/路径/UID/unit/环境或自由格式 Caddy fragment。Target 生成是可重放的纯计算（`Server truth + frozen policy → DeviceTarget`）；Device-facing wire 是 `SyncState{canonical_hash, binding_id, seat_code, domjudge_username}`，无 `generation`。**Target 变化不自动创建 Command**；操作员必须显式创建 `SYNC_STATE`。
+Target 是根据已提交 Server truth 为某台 Device 计算的**非秘密**期望状态。Target 不包含 password、private key、token 或任意执行材料。Device-facing wire 是 `SyncState{unbound | bound{binding_id,account_id,seat_code,domjudge_username}}`，hash 由双端确定性派生，无 `generation`。**Target 变化不自动创建 Command**。
 
 ## 8. DeviceObserved
 
-Observed snapshot 是 Device 对自身实际状态的 slim typed 报告。字段：`applied_hash`、`installed_binding_id`（可空 UUIDv7 字符串；NULL = 从未安装 Binding）、`installed_credential_revision`、`credential_state`（无 `STALE`）、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。**不得**在 Observed 上回传 `secret_state`、`session_instance_id`、`active_lock_command_id`、`boot_id`、`observed_sequence`、`received_generation`、`apply_status`、session_agent blob 或 `home_state`。物理 current row 即上述字段加 `observed_at_unix_ms`（Server 收包时间），按 `device_id` 唯一。**Observed 不得携带秘密；Device 自报的属性不构成授权。** Observed 可能陈旧；Server 保留接收时间和 freshness 语义，不得用单个 `READY` 覆盖全部维度。上报节奏为变化时上报 + 低频周期兜底。
+Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、`gateway_certificate_fingerprint`、`session_state`。不得回传 secret/session instance/sequence/generation/apply blob。物理 current row 添加 Server 收包时间并按 `device_id` 唯一。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。无 `observed_sequence` 或 session DB 字段。
 
 ## 9. Drift
 
@@ -137,7 +137,7 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 
 **Command** 是面向单台 Device 的显式意图，分 Converge 与 Oneshot，不是同一套 Device journal 耐久机。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}` 作为 operator 审计入口；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 HTTP replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。只有当前 `DeviceState::Enrolled` 可首次持久化 Command；不存在或 non-enrolled target 对外同为 `404 RESOURCE_NOT_FOUND`，且资格拒绝零 Command、零 audit、零 notifier。Command 已创建后，Device 的 disable/revoke 不改变该 ID 的 replay/conflict 事实。首次 `201`、replay `200`、invalid ID `400`、missing/non-enrolled `404`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
 
-`commands` current row 只有 `command_id`、`device_id`、`kind`、`state`、两个 request fingerprint field、可选 `group_correlation_id`、`payload_version`、typed object `frozen_payload_json`、`created_at_unix_ms`、可空 `deadline_at_unix_ms`、可选 `terminal_error_code`/`redacted_terminal_result_json` 与 `created_audit_event_id`。正确性是 payload 幂等（Converge：`canonical_hash` / `credential_revision` / `home_epoch`）或 live delivery（Oneshot），不是 Client journal。每 Command 的 frozen content 只由 `frozen_payload_json` 表达；陈旧 `binding_id`/revision 用稳定错误拒绝，不“尽量兼容”地部分应用。Oneshot 为空 body，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。`OPEN_BINDING_PROMPT` 打开 screen 即 `SUCCEEDED`，确认/拒绝走 `BindingRequest`。终态行予以保留；其消费者是 Panel 状态查询与审计回溯，清理与赛后导出归 Phase 7。
+Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，每台 Device 同时最多一条已投递未终态 Command。Target `commands.state` 为 `queued` / `succeeded` / `failed` / `outcome_unknown`；最后一项是 Oneshot 已尝试投递但 terminal status 前断线的 Server-only 终态，不自动重放。Converge 键是 assignment hash、完整 credential context 或 `home_epoch`；Device 无 command journal。Oneshot 无 wire session target，本地开始时捕获 current session 并在特权动作前重检，不改投 replacement session。
 
 批量操作 = 批量创建 Command，进度视图只由查询聚合；可选 `group_correlation_id` 只用于查询和审计分组，不定义跨 Device 顺序、原子性或 lifecycle。
 
@@ -163,7 +163,7 @@ Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：d
 ## 13. 本地运行时领域
 
 - **Machine identity startup**：identity 检查先于一切 identity-bound 产物使用。决策是封闭枚举（如 `FIRST_BOOT_ALLOWED`、`IDENTITY_MATCH`、`IDENTITY_UNAVAILABLE_FAIL_CLOSED`、`IDENTITY_MISMATCH_FAIL_CLOSED`、`CREDENTIALS_UNREADABLE_FAIL_CLOSED`、`RECOVERY_REQUIRED`）。**不能输出“猜测最可能是同一台机器并继续”。**
-- **Session**：WSS lock/unlock/terminate/open_binding_prompt 作用于当前 graphical session，空 body，不携带 `SessionTarget` / `session_epoch`。`open_binding_prompt` 打开 screen 即 Command 成功，确认/拒绝走 `BindingRequest`。本地 Agent/UI 仍校验当前 logind session 与 lease；陈旧 Agent 或陈旧 UI action 被拒绝。
+- **Session**：WSS lock/unlock/terminate/open_binding_prompt 作用于当前 graphical session，空 body，不携带 `SessionTarget` / `session_epoch`。`open_binding_prompt` 打开 screen 即 Command 成功；志愿者确认后发送 `BindingRequest`，本地取消不发业务包。本地 Agent/UI 仍校验当前 logind session 与 lease；陈旧 Agent 或陈旧 UI action 被拒绝。
 - **Home**：每次 `HOME_RESET` 由 Server 分配 `home_epoch`；同 epoch 可重入，已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当 epoch < 已完成 epoch；重试不得 bump epoch。`HOME_RESET` 不拆 daemon WSS。reset 完成前不启动受管 session；中断的 reset 经本地状态文件 + `RecoverHomeInstance` 恢复；**无法证明 mount/copy/ownership 安全时 fail closed；不静默切换 backend**。本地分解只属实现面，D-Bus surface 保持不变。
 
 ## 14. 删除、重置和替换

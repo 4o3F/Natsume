@@ -9,10 +9,11 @@ import "device_control_binding.proto";
 
 message ServerHandshakeEnvelope {
   oneof body {
-    ServerChallenge     server_challenge     = 1;
-    CredentialBundle    credential_bundle    = 2;
-    SessionReady        session_ready        = 3;
-    EnrollmentActivated enrollment_activated = 4;
+    ServerChallenge        server_challenge         = 1;
+    EnrollmentReviewStatus enrollment_review_status = 2;
+    CredentialBundle       credential_bundle        = 3;
+    EnrollmentActivated    enrollment_activated     = 4;
+    SessionReady           session_ready            = 5;
   }
 }
 
@@ -28,9 +29,9 @@ message ClientActiveEnvelope {
   // Echo of SessionReady.session_id; connection-local lease id, not Identifier UUID.
   bytes session_id = 1;
   oneof body {
-    CommandStatus         command_status  = 10;
-    ObservedStateSnapshot observed_state  = 11;
-    BindingRequest        binding_request = 12;
+    CommandStatus         command_status  = 2;
+    ObservedStateSnapshot observed_state  = 3;
+    BindingRequest        binding_request = 4;
   }
 }
 
@@ -38,9 +39,9 @@ message ServerActiveEnvelope {
   // Echo of SessionReady.session_id; connection-local lease id, not Identifier UUID.
   bytes session_id = 1;
   oneof body {
-    Command       command        = 10;
-    BindingResult binding_result = 11;
-    ProtocolError protocol_error = 13;
-    ServerDrain   server_drain   = 14;
+    Command       command        = 2;
+    BindingResult binding_result = 3;
+    ProtocolError protocol_error = 4;
+    ServerDrain   server_drain   = 5;
   }
 }

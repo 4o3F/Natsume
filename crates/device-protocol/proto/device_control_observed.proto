@@ -7,8 +7,8 @@ enum CredentialState {
   CREDENTIAL_STATE_UNSPECIFIED = 0;
   // No password file on disk.
   CREDENTIAL_STATE_ABSENT = 1;
-  // A password file is present and readable. Freshness is
-  // installed_credential_revision vs accounts.credential_revision, not this variant.
+  // A password file is present and readable. Freshness comes from comparing the
+  // complete CredentialObservation with Server truth, not from this variant.
   CREDENTIAL_STATE_INSTALLED = 2;
   // File is present but unusable (unreadable, corrupt, or apply failed).
   CREDENTIAL_STATE_FAILED = 3;
@@ -44,23 +44,28 @@ enum SessionState {
   SESSION_STATE_ERROR = 6;
 }
 
+// Complete context of the local DOMjudge password artifact. ABSENT requires
+// empty ids and revision zero. INSTALLED or FAILED requires canonical binding
+// and Account UUIDv7 values and a positive revision.
+message CredentialObservation {
+  string binding_id = 1;
+  string account_id = 2;
+  uint64 credential_revision = 3;
+  CredentialState state = 4;
+}
+
 // Slim Device-authored snapshot. Change + low-frequency periodic. No secrets,
 // paths, or internal error chains. Server receive-time is not a Device field.
 message ObservedStateSnapshot {
-  // SHA-256 of the last successfully applied SyncState assignment; same 32 bytes
-  // as SyncState.canonical_hash. Converge no-op when equal. Hash recipe is
-  // Phase 5 D1 (not frozen).
-  bytes applied_hash = 5;
-  // Occupancy stamp of the Binding installed on Device; canonical lowercase
-  // hyphenated UUIDv7. Empty = never installed. Not an integer revision.
-  string installed_binding_id = 8;
-  // accounts.credential_revision last written by SYNC_SECRET. 0 = never installed.
-  uint64 installed_credential_revision = 9;
-  // Local DOMjudge password file health. Pair with installed_credential_revision.
-  CredentialState credential_state = 10;
-  GatewayState gateway_state = 11;
+  // Empty if no SyncState has ever been applied; otherwise the 32-byte SHA-256
+  // derived from the last successfully applied typed SyncState. Converge no-ops
+  // when it equals the Server-derived target hash.
+  bytes applied_hash = 1;
+  // Required after semantic decode; missing is not equivalent to ABSENT.
+  CredentialObservation credential = 2;
+  GatewayState gateway_state = 3;
   // SHA-256 of the raw SubjectPublicKeyInfo DER of the Gateway cert Caddy is
   // actually using. Empty if none.
-  bytes gateway_certificate_fingerprint = 13;
-  SessionState session_state = 14;
+  bytes gateway_certificate_fingerprint = 4;
+  SessionState session_state = 5;
 }
