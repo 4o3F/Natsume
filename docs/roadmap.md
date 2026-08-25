@@ -10,7 +10,7 @@
 
 **2026-08-24 目标重基线**：Phase 3/4 段落保留的是已经交付的 Token/HTTPS/Bearer 历史工作与 Gate 证据，不得当作 ADR-0038 最终 runtime 语义。atomic cutover 的目标为 ordinary WSS Challenge proof、每个 Enrollment transaction 人工审核、无 Enrollment expiry、SessionReady 后 initial Observed barrier、双端有界 single-consumer Command channel。Phase 5/6 必须按新 Proto 接线，不建立兼容双轨。
 
-**2026-08-25 目标修订**：Client Handshake/Active 统一允许无 action 的 `ClientClose`；成功 Ack/status 必须晚于本地 durable fact。Command actor 以持久化 `enqueue_order` 恢复 Device 内 FIFO，disable/revoke 事务先收口旧 Device 非终态 Command 再驱逐。revoked 旧 identity 永不恢复；destructive reprovision 以全新 material 经人工审核创建新 Device。当前 Rust/migration/evidence 尚未同步。
+**2026-08-25 目标修订**：Client Handshake/Active 统一允许无 action 的 `ClientClose`；成功 Ack/status 必须晚于本地 durable fact。Client current authority 与 candidate Enrollment 是两个可并存槽位，replacement Ack 后崩溃由 candidate exact replay 恢复。Server 以 HWID-sharded MachineActor 内的 per-DeviceLane 持久化 `enqueue_order` 恢复 FIFO；lease、Observed、Command 与 lifecycle eviction 都按准确 device_id 隔离，disable/revoke 事务先收口旧 lane 再 owner-matching 驱逐。revoked 旧 identity 永不恢复；destructive reprovision 以全新 material 经人工审核创建新 Device/lane。wire evidence quality 只有 MEDIUM/STRONG，SecretBytes password 继承 Account 值域，canonical-hash message 字段变化必须切换 subprotocol。当前 Rust/migration/evidence 尚未同步。
 
 ## 1. 计划原则
 
@@ -130,7 +130,7 @@ Server current-fact migration 与模块边界、Seat/account/current-credential 
 
 WSS + Bearer token 认证、subprotocol 版本协商、401-before-decode、按 Converge/Oneshot 二分的 dispatcher、Observed slim snapshot（变化 + 低频兜底）、PUT same-ID replay/conflict。Panel-generated UUIDv7 与 `PUT` create/replay contract 已在 Phase 0 冻结；本阶段实现 WSS 投递，并以 `frozen_payload_json` 表达每 Command 的 frozen typed input。Device **不**维护 command journal；keep-alive 为 WS ping/pong。本阶段还必须对 ingress hardening 显式定案（[契约](contracts.md) §3.6.5）：header count/size、slow-header timeout 与 connection capacity，或以 hyper HTTP/1 builder limit 自建 accept loop，或记录带部署证据的评审接受结论；该 gap 不得继续无限期携带。
 
-**G4 覆盖**：canonical UUIDv7/`201/200/400/409` contract、PUT 审计、Device 内 `enqueue_order` 分配/恢复与 `queued → in_flight` pre-send durable cut、每 Device 单 in-flight 与 status-current-lease/ID 配对、frame size/exact-subprotocol version/unknown enum、双向 Close 与 control lease 替换、Converge initial-Observed 推定成功/退队重投/fail-closed、Oneshot pre-cut `COMMAND_NOT_DELIVERED`/post-cut `outcome_unknown`/不重放、disable/revoke terminalization、same-ID/different-request conflict、stale `binding_id`/revision 拒绝、ErrorCode 64-byte ASCII grammar 与 unknown-opaque handling、ingress hardening 决策项的可定位落地或评审接受证据、缩比容量探针（≥50–100 条模拟 WSS 连接并携 Observed 上报，压到 SQLite 单写者路径；完整 500 台验证仍在 G7）——写路径风险必须在关键路径结束前暴露。
+**G4 覆盖**：canonical UUIDv7/`201/200/400/409` contract、PUT 审计、MachineActor/DeviceLane alias 与 predecessor/successor 隔离、Device 内 `enqueue_order` 分配/恢复与 `queued → in_flight` pre-send durable cut、每 Device 单 owner-tagged lease/in-flight 与 status-current-lease/ID 配对、旧 lane noop 不驱逐 successor、Client current-authority/candidate 双槽 Ack 崩溃恢复、frame size/exact-subprotocol version/unknown enum/canonical message field-set breaking rule、`EnrollmentEvidenceQuality` 仅 MEDIUM/STRONG、required Account-domain SecretBytes、双向 Close 与 control lease 替换、Converge initial-Observed 推定成功/退队重投/fail-closed、Oneshot pre-cut `COMMAND_NOT_DELIVERED`/post-cut `outcome_unknown`/不重放、disable/revoke terminalization、same-ID/different-request conflict、stale `binding_id`/revision 拒绝、ErrorCode 64-byte ASCII grammar 与 unknown-opaque handling、ingress hardening 决策项的可定位落地或评审接受证据、缩比容量探针（≥50–100 条模拟 WSS 连接并携 Observed 上报，压到 SQLite 单写者路径；完整 500 台验证仍在 G7）——写路径风险必须在关键路径结束前暴露。
 
 ### Phase 5：State, Data Plane & Secrets
 

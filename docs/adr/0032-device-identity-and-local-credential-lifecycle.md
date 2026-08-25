@@ -30,7 +30,7 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 
 **2026-08-16 修订**：claim 层整机配方冻结——按 ANCHOR_ORDER 逐槽拼接 `anchor_literal ++ 0x00 ++（present 槽的 R2 归一化值 | 单字节 0x01 缺失标记）++ 0x00`，在同一 Fleet namespace 下派生 UUIDv5 得 `machine_hardware_id`；判定为 2-of-3——任一槽 `unsupported` 即整体 `unsupported`，否则 `present` 槽数 ≥2 才允许派生，非 present 槽以缺失标记参与拼接；slot/claim 词表已统一。
 
-**2026-08-24 修订（aggregate evidence quality）**：仅对已经通过上述 2-of-3 判定的 claim，将 present slots 的固有 quality 从高到低排序并取第二个值，作为 Enrollment wire 的 aggregate `EvidenceQuality`。它表达形成 quorum 的最低质量：`strong + strong`（无论第三个 medium 是否 present）为 `strong`，`strong + medium` 为 `medium`。该值在首次 Enrollment attempt 前随 transaction material crash-safe 持久化；exact replay 读取持久化值，不因后续启动时 slot 可用性变化而重算。它由 candidate key 签名，但 Server 不接收 raw slots，不能独立复算；Panel 必须标为 Device self-reported advisory evidence。它不改变 derivation bytes、2-of-3 eligibility、unsupported fail-closed 或 startup strict equality，也不构成 authenticator。
+**2026-08-24 修订（aggregate evidence quality；2026-08-25 可达值收紧）**：仅对已经通过上述 2-of-3 判定的 claim，将 present slots 的固有 quality 从高到低排序并取第二个值，作为 Enrollment wire 的 aggregate `EnrollmentEvidenceQuality`。它表达形成 quorum 的最低质量：`strong + strong`（无论第三个 medium 是否 present）为 `STRONG`，`strong + medium` 为 `MEDIUM`。固定配方只有两个 strong slot 和一个 medium slot，故 2-of-3 成功后的 aggregate 不可能为 weak；wire enum 只保留 `MEDIUM` / `STRONG`。该值在首次 Enrollment attempt 前随 transaction material crash-safe 持久化；exact replay 读取持久化值，不因后续启动时 slot 可用性变化而重算。它由 candidate key 签名，但 Server 不接收 raw slots，不能独立复算；Panel 必须标为 Device self-reported advisory evidence。它不改变 derivation bytes、2-of-3 eligibility、unsupported fail-closed 或 startup strict equality，也不构成 authenticator。
 
 开发期匿名 fixture collector 位于 `client/privileged-helper/examples/collect_identity_fixture.rs`，只输出上述匿名化 slot 结果与 completeness，不输出原始硬件值。
 

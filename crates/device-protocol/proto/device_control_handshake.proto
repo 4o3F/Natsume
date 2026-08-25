@@ -7,11 +7,13 @@ message ServerChallenge {
   bytes challenge_nonce = 1;
 }
 
-enum EvidenceQuality {
-  EVIDENCE_QUALITY_UNSPECIFIED = 0;
-  EVIDENCE_QUALITY_WEAK        = 1;
-  EVIDENCE_QUALITY_MEDIUM      = 2;
-  EVIDENCE_QUALITY_STRONG      = 3;
+// Aggregate Enrollment evidence admitted by the fixed 2-of-3 hardware recipe.
+// The current strong/strong/medium anchors make WEAK unreachable, so it is not
+// part of this wire state space.
+enum EnrollmentEvidenceQuality {
+  ENROLLMENT_EVIDENCE_QUALITY_UNSPECIFIED = 0;
+  ENROLLMENT_EVIDENCE_QUALITY_MEDIUM      = 1;
+  ENROLLMENT_EVIDENCE_QUALITY_STRONG      = 2;
 }
 
 // Durable Enrollment transaction material. The Device creates and persists the
@@ -24,7 +26,7 @@ message EnrollmentAttempt {
   bytes           gateway_csr_der      = 3;
   // Aggregate quality of the accepted 2-of-3 hardware claim: the second-highest
   // quality among present anchors. Advisory to operator review; never authority.
-  EvidenceQuality evidence_quality     = 4;
+  EnrollmentEvidenceQuality evidence_quality    = 4;
 }
 
 // Durable operator-review state. Approval has no separate wire value: receipt

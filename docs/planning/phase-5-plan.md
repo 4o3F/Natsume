@@ -7,9 +7,9 @@
 
 **2026-08-19 blocker**：本计划按当前 Token Enrollment、daemon credential paths 与 Bearer WSS authority 起草；[ADR-0038](../adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 Proto/crypto/schema foundation 已存在，但 runtime cutover 尚未发生。Owner 必须先决定 Phase 5 位于 atomic authority cutover 前还是后，并据此重基线 credential/session inputs；禁止实现混合 Token/control-key compatibility。
 
-**2026-08-24 修订（统一 Converge context 与串行执行）**：`SYNC_STATE` / `SYNC_SECRET` 是 Converge 命令。前者携带显式 `oneof assignment`（unbound 或完整 `{binding_id,account_id,seat_code,domjudge_username}`），hash 不上 wire，而从 canonical protobuf bytes 按固定 domain-separated SHA-256 配方派生；后者与 Observed 按完整 `{binding_id,account_id,credential_revision}` 收敛，password 使用 `SecretBytes`。Device 无 command journal；D12 journal GC 关闭为不再适用。Server DeviceActor 与 Client executor 都是有界 single-consumer channel，每连接最多一个 in-flight。Observed 为 slim snapshot，且每次 SessionReady 后第一条 Active packet 必须是 Observed。`open_binding_prompt` 空 body；Seat 在 `BindingRequest.seat_code`（Phase 6 消费），无 request ID。
+**2026-08-24 修订（统一 Converge context 与串行执行）**：`SYNC_STATE` / `SYNC_SECRET` 是 Converge 命令。前者携带显式 `oneof assignment`（unbound 或完整 `{binding_id,account_id,seat_code,domjudge_username}`），hash 不上 wire，而从 canonical protobuf bytes 按固定 domain-separated SHA-256 配方派生；后者与 Observed 按完整 `{binding_id,account_id,credential_revision}` 收敛，password 使用 required `SecretBytes` wrapper，值继承 Account password 的非空 UTF-8/control-free/512-byte 契约。Device 无 command journal；D12 journal GC 关闭为不再适用。Server MachineActor 的准确 DeviceLane 与 Client executor 都是有界 single-consumer channel，每 lane 最多一个 in-flight。Observed 为 slim snapshot，且每次 SessionReady 后第一条 Active packet 必须是 Observed。`open_binding_prompt` 空 body；Seat 在 `BindingRequest.seat_code`（Phase 6 消费），无 request ID。
 
-**2026-08-25 修订（Client failure 与 durable FIFO）**：Client 本地 fact 写入失败时发送无 action 的 `ClientClose` 并关闭，不伪造 success/Observed。`SYNC_SECRET` 只有在 secret + 完整 credential context crash-safe 持久化后才报 success/INSTALLED。Command 的 Device 内顺序由数据库 `enqueue_order` 冻结；DeviceActor 首次创建分配、重启恢复，disable/revoke 事务在 eviction 前收口 queued/in-flight。当前 Rust/migration 仍待 atomic batch 同步。
+**2026-08-25 修订（Client failure 与 durable FIFO）**：Client 本地 fact 写入失败时发送无 action 的 `ClientClose` 并关闭，不伪造 success/Observed。`SYNC_SECRET` 只有在经值域校验的 secret + 完整 credential context crash-safe 持久化后才报 success/INSTALLED。Command 的 Device 内顺序由数据库 `enqueue_order` 冻结；MachineActor 的准确 DeviceLane 首次创建分配、只按自身 device_id 重启恢复，disable/revoke 事务在 owner-matching eviction 前收口旧 lane queued/in-flight。当前 Rust/migration 仍待 atomic batch 同步。
 
 本文件是计划，不是完成声明。遵守 [路线图](../roadmap.md) §1 原则 5：细目在 Phase 启动时冻结，本文件提供该冻结的候选基线与决策清单。
 
@@ -58,7 +58,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### 3.5 Phase 4 已交付、本阶段直接消费
 
-- **payload schema v1 当前实现存在 drift**（`server/src/application/command.rs`）：HTTP frozen payload 仍是 Phase 4 交付面，但渲染与执行在 Phase 5 接线前必须适配新 wire。`SyncState` 使用 `oneof assignment`：显式 unbound 或 `BoundAssignment{binding_id,account_id,seat_code,domjudge_username}`；hash 不在 wire，双方按 `SHA-256("NATSUME-SYNC-STATE-v1\0" || sync_state.encode_length_delimited_to_vec())` 派生，typed `SyncState` 只含已验证 assignment。`SyncSecret` 为 `{binding_id,account_id,credential_revision,password: SecretBytes}`。Converge 看完整 assignment/hash 或完整 credential observation；无 `generation`，无 `TargetAssignment` / `TargetGateway` 消息。
+- **payload schema v1 当前实现存在 drift**（`server/src/application/command.rs`）：HTTP frozen payload 仍是 Phase 4 交付面，但渲染与执行在 Phase 5 接线前必须适配新 wire。`SyncState` 使用 `oneof assignment`：显式 unbound 或 `BoundAssignment{binding_id,account_id,seat_code,domjudge_username}`；hash 不在 wire，双方按 `SHA-256("NATSUME-SYNC-STATE-v1\0" || sync_state.encode_length_delimited_to_vec())` 派生，typed `SyncState` 只含已验证 assignment。`SyncSecret` 为 `{binding_id,account_id,credential_revision,password: required SecretBytes}`，password value 继承 Account 的 exact、非空 UTF-8/control-free/512-byte 值域。Converge 看完整 assignment/hash 或完整 credential observation；无 `generation`，无 `TargetAssignment` / `TargetGateway` 消息。
 - `sync_secret` 的 vault→wire `SecretBytes` 注入被 Phase 4 显式登记为 **Phase 5 接线 hook**（Phase 4 接受并持久化但 dispatcher 不渲染不投递）。
 - proto `SecretBytes` 的 `Debug` 经 build 期 `skip_debug` 手写为 `[REDACTED]`。
 
@@ -175,7 +175,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 **历史背景（不再实施）**：曾设想 Device journal 保存 Command frame bytes，条目删除依赖服务端终态确认。高水位游标因乱序终态会静默丢结果而被否决。
 
-高水位游标、按命令确认帧、首批投递完成标记均不再评估。Server 以 DeviceActor 分配的 durable `enqueue_order` 恢复 FIFO，并在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 创建时无 READY lease，或仍 `queued` 时失去所属 lease，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure、断线或 Server restart 才记 `outcome_unknown`。两者均不重放。Converge 断线后由新连接 initial Observed 按完整领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed。disable/revoke 事务在 eviction 前将旧 Device queued 全部置为 `failed/COMMAND_NOT_DELIVERED`、in-flight 全部置为 `outcome_unknown`。
+高水位游标、按命令确认帧、首批投递完成标记均不再评估。Server 以准确 DeviceLane 分配的 durable `enqueue_order` 恢复 FIFO，并在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 创建时无 READY lease，或仍 `queued` 时失去所属 lease，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure、断线或 Server restart 才记 `outcome_unknown`。两者均不重放。Converge 断线后由新连接 initial Observed 按完整领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed。disable/revoke 事务在 owner-matching eviction 前将准确旧 lane queued 全部置为 `failed/COMMAND_NOT_DELIVERED`、in-flight 全部置为 `outcome_unknown`。
 
 ## 7. 跨切风险
 

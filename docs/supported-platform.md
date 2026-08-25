@@ -180,12 +180,12 @@ MAC 地址明确排除，不要采集。
 |---|---|---|
 | `anchor_kind` | 固定 slot 标识 | 三者之一 |
 | `status` | `present` / `unavailable` / `unsupported` / `permission_denied` / `malformed` / `rejected_placeholder` / `conflict` | 采集结果分类，对应 `EvidenceStatus` |
-| `quality` | `strong` / `medium` / `weak` | 对应 `EvidenceQuality` |
+| `quality` | `strong` / `medium` | 当前三个固定 slot 的固有 quality 词汇 |
 | `candidate_id` | 该 slot 规范化值的 UUID 派生结果 | **不提交原始 serial** |
 
 整机再加一个 `completeness`：`complete` / `temporarily_unavailable` / `unsupported`，对应 `CollectionCompleteness`。
 
-进入 Enrollment 的 aggregate `evidence_quality` 只对已通过 2-of-3 的整机 claim 计算：取 present slots 固有 quality 的第二高值，表示 quorum 的最低质量。它在首次 attempt 前随 transaction material 持久化，exact replay 不重算；由于 Server 不接收 raw slots，Panel 必须把它标为 Device self-reported advisory evidence。它不替代 per-slot fixture，也不参与 authority。
+进入 Enrollment 的 aggregate `evidence_quality` 只对已通过 2-of-3 的整机 claim 计算：取 present slots 固有 quality 的第二高值，表示 quorum 的最低质量。当前固定 `strong + strong + medium` 配方只可能产生 wire `EnrollmentEvidenceQuality::STRONG` 或 `MEDIUM`，不保留不可达的 `WEAK`。它在首次 attempt 前随 transaction material 持久化，exact replay 不重算；由于 Server 不接收 raw slots，Panel 必须把它标为 Device self-reported advisory evidence。它不替代 per-slot fixture，也不参与 authority。
 
 **禁止提交**：原始 DMI serial、原始磁盘 serial、完整 Machine Hardware ID、private key、真实密码。只提交 slot 分类、quality 与派生候选 UUID。
 

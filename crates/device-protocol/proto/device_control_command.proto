@@ -78,7 +78,9 @@ message SyncSecret {
   // accounts.credential_revision in 1..=i64::MAX. Already installed at this
   // complete binding/account/revision context → no-op.
   uint64 credential_revision = 3;
-  // DOMjudge password plaintext. Never log, persist in Observed, or put in Debug.
+  // Required DOMjudge password plaintext. The wrapper must be present and its
+  // value must be the exact non-empty, valid UTF-8, control-free Account
+  // password in 1..=512 bytes. Never log, persist in Observed, or put in Debug.
   SecretBytes password = 4;
 }
 
