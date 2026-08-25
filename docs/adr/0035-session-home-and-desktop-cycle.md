@@ -13,6 +13,8 @@
 > **2026-08-24 修订（Oneshot delivery cut）**：Server 在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 在 cut 前失去 live lease 为 `failed/COMMAND_NOT_DELIVERED`；cut 后在 terminal status 前发生 send failure、disconnect 或 restart 才为 Server-only `outcome_unknown`。两者均不自动重放。
 >
 > **2026-08-24 修订（Home R1 收敛）**：Observed 只增加可选 `completed_home_epoch`，表达最近一次完整 durable 完成的 reset；不恢复通用 `home_state`、进度 blob 或 generation。
+>
+> **2026-08-25 修订（write-before-success）**：Home completion record 必须先 crash-safe 持久化，之后才允许推进 `completed_home_epoch` 或发送 `CommandStatus(SUCCEEDED)`；本地 metadata 损坏到无法安全报告 status/Observed 时保持 fail closed 并以 `ClientClose` 终止连接。
 
 ## Context
 
@@ -37,7 +39,7 @@ Session Agent 必须运行于真实 graphical session，但不能成为 credenti
 
 - 使用固定 contest user 与 versioned Home template。
 - deployment 基于 target safety、recovery 与 performance evidence 只选择一个 Home backend（OverlayFS 或 staged copy），并记录到 platform evidence；runtime 不静默 fallback。
-- 每次 `HOME_RESET` 获得由 Server 分配的 `home_epoch`。收敛键是 Target `home_epoch` vs Observed 可选 `completed_home_epoch`。两者出现值都必须在 `1..=i64::MAX`；后者缺失表示从未成功完成 reset，且只在 Prepare/Activate/Recover/GC 全部 durable 完成后单调前进。较新 reset 执行或恢复期间继续报告上一个完成 epoch。同 epoch 的各步骤必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch；重试不得 bump epoch。达到上界时 fail closed，不得 wrap。
+- 每次 `HOME_RESET` 获得由 Server 分配的 `home_epoch`。收敛键是 Target `home_epoch` vs Observed 可选 `completed_home_epoch`。两者出现值都必须在 `1..=i64::MAX`；后者缺失表示从未成功完成 reset，且只在 Prepare/Activate/Recover/GC 与 completion record 全部 crash-safe 持久化后单调前进，对应 success status 同样必须晚于该写入。较新 reset 执行或恢复期间继续报告上一个完成 epoch。同 epoch 的各步骤必须可重入；已完成则为 success/no-op；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch；重试不得 bump epoch。达到上界时 fail closed，不得 wrap。
 - `HOME_RESET` 不拆 daemon WSS（contest user home，daemon 是 natsume service）。
 - 中断的 reset 通过本地状态文件 + `RecoverHomeInstance` 恢复，不靠 Command durability；不确定时 fail closed。曾完成 reset 但本地完成记录缺失或损坏时不得报告正常 absent。Server 看到 Observed 缺失/小于 Target 时重推同一 epoch，相等时收敛；Observed 大于 Server Target 或相对既有持久化观测回退时 fail closed，不发送旧 epoch。reset 完成并证明 mount/copy 与 ownership safety 后才能启动 managed graphical session。
 - reset 是 operator-present controlled event，不因 session replacement 隐式发生。

@@ -19,9 +19,11 @@
 
 **2026-08-24 修订（统一 Server 终止）**：Handshake 与 Active 共用 `ServerClose{error_code, action: ServerCloseAction}`，删除 phase-specific `ProtocolError` / `ServerDrain`。`RETRY` / `STOP` enum 是 Client 行为权威；error code 只作稳定诊断分类。人工审核 `EnrollmentReviewStatus(DENIED)` 仍是 durable transaction 结果，不包装为连接错误。
 
-**2026-08-24 修订（单控制租约与字段域）**：每台 Device 同时至多一个 current control lease；新连接的 Server-generated UUIDv7 lease 在 `SessionReady` 前替换旧 lease。`session_id` 是 16-byte RFC 9562 network-order UUIDv7。持久化 revision/epoch 的 wire 有效域统一为 `1..=i64::MAX`；Client 版本是 canonical SemVer；Enrollment 的 aggregate evidence quality 是 present anchors 的第二高质量，仅供人工审核参考。
+**2026-08-24 修订（单控制租约与字段域）**：每台 Device 同时至多一个 current control lease；新连接的 Server-generated UUIDv7 lease 在 `SessionReady` 前替换旧 lease。`session_id` 是 16-byte RFC 9562 network-order UUIDv7。持久化 revision/epoch 的 wire 有效域统一为 `1..=i64::MAX`；Client 版本是 canonical SemVer；Enrollment 的 aggregate evidence quality 是 present anchors 的第二高质量，是 candidate-signed、Server 不独立验证 anchors 的自报 advisory evidence，仅供人工审核参考。
 
 **2026-08-24 修订（单版本权威与 Handshake attachment）**：删除 Challenge/Proof 重复的 numeric `protocol_version`，只由 exact `natsume.control.v1` 选择当前 wire generation。每个非终态 Enrollment transaction 同时至多一个 current Handshake attachment；新 exact replay 原子替换旧 attachment，但 credential replacement 的 attachment 在 Ack 激活前不驱逐旧 Active lease。
+
+**2026-08-25 修订（双向终止、durable enqueue 与 terminal lifecycle）**：Client 在 Handshake/Active 统一用 `ClientClose{error_code}` best-effort 报告本连接无法安全继续；它不带 action，也不改变 durable 业务状态。Command 以 Device 内持久化 `enqueue_order` 恢复 actor 顺序。disable/revoke 在 lifecycle transaction 内先收口旧 Device 非终态 Command 再驱逐；revoked 身份永久终止，显式本地 reprovision 必须经全新人工审核 Enrollment 创建新 Device。
 
 **2026-08-20 修订（无 ControlKeyId）**：Server natural key 是 `public_key`；不派生 ControlKeyId。daemon manifest pins hex(public_key)。Enrollment/WSS Token 路径仍按本 ADR 原子 flag day 重写，本记录仍是目标。
 
@@ -59,6 +61,7 @@ TLS 1.3
 → first ClientActiveEnvelope: ObservedStateSnapshot
 → Active envelopes echo session_id
 ↳ (Handshake/Active connection failure) ServerClose{error_code, action = RETRY | STOP}
+↳ (Handshake/Active local fatal failure) ClientClose{error_code}
 ```
 
 该旁路不适用于 durable `EnrollmentReviewStatus(DENIED)`；Denied 发送后直接关闭，不再追加 Close。
@@ -74,13 +77,13 @@ Exact WS subprotocol 是 control wire generation 的唯一版本权威。`Server
 | `EnrollmentAttempt` | 候选新 key | 必带 canonical UUIDv7 `enrollment_id`、32-byte `candidate_public_key`、非空 `gateway_csr_der` 与非 `UNSPECIFIED` aggregate `evidence_quality` |
 | `ResumeSession` | 当前 active key | 空 message；不得携带任何 Enrollment material |
 
-Device 在第一次网络尝试前 crash-safe 持久化 `enrollment_id`、control key、Gateway key 与 exact CSR。处于 Prepared 或 BundleInstalled 的 Device 每次连接都发送完全相同的 `EnrollmentAttempt`；只有本地 Active manifest 已持久化后才发送 `ResumeSession`。Server 不把 Enrollment 改写为 Resume，也不在拒绝后要求 Device 猜测另一 purpose。control-key rotation 不是 handshake。
+Device 在第一次网络尝试前 crash-safe 持久化 `enrollment_id`、control key、Gateway key、exact CSR 与当次计算的 `evidence_quality`。处于 Prepared 或 BundleInstalled 的 Device 每次连接都从该持久化 material 重建完全相同的 `EnrollmentAttempt`，不得因后续启动时 anchor 可用性变化而重新计算 quality；只有本地 Active manifest 已持久化后才发送 `ResumeSession`。Server 不把 Enrollment 改写为 Resume，也不在拒绝后要求 Device 猜测另一 purpose。control-key rotation 不是 handshake。
 
-Server 将 `(machine_hardware_id, enrollment_id, candidate_public_key, gateway_csr_der, evidence_quality)` 视为 immutable Enrollment transaction material；daemon/agent version、connection challenge 与 signature 不属于该 material。同 `enrollment_id` + exact material 是 replay；同 ID + 不同 material 是稳定 conflict。不同**非终态** transaction ID 对同一 HWID 或候选 key 的 reservation 同样拒绝；已完成的旧 transaction 不妨碍 Server 为 lifecycle 允许的现有 Device 派生一个新的 replacement/recovery attempt。Server 从当前事实派生 create/replace/recovery 分类，Client 不声明该 intent；只有当前 lifecycle 允许的请求可进入人工审核，`disabled` / `revoked` Device 不得借 Enrollment 隐式恢复。
+Server 将 `(machine_hardware_id, enrollment_id, candidate_public_key, gateway_csr_der, evidence_quality)` 视为 immutable Enrollment transaction material；daemon/agent version、connection challenge 与 signature 不属于该 material。同 `enrollment_id` + exact material 是 replay；同 ID + 不同 material 是稳定 conflict。不同**非终态** transaction ID 对同一 HWID 或候选 key 的 reservation 同样拒绝；已完成的旧 transaction 不妨碍 Server 为 lifecycle 允许的现有 Device 派生一个新的 replacement/recovery attempt。Server 从当前事实派生 create/replace/recovery，并在有 revoked predecessor 时派生“这是新 Device”的关系；Client 不声明该 intent。`disabled` Device 不得借 Enrollment 恢复；`revoked` 旧 Device 同样永不恢复，但显式清除旧本地 identity-bound material 后产生的全新 key/CSR/`enrollment_id` 可作为**新 Device**进入人工审核，绝不改写旧 transaction 或旧 Device row。
 
 `ClientProof.daemon_version` 是当前实际运行的 Device Daemon build version；`agent_version` 是本机已安装的 Session Agent build version，即使 Agent 当前未运行也必须报告。两者都使用无前导 `v`、无空白或路径的 canonical SemVer 2.0.0 字符串，由 Panel 消费；它们随每次 Proof 重新观测，不进入 immutable Enrollment replay identity，也不参与认证、授权或 evidence-quality 计算。
 
-`EnrollmentAttempt.evidence_quality` 不是 Client 任意打分，而是已通过 2-of-3 claim 的 present anchors 按固有 `EvidenceQuality` 排序后的第二高值：它表示形成 quorum 的最低质量；三个 slot 全部 present 时仍取第二高值。当前 `strong + strong`（含第三个 medium）为 `STRONG`，`strong + medium` 为 `MEDIUM`。该值随 transaction material 固化，只供 operator/Panel 人工审核与诊断，不放宽 2-of-3、placeholder、unsupported 或 startup strict-equality 规则，也不授予 authority。
+`EnrollmentAttempt.evidence_quality` 不是 UI 或网络层任意打分，而是 Device 本地 identity 配方对已通过 2-of-3 claim 的 present anchors 按固有 `EvidenceQuality` 排序后取第二高值：它表示形成 quorum 的最低质量；三个 slot 全部 present 时仍取第二高值。当前 `strong + strong`（含第三个 medium）为 `STRONG`，`strong + medium` 为 `MEDIUM`。该值在首次 attempt 前随 transaction material 固化并由 candidate key 签名，但 Server 不接收 raw anchors，因而不能独立复算或证明该质量。Panel 必须标为 Device self-reported advisory evidence；它不放宽 2-of-3、placeholder、unsupported 或 startup strict-equality 规则，也不授予 authority。
 
 每条 WSS connection 只拥有一个 32-byte CSPRNG `challenge_nonce`；它只存在该 connection-local PreAuthSession，不由 Client 回显，并在 proof 成功、失败、timeout、非法 message 或 disconnect 后销毁。不得建立全局 challenge lookup 或允许第二次 proof。Client 的时间义务只是在 Server 本地 PreAuth timer 内提交唯一 `ClientProof`；人工审核、Bundle、Ack、Activated 与 Ready 不受该 timer 约束。
 
@@ -105,7 +108,9 @@ SHA-256 通过 `Sha256::update` 按上述 chunks 增量计算，不分配 combin
 
 `ServerHandshakeEnvelope` 与 `ClientHandshakeEnvelope` 各占一个 standalone binary WebSocket message，不属于 Active envelope。这里的 message 是 tungstenite 重组 RFC 6455 fragmentation 后暴露的应用边界；不要求访问 raw frame。`max_message_size` 在 Protobuf decode 前约束重组后的完整消息，`max_frame_size` 独立约束单个 transport fragment。Client 与 Server 都把经语义校验的 typed `ServerChallenge` / `ClientProof` 交给 pinned Prost `0.14.4` encoder；proof digest 对 Challenge 与清空 `signature` 的 Proof 做 length-delimited canonical encoding。入站字段顺序、非最短 varint、显式 default、unknown bytes、重复字段的被覆盖值与等价 repeated 布局不进入签名。Server 丢弃收到的 raw bytes，只继续使用规范再编码结果。切换 Protobuf runtime 或编码版本必须重开本 ADR 并重算全部语义摘要 golden。
 
-101 后的 Server 终止统一使用两个 envelope 都可承载的 `ServerClose`。`action` 是 required `ServerCloseAction` enum：`RETRY` 只进入 Client 统一的指数退避 + jitter 重连策略；`STOP` 终止该 local connection intent，直到 Client 可观察的软件或 durable local state 改变，或 operator 明确重新 arm。不存在 Server 提供的 retry delay、deadline 或 error-code-to-action 表；Server-only 状态可能自行恢复时必须选择 `RETRY`，不能让 `STOP` 等待 Client 无法观察的 Server 变化。`error_code` 必须是非空、不超过 64 ASCII bytes 且匹配 `[A-Z][A-Z0-9_]*` 的稳定 token；接收方对未知但合法的 token 保持 opaque，不得因本地 registry 未知而拒绝 envelope，也不得据此推导 action。Server 每连接最多发送一个 Close，发送后不再发任何业务 Protobuf、无需 Client ACK，并关闭 WebSocket。超限消息、无法安全分类或无法可靠编码响应的失败可以直接关闭。101 前的 subprotocol/容量/HTTP 拒绝仍由对应 transport response 表达，因为 protobuf 尚不可用。
+101 后的 Server 终止统一使用两个 Server envelope 都可承载的 `ServerClose`。`action` 是 required `ServerCloseAction` enum：`RETRY` 只进入 Client 统一的指数退避 + jitter 重连策略；`STOP` 终止该 local connection intent，直到 Client 可观察的软件或 durable local state 改变，或 operator 明确重新 arm。不存在 Server 提供的 retry delay、deadline 或 error-code-to-action 表；Server-only 状态可能自行恢复时必须选择 `RETRY`，不能让 `STOP` 等待 Client 无法观察的 Server 变化。
+
+Client 在两个 Client envelope 中统一用 `ClientClose{error_code}` 报告本地状态使本连接无法安全继续。它没有 action，因为 Client 无权命令 Server 选择 retry、审核或 transaction transition；也不替代 `CredentialAck`、`EnrollmentReady`、`CommandStatus` 或 Observed。双向 Close 的 `error_code` 都必须是非空、不超过 64 ASCII bytes 且匹配 `[A-Z][A-Z0-9_]*` 的稳定 token；接收方对未知但合法的 token 保持 opaque，不得因本地 registry 未知而拒绝 envelope，也不得据此驱动 authority。每一方向每连接最多发送一次 Close，发送后不再发任何业务 Protobuf、对端无需 ACK，并关闭 WebSocket。Server 可把 ClientClose 的 bounded token 记为 structured connection diagnostic；proof 后可关联已认证 attachment/current lease，proof 前不可归因于 Device。两者都只执行与该阶段普通断线相同的 barrier/recovery，不创建 durable 业务事实。超限消息、无法安全分类或无法可靠编码响应的失败可以直接关闭。101 前的 subprotocol/容量/HTTP 拒绝仍由对应 transport response 表达，因为 protobuf 尚不可用。
 
 ### Unified dynamic actor
 
@@ -123,7 +128,9 @@ Operator approve/reject 只向 actor 当时的 current attachment 发送 Bundle/
 
 租约替换后，旧连接上尚未开始的 Command 不得执行；已开始的 Oneshot 若终态丢失仍按 `outcome_unknown`，不得自动重放；Converge 在新连接完成 initial Observed barrier 后按最新 drift 重评估。旧连接尚未完成的 BindingRequest/Result 关联随连接终止，新连接可由现场重新提交，Server 仍按 current Binding truth 幂等判断。
 
-当前为 `enrolled` 的已有 Machine Hardware ID 可以把新 transaction 分类为待审核的 credential replacement/recovery；批准不立即退役旧 key，只在新 transaction 的 exact Ack 激活时原子 supersede 旧 key 并使旧 control lease 失效。`disabled` / `revoked` Device 不能通过 Enrollment、reconnect、Ack 或 recovery 隐式恢复；必须先有独立 lifecycle 授权。
+当前为 `enrolled` 的已有 Machine Hardware ID 可以把新 transaction 分类为待审核的 credential replacement/recovery；批准不立即退役旧 key，只在新 transaction 的 exact Ack 激活时原子 supersede 旧 key 并使旧 control lease 失效。`disabled` Device 不能通过 Enrollment、reconnect、Ack 或 recovery 隐式恢复，也不释放 HWID ownership。
+
+`revoked` 是旧 Device identity 的永久终态，而不是可 reactivate 的状态。旧 key 的 Resume、旧 active Enrollment 的 replay/Ack 与旧本地 material 永远不能恢复旧 row。现场显式 factory reset/reprovision 必须清除旧 identity-bound material，生成新的 control key、Gateway key/CSR 与 `enrollment_id`；只有这样形成的全新 attempt 才能在 open window 创建另一条 `pending_review`，且仍由 operator 人工批准。Server 从 revoked predecessor 与全新 material 派生新旧 Device 关系，不信任 Client intent；Panel 必须展示 predecessor。Ack 创建全新 `device_id`，旧 Device/key/certificate/Command/audit 历史保持终态。物理约束只允许每个 HWID 一个 non-revoked Device row，revoked 历史可共享 HWID；旧 row 不能因新 row 出现而删除或改写。
 
 ### Credential activation and replay
 
@@ -131,11 +138,11 @@ Operator approve/reject 只向 actor 当时的 current attachment 发送 Bundle/
 
 Operator approve 是唯一 `pending_review → awaiting_credential_ack` 路径。它重新校验 provisioning window、Device lifecycle、HWID/key ownership 与容量，在一个 application transaction 中原子提交 approval audit、Gateway certificate 签发、immutable public `CredentialBundle` 与 candidate reservation。没有独立 `approved` state 或 packet：`CredentialBundle` 本身证明批准、签发与持久化都已提交。Operator reject 将 `pending_review → denied` 并写 audit；Server 发送 `EnrollmentReviewStatus(DENIED)` 后直接关闭 pending connection，不追加 `ServerClose`。Denied 是可 exact replay 的 transaction result，不是瞬时连接 failure。同一 `enrollment_id` 的 exact replay 永远得到相同 denied 结果；未来 open window 可受理一个材料自洽的新 enrollment ID，但不得覆盖旧终态行。
 
-`CredentialBundle` 只有 `enrollment_id` 与 `gateway_leaf_der`。`bundle_sha256 = SHA-256(CredentialBundle.encode_to_vec())`，输入是经语义校验的 typed message，并使用 proof transcript 同一 pinned Prost 版本。canonical bytes 与 SHA-256 是可持久化 public data；`CredentialAck` 回显 `enrollment_id` 与 `bundle_sha256`。`awaiting_credential_ack` 或 active transaction 收到 exact EnrollmentAttempt 都必须重放同一 typed bundle，禁止重新签名、重新分配 DeviceId 或激活另一把 key。
+`CredentialBundle` 只有 `enrollment_id` 与 `gateway_leaf_der`。`bundle_sha256 = SHA-256(CredentialBundle.encode_to_vec())`，输入是经语义校验的 typed message，并使用 proof transcript 同一 pinned Prost 版本。canonical bytes 与 SHA-256 是可持久化 public data；Client 必须完整验证 Bundle 并 crash-safe 持久化 Gateway credential、exact Bundle 与 BundleInstalled phase 后，才能发送回显 `enrollment_id` / `bundle_sha256` 的 `CredentialAck`。写入失败不得 Ack；可安全编码时发送一次 `ClientClose` 后关闭。`awaiting_credential_ack` 或 active transaction 收到 exact EnrollmentAttempt 都必须重放同一 typed bundle，禁止重新签名、重新分配 DeviceId 或激活另一把 key。
 
 Enrollment 在 exact `CredentialAck` 前不创建首次 Device row 或 active candidate control-key row。`awaiting_credential_ack` 的 exact Ack 执行一次 activation transaction：首次注册创建 Device，replacement/recovery 则在同一事务原子 supersede 旧 key、激活 candidate key/certificate、写 audit、驱逐旧 lease，并把 Enrollment transaction 置为 active。Active transaction 的 exact Ack 验证当前 ownership 后是 durable no-op。两者都返回同一 `EnrollmentActivated` facts。Operator 可在 Ack 前显式撤销已批准 transaction，原子撤销 candidate certificate/material 并进入 `denied`；没有自动 deadline 或 sweeper。
 
-Ack transaction commit 后，Server authority 已 durable active，但连接尚未进入 Active phase。Server 发送 `EnrollmentActivated{enrollment_id, device_id, bundle_sha256}`；Client 验证 transaction/hash，原子写入 Active manifest 后发送 `EnrollmentReady{enrollment_id, device_id,bundle_sha256}`，完整回显 Activated facts。`EnrollmentReady` 只是本连接的 durable-client barrier，不是新的 Server durable state。Server 收到完全匹配的 Ready 后安装本 Device 的新 current control lease 并发送 `SessionReady`；同一连接重复的 exact Ready 重放同一 SessionReady。若 Ready 或 SessionReady 丢失并断线，Client 已持有 Active manifest，下一条连接直接使用 `ResumeSession` 获取新的 UUIDv7 lease。
+Ack transaction commit 后，Server authority 已 durable active，但连接尚未进入 Active phase。Server 发送 `EnrollmentActivated{enrollment_id, device_id, bundle_sha256}`；Client 验证 transaction/hash，原子、crash-safe 写入 Active manifest 后才能发送 `EnrollmentReady{enrollment_id, device_id,bundle_sha256}`，完整回显 Activated facts。manifest 写入失败不得 Ready；可安全编码时发送一次 `ClientClose` 后关闭。`EnrollmentReady` 只是本连接的 durable-client barrier，不是新的 Server durable state。Server 收到完全匹配的 Ready 后安装本 Device 的新 current control lease 并发送 `SessionReady`；同一连接重复的 exact Ready 重放同一 SessionReady。若 Ready 或 SessionReady 丢失并断线，Client 已持有 Active manifest，下一条连接直接使用 `ResumeSession` 获取新的 UUIDv7 lease。
 
 断线点的恢复结果冻结如下；任何一行都不依赖 Server 猜测 Client phase：
 
@@ -202,9 +209,13 @@ stateDiagram-v2
 
 ### Active admission and Command ordering
 
-`SessionReady` 只表示认证连接与 current lease 已建立。Server actor 随后处于 `AwaitingInitialObserved`：Client 的第一条 Active envelope 必须是 fresh `ObservedStateSnapshot`。Actor 在完成语义校验与持久化前不投递 Command，也不受理 BindingRequest 等其他业务包。可安全分类的非法首包、无效 Observed 或持久化失败以 `ServerClose` 终止；无法安全响应则直接关闭。每次重连重新执行该 barrier；SQLite 中上一条 Observed 只是 last-known，不能代替当前 actor 的 fresh barrier。无 `observed_sequence`、`observed_session_id` 或额外 ACK。
+`SessionReady` 只表示认证连接与 current lease 已建立。Server actor 随后处于 `AwaitingInitialObserved`：Client 的第一条 Active envelope 必须是 fresh `ObservedStateSnapshot`。Actor 在完成语义校验与持久化前不投递 Command，也不受理 BindingRequest 等其他业务包。可安全分类的非法首包、无效 Observed 或 Server 持久化失败以 `ServerClose` 终止；Client 若因本地 current-fact 损坏而无法安全构造真实 Observed，则保持数据面 BLOCKED、best-effort 发送 `ClientClose` 并关闭，不能伪造 `ABSENT`。每次重连重新执行该 barrier；SQLite 中上一条 Observed 只是 last-known，不能代替当前 actor 的 fresh barrier。无 `observed_sequence`、`observed_session_id` 或额外 ACK。
 
 Server actor 以单消费者有界 channel 接收 operator action、socket event 与 lifecycle event。Client WS reader 把 Command 放入单消费者有界 command channel；唯一 executor 严格按出队顺序执行。Server 同时最多投递一条尚未终态的 Command，收到终态后才投递下一条。WS I/O、ping/pong、Observed 与 disconnect 检测可并发，但业务 Command 的本地副作用不并发。不增加 wire sequence 或 generation。
+
+Command 的确定顺序由数据库内每 Device 严格递增的 `enqueue_order` 冻结，不由时间戳、UUID 或 actor 重启后的 mailbox 到达次序猜测。它是 `1..=i64::MAX` 的内部字段，`UNIQUE(device_id,enqueue_order)`，不进 wire。所有首次创建（包括 Device 离线）都路由到动态 DeviceActor；actor 首次装载读取已持久化最大值，在同一串行 turn 分配下一值并原子提交 Command + audit。Exact HTTP replay/conflict 不分配。Crash gap 合法，不要求连续；到达 SQLite INTEGER 上界 fail closed。Actor 重建时若存在 `in_flight`，先按 cut/initial Observed 规则收敛它；否则按 `enqueue_order` 选择最早 queued，因而进程重启不改变执行顺序。
+
+disable/revoke lifecycle event 与 Command status 在同一 actor 排序，并由 guarded DB transaction 最终仲裁。Lifecycle transaction 在提交 Device/key/certificate/audit 变化与 post-commit eviction 前，将该旧 Device 全部 `queued` Command（Converge/Oneshot）置为 `failed/COMMAND_NOT_DELIVERED`，全部 `in_flight` 置为 `outcome_unknown`，既有终态不变。前者可确定零 wire 副作用；后者可能已有副作用，而 lifecycle 已切断未来 Observed 收敛。若 status 先提交就保留该终态；若 lifecycle 先提交，旧 lease 的迟到 status 无 authority。终态 Command rows 保留，HTTP exact replay/conflict 不变；未来 lifecycle 也不得复活旧意图。
 
 ### Limits, shutdown, and restart
 
@@ -272,7 +283,7 @@ Batch 0 只建立决策、依赖准入、deterministic vectors 与 isolated priv
 
 Batch 0 的 private isolated listener 已证明 server-auth TLS 1.3、ordinary WSS 101、random challenge、deterministic Ed25519/PKCS#8 vectors、strict verification、canonical ClientProof digest 与 clean close。Batch 1 将 transcript、Prost decode/semantic validation 与 typed canonical re-encoding纳入唯一production protocol crate，但新proof消息仍未接入runtime authority。
 
-后续还必须证明 capacity、manual-review/issuance/Ack crash cuts、单 current Handshake attachment 的 exact-replay replacement 及其与旧 Active lease 并存、actor channel ordering、single current UUIDv7 lease replacement、initial-Observed barrier、immutable replay、exact `natsume.control.v1` 的 sole-version authority 与 versioned-subprotocol proof transcript、Handshake/Active 统一 `ServerCloseAction`、Denied 与 Close 的终止分流、ErrorCode 64-byte ASCII grammar/unknown-opaque handling、canonical SemVer、aggregate evidence quality、state/error-code 矩阵、revision/epoch 上界、Gateway state/hash 独立组合、filesystem durability、lifecycle ordering 与 500–600 Device envelope。Foundation 落地不关闭 G4。
+后续还必须证明 capacity、manual-review/issuance/Ack crash cuts、Bundle/Active-manifest write-before-Ack/Ready、单 current Handshake attachment 的 exact-replay replacement 及其与旧 Active lease 并存、actor channel ordering 与 durable `enqueue_order` 的分配/重启恢复、single current UUIDv7 lease replacement、initial-Observed barrier、immutable replay、revoked predecessor 的新 Device reprovision/旧 Resume 永久拒绝、exact `natsume.control.v1` 的 sole-version authority 与 versioned-subprotocol proof transcript、Handshake/Active `ServerCloseAction`、无 action 的 `ClientClose`、Denied 与 Close 的终止分流、ErrorCode 64-byte ASCII grammar/unknown-opaque handling、canonical SemVer、aggregate evidence quality 的首次持久化/exact replay/self-reported Panel 标识、state/error-code 矩阵、disable/revoke Command 终态化、revision/epoch 上界、Gateway state/hash 独立组合、filesystem durability、lifecycle ordering 与 500–600 Device envelope。Foundation 落地不关闭 G4。
 
 当TLS在外部终止、provisioning不再物理受控、要求HA、多Server、出现manufacturer Device credential，或无法接受destructive coordinated rollout时重开本ADR。
 

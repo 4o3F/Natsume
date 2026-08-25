@@ -22,6 +22,8 @@
 
 **2026-08-24 修订（Command durable delivery cut）**：`commands.state` 的非终态为 `queued` / `in_flight`，终态为 `succeeded` / `failed` / `outcome_unknown`。Server 在 socket write 前提交 `queued → in_flight`。Oneshot 在 cut 前失去 live lease 为 `failed/COMMAND_NOT_DELIVERED`，cut 后结果丢失才为 `outcome_unknown`；Converge 由新连接 initial Observed 推定成功、退回 `queued` 重投或 fail closed。Command 无 deadline。
 
+**2026-08-25 修订（Client failure、durable order 与 revoked successor）**：Client 以统一 `ClientClose` best-effort 报告本连接无法安全继续，但它不改变 durable 领域状态。Command 使用 Device 内持久化 `enqueue_order` 恢复严格顺序；disable/revoke transaction 在驱逐前收口旧 Device 的非终态 Command。revoked 旧 Device 永不恢复；显式本地 reprovision 只能通过新的人工审核 Enrollment 创建新 `device_id`，旧历史保留。
+
 Control-key history、人工审核的 durable Enrollment transaction、immutable CredentialBundle、EnrollmentActivated/Ready barrier 与动态 DeviceActor 只有在 atomic flag-day schema/application 同批接线后才替代当前模型。Target transaction state 是 `pending_review` / `awaiting_credential_ack` / `active` / `denied`，无 Enrollment expiry 或 activation deadline。Device Prepared/BundleInstalled 使用 Enrollment purpose，只有 Active manifest 使用 Resume purpose。届时删除 Token-era states/rows并收紧 transitional NULL，不维持双 authority。
 
 数据库 migration 是物理 schema 的权威来源；本文件定义稳定的业务含义、聚合边界和安全不变量。未实现行为的具体字段、状态枚举与事务编排延迟到对应 Phase 实现时定义。
@@ -96,13 +98,13 @@ Confirmed configuration 只表示现在：Seat collection 不冻结，Seat code 
 
 ## 4. Device 与 provisioning
 
-- `devices.machine_hardware_id` 是 unique，因此一个存储的 `machine_hardware_id` 最多对应一个 `devices` row；该 row 只有 `device_id`、硬件 ID、`hardware_identity_quality`（`strong`/`medium`/`weak`）与 `state`（`enrolled`/`revoked`/`disabled`）。
-- 凭据签发或替换要求其绑定的 Device 当前为 `enrolled`；`revoked` 或 `disabled` Device 必须拒绝签发，恢复使用须经过显式、受审计的 lifecycle 动作，不得由 Enrollment 隐式复活。
+- 每个 `machine_hardware_id` 同时最多一个 **non-revoked** `devices` row；`disabled` 仍占有 HWID，`revoked` 历史可与后来显式 reprovision 创建的新 current row 共享 HWID。该 row 只有 `device_id`、硬件 ID、`hardware_identity_quality`（`strong`/`medium`/`weak`）与 `state`（`enrolled`/`revoked`/`disabled`）。目标物理约束是 HWID 上排除 `revoked` 的 partial unique index；当前 migration 的整列 `UNIQUE` 属后续 atomic schema batch 待同步的实现漂移。
+- 凭据签发或替换要求其绑定的 Device 当前为 `enrolled`。`disabled` Device 必须拒绝签发且不释放 HWID；`revoked` 是旧身份的永久终态，旧 Resume/Ack/recovery 都不得复活。
 - provisioning window 由 `provisioning_window` current singleton 表示，只有 `state`、`revision` 和 `last_audit_event_id`；不保留逐次 provisioning revision 状态行，历史由审计提供。restart/restore 只会对观察到的 `open` 状态执行一次 audited CAS close；已 `closed` 时零写入。
-- ADR-0038 target 的每个新 Enrollment transaction 都经人工审核：`pending_review → awaiting_credential_ack → active` 或 `denied`。Server 派生 create/replace/recovery intent；`disabled` / `revoked` Device 在独立 lifecycle 授权前不可 approve。Approve 与 Gateway 签发原子提交，Ack 才激活 candidate key；replacement 的旧 key 在该 Ack 事务中才 supersede。终态行保留供 exact replay 与审计。无 Enrollment `expired`、activation deadline 或自动清理。
+- ADR-0038 target 的每个新 Enrollment transaction 都经人工审核：`pending_review → awaiting_credential_ack → active` 或 `denied`。Server 派生 create/replace/recovery，并识别 revoked predecessor 与新 Device 的关系。`disabled` 不可 approve；同 HWID 存在 revoked predecessor 时，只有现场显式清除旧 identity-bound material 并生成全新 control/Gateway key、CSR、`enrollment_id` 的 attempt 才可作为新 Device 进入审核，Client 不声明 intent，Panel 展示 predecessor。Approve 与 Gateway 签发原子提交，Ack 才激活 candidate key 并创建新的 `device_id`；旧 Device/keys/certificates/Command/audit 行不改写。replacement 的旧 key 在 Ack 事务中才 supersede。终态 Enrollment 行保留供 exact replay 与审计。无 Enrollment `expired`、activation deadline 或自动清理。
 - `gateway_certificates` 的 `revoked` / `retired` 状态行予以保留；其消费者是单活跃证书唯一性判定（partial unique index 只约束 `status = 'active'`）、Enrollment 替换路径对旧证书的处置与审计回溯。
 - 窗口外的硬件身份冲突：**不自动合并、不选择“最近上线者”、不删除凭据**，停止敏感进展并返回稳定错误，要求人工执行恢复 runbook。
-- Device 删除/替换不复用 `device_id` 或凭据文件；替换走窗口重开 + 新 Enrollment 的受审计生命周期，而不是 merge。
+- Device 删除/替换/reprovision 不复用 `device_id` 或凭据文件；旧 revoked Device row 作为历史保留。替换走窗口重开 + 新 Enrollment 的受审计生命周期，而不是 merge。
 
 ## 5. 当前 Seat→Account mapping 与 Binding
 
@@ -133,7 +135,7 @@ Target 是根据已提交 Server truth 为某台 Device 计算的**非秘密**�
 
 ## 8. DeviceObserved
 
-Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、可选 `gateway_leaf_sha256`、`session_state`、可选 `completed_home_epoch`。state 与 leaf hash 是独立 evidence；hash 出现时恰为 32 bytes，是 Caddy 实际加载 leaf certificate 完整 DER 的普通 SHA-256。Server 从 immutable Bundle leaf DER 派生期望值，同 key 重签也视为不同证书；只有 `READY` 且 hash 与期望相等才收敛，其他组合保留为 drift/inconsistency 而不拒绝整份 snapshot。`completed_home_epoch` 缺失表示从未完整完成 reset，出现时在 `1..=i64::MAX`，且只在完整 durable 完成后单调前进；执行/恢复较新 reset 时仍报告上一完成值。不得回传 secret/session instance/sequence/generation/apply blob、通用 Home state 或进度。目标物理 current row 添加这两个可空事实和 Server 收包时间，并按 `device_id` 唯一；本轮只冻结协议/文档，migration 与 Rust 实现在后续 atomic batch 同步。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。无 `observed_sequence` 或 session DB 字段。
+Observed snapshot 是 Device 对自身实际状态的 slim typed 报告：`applied_hash`、`credential{binding_id,account_id,credential_revision,state}`、`gateway_state`、可选 `gateway_leaf_sha256`、`session_state`、可选 `completed_home_epoch`。state 与 leaf hash 是独立 evidence；hash 出现时恰为 32 bytes，是 Caddy 实际加载 leaf certificate 完整 DER 的普通 SHA-256。Server 从 immutable Bundle leaf DER 派生期望值，同 key 重签也视为不同证书；只有 `READY` 且 hash 与期望相等才收敛，其他组合保留为 drift/inconsistency 而不拒绝整份 snapshot。`completed_home_epoch` 缺失表示从未完整完成 reset，出现时在 `1..=i64::MAX`，且只在完整 durable completion record 写入后单调前进；`HOME_RESET` success status 也只能在该写入之后发送。执行/恢复较新 reset 时仍报告上一完成值。不得回传 secret/session instance/sequence/generation/apply blob、通用 Home state 或进度。目标物理 current row 添加这两个可空事实和 Server 收包时间，并按 `device_id` 唯一；本轮只冻结协议/文档，migration 与 Rust 实现在后续 atomic batch 同步。`SessionReady` 后的第一条 Active 消息必须是 fresh Observed；当前 actor 通过此 barrier 前，数据库旧 row 只是 last-known，不能当作 current。若本地 current-fact 损坏到无法安全构造真实 snapshot，数据面保持 BLOCKED，Client 以 `ClientClose` 终止连接而不是伪造 `ABSENT`。无 `observed_sequence` 或 session DB 字段。
 
 ## 9. Drift
 
@@ -144,6 +146,10 @@ Drift 是纯比较结果（`compare(Target, latest valid Observed)`），不持�
 **Command** 是面向单台 Device 的显式意图，分 Converge 与 Oneshot，不是同一套 Device journal 耐久机。Panel 在创建前生成 canonical lowercase hyphenated UUIDv7 `command_id`，并使用 `PUT /api/v2/commands/{command_id}` 作为 operator 审计入口；Server 以 `request_fingerprint_version` 和 `request_fingerprint_sha256` 判断 HTTP replay：同 ID+同 request 返回既有 Command，同 ID+不同 request 是稳定 conflict。只有当前 `DeviceState::Enrolled` 可首次持久化 Command；不存在或 non-enrolled target 对外同为 `404 RESOURCE_NOT_FOUND`，且资格拒绝零 Command、零 audit、零 notifier。Command 已创建后，Device 的 disable/revoke 不改变该 ID 的 replay/conflict 事实。首次 `201`、replay `200`、invalid ID `400`、missing/non-enrolled `404`、conflict `409` 的完整 HTTP 语义见 [契约](contracts.md)。
 
 Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，每台 Device 同时最多一条 `in_flight` Command。Target `commands.state` 为非终态 `queued` / `in_flight` 与终态 `succeeded` / `failed` / `outcome_unknown`。`in_flight` 是 Server 在 socket write 前 durable 提交的保守 delivery-attempt cut。Oneshot 创建时无 current READY lease，或仍 `queued` 时所属 lease 断开/被替换/Server 重启，为 `failed/COMMAND_NOT_DELIVERED`；已 `in_flight` 但 terminal status 前 send failure/disconnect/restart 才为 `outcome_unknown`，不自动重放。Converge 键是 assignment hash、完整 credential context 或 Target `home_epoch` vs Observed `completed_home_epoch`；新连接 initial Observed 已匹配则推定 `succeeded`，仍 drift 则退回 `queued` 重投，异常观测 fail closed。已明确终态的 Command 不得因后来 drift 复活。Device 无 command journal；Oneshot 无 wire session target，本地开始时捕获 current session 并在特权动作前重检，不改投 replacement session。
+
+`commands.enqueue_order` 是每 Device 唯一、严格递增的 `1..=i64::MAX` INTEGER，只定义 actor 的 durable FIFO，不进 wire/public API、不要求连续。所有首次创建都经该 DeviceActor 分配并与 Command/audit 原子提交；exact replay/conflict 不消费序号。Actor 重建从数据库最大值继续，先收敛唯一 `in_flight`，否则按 `enqueue_order` 投递最早 `queued`。Crash gap 合法；上界溢出 fail closed。当前 migration 尚缺该列与 `UNIQUE(device_id,enqueue_order)`，留给同一 flag-day schema batch。
+
+disable/revoke guarded transaction 在 post-commit eviction 前把该旧 Device 全部 `queued` Command 转为 `failed/COMMAND_NOT_DELIVERED`、全部 `in_flight` 转为 `outcome_unknown`，既有终态不变。该规则覆盖 Converge 与 Oneshot：前者尚未过 delivery cut 时确定无副作用；一旦过 cut 而 lifecycle 永久切断后续 Observed，就只能保守标记未知。status 与 lifecycle 谁先提交谁胜；迟到旧 lease status 无 authority。终态 row 与 HTTP replay/conflict 保留，未来 lifecycle 不复活旧意图。
 
 批量操作 = 批量创建 Command，进度视图只由查询聚合；可选 `group_correlation_id` 只用于查询和审计分组，不定义跨 Device 顺序、原子性或 lifecycle。
 
@@ -164,7 +170,7 @@ Server DeviceActor 与 Client executor 以单消费者 channel 串行 Command，
 - Operator 是 `audit_events.actor` 的来源之一；`system:recovery` 等非人类 actor 不对应 Operator 行。
 - Operator 身份**不参与 Device 认证**：不能取得 Device Token、Gateway certificate 或 WSS 控制面身份（`INV-CERT-01`）。
 
-Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：disable 只把 `enrolled` 转为 `disabled`，**保留当前 Device Token 与 active Gateway certificate**；revoke 收敛到 `revoked`，移除当前 `device_tokens` row，并将关联的 non-revoked `gateway_certificates` 状态行转为 `revoked` 后保留。目标状态已达成时零业务写入，只记录 `result = 'noop'` 的 audit。application lifecycle use case 在事务成功提交后（包括 noop）必须对准确 `device_id` 调用一次 live-connection evictor；事务或查找失败时零 eviction。这样 disable/revoke 立即排空既有 WSS，而 WSS 新认证仍只允许 `enrolled`。它们**不创建 Command、不发送远端 Command、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
+Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：disable 只把 `enrolled` 转为 `disabled`，**保留当前 Device Token 与 active Gateway certificate**；revoke 收敛到 `revoked`，移除当前 `device_tokens` row，并将关联的 non-revoked `gateway_certificates` 状态行转为 `revoked` 后保留。首次状态转移在同一 guarded transaction 内按 §10 收口该旧 Device 的非终态 Command 并写 audit；目标状态已达成的 repeat request 不再改 Command，只记录 `result = 'noop'`。application lifecycle use case 在事务成功提交后（包括 noop）必须对准确 `device_id` 调用一次 live-connection evictor；事务或查找失败时零 eviction。这样 disable/revoke 立即排空既有 WSS，而 WSS 新认证仍只允许 `enrolled`。它们**不创建 Command、不发送远端 Command、不改变 Binding 集合，也不推进任何 revision**——解绑是独立的 Binding-set mutation（§5），不由 Device state 转移隐含触发。完整的 Device 删除/替换生命周期见 §14。
 
 ## 13. 本地运行时领域
 
@@ -174,8 +180,8 @@ Device lifecycle 的 operator 动作是 repeat-safe 的当前事实 mutation：d
 
 ## 14. 删除、重置和替换
 
-- **Device 删除**：Server 显式授权、停止新 Command 投递、更新 `devices.state`、移除或替换当前 `device_tokens` row、更新关联 `gateway_certificates.status`、解除 binding、记录审计；不复用旧 `device_id`。
-- **Device 替换**：原 lifecycle 结束、重开 provisioning 窗口、新硬件独立 Enrollment、人工重建 binding、显式 `SYNC_STATE`/`SYNC_SECRET`；不复制凭据文件。
+- **Device 删除/终止**：Server 显式授权、按 §10 收口旧 Command、更新 `devices.state`、移除或替换当前 `device_tokens` row、更新关联 `gateway_certificates.status`、解除 binding、记录审计；保留旧 row 与 `device_id` 作为 terminal history，不物理删除或复用。
+- **Device 替换/reprovision**：原 lifecycle 结束、现场显式清除旧 identity-bound material、重开 provisioning 窗口，以全新 key/CSR/`enrollment_id` 独立 Enrollment，人工批准后创建新 `device_id`，再人工重建 binding 并显式 `SYNC_STATE`/`SYNC_SECRET`；不复制凭据文件，不把旧 Resume 解释成新 Device。
 - **单生命周期竞赛重置**：通过破坏性 runbook 清理业务状态和秘密（含 pending candidate）；下一次 import 走普通 first-import lifecycle。
 - **candidate/credential 替换**：终止 pending candidate 只删除该非秘密草稿行；密码替换删除可寻址的旧 current ciphertext。两者的 redacted audit 保留，但不承诺存储介质的物理擦除。
 

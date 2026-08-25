@@ -23,6 +23,7 @@ message ClientHandshakeEnvelope {
     ClientProof     client_proof     = 1;
     CredentialAck   credential_ack   = 2;
     EnrollmentReady enrollment_ready = 3;
+    ClientClose     client_close     = 4;
   }
 }
 
@@ -33,6 +34,7 @@ message ClientActiveEnvelope {
     CommandStatus         command_status  = 2;
     ObservedStateSnapshot observed_state  = 3;
     BindingRequest        binding_request = 4;
+    ClientClose           client_close    = 5;
   }
 }
 

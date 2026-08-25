@@ -10,9 +10,9 @@
 
 正文中的 `Enrollment HTTPS`、Device Token 与 Bearer WSS 仍是当前 authority 拓扑，在 atomic cutover 前保持权威。
 
-[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，目标 subprotocol 为唯一 wire-generation 权威 `natsume.control.v1`（当前 Token-era Rust runtime 仍使用旧 token，待 flag day 同步），定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady|ServerClose；Client Proof|Ack|Ready；Active Server 同样允许 ServerClose）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
+[ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 的原位 wire/crypto/schema foundation 已开始落地：production Proto 是单一六文件 `natsume.device.control` package，目标 subprotocol 为唯一 wire-generation 权威 `natsume.control.v1`（当前 Token-era Rust runtime 仍使用旧 token，待 flag day 同步），定向 handshake/Active envelopes（Server Challenge|EnrollmentReviewStatus|Bundle|Activated|SessionReady|ServerClose；Client Proof|Ack|Ready|ClientClose；Active 双向各允许本方 Close）、strict signature transcript、Prost semantic canonicalizer 与 control-key/bundle persistence facts 已存在但无 runtime authority consumer。无 `ClientInit`、无 `ControlEnvelope`、无 Hello。项目不维护旧/新 package 兼容层。**2026-08-20**：Identifier 统一为 `device_id`；已删除 `devices.control_authority_revision`，当前 control key 由 `device_control_keys.status = 'active'` 表达。
 
-尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 `challenge_nonce`/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，先进入必须人工处置的 `pending_review`，批准时原子固化 `CredentialBundle`，再依次交换 `CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id = 16-byte UUIDv7}`；拒绝由 `EnrollmentReviewStatus{DENIED,error_code}` 表达。Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active；每台 Device 至多一个 current control lease，新连接在 SessionReady 前原子替换旧 lease；SessionReady 后第一条 Active packet 必须是 Observed。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
+尚未实现的目标 runtime 是：普通 server-auth TLS/WSS 内完成 `challenge_nonce`/Proof；Enrollment purpose 使用 durable canonical UUIDv7 `enrollment_id`，先进入必须人工处置的 `pending_review`，批准时原子固化 `CredentialBundle`，再依次交换 `CredentialAck`、`EnrollmentActivated` 与 `EnrollmentReady`，最后才签发 `SessionReady{session_id = 16-byte UUIDv7}`；拒绝由 `EnrollmentReviewStatus{DENIED,error_code}` 表达。Client 本地无法安全继续时以无 action 的 `ClientClose{error_code}` 报告后关闭，不推进业务状态。Active manifest 的 reconnect 使用结构化 `ResumeSession` purpose。由启动为空的动态 registry 创建统一 DeviceActor，并在同一 socket 进入 Active；每台 Device 至多一个 current control lease，新连接在 SessionReady 前原子替换旧 lease；SessionReady 后第一条 Active packet 必须是 Observed。Command actor 以持久化 `enqueue_order` 恢复 FIFO，disable/revoke transaction 先收口旧 Device 的非终态 Command 再驱逐。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。Token/public Enrollment HTTP 只有在 atomic flag day 才删除。
 
 ## 1. 目标
 
@@ -152,7 +152,7 @@ flowchart LR
 - Client 凭据文件（control key/manifest、Gateway key/leaf、Seat 凭据、LKG；flag day 前还包括 Device Token）；
 - Enrollment 客户端（含 Gateway CSR）；
 - WSS 控制连接；
-- 单一有界 single-consumer command executor；每连接最多一个 in-flight，严格按抵达顺序执行；
+- 单一有界 single-consumer command executor；每连接最多一个 in-flight，严格按 Server durable `enqueue_order` 抵达并依 channel 顺序执行；
 - Converge 命令的完整领域键幂等执行（typed assignment/hash / `{binding_id,account_id,credential_revision}` / Target `home_epoch` vs Observed `completed_home_epoch`）与 Oneshot 的 live-socket 执行；**不**维护 Device command journal；
 - Target 应用和 Observed 采集；
 - Caddy 配置渲染（含 `/login` 自动登录注入）、validate、原子激活与 LKG 回滚；
@@ -251,7 +251,7 @@ Helper 的每个方法必须是独立、可审计、参数封闭的 capability�
 | Operator → Server | operator session/固定角色 | 人类控制面 | 拒绝并审计 |
 | Device Enrollment → Server（当前，flag day 前） | server-auth HTTPS + provisioning 窗口 | 硬件身份证据、Gateway CSR | 窗口关闭或校验失败即拒绝，零状态变更 |
 | Device control ↔ Server（当前，flag day 前） | server-auth TLS + Device Token（WSS） | typed protocol、Command、Observed | 认证失败 401（解码前）；协议失败断开 |
-| Unified Device WSS（ADR-0038 目标） | server-auth TLS + connection-local Challenge proof；Enrollment 另经窗口与人工审核 | Enrollment/Resume、Command、Observed、binding | 101 后可分类终止最多发一次 Handshake/Active 共用 `ServerClose{error_code,ServerCloseAction}` 后关闭；审核拒绝单独走 durable `EnrollmentReviewStatus(DENIED)` |
+| Unified Device WSS（ADR-0038 目标） | server-auth TLS + connection-local Challenge proof；Enrollment 另经窗口与人工审核 | Enrollment/Resume、Command、Observed、binding | 101 后 Server 可发一次带 action 的 `ServerClose`，Client 可发一次无 action 的 `ClientClose`，随后关闭；两者均不替代 durable 审核/业务结果，审核拒绝单独走 `EnrollmentReviewStatus(DENIED)` |
 | Device Daemon → Helper | 本地 system D-Bus + OS policy | 封闭特权请求 | 拒绝且不降级 |
 | Agent ↔ Device Daemon | 本地 session-aware typed IPC | UI snapshot 和会话动作 | lease/当前 session 失效 |
 | Browser → Caddy | loopback HTTPS | 页面和 DOMjudge 流量 | BLOCKED/503 |
@@ -353,7 +353,7 @@ identity-before-credentials（ADR-0032 配方）
            → 第一条 Active packet 必须是 Observed
 ```
 
-每个新 transaction 都需人工审核，不存在按 SPKI 自动批准。Enrollment transaction 不过期；窗口只 gate 新 admission 与 approve/sign，关闭后已存在 pending 保留等待下次窗口，已固化 Bundle 的 exact replay、Ack、Activated/Ready 与 Resume 可以继续。pending 连接可只交换 Ping/Pong 并等待审核，也可用 exact EnrollmentAttempt 重连。`disabled` / `revoked` 不能借 Enrollment 隐式恢复。当前 HTTPS + Device Token 路径只作为 atomic flag day 前的实现现状保留，不再定义目标业务语义。
+每个新 transaction 都需人工审核，不存在按 SPKI 自动批准。Enrollment transaction 不过期；窗口只 gate 新 admission 与 approve/sign，关闭后已存在 pending 保留等待下次窗口，已固化 Bundle 的 exact replay、Ack、Activated/Ready 与 Resume 可以继续。pending 连接可只交换 Ping/Pong 并等待审核，也可用 exact EnrollmentAttempt 重连。`disabled` 不能借 Enrollment 恢复；`revoked` 旧 identity 永不恢复，但现场 destructive reprovision 生成全新 key/CSR/`enrollment_id` 后可作为新 Device 审核并创建新 `device_id`，旧 Resume/row/history 保持终态。当前 HTTPS + Device Token 路径只作为 atomic flag day 前的实现现状保留，不再定义目标业务语义。
 
 每个非终态 transaction 同时至多一个 current Handshake attachment。新 exact replay 在 actor 内原子替换旧 attachment；operator review 只向当时的 current attachment 发送，absence/send failure 不回滚 durable transaction。Credential replacement 的新 attachment 与旧 Active lease 可并存，只有 exact Ack activation 才替换旧 key/lease。
 
@@ -405,7 +405,7 @@ current binding and home_epoch
 
 Home 无法证明安全时不得启动受管 session。`HOME_RESET` 不拆 daemon WSS；中断经本地状态文件 + RecoverHomeInstance 恢复。Session lock/unlock/terminate/`open_binding_prompt` 是 Oneshot（空 body，live socket，重连不重放），不改变 Caddy。Client 在动作开始时捕获本地 session identity，并在 privileged effect 前重新校验；session 被替换则返回 `SESSION_CONTEXT_STALE`，不 retarget。`open_binding_prompt` 打开 binding-prompt screen 即 `CommandStatus` `SUCCEEDED`；每个 active session 只允许一个 in-flight prompt/request，确认绑定是 Device `BindingRequest{seat_code}` → Server `BindingResult{state,error_code}`，靠连接内顺序关联，不携带 `binding_request_id`。Server 按当前 Binding truth 幂等处理：free+unbound 创建、同一 pair 为 approved no-op、其他 occupancy 为 conflict、缺失或 policy 问题为 rejected；绑定不隐式触发 `SYNC_STATE`/`SYNC_SECRET`。
 
-Server 的 DeviceActor 与 Client command executor 都使用有界 single-consumer channel；每台 Device 最多一个 `in_flight` Command。Server 在 socket write 前 durable 提交 `queued → in_flight`，且只接受 current lease 上 matching in-flight ID 的 status。Oneshot 在 cut 前没有投递则 `failed/COMMAND_NOT_DELIVERED`；cut 后在 terminal status 前发生 send failure、断线或 Server restart 才记录 `outcome_unknown`，两者均不重放。Converge 在新连接 initial Observed 后按冻结领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed；已明确 terminal 的 Command 不因以后 drift 复活。
+Server 的 DeviceActor 与 Client command executor 都使用有界 single-consumer channel；每台 Device 最多一个 `in_flight` Command。Actor 为首次创建分配 Device 内 durable `enqueue_order`，重建时先收敛 in-flight、否则投递最早 queued。Server 在 socket write 前 durable 提交 `queued → in_flight`，且只接受 current lease 上 matching in-flight ID 的 status。Oneshot 在 cut 前没有投递则 `failed/COMMAND_NOT_DELIVERED`；cut 后在 terminal status 前发生 send failure、断线或 Server restart 才记录 `outcome_unknown`，两者均不重放。Converge 在新连接 initial Observed 后按冻结领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed；disable/revoke 事务在驱逐前将旧 Device queued 收口为 failed、in-flight 收口为 unknown。已明确 terminal 的 Command 不因以后 drift 复活。
 
 ## 9. 部署拓扑
 

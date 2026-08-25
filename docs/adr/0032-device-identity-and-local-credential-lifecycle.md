@@ -30,7 +30,7 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 
 **2026-08-16 修订**：claim 层整机配方冻结——按 ANCHOR_ORDER 逐槽拼接 `anchor_literal ++ 0x00 ++（present 槽的 R2 归一化值 | 单字节 0x01 缺失标记）++ 0x00`，在同一 Fleet namespace 下派生 UUIDv5 得 `machine_hardware_id`；判定为 2-of-3——任一槽 `unsupported` 即整体 `unsupported`，否则 `present` 槽数 ≥2 才允许派生，非 present 槽以缺失标记参与拼接；slot/claim 词表已统一。
 
-**2026-08-24 修订（aggregate evidence quality）**：仅对已经通过上述 2-of-3 判定的 claim，将 present slots 的固有 quality 从高到低排序并取第二个值，作为 Enrollment wire 的 aggregate `EvidenceQuality`。它表达形成 quorum 的最低质量：`strong + strong`（无论第三个 medium 是否 present）为 `strong`，`strong + medium` 为 `medium`。该值只供 operator/Panel 审核与诊断，不改变 derivation bytes、2-of-3 eligibility、unsupported fail-closed 或 startup strict equality，也不构成 authenticator。
+**2026-08-24 修订（aggregate evidence quality）**：仅对已经通过上述 2-of-3 判定的 claim，将 present slots 的固有 quality 从高到低排序并取第二个值，作为 Enrollment wire 的 aggregate `EvidenceQuality`。它表达形成 quorum 的最低质量：`strong + strong`（无论第三个 medium 是否 present）为 `strong`，`strong + medium` 为 `medium`。该值在首次 Enrollment attempt 前随 transaction material crash-safe 持久化；exact replay 读取持久化值，不因后续启动时 slot 可用性变化而重算。它由 candidate key 签名，但 Server 不接收 raw slots，不能独立复算；Panel 必须标为 Device self-reported advisory evidence。它不改变 derivation bytes、2-of-3 eligibility、unsupported fail-closed 或 startup strict equality，也不构成 authenticator。
 
 开发期匿名 fixture collector 位于 `client/privileged-helper/examples/collect_identity_fixture.rs`，只输出上述匿名化 slot 结果与 completeness，不输出原始硬件值。
 
@@ -48,10 +48,10 @@ Device 在证明当前硬件身份前不得读取或使用旧机器绑定的凭�
 - Device Daemon 的第一个应用流程是 identity decision；所有 identity-bound adapter 和 credential read 都必须位于其后，不新增独立 Identity Guard service。
 - 无绑定 artifact 时，只有有效 derivation 才允许首次 Enrollment；已有 artifact 时，证据不足、ID mismatch 或凭据损坏均 fail closed。
 - Daemon 不得通过删除 identity/credential artifact 自动获得 fresh registration，也不得自动 re-enroll。
-- `machine_hardware_id` 在一个 Device lifecycle 内不可编辑；Server `devices.device_id` 是独立 TEXT primary key（canonical lowercase hyphenated UUIDv7），不由硬件数据派生，也不 merge、split 或复用。
+- `machine_hardware_id` 在一个 Device lifecycle 内不可编辑；Server `devices.device_id` 是独立 TEXT primary key（canonical lowercase hyphenated UUIDv7），不由硬件数据派生，也不 merge、split 或复用。`revoked` 永久终止该旧 identity；同一物理机再次接入只能由现场 operator 执行显式 destructive reprovision，完整清除旧 identity-bound material 并生成全新 control/Gateway key、CSR 与 `enrollment_id`，再经人工审核创建新的 `device_id`。这不是 daemon 对“文件缺失”的自动恢复；旧 Device row/key/Resume 保持终态。
 
 **2026-08-20 修订**：原 `devices.device_pk` 已原位更名为 `device_id`，同一 UUIDv7 surrogate。
-- 硬件替换结束旧 lifecycle，需要显式重开 provisioning window、重新 Enrollment、人工重建 binding，再由显式 Command 同步。
+- 硬件替换或 revoked Device 的 destructive reprovision 都结束旧 lifecycle，需要显式重开 provisioning window、以全新 material 重新 Enrollment、人工重建 binding，再由显式 Command 同步。
 
 ### Client artifact 与 Server vault
 

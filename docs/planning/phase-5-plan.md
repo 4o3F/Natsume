@@ -9,6 +9,8 @@
 
 **2026-08-24 修订（统一 Converge context 与串行执行）**：`SYNC_STATE` / `SYNC_SECRET` 是 Converge 命令。前者携带显式 `oneof assignment`（unbound 或完整 `{binding_id,account_id,seat_code,domjudge_username}`），hash 不上 wire，而从 canonical protobuf bytes 按固定 domain-separated SHA-256 配方派生；后者与 Observed 按完整 `{binding_id,account_id,credential_revision}` 收敛，password 使用 `SecretBytes`。Device 无 command journal；D12 journal GC 关闭为不再适用。Server DeviceActor 与 Client executor 都是有界 single-consumer channel，每连接最多一个 in-flight。Observed 为 slim snapshot，且每次 SessionReady 后第一条 Active packet 必须是 Observed。`open_binding_prompt` 空 body；Seat 在 `BindingRequest.seat_code`（Phase 6 消费），无 request ID。
 
+**2026-08-25 修订（Client failure 与 durable FIFO）**：Client 本地 fact 写入失败时发送无 action 的 `ClientClose` 并关闭，不伪造 success/Observed。`SYNC_SECRET` 只有在 secret + 完整 credential context crash-safe 持久化后才报 success/INSTALLED。Command 的 Device 内顺序由数据库 `enqueue_order` 冻结；DeviceActor 首次创建分配、重启恢复，disable/revoke 事务在 eviction 前收口 queued/in-flight。当前 Rust/migration 仍待 atomic batch 同步。
+
 本文件是计划，不是完成声明。遵守 [路线图](../roadmap.md) §1 原则 5：细目在 Phase 启动时冻结，本文件提供该冻结的候选基线与决策清单。
 
 ## 1. 阶段目标与边界
@@ -126,7 +128,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 ### WP6：`SYNC_SECRET` 全链
 
-- 目标：operator 触发 → Server 渲染 wire Command 时从 vault 取秘密注入 `SecretBytes` → Device 重检完整 `{binding_id,account_id,credential_revision}` → 原子写凭据文件 → 重渲染含凭据配置并激活 → 报告完整 redacted CredentialObservation。
+- 目标：operator 触发 → Server 渲染 wire Command 时从 vault 取秘密注入 `SecretBytes` → Device 重检完整 `{binding_id,account_id,credential_revision}` → crash-safe 原子写凭据文件与 context → 重渲染含凭据配置并激活 → 只有 durable fact 后才报告 success 与完整 redacted CredentialObservation；无法安全构造 status/Observed 时保持 BLOCKED 并发送 `ClientClose`。
 - 冻结项：秘密注入发生在**渲染 wire Command 时**（绝不进 `frozen_payload_json`，Phase 4 已冻结）；Device 凭据文件路径与权限；重投递时每次重新取秘密而非缓存；零秘密断言点清单。
 - 测试：password 明文不入 DB/WAL/日志/审计/Observed/metrics 的字节扫描；任一 binding/account/revision 不符都拒绝安装；同一完整三元组重推为 no-op；写入中断保留旧 secret 或明确标记不可用；成功后配置含凭据且权限正确。
 
@@ -173,7 +175,7 @@ credential source `0600 natsume:natsume`，rendered Caddy secret artifact `0640 
 
 **历史背景（不再实施）**：曾设想 Device journal 保存 Command frame bytes，条目删除依赖服务端终态确认。高水位游标因乱序终态会静默丢结果而被否决。
 
-高水位游标、按命令确认帧、首批投递完成标记均不再评估。Server 在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 创建时无 READY lease，或仍 `queued` 时失去所属 lease，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure、断线或 Server restart 才记 `outcome_unknown`。两者均不重放。Converge 断线后由新连接 initial Observed 按完整领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed。
+高水位游标、按命令确认帧、首批投递完成标记均不再评估。Server 以 DeviceActor 分配的 durable `enqueue_order` 恢复 FIFO，并在 socket write 前 durable 提交 `queued → in_flight`。Oneshot 创建时无 READY lease，或仍 `queued` 时失去所属 lease，为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure、断线或 Server restart 才记 `outcome_unknown`。两者均不重放。Converge 断线后由新连接 initial Observed 按完整领域键推定成功、退回 `queued` 重投相同 ID/payload，或 fail closed。disable/revoke 事务在 eviction 前将旧 Device queued 全部置为 `failed/COMMAND_NOT_DELIVERED`、in-flight 全部置为 `outcome_unknown`。
 
 ## 7. 跨切风险
 

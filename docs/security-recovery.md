@@ -9,9 +9,11 @@
 
 **当前实现**继续由 HTTPS Enrollment 签发 Device Token，并在 WSS 101 前校验 Bearer 与 resolved Device state；现有 Token 文件、吊销、恢复和禁止泄漏条款保持规范性，直到 coordinated flag day。
 
-**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local `ServerChallenge{challenge_nonce}`、结构化 `ClientProof.oneof purpose`、durable `enrollment_id`、人工审核的 `pending_review`、不可变 `CredentialBundle`/`CredentialAck`、`EnrollmentActivated`/`EnrollmentReady` durable barrier、`SessionReady{session_id = 16-byte UUIDv7}` 与动态 actor。每台 Device 同时至多一个 current control lease，新认证连接在 SessionReady 前原子替换旧 lease。每个新 Enrollment transaction 都必须经人工批准或拒绝；Server 从现有身份状态派生 create/replacement/recovery 意图，Client 不自报授权意图。Enrollment purpose 可跨连接重放同一 transaction；Active manifest 只使用 Resume purpose。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。单一 split Proto 与 strict signature foundation 已存在，但尚未成为当前认证或恢复路径。
+**已接受目标**由 [ADR-0038](adr/0038-unified-ordinary-wss-device-control-authority.md) 定义：专用 Ed25519 control key、101 后 connection-local `ServerChallenge{challenge_nonce}`、结构化 `ClientProof.oneof purpose`、durable `enrollment_id`、人工审核的 `pending_review`、不可变 `CredentialBundle`/`CredentialAck`、`EnrollmentActivated`/`EnrollmentReady` durable barrier、`SessionReady{session_id = 16-byte UUIDv7}`、双向 terminal close 与动态 actor。每台 Device 同时至多一个 current control lease，新认证连接在 SessionReady 前原子替换旧 lease。每个新 Enrollment transaction 都必须经人工批准或拒绝；Server 从现有身份状态派生 create/replacement/recovery，并识别 revoked predecessor 与新 Device 的关系，Client 不自报授权意图。Enrollment purpose 可跨连接重放同一 transaction；Active manifest 只使用 Resume purpose。无 `ClientInit`、无 Hello、无 `ControlEnvelope`、无 `ProofIntent` enum。单一 split Proto 与 strict signature foundation 已存在，但尚未成为当前认证或恢复路径。
 
 目标恢复不变量：Prepared client 永远以 exact EnrollmentAttempt 重连。`pending_review` 重放 `EnrollmentReviewStatus{PENDING_REVIEW}`，`awaiting_credential_ack` 与 `active` 都先重放 exact Bundle，`active` 状态的 exact Ack 只做校验/no-op，再发 Activated；`denied` 重放稳定拒绝。Client 只有 durable Active manifest 才可改用 Resume。因而审核等待、Ack commit 后丢失 Activated，以及 Ready/SessionReady 丢失，分别由 Enrollment replay 与 Resume 收敛，不需要服务端猜测客户端阶段。Enrollment transaction 不过期；provisioning window 只约束新 admission 与 operator approve/sign，exact replay、Ack 和最终化在窗口关闭后仍可继续。
+
+Client 的成功 barrier 永远在本地 durable fact 之后：完整验证并 crash-safe 持久化 CredentialBundle 后才能 Ack，Active manifest 持久化后才能 Ready，secret/context 或 Home completion record 持久化后才能发送对应 Command success/Observed 完成值。失败不得伪造成功、`ABSENT` 或较新 epoch；若连正常 FAILED status/Observed 都无法安全构造，则数据面保持 BLOCKED 并 best-effort 发送一次 `ClientClose{error_code}` 后关闭。该包不带 action、不替代业务 status，也不改变 Server transaction；收不到它时普通断线仍按相同 barrier 恢复。
 
 **2026-08-20**：Identifier 与持久化主键统一为 `device_id`。已删除 `devices.control_authority_revision`；当前 control key 由 `device_control_keys.status = 'active'` 表达。Resume 被 supersede 的 key 因 status 拒绝。Active envelope 不携带 `authority_revision`。
 
@@ -145,7 +147,7 @@ server-auth TLS（全部入口，预置 trust + IP-SAN 验证）
 
 Gateway SAN、hostname、profile、EKU 和 validity 必须由 Server 站点配置与冻结 policy 派生。CSR 自报字段不授予权限，只证明 possession 与公钥结构。
 
-同一 `MachineHardwareId` 的 Enrollment 意图只由 Server 根据现有 Device/control-key 状态派生。既有 Device 处于可替换状态时，新 attempt 进入独立人工审核；批准后旧 control key 在新 Bundle Ack 前仍保持有效，Ack 激活新 key 与 supersede 旧 key 必须原子提交，避免批准至安装之间失联。`disabled` / `revoked` Device 的 intake、live replay 与 approval 全部以 identity conflict 拒绝；重开窗口不构成 enable/reactivate 权限，也不存在 Client 自报 replacement/recovery 绕过 lifecycle 的字段。
+同一 `MachineHardwareId` 的 Enrollment 意图只由 Server 根据现有 Device/control-key 状态派生。既有 enrolled Device 处于可替换状态时，新 attempt 进入独立人工审核；批准后旧 control key 在新 Bundle Ack 前仍保持有效，Ack 激活新 key 与 supersede 旧 key 必须原子提交，避免批准至安装之间失联。`disabled` Device 的 intake、live replay 与 approval 全部以 identity conflict 拒绝，且不释放 HWID ownership。`revoked` 旧 Device 的 Resume、旧 transaction replay/Ack 同样永久拒绝；但现场经显式 destructive reprovision 清除旧 material 并生成全新 key/CSR/`enrollment_id` 后，新 attempt 可作为**新 Device**进入人工审核。Server 自行派生新旧 Device 关系并向 Panel 展示 predecessor；批准/Ack 创建新 `device_id`，不 reactivate 或改写旧 row。不存在 Client 自报 replacement/recovery/reprovision 绕过 lifecycle 的字段。
 
 **验证入口：** CSR SAN ignore test、替换语义与审计测试、certificate inspection。
 
@@ -182,7 +184,7 @@ Import 不创建 Command，不自动 `SYNC_STATE` 或 `SYNC_SECRET`，也不表�
 - **Converge**（`sync_state` / `sync_secret` / `reset_home`）：按领域键幂等；只有同一非终态 operator 意图可在 drift 时重投同一 ID/payload；Device 无 command journal。键分别为 Target 的完整 typed assignment（`unbound` 或 `{binding_id, account_id, seat_code, domjudge_username}`）及由 canonical protobuf bytes 本地派生的 hash、完整 credential observation `{binding_id, account_id, credential_revision, installed}`、Target `home_epoch` vs Observed `completed_home_epoch`（缺失/较小重投同一 epoch，相等收敛；超前或观测回退 fail closed；同 epoch 可重入；`HOME_EPOCH_STALE` 仅当命令 epoch < 本地已完成 epoch）。
 - **Oneshot**（lock/unlock/terminate/open_binding_prompt）：仅 current live socket；不转投 replacement lease；重连不重放。无通过 initial Observed barrier 的 current lease，或仍为 `queued` 时所属 lease 断开/被替换/Server 重启，终止为 `failed/COMMAND_NOT_DELIVERED`；进入 `in_flight` 后在 terminal status 前 send failure/disconnect/restart 则为 `outcome_unknown`。空 body，不携带 `SessionTarget` / `session_instance_id` / `session_epoch`。Unlock 不从 Observed 读取 `expected_lock_command_id`。`open_binding_prompt` 打开 screen 即 `SUCCEEDED`；志愿者确认后发送 `BindingRequest`，本地取消不发业务包。`CommandState` 只有 `SUCCEEDED` | `FAILED`。
 
-Server 每个 DeviceActor 只有一个有界 single-consumer mailbox 和至多一个 current control lease；Client 只有一个有界 single-consumer command executor。每台 Device 最多一条 `in_flight` Command，严格按抵达顺序开始和完成；底层 I/O 可以异步，但不得并发执行两条 Command。Server 必须在 socket write 前 durable 提交 `queued → in_flight`，转换失败时零 wire 副作用。Server 只接受 current lease 上 current in-flight ID 的 status；exact same terminal replay 是 no-op，冲突或非 current ID 是 protocol violation。Oneshot 断线按 durable cut 前后分别进入 `COMMAND_NOT_DELIVERED` / `outcome_unknown`；Converge 在新连接 initial Observed 后匹配 frozen key 则推定 `succeeded`，仍 drift 则退回 `queued` 并重投，ahead/regression/无法比较则 fail closed。已明确终态的 Command 不得因后来 drift 复活。
+Server 每个 DeviceActor 只有一个有界 single-consumer mailbox 和至多一个 current control lease；Client 只有一个有界 single-consumer command executor。每台 Device 最多一条 `in_flight` Command，严格按持久化 `enqueue_order` 开始和完成；底层 I/O 可以异步，但不得并发执行两条 Command。`enqueue_order` 是 Device 内唯一且严格递增的 `1..=i64::MAX` INTEGER，由 actor 对所有首次创建串行分配，不进 wire；actor 重启先收敛唯一 in-flight，再取最早 queued。Server 必须在 socket write 前 durable 提交 `queued → in_flight`，转换失败时零 wire 副作用。Server 只接受 current lease 上 current in-flight ID 的 status；exact same terminal replay 是 no-op，冲突或非 current ID 是 protocol violation。Oneshot 断线按 durable cut 前后分别进入 `COMMAND_NOT_DELIVERED` / `outcome_unknown`；Converge 在新连接 initial Observed 后匹配 frozen key 则推定 `succeeded`，仍 drift 则退回 `queued` 并重投，ahead/regression/无法比较则 fail closed。disable/revoke transaction 在 eviction 前把旧 Device queued 全部收口为 `failed/COMMAND_NOT_DELIVERED`、in-flight 全部收口为 `outcome_unknown`，不复活终态。已明确终态的 Command 不得因后来 drift 复活。
 
 Server 用 `request_fingerprint_version` 与 `request_fingerprint_sha256` 区分同 ID HTTP replay：相同 fingerprint 返回既有 Command；不同 fingerprint 返回 `COMMAND_REQUEST_CONFLICT`，不得覆写既有 Command。非 canonical UUIDv7 返回 `COMMAND_ID_INVALID`。每 Command 的 frozen content 只保存在 typed JSON。`HOME_RESET` 不拆 daemon WSS；中断 reset 经本地状态文件 + RecoverHomeInstance 恢复。
 
@@ -265,7 +267,7 @@ CSV / candidate import 的密码只存在于 upload/commit 的 HTTP 请求体解
 - 全部原子写（temp + fsync + rename），半写不可见；
 - 最小版本头，不预建迁移框架；
 - identity-before-credentials（`INV-IDENTITY-02`）；
-- 损坏不自动重建；窗口重开后的 re-enrollment 只适用于 Server 当前仍为 `enrolled` 的既有 Device。`disabled` / `revoked` Device 没有 Enrollment 恢复捷径；恢复必须走另行评审的显式、受审计 lifecycle/runbook，当前不提供 enable/reactivate API。重新 `SYNC_SECRET` 同样不改变 Device state。
+- 损坏不自动重建；窗口重开后的 credential replacement/recovery 只适用于 Server 当前仍为 `enrolled` 的既有 Device。`disabled` Device 没有 Enrollment 恢复捷径，当前不提供 enable/reactivate API。`revoked` 旧身份也永不恢复；唯一允许的再次接入是现场执行显式、destructive、受审计的 factory-reset/reprovision runbook，完整清除旧 identity-bound material 后生成全新 key/CSR/`enrollment_id`，再作为新 Device 走 open window + 人工审核。普通启动、删单个文件、重新 `SYNC_SECRET` 都不得触发该路径或改变 Device state。
 
 ### 5.3 内存
 
@@ -295,6 +297,8 @@ CSV / candidate import 的密码只存在于 upload/commit 的 HTTP 请求体解
 - 将 configured-disk copy 当作原机器；
 - 创建安装实例 ID 作为硬件身份 fallback。
 
+上述禁止不排除 operator 明确授权的整机 destructive reprovision：它必须作为不可中断的 runbook step 删除全部旧 identity-bound material、留下本地审计/现场记录并重新生成完整 Prepared transaction；不能由 daemon 看到某个文件缺失就自行推断。
+
 ## 7. Fail-closed 矩阵
 
 | 故障 | 允许继续 | 禁止 |
@@ -323,7 +327,7 @@ CSV / candidate import 的密码只存在于 upload/commit 的 HTTP 请求体解
 7. 恢复后用 Observed、Drift、certificate inspection 和 audit 验证，而不是只看服务进程已启动。
 8. 无法证明旧状态安全时进入 BLOCKED，而不是尝试“最大可用性”。
 9. runbook 中的每个 destructive step 必须有备份/rollback 条件。
-10. 重开 provisioning window、重投 Enrollment 或保留 disabled/revoked Device 的 credential/certificate row 都不得被 runbook 解释为重新启用；Server 只为 lifecycle 允许的 Device 派生 replacement/recovery intent，且每个新 transaction 仍需人工审核。
+10. 重开 provisioning window、重投旧 Enrollment 或保留 disabled/revoked Device 的 credential/certificate row 都不得被解释为重新启用；Server 只为 lifecycle 允许的 enrolled Device 派生 replacement/recovery。revoked 后再次接入必须是 destructive reprovision 生成的新 material，由 Server 识别 revoked predecessor、Panel 展示该关系并按新 Device 人工审核。
 
 具体恢复步骤在对应 Phase 实现后编写；当前不保留未建系统的目标操作流程。
 
@@ -356,7 +360,7 @@ redacted_detail_json         # typed、allowlisted、已脱敏；承载 revision
 - Device Enrollment admission、人工批准/拒绝、不可变 Bundle 固化、Ack 激活（含 replacement 旧 key 原子 supersede）、pre-Ack revoke/deny、retire、delete；
 - Device Token 吊销；
 - binding/unbind；
-- Command create（首次持久化）与同 ID/不同 fingerprint 的 conflict 拒绝、Converge（`SYNC_STATE` / `SYNC_SECRET` / `HOME_RESET`）与 Oneshot 意图，以及断线造成的 Oneshot `outcome_unknown`；同 ID/同 fingerprint 的 HTTP replay **不写**新 audit——它是幂等的读等价结果，为它写审计既违反零副作用 replay 规则，又让重试的 client 得以撑大审计表；
+- Command create（首次持久化，含 Device 内 `enqueue_order`）与同 ID/不同 fingerprint 的 conflict 拒绝、Converge（`SYNC_STATE` / `SYNC_SECRET` / `HOME_RESET`）与 Oneshot 意图、断线造成的 Oneshot `outcome_unknown`，以及 disable/revoke 对 queued/in-flight 的批量终态化计数；同 ID/同 fingerprint 的 HTTP replay **不写**新 audit——它是幂等的读等价结果，为它写审计既违反零副作用 replay 规则，又让重试的 client 得以撑大审计表；
 - certificate issuance 与证书状态行变化（含 `revoked` / `retired` 终态保留）；
 - Session/Home action；
 - operator 登录失败限流触发（每个 limiter window 一条，actor 为非人类 system actor；不记录尝试使用的 login name）；
