@@ -10,14 +10,10 @@ build = "build.rs"
 
 [dependencies]
 ed25519-dalek.workspace = true
-natsume-error-code = { path = "../error-code" }
 prost.workspace = true
 sha2.workspace = true
-snafu.workspace = true
-uuid.workspace = true
 
 [build-dependencies]
-snafu.workspace = true
 prost-build = "=0.14.4"
 protoc-bin-vendored = "3"
 

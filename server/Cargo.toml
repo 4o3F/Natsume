@@ -21,7 +21,6 @@ hex.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 natsume-device-protocol = { path = "../crates/device-protocol" }
-natsume-error-code = { path = "../crates/error-code" }
 percent-encoding.workspace = true
 prost.workspace = true
 rcgen = { workspace = true, features = ["x509-parser"] }

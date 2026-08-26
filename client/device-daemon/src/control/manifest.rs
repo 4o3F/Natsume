@@ -1,6 +1,5 @@
 use std::{fs, io::ErrorKind, os::unix::fs::MetadataExt as _, path::Path};
 
-use natsume_device_protocol::ControlKeyId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -27,7 +26,7 @@ pub(super) struct ControlManifest {
     format_version: u32,
     machine_hardware_id: String,
     control_key_generation: u32,
-    control_key_id: String,
+    control_public_key: String,
     state: ControlManifestState,
 }
 
@@ -40,11 +39,10 @@ impl ControlManifest {
         let stored_machine_hardware_id = canonical_uuid(&self.machine_hardware_id)
             .filter(|stored| stored.get_version_num() == 5)
             .ok_or(DormantControlIdentityError::Manifest)?;
-        let expected_key_id = ControlKeyId::derive(control_public_key);
         if self.format_version != CONTROL_MANIFEST_FORMAT_VERSION
             || stored_machine_hardware_id != machine_hardware_id
             || self.control_key_generation != CONTROL_KEY_GENERATION
-            || self.control_key_id != hex::encode(expected_key_id.as_bytes())
+            || self.control_public_key != hex::encode(control_public_key)
             || self.state != ControlManifestState::Dormant
         {
             return Err(DormantControlIdentityError::Manifest);
@@ -73,12 +71,11 @@ pub(super) fn create_or_validate(
     machine_hardware_id: Uuid,
     control_public_key: [u8; 32],
 ) -> Result<(), DormantControlIdentityError> {
-    let key_id = ControlKeyId::derive(control_public_key);
     let manifest = ControlManifest {
         format_version: CONTROL_MANIFEST_FORMAT_VERSION,
         machine_hardware_id: machine_hardware_id.to_string(),
         control_key_generation: CONTROL_KEY_GENERATION,
-        control_key_id: hex::encode(key_id.as_bytes()),
+        control_public_key: hex::encode(control_public_key),
         state: ControlManifestState::Dormant,
     };
     manifest.validate(machine_hardware_id, control_public_key)?;

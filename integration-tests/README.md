@@ -1,3 +1,0 @@
-# Integration tests
-
-Cross-process, reboot, physical-hardware, protocol, package and fault-injection ownership lives here. Phase 0 executes the committed Protobuf descriptor/validation, Rust-owned OpenAPI consumer contract, D-Bus introspection/value signatures and embedded SQLite migrations here; source-text checks remain defense in depth only. Target package lifecycle evidence uses `packaging/target-vm/phase0-lifecycle.sh` and cannot be replaced by shared-runner smoke. Later priority scenarios are identity-before-vault, vault corruption, provisioning-window Enrollment, Device Token-authenticated WSS, Enrollment-time Gateway certificate issuance, explicit state/secret Commands, cross-desktop Session Agent GUI, desktop-only lock, Caddy offline replay and Home recovery.

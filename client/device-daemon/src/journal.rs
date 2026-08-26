@@ -5,8 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use natsume_device_protocol::is_canonical_command_id;
 use snafu::Snafu;
+use uuid::{Uuid, Variant, Version};
 
 use crate::atomic_write::{AtomicWriteError, WritePolicy, atomic_write};
 
@@ -89,7 +89,11 @@ impl Journal {
 }
 
 fn validate_command_id(command_id: &str) -> Result<(), JournalError> {
-    if !is_canonical_command_id(command_id) {
+    if !Uuid::parse_str(command_id).is_ok_and(|uuid| {
+        uuid.get_version() == Some(Version::SortRand)
+            && uuid.get_variant() == Variant::RFC4122
+            && uuid.to_string() == command_id
+    }) {
         return Err(JournalError::InvalidCommandId);
     }
     Ok(())

@@ -2,10 +2,6 @@ use axum::{
     http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
-use natsume_error_code::{
-    ErrorCode, common::CommonErrorCode, control::ControlErrorCode,
-    operator::OperatorErrorCode as PublicOperatorErrorCode,
-};
 use serde::Serialize;
 
 use crate::{
@@ -28,10 +24,45 @@ struct ErrorResponse<'a> {
     correlation_id: &'a str,
 }
 
+/// Closed set emitted by the current HTTP API. This type belongs to the HTTP
+/// adapter; it is not a domain error or a cross-transport registry.
+#[derive(Clone, Copy)]
+enum ApiErrorCode {
+    AuthenticationFailed,
+    AuthorizationDenied,
+    InvalidRequest,
+    ResourceNotFound,
+    InternalError,
+    CommandIdInvalid,
+    CommandRequestConflict,
+    ImportCandidateInvalid,
+    ImportCandidatePending,
+    ImportCandidateUnavailable,
+    ImportPreviewStale,
+}
+
+impl ApiErrorCode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthenticationFailed => "AUTHENTICATION_FAILED",
+            Self::AuthorizationDenied => "AUTHORIZATION_DENIED",
+            Self::InvalidRequest => "INVALID_REQUEST",
+            Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
+            Self::InternalError => "INTERNAL_ERROR",
+            Self::CommandIdInvalid => "COMMAND_ID_INVALID",
+            Self::CommandRequestConflict => "COMMAND_REQUEST_CONFLICT",
+            Self::ImportCandidateInvalid => "IMPORT_CANDIDATE_INVALID",
+            Self::ImportCandidatePending => "IMPORT_CANDIDATE_PENDING",
+            Self::ImportCandidateUnavailable => "IMPORT_CANDIDATE_UNAVAILABLE",
+            Self::ImportPreviewStale => "IMPORT_PREVIEW_STALE",
+        }
+    }
+}
+
 pub(super) struct ApiError {
     status: StatusCode,
     title: &'static str,
-    code: &'static str,
+    code: ApiErrorCode,
     /// Compile-time constant discriminant of the internal failure mode, logged
     /// beside the correlation ID so a published `code` stays attributable. It
     /// is never serialized into the body and never sent as a header.
@@ -47,7 +78,7 @@ impl ApiError {
         Self::new(
             StatusCode::UNAUTHORIZED,
             "Unauthorized",
-            CommonErrorCode::AuthenticationFailed,
+            ApiErrorCode::AuthenticationFailed,
             cause,
             correlation_id,
         )
@@ -57,7 +88,7 @@ impl ApiError {
         Self::new(
             StatusCode::FORBIDDEN,
             "Forbidden",
-            CommonErrorCode::AuthorizationDenied,
+            ApiErrorCode::AuthorizationDenied,
             cause,
             correlation_id,
         )
@@ -67,7 +98,7 @@ impl ApiError {
         Self::new(
             StatusCode::BAD_REQUEST,
             "Bad Request",
-            CommonErrorCode::InvalidRequest,
+            ApiErrorCode::InvalidRequest,
             cause,
             correlation_id,
         )
@@ -77,7 +108,7 @@ impl ApiError {
         Self::new(
             StatusCode::NOT_FOUND,
             "Not Found",
-            CommonErrorCode::ResourceNotFound,
+            ApiErrorCode::ResourceNotFound,
             cause,
             correlation_id,
         )
@@ -87,7 +118,7 @@ impl ApiError {
         Self::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Internal Server Error",
-            CommonErrorCode::InternalError,
+            ApiErrorCode::InternalError,
             cause,
             correlation_id,
         )
@@ -181,7 +212,7 @@ impl ApiError {
             CommandError::CommandIdInvalid => Self {
                 status: StatusCode::BAD_REQUEST,
                 title: "Bad Request",
-                code: ErrorCode::from(ControlErrorCode::CommandIdInvalid).as_str(),
+                code: ApiErrorCode::CommandIdInvalid,
                 cause: "command_id_invalid",
                 correlation_id,
             },
@@ -212,7 +243,7 @@ impl ApiError {
             CommandError::RequestConflict => Self {
                 status: StatusCode::CONFLICT,
                 title: "Conflict",
-                code: ErrorCode::from(ControlErrorCode::CommandRequestConflict).as_str(),
+                code: ApiErrorCode::CommandRequestConflict,
                 cause: "command_request_conflict",
                 correlation_id,
             },
@@ -245,7 +276,7 @@ impl ApiError {
                 Self::import_error(
                     StatusCode::BAD_REQUEST,
                     "Bad Request",
-                    PublicOperatorErrorCode::ImportCandidateInvalid,
+                    ApiErrorCode::ImportCandidateInvalid,
                     cause,
                     correlation_id,
                 )
@@ -253,28 +284,28 @@ impl ApiError {
             ImportError::CandidateInvalid => Self::import_error(
                 StatusCode::BAD_REQUEST,
                 "Bad Request",
-                PublicOperatorErrorCode::ImportCandidateInvalid,
+                ApiErrorCode::ImportCandidateInvalid,
                 "import_candidate_invalid",
                 correlation_id,
             ),
             ImportError::CandidatePending => Self::import_error(
                 StatusCode::CONFLICT,
                 "Conflict",
-                PublicOperatorErrorCode::ImportCandidatePending,
+                ApiErrorCode::ImportCandidatePending,
                 "import_candidate_pending",
                 correlation_id,
             ),
             ImportError::CandidateUnavailable => Self::import_error(
                 StatusCode::NOT_FOUND,
                 "Not Found",
-                PublicOperatorErrorCode::ImportCandidateUnavailable,
+                ApiErrorCode::ImportCandidateUnavailable,
                 "import_candidate_unavailable",
                 correlation_id,
             ),
             ImportError::PreviewStale => Self::import_error(
                 StatusCode::CONFLICT,
                 "Conflict",
-                PublicOperatorErrorCode::ImportPreviewStale,
+                ApiErrorCode::ImportPreviewStale,
                 "import_preview_stale",
                 correlation_id,
             ),
@@ -307,14 +338,14 @@ impl ApiError {
     fn import_error(
         status: StatusCode,
         title: &'static str,
-        code: PublicOperatorErrorCode,
+        code: ApiErrorCode,
         cause: &'static str,
         correlation_id: CorrelationId,
     ) -> Self {
         Self {
             status,
             title,
-            code: ErrorCode::from(code).as_str(),
+            code,
             cause,
             correlation_id,
         }
@@ -323,14 +354,14 @@ impl ApiError {
     fn new(
         status: StatusCode,
         title: &'static str,
-        code: CommonErrorCode,
+        code: ApiErrorCode,
         cause: &'static str,
         correlation_id: CorrelationId,
     ) -> Self {
         Self {
             status,
             title,
-            code: ErrorCode::from(code).as_str(),
+            code,
             cause,
             correlation_id,
         }
@@ -343,12 +374,12 @@ impl IntoResponse for ApiError {
         let error_response = ErrorResponse {
             title: self.title,
             status: self.status.as_u16(),
-            code: self.code,
+            code: self.code.as_str(),
             correlation_id: &correlation_id,
         };
         let body = serde_json::to_vec(&error_response).unwrap_or_else(|_| {
             tracing::error!(
-                code = CommonErrorCode::InternalError.as_str(),
+                code = ApiErrorCode::InternalError.as_str(),
                 cause = "http_error_response_serialization_failed",
                 correlation_id = %correlation_id,
                 "HTTP error response serialization invariant failed"
@@ -358,14 +389,14 @@ impl IntoResponse for ApiError {
 
         if self.status.is_server_error() {
             tracing::error!(
-                code = self.code,
+                code = self.code.as_str(),
                 cause = self.cause,
                 correlation_id = %correlation_id,
                 "HTTP request failed"
             );
         } else {
             tracing::warn!(
-                code = self.code,
+                code = self.code.as_str(),
                 cause = self.cause,
                 correlation_id = %correlation_id,
                 "HTTP request rejected"

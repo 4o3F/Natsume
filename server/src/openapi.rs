@@ -7,10 +7,7 @@ use utoipa::{
         header::HeaderBuilder,
         info::InfoBuilder,
         path::{Operation, Paths},
-        schema::{
-            AdditionalProperties, KnownFormat, ObjectBuilder, Schema,
-            Type,
-        },
+        schema::{AdditionalProperties, KnownFormat, ObjectBuilder, Schema, Type},
         security::{ApiKey, ApiKeyValue, SecurityScheme},
     },
 };

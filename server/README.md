@@ -27,8 +27,9 @@ carries configuration, paths, or secrets.
 
 Before `natsume-server serve` starts, the deployer must provision the Origin CA
 issuing material exactly as it provisions the Server TLS leaf/key pair. Packaging
-must never generate either CA: [ADR-0030](../docs/adr/0030-foundation-deployment-and-delivery-baseline.md)
-keeps CA creation and custody in the deployer-controlled PKI workflow.
+must never generate either CA. The
+[target architecture](../docs/architecture.md#53-pki) keeps CA creation and
+custody in the deployer-controlled PKI workflow.
 
 The two Origin CA files have fixed names under the Server private keys directory:
 
@@ -81,9 +82,5 @@ login name exits non-zero with zero writes. Never run it as root or from
 automation. The package `postinstall` must not call it because install-time
 secret handling and a packaging-script TTY prompt are forbidden.
 
-Known Gate limitations: the 4096-byte session body limit is closed. Header
-count/size and slow-header handling remain open while Stage 4 retains
-`axum::serve`; connection capacity remains `ENV-UNFROZEN` pending S0-4 Device
-fleet evidence for the shared future WSS port. Gate 4 is therefore not fully
-`PASS`. `INV-CERT` integration remains pending, and target platform, browser,
-network, and PKI inputs remain `ENV-UNFROZEN`.
+The complete Server target, including the component model and Device WSS, is
+defined only by the [target architecture](../docs/architecture.md).

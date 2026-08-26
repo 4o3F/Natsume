@@ -8,9 +8,7 @@ use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    application::{
-        operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
-    },
+    application::operator::{OperatorRole, sign_in, tests::PasswordVerificationTestGuard},
     audit::CorrelationId,
     db::{
         Database,

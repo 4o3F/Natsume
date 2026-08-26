@@ -1,42 +1,35 @@
 #![forbid(unsafe_code)]
-//! Generated control protocol and semantic validation.
+//! Generated Device Control schema and shared wire primitives.
 
-mod handshake;
-pub mod validation;
+mod transcript;
 
-pub use handshake::{
-    ControlKeyId, HandshakeError, proof_signing_digest, sign_client_proof, verify_proof_strict,
+pub use transcript::{
+    ProofVerificationError, client_proof_signing_digest, sign_client_proof, verify_client_proof,
 };
 
 /// Exact WebSocket subprotocol selected by both control peers.
 pub const CONTROL_SUBPROTOCOL: &str = "natsume.control";
 /// Exact HTTP route carrying Device control WebSocket upgrades.
 pub const CONTROL_ROUTE: &str = "/api/v2/device/control";
-/// Current Device control wire version.
-pub const CONTROL_WIRE_VERSION: u32 = 1;
-/// Maximum encoded control-envelope frame accepted by either peer.
-pub const CONTROL_MAX_FRAME_BYTES: usize = 65_536;
-/// Maximum standalone `ClientProof` message size.
-pub const CONTROL_MAX_PROOF_BYTES: usize = 1_024 * 48;
-/// Maximum standalone `ClientInit` message size.
-pub const CONTROL_MAX_CLIENT_INIT_BYTES: usize = 48 * 1_024;
-/// Maximum active control message size.
-pub const CONTROL_MAX_ACTIVE_MESSAGE_BYTES: usize = 64 * 1_024;
-/// Deadline shared by the TCP, TLS, WebSocket, and hello exchanges.
-pub const CONTROL_HELLO_TIMEOUT_SECONDS: u64 = 10;
-/// Canonical unpadded base64url length of one 32-byte Device Token.
-pub const DEVICE_TOKEN_ENCODED_LENGTH: usize = 43;
+/// Maximum encoded length of one Device Control `ErrorCode` token.
+pub const ERROR_CODE_MAX_BYTES: usize = 64;
 
-/// Returns whether bytes have the canonical encoded shape of one 32-byte Device Token.
+/// Returns whether `value` is a well-formed open `ErrorCode` token.
+///
+/// Receiver behavior must come from the accompanying typed state or action,
+/// never from this diagnostic token.
 #[must_use]
-pub fn is_valid_device_token(token: &[u8]) -> bool {
-    token.len() == DEVICE_TOKEN_ENCODED_LENGTH
-        && token
+pub fn is_valid_error_code_token(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let Some((first, rest)) = bytes.split_first() else {
+        return false;
+    };
+
+    bytes.len() <= ERROR_CODE_MAX_BYTES
+        && first.is_ascii_uppercase()
+        && rest
             .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-        && token
-            .last()
-            .is_some_and(|byte| b"AEIMQUYcgkosw048".contains(byte))
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'_')
 }
 
 // Prost owns this generated surface. First-party source remains subject to the
@@ -56,58 +49,57 @@ impl std::fmt::Debug for generated::SecretBytes {
     }
 }
 
-pub use validation::{ProtocolValidationError, is_canonical_command_id, validate_envelope};
-
-/// Returns the exact descriptor generated from the split Device control schema.
-#[must_use]
-pub const fn file_descriptor_set() -> &'static [u8] {
-    include_bytes!(concat!(env!("OUT_DIR"), "/device_control.pb"))
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        DEVICE_TOKEN_ENCODED_LENGTH,
-        generated::{SecretBytes, SyncSecret},
-        is_valid_device_token,
-    };
-
-    const VALID_TOKEN: &[u8] = b"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    use super::*;
 
     #[test]
-    fn device_token_shape_pins_the_32_byte_base64url_tail() {
-        assert_eq!(VALID_TOKEN.len(), DEVICE_TOKEN_ENCODED_LENGTH);
-        assert!(is_valid_device_token(VALID_TOKEN));
+    fn error_code_tokens_preserve_the_open_wire_grammar() {
+        for valid in ["A", "PROTOCOL_INVALID_ENVELOPE", "FUTURE_PEER_CODE_7"] {
+            assert!(is_valid_error_code_token(valid), "rejected {valid:?}");
+        }
+        assert!(is_valid_error_code_token(&"A".repeat(ERROR_CODE_MAX_BYTES)));
 
-        let mut invalid_tail = VALID_TOKEN.to_vec();
-        invalid_tail[DEVICE_TOKEN_ENCODED_LENGTH - 1] = b'B';
-        assert!(!is_valid_device_token(&invalid_tail));
-        assert!(!is_valid_device_token(&VALID_TOKEN[..42]));
-        assert!(!is_valid_device_token(
-            b"!AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        for invalid in [
+            "",
+            "7_STARTS_WITH_DIGIT",
+            "_STARTS_WITH_UNDERSCORE",
+            "lowercase",
+            "HAS-HYPHEN",
+            "HAS SPACE",
+            "非ASCII",
+        ] {
+            assert!(!is_valid_error_code_token(invalid), "accepted {invalid:?}");
+        }
+        assert!(!is_valid_error_code_token(
+            &"A".repeat(ERROR_CODE_MAX_BYTES + 1)
         ));
     }
 
     #[test]
     fn secret_bytes_and_containing_messages_have_redacted_debug() {
-        let value = b"device-token-must-never-appear".to_vec();
+        let value = b"binding-password-must-never-appear".to_vec();
         let raw_debug = format!("{value:?}");
-        let secret = SecretBytes {
+        let secret = generated::SecretBytes {
             value: value.clone(),
         };
         let secret_debug = format!("{secret:?}");
         assert_eq!(secret_debug, "SecretBytes([REDACTED])");
         assert!(!secret_debug.contains(&raw_debug));
 
-        let sync = SyncSecret {
-            seat_id: "seat-1".to_owned(),
-            binding_id: "01900000-0000-7000-8000-000000000001".to_owned(),
-            account_id: "account-1".to_owned(),
-            credential_revision: 1,
+        let target = generated::BoundTarget {
+            context: None,
             password: Some(secret),
         };
-        let containing_debug = format!("{sync:?}");
+        let containing_debug = format!("{target:?}");
         assert!(containing_debug.contains("SecretBytes([REDACTED])"));
         assert!(!containing_debug.contains(&raw_debug));
+    }
+
+    #[test]
+    fn generated_descriptor_matches_the_checked_in_golden() {
+        let generated = include_bytes!(concat!(env!("OUT_DIR"), "/device_control.pb"));
+        let golden = include_bytes!("../testdata/device_control.pb");
+        assert_eq!(generated.as_slice(), golden.as_slice());
     }
 }

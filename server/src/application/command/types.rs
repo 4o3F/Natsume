@@ -1,8 +1,6 @@
 use serde_json::value::RawValue;
 use snafu::Snafu;
-use uuid::Uuid;
-
-use natsume_device_protocol::is_canonical_command_id;
+use uuid::{Uuid, Variant, Version};
 
 use crate::{
     application::device::{DeviceId, DevicePersistenceError},
@@ -280,8 +278,12 @@ impl CommandError {
 }
 
 pub(super) fn parse_canonical_uuid_v7(value: &str) -> Result<Uuid, ()> {
-    if !is_canonical_command_id(value) {
+    let uuid = Uuid::parse_str(value).map_err(|_| ())?;
+    if uuid.get_version() != Some(Version::SortRand)
+        || uuid.get_variant() != Variant::RFC4122
+        || uuid.to_string() != value
+    {
         return Err(());
     }
-    Uuid::parse_str(value).map_err(|_| ())
+    Ok(uuid)
 }

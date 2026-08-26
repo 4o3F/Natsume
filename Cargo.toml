@@ -7,10 +7,8 @@ members = [
   "client/privileged-helper",
   "client/session-agent",
   "crates/device-protocol",
-  "crates/error-code",
   "crates/local-control-api",
   "crates/machine-identity",
-  "integration-tests",
 ]
 default-members = [
   "server",
@@ -18,7 +16,6 @@ default-members = [
   "client/privileged-helper",
   "client/session-agent",
   "crates/device-protocol",
-  "crates/error-code",
   "crates/local-control-api",
   "crates/machine-identity",
 ]

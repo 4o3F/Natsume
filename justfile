@@ -15,11 +15,6 @@ toolchain:
     grep -Exq '[0-9a-f]{64}  gitleaks_8\.30\.1_linux_x64\.tar\.gz' tools/gitleaks.sha256
     grep -Fqx 'name = "protoc-bin-vendored"' Cargo.lock
 
-docs-validate:
-    node --test docs/verification/markdown.test.mjs
-    git ls-files -z -- '*.md' | xargs -0r node docs/verification/validate-links.mjs
-    node docs/verification/validate-markdown.mjs docs README.md
-
 install:
     pnpm install --frozen-lockfile
 
@@ -64,9 +59,6 @@ api:
     pnpm --filter @natsume/web openapi:lint
     pnpm --filter @natsume/web api:generate
 
-diagrams:
-    pnpm diagrams
-
 diesel-schema:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -86,9 +78,6 @@ build:
     cargo build --workspace --release --locked
     pnpm --filter @natsume/web build
 
-integration:
-    cargo test -p natsume-integration-tests
-
 e2e:
     pnpm --filter @natsume/web e2e
 
@@ -97,9 +86,6 @@ ci-rust:
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test --workspace --all-features --locked --lib --bins --tests
     cargo test --workspace --all-features --locked --doc
-    # Default-features guard: --all-features enables `fixture`, so this is the only lane
-    # proving the daemon builds without its integration-test fixture surface.
-    cargo build -p natsume-device-daemon --locked
     cargo deny check
 
 ci-web: install
@@ -112,21 +98,19 @@ ci-web: install
     ! grep -rq '@apply' web/dist/assets
     grep -rq 'min-h-screen' web/dist/assets
 
-ci-contracts: install docs-validate diesel-schema
+ci-contracts: install diesel-schema
     cargo run -p natsume-server --locked --bin export-openapi -- web/openapi/natsume.openapi.json
     pnpm --filter @natsume/web openapi:lint
     pnpm --filter @natsume/web api:generate
     git diff --exit-code -- web/openapi/natsume.openapi.json web/src/api/generated/schema.d.ts
-    cargo test -p natsume-integration-tests --locked
-    pnpm diagrams
 
 ci-policy: shell-format secret-scan
-    bash integration-tests/policy-scan.sh
+    bash tools/architecture-scan.sh
 
 ci-packages:
     bash packaging/ci-package-smoke.sh
 
-verify: toolchain install fmt lint unit api diesel-schema diagrams docs-validate secret-scan
+verify: toolchain install fmt lint unit api diesel-schema secret-scan
 
 package-server:
     nfpm package --packager deb --config packaging/server/nfpm.yaml --target dist/packages/

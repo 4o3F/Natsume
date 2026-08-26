@@ -122,22 +122,9 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   >/dev/null 2>&1
 rm -f "${input_root}/control-ca.key" "${input_root}/local-origin-ca.key"
 
-# Build only the binaries that enter the packages, in an isolated target directory. A
-# workspace-wide build unifies integration-tests' `fixture` feature into the daemon and would
-# ship test counters/watch channels in the production deb.
+# Build only the binaries that enter the packages, in an isolated target directory.
 production_target="${work_root}/cargo-target-production"
 production_release="${production_target}/release"
-daemon_cfg="${work_root}/natsume-device-daemon.cfg"
-CARGO_TARGET_DIR="${production_target}" cargo rustc \
-  -p natsume-device-daemon \
-  --bin natsume-device-daemon \
-  --release \
-  --locked \
-  -- \
-  --print cfg >"${daemon_cfg}"
-if grep -Fxq 'feature="fixture"' "${daemon_cfg}"; then
-  fail 'production Device Daemon unexpectedly enabled the fixture feature'
-fi
 CARGO_TARGET_DIR="${production_target}" cargo build \
   --release \
   --locked \

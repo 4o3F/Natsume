@@ -1,18 +1,4 @@
-use std::{env, path::PathBuf};
-
-use snafu::{OptionExt, ResultExt, Snafu};
-
-#[derive(Debug, Snafu)]
-enum Error {
-    #[snafu(display("vendored protoc is unavailable for this build target"))]
-    ProtocUnavailable { source: protoc_bin_vendored::Error },
-
-    #[snafu(display("Cargo did not provide OUT_DIR to the protocol build"))]
-    MissingOutDir,
-
-    #[snafu(display("failed to generate split Device control protocol"))]
-    GenerateProtocol { source: std::io::Error },
-}
+use std::{env, io, path::PathBuf};
 
 const PROTOS: [&str; 8] = [
     "proto/device_control.proto",
@@ -25,18 +11,20 @@ const PROTOS: [&str; 8] = [
     "proto/device_control_state.proto",
 ];
 
-#[snafu::report]
-fn main() -> Result<(), Error> {
-    let protoc = protoc_bin_vendored::protoc_bin_path().context(ProtocUnavailableSnafu)?;
-    let out_dir = env::var_os("OUT_DIR").context(MissingOutDirSnafu)?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let protoc = protoc_bin_vendored::protoc_bin_path()?;
+    let out_dir = env::var_os("OUT_DIR").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "Cargo did not provide OUT_DIR to the protocol build",
+        )
+    })?;
     let descriptor_path = PathBuf::from(out_dir).join("device_control.pb");
     let mut config = prost_build::Config::new();
     config.protoc_executable(protoc);
     config.file_descriptor_set_path(descriptor_path);
     config.skip_debug([".natsume.device.control.SecretBytes"]);
-    config
-        .compile_protos(&PROTOS, &["proto"])
-        .context(GenerateProtocolSnafu)?;
+    config.compile_protos(&PROTOS, &["proto"])?;
     for proto in PROTOS {
         println!("cargo:rerun-if-changed={proto}");
     }

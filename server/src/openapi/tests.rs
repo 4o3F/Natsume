@@ -326,7 +326,6 @@ fn provisioning_window_operations_and_response_schema_are_closed_and_exact()
     Ok(())
 }
 
-
 #[test]
 fn import_paths_and_schemas_are_closed_and_exact() -> Result<(), TestFailure> {
     let value = serialized_document()?;

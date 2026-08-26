@@ -22,10 +22,11 @@ const PUBLIC_TEST_KEY_DER: [u8; 83] = [
     0x15, 0xe4, 0xe6, 0xd0, 0x22, 0x4a, 0xb7, 0x1a, 0x01, 0x6b, 0xaf, 0x85, 0x20, 0xa3, 0x32, 0xc9,
     0x77, 0x87, 0x37,
 ];
-const EXPECTED_KEY_ID: &str = "9b3b54a4f096cdc7e2d219894601378f93532aefbbb6b4ec15ae65f7100046d8";
+const EXPECTED_PUBLIC_KEY: &str =
+    "d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737";
 const EXPECTED_MANIFEST: &str = concat!(
     r#"{"format_version":1,"machine_hardware_id":"a9aa9d04-3ece-5567-8260-910930ff5e03","#,
-    r#""control_key_generation":1,"control_key_id":"9b3b54a4f096cdc7e2d219894601378f93532aefbbb6b4ec15ae65f7100046d8","state":"dormant"}"#
+    r#""control_key_generation":1,"control_public_key":"d04ab232742bb4ab3a1368bd4615e4e6d0224ab71a016baf8520a332c9778737","state":"dormant"}"#
 );
 
 fn require_tempdir() -> TempDir {
@@ -60,12 +61,12 @@ fn require_mode(path: &Path) -> u32 {
 
 fn raw_manifest(
     machine_hardware_id: &str,
-    control_key_id: &str,
+    control_public_key: &str,
     state: &str,
     extra_field: &str,
 ) -> String {
     format!(
-        r#"{{"format_version":1,"machine_hardware_id":"{machine_hardware_id}","control_key_generation":1,"control_key_id":"{control_key_id}","state":"{state}"{extra_field}}}"#
+        r#"{{"format_version":1,"machine_hardware_id":"{machine_hardware_id}","control_key_generation":1,"control_public_key":"{control_public_key}","state":"{state}"{extra_field}}}"#
     )
 }
 
@@ -108,7 +109,7 @@ fn separate_first_starts_generate_distinct_control_keys() {
 }
 
 #[test]
-fn key_only_crash_state_converges_to_the_control_key_id_golden() {
+fn key_only_crash_state_converges_to_the_public_key_golden() {
     let directory = require_tempdir();
     let key_path = directory.path().join(CONTROL_KEY_NAME);
     write_owner_only(&key_path, &PUBLIC_TEST_KEY_DER);
@@ -186,13 +187,13 @@ fn mismatched_noncanonical_and_unknown_manifest_values_make_zero_writes() {
     let invalid_manifests = [
         raw_manifest(
             "550e8400-e29b-51d4-a716-446655440000",
-            EXPECTED_KEY_ID,
+            EXPECTED_PUBLIC_KEY,
             "dormant",
             "",
         ),
         raw_manifest(
             "A9AA9D04-3ECE-5567-8260-910930FF5E03",
-            EXPECTED_KEY_ID,
+            EXPECTED_PUBLIC_KEY,
             "dormant",
             "",
         ),
@@ -204,14 +205,14 @@ fn mismatched_noncanonical_and_unknown_manifest_values_make_zero_writes() {
         ),
         raw_manifest(
             &MACHINE_ID.to_string(),
-            &EXPECTED_KEY_ID.to_ascii_uppercase(),
+            &EXPECTED_PUBLIC_KEY.to_ascii_uppercase(),
             "dormant",
             "",
         ),
-        raw_manifest(&MACHINE_ID.to_string(), EXPECTED_KEY_ID, "active", ""),
+        raw_manifest(&MACHINE_ID.to_string(), EXPECTED_PUBLIC_KEY, "active", ""),
         raw_manifest(
             &MACHINE_ID.to_string(),
-            EXPECTED_KEY_ID,
+            EXPECTED_PUBLIC_KEY,
             "dormant",
             r#", "unknown":true"#,
         ),

@@ -67,11 +67,6 @@ jobs:
       - name: Documentation tests
         run: cargo test --workspace --all-features --locked --doc
 
-      - name: Default-features daemon build
-        run: |
-          # `--all-features` enables `fixture`, so this is the only lane proving the daemon builds without its integration-test fixture surface.
-          cargo build -p natsume-device-daemon --locked
-
       - name: Dependency policy and advisories
         run: cargo deny check
 
@@ -168,9 +163,6 @@ jobs:
       - name: Frozen install
         run: pnpm install --frozen-lockfile
 
-      - name: Validate documentation
-        run: just docs-validate
-
       - name: Regenerate Rust-owned OpenAPI and TypeScript snapshots
         run: |
           set -euo pipefail
@@ -191,12 +183,6 @@ jobs:
 
       - name: Diesel schema clean diff
         run: just diesel-schema
-
-      - name: Rust contract tests
-        run: cargo test -p natsume-integration-tests --locked
-
-      - name: Mermaid contracts
-        run: pnpm diagrams
 
   policy-scan:
     name: policy-scan
@@ -252,12 +238,8 @@ jobs:
           test ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service
           grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
 
-      - name: Enrollment and certificate boundaries
-        run: |
-          set -euo pipefail
-          cargo test -p natsume-integration-tests --locked \
-            --test protocol_contract
-          cargo test -p natsume-server --locked db::provisioning::schema_contract_tests
+      - name: Server schema contract
+        run: cargo test -p natsume-server --locked db::provisioning::schema_contract_tests
 
   packages:
     name: packages

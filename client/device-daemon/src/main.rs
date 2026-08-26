@@ -5,7 +5,6 @@ use std::{
 
 use clap::{ArgGroup, Parser};
 use natsume_device_daemon::{EndpointError, parse_endpoint, startup};
-use natsume_error_code::ErrorCode;
 use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
@@ -15,9 +14,9 @@ enum Error {
     ))]
     Arguments,
 
-    #[snafu(display("{}: {error}", code.as_str()))]
+    #[snafu(display("{code}: {error}"))]
     Endpoint {
-        code: ErrorCode,
+        code: &'static str,
         error: EndpointError,
     },
 
@@ -129,7 +128,6 @@ async fn main() -> Result<(), Error> {
 #[cfg(test)]
 mod tests {
     use natsume_device_daemon::EndpointError;
-    use natsume_error_code::{ErrorCode, common::CommonErrorCode};
 
     use super::*;
 
@@ -146,14 +144,8 @@ mod tests {
 
     #[test]
     fn endpoint_errors_map_to_stable_invalid_request() {
-        assert_eq!(
-            EndpointError::Ip.error_code(),
-            ErrorCode::Common(CommonErrorCode::InvalidRequest)
-        );
-        assert_eq!(
-            EndpointError::Port.error_code(),
-            ErrorCode::Common(CommonErrorCode::InvalidRequest)
-        );
+        assert_eq!(EndpointError::Ip.error_code(), "INVALID_REQUEST");
+        assert_eq!(EndpointError::Port.error_code(), "INVALID_REQUEST");
     }
 
     #[test]

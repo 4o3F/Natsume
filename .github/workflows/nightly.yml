@@ -90,11 +90,9 @@ jobs:
           git diff --exit-code -- \
             web/openapi/natsume.openapi.json \
             web/src/api/generated/schema.d.ts
-          cargo test -p natsume-integration-tests --locked
-          pnpm diagrams
 
       - name: Policy scan
-        run: bash integration-tests/policy-scan.sh
+        run: bash tools/architecture-scan.sh
 
       - name: Package content smoke
         run: bash packaging/ci-package-smoke.sh

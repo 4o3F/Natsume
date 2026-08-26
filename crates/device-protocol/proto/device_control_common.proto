@@ -1,6 +1,11 @@
 syntax = "proto3";
 package natsume.device.control;
 
+// Every string error_code in this package uses the same open wire grammar:
+// 1..=64 ASCII bytes matching [A-Z][A-Z0-9_]*. A receiver validates only this
+// grammar; an unknown well-formed token remains opaque and never determines
+// behavior, retry policy, authorization, or a domain transition.
+
 // Secret-bearing protobuf field wrapper. The containing message owns presence
 // and value-domain validation. Generated Rust must suppress ordinary Debug
 // output for this type; its value is never legal in logs, ClientStateSnapshot,

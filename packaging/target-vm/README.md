@@ -1,6 +1,9 @@
-# Phase 0 target-VM package lifecycle
+# Target-VM package lifecycle
 
-This harness is intentionally excluded from shared-runner CI. It mutates package state and must run only on a disposable VM whose OS/systemd baseline is frozen in [the supported platform](../../docs/supported-platform.md) and recorded with the run evidence in [Phase 0 status](../../docs/gates/phase-0-status.md).
+This harness is intentionally excluded from shared-runner CI. It mutates package
+state and must run only on a disposable VM. Record the exact OS/systemd baseline
+with the run evidence required by the
+[target architecture](../../docs/architecture.md#19-验证策略).
 
 ## Inputs
 
@@ -9,7 +12,8 @@ This harness is intentionally excluded from shared-runner CI. It mutates package
 - a non-secret Server IP literal and port;
 - explicit destructive-test acknowledgement.
 
-The committed `integration-tests/fixtures/client.preseed` is documentation and a parser fixture. Override its documentation-range endpoint with the target lab endpoint through the environment.
+Supply the target lab endpoint through the environment; the repository does not
+carry a deployment-specific debconf preseed.
 
 ## Run
 

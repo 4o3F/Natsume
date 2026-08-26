@@ -11,7 +11,6 @@ pub mod startup;
 
 use std::{net::IpAddr, num::NonZeroU16, str::FromStr};
 
-use natsume_error_code::{ErrorCode, common::CommonErrorCode};
 use snafu::Snafu;
 use uuid::Uuid;
 
@@ -49,11 +48,11 @@ pub enum EndpointError {
 }
 
 impl EndpointError {
-    /// Maps endpoint validation failures to the stable invalid-request semantic.
+    /// Maps endpoint validation failures to this CLI boundary's reviewed code.
     #[must_use]
-    pub const fn error_code(&self) -> ErrorCode {
+    pub const fn error_code(&self) -> &'static str {
         match self {
-            Self::Ip | Self::Port => ErrorCode::Common(CommonErrorCode::InvalidRequest),
+            Self::Ip | Self::Port => "INVALID_REQUEST",
         }
     }
 }
@@ -102,9 +101,7 @@ mod tests {
 
     #[test]
     fn endpoint_failures_share_the_stable_invalid_request_semantic() {
-        let expected = ErrorCode::Common(CommonErrorCode::InvalidRequest);
-
-        assert_eq!(EndpointError::Ip.error_code(), expected);
-        assert_eq!(EndpointError::Port.error_code(), expected);
+        assert_eq!(EndpointError::Ip.error_code(), "INVALID_REQUEST");
+        assert_eq!(EndpointError::Port.error_code(), "INVALID_REQUEST");
     }
 }
