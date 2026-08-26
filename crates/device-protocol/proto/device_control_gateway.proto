@@ -1,0 +1,61 @@
+syntax = "proto3";
+package natsume.device.control;
+
+// The one Server-owned nonterminal credential generation for this Device.
+// It is input to the Server Resolver, not a certificate or an apply target.
+message GatewayCredentialIntent {
+  string credential_id = 1;
+}
+
+// Immutable public grant produced by the Server-owned Origin CA. The leaf is
+// complete DER. issuer_chain_der is leaf-nearest first and excludes the
+// deployment-pinned Local Origin Trust Root; it may be empty for direct issue.
+message GatewayCertificateGrant {
+  bytes          gateway_leaf_der = 1;
+  repeated bytes issuer_chain_der = 2;
+}
+
+// Concrete target derived from current Server intent and Client input. A
+// missing certificate is still an exact target: keep Gateway blocked with no
+// credential from this generation eligible while the Resolver awaits input.
+// A present certificate is the durable grant for this same generation.
+//
+// A generation is never rotated merely by schedule or age threshold. Any
+// completed Apply/Verify failure replaces it even if the private key remains
+// usable; private-key loss and leaf expiry use that same replacement transition.
+message GatewayTarget {
+  string                  credential_id = 1;
+  GatewayCertificateGrant certificate   = 2;
+}
+
+// Completed Client input decision for the exact Server intent. Absence of this
+// whole message in ClientInputState means input is still pending. Presence with
+// CSR means the matching private key and exact CSR were crash-safely stored
+// before publish. Presence with CSR absent means this generation's local input
+// is unrecoverable and asks the Resolver to replace the intent atomically.
+message GatewayCredentialInput {
+  string         credential_id   = 1;
+  optional bytes gateway_csr_der = 2;
+}
+
+enum GatewayState {
+  GATEWAY_STATE_UNSPECIFIED        = 0;
+  GATEWAY_STATE_ABSENT             = 1;
+  GATEWAY_STATE_BLOCKED            = 2;
+  GATEWAY_STATE_RESTORING          = 3;
+  GATEWAY_STATE_READY              = 4;
+  GATEWAY_STATE_UPSTREAM_UNHEALTHY = 5;
+  GATEWAY_STATE_RECOVERY_REQUIRED  = 6;
+}
+
+// Complete Gateway actual state produced only by reconciling GatewayTarget.
+// ABSENT has neither ID nor hash. RESTORING and RECOVERY_REQUIRED have the
+// reconciled ID and no hash; only RECOVERY_REQUIRED requests replacement.
+// BLOCKED, READY, and UPSTREAM_UNHEALTHY require the SHA-256 of the complete leaf
+// DER actually loaded by Gateway/Caddy. A mismatch for the exact current target
+// requests replacement. Stale IDs never mutate current Server authority.
+message GatewayActualState {
+  optional string credential_id       = 1;
+  GatewayState    state               = 2;
+  optional bytes  gateway_leaf_sha256 = 3;
+}

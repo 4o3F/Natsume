@@ -14,13 +14,15 @@ enum Error {
     GenerateProtocol { source: std::io::Error },
 }
 
-const PROTOS: [&str; 6] = [
+const PROTOS: [&str; 8] = [
     "proto/device_control.proto",
     "proto/device_control_common.proto",
     "proto/device_control_handshake.proto",
-    "proto/device_control_command.proto",
-    "proto/device_control_observed.proto",
     "proto/device_control_binding.proto",
+    "proto/device_control_gateway.proto",
+    "proto/device_control_runtime.proto",
+    "proto/device_control_session.proto",
+    "proto/device_control_state.proto",
 ];
 
 #[snafu::report]

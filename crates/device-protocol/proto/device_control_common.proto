@@ -3,8 +3,8 @@ package natsume.device.control;
 
 // Secret-bearing protobuf field wrapper. The containing message owns presence
 // and value-domain validation. Generated Rust must suppress ordinary Debug
-// output for this type; its value is never legal in logs, Observed, audit,
-// ServerClose, ClientClose, or Command terminal details.
+// output for this type; its value is never legal in logs, ClientStateSnapshot,
+// audit, metrics, ServerClose, ClientClose, or ordinary durable target state.
 message SecretBytes {
   bytes value = 1;
 }

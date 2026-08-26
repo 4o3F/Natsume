@@ -17,23 +17,24 @@ enum EnrollmentEvidenceQuality {
 }
 
 // Durable Enrollment transaction material. The Device creates and persists the
-// canonical UUIDv7 enrollment_id, control key, Gateway key, and exact CSR before
-// its first network attempt. Every retry for this transaction repeats these
-// exact values; same id with different material is a conflict.
+// canonical UUIDv7 enrollment_id and candidate control key before its first
+// network attempt. Every retry repeats these exact values; same id with
+// different material is a stable conflict. Enrollment grants only Device
+// control authority and contains no Gateway, Binding, or business material.
 message EnrollmentAttempt {
   string          enrollment_id        = 1;
   bytes           candidate_public_key = 2;
-  bytes           gateway_csr_der      = 3;
   // Aggregate quality of the accepted 2-of-3 hardware claim: the second-highest
   // quality among present anchors. Advisory to operator review; never authority.
-  EnrollmentEvidenceQuality evidence_quality    = 4;
+  EnrollmentEvidenceQuality evidence_quality = 3;
 }
 
-// Durable operator-review state. Approval has no separate wire value: receipt
-// of CredentialBundle proves that approval, issuance, and immutable persistence
-// have committed. PENDING_REVIEW has an empty error_code; DENIED has a stable
-// reviewed ErrorCode and is terminal for this enrollment_id. Unknown
-// well-formed ErrorCode tokens remain opaque to the receiver.
+// Durable operator-review state. Approval has no separate wire value. An online
+// exact candidate may proceed directly to the enrollment_activated barrier
+// after the Server activation transaction commits; an offline approved
+// candidate re-proves the exact attempt on a later connection. PENDING_REVIEW
+// has an empty error_code; DENIED has a stable reviewed ErrorCode and is
+// terminal for this enrollment_id.
 enum EnrollmentReviewState {
   ENROLLMENT_REVIEW_STATE_UNSPECIFIED    = 0;
   ENROLLMENT_REVIEW_STATE_PENDING_REVIEW = 1;
@@ -67,38 +68,13 @@ message ClientProof {
   }
 }
 
-message CredentialBundle {
-  // Exact durable transaction echoed from ClientProof.enrollment.
-  string enrollment_id = 1;
-  // Public Gateway leaf. The bundle hash is SHA-256 of the semantically
-  // validated typed CredentialBundle encoded by the pinned Prost version.
-  bytes gateway_leaf_der = 2;
-}
-
-message CredentialAck {
-  string enrollment_id = 1;
-  // Exact Ack is idempotent for both awaiting and already-active transactions.
-  bytes bundle_sha256 = 2;
-}
-
-// Durable Server authority has committed: Device, active control key, and
-// active Gateway certificate exist and the Enrollment transaction is active.
-// The Device persists these facts before answering EnrollmentReady.
-message EnrollmentActivated {
+// Exact committed Enrollment authority facts shared by the Server's
+// enrollment_activated barrier and the Client's enrollment_ready barrier.
+// The envelope field names express direction and phase; duplicating this
+// payload into two message types would add no state or validation boundary.
+message EnrollmentAuthority {
   string enrollment_id = 1;
   string device_id     = 2;
-  bytes  bundle_sha256 = 3;
-}
-
-// Connection-local barrier proving the Device has crash-safely persisted the
-// activated manifest. This message is not durable Server state. An exact retry
-// on this connection replays the same SessionReady; after disconnect an Active
-// Device reconnects with ResumeSession instead.
-message EnrollmentReady {
-  // These fields exactly mirror the preceding EnrollmentActivated facts.
-  string enrollment_id = 1;
-  string device_id     = 2;
-  bytes  bundle_sha256 = 3;
 }
 
 message SessionReady {

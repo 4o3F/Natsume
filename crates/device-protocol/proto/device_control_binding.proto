@@ -1,33 +1,82 @@
 syntax = "proto3";
 package natsume.device.control;
 
-// Device-initiated bind. Client → Server on the live Active socket.
-// Not a Command reply: OPEN_BINDING_PROMPT is answered only with CommandStatus.
-message BindingRequest {
-  // Seat natural key (seat code), not Identifier UUID.
-  string seat_code = 1;
+import "device_control_common.proto";
+
+// Durable Server-owned context of one UNBOUND negotiation generation. Its
+// presence, together with local Home/session eligibility, derives Binding UI
+// visibility. The bounded current evaluation is not an operation result.
+message BindingNegotiationIntent {
+  string            negotiation_id = 1;
+  BindingEvaluation evaluation     = 2;
 }
 
-// Server outcome of BindingRequest. UNSPECIFIED is the proto3 default trap:
-// reject after decode; never a business state.
-enum BindingResultState {
-  BINDING_RESULT_STATE_UNSPECIFIED = 0;
-  // The same Device↔Seat relation exists after processing: either newly inserted
-  // or an exact zero-write replay. Only insertion mints Binding.binding_id; Device
-  // learns it from the following SYNC_STATE / SYNC_SECRET, not this frame.
-  BINDING_RESULT_STATE_APPROVED = 1;
-  // Policy refusal (unknown seat, ineligible Device/session, ...). See error_code.
-  BINDING_RESULT_STATE_REJECTED = 2;
-  // Unique occupancy clash (seat or device already bound). See error_code.
-  BINDING_RESULT_STATE_CONFLICT = 3;
-}
-
-// Server → Device. Each Active session permits at most one in-flight
-// BindingRequest, so request and result pair by channel order. No occupancy id
-// is carried on this message.
-message BindingResult {
-  BindingResultState state = 1;
-  // Empty on APPROVED; required non-empty bounded ErrorCode token on REJECTED or
-  // CONFLICT. Unknown well-formed tokens remain opaque; never human-readable.
+// The latest rejected submission for the current negotiation. Message absence
+// means no current rejection. A newer submission replaces this value; there is
+// no proposal history, delivery state, or acknowledgement lifecycle.
+message BindingEvaluation {
+  // In 1..=i64::MAX and scoped only to BindingNegotiationIntent.negotiation_id.
+  uint64 submission_epoch = 1;
+  // Required non-empty bounded ErrorCode token; never peer detail or free text.
   string error_code = 2;
+}
+
+// Current durable Client input for one Server-owned negotiation. This is
+// embedded in ClientStateSnapshot, never sent as a resource-specific request. A
+// click on Confirm advances submission_epoch; transport replay does not.
+message BindingInput {
+  string negotiation_id   = 1;
+  uint64 submission_epoch = 2;
+  // Seat natural key, not Identifier UUID.
+  string seat_code        = 3;
+}
+
+// Complete non-secret identity of one committed Binding target generation.
+// The same typed value is used by ConcreteTarget and by a coherent ActualState;
+// individual local artifacts do not repeat overlapping fragments of it.
+message BindingContext {
+  string      binding_id          = 1;
+  string      account_id          = 2;
+  string      seat_code           = 3;
+  string      domjudge_username   = 4;
+  // Account-scoped revision in 1..=i64::MAX.
+  uint64      credential_revision = 5;
+}
+
+// Server-resolved bound access target. Context and password come from one
+// consistent truth/vault view. Password is carried in every complete target but
+// is excluded from generic Client persistence and Client state.
+message BoundTarget {
+  BindingContext context  = 1;
+  // Required exact non-empty UTF-8, control-free DOMjudge password in
+  // 1..=512 bytes. Generated Debug must remain redacted through SecretBytes.
+  SecretBytes   password = 2;
+}
+
+// Concrete contestant-access target. Bound presence applies the exact context
+// and password; absence requires both assignment and credential artifacts to be
+// absent. This resource is independent from Binding input UI and evaluation.
+message BindingAccessTarget {
+  BoundTarget bound = 1;
+}
+
+// The common lifecycle of the two local artifacts that realize one Binding.
+// This enum is scoped to Binding; it is not a cross-resource apply abstraction.
+enum BindingArtifactState {
+  BINDING_ARTIFACT_STATE_UNSPECIFIED = 0;
+  BINDING_ARTIFACT_STATE_ABSENT      = 1;
+  BINDING_ARTIFACT_STATE_APPLIED     = 2;
+  BINDING_ARTIFACT_STATE_FAILED      = 3;
+}
+
+// Actual local Binding/account access state. It contains no UI acknowledgement
+// and no password. Context is present exactly when both artifacts are APPLIED,
+// and then is their one complete, coherent, reliably sampled value. Otherwise
+// it is absent. Conflicting or unreadable artifact context is represented by
+// FAILED, not by uploading partial forensic fields. Binding UI visibility is
+// derived locally and is not observed.
+message BindingAccessActualState {
+  BindingArtifactState assignment_state = 1;
+  BindingArtifactState credential_state = 2;
+  BindingContext       context          = 3;
 }

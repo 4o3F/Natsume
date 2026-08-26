@@ -3,27 +3,27 @@ package natsume.device.control;
 
 import "device_control_common.proto";
 import "device_control_handshake.proto";
-import "device_control_command.proto";
-import "device_control_observed.proto";
-import "device_control_binding.proto";
+import "device_control_state.proto";
 
 message ServerHandshakeEnvelope {
   oneof body {
     ServerChallenge        server_challenge         = 1;
     EnrollmentReviewStatus enrollment_review_status = 2;
-    CredentialBundle       credential_bundle        = 3;
-    EnrollmentActivated    enrollment_activated     = 4;
-    SessionReady           session_ready            = 5;
-    ServerClose            server_close             = 6;
+    // Sent only after Server authority activation commits. Gateway and Binding
+    // are not part of these authority facts.
+    EnrollmentAuthority    enrollment_activated     = 3;
+    SessionReady           session_ready            = 4;
+    ServerClose            server_close             = 5;
   }
 }
 
 message ClientHandshakeEnvelope {
   oneof body {
     ClientProof     client_proof     = 1;
-    CredentialAck   credential_ack   = 2;
-    EnrollmentReady enrollment_ready = 3;
-    ClientClose     client_close     = 4;
+    // Connection-local barrier proving the exact preceding authority facts
+    // were installed crash-safely. Retry on this connection is idempotent.
+    EnrollmentAuthority enrollment_ready = 2;
+    ClientClose     client_close     = 3;
   }
 }
 
@@ -31,10 +31,9 @@ message ClientActiveEnvelope {
   // Exact 16-byte echo of the connection's SessionReady UUIDv7 control lease.
   bytes session_id = 1;
   oneof body {
-    CommandStatus         command_status  = 2;
-    ObservedStateSnapshot observed_state  = 3;
-    BindingRequest        binding_request = 4;
-    ClientClose           client_close    = 5;
+    // Complete replace-latest Client input plus target-derived actual state.
+    ClientStateSnapshot client_state = 2;
+    ClientClose         client_close = 3;
   }
 }
 
@@ -43,8 +42,8 @@ message ServerActiveEnvelope {
   // terminal ServerClose may carry the just-superseded lease for this socket.
   bytes session_id = 1;
   oneof body {
-    Command       command        = 2;
-    BindingResult binding_result = 3;
-    ServerClose   server_close   = 4;
+    // Complete replace-latest Server intent plus resolved concrete targets.
+    ServerStateSnapshot server_state = 2;
+    ServerClose         server_close = 3;
   }
 }

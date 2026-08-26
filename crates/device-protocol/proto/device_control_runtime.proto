@@ -1,0 +1,25 @@
+syntax = "proto3";
+package natsume.device.control;
+
+// First-generation fleet-global runtime target. domjudge_origin is one canonical
+// HTTPS origin with no userinfo, path, query, or fragment. Bootstrap control
+// endpoint, trust roots, fleet namespace, and Gateway hostname are never legal
+// here.
+message RuntimeConfigTarget {
+  string domjudge_origin = 1;
+}
+
+enum RuntimeConfigState {
+  RUNTIME_CONFIG_STATE_UNSPECIFIED = 0;
+  RUNTIME_CONFIG_STATE_ABSENT      = 1;
+  RUNTIME_CONFIG_STATE_APPLIED     = 2;
+  RUNTIME_CONFIG_STATE_FAILED      = 3;
+}
+
+// Actual activated runtime config. APPLIED requires the canonical origin to be
+// present. FAILED may retain a reliably sampled old origin as drift evidence,
+// but the Gateway data plane must remain BLOCKED and never proxy that old target.
+message RuntimeConfigActualState {
+  RuntimeConfigState state                   = 1;
+  optional string    applied_domjudge_origin = 2;
+}

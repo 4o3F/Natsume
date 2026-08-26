@@ -1,0 +1,55 @@
+syntax = "proto3";
+package natsume.device.control;
+
+import "device_control_binding.proto";
+import "device_control_gateway.proto";
+import "device_control_runtime.proto";
+import "device_control_session.proto";
+
+// Complete public projections of Server-owned intents which currently admit
+// Client input. Field absence is the current absence of that input intent and
+// never inherits an older value. Unit-input resources need no empty wire field.
+message ServerIntentState {
+  GatewayCredentialIntent  gateway_credential = 1;
+  BindingNegotiationIntent binding            = 2;
+}
+
+// Complete concrete targets resolved from committed ServerIntent and current
+// ClientInput. Every field is required after semantic decode; resource-internal
+// presence expresses an exact absent target, never inheritance.
+message ConcreteTargetState {
+  GatewayTarget        gateway         = 1;
+  BindingAccessTarget  binding_access  = 2;
+  RuntimeConfigTarget  runtime_config  = 3;
+  SessionControlTarget session_control = 4;
+  HomeTarget           home            = 5;
+}
+
+// Complete Server projection. Intent and target are independently typed planes;
+// neither may be reconstructed from an older snapshot.
+message ServerStateSnapshot {
+  ServerIntentState   intent = 1;
+  ConcreteTargetState target = 2;
+}
+
+// Complete current Client-owned input. Message absence clears the corresponding
+// previous input; Server must never interpret input as authority or completion.
+message ClientInputState {
+  GatewayCredentialInput gateway_credential = 1;
+  BindingInput           binding            = 2;
+}
+
+// Complete actual/completion facts emitted only by target reconcilers. These
+// untrusted facts are not Server authority and are not generic acknowledgements.
+message ActualState {
+  GatewayActualState        gateway         = 1;
+  BindingAccessActualState  binding_access  = 2;
+  RuntimeConfigActualState  runtime_config  = 3;
+  SessionControlActualState session_control = 4;
+  HomeActualState           home            = 5;
+}
+
+message ClientStateSnapshot {
+  ClientInputState input  = 1;
+  ActualState      actual = 2;
+}
