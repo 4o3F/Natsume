@@ -38,7 +38,6 @@ import {
   setPreparationPreview,
 } from "@/pages/preparation-store";
 
-type ImportCommitResponse = components["schemas"]["ImportCommitResponse"];
 type ImportMappingChange = components["schemas"]["ImportMappingChangeResponse"];
 type ImportPendingResponse = components["schemas"]["ImportPendingResponse"];
 type ImportPendingSummary = components["schemas"]["ImportPendingSummary"];
@@ -155,30 +154,34 @@ export function PreparationPage() {
   });
 
   const commit = useMutation({
-    mutationFn: async (candidateId: string): Promise<ImportCommitResponse> => {
+    mutationFn: async (candidateId: string): Promise<void> => {
       const preview = getPreparationPreview();
       if (!preview || preview.candidate_id !== candidateId) {
         throw new Error("the preview token is unavailable");
       }
-      return unwrap<ImportCommitResponse>(
+      if (!selectedFile) {
+        throw new Error("the reviewed CSV is unavailable");
+      }
+      const csv = await selectedFile.text();
+      return unwrap<void>(
         await api.POST("/api/v2/imports/{import_id}/actions/commit", {
           params: { path: { import_id: candidateId } },
-          body: { preview_token: preview.preview_token },
+          body: { csv, preview_token: preview.preview_token },
         }),
       );
     },
-    onSuccess: async (result) => {
+    onSuccess: async () => {
       forgetPreview();
+      setSelectedFile(null);
       setNotice({
         tone: "success",
         title: "Import committed",
-        detail: `Configuration revision ${result.configuration_revision}; binding revision ${result.binding_revision}.`,
+        detail: "The confirmed contest configuration has been replaced.",
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: PENDING_IMPORT_KEY }),
         queryClient.invalidateQueries({ queryKey: ["seats"] }),
         queryClient.invalidateQueries({ queryKey: ["accounts"] }),
-        queryClient.invalidateQueries({ queryKey: ["devices"] }),
         queryClient.invalidateQueries({ queryKey: ["bindings"] }),
       ]);
     },
@@ -206,7 +209,9 @@ export function PreparationPage() {
 
   const pending = pendingQuery.data?.pending ?? null;
   const commitTokenAvailable =
-    pending !== null && localPreview?.candidate_id === pending.candidate_id;
+    pending !== null &&
+    localPreview?.candidate_id === pending.candidate_id &&
+    selectedFile !== null;
 
   function submitUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -315,7 +320,7 @@ function PendingImportCard({
   onCommit: () => void;
   onDiscard: () => void;
 }) {
-  const remainingSeconds = useRemainingSeconds(pending.expires_at);
+  const remainingSeconds = useRemainingSeconds(pending.expires_at_unix_ms);
   const seatChanges = useMemo(
     () =>
       [
@@ -344,19 +349,13 @@ function PendingImportCard({
         <CardDescription className="space-y-1">
           <span className="block font-mono">{pending.candidate_id}</span>
           <span className="block">
-            Expires {new Date(pending.expires_at).toLocaleString()} (
+            Expires {new Date(pending.expires_at_unix_ms).toLocaleString()} (
             {formatRemainingTime(remainingSeconds)} remaining)
           </span>
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
         <div className="flex flex-wrap gap-2">
-          <Badge variant="outline">
-            Configuration baseline {pending.baseline_configuration_revision}
-          </Badge>
-          <Badge variant="outline">
-            Binding baseline {pending.baseline_binding_revision}
-          </Badge>
           <Badge variant="secondary">
             Unchanged seats {pending.diff.unchanged_count}
           </Badge>
@@ -390,7 +389,8 @@ function PendingImportCard({
             <AlertTitle className="col-start-1">Binding impacts</AlertTitle>
             <AlertDescription className="col-start-1 w-full">
               <p>
-                These bindings will be removed when their seats are removed.
+                These occupied seats block the import until their bindings are
+                released.
               </p>
               <div className="w-full text-foreground">
                 <DataTable
@@ -406,8 +406,8 @@ function PendingImportCard({
 
         {!commitTokenAvailable && (
           <p className="text-sm text-muted-foreground">
-            Preview token is unavailable after reload; discard and re-upload to
-            commit.
+            Preview authorization and the reviewed CSV are unavailable after a
+            reload; discard and re-upload to commit.
           </p>
         )}
       </CardContent>
@@ -455,7 +455,7 @@ function PendingImportCard({
   );
 }
 
-function useRemainingSeconds(expiresAt: string): number {
+function useRemainingSeconds(expiresAtUnixMs: number): number {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -463,7 +463,7 @@ function useRemainingSeconds(expiresAt: string): number {
     return () => window.clearInterval(interval);
   }, []);
 
-  return Math.max(0, Math.floor((Date.parse(expiresAt) - now) / 1_000));
+  return Math.max(0, Math.floor((expiresAtUnixMs - now) / 1_000));
 }
 
 function formatRemainingTime(totalSeconds: number): string {

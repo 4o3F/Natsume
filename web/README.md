@@ -4,8 +4,8 @@
 
 **2026-08-15 修订**：面板随 Server Deb 交付，并由 `natsume-server serve` 同源托管；开发迭代仍使用经 Vite proxy 转发的 `pnpm dev`。
 
-The planned Panel surface contains the authoritative UTF-8 CSV import, provisioning-window Enrollment, binding, explicit state/secret workflows, Enrollment-time Gateway-certificate progress, session lock/unlock, readiness checks, and polling-based views. It never renders or retrieves contest passwords, Gateway private keys, CSRs, or unredacted audit evidence. It does not rely on SSE or ChangeEvent streams.
+The target Panel surface follows `docs/architecture.md`: contest preparation, provisioning, Enrollment review, Device lifecycle, Gateway and Binding facts, Runtime/Session/Home targets, and readiness views. It never renders or retrieves contest passwords, Gateway private keys, CSRs, or unredacted audit evidence. It does not rely on SSE, ChangeEvent streams, or an HTTP Command resource.
 
-Before creating every direct Command, the Panel generates a canonical lowercase hyphenated UUIDv7 `command_id` and uses `PUT /api/v2/commands/{command_id}`. Replaying the same ID with the same canonical request retrieves the existing Command; changing the request under that ID conflicts. A bulk action creates one ID per Device and may attach an optional query-only `group_correlation_id`; it does not create an Operation/Attempt or use `Idempotency-Key`.
+Only routes present in the generated OpenAPI snapshot are mounted in the current Panel. Future component surfaces are added together with their Server HTTP adapter and regenerated contract; the Panel does not keep placeholder routes for unimplemented resources.
 
-This README records the frozen client contract, not a completion claim. Phase 0 does not assert a working Panel mutation flow, HTTP Command handler, dispatcher, or Device journal.
+CSV preview persists only a redacted diff and fingerprints. The browser keeps both preview authorization and the reviewed file in memory and resubmits the CSV on commit; a reload requires discard and re-upload.

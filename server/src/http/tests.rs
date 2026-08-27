@@ -18,13 +18,14 @@ use tracing::instrument::WithSubscriber as _;
 use uuid::Uuid;
 
 use crate::{
-    application::operator::{
-        OperatorCredentials, OperatorRole, hash_password, tests::PasswordVerificationTestGuard,
-    },
     audit::CorrelationId,
+    component::operator::{
+        OperatorCredentials, OperatorRole, hash_password, test_db as db_operator,
+        tests::PasswordVerificationTestGuard,
+    },
     config::LogLevel,
     db::{
-        Database, DatabaseConfig, contest as db_contest, operator as db_operator,
+        Database, DatabaseConfig,
         tests::{test_data_version, test_lock_database, test_observer},
     },
     logging::tests::{CapturedLogs, SubscriberTestGuard},
@@ -164,21 +165,6 @@ pub(super) fn check_error_response(
     Ok(())
 }
 
-pub(super) fn normalized_error_response_body(
-    response: &Captured,
-) -> Result<String, SupportFailure> {
-    let mut value: Value =
-        serde_json::from_slice(&response.body).map_err(|_| SupportFailure::ResponseJsonInvalid)?;
-    let object = value
-        .as_object_mut()
-        .ok_or(SupportFailure::ResponseJsonInvalid)?;
-    object.insert(
-        "correlation_id".to_owned(),
-        Value::String("NORMALIZED".to_owned()),
-    );
-    serde_json::to_string(&value).map_err(|_| SupportFailure::ResponseJsonInvalid)
-}
-
 pub(super) fn response_body_text(response: &Captured) -> Result<&str, SupportFailure> {
     std::str::from_utf8(&response.body).map_err(|_| SupportFailure::ResponseBodyFailed)
 }
@@ -259,7 +245,7 @@ pub(super) async fn seed_operator(
     .map_err(|_| SupportFailure::FixtureFailed)?;
     let password_hash =
         hash_password(credentials.password()).map_err(|_| SupportFailure::FixtureFailed)?;
-    db_operator::tests::test_insert_account(database, login_name, role, &password_hash)
+    db_operator::test_insert_account(database, login_name, role, &password_hash)
         .await
         .map_err(|_| SupportFailure::FixtureFailed)
 }
@@ -398,7 +384,6 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
     ];
     for (response, expected_status) in mounted.iter().zip(expected_statuses) {
         if response.status != expected_status {
@@ -465,15 +450,6 @@ async fn mounted_route_responses(
             request(
                 Method::POST,
                 "/api/v2/imports/01900000-0000-7000-8000-000000000000/actions/discard",
-                "",
-            )?,
-        )
-        .await?,
-        drive(
-            application,
-            request(
-                Method::PUT,
-                "/api/v2/commands/01900000-0000-7000-8000-000000000000",
                 "",
             )?,
         )
@@ -625,7 +601,7 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
         .next()
         .ok_or(TestFailure::CookieContractChanged)?
         .to_owned();
-    db_contest::tests::test_expire_all_sessions(&fixture.database)
+    db_operator::test_expire_all_sessions(&fixture.database)
         .await
         .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
     let _database_lock =

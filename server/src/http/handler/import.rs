@@ -13,22 +13,23 @@ use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::{
-    application::{
+    audit::CorrelationId,
+    component::{
         import::{
             self, ImportBindingImpact, ImportError, ImportMappingChange, PendingImportCandidate,
             PreviewToken, RedactedImportPreview,
         },
         operator::{self, OperatorIdentity},
     },
-    audit::CorrelationId,
 };
 
 use super::super::{AppState, error::ApiError, middleware, not_found};
 
 pub(crate) const CSV_IMPORT_BODY_LIMIT_BYTES: usize = 4_194_304;
-pub(crate) const IMPORT_COMMIT_BODY_LIMIT_BYTES: usize = 4_096;
+pub(crate) const IMPORT_COMMIT_BODY_LIMIT_BYTES: usize = CSV_IMPORT_BODY_LIMIT_BYTES + 4_096;
 
 const PREVIEW_TOKEN_BYTES: usize = 32;
 const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
@@ -134,11 +135,7 @@ pub(crate) struct ImportPreviewResponse {
         pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
     )]
     preview_token: String,
-    /// RFC 3339 UTC timestamp with a trailing Z.
-    #[schema(value_type = String, format = DateTime)]
-    expires_at: String,
-    baseline_configuration_revision: i64,
-    baseline_binding_revision: i64,
+    expires_at_unix_ms: i64,
     diff: ImportRedactedDiff,
 }
 
@@ -146,11 +143,7 @@ pub(crate) struct ImportPreviewResponse {
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportPendingSummary {
     candidate_id: Uuid,
-    /// RFC 3339 UTC timestamp with a trailing Z.
-    #[schema(value_type = String, format = DateTime)]
-    expires_at: String,
-    baseline_configuration_revision: i64,
-    baseline_binding_revision: i64,
+    expires_at_unix_ms: i64,
     diff: ImportRedactedDiff,
 }
 
@@ -161,7 +154,7 @@ pub(crate) struct ImportPendingResponse {
     pending: Option<ImportPendingSummary>,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, ToSchema, Zeroize, ZeroizeOnDrop)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportCommitRequest {
     #[schema(
@@ -171,13 +164,10 @@ pub(crate) struct ImportCommitRequest {
         pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
     )]
     preview_token: String,
-}
-
-#[derive(Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ImportCommitResponse {
-    configuration_revision: i64,
-    binding_revision: i64,
+    /// The same seat/account candidate reviewed in preview, with the passwords
+    /// supplied again because preview never persists them.
+    #[schema(write_only)]
+    csv: String,
 }
 
 #[utoipa::path(
@@ -211,21 +201,12 @@ pub(crate) async fn create_import(
                 .into_response();
         }
     };
-    match import::create_import_candidate(
-        &state.database,
-        &state.vault_master_key_path,
-        &body,
-        correlation_id,
-    )
-    .await
-    {
+    match import::create_import_candidate(&state.database, &body, correlation_id).await {
         Ok(created) => {
             let response = ImportPreviewResponse {
                 candidate_id: created.candidate_id(),
                 preview_token: encode_preview_token(created.preview_token().as_bytes()),
-                expires_at: created.expires_at().to_owned(),
-                baseline_configuration_revision: created.baseline_configuration_revision(),
-                baseline_binding_revision: created.baseline_binding_revision(),
+                expires_at_unix_ms: created.expires_at_unix_ms(),
                 diff: ImportRedactedDiff::from(created.diff()),
             };
             json_response(StatusCode::CREATED, &response, correlation_id)
@@ -278,7 +259,7 @@ pub(crate) async fn get_import(
     security(("sessionCookie" = [])),
     request_body = ImportCommitRequest,
     responses(
-        (status = 200, description = "CSV import committed", body = ImportCommitResponse),
+        (status = 204, description = "CSV import committed"),
         (status = 400, description = "Invalid import ID or closed request"),
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
@@ -317,18 +298,12 @@ pub(crate) async fn commit_import(
         &state.vault_master_key_path,
         import_id,
         &PreviewToken::from_bytes(token),
+        request.csv.as_bytes(),
         correlation_id,
     )
     .await
     {
-        Ok(committed) => json_response(
-            StatusCode::OK,
-            &ImportCommitResponse {
-                configuration_revision: committed.configuration_revision(),
-                binding_revision: committed.binding_revision(),
-            },
-            correlation_id,
-        ),
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_import(error, correlation_id).into_response(),
     }
 }
@@ -407,9 +382,7 @@ impl From<&PendingImportCandidate> for ImportPendingSummary {
     fn from(pending: &PendingImportCandidate) -> Self {
         Self {
             candidate_id: pending.candidate_id(),
-            expires_at: pending.expires_at().to_owned(),
-            baseline_configuration_revision: pending.baseline_configuration_revision(),
-            baseline_binding_revision: pending.baseline_binding_revision(),
+            expires_at_unix_ms: pending.expires_at_unix_ms(),
             diff: ImportRedactedDiff::from(pending.diff()),
         }
     }
@@ -456,6 +429,3 @@ fn json_response<T: Serialize>(
     )
         .into_response()
 }
-
-#[cfg(test)]
-mod tests;

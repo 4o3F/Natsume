@@ -19,15 +19,14 @@ use crate::{
     http,
 };
 
-use super::{COMMAND_KIND_VALUES, document};
+use super::document;
 
 const UNMOUNTED_DESCRIPTION_PREFIX: &str = "Declared but not mounted in Stage 5B operation IDs: ";
 const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
-const ALLOWED_CREDENTIAL_PATHS: [&str; 4] = [
+const ALLOWED_CREDENTIAL_PATHS: [&str; 3] = [
     "/components/schemas/SessionRequest/properties/password",
     "/components/schemas/ImportPreviewResponse/properties/preview_token",
     "/components/schemas/ImportCommitRequest/properties/preview_token",
-    "/components/schemas/EnrollmentIssuedResponse/properties/device_token",
 ];
 type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
 const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
@@ -35,7 +34,7 @@ const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
         "get",
         "/api/v2/provisioning-window",
         "getProvisioningWindow",
-        &["200", "401", "500"],
+        &["200", "401"],
     ),
     (
         "post",
@@ -122,19 +121,13 @@ fn expected_operation_table() -> OperationTable {
             "post",
             "/api/v2/imports/{import_id}/actions/commit",
             "commitCsvImport",
-            &["200", "400", "401", "403", "404", "409", "413", "500"],
+            &["204", "400", "401", "403", "404", "409", "413", "500"],
         ),
         (
             "post",
             "/api/v2/imports/{import_id}/actions/discard",
             "discardCsvImport",
             &["204", "400", "401", "403", "404", "500"],
-        ),
-        (
-            "put",
-            "/api/v2/commands/{command_id}",
-            "putCommand",
-            &["200", "201", "400", "401", "403", "404", "409", "500"],
         ),
     ];
     rows.iter()
@@ -217,7 +210,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none."
+        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -303,19 +296,14 @@ fn provisioning_window_operations_and_response_schema_are_closed_and_exact()
         .keys()
         .map(String::as_str)
         .collect::<BTreeSet<_>>()
-        != BTreeSet::from(["revision", "state"])
-        || required != BTreeSet::from(["revision", "state"])
+        != BTreeSet::from(["state"])
+        || required != BTreeSet::from(["state"])
         || states != BTreeSet::from(["closed", "open"])
         || properties
             .get("state")
             .and_then(|state| state.get("type"))
             .and_then(Value::as_str)
             != Some("string")
-        || properties
-            .get("revision")
-            .and_then(|revision| revision.get("format"))
-            .and_then(Value::as_str)
-            != Some("int64")
         || response
             .get("additionalProperties")
             .and_then(Value::as_bool)
@@ -406,19 +394,7 @@ fn assert_import_operations(value: &Value) -> Result<(), TestFailure> {
         )
         .and_then(Value::as_str)
             != Some("#/components/schemas/ImportPreviewResponse")
-        || nested_value(
-            commit,
-            &[
-                "responses",
-                "200",
-                "content",
-                "application/json",
-                "schema",
-                "$ref",
-            ],
-        )
-        .and_then(Value::as_str)
-            != Some("#/components/schemas/ImportCommitResponse")
+        || nested_value(commit, &["responses", "204", "content"]).is_some()
     {
         return Err(TestFailure::ImportContractChanged);
     }
@@ -454,14 +430,7 @@ fn assert_import_pending_schemas(value: &Value) -> Result<(), TestFailure> {
 
     let summary = schema_object(value, "ImportPendingSummary")?;
     let properties = schema_properties(summary)?;
-    if property_names(properties)
-        != BTreeSet::from([
-            "baseline_binding_revision",
-            "baseline_configuration_revision",
-            "candidate_id",
-            "diff",
-            "expires_at",
-        ])
+    if property_names(properties) != BTreeSet::from(["candidate_id", "diff", "expires_at_unix_ms"])
         || required_property_names(summary)? != property_names(properties)
         || summary.get("additionalProperties").and_then(Value::as_bool) != Some(false)
         || properties
@@ -470,12 +439,7 @@ fn assert_import_pending_schemas(value: &Value) -> Result<(), TestFailure> {
             .and_then(Value::as_str)
             != Some("#/components/schemas/CanonicalUuidV7")
         || properties
-            .get("baseline_configuration_revision")
-            .and_then(|property| property.get("format"))
-            .and_then(Value::as_str)
-            != Some("int64")
-        || properties
-            .get("baseline_binding_revision")
+            .get("expires_at_unix_ms")
             .and_then(|property| property.get("format"))
             .and_then(Value::as_str)
             != Some("int64")
@@ -495,11 +459,9 @@ fn assert_import_preview_schema(value: &Value) -> Result<(), TestFailure> {
     let preview_properties = schema_properties(preview)?;
     if property_names(preview_properties)
         != BTreeSet::from([
-            "baseline_binding_revision",
-            "baseline_configuration_revision",
             "candidate_id",
             "diff",
-            "expires_at",
+            "expires_at_unix_ms",
             "preview_token",
         ])
         || preview.get("additionalProperties").and_then(Value::as_bool) != Some(false)
@@ -509,12 +471,7 @@ fn assert_import_preview_schema(value: &Value) -> Result<(), TestFailure> {
             .and_then(Value::as_str)
             != Some("#/components/schemas/CanonicalUuidV7")
         || preview_properties
-            .get("baseline_configuration_revision")
-            .and_then(|property| property.get("format"))
-            .and_then(Value::as_str)
-            != Some("int64")
-        || preview_properties
-            .get("baseline_binding_revision")
+            .get("expires_at_unix_ms")
             .and_then(|property| property.get("format"))
             .and_then(Value::as_str)
             != Some("int64")
@@ -523,11 +480,6 @@ fn assert_import_preview_schema(value: &Value) -> Result<(), TestFailure> {
             .and_then(|property| property.get("pattern"))
             .and_then(Value::as_str)
             != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
-        || preview_properties
-            .get("expires_at")
-            .and_then(|property| property.get("description"))
-            .and_then(Value::as_str)
-            != Some("RFC 3339 UTC timestamp with a trailing Z.")
     {
         return Err(TestFailure::ImportContractChanged);
     }
@@ -593,19 +545,11 @@ fn assert_import_mapping_schemas(value: &Value) -> Result<(), TestFailure> {
 }
 
 fn assert_import_commit_schemas(value: &Value) -> Result<(), TestFailure> {
-    for (schema_name, expected_properties) in [
-        ("ImportCommitRequest", BTreeSet::from(["preview_token"])),
-        (
-            "ImportCommitResponse",
-            BTreeSet::from(["binding_revision", "configuration_revision"]),
-        ),
-    ] {
-        let schema = schema_object(value, schema_name)?;
-        if property_names(schema_properties(schema)?) != expected_properties
-            || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        {
-            return Err(TestFailure::ImportContractChanged);
-        }
+    let schema = schema_object(value, "ImportCommitRequest")?;
+    if property_names(schema_properties(schema)?) != BTreeSet::from(["csv", "preview_token"])
+        || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+    {
+        return Err(TestFailure::ImportContractChanged);
     }
     let commit_request = schema_properties(schema_object(value, "ImportCommitRequest")?)?;
     if commit_request
@@ -613,86 +557,13 @@ fn assert_import_commit_schemas(value: &Value) -> Result<(), TestFailure> {
         .and_then(|property| property.get("pattern"))
         .and_then(Value::as_str)
         != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
+        || commit_request
+            .get("csv")
+            .and_then(|property| property.get("writeOnly"))
+            .and_then(Value::as_bool)
+            != Some(true)
     {
         return Err(TestFailure::ImportContractChanged);
-    }
-    Ok(())
-}
-
-#[test]
-fn put_command_contract_is_closed_and_exact() -> Result<(), TestFailure> {
-    let value = serialized_document()?;
-    let operation = operation_at(&value, "/api/v2/commands/{command_id}", "put")?;
-    if operation.get("description").and_then(Value::as_str)
-        != Some(
-            "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.",
-        )
-        || nested_value(operation, &["responses", "404", "description"]).and_then(Value::as_str)
-            != Some("Device does not exist or is not enrolled")
-    {
-        return Err(TestFailure::CommandDescriptionChanged);
-    }
-    let parameter = operation
-        .get("parameters")
-        .and_then(Value::as_array)
-        .and_then(|parameters| {
-            parameters.iter().find(|parameter| {
-                parameter.get("name").and_then(Value::as_str) == Some("command_id")
-            })
-        })
-        .ok_or(TestFailure::DocumentShapeInvalid)?;
-    let parameter_schema = parameter
-        .get("schema")
-        .and_then(Value::as_object)
-        .ok_or(TestFailure::DocumentShapeInvalid)?;
-    if parameter.get("in").and_then(Value::as_str) != Some("path")
-        || parameter.get("required").and_then(Value::as_bool) != Some(true)
-        || parameter_schema.get("$ref").and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-    {
-        return Err(TestFailure::CommandIdContractChanged);
-    }
-
-    let schema = value
-        .pointer("/components/schemas/PutCommandRequest")
-        .and_then(Value::as_object)
-        .ok_or(TestFailure::DocumentShapeInvalid)?;
-    let properties = schema
-        .get("properties")
-        .and_then(Value::as_object)
-        .ok_or(TestFailure::DocumentShapeInvalid)?;
-    let property_set = properties
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let expected_properties = BTreeSet::from([
-        "device_id",
-        "group_correlation_id",
-        "kind",
-        "payload",
-        "payload_version",
-        "reason_code",
-    ]);
-    let kind = properties
-        .get("kind")
-        .and_then(Value::as_object)
-        .ok_or(TestFailure::DocumentShapeInvalid)?;
-    let actual_kind_values = kind
-        .get("enum")
-        .and_then(Value::as_array)
-        .and_then(|values| values.iter().map(Value::as_str).collect::<Option<Vec<_>>>());
-    if property_set != expected_properties
-        || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
-        || kind.get("type").and_then(Value::as_str) != Some("string")
-        || actual_kind_values != Some(COMMAND_KIND_VALUES.to_vec())
-        || properties
-            .get("device_id")
-            .and_then(Value::as_object)
-            .and_then(|device_id| device_id.get("$ref"))
-            .and_then(Value::as_str)
-            != Some("#/components/schemas/CanonicalUuidV7")
-    {
-        return Err(TestFailure::CommandRequestContractChanged);
     }
     Ok(())
 }
@@ -1033,8 +904,7 @@ fn probe_request(method: &str, path: &str) -> Result<Request<Body>, TestFailure>
 }
 
 fn concrete_path(path: &str) -> String {
-    path.replace("{command_id}", "01900000-0000-7000-8000-000000000000")
-        .replace("{device_id}", "01900000-0000-7000-8000-000000000000")
+    path.replace("{device_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{import_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{request_id}", "01900000-0000-7000-8000-000000000000")
 }
@@ -1162,12 +1032,6 @@ enum TestFailure {
     ProvisioningWindowContractChanged,
     #[snafu(display("the Enrollment OpenAPI contract changed"))]
     EnrollmentContractChanged,
-    #[snafu(display("the Command description changed"))]
-    CommandDescriptionChanged,
-    #[snafu(display("the Command ID contract changed"))]
-    CommandIdContractChanged,
-    #[snafu(display("the Command request contract changed"))]
-    CommandRequestContractChanged,
     #[snafu(display("the session password schema was not write-only"))]
     PasswordSchemaWasNotWriteOnly,
     #[snafu(display("the session password schema escaped into a response"))]

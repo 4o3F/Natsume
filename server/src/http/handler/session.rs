@@ -10,8 +10,8 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
-    application::operator::{self, OperatorIdentity},
     audit::CorrelationId,
+    component::operator::{self, OperatorIdentity},
 };
 
 use super::super::{AppState, cookie, error::ApiError, middleware};
@@ -172,6 +172,3 @@ fn identity_response(
     }
     response
 }
-
-#[cfg(test)]
-mod tests;

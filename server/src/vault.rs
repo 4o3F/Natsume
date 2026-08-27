@@ -17,21 +17,6 @@ const RECORD_NONCE_LENGTH: usize = 24;
 const PRIVATE_FILE_FORBIDDEN_BITS: u32 = 0o177;
 const PRIVATE_DIRECTORY_FORBIDDEN_BITS: u32 = 0o077;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum VaultRecordType {
-    AccountCredential,
-    ImportPayload,
-}
-
-impl VaultRecordType {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::AccountCredential => "account_credential",
-            Self::ImportPayload => "import_payload",
-        }
-    }
-}
-
 /// Ensures that the Server vault master key exists and satisfies its storage
 /// policy.
 ///

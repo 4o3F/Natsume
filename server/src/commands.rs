@@ -12,10 +12,7 @@ pub(crate) mod serve;
 pub use crate::error::CommandError;
 
 use crate::{
-    application::{
-        operator::{self, OperatorCredentials, hash_password},
-        provisioning,
-    },
+    component::operator::{self, OperatorCredentials, hash_password},
     config::{GatewaySiteConfig, ServerConfig},
     db::{Database, DatabaseConfig},
     http, logging,
@@ -69,25 +66,15 @@ pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), Comma
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let site = GatewaySiteConfig::load_from(config.site_config_path())
+    GatewaySiteConfig::load_from(config.site_config_path())
         .map_err(|_| CommandError::SiteConfiguration)?;
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
         .map_err(|_| CommandError::Database)?;
-    provisioning::recover_on_startup(&database)
-        .await
-        .map_err(|error| match error {
-            provisioning::ProvisioningError::RevisionOverflow => {
-                tracing::error!("provisioning window revision overflow prevented startup");
-                CommandError::ProvisioningRevisionOverflow
-            }
-            provisioning::ProvisioningError::PersistenceFailed => CommandError::Database,
-        })?;
     tracing::info!("database ready");
     require_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
     tracing::info!("vault key verified");
-    let _site = site;
     let listener = TlsListener::bind(
         config.listen_address(),
         config.tls_certificate_path(),
@@ -238,6 +225,3 @@ fn shutdown_signal() -> Result<impl Future<Output = ()>, CommandError> {
         }
     })
 }
-
-#[cfg(test)]
-mod tests;

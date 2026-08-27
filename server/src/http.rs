@@ -16,13 +16,14 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::{audit::CorrelationId, db::Database};
+use crate::{audit::CorrelationId, component::provisioning::ProvisioningGate, db::Database};
 
 use self::error::ApiError;
 
 #[derive(Clone)]
 pub(crate) struct AppState {
     database: Database,
+    provisioning: ProvisioningGate,
     vault_master_key_path: PathBuf,
 }
 
@@ -30,6 +31,7 @@ pub(crate) struct AppState {
 pub(crate) fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
     let state = AppState {
         database,
+        provisioning: ProvisioningGate::closed(),
         vault_master_key_path: vault_master_key_path.to_owned(),
     };
     let static_service =
@@ -48,7 +50,6 @@ pub(crate) fn router(database: Database, vault_master_key_path: &Path, web_root:
 fn api_v2(state: &AppState) -> Router<AppState> {
     let authenticated = Router::new()
         .merge(handler::contest::routes(state.clone()))
-        .merge(handler::command::routes(state.clone()))
         .merge(handler::import::routes(state.clone()))
         .merge(handler::provisioning::routes(state.clone()))
         .merge(handler::session::protected_routes(state.clone()));

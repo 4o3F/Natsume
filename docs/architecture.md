@@ -20,7 +20,7 @@
 | HTTP API 的精确公开 schema | Server OpenAPI 生成源与生成物 |
 | 本地 IPC 的精确接口 | `crates/local-control-api` 与 D-Bus introspection |
 | SQLite 物理表、列、索引与约束 | 完成 flag day 后的 `server/migrations/00000000000001_initial/up.sql` |
-| Diesel 生成类型 | `server/src/db/schema.rs`，必须由 migration 重建 |
+| Diesel 生成类型 | `server/src/schema.rs`，必须由 migration 重建 |
 | Device Control `error_code` 字段与开放token语法 | `crates/device-protocol/proto/*.proto` 与 `crates/device-protocol` |
 | HTTP公开错误码与status映射 | Server OpenAPI生成源与HTTP adapter |
 | 本地IPC typed失败 | `crates/local-control-api` 与各IPC adapter |
@@ -134,7 +134,7 @@ Server 是唯一业务 authority，拥有：
 - Binding negotiation 与 occupancy；
 - Gateway credential generation 与 Origin CA；
 - Runtime、Session 和 Home 的 Server target；
-- 每项资源最新 Client Input/Actual；
+- 当前lease的完整Client Input/Actual，仅存在于对应DeviceActor内存；
 - append-only redacted audit；
 - Operator HTTP API、Web 静态资源和 Device WSS。
 
@@ -261,13 +261,14 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Seat、Account、Seat→Account | Contest/Import Component | Import 唯一修改者 |
 | Account password ciphertext/revision | Contest/Import + Vault | plaintext 只存在于短生命周期内存 |
 | Device lifecycle | Device Lifecycle Component | enabled/disabled/revoked |
-| Enrollment attempt/control key | Enrollment Component | 人工审核，和 Gateway 解耦 |
+| Pending Enrollment review | Enrollment Component memory registry | 仅当前WSS连接有效，Server生成`review_id`供Panel定位 |
+| Device control key | Enrollment Component | activation事务后才是durable authority，和Gateway解耦 |
 | Gateway generation/grant | Gateway Component | 每 Device 至多一个 current generation |
 | Binding negotiation/occupancy | Binding Component | Binding ID 是每次 occupancy 的 UUID |
 | Runtime Config | Runtime Config Component | 当前 DOMjudge HTTPS origin |
 | Session target | Session Control Component | lock level + terminate epoch |
 | Home target | Home Component | reset epoch |
-| Client Input/Actual | 对应 State Component | 每资源最新事实，不是 history |
+| 当前lease的Client Input/Actual | DeviceActor memory | fresh snapshot，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
 | Audit | 公共 append sink，mutation owner 写入 | 不参与 Resolve |
 
@@ -386,41 +387,37 @@ ServerChallenge
 
 Enrollment 只注册 Device control authority，不签发 Gateway credential，不承载 Binding 或业务配置。
 
-Durable attempt material：
+连接期Enrollment material：
 
 ```text
 EnrollmentAttempt
-  enrollment_id
   candidate_public_key
   evidence_quality
 ```
 
-Server 另外从 proof context 取得 Machine Hardware ID 和版本信息。Attempt 状态只有：
+Server另外从proof context取得Machine Hardware ID和版本信息。Client必须在proof前crash-safe持久化candidate private key，但pending review本身不持久化。Server为Panel生成仅在当前进程和连接内有效的`review_id`。
 
-```text
-pending_review | approved | active | denied
-```
-
-不存在 expiry、activation deadline 或 sweeper。
+`PENDING_REVIEW`和`DENIED`都是当前WSS上的状态，不是跨连接authority；没有offline approval、attempt TTL、activation deadline或sweeper。
 
 完整规则：
 
-1. Client 在首次网络尝试前持久化 canonical UUIDv7 `enrollment_id` 和 candidate control key。
-2. same ID + exact material 是 replay；same ID + different material 是 conflict。
-3. 所有新 attempt 必须人工审核。
-4. Provisioning window 只门禁新 attempt admission 和 approve，不门禁 exact replay、activation recovery、Resume 或 Active Gateway signing。
-5. Deny 是 durable 终态。
-6. 在线 approve 可以在 exact current proof attachment 上直接提交 activation。
-7. 离线 approve 只写 `approved`；下次 exact re-proof 再 activation。
-8. Control-key replacement 在 activation commit 前保留旧 authority 和旧 lease。
-9. activation commit 后 Server 发送 `EnrollmentAuthority`。
-10. Client crash-safe 安装新 authority manifest 后回显 exact `EnrollmentAuthority`。
-11. Server 验证后建立 lease 并发送 `SessionReady`。
+1. Client在发送proof前持久化candidate control key；重连可以继续使用该key，但每条连接都建立全新review。
+2. Server先检查candidate public key是否已经是该Machine Hardware ID对应Device的current control key；若是，直接重放已提交authority，不再次审核。
+3. 其他Enrollment只有在进程内Provisioning Gate开启时才能进入pending review，且必须人工审核。
+4. Pending registry保存`review_id`、当前PreAuth attachment和经过验证的非秘密evidence；它不是authority。
+5. Operator只能批准当前仍attached的review，批准前再次检查Gate与attachment fencing。
+6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device Lifecycle/denylist authority，不能复用attempt状态。
+7. 连接在activation commit前断开时直接删除pending review；Client重连后重新审核。
+8. Control-key replacement在activation commit前保留旧authority和旧lease。
+9. activation事务原子创建/更新Device、切换current control key并写audit；这是Enrollment唯一持久化分界点。
+10. activation commit后Server发送只含`device_id`的`EnrollmentAuthority`。
+11. Client crash-safe安装新authority manifest后回显exact `EnrollmentAuthority`；Server验证后建立lease并发送`SessionReady`。
+12. activation commit后、Client安装前发生断联或Server重启时，Client用同一candidate key重新proof；Server按第2条重放authority。
 
 Client 本地 control manifest 直接保存 exact Ed25519 public key并与私钥文件重新派生的
 公钥比较；不再为同一自然authority建立派生 `ControlKeyId`。
 
-Enrollment 在线连接只通过 `EnrollmentAttachments` 内存表获得即时通知；该表不是 authority。数据库状态决定断线恢复。
+Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不落库。Server重启清空所有pending review并把Provisioning Gate恢复为closed。
 
 ### 8.3 Resume 与 lease
 
@@ -448,7 +445,7 @@ Server 随后依次调用所有组件 `ingest`。只有全部组件成功后，�
 - Server 未发送 Target；
 - 新连接重新关闭 freshness barrier；
 - Client 重发完整 snapshot 后各组件收敛；
-- 数据库中的旧/部分最新 Actual 只用于诊断，不能代替新 lease barrier。
+- 已被部分组件处理的旧snapshot不能代替新lease barrier；新连接仍须重报完整snapshot。
 
 系统不要求跨资源原子 snapshot transaction。如果未来出现真实的跨资源原子不变量，应合并相关组件，而不是增加分布式事务协调器。
 
@@ -478,7 +475,7 @@ GatewayActualState       { credential_id?, state, leaf_sha256? }
 - current generation 的 grant由 Server 重放，不重新签名；
 - 过期、private key/CSR 丢失、Apply/Verify 完成失败或实际 leaf hash 不匹配都走同一个 replacement；
 - replacement 即使旧 private key 仍可读也生成新 key/CSR；
-- 旧 generation 终态保留审计/撤销事实，但不再成为 Target。
+- Replacement原子覆盖current generation；旧generation只保留redacted audit，不再成为Target。
 
 Gateway Actual 的 leaf hash是 Caddy 实际加载的完整 leaf DER 的 SHA-256，不是 PEM、SPKI、chain、serial 或磁盘候选文件。
 
@@ -570,8 +567,8 @@ Server 业务采用纵向组件：
 |---|---|---|
 | Operator | 否 | 账户、会话、角色 |
 | Contest/Import | 否 | Seat、Account、mapping、vault import |
-| Provisioning | 否 | Window |
-| Enrollment | 否 | Attempt、review、activation、control key |
+| Provisioning | 否 | 进程内、重启即closed的Enrollment admission gate |
+| Enrollment | 否 | 内存review registry、activation、control key |
 | Device Lifecycle | 否 | enable/disable/revoke/reprovision |
 | Gateway | 是 | Gateway intent/input/target/actual |
 | Binding | 是 | negotiation、occupancy、access target/actual |
@@ -625,16 +622,16 @@ pub(crate) trait StateComponent: Send + Sync + 'static {
 
 `ingest` 必须：
 
-1. 保存自己的 Client Input/Actual；
-2. 根据 fresh Actual 运行组件 Intent Policy；
-3. 根据 fresh Input 运行资源 transition；
-4. 在组件事务中写 authority 与 audit；
-5. 保持 exact replay 幂等。
+1. 只消费当前lease已经整体校验通过的fresh Input/Actual；
+2. 根据fresh Actual运行组件Intent Policy；
+3. 根据fresh Input运行资源transition；
+4. 只把恢复必需的accepted input、authority与audit写入组件事务，不保存原始projection；
+5. 保持exact replay幂等。
 
 `materialize` 必须：
 
-1. 从自己的数据库视图读取 ServerIntent 与 current ClientInput；
-2. 调用组件内部纯 `resolve(intent, input)`；
+1. 从自己的数据库视图读取ServerIntent与已接受的必要Input事实；
+2. 调用组件内部纯`resolve(intent, accepted_input)`；
 3. 只返回 committed stable target；
 4. 不读取 Actual 作为 current Resolve 参数。
 
@@ -807,10 +804,13 @@ Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期�
 
 - SQLite 单数据库、单 Server writer；
 - 预发布只维护一个 initial migration；
-- 所有表使用 typed column、FK、UNIQUE、CHECK；
+- SQLite只表达typed column、`NOT NULL`、PK、FK、UNIQUE和索引；
+- 禁止用数据库`CHECK`承载UUID格式、长度、枚举、状态组合、时间范围或presence等业务校验；
+- 所有持久化值必须先通过owning component的Rust validated type和事务规则；读取到非法历史值时fail closed；
 - 不用通用 resource、event-sourcing、operation、JSON payload 表；
 - 不持久化 ServerState/ConcreteTarget blob；
 - 不持久化 lease；
+- 不持久化原始Client Input/Actual projection；只有参与恢复或replay fencing的accepted input字段才进入owning component的current-fact表；
 - 不建立 global revision counter；
 - 业务 revision/epoch 只在资源确实需要 fencing 或 transition 时存在；
 - Client 报告的 stale ID 合法，因此 reported credential/binding/context ID 不建立 authority FK；
@@ -830,92 +830,68 @@ Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期�
 | `server_vault_records` | Contest/Import + Vault | account PK/FK，一账户一current ciphertext |
 | `account_mappings` | Contest/Import | Seat与Account一对一current mapping |
 | `pending_import_candidate` | Contest/Import | singleton、非秘密、可过期 |
-| `provisioning_window` | Provisioning | singleton open/closed，无通用revision |
 | `devices` | Device Lifecycle | revoked历史可共享HWID；每HWID至多一个non-revoked |
-| `enrollment_attempts` | Enrollment | immutable attempt material，四状态，无TTL |
 | `device_control_keys` | Enrollment | public key PK；每Device一个current |
-| `gateway_credentials` | Gateway | 每Device一个current generation，grant与CSR同生命周期 |
-| `binding_negotiations` | Binding | 每UNBOUND Device一个current negotiation |
-| `device_bindings` | Binding | Seat/Device唯一occupancy，保存accepted replay association |
+| `gateway_credentials` | Gateway | 每Device一个current generation及其accepted CSR/grant |
+| `binding_negotiations` | Binding | 每UNBOUND Device一个current negotiation及最新拒绝元组 |
+| `device_bindings` | Binding | Binding/Seat/Device唯一occupancy |
 | `runtime_config` | Runtime | singleton canonical HTTPS origin |
 | `device_session_targets` | Session | 每Device lock level/terminate epoch |
 | `device_home_targets` | Home | 每Device reset epoch |
-| `gateway_client_states` | Gateway | 最新Input+Actual+session/receive time |
-| `binding_client_states` | Binding | 最新Input+Actual+session/receive time |
-| `runtime_client_states` | Runtime | 最新Actual+session/receive time |
-| `session_client_states` | Session | 最新Actual+session/receive time |
-| `home_client_states` | Home | 最新Actual+session/receive time |
 
 具体列由 Proto 和组件 typed facts推导，但以下 shape 已冻结。
 
 ### 12.3 Enrollment 与 control key
 
-`enrollment_attempts` 至少包含：
+数据库不保存Enrollment attempt、pending review、approval或denial。`device_control_keys`只保存已激活authority的public key、Device、current/terminal状态、时间和audit引用，不包含`enrollment_id`或review关联。
 
-- `enrollment_id`；
-- `machine_hardware_id`；
-- candidate public key；
-- evidence quality；
-- `pending_review|approved|active|denied`；
-- resolved `device_id`；
-- review/activation audit引用；
-- 创建时间和必要的非秘密版本证据。
+`device_control_keys`不需要global authority revision。current key由partial unique index表达。Replacement activation事务原子supersede old、activate new并保留历史。已提交activation的恢复通过“proved Machine Hardware ID + exact current public key”查询完成，不依赖attempt记录。
 
-不得包含 Gateway CSR、SPKI、leaf、Bundle、Ack、activation deadline 或 expiry。
-
-`device_control_keys` 不需要 global authority revision。current key由 partial unique index表达。Replacement activation事务原子 supersede old、activate new并保留历史。
+Provisioning Gate同样不落库；每次Server启动都构造closed状态。open/close Operator请求仍写audit，但audit不作为当前Gate状态来源。
 
 ### 12.4 Gateway
 
 `gateway_credentials` 合并 generation、CSR 与 grant：
 
-- `credential_id`；
-- `device_id`；
-- current/terminal status；
-- exact CSR及其固定hash；
-- leaf DER、issuer chain、serial、validity与必要policy metadata；
-- 创建、grant、retire/revoke audit引用。
+- `device_id` primary key；
+- unique current `credential_id`；
+- accepted exact CSR DER；
+- exact leaf DER与issuer chain DER。
 
-字段 presence通过 CHECK 保证：等待Input、已有grant、terminal历史不能形成非法组合。Gateway 不再引用 Enrollment。
+不存在terminal row或独立status。Replacement在同一Device row原子换入新`credential_id`并清空CSR/grant；旧generation只留audit。CSR hash、leaf hash、serial、validity与certificate policy都从exact DER或当前issuer policy派生，不复制为数据库列。字段presence和状态组合由Gateway组件的Rust validated types与事务规则保证。Gateway不再引用Enrollment。
+
+如果未来实现Client实际执行的CRL/OCSP撤销，再为撤销authority增加独立最小ledger；当前不为尚不存在的撤销机制保留certificate history。
 
 ### 12.5 Binding
 
 `binding_negotiations` 保存：
 
-- current `negotiation_id`；
-- `device_id`；
-- latest submission epoch/Seat；
-- latest bounded evaluation；
-- 创建/更新审计。
+- `device_id` primary key；
+- unique current `negotiation_id`；
+- 最新被拒绝submission的epoch、Seat与bounded error code。
+
+没有submission时后三项同时absent。拒绝事务一次性写入完整三元组；`BindingEvaluation.submission_epoch`直接取该submission epoch，不单独复制。接受事务删除negotiation并创建Binding，因此不需要status或历史row。
 
 `device_bindings` 保存：
 
 - `binding_id`；
 - `device_id`；
-- `seat_id`；
-- accepted `negotiation_id` 和 submission epoch。
+- `seat_id`。
 
-Binding Target 中的 Account和密码始终从 current Seat→Account mapping与vault读取，不复制到 Binding authority table。
+Binding成功后旧Input由“没有current negotiation”自然fence；Unbind会创建全新negotiation ID，因此accepted negotiation/epoch不是current authority。Binding Target中的Account和密码始终从current Seat→Account mapping与vault读取，不复制到Binding authority table。
 
-### 12.6 Client component state
+### 12.6 Client component state不落库
 
-每张 `*_client_states` 表只保存该组件当前 projection：
+完整ClientStateSnapshot先在DeviceActor边界整体校验，再依次交给组件：
 
-- `device_id` primary key；
-- last `session_id`；
-- Server receive-time；
-- 资源 typed Input（如有）；
-- 资源 typed Actual。
+- Gateway接受的exact CSR直接进入`gateway_credentials`；
+- Binding被拒绝的最新submission直接进入`binding_negotiations`，接受则进入`device_bindings`；
+- Runtime、Session与Home只持久化Server target；
+- 原始Input与所有Actual只保留在当前DeviceActor内存，lease结束即丢弃。
 
-Gateway/Binding 必须区分：
+Server重启会丢失所有Client observation，但同时也会使所有lease失效；Client重连后的fresh barrier要求重新发送完整snapshot，因此不影响恢复、Resolve或transition completion。旧Actual不得参与新lease决策。
 
-- 整个 Input message absent；
-- Input present但resource-internal optional field absent；
-- Input present且完整。
-
-需要显式 presence column与CHECK，不能靠 nullable列猜测。
-
-这些表不是 history，也不授予 authority。Actor freshness仍以内存 lease barrier为准。
+Panel当前只读取durable authority和在线Actor状态。如果未来出现明确的离线last-seen/telemetry需求，应建立独立诊断projection；不得让诊断数据参与控制正确性。
 
 ### 12.7 必须删除的旧表和字段
 
@@ -931,6 +907,7 @@ flag day 必须删除：
 - 所有 Bundle/Ack/deadline字段；
 - 所有 authority/global revision字段；
 - Gateway 与 Enrollment 的耦合 FK。
+- 所有`*_client_states`持久化projection及其session/receive-time字段。
 
 不要为这些删除项保留 compatibility table、view、adapter、feature flag或 `reserved` wire字段。
 
@@ -1050,6 +1027,9 @@ strict parse
 - preview不持久化密码；
 - pending candidate不含原始CSV；
 - commit请求重新携带密码；
+- candidate fingerprint只覆盖排序后的Seat/Account非秘密结构，不覆盖密码；
+- baseline fingerprint覆盖当前Seat identity、mapping、Account identity/credential revision与Binding占用，取代global revision；
+- commit时任一candidate或baseline fingerprint不一致都必须重新preview；
 - Import唯一修改Seat、Account、mapping与credential revision；
 - 删除仍被Binding占用的Seat必须拒绝；
 - Import不修改Binding，不创建Binding ID；
@@ -1130,7 +1110,7 @@ Audit记录“谁改变了Server authority以及结果”，包括：
 - Enrollment review/activation；
 - control-key replacement；
 - Device lifecycle；
-- Gateway generation/grant/replacement/revoke；
+- Gateway generation/grant/replacement；
 - Binding accept/unbind/rejection；
 - Runtime/Session/Home target变化；
 - Operator账户恢复。
@@ -1199,7 +1179,6 @@ server/src/
     import.rs
     import/db.rs
     provisioning.rs
-    provisioning/db.rs
     enrollment.rs
     enrollment/db.rs
     lifecycle.rs
@@ -1225,13 +1204,13 @@ server/src/
   http/handler/
     device_control.rs
   db.rs
-  db/schema.rs
+  schema.rs
   audit.rs
   vault.rs
   pki.rs
 ```
 
-`db.rs`只提供连接、transaction和generated schema入口。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际变大后才拆`types.rs`或`resolve.rs`。
+`db.rs`只提供连接和transaction；`schema.rs`是由migration生成的独立类型入口。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际变大后才拆`types.rs`或`resolve.rs`。
 
 现有Operator/Import代码迁移时保持行为测试，不借本次重构增加新功能。
 
@@ -1295,7 +1274,8 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 必须覆盖：
 
 - challenge/proof唯一窗口；
-- Enrollment pending/approve/deny/offline re-proof；
+- Enrollment pending/approve/deny的连接期清理；
+- activation前断联重新审核，以及activation后按current key重放authority；
 - Activated/Ready/SessionReady各丢包点；
 - 新lease替换旧lease；
 - 旧socket晚到frame；
@@ -1408,7 +1388,7 @@ just api
 - 建立组件所有权表；
 - 删除Command/Observed/Token/Bundle旧schema；
 - 生成Diesel schema；
-- 补FK/UNIQUE/CHECK和query-plan测试。
+- 补PK/FK/UNIQUE/index和query-plan测试；业务校验只测试Rust类型与组件事务。
 
 验收：
 
@@ -1438,7 +1418,7 @@ just api
 目标：
 
 - 实现Challenge proof分类；
-- 实现Enrollment attempt、人工审核、online attachment和activation replay；
+- 实现内存pending review、人工审核、attachment fencing和activation replay；
 - 实现control-key Resume；
 - 实现enable/disable/revoke/replacement。
 
@@ -1453,9 +1433,9 @@ just api
 
 目标：
 
-- 实现Gateway client-state持久化；
+- 实现accepted CSR current fact，不持久化原始Client projection；
 - Intent Policy、CSR validation、sign/CAS、grant/replacement；
-- Operator/Panel read model。
+- Operator/Panel读取durable current fact与在线Actor状态。
 
 验收：
 
@@ -1486,7 +1466,7 @@ just api
 
 - 实现三个Unit-input组件；
 - 替换旧lock/unlock/terminate/reset Command API；
-- 建立typed target与actual表。
+- 建立typed target表，Actual只属于当前lease内存。
 
 验收：
 

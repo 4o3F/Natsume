@@ -13,7 +13,7 @@ type Binding = components["schemas"]["BindingResponse"];
 const columns: ColumnDef<Binding>[] = [
   { accessorKey: "seat_id", header: "Seat ID" },
   { accessorKey: "device_id", header: "Device ID" },
-  { accessorKey: "binding_revision", header: "Binding revision" },
+  { accessorKey: "binding_id", header: "Binding ID" },
 ];
 
 export function BindingsPage() {

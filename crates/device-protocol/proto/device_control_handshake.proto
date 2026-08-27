@@ -16,25 +16,21 @@ enum EnrollmentEvidenceQuality {
   ENROLLMENT_EVIDENCE_QUALITY_STRONG      = 2;
 }
 
-// Durable Enrollment transaction material. The Device creates and persists the
-// canonical UUIDv7 enrollment_id and candidate control key before its first
-// network attempt. Every retry repeats these exact values; same id with
-// different material is a stable conflict. Enrollment grants only Device
-// control authority and contains no Gateway, Binding, or business material.
+// Connection-local Enrollment material. The candidate private key is persisted
+// before proof, but review and denial live only for this WSS connection. A new
+// connection starts a new review unless this exact public key is already the
+// committed current authority for the proved Machine Hardware ID.
 message EnrollmentAttempt {
-  string          enrollment_id        = 1;
-  bytes           candidate_public_key = 2;
+  bytes candidate_public_key = 1;
   // Aggregate quality of the accepted 2-of-3 hardware claim: the second-highest
   // quality among present anchors. Advisory to operator review; never authority.
-  EnrollmentEvidenceQuality evidence_quality = 3;
+  EnrollmentEvidenceQuality evidence_quality = 2;
 }
 
-// Durable operator-review state. Approval has no separate wire value. An online
-// exact candidate may proceed directly to the enrollment_activated barrier
-// after the Server activation transaction commits; an offline approved
-// candidate re-proves the exact attempt on a later connection. PENDING_REVIEW
-// has an empty error_code; DENIED has a stable reviewed ErrorCode and is
-// terminal for this enrollment_id.
+// Connection-local operator-review state. Approval has no separate wire value:
+// an attached candidate proceeds directly to enrollment_activated after the
+// activation transaction commits. Disconnect discards pending/denied review.
+// PENDING_REVIEW has an empty error_code; DENIED requires a bounded ErrorCode.
 enum EnrollmentReviewState {
   ENROLLMENT_REVIEW_STATE_UNSPECIFIED    = 0;
   ENROLLMENT_REVIEW_STATE_PENDING_REVIEW = 1;
@@ -42,10 +38,9 @@ enum EnrollmentReviewState {
 }
 
 message EnrollmentReviewStatus {
-  string                enrollment_id = 1;
-  EnrollmentReviewState state         = 2;
+  EnrollmentReviewState state = 1;
   // Empty for PENDING_REVIEW; required non-empty bounded ErrorCode token for DENIED.
-  string                error_code    = 3;
+  string error_code = 2;
 }
 
 // Active authority reconnect. The Server selects the active control key by the
@@ -73,8 +68,7 @@ message ClientProof {
 // The envelope field names express direction and phase; duplicating this
 // payload into two message types would add no state or validation boundary.
 message EnrollmentAuthority {
-  string enrollment_id = 1;
-  string device_id     = 2;
+  string device_id = 1;
 }
 
 message SessionReady {

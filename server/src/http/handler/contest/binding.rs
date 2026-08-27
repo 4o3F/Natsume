@@ -7,11 +7,11 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::{
-    application::{
+    audit::CorrelationId,
+    component::{
         contest::{self, BindingFacts},
         operator::OperatorIdentity,
     },
-    audit::CorrelationId,
 };
 
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
@@ -22,19 +22,20 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
 
 #[derive(Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
+#[allow(clippy::struct_field_names)] // The API fields are canonical domain identifiers.
 pub(crate) struct BindingResponse {
+    binding_id: String,
     seat_id: String,
     device_id: String,
-    binding_revision: i64,
 }
 
 impl From<BindingFacts> for BindingResponse {
     fn from(facts: BindingFacts) -> Self {
-        let (seat_id, device_id, binding_revision) = facts.into_parts();
+        let (binding_id, seat_id, device_id) = facts.into_parts();
         Self {
+            binding_id,
             seat_id,
             device_id: device_id.as_text(),
-            binding_revision,
         }
     }
 }

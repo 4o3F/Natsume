@@ -72,7 +72,7 @@ diesel-schema:
     generated="$temp_dir/schema.rs"
     diesel --database-url "$database" --config-file /dev/null migration run --migration-dir server/migrations
     diesel --database-url "$database" --config-file server/diesel.toml print-schema > "$generated"
-    diff -u -- "$generated" server/src/db/schema.rs
+    diff -u -- "$generated" server/src/schema.rs
 
 build:
     cargo build --workspace --release --locked

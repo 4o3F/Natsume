@@ -7,11 +7,11 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::{
-    application::{
+    audit::CorrelationId,
+    component::{
         contest::{self, AccountFacts},
         operator::OperatorIdentity,
     },
-    audit::CorrelationId,
 };
 
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};

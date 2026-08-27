@@ -1,0 +1,430 @@
+use std::{
+    error::Error,
+    fmt::{self, Display, Formatter},
+};
+
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+use zeroize::{Zeroize, ZeroizeOnDrop};
+
+use crate::{
+    audit::{AuditEvent, AuditEventId, CorrelationId},
+    db::{Database, Transaction},
+};
+
+use super::{
+    FINGERPRINT_VERSION, candidate_fingerprint,
+    csv::{CsvImportError, parse_csv},
+    current_fingerprint,
+    diff::{RedactedImportPreview, compute_diff},
+};
+
+const IMPORT_CANDIDATE_TTL_MS: i64 = 1_800_000;
+const PREVIEW_TOKEN_LENGTH: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CandidateRowFacts {
+    pub(crate) seat_code: String,
+    pub(crate) domjudge_username: String,
+}
+
+impl CandidateRowFacts {
+    pub(crate) fn seat_code(&self) -> &str {
+        &self.seat_code
+    }
+
+    pub(crate) fn domjudge_username(&self) -> &str {
+        &self.domjudge_username
+    }
+}
+
+pub(crate) struct SealedCommitRow {
+    pub(crate) seat_code: String,
+    pub(crate) domjudge_username: String,
+    pub(crate) nonce: [u8; 24],
+    pub(crate) ciphertext: Vec<u8>,
+}
+
+impl SealedCommitRow {
+    pub(crate) fn seat_code(&self) -> &str {
+        &self.seat_code
+    }
+
+    pub(crate) fn domjudge_username(&self) -> &str {
+        &self.domjudge_username
+    }
+
+    pub(crate) const fn nonce(&self) -> &[u8; 24] {
+        &self.nonce
+    }
+
+    pub(crate) fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CandidateExpiry {
+    Valid,
+    Expired,
+}
+
+pub(crate) struct CandidateRecord {
+    candidate_id: Uuid,
+    expires_at_unix_ms: i64,
+    preview_token_hash: [u8; 32],
+    fingerprint_version: i32,
+    candidate_fingerprint_sha256: [u8; 32],
+    baseline_fingerprint_sha256: [u8; 32],
+    diff: RedactedImportPreview,
+    expiry: CandidateExpiry,
+}
+
+impl CandidateRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        candidate_id: Uuid,
+        expires_at_unix_ms: i64,
+        preview_token_hash: [u8; 32],
+        fingerprint_version: i32,
+        candidate_fingerprint_sha256: [u8; 32],
+        baseline_fingerprint_sha256: [u8; 32],
+        diff: RedactedImportPreview,
+        expiry: CandidateExpiry,
+    ) -> Self {
+        Self {
+            candidate_id,
+            expires_at_unix_ms,
+            preview_token_hash,
+            fingerprint_version,
+            candidate_fingerprint_sha256,
+            baseline_fingerprint_sha256,
+            diff,
+            expiry,
+        }
+    }
+
+    pub(crate) const fn candidate_id(&self) -> Uuid {
+        self.candidate_id
+    }
+
+    pub(crate) const fn expires_at_unix_ms(&self) -> i64 {
+        self.expires_at_unix_ms
+    }
+
+    pub(crate) const fn preview_token_hash(&self) -> &[u8; 32] {
+        &self.preview_token_hash
+    }
+
+    pub(crate) const fn fingerprint_version(&self) -> i32 {
+        self.fingerprint_version
+    }
+
+    pub(crate) const fn candidate_fingerprint_sha256(&self) -> &[u8; 32] {
+        &self.candidate_fingerprint_sha256
+    }
+
+    pub(crate) const fn baseline_fingerprint_sha256(&self) -> &[u8; 32] {
+        &self.baseline_fingerprint_sha256
+    }
+
+    pub(crate) const fn diff(&self) -> &RedactedImportPreview {
+        &self.diff
+    }
+
+    pub(crate) const fn expiry(&self) -> CandidateExpiry {
+        self.expiry
+    }
+
+    fn into_pending(self) -> PendingImportCandidate {
+        PendingImportCandidate {
+            candidate_id: self.candidate_id,
+            expires_at_unix_ms: self.expires_at_unix_ms,
+            diff: self.diff,
+        }
+    }
+}
+
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub(crate) struct PreviewToken {
+    bytes: [u8; PREVIEW_TOKEN_LENGTH],
+}
+
+impl PreviewToken {
+    fn generate() -> Result<Self, ImportError> {
+        let mut token = Self {
+            bytes: [0; PREVIEW_TOKEN_LENGTH],
+        };
+        getrandom::fill(&mut token.bytes).map_err(|_| ImportError::EntropyUnavailable)?;
+        Ok(token)
+    }
+
+    pub(crate) fn from_bytes(bytes: [u8; PREVIEW_TOKEN_LENGTH]) -> Self {
+        Self { bytes }
+    }
+
+    pub(crate) const fn as_bytes(&self) -> &[u8; PREVIEW_TOKEN_LENGTH] {
+        &self.bytes
+    }
+
+    pub(crate) fn sha256(&self) -> [u8; 32] {
+        Sha256::digest(self.bytes).into()
+    }
+}
+
+pub(crate) struct CreatedImportCandidate {
+    candidate_id: Uuid,
+    preview_token: PreviewToken,
+    expires_at_unix_ms: i64,
+    diff: RedactedImportPreview,
+}
+
+impl CreatedImportCandidate {
+    pub(crate) const fn candidate_id(&self) -> Uuid {
+        self.candidate_id
+    }
+
+    pub(crate) const fn preview_token(&self) -> &PreviewToken {
+        &self.preview_token
+    }
+
+    pub(crate) const fn expires_at_unix_ms(&self) -> i64 {
+        self.expires_at_unix_ms
+    }
+
+    pub(crate) const fn diff(&self) -> &RedactedImportPreview {
+        &self.diff
+    }
+}
+
+pub(crate) struct PendingImportCandidate {
+    candidate_id: Uuid,
+    expires_at_unix_ms: i64,
+    diff: RedactedImportPreview,
+}
+
+impl PendingImportCandidate {
+    pub(crate) const fn candidate_id(&self) -> Uuid {
+        self.candidate_id
+    }
+
+    pub(crate) const fn expires_at_unix_ms(&self) -> i64 {
+        self.expires_at_unix_ms
+    }
+
+    pub(crate) const fn diff(&self) -> &RedactedImportPreview {
+        &self.diff
+    }
+}
+
+pub(crate) async fn create_import_candidate(
+    database: &Database,
+    raw_csv: &[u8],
+    correlation_id: CorrelationId,
+) -> Result<CreatedImportCandidate, ImportError> {
+    let parsed = parse_csv(raw_csv).map_err(ImportError::InvalidCsv)?;
+    let candidate_rows = parsed.candidate_rows();
+    let candidate_hash = candidate_fingerprint(&candidate_rows);
+    drop(parsed);
+
+    let preview_token = PreviewToken::generate()?;
+    let preview_token_hash = preview_token.sha256();
+    let candidate_id = Uuid::now_v7();
+    let create_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+
+    database
+        .write(move |transaction| {
+            if let Some(existing) = super::db::pending_import_candidate::find(transaction)? {
+                if existing.expiry() == CandidateExpiry::Valid {
+                    return Err(ImportError::CandidatePending);
+                }
+                expire_candidate(
+                    transaction,
+                    &existing,
+                    correlation_id,
+                    expiry_audit_event_id,
+                )?;
+            }
+
+            let current_seats = super::db::query::read_current_seats(transaction)?;
+            let current_accounts = super::db::query::read_current_accounts(transaction)?;
+            let baseline_hash = current_fingerprint(&current_seats, &current_accounts);
+            let diff = compute_diff(&current_seats, &candidate_rows)?;
+            let now = super::db::pending_import_candidate::current_time_unix_ms(transaction)?;
+            let expires_at_unix_ms = now
+                .checked_add(IMPORT_CANDIDATE_TTL_MS)
+                .ok_or(ImportError::PersistenceFailure)?;
+            let candidate = CandidateRecord::new(
+                candidate_id,
+                expires_at_unix_ms,
+                preview_token_hash,
+                FINGERPRINT_VERSION,
+                candidate_hash,
+                baseline_hash,
+                diff,
+                CandidateExpiry::Valid,
+            );
+
+            let event = AuditEvent::import_candidate_created(
+                create_audit_event_id,
+                correlation_id,
+                candidate_id,
+                candidate.diff().seats_added().len(),
+                candidate.diff().seats_removed().len(),
+                candidate.diff().mappings_changed().len(),
+                candidate.diff().binding_impacts().len(),
+            );
+            crate::audit::insert(transaction, &event)
+                .map_err(ImportError::from_audit_persistence)?;
+            if super::db::pending_import_candidate::insert(
+                transaction,
+                &candidate,
+                create_audit_event_id,
+            )? != 1
+            {
+                return Err(ImportError::PersistenceFailure);
+            }
+            Ok(CreatedImportCandidate {
+                candidate_id,
+                preview_token,
+                expires_at_unix_ms,
+                diff: candidate.diff,
+            })
+        })
+        .await
+}
+
+pub(crate) async fn read_pending_import_candidate(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<Option<PendingImportCandidate>, ImportError> {
+    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    database
+        .write(move |transaction| {
+            let Some(candidate) = super::db::pending_import_candidate::find(transaction)? else {
+                return Ok(None);
+            };
+            if candidate.expiry() == CandidateExpiry::Expired {
+                expire_candidate(
+                    transaction,
+                    &candidate,
+                    correlation_id,
+                    expiry_audit_event_id,
+                )?;
+                return Ok(None);
+            }
+            Ok(Some(candidate.into_pending()))
+        })
+        .await
+}
+
+pub(crate) async fn discard_import(
+    database: &Database,
+    candidate_id: Uuid,
+    correlation_id: CorrelationId,
+) -> Result<(), ImportError> {
+    let discard_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
+    database
+        .write(move |transaction| {
+            let Some(candidate) = super::db::pending_import_candidate::find(transaction)? else {
+                return Err(ImportError::CandidateUnavailable);
+            };
+            if candidate.candidate_id() != candidate_id {
+                return Err(ImportError::CandidateUnavailable);
+            }
+            if candidate.expiry() == CandidateExpiry::Expired {
+                expire_candidate(
+                    transaction,
+                    &candidate,
+                    correlation_id,
+                    expiry_audit_event_id,
+                )?;
+                return Err(ImportError::CandidateUnavailable);
+            }
+            let event = AuditEvent::import_candidate_discarded(
+                discard_audit_event_id,
+                correlation_id,
+                candidate_id,
+            );
+            crate::audit::insert(transaction, &event)
+                .map_err(ImportError::from_audit_persistence)?;
+            if super::db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
+                return Err(ImportError::PersistenceFailure);
+            }
+            Ok(())
+        })
+        .await
+}
+
+pub(crate) async fn audit_invalid_import_upload(
+    database: &Database,
+    correlation_id: CorrelationId,
+) -> Result<(), ImportError> {
+    database
+        .write(move |transaction| {
+            let event = AuditEvent::import_candidate_rejected(
+                AuditEventId::from_uuid(Uuid::now_v7()),
+                correlation_id,
+            );
+            crate::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)
+        })
+        .await
+}
+
+pub(super) fn expire_candidate(
+    transaction: &mut Transaction<'_>,
+    candidate: &CandidateRecord,
+    correlation_id: CorrelationId,
+    audit_event_id: AuditEventId,
+) -> Result<(), ImportError> {
+    let event = AuditEvent::import_candidate_expired(
+        audit_event_id,
+        correlation_id,
+        candidate.candidate_id(),
+    );
+    crate::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)?;
+    if super::db::pending_import_candidate::delete_exact(transaction, candidate)? != 1 {
+        return Err(ImportError::PersistenceFailure);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImportError {
+    InvalidCsv(CsvImportError),
+    CandidateInvalid,
+    CandidatePending,
+    CandidateUnavailable,
+    PreviewStale,
+    SeatOccupied,
+    EntropyUnavailable,
+    VaultFailure,
+    PersistenceFailure,
+}
+
+impl Display for ImportError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidCsv(_) | Self::CandidateInvalid => "the import candidate is invalid",
+            Self::CandidatePending => "an import candidate is already pending",
+            Self::CandidateUnavailable => "the import candidate is unavailable",
+            Self::PreviewStale => "the import preview is stale",
+            Self::SeatOccupied => "the import would remove an occupied seat",
+            Self::EntropyUnavailable => "import candidate entropy is unavailable",
+            Self::VaultFailure => "an import credential could not be sealed",
+            Self::PersistenceFailure => "the import could not be persisted",
+        })
+    }
+}
+
+impl Error for ImportError {}
+
+impl ImportError {
+    pub(super) const fn from_audit_persistence(error: crate::audit::AuditPersistenceError) -> Self {
+        match error {
+            crate::audit::AuditPersistenceError::PersistenceFailed => Self::PersistenceFailure,
+        }
+    }
+}

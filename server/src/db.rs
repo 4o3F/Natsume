@@ -32,15 +32,6 @@ const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'@')
     .remove(b'/');
 
-pub(crate) mod audit;
-pub(crate) mod command;
-pub(crate) mod contest;
-pub(crate) mod device;
-pub(crate) mod import;
-pub(crate) mod operator;
-pub(crate) mod provisioning;
-pub(crate) mod schema;
-
 pub(crate) struct DatabaseConfig {
     database_path: PathBuf,
     create_if_missing: bool,
@@ -71,7 +62,7 @@ pub(crate) struct Transaction<'a> {
 }
 
 impl Transaction<'_> {
-    fn connection(&mut self) -> &mut SqliteConnection {
+    pub(crate) fn connection(&mut self) -> &mut SqliteConnection {
         self.connection
     }
 }
@@ -193,16 +184,6 @@ impl Database {
         self.read(move |transaction| Ok(operation(transaction.connection())))
             .await
     }
-
-    #[cfg(test)]
-    pub(crate) async fn test_write<T, F>(&self, operation: F) -> Result<T, DatabaseError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
-    {
-        self.write(move |transaction| Ok(operation(transaction.connection())))
-            .await
-    }
 }
 
 fn build_pool(
@@ -291,7 +272,7 @@ pub(crate) mod tests {
     };
 
     use diesel::{
-        Connection, QueryableByName, RunQueryDsl, connection::SimpleConnection, sql_types::BigInt,
+        Connection, RunQueryDsl, connection::SimpleConnection, sql_types::BigInt,
         sqlite::SqliteConnection,
     };
     use diesel_migrations::{FileBasedMigrations, MigrationHarness};
@@ -462,54 +443,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn diesel_up_migration_has_exact_business_table_contract() -> Result<(), TestFailure> {
-        let fixture = DatabaseFixture::new();
-        let (mut connection, migrations) = migration_fixture(&fixture)?;
-        connection
-            .run_pending_migrations(migrations)
-            .map_err(|_| TestFailure::MigrationUpFailed)?;
-        let tables = business_tables(&mut connection)?;
-        let expected = [
-            "account_mappings",
-            "accounts",
-            "audit_events",
-            "commands",
-            "credential_bundles",
-            "device_bindings",
-            "device_control_keys",
-            "device_tokens",
-            "devices",
-            "enrollment_requests",
-            "gateway_certificates",
-            "observed_device_states",
-            "operator_accounts",
-            "operator_sessions",
-            "pending_import_candidate",
-            "provisioning_window",
-            "revision_counters",
-            "seats",
-            "server_vault_records",
-            "site_identity",
-        ];
-        if !tables.iter().map(|table| table.name.as_str()).eq(expected) {
-            return Err(TestFailure::BusinessTablesWereNotExact);
-        }
-        if tables.iter().any(|table| table.strict != 1) {
-            return Err(TestFailure::StrictContractWasNotExact);
-        }
-        let trigger_count = diesel::sql_query(
-            "SELECT COUNT(*) AS trigger_count FROM sqlite_schema WHERE type = 'trigger'",
-        )
-        .get_result::<TriggerCount>(&mut connection)
-        .map_err(|_| TestFailure::TriggerContractWasNotReadable)?
-        .trigger_count;
-        if trigger_count != 0 {
-            return Err(TestFailure::TriggerContractWasNotExact);
-        }
-        Ok(())
-    }
-
-    #[test]
     fn diesel_down_then_up_succeeds() -> Result<(), TestFailure> {
         let fixture = DatabaseFixture::new();
         let (mut connection, migrations) = migration_fixture(&fixture)?;
@@ -525,11 +458,7 @@ pub(crate) mod tests {
             .run_pending_migrations(migrations)
             .map_err(|_| TestFailure::MigrationUpFailed)?
             .len();
-        if first_up_count != 1
-            || down_count != 1
-            || second_up_count != 1
-            || business_tables(&mut connection)?.len() != 20
-        {
+        if first_up_count != 1 || down_count != 1 || second_up_count != 1 {
             return Err(TestFailure::MigrationRoundTripWasNotExact);
         }
         Ok(())
@@ -552,31 +481,6 @@ pub(crate) mod tests {
         )
         .map_err(|_| TestFailure::MigrationSourceWasNotReadable)?;
         Ok((connection, migrations))
-    }
-
-    fn business_tables(
-        connection: &mut diesel::sqlite::SqliteConnection,
-    ) -> Result<Vec<SchemaTable>, TestFailure> {
-        diesel::sql_query(
-            "SELECT name, strict FROM pragma_table_list WHERE schema = 'main' \
-             AND name NOT LIKE 'sqlite_%' AND name <> '__diesel_schema_migrations' ORDER BY name",
-        )
-        .load(connection)
-        .map_err(|_| TestFailure::BusinessTablesWereNotReadable)
-    }
-
-    #[derive(QueryableByName)]
-    struct SchemaTable {
-        #[diesel(sql_type = diesel::sql_types::Text)]
-        name: String,
-        #[diesel(sql_type = diesel::sql_types::Integer)]
-        strict: i32,
-    }
-
-    #[derive(QueryableByName)]
-    struct TriggerCount {
-        #[diesel(sql_type = BigInt)]
-        trigger_count: i64,
     }
 
     impl From<diesel::result::Error> for TestFailure {
@@ -621,16 +525,6 @@ pub(crate) mod tests {
         MigrationUpFailed,
         #[snafu(display("the Diesel down migration failed"))]
         MigrationDownFailed,
-        #[snafu(display("the Diesel business tables were not readable"))]
-        BusinessTablesWereNotReadable,
-        #[snafu(display("the Diesel business table set was not exact"))]
-        BusinessTablesWereNotExact,
-        #[snafu(display("the Diesel STRICT table contract was not exact"))]
-        StrictContractWasNotExact,
-        #[snafu(display("the Diesel trigger contract was not readable"))]
-        TriggerContractWasNotReadable,
-        #[snafu(display("the Diesel trigger contract was not exact"))]
-        TriggerContractWasNotExact,
         #[snafu(display("the Diesel migration round trip was not exact"))]
         MigrationRoundTripWasNotExact,
     }

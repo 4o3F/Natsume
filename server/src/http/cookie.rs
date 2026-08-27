@@ -5,7 +5,7 @@ use axum::{
 use cookie::{Cookie, SameSite, time::Duration};
 use zeroize::Zeroizing;
 
-use crate::application::operator::SessionCredentialHex;
+use crate::component::operator::SessionCredentialHex;
 
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const SESSION_COOKIE_PATH: &str = "/api/v2";

@@ -87,7 +87,6 @@ mod tests {
             machine_hardware_id: "a9aa9d04-3ece-5567-8260-910930ff5e03".to_owned(),
             signature: vec![0xAA; 64],
             purpose: Some(Purpose::Enrollment(EnrollmentAttempt {
-                enrollment_id: "01900000-0000-7000-8000-000000000001".to_owned(),
                 candidate_public_key: vec![0x11; 32],
                 evidence_quality: EnrollmentEvidenceQuality::Strong.into(),
             })),
@@ -102,8 +101,8 @@ mod tests {
         assert_eq!(
             digest,
             [
-                40, 7, 132, 243, 49, 245, 220, 233, 112, 97, 171, 41, 44, 68, 254, 124, 38, 143,
-                193, 86, 145, 207, 183, 228, 15, 64, 229, 29, 249, 110, 208, 114,
+                68, 167, 26, 247, 203, 228, 61, 65, 182, 199, 245, 53, 161, 125, 147, 66, 58, 4,
+                120, 206, 120, 143, 52, 96, 237, 233, 132, 159, 110, 234, 205, 249,
             ]
         );
 

@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{application::operator, audit::CorrelationId};
+use crate::{audit::CorrelationId, component::operator};
 
 use super::super::{AppState, cookie, error::ApiError};
 

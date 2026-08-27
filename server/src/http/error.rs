@@ -5,15 +5,14 @@ use axum::{
 use serde::Serialize;
 
 use crate::{
-    application::{
-        command::CommandError,
+    audit::CorrelationId,
+    component::{
         contest::ContestError,
-        device::DeviceError,
         import::{CsvImportErrorCategory, ImportError},
+        lifecycle::DeviceError,
         operator::OperatorError,
         provisioning::ProvisioningError,
     },
-    audit::CorrelationId,
 };
 
 #[derive(Serialize)]
@@ -33,12 +32,11 @@ enum ApiErrorCode {
     InvalidRequest,
     ResourceNotFound,
     InternalError,
-    CommandIdInvalid,
-    CommandRequestConflict,
     ImportCandidateInvalid,
     ImportCandidatePending,
     ImportCandidateUnavailable,
     ImportPreviewStale,
+    ImportSeatOccupied,
 }
 
 impl ApiErrorCode {
@@ -49,12 +47,11 @@ impl ApiErrorCode {
             Self::InvalidRequest => "INVALID_REQUEST",
             Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
             Self::InternalError => "INTERNAL_ERROR",
-            Self::CommandIdInvalid => "COMMAND_ID_INVALID",
-            Self::CommandRequestConflict => "COMMAND_REQUEST_CONFLICT",
             Self::ImportCandidateInvalid => "IMPORT_CANDIDATE_INVALID",
             Self::ImportCandidatePending => "IMPORT_CANDIDATE_PENDING",
             Self::ImportCandidateUnavailable => "IMPORT_CANDIDATE_UNAVAILABLE",
             Self::ImportPreviewStale => "IMPORT_PREVIEW_STALE",
+            Self::ImportSeatOccupied => "IMPORT_SEAT_OCCUPIED",
         }
     }
 }
@@ -207,55 +204,6 @@ impl ApiError {
         }
     }
 
-    pub(super) fn from_command(error: CommandError, correlation_id: CorrelationId) -> Self {
-        match error {
-            CommandError::CommandIdInvalid => Self {
-                status: StatusCode::BAD_REQUEST,
-                title: "Bad Request",
-                code: ApiErrorCode::CommandIdInvalid,
-                cause: "command_id_invalid",
-                correlation_id,
-            },
-            CommandError::RequestInvalid => {
-                Self::invalid_request("command_request_invalid", correlation_id)
-            }
-            CommandError::DeviceIdInvalid => {
-                Self::invalid_request("command_device_id_invalid", correlation_id)
-            }
-            CommandError::KindInvalid => {
-                Self::invalid_request("command_kind_invalid", correlation_id)
-            }
-            CommandError::PayloadInvalid => {
-                Self::invalid_request("command_payload_invalid", correlation_id)
-            }
-            CommandError::ReasonCodeInvalid => {
-                Self::invalid_request("command_reason_code_invalid", correlation_id)
-            }
-            CommandError::GroupCorrelationIdInvalid => {
-                Self::invalid_request("command_group_correlation_id_invalid", correlation_id)
-            }
-            CommandError::DeviceNotFound => {
-                Self::not_found("command_device_not_found", correlation_id)
-            }
-            CommandError::DeviceNotEnrolled => {
-                Self::not_found("command_device_not_enrolled", correlation_id)
-            }
-            CommandError::RequestConflict => Self {
-                status: StatusCode::CONFLICT,
-                title: "Conflict",
-                code: ApiErrorCode::CommandRequestConflict,
-                cause: "command_request_conflict",
-                correlation_id,
-            },
-            CommandError::CanonicalizationFailed => {
-                Self::internal_error("command_canonicalization_failed", correlation_id)
-            }
-            CommandError::PersistenceFailed => {
-                Self::internal_error("command_persistence_failed", correlation_id)
-            }
-        }
-    }
-
     pub(super) fn from_import(error: ImportError, correlation_id: CorrelationId) -> Self {
         match error {
             ImportError::InvalidCsv(error) => {
@@ -309,6 +257,13 @@ impl ApiError {
                 "import_preview_stale",
                 correlation_id,
             ),
+            ImportError::SeatOccupied => Self::import_error(
+                StatusCode::CONFLICT,
+                "Conflict",
+                ApiErrorCode::ImportSeatOccupied,
+                "import_seat_occupied",
+                correlation_id,
+            ),
             ImportError::EntropyUnavailable => {
                 Self::internal_error("import_entropy_unavailable", correlation_id)
             }
@@ -326,9 +281,6 @@ impl ApiError {
         correlation_id: CorrelationId,
     ) -> Self {
         match error {
-            ProvisioningError::RevisionOverflow => {
-                Self::internal_error("provisioning_revision_overflow", correlation_id)
-            }
             ProvisioningError::PersistenceFailed => {
                 Self::internal_error("provisioning_persistence_failed", correlation_id)
             }

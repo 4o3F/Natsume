@@ -11,8 +11,6 @@ pub enum CommandError {
     Database,
     #[snafu(display("site configuration startup failed"))]
     SiteConfiguration,
-    #[snafu(display("provisioning window revision overflow prevented startup"))]
-    ProvisioningRevisionOverflow,
     #[snafu(display("vault startup failed"))]
     Vault,
     #[snafu(display("web assets startup failed"))]

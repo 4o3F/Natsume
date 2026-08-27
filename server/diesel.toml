@@ -1,19 +1,22 @@
 [print_schema]
-file = "src/db/schema.rs"
+file = "src/schema.rs"
+patch_file = "src/schema.patch"
 filter.only_tables = [
-  "^audit_events$",
-  "^commands$",
   "^account_mappings$",
+  "^accounts$",
+  "^audit_events$",
+  "^binding_negotiations$",
+  "^device_bindings$",
+  "^device_control_keys$",
+  "^device_home_targets$",
+  "^device_session_targets$",
+  "^devices$",
+  "^gateway_credentials$",
   "^operator_accounts$",
   "^operator_sessions$",
-  "^seats$",
-  "^accounts$",
-  "^devices$",
-  "^device_bindings$",
-  "^device_tokens$",
-  "^gateway_certificates$",
-  "^provisioning_window$",
   "^pending_import_candidate$",
-  "^revision_counters$",
+  "^runtime_config$",
+  "^seats$",
   "^server_vault_records$",
+  "^site_identity$",
 ]

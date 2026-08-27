@@ -1,0 +1,245 @@
+#![allow(dead_code)]
+
+use snafu::Snafu;
+use uuid::{Uuid, Variant, Version};
+
+use crate::audit::AuditPersistenceError;
+
+/// Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeviceId(Uuid);
+
+impl DeviceId {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        let parsed = Uuid::parse_str(value).ok()?;
+        if parsed.hyphenated().to_string() != value {
+            return None;
+        }
+        Self::from_uuid(parsed)
+    }
+
+    pub(crate) fn from_uuid(value: Uuid) -> Option<Self> {
+        if value.get_version() != Some(Version::SortRand) || value.get_variant() != Variant::RFC4122
+        {
+            return None;
+        }
+        Some(Self(value))
+    }
+
+    pub(crate) const fn value(&self) -> Uuid {
+        self.0
+    }
+
+    pub(crate) fn as_text(&self) -> String {
+        self.value().hyphenated().to_string()
+    }
+}
+
+/// Redacted persistence boundary shared by Device-owned adapters and read models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DevicePersistenceError {
+    InvalidPersistedFacts,
+    PersistenceFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+pub(crate) enum DeviceError {
+    #[snafu(display("the Device ID is invalid"))]
+    InvalidDeviceId,
+    #[snafu(display("the Device does not exist"))]
+    DeviceNotFound,
+    #[snafu(display("persisted Device facts are invalid"))]
+    InvalidPersistedFacts,
+    #[snafu(display("Device persistence failed"))]
+    PersistenceFailed,
+}
+
+impl DeviceError {
+    pub(crate) const fn from_persistence(error: DevicePersistenceError) -> Self {
+        match error {
+            DevicePersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
+            DevicePersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+
+    pub(crate) const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
+        match error {
+            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DeviceState {
+    Enabled,
+    Revoked,
+    Disabled,
+}
+
+impl DeviceState {
+    pub(crate) fn from_persisted(value: &str) -> Option<Self> {
+        match value {
+            "enabled" => Some(Self::Enabled),
+            "revoked" => Some(Self::Revoked),
+            "disabled" => Some(Self::Disabled),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Enabled => "enabled",
+            Self::Revoked => "revoked",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+// The closed `devices.evidence_quality` vocabulary owned by this component.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EvidenceQuality {
+    Strong,
+    Medium,
+}
+
+impl EvidenceQuality {
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value {
+            "strong" => Some(Self::Strong),
+            "medium" => Some(Self::Medium),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn as_persisted(self) -> &'static str {
+        match self {
+            Self::Strong => "strong",
+            Self::Medium => "medium",
+        }
+    }
+}
+
+/// Application-owned projection of the Device row selected by hardware ID.
+#[derive(Clone, Copy)]
+pub(crate) struct DeviceByHardwareProjection {
+    pub(in crate::component::lifecycle) device_id: DeviceId,
+    pub(in crate::component::lifecycle) evidence_quality: EvidenceQuality,
+    pub(in crate::component::lifecycle) state: DeviceState,
+}
+
+impl DeviceByHardwareProjection {
+    pub(crate) fn from_persisted(
+        device_id: &str,
+        evidence_quality: &str,
+        state: &str,
+    ) -> Result<Self, DevicePersistenceError> {
+        Ok(Self {
+            device_id: DeviceId::parse(device_id)
+                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
+            evidence_quality: EvidenceQuality::parse(evidence_quality)
+                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
+            state: DeviceState::from_persisted(state)
+                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
+        })
+    }
+}
+
+pub(crate) struct DeviceFacts {
+    device_id: DeviceId,
+    state: DeviceState,
+    evidence_quality: EvidenceQuality,
+}
+
+impl DeviceFacts {
+    pub(crate) fn new(
+        device_id: DeviceId,
+        state: DeviceState,
+        evidence_quality: EvidenceQuality,
+    ) -> Self {
+        Self {
+            device_id,
+            state,
+            evidence_quality,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (DeviceId, DeviceState, EvidenceQuality) {
+        (self.device_id, self.state, self.evidence_quality)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::audit::AuditPersistenceError;
+
+    use super::{DeviceError, DeviceId, DevicePersistenceError, DeviceState, EvidenceQuality};
+
+    #[test]
+    fn persistence_mappings_cover_every_neutral_variant() {
+        assert_eq!(
+            DeviceError::from_persistence(DevicePersistenceError::InvalidPersistedFacts),
+            DeviceError::InvalidPersistedFacts
+        );
+        assert_eq!(
+            DeviceError::from_persistence(DevicePersistenceError::PersistenceFailed),
+            DeviceError::PersistenceFailed
+        );
+        assert_eq!(
+            DeviceError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
+            DeviceError::PersistenceFailed
+        );
+    }
+
+    #[test]
+    fn device_id_accepts_only_canonical_uuid_v7_text() {
+        const CANONICAL_V7: &str = "01900000-0000-7000-8000-000000000001";
+
+        let parsed = DeviceId::parse(CANONICAL_V7)
+            .unwrap_or_else(|| panic!("a canonical UUIDv7 Device ID was rejected"));
+        assert_eq!(parsed.as_text(), CANONICAL_V7);
+        assert_eq!(parsed.value().get_version_num(), 7);
+
+        for invalid in [
+            "01900000-0000-7000-8000-00000000000A",
+            "01900000000070008000000000000001",
+            "550e8400-e29b-41d4-a716-446655440000",
+            "01900000-0000-7000-0000-000000000001",
+        ] {
+            assert!(
+                DeviceId::parse(invalid).is_none(),
+                "a non-canonical or non-v7 Device ID was accepted: {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn device_state_persisted_vocabulary_roundtrips_exhaustively() {
+        for (persisted, state) in [
+            ("enabled", DeviceState::Enabled),
+            ("revoked", DeviceState::Revoked),
+            ("disabled", DeviceState::Disabled),
+        ] {
+            assert_eq!(DeviceState::from_persisted(persisted), Some(state));
+            assert_eq!(state.as_persisted(), persisted);
+        }
+
+        for invalid in ["", "Enabled", "disabled ", "active", "weak"] {
+            assert!(DeviceState::from_persisted(invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn evidence_quality_persisted_vocabulary_roundtrips_exhaustively() {
+        for (persisted, quality) in [
+            ("strong", EvidenceQuality::Strong),
+            ("medium", EvidenceQuality::Medium),
+        ] {
+            assert_eq!(EvidenceQuality::parse(persisted), Some(quality));
+            assert_eq!(quality.as_persisted(), persisted);
+        }
+
+        for invalid in ["", "Strong", "medium ", "weak", "unknown", "enabled"] {
+            assert!(EvidenceQuality::parse(invalid).is_none());
+        }
+    }
+}

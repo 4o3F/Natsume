@@ -30,9 +30,7 @@ const diff = {
 
 const pendingSummary = {
   candidate_id: candidateId,
-  expires_at: "2099-08-16T12:30:00.000Z",
-  baseline_configuration_revision: 7,
-  baseline_binding_revision: 4,
+  expires_at_unix_ms: 4_090_579_800_000,
   diff,
 };
 
@@ -95,10 +93,16 @@ async function mockPreparationApi(
           correlation_id: correlationId,
         });
       }
+      const body = request.postDataJSON() as {
+        csv: string;
+        preview_token: string;
+      };
+      expect(body.preview_token).toBe(previewToken);
+      expect(body.csv).toContain("e2e-password-canary");
       pending = null;
-      return fulfillJson(route, 200, {
-        configuration_revision: 8,
-        binding_revision: 5,
+      return route.fulfill({
+        status: 204,
+        headers: { "X-Correlation-Id": correlationId },
       });
     }
 
@@ -186,13 +190,13 @@ test("a restored pending candidate disables commit but leaves discard available"
   ).toBeEnabled();
   await expect(
     page.getByText(
-      "Preview token is unavailable after reload; discard and re-upload to commit.",
+      "Preview authorization and the reviewed CSV are unavailable after a reload; discard and re-upload to commit.",
       { exact: true },
     ),
   ).toBeVisible();
 });
 
-test("commit confirmation reaches the revision success state", async ({
+test("commit resubmits the reviewed CSV and reaches the success state", async ({
   page,
 }) => {
   await mockPreparationApi(page);
@@ -209,8 +213,9 @@ test("commit confirmation reaches the revision success state", async ({
   const success = page
     .getByRole("alert")
     .filter({ hasText: "Import committed" });
-  await expect(success).toContainText("Configuration revision 8");
-  await expect(success).toContainText("binding revision 5");
+  await expect(success).toContainText(
+    "The confirmed contest configuration has been replaced.",
+  );
 });
 
 test("a stale commit displays the discard and re-upload advisory", async ({
@@ -247,7 +252,7 @@ test("reload loses the token but preserves tokenless discard recovery", async ({
   ).toBeDisabled();
   await expect(
     page.getByText(
-      "Preview token is unavailable after reload; discard and re-upload to commit.",
+      "Preview authorization and the reviewed CSV are unavailable after a reload; discard and re-upload to commit.",
       { exact: true },
     ),
   ).toBeVisible();

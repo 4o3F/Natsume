@@ -322,32 +322,6 @@ pub(crate) mod tests {
         }
     }
 
-    pub(crate) async fn connect_test_client(
-        address: SocketAddr,
-        trust_root: &CertificateDer<'static>,
-        server_ip: IpAddr,
-    ) -> Result<TlsStream<TcpStream>, TestSupportError> {
-        let mut roots = RootCertStore::empty();
-        roots
-            .add(trust_root.clone())
-            .map_err(|_| TestSupportError)?;
-        let mut config =
-            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-                .with_protocol_versions(&[&rustls::version::TLS13])
-                .map_err(|_| TestSupportError)?
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        let connector = TlsConnector::from(Arc::new(config));
-        let stream = TcpStream::connect(address)
-            .await
-            .map_err(|_| TestSupportError)?;
-        connector
-            .connect(ServerName::from(server_ip), stream)
-            .await
-            .map_err(|_| TestSupportError)
-    }
-
     fn install_der(path: &Path, contents: &[u8]) -> Result<(), TestSupportError> {
         let mut file = OpenOptions::new()
             .write(true)

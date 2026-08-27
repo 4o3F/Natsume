@@ -10,11 +10,11 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 use crate::{
-    application::{
+    audit::CorrelationId,
+    component::{
         operator::{self, OperatorIdentity},
         provisioning::{self, ProvisioningWindow, ProvisioningWindowState},
     },
-    audit::CorrelationId,
 };
 
 use super::super::{AppState, error::ApiError, middleware};
@@ -56,7 +56,6 @@ async fn require_admin_role(
 pub(crate) struct ProvisioningWindowResponse {
     #[schema(inline)]
     state: ProvisioningWindowResponseState,
-    revision: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -79,7 +78,6 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     fn from(window: ProvisioningWindow) -> Self {
         Self {
             state: ProvisioningWindowResponseState::from(window.state),
-            revision: window.revision,
         }
     }
 }
@@ -91,18 +89,12 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     security(("sessionCookie" = [])),
     responses(
         (status = 200, description = "Current provisioning-window fact", body = ProvisioningWindowResponse),
-        (status = 401, description = "Session authentication failed"),
-        (status = 500, description = "Internal failure")
+        (status = 401, description = "Session authentication failed")
     )
 )]
-pub(crate) async fn get_provisioning_window(
-    State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
-) -> Response {
-    match provisioning::read_window(&state.database).await {
-        Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
-        Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
-    }
+pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Response {
+    let window = provisioning::read_window(&state.provisioning).await;
+    Json(ProvisioningWindowResponse::from(window)).into_response()
 }
 
 #[utoipa::path(
@@ -121,7 +113,7 @@ pub(crate) async fn open_provisioning_window(
     State(state): State<AppState>,
     Extension(correlation_id): Extension<CorrelationId>,
 ) -> Response {
-    match provisioning::open_window(&state.database, correlation_id).await {
+    match provisioning::open_window(&state.provisioning, &state.database, correlation_id).await {
         Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
         Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
     }
@@ -143,12 +135,8 @@ pub(crate) async fn close_provisioning_window(
     State(state): State<AppState>,
     Extension(correlation_id): Extension<CorrelationId>,
 ) -> Response {
-    match provisioning::close_window(&state.database, correlation_id).await {
+    match provisioning::close_window(&state.provisioning, &state.database, correlation_id).await {
         Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
         Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
     }
 }
-
-#[cfg(test)]
-#[path = "provisioning/tests.rs"]
-mod tests;

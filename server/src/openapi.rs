@@ -12,22 +12,11 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow, putCommand.\nDeclared but not mounted in Stage 5B operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
     "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
-const COMMAND_KIND_VALUES: [&str; 7] = [
-    "sync_state",
-    "sync_secret",
-    "open_binding_prompt",
-    "lock_session",
-    "unlock_session",
-    "terminate_session",
-    "reset_home",
-];
-pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical lowercase hyphenated UUIDv7. The same canonical request, identified by its versioned domain-separated request fingerprint, replays the existing Command. A differing canonical request conflicts.";
-
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
@@ -38,7 +27,6 @@ pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical low
         crate::http::handler::contest::seat::list_seats,
         crate::http::handler::contest::account::list_accounts,
         crate::http::handler::contest::binding::list_bindings,
-        crate::http::handler::command::put_command,
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
         crate::http::handler::import::commit_import,
@@ -61,7 +49,6 @@ pub(crate) const COMMAND_DESCRIPTION: &str = "command_id must be a canonical low
         crate::http::handler::import::ImportPendingSummary,
         crate::http::handler::import::ImportPendingResponse,
         crate::http::handler::import::ImportCommitRequest,
-        crate::http::handler::import::ImportCommitResponse,
         crate::http::handler::provisioning::ProvisioningWindowResponse
     ))
 )]
@@ -93,10 +80,6 @@ pub fn document() -> OpenApi {
 }
 
 fn configure_components(components: &mut utoipa::openapi::Components) {
-    components.schemas.insert(
-        "PutCommandRequest".to_owned(),
-        put_command_request_schema().into(),
-    );
     components.schemas.insert(
         "CanonicalUuidV7".to_owned(),
         canonical_uuid_v7_schema().into(),
@@ -147,20 +130,6 @@ fn canonicalize_path_parameters(paths: &mut Paths) {
         };
         parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
     }
-    let Some(parameter) = paths
-        .paths
-        .get_mut("/api/v2/commands/{command_id}")
-        .and_then(|path_item| path_item.put.as_mut())
-        .and_then(|operation| operation.parameters.as_mut())
-        .and_then(|parameters| {
-            parameters
-                .iter_mut()
-                .find(|parameter| parameter.name == "command_id")
-        })
-    else {
-        return;
-    };
-    parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
 }
 
 fn remove_operation_tags(paths: &mut Paths) {
@@ -188,37 +157,6 @@ fn canonical_uuid_v7_schema() -> ObjectBuilder {
         .schema_type(Type::String)
         .format(Some(SchemaFormat::KnownFormat(KnownFormat::Uuid)))
         .pattern(Some(CANONICAL_UUID_V7_PATTERN))
-}
-
-fn put_command_request_schema() -> Schema {
-    ObjectBuilder::new()
-        .schema_type(Type::Object)
-        .property("device_id", Ref::from_schema_name("CanonicalUuidV7"))
-        .property("group_correlation_id", uuid_schema())
-        .property("payload", ObjectBuilder::new().schema_type(Type::Object))
-        .property(
-            "payload_version",
-            ObjectBuilder::new()
-                .schema_type(Type::Integer)
-                .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int32))),
-        )
-        .property(
-            "kind",
-            ObjectBuilder::new()
-                .schema_type(Type::String)
-                .enum_values(Some(COMMAND_KIND_VALUES)),
-        )
-        .property(
-            "reason_code",
-            ObjectBuilder::new().schema_type(Type::String),
-        )
-        .required("device_id")
-        .required("payload")
-        .required("payload_version")
-        .required("kind")
-        .additional_properties(Some(AdditionalProperties::FreeForm(false)))
-        .build()
-        .into()
 }
 
 fn uuid_schema() -> ObjectBuilder {
