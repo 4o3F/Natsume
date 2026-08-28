@@ -8,10 +8,7 @@ use utoipa::ToSchema;
 
 use crate::{
     audit::CorrelationId,
-    component::{
-        contest::{self, BindingFacts},
-        operator::OperatorIdentity,
-    },
+    component::{contest::BindingFacts, operator::OperatorIdentity},
 };
 
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
@@ -56,7 +53,7 @@ pub(crate) async fn list_bindings(
     Extension(correlation_id): Extension<CorrelationId>,
     Extension(_identity): Extension<OperatorIdentity>,
 ) -> Response {
-    match contest::list_bindings(&state.database).await {
+    match state.contest().list_bindings().await {
         Ok(facts) => {
             let response = facts
                 .into_iter()

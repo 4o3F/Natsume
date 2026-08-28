@@ -3,7 +3,7 @@ mod error;
 pub(crate) mod handler;
 mod middleware;
 
-use std::path::{Path, PathBuf};
+use std::{path::Path, sync::Arc};
 
 use axum::{
     Extension, Router,
@@ -16,24 +16,14 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::{audit::CorrelationId, component::provisioning::ProvisioningGate, db::Database};
+use crate::{audit::CorrelationId, server_state::ServerState};
 
 use self::error::ApiError;
 
-#[derive(Clone)]
-pub(crate) struct AppState {
-    database: Database,
-    provisioning: ProvisioningGate,
-    vault_master_key_path: PathBuf,
-}
+pub(crate) type AppState = Arc<ServerState>;
 
-/// Builds the mounted Server HTTP surface over an already-migrated database.
-pub(crate) fn router(database: Database, vault_master_key_path: &Path, web_root: &Path) -> Router {
-    let state = AppState {
-        database,
-        provisioning: ProvisioningGate::closed(),
-        vault_master_key_path: vault_master_key_path.to_owned(),
-    };
+/// Builds the mounted Server HTTP surface over process-wide business state.
+pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
     let static_service =
         any_service(ServeDir::new(web_root).fallback(ServeFile::new(web_root.join("index.html"))))
             .layer(SetResponseHeaderLayer::overriding(

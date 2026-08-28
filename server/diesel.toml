@@ -1,6 +1,7 @@
 [print_schema]
-file = "src/schema.rs"
-patch_file = "src/schema.patch"
+file = "diesel/schema.rs"
+# SQLite STRICT requires INTEGER while these values use Diesel BigInt/i64.
+patch_file = "diesel/sqlite-integer-to-bigint.patch"
 filter.only_tables = [
   "^account_mappings$",
   "^accounts$",

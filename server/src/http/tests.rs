@@ -1,6 +1,8 @@
 use std::{
     fs,
+    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use axum::{
@@ -29,9 +31,12 @@ use crate::{
         tests::{test_data_version, test_lock_database, test_observer},
     },
     logging::tests::{CapturedLogs, SubscriberTestGuard},
+    server_state::ServerState,
+    vault,
 };
 
 use super::{
+    AppState,
     error::ApiError,
     handler::health,
     middleware::{CORRELATION_ID_HEADER, correlation_id},
@@ -251,7 +256,7 @@ pub(super) async fn seed_operator(
 }
 
 #[derive(Debug, Snafu)]
-pub(super) enum SupportFailure {
+pub(crate) enum SupportFailure {
     #[snafu(display("the HTTP test fixture failed"))]
     FixtureFailed,
     #[snafu(display("the HTTP request could not be built"))]
@@ -282,19 +287,23 @@ pub(crate) fn unused_web_root() -> &'static Path {
     Path::new("/natsume-server-test-unused-web-root")
 }
 
-pub(crate) fn unused_vault_master_key() -> &'static Path {
-    Path::new("/natsume-server-test-unused-vault-master-key")
+pub(crate) fn server_state(database: Database) -> Result<AppState, SupportFailure> {
+    let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
+    fs::create_dir(&root).map_err(|_| SupportFailure::FixtureFailed)?;
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+        .map_err(|_| SupportFailure::FixtureFailed)?;
+    let key_path = root.join("master.key");
+    vault::ensure_master_key(&key_path).map_err(|_| SupportFailure::FixtureFailed)?;
+    let vault = vault::load(&key_path).map_err(|_| SupportFailure::FixtureFailed)?;
+    fs::remove_dir_all(root).map_err(|_| SupportFailure::FixtureFailed)?;
+    Ok(Arc::new(ServerState::new(database, Arc::new(vault))))
 }
 
 #[tokio::test]
 async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestFailure> {
     let web_root = TestWebRoot::new()?;
     let fixture = TestDatabase::new().await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        web_root.path(),
-    );
+    let application = router(server_state(fixture.database.clone())?, web_root.path());
 
     for (path, expected_body) in [
         ("/", INDEX_HTML),
@@ -328,8 +337,7 @@ async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestF
 async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), TestFailure> {
     let closed_fixture = TestDatabase::new().await?;
     let health_router = router(
-        closed_fixture.database.clone(),
-        unused_vault_master_key(),
+        server_state(closed_fixture.database.clone())?,
         unused_web_root(),
     );
     let _database_lock = test_lock_database(&closed_fixture.path)
@@ -345,11 +353,7 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
     let first_correlation = canonical_correlation_id(&health_response.headers)?;
 
     let fixture = TestDatabase::new().await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        unused_web_root(),
-    );
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let supplied = "00000000-0000-7000-8000-000000000000";
     let supplied_request = Request::builder()
         .method(Method::GET)
@@ -461,11 +465,7 @@ async fn mounted_route_responses(
 async fn completed_request_log_is_single_bounded_and_correlated() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let fixture = TestDatabase::new().await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        unused_web_root(),
-    );
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Info);
     let response = async { drive(&application, request(Method::GET, "/api/v2/health", "")?).await }
@@ -499,11 +499,7 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
         LOG_PASSWORD,
     )
     .await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        unused_web_root(),
-    );
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
     let (credential, authentication_correlation, internal_correlation) = async {
@@ -587,11 +583,7 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        unused_web_root(),
-    );
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -641,11 +633,7 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        unused_web_root(),
-    );
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);
@@ -711,11 +699,7 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
-    let application = router(
-        fixture.database.clone(),
-        unused_vault_master_key(),
-        unused_web_root(),
-    );
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
         return Err(TestFailure::ValidLoginFailed);

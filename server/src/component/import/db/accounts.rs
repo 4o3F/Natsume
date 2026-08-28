@@ -6,7 +6,7 @@ use crate::{
         import::ImportError,
     },
     db::Transaction,
-    schema::accounts,
+    diesel_schema::accounts,
 };
 
 pub(crate) fn insert(

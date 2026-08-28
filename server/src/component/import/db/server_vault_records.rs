@@ -6,7 +6,7 @@ use crate::{
         import::{ImportError, candidate::SealedCommitRow},
     },
     db::Transaction,
-    schema::server_vault_records,
+    diesel_schema::server_vault_records,
 };
 
 pub(crate) fn insert_account_credential(

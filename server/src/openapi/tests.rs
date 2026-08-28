@@ -846,11 +846,9 @@ async fn probe_live_router(
     records: &[OperationRecord],
 ) -> Result<BTreeSet<(String, String)>, TestFailure> {
     let fixture = TestDatabase::new().await?;
-    let application = http::router(
-        fixture.database.clone(),
-        http::tests::unused_vault_master_key(),
-        http::tests::unused_web_root(),
-    );
+    let state = http::tests::server_state(fixture.database.clone())
+        .map_err(|_| TestFailure::RouterProbeFailed)?;
+    let application = http::router(state, http::tests::unused_web_root());
     let mut paths = records
         .iter()
         .map(|record| record.path.clone())

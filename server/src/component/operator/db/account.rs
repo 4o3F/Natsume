@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{
     component::operator::{AccountFacts, OperatorError, OperatorIdentity, OperatorRole},
     db::Transaction,
-    schema::operator_accounts,
+    diesel_schema::operator_accounts,
 };
 
 use super::OperatorStoreError;

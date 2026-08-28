@@ -8,10 +8,7 @@ use utoipa::ToSchema;
 
 use crate::{
     audit::CorrelationId,
-    component::{
-        contest::{self, SeatFacts},
-        operator::OperatorIdentity,
-    },
+    component::{contest::SeatFacts, operator::OperatorIdentity},
 };
 
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
@@ -50,7 +47,7 @@ pub(crate) async fn list_seats(
     Extension(correlation_id): Extension<CorrelationId>,
     Extension(_identity): Extension<OperatorIdentity>,
 ) -> Response {
-    match contest::list_seats(&state.database).await {
+    match state.contest().list_seats().await {
         Ok(facts) => {
             let response = facts
                 .into_iter()

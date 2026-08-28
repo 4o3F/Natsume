@@ -6,7 +6,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::{audit::CorrelationId, component::operator};
+use crate::audit::CorrelationId;
 
 use super::super::{AppState, cookie, error::ApiError};
 
@@ -23,12 +23,10 @@ pub(super) async fn authenticate_operator(
         return ApiError::authentication_failed("missing_session_cookie", correlation_id)
             .into_response();
     };
-    let identity = match operator::authenticate_session(
-        &state.database,
-        correlation_id,
-        wire_credential,
-    )
-    .await
+    let identity = match state
+        .operator()
+        .authenticate_session(correlation_id, wire_credential)
+        .await
     {
         Ok(identity) => identity,
         Err(error) => return ApiError::from_operator(error, correlation_id).into_response(),

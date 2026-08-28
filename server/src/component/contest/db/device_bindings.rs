@@ -6,7 +6,7 @@ use crate::{
         lifecycle::DeviceId,
     },
     db::Transaction,
-    schema::device_bindings,
+    diesel_schema::device_bindings,
 };
 
 pub(crate) fn list(

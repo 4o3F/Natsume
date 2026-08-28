@@ -5,7 +5,7 @@ mod csv;
 mod db;
 mod diff;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use sha2::{Digest, Sha256};
 
@@ -13,17 +13,78 @@ use crate::component::{
     contest::{CurrentAccountProjection, CurrentSeatProjection},
     lifecycle::DeviceId,
 };
+use crate::{audit::CorrelationId, db::Database, vault::VaultSession};
 
-pub(crate) use self::candidate::{
-    ImportError, PendingImportCandidate, PreviewToken, audit_invalid_import_upload,
-    create_import_candidate, discard_import, read_pending_import_candidate,
-};
-pub(crate) use self::commit::commit_import;
+#[cfg(test)]
+use self::candidate::create_import_candidate;
+pub(crate) use self::candidate::{ImportError, PendingImportCandidate, PreviewToken};
+#[cfg(test)]
+use self::commit::commit_import;
 pub(crate) use self::csv::CsvImportErrorCategory;
 #[cfg(test)]
 pub(crate) use self::csv::parse_csv;
 pub(crate) use self::diff::{ImportBindingImpact, ImportMappingChange, RedactedImportPreview};
 use self::{candidate::CandidateRowFacts, csv::ImportRow};
+
+/// CSV import authority with private persistence and a startup-loaded vault.
+pub(crate) struct ImportComponent {
+    database: Database,
+    vault: Arc<VaultSession>,
+}
+
+impl ImportComponent {
+    pub(crate) const fn new(database: Database, vault: Arc<VaultSession>) -> Self {
+        Self { database, vault }
+    }
+
+    pub(crate) async fn create_candidate(
+        &self,
+        raw_csv: &[u8],
+        correlation_id: CorrelationId,
+    ) -> Result<candidate::CreatedImportCandidate, ImportError> {
+        match candidate::create_import_candidate(&self.database, raw_csv, correlation_id).await {
+            Ok(candidate) => Ok(candidate),
+            Err(error @ (ImportError::InvalidCsv(_) | ImportError::CandidateInvalid)) => {
+                candidate::audit_invalid_import_upload(&self.database, correlation_id).await?;
+                Err(error)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) async fn read_pending(
+        &self,
+        correlation_id: CorrelationId,
+    ) -> Result<Option<PendingImportCandidate>, ImportError> {
+        candidate::read_pending_import_candidate(&self.database, correlation_id).await
+    }
+
+    pub(crate) async fn commit(
+        &self,
+        candidate_id: uuid::Uuid,
+        presented_token: &PreviewToken,
+        raw_csv: &[u8],
+        correlation_id: CorrelationId,
+    ) -> Result<(), ImportError> {
+        commit::commit_import(
+            &self.database,
+            &self.vault,
+            candidate_id,
+            presented_token,
+            raw_csv,
+            correlation_id,
+        )
+        .await
+    }
+
+    pub(crate) async fn discard(
+        &self,
+        candidate_id: uuid::Uuid,
+        correlation_id: CorrelationId,
+    ) -> Result<(), ImportError> {
+        candidate::discard_import(&self.database, candidate_id, correlation_id).await
+    }
+}
 
 const FINGERPRINT_VERSION: i32 = 1;
 

@@ -9,7 +9,7 @@ use crate::{
         candidate::{CandidateExpiry, CandidateRecord},
     },
     db::Transaction,
-    schema::pending_import_candidate,
+    diesel_schema::pending_import_candidate,
 };
 
 use super::canonical_uuid_v7;

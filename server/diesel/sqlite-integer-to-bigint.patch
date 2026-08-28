@@ -1,5 +1,5 @@
---- schema.rs
-+++ schema.rs
+--- generated-schema.rs
++++ diesel-schema.rs
 @@ -14 +14 @@
 -        credential_revision -> Integer,
 +        credential_revision -> BigInt,

@@ -3,7 +3,7 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use crate::{
     component::{contest::CurrentSeatProjection, import::ImportError},
     db::Transaction,
-    schema::seats,
+    diesel_schema::seats,
 };
 
 pub(crate) fn insert(

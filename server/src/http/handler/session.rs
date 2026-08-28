@@ -9,10 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::{
-    audit::CorrelationId,
-    component::operator::{self, OperatorIdentity},
-};
+use crate::{audit::CorrelationId, component::operator::OperatorIdentity};
 
 use super::super::{AppState, cookie, error::ApiError, middleware};
 
@@ -75,13 +72,10 @@ pub(crate) async fn create_session(
         }
     };
 
-    let signed_in = match operator::sign_in(
-        &state.database,
-        correlation_id,
-        &request.login_name,
-        request.password,
-    )
-    .await
+    let signed_in = match state
+        .operator()
+        .sign_in(correlation_id, &request.login_name, request.password)
+        .await
     {
         Ok(signed_in) => signed_in,
         Err(error) => return ApiError::from_operator(error, correlation_id).into_response(),
@@ -129,7 +123,9 @@ pub(crate) async fn delete_session(
 ) -> Response {
     let response = match cookie::session_credential(&headers) {
         Ok(wire_credential) => {
-            match operator::terminate_session(&state.database, correlation_id, wire_credential)
+            match state
+                .operator()
+                .terminate_session(correlation_id, wire_credential)
                 .await
             {
                 Ok(()) => StatusCode::NO_CONTENT.into_response(),

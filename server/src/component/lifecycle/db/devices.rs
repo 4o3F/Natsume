@@ -5,7 +5,7 @@ use crate::{
         DeviceFacts, DeviceId, DevicePersistenceError, DeviceState, EvidenceQuality,
     },
     db::Transaction,
-    schema::devices,
+    diesel_schema::devices,
 };
 use diesel::{
     ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt,

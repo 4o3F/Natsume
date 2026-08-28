@@ -97,7 +97,7 @@ impl CurrentAccountProjection {
 /// # Errors
 ///
 /// Returns a redacted [`ContestError`] when persistence fails.
-pub(crate) async fn list_accounts(database: &Database) -> Result<Vec<AccountFacts>, ContestError> {
+pub(super) async fn list_accounts(database: &Database) -> Result<Vec<AccountFacts>, ContestError> {
     database
         .read(crate::component::contest::db::accounts::list)
         .await

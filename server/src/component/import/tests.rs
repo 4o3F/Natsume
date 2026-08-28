@@ -48,7 +48,7 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
 
     commit_import(
         &fixture.database,
-        &fixture.master_key,
+        &fixture.vault,
         first.candidate_id(),
         first.preview_token(),
         first_csv,
@@ -67,13 +67,11 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
     );
     assert_eq!(first_evidence.credential_revision, 1);
     assert_eq!(
-        vault::open(
-            &fixture.master_key,
-            &first_evidence.nonce,
-            &first_evidence.ciphertext,
-        )
-        .unwrap_or_else(|_| panic!("first credential could not be opened"))
-        .as_slice(),
+        fixture
+            .vault
+            .open(&first_evidence.nonce, &first_evidence.ciphertext)
+            .unwrap_or_else(|_| panic!("first credential could not be opened"))
+            .as_slice(),
         b"first-password-canary"
     );
 
@@ -87,7 +85,7 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
     .unwrap_or_else(|error| panic!("second preview failed: {error}"));
     commit_import(
         &fixture.database,
-        &fixture.master_key,
+        &fixture.vault,
         second.candidate_id(),
         second.preview_token(),
         second_csv,
@@ -100,13 +98,11 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
     assert_ne!(second_evidence.nonce, first_evidence.nonce);
     assert_ne!(second_evidence.ciphertext, first_evidence.ciphertext);
     assert_eq!(
-        vault::open(
-            &fixture.master_key,
-            &second_evidence.nonce,
-            &second_evidence.ciphertext,
-        )
-        .unwrap_or_else(|_| panic!("second credential could not be opened"))
-        .as_slice(),
+        fixture
+            .vault
+            .open(&second_evidence.nonce, &second_evidence.ciphertext)
+            .unwrap_or_else(|_| panic!("second credential could not be opened"))
+            .as_slice(),
         b"second-password-canary"
     );
 }
@@ -124,7 +120,7 @@ async fn commit_rejects_removing_a_seat_owned_by_binding() {
     .unwrap_or_else(|error| panic!("initial preview failed: {error}"));
     commit_import(
         &fixture.database,
-        &fixture.master_key,
+        &fixture.vault,
         initial.candidate_id(),
         initial.preview_token(),
         initial_csv,
@@ -145,7 +141,7 @@ async fn commit_rejects_removing_a_seat_owned_by_binding() {
     assert_eq!(replacement.diff().binding_impacts().len(), 1);
     let result = commit_import(
         &fixture.database,
-        &fixture.master_key,
+        &fixture.vault,
         replacement.candidate_id(),
         replacement.preview_token(),
         replacement_csv,
@@ -261,7 +257,7 @@ struct TextValue {
 struct Fixture {
     database: Database,
     root: PathBuf,
-    master_key: PathBuf,
+    vault: vault::VaultSession,
 }
 
 impl Fixture {
@@ -273,6 +269,8 @@ impl Fixture {
         let master_key = root.join("master.key");
         vault::ensure_master_key(&master_key)
             .unwrap_or_else(|_| panic!("fixture vault key could not be created"));
+        let vault = vault::load(&master_key)
+            .unwrap_or_else(|_| panic!("fixture vault key could not be loaded"));
         let database =
             Database::connect_and_migrate(&DatabaseConfig::new(root.join("server.sqlite3"), true))
                 .await
@@ -280,7 +278,7 @@ impl Fixture {
         Self {
             database,
             root,
-            master_key,
+            vault,
         }
     }
 }

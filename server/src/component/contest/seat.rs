@@ -66,7 +66,7 @@ impl CurrentSeatProjection {
 /// # Errors
 ///
 /// Returns a redacted [`ContestError`] when persistence fails.
-pub(crate) async fn list_seats(database: &Database) -> Result<Vec<SeatFacts>, ContestError> {
+pub(super) async fn list_seats(database: &Database) -> Result<Vec<SeatFacts>, ContestError> {
     database
         .read(crate::component::contest::db::seats::list)
         .await

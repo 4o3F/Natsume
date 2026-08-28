@@ -3,7 +3,7 @@ use diesel::{QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt};
 use crate::{
     component::contest::{AccountFacts, ContestPersistenceError},
     db::Transaction,
-    schema::accounts,
+    diesel_schema::accounts,
 };
 
 pub(crate) fn list(

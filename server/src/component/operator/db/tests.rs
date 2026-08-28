@@ -52,8 +52,8 @@ pub(crate) async fn test_session_hashes(
     database
         .read(|transaction| {
             use diesel::{QueryDsl as _, RunQueryDsl as _};
-            crate::schema::operator_sessions::table
-                .select(crate::schema::operator_sessions::session_credential_hash)
+            crate::diesel_schema::operator_sessions::table
+                .select(crate::diesel_schema::operator_sessions::session_credential_hash)
                 .load::<Vec<u8>>(transaction.connection())
                 .map_err(|_| OperatorError::PersistenceFailed)
         })

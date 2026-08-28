@@ -7,7 +7,7 @@ use crate::{
         lifecycle::DeviceId,
     },
     db::Transaction,
-    schema::{account_mappings, accounts, device_bindings, seats},
+    diesel_schema::{account_mappings, accounts, device_bindings, seats},
 };
 
 pub(crate) fn read_current_seats(

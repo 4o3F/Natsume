@@ -51,7 +51,7 @@ upgrade never create or rewrite these files.
 The server embeds and runs its Diesel migrations at runtime; deployed packages
 and production hosts do not require Diesel CLI. Developers and CI use exactly
 `diesel_cli 2.3.12` only for `just diesel-schema`, which rebuilds the committed
-private schema artifact from a temporary database and checks the clean diff.
+private `diesel/schema.rs` artifact from a temporary database and checks the clean diff.
 CI installs it with `cargo install diesel_cli --version 2.3.12 --locked
 --no-default-features --features sqlite-bundled`.
 

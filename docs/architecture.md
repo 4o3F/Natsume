@@ -1,7 +1,7 @@
 # Natsume V2 目标架构与实施计划
 
 > 状态：`ACCEPTED TARGET`
-> 基线日期：2026-08-26
+> 基线日期：2026-08-28
 > 适用范围：Natsume V2 全系统
 > 实施策略：预发布 flag day；协议、数据库、Server、Client、Web 与测试同步切换
 
@@ -20,7 +20,7 @@
 | HTTP API 的精确公开 schema | Server OpenAPI 生成源与生成物 |
 | 本地 IPC 的精确接口 | `crates/local-control-api` 与 D-Bus introspection |
 | SQLite 物理表、列、索引与约束 | 完成 flag day 后的 `server/migrations/00000000000001_initial/up.sql` |
-| Diesel 生成类型 | `server/src/schema.rs`，必须由 migration 重建 |
+| Diesel 生成类型 | `server/diesel/schema.rs`，必须由 migration 重建 |
 | Device Control `error_code` 字段与开放token语法 | `crates/device-protocol/proto/*.proto` 与 `crates/device-protocol` |
 | HTTP公开错误码与status映射 | Server OpenAPI生成源与HTTP adapter |
 | 本地IPC typed失败 | `crates/local-control-api` 与各IPC adapter |
@@ -436,7 +436,8 @@ Resume proof 使用 current control key。Server 将 proof 映射到准确 `devi
 
 `SessionReady` 后第一条 Active frame 必须是完整、语义有效的 `ClientStateSnapshot`。在它全部通过边界校验前，任何组件不得写入。
 
-Server 随后依次调用所有组件 `ingest`。只有全部组件成功后，当前 Actor 才把 `initial_state_received` 设为 true 并生成 ServerState。
+Server 随后依次调用所有组件 `ingest`。只有全部组件成功后，当前 Actor 才把
+`initial_state_received` 设为 true 并生成完整 `ServerStateSnapshot`。
 
 组件事务彼此独立，因此进程可能在部分组件提交后崩溃。这是允许的：
 
@@ -580,7 +581,8 @@ Server 业务采用纵向组件：
 
 ### 10.2 `StateComponent`
 
-trait 是 Server-local contract，不放入共享 crate：
+trait 是 Server-local contract，不放入共享 crate。它只随第一个真实 Active
+资源实现一起落地；在此之前不创建无消费者的 trait、空实现或占位组件集合：
 
 ```rust
 pub(crate) trait StateComponent: Send + Sync + 'static {
@@ -637,7 +639,10 @@ pub(crate) trait StateComponent: Send + Sync + 'static {
 
 组件可以在内部执行有限的 transition→re-read→resolve，但不建立通用 fixed-point engine。每个组件明确证明自己的 transition 会终止。
 
-### 10.3 静态组件集合
+### 10.3 Active 资源的静态组件集合
+
+Gateway 在 WP4 成为第一个 Active 资源时，同时建立 `StateComponent` 与静态
+`StateComponents`。后续资源按固定 wire structure 增加字段：
 
 ```rust
 pub(crate) struct StateComponents {
@@ -659,7 +664,28 @@ pub(crate) struct StateComponents {
 
 顶层显式调用每个组件。少量重复是静态 wire structure 的直接表达。
 
-### 10.4 组件内部数据库
+### 10.4 `ServerState`
+
+`ServerState` 是进程内唯一业务组合对象，由启动入口创建并通过 `Arc` 共享给所有
+transport。HTTP 的 `AppState` 只是 `Arc<ServerState>` 类型别名，不再建立第二个
+依赖容器。
+
+当前已实现的组成是：
+
+```rust
+pub(crate) struct ServerState {
+    operator: OperatorComponent,
+    contest: ContestComponent,
+    import: ImportComponent,
+    provisioning: ProvisioningComponent,
+}
+```
+
+Enrollment、Lifecycle、Active 资源和 Registry 到达各自 WP 时直接增加为明确字段；
+不增加单层 `Components` wrapper，也不建立 service locator。`Database` 和
+`VaultSession` 只在启动组装时出现，transport 只能取得 component reference。
+
+### 10.5 组件内部数据库
 
 每个组件持有自己需要的 concrete dependency：
 
@@ -690,18 +716,20 @@ pub(crate) struct BindingComponent {
 
 ### 11.1 Composition root
 
-Server 启动时创建：
+当前 Server 启动顺序是：
 
 ```text
 Database
 VaultSession
-GatewayIssuer
-Components
-DeviceControl
-HTTP AppState
+  → ServerState { Operator, Contest, Import, Provisioning }
+  → Arc<ServerState>
+  → HTTP
 ```
 
-`AppState` 持有 `Arc<DeviceControl>` 和仍被非 Device HTTP feature需要的 handle。没有全局 singleton。
+后续在同一个 `ServerState` 中加入 Enrollment、Lifecycle、Active Components 与
+Registry，WSS、DeviceActor 和 HTTP 共享该对象。`GatewayIssuer` 在 Gateway
+Component 到达时由它持有。不存在全局 singleton，也不允许 transport 重新组装
+组件依赖。
 
 ### 11.2 Registry
 
@@ -769,13 +797,15 @@ validate current lease
   → Session materialize
   → Home materialize
   → final lifecycle/lease check
-  → encode complete ServerState
+  → encode complete ServerStateSnapshot
   → send on current lease
 ```
 
 初期顺序执行。SQLite 是单写者，提前并行只会增加 cancellation、错误聚合和 race。只有测量证明瓶颈后才考虑并行 materialize。
 
-跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation 在 commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下一份完整 ServerState。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
+跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation 在
+commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下一份完整
+`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
 
 ### 11.5 Dirty 与周期收敛
 
@@ -808,7 +838,7 @@ Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期�
 - 禁止用数据库`CHECK`承载UUID格式、长度、枚举、状态组合、时间范围或presence等业务校验；
 - 所有持久化值必须先通过owning component的Rust validated type和事务规则；读取到非法历史值时fail closed；
 - 不用通用 resource、event-sourcing、operation、JSON payload 表；
-- 不持久化 ServerState/ConcreteTarget blob；
+- 不持久化 `ServerStateSnapshot`/ConcreteTarget blob；
 - 不持久化 lease；
 - 不持久化原始Client Input/Actual projection；只有参与恢复或replay fencing的accepted input字段才进入owning component的current-fact表；
 - 不建立 global revision counter；
@@ -985,7 +1015,7 @@ trait Reconciler {
 
 Daemon 可以有一个有界 effect executor，但它处理 latest target计划，不是 Command queue：
 
-- 新完整 ServerState 通过验证后原子替换当前 target；
+- 新完整 `ServerStateSnapshot` 通过验证后原子替换当前 target；
 - 旧 plan在副作用前检查 receive generation并取消；
 - 资源副作用按安全依赖排序；
 - Gateway数据面先BLOCKED，再变更credential/config；
@@ -1169,7 +1199,11 @@ probe拥有的真实跨进程/持久化/fault-injection场景出现时再创建�
 新模块继续使用 `parent.rs + parent/child.rs`，不使用 `mod.rs`：
 
 ```text
+server/diesel/
+  schema.rs
+  sqlite-integer-to-bigint.patch
 server/src/
+  server_state.rs
   component.rs
   component/
     operator.rs
@@ -1204,13 +1238,16 @@ server/src/
   http/handler/
     device_control.rs
   db.rs
-  schema.rs
   audit.rs
   vault.rs
   pki.rs
 ```
 
-`db.rs`只提供连接和transaction；`schema.rs`是由migration生成的独立类型入口。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际变大后才拆`types.rs`或`resolve.rs`。
+`db.rs`只提供连接和transaction；`server/diesel/schema.rs`是由migration生成、通过
+`crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达
+SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning
+component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际
+变大后才拆`types.rs`或`resolve.rs`。
 
 现有Operator/Import代码迁移时保持行为测试，不借本次重构增加新功能。
 
@@ -1349,25 +1386,29 @@ just api
 
 以下Work Package是依赖顺序，不是长期Phase体系。每个WP只在列出的验收满足后结束。
 
-### 当前实现起点
+### 当前实现基线
 
-2026-08-26 的实现基线：
+2026-08-28 的实现基线：
 
-- split Proto、四平面快照、Challenge/Proof和Enrollment barrier已经在
-  `natsume-device-protocol`中形成；
-- Server尚无production Device WSS、DeviceActor或State Component；
-- Server仍有旧Command application/db/http/audit代码和OpenAPI surface；
-- initial migration仍混合Token-era Enrollment、Bundle、Command和Observed；
-- Diesel schema与runtime adapter仍表达旧schema；
-- Daemon只有identity、control key/manifest等foundation，尚无完整连接循环和五资源Reconciler；
-- 旧`integration-tests`已删除；第一个真实跨进程、持久化或故障注入场景
-  到达时再创建，组件/协议/IPC单元契约不得在此复制；
-- `Database::read/write`、Operator、Import、Vault、TLS listener、打包与现有行为测试是可复用基础，不能因Device Control flag day被无关删除；
-- 本文重置文档体系，不代表上述实现债务已完成。
+- split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在
+  `natsume-device-protocol` 中形成；
+- 唯一 initial migration 和 Diesel schema 已统一到 17 张目标表，不再包含
+  Command、Observed、Token 或 Bundle 旧模型；
+- Server 已建立纵向 `component` 结构和进程级 `ServerState`；Operator、Contest、
+  Import、Provisioning 持有自己的 concrete dependency，HTTP 只调用组件；
+- Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
+  属于 HTTP；
+- Lifecycle 目前只有 validated types 与私有 DB adapter；Server 尚无 production
+  Device WSS、DeviceActor、Enrollment service 或 Active State Component；
+- Daemon 只有 identity、control key/manifest 等 foundation，尚无完整连接循环和
+  五资源 Reconciler；
+- `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建，
+  组件、协议和 IPC 单元契约不得在此复制。
 
-实现模型必须先用只读扫描确认这些事实是否仍然成立；如果后续commit已经推进，跳过已完成工作，但不得恢复旧设计。
+后续 WP 开始前仍需只读核对本文、Proto、migration 和相关源码；跳过已经完成的工作，
+不得恢复旧设计。
 
-### WP0：单一架构基线
+### WP0：单一架构基线（已完成）
 
 目标：
 
@@ -1380,7 +1421,7 @@ just api
 - 仓库只有本文一份`docs/*.md`；
 - 本文不引用已删除的旧文档。
 
-### WP1：目标migration
+### WP1：目标migration（已完成）
 
 目标：
 
@@ -1397,18 +1438,20 @@ just api
 - 旧表/列symbol为零；
 - 每HWID一个non-revoked Device、每Device一个current key/credential/negotiation约束可由并发测试证明。
 
-### WP2：Server组件骨架
+### WP2：Server组件骨架（已完成）
 
 目标：
 
 - 建立`component`纵向结构；
-- 实现Server-local `StateComponent`和静态`StateComponents`；
-- 迁移Database/Audit/Vault/PKI基础设施；
+- 建立进程级`ServerState`，由HTTP和后续WSS/Actor共享；
+- 让Operator、Contest、Import、Provisioning持有自己的concrete dependency；
+- Vault在启动时加载一次，Provisioning gate归属组件；
 - 定义application-owned validated types。
 
 验收：
 
 - 无trait object/dynamic registry；
+- HTTP state不暴露Database、Vault path或业务gate；
 - Proto/Diesel/Axum类型不进入纯resolver；
 - 组件DB私有；
 - Operator/Import既有行为测试保持。
@@ -1433,6 +1476,8 @@ just api
 
 目标：
 
+- 随首个真实Active资源实现Server-local `StateComponent`和静态
+  `StateComponents`，不增加dynamic registry；
 - 实现accepted CSR current fact，不持久化原始Client projection；
 - Intent Policy、CSR validation、sign/CAS、grant/replacement；
 - Operator/Panel读取durable current fact与在线Actor状态。
@@ -1496,8 +1541,7 @@ just api
 
 目标：
 
-- HTTP handler只调用组件；
-- 删除`/commands`、Command errors/OpenAPI/Web页面；
+- 保持HTTP handler只调用组件；
 - 增加Enrollment、target mutation与convergence查询；
 - 更新generated API。
 

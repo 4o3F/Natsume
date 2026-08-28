@@ -19,10 +19,10 @@ use crate::{
     audit::CorrelationId,
     component::{
         import::{
-            self, ImportBindingImpact, ImportError, ImportMappingChange, PendingImportCandidate,
-            PreviewToken, RedactedImportPreview,
+            ImportBindingImpact, ImportMappingChange, PendingImportCandidate, PreviewToken,
+            RedactedImportPreview,
         },
-        operator::{self, OperatorIdentity},
+        operator::OperatorIdentity,
     },
 };
 
@@ -67,7 +67,7 @@ async fn require_admin_role(
     request: Request,
     next: Next,
 ) -> Response {
-    if let Err(error) = operator::require_admin(identity.role()) {
+    if let Err(error) = identity.require_admin() {
         return ApiError::from_operator(error, correlation_id).into_response();
     }
     next.run(request).await
@@ -201,7 +201,7 @@ pub(crate) async fn create_import(
                 .into_response();
         }
     };
-    match import::create_import_candidate(&state.database, &body, correlation_id).await {
+    match state.import().create_candidate(&body, correlation_id).await {
         Ok(created) => {
             let response = ImportPreviewResponse {
                 candidate_id: created.candidate_id(),
@@ -210,14 +210,6 @@ pub(crate) async fn create_import(
                 diff: ImportRedactedDiff::from(created.diff()),
             };
             json_response(StatusCode::CREATED, &response, correlation_id)
-        }
-        Err(error @ (ImportError::InvalidCsv(_) | ImportError::CandidateInvalid)) => {
-            match import::audit_invalid_import_upload(&state.database, correlation_id).await {
-                Ok(()) => ApiError::from_import(error, correlation_id).into_response(),
-                Err(audit_error) => {
-                    ApiError::from_import(audit_error, correlation_id).into_response()
-                }
-            }
         }
         Err(error) => ApiError::from_import(error, correlation_id).into_response(),
     }
@@ -239,7 +231,7 @@ pub(crate) async fn get_import(
     State(state): State<AppState>,
     Extension(correlation_id): Extension<CorrelationId>,
 ) -> Response {
-    match import::read_pending_import_candidate(&state.database, correlation_id).await {
+    match state.import().read_pending(correlation_id).await {
         Ok(pending) => json_response(
             StatusCode::OK,
             &ImportPendingResponse {
@@ -293,15 +285,15 @@ pub(crate) async fn commit_import(
         return ApiError::invalid_request("import_preview_token_rejected", correlation_id)
             .into_response();
     };
-    match import::commit_import(
-        &state.database,
-        &state.vault_master_key_path,
-        import_id,
-        &PreviewToken::from_bytes(token),
-        request.csv.as_bytes(),
-        correlation_id,
-    )
-    .await
+    match state
+        .import()
+        .commit(
+            import_id,
+            &PreviewToken::from_bytes(token),
+            request.csv.as_bytes(),
+            correlation_id,
+        )
+        .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_import(error, correlation_id).into_response(),
@@ -332,7 +324,7 @@ pub(crate) async fn discard_import(
         return ApiError::invalid_request("import_id_not_canonical_uuid_v7", correlation_id)
             .into_response();
     };
-    match import::discard_import(&state.database, import_id, correlation_id).await {
+    match state.import().discard(import_id, correlation_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_import(error, correlation_id).into_response(),
     }

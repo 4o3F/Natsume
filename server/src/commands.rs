@@ -3,6 +3,7 @@ use std::{
     future::Future,
     io::{BufRead, BufReader, Write},
     path::Path,
+    sync::Arc,
 };
 use tracing::instrument::WithSubscriber as _;
 
@@ -12,12 +13,13 @@ pub(crate) mod serve;
 pub use crate::error::CommandError;
 
 use crate::{
-    component::operator::{self, OperatorCredentials, hash_password},
+    component::operator::{OperatorComponent, OperatorCredentials, hash_password},
     config::{GatewaySiteConfig, ServerConfig},
     db::{Database, DatabaseConfig},
     http, logging,
+    server_state::ServerState,
     tls::TlsListener,
-    vault::{ensure_master_key, require_master_key},
+    vault::{ensure_master_key, load as load_vault},
 };
 
 const WEB_ASSETS_PATH: &str = "/usr/share/natsume-server/web";
@@ -29,17 +31,15 @@ const PASSWORD_CONFIRMATION_PROMPT: &str = "Confirm password: ";
 ///
 /// # Errors
 ///
-/// Returns a redacted [`CommandError`] when the database cannot be opened or migrated.
+/// Returns a redacted [`CommandError`] when startup infrastructure cannot be loaded.
 pub async fn router(config: ServerConfig, web_root: &Path) -> Result<axum::Router, CommandError> {
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
         .map_err(|_| CommandError::Database)?;
-    Ok(http::router(
-        database,
-        config.vault_master_key_path(),
-        web_root,
-    ))
+    let vault = load_vault(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
+    let state = Arc::new(ServerState::new(database, Arc::new(vault)));
+    Ok(http::router(state, web_root))
 }
 
 /// Runs the Server until SIGINT or SIGTERM requests graceful shutdown.
@@ -73,8 +73,8 @@ where
         .await
         .map_err(|_| CommandError::Database)?;
     tracing::info!("database ready");
-    require_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
-    tracing::info!("vault key verified");
+    let vault = load_vault(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
+    tracing::info!("vault ready");
     let listener = TlsListener::bind(
         config.listen_address(),
         config.tls_certificate_path(),
@@ -84,11 +84,8 @@ where
     .map_err(|_| CommandError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let router = http::router(
-        database,
-        config.vault_master_key_path(),
-        Path::new(WEB_ASSETS_PATH),
-    );
+    let state = Arc::new(ServerState::new(database, Arc::new(vault)));
+    let router = http::router(state, Path::new(WEB_ASSETS_PATH));
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
     let shutdown = async move {
@@ -151,7 +148,8 @@ where
     let credentials = read_credentials()?;
     let password_hash =
         hash_password(credentials.password()).map_err(|_| CommandError::Bootstrap)?;
-    operator::create_first_admin(&database, credentials.login_name(), &password_hash)
+    OperatorComponent::new(database)
+        .create_first_admin(credentials.login_name(), &password_hash)
         .await
         .map_err(|_| CommandError::Bootstrap)?;
     Ok(())
@@ -172,7 +170,8 @@ where
     let credentials = read_credentials()?;
     let password_hash =
         hash_password(credentials.password()).map_err(|_| CommandError::PasswordReset)?;
-    operator::reset_operator_password(&database, credentials.login_name(), &password_hash)
+    OperatorComponent::new(database)
+        .reset_password(credentials.login_name(), &password_hash)
         .await
         .map_err(|_| CommandError::PasswordReset)
 }

@@ -3,7 +3,7 @@ use diesel::{QueryDsl, RunQueryDsl};
 use crate::{
     component::contest::{ContestPersistenceError, SeatFacts},
     db::Transaction,
-    schema::seats,
+    diesel_schema::seats,
 };
 
 pub(crate) fn list(

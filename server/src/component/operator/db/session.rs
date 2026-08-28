@@ -4,7 +4,7 @@ use uuid::Uuid;
 use crate::{
     component::operator::{OperatorError, OperatorIdentity},
     db::Transaction,
-    schema::operator_sessions,
+    diesel_schema::operator_sessions,
 };
 
 use super::OperatorStoreError;

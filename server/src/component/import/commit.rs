@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    path::Path,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
@@ -13,7 +10,7 @@ use crate::{
     },
     component::contest::{CurrentAccountProjection, CurrentSeatProjection, NewAccountFacts},
     db::{Database, Transaction},
-    vault,
+    vault::VaultSession,
 };
 
 use super::{
@@ -28,7 +25,7 @@ use super::{
 
 pub(crate) async fn commit_import(
     database: &Database,
-    master_key_path: &Path,
+    vault: &VaultSession,
     candidate_id: Uuid,
     presented_token: &PreviewToken,
     raw_csv: &[u8],
@@ -37,10 +34,8 @@ pub(crate) async fn commit_import(
     let parsed = parse_csv(raw_csv).map_err(ImportError::InvalidCsv)?;
     let candidate_rows = parsed.candidate_rows();
     let candidate_hash = candidate_fingerprint(&candidate_rows);
-    let vault_session = vault::load(master_key_path).map_err(|_| ImportError::VaultFailure)?;
-    let sealed_rows = seal_rows(&vault_session, &parsed.rows)?;
+    let sealed_rows = seal_rows(vault, &parsed.rows)?;
     drop(parsed);
-    drop(vault_session);
 
     let token_hash = presented_token.sha256();
     let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());

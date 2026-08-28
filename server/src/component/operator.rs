@@ -1,7 +1,7 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::audit::AuditPersistenceError;
+use crate::{audit::AuditPersistenceError, db::Database};
 
 mod account;
 mod audit;
@@ -14,7 +14,7 @@ pub(crate) mod test_db {
     pub(crate) use super::db::tests::*;
 }
 
-pub(crate) use self::account::{AccountFacts, create_first_admin, reset_operator_password};
+pub(crate) use self::account::AccountFacts;
 #[cfg(test)]
 pub(crate) use self::password::OperatorPassword;
 pub(crate) use self::password::hash_password;
@@ -25,12 +25,67 @@ use self::password::{
 };
 #[cfg(test)]
 pub(crate) use self::session::SessionCredential;
-pub(crate) use self::session::{
-    OperatorCredentials, SessionCredentialHex, SessionFacts, authenticate_session, sign_in,
-    terminate_session,
-};
+pub(crate) use self::session::{OperatorCredentials, SessionCredentialHex, SessionFacts};
 #[cfg(test)]
-use self::session::{SESSION_CREDENTIAL_LENGTH, decode_lower_hex};
+use self::session::{SESSION_CREDENTIAL_LENGTH, authenticate_session, decode_lower_hex, sign_in};
+
+/// Operator authentication and account authority with private persistence.
+pub(crate) struct OperatorComponent {
+    database: Database,
+}
+
+impl OperatorComponent {
+    pub(crate) const fn new(database: Database) -> Self {
+        Self { database }
+    }
+
+    pub(crate) async fn create_first_admin(
+        &self,
+        login_name: &str,
+        password_hash: &str,
+    ) -> Result<Uuid, OperatorError> {
+        account::create_first_admin(&self.database, login_name, password_hash).await
+    }
+
+    pub(crate) async fn reset_password(
+        &self,
+        login_name: &str,
+        password_hash: &str,
+    ) -> Result<(), OperatorError> {
+        account::reset_operator_password(&self.database, login_name, password_hash).await
+    }
+
+    pub(crate) async fn sign_in(
+        &self,
+        correlation_id: crate::audit::CorrelationId,
+        login_name: &str,
+        submitted_password: String,
+    ) -> Result<session::SignedInSession, OperatorError> {
+        session::sign_in(
+            &self.database,
+            correlation_id,
+            login_name,
+            submitted_password,
+        )
+        .await
+    }
+
+    pub(crate) async fn authenticate_session(
+        &self,
+        correlation_id: crate::audit::CorrelationId,
+        wire_credential: SessionCredentialHex,
+    ) -> Result<OperatorIdentity, OperatorError> {
+        session::authenticate_session(&self.database, correlation_id, wire_credential).await
+    }
+
+    pub(crate) async fn terminate_session(
+        &self,
+        correlation_id: crate::audit::CorrelationId,
+        wire_credential: SessionCredentialHex,
+    ) -> Result<(), OperatorError> {
+        session::terminate_session(&self.database, correlation_id, wire_credential).await
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OperatorRole {
@@ -84,6 +139,10 @@ impl OperatorIdentity {
     #[must_use]
     pub(crate) const fn role(self) -> OperatorRole {
         self.role
+    }
+
+    pub(crate) const fn require_admin(self) -> Result<(), OperatorError> {
+        require_admin(self.role)
     }
 }
 

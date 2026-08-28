@@ -10,7 +10,9 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
 };
 use snafu::Snafu;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroize;
+#[cfg(test)]
+use zeroize::Zeroizing;
 
 const MASTER_KEY_LENGTH: usize = 32;
 const RECORD_NONCE_LENGTH: usize = 24;
@@ -35,51 +37,6 @@ pub(crate) fn ensure_master_key(master_key_path: &Path) -> Result<(), VaultError
     };
     drop(master_key);
     Ok(())
-}
-
-/// Requires an existing Server vault master key and validates its storage
-/// policy without creating any filesystem artifact.
-///
-/// # Errors
-///
-/// Returns a redacted [`VaultError`] when the key is absent or invalid.
-pub(crate) fn require_master_key(master_key_path: &Path) -> Result<(), VaultError> {
-    validate_private_directory(master_key_path)?;
-    let file = OpenOptions::new()
-        .read(true)
-        .open(master_key_path)
-        .map_err(|_| VaultError::InvalidExistingKey)?;
-    drop(read_existing_key(file)?);
-    Ok(())
-}
-
-/// Encrypts one vault record with a fresh extended nonce.
-///
-/// # Errors
-///
-/// Returns a redacted [`VaultError`] when the key is invalid, entropy is
-/// unavailable, or encryption fails.
-#[allow(dead_code)]
-pub(crate) fn seal(
-    master_key_path: &Path,
-    plaintext: &[u8],
-) -> Result<([u8; RECORD_NONCE_LENGTH], Vec<u8>), VaultError> {
-    load(master_key_path)?.seal(plaintext)
-}
-
-/// Decrypts one authenticated vault record.
-///
-/// # Errors
-///
-/// Returns a redacted [`VaultError`] when the key or nonce is invalid or
-/// authentication fails.
-#[allow(dead_code)]
-pub(crate) fn open(
-    master_key_path: &Path,
-    nonce: &[u8],
-    ciphertext: &[u8],
-) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-    load(master_key_path)?.open(nonce, ciphertext)
 }
 
 pub(crate) struct VaultSession {
@@ -111,6 +68,7 @@ impl VaultSession {
         Ok((nonce_bytes, ciphertext))
     }
 
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         nonce: &[u8],
@@ -304,8 +262,8 @@ mod tests {
     };
 
     use super::{
-        MASTER_KEY_LENGTH, TemporaryKeyFile, VaultError, create_master_key, ensure_master_key,
-        load, open, require_master_key, seal, temporary_key_path,
+        MASTER_KEY_LENGTH, TemporaryKeyFile, VaultError, VaultSession, create_master_key,
+        ensure_master_key, load, temporary_key_path,
     };
 
     #[test]
@@ -313,19 +271,23 @@ mod tests {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
         ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        let session = load(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
         let plaintext = b"vault-record-plaintext-canary";
 
-        let (nonce, ciphertext) =
-            seal(&key_path, plaintext).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        let (nonce, ciphertext) = session
+            .seal(plaintext)
+            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
         if ciphertext.as_slice() == plaintext {
             return Err(TestFailure::CiphertextMatchedPlaintext);
         }
-        let (second_nonce, second_ciphertext) =
-            seal(&key_path, plaintext).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        let (second_nonce, second_ciphertext) = session
+            .seal(plaintext)
+            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
         if second_nonce == nonce || second_ciphertext == ciphertext {
             return Err(TestFailure::RecordSealWasReused);
         }
-        let opened = open(&key_path, &nonce, &ciphertext)
+        let opened = session
+            .open(&nonce, &ciphertext)
             .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
         if opened.as_slice() != plaintext {
             return Err(TestFailure::UnexpectedVaultFailure);
@@ -333,14 +295,14 @@ mod tests {
 
         let mut wrong_nonce = nonce;
         wrong_nonce[0] ^= 1;
-        assert_record_open_failure(&key_path, &wrong_nonce, &ciphertext, plaintext)?;
+        assert_record_open_failure(&session, &wrong_nonce, &ciphertext, plaintext)?;
 
         let mut tampered = ciphertext;
         let Some(last) = tampered.last_mut() else {
             return Err(TestFailure::UnexpectedVaultFailure);
         };
         *last ^= 1;
-        assert_record_open_failure(&key_path, &nonce, &tampered, plaintext)
+        assert_record_open_failure(&session, &nonce, &tampered, plaintext)
     }
 
     #[test]
@@ -436,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn require_reads_without_rewriting() -> Result<(), TestFailure> {
+    fn load_reads_without_rewriting() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
         ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
@@ -446,7 +408,7 @@ mod tests {
             .and_then(|metadata| metadata.modified())
             .map_err(|_| TestFailure::FixtureIoFailed)?;
 
-        require_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        drop(load(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?);
 
         let content_after =
             Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
@@ -462,12 +424,12 @@ mod tests {
     }
 
     #[test]
-    fn require_missing_key_creates_no_artifacts() -> Result<(), TestFailure> {
+    fn load_missing_key_creates_no_artifacts() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
         let temporary_path = temporary_key_path(&key_path);
 
-        let Err(error) = require_master_key(&key_path) else {
+        let Err(error) = load(&key_path) else {
             return Err(TestFailure::ExpectedVaultFailure);
         };
         if error != VaultError::InvalidExistingKey {
@@ -626,12 +588,12 @@ mod tests {
     }
 
     fn assert_record_open_failure(
-        key_path: &Path,
+        session: &VaultSession,
         nonce: &[u8],
         ciphertext: &[u8],
         plaintext_canary: &[u8],
     ) -> Result<(), TestFailure> {
-        let Err(error) = open(key_path, nonce, ciphertext) else {
+        let Err(error) = session.open(nonce, ciphertext) else {
             return Err(TestFailure::ExpectedVaultFailure);
         };
         if error != VaultError::RecordOpenFailed {

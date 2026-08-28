@@ -4,7 +4,7 @@ use serde::Serialize;
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::{db::Transaction, schema::audit_events};
+use crate::{db::Transaction, diesel_schema::audit_events};
 
 /// Redacted persistence boundary shared by the Audit adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]

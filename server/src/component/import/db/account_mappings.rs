@@ -1,6 +1,6 @@
 use diesel::{ExpressionMethods, RunQueryDsl};
 
-use crate::{component::import::ImportError, db::Transaction, schema::account_mappings};
+use crate::{component::import::ImportError, db::Transaction, diesel_schema::account_mappings};
 
 pub(crate) fn delete_all(transaction: &mut Transaction<'_>) -> Result<usize, ImportError> {
     diesel::delete(account_mappings::table)

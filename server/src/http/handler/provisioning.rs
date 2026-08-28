@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 use crate::{
     audit::CorrelationId,
     component::{
-        operator::{self, OperatorIdentity},
-        provisioning::{self, ProvisioningWindow, ProvisioningWindowState},
+        operator::OperatorIdentity,
+        provisioning::{ProvisioningWindow, ProvisioningWindowState},
     },
 };
 
@@ -45,7 +45,7 @@ async fn require_admin_role(
     request: Request,
     next: Next,
 ) -> Response {
-    if let Err(error) = operator::require_admin(identity.role()) {
+    if let Err(error) = identity.require_admin() {
         return ApiError::from_operator(error, correlation_id).into_response();
     }
     next.run(request).await
@@ -93,7 +93,7 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     )
 )]
 pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Response {
-    let window = provisioning::read_window(&state.provisioning).await;
+    let window = state.provisioning().read_window().await;
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }
 
@@ -113,7 +113,7 @@ pub(crate) async fn open_provisioning_window(
     State(state): State<AppState>,
     Extension(correlation_id): Extension<CorrelationId>,
 ) -> Response {
-    match provisioning::open_window(&state.provisioning, &state.database, correlation_id).await {
+    match state.provisioning().open_window(correlation_id).await {
         Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
         Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
     }
@@ -135,7 +135,7 @@ pub(crate) async fn close_provisioning_window(
     State(state): State<AppState>,
     Extension(correlation_id): Extension<CorrelationId>,
 ) -> Response {
-    match provisioning::close_window(&state.provisioning, &state.database, correlation_id).await {
+    match state.provisioning().close_window(correlation_id).await {
         Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
         Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
     }

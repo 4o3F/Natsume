@@ -27,7 +27,7 @@ impl BindingFacts {
 /// # Errors
 ///
 /// Returns a redacted [`ContestError`] when persistence fails.
-pub(crate) async fn list_bindings(database: &Database) -> Result<Vec<BindingFacts>, ContestError> {
+pub(super) async fn list_bindings(database: &Database) -> Result<Vec<BindingFacts>, ContestError> {
     database
         .read(crate::component::contest::db::device_bindings::list)
         .await
