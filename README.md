@@ -38,4 +38,21 @@ just verify
 just package
 ```
 
+## 提交前检查
+
+仓库使用 `prek` 0.5.0 管理 Git pre-commit hook。完成项目依赖安装后，在当前 checkout 中启用 hook：
+
+```bash
+prek install
+```
+
+手动检查当前暂存内容或运行完整 hook：
+
+```bash
+prek run
+prek run --all-files
+```
+
+该 hook 运行 Web lint、Rust Clippy，以及 Rust 和 Web 测试。它不会自动修改或暂存文件；远端 CI 仍是最终验证门禁。
+
 精确依赖版本、生成契约和打包输入分别由 lockfile、机器 schema 和 packaging 配置拥有。
