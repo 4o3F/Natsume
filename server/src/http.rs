@@ -2,6 +2,9 @@ mod cookie;
 mod error;
 pub(crate) mod handler;
 mod middleware;
+mod server;
+
+pub(crate) use server::serve_until;
 
 use std::{path::Path, sync::Arc};
 

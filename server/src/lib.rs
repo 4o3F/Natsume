@@ -8,7 +8,6 @@ pub mod config;
 pub(crate) mod db;
 #[path = "../diesel/schema.rs"]
 pub(crate) mod diesel_schema;
-pub(crate) mod error;
 pub(crate) mod http;
 pub(crate) mod logging;
 pub mod openapi;
