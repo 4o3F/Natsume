@@ -74,7 +74,8 @@ where
         tracing::info!("graceful shutdown initiated");
     }
     .with_subscriber(dispatcher);
-    let result = http::serve_until(listener, router, shutdown)
+    let result = axum::serve(listener, router)
+        .with_graceful_shutdown(shutdown)
         .await
         .map_err(|_| CommandError::Http);
     if result.is_ok() {

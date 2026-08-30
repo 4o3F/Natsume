@@ -2,11 +2,7 @@ use std::{
     fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration,
 };
 
-use axum::{
-    extract::{ConnectInfo, FromRequestParts, connect_info::Connected},
-    http::{StatusCode, request::Parts},
-    serve::{IncomingStream, Listener},
-};
+use axum::serve::Listener;
 use rustls::sign::{CertifiedKey, SigningKey};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use snafu::Snafu;
@@ -29,48 +25,6 @@ pub(crate) struct TlsListener {
     tcp_listener: TcpListener,
     tls_acceptor: TlsAcceptor,
     handshakes: JoinSet<Option<(TlsStream<TcpStream>, SocketAddr)>>,
-}
-
-#[allow(dead_code)]
-#[derive(Clone, Copy)]
-pub(crate) struct ClientAddress(SocketAddr);
-
-impl ClientAddress {
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) const fn new(address: SocketAddr) -> Self {
-        Self(address)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) const fn ip(self) -> std::net::IpAddr {
-        self.0.ip()
-    }
-}
-
-impl Connected<IncomingStream<'_, TlsListener>> for ClientAddress {
-    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
-        Self(*stream.remote_addr())
-    }
-}
-
-impl<S> FromRequestParts<S> for ClientAddress
-where
-    S: Send + Sync,
-{
-    type Rejection = StatusCode;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        if let Some(ConnectInfo(address)) = parts.extensions.get::<ConnectInfo<Self>>() {
-            return Ok(*address);
-        }
-        parts
-            .extensions
-            .get::<ConnectInfo<SocketAddr>>()
-            .map_or(Err(StatusCode::INTERNAL_SERVER_ERROR), |address| {
-                Ok(Self(address.0))
-            })
-    }
 }
 
 impl TlsListener {

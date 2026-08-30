@@ -3417,8 +3417,6 @@ dependencies = [
  "diesel_migrations",
  "getrandom 0.4.3",
  "hex",
- "hyper",
- "hyper-util",
  "natsume-device-protocol",
  "percent-encoding",
  "prost",

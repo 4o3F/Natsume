@@ -41,8 +41,6 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 hkdf = "0.13"
-hyper = { version = "=1.11.0", default-features = false, features = ["http1", "server"] }
-hyper-util = { version = "=0.1.20", default-features = false, features = ["server", "server-graceful", "service", "tokio"] }
 percent-encoding = { version = "2.3", default-features = false, features = ["alloc"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 prost = "=0.14.4"
