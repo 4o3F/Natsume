@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -15,7 +16,7 @@ use crate::{
 
 use super::{
     FINGERPRINT_VERSION,
-    candidate::{CandidateExpiry, ImportError, PreviewToken, SealedCommitRow, expire_candidate},
+    candidate::{CandidateExpiry, ImportError, SealedCommitRow, expire_candidate},
     candidate_fingerprint,
     csv::parse_csv,
     current_fingerprint,
@@ -23,21 +24,21 @@ use super::{
     seal_rows,
 };
 
-pub(crate) async fn commit_import(
+pub(super) async fn commit_import(
     database: &Database,
     vault: &VaultSession,
     candidate_id: Uuid,
-    presented_token: &PreviewToken,
+    presented_token: &[u8; 32],
     raw_csv: &[u8],
     correlation_id: CorrelationId,
 ) -> Result<(), ImportError> {
-    let parsed = parse_csv(raw_csv).map_err(ImportError::InvalidCsv)?;
+    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv(error.category()))?;
     let candidate_rows = parsed.candidate_rows();
     let candidate_hash = candidate_fingerprint(&candidate_rows);
-    let sealed_rows = seal_rows(vault, &parsed.rows)?;
+    let sealed_rows = seal_rows(vault, parsed.rows())?;
     drop(parsed);
 
-    let token_hash = presented_token.sha256();
+    let token_hash = Sha256::digest(presented_token).into();
     let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
     let commit_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
     let outcome = database
@@ -133,7 +134,7 @@ fn commit_in_transaction(
     }
 
     let plan = CommitPlan::prepare(current_seats, current_accounts, candidate_rows)?;
-    if !plan.diff.binding_impacts().is_empty() {
+    if plan.diff.binding_impacts().len() != 0 {
         insert_rejection(
             transaction,
             commit_audit_event_id,

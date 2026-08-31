@@ -1,9 +1,9 @@
 use crate::{
-    component::lifecycle::{DeviceError, DevicePersistenceError},
+    component::lifecycle::{DeviceError, types::DevicePersistenceError},
     db::DatabaseError,
 };
 
-pub(crate) mod devices;
+mod devices;
 
 impl From<DatabaseError> for DeviceError {
     fn from(source: DatabaseError) -> Self {

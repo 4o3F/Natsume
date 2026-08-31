@@ -9,7 +9,7 @@ use crate::{
     diesel_schema::server_vault_records,
 };
 
-pub(crate) fn insert_account_credential(
+pub(in crate::component::import) fn insert_account_credential(
     transaction: &mut Transaction<'_>,
     account: &NewAccountFacts,
     credential: &SealedCommitRow,
@@ -24,7 +24,7 @@ pub(crate) fn insert_account_credential(
         .map_err(|_| ImportError::PersistenceFailure)
 }
 
-pub(crate) fn update_account_credential(
+pub(in crate::component::import) fn update_account_credential(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
     credential: &SealedCommitRow,

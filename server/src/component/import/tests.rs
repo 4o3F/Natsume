@@ -50,7 +50,7 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
         &fixture.database,
         &fixture.vault,
         first.candidate_id(),
-        first.preview_token(),
+        first.preview_token_bytes(),
         first_csv,
         CorrelationId::from_uuid(Uuid::now_v7()),
     )
@@ -87,7 +87,7 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
         &fixture.database,
         &fixture.vault,
         second.candidate_id(),
-        second.preview_token(),
+        second.preview_token_bytes(),
         second_csv,
         CorrelationId::from_uuid(Uuid::now_v7()),
     )
@@ -122,7 +122,7 @@ async fn commit_rejects_removing_a_seat_owned_by_binding() {
         &fixture.database,
         &fixture.vault,
         initial.candidate_id(),
-        initial.preview_token(),
+        initial.preview_token_bytes(),
         initial_csv,
         CorrelationId::from_uuid(Uuid::now_v7()),
     )
@@ -143,7 +143,7 @@ async fn commit_rejects_removing_a_seat_owned_by_binding() {
         &fixture.database,
         &fixture.vault,
         replacement.candidate_id(),
-        replacement.preview_token(),
+        replacement.preview_token_bytes(),
         replacement_csv,
         CorrelationId::from_uuid(Uuid::now_v7()),
     )

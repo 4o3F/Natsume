@@ -17,13 +17,11 @@ use crate::{audit::CorrelationId, db::Database, vault::VaultSession};
 
 #[cfg(test)]
 use self::candidate::create_import_candidate;
-pub(crate) use self::candidate::{ImportError, PendingImportCandidate, PreviewToken};
+pub(crate) use self::candidate::{CreatedImportCandidate, ImportError, PendingImportCandidate};
 #[cfg(test)]
 use self::commit::commit_import;
 pub(crate) use self::csv::CsvImportErrorCategory;
-#[cfg(test)]
-pub(crate) use self::csv::parse_csv;
-pub(crate) use self::diff::{ImportBindingImpact, ImportMappingChange, RedactedImportPreview};
+pub(crate) use self::diff::RedactedImportPreview;
 use self::{candidate::CandidateRowFacts, csv::ImportRow};
 
 /// CSV import authority with private persistence and a startup-loaded vault.
@@ -41,7 +39,7 @@ impl ImportComponent {
         &self,
         raw_csv: &[u8],
         correlation_id: CorrelationId,
-    ) -> Result<candidate::CreatedImportCandidate, ImportError> {
+    ) -> Result<CreatedImportCandidate, ImportError> {
         match candidate::create_import_candidate(&self.database, raw_csv, correlation_id).await {
             Ok(candidate) => Ok(candidate),
             Err(error @ (ImportError::InvalidCsv(_) | ImportError::CandidateInvalid)) => {
@@ -62,7 +60,7 @@ impl ImportComponent {
     pub(crate) async fn commit(
         &self,
         candidate_id: uuid::Uuid,
-        presented_token: &PreviewToken,
+        presented_token: &[u8; 32],
         raw_csv: &[u8],
         correlation_id: CorrelationId,
     ) -> Result<(), ImportError> {
@@ -91,7 +89,7 @@ const FINGERPRINT_VERSION: i32 = 1;
 fn candidate_fingerprint(rows: &[CandidateRowFacts]) -> [u8; 32] {
     let mut ordered = BTreeMap::new();
     for row in rows {
-        ordered.insert(row.seat_code.as_str(), row.domjudge_username.as_str());
+        ordered.insert(row.seat_code(), row.domjudge_username());
     }
     let mut hasher = Sha256::new();
     write_field(&mut hasher, b"natsume/import-candidate/v1");
@@ -144,14 +142,14 @@ fn seal_rows(
     rows.iter()
         .map(|row| {
             let (nonce, ciphertext) = vault
-                .seal(row.password.as_bytes())
+                .seal(row.password().as_bytes())
                 .map_err(|_| ImportError::VaultFailure)?;
-            Ok(candidate::SealedCommitRow {
-                seat_code: row.seat_code.clone(),
-                domjudge_username: row.domjudge_username.clone(),
+            Ok(candidate::SealedCommitRow::new(
+                row.seat_code().to_owned(),
+                row.domjudge_username().to_owned(),
                 nonce,
                 ciphertext,
-            })
+            ))
         })
         .collect()
 }

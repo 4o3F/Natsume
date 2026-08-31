@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     component::{
-        import::{ImportError, parse_csv},
+        import::{CsvImportErrorCategory, ImportError},
         lifecycle::DeviceError,
         provisioning::ProvisioningError,
     },
@@ -253,12 +253,9 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 4] {
 }
 
 fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
-    let Err(parse_error) = parse_csv(&[]) else {
-        panic!("empty import unexpectedly parsed");
-    };
     [
         (
-            ImportError::InvalidCsv(parse_error),
+            ImportError::InvalidCsv(CsvImportErrorCategory::ZeroDataRows),
             "import_csv_zero_data_rows",
             StatusCode::BAD_REQUEST,
         ),

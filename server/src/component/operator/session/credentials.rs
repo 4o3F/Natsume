@@ -2,7 +2,10 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::super::{OperatorError, password::OperatorPassword};
+use super::super::{
+    OperatorError,
+    password::{self, OperatorPassword},
+};
 
 pub(in crate::component::operator) const SESSION_CREDENTIAL_LENGTH: usize = 32;
 const SESSION_CREDENTIAL_HEX_LENGTH: usize = SESSION_CREDENTIAL_LENGTH * 2;
@@ -10,7 +13,7 @@ const SESSION_CREDENTIAL_HEX_LENGTH: usize = SESSION_CREDENTIAL_LENGTH * 2;
 // component independently of the credential width.
 const SESSION_CREDENTIAL_HASH_LENGTH: usize = 32;
 
-pub(crate) struct SessionCredential(
+pub(in crate::component::operator) struct SessionCredential(
     pub(in crate::component::operator) Zeroizing<[u8; SESSION_CREDENTIAL_LENGTH]>,
 );
 
@@ -27,7 +30,7 @@ impl SessionCredential {
         decode_lower_hex(wire.expose())
     }
 
-    pub(crate) fn to_wire(&self) -> SessionCredentialHex {
+    pub(in crate::component::operator) fn to_wire(&self) -> SessionCredentialHex {
         SessionCredentialHex(encode_lower_hex(&self.0))
     }
 
@@ -36,7 +39,7 @@ impl SessionCredential {
     }
 }
 
-pub(crate) struct SessionCredentialHex(pub(in crate::component::operator) SecretString);
+pub(crate) struct SessionCredentialHex(SecretString);
 
 impl SessionCredentialHex {
     pub(crate) fn new(value: String) -> Self {
@@ -48,12 +51,12 @@ impl SessionCredentialHex {
     }
 }
 
-pub(crate) struct SessionCredentialHash(
-    pub(in crate::component::operator) Zeroizing<[u8; SESSION_CREDENTIAL_HASH_LENGTH]>,
+pub(in crate::component::operator) struct SessionCredentialHash(
+    Zeroizing<[u8; SESSION_CREDENTIAL_HASH_LENGTH]>,
 );
 
 impl SessionCredentialHash {
-    pub(crate) fn as_bytes(&self) -> &[u8; SESSION_CREDENTIAL_HASH_LENGTH] {
+    pub(in crate::component::operator) fn as_bytes(&self) -> &[u8; SESSION_CREDENTIAL_HASH_LENGTH] {
         &self.0
     }
 }
@@ -93,7 +96,12 @@ impl OperatorCredentials {
         &self.login_name
     }
 
-    pub(crate) fn password(&self) -> &OperatorPassword {
+    pub(crate) fn hash_password(&self) -> Result<String, OperatorError> {
+        password::hash_password(&self.password)
+    }
+
+    #[cfg(test)]
+    pub(in crate::component::operator) fn password(&self) -> &OperatorPassword {
         &self.password
     }
 }

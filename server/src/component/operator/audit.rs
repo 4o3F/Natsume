@@ -4,7 +4,7 @@ use crate::audit::{AuditDetail, AuditEvent, AuditEventId, CorrelationId};
 
 impl AuditEvent {
     #[must_use]
-    pub(crate) fn first_admin_created(
+    pub(in crate::component::operator) fn first_admin_created(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         operator_id: Uuid,
@@ -24,7 +24,7 @@ impl AuditEvent {
     }
 
     #[must_use]
-    pub(crate) fn operator_password_reset(
+    pub(in crate::component::operator) fn operator_password_reset(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         operator_id: Uuid,
@@ -47,7 +47,7 @@ impl AuditEvent {
     }
 
     #[must_use]
-    pub(crate) fn session_established(
+    pub(in crate::component::operator) fn session_established(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         operator_id: Uuid,
@@ -68,7 +68,7 @@ impl AuditEvent {
     }
 
     #[must_use]
-    pub(crate) fn session_terminated(
+    pub(in crate::component::operator) fn session_terminated(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         operator_id: Uuid,
@@ -88,7 +88,7 @@ impl AuditEvent {
     }
 
     #[must_use]
-    pub(crate) fn session_expired(
+    pub(in crate::component::operator) fn session_expired(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         operator_id: Uuid,

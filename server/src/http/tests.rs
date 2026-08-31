@@ -22,8 +22,7 @@ use uuid::Uuid;
 use crate::{
     audit::CorrelationId,
     component::operator::{
-        OperatorCredentials, OperatorRole, hash_password, test_db as db_operator,
-        tests::PasswordVerificationTestGuard,
+        OperatorCredentials, PasswordVerificationTestGuard, test_db as db_operator,
     },
     config::LogLevel,
     db::{
@@ -239,7 +238,6 @@ impl Drop for TestWebRoot {
 pub(super) async fn seed_operator(
     database: &Database,
     login_name: &str,
-    role: OperatorRole,
     password: &str,
 ) -> Result<Uuid, SupportFailure> {
     let credentials = OperatorCredentials::new(
@@ -248,9 +246,10 @@ pub(super) async fn seed_operator(
         password.to_owned(),
     )
     .map_err(|_| SupportFailure::FixtureFailed)?;
-    let password_hash =
-        hash_password(credentials.password()).map_err(|_| SupportFailure::FixtureFailed)?;
-    db_operator::test_insert_account(database, login_name, role, &password_hash)
+    let password_hash = credentials
+        .hash_password()
+        .map_err(|_| SupportFailure::FixtureFailed)?;
+    db_operator::test_insert_admin_account(database, login_name, &password_hash)
         .await
         .map_err(|_| SupportFailure::FixtureFailed)
 }
@@ -492,13 +491,7 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    seed_operator(
-        &fixture.database,
-        LOG_LOGIN_NAME,
-        OperatorRole::Admin,
-        LOG_PASSWORD,
-    )
-    .await?;
+    seed_operator(&fixture.database, LOG_LOGIN_NAME, LOG_PASSWORD).await?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
@@ -582,7 +575,7 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
+    seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
@@ -632,7 +625,7 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
 async fn head_is_rejected_without_session_persistence_access() -> Result<(), TestFailure> {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
+    seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {
@@ -698,7 +691,7 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
 async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), TestFailure> {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    seed_operator(&fixture.database, LOGIN_NAME, OperatorRole::Admin, PASSWORD).await?;
+    seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     if login_response.status != StatusCode::OK {

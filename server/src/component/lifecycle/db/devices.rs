@@ -2,7 +2,8 @@
 
 use crate::{
     component::lifecycle::{
-        DeviceFacts, DeviceId, DevicePersistenceError, DeviceState, EvidenceQuality,
+        DeviceId,
+        types::{DeviceFacts, DevicePersistenceError, DeviceState, EvidenceQuality},
     },
     db::Transaction,
     diesel_schema::devices,
@@ -11,7 +12,7 @@ use diesel::{
     ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt,
 };
 
-pub(crate) fn find_state(
+fn find_state(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
 ) -> Result<Option<DeviceState>, DevicePersistenceError> {
@@ -28,9 +29,7 @@ pub(crate) fn find_state(
         .transpose()
 }
 
-pub(crate) fn list(
-    transaction: &mut Transaction<'_>,
-) -> Result<Vec<DeviceFacts>, DevicePersistenceError> {
+fn list(transaction: &mut Transaction<'_>) -> Result<Vec<DeviceFacts>, DevicePersistenceError> {
     let rows = devices::table
         .select((
             devices::device_id,
@@ -53,7 +52,7 @@ pub(crate) fn list(
         .collect()
 }
 
-pub(crate) fn insert(
+fn insert(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
     machine_hardware_id: &str,
@@ -73,7 +72,7 @@ pub(crate) fn insert(
         .map_err(|_| DevicePersistenceError::PersistenceFailed)
 }
 
-pub(crate) fn update_state_guarded(
+fn update_state_guarded(
     transaction: &mut Transaction<'_>,
     device_id: &str,
     expected: DeviceState,

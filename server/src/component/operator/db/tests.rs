@@ -11,7 +11,9 @@ struct IntegerValue {
     value: i64,
 }
 
-pub(crate) async fn test_now(database: &Database) -> Result<i64, OperatorError> {
+pub(in crate::component::operator) async fn test_now(
+    database: &Database,
+) -> Result<i64, OperatorError> {
     database
         .read(|transaction| {
             use diesel::RunQueryDsl as _;
@@ -23,7 +25,7 @@ pub(crate) async fn test_now(database: &Database) -> Result<i64, OperatorError> 
         .await
 }
 
-pub(crate) async fn test_sessions_have_expected_ttl(
+pub(in crate::component::operator) async fn test_sessions_have_expected_ttl(
     database: &Database,
     before: &i64,
     after: &i64,
@@ -46,7 +48,7 @@ pub(crate) async fn test_sessions_have_expected_ttl(
         .await
 }
 
-pub(crate) async fn test_session_hashes(
+pub(in crate::component::operator) async fn test_session_hashes(
     database: &Database,
 ) -> Result<Vec<Vec<u8>>, OperatorError> {
     database
@@ -60,7 +62,7 @@ pub(crate) async fn test_session_hashes(
         .await
 }
 
-pub(crate) async fn test_session_and_audit_counts(
+pub(in crate::component::operator) async fn test_session_and_audit_counts(
     database: &Database,
 ) -> Result<(i64, i64), OperatorError> {
     database
@@ -84,7 +86,9 @@ pub(crate) async fn test_session_and_audit_counts(
         .await
 }
 
-pub(crate) async fn test_expire_all_sessions(database: &Database) -> Result<(), OperatorError> {
+pub(in crate::component::operator) async fn test_expire_all_sessions(
+    database: &Database,
+) -> Result<(), OperatorError> {
     database
         .write(|transaction| {
             use diesel::RunQueryDsl as _;
@@ -96,7 +100,7 @@ pub(crate) async fn test_expire_all_sessions(database: &Database) -> Result<(), 
         .await
 }
 
-pub(crate) async fn test_insert_account(
+pub(in crate::component::operator) async fn test_insert_account(
     database: &Database,
     login_name: &str,
     role: OperatorRole,

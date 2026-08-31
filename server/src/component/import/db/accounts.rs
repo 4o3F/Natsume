@@ -9,7 +9,7 @@ use crate::{
     diesel_schema::accounts,
 };
 
-pub(crate) fn insert(
+pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
     account: &NewAccountFacts,
 ) -> Result<usize, ImportError> {
@@ -23,7 +23,7 @@ pub(crate) fn insert(
         .map_err(|_| ImportError::PersistenceFailure)
 }
 
-pub(crate) fn delete_exact(
+pub(in crate::component::import) fn delete_exact(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
 ) -> Result<usize, ImportError> {
@@ -37,7 +37,7 @@ pub(crate) fn delete_exact(
     .map_err(|_| ImportError::PersistenceFailure)
 }
 
-pub(crate) fn advance_credential_revision(
+pub(in crate::component::import) fn advance_credential_revision(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
     next: i64,

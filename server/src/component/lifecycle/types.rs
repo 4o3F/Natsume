@@ -18,7 +18,7 @@ impl DeviceId {
         Self::from_uuid(parsed)
     }
 
-    pub(crate) fn from_uuid(value: Uuid) -> Option<Self> {
+    fn from_uuid(value: Uuid) -> Option<Self> {
         if value.get_version() != Some(Version::SortRand) || value.get_variant() != Variant::RFC4122
         {
             return None;
@@ -26,7 +26,7 @@ impl DeviceId {
         Some(Self(value))
     }
 
-    pub(crate) const fn value(&self) -> Uuid {
+    const fn value(&self) -> Uuid {
         self.0
     }
 
@@ -37,7 +37,7 @@ impl DeviceId {
 
 /// Redacted persistence boundary shared by Device-owned adapters and read models.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DevicePersistenceError {
+pub(in crate::component::lifecycle) enum DevicePersistenceError {
     InvalidPersistedFacts,
     PersistenceFailed,
 }
@@ -55,14 +55,14 @@ pub(crate) enum DeviceError {
 }
 
 impl DeviceError {
-    pub(crate) const fn from_persistence(error: DevicePersistenceError) -> Self {
+    const fn from_persistence(error: DevicePersistenceError) -> Self {
         match error {
             DevicePersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
             DevicePersistenceError::PersistenceFailed => Self::PersistenceFailed,
         }
     }
 
-    pub(crate) const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
+    const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
         match error {
             AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
         }
@@ -70,14 +70,14 @@ impl DeviceError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeviceState {
+pub(in crate::component::lifecycle) enum DeviceState {
     Enabled,
     Revoked,
     Disabled,
 }
 
 impl DeviceState {
-    pub(crate) fn from_persisted(value: &str) -> Option<Self> {
+    pub(in crate::component::lifecycle) fn from_persisted(value: &str) -> Option<Self> {
         match value {
             "enabled" => Some(Self::Enabled),
             "revoked" => Some(Self::Revoked),
@@ -86,7 +86,7 @@ impl DeviceState {
         }
     }
 
-    pub(crate) const fn as_persisted(self) -> &'static str {
+    pub(in crate::component::lifecycle) const fn as_persisted(self) -> &'static str {
         match self {
             Self::Enabled => "enabled",
             Self::Revoked => "revoked",
@@ -97,13 +97,13 @@ impl DeviceState {
 
 // The closed `devices.evidence_quality` vocabulary owned by this component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum EvidenceQuality {
+pub(in crate::component::lifecycle) enum EvidenceQuality {
     Strong,
     Medium,
 }
 
 impl EvidenceQuality {
-    pub(crate) fn parse(value: &str) -> Option<Self> {
+    pub(in crate::component::lifecycle) fn parse(value: &str) -> Option<Self> {
         match value {
             "strong" => Some(Self::Strong),
             "medium" => Some(Self::Medium),
@@ -111,7 +111,7 @@ impl EvidenceQuality {
         }
     }
 
-    pub(crate) const fn as_persisted(self) -> &'static str {
+    pub(in crate::component::lifecycle) const fn as_persisted(self) -> &'static str {
         match self {
             Self::Strong => "strong",
             Self::Medium => "medium",
@@ -121,14 +121,14 @@ impl EvidenceQuality {
 
 /// Application-owned projection of the Device row selected by hardware ID.
 #[derive(Clone, Copy)]
-pub(crate) struct DeviceByHardwareProjection {
-    pub(in crate::component::lifecycle) device_id: DeviceId,
-    pub(in crate::component::lifecycle) evidence_quality: EvidenceQuality,
-    pub(in crate::component::lifecycle) state: DeviceState,
+struct DeviceByHardwareProjection {
+    device_id: DeviceId,
+    evidence_quality: EvidenceQuality,
+    state: DeviceState,
 }
 
 impl DeviceByHardwareProjection {
-    pub(crate) fn from_persisted(
+    fn from_persisted(
         device_id: &str,
         evidence_quality: &str,
         state: &str,
@@ -144,14 +144,14 @@ impl DeviceByHardwareProjection {
     }
 }
 
-pub(crate) struct DeviceFacts {
+pub(in crate::component::lifecycle) struct DeviceFacts {
     device_id: DeviceId,
     state: DeviceState,
     evidence_quality: EvidenceQuality,
 }
 
 impl DeviceFacts {
-    pub(crate) fn new(
+    pub(in crate::component::lifecycle) fn new(
         device_id: DeviceId,
         state: DeviceState,
         evidence_quality: EvidenceQuality,
@@ -163,7 +163,7 @@ impl DeviceFacts {
         }
     }
 
-    pub(crate) fn into_parts(self) -> (DeviceId, DeviceState, EvidenceQuality) {
+    fn into_parts(self) -> (DeviceId, DeviceState, EvidenceQuality) {
         (self.device_id, self.state, self.evidence_quality)
     }
 }

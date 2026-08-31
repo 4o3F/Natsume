@@ -14,7 +14,7 @@ use crate::{
 
 use super::{
     FINGERPRINT_VERSION, candidate_fingerprint,
-    csv::{CsvImportError, parse_csv},
+    csv::{CsvImportErrorCategory, parse_csv},
     current_fingerprint,
     diff::{RedactedImportPreview, compute_diff},
 };
@@ -23,53 +23,74 @@ const IMPORT_CANDIDATE_TTL_MS: i64 = 1_800_000;
 const PREVIEW_TOKEN_LENGTH: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CandidateRowFacts {
-    pub(crate) seat_code: String,
-    pub(crate) domjudge_username: String,
+pub(super) struct CandidateRowFacts {
+    seat_code: String,
+    domjudge_username: String,
 }
 
 impl CandidateRowFacts {
-    pub(crate) fn seat_code(&self) -> &str {
+    pub(super) fn new(seat_code: String, domjudge_username: String) -> Self {
+        Self {
+            seat_code,
+            domjudge_username,
+        }
+    }
+
+    pub(super) fn seat_code(&self) -> &str {
         &self.seat_code
     }
 
-    pub(crate) fn domjudge_username(&self) -> &str {
+    pub(super) fn domjudge_username(&self) -> &str {
         &self.domjudge_username
     }
 }
 
-pub(crate) struct SealedCommitRow {
-    pub(crate) seat_code: String,
-    pub(crate) domjudge_username: String,
-    pub(crate) nonce: [u8; 24],
-    pub(crate) ciphertext: Vec<u8>,
+pub(super) struct SealedCommitRow {
+    seat_code: String,
+    domjudge_username: String,
+    nonce: [u8; 24],
+    ciphertext: Vec<u8>,
 }
 
 impl SealedCommitRow {
-    pub(crate) fn seat_code(&self) -> &str {
+    pub(super) fn new(
+        seat_code: String,
+        domjudge_username: String,
+        nonce: [u8; 24],
+        ciphertext: Vec<u8>,
+    ) -> Self {
+        Self {
+            seat_code,
+            domjudge_username,
+            nonce,
+            ciphertext,
+        }
+    }
+
+    pub(super) fn seat_code(&self) -> &str {
         &self.seat_code
     }
 
-    pub(crate) fn domjudge_username(&self) -> &str {
+    pub(super) fn domjudge_username(&self) -> &str {
         &self.domjudge_username
     }
 
-    pub(crate) const fn nonce(&self) -> &[u8; 24] {
+    pub(super) const fn nonce(&self) -> &[u8; 24] {
         &self.nonce
     }
 
-    pub(crate) fn ciphertext(&self) -> &[u8] {
+    pub(super) fn ciphertext(&self) -> &[u8] {
         &self.ciphertext
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CandidateExpiry {
+pub(super) enum CandidateExpiry {
     Valid,
     Expired,
 }
 
-pub(crate) struct CandidateRecord {
+pub(super) struct CandidateRecord {
     candidate_id: Uuid,
     expires_at_unix_ms: i64,
     preview_token_hash: [u8; 32],
@@ -82,7 +103,7 @@ pub(crate) struct CandidateRecord {
 
 impl CandidateRecord {
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
+    pub(super) fn new(
         candidate_id: Uuid,
         expires_at_unix_ms: i64,
         preview_token_hash: [u8; 32],
@@ -104,35 +125,35 @@ impl CandidateRecord {
         }
     }
 
-    pub(crate) const fn candidate_id(&self) -> Uuid {
+    pub(super) const fn candidate_id(&self) -> Uuid {
         self.candidate_id
     }
 
-    pub(crate) const fn expires_at_unix_ms(&self) -> i64 {
+    pub(super) const fn expires_at_unix_ms(&self) -> i64 {
         self.expires_at_unix_ms
     }
 
-    pub(crate) const fn preview_token_hash(&self) -> &[u8; 32] {
+    pub(super) const fn preview_token_hash(&self) -> &[u8; 32] {
         &self.preview_token_hash
     }
 
-    pub(crate) const fn fingerprint_version(&self) -> i32 {
+    pub(super) const fn fingerprint_version(&self) -> i32 {
         self.fingerprint_version
     }
 
-    pub(crate) const fn candidate_fingerprint_sha256(&self) -> &[u8; 32] {
+    pub(super) const fn candidate_fingerprint_sha256(&self) -> &[u8; 32] {
         &self.candidate_fingerprint_sha256
     }
 
-    pub(crate) const fn baseline_fingerprint_sha256(&self) -> &[u8; 32] {
+    pub(super) const fn baseline_fingerprint_sha256(&self) -> &[u8; 32] {
         &self.baseline_fingerprint_sha256
     }
 
-    pub(crate) const fn diff(&self) -> &RedactedImportPreview {
+    pub(super) const fn diff(&self) -> &RedactedImportPreview {
         &self.diff
     }
 
-    pub(crate) const fn expiry(&self) -> CandidateExpiry {
+    pub(super) const fn expiry(&self) -> CandidateExpiry {
         self.expiry
     }
 
@@ -146,7 +167,7 @@ impl CandidateRecord {
 }
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub(crate) struct PreviewToken {
+struct PreviewToken {
     bytes: [u8; PREVIEW_TOKEN_LENGTH],
 }
 
@@ -159,15 +180,11 @@ impl PreviewToken {
         Ok(token)
     }
 
-    pub(crate) fn from_bytes(bytes: [u8; PREVIEW_TOKEN_LENGTH]) -> Self {
-        Self { bytes }
-    }
-
-    pub(crate) const fn as_bytes(&self) -> &[u8; PREVIEW_TOKEN_LENGTH] {
+    const fn as_bytes(&self) -> &[u8; PREVIEW_TOKEN_LENGTH] {
         &self.bytes
     }
 
-    pub(crate) fn sha256(&self) -> [u8; 32] {
+    fn sha256(&self) -> [u8; 32] {
         Sha256::digest(self.bytes).into()
     }
 }
@@ -184,8 +201,8 @@ impl CreatedImportCandidate {
         self.candidate_id
     }
 
-    pub(crate) const fn preview_token(&self) -> &PreviewToken {
-        &self.preview_token
+    pub(crate) const fn preview_token_bytes(&self) -> &[u8; PREVIEW_TOKEN_LENGTH] {
+        self.preview_token.as_bytes()
     }
 
     pub(crate) const fn expires_at_unix_ms(&self) -> i64 {
@@ -217,12 +234,12 @@ impl PendingImportCandidate {
     }
 }
 
-pub(crate) async fn create_import_candidate(
+pub(super) async fn create_import_candidate(
     database: &Database,
     raw_csv: &[u8],
     correlation_id: CorrelationId,
 ) -> Result<CreatedImportCandidate, ImportError> {
-    let parsed = parse_csv(raw_csv).map_err(ImportError::InvalidCsv)?;
+    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv(error.category()))?;
     let candidate_rows = parsed.candidate_rows();
     let candidate_hash = candidate_fingerprint(&candidate_rows);
     drop(parsed);
@@ -295,7 +312,7 @@ pub(crate) async fn create_import_candidate(
         .await
 }
 
-pub(crate) async fn read_pending_import_candidate(
+pub(super) async fn read_pending_import_candidate(
     database: &Database,
     correlation_id: CorrelationId,
 ) -> Result<Option<PendingImportCandidate>, ImportError> {
@@ -319,7 +336,7 @@ pub(crate) async fn read_pending_import_candidate(
         .await
 }
 
-pub(crate) async fn discard_import(
+pub(super) async fn discard_import(
     database: &Database,
     candidate_id: Uuid,
     correlation_id: CorrelationId,
@@ -358,7 +375,7 @@ pub(crate) async fn discard_import(
         .await
 }
 
-pub(crate) async fn audit_invalid_import_upload(
+pub(super) async fn audit_invalid_import_upload(
     database: &Database,
     correlation_id: CorrelationId,
 ) -> Result<(), ImportError> {
@@ -393,7 +410,7 @@ pub(super) fn expire_candidate(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImportError {
-    InvalidCsv(CsvImportError),
+    InvalidCsv(CsvImportErrorCategory),
     CandidateInvalid,
     CandidatePending,
     CandidateUnavailable,

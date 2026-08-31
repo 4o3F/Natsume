@@ -9,7 +9,7 @@ use crate::{
 
 use super::OperatorStoreError;
 
-pub(crate) fn insert_session(
+pub(in crate::component::operator) fn insert_session(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
     identity: OperatorIdentity,
@@ -28,7 +28,7 @@ pub(crate) fn insert_session(
         .map_err(OperatorError::from)
 }
 
-pub(crate) fn delete_session_by_hash(
+pub(in crate::component::operator) fn delete_session_by_hash(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
 ) -> Result<usize, OperatorError> {
@@ -41,7 +41,7 @@ pub(crate) fn delete_session_by_hash(
     .map_err(OperatorError::from)
 }
 
-pub(crate) fn delete_sessions_by_operator(
+pub(in crate::component::operator) fn delete_sessions_by_operator(
     transaction: &mut Transaction<'_>,
     operator_id: Uuid,
 ) -> Result<usize, OperatorError> {

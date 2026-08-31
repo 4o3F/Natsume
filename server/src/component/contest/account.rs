@@ -11,7 +11,7 @@ pub(crate) struct AccountFacts {
 }
 
 impl AccountFacts {
-    pub(crate) fn new(
+    pub(super) fn new(
         account_id: String,
         domjudge_username: String,
         credential_revision: i64,

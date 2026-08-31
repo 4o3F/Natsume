@@ -5,7 +5,7 @@ use crate::audit::{
 use super::ProvisioningWindowAction;
 
 impl AuditEvent {
-    pub(crate) const fn operator_provisioning_window(
+    pub(super) const fn operator_provisioning_window(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         action: ProvisioningWindowAction,

@@ -20,14 +20,16 @@ struct CurrentTime {
     value: i64,
 }
 
-pub(crate) fn current_time_unix_ms(transaction: &mut Transaction<'_>) -> Result<i64, ImportError> {
+pub(in crate::component::import) fn current_time_unix_ms(
+    transaction: &mut Transaction<'_>,
+) -> Result<i64, ImportError> {
     diesel::sql_query("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS value")
         .get_result::<CurrentTime>(transaction.connection())
         .map(|row| row.value)
         .map_err(|_| ImportError::PersistenceFailure)
 }
 
-pub(crate) fn find(
+pub(in crate::component::import) fn find(
     transaction: &mut Transaction<'_>,
 ) -> Result<Option<CandidateRecord>, ImportError> {
     let row = pending_import_candidate::table
@@ -72,7 +74,7 @@ pub(crate) fn find(
     )))
 }
 
-pub(crate) fn insert(
+pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
     candidate: &CandidateRecord,
     audit_event_id: AuditEventId,
@@ -98,7 +100,7 @@ pub(crate) fn insert(
         .map_err(|_| ImportError::PersistenceFailure)
 }
 
-pub(crate) fn delete_exact(
+pub(in crate::component::import) fn delete_exact(
     transaction: &mut Transaction<'_>,
     candidate: &CandidateRecord,
 ) -> Result<usize, ImportError> {

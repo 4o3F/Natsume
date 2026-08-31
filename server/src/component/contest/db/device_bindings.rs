@@ -9,7 +9,7 @@ use crate::{
     diesel_schema::device_bindings,
 };
 
-pub(crate) fn list(
+pub(in crate::component::contest) fn list(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<BindingFacts>, ContestPersistenceError> {
     let rows = device_bindings::table

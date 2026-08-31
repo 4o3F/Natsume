@@ -10,7 +10,7 @@ use crate::{
     diesel_schema::{account_mappings, accounts, device_bindings, seats},
 };
 
-pub(crate) fn read_current_seats(
+pub(in crate::component::import) fn read_current_seats(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<CurrentSeatProjection>, ImportError> {
     let rows = seats::table
@@ -45,7 +45,7 @@ pub(crate) fn read_current_seats(
         .collect()
 }
 
-pub(crate) fn read_current_accounts(
+pub(in crate::component::import) fn read_current_accounts(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<CurrentAccountProjection>, ImportError> {
     accounts::table

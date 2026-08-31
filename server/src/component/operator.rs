@@ -11,23 +11,47 @@ mod session;
 
 #[cfg(test)]
 pub(crate) mod test_db {
-    pub(crate) use super::db::tests::*;
+    use uuid::Uuid;
+
+    use crate::db::Database;
+
+    use super::{OperatorError, OperatorRole};
+
+    pub(crate) async fn test_expire_all_sessions(database: &Database) -> Result<(), OperatorError> {
+        super::db::tests::test_expire_all_sessions(database).await
+    }
+
+    pub(crate) async fn test_insert_admin_account(
+        database: &Database,
+        login_name: &str,
+        password_hash: &str,
+    ) -> Result<Uuid, OperatorError> {
+        super::db::tests::test_insert_account(
+            database,
+            login_name,
+            OperatorRole::Admin,
+            password_hash,
+        )
+        .await
+    }
 }
 
-pub(crate) use self::account::AccountFacts;
+use self::account::AccountFacts;
 #[cfg(test)]
-pub(crate) use self::password::OperatorPassword;
-pub(crate) use self::password::hash_password;
+use self::password::OperatorPassword;
 #[cfg(test)]
 use self::password::{
     DUMMY_PASSWORD_PHC, PASSWORD_VERIFICATION_CONCURRENCY, PASSWORD_VERIFICATION_GATE,
-    verify_password_once,
+    hash_password as hash_raw_password, verify_password_once,
 };
 #[cfg(test)]
-pub(crate) use self::session::SessionCredential;
-pub(crate) use self::session::{OperatorCredentials, SessionCredentialHex, SessionFacts};
+use self::session::SessionCredential;
+use self::session::SessionFacts;
+pub(crate) use self::session::{OperatorCredentials, SessionCredentialHex, SignedInSession};
 #[cfg(test)]
 use self::session::{SESSION_CREDENTIAL_LENGTH, authenticate_session, decode_lower_hex, sign_in};
+#[cfg(test)]
+pub(crate) use self::tests::PasswordVerificationTestGuard;
 
 /// Operator authentication and account authority with private persistence.
 pub(crate) struct OperatorComponent {
@@ -60,7 +84,7 @@ impl OperatorComponent {
         correlation_id: crate::audit::CorrelationId,
         login_name: &str,
         submitted_password: String,
-    ) -> Result<session::SignedInSession, OperatorError> {
+    ) -> Result<SignedInSession, OperatorError> {
         session::sign_in(
             &self.database,
             correlation_id,
@@ -88,14 +112,14 @@ impl OperatorComponent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OperatorRole {
+enum OperatorRole {
     Admin,
     Viewer,
 }
 
 impl OperatorRole {
     #[must_use]
-    pub(crate) const fn as_persisted(self) -> &'static str {
+    const fn as_persisted(self) -> &'static str {
         match self {
             Self::Admin => "admin",
             Self::Viewer => "viewer",
@@ -107,7 +131,7 @@ impl OperatorRole {
     /// # Errors
     ///
     /// Returns [`OperatorError::InvalidPersistedRole`] for unknown values.
-    pub(crate) fn from_persisted(value: &str) -> Result<Self, OperatorError> {
+    fn from_persisted(value: &str) -> Result<Self, OperatorError> {
         match value {
             "admin" => Ok(Self::Admin),
             "viewer" => Ok(Self::Viewer),
@@ -123,7 +147,7 @@ pub(crate) struct OperatorIdentity {
 }
 
 impl OperatorIdentity {
-    pub(crate) fn from_persisted(operator_id: &str, role: &str) -> Result<Self, OperatorError> {
+    fn from_persisted(operator_id: &str, role: &str) -> Result<Self, OperatorError> {
         Ok(Self {
             operator_id: Uuid::parse_str(operator_id)
                 .map_err(|_| OperatorError::InvalidPersistedIdentity)?,
@@ -137,8 +161,13 @@ impl OperatorIdentity {
     }
 
     #[must_use]
-    pub(crate) const fn role(self) -> OperatorRole {
+    const fn role(self) -> OperatorRole {
         self.role
+    }
+
+    #[must_use]
+    pub(crate) const fn role_name(self) -> &'static str {
+        self.role.as_persisted()
     }
 
     pub(crate) const fn require_admin(self) -> Result<(), OperatorError> {
@@ -151,7 +180,7 @@ impl OperatorIdentity {
 /// # Errors
 ///
 /// Returns [`OperatorError::AuthorizationDenied`] for a viewer.
-pub(crate) const fn require_admin(role: OperatorRole) -> Result<(), OperatorError> {
+const fn require_admin(role: OperatorRole) -> Result<(), OperatorError> {
     match role {
         OperatorRole::Admin => Ok(()),
         OperatorRole::Viewer => Err(OperatorError::AuthorizationDenied),
@@ -193,7 +222,7 @@ pub(crate) enum OperatorError {
 }
 
 impl OperatorError {
-    pub(crate) const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
+    const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
         match error {
             AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
         }
@@ -201,4 +230,4 @@ impl OperatorError {
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;

@@ -7,14 +7,14 @@ use crate::component::contest::CurrentSeatProjection;
 use super::{CandidateRowFacts, ImportError};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub(crate) struct ImportMappingChange {
-    pub(super) seat_code: String,
-    pub(super) current_domjudge_username: Option<String>,
-    pub(super) candidate_domjudge_username: String,
+struct ImportMappingChange {
+    seat_code: String,
+    current_domjudge_username: Option<String>,
+    candidate_domjudge_username: String,
 }
 
 impl ImportMappingChange {
-    pub(crate) fn new(
+    fn new(
         seat_code: String,
         current_domjudge_username: Option<String>,
         candidate_domjudge_username: String,
@@ -25,60 +25,35 @@ impl ImportMappingChange {
             candidate_domjudge_username,
         }
     }
-
-    #[must_use]
-    pub(crate) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    #[must_use]
-    pub(crate) fn current_domjudge_username(&self) -> Option<&str> {
-        self.current_domjudge_username.as_deref()
-    }
-
-    #[must_use]
-    pub(crate) fn candidate_domjudge_username(&self) -> &str {
-        &self.candidate_domjudge_username
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-pub(crate) struct ImportBindingImpact {
-    pub(super) seat_code: String,
-    pub(super) device_id: String,
+struct ImportBindingImpact {
+    seat_code: String,
+    device_id: String,
 }
 
 impl ImportBindingImpact {
-    pub(crate) fn new(seat_code: String, device_id: String) -> Self {
+    fn new(seat_code: String, device_id: String) -> Self {
         Self {
             seat_code,
             device_id,
         }
     }
-
-    #[must_use]
-    pub(crate) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    #[must_use]
-    pub(crate) fn device_id(&self) -> &str {
-        &self.device_id
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct RedactedImportPreview {
-    pub(super) seats_added: Vec<String>,
-    pub(super) seats_removed: Vec<String>,
-    pub(super) mappings_changed: Vec<ImportMappingChange>,
-    pub(super) unchanged_count: usize,
-    pub(super) affected_account_count: usize,
-    pub(super) binding_impacts: Vec<ImportBindingImpact>,
+    seats_added: Vec<String>,
+    seats_removed: Vec<String>,
+    mappings_changed: Vec<ImportMappingChange>,
+    unchanged_count: usize,
+    affected_account_count: usize,
+    binding_impacts: Vec<ImportBindingImpact>,
 }
 
 impl RedactedImportPreview {
-    pub(crate) fn new(
+    fn new(
         seats_added: Vec<String>,
         seats_removed: Vec<String>,
         mappings_changed: Vec<ImportMappingChange>,
@@ -107,8 +82,16 @@ impl RedactedImportPreview {
     }
 
     #[must_use]
-    pub(crate) fn mappings_changed(&self) -> &[ImportMappingChange] {
-        &self.mappings_changed
+    pub(crate) fn mappings_changed(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (&str, Option<&str>, &str)> {
+        self.mappings_changed.iter().map(|change| {
+            (
+                change.seat_code.as_str(),
+                change.current_domjudge_username.as_deref(),
+                change.candidate_domjudge_username.as_str(),
+            )
+        })
     }
 
     #[must_use]
@@ -122,8 +105,10 @@ impl RedactedImportPreview {
     }
 
     #[must_use]
-    pub(crate) fn binding_impacts(&self) -> &[ImportBindingImpact] {
-        &self.binding_impacts
+    pub(crate) fn binding_impacts(&self) -> impl ExactSizeIterator<Item = (&str, &str)> {
+        self.binding_impacts
+            .iter()
+            .map(|impact| (impact.seat_code.as_str(), impact.device_id.as_str()))
     }
 }
 

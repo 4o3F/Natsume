@@ -39,7 +39,7 @@ impl ContestComponent {
 /// Redacted persistence boundary shared by Contest-owned adapters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 #[snafu(module)]
-pub(crate) enum ContestPersistenceError {
+enum ContestPersistenceError {
     #[snafu(display("persisted contest facts are invalid"))]
     InvalidPersistedFacts,
     #[snafu(display("contest persistence failed"))]
@@ -53,7 +53,7 @@ pub(crate) enum ContestError {
 }
 
 impl ContestError {
-    pub(crate) const fn from_persistence(error: ContestPersistenceError) -> Self {
+    const fn from_persistence(error: ContestPersistenceError) -> Self {
         match error {
             ContestPersistenceError::InvalidPersistedFacts
             | ContestPersistenceError::PersistenceFailed => Self::PersistenceFailed,

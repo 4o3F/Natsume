@@ -11,15 +11,14 @@ use zeroize::Zeroizing;
 
 use crate::{
     audit::{AuditPersistenceError, CorrelationId},
-    component::operator::test_db as db_operator,
     db::{Database, DatabaseConfig},
 };
 
 use super::{
     DUMMY_PASSWORD_PHC, OperatorCredentials, OperatorError, OperatorPassword, OperatorRole,
     PASSWORD_VERIFICATION_CONCURRENCY, PASSWORD_VERIFICATION_GATE, SESSION_CREDENTIAL_LENGTH,
-    SessionCredential, authenticate_session, decode_lower_hex, hash_password, require_admin,
-    sign_in, verify_password_once,
+    SessionCredential, authenticate_session, db::tests as db_operator, decode_lower_hex,
+    hash_raw_password, require_admin, sign_in, verify_password_once,
 };
 
 const GATE_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
@@ -87,8 +86,8 @@ fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailur
     let credentials =
         OperatorCredentials::new("admin".to_owned(), password.to_owned(), password.to_owned())
             .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
-    let encoded =
-        hash_password(credentials.password()).map_err(|_| TestFailure::PasswordHashingFailed)?;
+    let encoded = hash_raw_password(credentials.password())
+        .map_err(|_| TestFailure::PasswordHashingFailed)?;
     let parsed = PasswordHash::new(&encoded).map_err(|_| TestFailure::GeneratedPhcWasInvalid)?;
 
     if parsed.algorithm.as_str() != "argon2id"
@@ -119,7 +118,7 @@ fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailur
 fn password_verification_returns_typed_expected_outcomes() -> Result<(), TestFailure> {
     let correct = OperatorPassword::new("verification-contract-password".to_owned());
     let wrong = OperatorPassword::new("wrong-verification-contract-password".to_owned());
-    let encoded = hash_password(&correct).map_err(|_| TestFailure::PasswordHashingFailed)?;
+    let encoded = hash_raw_password(&correct).map_err(|_| TestFailure::PasswordHashingFailed)?;
     let correct_verified = verify_password_once(&correct, &encoded)
         .map_err(|_| TestFailure::PasswordVerificationFailed)?;
     let wrong_verified = verify_password_once(&wrong, &encoded)
@@ -244,7 +243,7 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
     let authenticated = authenticate_session(
         &fixture.database,
         correlation_id(),
-        admin_session.credential().to_wire(),
+        admin_session.wire_credential(),
     )
     .await
     .map_err(|_| TestFailure::SessionAuthenticationFailed)?;
@@ -255,13 +254,13 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
     let persisted_hashes = db_operator::test_session_hashes(&fixture.database)
         .await
         .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
-    let expected_hash = admin_session.credential().sha256();
+    let expected_hash = admin_session.credential_for_test().sha256();
     if !persisted_hashes
         .iter()
         .any(|hash| hash.as_slice() == expected_hash.as_bytes().as_slice())
         || persisted_hashes
             .iter()
-            .any(|hash| hash.as_slice() == admin_session.credential().0.as_slice())
+            .any(|hash| hash.as_slice() == admin_session.credential_for_test().0.as_slice())
     {
         return Err(TestFailure::PersistedCredentialEvidenceWasInvalid);
     }
@@ -506,7 +505,7 @@ fn password_phc(login_name: &str, password: &str) -> Result<String, TestFailure>
         password.to_owned(),
     )
     .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
-    hash_password(credentials.password()).map_err(|_| TestFailure::PasswordHashingFailed)
+    hash_raw_password(credentials.password()).map_err(|_| TestFailure::PasswordHashingFailed)
 }
 
 fn extra_parameter_phc(password: &str) -> Result<String, TestFailure> {

@@ -9,7 +9,7 @@ pub(crate) struct BindingFacts {
 }
 
 impl BindingFacts {
-    pub(crate) fn new(binding_id: String, seat_id: String, device_id: DeviceId) -> Self {
+    pub(super) fn new(binding_id: String, seat_id: String, device_id: DeviceId) -> Self {
         Self {
             binding: binding_id,
             seat: seat_id,

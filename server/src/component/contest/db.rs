@@ -1,8 +1,8 @@
 use crate::{component::contest::ContestPersistenceError, db::DatabaseError};
 
-pub(crate) mod accounts;
-pub(crate) mod device_bindings;
-pub(crate) mod seats;
+pub(super) mod accounts;
+pub(super) mod device_bindings;
+pub(super) mod seats;
 
 impl From<DatabaseError> for ContestPersistenceError {
     fn from(error: DatabaseError) -> Self {

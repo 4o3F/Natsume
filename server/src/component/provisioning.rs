@@ -10,20 +10,26 @@ use crate::{
 mod audit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProvisioningWindowState {
+enum ProvisioningWindowState {
     Closed,
     Open,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ProvisioningWindowAction {
+enum ProvisioningWindowAction {
     Open,
     Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProvisioningWindow {
-    pub(crate) state: ProvisioningWindowState,
+    state: ProvisioningWindowState,
+}
+
+impl ProvisioningWindow {
+    pub(crate) const fn is_open(self) -> bool {
+        matches!(self.state, ProvisioningWindowState::Open)
+    }
 }
 
 /// Enrollment admission authority. Every Server start creates its process-local

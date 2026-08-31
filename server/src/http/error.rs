@@ -206,8 +206,8 @@ impl ApiError {
 
     pub(super) fn from_import(error: ImportError, correlation_id: CorrelationId) -> Self {
         match error {
-            ImportError::InvalidCsv(error) => {
-                let cause = match error.category() {
+            ImportError::InvalidCsv(category) => {
+                let cause = match category {
                     CsvImportErrorCategory::InvalidUtf8 => "import_csv_invalid_utf8",
                     CsvImportErrorCategory::InvalidHeader => "import_csv_invalid_header",
                     CsvImportErrorCategory::WrongColumnCount => "import_csv_wrong_column_count",

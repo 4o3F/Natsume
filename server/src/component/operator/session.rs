@@ -8,11 +8,10 @@ use crate::{
 
 mod credentials;
 
-pub(crate) use self::credentials::{
-    OperatorCredentials, SessionCredential, SessionCredentialHash, SessionCredentialHex,
-};
+pub(crate) use self::credentials::{OperatorCredentials, SessionCredentialHex};
 #[cfg(test)]
 pub(super) use self::credentials::{SESSION_CREDENTIAL_LENGTH, decode_lower_hex};
+pub(super) use self::credentials::{SessionCredential, SessionCredentialHash};
 use super::{
     OperatorError, OperatorIdentity,
     password::{
@@ -21,9 +20,9 @@ use super::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SessionFacts {
-    pub(crate) identity: OperatorIdentity,
-    pub(crate) expired: bool,
+pub(super) struct SessionFacts {
+    pub(super) identity: OperatorIdentity,
+    pub(super) expired: bool,
 }
 
 enum ExpiredSessionCleanup {
@@ -44,7 +43,12 @@ impl SignedInSession {
     }
 
     #[must_use]
-    pub(crate) const fn credential(&self) -> &SessionCredential {
+    pub(crate) fn wire_credential(&self) -> SessionCredentialHex {
+        self.credential.to_wire()
+    }
+
+    #[cfg(test)]
+    pub(super) const fn credential_for_test(&self) -> &SessionCredential {
         &self.credential
     }
 }
@@ -56,7 +60,7 @@ impl SignedInSession {
 ///
 /// Returns a redacted [`OperatorError`] for authentication, persistence,
 /// entropy, or blocking-task failures.
-pub(crate) async fn sign_in(
+pub(super) async fn sign_in(
     database: &Database,
     correlation_id: CorrelationId,
     login_name: &str,
@@ -113,7 +117,7 @@ pub(crate) async fn sign_in(
     })
 }
 
-pub(crate) async fn create_session(
+async fn create_session(
     database: &Database,
     credential_hash: &SessionCredentialHash,
     identity: OperatorIdentity,
@@ -129,7 +133,7 @@ pub(crate) async fn create_session(
     .await
 }
 
-pub(crate) async fn create_session_with_audit_id(
+async fn create_session_with_audit_id(
     database: &Database,
     credential_hash: &SessionCredentialHash,
     identity: OperatorIdentity,
@@ -161,7 +165,7 @@ pub(crate) async fn create_session_with_audit_id(
 ///
 /// Missing, malformed, unknown, and expired credentials all return the same
 /// typed failure. Persistence failures remain a separate internal cause.
-pub(crate) async fn authenticate_session(
+pub(super) async fn authenticate_session(
     database: &Database,
     correlation_id: CorrelationId,
     wire_credential: SessionCredentialHex,
@@ -172,7 +176,7 @@ pub(crate) async fn authenticate_session(
     let snapshot_hash = Zeroizing::new(*credential_hash.as_bytes());
     let Some(facts) = database
         .read(move |transaction| {
-            crate::component::operator::db::query::find_session(transaction, &snapshot_hash)
+            crate::component::operator::db::find_session(transaction, &snapshot_hash)
         })
         .await?
     else {
@@ -186,7 +190,7 @@ pub(crate) async fn authenticate_session(
     let cleanup = database
         .write(move |transaction| {
             let Some(current) =
-                crate::component::operator::db::query::find_session(transaction, &cleanup_hash)?
+                crate::component::operator::db::find_session(transaction, &cleanup_hash)?
             else {
                 return Ok(ExpiredSessionCleanup::Missing);
             };
@@ -233,7 +237,7 @@ pub(crate) async fn authenticate_session(
 /// # Errors
 ///
 /// Returns a redacted [`OperatorError`] only for internal persistence failure.
-pub(crate) async fn terminate_session(
+pub(super) async fn terminate_session(
     database: &Database,
     correlation_id: CorrelationId,
     wire_credential: SessionCredentialHex,
@@ -251,7 +255,7 @@ pub(crate) async fn terminate_session(
     .await
 }
 
-pub(crate) async fn terminate_session_with_audit_id(
+async fn terminate_session_with_audit_id(
     database: &Database,
     credential_hash: &SessionCredentialHash,
     correlation_id: CorrelationId,
@@ -261,7 +265,7 @@ pub(crate) async fn terminate_session_with_audit_id(
     database
         .write(move |transaction| {
             let Some(current) =
-                crate::component::operator::db::query::find_session(transaction, &credential_hash)?
+                crate::component::operator::db::find_session(transaction, &credential_hash)?
             else {
                 return Ok(());
             };

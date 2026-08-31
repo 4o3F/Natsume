@@ -20,7 +20,7 @@ struct PersistedSessionFacts {
     expired: i64,
 }
 
-pub(crate) fn find_session(
+pub(in crate::component::operator) fn find_session(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
 ) -> Result<Option<SessionFacts>, OperatorError> {

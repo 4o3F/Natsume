@@ -18,10 +18,7 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use crate::{
     audit::CorrelationId,
     component::{
-        import::{
-            ImportBindingImpact, ImportMappingChange, PendingImportCandidate, PreviewToken,
-            RedactedImportPreview,
-        },
+        import::{PendingImportCandidate, RedactedImportPreview},
         operator::OperatorIdentity,
     },
 };
@@ -205,7 +202,7 @@ pub(crate) async fn create_import(
         Ok(created) => {
             let response = ImportPreviewResponse {
                 candidate_id: created.candidate_id(),
-                preview_token: encode_preview_token(created.preview_token().as_bytes()),
+                preview_token: encode_preview_token(created.preview_token_bytes()),
                 expires_at_unix_ms: created.expires_at_unix_ms(),
                 diff: ImportRedactedDiff::from(created.diff()),
             };
@@ -287,12 +284,7 @@ pub(crate) async fn commit_import(
     };
     match state
         .import()
-        .commit(
-            import_id,
-            &PreviewToken::from_bytes(token),
-            request.csv.as_bytes(),
-            correlation_id,
-        )
+        .commit(import_id, &token, request.csv.as_bytes(), correlation_id)
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -337,35 +329,25 @@ impl From<&RedactedImportPreview> for ImportRedactedDiff {
             seats_removed: diff.seats_removed().to_vec(),
             mappings_changed: diff
                 .mappings_changed()
-                .iter()
-                .map(ImportMappingChangeResponse::from)
+                .map(
+                    |(seat_code, current_domjudge_username, candidate_domjudge_username)| {
+                        ImportMappingChangeResponse {
+                            seat_code: seat_code.to_owned(),
+                            current_domjudge_username: current_domjudge_username.map(str::to_owned),
+                            candidate_domjudge_username: candidate_domjudge_username.to_owned(),
+                        }
+                    },
+                )
                 .collect(),
             unchanged_count: diff.unchanged_count(),
             affected_account_count: diff.affected_account_count(),
             binding_impacts: diff
                 .binding_impacts()
-                .iter()
-                .map(ImportBindingImpactResponse::from)
+                .map(|(seat_code, device_id)| ImportBindingImpactResponse {
+                    seat_code: seat_code.to_owned(),
+                    device_id: device_id.to_owned(),
+                })
                 .collect(),
-        }
-    }
-}
-
-impl From<&ImportMappingChange> for ImportMappingChangeResponse {
-    fn from(change: &ImportMappingChange) -> Self {
-        Self {
-            seat_code: change.seat_code().to_owned(),
-            current_domjudge_username: change.current_domjudge_username().map(str::to_owned),
-            candidate_domjudge_username: change.candidate_domjudge_username().to_owned(),
-        }
-    }
-}
-
-impl From<&ImportBindingImpact> for ImportBindingImpactResponse {
-    fn from(impact: &ImportBindingImpact) -> Self {
-        Self {
-            seat_code: impact.seat_code().to_owned(),
-            device_id: impact.device_id().to_owned(),
         }
     }
 }

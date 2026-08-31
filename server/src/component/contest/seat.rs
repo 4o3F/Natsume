@@ -8,7 +8,7 @@ pub(crate) struct SeatFacts {
 }
 
 impl SeatFacts {
-    pub(crate) fn new(seat_id: String, seat_code: String) -> Self {
+    pub(super) fn new(seat_id: String, seat_code: String) -> Self {
         Self { seat_id, seat_code }
     }
 

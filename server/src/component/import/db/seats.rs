@@ -6,7 +6,7 @@ use crate::{
     diesel_schema::seats,
 };
 
-pub(crate) fn insert(
+pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
     seat_id: &str,
     seat_code: &str,
@@ -17,7 +17,7 @@ pub(crate) fn insert(
         .map_err(|_| ImportError::PersistenceFailure)
 }
 
-pub(crate) fn delete_exact(
+pub(in crate::component::import) fn delete_exact(
     transaction: &mut Transaction<'_>,
     seat: &CurrentSeatProjection,
 ) -> Result<usize, ImportError> {

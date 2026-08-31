@@ -1,5 +1,5 @@
 use crate::{
-    component::operator::{OperatorComponent, OperatorCredentials, hash_password},
+    component::operator::{OperatorComponent, OperatorCredentials},
     config::ServerConfig,
     db::{Database, DatabaseConfig},
     vault::ensure_master_key,
@@ -25,8 +25,9 @@ where
     ensure_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
     tracing::info!("vault key verified");
     let credentials = read_credentials()?;
-    let password_hash =
-        hash_password(credentials.password()).map_err(|_| CommandError::Bootstrap)?;
+    let password_hash = credentials
+        .hash_password()
+        .map_err(|_| CommandError::Bootstrap)?;
     OperatorComponent::new(database)
         .create_first_admin(credentials.login_name(), &password_hash)
         .await

@@ -7,14 +7,14 @@ use crate::{
 
 use super::{OperatorError, OperatorIdentity, OperatorRole};
 
-pub(crate) struct AccountFacts {
-    pub(crate) identity: OperatorIdentity,
-    pub(crate) password_hash: String,
+pub(super) struct AccountFacts {
+    pub(super) identity: OperatorIdentity,
+    pub(super) password_hash: String,
 }
 
 /// Creates the only bootstrap administrator and its audit in one write
 /// transaction.
-pub(crate) async fn create_first_admin(
+pub(super) async fn create_first_admin(
     database: &Database,
     login_name: &str,
     password_hash: &str,
@@ -30,7 +30,7 @@ pub(crate) async fn create_first_admin(
     .await
 }
 
-pub(crate) async fn create_first_admin_with_ids(
+async fn create_first_admin_with_ids(
     database: &Database,
     login_name: &str,
     password_hash: &str,
@@ -63,7 +63,7 @@ pub(crate) async fn create_first_admin_with_ids(
 
 /// Replaces one operator password, removes exactly that operator's sessions,
 /// and records the removed count atomically.
-pub(crate) async fn reset_operator_password(
+pub(super) async fn reset_operator_password(
     database: &Database,
     login_name: &str,
     password_hash: &str,
@@ -86,7 +86,7 @@ pub(crate) async fn reset_operator_password(
     result
 }
 
-pub(crate) async fn reset_operator_password_with_ids(
+async fn reset_operator_password_with_ids(
     database: &Database,
     login_name: &str,
     password_hash: &str,

@@ -1,5 +1,5 @@
 use crate::{
-    component::operator::{OperatorComponent, OperatorCredentials, hash_password},
+    component::operator::{OperatorComponent, OperatorCredentials},
     config::ServerConfig,
     db::{Database, DatabaseConfig},
 };
@@ -25,8 +25,9 @@ where
         .map_err(|_| CommandError::Database)?;
     tracing::info!("database ready");
     let credentials = read_credentials()?;
-    let password_hash =
-        hash_password(credentials.password()).map_err(|_| CommandError::PasswordReset)?;
+    let password_hash = credentials
+        .hash_password()
+        .map_err(|_| CommandError::PasswordReset)?;
     OperatorComponent::new(database)
         .reset_password(credentials.login_name(), &password_hash)
         .await

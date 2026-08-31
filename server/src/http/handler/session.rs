@@ -80,7 +80,7 @@ pub(crate) async fn create_session(
         Ok(signed_in) => signed_in,
         Err(error) => return ApiError::from_operator(error, correlation_id).into_response(),
     };
-    let wire_credential = signed_in.credential().to_wire();
+    let wire_credential = signed_in.wire_credential();
     let Ok(session_cookie) = cookie::issue_session_credential(wire_credential.expose()) else {
         return ApiError::internal_error("session_cookie_issuance_failed", correlation_id)
             .into_response();
@@ -146,7 +146,7 @@ fn identity_response(
 ) -> Response {
     let body = SessionResponse {
         operator_id: identity.operator_id(),
-        role: identity.role().as_persisted(),
+        role: identity.role_name(),
     };
     let encoded = serde_json::to_string(&body).unwrap_or_else(|_| {
         tracing::error!(

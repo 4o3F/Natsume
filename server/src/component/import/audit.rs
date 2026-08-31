@@ -8,7 +8,7 @@ use crate::audit::{
 impl AuditEvent {
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn import_candidate_created(
+    pub(super) fn import_candidate_created(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         candidate_id: Uuid,
@@ -37,7 +37,7 @@ impl AuditEvent {
     }
 
     #[must_use]
-    pub(crate) fn import_candidate_rejected(
+    pub(super) fn import_candidate_rejected(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
     ) -> Self {
@@ -57,7 +57,7 @@ impl AuditEvent {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn import_candidate_expired(
+    pub(super) fn import_candidate_expired(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         candidate_id: Uuid,
@@ -78,7 +78,7 @@ impl AuditEvent {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn import_committed(
+    pub(super) fn import_committed(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         candidate_id: Uuid,
@@ -106,7 +106,7 @@ impl AuditEvent {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn import_commit_rejected(
+    pub(super) fn import_commit_rejected(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         candidate_id: Uuid,
@@ -128,7 +128,7 @@ impl AuditEvent {
 
     #[must_use]
     #[allow(dead_code)]
-    pub(crate) fn import_candidate_discarded(
+    pub(super) fn import_candidate_discarded(
         audit_event_id: AuditEventId,
         correlation_id: CorrelationId,
         candidate_id: Uuid,

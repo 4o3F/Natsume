@@ -11,10 +11,7 @@ use utoipa::ToSchema;
 
 use crate::{
     audit::CorrelationId,
-    component::{
-        operator::OperatorIdentity,
-        provisioning::{ProvisioningWindow, ProvisioningWindowState},
-    },
+    component::{operator::OperatorIdentity, provisioning::ProvisioningWindow},
 };
 
 use super::super::{AppState, error::ApiError, middleware};
@@ -65,19 +62,14 @@ enum ProvisioningWindowResponseState {
     Open,
 }
 
-impl From<ProvisioningWindowState> for ProvisioningWindowResponseState {
-    fn from(state: ProvisioningWindowState) -> Self {
-        match state {
-            ProvisioningWindowState::Closed => Self::Closed,
-            ProvisioningWindowState::Open => Self::Open,
-        }
-    }
-}
-
 impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     fn from(window: ProvisioningWindow) -> Self {
         Self {
-            state: ProvisioningWindowResponseState::from(window.state),
+            state: if window.is_open() {
+                ProvisioningWindowResponseState::Open
+            } else {
+                ProvisioningWindowResponseState::Closed
+            },
         }
     }
 }

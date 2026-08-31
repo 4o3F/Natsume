@@ -26,7 +26,7 @@ pub(in crate::component::operator) const PASSWORD_VERIFICATION_CONCURRENCY: usiz
 pub(in crate::component::operator) static PASSWORD_VERIFICATION_GATE: Semaphore =
     Semaphore::const_new(PASSWORD_VERIFICATION_CONCURRENCY);
 
-pub(crate) struct OperatorPassword(SecretString);
+pub(super) struct OperatorPassword(SecretString);
 
 impl OperatorPassword {
     pub(in crate::component::operator) fn new(value: String) -> Self {
@@ -44,7 +44,7 @@ impl OperatorPassword {
 ///
 /// Returns a redacted [`OperatorError`] if entropy, parameter construction,
 /// salt encoding, or password hashing fails.
-pub(crate) fn hash_password(password: &OperatorPassword) -> Result<String, OperatorError> {
+pub(super) fn hash_password(password: &OperatorPassword) -> Result<String, OperatorError> {
     let params = Params::new(
         ARGON2_MEMORY_COST_KIB,
         ARGON2_TIME_COST,

@@ -6,7 +6,7 @@ use crate::{
     diesel_schema::accounts,
 };
 
-pub(crate) fn list(
+pub(in crate::component::contest) fn list(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<AccountFacts>, ContestPersistenceError> {
     accounts::table

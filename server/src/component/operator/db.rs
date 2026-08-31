@@ -1,11 +1,12 @@
 use crate::{component::operator::OperatorError, db::DatabaseError};
 
 mod account;
-pub(crate) mod query;
+mod query;
 mod session;
 
-pub(crate) use self::{
+pub(super) use self::{
     account::{any_account_exists, find_account, insert_account, update_password},
+    query::find_session,
     session::{delete_session_by_hash, delete_sessions_by_operator, insert_session},
 };
 
@@ -48,4 +49,4 @@ impl From<DatabaseError> for OperatorError {
 }
 
 #[cfg(test)]
-pub(crate) mod tests;
+pub(super) mod tests;

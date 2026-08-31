@@ -12,7 +12,7 @@ use crate::{
 
 use super::OperatorStoreError;
 
-pub(crate) fn find_account(
+pub(in crate::component::operator) fn find_account(
     transaction: &mut Transaction<'_>,
     login_name: &str,
 ) -> Result<Option<AccountFacts>, OperatorError> {
@@ -44,7 +44,9 @@ fn find_account_persisted(
     .transpose()
 }
 
-pub(crate) fn any_account_exists(transaction: &mut Transaction<'_>) -> Result<bool, OperatorError> {
+pub(in crate::component::operator) fn any_account_exists(
+    transaction: &mut Transaction<'_>,
+) -> Result<bool, OperatorError> {
     select(exists(
         operator_accounts::table.select(operator_accounts::operator_id),
     ))
@@ -53,7 +55,7 @@ pub(crate) fn any_account_exists(transaction: &mut Transaction<'_>) -> Result<bo
     .map_err(OperatorError::from)
 }
 
-pub(crate) fn insert_account(
+pub(in crate::component::operator) fn insert_account(
     transaction: &mut Transaction<'_>,
     operator_id: Uuid,
     login_name: &str,
@@ -73,7 +75,7 @@ pub(crate) fn insert_account(
         .map_err(OperatorError::from)
 }
 
-pub(crate) fn update_password(
+pub(in crate::component::operator) fn update_password(
     transaction: &mut Transaction<'_>,
     operator_id: Uuid,
     password_hash: &str,

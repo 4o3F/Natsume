@@ -9,13 +9,13 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::candidate::CandidateRowFacts;
 
-pub(crate) const MAX_IMPORT_ROWS: usize = 10_000;
+const MAX_IMPORT_ROWS: usize = 10_000;
 
-pub(super) const CSV_HEADER: &str = "seat,account,password";
-pub(super) const UTF8_BOM: &[u8] = &[0xef, 0xbb, 0xbf];
-pub(super) const SEAT_CODE_LENGTH_LIMIT: usize = 64;
-pub(super) const ACCOUNT_USERNAME_LENGTH_LIMIT: usize = 64;
-pub(super) const PASSWORD_LENGTH_LIMIT: usize = 512;
+const CSV_HEADER: &str = "seat,account,password";
+const UTF8_BOM: &[u8] = &[0xef, 0xbb, 0xbf];
+const SEAT_CODE_LENGTH_LIMIT: usize = 64;
+const ACCOUNT_USERNAME_LENGTH_LIMIT: usize = 64;
+const PASSWORD_LENGTH_LIMIT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CsvImportErrorCategory {
@@ -32,24 +32,24 @@ pub(crate) enum CsvImportErrorCategory {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct CsvImportError {
-    pub(super) line: usize,
-    pub(super) category: CsvImportErrorCategory,
+pub(super) struct CsvImportError {
+    line: usize,
+    category: CsvImportErrorCategory,
 }
 
 impl CsvImportError {
-    pub(super) const fn new(line: usize, category: CsvImportErrorCategory) -> Self {
+    const fn new(line: usize, category: CsvImportErrorCategory) -> Self {
         Self { line, category }
     }
 
     #[cfg(test)]
     #[must_use]
-    pub(crate) const fn line(&self) -> usize {
+    const fn line(&self) -> usize {
         self.line
     }
 
     #[must_use]
-    pub(crate) const fn category(&self) -> CsvImportErrorCategory {
+    pub(super) const fn category(&self) -> CsvImportErrorCategory {
         self.category
     }
 }
@@ -63,50 +63,43 @@ impl Display for CsvImportError {
 impl Error for CsvImportError {}
 
 #[derive(Zeroize, ZeroizeOnDrop)]
-pub(crate) struct ImportRow {
-    pub(super) seat_code: String,
-    pub(super) domjudge_username: String,
-    pub(super) password: String,
+pub(super) struct ImportRow {
+    seat_code: String,
+    domjudge_username: String,
+    password: String,
 }
 
 impl ImportRow {
-    #[cfg(test)]
     #[must_use]
-    pub(crate) fn seat_code(&self) -> &str {
+    pub(super) fn seat_code(&self) -> &str {
         &self.seat_code
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub(crate) fn domjudge_username(&self) -> &str {
+    pub(super) fn domjudge_username(&self) -> &str {
         &self.domjudge_username
     }
 
-    #[cfg(test)]
     #[must_use]
-    pub(crate) fn password(&self) -> &str {
+    pub(super) fn password(&self) -> &str {
         &self.password
     }
 }
 
-pub(crate) struct ParsedImport {
-    pub(super) rows: Vec<ImportRow>,
+pub(super) struct ParsedImport {
+    rows: Vec<ImportRow>,
 }
 
 impl ParsedImport {
-    #[cfg(test)]
     #[must_use]
-    pub(crate) fn rows(&self) -> &[ImportRow] {
+    pub(super) fn rows(&self) -> &[ImportRow] {
         &self.rows
     }
 
     pub(super) fn candidate_rows(&self) -> Vec<CandidateRowFacts> {
         self.rows
             .iter()
-            .map(|row| CandidateRowFacts {
-                seat_code: row.seat_code.clone(),
-                domjudge_username: row.domjudge_username.clone(),
-            })
+            .map(|row| CandidateRowFacts::new(row.seat_code.clone(), row.domjudge_username.clone()))
             .collect()
     }
 }
@@ -121,7 +114,7 @@ impl ParsedImport {
 ///
 /// Panics only if serializing the fixed string-only staging shape violates its
 /// infallible serialization invariant.
-pub(crate) fn parse_csv(raw: &[u8]) -> Result<ParsedImport, CsvImportError> {
+pub(super) fn parse_csv(raw: &[u8]) -> Result<ParsedImport, CsvImportError> {
     let bytes = raw.strip_prefix(UTF8_BOM).unwrap_or(raw);
     let text = str::from_utf8(bytes).map_err(|error| {
         let line = bytes[..error.valid_up_to()]
@@ -209,7 +202,7 @@ pub(crate) fn parse_csv(raw: &[u8]) -> Result<ParsedImport, CsvImportError> {
     Ok(ParsedImport { rows })
 }
 
-pub(super) fn csv_line(encoded_line: &str) -> &str {
+fn csv_line(encoded_line: &str) -> &str {
     encoded_line
         .strip_suffix('\n')
         .map_or(encoded_line, |line| line.strip_suffix('\r').unwrap_or(line))

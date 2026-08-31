@@ -6,7 +6,7 @@ use crate::{
     diesel_schema::seats,
 };
 
-pub(crate) fn list(
+pub(in crate::component::contest) fn list(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<SeatFacts>, ContestPersistenceError> {
     seats::table
