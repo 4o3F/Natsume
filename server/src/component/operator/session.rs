@@ -4,7 +4,7 @@ use crate::db::{Database, PersistenceError, TransactionError};
 
 mod credentials;
 
-pub(crate) use self::credentials::{OperatorCredentials, SessionCredentialHex};
+pub(crate) use self::credentials::SessionCredentialHex;
 pub(super) use self::credentials::{SessionCredential, SessionCredentialHash};
 use super::{
     OperatorError, OperatorIdentity,

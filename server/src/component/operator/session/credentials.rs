@@ -2,10 +2,7 @@ use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-use super::super::{
-    OperatorError,
-    password::{self, OperatorPassword},
-};
+use super::super::OperatorError;
 
 pub(in crate::component::operator) const SESSION_CREDENTIAL_LENGTH: usize = 32;
 const SESSION_CREDENTIAL_HEX_LENGTH: usize = SESSION_CREDENTIAL_LENGTH * 2;
@@ -61,46 +58,6 @@ impl SessionCredentialHash {
     }
 }
 
-pub(crate) struct OperatorCredentials {
-    login_name: String,
-    password: OperatorPassword,
-}
-
-impl OperatorCredentials {
-    /// Validates non-interactive operator credential input.
-    ///
-    /// # Errors
-    ///
-    /// Returns a redacted [`OperatorError`] when the login name is empty or the
-    /// two passwords differ.
-    pub(crate) fn new(
-        login_name: String,
-        password: String,
-        password_confirmation: String,
-    ) -> Result<Self, OperatorError> {
-        let password = OperatorPassword::new(password);
-        let password_confirmation = OperatorPassword::new(password_confirmation);
-        if login_name.is_empty() {
-            return Err(OperatorError::EmptyLoginName);
-        }
-        if password.expose() != password_confirmation.expose() {
-            return Err(OperatorError::PasswordMismatch);
-        }
-        Ok(Self {
-            login_name,
-            password,
-        })
-    }
-
-    pub(crate) fn login_name(&self) -> &str {
-        &self.login_name
-    }
-
-    pub(crate) fn hash_password(&self) -> Result<String, OperatorError> {
-        password::hash_password(&self.password)
-    }
-}
-
 fn encode_lower_hex(bytes: &[u8; SESSION_CREDENTIAL_LENGTH]) -> SecretString {
     hex::encode(bytes).into()
 }
@@ -119,15 +76,4 @@ pub(in crate::component::operator) fn decode_lower_hex(
     hex::decode_to_slice(value, &mut *bytes)
         .map_err(|_| OperatorError::InvalidSessionCredential)?;
     Ok(SessionCredential(bytes))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{OperatorCredentials, OperatorPassword};
-
-    impl OperatorCredentials {
-        pub(in crate::component::operator) fn password(&self) -> &OperatorPassword {
-            &self.password
-        }
-    }
 }

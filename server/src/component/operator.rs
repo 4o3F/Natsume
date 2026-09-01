@@ -4,13 +4,17 @@ use uuid::Uuid;
 use crate::db::{Database, PersistenceError};
 
 mod account;
+mod credentials;
 mod db;
 mod password;
 mod session;
 
 use self::account::AccountFacts;
 use self::session::SessionFacts;
-pub(crate) use self::session::{OperatorCredentials, SessionCredentialHex, SignedInSession};
+pub(crate) use self::{
+    credentials::OperatorCredentials,
+    session::{SessionCredentialHex, SignedInSession},
+};
 
 /// Operator authentication and account authority with private persistence.
 pub(crate) struct OperatorComponent {
