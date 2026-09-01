@@ -13,14 +13,13 @@ carries configuration, paths, or secrets.
   key, or account and never prompts.
 - `natsume-server bootstrap` creates or migrates the database, creates the vault
   master key only when absent, reads the login name and password from a TTY
-  (password twice without echo), atomically creates the single first admin with
-  its typed audit row, and exits without TLS preflight or a listener. Repeating
+  (password twice without echo), atomically creates the single first admin,
+  and exits without TLS preflight or a listener. Repeating
   it makes zero business writes and exits non-zero.
 - `natsume-server reset-operator-password` opens the existing database, runs
   migrations, and reads the target login name and new password from a TTY
   (password twice without echo). In one transaction it replaces that operator's
-  PHC string, purges all of that operator's current sessions, and writes one
-  `system:password-reset` audit row. It never creates accounts or touches the
+  PHC string and purges all of that operator's current sessions. It never creates accounts or touches the
   vault master key. An unknown login name exits non-zero with zero writes.
 
 ## TLS and Origin CA material
@@ -76,11 +75,26 @@ sudo -u natsume-server -- /usr/bin/natsume-server reset-operator-password
 
 Enter the target login name and the same new password twice at the prompts. The
 command replaces that operator's PHC string, purges all of that operator's
-current sessions, writes one `system:password-reset` audit row, and exits. It
+current sessions, and exits. It
 never creates an account and never touches the vault master key; an unknown
 login name exits non-zero with zero writes. Never run it as root or from
 automation. The package `postinstall` must not call it because install-time
 secret handling and a packaging-script TTY prompt are forbidden.
+
+## OpenTelemetry traces
+
+The Server always writes its ordinary `tracing` output to stderr. OTLP/gRPC
+trace export is enabled only when `OTEL_EXPORTER_OTLP_ENDPOINT` or
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is non-empty; `OTEL_SDK_DISABLED=true`
+disables it. Other exporter settings use the standard OpenTelemetry environment
+variables. The process explicitly shuts down the trace provider on normal exit.
+Exporter construction failures fail startup, while shutdown/export failures only
+write a fixed diagnostic and never replace the business command result.
+
+Traces are best-effort observability data, not a business audit trail. The
+Server does not write a local operation JSONL file or expose a Panel audit page.
+HTTP spans extract W3C trace context, and Diesel emits redacted query spans that
+do not contain SQL text, bind values, database URLs, or error details.
 
 The complete Server target, including the component model and Device WSS, is
 defined only by the [target architecture](../docs/architecture.md).

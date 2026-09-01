@@ -9,10 +9,7 @@ use snafu::Snafu;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::{
-    audit::{AuditPersistenceError, CorrelationId},
-    db::{Database, DatabaseConfig},
-};
+use crate::db::{Database, DatabaseConfig};
 
 use super::{
     DUMMY_PASSWORD_PHC, OperatorCredentials, OperatorError, OperatorPassword, OperatorRole,
@@ -25,14 +22,6 @@ const GATE_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_s
 const GATE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 static PASSWORD_VERIFICATION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-#[test]
-fn audit_persistence_mapping_covers_every_neutral_variant() {
-    assert_eq!(
-        OperatorError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
-        OperatorError::PersistenceFailed
-    );
-}
 
 pub(crate) struct PasswordVerificationTestGuard {
     _guard: tokio::sync::MutexGuard<'static, ()>,
@@ -205,17 +194,11 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
     let before_sign_in = db_operator::test_now(&fixture.database)
         .await
         .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
-    let admin_session = sign_in(
-        &fixture.database,
-        correlation_id(),
-        "exact-admin",
-        admin_password.to_owned(),
-    )
-    .await
-    .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    let admin_session = sign_in(&fixture.database, "exact-admin", admin_password.to_owned())
+        .await
+        .map_err(|_| TestFailure::CorrectSignInFailed)?;
     let viewer_session = sign_in(
         &fixture.database,
-        correlation_id(),
         "exact-viewer",
         viewer_password.to_owned(),
     )
@@ -240,13 +223,9 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
         return Err(TestFailure::SignedInSessionTtlWasNotFrozen);
     }
 
-    let authenticated = authenticate_session(
-        &fixture.database,
-        correlation_id(),
-        admin_session.wire_credential(),
-    )
-    .await
-    .map_err(|_| TestFailure::SessionAuthenticationFailed)?;
+    let authenticated = authenticate_session(&fixture.database, admin_session.wire_credential())
+        .await
+        .map_err(|_| TestFailure::SessionAuthenticationFailed)?;
     if authenticated != admin_session.identity() {
         return Err(TestFailure::AuthenticatedIdentityChanged);
     }
@@ -303,7 +282,7 @@ async fn prepare_sign_in_accounts(
 }
 
 async fn assert_failed_sign_ins_are_unified(database: &Database) -> Result<(), TestFailure> {
-    let before_failures = db_operator::test_session_and_audit_counts(database)
+    let before_failures = db_operator::test_session_count(database)
         .await
         .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
     let wrong_password = failed_sign_in_once(
@@ -349,7 +328,7 @@ async fn assert_failed_sign_ins_are_unified(database: &Database) -> Result<(), T
     {
         return Err(TestFailure::SignInFailuresWereDistinguishable);
     }
-    if db_operator::test_session_and_audit_counts(database)
+    if db_operator::test_session_count(database)
         .await
         .map_err(|_| TestFailure::SessionEvidenceReadFailed)?
         != before_failures
@@ -381,7 +360,7 @@ async fn failed_sign_in_once(
     password: &str,
     unexpected_success: TestFailure,
 ) -> Result<OperatorError, TestFailure> {
-    sign_in(database, correlation_id(), login_name, password.to_owned())
+    sign_in(database, login_name, password.to_owned())
         .await
         .err()
         .ok_or(unexpected_success)
@@ -428,7 +407,6 @@ async fn password_verification_concurrency_is_bounded() -> Result<(), TestFailur
 async fn gated_sign_in_fails(database: &Database) -> Result<(), TestFailure> {
     let error = sign_in(
         database,
-        correlation_id(),
         "gate-unknown-login-canary",
         "gate-password-canary".to_owned(),
     )
@@ -534,10 +512,6 @@ fn short_salt_phc(password: &str) -> Result<String, TestFailure> {
         .hash_password(password.as_bytes(), &salt)
         .map(|hash| hash.to_string())
         .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)
-}
-
-fn correlation_id() -> CorrelationId {
-    CorrelationId::from_uuid(Uuid::now_v7())
 }
 
 struct TestDatabase {

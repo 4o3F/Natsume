@@ -22,12 +22,7 @@ export function DataState({
   }
 
   if (error instanceof ApiError) {
-    return (
-      <p className="text-sm text-destructive">
-        {error.title}
-        {error.correlationId && ` (Correlation ID: ${error.correlationId})`}
-      </p>
-    );
+    return <p className="text-sm text-destructive">{error.title}</p>;
   }
 
   if (error instanceof Error) {

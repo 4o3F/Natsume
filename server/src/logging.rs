@@ -1,3 +1,5 @@
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::{Resource, trace::SdkTracerProvider};
 use snafu::Snafu;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{
@@ -6,6 +8,10 @@ use tracing_subscriber::{
 };
 
 use crate::config::LogLevel;
+
+const OTEL_EXPORTER_OTLP_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+const OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
+const OTEL_SDK_DISABLED: &str = "OTEL_SDK_DISABLED";
 
 fn level_filter(level: LogLevel) -> LevelFilter {
     match level {
@@ -17,41 +23,126 @@ fn level_filter(level: LogLevel) -> LevelFilter {
     }
 }
 
-fn subscriber<W>(level: LogLevel, writer: W) -> impl tracing::Subscriber + Send + Sync + 'static
+fn log_layer<W>(level: LogLevel, writer: W) -> impl tracing_subscriber::Layer<Registry>
 where
     W: for<'writer> fmt::MakeWriter<'writer> + Send + Sync + 'static,
 {
     let targets = Targets::new()
         .with_default(LevelFilter::OFF)
         .with_target("natsume_server", level_filter(level));
-    let formatter = fmt::layer()
+    fmt::layer()
         .with_writer(writer)
         .with_ansi(false)
         .without_time()
         .with_target(false)
-        .with_filter(targets);
-    Registry::default().with(formatter)
+        .with_filter(targets)
 }
 
-pub(crate) fn initialize(level: LogLevel) -> Result<(), LoggingError> {
-    subscriber(level, std::io::stderr)
+#[cfg(test)]
+fn subscriber<W>(level: LogLevel, writer: W) -> impl tracing::Subscriber + Send + Sync + 'static
+where
+    W: for<'writer> fmt::MakeWriter<'writer> + Send + Sync + 'static,
+{
+    Registry::default().with(log_layer(level, writer))
+}
+
+pub(crate) fn initialize(level: LogLevel) -> Result<TelemetryGuard, LoggingError> {
+    let tracer_provider = if telemetry_enabled_from_environment() {
+        Some(build_tracer_provider()?)
+    } else {
+        None
+    };
+    let telemetry_layer = tracer_provider.as_ref().map(|provider| {
+        let tracer = provider.tracer("natsume-server");
+        let targets = Targets::new()
+            .with_default(LevelFilter::OFF)
+            .with_target("natsume_server", LevelFilter::TRACE);
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(targets)
+    });
+    Registry::default()
+        .with(log_layer(level, std::io::stderr))
+        .with(telemetry_layer)
         .try_init()
-        .map_err(|_| LoggingError::InitializationFailed)
+        .map_err(|_| LoggingError::SubscriberInitialization)?;
+    Ok(TelemetryGuard { tracer_provider })
+}
+
+fn build_tracer_provider() -> Result<SdkTracerProvider, LoggingError> {
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .build()
+        .map_err(|_| LoggingError::ExporterInitialization)?;
+    let resource = Resource::builder()
+        .with_service_name("natsume-server")
+        .build();
+    Ok(SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter)
+        .build())
+}
+
+fn telemetry_enabled_from_environment() -> bool {
+    let disabled = std::env::var(OTEL_SDK_DISABLED).ok();
+    let endpoint = std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).ok();
+    let traces_endpoint = std::env::var(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).ok();
+    telemetry_enabled(
+        disabled.as_deref(),
+        endpoint.as_deref(),
+        traces_endpoint.as_deref(),
+    )
+}
+
+fn telemetry_enabled(
+    disabled: Option<&str>,
+    endpoint: Option<&str>,
+    traces_endpoint: Option<&str>,
+) -> bool {
+    !disabled.is_some_and(|value| value.eq_ignore_ascii_case("true"))
+        && [endpoint, traces_endpoint]
+            .into_iter()
+            .flatten()
+            .any(|value| !value.trim().is_empty())
+}
+
+pub(crate) struct TelemetryGuard {
+    tracer_provider: Option<SdkTracerProvider>,
+}
+
+impl TelemetryGuard {
+    pub(crate) fn shutdown(self) {
+        if let Some(provider) = self.tracer_provider
+            && provider.shutdown().is_err()
+        {
+            eprintln!("OpenTelemetry trace shutdown failed");
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum LoggingError {
+    #[snafu(display("OpenTelemetry OTLP trace exporter initialization failed"))]
+    ExporterInitialization,
     #[snafu(display("structured logging initialization failed"))]
-    InitializationFailed,
+    SubscriberInitialization,
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::{
         io::{self, Write},
-        sync::{Arc, Mutex, MutexGuard, PoisonError},
+        sync::{
+            Arc, Mutex, MutexGuard, PoisonError,
+            atomic::{AtomicBool, Ordering},
+        },
+        time::Duration,
     };
 
+    use opentelemetry_sdk::{
+        error::{OTelSdkError, OTelSdkResult},
+        trace::{SdkTracerProvider, SpanData, SpanExporter},
+    };
     use snafu::Snafu;
     use tracing_subscriber::fmt::MakeWriter;
 
@@ -64,15 +155,8 @@ pub(crate) mod tests {
     }
 
     impl SubscriberTestGuard {
-        /// Serialises every test that installs a scoped subscriber or emits a
-        /// crate callsite without one. `tracing` caches callsite interest
-        /// process-globally, and a `Dispatch::new` rebuild racing a callsite's
-        /// first registration can latch that callsite at `never` for the rest of
-        /// the process, silently dropping the event from later captures.
-        ///
-        /// This is a plain `std` mutex because the tests that need it are a mix
-        /// of `#[test]` and `#[tokio::test]`; the guard is held across `.await`
-        /// on the current-thread runtimes `#[tokio::test]` builds.
+        /// Serialises tests that install a scoped subscriber because `tracing`
+        /// caches callsite interest process-globally.
         pub(crate) fn acquire() -> Self {
             Self {
                 _guard: SUBSCRIBER_TEST_LOCK
@@ -150,6 +234,65 @@ pub(crate) mod tests {
             return Err(TestFailure::LevelFilterChanged);
         }
         Ok(())
+    }
+
+    #[test]
+    fn otlp_export_requires_a_nonempty_endpoint_and_honours_sdk_disabled() {
+        assert!(!super::telemetry_enabled(None, None, None));
+        assert!(!super::telemetry_enabled(None, Some("  "), None));
+        assert!(super::telemetry_enabled(
+            None,
+            Some("http://collector:4317"),
+            None
+        ));
+        assert!(super::telemetry_enabled(
+            None,
+            None,
+            Some("http://collector:4317")
+        ));
+        assert!(!super::telemetry_enabled(
+            Some("TRUE"),
+            Some("http://collector:4317"),
+            None
+        ));
+    }
+
+    #[test]
+    fn provider_shutdown_failure_is_best_effort() {
+        let shutdown_called = Arc::new(AtomicBool::new(false));
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(ShutdownFailingExporter {
+                shutdown_called: Arc::clone(&shutdown_called),
+            })
+            .build();
+
+        super::TelemetryGuard {
+            tracer_provider: Some(provider),
+        }
+        .shutdown();
+
+        assert!(shutdown_called.load(Ordering::Relaxed));
+    }
+
+    #[derive(Debug)]
+    struct ShutdownFailingExporter {
+        shutdown_called: Arc<AtomicBool>,
+    }
+
+    impl SpanExporter for ShutdownFailingExporter {
+        fn export(
+            &self,
+            _batch: Vec<SpanData>,
+        ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+            std::future::ready(Ok(()))
+        }
+
+        fn shutdown_with_timeout(&self, _timeout: Duration) -> OTelSdkResult {
+            self.shutdown_called.store(true, Ordering::Relaxed);
+            Err(OTelSdkError::InternalFailure(
+                "exporter detail must not be logged".to_owned(),
+            ))
+        }
     }
 
     #[derive(Debug, Snafu)]

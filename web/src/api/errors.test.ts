@@ -18,13 +18,11 @@ describe("unwrap", () => {
   });
 
   it("maps an ErrorResponse body to ApiError fields", async () => {
-    const correlationId = "01912345-6789-7abc-8def-0123456789ab";
     const result = unwrap({
       error: {
         title: "Authentication failed",
         status: 401,
         code: "AUTHENTICATION_FAILED",
-        correlation_id: correlationId,
       },
       response: new Response(null, { status: 401 }),
     });
@@ -35,7 +33,6 @@ describe("unwrap", () => {
       title: "Authentication failed",
       status: 401,
       code: "AUTHENTICATION_FAILED",
-      correlationId,
     });
   });
 
@@ -49,7 +46,6 @@ describe("unwrap", () => {
       title: "HTTP 502",
       status: 502,
       code: "UNPARSEABLE_RESPONSE",
-      correlationId: null,
     });
   });
 });

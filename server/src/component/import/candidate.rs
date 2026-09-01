@@ -7,10 +7,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{
-    audit::{AuditEvent, AuditEventId, CorrelationId},
-    db::{Database, Transaction},
-};
+use crate::db::{Database, Transaction};
 
 use super::{
     FINGERPRINT_VERSION, candidate_fingerprint,
@@ -237,7 +234,6 @@ impl PendingImportCandidate {
 pub(super) async fn create_import_candidate(
     database: &Database,
     raw_csv: &[u8],
-    correlation_id: CorrelationId,
 ) -> Result<CreatedImportCandidate, ImportError> {
     let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv(error.category()))?;
     let candidate_rows = parsed.candidate_rows();
@@ -247,21 +243,14 @@ pub(super) async fn create_import_candidate(
     let preview_token = PreviewToken::generate()?;
     let preview_token_hash = preview_token.sha256();
     let candidate_id = Uuid::now_v7();
-    let create_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
-    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
 
     database
-        .write(move |transaction| {
+        .write(move |transaction| -> Result<_, ImportError> {
             if let Some(existing) = super::db::pending_import_candidate::find(transaction)? {
                 if existing.expiry() == CandidateExpiry::Valid {
                     return Err(ImportError::CandidatePending);
                 }
-                expire_candidate(
-                    transaction,
-                    &existing,
-                    correlation_id,
-                    expiry_audit_event_id,
-                )?;
+                expire_candidate(transaction, &existing)?;
             }
 
             let current_seats = super::db::query::read_current_seats(transaction)?;
@@ -283,23 +272,7 @@ pub(super) async fn create_import_candidate(
                 CandidateExpiry::Valid,
             );
 
-            let event = AuditEvent::import_candidate_created(
-                create_audit_event_id,
-                correlation_id,
-                candidate_id,
-                candidate.diff().seats_added().len(),
-                candidate.diff().seats_removed().len(),
-                candidate.diff().mappings_changed().len(),
-                candidate.diff().binding_impacts().len(),
-            );
-            crate::audit::insert(transaction, &event)
-                .map_err(ImportError::from_audit_persistence)?;
-            if super::db::pending_import_candidate::insert(
-                transaction,
-                &candidate,
-                create_audit_event_id,
-            )? != 1
-            {
+            if super::db::pending_import_candidate::insert(transaction, &candidate)? != 1 {
                 return Err(ImportError::PersistenceFailure);
             }
             Ok(CreatedImportCandidate {
@@ -314,21 +287,14 @@ pub(super) async fn create_import_candidate(
 
 pub(super) async fn read_pending_import_candidate(
     database: &Database,
-    correlation_id: CorrelationId,
 ) -> Result<Option<PendingImportCandidate>, ImportError> {
-    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
     database
-        .write(move |transaction| {
+        .write(move |transaction| -> Result<_, ImportError> {
             let Some(candidate) = super::db::pending_import_candidate::find(transaction)? else {
                 return Ok(None);
             };
             if candidate.expiry() == CandidateExpiry::Expired {
-                expire_candidate(
-                    transaction,
-                    &candidate,
-                    correlation_id,
-                    expiry_audit_event_id,
-                )?;
+                expire_candidate(transaction, &candidate)?;
                 return Ok(None);
             }
             Ok(Some(candidate.into_pending()))
@@ -339,11 +305,8 @@ pub(super) async fn read_pending_import_candidate(
 pub(super) async fn discard_import(
     database: &Database,
     candidate_id: Uuid,
-    correlation_id: CorrelationId,
 ) -> Result<(), ImportError> {
-    let discard_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
-    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
-    database
+    let outcome = database
         .write(move |transaction| {
             let Some(candidate) = super::db::pending_import_candidate::find(transaction)? else {
                 return Err(ImportError::CandidateUnavailable);
@@ -352,60 +315,34 @@ pub(super) async fn discard_import(
                 return Err(ImportError::CandidateUnavailable);
             }
             if candidate.expiry() == CandidateExpiry::Expired {
-                expire_candidate(
-                    transaction,
-                    &candidate,
-                    correlation_id,
-                    expiry_audit_event_id,
-                )?;
-                return Err(ImportError::CandidateUnavailable);
+                expire_candidate(transaction, &candidate)?;
+                return Ok(DiscardOutcome::Unavailable);
             }
-            let event = AuditEvent::import_candidate_discarded(
-                discard_audit_event_id,
-                correlation_id,
-                candidate_id,
-            );
-            crate::audit::insert(transaction, &event)
-                .map_err(ImportError::from_audit_persistence)?;
             if super::db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
                 return Err(ImportError::PersistenceFailure);
             }
-            Ok(())
+            Ok(DiscardOutcome::Discarded)
         })
-        .await
-}
-
-pub(super) async fn audit_invalid_import_upload(
-    database: &Database,
-    correlation_id: CorrelationId,
-) -> Result<(), ImportError> {
-    database
-        .write(move |transaction| {
-            let event = AuditEvent::import_candidate_rejected(
-                AuditEventId::from_uuid(Uuid::now_v7()),
-                correlation_id,
-            );
-            crate::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)
-        })
-        .await
+        .await?;
+    match outcome {
+        DiscardOutcome::Discarded => Ok(()),
+        DiscardOutcome::Unavailable => Err(ImportError::CandidateUnavailable),
+    }
 }
 
 pub(super) fn expire_candidate(
     transaction: &mut Transaction<'_>,
     candidate: &CandidateRecord,
-    correlation_id: CorrelationId,
-    audit_event_id: AuditEventId,
 ) -> Result<(), ImportError> {
-    let event = AuditEvent::import_candidate_expired(
-        audit_event_id,
-        correlation_id,
-        candidate.candidate_id(),
-    );
-    crate::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)?;
     if super::db::pending_import_candidate::delete_exact(transaction, candidate)? != 1 {
         return Err(ImportError::PersistenceFailure);
     }
     Ok(())
+}
+
+enum DiscardOutcome {
+    Discarded,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -437,11 +374,3 @@ impl Display for ImportError {
 }
 
 impl Error for ImportError {}
-
-impl ImportError {
-    pub(super) const fn from_audit_persistence(error: crate::audit::AuditPersistenceError) -> Self {
-        match error {
-            crate::audit::AuditPersistenceError::PersistenceFailed => Self::PersistenceFailure,
-        }
-    }
-}

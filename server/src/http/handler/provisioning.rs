@@ -9,10 +9,7 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{
-    audit::CorrelationId,
-    component::{operator::OperatorIdentity, provisioning::ProvisioningWindow},
-};
+use crate::component::{operator::OperatorIdentity, provisioning::ProvisioningWindow};
 
 use super::super::{AppState, error::ApiError, middleware};
 
@@ -37,13 +34,12 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
 }
 
 async fn require_admin_role(
-    Extension(correlation_id): Extension<CorrelationId>,
     Extension(identity): Extension<OperatorIdentity>,
     request: Request,
     next: Next,
 ) -> Response {
     if let Err(error) = identity.require_admin() {
-        return ApiError::from_operator(error, correlation_id).into_response();
+        return ApiError::from_operator(error).into_response();
     }
     next.run(request).await
 }
@@ -97,18 +93,12 @@ pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Re
     responses(
         (status = 200, description = "Provisioning window opened or already open", body = ProvisioningWindowResponse),
         (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure")
+        (status = 403, description = "Administrator role required")
     )
 )]
-pub(crate) async fn open_provisioning_window(
-    State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
-) -> Response {
-    match state.provisioning().open_window(correlation_id).await {
-        Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
-        Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
-    }
+pub(crate) async fn open_provisioning_window(State(state): State<AppState>) -> Response {
+    let window = state.provisioning().open_window().await;
+    Json(ProvisioningWindowResponse::from(window)).into_response()
 }
 
 #[utoipa::path(
@@ -119,16 +109,10 @@ pub(crate) async fn open_provisioning_window(
     responses(
         (status = 200, description = "Provisioning window closed or already closed", body = ProvisioningWindowResponse),
         (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure")
+        (status = 403, description = "Administrator role required")
     )
 )]
-pub(crate) async fn close_provisioning_window(
-    State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
-) -> Response {
-    match state.provisioning().close_window(correlation_id).await {
-        Ok(window) => Json(ProvisioningWindowResponse::from(window)).into_response(),
-        Err(error) => ApiError::from_provisioning(error, correlation_id).into_response(),
-    }
+pub(crate) async fn close_provisioning_window(State(state): State<AppState>) -> Response {
+    let window = state.provisioning().close_window().await;
+    Json(ProvisioningWindowResponse::from(window)).into_response()
 }

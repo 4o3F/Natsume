@@ -5,7 +5,7 @@ import { z } from "zod";
 
 import { ApiError } from "@/api/errors";
 import { useLogin, useSession } from "@/auth/use-session";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -66,11 +66,6 @@ export function LoginPage() {
                     ? `Login failed: ${apiError.title}`
                     : apiError.title}
                 </AlertTitle>
-                {apiError.correlationId && (
-                  <AlertDescription>
-                    Correlation ID: {apiError.correlationId}
-                  </AlertDescription>
-                )}
               </Alert>
             )}
             <div className="space-y-2">

@@ -1,10 +1,6 @@
-use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use crate::{
-    audit::{AuditEvent, AuditEventId, CorrelationId},
-    db::Database,
-};
+use crate::db::Database;
 
 mod credentials;
 
@@ -28,7 +24,7 @@ pub(super) struct SessionFacts {
 enum ExpiredSessionCleanup {
     Missing,
     Live(OperatorIdentity),
-    Deleted,
+    Deleted(OperatorIdentity),
 }
 
 pub(crate) struct SignedInSession {
@@ -62,7 +58,6 @@ impl SignedInSession {
 /// entropy, or blocking-task failures.
 pub(super) async fn sign_in(
     database: &Database,
-    correlation_id: CorrelationId,
     login_name: &str,
     submitted_password: String,
 ) -> Result<SignedInSession, OperatorError> {
@@ -107,9 +102,10 @@ pub(super) async fn sign_in(
     }
 
     let identity = account.identity;
+    record_actor(identity);
     let credential = SessionCredential::generate()?;
     let credential_hash = credential.sha256();
-    create_session(database, &credential_hash, identity, correlation_id).await?;
+    create_session(database, &credential_hash, identity).await?;
 
     Ok(SignedInSession {
         identity,
@@ -121,40 +117,11 @@ async fn create_session(
     database: &Database,
     credential_hash: &SessionCredentialHash,
     identity: OperatorIdentity,
-    correlation_id: CorrelationId,
-) -> Result<(), OperatorError> {
-    create_session_with_audit_id(
-        database,
-        credential_hash,
-        identity,
-        correlation_id,
-        AuditEventId::from_uuid(Uuid::now_v7()),
-    )
-    .await
-}
-
-async fn create_session_with_audit_id(
-    database: &Database,
-    credential_hash: &SessionCredentialHash,
-    identity: OperatorIdentity,
-    correlation_id: CorrelationId,
-    audit_event_id: AuditEventId,
 ) -> Result<(), OperatorError> {
     let credential_hash = Zeroizing::new(*credential_hash.as_bytes());
     database
         .write(move |transaction| {
-            crate::component::operator::db::insert_session(
-                transaction,
-                &credential_hash,
-                identity,
-            )?;
-            let event = AuditEvent::session_established(
-                audit_event_id,
-                correlation_id,
-                identity.operator_id(),
-                identity.role().as_persisted(),
-            );
-            crate::audit::insert(transaction, &event).map_err(OperatorError::from_audit_persistence)
+            crate::component::operator::db::insert_session(transaction, &credential_hash, identity)
         })
         .await
 }
@@ -167,7 +134,6 @@ async fn create_session_with_audit_id(
 /// typed failure. Persistence failures remain a separate internal cause.
 pub(super) async fn authenticate_session(
     database: &Database,
-    correlation_id: CorrelationId,
     wire_credential: SessionCredentialHex,
 ) -> Result<OperatorIdentity, OperatorError> {
     let credential = SessionCredential::from_wire(&wire_credential)
@@ -182,6 +148,7 @@ pub(super) async fn authenticate_session(
     else {
         return Err(OperatorError::SessionAuthenticationFailed);
     };
+    record_actor(facts.identity);
     if !facts.expired {
         return Ok(facts.identity);
     }
@@ -202,26 +169,20 @@ pub(super) async fn authenticate_session(
             if deleted != 1 {
                 return Err(OperatorError::PersistenceFailed);
             }
-            let event = AuditEvent::session_expired(
-                AuditEventId::from_uuid(Uuid::now_v7()),
-                correlation_id,
-                current.identity.operator_id(),
-            );
-            crate::audit::insert(transaction, &event)
-                .map_err(OperatorError::from_audit_persistence)?;
-            Ok(ExpiredSessionCleanup::Deleted)
+            Ok(ExpiredSessionCleanup::Deleted(current.identity))
         })
         .await;
 
     match cleanup {
         Ok(ExpiredSessionCleanup::Live(identity)) => Ok(identity),
-        Ok(ExpiredSessionCleanup::Missing | ExpiredSessionCleanup::Deleted) => {
+        Ok(ExpiredSessionCleanup::Deleted(identity)) => {
+            record_actor(identity);
             Err(OperatorError::SessionAuthenticationFailed)
         }
+        Ok(ExpiredSessionCleanup::Missing) => Err(OperatorError::SessionAuthenticationFailed),
         Err(_) => {
             tracing::warn!(
                 cause = "operator_store_transaction_failed",
-                correlation_id = %correlation_id.as_text(),
                 "expired operator session cleanup failed"
             );
             Err(OperatorError::SessionAuthenticationFailed)
@@ -239,35 +200,19 @@ pub(super) async fn authenticate_session(
 /// Returns a redacted [`OperatorError`] only for internal persistence failure.
 pub(super) async fn terminate_session(
     database: &Database,
-    correlation_id: CorrelationId,
     wire_credential: SessionCredentialHex,
 ) -> Result<(), OperatorError> {
     let Ok(credential) = SessionCredential::from_wire(&wire_credential) else {
         return Ok(());
     };
     let credential_hash = credential.sha256();
-    terminate_session_with_audit_id(
-        database,
-        &credential_hash,
-        correlation_id,
-        AuditEventId::from_uuid(Uuid::now_v7()),
-    )
-    .await
-}
-
-async fn terminate_session_with_audit_id(
-    database: &Database,
-    credential_hash: &SessionCredentialHash,
-    correlation_id: CorrelationId,
-    audit_event_id: AuditEventId,
-) -> Result<(), OperatorError> {
     let credential_hash = Zeroizing::new(*credential_hash.as_bytes());
-    database
+    let identity = database
         .write(move |transaction| {
             let Some(current) =
                 crate::component::operator::db::find_session(transaction, &credential_hash)?
             else {
-                return Ok(());
+                return Ok(None);
             };
             let deleted = crate::component::operator::db::delete_session_by_hash(
                 transaction,
@@ -276,20 +221,18 @@ async fn terminate_session_with_audit_id(
             if deleted != 1 {
                 return Err(OperatorError::PersistenceFailed);
             }
-            let event = if current.expired {
-                AuditEvent::session_expired(
-                    audit_event_id,
-                    correlation_id,
-                    current.identity.operator_id(),
-                )
-            } else {
-                AuditEvent::session_terminated(
-                    audit_event_id,
-                    correlation_id,
-                    current.identity.operator_id(),
-                )
-            };
-            crate::audit::insert(transaction, &event).map_err(OperatorError::from_audit_persistence)
+            Ok(Some(current.identity))
         })
-        .await
+        .await?;
+    if let Some(identity) = identity {
+        record_actor(identity);
+    }
+    Ok(())
+}
+
+fn record_actor(identity: OperatorIdentity) {
+    let actor_id = identity.operator_id().to_string();
+    let span = tracing::Span::current();
+    span.record("actor_kind", "operator");
+    span.record("actor_id", actor_id.as_str());
 }

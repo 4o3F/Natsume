@@ -4,7 +4,6 @@ use utoipa::{
     OpenApi as OpenApiTrait,
     openapi::{
         Content, OpenApi, OpenApiBuilder, Ref, RefOr, SchemaFormat,
-        header::HeaderBuilder,
         info::InfoBuilder,
         path::{Operation, Paths},
         schema::{AdditionalProperties, KnownFormat, ObjectBuilder, Schema, Type},
@@ -159,23 +158,15 @@ fn canonical_uuid_v7_schema() -> ObjectBuilder {
         .pattern(Some(CANONICAL_UUID_V7_PATTERN))
 }
 
-fn uuid_schema() -> ObjectBuilder {
-    ObjectBuilder::new()
-        .schema_type(Type::String)
-        .format(Some(SchemaFormat::KnownFormat(KnownFormat::Uuid)))
-}
-
 fn error_response_schema() -> Schema {
     ObjectBuilder::new()
         .schema_type(Type::Object)
         .property("title", ObjectBuilder::new().schema_type(Type::String))
         .property("status", ObjectBuilder::new().schema_type(Type::Integer))
         .property("code", ObjectBuilder::new().schema_type(Type::String))
-        .property("correlation_id", uuid_schema())
         .required("title")
         .required("status")
         .required("code")
-        .required("correlation_id")
         .additional_properties(Some(AdditionalProperties::FreeForm(false)))
         .build()
         .into()
@@ -198,13 +189,6 @@ fn enrich_operation(operation: Option<&mut Operation>) {
         let RefOr::T(response) = response else {
             continue;
         };
-        response.headers.insert(
-            "X-Correlation-Id".to_owned(),
-            HeaderBuilder::new()
-                .description(Some("Server-generated canonical UUIDv7 correlation ID"))
-                .schema(uuid_schema())
-                .build(),
-        );
         if matches!(
             status.as_str(),
             "400" | "401" | "403" | "404" | "409" | "500"

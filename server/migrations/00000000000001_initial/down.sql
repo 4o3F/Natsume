@@ -13,5 +13,4 @@ DROP TABLE accounts;
 DROP TABLE seats;
 DROP TABLE operator_sessions;
 DROP TABLE operator_accounts;
-DROP TABLE audit_events;
 DROP TABLE site_identity;

@@ -135,7 +135,6 @@ Server 是唯一业务 authority，拥有：
 - Gateway credential generation 与 Origin CA；
 - Runtime、Session 和 Home 的 Server target；
 - 当前lease的完整Client Input/Actual，仅存在于对应DeviceActor内存；
-- append-only redacted audit；
 - Operator HTTP API、Web 静态资源和 Device WSS。
 
 Server 不直接操作工作站文件、Caddy、图形 Session 或 Home。
@@ -244,7 +243,6 @@ Server TLS leaf 必须包含部署实际 Control Endpoint 的 IP-SAN。Server �
 秘密不得进入：
 
 - 普通 `Debug`、日志、trace、metric；
-- Audit detail；
 - HTTP 普通响应；
 - Client Input 或 Actual State；
 - Client 通用 target journal；
@@ -270,7 +268,6 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Home target | Home Component | reset epoch |
 | 当前lease的Client Input/Actual | DeviceActor memory | fresh snapshot，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
-| Audit | 公共 append sink，mutation owner 写入 | 不参与 Resolve |
 
 Import 不修改 Binding，不创建远端操作，不产生 Device I/O。Binding 和 Gateway 互不授予对方 authority。Client Input 和 Actual 都是不可信报告。
 
@@ -409,7 +406,7 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device Lifecycle/denylist authority，不能复用attempt状态。
 7. 连接在activation commit前断开时直接删除pending review；Client重连后重新审核。
 8. Control-key replacement在activation commit前保留旧authority和旧lease。
-9. activation事务原子创建/更新Device、切换current control key并写audit；这是Enrollment唯一持久化分界点。
+9. activation事务原子创建/更新Device并切换current control key；成功commit是Enrollment唯一持久化分界点，所有外部副作用都发生在其后。
 10. activation commit后Server发送只含`device_id`的`EnrollmentAuthority`。
 11. Client crash-safe安装新authority manifest后回显exact `EnrollmentAuthority`；Server验证后建立lease并发送`SessionReady`。
 12. activation commit后、Client安装前发生断联或Server重启时，Client用同一candidate key重新proof；Server按第2条重放authority。
@@ -476,7 +473,7 @@ GatewayActualState       { credential_id?, state, leaf_sha256? }
 - current generation 的 grant由 Server 重放，不重新签名；
 - 过期、private key/CSR 丢失、Apply/Verify 完成失败或实际 leaf hash 不匹配都走同一个 replacement；
 - replacement 即使旧 private key 仍可读也生成新 key/CSR；
-- Replacement原子覆盖current generation；旧generation只保留redacted audit，不再成为Target。
+- Replacement原子覆盖current generation；旧generation不再保留，也不再成为Target。
 
 Gateway Actual 的 leaf hash是 Caddy 实际加载的完整 leaf DER 的 SHA-256，不是 PEM、SPKI、chain、serial 或磁盘候选文件。
 
@@ -485,7 +482,7 @@ Server 签发使用 read–sign–compare-and-set：
 1. 读取 current generation 与 CSR；
 2. 事务外调用 Origin CA；
 3. 短写事务重检 generation/CSR；
-4. 写入 exact grant 和 audit；
+4. 写入 exact grant并commit；
 5. 竞争失败时丢弃候选并重新读取。
 
 CA、网络或文件 I/O 不能发生在 SQLite 写事务内。
@@ -512,7 +509,7 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 - same epoch + different Seat 是 protocol violation；
 - 较旧 negotiation/epoch 不改变 current authority；
 - 可修正业务拒绝写入 current negotiation 的 bounded evaluation；
-- 接受 Binding 时在一个组件事务内重检 Seat、Account mapping、Device eligibility 和 occupancy，消费 negotiation、铸造新 `binding_id`、写 accepted association 和 audit；
+- 接受 Binding 时在一个组件事务内重检 Seat、Account mapping、Device eligibility 和 occupancy，消费 negotiation、铸造新 `binding_id`并写 accepted association；
 - Bound Target 从同一 Binding 组件一致性视图取得 context、Account revision 和 vault ciphertext；
 - 密码只在受控内存中解密并进入当次完整 Target；
 - Actual 只有 assignment 与 credential 都成功且 context coherent 时才携带 context；
@@ -627,7 +624,7 @@ pub(crate) trait StateComponent: Send + Sync + 'static {
 1. 只消费当前lease已经整体校验通过的fresh Input/Actual；
 2. 根据fresh Actual运行组件Intent Policy；
 3. 根据fresh Input运行资源transition；
-4. 只把恢复必需的accepted input、authority与audit写入组件事务，不保存原始projection；
+4. 只把恢复必需的accepted input与authority写入组件事务，不保存原始projection；
 5. 保持exact replay幂等。
 
 `materialize` 必须：
@@ -708,7 +705,6 @@ pub(crate) struct BindingComponent {
 - 一张业务表只有一个 mutation owner；
 - 组件可以通过明确 read model 读取其他组件的公开事实，但不得修改其表；
 - 必须在同一组件事务内原子变化的表由该组件组合；
-- 公共 Audit insert helper允许在各组件事务中使用；
 - 数据库 row、Diesel 类型和 store error 不泄漏出组件；
 - 不创建 Repository、UnitOfWork 或 DI framework trait。
 
@@ -811,7 +807,7 @@ commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下�
 
 所有 Server mutation：
 
-1. 先提交业务和 audit；
+1. 先提交业务；
 2. 再返回 `ChangeImpact`；
 3. `DeviceControl` 对一个、多个或全部在线 Device 发送 best-effort `Dirty`。
 
@@ -854,7 +850,6 @@ Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期�
 | `site_identity` | Core | singleton fleet namespace |
 | `operator_accounts` | Operator | username unique，role封闭 |
 | `operator_sessions` | Operator | 只存cookie hash和绝对过期 |
-| `audit_events` | Audit sink | append-only、redacted |
 | `seats` | Contest/Import | seat code unique |
 | `accounts` | Contest/Import | username unique，credential revision正数 |
 | `server_vault_records` | Contest/Import + Vault | account PK/FK，一账户一current ciphertext |
@@ -873,11 +868,11 @@ Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期�
 
 ### 12.3 Enrollment 与 control key
 
-数据库不保存Enrollment attempt、pending review、approval或denial。`device_control_keys`只保存已激活authority的public key、Device、current/terminal状态、时间和audit引用，不包含`enrollment_id`或review关联。
+数据库不保存Enrollment attempt、pending review、approval或denial。`device_control_keys`只保存已激活authority的public key、Device、current/terminal状态和时间，不包含`enrollment_id`或review关联。
 
 `device_control_keys`不需要global authority revision。current key由partial unique index表达。Replacement activation事务原子supersede old、activate new并保留历史。已提交activation的恢复通过“proved Machine Hardware ID + exact current public key”查询完成，不依赖attempt记录。
 
-Provisioning Gate同样不落库；每次Server启动都构造closed状态。open/close Operator请求仍写audit，但audit不作为当前Gate状态来源。
+Provisioning Gate同样不落库；每次Server启动都构造closed状态。open/close请求只改变当前进程内状态。
 
 ### 12.4 Gateway
 
@@ -888,7 +883,7 @@ Provisioning Gate同样不落库；每次Server启动都构造closed状态。ope
 - accepted exact CSR DER；
 - exact leaf DER与issuer chain DER。
 
-不存在terminal row或独立status。Replacement在同一Device row原子换入新`credential_id`并清空CSR/grant；旧generation只留audit。CSR hash、leaf hash、serial、validity与certificate policy都从exact DER或当前issuer policy派生，不复制为数据库列。字段presence和状态组合由Gateway组件的Rust validated types与事务规则保证。Gateway不再引用Enrollment。
+不存在terminal row或独立status。Replacement在同一Device row原子换入新`credential_id`并清空CSR/grant；旧generation不保留。CSR hash、leaf hash、serial、validity与certificate policy都从exact DER或当前issuer policy派生，不复制为数据库列。字段presence和状态组合由Gateway组件的Rust validated types与事务规则保证。Gateway不再引用Enrollment。
 
 如果未来实现Client实际执行的CRL/OCSP撤销，再为撤销authority增加独立最小ledger；当前不为尚不存在的撤销机制保留certificate history。
 
@@ -949,10 +944,10 @@ flag day 必须删除：
 - 写使用短 `IMMEDIATE` transaction；
 - 不得跨 `.await`、网络、CA、Vault文件I/O、Caddy或D-Bus持有事务；
 - 组件内部 table adapter可以保持“一函数写一表”；
-- 组件 application method负责同一组件多表与 audit原子组合；
+- 组件 application method负责同一组件多表原子组合；
 - read model可以 JOIN 多表，但必须只读、显式命名、索引可验证。
 
-跨组件 partial commit 是设计允许的恢复状态，不使用补偿事务。只有 Server authority mutation 与相应 audit 必须在同一组件 transaction 原子完成。
+跨组件 partial commit 是设计允许的恢复状态，不使用补偿事务。可观测性数据不参与业务事务，也不影响SQLite提交结果。
 
 Operator HTTP response、WSS发送和 Dirty notification均发生在 commit 之后。网络失败不能回滚 durable authority。
 
@@ -1033,7 +1028,7 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 - 绝对过期，不滑动续期；
 - logout/password reset删除session；
 - first admin由TTY-only `bootstrap` 创建；
-- password recovery由TTY-only `reset-operator-password`执行并审计；
+- password recovery由TTY-only `reset-operator-password`执行；
 - serve不隐式创建账户或vault key。
 
 ### 15.2 Import
@@ -1047,7 +1042,7 @@ strict parse
   → persist one non-secret pending candidate
   → explicit commit with same CSV and opaque token
   → revalidate fingerprint
-  → atomic Contest/Vault update and audit
+  → atomic Contest/Vault update
   → delete candidate
   → dirty affected/all devices
 ```
@@ -1100,11 +1095,10 @@ Panel展示：
 - latest Actual和receive-time；
 - typed convergence/drift；
 - Enrollment/Binding evaluation；
-- Audit。
 
-Panel query可以显式汇总组件read model，但不能成为authority、不能解析日志文本、不能把缺失fresh state显示为成功。
+Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。当前不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
-## 16. 错误、审计与可观测性
+## 16. 错误与可观测性
 
 ### 16.1 错误
 
@@ -1127,25 +1121,34 @@ Panel query可以显式汇总组件read model，但不能成为authority、不�
 - Display、Debug、source text不作为公开语义。
 
 是否驱动接收方行为是建模分界：会改变retry、授权、UI流程或业务transition的
-信息必须是所属业务的typed state/action/evaluation；`error_code`只用于诊断、审计
+信息必须是所属业务的typed state/action/evaluation；`error_code`只用于诊断
 关联或通用展示，永不成为控制流协议。稳定公开字符串在首次发布后仍是各自边界的
 兼容承诺，但新增和审查在该边界内完成。
 
-### 16.2 Audit
+### 16.2 Distributed tracing
 
-Audit记录“谁改变了Server authority以及结果”，包括：
+当前可观测性只使用标准 `tracing`、`tracing-opentelemetry`、OpenTelemetry SDK和
+OTLP trace exporter，不实现业务审计、自定义operation log schema、应用内JSONL
+writer或OpenTelemetry Logs signal。trace是best-effort诊断数据，不参与业务正确性、
+授权或事务；Batch Span Processor在资源耗尽或异常退出时可能丢失span。
 
-- Import；
-- Provisioning；
-- Enrollment review/activation；
-- control-key replacement；
-- Device lifecycle；
-- Gateway generation/grant/replacement；
-- Binding accept/unbind/rejection；
-- Runtime/Session/Home target变化；
-- Operator账户恢复。
+设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用
+stderr fmt日志，不尝试连接默认Collector。`OTEL_SDK_DISABLED=true`强制禁用导出。
+Exporter的endpoint、timeout和headers继续使用OpenTelemetry标准环境变量。endpoint配置
+无法建立exporter时启动失败；进程正常退出时显式shutdown provider以flush已排队span，
+但shutdown/export失败只输出固定诊断，不覆盖业务命令结果。
 
-周期ClientState、重复Target和ordinary convergence不制造audit。Audit detail只保存opaque ID、revision/epoch、计数、稳定reason code和必要hash，不保存secret、CSR/leaf正文、原始CSV、路径或free text。
+每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和
+success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从
+W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。
+认证成功后可向当前Span补充不含secret的actor ID，但HTTP header、错误体、OpenAPI和
+业务函数参数都不公开或传递自定义correlation/operation ID。CLI命令建立internal根Span。
+
+async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享数据库边界显式
+捕获subscriber和当前Span。每个Diesel连接通过官方`Instrumentation`接口为query建立
+`otel.kind=client`子Span，只记录SQLite类型和成功/失败，不读取或记录SQL文本、bind参数、
+数据库URL、错误正文或其他secret。
 
 ### 16.3 日志和metrics
 
@@ -1238,7 +1241,6 @@ server/src/
   http/handler/
     device_control.rs
   db.rs
-  audit.rs
   vault.rs
   pki.rs
 ```
@@ -1300,9 +1302,10 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - SQLite真实transaction测试；
 - exact replay幂等测试；
 - transition commit前后crash cut；
-- authority+audit原子性；
 - stale ID/epoch零authority写入；
 - secret redaction测试。
+
+可观测性基础设施另行覆盖：HTTP success/4xx/5xx根Span字段、actor late record、W3C父上下文、跨async与`spawn_blocking`传播、无SQL/bind secret以及provider graceful shutdown。HTTP契约测试必须证明response header、错误体和OpenAPI均无自定义correlation ID。
 
 不为数据库组件建立Repository mock。使用临时SQLite和真实constraint。
 
@@ -1598,7 +1601,7 @@ just api
 5. 不把component内部DB重新上提到Actor或HTTP。
 6. 不引入`async-trait`、DI container、event bus、outbox、CQRS或Repository framework，除非有新的明确证据和owner批准。
 7. 不在一个WP顺手重构无关组件。
-8. 每个mutation先证明transaction和audit，再接网络通知。
+8. 每个mutation先证明transaction提交，再接网络通知。
 9. 每个成功状态先证明durability，再发送。
 10. 每个WP提交前运行与风险相称的测试，最终运行全workspace与生成物校验。
 
@@ -1622,6 +1625,6 @@ just api
 - 跨组件partial commit可由完整snapshot幂等恢复；
 - 数据库没有Command、Observed、Token、Bundle、global revision或通用resource表；
 - 密码、private key、CSR/leaf正文不越过规定边界；
-- 所有authority mutation与redacted audit同事务；
-- 所有故障只造成暂时drift或明确fail closed，不产生双authority、错误Binding、旧Session副作用或不可判断投递结果；
+- OpenTelemetry trace仅作best-effort可观测性，不充当业务审计或事务证据；
+- 所有已建模业务故障只造成暂时drift或明确fail closed，不产生双authority、错误Binding、旧Session副作用或不可判断投递结果；
 - 完整测试、生成物、目标环境和恢复演练通过。

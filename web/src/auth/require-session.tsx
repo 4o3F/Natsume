@@ -16,9 +16,6 @@ export function RequireSession() {
             {error instanceof ApiError ? error.title : error.message}
           </AlertTitle>
           <AlertDescription>
-            {error instanceof ApiError && error.correlationId && (
-              <p>Correlation ID: {error.correlationId}</p>
-            )}
             <Button variant="outline" size="sm" onClick={() => refetch()}>
               Retry
             </Button>

@@ -29,7 +29,7 @@ publish = false
 
 [workspace.dependencies]
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "ws"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio", "ws"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
@@ -41,6 +41,9 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 hkdf = "0.13"
+opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
 percent-encoding = { version = "2.3", default-features = false, features = ["alloc"] }
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 prost = "=0.14.4"
@@ -72,6 +75,7 @@ tempfile = "3"
 tower = { version = "0.5", default-features = false, features = ["util"] }
 tower-http = { version = "0.6", default-features = false, features = ["fs", "limit", "set-header"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
 utoipa = { version = "5", default-features = false, features = ["macros", "uuid"] }
 uuid = { version = "1", features = ["serde", "v5", "v7"] }

@@ -26,8 +26,8 @@ impl ServerState {
         Self {
             operator: OperatorComponent::new(database.clone()),
             contest: ContestComponent::new(database.clone()),
-            import: ImportComponent::new(database.clone(), vault),
-            provisioning: ProvisioningComponent::new(database),
+            import: ImportComponent::new(database, vault),
+            provisioning: ProvisioningComponent::new(),
         }
     }
 

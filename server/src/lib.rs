@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
 //! Natsume control server startup.
 
-pub(crate) mod audit;
 pub mod commands;
 pub(crate) mod component;
 pub mod config;

@@ -4,7 +4,7 @@
 
 **2026-08-15 修订**：面板随 Server Deb 交付，并由 `natsume-server serve` 同源托管；开发迭代仍使用经 Vite proxy 转发的 `pnpm dev`。
 
-The target Panel surface follows `docs/architecture.md`: contest preparation, provisioning, Enrollment review, Device lifecycle, Gateway and Binding facts, Runtime/Session/Home targets, and readiness views. It never renders or retrieves contest passwords, Gateway private keys, CSRs, or unredacted audit evidence. It does not rely on SSE, ChangeEvent streams, or an HTTP Command resource.
+The target Panel surface follows `docs/architecture.md`: contest preparation, provisioning, Enrollment review, Device lifecycle, Gateway and Binding facts, Runtime/Session/Home targets, and readiness views. It never renders or retrieves contest passwords, Gateway private keys, or CSRs. It does not rely on SSE, ChangeEvent streams, an audit page, or an HTTP Command resource.
 
 Only routes present in the generated OpenAPI snapshot are mounted in the current Panel. Future component surfaces are added together with their Server HTTP adapter and regenerated contract; the Panel does not keep placeholder routes for unimplemented resources.
 

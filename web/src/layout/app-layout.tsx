@@ -2,7 +2,7 @@ import { NavLink, Outlet } from "react-router";
 
 import { ApiError } from "@/api/errors";
 import { useLogout, useSession } from "@/auth/use-session";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -68,11 +68,6 @@ export function AppLayout() {
         {logout.error instanceof ApiError && (
           <Alert variant="destructive" className="mb-6">
             <AlertTitle>{logout.error.title}</AlertTitle>
-            {logout.error.correlationId && (
-              <AlertDescription>
-                Correlation ID: {logout.error.correlationId}
-              </AlertDescription>
-            )}
           </Alert>
         )}
         <Outlet />

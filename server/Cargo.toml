@@ -19,6 +19,9 @@ diesel_migrations.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 natsume-device-protocol = { path = "../crates/device-protocol" }
+opentelemetry.workspace = true
+opentelemetry-otlp.workspace = true
+opentelemetry_sdk.workspace = true
 percent-encoding.workspace = true
 prost.workspace = true
 rcgen = { workspace = true, features = ["x509-parser"] }
@@ -38,6 +41,7 @@ tokio-rustls.workspace = true
 toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
+tracing-opentelemetry.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 uuid.workspace = true

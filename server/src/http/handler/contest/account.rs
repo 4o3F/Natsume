@@ -6,10 +6,7 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{
-    audit::CorrelationId,
-    component::{contest::AccountFacts, operator::OperatorIdentity},
-};
+use crate::component::{contest::AccountFacts, operator::OperatorIdentity};
 
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
 
@@ -49,7 +46,6 @@ impl From<AccountFacts> for AccountResponse {
 )]
 pub(crate) async fn list_accounts(
     State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
     Extension(_identity): Extension<OperatorIdentity>,
 ) -> Response {
     match state.contest().list_accounts().await {
@@ -58,8 +54,8 @@ pub(crate) async fn list_accounts(
                 .into_iter()
                 .map(AccountResponse::from)
                 .collect::<Vec<_>>();
-            current_facts_response(&response, correlation_id)
+            current_facts_response(&response)
         }
-        Err(error) => ApiError::from_contest(error, correlation_id).into_response(),
+        Err(error) => ApiError::from_contest(error).into_response(),
     }
 }

@@ -1,4 +1,3 @@
-mod audit;
 mod candidate;
 mod commit;
 mod csv;
@@ -13,7 +12,7 @@ use crate::component::{
     contest::{CurrentAccountProjection, CurrentSeatProjection},
     lifecycle::DeviceId,
 };
-use crate::{audit::CorrelationId, db::Database, vault::VaultSession};
+use crate::{db::Database, vault::VaultSession};
 
 #[cfg(test)]
 use self::candidate::create_import_candidate;
@@ -38,23 +37,12 @@ impl ImportComponent {
     pub(crate) async fn create_candidate(
         &self,
         raw_csv: &[u8],
-        correlation_id: CorrelationId,
     ) -> Result<CreatedImportCandidate, ImportError> {
-        match candidate::create_import_candidate(&self.database, raw_csv, correlation_id).await {
-            Ok(candidate) => Ok(candidate),
-            Err(error @ (ImportError::InvalidCsv(_) | ImportError::CandidateInvalid)) => {
-                candidate::audit_invalid_import_upload(&self.database, correlation_id).await?;
-                Err(error)
-            }
-            Err(error) => Err(error),
-        }
+        candidate::create_import_candidate(&self.database, raw_csv).await
     }
 
-    pub(crate) async fn read_pending(
-        &self,
-        correlation_id: CorrelationId,
-    ) -> Result<Option<PendingImportCandidate>, ImportError> {
-        candidate::read_pending_import_candidate(&self.database, correlation_id).await
+    pub(crate) async fn read_pending(&self) -> Result<Option<PendingImportCandidate>, ImportError> {
+        candidate::read_pending_import_candidate(&self.database).await
     }
 
     pub(crate) async fn commit(
@@ -62,7 +50,6 @@ impl ImportComponent {
         candidate_id: uuid::Uuid,
         presented_token: &[u8; 32],
         raw_csv: &[u8],
-        correlation_id: CorrelationId,
     ) -> Result<(), ImportError> {
         commit::commit_import(
             &self.database,
@@ -70,17 +57,12 @@ impl ImportComponent {
             candidate_id,
             presented_token,
             raw_csv,
-            correlation_id,
         )
         .await
     }
 
-    pub(crate) async fn discard(
-        &self,
-        candidate_id: uuid::Uuid,
-        correlation_id: CorrelationId,
-    ) -> Result<(), ImportError> {
-        candidate::discard_import(&self.database, candidate_id, correlation_id).await
+    pub(crate) async fn discard(&self, candidate_id: uuid::Uuid) -> Result<(), ImportError> {
+        candidate::discard_import(&self.database, candidate_id).await
     }
 }
 

@@ -3,7 +3,6 @@ use diesel::{
 };
 
 use crate::{
-    audit::AuditEventId,
     component::import::{
         ImportError, RedactedImportPreview,
         candidate::{CandidateExpiry, CandidateRecord},
@@ -77,7 +76,6 @@ pub(in crate::component::import) fn find(
 pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
     candidate: &CandidateRecord,
-    audit_event_id: AuditEventId,
 ) -> Result<usize, ImportError> {
     let diff =
         serde_json::to_string(candidate.diff()).map_err(|_| ImportError::PersistenceFailure)?;
@@ -94,7 +92,6 @@ pub(in crate::component::import) fn insert(
             pending_import_candidate::baseline_fingerprint_sha256
                 .eq(candidate.baseline_fingerprint_sha256().as_slice()),
             pending_import_candidate::redacted_preview_json.eq(diff),
-            pending_import_candidate::created_audit_event_id.eq(audit_event_id.as_text()),
         ))
         .execute(transaction.connection())
         .map_err(|_| ImportError::PersistenceFailure)

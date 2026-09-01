@@ -5,7 +5,6 @@ const operator = {
   role: "admin",
 };
 const candidateId = "01934567-89ab-7cde-8f01-23456789abcd";
-const correlationId = "01945678-9abc-7def-8012-3456789abcde";
 const previewToken = "A".repeat(43);
 
 const diff = {
@@ -38,7 +37,6 @@ function fulfillJson(route: Route, status: number, body: unknown) {
   return route.fulfill({
     status,
     contentType: "application/json",
-    headers: { "X-Correlation-Id": correlationId },
     body: JSON.stringify(body),
   });
 }
@@ -71,7 +69,6 @@ async function mockPreparationApi(
           title: "Bad Request",
           status: 400,
           code: "IMPORT_CANDIDATE_INVALID",
-          correlation_id: correlationId,
         });
       }
       pending = pendingSummary;
@@ -90,7 +87,6 @@ async function mockPreparationApi(
           title: "Conflict",
           status: 409,
           code: "IMPORT_PREVIEW_STALE",
-          correlation_id: correlationId,
         });
       }
       const body = request.postDataJSON() as {
@@ -102,7 +98,6 @@ async function mockPreparationApi(
       pending = null;
       return route.fulfill({
         status: 204,
-        headers: { "X-Correlation-Id": correlationId },
       });
     }
 
@@ -113,7 +108,6 @@ async function mockPreparationApi(
       pending = null;
       return route.fulfill({
         status: 204,
-        headers: { "X-Correlation-Id": correlationId },
       });
     }
 
@@ -234,7 +228,6 @@ test("a stale commit displays the discard and re-upload advisory", async ({
   await expect(alert).toContainText(
     "Discard this preview and re-upload the CSV before committing.",
   );
-  await expect(alert).toContainText(`Correlation ID: ${correlationId}`);
 });
 
 test("reload loses the token but preserves tokenless discard recovery", async ({
@@ -278,5 +271,4 @@ test("invalid CSV leaves a durable coded error notice", async ({ page }) => {
   await expect(alert).toContainText(
     "The CSV did not satisfy the import contract.",
   );
-  await expect(alert).toContainText(`Correlation ID: ${correlationId}`);
 });

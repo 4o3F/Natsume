@@ -6,7 +6,7 @@ mod middleware;
 use std::{path::Path, sync::Arc};
 
 use axum::{
-    Extension, Router,
+    Router,
     http::{HeaderValue, header::CACHE_CONTROL},
     middleware as axum_middleware,
     routing::any_service,
@@ -16,7 +16,7 @@ use tower_http::{
     set_header::SetResponseHeaderLayer,
 };
 
-use crate::{audit::CorrelationId, server_state::ServerState};
+use crate::server_state::ServerState;
 
 use self::error::ApiError;
 
@@ -34,7 +34,7 @@ pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
         .nest("/api/v2", api_v2(&state).fallback(not_found))
         .fallback_service(static_service)
         .with_state(state)
-        .layer(axum_middleware::from_fn(middleware::correlation_id))
+        .layer(axum_middleware::from_fn(middleware::request_context))
 }
 
 fn api_v2(state: &AppState) -> Router<AppState> {
@@ -49,8 +49,8 @@ fn api_v2(state: &AppState) -> Router<AppState> {
     public.merge(authenticated)
 }
 
-async fn not_found(Extension(correlation_id): Extension<CorrelationId>) -> ApiError {
-    ApiError::not_found("unmounted_route", correlation_id)
+async fn not_found() -> ApiError {
+    ApiError::not_found("unmounted_route")
 }
 
 #[cfg(test)]

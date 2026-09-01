@@ -5,10 +5,6 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{
-    audit::{
-        AuditEvent, AuditEventId, CorrelationId, ImportCommitAuditFacts,
-        ImportCommitRejectionReason,
-    },
     component::contest::{CurrentAccountProjection, CurrentSeatProjection, NewAccountFacts},
     db::{Database, Transaction},
     vault::VaultSession,
@@ -30,7 +26,6 @@ pub(super) async fn commit_import(
     candidate_id: Uuid,
     presented_token: &[u8; 32],
     raw_csv: &[u8],
-    correlation_id: CorrelationId,
 ) -> Result<(), ImportError> {
     let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv(error.category()))?;
     let candidate_rows = parsed.candidate_rows();
@@ -39,8 +34,6 @@ pub(super) async fn commit_import(
     drop(parsed);
 
     let token_hash = Sha256::digest(presented_token).into();
-    let expiry_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
-    let commit_audit_event_id = AuditEventId::from_uuid(Uuid::now_v7());
     let outcome = database
         .write(move |transaction| {
             commit_in_transaction(
@@ -50,9 +43,6 @@ pub(super) async fn commit_import(
                 candidate_hash,
                 &candidate_rows,
                 &sealed_rows,
-                correlation_id,
-                expiry_audit_event_id,
-                commit_audit_event_id,
             )
         })
         .await?;
@@ -65,7 +55,6 @@ pub(super) async fn commit_import(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn commit_in_transaction(
     transaction: &mut Transaction<'_>,
     candidate_id: Uuid,
@@ -73,9 +62,6 @@ fn commit_in_transaction(
     candidate_hash: [u8; 32],
     candidate_rows: &[super::candidate::CandidateRowFacts],
     sealed_rows: &[SealedCommitRow],
-    correlation_id: CorrelationId,
-    expiry_audit_event_id: AuditEventId,
-    commit_audit_event_id: AuditEventId,
 ) -> Result<CommitOutcome, ImportError> {
     let Some(candidate) = super::db::pending_import_candidate::find(transaction)? else {
         return Ok(CommitOutcome::Unavailable);
@@ -84,12 +70,7 @@ fn commit_in_transaction(
         return Ok(CommitOutcome::Unavailable);
     }
     if candidate.expiry() == CandidateExpiry::Expired {
-        expire_candidate(
-            transaction,
-            &candidate,
-            correlation_id,
-            expiry_audit_event_id,
-        )?;
+        expire_candidate(transaction, &candidate)?;
         return Ok(CommitOutcome::Unavailable);
     }
     if !bool::from(
@@ -97,25 +78,11 @@ fn commit_in_transaction(
             .as_slice()
             .ct_eq(candidate.preview_token_hash().as_slice()),
     ) {
-        insert_rejection(
-            transaction,
-            commit_audit_event_id,
-            correlation_id,
-            candidate_id,
-            ImportCommitRejectionReason::PreviewTokenMismatch,
-        )?;
         return Ok(CommitOutcome::Unavailable);
     }
     if candidate.fingerprint_version() != FINGERPRINT_VERSION
         || candidate.candidate_fingerprint_sha256() != &candidate_hash
     {
-        insert_rejection(
-            transaction,
-            commit_audit_event_id,
-            correlation_id,
-            candidate_id,
-            ImportCommitRejectionReason::CandidateChanged,
-        )?;
         return Ok(CommitOutcome::Stale);
     }
 
@@ -123,51 +90,18 @@ fn commit_in_transaction(
     let current_accounts = super::db::query::read_current_accounts(transaction)?;
     let baseline_hash = current_fingerprint(&current_seats, &current_accounts);
     if candidate.baseline_fingerprint_sha256() != &baseline_hash {
-        insert_rejection(
-            transaction,
-            commit_audit_event_id,
-            correlation_id,
-            candidate_id,
-            ImportCommitRejectionReason::BaselineStale,
-        )?;
         return Ok(CommitOutcome::Stale);
     }
 
     let plan = CommitPlan::prepare(current_seats, current_accounts, candidate_rows)?;
     if plan.diff.binding_impacts().len() != 0 {
-        insert_rejection(
-            transaction,
-            commit_audit_event_id,
-            correlation_id,
-            candidate_id,
-            ImportCommitRejectionReason::SeatOccupied,
-        )?;
         return Ok(CommitOutcome::SeatOccupied);
     }
-    let audit_facts = apply_plan(transaction, sealed_rows, &plan)?;
+    apply_plan(transaction, sealed_rows, &plan)?;
     if super::db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
         return Err(ImportError::PersistenceFailure);
     }
-    let event = AuditEvent::import_committed(
-        commit_audit_event_id,
-        correlation_id,
-        candidate_id,
-        &audit_facts,
-    );
-    crate::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)?;
     Ok(CommitOutcome::Committed)
-}
-
-fn insert_rejection(
-    transaction: &mut Transaction<'_>,
-    audit_event_id: AuditEventId,
-    correlation_id: CorrelationId,
-    candidate_id: Uuid,
-    reason: ImportCommitRejectionReason,
-) -> Result<(), ImportError> {
-    let event =
-        AuditEvent::import_commit_rejected(audit_event_id, correlation_id, candidate_id, reason);
-    crate::audit::insert(transaction, &event).map_err(ImportError::from_audit_persistence)
 }
 
 struct CommitPlan {
@@ -229,7 +163,7 @@ fn apply_plan(
     transaction: &mut Transaction<'_>,
     sealed_rows: &[SealedCommitRow],
     plan: &CommitPlan,
-) -> Result<ImportCommitAuditFacts, ImportError> {
+) -> Result<(), ImportError> {
     let expected_mappings = plan
         .current_seats
         .values()
@@ -317,13 +251,7 @@ fn apply_plan(
         }
     }
 
-    Ok(ImportCommitAuditFacts {
-        seats_added: plan.diff.seats_added().len(),
-        seats_removed: plan.diff.seats_removed().len(),
-        mappings_changed: plan.diff.mappings_changed().len(),
-        binding_impacts: 0,
-        credentials_advanced: sealed_rows.len(),
-    })
+    Ok(())
 }
 
 enum CommitOutcome {

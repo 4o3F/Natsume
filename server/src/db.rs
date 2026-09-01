@@ -2,7 +2,7 @@ use std::{path::PathBuf, time::Duration};
 
 use diesel::{
     Connection, RunQueryDsl,
-    connection::{CacheSize, SimpleConnection},
+    connection::{CacheSize, Instrumentation, InstrumentationEvent, SimpleConnection},
     r2d2::{ConnectionManager, CustomizeConnection, NopErrorHandler, Pool},
     sql_types::{Integer, Text},
     sqlite::SqliteConnection,
@@ -115,26 +115,30 @@ impl Database {
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
         let pool = self.pool.clone();
-        // A blocking thread does not inherit a scoped dispatcher, so without
-        // this every event emitted inside `operation` would be dropped. In
-        // production the captured dispatcher is the installed global one.
+        // A blocking thread inherits neither the scoped dispatcher nor the
+        // current span. Capture both at this shared boundary so database work
+        // remains associated with its entrypoint without an application ID.
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+        let span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
-                let mut connection = pool
-                    .get()
-                    .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
-                let outcome = connection.transaction::<T, TransactionFailure<E>, _>(|connection| {
-                    let mut transaction = Transaction { connection };
-                    operation(&mut transaction).map_err(TransactionFailure::Operation)
-                });
-                match outcome {
-                    Ok(value) => Ok(value),
-                    Err(TransactionFailure::Operation(error)) => Err(error),
-                    Err(TransactionFailure::Diesel) => {
-                        Err(E::from(DatabaseError::TransactionFailed))
+                span.in_scope(|| {
+                    let mut connection = pool
+                        .get()
+                        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
+                    let outcome =
+                        connection.transaction::<T, TransactionFailure<E>, _>(|connection| {
+                            let mut transaction = Transaction { connection };
+                            operation(&mut transaction).map_err(TransactionFailure::Operation)
+                        });
+                    match outcome {
+                        Ok(value) => Ok(value),
+                        Err(TransactionFailure::Operation(error)) => Err(error),
+                        Err(TransactionFailure::Diesel) => {
+                            Err(E::from(DatabaseError::TransactionFailed))
+                        }
                     }
-                }
+                })
             })
         })
         .await
@@ -148,27 +152,31 @@ impl Database {
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
         let pool = self.pool.clone();
-        // A blocking thread does not inherit a scoped dispatcher, so without
-        // this every event emitted inside `operation` would be dropped. In
-        // production the captured dispatcher is the installed global one.
+        // A blocking thread inherits neither the scoped dispatcher nor the
+        // current span. Capture both at this shared boundary so database work
+        // remains associated with its entrypoint without an application ID.
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
+        let span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
-                let mut connection = pool
-                    .get()
-                    .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
-                let outcome =
-                    connection.immediate_transaction::<T, TransactionFailure<E>, _>(|connection| {
-                        let mut transaction = Transaction { connection };
-                        operation(&mut transaction).map_err(TransactionFailure::Operation)
-                    });
-                match outcome {
-                    Ok(value) => Ok(value),
-                    Err(TransactionFailure::Operation(error)) => Err(error),
-                    Err(TransactionFailure::Diesel) => {
-                        Err(E::from(DatabaseError::TransactionFailed))
+                span.in_scope(|| {
+                    let mut connection = pool
+                        .get()
+                        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
+                    let outcome = connection.immediate_transaction::<T, TransactionFailure<E>, _>(
+                        |connection| {
+                            let mut transaction = Transaction { connection };
+                            operation(&mut transaction).map_err(TransactionFailure::Operation)
+                        },
+                    );
+                    match outcome {
+                        Ok(value) => Ok(value),
+                        Err(TransactionFailure::Operation(error)) => Err(error),
+                        Err(TransactionFailure::Diesel) => {
+                            Err(E::from(DatabaseError::TransactionFailed))
+                        }
                     }
-                }
+                })
             })
         })
         .await
@@ -238,7 +246,39 @@ impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for SqliteConnec
                 diesel::result::Error::NotFound,
             ));
         }
+        connection.set_instrumentation(SqliteQueryInstrumentation::default());
         Ok(())
+    }
+}
+
+#[derive(Default)]
+struct SqliteQueryInstrumentation {
+    active_query: Option<tracing::Span>,
+}
+
+impl Instrumentation for SqliteQueryInstrumentation {
+    fn on_connection_event(&mut self, event: InstrumentationEvent<'_>) {
+        match event {
+            InstrumentationEvent::StartQuery { .. } => {
+                self.active_query = Some(tracing::debug_span!(
+                    target: "natsume_server::db",
+                    "db.query",
+                    "otel.kind" = "client",
+                    "otel.status_code" = tracing::field::Empty,
+                    "db.system.name" = "sqlite",
+                    "error.type" = tracing::field::Empty,
+                ));
+            }
+            InstrumentationEvent::FinishQuery { error, .. } => {
+                if let Some(span) = self.active_query.take()
+                    && error.is_some()
+                {
+                    span.record("otel.status_code", "ERROR");
+                    span.record("error.type", "diesel");
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -268,6 +308,7 @@ pub(crate) mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
+        sync::{Arc, Mutex, PoisonError},
         time::Duration,
     };
 
@@ -277,7 +318,19 @@ pub(crate) mod tests {
     };
     use diesel_migrations::{FileBasedMigrations, MigrationHarness};
     use snafu::Snafu;
+    use tracing::{
+        Instrument as _, Subscriber,
+        field::{Field, Visit},
+        instrument::WithSubscriber as _,
+        span::{Attributes, Id},
+    };
+    use tracing_subscriber::{
+        Layer, Registry,
+        layer::{Context, SubscriberExt as _},
+    };
     use uuid::Uuid;
+
+    use crate::logging::tests::SubscriberTestGuard;
 
     use super::{
         Database, DatabaseConfig, DatabaseError, diesel_database_url, sqlite_pragma_values,
@@ -374,6 +427,132 @@ pub(crate) mod tests {
         }
         drop(database);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_and_write_propagate_the_current_span_to_blocking_work() -> Result<(), TestFailure>
+    {
+        let _subscriber_guard = SubscriberTestGuard::acquire();
+        let fixture = DatabaseFixture::new();
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
+            .await
+            .map_err(|_| TestFailure::DatabaseCreationFailed)?;
+
+        let (read_span_matches, write_span_matches) = async {
+            let span = tracing::info_span!("database_span_propagation_test");
+            let expected_id = span.id().ok_or(TestFailure::ContextSpanDisabled)?;
+            let read_expected_id = expected_id.clone();
+            async {
+                let read_span_matches = database
+                    .read(move |_transaction| {
+                        Ok::<bool, DatabaseError>(
+                            tracing::Span::current().id().as_ref() == Some(&read_expected_id),
+                        )
+                    })
+                    .await
+                    .map_err(|_| TestFailure::DieselInteractionFailed)?;
+                let write_span_matches = database
+                    .write(move |_transaction| {
+                        Ok::<bool, DatabaseError>(
+                            tracing::Span::current().id().as_ref() == Some(&expected_id),
+                        )
+                    })
+                    .await
+                    .map_err(|_| TestFailure::DieselInteractionFailed)?;
+                Ok::<(bool, bool), TestFailure>((read_span_matches, write_span_matches))
+            }
+            .instrument(span)
+            .await
+        }
+        .with_subscriber(Registry::default())
+        .await?;
+
+        if !read_span_matches || !write_span_matches {
+            return Err(TestFailure::DatabaseSpanWasNotPropagated);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn diesel_instrumentation_emits_query_spans_without_sql_or_bind_values()
+    -> Result<(), TestFailure> {
+        let _subscriber_guard = SubscriberTestGuard::acquire();
+        let fixture = DatabaseFixture::new();
+        let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
+            .await
+            .map_err(|_| TestFailure::DatabaseCreationFailed)?;
+        let captured = CapturedSqlSpans::default();
+        let subscriber = Registry::default().with(captured.clone());
+
+        async {
+            database
+                .test_read(|connection| {
+                    diesel::select(diesel::dsl::sql::<diesel::sql_types::Text>(
+                        "'sql-secret-canary'",
+                    ))
+                    .get_result::<String>(connection)
+                })
+                .await
+                .map_err(|_| TestFailure::DieselInteractionFailed)?
+                .map_err(|_| TestFailure::DieselInteractionFailed)?;
+            Ok::<(), TestFailure>(())
+        }
+        .with_subscriber(subscriber)
+        .await?;
+
+        let evidence = captured.snapshot();
+        if evidence.query_span_count == 0 || evidence.secret_was_recorded {
+            return Err(TestFailure::DatabaseQuerySpanChanged);
+        }
+        Ok(())
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedSqlSpans {
+        evidence: Arc<Mutex<SqlSpanEvidence>>,
+    }
+
+    impl CapturedSqlSpans {
+        fn snapshot(&self) -> SqlSpanEvidence {
+            self.evidence
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl<S> Layer<S> for CapturedSqlSpans
+    where
+        S: Subscriber,
+    {
+        fn on_new_span(&self, attributes: &Attributes<'_>, _id: &Id, _context: Context<'_, S>) {
+            if attributes.metadata().name() != "db.query" {
+                return;
+            }
+            let mut evidence = self.evidence.lock().unwrap_or_else(PoisonError::into_inner);
+            evidence.query_span_count += 1;
+            attributes.record(&mut SqlSpanVisitor {
+                evidence: &mut evidence,
+            });
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct SqlSpanEvidence {
+        query_span_count: usize,
+        secret_was_recorded: bool,
+    }
+
+    struct SqlSpanVisitor<'evidence> {
+        evidence: &'evidence mut SqlSpanEvidence,
+    }
+
+    impl Visit for SqlSpanVisitor<'_> {
+        fn record_debug(&mut self, _field: &Field, value: &dyn std::fmt::Debug) {
+            if format!("{value:?}").contains("sql-secret-canary") {
+                self.evidence.secret_was_recorded = true;
+            }
+        }
     }
 
     #[test]
@@ -495,6 +674,12 @@ pub(crate) mod tests {
         DatabaseCreationFailed,
         #[snafu(display("the Diesel interaction failed"))]
         DieselInteractionFailed,
+        #[snafu(display("the database context test span was disabled"))]
+        ContextSpanDisabled,
+        #[snafu(display("the current span did not reach blocking database work"))]
+        DatabaseSpanWasNotPropagated,
+        #[snafu(display("the redacted Diesel query span contract changed"))]
+        DatabaseQuerySpanChanged,
         #[snafu(display("the Diesel connection PRAGMAs were not exact"))]
         PragmasWereNotExact,
         #[snafu(display("the Diesel connection PRAGMAs were not readable"))]

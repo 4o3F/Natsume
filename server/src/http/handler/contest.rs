@@ -5,8 +5,6 @@ use axum::{
 };
 use serde::Serialize;
 
-use crate::audit::CorrelationId;
-
 use super::super::{AppState, middleware};
 
 pub(crate) mod account;
@@ -20,12 +18,9 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         .merge(binding::routes(state))
 }
 
-fn current_facts_response<T: Serialize>(facts: &[T], correlation_id: CorrelationId) -> Response {
+fn current_facts_response<T: Serialize>(facts: &[T]) -> Response {
     let body = serde_json::to_string(&facts).unwrap_or_else(|_| {
-        tracing::error!(
-            correlation_id = %correlation_id.as_text(),
-            "current facts response serialization invariant failed"
-        );
+        tracing::error!("current facts response serialization invariant failed");
         panic!("current facts response serialization invariant failed");
     });
     (

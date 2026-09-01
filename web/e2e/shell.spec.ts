@@ -4,7 +4,6 @@ const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
 };
-const correlationId = "01923456-789a-7bcd-8ef0-123456789abc";
 
 function fulfillJson(route: Route, status: number, body: unknown) {
   return route.fulfill({
@@ -18,7 +17,6 @@ const unauthorized = {
   title: "No valid session",
   status: 401,
   code: "AUTHENTICATION_FAILED",
-  correlation_id: correlationId,
 };
 
 test("unauthenticated visits redirect to the login form", async ({ page }) => {
@@ -76,7 +74,6 @@ test("failed login surfaces the coded error", async ({ page }) => {
         title: "Authentication failed",
         status: 401,
         code: "AUTHENTICATION_FAILED",
-        correlation_id: correlationId,
       });
     }
 
@@ -90,7 +87,6 @@ test("failed login surfaces the coded error", async ({ page }) => {
 
   const alert = page.getByRole("alert");
   await expect(alert).toContainText("Login failed: Authentication failed");
-  await expect(alert).toContainText(`Correlation ID: ${correlationId}`);
 });
 
 test("seats page renders rows", async ({ page }) => {

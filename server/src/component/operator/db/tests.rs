@@ -62,26 +62,16 @@ pub(in crate::component::operator) async fn test_session_hashes(
         .await
 }
 
-pub(in crate::component::operator) async fn test_session_and_audit_counts(
+pub(in crate::component::operator) async fn test_session_count(
     database: &Database,
-) -> Result<(i64, i64), OperatorError> {
+) -> Result<i64, OperatorError> {
     database
         .read(|transaction| {
             use diesel::RunQueryDsl as _;
-            #[derive(diesel::QueryableByName)]
-            struct Counts {
-                #[diesel(sql_type = diesel::sql_types::BigInt)]
-                sessions: i64,
-                #[diesel(sql_type = diesel::sql_types::BigInt)]
-                audits: i64,
-            }
-            diesel::sql_query(
-                "SELECT (SELECT COUNT(*) FROM operator_sessions) AS sessions, \
-                 (SELECT COUNT(*) FROM audit_events) AS audits",
-            )
-            .get_result::<Counts>(transaction.connection())
-            .map(|row| (row.sessions, row.audits))
-            .map_err(|_| OperatorError::PersistenceFailed)
+            diesel::sql_query("SELECT COUNT(*) AS value FROM operator_sessions")
+                .get_result::<IntegerValue>(transaction.connection())
+                .map(|row| row.value)
+                .map_err(|_| OperatorError::PersistenceFailed)
         })
         .await
 }

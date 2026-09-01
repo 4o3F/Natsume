@@ -2,7 +2,7 @@ use std::{
     fs,
     os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use axum::{
@@ -13,14 +13,28 @@ use axum::{
     response::IntoResponse as _,
 };
 use diesel::{QueryableByName, RunQueryDsl, sql_types::BigInt, sqlite::SqliteConnection};
+use opentelemetry::trace::{SpanKind, TracerProvider as _};
+use opentelemetry_sdk::{
+    error::OTelSdkResult,
+    trace::{SdkTracerProvider, SpanData, SpanExporter},
+};
 use serde_json::Value;
 use snafu::Snafu;
 use tower::ServiceExt;
-use tracing::instrument::WithSubscriber as _;
+use tracing::{
+    Subscriber,
+    field::{Field, Visit},
+    instrument::WithSubscriber as _,
+    span::{Attributes, Id, Record},
+};
+use tracing_subscriber::{
+    Layer,
+    layer::{Context, SubscriberExt as _},
+    registry::{LookupSpan, Registry},
+};
 use uuid::Uuid;
 
 use crate::{
-    audit::CorrelationId,
     component::operator::{
         OperatorCredentials, PasswordVerificationTestGuard, test_db as db_operator,
     },
@@ -35,24 +49,105 @@ use crate::{
 };
 
 use super::{
-    AppState,
-    error::ApiError,
-    handler::health,
-    middleware::{CORRELATION_ID_HEADER, correlation_id},
-    not_found, router,
+    AppState, error::ApiError, handler::health, middleware::request_context, not_found, router,
 };
 
 pub(crate) fn health_router() -> Router {
     Router::new()
         .nest("/api/v2", health::routes())
         .fallback(not_found)
-        .layer(axum_middleware::from_fn(correlation_id))
+        .layer(axum_middleware::from_fn(request_context))
 }
 
 pub(super) struct Captured {
     pub(super) status: StatusCode,
     pub(super) headers: HeaderMap,
     pub(super) body: Vec<u8>,
+}
+
+#[derive(Clone, Default)]
+struct CapturedRequestContext {
+    fields: Arc<Mutex<RequestContextFields>>,
+}
+
+impl CapturedRequestContext {
+    fn update(&self, update: impl FnOnce(&mut RequestContextFields)) {
+        let mut fields = self.fields.lock().unwrap_or_else(PoisonError::into_inner);
+        update(&mut fields);
+    }
+
+    fn snapshot(&self) -> RequestContextFields {
+        self.fields
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl<S> Layer<S> for CapturedRequestContext
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_new_span(&self, attributes: &Attributes<'_>, _id: &Id, _context: Context<'_, S>) {
+        if attributes.metadata().name() != "http_request" {
+            return;
+        }
+        self.update(|fields| {
+            fields.span_count += 1;
+            fields.span_name = Some(attributes.metadata().name());
+            attributes.record(&mut RequestContextVisitor { fields });
+        });
+    }
+
+    fn on_record(&self, id: &Id, values: &Record<'_>, context: Context<'_, S>) {
+        let Some(span) = context.span(id) else {
+            return;
+        };
+        if span.metadata().name() != "http_request" {
+            return;
+        }
+        self.update(|fields| values.record(&mut RequestContextVisitor { fields }));
+    }
+}
+
+#[derive(Clone, Default)]
+struct RequestContextFields {
+    span_count: usize,
+    span_name: Option<&'static str>,
+    http_method: Option<String>,
+    http_route: Option<String>,
+    http_status: Option<u64>,
+    outcome: Option<String>,
+    otel_status: Option<String>,
+    actor_kind: Option<String>,
+    actor_id: Option<String>,
+}
+
+struct RequestContextVisitor<'fields> {
+    fields: &'fields mut RequestContextFields,
+}
+
+impl Visit for RequestContextVisitor<'_> {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        let destination = match field.name() {
+            "http.request.method" => &mut self.fields.http_method,
+            "http.route" => &mut self.fields.http_route,
+            "request.outcome" => &mut self.fields.outcome,
+            "otel.status_code" => &mut self.fields.otel_status,
+            "actor_kind" => &mut self.fields.actor_kind,
+            "actor_id" => &mut self.fields.actor_id,
+            _ => return,
+        };
+        *destination = Some(value.to_owned());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "http.response.status_code" {
+            self.fields.http_status = Some(value);
+        }
+    }
+
+    fn record_debug(&mut self, _field: &Field, _value: &dyn std::fmt::Debug) {}
 }
 
 pub(super) async fn drive(
@@ -125,15 +220,6 @@ pub(super) fn header_text<'a>(
         .map_err(|_| SupportFailure::ResponseHeaderInvalid)
 }
 
-pub(super) fn canonical_correlation_id(headers: &HeaderMap) -> Result<String, SupportFailure> {
-    let value = header_text(headers, &CORRELATION_ID_HEADER)?;
-    let parsed = Uuid::parse_str(value).map_err(|_| SupportFailure::CorrelationIdInvalid)?;
-    if parsed.get_version_num() != 7 || parsed.to_string() != value {
-        return Err(SupportFailure::CorrelationIdInvalid);
-    }
-    Ok(value.to_owned())
-}
-
 pub(super) fn check_error_response(
     response: &Captured,
     status: StatusCode,
@@ -150,17 +236,16 @@ pub(super) fn check_error_response(
     let object = value
         .as_object()
         .ok_or(SupportFailure::ErrorResponseContractChanged)?;
-    let correlation = canonical_correlation_id(&response.headers)?;
     let expected_body = format!(
-        "{{\"title\":\"{title}\",\"status\":{},\"code\":\"{code}\",\"correlation_id\":\"{correlation}\"}}",
+        "{{\"title\":\"{title}\",\"status\":{},\"code\":\"{code}\"}}",
         status.as_u16(),
     );
     if response.body != expected_body.as_bytes()
-        || object.len() != 4
+        || response.headers.contains_key("x-correlation-id")
+        || object.len() != 3
         || object.get("title").and_then(Value::as_str) != Some(title)
         || object.get("status").and_then(Value::as_u64) != Some(u64::from(status.as_u16()))
         || object.get("code").and_then(Value::as_str) != Some(code)
-        || object.get("correlation_id").and_then(Value::as_str) != Some(correlation.as_str())
         || object.contains_key("detail")
         || object.contains_key("field_errors")
     {
@@ -268,8 +353,6 @@ pub(crate) enum SupportFailure {
     ResponseHeaderMissing,
     #[snafu(display("an HTTP response header was invalid"))]
     ResponseHeaderInvalid,
-    #[snafu(display("the correlation ID contract changed"))]
-    CorrelationIdInvalid,
     #[snafu(display("the error response contract changed"))]
     ErrorResponseContractChanged,
     #[snafu(display("an HTTP response was not valid JSON"))]
@@ -333,7 +416,8 @@ async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestF
 }
 
 #[tokio::test]
-async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), TestFailure> {
+async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
+-> Result<(), TestFailure> {
     let closed_fixture = TestDatabase::new().await?;
     let health_router = router(
         server_state(closed_fixture.database.clone())?,
@@ -346,10 +430,10 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
     if health_response.status != StatusCode::OK
         || health_response.body != br#"{"status":"ok"}"#
         || header_text(&health_response.headers, &header::CONTENT_TYPE)? != "application/json"
+        || health_response.headers.contains_key("x-correlation-id")
     {
         return Err(TestFailure::HealthContractChanged);
     }
-    let first_correlation = canonical_correlation_id(&health_response.headers)?;
 
     let fixture = TestDatabase::new().await?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
@@ -357,13 +441,14 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
     let supplied_request = Request::builder()
         .method(Method::GET)
         .uri("/api/v2/health")
-        .header(CORRELATION_ID_HEADER, supplied)
+        .header("x-correlation-id", supplied)
         .body(Body::empty())
         .map_err(|_| TestFailure::RequestBuildFailed)?;
     let supplied_response = drive(&application, supplied_request).await?;
-    let second_correlation = canonical_correlation_id(&supplied_response.headers)?;
-    if first_correlation == second_correlation || second_correlation == supplied {
-        return Err(TestFailure::CorrelationIdWasNotServerOwned);
+    if supplied_response.headers.contains_key("x-correlation-id")
+        || response_contains(&supplied_response, supplied)
+    {
+        return Err(TestFailure::CorrelationContractWasRetained);
     }
 
     let post_request = Request::builder()
@@ -392,7 +477,9 @@ async fn mounted_and_unmounted_routes_and_correlation_are_exact() -> Result<(), 
         if response.status != expected_status {
             return Err(TestFailure::MountedRouteWasNotReachable);
         }
-        canonical_correlation_id(&response.headers)?;
+        if response.headers.contains_key("x-correlation-id") {
+            return Err(TestFailure::CorrelationContractWasRetained);
+        }
     }
 
     Ok(())
@@ -461,7 +548,7 @@ async fn mounted_route_responses(
 }
 
 #[tokio::test]
-async fn completed_request_log_is_single_bounded_and_correlated() -> Result<(), TestFailure> {
+async fn completed_request_log_is_single_and_uses_the_route_template() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let fixture = TestDatabase::new().await?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
@@ -470,20 +557,199 @@ async fn completed_request_log_is_single_bounded_and_correlated() -> Result<(), 
     let response = async { drive(&application, request(Method::GET, "/api/v2/health", "")?).await }
         .with_subscriber(subscriber)
         .await?;
-    let correlation_id = canonical_correlation_id(&response.headers)?;
     let output = captured
         .text()
         .map_err(|()| TestFailure::LogCaptureFailed)?;
     if output.matches("HTTP request completed").count() != 1
+        || response.status != StatusCode::OK
         || !output.contains("method=GET")
-        || !output.contains("path=/api/v2/health")
+        || !output.contains("route=\"/api/v2/health\"")
         || !output.contains("status=200")
-        || !output.contains(&format!("correlation_id={correlation_id}"))
         || !output.contains("duration_us=")
+        || output.contains("correlation_id")
+        || response.headers.contains_key("x-correlation-id")
     {
         return Err(TestFailure::CompletedRequestLogChanged);
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn authenticated_request_records_context_on_the_http_root_span() -> Result<(), TestFailure> {
+    let _subscriber_guard = SubscriberTestGuard::acquire();
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    let operator_id = seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
+    let login_response = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
+    if login_response.status != StatusCode::OK {
+        return Err(TestFailure::ValidLoginFailed);
+    }
+    let cookie_pair = header_text(&login_response.headers, &header::SET_COOKIE)?
+        .split(';')
+        .next()
+        .ok_or(TestFailure::CookieContractChanged)?
+        .to_owned();
+
+    let captured_context = CapturedRequestContext::default();
+    let subscriber = Registry::default().with(captured_context.clone());
+    let response = async {
+        drive(
+            &application,
+            cookie_request(Method::GET, "/api/v2/session", &cookie_pair)?,
+        )
+        .await
+    }
+    .with_subscriber(subscriber)
+    .await?;
+    if response.status != StatusCode::OK {
+        return Err(TestFailure::ValidLoginFailed);
+    }
+
+    let context = captured_context.snapshot();
+    let expected_actor_id = operator_id.to_string();
+    if context.span_count != 1
+        || context.span_name != Some("http_request")
+        || context.http_method.as_deref() != Some("GET")
+        || context.http_route.as_deref() != Some("/api/v2/session")
+        || context.http_status != Some(200)
+        || context.outcome.as_deref() != Some("success")
+        || context.otel_status.is_some()
+        || context.actor_kind.as_deref() != Some("operator")
+        || context.actor_id.as_deref() != Some(expected_actor_id.as_str())
+    {
+        return Err(TestFailure::RequestContextSpanChanged);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_root_span_records_success_client_error_and_server_error() -> Result<(), TestFailure> {
+    let _subscriber_guard = SubscriberTestGuard::acquire();
+    let application = Router::new()
+        .route("/success", axum::routing::get(|| async { StatusCode::OK }))
+        .route(
+            "/client-error",
+            axum::routing::get(|| async { StatusCode::BAD_REQUEST }),
+        )
+        .route(
+            "/server-error",
+            axum::routing::get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        )
+        .layer(axum_middleware::from_fn(request_context));
+
+    for (path, status, outcome, otel_status) in [
+        ("/success", StatusCode::OK, "success", None),
+        (
+            "/client-error",
+            StatusCode::BAD_REQUEST,
+            "client_error",
+            None,
+        ),
+        (
+            "/server-error",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "server_error",
+            Some("ERROR"),
+        ),
+    ] {
+        let captured_context = CapturedRequestContext::default();
+        let subscriber = Registry::default().with(captured_context.clone());
+        let response = async { drive(&application, request(Method::GET, path, "")?).await }
+            .with_subscriber(subscriber)
+            .await?;
+        let context = captured_context.snapshot();
+        if response.status != status
+            || context.span_count != 1
+            || context.http_status != Some(u64::from(status.as_u16()))
+            || context.outcome.as_deref() != Some(outcome)
+            || context.otel_status.as_deref() != otel_status
+        {
+            return Err(TestFailure::RequestContextSpanChanged);
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn http_root_span_inherits_the_remote_w3c_trace_parent() -> Result<(), TestFailure> {
+    let _subscriber_guard = SubscriberTestGuard::acquire();
+    let exporter = CapturedSpanExporter::default();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let tracer = provider.tracer("http-trace-parent-test");
+    let subscriber = Registry::default().with(
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(tracing::level_filters::LevelFilter::TRACE),
+    );
+    let application = Router::new()
+        .route(
+            "/trace-parent",
+            axum::routing::get(|| async { StatusCode::NO_CONTENT }),
+        )
+        .layer(axum_middleware::from_fn(request_context));
+    let request = Request::builder()
+        .method(Method::GET)
+        .uri("/trace-parent")
+        .header(
+            "traceparent",
+            "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        )
+        .body(Body::empty())
+        .map_err(|_| TestFailure::RequestBuildFailed)?;
+
+    let response = async { drive(&application, request).await }
+        .with_subscriber(subscriber)
+        .await?;
+    let spans = exporter.snapshot();
+    let request_span = spans
+        .iter()
+        .find(|span| span.name == "GET /trace-parent")
+        .ok_or(TestFailure::TraceContextSpanChanged)?;
+    if response.status != StatusCode::NO_CONTENT
+        || request_span.span_context.trace_id().to_string() != "0af7651916cd43dd8448eb211c80319c"
+        || request_span.parent_span_id.to_string() != "b7ad6b7169203331"
+        || !request_span.parent_span_is_remote
+        || request_span.span_kind != SpanKind::Server
+    {
+        return Err(TestFailure::TraceContextSpanChanged);
+    }
+    provider
+        .shutdown()
+        .map_err(|_| TestFailure::TraceContextSpanChanged)?;
+    Ok(())
+}
+
+#[derive(Clone, Debug, Default)]
+struct CapturedSpanExporter {
+    spans: Arc<Mutex<Vec<SpanData>>>,
+}
+
+impl CapturedSpanExporter {
+    fn snapshot(&self) -> Vec<SpanData> {
+        self.spans
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl SpanExporter for CapturedSpanExporter {
+    fn export(
+        &self,
+        batch: Vec<SpanData>,
+    ) -> impl std::future::Future<Output = OTelSdkResult> + Send {
+        let spans = Arc::clone(&self.spans);
+        async move {
+            spans
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .extend(batch);
+            Ok(())
+        }
+    }
 }
 
 #[tokio::test]
@@ -495,7 +761,7 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
-    let (credential, authentication_correlation, internal_correlation) = async {
+    let credential = async {
         let login = drive(&application, login_request(LOG_LOGIN_NAME, LOG_PASSWORD)?).await?;
         if login.status != StatusCode::OK {
             return Err(TestFailure::ValidLoginFailed);
@@ -517,18 +783,11 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
         if authenticated.status != StatusCode::OK {
             return Err(TestFailure::ValidLoginFailed);
         }
-        let authentication_failure =
+        let _authentication_failure =
             drive(&application, request(Method::GET, "/api/v2/session", "")?).await?;
-        let authentication_correlation = canonical_correlation_id(&authentication_failure.headers)?;
-        let internal_correlation = CorrelationId::from_uuid(Uuid::now_v7());
         let _internal_response =
-            ApiError::internal_error("test_internal_cause_canary", internal_correlation)
-                .into_response();
-        Ok((
-            credential,
-            authentication_correlation,
-            internal_correlation.as_text(),
-        ))
+            ApiError::internal_error("test_internal_cause_canary").into_response();
+        Ok(credential)
     }
     .with_subscriber(subscriber)
     .await?;
@@ -551,14 +810,21 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
             return Err(TestFailure::SecretEscapedIntoLog);
         }
     }
+    let authentication_error_logged = output.lines().any(|line| {
+        line.contains("WARN")
+            && line.contains("HTTP request rejected")
+            && line.contains("code=\"AUTHENTICATION_FAILED\"")
+    });
+    let internal_error_logged = output.lines().any(|line| {
+        line.contains("ERROR")
+            && line.contains("HTTP request failed")
+            && line.contains("code=\"INTERNAL_ERROR\"")
+    });
     if uppercase_output.contains("SELECT")
         || uppercase_output.contains("INSERT")
-        || !output.contains("WARN HTTP request rejected")
-        || !output.contains("code=\"AUTHENTICATION_FAILED\"")
-        || !output.contains(&format!("correlation_id={authentication_correlation}"))
-        || !output.contains("ERROR HTTP request failed")
-        || !output.contains("code=\"INTERNAL_ERROR\"")
-        || !output.contains(&format!("correlation_id={internal_correlation}"))
+        || !authentication_error_logged
+        || !internal_error_logged
+        || output.contains("correlation_id")
     {
         return Err(TestFailure::ErrorLogChanged);
     }
@@ -638,7 +904,7 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
         .to_owned();
     let mut observer =
         test_observer(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
-    let counts_before = session_and_audit_counts_on(&mut observer)?;
+    let session_count_before = session_count_on(&mut observer)?;
     let version_before =
         test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
     let _database_lock =
@@ -672,9 +938,11 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
         {
             return Err(TestFailure::HeadRouteWasReachable);
         }
-        canonical_correlation_id(&response.headers)?;
+        if response.headers.contains_key("x-correlation-id") {
+            return Err(TestFailure::CorrelationContractWasRetained);
+        }
     }
-    if session_and_audit_counts_on(&mut observer)? != counts_before
+    if session_count_on(&mut observer)? != session_count_before
         || test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?
             != version_before
     {
@@ -728,7 +996,9 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
             if response.status != expected_status {
                 return Err(TestFailure::HeadRouteWasReachable);
             }
-            canonical_correlation_id(&response.headers)?;
+            if response.headers.contains_key("x-correlation-id") {
+                return Err(TestFailure::CorrelationContractWasRetained);
+            }
             // A reached handler would answer 200; `HEAD` bodies are stripped, so
             // the status and the uniform JSON error shape are the evidence.
             if expected_status == StatusCode::NOT_FOUND
@@ -742,24 +1012,17 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
     Ok(())
 }
 
-fn session_and_audit_counts_on(
-    connection: &mut SqliteConnection,
-) -> Result<(i64, i64), TestFailure> {
-    diesel::sql_query(
-        "SELECT (SELECT COUNT(*) FROM operator_sessions) AS sessions, \
-         (SELECT COUNT(*) FROM audit_events) AS audits",
-    )
-    .get_result::<PersistenceCountsRow>(connection)
-    .map(|row| (row.sessions, row.audits))
-    .map_err(|_| TestFailure::DatabaseEvidenceFailed)
+fn session_count_on(connection: &mut SqliteConnection) -> Result<i64, TestFailure> {
+    diesel::sql_query("SELECT COUNT(*) AS sessions FROM operator_sessions")
+        .get_result::<PersistenceCountsRow>(connection)
+        .map(|row| row.sessions)
+        .map_err(|_| TestFailure::DatabaseEvidenceFailed)
 }
 
 #[derive(QueryableByName)]
 struct PersistenceCountsRow {
     #[diesel(sql_type = BigInt)]
     sessions: i64,
-    #[diesel(sql_type = BigInt)]
-    audits: i64,
 }
 
 #[derive(Debug, Snafu)]
@@ -771,6 +1034,10 @@ enum TestFailure {
     LogCaptureFailed,
     #[snafu(display("the completed-request log contract changed"))]
     CompletedRequestLogChanged,
+    #[snafu(display("the HTTP request context span contract changed"))]
+    RequestContextSpanChanged,
+    #[snafu(display("the W3C remote parent trace context was not inherited"))]
+    TraceContextSpanChanged,
     #[snafu(display("a secret or forbidden diagnostic escaped into logs"))]
     SecretEscapedIntoLog,
     #[snafu(display("the stable HTTP error log contract changed"))]
@@ -781,8 +1048,8 @@ enum TestFailure {
     HealthContractChanged,
     #[snafu(display("the static Panel serving contract changed"))]
     StaticPanelContractChanged,
-    #[snafu(display("a client correlation ID was accepted"))]
-    CorrelationIdWasNotServerOwned,
+    #[snafu(display("the removed HTTP correlation contract was retained"))]
+    CorrelationContractWasRetained,
     #[snafu(display("a mounted HTTP route was unreachable"))]
     MountedRouteWasNotReachable,
     #[snafu(display("an undeclared HEAD route was reachable"))]

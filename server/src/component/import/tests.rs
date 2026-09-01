@@ -8,7 +8,6 @@ use diesel::{
 use uuid::Uuid;
 
 use crate::{
-    audit::CorrelationId,
     db::{Database, DatabaseConfig},
     vault,
 };
@@ -35,13 +34,9 @@ struct ContestEvidence {
 async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential() {
     let fixture = Fixture::new().await;
     let first_csv = b"seat,account,password\nA-01,team-alpha,first-password-canary";
-    let first = create_import_candidate(
-        &fixture.database,
-        first_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("first preview failed: {error}"));
+    let first = create_import_candidate(&fixture.database, first_csv)
+        .await
+        .unwrap_or_else(|error| panic!("first preview failed: {error}"));
     let preview_json = pending_preview_json(&fixture.database).await;
     assert!(!preview_json.contains("first-password-canary"));
     assert_eq!(vault_record_count(&fixture.database).await, 0);
@@ -52,7 +47,6 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
         first.candidate_id(),
         first.preview_token_bytes(),
         first_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
     )
     .await
     .unwrap_or_else(|error| panic!("first commit failed: {error}"));
@@ -76,20 +70,15 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
     );
 
     let second_csv = b"seat,account,password\nA-01,team-alpha,second-password-canary";
-    let second = create_import_candidate(
-        &fixture.database,
-        second_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("second preview failed: {error}"));
+    let second = create_import_candidate(&fixture.database, second_csv)
+        .await
+        .unwrap_or_else(|error| panic!("second preview failed: {error}"));
     commit_import(
         &fixture.database,
         &fixture.vault,
         second.candidate_id(),
         second.preview_token_bytes(),
         second_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
     )
     .await
     .unwrap_or_else(|error| panic!("second commit failed: {error}"));
@@ -111,33 +100,24 @@ async fn preview_is_non_secret_and_each_commit_replaces_the_current_credential()
 async fn commit_rejects_removing_a_seat_owned_by_binding() {
     let fixture = Fixture::new().await;
     let initial_csv = b"seat,account,password\nA-01,team-alpha,password-a";
-    let initial = create_import_candidate(
-        &fixture.database,
-        initial_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("initial preview failed: {error}"));
+    let initial = create_import_candidate(&fixture.database, initial_csv)
+        .await
+        .unwrap_or_else(|error| panic!("initial preview failed: {error}"));
     commit_import(
         &fixture.database,
         &fixture.vault,
         initial.candidate_id(),
         initial.preview_token_bytes(),
         initial_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
     )
     .await
     .unwrap_or_else(|error| panic!("initial commit failed: {error}"));
     install_binding(&fixture.database).await;
 
     let replacement_csv = b"seat,account,password\nB-02,team-beta,password-b";
-    let replacement = create_import_candidate(
-        &fixture.database,
-        replacement_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
-    )
-    .await
-    .unwrap_or_else(|error| panic!("replacement preview failed: {error}"));
+    let replacement = create_import_candidate(&fixture.database, replacement_csv)
+        .await
+        .unwrap_or_else(|error| panic!("replacement preview failed: {error}"));
     assert_eq!(replacement.diff().binding_impacts().len(), 1);
     let result = commit_import(
         &fixture.database,
@@ -145,7 +125,6 @@ async fn commit_rejects_removing_a_seat_owned_by_binding() {
         replacement.candidate_id(),
         replacement.preview_token_bytes(),
         replacement_csv,
-        CorrelationId::from_uuid(Uuid::now_v7()),
     )
     .await;
     assert_eq!(result, Err(ImportError::SeatOccupied));

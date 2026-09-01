@@ -3,8 +3,6 @@
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
 
-use crate::audit::AuditPersistenceError;
-
 /// Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeviceId(Uuid);
@@ -59,12 +57,6 @@ impl DeviceError {
         match error {
             DevicePersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
             DevicePersistenceError::PersistenceFailed => Self::PersistenceFailed,
-        }
-    }
-
-    const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
-        match error {
-            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
         }
     }
 }
@@ -170,8 +162,6 @@ impl DeviceFacts {
 
 #[cfg(test)]
 mod tests {
-    use crate::audit::AuditPersistenceError;
-
     use super::{DeviceError, DeviceId, DevicePersistenceError, DeviceState, EvidenceQuality};
 
     #[test]
@@ -182,10 +172,6 @@ mod tests {
         );
         assert_eq!(
             DeviceError::from_persistence(DevicePersistenceError::PersistenceFailed),
-            DeviceError::PersistenceFailed
-        );
-        assert_eq!(
-            DeviceError::from_audit_persistence(AuditPersistenceError::PersistenceFailed),
             DeviceError::PersistenceFailed
         );
     }

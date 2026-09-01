@@ -199,8 +199,6 @@ export interface components {
     CanonicalUuidV7: string;
     ErrorResponse: {
       code: string;
-      /** Format: uuid */
-      correlation_id: string;
       status: number;
       title: string;
     };
@@ -286,8 +284,6 @@ export interface operations {
       /** @description Current Account set */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -297,8 +293,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -308,8 +302,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -330,8 +322,6 @@ export interface operations {
       /** @description Current Seat-to-Device Binding set */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -341,8 +331,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -352,8 +340,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -374,8 +360,6 @@ export interface operations {
       /** @description Server is healthy */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -385,8 +369,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -407,8 +389,6 @@ export interface operations {
       /** @description Current pending CSV import candidate */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -418,8 +398,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -429,8 +407,6 @@ export interface operations {
       /** @description Administrator role required */
       403: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -440,8 +416,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -466,8 +440,6 @@ export interface operations {
       /** @description CSV import candidate created */
       201: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -477,8 +449,6 @@ export interface operations {
       /** @description Invalid CSV import or request media type */
       400: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -488,8 +458,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -499,8 +467,6 @@ export interface operations {
       /** @description Administrator role required */
       403: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -510,8 +476,6 @@ export interface operations {
       /** @description An import candidate is already pending */
       409: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -521,8 +485,6 @@ export interface operations {
       /** @description CSV request body exceeds the import ingress limit */
       413: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -530,8 +492,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -559,8 +519,6 @@ export interface operations {
       /** @description CSV import committed */
       204: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -568,8 +526,6 @@ export interface operations {
       /** @description Invalid import ID or closed request */
       400: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -579,8 +535,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -590,8 +544,6 @@ export interface operations {
       /** @description Administrator role required */
       403: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -601,8 +553,6 @@ export interface operations {
       /** @description Import candidate unavailable */
       404: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -612,8 +562,6 @@ export interface operations {
       /** @description Import preview baseline is stale */
       409: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -623,8 +571,6 @@ export interface operations {
       /** @description Commit request body exceeds the import ingress limit */
       413: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -632,8 +578,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -657,8 +601,6 @@ export interface operations {
       /** @description CSV import candidate discarded */
       204: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -666,8 +608,6 @@ export interface operations {
       /** @description Invalid import ID */
       400: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -677,8 +617,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -688,8 +626,6 @@ export interface operations {
       /** @description Administrator role required */
       403: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -699,8 +635,6 @@ export interface operations {
       /** @description Import candidate unavailable */
       404: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -710,8 +644,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -732,8 +664,6 @@ export interface operations {
       /** @description Current provisioning-window fact */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -743,8 +673,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -765,8 +693,6 @@ export interface operations {
       /** @description Provisioning window closed or already closed */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -776,8 +702,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -787,19 +711,6 @@ export interface operations {
       /** @description Administrator role required */
       403: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Internal failure */
-      500: {
-        headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -820,8 +731,6 @@ export interface operations {
       /** @description Provisioning window opened or already open */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -831,8 +740,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -842,19 +749,6 @@ export interface operations {
       /** @description Administrator role required */
       403: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Internal failure */
-      500: {
-        headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -875,8 +769,6 @@ export interface operations {
       /** @description Current Seat set */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -886,8 +778,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -897,8 +787,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -919,8 +807,6 @@ export interface operations {
       /** @description Current session */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -930,8 +816,6 @@ export interface operations {
       /** @description Session authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -941,8 +825,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -967,8 +849,6 @@ export interface operations {
       /** @description Session established */
       200: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -978,8 +858,6 @@ export interface operations {
       /** @description Invalid closed request */
       400: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -989,8 +867,6 @@ export interface operations {
       /** @description Authentication failed */
       401: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -1000,8 +876,6 @@ export interface operations {
       /** @description Request body exceeds the session ingress limit */
       413: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -1009,8 +883,6 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {
@@ -1031,8 +903,6 @@ export interface operations {
       /** @description Session terminated or credential-state no-op */
       204: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content?: never;
@@ -1040,8 +910,6 @@ export interface operations {
       /** @description Session termination infrastructure failure */
       500: {
         headers: {
-          /** @description Server-generated canonical UUIDv7 correlation ID */
-          "X-Correlation-Id"?: string;
           [name: string]: unknown;
         };
         content: {

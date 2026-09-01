@@ -1,19 +1,15 @@
 mod authentication;
-mod correlation;
+mod request_context;
 
 use axum::{
     handler::Handler,
-    http::HeaderName,
     middleware as axum_middleware,
     routing::{MethodRouter, get},
 };
 
 use super::{AppState, not_found};
 
-pub(super) use correlation::correlation_id;
-
-pub(in crate::http) const CORRELATION_ID_HEADER: HeaderName =
-    HeaderName::from_static("x-correlation-id");
+pub(super) use request_context::request_context;
 
 pub(in crate::http) fn require_operator(
     state: AppState,

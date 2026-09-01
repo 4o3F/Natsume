@@ -1,19 +1,17 @@
 use axum::body::to_bytes;
 use snafu::Snafu;
 use tracing::instrument::WithSubscriber as _;
-use uuid::Uuid;
 
 use crate::{
     component::{
         import::{CsvImportErrorCategory, ImportError},
         lifecycle::DeviceError,
-        provisioning::ProvisioningError,
     },
     config::LogLevel,
     logging::tests::{CapturedLogs, SubscriberTestGuard},
 };
 
-use super::{ApiError, ContestError, CorrelationId, IntoResponse as _, OperatorError, StatusCode};
+use super::{ApiError, ContestError, IntoResponse as _, OperatorError, StatusCode};
 
 const CAUSE_CANARY: &str = "internal_cause_canary";
 const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
@@ -23,31 +21,25 @@ async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Trace);
-    let correlation_id = CorrelationId::from_uuid(Uuid::now_v7());
     let causes = async {
         let mut causes = Vec::new();
         for (error, cause, status) in operator_causes() {
-            let rendered = ApiError::from_operator(error, correlation_id);
+            let rendered = ApiError::from_operator(error);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
         for (error, cause, status) in contest_causes() {
-            let rendered = ApiError::from_contest(error, correlation_id);
+            let rendered = ApiError::from_contest(error);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
         for (error, cause, status) in device_causes() {
-            let rendered = ApiError::from_device(error, correlation_id);
+            let rendered = ApiError::from_device(error);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
         for (error, cause, status) in import_causes() {
-            let rendered = ApiError::from_import(error, correlation_id);
-            assert_cause_stays_internal(rendered, cause, status).await?;
-            causes.push(cause);
-        }
-        for (error, cause, status) in provisioning_causes() {
-            let rendered = ApiError::from_provisioning(error, correlation_id);
+            let rendered = ApiError::from_import(error);
             assert_cause_stays_internal(rendered, cause, status).await?;
             causes.push(cause);
         }
@@ -55,23 +47,20 @@ async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result
         // static cause; the canary proves it stays out of the response.
         for (error, status) in [
             (
-                ApiError::authentication_failed(CAUSE_CANARY, correlation_id),
+                ApiError::authentication_failed(CAUSE_CANARY),
                 StatusCode::UNAUTHORIZED,
             ),
             (
-                ApiError::authorization_denied(CAUSE_CANARY, correlation_id),
+                ApiError::authorization_denied(CAUSE_CANARY),
                 StatusCode::FORBIDDEN,
             ),
             (
-                ApiError::invalid_request(CAUSE_CANARY, correlation_id),
+                ApiError::invalid_request(CAUSE_CANARY),
                 StatusCode::BAD_REQUEST,
             ),
+            (ApiError::not_found(CAUSE_CANARY), StatusCode::NOT_FOUND),
             (
-                ApiError::not_found(CAUSE_CANARY, correlation_id),
-                StatusCode::NOT_FOUND,
-            ),
-            (
-                ApiError::internal_error(CAUSE_CANARY, correlation_id),
+                ApiError::internal_error(CAUSE_CANARY),
                 StatusCode::INTERNAL_SERVER_ERROR,
             ),
         ] {
@@ -209,14 +198,6 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 15] {
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
     ]
-}
-
-fn provisioning_causes() -> [(ProvisioningError, &'static str, StatusCode); 1] {
-    [(
-        ProvisioningError::PersistenceFailed,
-        "provisioning_persistence_failed",
-        StatusCode::INTERNAL_SERVER_ERROR,
-    )]
 }
 
 fn contest_causes() -> [(ContestError, &'static str, StatusCode); 1] {

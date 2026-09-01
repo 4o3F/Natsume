@@ -5,7 +5,6 @@ patch_file = "diesel/sqlite-integer-to-bigint.patch"
 filter.only_tables = [
   "^account_mappings$",
   "^accounts$",
-  "^audit_events$",
   "^binding_negotiations$",
   "^device_bindings$",
   "^device_control_keys$",

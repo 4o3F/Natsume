@@ -16,22 +16,6 @@ diesel::table! {
 }
 
 diesel::table! {
-    audit_events (audit_event_id) {
-        audit_event_id -> Text,
-        occurred_at_unix_ms -> BigInt,
-        actor -> Text,
-        action_kind -> Text,
-        resource_type -> Text,
-        resource_id -> Nullable<Text>,
-        result -> Text,
-        reason_code -> Nullable<Text>,
-        correlation_id -> Text,
-        group_correlation_id -> Nullable<Text>,
-        redacted_detail_json -> Text,
-    }
-}
-
-diesel::table! {
     binding_negotiations (device_id) {
         device_id -> Text,
         negotiation_id -> Text,
@@ -55,9 +39,7 @@ diesel::table! {
         device_id -> Text,
         status -> Text,
         activated_at_unix_ms -> BigInt,
-        activated_audit_event_id -> Text,
         retired_at_unix_ms -> Nullable<BigInt>,
-        retired_audit_event_id -> Nullable<Text>,
     }
 }
 
@@ -123,7 +105,6 @@ diesel::table! {
         candidate_fingerprint_sha256 -> Binary,
         baseline_fingerprint_sha256 -> Binary,
         redacted_preview_json -> Text,
-        created_audit_event_id -> Text,
     }
 }
 
@@ -166,13 +147,11 @@ diesel::joinable!(device_home_targets -> devices (device_id));
 diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
-diesel::joinable!(pending_import_candidate -> audit_events (created_audit_event_id));
 diesel::joinable!(server_vault_records -> accounts (account_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     account_mappings,
     accounts,
-    audit_events,
     binding_negotiations,
     device_bindings,
     device_control_keys,

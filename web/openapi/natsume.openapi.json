@@ -12,15 +12,6 @@
         "responses": {
           "200": {
             "description": "Current Account set",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -34,15 +25,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -53,15 +35,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -84,15 +57,6 @@
         "responses": {
           "200": {
             "description": "Current Seat-to-Device Binding set",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -106,15 +70,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -125,15 +80,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -156,15 +102,6 @@
         "responses": {
           "200": {
             "description": "Server is healthy",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -175,15 +112,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -201,15 +129,6 @@
         "responses": {
           "200": {
             "description": "Current pending CSV import candidate",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -220,15 +139,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -239,15 +149,6 @@
           },
           "403": {
             "description": "Administrator role required",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -258,15 +159,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -297,15 +189,6 @@
         "responses": {
           "201": {
             "description": "CSV import candidate created",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -316,15 +199,6 @@
           },
           "400": {
             "description": "Invalid CSV import or request media type",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -335,15 +209,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -354,15 +219,6 @@
           },
           "403": {
             "description": "Administrator role required",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -373,15 +229,6 @@
           },
           "409": {
             "description": "An import candidate is already pending",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -391,28 +238,10 @@
             }
           },
           "413": {
-            "description": "CSV request body exceeds the import ingress limit",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            }
+            "description": "CSV request body exceeds the import ingress limit"
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -455,28 +284,10 @@
         },
         "responses": {
           "204": {
-            "description": "CSV import committed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            }
+            "description": "CSV import committed"
           },
           "400": {
             "description": "Invalid import ID or closed request",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -487,15 +298,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -506,15 +308,6 @@
           },
           "403": {
             "description": "Administrator role required",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -525,15 +318,6 @@
           },
           "404": {
             "description": "Import candidate unavailable",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -544,15 +328,6 @@
           },
           "409": {
             "description": "Import preview baseline is stale",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -562,28 +337,10 @@
             }
           },
           "413": {
-            "description": "Commit request body exceeds the import ingress limit",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            }
+            "description": "Commit request body exceeds the import ingress limit"
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -616,28 +373,10 @@
         ],
         "responses": {
           "204": {
-            "description": "CSV import candidate discarded",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            }
+            "description": "CSV import candidate discarded"
           },
           "400": {
             "description": "Invalid import ID",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -648,15 +387,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -667,15 +397,6 @@
           },
           "403": {
             "description": "Administrator role required",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -686,15 +407,6 @@
           },
           "404": {
             "description": "Import candidate unavailable",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -705,15 +417,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -736,15 +439,6 @@
         "responses": {
           "200": {
             "description": "Current provisioning-window fact",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -755,15 +449,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -786,15 +471,6 @@
         "responses": {
           "200": {
             "description": "Provisioning window closed or already closed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -805,15 +481,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -824,34 +491,6 @@
           },
           "403": {
             "description": "Administrator role required",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -874,15 +513,6 @@
         "responses": {
           "200": {
             "description": "Provisioning window opened or already open",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -893,15 +523,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -912,34 +533,6 @@
           },
           "403": {
             "description": "Administrator role required",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -962,15 +555,6 @@
         "responses": {
           "200": {
             "description": "Current Seat set",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -984,15 +568,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1003,15 +578,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1034,15 +600,6 @@
         "responses": {
           "200": {
             "description": "Current session",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1053,15 +610,6 @@
           },
           "401": {
             "description": "Session authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1072,15 +620,6 @@
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1111,15 +650,6 @@
         "responses": {
           "200": {
             "description": "Session established",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1130,15 +660,6 @@
           },
           "400": {
             "description": "Invalid closed request",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1149,15 +670,6 @@
           },
           "401": {
             "description": "Authentication failed",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1167,28 +679,10 @@
             }
           },
           "413": {
-            "description": "Request body exceeds the session ingress limit",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            }
+            "description": "Request body exceeds the session ingress limit"
           },
           "500": {
             "description": "Internal failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1203,28 +697,10 @@
         "operationId": "deleteSession",
         "responses": {
           "204": {
-            "description": "Session terminated or credential-state no-op",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            }
+            "description": "Session terminated or credential-state no-op"
           },
           "500": {
             "description": "Session termination infrastructure failure",
-            "headers": {
-              "X-Correlation-Id": {
-                "schema": {
-                  "type": "string",
-                  "format": "uuid"
-                },
-                "description": "Server-generated canonical UUIDv7 correlation ID"
-              }
-            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1284,14 +760,10 @@
       },
       "ErrorResponse": {
         "type": "object",
-        "required": ["title", "status", "code", "correlation_id"],
+        "required": ["title", "status", "code"],
         "properties": {
           "code": {
             "type": "string"
-          },
-          "correlation_id": {
-            "type": "string",
-            "format": "uuid"
           },
           "status": {
             "type": "integer"

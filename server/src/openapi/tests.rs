@@ -40,13 +40,13 @@ const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
         "post",
         "/api/v2/provisioning-window/actions/open",
         "openProvisioningWindow",
-        &["200", "401", "403", "500"],
+        &["200", "401", "403"],
     ),
     (
         "post",
         "/api/v2/provisioning-window/actions/close",
         "closeProvisioningWindow",
-        &["200", "401", "403", "500"],
+        &["200", "401", "403"],
     ),
 ];
 
@@ -623,7 +623,7 @@ fn password_and_cookie_security_metadata_are_secret_safe() -> Result<(), TestFai
 }
 
 #[test]
-fn error_response_shape_and_correlation_headers_match_stage_four() -> Result<(), TestFailure> {
+fn error_response_shape_has_no_correlation_contract() -> Result<(), TestFailure> {
     let value = serialized_document()?;
     let error_response = value
         .pointer("/components/schemas/ErrorResponse")
@@ -640,7 +640,7 @@ fn error_response_shape_and_correlation_headers_match_stage_four() -> Result<(),
         .iter()
         .filter_map(Value::as_str)
         .collect::<BTreeSet<_>>();
-    let frozen_fields = BTreeSet::from(["title", "status", "code", "correlation_id"]);
+    let frozen_fields = BTreeSet::from(["title", "status", "code"]);
     if properties
         .keys()
         .map(String::as_str)
@@ -660,8 +660,8 @@ fn error_response_shape_and_correlation_headers_match_stage_four() -> Result<(),
             .and_then(Value::as_object)
             .ok_or(TestFailure::DocumentShapeInvalid)?;
         for (status, response) in responses {
-            if response.pointer("/headers/X-Correlation-Id").is_none() {
-                return Err(TestFailure::CorrelationHeaderWasOmitted);
+            if response.pointer("/headers/X-Correlation-Id").is_some() {
+                return Err(TestFailure::CorrelationHeaderWasRetained);
             }
             let has_error_response = response
                 .pointer("/content/application~1json/schema/$ref")
@@ -1040,8 +1040,8 @@ enum TestFailure {
     CookieSecuritySchemeChanged,
     #[snafu(display("the error response schema changed"))]
     ErrorResponseSchemaChanged,
-    #[snafu(display("an OpenAPI response omitted the correlation header"))]
-    CorrelationHeaderWasOmitted,
+    #[snafu(display("an OpenAPI response retained the removed correlation header"))]
+    CorrelationHeaderWasRetained,
     #[snafu(display("the OpenAPI error response mapping changed"))]
     ErrorResponseMappingChanged,
     #[snafu(display("the secret-key pattern was invalid"))]

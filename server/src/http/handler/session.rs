@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::{audit::CorrelationId, component::operator::OperatorIdentity};
+use crate::component::operator::OperatorIdentity;
 
 use super::super::{AppState, cookie, error::ApiError, middleware};
 
@@ -58,7 +58,6 @@ pub(crate) struct SessionResponse {
 )]
 pub(crate) async fn create_session(
     State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
     request: Result<Json<SessionRequest>, JsonRejection>,
 ) -> Response {
     let Json(request) = match request {
@@ -67,25 +66,23 @@ pub(crate) async fn create_session(
             return rejection.into_response();
         }
         Err(_) => {
-            return ApiError::invalid_request("session_request_body_rejected", correlation_id)
-                .into_response();
+            return ApiError::invalid_request("session_request_body_rejected").into_response();
         }
     };
 
     let signed_in = match state
         .operator()
-        .sign_in(correlation_id, &request.login_name, request.password)
+        .sign_in(&request.login_name, request.password)
         .await
     {
         Ok(signed_in) => signed_in,
-        Err(error) => return ApiError::from_operator(error, correlation_id).into_response(),
+        Err(error) => return ApiError::from_operator(error).into_response(),
     };
     let wire_credential = signed_in.wire_credential();
     let Ok(session_cookie) = cookie::issue_session_credential(wire_credential.expose()) else {
-        return ApiError::internal_error("session_cookie_issuance_failed", correlation_id)
-            .into_response();
+        return ApiError::internal_error("session_cookie_issuance_failed").into_response();
     };
-    identity_response(signed_in.identity(), Some(session_cookie), correlation_id)
+    identity_response(signed_in.identity(), Some(session_cookie))
 }
 
 #[utoipa::path(
@@ -99,11 +96,8 @@ pub(crate) async fn create_session(
         (status = 500, description = "Internal failure")
     )
 )]
-pub(crate) async fn read_session(
-    Extension(identity): Extension<OperatorIdentity>,
-    Extension(correlation_id): Extension<CorrelationId>,
-) -> Response {
-    identity_response(identity, None, correlation_id)
+pub(crate) async fn read_session(Extension(identity): Extension<OperatorIdentity>) -> Response {
+    identity_response(identity, None)
 }
 
 #[utoipa::path(
@@ -116,43 +110,26 @@ pub(crate) async fn read_session(
         (status = 500, description = "Session termination infrastructure failure")
     )
 )]
-pub(crate) async fn delete_session(
-    State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
-    headers: HeaderMap,
-) -> Response {
+pub(crate) async fn delete_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let response = match cookie::session_credential(&headers) {
-        Ok(wire_credential) => {
-            match state
-                .operator()
-                .terminate_session(correlation_id, wire_credential)
-                .await
-            {
-                Ok(()) => StatusCode::NO_CONTENT.into_response(),
-                Err(error) => ApiError::from_operator(error, correlation_id).into_response(),
-            }
-        }
+        Ok(wire_credential) => match state.operator().terminate_session(wire_credential).await {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(error) => ApiError::from_operator(error).into_response(),
+        },
         Err(()) => StatusCode::NO_CONTENT.into_response(),
     };
     cookie::with_clearing_session_cookie(response).unwrap_or_else(|()| {
-        ApiError::internal_error("session_clearing_cookie_failed", correlation_id).into_response()
+        ApiError::internal_error("session_clearing_cookie_failed").into_response()
     })
 }
 
-fn identity_response(
-    identity: OperatorIdentity,
-    session_cookie: Option<HeaderValue>,
-    correlation_id: CorrelationId,
-) -> Response {
+fn identity_response(identity: OperatorIdentity, session_cookie: Option<HeaderValue>) -> Response {
     let body = SessionResponse {
         operator_id: identity.operator_id(),
         role: identity.role_name(),
     };
     let encoded = serde_json::to_string(&body).unwrap_or_else(|_| {
-        tracing::error!(
-            correlation_id = %correlation_id.as_text(),
-            "session response serialization invariant failed"
-        );
+        tracing::error!("session response serialization invariant failed");
         panic!("session response serialization invariant failed");
     });
     let mut response = (

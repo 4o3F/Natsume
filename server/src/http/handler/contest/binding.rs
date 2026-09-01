@@ -6,10 +6,7 @@ use axum::{
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::{
-    audit::CorrelationId,
-    component::{contest::BindingFacts, operator::OperatorIdentity},
-};
+use crate::component::{contest::BindingFacts, operator::OperatorIdentity};
 
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
 
@@ -50,7 +47,6 @@ impl From<BindingFacts> for BindingResponse {
 )]
 pub(crate) async fn list_bindings(
     State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
     Extension(_identity): Extension<OperatorIdentity>,
 ) -> Response {
     match state.contest().list_bindings().await {
@@ -59,8 +55,8 @@ pub(crate) async fn list_bindings(
                 .into_iter()
                 .map(BindingResponse::from)
                 .collect::<Vec<_>>();
-            current_facts_response(&response, correlation_id)
+            current_facts_response(&response)
         }
-        Err(error) => ApiError::from_contest(error, correlation_id).into_response(),
+        Err(error) => ApiError::from_contest(error).into_response(),
     }
 }

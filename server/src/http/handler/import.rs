@@ -15,12 +15,9 @@ use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::{
-    audit::CorrelationId,
-    component::{
-        import::{PendingImportCandidate, RedactedImportPreview},
-        operator::OperatorIdentity,
-    },
+use crate::component::{
+    import::{PendingImportCandidate, RedactedImportPreview},
+    operator::OperatorIdentity,
 };
 
 use super::super::{AppState, error::ApiError, middleware, not_found};
@@ -59,22 +56,17 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
 }
 
 async fn require_admin_role(
-    Extension(correlation_id): Extension<CorrelationId>,
     Extension(identity): Extension<OperatorIdentity>,
     request: Request,
     next: Next,
 ) -> Response {
     if let Err(error) = identity.require_admin() {
-        return ApiError::from_operator(error, correlation_id).into_response();
+        return ApiError::from_operator(error).into_response();
     }
     next.run(request).await
 }
 
-async fn require_csv_content_type(
-    Extension(correlation_id): Extension<CorrelationId>,
-    request: Request,
-    next: Next,
-) -> Response {
+async fn require_csv_content_type(request: Request, next: Next) -> Response {
     let content_type_is_csv = request
         .headers()
         .get(header::CONTENT_TYPE)
@@ -82,8 +74,7 @@ async fn require_csv_content_type(
         .and_then(|value| value.split(';').next())
         .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/csv"));
     if !content_type_is_csv {
-        return ApiError::invalid_request("import_content_type_rejected", correlation_id)
-            .into_response();
+        return ApiError::invalid_request("import_content_type_rejected").into_response();
     }
     next.run(request).await
 }
@@ -185,7 +176,6 @@ pub(crate) struct ImportCommitRequest {
 )]
 pub(crate) async fn create_import(
     State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
     let body = match body {
@@ -194,11 +184,10 @@ pub(crate) async fn create_import(
             return rejection.into_response();
         }
         Err(_) => {
-            return ApiError::invalid_request("import_request_body_rejected", correlation_id)
-                .into_response();
+            return ApiError::invalid_request("import_request_body_rejected").into_response();
         }
     };
-    match state.import().create_candidate(&body, correlation_id).await {
+    match state.import().create_candidate(&body).await {
         Ok(created) => {
             let response = ImportPreviewResponse {
                 candidate_id: created.candidate_id(),
@@ -206,9 +195,9 @@ pub(crate) async fn create_import(
                 expires_at_unix_ms: created.expires_at_unix_ms(),
                 diff: ImportRedactedDiff::from(created.diff()),
             };
-            json_response(StatusCode::CREATED, &response, correlation_id)
+            json_response(StatusCode::CREATED, &response)
         }
-        Err(error) => ApiError::from_import(error, correlation_id).into_response(),
+        Err(error) => ApiError::from_import(error).into_response(),
     }
 }
 
@@ -224,19 +213,15 @@ pub(crate) async fn create_import(
         (status = 500, description = "Internal failure")
     )
 )]
-pub(crate) async fn get_import(
-    State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
-) -> Response {
-    match state.import().read_pending(correlation_id).await {
+pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
+    match state.import().read_pending().await {
         Ok(pending) => json_response(
             StatusCode::OK,
             &ImportPendingResponse {
                 pending: pending.as_ref().map(ImportPendingSummary::from),
             },
-            correlation_id,
         ),
-        Err(error) => ApiError::from_import(error, correlation_id).into_response(),
+        Err(error) => ApiError::from_import(error).into_response(),
     }
 }
 
@@ -260,13 +245,11 @@ pub(crate) async fn get_import(
 )]
 pub(crate) async fn commit_import(
     State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
     Path(path): Path<ImportPath>,
     request: Result<Json<ImportCommitRequest>, axum::extract::rejection::JsonRejection>,
 ) -> Response {
     let Some(import_id) = canonical_uuid_v7(&path.import_id) else {
-        return ApiError::invalid_request("import_id_not_canonical_uuid_v7", correlation_id)
-            .into_response();
+        return ApiError::invalid_request("import_id_not_canonical_uuid_v7").into_response();
     };
     let Json(request) = match request {
         Ok(request) => request,
@@ -274,21 +257,19 @@ pub(crate) async fn commit_import(
             return rejection.into_response();
         }
         Err(_) => {
-            return ApiError::invalid_request("import_commit_body_rejected", correlation_id)
-                .into_response();
+            return ApiError::invalid_request("import_commit_body_rejected").into_response();
         }
     };
     let Some(token) = decode_preview_token(&request.preview_token) else {
-        return ApiError::invalid_request("import_preview_token_rejected", correlation_id)
-            .into_response();
+        return ApiError::invalid_request("import_preview_token_rejected").into_response();
     };
     match state
         .import()
-        .commit(import_id, &token, request.csv.as_bytes(), correlation_id)
+        .commit(import_id, &token, request.csv.as_bytes())
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => ApiError::from_import(error, correlation_id).into_response(),
+        Err(error) => ApiError::from_import(error).into_response(),
     }
 }
 
@@ -309,16 +290,14 @@ pub(crate) async fn commit_import(
 )]
 pub(crate) async fn discard_import(
     State(state): State<AppState>,
-    Extension(correlation_id): Extension<CorrelationId>,
     Path(path): Path<ImportPath>,
 ) -> Response {
     let Some(import_id) = canonical_uuid_v7(&path.import_id) else {
-        return ApiError::invalid_request("import_id_not_canonical_uuid_v7", correlation_id)
-            .into_response();
+        return ApiError::invalid_request("import_id_not_canonical_uuid_v7").into_response();
     };
-    match state.import().discard(import_id, correlation_id).await {
+    match state.import().discard(import_id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => ApiError::from_import(error, correlation_id).into_response(),
+        Err(error) => ApiError::from_import(error).into_response(),
     }
 }
 
@@ -384,16 +363,9 @@ fn decode_preview_token(value: &str) -> Option<[u8; PREVIEW_TOKEN_BYTES]> {
         .ok()
 }
 
-fn json_response<T: Serialize>(
-    status: StatusCode,
-    body: &T,
-    correlation_id: CorrelationId,
-) -> Response {
+fn json_response<T: Serialize>(status: StatusCode, body: &T) -> Response {
     let encoded = serde_json::to_vec(body).unwrap_or_else(|_| {
-        tracing::error!(
-            correlation_id = %correlation_id.as_text(),
-            "import response serialization invariant failed"
-        );
+        tracing::error!("import response serialization invariant failed");
         panic!("import response serialization invariant failed");
     });
     (

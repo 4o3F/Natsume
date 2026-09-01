@@ -9,20 +9,6 @@ CREATE TABLE site_identity (
     fleet_namespace_uuid TEXT NOT NULL UNIQUE
 ) STRICT;
 
-CREATE TABLE audit_events (
-    audit_event_id TEXT PRIMARY KEY,
-    occurred_at_unix_ms INTEGER NOT NULL,
-    actor TEXT NOT NULL,
-    action_kind TEXT NOT NULL,
-    resource_type TEXT NOT NULL,
-    resource_id TEXT,
-    result TEXT NOT NULL,
-    reason_code TEXT,
-    correlation_id TEXT NOT NULL,
-    group_correlation_id TEXT,
-    redacted_detail_json TEXT NOT NULL
-) STRICT;
-
 CREATE TABLE operator_accounts (
     operator_id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
@@ -66,8 +52,7 @@ CREATE TABLE pending_import_candidate (
     fingerprint_version INTEGER NOT NULL,
     candidate_fingerprint_sha256 BLOB NOT NULL,
     baseline_fingerprint_sha256 BLOB NOT NULL,
-    redacted_preview_json TEXT NOT NULL,
-    created_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id)
+    redacted_preview_json TEXT NOT NULL
 ) STRICT;
 
 CREATE TABLE devices (
@@ -86,9 +71,7 @@ CREATE TABLE device_control_keys (
     device_id TEXT NOT NULL REFERENCES devices(device_id),
     status TEXT NOT NULL,
     activated_at_unix_ms INTEGER NOT NULL,
-    activated_audit_event_id TEXT NOT NULL UNIQUE REFERENCES audit_events(audit_event_id),
-    retired_at_unix_ms INTEGER,
-    retired_audit_event_id TEXT UNIQUE REFERENCES audit_events(audit_event_id)
+    retired_at_unix_ms INTEGER
 ) STRICT;
 CREATE UNIQUE INDEX one_current_device_control_key
     ON device_control_keys(device_id)

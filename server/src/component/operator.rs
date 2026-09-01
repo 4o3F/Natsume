@@ -1,10 +1,9 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::{audit::AuditPersistenceError, db::Database};
+use crate::db::Database;
 
 mod account;
-mod audit;
 mod db;
 mod password;
 mod session;
@@ -81,33 +80,24 @@ impl OperatorComponent {
 
     pub(crate) async fn sign_in(
         &self,
-        correlation_id: crate::audit::CorrelationId,
         login_name: &str,
         submitted_password: String,
     ) -> Result<SignedInSession, OperatorError> {
-        session::sign_in(
-            &self.database,
-            correlation_id,
-            login_name,
-            submitted_password,
-        )
-        .await
+        session::sign_in(&self.database, login_name, submitted_password).await
     }
 
     pub(crate) async fn authenticate_session(
         &self,
-        correlation_id: crate::audit::CorrelationId,
         wire_credential: SessionCredentialHex,
     ) -> Result<OperatorIdentity, OperatorError> {
-        session::authenticate_session(&self.database, correlation_id, wire_credential).await
+        session::authenticate_session(&self.database, wire_credential).await
     }
 
     pub(crate) async fn terminate_session(
         &self,
-        correlation_id: crate::audit::CorrelationId,
         wire_credential: SessionCredentialHex,
     ) -> Result<(), OperatorError> {
-        session::terminate_session(&self.database, correlation_id, wire_credential).await
+        session::terminate_session(&self.database, wire_credential).await
     }
 }
 
@@ -161,6 +151,7 @@ impl OperatorIdentity {
     }
 
     #[must_use]
+    #[cfg(test)]
     const fn role(self) -> OperatorRole {
         self.role
     }
@@ -219,14 +210,6 @@ pub(crate) enum OperatorError {
     SaltEncodingFailed,
     #[snafu(display("the operator password could not be hashed"))]
     PasswordHashingFailed,
-}
-
-impl OperatorError {
-    const fn from_audit_persistence(error: AuditPersistenceError) -> Self {
-        match error {
-            AuditPersistenceError::PersistenceFailed => Self::PersistenceFailed,
-        }
-    }
 }
 
 #[cfg(test)]

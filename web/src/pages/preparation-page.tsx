@@ -53,7 +53,6 @@ interface Notice {
   tone: "success" | "error";
   title: string;
   detail?: string;
-  correlationId?: string;
 }
 
 const PENDING_IMPORT_KEY = ["imports", "pending"] as const;
@@ -485,7 +484,6 @@ function noticeFromError(error: unknown): Notice {
       tone: "error",
       title: "Request too large",
       detail: "The request exceeded the route's size limit.",
-      correlationId: error.correlationId ?? undefined,
     };
   }
 
@@ -495,35 +493,30 @@ function noticeFromError(error: unknown): Notice {
         tone: "error",
         title: error.title,
         detail: "The CSV did not satisfy the import contract.",
-        correlationId: error.correlationId ?? undefined,
       };
     case "IMPORT_CANDIDATE_PENDING":
       return {
         tone: "error",
         title: "A preview is already pending",
         detail: "The pending candidate has been refreshed.",
-        correlationId: error.correlationId ?? undefined,
       };
     case "IMPORT_PREVIEW_STALE":
       return {
         tone: "error",
         title: "Import preview is stale",
         detail: "Discard this preview and re-upload the CSV before committing.",
-        correlationId: error.correlationId ?? undefined,
       };
     case "IMPORT_CANDIDATE_UNAVAILABLE":
       return {
         tone: "error",
         title: "Import candidate unavailable",
         detail: "The pending candidate has been refreshed.",
-        correlationId: error.correlationId ?? undefined,
       };
     default:
       return {
         tone: "error",
         title: error.title,
         detail: "The request could not be completed.",
-        correlationId: error.correlationId ?? undefined,
       };
   }
 }
@@ -534,7 +527,6 @@ function NoticeAlert({ notice }: { notice: Notice }) {
       <AlertTitle>{notice.title}</AlertTitle>
       <AlertDescription>
         {notice.detail && <p>{notice.detail}</p>}
-        {notice.correlationId && <p>Correlation ID: {notice.correlationId}</p>}
       </AlertDescription>
     </Alert>
   );
