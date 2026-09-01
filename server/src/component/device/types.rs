@@ -3,6 +3,8 @@
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
 
+use crate::db::PersistenceError;
+
 /// Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeviceId(Uuid);
@@ -33,13 +35,6 @@ impl DeviceId {
     }
 }
 
-/// Redacted persistence boundary shared by Device-owned adapters and read models.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::component::lifecycle) enum DevicePersistenceError {
-    InvalidPersistedFacts,
-    PersistenceFailed,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum DeviceError {
     #[snafu(display("the Device ID is invalid"))]
@@ -52,24 +47,24 @@ pub(crate) enum DeviceError {
     PersistenceFailed,
 }
 
-impl DeviceError {
-    const fn from_persistence(error: DevicePersistenceError) -> Self {
+impl From<PersistenceError> for DeviceError {
+    fn from(error: PersistenceError) -> Self {
         match error {
-            DevicePersistenceError::InvalidPersistedFacts => Self::InvalidPersistedFacts,
-            DevicePersistenceError::PersistenceFailed => Self::PersistenceFailed,
+            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
+            PersistenceError::OperationFailed => Self::PersistenceFailed,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::component::lifecycle) enum DeviceState {
+pub(in crate::component::device) enum DeviceState {
     Enabled,
     Revoked,
     Disabled,
 }
 
 impl DeviceState {
-    pub(in crate::component::lifecycle) fn from_persisted(value: &str) -> Option<Self> {
+    pub(in crate::component::device) fn from_persisted(value: &str) -> Option<Self> {
         match value {
             "enabled" => Some(Self::Enabled),
             "revoked" => Some(Self::Revoked),
@@ -78,7 +73,7 @@ impl DeviceState {
         }
     }
 
-    pub(in crate::component::lifecycle) const fn as_persisted(self) -> &'static str {
+    pub(in crate::component::device) const fn as_persisted(self) -> &'static str {
         match self {
             Self::Enabled => "enabled",
             Self::Revoked => "revoked",
@@ -89,13 +84,13 @@ impl DeviceState {
 
 // The closed `devices.evidence_quality` vocabulary owned by this component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::component::lifecycle) enum EvidenceQuality {
+pub(in crate::component::device) enum EvidenceQuality {
     Strong,
     Medium,
 }
 
 impl EvidenceQuality {
-    pub(in crate::component::lifecycle) fn parse(value: &str) -> Option<Self> {
+    pub(in crate::component::device) fn parse(value: &str) -> Option<Self> {
         match value {
             "strong" => Some(Self::Strong),
             "medium" => Some(Self::Medium),
@@ -103,7 +98,7 @@ impl EvidenceQuality {
         }
     }
 
-    pub(in crate::component::lifecycle) const fn as_persisted(self) -> &'static str {
+    pub(in crate::component::device) const fn as_persisted(self) -> &'static str {
         match self {
             Self::Strong => "strong",
             Self::Medium => "medium",
@@ -124,26 +119,25 @@ impl DeviceByHardwareProjection {
         device_id: &str,
         evidence_quality: &str,
         state: &str,
-    ) -> Result<Self, DevicePersistenceError> {
+    ) -> Result<Self, PersistenceError> {
         Ok(Self {
-            device_id: DeviceId::parse(device_id)
-                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
+            device_id: DeviceId::parse(device_id).ok_or(PersistenceError::InvalidPersistedData)?,
             evidence_quality: EvidenceQuality::parse(evidence_quality)
-                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
+                .ok_or(PersistenceError::InvalidPersistedData)?,
             state: DeviceState::from_persisted(state)
-                .ok_or(DevicePersistenceError::InvalidPersistedFacts)?,
+                .ok_or(PersistenceError::InvalidPersistedData)?,
         })
     }
 }
 
-pub(in crate::component::lifecycle) struct DeviceFacts {
+pub(in crate::component::device) struct DeviceFacts {
     device_id: DeviceId,
     state: DeviceState,
     evidence_quality: EvidenceQuality,
 }
 
 impl DeviceFacts {
-    pub(in crate::component::lifecycle) fn new(
+    pub(in crate::component::device) fn new(
         device_id: DeviceId,
         state: DeviceState,
         evidence_quality: EvidenceQuality,
@@ -162,16 +156,18 @@ impl DeviceFacts {
 
 #[cfg(test)]
 mod tests {
-    use super::{DeviceError, DeviceId, DevicePersistenceError, DeviceState, EvidenceQuality};
+    use crate::db::PersistenceError;
+
+    use super::{DeviceError, DeviceId, DeviceState, EvidenceQuality};
 
     #[test]
     fn persistence_mappings_cover_every_neutral_variant() {
         assert_eq!(
-            DeviceError::from_persistence(DevicePersistenceError::InvalidPersistedFacts),
+            DeviceError::from(PersistenceError::InvalidPersistedData),
             DeviceError::InvalidPersistedFacts
         );
         assert_eq!(
-            DeviceError::from_persistence(DevicePersistenceError::PersistenceFailed),
+            DeviceError::from(PersistenceError::OperationFailed),
             DeviceError::PersistenceFailed
         );
     }

@@ -4,10 +4,10 @@ use diesel::{
 
 use crate::{
     component::import::{
-        ImportError, RedactedImportPreview,
+        RedactedImportPreview,
         candidate::{CandidateExpiry, CandidateRecord},
     },
-    db::Transaction,
+    db::{PersistenceError, Transaction},
     diesel_schema::pending_import_candidate,
 };
 
@@ -21,16 +21,16 @@ struct CurrentTime {
 
 pub(in crate::component::import) fn current_time_unix_ms(
     transaction: &mut Transaction<'_>,
-) -> Result<i64, ImportError> {
+) -> Result<i64, PersistenceError> {
     diesel::sql_query("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS value")
         .get_result::<CurrentTime>(transaction.connection())
         .map(|row| row.value)
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::import) fn find(
     transaction: &mut Transaction<'_>,
-) -> Result<Option<CandidateRecord>, ImportError> {
+) -> Result<Option<CandidateRecord>, PersistenceError> {
     let row = pending_import_candidate::table
         .select((
             pending_import_candidate::candidate_id,
@@ -44,7 +44,7 @@ pub(in crate::component::import) fn find(
         .filter(pending_import_candidate::singleton.eq(1_i32))
         .first::<(String, i64, Vec<u8>, i32, Vec<u8>, Vec<u8>, String)>(transaction.connection())
         .optional()
-        .map_err(|_| ImportError::PersistenceFailure)?;
+        .map_err(|_| PersistenceError::OperationFailed)?;
     let Some((candidate_id, expires_at, token_hash, version, candidate_hash, baseline_hash, json)) =
         row
     else {
@@ -55,7 +55,7 @@ pub(in crate::component::import) fn find(
     let candidate_hash = exact_hash(&candidate_hash)?;
     let baseline_hash = exact_hash(&baseline_hash)?;
     let diff = serde_json::from_str::<RedactedImportPreview>(&json)
-        .map_err(|_| ImportError::PersistenceFailure)?;
+        .map_err(|_| PersistenceError::InvalidPersistedData)?;
     let expiry = if expires_at <= now {
         CandidateExpiry::Expired
     } else {
@@ -76,9 +76,9 @@ pub(in crate::component::import) fn find(
 pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
     candidate: &CandidateRecord,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     let diff =
-        serde_json::to_string(candidate.diff()).map_err(|_| ImportError::PersistenceFailure)?;
+        serde_json::to_string(candidate.diff()).map_err(|_| PersistenceError::OperationFailed)?;
     diesel::insert_into(pending_import_candidate::table)
         .values((
             pending_import_candidate::singleton.eq(1_i32),
@@ -94,13 +94,13 @@ pub(in crate::component::import) fn insert(
             pending_import_candidate::redacted_preview_json.eq(diff),
         ))
         .execute(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::import) fn delete_exact(
     transaction: &mut Transaction<'_>,
     candidate: &CandidateRecord,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     diesel::delete(
         pending_import_candidate::table
             .filter(pending_import_candidate::singleton.eq(1_i32))
@@ -111,11 +111,11 @@ pub(in crate::component::import) fn delete_exact(
             ),
     )
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| PersistenceError::OperationFailed)
 }
 
-fn exact_hash(value: &[u8]) -> Result<[u8; 32], ImportError> {
+fn exact_hash(value: &[u8]) -> Result<[u8; 32], PersistenceError> {
     value
         .try_into()
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| PersistenceError::InvalidPersistedData)
 }

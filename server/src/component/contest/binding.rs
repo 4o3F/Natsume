@@ -1,6 +1,6 @@
-use crate::db::Database;
+use crate::db::{Database, TransactionError};
 
-use super::{super::lifecycle::DeviceId, ContestError};
+use super::{super::device::DeviceId, ContestError};
 
 pub(crate) struct BindingFacts {
     binding: String,
@@ -31,5 +31,6 @@ pub(super) async fn list_bindings(database: &Database) -> Result<Vec<BindingFact
     database
         .read(crate::component::contest::db::device_bindings::list)
         .await
-        .map_err(ContestError::from_persistence)
+        .map_err(TransactionError::into_error)
+        .map_err(ContestError::from)
 }

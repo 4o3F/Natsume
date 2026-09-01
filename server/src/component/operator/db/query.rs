@@ -4,11 +4,9 @@ use diesel::{
 };
 
 use crate::{
-    component::operator::{OperatorError, OperatorIdentity, SessionFacts},
-    db::Transaction,
+    component::operator::{OperatorIdentity, SessionFacts},
+    db::{PersistenceError, Transaction},
 };
-
-use super::OperatorStoreError;
 
 #[derive(QueryableByName)]
 struct PersistedSessionFacts {
@@ -23,14 +21,7 @@ struct PersistedSessionFacts {
 pub(in crate::component::operator) fn find_session(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
-) -> Result<Option<SessionFacts>, OperatorError> {
-    find_session_persisted(transaction, credential_hash).map_err(OperatorError::from)
-}
-
-fn find_session_persisted(
-    transaction: &mut Transaction<'_>,
-    credential_hash: &[u8; 32],
-) -> Result<Option<SessionFacts>, OperatorStoreError> {
+) -> Result<Option<SessionFacts>, PersistenceError> {
     let row = diesel::sql_query(
         "SELECT accounts.operator_id AS operator_id, accounts.role AS role, \
          CASE WHEN sessions.expires_at_unix_ms <= \
@@ -42,14 +33,14 @@ fn find_session_persisted(
     .bind::<Binary, _>(credential_hash.as_slice())
     .get_result::<PersistedSessionFacts>(transaction.connection())
     .optional()
-    .map_err(|_| OperatorStoreError::SessionReadFailed)?;
+    .map_err(|_| PersistenceError::OperationFailed)?;
 
     row.map(|row| {
         if !matches!(row.expired, 0 | 1) {
-            return Err(OperatorStoreError::InvalidPersistedFacts);
+            return Err(PersistenceError::InvalidPersistedData);
         }
         let identity = OperatorIdentity::from_persisted(&row.operator_id, &row.role)
-            .map_err(|_| OperatorStoreError::InvalidPersistedFacts)?;
+            .map_err(|_| PersistenceError::InvalidPersistedData)?;
         Ok(SessionFacts {
             identity,
             expired: row.expired == 1,
@@ -65,10 +56,7 @@ mod tests {
     use diesel::{QueryableByName, RunQueryDsl, sql_types::Text};
     use uuid::Uuid;
 
-    use crate::{
-        component::operator::OperatorError,
-        db::{Database, DatabaseConfig},
-    };
+    use crate::db::{Database, DatabaseConfig, PersistenceError};
 
     #[derive(QueryableByName)]
     struct QueryPlanRow {
@@ -99,7 +87,7 @@ mod tests {
                 )
                 .load::<QueryPlanRow>(transaction.connection())
                 .map(|rows| rows.into_iter().map(|row| row.detail).collect::<Vec<_>>())
-                .map_err(|_| OperatorError::PersistenceFailed)
+                .map_err(|_| PersistenceError::OperationFailed)
             })
             .await
             .unwrap_or_else(|_| panic!("operator query plan could not be read"));

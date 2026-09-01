@@ -3,9 +3,9 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use crate::{
     component::{
         contest::{CurrentAccountProjection, NewAccountFacts},
-        import::{ImportError, candidate::SealedCommitRow},
+        import::candidate::SealedCommitRow,
     },
-    db::Transaction,
+    db::{PersistenceError, Transaction},
     diesel_schema::server_vault_records,
 };
 
@@ -13,7 +13,7 @@ pub(in crate::component::import) fn insert_account_credential(
     transaction: &mut Transaction<'_>,
     account: &NewAccountFacts,
     credential: &SealedCommitRow,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     diesel::insert_into(server_vault_records::table)
         .values((
             server_vault_records::account_id.eq(account.account_id().to_string()),
@@ -21,14 +21,14 @@ pub(in crate::component::import) fn insert_account_credential(
             server_vault_records::ciphertext.eq(credential.ciphertext()),
         ))
         .execute(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::import) fn update_account_credential(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
     credential: &SealedCommitRow,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     diesel::update(
         server_vault_records::table
             .filter(server_vault_records::account_id.eq(account.account_id())),
@@ -38,5 +38,5 @@ pub(in crate::component::import) fn update_account_credential(
         server_vault_records::ciphertext.eq(credential.ciphertext()),
     ))
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| PersistenceError::OperationFailed)
 }

@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::db::Database;
+use crate::db::{Database, TransactionError};
 
 use super::ContestError;
 
@@ -101,5 +101,6 @@ pub(super) async fn list_accounts(database: &Database) -> Result<Vec<AccountFact
     database
         .read(crate::component::contest::db::accounts::list)
         .await
-        .map_err(ContestError::from_persistence)
+        .map_err(TransactionError::into_error)
+        .map_err(ContestError::from)
 }

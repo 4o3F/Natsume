@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 use crate::component::{
     contest::{CurrentAccountProjection, CurrentSeatProjection},
-    lifecycle::DeviceId,
+    device::DeviceId,
 };
 use crate::{db::Database, vault::VaultSession};
 

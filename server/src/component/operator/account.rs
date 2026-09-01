@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::db::Database;
+use crate::db::{Database, PersistenceError, TransactionError};
 
 use super::{OperatorError, OperatorIdentity, OperatorRole};
 
@@ -21,7 +21,7 @@ pub(super) async fn create_first_admin(
     database
         .write(move |transaction| {
             if crate::component::operator::db::any_account_exists(transaction)? {
-                return Err(OperatorError::PersistenceFailed);
+                return Err(PersistenceError::InvalidPersistedData);
             }
             crate::component::operator::db::insert_account(
                 transaction,
@@ -33,6 +33,8 @@ pub(super) async fn create_first_admin(
             Ok(operator_id)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 /// Replaces one operator password and removes exactly that operator's sessions.
@@ -44,9 +46,9 @@ pub(super) async fn reset_operator_password(
     let login_name = login_name.to_owned();
     let password_hash = password_hash.to_owned();
     let result = database
-        .write(move |transaction| {
+        .write(move |transaction| -> Result<_, PersistenceError> {
             let account = crate::component::operator::db::find_account(transaction, &login_name)?
-                .ok_or(OperatorError::PersistenceFailed)?;
+                .ok_or(PersistenceError::InvalidPersistedData)?;
             crate::component::operator::db::update_password(
                 transaction,
                 account.identity.operator_id(),
@@ -58,7 +60,9 @@ pub(super) async fn reset_operator_password(
             )?;
             Ok(())
         })
-        .await;
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from);
     if result.is_err() {
         tracing::warn!("operator password reset failed");
     }

@@ -1,6 +1,6 @@
 use zeroize::Zeroizing;
 
-use crate::db::Database;
+use crate::db::{Database, PersistenceError, TransactionError};
 
 mod credentials;
 
@@ -67,7 +67,9 @@ pub(super) async fn sign_in(
         .read(move |transaction| {
             crate::component::operator::db::find_account(transaction, &login_name)
         })
-        .await?;
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)?;
     let candidate_phc = account.as_ref().map_or_else(
         || DUMMY_PASSWORD_PHC.to_owned(),
         |facts| facts.password_hash.clone(),
@@ -124,6 +126,8 @@ async fn create_session(
             crate::component::operator::db::insert_session(transaction, &credential_hash, identity)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 /// Authenticates a caller-supplied session credential.
@@ -144,7 +148,9 @@ pub(super) async fn authenticate_session(
         .read(move |transaction| {
             crate::component::operator::db::find_session(transaction, &snapshot_hash)
         })
-        .await?
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)?
     else {
         return Err(OperatorError::SessionAuthenticationFailed);
     };
@@ -167,11 +173,12 @@ pub(super) async fn authenticate_session(
             let deleted =
                 crate::component::operator::db::delete_session_by_hash(transaction, &cleanup_hash)?;
             if deleted != 1 {
-                return Err(OperatorError::PersistenceFailed);
+                return Err(PersistenceError::InvalidPersistedData);
             }
             Ok(ExpiredSessionCleanup::Deleted(current.identity))
         })
-        .await;
+        .await
+        .map_err(TransactionError::into_error);
 
     match cleanup {
         Ok(ExpiredSessionCleanup::Live(identity)) => Ok(identity),
@@ -219,11 +226,13 @@ pub(super) async fn terminate_session(
                 &credential_hash,
             )?;
             if deleted != 1 {
-                return Err(OperatorError::PersistenceFailed);
+                return Err(PersistenceError::InvalidPersistedData);
             }
             Ok(Some(current.identity))
         })
-        .await?;
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)?;
     if let Some(identity) = identity {
         record_actor(identity);
     }

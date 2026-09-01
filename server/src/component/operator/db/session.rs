@@ -2,18 +2,16 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigI
 use uuid::Uuid;
 
 use crate::{
-    component::operator::{OperatorError, OperatorIdentity},
-    db::Transaction,
+    component::operator::OperatorIdentity,
+    db::{PersistenceError, Transaction},
     diesel_schema::operator_sessions,
 };
-
-use super::OperatorStoreError;
 
 pub(in crate::component::operator) fn insert_session(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
     identity: OperatorIdentity,
-) -> Result<(), OperatorError> {
+) -> Result<(), PersistenceError> {
     diesel::insert_into(operator_sessions::table)
         .values((
             operator_sessions::session_credential_hash.eq(credential_hash.as_slice()),
@@ -24,31 +22,28 @@ pub(in crate::component::operator) fn insert_session(
         ))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| OperatorStoreError::SessionInsertFailed)
-        .map_err(OperatorError::from)
+        .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::operator) fn delete_session_by_hash(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
-) -> Result<usize, OperatorError> {
+) -> Result<usize, PersistenceError> {
     diesel::delete(
         operator_sessions::table
             .filter(operator_sessions::session_credential_hash.eq(credential_hash.as_slice())),
     )
     .execute(transaction.connection())
-    .map_err(|_| OperatorStoreError::SessionDeleteFailed)
-    .map_err(OperatorError::from)
+    .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::operator) fn delete_sessions_by_operator(
     transaction: &mut Transaction<'_>,
     operator_id: Uuid,
-) -> Result<usize, OperatorError> {
+) -> Result<usize, PersistenceError> {
     diesel::delete(
         operator_sessions::table.filter(operator_sessions::operator_id.eq(operator_id.to_string())),
     )
     .execute(transaction.connection())
-    .map_err(|_| OperatorStoreError::SessionDeleteFailed)
-    .map_err(OperatorError::from)
+    .map_err(|_| PersistenceError::OperationFailed)
 }

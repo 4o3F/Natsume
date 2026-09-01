@@ -4,8 +4,8 @@ use tracing::instrument::WithSubscriber as _;
 
 use crate::{
     component::{
+        device::DeviceError,
         import::{CsvImportErrorCategory, ImportError},
-        lifecycle::DeviceError,
     },
     config::LogLevel,
     logging::tests::{CapturedLogs, SubscriberTestGuard},

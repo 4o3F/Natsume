@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     component::contest::{CurrentAccountProjection, CurrentSeatProjection, NewAccountFacts},
-    db::{Database, Transaction},
+    db::{Database, Transaction, TransactionError},
     vault::VaultSession,
 };
 
@@ -45,7 +45,8 @@ pub(super) async fn commit_import(
                 &sealed_rows,
             )
         })
-        .await?;
+        .await
+        .map_err(TransactionError::into_error)?;
 
     match outcome {
         CommitOutcome::Committed => Ok(()),

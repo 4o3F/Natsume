@@ -1,14 +1,14 @@
 use diesel::{QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt};
 
 use crate::{
-    component::contest::{AccountFacts, ContestPersistenceError},
-    db::Transaction,
+    component::contest::AccountFacts,
+    db::{PersistenceError, Transaction},
     diesel_schema::accounts,
 };
 
 pub(in crate::component::contest) fn list(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<AccountFacts>, ContestPersistenceError> {
+) -> Result<Vec<AccountFacts>, PersistenceError> {
     accounts::table
         .select((
             accounts::account_id,
@@ -24,5 +24,5 @@ pub(in crate::component::contest) fn list(
                 })
                 .collect()
         })
-        .map_err(|_| ContestPersistenceError::PersistenceFailed)
+        .map_err(|_| PersistenceError::OperationFailed)
 }

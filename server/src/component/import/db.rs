@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::{component::import::ImportError, db::DatabaseError};
+use crate::db::PersistenceError;
 
 pub(super) mod account_mappings;
 pub(super) mod accounts;
@@ -9,21 +9,10 @@ pub(super) mod query;
 pub(super) mod seats;
 pub(super) mod server_vault_records;
 
-fn canonical_uuid_v7(value: &str) -> Result<Uuid, ImportError> {
-    let parsed = Uuid::parse_str(value).map_err(|_| ImportError::PersistenceFailure)?;
+fn canonical_uuid_v7(value: &str) -> Result<Uuid, PersistenceError> {
+    let parsed = Uuid::parse_str(value).map_err(|_| PersistenceError::InvalidPersistedData)?;
     if parsed.get_version_num() != 7 || parsed.hyphenated().to_string() != value {
-        return Err(ImportError::PersistenceFailure);
+        return Err(PersistenceError::InvalidPersistedData);
     }
     Ok(parsed)
-}
-
-impl From<DatabaseError> for ImportError {
-    fn from(source: DatabaseError) -> Self {
-        match source {
-            DatabaseError::InvalidConfiguration
-            | DatabaseError::ConnectionFailed
-            | DatabaseError::MigrationFailed
-            | DatabaseError::TransactionFailed => Self::PersistenceFailure,
-        }
-    }
 }

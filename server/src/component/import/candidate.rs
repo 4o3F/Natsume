@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::db::{Database, Transaction};
+use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 
 use super::{
     FINGERPRINT_VERSION, candidate_fingerprint,
@@ -283,6 +283,7 @@ pub(super) async fn create_import_candidate(
             })
         })
         .await
+        .map_err(TransactionError::into_error)
 }
 
 pub(super) async fn read_pending_import_candidate(
@@ -300,6 +301,7 @@ pub(super) async fn read_pending_import_candidate(
             Ok(Some(candidate.into_pending()))
         })
         .await
+        .map_err(TransactionError::into_error)
 }
 
 pub(super) async fn discard_import(
@@ -323,7 +325,8 @@ pub(super) async fn discard_import(
             }
             Ok(DiscardOutcome::Discarded)
         })
-        .await?;
+        .await
+        .map_err(TransactionError::into_error)?;
     match outcome {
         DiscardOutcome::Discarded => Ok(()),
         DiscardOutcome::Unavailable => Err(ImportError::CandidateUnavailable),
@@ -356,6 +359,16 @@ pub(crate) enum ImportError {
     EntropyUnavailable,
     VaultFailure,
     PersistenceFailure,
+}
+
+impl From<PersistenceError> for ImportError {
+    fn from(error: PersistenceError) -> Self {
+        match error {
+            PersistenceError::InvalidPersistedData | PersistenceError::OperationFailed => {
+                Self::PersistenceFailure
+            }
+        }
+    }
 }
 
 impl Display for ImportError {

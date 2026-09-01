@@ -1,6 +1,6 @@
 use snafu::Snafu;
 
-use crate::db::Database;
+use crate::db::{Database, PersistenceError};
 
 mod account;
 mod binding;
@@ -36,45 +36,35 @@ impl ContestComponent {
     }
 }
 
-/// Redacted persistence boundary shared by Contest-owned adapters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-#[snafu(module)]
-enum ContestPersistenceError {
-    #[snafu(display("persisted contest facts are invalid"))]
-    InvalidPersistedFacts,
-    #[snafu(display("contest persistence failed"))]
-    PersistenceFailed,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum ContestError {
     #[snafu(display("contest current facts could not be read"))]
     PersistenceFailed,
 }
 
-impl ContestError {
-    const fn from_persistence(error: ContestPersistenceError) -> Self {
+impl From<PersistenceError> for ContestError {
+    fn from(error: PersistenceError) -> Self {
         match error {
-            ContestPersistenceError::InvalidPersistedFacts
-            | ContestPersistenceError::PersistenceFailed => Self::PersistenceFailed,
+            PersistenceError::InvalidPersistedData | PersistenceError::OperationFailed => {
+                Self::PersistenceFailed
+            }
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ContestError, ContestPersistenceError};
+    use crate::db::PersistenceError;
+
+    use super::ContestError;
 
     #[test]
     fn persistence_mapping_covers_every_neutral_variant() {
         for error in [
-            ContestPersistenceError::InvalidPersistedFacts,
-            ContestPersistenceError::PersistenceFailed,
+            PersistenceError::InvalidPersistedData,
+            PersistenceError::OperationFailed,
         ] {
-            assert_eq!(
-                ContestError::from_persistence(error),
-                ContestError::PersistenceFailed
-            );
+            assert_eq!(ContestError::from(error), ContestError::PersistenceFailed);
         }
     }
 }

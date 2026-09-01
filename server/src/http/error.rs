@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use crate::component::{
     contest::ContestError,
+    device::DeviceError,
     import::{CsvImportErrorCategory, ImportError},
-    lifecycle::DeviceError,
     operator::OperatorError,
 };
 

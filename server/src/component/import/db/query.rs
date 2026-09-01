@@ -3,16 +3,15 @@ use diesel::{ExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryDsl, 
 use crate::{
     component::{
         contest::{CurrentAccountProjection, CurrentSeatProjection},
-        import::ImportError,
-        lifecycle::DeviceId,
+        device::DeviceId,
     },
-    db::Transaction,
+    db::{PersistenceError, Transaction},
     diesel_schema::{account_mappings, accounts, device_bindings, seats},
 };
 
 pub(in crate::component::import) fn read_current_seats(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<CurrentSeatProjection>, ImportError> {
+) -> Result<Vec<CurrentSeatProjection>, PersistenceError> {
     let rows = seats::table
         .left_join(account_mappings::table.on(account_mappings::seat_id.eq(seats::seat_id)))
         .left_join(accounts::table.on(account_mappings::account_id.eq(accounts::account_id)))
@@ -25,13 +24,13 @@ pub(in crate::component::import) fn read_current_seats(
         ))
         .order(seats::seat_code)
         .load::<(String, String, Option<String>, Option<String>)>(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)?;
+        .map_err(|_| PersistenceError::OperationFailed)?;
     rows.into_iter()
         .map(
             |(seat_id, seat_code, current_domjudge_username, device_id)| {
                 let device_id = device_id
                     .map(|device_id| {
-                        DeviceId::parse(&device_id).ok_or(ImportError::PersistenceFailure)
+                        DeviceId::parse(&device_id).ok_or(PersistenceError::InvalidPersistedData)
                     })
                     .transpose()?;
                 Ok(CurrentSeatProjection::new(
@@ -47,7 +46,7 @@ pub(in crate::component::import) fn read_current_seats(
 
 pub(in crate::component::import) fn read_current_accounts(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<CurrentAccountProjection>, ImportError> {
+) -> Result<Vec<CurrentAccountProjection>, PersistenceError> {
     accounts::table
         .select((
             accounts::account_id,
@@ -67,7 +66,7 @@ pub(in crate::component::import) fn read_current_accounts(
                 })
                 .collect()
         })
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| PersistenceError::OperationFailed)
 }
 
 #[cfg(test)]
@@ -77,10 +76,7 @@ mod tests {
     use diesel::{QueryableByName, RunQueryDsl, sql_types::Text};
     use uuid::Uuid;
 
-    use crate::{
-        component::import::ImportError,
-        db::{Database, DatabaseConfig},
-    };
+    use crate::db::{Database, DatabaseConfig, PersistenceError};
 
     #[derive(QueryableByName)]
     struct QueryPlanRow {
@@ -165,7 +161,7 @@ mod tests {
 
     fn read_query_plans(
         transaction: &mut crate::db::Transaction<'_>,
-    ) -> Result<QueryPlans, ImportError> {
+    ) -> Result<QueryPlans, PersistenceError> {
         let queries = [
             (
                 "current seats",
@@ -204,7 +200,7 @@ mod tests {
                             rows.into_iter().map(|row| row.detail).collect::<Vec<_>>(),
                         )
                     })
-                    .map_err(|_| ImportError::PersistenceFailure)
+                    .map_err(|_| PersistenceError::OperationFailed)
             })
             .collect()
     }

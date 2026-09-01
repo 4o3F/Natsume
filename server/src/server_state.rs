@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     component::{
-        contest::ContestComponent, import::ImportComponent, operator::OperatorComponent,
-        provisioning::ProvisioningComponent,
+        contest::ContestComponent, device::DeviceComponent, import::ImportComponent,
+        operator::OperatorComponent, provisioning::ProvisioningComponent,
     },
     db::Database,
     vault::VaultSession,
@@ -19,6 +19,8 @@ pub(crate) struct ServerState {
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: ProvisioningComponent,
+    #[allow(dead_code)]
+    device: DeviceComponent,
 }
 
 impl ServerState {
@@ -26,8 +28,9 @@ impl ServerState {
         Self {
             operator: OperatorComponent::new(database.clone()),
             contest: ContestComponent::new(database.clone()),
-            import: ImportComponent::new(database, vault),
+            import: ImportComponent::new(database.clone(), vault),
             provisioning: ProvisioningComponent::new(),
+            device: DeviceComponent::new(database),
         }
     }
 
@@ -45,5 +48,10 @@ impl ServerState {
 
     pub(crate) const fn provisioning(&self) -> &ProvisioningComponent {
         &self.provisioning
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn device(&self) -> &DeviceComponent {
+        &self.device
     }
 }

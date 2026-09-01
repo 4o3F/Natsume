@@ -1,7 +1,7 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::db::Database;
+use crate::db::{Database, PersistenceError};
 
 mod account;
 mod db;
@@ -210,6 +210,16 @@ pub(crate) enum OperatorError {
     SaltEncodingFailed,
     #[snafu(display("the operator password could not be hashed"))]
     PasswordHashingFailed,
+}
+
+impl From<PersistenceError> for OperatorError {
+    fn from(error: PersistenceError) -> Self {
+        match error {
+            PersistenceError::InvalidPersistedData | PersistenceError::OperationFailed => {
+                Self::PersistenceFailed
+            }
+        }
+    }
 }
 
 #[cfg(test)]

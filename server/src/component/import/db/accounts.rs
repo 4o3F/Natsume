@@ -1,18 +1,15 @@
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 
 use crate::{
-    component::{
-        contest::{CurrentAccountProjection, NewAccountFacts},
-        import::ImportError,
-    },
-    db::Transaction,
+    component::contest::{CurrentAccountProjection, NewAccountFacts},
+    db::{PersistenceError, Transaction},
     diesel_schema::accounts,
 };
 
 pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
     account: &NewAccountFacts,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     diesel::insert_into(accounts::table)
         .values((
             accounts::account_id.eq(account.account_id().to_string()),
@@ -20,13 +17,13 @@ pub(in crate::component::import) fn insert(
             accounts::credential_revision.eq(1_i64),
         ))
         .execute(transaction.connection())
-        .map_err(|_| ImportError::PersistenceFailure)
+        .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::import) fn delete_exact(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     diesel::delete(
         accounts::table
             .filter(accounts::account_id.eq(account.account_id()))
@@ -34,14 +31,14 @@ pub(in crate::component::import) fn delete_exact(
             .filter(accounts::credential_revision.eq(account.credential_revision())),
     )
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| PersistenceError::OperationFailed)
 }
 
 pub(in crate::component::import) fn advance_credential_revision(
     transaction: &mut Transaction<'_>,
     account: &CurrentAccountProjection,
     next: i64,
-) -> Result<usize, ImportError> {
+) -> Result<usize, PersistenceError> {
     diesel::update(
         accounts::table
             .filter(accounts::account_id.eq(account.account_id()))
@@ -50,5 +47,5 @@ pub(in crate::component::import) fn advance_credential_revision(
     )
     .set(accounts::credential_revision.eq(next))
     .execute(transaction.connection())
-    .map_err(|_| ImportError::PersistenceFailure)
+    .map_err(|_| PersistenceError::OperationFailed)
 }

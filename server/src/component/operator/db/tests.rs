@@ -2,7 +2,7 @@ use uuid::Uuid;
 
 use crate::{
     component::operator::{OperatorError, OperatorRole},
-    db::Database,
+    db::{Database, PersistenceError, TransactionError},
 };
 
 #[derive(diesel::QueryableByName)]
@@ -20,9 +20,11 @@ pub(in crate::component::operator) async fn test_now(
             diesel::sql_query("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS value")
                 .get_result::<IntegerValue>(transaction.connection())
                 .map(|row| row.value)
-                .map_err(|_| OperatorError::PersistenceFailed)
+                .map_err(|_| PersistenceError::OperationFailed)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 pub(in crate::component::operator) async fn test_sessions_have_expected_ttl(
@@ -33,7 +35,7 @@ pub(in crate::component::operator) async fn test_sessions_have_expected_ttl(
     let lower = before.saturating_add(57_600_000);
     let upper = after.saturating_add(57_600_000);
     database
-        .read(move |transaction| {
+        .read(move |transaction| -> Result<_, PersistenceError> {
             use diesel::RunQueryDsl as _;
             let row = diesel::sql_query(
                 "SELECT COUNT(*) AS value FROM operator_sessions \
@@ -42,10 +44,12 @@ pub(in crate::component::operator) async fn test_sessions_have_expected_ttl(
             .bind::<diesel::sql_types::BigInt, _>(lower)
             .bind::<diesel::sql_types::BigInt, _>(upper)
             .get_result::<IntegerValue>(transaction.connection())
-            .map_err(|_| OperatorError::PersistenceFailed)?;
+            .map_err(|_| PersistenceError::OperationFailed)?;
             Ok(row.value == 2)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 pub(in crate::component::operator) async fn test_session_hashes(
@@ -57,9 +61,11 @@ pub(in crate::component::operator) async fn test_session_hashes(
             crate::diesel_schema::operator_sessions::table
                 .select(crate::diesel_schema::operator_sessions::session_credential_hash)
                 .load::<Vec<u8>>(transaction.connection())
-                .map_err(|_| OperatorError::PersistenceFailed)
+                .map_err(|_| PersistenceError::OperationFailed)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 pub(in crate::component::operator) async fn test_session_count(
@@ -71,9 +77,11 @@ pub(in crate::component::operator) async fn test_session_count(
             diesel::sql_query("SELECT COUNT(*) AS value FROM operator_sessions")
                 .get_result::<IntegerValue>(transaction.connection())
                 .map(|row| row.value)
-                .map_err(|_| OperatorError::PersistenceFailed)
+                .map_err(|_| PersistenceError::OperationFailed)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 pub(in crate::component::operator) async fn test_expire_all_sessions(
@@ -85,9 +93,11 @@ pub(in crate::component::operator) async fn test_expire_all_sessions(
             diesel::sql_query("UPDATE operator_sessions SET expires_at_unix_ms = 0")
                 .execute(transaction.connection())
                 .map(|_| ())
-                .map_err(|_| OperatorError::PersistenceFailed)
+                .map_err(|_| PersistenceError::OperationFailed)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }
 
 pub(in crate::component::operator) async fn test_insert_account(
@@ -100,9 +110,11 @@ pub(in crate::component::operator) async fn test_insert_account(
     let login_name = login_name.to_owned();
     let password_hash = password_hash.to_owned();
     database
-        .write(move |transaction| {
+        .write(move |transaction| -> Result<_, PersistenceError> {
             super::insert_account(transaction, operator_id, &login_name, role, &password_hash)?;
             Ok(operator_id)
         })
         .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
 }

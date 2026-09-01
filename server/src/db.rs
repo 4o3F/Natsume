@@ -67,14 +67,35 @@ impl Transaction<'_> {
     }
 }
 
-enum TransactionFailure<E> {
-    Operation(E),
-    Diesel,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+pub(crate) enum PersistenceError {
+    #[snafu(display("persisted data is invalid"))]
+    InvalidPersistedData,
+    #[snafu(display("the persistence operation failed"))]
+    OperationFailed,
 }
 
-impl<E> From<diesel::result::Error> for TransactionFailure<E> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransactionError<E> {
+    Operation(E),
+    Persistence(PersistenceError),
+}
+
+impl<E> TransactionError<E> {
+    pub(crate) fn into_error(self) -> E
+    where
+        E: From<PersistenceError>,
+    {
+        match self {
+            Self::Operation(error) => error,
+            Self::Persistence(error) => E::from(error),
+        }
+    }
+}
+
+impl<E> From<diesel::result::Error> for TransactionError<E> {
     fn from(_source: diesel::result::Error) -> Self {
-        Self::Diesel
+        Self::Persistence(PersistenceError::OperationFailed)
     }
 }
 
@@ -108,10 +129,10 @@ impl Database {
         Ok(Self { pool })
     }
 
-    pub(crate) async fn read<T, E, F>(&self, operation: F) -> Result<T, E>
+    pub(crate) async fn read<T, E, F>(&self, operation: F) -> Result<T, TransactionError<E>>
     where
         T: Send + 'static,
-        E: From<DatabaseError> + Send + 'static,
+        E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
         let pool = self.pool.clone();
@@ -123,32 +144,24 @@ impl Database {
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
-                    let mut connection = pool
-                        .get()
-                        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
-                    let outcome =
-                        connection.transaction::<T, TransactionFailure<E>, _>(|connection| {
-                            let mut transaction = Transaction { connection };
-                            operation(&mut transaction).map_err(TransactionFailure::Operation)
-                        });
-                    match outcome {
-                        Ok(value) => Ok(value),
-                        Err(TransactionFailure::Operation(error)) => Err(error),
-                        Err(TransactionFailure::Diesel) => {
-                            Err(E::from(DatabaseError::TransactionFailed))
-                        }
-                    }
+                    let mut connection = pool.get().map_err(|_| {
+                        TransactionError::Persistence(PersistenceError::OperationFailed)
+                    })?;
+                    connection.transaction::<T, TransactionError<E>, _>(|connection| {
+                        let mut transaction = Transaction { connection };
+                        operation(&mut transaction).map_err(TransactionError::Operation)
+                    })
                 })
             })
         })
         .await
-        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?
+        .map_err(|_| TransactionError::Persistence(PersistenceError::OperationFailed))?
     }
 
-    pub(crate) async fn write<T, E, F>(&self, operation: F) -> Result<T, E>
+    pub(crate) async fn write<T, E, F>(&self, operation: F) -> Result<T, TransactionError<E>>
     where
         T: Send + 'static,
-        E: From<DatabaseError> + Send + 'static,
+        E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
         let pool = self.pool.clone();
@@ -160,37 +173,29 @@ impl Database {
         tokio::task::spawn_blocking(move || {
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
-                    let mut connection = pool
-                        .get()
-                        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?;
-                    let outcome = connection.immediate_transaction::<T, TransactionFailure<E>, _>(
-                        |connection| {
-                            let mut transaction = Transaction { connection };
-                            operation(&mut transaction).map_err(TransactionFailure::Operation)
-                        },
-                    );
-                    match outcome {
-                        Ok(value) => Ok(value),
-                        Err(TransactionFailure::Operation(error)) => Err(error),
-                        Err(TransactionFailure::Diesel) => {
-                            Err(E::from(DatabaseError::TransactionFailed))
-                        }
-                    }
+                    let mut connection = pool.get().map_err(|_| {
+                        TransactionError::Persistence(PersistenceError::OperationFailed)
+                    })?;
+                    connection.immediate_transaction::<T, TransactionError<E>, _>(|connection| {
+                        let mut transaction = Transaction { connection };
+                        operation(&mut transaction).map_err(TransactionError::Operation)
+                    })
                 })
             })
         })
         .await
-        .map_err(|_| E::from(DatabaseError::ConnectionFailed))?
+        .map_err(|_| TransactionError::Persistence(PersistenceError::OperationFailed))?
     }
 
     #[cfg(test)]
-    pub(crate) async fn test_read<T, F>(&self, operation: F) -> Result<T, DatabaseError>
+    pub(crate) async fn test_read<T, F>(&self, operation: F) -> Result<T, PersistenceError>
     where
         T: Send + 'static,
         F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
     {
-        self.read(move |transaction| Ok(operation(transaction.connection())))
+        self.read(move |transaction| Ok::<T, PersistenceError>(operation(transaction.connection())))
             .await
+            .map_err(TransactionError::into_error)
     }
 }
 
@@ -299,8 +304,6 @@ pub(crate) enum DatabaseError {
     ConnectionFailed,
     #[snafu(display("the database migration failed"))]
     MigrationFailed,
-    #[snafu(display("the database transaction failed"))]
-    TransactionFailed,
 }
 
 #[cfg(test)]
@@ -333,7 +336,8 @@ pub(crate) mod tests {
     use crate::logging::tests::SubscriberTestGuard;
 
     use super::{
-        Database, DatabaseConfig, DatabaseError, diesel_database_url, sqlite_pragma_values,
+        Database, DatabaseConfig, DatabaseError, PersistenceError, TransactionError,
+        diesel_database_url, sqlite_pragma_values,
     };
 
     /// Opens an independent connection outside the pool so tests can observe
@@ -385,6 +389,27 @@ pub(crate) mod tests {
         let canary = fixture.path.to_string_lossy();
         assert!(!display.contains(canary.as_ref()));
         assert!(!debug.contains(canary.as_ref()));
+    }
+
+    #[test]
+    fn transaction_error_preserves_operation_and_persistence_failures() {
+        let operation = TransactionError::Operation(PersistenceError::InvalidPersistedData);
+        assert_eq!(
+            operation,
+            TransactionError::Operation(PersistenceError::InvalidPersistedData)
+        );
+        assert_eq!(
+            operation.into_error(),
+            PersistenceError::InvalidPersistedData
+        );
+
+        let persistence =
+            TransactionError::<PersistenceError>::from(diesel::result::Error::RollbackTransaction);
+        assert_eq!(
+            persistence,
+            TransactionError::Persistence(PersistenceError::OperationFailed)
+        );
+        assert_eq!(persistence.into_error(), PersistenceError::OperationFailed);
     }
 
     #[tokio::test]

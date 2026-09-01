@@ -1,4 +1,7 @@
-use crate::{component::lifecycle::DeviceId, db::Database};
+use crate::{
+    component::device::DeviceId,
+    db::{Database, TransactionError},
+};
 
 use super::ContestError;
 
@@ -70,5 +73,6 @@ pub(super) async fn list_seats(database: &Database) -> Result<Vec<SeatFacts>, Co
     database
         .read(crate::component::contest::db::seats::list)
         .await
-        .map_err(ContestError::from_persistence)
+        .map_err(TransactionError::into_error)
+        .map_err(ContestError::from)
 }
