@@ -8,6 +8,14 @@ use super::*;
 const NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
 const MACHINE_ID: Uuid = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
 
+fn run_with_claim(
+    paths: &StartupPaths,
+    claim: &SanitizedHardwareClaim,
+) -> Result<StartupIdentityState, StartupError> {
+    let context = preflight(paths)?;
+    apply_claim(paths, context, claim).map(|ready| ready.state)
+}
+
 fn tempdir() -> TempDir {
     match TempDir::new() {
         Ok(directory) => directory,

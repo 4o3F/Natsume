@@ -99,11 +99,6 @@ impl OperatorCredentials {
     pub(crate) fn hash_password(&self) -> Result<String, OperatorError> {
         password::hash_password(&self.password)
     }
-
-    #[cfg(test)]
-    pub(in crate::component::operator) fn password(&self) -> &OperatorPassword {
-        &self.password
-    }
 }
 
 fn encode_lower_hex(bytes: &[u8; SESSION_CREDENTIAL_LENGTH]) -> SecretString {
@@ -124,4 +119,15 @@ pub(in crate::component::operator) fn decode_lower_hex(
     hex::decode_to_slice(value, &mut *bytes)
         .map_err(|_| OperatorError::InvalidSessionCredential)?;
     Ok(SessionCredential(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{OperatorCredentials, OperatorPassword};
+
+    impl OperatorCredentials {
+        pub(in crate::component::operator) fn password(&self) -> &OperatorPassword {
+            &self.password
+        }
+    }
 }

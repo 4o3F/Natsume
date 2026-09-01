@@ -5,8 +5,6 @@ use crate::db::{Database, PersistenceError, TransactionError};
 mod credentials;
 
 pub(crate) use self::credentials::{OperatorCredentials, SessionCredentialHex};
-#[cfg(test)]
-pub(super) use self::credentials::{SESSION_CREDENTIAL_LENGTH, decode_lower_hex};
 pub(super) use self::credentials::{SessionCredential, SessionCredentialHash};
 use super::{
     OperatorError, OperatorIdentity,
@@ -41,11 +39,6 @@ impl SignedInSession {
     #[must_use]
     pub(crate) fn wire_credential(&self) -> SessionCredentialHex {
         self.credential.to_wire()
-    }
-
-    #[cfg(test)]
-    pub(super) const fn credential_for_test(&self) -> &SessionCredential {
-        &self.credential
     }
 }
 
@@ -244,4 +237,20 @@ fn record_actor(identity: OperatorIdentity) {
     let span = tracing::Span::current();
     span.record("actor_kind", "operator");
     span.record("actor_id", actor_id.as_str());
+}
+
+#[cfg(test)]
+pub(in crate::component::operator) mod tests {
+    pub(in crate::component::operator) use super::credentials::{
+        SESSION_CREDENTIAL_LENGTH, decode_lower_hex,
+    };
+    use super::{SessionCredential, SignedInSession};
+
+    impl SignedInSession {
+        pub(in crate::component::operator) const fn credential_for_test(
+            &self,
+        ) -> &SessionCredential {
+            &self.credential
+        }
+    }
 }

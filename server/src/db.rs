@@ -186,17 +186,6 @@ impl Database {
         .await
         .map_err(|_| TransactionError::Persistence(PersistenceError::OperationFailed))?
     }
-
-    #[cfg(test)]
-    pub(crate) async fn test_read<T, F>(&self, operation: F) -> Result<T, PersistenceError>
-    where
-        T: Send + 'static,
-        F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
-    {
-        self.read(move |transaction| Ok::<T, PersistenceError>(operation(transaction.connection())))
-            .await
-            .map_err(TransactionError::into_error)
-    }
 }
 
 fn build_pool(
@@ -339,6 +328,20 @@ pub(crate) mod tests {
         Database, DatabaseConfig, DatabaseError, PersistenceError, TransactionError,
         diesel_database_url, sqlite_pragma_values,
     };
+
+    impl Database {
+        pub(crate) async fn test_read<T, F>(&self, operation: F) -> Result<T, PersistenceError>
+        where
+            T: Send + 'static,
+            F: FnOnce(&mut SqliteConnection) -> T + Send + 'static,
+        {
+            self.read(move |transaction| {
+                Ok::<T, PersistenceError>(operation(transaction.connection()))
+            })
+            .await
+            .map_err(TransactionError::into_error)
+        }
+    }
 
     /// Opens an independent connection outside the pool so tests can observe
     /// committed state without joining the pool's own contention.

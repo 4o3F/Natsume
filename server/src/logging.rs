@@ -38,14 +38,6 @@ where
         .with_filter(targets)
 }
 
-#[cfg(test)]
-fn subscriber<W>(level: LogLevel, writer: W) -> impl tracing::Subscriber + Send + Sync + 'static
-where
-    W: for<'writer> fmt::MakeWriter<'writer> + Send + Sync + 'static,
-{
-    Registry::default().with(log_layer(level, writer))
-}
-
 pub(crate) fn initialize(level: LogLevel) -> Result<TelemetryGuard, LoggingError> {
     let tracer_provider = if telemetry_enabled_from_environment() {
         Some(build_tracer_provider()?)
@@ -144,11 +136,18 @@ pub(crate) mod tests {
         trace::{SdkTracerProvider, SpanData, SpanExporter},
     };
     use snafu::Snafu;
-    use tracing_subscriber::fmt::MakeWriter;
+    use tracing_subscriber::{fmt::MakeWriter, layer::SubscriberExt as _, registry::Registry};
 
     use crate::config::LogLevel;
 
     static SUBSCRIBER_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn subscriber<W>(level: LogLevel, writer: W) -> impl tracing::Subscriber + Send + Sync + 'static
+    where
+        W: for<'writer> MakeWriter<'writer> + Send + Sync + 'static,
+    {
+        Registry::default().with(super::log_layer(level, writer))
+    }
 
     pub(crate) struct SubscriberTestGuard {
         _guard: MutexGuard<'static, ()>,
@@ -176,7 +175,7 @@ pub(crate) mod tests {
             &self,
             level: LogLevel,
         ) -> impl tracing::Subscriber + Send + Sync + 'static {
-            super::subscriber(level, self.clone())
+            subscriber(level, self.clone())
         }
 
         pub(crate) fn text(&self) -> Result<String, ()> {

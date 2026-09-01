@@ -12,16 +12,42 @@ use zeroize::Zeroizing;
 use crate::db::{Database, DatabaseConfig};
 
 use super::{
-    DUMMY_PASSWORD_PHC, OperatorCredentials, OperatorError, OperatorPassword, OperatorRole,
-    PASSWORD_VERIFICATION_CONCURRENCY, PASSWORD_VERIFICATION_GATE, SESSION_CREDENTIAL_LENGTH,
-    SessionCredential, authenticate_session, db::tests as db_operator, decode_lower_hex,
-    hash_raw_password, require_admin, sign_in, verify_password_once,
+    OperatorCredentials, OperatorError, OperatorIdentity, OperatorRole,
+    db::tests as db_operator,
+    password::{
+        DUMMY_PASSWORD_PHC, OperatorPassword, PASSWORD_VERIFICATION_CONCURRENCY,
+        PASSWORD_VERIFICATION_GATE, hash_password as hash_raw_password, verify_password_once,
+    },
+    require_admin,
+    session::{
+        SessionCredential, authenticate_session, sign_in,
+        tests::{SESSION_CREDENTIAL_LENGTH, decode_lower_hex},
+    },
 };
 
 const GATE_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const GATE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 static PASSWORD_VERIFICATION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+impl OperatorIdentity {
+    #[must_use]
+    const fn role(self) -> OperatorRole {
+        self.role
+    }
+}
+
+pub(crate) async fn test_expire_all_sessions(database: &Database) -> Result<(), OperatorError> {
+    db_operator::test_expire_all_sessions(database).await
+}
+
+pub(crate) async fn test_insert_admin_account(
+    database: &Database,
+    login_name: &str,
+    password_hash: &str,
+) -> Result<Uuid, OperatorError> {
+    db_operator::test_insert_account(database, login_name, OperatorRole::Admin, password_hash).await
+}
 
 pub(crate) struct PasswordVerificationTestGuard {
     _guard: tokio::sync::MutexGuard<'static, ()>,

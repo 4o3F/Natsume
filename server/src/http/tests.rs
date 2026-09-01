@@ -36,7 +36,8 @@ use uuid::Uuid;
 
 use crate::{
     component::operator::{
-        OperatorCredentials, PasswordVerificationTestGuard, test_db as db_operator,
+        OperatorCredentials,
+        tests::{self as db_operator, PasswordVerificationTestGuard},
     },
     config::LogLevel,
     db::{

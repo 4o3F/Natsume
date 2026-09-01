@@ -12,7 +12,7 @@ use crate::{
     vault,
 };
 
-use super::{ImportError, commit_import, create_import_candidate};
+use super::{ImportError, candidate::create_import_candidate, commit::commit_import};
 
 #[derive(QueryableByName)]
 struct ContestEvidence {

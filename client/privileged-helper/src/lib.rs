@@ -24,14 +24,6 @@ impl PrivilegedService {
         }
     }
 
-    #[cfg(test)]
-    fn fixture(filesystem_root: &std::path::Path, mountinfo: Vec<MountInfo>) -> Self {
-        Self {
-            filesystem_root: filesystem_root.to_owned(),
-            fixture_mountinfo: Some(mountinfo),
-        }
-    }
-
     fn collect_claim(&self, namespace: Uuid) -> SanitizedHardwareClaim {
         match self.fixture_mountinfo.as_deref() {
             Some(mountinfo) => hardware_identity::derive_claim_with_mountinfo(
@@ -77,6 +69,15 @@ mod tests {
     use super::*;
 
     const TEST_NAMESPACE: &str = "12345678-1234-5678-9234-567812345678";
+
+    impl PrivilegedService {
+        fn fixture(filesystem_root: &Path, mountinfo: Vec<MountInfo>) -> Self {
+            Self {
+                filesystem_root: filesystem_root.to_owned(),
+                fixture_mountinfo: Some(mountinfo),
+            }
+        }
+    }
 
     fn tempdir() -> TempDir {
         match TempDir::new() {

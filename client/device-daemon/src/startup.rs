@@ -431,13 +431,4 @@ pub async fn run_production() -> Result<(), StartupError> {
 }
 
 #[cfg(test)]
-fn run_with_claim(
-    paths: &StartupPaths,
-    claim: &SanitizedHardwareClaim,
-) -> Result<StartupIdentityState, StartupError> {
-    let context = preflight(paths)?;
-    apply_claim(paths, context, claim).map(|ready| ready.state)
-}
-
-#[cfg(test)]
 mod tests;

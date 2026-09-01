@@ -12,9 +12,6 @@
 
 use std::path::Path;
 
-#[cfg(test)]
-use std::{fs, os::unix::fs::PermissionsExt as _, path::PathBuf};
-
 use natsume_local_control_api::{HardwareCandidate, SanitizedHardwareClaim};
 use natsume_machine_identity::{
     ANCHOR_ORDER, CollectionCompleteness, EvidenceQuality, EvidenceStatus, MachineIdentityDecision,
@@ -52,9 +49,6 @@ use self::{
     dmi::collect_dmi,
     source::outcome_from_status,
 };
-
-#[cfg(test)]
-use self::source::rooted;
 
 /// Collects the three frozen hardware readings from a filesystem rooted at `filesystem_root`.
 /// Production passes `/`; tests pass an isolated fixture root.

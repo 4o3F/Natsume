@@ -1,9 +1,14 @@
-use std::{os::unix::fs::symlink, str::FromStr as _};
+use std::{
+    fs,
+    os::unix::fs::{PermissionsExt as _, symlink},
+    path::PathBuf,
+    str::FromStr as _,
+};
 
 use natsume_machine_identity::{AnchorKind, EvidenceStatus, evaluate_slot};
 use tempfile::TempDir;
 
-use super::*;
+use super::{source::rooted, *};
 
 const TEST_NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
 const SYSTEM_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";

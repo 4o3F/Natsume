@@ -246,35 +246,8 @@ impl GatewaySiteConfig {
         &self.gateway_not_after
     }
 
-    #[cfg(test)]
-    pub(crate) const fn contest_end(&self) -> &GatewayNotAfter {
-        &self.contest_end
-    }
-
     pub(crate) fn has_required_validity_coverage(&self) -> bool {
         validate_gateway_validity_coverage(&self.gateway_not_after, &self.contest_end).is_ok()
-    }
-
-    #[cfg(test)]
-    #[allow(dead_code)]
-    pub(crate) fn for_test(
-        gateway_hostname: &str,
-        gateway_not_after: &str,
-        contest_end: &str,
-    ) -> Result<Self, SiteConfigError> {
-        if !is_canonical_dns_hostname(gateway_hostname) {
-            return Err(SiteConfigError::InvalidGatewayHostname);
-        }
-        let gateway_not_after = GatewayNotAfter::parse(gateway_not_after.to_owned())
-            .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
-        let contest_end = GatewayNotAfter::parse(contest_end.to_owned())
-            .ok_or(SiteConfigError::InvalidContestEnd)?;
-        validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
-        Ok(Self {
-            gateway_hostname: gateway_hostname.to_owned(),
-            gateway_not_after,
-            contest_end,
-        })
     }
 }
 
@@ -431,8 +404,36 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ConfigError, GatewaySiteConfig, LogLevel, OffsetDateTime, ServerConfig, SiteConfigError,
+        ConfigError, GatewayNotAfter, GatewaySiteConfig, LogLevel, OffsetDateTime, ServerConfig,
+        SiteConfigError, is_canonical_dns_hostname, validate_gateway_validity_coverage,
     };
+
+    impl GatewaySiteConfig {
+        pub(crate) const fn contest_end(&self) -> &GatewayNotAfter {
+            &self.contest_end
+        }
+
+        #[allow(dead_code)]
+        pub(crate) fn for_test(
+            gateway_hostname: &str,
+            gateway_not_after: &str,
+            contest_end: &str,
+        ) -> Result<Self, SiteConfigError> {
+            if !is_canonical_dns_hostname(gateway_hostname) {
+                return Err(SiteConfigError::InvalidGatewayHostname);
+            }
+            let gateway_not_after = GatewayNotAfter::parse(gateway_not_after.to_owned())
+                .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
+            let contest_end = GatewayNotAfter::parse(contest_end.to_owned())
+                .ok_or(SiteConfigError::InvalidContestEnd)?;
+            validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
+            Ok(Self {
+                gateway_hostname: gateway_hostname.to_owned(),
+                gateway_not_after,
+                contest_end,
+            })
+        }
+    }
 
     const VALID_CONFIG: &str = r#"
 [listen]

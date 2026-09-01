@@ -42,12 +42,6 @@ impl CsvImportError {
         Self { line, category }
     }
 
-    #[cfg(test)]
-    #[must_use]
-    const fn line(&self) -> usize {
-        self.line
-    }
-
     #[must_use]
     pub(super) const fn category(&self) -> CsvImportErrorCategory {
         self.category
@@ -212,7 +206,14 @@ fn csv_line(encoded_line: &str) -> &str {
 mod tests {
     use std::fmt::Write as _;
 
-    use super::{CsvImportErrorCategory, MAX_IMPORT_ROWS, parse_csv};
+    use super::{CsvImportError, CsvImportErrorCategory, MAX_IMPORT_ROWS, parse_csv};
+
+    impl CsvImportError {
+        #[must_use]
+        const fn line(&self) -> usize {
+            self.line
+        }
+    }
 
     struct RejectionCase {
         input: Vec<u8>,

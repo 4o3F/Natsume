@@ -8,49 +8,9 @@ mod db;
 mod password;
 mod session;
 
-#[cfg(test)]
-pub(crate) mod test_db {
-    use uuid::Uuid;
-
-    use crate::db::Database;
-
-    use super::{OperatorError, OperatorRole};
-
-    pub(crate) async fn test_expire_all_sessions(database: &Database) -> Result<(), OperatorError> {
-        super::db::tests::test_expire_all_sessions(database).await
-    }
-
-    pub(crate) async fn test_insert_admin_account(
-        database: &Database,
-        login_name: &str,
-        password_hash: &str,
-    ) -> Result<Uuid, OperatorError> {
-        super::db::tests::test_insert_account(
-            database,
-            login_name,
-            OperatorRole::Admin,
-            password_hash,
-        )
-        .await
-    }
-}
-
 use self::account::AccountFacts;
-#[cfg(test)]
-use self::password::OperatorPassword;
-#[cfg(test)]
-use self::password::{
-    DUMMY_PASSWORD_PHC, PASSWORD_VERIFICATION_CONCURRENCY, PASSWORD_VERIFICATION_GATE,
-    hash_password as hash_raw_password, verify_password_once,
-};
-#[cfg(test)]
-use self::session::SessionCredential;
 use self::session::SessionFacts;
 pub(crate) use self::session::{OperatorCredentials, SessionCredentialHex, SignedInSession};
-#[cfg(test)]
-use self::session::{SESSION_CREDENTIAL_LENGTH, authenticate_session, decode_lower_hex, sign_in};
-#[cfg(test)]
-pub(crate) use self::tests::PasswordVerificationTestGuard;
 
 /// Operator authentication and account authority with private persistence.
 pub(crate) struct OperatorComponent {
@@ -151,12 +111,6 @@ impl OperatorIdentity {
     }
 
     #[must_use]
-    #[cfg(test)]
-    const fn role(self) -> OperatorRole {
-        self.role
-    }
-
-    #[must_use]
     pub(crate) const fn role_name(self) -> &'static str {
         self.role.as_persisted()
     }
@@ -223,4 +177,4 @@ impl From<PersistenceError> for OperatorError {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

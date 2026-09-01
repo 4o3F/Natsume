@@ -14,11 +14,7 @@ use crate::component::{
 };
 use crate::{db::Database, vault::VaultSession};
 
-#[cfg(test)]
-use self::candidate::create_import_candidate;
 pub(crate) use self::candidate::{CreatedImportCandidate, ImportError, PendingImportCandidate};
-#[cfg(test)]
-use self::commit::commit_import;
 pub(crate) use self::csv::CsvImportErrorCategory;
 pub(crate) use self::diff::RedactedImportPreview;
 use self::{candidate::CandidateRowFacts, csv::ImportRow};
