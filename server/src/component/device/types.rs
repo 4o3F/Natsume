@@ -106,30 +106,6 @@ impl EvidenceQuality {
     }
 }
 
-/// Application-owned projection of the Device row selected by hardware ID.
-#[derive(Clone, Copy)]
-struct DeviceByHardwareProjection {
-    device_id: DeviceId,
-    evidence_quality: EvidenceQuality,
-    state: DeviceState,
-}
-
-impl DeviceByHardwareProjection {
-    fn from_persisted(
-        device_id: &str,
-        evidence_quality: &str,
-        state: &str,
-    ) -> Result<Self, PersistenceError> {
-        Ok(Self {
-            device_id: DeviceId::parse(device_id).ok_or(PersistenceError::InvalidPersistedData)?,
-            evidence_quality: EvidenceQuality::parse(evidence_quality)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
-            state: DeviceState::from_persisted(state)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
-        })
-    }
-}
-
 pub(in crate::component::device) struct DeviceFacts {
     device_id: DeviceId,
     state: DeviceState,

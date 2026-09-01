@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::component::contest::CurrentSeatProjection;
-
-use super::{CandidateRowFacts, ImportError};
+use super::{CandidateRowFacts, ImportError, baseline::BaselineSeat};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 struct ImportMappingChange {
@@ -113,16 +111,9 @@ impl RedactedImportPreview {
 }
 
 pub(super) fn compute_diff(
-    current_rows: &[CurrentSeatProjection],
+    current_rows: &BTreeMap<String, BaselineSeat>,
     candidate_rows: &[CandidateRowFacts],
 ) -> Result<RedactedImportPreview, ImportError> {
-    let mut current = BTreeMap::new();
-    for row in current_rows {
-        if current.insert(row.seat_code(), row).is_some() {
-            return Err(ImportError::PersistenceFailure);
-        }
-    }
-
     let mut candidate = BTreeMap::new();
     let mut candidate_accounts = BTreeSet::new();
     for row in candidate_rows {
@@ -140,7 +131,7 @@ pub(super) fn compute_diff(
 
     let seats_added = candidate
         .keys()
-        .filter(|seat_code| !current.contains_key(**seat_code))
+        .filter(|seat_code| !current_rows.contains_key(**seat_code))
         .map(|seat_code| (*seat_code).to_owned())
         .collect();
     let mut seats_removed = Vec::new();
@@ -148,8 +139,8 @@ pub(super) fn compute_diff(
     let mut unchanged_count = 0;
     let mut binding_impacts = Vec::new();
 
-    for (seat_code, facts) in current {
-        let Some(candidate_username) = candidate.get(seat_code) else {
+    for (seat_code, facts) in current_rows {
+        let Some(candidate_username) = candidate.get(seat_code.as_str()) else {
             seats_removed.push(seat_code.to_owned());
             if let Some(device_id) = facts.device_id() {
                 binding_impacts.push(ImportBindingImpact::new(

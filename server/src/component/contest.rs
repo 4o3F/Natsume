@@ -7,11 +7,7 @@ mod binding;
 mod db;
 mod seat;
 
-pub(crate) use self::{
-    account::{AccountFacts, CurrentAccountProjection, NewAccountFacts},
-    binding::BindingFacts,
-    seat::{CurrentSeatProjection, SeatFacts},
-};
+pub(crate) use self::{account::AccountFacts, binding::BindingFacts, seat::SeatFacts};
 
 /// Contest-owned current facts exposed to transport and peer components.
 pub(crate) struct ContestComponent {

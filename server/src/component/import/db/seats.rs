@@ -1,10 +1,11 @@
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 
 use crate::{
-    component::contest::CurrentSeatProjection,
     db::{PersistenceError, Transaction},
     diesel_schema::seats,
 };
+
+use super::super::baseline::BaselineSeat;
 
 pub(in crate::component::import) fn insert(
     transaction: &mut Transaction<'_>,
@@ -19,7 +20,7 @@ pub(in crate::component::import) fn insert(
 
 pub(in crate::component::import) fn delete_exact(
     transaction: &mut Transaction<'_>,
-    seat: &CurrentSeatProjection,
+    seat: &BaselineSeat,
 ) -> Result<usize, PersistenceError> {
     diesel::delete(
         seats::table

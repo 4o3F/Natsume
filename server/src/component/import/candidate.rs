@@ -12,7 +12,6 @@ use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 use super::{
     FINGERPRINT_VERSION, candidate_fingerprint,
     csv::{CsvImportErrorCategory, parse_csv},
-    current_fingerprint,
     diff::{RedactedImportPreview, compute_diff},
 };
 
@@ -253,10 +252,9 @@ pub(super) async fn create_import_candidate(
                 expire_candidate(transaction, &existing)?;
             }
 
-            let current_seats = super::db::query::read_current_seats(transaction)?;
-            let current_accounts = super::db::query::read_current_accounts(transaction)?;
-            let baseline_hash = current_fingerprint(&current_seats, &current_accounts);
-            let diff = compute_diff(&current_seats, &candidate_rows)?;
+            let baseline = super::db::query::read_baseline(transaction)?;
+            let baseline_hash = baseline.fingerprint();
+            let diff = compute_diff(baseline.seats(), &candidate_rows)?;
             let now = super::db::pending_import_candidate::current_time_unix_ms(transaction)?;
             let expires_at_unix_ms = now
                 .checked_add(IMPORT_CANDIDATE_TTL_MS)

@@ -5,17 +5,16 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{
-    component::contest::{CurrentAccountProjection, CurrentSeatProjection, NewAccountFacts},
     db::{Database, Transaction, TransactionError},
     vault::VaultSession,
 };
 
 use super::{
     FINGERPRINT_VERSION,
+    baseline::{BaselineAccount, BaselineSeat, ImportBaseline},
     candidate::{CandidateExpiry, ImportError, SealedCommitRow, expire_candidate},
     candidate_fingerprint,
     csv::parse_csv,
-    current_fingerprint,
     diff::{RedactedImportPreview, compute_diff},
     seal_rows,
 };
@@ -87,14 +86,13 @@ fn commit_in_transaction(
         return Ok(CommitOutcome::Stale);
     }
 
-    let current_seats = super::db::query::read_current_seats(transaction)?;
-    let current_accounts = super::db::query::read_current_accounts(transaction)?;
-    let baseline_hash = current_fingerprint(&current_seats, &current_accounts);
+    let baseline = super::db::query::read_baseline(transaction)?;
+    let baseline_hash = baseline.fingerprint();
     if candidate.baseline_fingerprint_sha256() != &baseline_hash {
         return Ok(CommitOutcome::Stale);
     }
 
-    let plan = CommitPlan::prepare(current_seats, current_accounts, candidate_rows)?;
+    let plan = CommitPlan::prepare(baseline, candidate_rows)?;
     if plan.diff.binding_impacts().len() != 0 {
         return Ok(CommitOutcome::SeatOccupied);
     }
@@ -106,8 +104,8 @@ fn commit_in_transaction(
 }
 
 struct CommitPlan {
-    current_seats: BTreeMap<String, CurrentSeatProjection>,
-    current_accounts: BTreeMap<String, CurrentAccountProjection>,
+    current_seats: BTreeMap<String, BaselineSeat>,
+    current_accounts: BTreeMap<String, BaselineAccount>,
     candidate_usernames: BTreeSet<String>,
     next_credential_revisions: BTreeMap<String, i64>,
     diff: RedactedImportPreview,
@@ -115,34 +113,18 @@ struct CommitPlan {
 
 impl CommitPlan {
     fn prepare(
-        current_seats: Vec<CurrentSeatProjection>,
-        current_accounts: Vec<CurrentAccountProjection>,
+        baseline: ImportBaseline,
         candidate_rows: &[super::candidate::CandidateRowFacts],
     ) -> Result<Self, ImportError> {
-        let diff = compute_diff(&current_seats, candidate_rows)?;
-        let mut seats = BTreeMap::new();
-        for seat in current_seats {
-            if seats.insert(seat.seat_code().to_owned(), seat).is_some() {
-                return Err(ImportError::PersistenceFailure);
-            }
-        }
-        let mut accounts = BTreeMap::new();
-        for account in current_accounts {
-            if account.credential_revision() < 1
-                || accounts
-                    .insert(account.domjudge_username().to_owned(), account)
-                    .is_some()
-            {
-                return Err(ImportError::PersistenceFailure);
-            }
-        }
+        let diff = compute_diff(baseline.seats(), candidate_rows)?;
+        let (current_seats, current_accounts) = baseline.into_parts();
         let candidate_usernames = candidate_rows
             .iter()
             .map(|row| row.domjudge_username().to_owned())
             .collect::<BTreeSet<_>>();
         let mut next_credential_revisions = BTreeMap::new();
         for username in &candidate_usernames {
-            if let Some(account) = accounts.get(username) {
+            if let Some(account) = current_accounts.get(username) {
                 let next = account
                     .credential_revision()
                     .checked_add(1)
@@ -151,8 +133,8 @@ impl CommitPlan {
             }
         }
         Ok(Self {
-            current_seats: seats,
-            current_accounts: accounts,
+            current_seats,
+            current_accounts,
             candidate_usernames,
             next_credential_revisions,
             diff,
@@ -225,17 +207,17 @@ fn apply_plan(
             }
             current.account_id().to_owned()
         } else {
-            let account = NewAccountFacts::new(row.domjudge_username().to_owned());
-            if super::db::accounts::insert(transaction, &account)? != 1
+            let account_id = Uuid::now_v7();
+            if super::db::accounts::insert(transaction, account_id, row.domjudge_username())? != 1
                 || super::db::server_vault_records::insert_account_credential(
                     transaction,
-                    &account,
+                    account_id,
                     row,
                 )? != 1
             {
                 return Err(ImportError::PersistenceFailure);
             }
-            account.account_id().to_string()
+            account_id.to_string()
         };
         final_account_ids.insert(row.domjudge_username().to_owned(), account_id);
     }

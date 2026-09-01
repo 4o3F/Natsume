@@ -1,17 +1,25 @@
 use diesel::{ExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryDsl, RunQueryDsl};
 
 use crate::{
-    component::{
-        contest::{CurrentAccountProjection, CurrentSeatProjection},
-        device::DeviceId,
-    },
+    component::device::DeviceId,
     db::{PersistenceError, Transaction},
     diesel_schema::{account_mappings, accounts, device_bindings, seats},
 };
 
-pub(in crate::component::import) fn read_current_seats(
+use super::super::baseline::{BaselineAccount, BaselineSeat, ImportBaseline};
+
+pub(in crate::component::import) fn read_baseline(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<CurrentSeatProjection>, PersistenceError> {
+) -> Result<ImportBaseline, PersistenceError> {
+    ImportBaseline::new(
+        read_current_seats(transaction)?,
+        read_current_accounts(transaction)?,
+    )
+}
+
+fn read_current_seats(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<BaselineSeat>, PersistenceError> {
     let rows = seats::table
         .left_join(account_mappings::table.on(account_mappings::seat_id.eq(seats::seat_id)))
         .left_join(accounts::table.on(account_mappings::account_id.eq(accounts::account_id)))
@@ -33,7 +41,7 @@ pub(in crate::component::import) fn read_current_seats(
                         DeviceId::parse(&device_id).ok_or(PersistenceError::InvalidPersistedData)
                     })
                     .transpose()?;
-                Ok(CurrentSeatProjection::new(
+                Ok(BaselineSeat::new(
                     seat_id,
                     seat_code,
                     current_domjudge_username,
@@ -44,9 +52,9 @@ pub(in crate::component::import) fn read_current_seats(
         .collect()
 }
 
-pub(in crate::component::import) fn read_current_accounts(
+fn read_current_accounts(
     transaction: &mut Transaction<'_>,
-) -> Result<Vec<CurrentAccountProjection>, PersistenceError> {
+) -> Result<Vec<BaselineAccount>, PersistenceError> {
     accounts::table
         .select((
             accounts::account_id,
@@ -58,11 +66,7 @@ pub(in crate::component::import) fn read_current_accounts(
         .map(|rows| {
             rows.into_iter()
                 .map(|(account_id, domjudge_username, credential_revision)| {
-                    CurrentAccountProjection::new(
-                        account_id,
-                        domjudge_username,
-                        credential_revision,
-                    )
+                    BaselineAccount::new(account_id, domjudge_username, credential_revision)
                 })
                 .collect()
         })

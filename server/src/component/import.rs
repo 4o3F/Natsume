@@ -1,3 +1,4 @@
+mod baseline;
 mod candidate;
 mod commit;
 mod csv;
@@ -8,10 +9,6 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use sha2::{Digest, Sha256};
 
-use crate::component::{
-    contest::{CurrentAccountProjection, CurrentSeatProjection},
-    device::DeviceId,
-};
 use crate::{db::Database, vault::VaultSession};
 
 pub(crate) use self::candidate::{CreatedImportCandidate, ImportError, PendingImportCandidate};
@@ -74,41 +71,6 @@ fn candidate_fingerprint(rows: &[CandidateRowFacts]) -> [u8; 32] {
     for (seat_code, username) in ordered {
         write_field(&mut hasher, seat_code.as_bytes());
         write_field(&mut hasher, username.as_bytes());
-    }
-    hasher.finalize().into()
-}
-
-fn current_fingerprint(
-    seats: &[CurrentSeatProjection],
-    accounts: &[CurrentAccountProjection],
-) -> [u8; 32] {
-    let mut ordered_seats = BTreeMap::new();
-    for seat in seats {
-        ordered_seats.insert(seat.seat_code(), seat);
-    }
-    let mut ordered_accounts = BTreeMap::new();
-    for account in accounts {
-        ordered_accounts.insert(account.domjudge_username(), account);
-    }
-
-    let mut hasher = Sha256::new();
-    write_field(&mut hasher, b"natsume/import-baseline/v1");
-    for seat in ordered_seats.into_values() {
-        write_field(&mut hasher, b"seat");
-        write_field(&mut hasher, seat.seat_id().as_bytes());
-        write_field(&mut hasher, seat.seat_code().as_bytes());
-        write_optional_field(
-            &mut hasher,
-            seat.current_domjudge_username().map(str::as_bytes),
-        );
-        let device_id = seat.device_id().map(DeviceId::as_text);
-        write_optional_field(&mut hasher, device_id.as_deref().map(str::as_bytes));
-    }
-    for account in ordered_accounts.into_values() {
-        write_field(&mut hasher, b"account");
-        write_field(&mut hasher, account.account_id().as_bytes());
-        write_field(&mut hasher, account.domjudge_username().as_bytes());
-        write_field(&mut hasher, &account.credential_revision().to_be_bytes());
     }
     hasher.finalize().into()
 }
