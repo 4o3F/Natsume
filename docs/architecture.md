@@ -555,12 +555,16 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 - same epoch + same Seat 是 replay；
 - same epoch + different Seat 是 protocol violation；
 - 较旧 negotiation/epoch 不改变 current authority；
-- 可修正业务拒绝写入 current negotiation 的 bounded evaluation；
-- 接受 Binding 时在一个组件事务内重检 Seat、Account mapping、Device eligibility 和 occupancy，消费 negotiation、铸造新 `binding_id`并写 accepted association；
-- Bound Target 从同一 Binding 组件一致性视图取得 context、Account revision 和 vault ciphertext；
-- 密码只在受控内存中解密并进入当次完整 Target；
+- 可修正业务拒绝写入 current negotiation 的 bounded evaluation，error code 只允许
+  `SEAT_NOT_FOUND`、`SEAT_UNMAPPED`、`SEAT_OCCUPIED`；
+- 接受 Binding 时在一个组件事务内重检 Device 仍为 enabled 且 unbound、Seat、
+  Account mapping 和 Seat/Device occupancy，消费 negotiation、铸造新 `binding_id`并写
+  accepted association；
+- Bound Target 在一次数据库一致性快照中取得 context、Account revision 和 vault
+  ciphertext；数据库事务结束后才在受控内存中解密密码并进入当次完整 Target；
 - Actual 只有 assignment 与 credential 都成功且 context coherent 时才携带 context；
-- Unbind 删除 occupancy 并建立新 negotiation；
+- Actual 的 `FAILED` 或 context mismatch 只表示 drift，不自动修改 authoritative Binding；
+- 显式 Unbind 删除 occupancy 并建立全新 negotiation；
 - Import 不创建或删除 Binding。
 
 ### 9.3 Runtime Config
@@ -732,6 +736,7 @@ pub(crate) struct ServerState {
     provisioning: ProvisioningComponent,
     device: DeviceComponent,
     gateway: GatewayComponent,
+    binding: BindingComponent,
 }
 ```
 
@@ -1581,17 +1586,26 @@ just api
 
 目标：
 
-- 实现negotiation、evaluation、accept/unbind；
+- 只实现Server concrete `BindingComponent`，不预建`StateComponent` trait、
+  `DeviceActor`或production WSS；
+- 实现每个unbound Device唯一current negotiation、submission epoch fencing、bounded
+  evaluation和accept/unbind；
+- concrete `BindingComponent::ingest` 当前只接收会参与transition的`BindingInput`；
+  `TODO(WP7)`：由production `DeviceActor`接入并校验Binding Actual；
 - 一致性读取Contest/Vault；
 - 生成Bound/Unbound target；
-- 移除Prompt Command。
+- Server不建立Prompt Command或HTTP/Panel入口；
+- 不实现Client artifact、Binding UI或InputProvider；
+- `TODO(WP9)`：清理Client侧遗留的`prompt_command_id`并由Intent自动展示Binding UI。
 
 验收：
 
 - 并发Seat/Device occupancy正确；
 - Import不修改Binding；
-- password/context来自一致组件视图；
-- UI由Intent自动显示。
+- password/context来自同一次数据库快照，密码在事务外解密；
+- bounded evaluation只产生`SEAT_NOT_FOUND`、`SEAT_UNMAPPED`、`SEAT_OCCUPIED`；
+- Binding authority只由accepted Input或显式Unbind改变；
+- Server代码不包含Prompt Command，Client UI切换留待`TODO(WP9)`。
 
 ### WP6：Runtime、Session与Home Components
 

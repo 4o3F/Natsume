@@ -10,7 +10,7 @@ use chacha20poly1305::{
     aead::{Aead, KeyInit},
 };
 use snafu::Snafu;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 const MASTER_KEY_LENGTH: usize = 32;
 const RECORD_NONCE_LENGTH: usize = 24;
@@ -64,6 +64,20 @@ impl VaultSession {
             .encrypt(&XNonce::from(nonce_bytes), plaintext)
             .map_err(|_| VaultError::RecordSealFailed)?;
         Ok((nonce_bytes, ciphertext))
+    }
+
+    pub(crate) fn open(
+        &self,
+        nonce: &[u8],
+        ciphertext: &[u8],
+    ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
+        let nonce_bytes: [u8; RECORD_NONCE_LENGTH] =
+            nonce.try_into().map_err(|_| VaultError::RecordOpenFailed)?;
+        let cipher = XChaCha20Poly1305::new(self.master_key.expose().into());
+        cipher
+            .decrypt(&XNonce::from(nonce_bytes), ciphertext)
+            .map(Zeroizing::new)
+            .map_err(|_| VaultError::RecordOpenFailed)
     }
 }
 
@@ -235,10 +249,6 @@ mod tests {
         thread,
     };
 
-    use chacha20poly1305::{
-        XChaCha20Poly1305, XNonce,
-        aead::{Aead as _, KeyInit as _},
-    };
     use snafu::Snafu;
     use uuid::Uuid;
     use zeroize::Zeroizing;
@@ -252,22 +262,6 @@ mod tests {
         MASTER_KEY_LENGTH, RECORD_NONCE_LENGTH, TemporaryKeyFile, VaultError, VaultSession,
         create_master_key, ensure_master_key, load, temporary_key_path,
     };
-
-    impl VaultSession {
-        pub(crate) fn open(
-            &self,
-            nonce: &[u8],
-            ciphertext: &[u8],
-        ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-            let nonce_bytes: [u8; RECORD_NONCE_LENGTH] =
-                nonce.try_into().map_err(|_| VaultError::RecordOpenFailed)?;
-            let cipher = XChaCha20Poly1305::new(self.master_key.expose().into());
-            cipher
-                .decrypt(&XNonce::from(nonce_bytes), ciphertext)
-                .map(Zeroizing::new)
-                .map_err(|_| VaultError::RecordOpenFailed)
-        }
-    }
 
     #[test]
     fn vault_records_round_trip_and_authenticate_nonce_and_ciphertext() -> Result<(), TestFailure> {
@@ -299,6 +293,12 @@ mod tests {
         let mut wrong_nonce = nonce;
         wrong_nonce[0] ^= 1;
         assert_record_open_failure(&session, &wrong_nonce, &ciphertext, plaintext)?;
+        assert_record_open_failure(
+            &session,
+            &nonce[..RECORD_NONCE_LENGTH - 1],
+            &ciphertext,
+            plaintext,
+        )?;
 
         let mut tampered = ciphertext;
         let Some(last) = tampered.last_mut() else {

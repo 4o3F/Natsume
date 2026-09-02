@@ -1,7 +1,10 @@
+use std::sync::Arc;
+
 use snafu::Snafu;
 
 use crate::{
     component::{
+        binding::BindingComponent,
         contest::ContestComponent,
         device::DeviceComponent,
         gateway::{GatewayComponent, GatewayLoadError},
@@ -24,11 +27,13 @@ pub(crate) struct ServerState {
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: ProvisioningComponent,
-    // TODO(WP7): Consume Device and Gateway from the production DeviceActor.
+    // TODO(WP7): Consume Device, Gateway, and Binding from the production DeviceActor.
     #[allow(dead_code)]
     device: DeviceComponent,
     #[allow(dead_code)]
     gateway: GatewayComponent,
+    #[allow(dead_code)]
+    binding: BindingComponent,
 }
 
 impl ServerState {
@@ -59,13 +64,15 @@ impl ServerState {
     }
 
     fn from_parts(database: Database, vault: VaultSession, gateway: GatewayComponent) -> Self {
+        let vault = Arc::new(vault);
         Self {
             operator: OperatorComponent::new(database.clone()),
             contest: ContestComponent::new(database.clone()),
-            import: ImportComponent::new(database.clone(), vault),
+            import: ImportComponent::new(database.clone(), Arc::clone(&vault)),
             provisioning: ProvisioningComponent::new(),
-            device: DeviceComponent::new(database),
+            device: DeviceComponent::new(database.clone()),
             gateway,
+            binding: BindingComponent::new(database, vault),
         }
     }
 
@@ -94,6 +101,11 @@ impl ServerState {
     #[allow(dead_code)]
     pub(crate) const fn gateway(&self) -> &GatewayComponent {
         &self.gateway
+    }
+
+    #[allow(dead_code)]
+    pub(crate) const fn binding(&self) -> &BindingComponent {
+        &self.binding
     }
 }
 
