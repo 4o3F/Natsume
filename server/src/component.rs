@@ -1,9 +1,12 @@
 //! Server-owned vertical business components.
 
 pub(crate) mod contest;
-// WP3 has no transport consumer yet.
+// TODO(WP7): Consume Device from production Device Control.
 #[allow(dead_code)]
 pub(crate) mod device;
+// TODO(WP7): Consume Gateway from the production DeviceActor.
+#[allow(dead_code)]
+pub(crate) mod gateway;
 pub(crate) mod import;
 pub(crate) mod operator;
 pub(crate) mod provisioning;

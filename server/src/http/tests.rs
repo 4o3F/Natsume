@@ -1,6 +1,5 @@
 use std::{
     fs,
-    os::unix::fs::PermissionsExt as _,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, PoisonError},
 };
@@ -45,8 +44,7 @@ use crate::{
         tests::{test_data_version, test_lock_database, test_observer},
     },
     logging::tests::{CapturedLogs, SubscriberTestGuard},
-    server_state::ServerState,
-    vault,
+    server_state,
 };
 
 use super::{
@@ -371,15 +369,9 @@ pub(crate) fn unused_web_root() -> &'static Path {
 }
 
 pub(crate) fn server_state(database: Database) -> Result<AppState, SupportFailure> {
-    let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
-    fs::create_dir(&root).map_err(|_| SupportFailure::FixtureFailed)?;
-    fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-        .map_err(|_| SupportFailure::FixtureFailed)?;
-    let key_path = root.join("master.key");
-    vault::ensure_master_key(&key_path).map_err(|_| SupportFailure::FixtureFailed)?;
-    let vault = vault::load(&key_path).map_err(|_| SupportFailure::FixtureFailed)?;
-    fs::remove_dir_all(root).map_err(|_| SupportFailure::FixtureFailed)?;
-    Ok(Arc::new(ServerState::new(database, Arc::new(vault))))
+    server_state::tests::for_test(database)
+        .map(Arc::new)
+        .map_err(|_| SupportFailure::FixtureFailed)
 }
 
 #[tokio::test]

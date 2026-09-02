@@ -3,12 +3,11 @@ use std::{future::Future, path::Path, sync::Arc};
 use tracing::instrument::WithSubscriber as _;
 
 use crate::{
-    config::{GatewaySiteConfig, ServerConfig},
+    config::ServerConfig,
     db::{Database, DatabaseConfig},
     http,
     server_state::ServerState,
     tls::TlsListener,
-    vault::load as load_vault,
 };
 
 use super::CommandError;
@@ -33,8 +32,7 @@ pub async fn router(config: ServerConfig, web_root: &Path) -> Result<axum::Route
     let database = Database::connect_and_migrate(&database_config)
         .await
         .map_err(|_| CommandError::Database)?;
-    let vault = load_vault(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
-    let state = Arc::new(ServerState::new(database, Arc::new(vault)));
+    let state = Arc::new(ServerState::load(database, &config).map_err(CommandError::from)?);
     Ok(http::router(state, web_root))
 }
 
@@ -47,15 +45,13 @@ pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), Comma
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    GatewaySiteConfig::load_from(config.site_config_path())
-        .map_err(|_| CommandError::SiteConfiguration)?;
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
         .map_err(|_| CommandError::Database)?;
     tracing::info!("database ready");
-    let vault = load_vault(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
-    tracing::info!("vault ready");
+    let state = Arc::new(ServerState::load(database, &config).map_err(CommandError::from)?);
+    tracing::info!("server state ready");
     let listener = TlsListener::bind(
         config.listen_address(),
         config.tls_certificate_path(),
@@ -65,7 +61,6 @@ where
     .map_err(|_| CommandError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
-    let state = Arc::new(ServerState::new(database, Arc::new(vault)));
     let router = http::router(state, Path::new(WEB_ASSETS_PATH));
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);

@@ -5,7 +5,7 @@ mod csv;
 mod db;
 mod diff;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 use sha2::{Digest, Sha256};
 
@@ -19,11 +19,11 @@ use self::{candidate::CandidateRowFacts, csv::ImportRow};
 /// CSV import authority with private persistence and a startup-loaded vault.
 pub(crate) struct ImportComponent {
     database: Database,
-    vault: Arc<VaultSession>,
+    vault: VaultSession,
 }
 
 impl ImportComponent {
-    pub(crate) const fn new(database: Database, vault: Arc<VaultSession>) -> Self {
+    pub(crate) const fn new(database: Database, vault: VaultSession) -> Self {
         Self { database, vault }
     }
 

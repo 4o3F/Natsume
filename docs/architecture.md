@@ -501,12 +501,26 @@ GatewayActualState       { credential_id?, state, leaf_sha256? }
 - same ID + same CSR 是 replay；
 - same ID + different CSR 是 protocol violation；
 - same ID + CSR absent 表示当前本地 input 不可恢复，触发 replacement；
-- Server 完全派生 subject、SAN、EKU、profile 和 validity，不信任 CSR requested attributes；
+- CSR 必须是 DER 编码的 PKCS#10，且携带 ECDSA P-256 public key；Server 必须使用
+  该 public key 验证 ECDSA-SHA256 CSR 自签名，不接受其他 key 或签名算法；
+- Server 忽略 CSR requested subject、SAN、extension 和其他 attribute，完全生成 leaf
+  profile；
 - 证书 grant 必须先 durable，再进入 Target；
 - current generation 的 grant由 Server 重放，不重新签名；
 - 过期、private key/CSR 丢失、Apply/Verify 完成失败或实际 leaf hash 不匹配都走同一个 replacement；
 - replacement 即使旧 private key 仍可读也生成新 key/CSR；
 - Replacement原子覆盖current generation；旧generation不再保留，也不再成为Target。
+
+Gateway leaf profile 固定为：
+
+- subject 是 empty distinguished name；
+- SAN 只包含一个 DNS name，值为部署配置的 `gateway_hostname`；
+- `CA=false`，Key Usage 只包含 `digitalSignature`，Extended Key Usage 只包含
+  `serverAuth`；
+- serial 的值字节是 `credential_id` UUID 的 16 bytes；
+- `not_before` 是签发时刻减 5 分钟，`not_after` 是部署配置的绝对
+  `gateway_not_after`；
+- Local Origin CA 直接签发 leaf；没有中间 CA，因此 grant 的 issuer chain 为空。
 
 Gateway Actual 的 leaf hash是 Caddy 实际加载的完整 leaf DER 的 SHA-256，不是 PEM、SPKI、chain、serial 或磁盘候选文件。
 
@@ -616,8 +630,10 @@ Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owne
 
 ### 10.2 `StateComponent`
 
-trait 是 Server-local contract，不放入共享 crate。它只随第一个真实 Active
-资源实现一起落地；在此之前不创建无消费者的 trait、空实现或占位组件集合：
+trait 是 Server-local contract，不放入共享 crate。它在 WP7 随 production
+`DeviceActor` 的真实编排消费者一起落地；在此之前不创建无消费者的 trait、空实现
+或占位组件集合。WP4 的 concrete `GatewayComponent::ingest/materialize` 保持以下
+未来形状，但不预建 trait：
 
 ```rust
 pub(crate) trait StateComponent: Send + Sync + 'static {
@@ -676,8 +692,9 @@ pub(crate) trait StateComponent: Send + Sync + 'static {
 
 ### 10.3 Active 资源的静态组件集合
 
-Gateway 在 WP4 成为第一个 Active 资源时，同时建立 `StateComponent` 与静态
-`StateComponents`。后续资源按固定 wire structure 增加字段：
+WP4-WP6 先实现 concrete Active components；WP7 在 production `DeviceActor` 需要
+统一编排时建立 `StateComponent` 与静态 `StateComponents`，按固定 wire structure
+显式组合字段：
 
 ```rust
 pub(crate) struct StateComponents {
@@ -714,12 +731,15 @@ pub(crate) struct ServerState {
     import: ImportComponent,
     provisioning: ProvisioningComponent,
     device: DeviceComponent,
+    gateway: GatewayComponent,
 }
 ```
 
 Active 资源和 DeviceRegistry 到达各自 WP 时直接增加为明确字段；
-不增加单层 `Components` wrapper，也不建立 service locator。`Database` 和
-`VaultSession` 只在启动组装时出现，transport 只能取得 component reference。
+不增加单层 `Components` wrapper，也不建立 service locator。生产构造入口统一为
+`ServerState::load(database, &config)`：它加载一次`VaultSession`，提取每个组件的
+窄依赖，并调用组件自己的concrete constructor。完整`ServerConfig`不下传给各组件，
+transport也只能取得component reference。
 
 ### 10.5 组件内部数据库
 
@@ -754,9 +774,12 @@ pub(crate) struct BindingComponent {
 当前 Server 启动顺序是：
 
 ```text
-Database
-VaultSession
-  → ServerState { Operator, Contest, Import, Provisioning, Device }
+Database + ServerConfig
+  → ServerState::load
+      → VaultSession
+      → GatewayComponent { Origin CA }
+      → Operator, Contest, Import, Provisioning, Device
+  → ServerState { Operator, Contest, Import, Provisioning, Device, Gateway }
   → Arc<ServerState>
   → HTTP
 ```
@@ -764,7 +787,8 @@ VaultSession
 后续在同一个 `ServerState` 中加入 Active Components 与 DeviceRegistry，
 WSS、DeviceActor 和 HTTP 共享该对象。`GatewayIssuer` 在 Gateway
 Component 到达时由它持有。不存在全局 singleton，也不允许 transport 重新组装
-组件依赖。
+组件依赖。Database连接/迁移、TLS listener和HTTP生命周期仍由`serve`启动入口负责；
+`ServerState`不持有完整`ServerConfig`，组件也不自行重复加载共享依赖。
 
 Production WSS handler只把socket交给`device_control::serve_connection`。该入口在模块
 内完成admission、Device authority查询/激活、最终复查和Registry attach；
@@ -964,7 +988,7 @@ Binding成功后旧Input由“没有current negotiation”自然fence；Unbind�
 
 Server重启会丢失所有Client observation，但同时也会使所有lease失效；Client重连后的fresh barrier要求重新发送完整snapshot，因此不影响恢复、Resolve或transition completion。旧Actual不得参与新lease决策。
 
-Panel当前只读取durable authority和在线Actor状态。如果未来出现明确的离线last-seen/telemetry需求，应建立独立诊断projection；不得让诊断数据参与控制正确性。
+WP8 的 Panel query 只读取durable authority和当前在线Actor状态。如果未来出现明确的离线last-seen/telemetry需求，应建立独立诊断projection；不得让诊断数据参与控制正确性。
 
 ### 12.7 必须删除的旧表和字段
 
@@ -1540,11 +1564,11 @@ just api
 
 目标：
 
-- 随首个真实Active资源实现Server-local `StateComponent`和静态
-  `StateComponents`，不增加dynamic registry；
+- 只实现Server concrete `GatewayComponent`，提供与未来`StateComponent`一致的
+  `ingest/materialize`形状，不预建trait、静态集合或dynamic registry；
 - 实现accepted CSR current fact，不持久化原始Client projection；
 - Intent Policy、CSR validation、sign/CAS、grant/replacement；
-- Operator/Panel读取durable current fact与在线Actor状态。
+- Client private key/CSR生成、durable artifact与Caddy收敛留在WP9。
 
 验收：
 
@@ -1591,6 +1615,8 @@ just api
 - 实现单连接`device_control::serve_connection`编排入口；
 - 使用同一`review_id`的一次性通知交付Enrollment activation结果；
 - 实现Registry、Actor、lease fencing、fresh barrier；
+- 为production Actor编排建立Server-local `StateComponent`和静态
+  `StateComponents`，不增加dynamic registry；
 - 串行组件ingest/materialize；
 - 完整snapshot编解码；
 - Dirty和背压。
@@ -1611,6 +1637,8 @@ just api
 
 - 保持HTTP handler只调用组件；
 - 增加Enrollment、target mutation与convergence查询；
+- Operator/Panel query汇总durable current fact与当前在线Actor状态，不在更早WP预建
+  read DTO；
 - 更新generated API。
 
 验收：

@@ -1,5 +1,7 @@
 use snafu::Snafu;
 
+use crate::server_state::ServerStateError;
+
 /// Redacted failure while starting the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub enum CommandError {
@@ -29,4 +31,16 @@ pub enum CommandError {
     Bootstrap,
     #[snafu(display("operator password reset failed"))]
     PasswordReset,
+}
+
+impl From<ServerStateError> for CommandError {
+    fn from(error: ServerStateError) -> Self {
+        match error {
+            ServerStateError::Configuration => Self::Configuration,
+            ServerStateError::SiteConfiguration => Self::SiteConfiguration,
+            ServerStateError::Vault => Self::Vault,
+            ServerStateError::OriginCa => Self::OriginCa,
+            ServerStateError::OriginCaTrustRootMismatch => Self::OriginCaTrustRootMismatch,
+        }
+    }
 }
