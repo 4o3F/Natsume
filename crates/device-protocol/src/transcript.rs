@@ -1,13 +1,16 @@
 use ed25519_dalek::{Signature, Signer as _, SigningKey, VerifyingKey};
-use prost::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use crate::{
     CONTROL_ROUTE, CONTROL_SUBPROTOCOL,
-    generated::{ClientProof, ServerChallenge},
+    generated::{ClientProof, ServerChallenge, client_proof},
 };
 
 const CLIENT_PROOF_DOMAIN: &[u8] = b"NATSUME-DEVICE-CONTROL-CLIENT-PROOF\0";
+const CLIENT_PROOF_TRANSCRIPT_VERSION: u8 = 1;
+const PURPOSE_MISSING: u8 = 0;
+const PURPOSE_ENROLLMENT: u8 = 1;
+const PURPOSE_RESUME: u8 = 2;
 
 /// Cryptographic failures independent of Enrollment and Resume semantics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,23 +20,34 @@ pub enum ProofVerificationError {
     InvalidSignature,
 }
 
-/// Hashes the canonical Client proof transcript.
+/// Hashes the canonical, versioned Client proof transcript.
 ///
-/// The signature field is always omitted from the signed representation. The
+/// Enrollment and Resume share exactly the same fields. The public key is the
+/// candidate key for Enrollment and the Server-selected current authority for
+/// Resume. Self-reported version and Enrollment review metadata, the signature
+/// field, and Prost's wire encoding are not part of the identity proof. The
 /// caller remains responsible for validating every semantic field.
 #[must_use]
-pub fn client_proof_signing_digest(challenge: &ServerChallenge, proof: &ClientProof) -> [u8; 32] {
-    let mut unsigned_proof = proof.clone();
-    unsigned_proof.signature.clear();
-
+pub fn client_proof_signing_digest(
+    public_key: &[u8; 32],
+    challenge: &ServerChallenge,
+    proof: &ClientProof,
+) -> [u8; 32] {
     let mut digest = Sha256::new();
     digest.update(CLIENT_PROOF_DOMAIN);
+    digest.update([CLIENT_PROOF_TRANSCRIPT_VERSION]);
     digest.update(CONTROL_ROUTE.as_bytes());
     digest.update([0]);
     digest.update(CONTROL_SUBPROTOCOL.as_bytes());
     digest.update([0]);
-    digest.update(challenge.encode_length_delimited_to_vec());
-    digest.update(unsigned_proof.encode_length_delimited_to_vec());
+    digest.update(&challenge.challenge_nonce);
+    digest.update(public_key);
+    digest.update([match proof.purpose.as_ref() {
+        None => PURPOSE_MISSING,
+        Some(client_proof::Purpose::Enrollment(_)) => PURPOSE_ENROLLMENT,
+        Some(client_proof::Purpose::Resume(_)) => PURPOSE_RESUME,
+    }]);
+    digest.update(proof.machine_hardware_id.as_bytes());
     digest.finalize().into()
 }
 
@@ -44,7 +58,8 @@ pub fn sign_client_proof(
     challenge: &ServerChallenge,
     mut proof: ClientProof,
 ) -> ClientProof {
-    let digest = client_proof_signing_digest(challenge, &proof);
+    let public_key = signing_key.verifying_key();
+    let digest = client_proof_signing_digest(public_key.as_bytes(), challenge, &proof);
     proof.signature = signing_key.sign(&digest).to_bytes().to_vec();
     proof
 }
@@ -67,7 +82,7 @@ pub fn verify_client_proof(
     }
     let signature = Signature::try_from(proof.signature.as_slice())
         .map_err(|_| ProofVerificationError::InvalidSignature)?;
-    let digest = client_proof_signing_digest(challenge, proof);
+    let digest = client_proof_signing_digest(key.as_bytes(), challenge, proof);
     key.verify_strict(&digest, &signature)
         .map_err(|_| ProofVerificationError::InvalidSignature)
 }
@@ -95,37 +110,51 @@ mod tests {
     }
 
     #[test]
-    fn signing_digest_has_a_stable_golden_and_ignores_the_signature_field() {
+    fn signing_digest_has_a_stable_golden_and_ignores_non_identity_fields() {
         let (challenge, proof) = fixture();
-        let digest = client_proof_signing_digest(&challenge, &proof);
+        let public_key = [0x11; 32];
+        let digest = client_proof_signing_digest(&public_key, &challenge, &proof);
         assert_eq!(
             digest,
             [
-                68, 167, 26, 247, 203, 228, 61, 65, 182, 199, 245, 53, 161, 125, 147, 66, 58, 4,
-                120, 206, 120, 143, 52, 96, 237, 233, 132, 159, 110, 234, 205, 249,
+                114, 19, 201, 89, 60, 14, 5, 183, 109, 114, 52, 149, 166, 44, 87, 118, 54, 149, 6,
+                150, 213, 143, 60, 198, 116, 125, 25, 97, 62, 195, 87, 19,
             ]
         );
 
         let mut different_signature = proof;
         different_signature.signature = vec![0x55; 64];
+        different_signature.daemon_version = "2.0.1".to_owned();
+        different_signature.agent_version = "2.0.1".to_owned();
+        let Some(Purpose::Enrollment(attempt)) = different_signature.purpose.as_mut() else {
+            panic!("fixture lost its Enrollment purpose");
+        };
+        attempt.evidence_quality = EnrollmentEvidenceQuality::Medium.into();
         assert_eq!(
-            client_proof_signing_digest(&challenge, &different_signature),
+            client_proof_signing_digest(&public_key, &challenge, &different_signature),
             digest
         );
     }
 
     #[test]
-    fn strict_verification_rejects_a_mutated_proof() {
+    fn strict_verification_binds_the_common_identity_fields() {
         let signing_key = SigningKey::from_bytes(&[0x42; 32]);
         let (challenge, proof) = fixture();
         let proof = sign_client_proof(&signing_key, &challenge, proof);
         let public_key = signing_key.verifying_key().to_bytes();
         assert_eq!(verify_client_proof(&public_key, &challenge, &proof), Ok(()));
 
-        let mut mutated = proof;
-        mutated.agent_version = "2.0.1".to_owned();
+        let mut different_hardware = proof.clone();
+        different_hardware.machine_hardware_id = "01900000-0000-7000-8000-000000000001".to_owned();
         assert_eq!(
-            verify_client_proof(&public_key, &challenge, &mutated),
+            verify_client_proof(&public_key, &challenge, &different_hardware),
+            Err(ProofVerificationError::InvalidSignature)
+        );
+
+        let mut different_purpose = proof;
+        different_purpose.purpose = Some(Purpose::Resume(crate::generated::ResumeSession {}));
+        assert_eq!(
+            verify_client_proof(&public_key, &challenge, &different_purpose),
             Err(ProofVerificationError::InvalidSignature)
         );
     }

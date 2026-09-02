@@ -5,6 +5,7 @@ pub mod commands;
 pub(crate) mod component;
 pub mod config;
 pub(crate) mod db;
+pub(crate) mod device_control;
 #[path = "../diesel/schema.rs"]
 pub(crate) mod diesel_schema;
 pub(crate) mod http;

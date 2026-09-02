@@ -47,7 +47,7 @@ Natsume 服务一场现场竞赛，目标规模约 500–600 台工作站。一�
 4. Server Desired State 与 Client Actual State 的持续收敛。
 5. Gateway credential 签发、Caddy 配置和 DOMjudge 自动登录。
 6. Runtime Config、图形 Session 和 contestant Home 控制。
-7. admin/viewer Operator、Web Panel、审计和恢复证据。
+7. admin/viewer Operator、Web Panel、best-effort可观测性和恢复证据。
 8. 网络中断与单进程重启后的确定性恢复。
 9. 身份、秘密、证书或本地状态不可证明安全时 fail closed。
 
@@ -63,6 +63,7 @@ Natsume 服务一场现场竞赛，目标规模约 500–600 台工作站。一�
 - 自动 Device merge/split 或静默身份迁移；
 - 多桌面环境同时支持；
 - 可编辑角色和权限策略；
+- 业务审计账本、操作历史或审计Panel；
 - 将 UI 遮罩、Session lock 或 Caddy 状态页当作强隔离边界。
 
 ## 3. 核心设计原则
@@ -196,7 +197,7 @@ Runtime Config 可以改变 DOMjudge HTTPS origin，但不能改变 Control Endp
 
 | 边界 | 认证 | 失败策略 |
 |---|---|---|
-| Operator → Server | 数据库中的 Operator session 与固定角色 | 拒绝，必要时审计 |
+| Operator → Server | 数据库中的 Operator session 与固定角色 | 拒绝，按可观测性规则记录诊断结果 |
 | Device → Server | pinned server-auth TLS + connection challenge + Ed25519 proof | protobuf 前后均 fail closed |
 | Daemon → Helper | system D-Bus policy + 封闭方法 | 拒绝，不降级 |
 | Agent ↔ Daemon | 当前本地 Session identity + typed IPC | stale Session 失效 |
@@ -258,9 +259,9 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Site/fleet identity | Server core | 单例、部署期固定 |
 | Seat、Account、Seat→Account | Contest/Import Component | Import 唯一修改者 |
 | Account password ciphertext/revision | Contest/Import + Vault | plaintext 只存在于短生命周期内存 |
-| Device lifecycle | Device Lifecycle Component | enabled/disabled/revoked |
-| Pending Enrollment review | Enrollment Component memory registry | 仅当前WSS连接有效，Server生成`review_id`供Panel定位 |
-| Device control key | Enrollment Component | activation事务后才是durable authority，和Gateway解耦 |
+| Device lifecycle | Device Component | enabled/disabled/revoked |
+| Pending Enrollment review | Device Component memory registry | 仅当前WSS连接有效，Server生成`review_id`供Panel定位 |
+| Device control key | Device Component | activation事务后才是durable authority，和Gateway解耦 |
 | Gateway generation/grant | Gateway Component | 每 Device 至多一个 current generation |
 | Binding negotiation/occupancy | Binding Component | Binding ID 是每次 occupancy 的 UUID |
 | Runtime Config | Runtime Config Component | 当前 DOMjudge HTTPS origin |
@@ -354,29 +355,48 @@ descriptor，不维持旧/新双栈。
 ```text
 SHA-256(
     "NATSUME-DEVICE-CONTROL-CLIENT-PROOF\0" ||
+    0x01 ||
     UTF-8("/api/v2/device/control") || 0x00 ||
     UTF-8("natsume.control") || 0x00 ||
-    protobuf_length_delimited(ServerChallenge) ||
-    protobuf_length_delimited(ClientProof { signature = empty })
+    challenge_nonce ||
+    public_key ||
+    purpose ||
+    UTF-8(machine_hardware_id)
 )
 ```
 
-双方都先把当前 schema 的 typed message 以 Prost length-delimited encoding重新编码，
-而不是签名收到的任意原始 wire bytes。Enrollment 使用 proof 内 exact
-`candidate_public_key` 验签；Resume 使用 Server 数据库选出的 current control public
-key 验签。协议crate统一 transcript、签名和 strict verification，但不选择authority
-key，也不校验 Enrollment/Resume 的业务presence、ID、版本或状态组合。
+`challenge_nonce`和`public_key`分别固定为exact 32 bytes，`purpose`固定为单字节：
+Enrollment是`0x01`，Resume是`0x02`，缺失purpose非法；canonical Machine Hardware ID
+固定为36-byte ASCII并位于末尾。因此字段边界不使用length prefix。两种purpose使用完全
+相同的transcript，没有Enrollment专属后缀；签名端从private key推导`public_key`，
+Enrollment验签使用proof内exact `candidate_public_key`，Resume验签使用Server数据库
+选出的current control public key。
+
+transcript不依赖Prost或任意收到的wire bytes。Daemon/Agent版本和Enrollment evidence
+quality是经TLS传输的自报审核metadata，不属于identity proof。协议crate统一transcript、
+签名和strict verification，但不选择authority key，也不校验Enrollment/Resume的业务
+presence、ID、版本或状态组合。
 
 成功升级后：
 
 ```text
-ServerChallenge
-  → ClientProof
-  → Enrollment flow 或 Resume flow
-  → SessionReady
-  → first ClientStateSnapshot
-  → Active full snapshots
+production WSS route
+  → device_control::serve_connection
+      → ServerChallenge
+      → ClientProof
+      → Enrollment flow 或 Resume flow
+      → final exact authority/lifecycle check
+      → DeviceRegistry attach
+      → SessionReady
+      → first ClientStateSnapshot
+      → Active full snapshots
 ```
+
+WSS route只移交socket和进程共享的`ServerState`，不编排Device、
+Provisioning、admission和Registry的中间步骤。`serve_connection`是单条连接的
+唯一application orchestration入口；admission的proof、pre-auth和ready barrier都不
+泄漏到transport或其他组件。连接期最终只向attach流程交付现有
+`ControlAuthority`，不再建立admission ticket、attachment ID或authority generation。
 
 `ServerChallenge` 的超时只约束当前连接唯一 `ClientProof` 的提交窗口，不是 Enrollment TTL。
 
@@ -401,9 +421,14 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 1. Client在发送proof前持久化candidate control key；重连可以继续使用该key，但每条连接都建立全新review。
 2. Server先检查candidate public key是否已经是该Machine Hardware ID对应Device的current control key；若是，直接重放已提交authority，不再次审核。
 3. 其他Enrollment只有在进程内Provisioning Gate开启时才能进入pending review，且必须人工审核。
-4. Pending registry保存`review_id`、当前PreAuth attachment和经过验证的非秘密evidence；它不是authority。
-5. Operator只能批准当前仍attached的review，批准前再次检查Gate与attachment fencing。
-6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device Lifecycle/denylist authority，不能复用attempt状态。
+4. Pending registry以`review_id`保存经过验证的非秘密evidence；到WP7接入
+   production WSS时，同一entry再持有一个进程内一次性完成通知sender，
+   originating connection持有receiver。registry中仍存在该`review_id`就表示
+   当前连接仍持有该review，它不是authority。
+5. Operator只能批准当前仍存在的review，批准前再次检查Gate并原子移除对应
+   `review_id`；activation完成后通过该entry的一次性通知把结果交回原连接。
+   连接断开也移除同一个ID，不建立第二个attachment标识，不轮询审批结果。
+6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device lifecycle/denylist authority，不能复用attempt状态。
 7. 连接在activation commit前断开时直接删除pending review；Client重连后重新审核。
 8. Control-key replacement在activation commit前保留旧authority和旧lease。
 9. activation事务原子创建/更新Device并切换current control key；成功commit是Enrollment唯一持久化分界点，所有外部副作用都发生在其后。
@@ -418,7 +443,15 @@ Panel只使用Server生成的`review_id`访问pending registry；该ID不进入D
 
 ### 8.3 Resume 与 lease
 
-Resume proof 使用 current control key。Server 将 proof 映射到准确 `device_id`，再附着该 DeviceActor。
+Resume proof 使用current control key。`serve_connection`让Device Component选出完整
+`ControlAuthority`，admission使用其exact public key验签并要求Device为
+`enabled`。Enrollment Ready和Resume最终都交付同一`ControlAuthority`表示，
+不在中间压缩为只含`device_id`的新ticket。
+
+在Registry attach前，`serve_connection`再让Device Component确认该exact authority仍是
+current且Device仍为`enabled`。这次复查关闭proof验证期间发生disable、
+revoke或control-key replacement的竞态，但完全封装在`device_control`内。
+复查成功后才使用authority中的`device_id`附着DeviceActor。
 
 每个 Device 同时只有一个 current lease：
 
@@ -566,15 +599,20 @@ Server 业务采用纵向组件：
 | Operator | 否 | 账户、会话、角色 |
 | Contest/Import | 否 | Seat、Account、mapping、vault import |
 | Provisioning | 否 | 进程内、重启即closed的Enrollment admission gate |
-| Enrollment | 否 | 内存review registry、activation、control key |
-| Device Lifecycle | 否 | enable/disable/revoke/reprovision |
+| Device | 否 | Device identity、control key、Enrollment review/activation、lifecycle |
 | Gateway | 是 | Gateway intent/input/target/actual |
 | Binding | 是 | negotiation、occupancy、access target/actual |
 | Runtime Config | 是 | DOMjudge origin target/actual |
 | Session Control | 是 | lock/terminate target/actual |
 | Home | 是 | reset target/actual |
 
-组件化不意味着一个 trait 统治所有业务。只有遵守四平面 Desired State 生命周期的 Active 资源实现 `StateComponent`。Enrollment、Operator、Import 和 Lifecycle 保持独立 concrete component。
+组件化不意味着一个 trait 统治所有业务。只有遵守四平面 Desired State 生命周期的
+Active 资源实现 `StateComponent`。Device、Provisioning、Operator 和 Import 保持
+独立 concrete component。`device_control/admission.rs` 只负责连接期的
+Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owner。
+其中间类型是admission module私有实现细节；未来的
+`device_control::serve_connection`使用Device Component的公开事实完成单向编排，
+不把protocol状态移入Device Component。
 
 ### 10.2 `StateComponent`
 
@@ -675,10 +713,11 @@ pub(crate) struct ServerState {
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: ProvisioningComponent,
+    device: DeviceComponent,
 }
 ```
 
-Enrollment、Lifecycle、Active 资源和 Registry 到达各自 WP 时直接增加为明确字段；
+Active 资源和 DeviceRegistry 到达各自 WP 时直接增加为明确字段；
 不增加单层 `Components` wrapper，也不建立 service locator。`Database` 和
 `VaultSession` 只在启动组装时出现，transport 只能取得 component reference。
 
@@ -717,15 +756,19 @@ pub(crate) struct BindingComponent {
 ```text
 Database
 VaultSession
-  → ServerState { Operator, Contest, Import, Provisioning }
+  → ServerState { Operator, Contest, Import, Provisioning, Device }
   → Arc<ServerState>
   → HTTP
 ```
 
-后续在同一个 `ServerState` 中加入 Enrollment、Lifecycle、Active Components 与
-Registry，WSS、DeviceActor 和 HTTP 共享该对象。`GatewayIssuer` 在 Gateway
+后续在同一个 `ServerState` 中加入 Active Components 与 DeviceRegistry，
+WSS、DeviceActor 和 HTTP 共享该对象。`GatewayIssuer` 在 Gateway
 Component 到达时由它持有。不存在全局 singleton，也不允许 transport 重新组装
 组件依赖。
+
+Production WSS handler只把socket交给`device_control::serve_connection`。该入口在模块
+内完成admission、Device authority查询/激活、最终复查和Registry attach；
+handler不传递或match admission中间状态。
 
 ### 11.2 Registry
 
@@ -738,7 +781,7 @@ HashMap<DeviceId, DeviceHandle>
 Registry：
 
 - 启动为空；
-- proof/classification 成功后按 `device_id` 懒创建 Actor；
+- `serve_connection`完成exact authority/lifecycle复查后按`device_id`懒创建Actor；
 - 锁只保护 map，不跨 `.await`、DB 或 channel send；
 - 不按 HWID 创建 MachineActor；
 - 不维护 public-key/HWID alias authority；
@@ -803,9 +846,9 @@ validate current lease
 commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下一份完整
 `ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
 
-### 11.5 Dirty 与周期收敛
+### 11.5 Dirty、Evict 与周期收敛
 
-所有 Server mutation：
+会改变Active resource target的Server mutation：
 
 1. 先提交业务；
 2. 再返回 `ChangeImpact`；
@@ -814,6 +857,11 @@ commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下�
 组件不能反向持有 Registry。
 
 Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期完整上报或低频 Server 全量 refresh 会恢复。当前规模允许 Import/Runtime 全局变化后直接 dirty all connected actors。
+
+Device disable、revoke和current control-key replacement不是普通target变更。它们在
+Device Component commit后对准确`device_id`发送`Evict`，终止current lease；
+`Evict`不能合并为或降级为best-effort `Dirty`。组件仍不反向持有Registry，
+该commit后动作由`DeviceControl`执行。
 
 ### 11.6 Channel 与背压
 
@@ -855,8 +903,8 @@ Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期�
 | `server_vault_records` | Contest/Import + Vault | account PK/FK，一账户一current ciphertext |
 | `account_mappings` | Contest/Import | Seat与Account一对一current mapping |
 | `pending_import_candidate` | Contest/Import | singleton、非秘密、可过期 |
-| `devices` | Device Lifecycle | revoked历史可共享HWID；每HWID至多一个non-revoked |
-| `device_control_keys` | Enrollment | public key PK；每Device一个current |
+| `devices` | Device | revoked历史可共享HWID；每HWID至多一个non-revoked |
+| `device_control_keys` | Device | public key PK；每Device一个current |
 | `gateway_credentials` | Gateway | 每Device一个current generation及其accepted CSR/grant |
 | `binding_negotiations` | Binding | 每UNBOUND Device一个current negotiation及最新拒绝元组 |
 | `device_bindings` | Binding | Binding/Seat/Device唯一occupancy |
@@ -1096,7 +1144,7 @@ Panel展示：
 - typed convergence/drift；
 - Enrollment/Binding evaluation；
 
-Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。当前不提供业务审计页，也不把trace或普通日志作为业务状态来源。
+Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
 ## 16. 错误与可观测性
 
@@ -1127,10 +1175,11 @@ Panel query可以显式汇总组件read model，但不能成为authority、不�
 
 ### 16.2 Distributed tracing
 
-当前可观测性只使用标准 `tracing`、`tracing-opentelemetry`、OpenTelemetry SDK和
-OTLP trace exporter，不实现业务审计、自定义operation log schema、应用内JSONL
-writer或OpenTelemetry Logs signal。trace是best-effort诊断数据，不参与业务正确性、
-授权或事务；Batch Span Processor在资源耗尽或异常退出时可能丢失span。
+业务审计不属于V2范围。Server可观测性只使用标准 `tracing`、
+`tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现自定义
+operation log schema、应用内JSONL writer或OpenTelemetry Logs signal。trace是
+best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源
+耗尽或异常退出时可能丢失span。
 
 设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用
@@ -1216,10 +1265,14 @@ server/src/
     import.rs
     import/db.rs
     provisioning.rs
-    enrollment.rs
-    enrollment/db.rs
-    lifecycle.rs
-    lifecycle/db.rs
+    device.rs
+    device/authority.rs
+    device/db.rs
+    device/db/control_keys.rs
+    device/db/devices.rs
+    device/enrollment.rs
+    device/lifecycle.rs
+    device/types.rs
     gateway.rs
     gateway/db.rs
     binding.rs
@@ -1391,7 +1444,7 @@ just api
 
 ### 当前实现基线
 
-2026-08-28 的实现基线：
+2026-09-01 的实现基线：
 
 - split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在
   `natsume-device-protocol` 中形成；
@@ -1401,8 +1454,12 @@ just api
   Import、Provisioning 持有自己的 concrete dependency，HTTP 只调用组件；
 - Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
   属于 HTTP；
-- Lifecycle 目前只有 validated types 与私有 DB adapter；Server 尚无 production
-  Device WSS、DeviceActor、Enrollment service 或 Active State Component；
+- Device Component 拥有 Device/current control key 的 durable authority、连接期
+  Enrollment review registry 和 lifecycle，并统一编排 Gate 复查、review claim
+  与 activation transaction；`device_control/admission.rs` 拥有纯
+  Challenge/Proof 准入与 Enrollment Ready barrier；
+- Server 尚无 production Device WSS、DeviceActor、DeviceRegistry 或 Active State
+  Component；
 - Daemon 只有 identity、control key/manifest 等 foundation，尚无完整连接循环和
   五资源 Reconciler；
 - `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建，
@@ -1459,18 +1516,22 @@ just api
 - 组件DB私有；
 - Operator/Import既有行为测试保持。
 
-### WP3：Enrollment与Lifecycle
+### WP3：Device authority与Admission（已实现，待审查）
 
 目标：
 
 - 实现Challenge proof分类；
-- 实现内存pending review、人工审核、attachment fencing和activation replay；
+- 实现内存pending review、人工审核、review fencing和activation replay；
 - 实现control-key Resume；
-- 实现enable/disable/revoke/replacement。
+- 实现enable/disable/revoke/replacement；
+- 不提前实现DeviceActor、Active Registry或production WSS。
 
 验收：
 
-- 所有Handshake crash cut；
+- Challenge/Proof、pending review、activation commit 和 Enrollment Ready barrier 的
+  crash cut 全部覆盖；
+- SessionReady/lease/socket 的 crash cut 在 production WSS 与 DeviceActor 落地的
+  WP7 验收；
 - 旧authority在replacement activation前可用；
 - revoked旧key永久拒绝；
 - Enrollment不包含Gateway/Binding。
@@ -1527,6 +1588,8 @@ just api
 
 目标：
 
+- 实现单连接`device_control::serve_connection`编排入口；
+- 使用同一`review_id`的一次性通知交付Enrollment activation结果；
 - 实现Registry、Actor、lease fencing、fresh barrier；
 - 串行组件ingest/materialize；
 - 完整snapshot编解码；
@@ -1534,6 +1597,8 @@ just api
 
 验收：
 
+- admission中间状态不泄漏到WSS handler，attach前exact authority与
+  lifecycle复查覆盖disable/revoke/replacement竞态；
 - 每Device一个current lease；
 - 旧frame零写入；
 - 首帧前零组件写入；
