@@ -737,6 +737,9 @@ pub(crate) struct ServerState {
     device: DeviceComponent,
     gateway: GatewayComponent,
     binding: BindingComponent,
+    runtime: RuntimeConfigComponent,
+    session: SessionControlComponent,
+    home: HomeComponent,
 }
 ```
 
@@ -1151,7 +1154,7 @@ strict parse
 - Device enable/disable/revoke；
 - Enrollment approve/deny。
 
-组件提交后返回：
+`TODO(WP7)`：production `DeviceActor`接入这些mutation后，将提交结果转换为：
 
 ```rust
 enum AffectedDevices {
@@ -1611,15 +1614,20 @@ just api
 
 目标：
 
-- 实现三个Unit-input组件；
-- 替换旧lock/unlock/terminate/reset Command API；
-- 建立typed target表，Actual只属于当前lease内存。
+- 只实现Server concrete Runtime Config、Session Control与Home组件，不预建
+  `StateComponent`、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
+- 实现三个Unit-input资源的durable target与concrete operator mutation method，不恢复
+  已删除的lock/unlock/terminate/reset Command API；
+- concrete component当前不接收不会参与Server transition的Actual；
+  `TODO(WP7)`：由production `DeviceActor`接入并校验fresh Actual；
+- `TODO(WP9)`：Client负责捕获exact graphical session且terminate不得retarget，并负责
+  Home reset的Prepare/Apply/Verify/Recover与durable completion。
 
 验收：
 
-- epoch overflow/regression fail closed；
-- terminate不retarget；
-- Home durable completion；
+- epoch overflow与非法持久值fail closed，target只由显式operator mutation推进；
+- 同一terminate target在下一次显式推进前保持稳定；
+- Home reset target跨组件重建保持durable；
 - Runtime Config不允许修改Control Endpoint。
 
 ### WP7：DeviceActor与生产WSS

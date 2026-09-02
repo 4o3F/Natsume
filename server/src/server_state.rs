@@ -8,9 +8,12 @@ use crate::{
         contest::ContestComponent,
         device::DeviceComponent,
         gateway::{GatewayComponent, GatewayLoadError},
+        home::HomeComponent,
         import::ImportComponent,
         operator::OperatorComponent,
         provisioning::ProvisioningComponent,
+        runtime::RuntimeConfigComponent,
+        session::SessionControlComponent,
     },
     config::{GatewaySiteConfig, ServerConfig},
     db::Database,
@@ -27,13 +30,19 @@ pub(crate) struct ServerState {
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: ProvisioningComponent,
-    // TODO(WP7): Consume Device, Gateway, and Binding from the production DeviceActor.
+    // TODO(WP7): Consume Active components from the production DeviceActor.
     #[allow(dead_code)]
     device: DeviceComponent,
     #[allow(dead_code)]
     gateway: GatewayComponent,
     #[allow(dead_code)]
     binding: BindingComponent,
+    #[allow(dead_code)]
+    runtime: RuntimeConfigComponent,
+    #[allow(dead_code)]
+    session: SessionControlComponent,
+    #[allow(dead_code)]
+    home: HomeComponent,
 }
 
 impl ServerState {
@@ -72,7 +81,10 @@ impl ServerState {
             provisioning: ProvisioningComponent::new(),
             device: DeviceComponent::new(database.clone()),
             gateway,
-            binding: BindingComponent::new(database, vault),
+            binding: BindingComponent::new(database.clone(), vault),
+            runtime: RuntimeConfigComponent::new(database.clone()),
+            session: SessionControlComponent::new(database.clone()),
+            home: HomeComponent::new(database),
         }
     }
 

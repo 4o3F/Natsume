@@ -78,6 +78,7 @@ tower-http = { version = "0.6", default-features = false, features = ["fs", "lim
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-opentelemetry = { version = "0.33", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
+url = "2.5"
 utoipa = { version = "5", default-features = false, features = ["macros", "uuid"] }
 uuid = { version = "1", features = ["serde", "v5", "v7"] }
 x509-parser = { version = "0.18", default-features = false }
