@@ -16,7 +16,7 @@ impl SessionControlComponent {
         Self { database }
     }
 
-    async fn materialize(
+    pub(crate) async fn materialize(
         &self,
         device_id: DeviceId,
     ) -> Result<SessionControlTarget, SessionControlError> {
@@ -117,19 +117,29 @@ fn require_one(updated: usize) -> Result<(), SessionControlError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LockState {
+pub(crate) enum LockState {
     Unlocked,
     Locked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SessionControlTarget {
+pub(crate) struct SessionControlTarget {
     lock_state: LockState,
     terminate_epoch: Option<u64>,
 }
 
+impl SessionControlTarget {
+    pub(crate) const fn lock_state(&self) -> LockState {
+        self.lock_state
+    }
+
+    pub(crate) const fn terminate_epoch(&self) -> Option<u64> {
+        self.terminate_epoch
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-enum SessionControlError {
+pub(crate) enum SessionControlError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("the terminate epoch cannot advance further"))]

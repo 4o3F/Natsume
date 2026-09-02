@@ -6,7 +6,7 @@ use uuid::{Uuid, Variant, Version};
 use crate::db::PersistenceError;
 
 /// Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DeviceId(Uuid);
 
 impl DeviceId {

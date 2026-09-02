@@ -16,7 +16,7 @@ impl HomeComponent {
         Self { database }
     }
 
-    async fn materialize(&self, device_id: DeviceId) -> Result<Option<u64>, HomeError> {
+    pub(crate) async fn materialize(&self, device_id: DeviceId) -> Result<Option<u64>, HomeError> {
         self.database
             .write(move |transaction| {
                 require_existing_device(transaction, &device_id)?;
@@ -78,7 +78,7 @@ fn require_one(updated: usize) -> Result<(), HomeError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-enum HomeError {
+pub(crate) enum HomeError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("the Home reset epoch is exhausted"))]

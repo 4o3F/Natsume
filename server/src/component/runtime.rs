@@ -27,7 +27,7 @@ impl RuntimeConfigComponent {
             .map_err(TransactionError::into_error)
     }
 
-    async fn materialize(&self) -> Result<String, RuntimeConfigError> {
+    pub(crate) async fn materialize(&self) -> Result<String, RuntimeConfigError> {
         self.database
             .read(|transaction| {
                 let rows = db::read_all(transaction)?;
@@ -42,7 +42,7 @@ impl RuntimeConfigComponent {
     }
 }
 
-fn is_canonical_https_origin(value: &str) -> bool {
+pub(crate) fn is_canonical_https_origin(value: &str) -> bool {
     let Ok(url) = Url::parse(value) else {
         return false;
     };
@@ -57,7 +57,7 @@ fn is_canonical_https_origin(value: &str) -> bool {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-enum RuntimeConfigError {
+pub(crate) enum RuntimeConfigError {
     #[snafu(display("the DOMjudge origin is not a canonical HTTPS origin"))]
     InvalidOrigin,
     #[snafu(display("Runtime Config has not been configured"))]

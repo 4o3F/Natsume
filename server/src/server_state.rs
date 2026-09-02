@@ -17,6 +17,7 @@ use crate::{
     },
     config::{GatewaySiteConfig, ServerConfig},
     db::Database,
+    device_control::DeviceRegistry,
     vault::{self, VaultSession},
 };
 
@@ -30,22 +31,21 @@ pub(crate) struct ServerState {
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: ProvisioningComponent,
-    // TODO(WP7): Consume Active components from the production DeviceActor.
-    #[allow(dead_code)]
     device: DeviceComponent,
-    #[allow(dead_code)]
     gateway: GatewayComponent,
-    #[allow(dead_code)]
     binding: BindingComponent,
-    #[allow(dead_code)]
     runtime: RuntimeConfigComponent,
-    #[allow(dead_code)]
     session: SessionControlComponent,
-    #[allow(dead_code)]
     home: HomeComponent,
+    device_registry: DeviceRegistry,
 }
 
 impl ServerState {
+    /// Loads process-wide resources once and constructs every concrete component and
+    /// the Device actor registry from them.
+    ///
+    /// Any configuration, Vault, site, or Origin CA failure aborts startup before a
+    /// partially constructed state becomes visible to transports.
     pub(crate) fn load(
         database: Database,
         config: &ServerConfig,
@@ -85,6 +85,7 @@ impl ServerState {
             runtime: RuntimeConfigComponent::new(database.clone()),
             session: SessionControlComponent::new(database.clone()),
             home: HomeComponent::new(database),
+            device_registry: DeviceRegistry::new(),
         }
     }
 
@@ -104,20 +105,33 @@ impl ServerState {
         &self.provisioning
     }
 
-    // TODO(WP7): Use these accessors from the production DeviceActor.
-    #[allow(dead_code)]
     pub(crate) const fn device(&self) -> &DeviceComponent {
         &self.device
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn gateway(&self) -> &GatewayComponent {
         &self.gateway
     }
 
-    #[allow(dead_code)]
     pub(crate) const fn binding(&self) -> &BindingComponent {
         &self.binding
+    }
+
+    pub(crate) const fn runtime(&self) -> &RuntimeConfigComponent {
+        &self.runtime
+    }
+
+    pub(crate) const fn session(&self) -> &SessionControlComponent {
+        &self.session
+    }
+
+    pub(crate) const fn home(&self) -> &HomeComponent {
+        &self.home
+    }
+
+    /// Returns the process-local owner of one serialized event loop per Device.
+    pub(crate) const fn device_registry(&self) -> &DeviceRegistry {
+        &self.device_registry
     }
 }
 

@@ -16,6 +16,11 @@ pub(crate) use self::types::{
     EvidenceQuality, LifecycleOutcome, MachineHardwareId,
 };
 
+/// Owns Device authority, lifecycle, and process-local Enrollment review invariants.
+///
+/// Persistent authority and lifecycle mutations stay in this component. Pending
+/// reviews are deliberately process-local, with their result sender assigned to the
+/// exact connection that created them.
 pub(crate) struct DeviceComponent {
     database: Database,
     reviews: EnrollmentReviewRegistry,
@@ -29,6 +34,7 @@ impl DeviceComponent {
         }
     }
 
+    /// Selects the database's current control authority for a Machine Hardware ID.
     pub(crate) async fn find_current_authority(
         &self,
         machine_hardware_id: MachineHardwareId,
@@ -54,13 +60,16 @@ impl DeviceComponent {
         if !provisioning.read_window().await.is_open() {
             return Err(EnrollmentStartError::ProvisioningClosed);
         }
-        Ok(EnrollmentStartOutcome::Pending(
-            self.reviews.create(evidence).await,
-        ))
+        let (review, activation) = self.reviews.create(evidence).await;
+        Ok(EnrollmentStartOutcome::Pending(review, activation))
     }
 
     /// Rechecks the gate, atomically claims the exact attached review, then
     /// commits Device/control-key activation without holding the review lock.
+    ///
+    /// Once the review is claimed, the same activation success or failure is sent
+    /// once to the originating connection. If that connection has gone away, delivery
+    /// failure does not roll back the terminal claim or database activation attempt.
     pub(crate) async fn approve_enrollment(
         &self,
         provisioning: &ProvisioningComponent,
@@ -69,25 +78,30 @@ impl DeviceComponent {
         if !provisioning.read_window().await.is_open() {
             return Err(EnrollmentApprovalError::ProvisioningClosed);
         }
-        let evidence = self
+        let (evidence, activation) = self
             .reviews
             .take(review_id)
             .await
             .ok_or(EnrollmentApprovalError::ReviewNotFound)?;
-        authority::activate(
+        let result = authority::activate(
             &self.database,
             evidence.machine_hardware_id(),
             evidence.candidate_public_key(),
             evidence.evidence_quality(),
         )
         .await
-        .map_err(EnrollmentApprovalError::from)
+        .map_err(EnrollmentApprovalError::from);
+        let _ = activation.send(result);
+        result
     }
 
+    /// Cancels one process-local review and wakes its waiting connection by dropping
+    /// the attached result sender.
     pub(crate) async fn remove_enrollment_review(&self, review_id: EnrollmentReviewId) -> bool {
         self.reviews.remove(review_id).await
     }
 
+    /// Lists non-secret projections of reviews pending in this process.
     pub(crate) async fn pending_enrollment_reviews(&self) -> Vec<PendingEnrollmentReview> {
         self.reviews.list().await
     }

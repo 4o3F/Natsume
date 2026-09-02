@@ -1,12 +1,16 @@
 use std::collections::HashMap;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use uuid::Uuid;
 
 use super::types::{
     ActivationError, ControlAuthority, ControlPublicKey, DeviceError, EvidenceQuality,
     MachineHardwareId,
 };
+
+/// The single terminal approval result delivered back to the connection that
+/// created a pending review.
+type EnrollmentResult = Result<ControlAuthority, EnrollmentApprovalError>;
 
 /// Opaque handle for one connection-local Enrollment review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -66,6 +70,10 @@ impl ValidatedEnrollmentEvidence {
     }
 }
 
+/// Read-only review projection returned to the operator boundary.
+///
+/// The identifier fences the terminal approve/remove operation; the evidence is a
+/// display copy and cannot itself activate a Device.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingEnrollmentReview {
     review_id: EnrollmentReviewId,
@@ -82,15 +90,28 @@ impl PendingEnrollmentReview {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Result of admitting validated Enrollment evidence into the Device Component.
+///
+/// `Replay` is an exact match with the already-current authority and permits the
+/// connection to repeat the activation/ready exchange without another review.
+/// `Pending` owns a fresh review and a one-shot receiver for that review's terminal
+/// approval result. Dropping the registry sender wakes the receiver as cancelled.
 pub(crate) enum EnrollmentStartOutcome {
+    /// The same Machine Hardware ID and candidate key are already current.
     Replay(ControlAuthority),
-    Pending(PendingEnrollmentReview),
+    /// Manual review is required before the connection can continue.
+    Pending(PendingEnrollmentReview, oneshot::Receiver<EnrollmentResult>),
 }
 
+/// Failure to start a new pending Enrollment review.
+///
+/// Exact committed replays are classified before the provisioning gate and therefore
+/// do not fail with `ProvisioningClosed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EnrollmentStartError {
+    /// A new candidate cannot create a review while the process-local gate is closed.
     ProvisioningClosed,
+    /// Current-authority lookup failed before replay classification.
     Authority(DeviceError),
 }
 
@@ -100,10 +121,14 @@ impl From<DeviceError> for EnrollmentStartError {
     }
 }
 
+/// Failure returned by an attempt to approve a pending Enrollment review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EnrollmentApprovalError {
+    /// The gate closed before the review was claimed; the review remains pending.
     ProvisioningClosed,
+    /// The review never existed or another terminal action already claimed it.
     ReviewNotFound,
+    /// Activation failed after the review was claimed and was sent to its connection.
     Activation(ActivationError),
 }
 
@@ -113,9 +138,22 @@ impl From<ActivationError> for EnrollmentApprovalError {
     }
 }
 
-/// Process-local pending Enrollment reviews. A new process starts empty.
+/// Process-local pending Enrollment reviews and their originating connections.
+///
+/// Each entry pairs immutable validated evidence with exactly one result sender.
+/// Taking or removing an entry is terminal, so concurrent terminal actions have one
+/// winner. A new process starts empty; committed authorities remain in the database
+/// and are recovered through exact replay instead of restoring pending reviews.
 pub(in crate::component::device) struct EnrollmentReviewRegistry {
-    reviews: Mutex<HashMap<EnrollmentReviewId, ValidatedEnrollmentEvidence>>,
+    reviews: Mutex<
+        HashMap<
+            EnrollmentReviewId,
+            (
+                ValidatedEnrollmentEvidence,
+                oneshot::Sender<EnrollmentResult>,
+            ),
+        >,
+    >,
 }
 
 impl EnrollmentReviewRegistry {
@@ -125,40 +163,52 @@ impl EnrollmentReviewRegistry {
         }
     }
 
+    /// Creates a new review and returns the receiver held by its originating
+    /// connection.
     pub(in crate::component::device) async fn create(
         &self,
         evidence: ValidatedEnrollmentEvidence,
-    ) -> PendingEnrollmentReview {
+    ) -> (PendingEnrollmentReview, oneshot::Receiver<EnrollmentResult>) {
         let review_id = EnrollmentReviewId::new();
+        let (sender, receiver) = oneshot::channel();
         self.reviews
             .lock()
             .await
-            .insert(review_id, evidence.clone());
-        PendingEnrollmentReview {
-            review_id,
-            evidence,
-        }
+            .insert(review_id, (evidence.clone(), sender));
+        (
+            PendingEnrollmentReview {
+                review_id,
+                evidence,
+            },
+            receiver,
+        )
     }
 
+    /// Returns display projections without exposing or consuming result senders.
     pub(in crate::component::device) async fn list(&self) -> Vec<PendingEnrollmentReview> {
         self.reviews
             .lock()
             .await
             .iter()
-            .map(|(&review_id, evidence)| PendingEnrollmentReview {
+            .map(|(&review_id, (evidence, _))| PendingEnrollmentReview {
                 review_id,
                 evidence: evidence.clone(),
             })
             .collect()
     }
 
+    /// Atomically claims the review and its only result sender.
     pub(in crate::component::device) async fn take(
         &self,
         review_id: EnrollmentReviewId,
-    ) -> Option<ValidatedEnrollmentEvidence> {
+    ) -> Option<(
+        ValidatedEnrollmentEvidence,
+        oneshot::Sender<EnrollmentResult>,
+    )> {
         self.reviews.lock().await.remove(&review_id)
     }
 
+    /// Cancels a pending review; dropping its sender wakes the waiting connection.
     pub(in crate::component::device) async fn remove(&self, review_id: EnrollmentReviewId) -> bool {
         self.take(review_id).await.is_some()
     }
@@ -189,21 +239,27 @@ mod tests {
     async fn create_lists_the_review_and_take_is_terminal() {
         let registry = EnrollmentReviewRegistry::new();
         let expected = evidence(7);
-        let created = registry.create(expected.clone()).await;
+        let (created, activation) = registry.create(expected.clone()).await;
 
         assert_eq!(created.review_id.0.get_version(), Some(Version::SortRand));
         assert_eq!(created.evidence(), &expected);
         assert_eq!(registry.list().await, vec![created.clone()]);
-        assert_eq!(registry.take(created.review_id()).await, Some(expected));
-        assert_eq!(registry.take(created.review_id()).await, None);
+        let (taken, sender) = registry
+            .take(created.review_id())
+            .await
+            .unwrap_or_else(|| panic!("the review was not present"));
+        assert_eq!(taken, expected);
+        drop(sender);
+        assert!(activation.await.is_err());
+        assert!(registry.take(created.review_id()).await.is_none());
         assert!(registry.list().await.is_empty());
     }
 
     #[tokio::test]
     async fn remove_deletes_only_the_selected_review() {
         let registry = EnrollmentReviewRegistry::new();
-        let first = registry.create(evidence(1)).await;
-        let second = registry.create(evidence(2)).await;
+        let (first, _) = registry.create(evidence(1)).await;
+        let (second, _) = registry.create(evidence(2)).await;
 
         assert!(registry.remove(first.review_id()).await);
         assert!(!registry.remove(first.review_id()).await);
@@ -213,7 +269,8 @@ mod tests {
     #[tokio::test]
     async fn concurrent_terminal_actions_have_one_winner() {
         let registry = Arc::new(EnrollmentReviewRegistry::new());
-        let review_id = registry.create(evidence(9)).await.review_id();
+        let (review, _) = registry.create(evidence(9)).await;
+        let review_id = review.review_id();
 
         let first_registry = Arc::clone(&registry);
         let first = tokio::spawn(async move { first_registry.take(review_id).await.is_some() });

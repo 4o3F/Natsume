@@ -612,7 +612,7 @@ Home reset 使用单调 `reset_epoch`：
 
 Server 业务采用纵向组件：
 
-| 组件 | 是否实现 `StateComponent` | 主要职责 |
+| 组件 | 是否由 `DeviceActor` 编排 | 主要职责 |
 |---|---|---|
 | Operator | 否 | 账户、会话、角色 |
 | Contest/Import | 否 | Seat、Account、mapping、vault import |
@@ -624,68 +624,30 @@ Server 业务采用纵向组件：
 | Session Control | 是 | lock/terminate target/actual |
 | Home | 是 | reset target/actual |
 
-组件化不意味着一个 trait 统治所有业务。只有遵守四平面 Desired State 生命周期的
-Active 资源实现 `StateComponent`。Device、Provisioning、Operator 和 Import 保持
-独立 concrete component。`device_control/admission.rs` 只负责连接期的
+组件化不意味着一个 trait 统治所有业务。Active资源由`DeviceActor`按固定wire结构
+显式编排；各component只接收自身transition实际消费的Input或Actual，不用统一trait
+制造`()`、空Intent或未使用参数。Device、Provisioning、Operator和Import保持独立
+concrete component。`device_control/admission.rs` 只负责连接期的
 Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owner。
-其中间类型是admission module私有实现细节；未来的
+其中间类型是admission module私有实现细节；
 `device_control::serve_connection`使用Device Component的公开事实完成单向编排，
 不把protocol状态移入Device Component。
 
-### 10.2 `StateComponent`
+### 10.2 Active component contract
 
-trait 是 Server-local contract，不放入共享 crate。它在 WP7 随 production
-`DeviceActor` 的真实编排消费者一起落地；在此之前不创建无消费者的 trait、空实现
-或占位组件集合。WP4 的 concrete `GatewayComponent::ingest/materialize` 保持以下
-未来形状，但不预建 trait：
+production `DeviceActor`是当前唯一编排消费者，而五个资源的Input、Actual、Intent、
+Target和错误均不同，因此不建立`StateComponent` trait或泛型runner。Actor直接调用
+concrete component method；固定顺序和完整wire字段在调用点可见。
 
-```rust
-pub(crate) trait StateComponent: Send + Sync + 'static {
-    type ClientInput: Send;
-    type ActualState: Send;
-    type PublicIntent: Send;
-    type ConcreteTarget: Send;
-    type Error: std::error::Error + Send + Sync + 'static;
-
-    fn ingest(
-        &self,
-        context: &DeviceContext,
-        input: Self::ClientInput,
-        actual: Self::ActualState,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
-    fn materialize(
-        &self,
-        context: &DeviceContext,
-    ) -> impl Future<
-        Output = Result<
-            Materialized<Self::PublicIntent, Self::ConcreteTarget>,
-            Self::Error,
-        >,
-    > + Send;
-}
-```
-
-`ClientInput` 是该资源完整 input projection：
-
-- Gateway/Binding 使用 `Option<T>` 表达 wire field absence；
-- Runtime/Session/Home 使用 `()`；
-- Actual 类型始终是 required typed value。
-
-`PublicIntent`：
-
-- Gateway/Binding 使用 `Option<T>`；
-- Unit-input 资源使用 `()`。
-
-`ingest` 必须：
+资源transition必须：
 
 1. 只消费当前lease已经整体校验通过的fresh Input/Actual；
-2. 根据fresh Actual运行组件Intent Policy；
-3. 根据fresh Input运行资源transition；
+2. 只把fresh Actual传给确实据此运行Intent Policy的component；
+3. 只把fresh Input传给确实据此运行transition的component；
 4. 只把恢复必需的accepted input与authority写入组件事务，不保存原始projection；
 5. 保持exact replay幂等。
 
-`materialize` 必须：
+资源materialize必须：
 
 1. 从自己的数据库视图读取ServerIntent与已接受的必要Input事实；
 2. 调用组件内部纯`resolve(intent, accepted_input)`；
@@ -694,25 +656,15 @@ pub(crate) trait StateComponent: Send + Sync + 'static {
 
 组件可以在内部执行有限的 transition→re-read→resolve，但不建立通用 fixed-point engine。每个组件明确证明自己的 transition 会终止。
 
-### 10.3 Active 资源的静态组件集合
+### 10.3 Active 资源的静态编排
 
-WP4-WP6 先实现 concrete Active components；WP7 在 production `DeviceActor` 需要
-统一编排时建立 `StateComponent` 与静态 `StateComponents`，按固定 wire structure
-显式组合字段：
-
-```rust
-pub(crate) struct StateComponents {
-    gateway: GatewayComponent,
-    binding: BindingComponent,
-    runtime: RuntimeConfigComponent,
-    session: SessionControlComponent,
-    home: HomeComponent,
-}
-```
+WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过
+`ServerState`的窄accessor按固定wire structure显式调用它们，不增加
+`StateComponents` wrapper。
 
 不使用：
 
-- `Vec<Box<dyn StateComponent>>`；
+- `Vec<Box<dyn ResourceComponent>>`式动态集合；
 - 字符串 component ID；
 - `Any`/downcast；
 - 宏生成的异构执行器；
@@ -830,16 +782,14 @@ HWID 并发和一个 non-revoked Device 约束由数据库 unique constraint 最
 enum DeviceEvent {
     Attach { session_id, outbound },
     ClientState { session_id, snapshot },
-    Dirty,
     Disconnected { session_id },
-    Evict,
 }
 ```
 
 Actor 只拥有临时协调状态：
 
 - current lease；
-- 首个 ClientState barrier；
+- 首个有效 ClientState 到达前不生成target；
 - 有界 mailbox；
 - current outbound sender。
 
@@ -859,28 +809,24 @@ validate current lease
   → validate complete snapshot
   → Gateway ingest
   → Binding ingest
-  → Runtime ingest
-  → Session ingest
-  → Home ingest
   → Gateway materialize
   → Binding materialize
   → Runtime materialize
   → Session materialize
   → Home materialize
-  → final lifecycle/lease check
   → encode complete ServerStateSnapshot
   → send on current lease
 ```
 
 初期顺序执行。SQLite 是单写者，提前并行只会增加 cancellation、错误聚合和 race。只有测量证明瓶颈后才考虑并行 materialize。
 
-跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation 在
-commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下一份完整
-`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
+跨组件读取不要求同一数据库 snapshot。组件必须语义独立；`TODO(WP8)`：Operator
+mutation接入后在commit后发送`Dirty`，若发生在materialize期间，会排队触发下一份
+完整`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
 
 ### 11.5 Dirty、Evict 与周期收敛
 
-会改变Active resource target的Server mutation：
+`TODO(WP8)`：会改变Active resource target的Server mutation接入时：
 
 1. 先提交业务；
 2. 再返回 `ChangeImpact`；
@@ -890,7 +836,7 @@ commit 后发送 `Dirty`，若发生在 materialize 期间，会排队触发下�
 
 Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期完整上报或低频 Server 全量 refresh 会恢复。当前规模允许 Import/Runtime 全局变化后直接 dirty all connected actors。
 
-Device disable、revoke和current control-key replacement不是普通target变更。它们在
+`TODO(WP8)`：Device disable、revoke和current control-key replacement不是普通target变更。它们在
 Device Component commit后对准确`device_id`发送`Evict`，终止current lease；
 `Evict`不能合并为或降级为best-effort `Dirty`。组件仍不反向持有Registry，
 该commit后动作由`DeviceControl`执行。
@@ -899,8 +845,8 @@ Device Component commit后对准确`device_id`发送`Evict`，终止current leas
 
 - Actor mailbox 和每 lease outbound queue 都必须有界；
 - ClientState 不能静默丢弃；
-- 重复 Dirty 可以合并或 best-effort 丢弃；
-- outbound 长期阻塞时终止 lease；
+- `TODO(WP8)`：重复 Dirty 可以合并或 best-effort 丢弃；
+- outbound queue满时终止 lease；
 - 不为每个资源创建 channel；
 - 不创建持久化网络 outbox。
 
@@ -1076,7 +1022,7 @@ trait Reconciler {
 
 ### 14.2 不创建共享 component crate
 
-`StateComponent` 只在 Server；`InputProvider`/`Reconciler` 只在 Client。它们职责和dependency完全不同。
+Server使用concrete component method；`InputProvider`/`Reconciler`只在Client。双方职责和dependency完全不同。
 
 暂不创建 `device-control-model`、`core` 或 `shared-components`。完成 Gateway 和 Binding 双端实现后，只有出现至少两个真实消费者使用的完全相同纯逻辑，才允许提取具体命名的共享 crate。共享 crate禁止依赖：
 
@@ -1154,7 +1100,7 @@ strict parse
 - Device enable/disable/revoke；
 - Enrollment approve/deny。
 
-`TODO(WP7)`：production `DeviceActor`接入这些mutation后，将提交结果转换为：
+`TODO(WP8)`：Operator mutation接入后，将提交结果转换为：
 
 ```rust
 enum AffectedDevices {
@@ -1572,8 +1518,8 @@ just api
 
 目标：
 
-- 只实现Server concrete `GatewayComponent`，提供与未来`StateComponent`一致的
-  `ingest/materialize`形状，不预建trait、静态集合或dynamic registry；
+- 只实现Server concrete `GatewayComponent`及当前资源需要的`ingest/materialize`，
+  不预建统一trait、静态集合或dynamic registry；
 - 实现accepted CSR current fact，不持久化原始Client projection；
 - Intent Policy、CSR validation、sign/CAS、grant/replacement；
 - Client private key/CSR生成、durable artifact与Caddy收敛留在WP9。
@@ -1589,12 +1535,12 @@ just api
 
 目标：
 
-- 只实现Server concrete `BindingComponent`，不预建`StateComponent` trait、
+- 只实现Server concrete `BindingComponent`，不预建统一component trait、
   `DeviceActor`或production WSS；
 - 实现每个unbound Device唯一current negotiation、submission epoch fencing、bounded
   evaluation和accept/unbind；
 - concrete `BindingComponent::ingest` 当前只接收会参与transition的`BindingInput`；
-  `TODO(WP7)`：由production `DeviceActor`接入并校验Binding Actual；
+  production `DeviceActor`在组件调用前校验Binding Actual；
 - 一致性读取Contest/Vault；
 - 生成Bound/Unbound target；
 - Server不建立Prompt Command或HTTP/Panel入口；
@@ -1615,11 +1561,11 @@ just api
 目标：
 
 - 只实现Server concrete Runtime Config、Session Control与Home组件，不预建
-  `StateComponent`、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
+  统一component trait、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
 - 实现三个Unit-input资源的durable target与concrete operator mutation method，不恢复
   已删除的lock/unlock/terminate/reset Command API；
 - concrete component当前不接收不会参与Server transition的Actual；
-  `TODO(WP7)`：由production `DeviceActor`接入并校验fresh Actual；
+  production `DeviceActor`在组件调用前校验fresh Actual；
 - `TODO(WP9)`：Client负责捕获exact graphical session且terminate不得retarget，并负责
   Home reset的Prepare/Apply/Verify/Recover与durable completion。
 
@@ -1637,11 +1583,12 @@ just api
 - 实现单连接`device_control::serve_connection`编排入口；
 - 使用同一`review_id`的一次性通知交付Enrollment activation结果；
 - 实现Registry、Actor、lease fencing、fresh barrier；
-- 为production Actor编排建立Server-local `StateComponent`和静态
-  `StateComponents`，不增加dynamic registry；
+- production Actor直接调用`ServerState`中的concrete components，不增加
+  `StateComponent`、`StateComponents`或dynamic registry；
 - 串行组件ingest/materialize；
 - 完整snapshot编解码；
-- Dirty和背压。
+- bounded mailbox与outbound背压；
+- `TODO(WP8)`：随真实Operator mutation接入Registry `Dirty`/`Evict`入口。
 
 验收：
 
@@ -1726,7 +1673,7 @@ just api
 
 - 本文是唯一人工维护架构文档；
 - 协议中没有Command、Bundle、通用payload或资源专用操作packet；
-- Server所有Active资源实现同一`StateComponent`生命周期并静态组合；
+- Server的production `DeviceActor`按固定wire结构显式编排所有concrete Active资源；
 - 每个业务组件内部拥有自己的数据库访问和transaction；
 - Server Component与Client Reconciler没有共享业务crate；
 - HTTP、WSS和本地IPC没有跨transport错误码registry；

@@ -329,13 +329,19 @@ async fn exact_replay_bypasses_the_closed_gate_but_a_new_candidate_does_not() {
         .component
         .start_enrollment(&provisioning, evidence(machine, current_key))
         .await;
-    assert_eq!(replay, Ok(EnrollmentStartOutcome::Replay(current)));
+    assert!(matches!(
+        replay,
+        Ok(EnrollmentStartOutcome::Replay(authority)) if authority == current
+    ));
 
     let rejected = fixture
         .component
         .start_enrollment(&provisioning, evidence(machine, key(0x72)))
         .await;
-    assert_eq!(rejected, Err(EnrollmentStartError::ProvisioningClosed));
+    assert!(matches!(
+        rejected,
+        Err(EnrollmentStartError::ProvisioningClosed)
+    ));
     assert!(
         fixture
             .component
@@ -357,7 +363,7 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
         .start_enrollment(&provisioning, evidence(machine, candidate))
         .await
         .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
-    let EnrollmentStartOutcome::Pending(pending) = pending else {
+    let EnrollmentStartOutcome::Pending(pending, activation) = pending else {
         panic!("new authority candidate unexpectedly replayed");
     };
 
@@ -385,6 +391,12 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
         .await
         .unwrap_or_else(|error| panic!("fenced approval failed: {error:?}"));
     assert_eq!(activated.control_public_key(), candidate);
+    assert_eq!(
+        activation
+            .await
+            .unwrap_or_else(|error| panic!("activation notification failed: {error}")),
+        Ok(activated)
+    );
     assert!(
         fixture
             .component
@@ -413,7 +425,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
         .start_enrollment(&provisioning, evidence(machine, candidate))
         .await
         .unwrap_or_else(|error| panic!("first review creation failed: {error:?}"));
-    let EnrollmentStartOutcome::Pending(first) = first else {
+    let EnrollmentStartOutcome::Pending(first, first_activation) = first else {
         panic!("new authority candidate unexpectedly replayed");
     };
     assert!(
@@ -422,6 +434,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
             .remove_enrollment_review(first.review_id())
             .await
     );
+    assert!(first_activation.await.is_err());
     assert_eq!(
         fixture
             .component
@@ -439,7 +452,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
         .start_enrollment(&provisioning, evidence(machine, candidate))
         .await
         .unwrap_or_else(|error| panic!("second review creation failed: {error:?}"));
-    let EnrollmentStartOutcome::Pending(second) = second else {
+    let EnrollmentStartOutcome::Pending(second, second_activation) = second else {
         panic!("uncommitted authority candidate unexpectedly replayed");
     };
     let activated = fixture
@@ -447,13 +460,22 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
         .approve_enrollment(&provisioning, second.review_id())
         .await
         .unwrap_or_else(|error| panic!("second review activation failed: {error:?}"));
+    assert_eq!(
+        second_activation
+            .await
+            .unwrap_or_else(|error| panic!("activation notification failed: {error}")),
+        Ok(activated)
+    );
 
     provisioning.close_window().await;
     let replay = fixture
         .component
         .start_enrollment(&provisioning, evidence(machine, candidate))
         .await;
-    assert_eq!(replay, Ok(EnrollmentStartOutcome::Replay(activated)));
+    assert!(matches!(
+        replay,
+        Ok(EnrollmentStartOutcome::Replay(authority)) if authority == activated
+    ));
     assert!(
         fixture
             .component

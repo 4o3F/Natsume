@@ -52,8 +52,10 @@ zeroize.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
+futures-util.workspace = true
 regex.workspace = true
 rustls = { workspace = true, features = ["tls12"] }
+tokio-tungstenite.workspace = true
 tower.workspace = true
 
 [lints]

@@ -44,6 +44,7 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .merge(handler::provisioning::routes(state.clone()))
         .merge(handler::session::protected_routes(state.clone()));
     let public = Router::new()
+        .merge(handler::device_control::routes())
         .merge(handler::health::routes())
         .merge(handler::session::public_routes());
     public.merge(authenticated)

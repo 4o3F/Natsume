@@ -9,17 +9,21 @@ use semver::Version;
 use snafu::Snafu;
 
 use crate::component::device::{
-    ControlAuthority, ControlPublicKey, DeviceId, EvidenceQuality, MachineHardwareId,
+    ControlAuthority, ControlPublicKey, EvidenceQuality, MachineHardwareId,
     ValidatedEnrollmentEvidence,
 };
 
 /// The connection-local window in which exactly one Client proof may be submitted.
-struct ProofWindow {
+///
+/// Taking the challenge during submission makes every attempt terminal, including a
+/// malformed one. The caller closes the connection on any [`AdmissionError`] rather
+/// than reopening the proof window.
+pub(super) struct ProofWindow {
     challenge: Option<ServerChallenge>,
 }
 
 impl ProofWindow {
-    fn new() -> Result<Self, AdmissionError> {
+    pub(super) fn new() -> Result<Self, AdmissionError> {
         let mut challenge_nonce = [0_u8; 32];
         getrandom::fill(&mut challenge_nonce).map_err(|_| AdmissionError::EntropyUnavailable)?;
         Ok(Self::from_challenge_nonce(challenge_nonce))
@@ -33,11 +37,11 @@ impl ProofWindow {
         }
     }
 
-    fn server_challenge(&self) -> Option<&ServerChallenge> {
+    pub(super) fn server_challenge(&self) -> Option<&ServerChallenge> {
         self.challenge.as_ref()
     }
 
-    fn submit(
+    pub(super) fn submit(
         &mut self,
         envelope: ClientHandshakeEnvelope,
     ) -> Result<ProofSubmission, AdmissionError> {
@@ -52,8 +56,14 @@ impl ProofWindow {
     }
 }
 
-enum ProofSubmission {
+/// Semantically classified proof ready for its purpose-specific authority step.
+///
+/// Enrollment has already verified the candidate key, while Resume deliberately
+/// retains the signed proof until the Device Component selects the current key.
+pub(super) enum ProofSubmission {
+    /// A proved candidate awaiting replay classification or manual review.
     Enrollment(EnrollmentPreAuth),
+    /// A validated Machine Hardware ID whose proof awaits current-authority verification.
     Resume(ResumeProof),
 }
 
@@ -65,19 +75,19 @@ enum ProofSubmission {
 /// remains on the originating connection. Consuming it in [`Self::activated`] binds the
 /// eventual authority to the exact candidate key proved by that connection before an
 /// [`EnrollmentReadyBarrier`] can be created.
-struct EnrollmentPreAuth {
+pub(super) struct EnrollmentPreAuth {
     evidence: ValidatedEnrollmentEvidence,
 }
 
 impl EnrollmentPreAuth {
     /// Copies the non-secret facts needed for manual review without discarding the
     /// connection's proof-to-activation binding.
-    fn review_evidence(&self) -> ValidatedEnrollmentEvidence {
+    pub(super) fn review_evidence(&self) -> ValidatedEnrollmentEvidence {
         self.evidence.clone()
     }
 
     /// Accepts only an authority for the candidate key proved by this connection.
-    fn activated(
+    pub(super) fn activated(
         self,
         authority: ControlAuthority,
     ) -> Result<EnrollmentReadyBarrier, AdmissionError> {
@@ -89,28 +99,31 @@ impl EnrollmentPreAuth {
             expected_authority: EnrollmentAuthority {
                 device_id: device_id.as_text(),
             },
-            device_id,
-            enabled: authority.device_state().is_enabled(),
+            authority,
         })
     }
 }
 
 /// A semantic Resume proof awaiting the Device Component's authority selection.
-struct ResumeProof {
+///
+/// Keeping the original challenge and proof here prevents the transport from
+/// authenticating against a caller-selected key. The value is consumed by
+/// [`Self::verify_authority`], so it cannot authorize more than one admission path.
+pub(super) struct ResumeProof {
     machine_hardware_id: MachineHardwareId,
     challenge: ServerChallenge,
     proof: ClientProof,
 }
 
 impl ResumeProof {
-    const fn machine_hardware_id(&self) -> MachineHardwareId {
+    pub(super) const fn machine_hardware_id(&self) -> MachineHardwareId {
         self.machine_hardware_id
     }
 
-    fn verify_authority(
+    pub(super) fn verify_authority(
         self,
         authority: Option<ControlAuthority>,
-    ) -> Result<DeviceId, AdmissionError> {
+    ) -> Result<ControlAuthority, AdmissionError> {
         let authority = authority.ok_or(AdmissionError::ResumeAuthorityUnavailable)?;
         verify_client_proof(
             authority.control_public_key().as_bytes(),
@@ -121,30 +134,36 @@ impl ResumeProof {
         if !authority.device_state().is_enabled() {
             return Err(AdmissionError::ResumeAuthorityInactive);
         }
-        Ok(authority.device_id())
+        Ok(authority)
     }
 }
 
 /// The exact activated authority echo required before a Device may proceed.
-struct EnrollmentReadyBarrier {
+///
+/// This connection-local barrier is created only after candidate-key activation
+/// matches [`EnrollmentPreAuth`]. It releases the same enabled authority only when
+/// the Client echoes its Device ID; mismatch or inactivity terminates admission.
+pub(super) struct EnrollmentReadyBarrier {
     expected_authority: EnrollmentAuthority,
-    device_id: DeviceId,
-    enabled: bool,
+    authority: ControlAuthority,
 }
 
 impl EnrollmentReadyBarrier {
-    const fn enrollment_activated(&self) -> &EnrollmentAuthority {
+    pub(super) const fn enrollment_activated(&self) -> &EnrollmentAuthority {
         &self.expected_authority
     }
 
     /// Validates the exact authority echo. Repeating the same echo is idempotent.
-    fn receive(&self, envelope: ClientHandshakeEnvelope) -> Result<DeviceId, AdmissionError> {
+    pub(super) fn receive(
+        &self,
+        envelope: ClientHandshakeEnvelope,
+    ) -> Result<ControlAuthority, AdmissionError> {
         match envelope.body {
             Some(client_handshake_envelope::Body::EnrollmentReady(authority))
                 if authority == self.expected_authority =>
             {
-                if self.enabled {
-                    Ok(self.device_id)
+                if self.authority.device_state().is_enabled() {
+                    Ok(self.authority)
                 } else {
                     Err(AdmissionError::EnrollmentAuthorityInactive)
                 }
@@ -157,6 +176,8 @@ impl EnrollmentReadyBarrier {
     }
 }
 
+/// Validates shared proof metadata and separates Enrollment verification from
+/// Resume's database-selected-key verification.
 fn classify_proof(
     challenge: ServerChallenge,
     proof: ClientProof,
@@ -213,8 +234,12 @@ fn is_canonical_version(value: &str) -> bool {
     Version::parse(value).is_ok_and(|parsed| parsed.to_string() == value)
 }
 
+/// Errors that terminate the current Device Control admission attempt.
+///
+/// The transport does not retry or downgrade any of these failures on the same
+/// connection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-enum AdmissionError {
+pub(super) enum AdmissionError {
     #[snafu(display("the connection proof window was already consumed"))]
     ProofWindowConsumed,
     #[snafu(display("unexpected Device Control handshake message"))]
