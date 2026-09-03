@@ -129,6 +129,10 @@ async fn invalid_or_exhausted_persisted_targets_fail_closed() {
         fixture.component.materialize(unknown_lock).await,
         Err(SessionControlError::InvalidPersistedFacts)
     );
+    assert!(matches!(
+        fixture.component.read_all_current().await,
+        Err(SessionControlError::InvalidPersistedFacts)
+    ));
 
     for invalid_epoch in [0, -1] {
         let device_id = fixture.insert_device().await;

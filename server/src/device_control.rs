@@ -18,7 +18,7 @@ mod admission;
 mod convergence;
 mod state;
 
-pub(crate) use convergence::{DeviceConvergenceError, DeviceConvergenceResponse};
+pub(crate) use convergence::{DeviceConvergenceError, DeviceConvergenceResponse, DeviceStatus};
 
 use crate::{
     component::device::{

@@ -1,5 +1,6 @@
 use diesel::{
-    BoolExpressionMethods, ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, dsl::exists,
+    BoolExpressionMethods, ExpressionMethods, JoinOnDsl, NullableExpressionMethods,
+    OptionalExtension, QueryDsl, RunQueryDsl, dsl::exists,
 };
 use uuid::{Uuid, Variant, Version};
 
@@ -13,6 +14,15 @@ use crate::{
 };
 
 type PersistedNegotiation = (String, Option<i64>, Option<String>, Option<String>);
+type PersistedBoundContext = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
 
 pub(in crate::component::binding) struct PersistedNegotiationRow {
     negotiation_id: Uuid,
@@ -161,6 +171,36 @@ pub(in crate::component::binding) fn find_negotiation(
         .map_err(|_| PersistenceError::OperationFailed)?
         .map(parse_negotiation)
         .transpose()
+}
+
+pub(in crate::component::binding) fn list_negotiations(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(String, PersistedNegotiationRow)>, PersistenceError> {
+    binding_negotiations::table
+        .select((
+            binding_negotiations::device_id,
+            binding_negotiations::negotiation_id,
+            binding_negotiations::submission_epoch,
+            binding_negotiations::seat_code,
+            binding_negotiations::evaluation_error_code,
+        ))
+        .load::<(String, String, Option<i64>, Option<String>, Option<String>)>(
+            transaction.connection(),
+        )
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .into_iter()
+        .map(
+            |(device_id, negotiation_id, submission_epoch, seat_code, evaluation_error_code)| {
+                parse_negotiation((
+                    negotiation_id,
+                    submission_epoch,
+                    seat_code,
+                    evaluation_error_code,
+                ))
+                .map(|row| (device_id, row))
+            },
+        )
+        .collect()
 }
 
 pub(in crate::component::binding) fn insert_negotiation(
@@ -361,6 +401,65 @@ pub(in crate::component::binding) fn find_bound_context(
         domjudge_username,
         credential_revision,
     }))
+}
+
+pub(in crate::component::binding) fn list_bound_contexts(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(String, PersistedBoundContextRow)>, PersistenceError> {
+    device_bindings::table
+        .left_join(seats::table.on(seats::seat_id.eq(device_bindings::seat_id)))
+        .left_join(account_mappings::table.on(account_mappings::seat_id.eq(seats::seat_id)))
+        .left_join(accounts::table.on(accounts::account_id.eq(account_mappings::account_id)))
+        .select((
+            device_bindings::device_id,
+            device_bindings::binding_id,
+            device_bindings::seat_id,
+            seats::seat_code.nullable(),
+            account_mappings::account_id.nullable(),
+            accounts::domjudge_username.nullable(),
+            accounts::credential_revision.nullable(),
+        ))
+        .load::<PersistedBoundContext>(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .into_iter()
+        .map(parse_bound_context)
+        .collect()
+}
+
+fn parse_bound_context(
+    (
+        device_id,
+        binding_id,
+        seat_id,
+        seat_code,
+        account_id,
+        domjudge_username,
+        credential_revision,
+    ): PersistedBoundContext,
+) -> Result<(String, PersistedBoundContextRow), PersistenceError> {
+    let binding_id = canonical_uuid_v7(&binding_id)?;
+    let _seat_id = canonical_uuid_v7(&seat_id)?;
+    let seat_code = seat_code.ok_or(PersistenceError::InvalidPersistedData)?;
+    let account_id = canonical_uuid_v7(
+        account_id
+            .as_deref()
+            .ok_or(PersistenceError::InvalidPersistedData)?,
+    )?;
+    let domjudge_username = domjudge_username.ok_or(PersistenceError::InvalidPersistedData)?;
+    let credential_revision = credential_revision.ok_or(PersistenceError::InvalidPersistedData)?;
+    if credential_revision < 1 {
+        return Err(PersistenceError::InvalidPersistedData);
+    }
+    Ok((
+        device_id,
+        PersistedBoundContextRow {
+            binding_id,
+            account_id,
+            seat_code,
+            domjudge_username,
+            credential_revision,
+        },
+    ))
 }
 
 fn parse_negotiation(

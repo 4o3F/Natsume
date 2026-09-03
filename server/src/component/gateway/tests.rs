@@ -50,6 +50,13 @@ async fn first_materialization_creates_one_waiting_intent() {
         fixture.component.read_current(fixture.device_id).await,
         Ok(Some(materialized))
     );
+    let all = fixture
+        .component
+        .read_all_current()
+        .await
+        .unwrap_or_else(|error| panic!("Gateway batch read failed: {error}"));
+    assert_eq!(all.len(), 1);
+    assert!(all.contains_key(&fixture.device_id));
 }
 
 #[tokio::test]
@@ -267,6 +274,10 @@ async fn invalid_persisted_presence_and_der_fail_closed() {
             .await,
         Err(GatewayError::InvalidPersistedFacts)
     );
+    assert!(matches!(
+        invalid_presence.component.read_all_current().await,
+        Err(GatewayError::InvalidPersistedFacts)
+    ));
 
     let invalid_csr = Fixture::new().await;
     invalid_csr

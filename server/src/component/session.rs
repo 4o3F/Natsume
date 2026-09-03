@@ -1,5 +1,7 @@
 mod db;
 
+use std::collections::HashMap;
+
 use snafu::Snafu;
 
 use crate::{
@@ -37,6 +39,26 @@ impl SessionControlComponent {
                 db::find_target(transaction, &device_id)?
                     .map(parse_target)
                     .transpose()
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    /// Reads and validates every initialized Session Control target in one query.
+    pub(crate) async fn read_all_current(
+        &self,
+    ) -> Result<HashMap<DeviceId, SessionControlTarget>, SessionControlError> {
+        self.database
+            .read(|transaction| {
+                let rows = db::list_targets(transaction)?;
+                let mut targets = HashMap::with_capacity(rows.len());
+                for (device_id, lock_state, terminate_epoch) in rows {
+                    let device_id = DeviceId::parse(&device_id)
+                        .ok_or(SessionControlError::InvalidPersistedFacts)?;
+                    let target = parse_target((lock_state, terminate_epoch))?;
+                    targets.insert(device_id, target);
+                }
+                Ok(targets)
             })
             .await
             .map_err(TransactionError::into_error)

@@ -34,6 +34,18 @@ pub(in crate::component::home) fn find_reset_epoch(
         .map_err(|_| PersistenceError::OperationFailed)
 }
 
+pub(in crate::component::home) fn list_reset_epochs(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(String, Option<i64>)>, PersistenceError> {
+    device_home_targets::table
+        .select((
+            device_home_targets::device_id,
+            device_home_targets::reset_epoch,
+        ))
+        .load(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)
+}
+
 pub(in crate::component::home) fn insert_target(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,

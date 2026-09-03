@@ -1139,11 +1139,15 @@ Panel展示：
 Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
 `DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation，
-不缓存target或convergence。单Device convergence query由`DeviceControl`读取各组件当前
-durable target，与Registry返回的current-lease observation即时比较；HTTP handler只处理
-请求、错误映射和序列化。这样离线Device、进程重启后尚未创建Actor的Device，以及丢失
-best-effort Dirty的Device仍以数据库当前target为准。当前Panel只有单Device详情调用方，
-不预建批量查询、跨组件缓存或通用collection abstraction。
+不缓存target或convergence。`DeviceControl`负责把各组件当前durable target与Registry返回的
+current-lease observation即时比较；HTTP handler只处理请求、错误映射和序列化。单Device
+详情保留直接读取路径；Device collection为完整fleet状态执行固定批量读取：Device、Gateway、
+Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public
+context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle，
+释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。这样数据库业务
+查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建
+Actor的Device，以及丢失best-effort Dirty的Device仍以数据库当前target为准。该Panel投影不是
+跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
 
 ## 16. 错误与可观测性
 
@@ -1450,7 +1454,7 @@ just api
 - 唯一 initial migration 和 Diesel schema 已统一到 17 张目标表，不再包含
   Command、Observed、Token 或 Bundle 旧模型；
 - Server 已建立纵向 `component` 结构和进程级 `ServerState`；所有业务组件持有自己的
-  concrete dependency，HTTP 只调用组件；
+  concrete dependency，HTTP只调用component facade或`DeviceControl` application coordination；
 - Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
   属于 HTTP；
 - Device Component 拥有 Device/current control key 的 durable authority、连接期

@@ -1,7 +1,7 @@
 mod db;
 mod issuer;
 
-use std::{path::Path, sync::Arc};
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use sha2::{Digest as _, Sha256};
 use snafu::Snafu;
@@ -144,6 +144,26 @@ impl GatewayComponent {
                     .map(GatewayFact::from_persisted)
                     .transpose()
                     .map(|fact| fact.map(resolve))
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    /// Reads and validates every current durable Gateway target in one query.
+    pub(crate) async fn read_all_current(
+        &self,
+    ) -> Result<HashMap<DeviceId, MaterializedGateway>, GatewayError> {
+        self.database
+            .read(|transaction| {
+                let rows = db::list(transaction)?;
+                let mut targets = HashMap::with_capacity(rows.len());
+                for (device_id, row) in rows {
+                    let device_id =
+                        DeviceId::parse(&device_id).ok_or(GatewayError::InvalidPersistedFacts)?;
+                    let target = resolve(GatewayFact::from_persisted(&row)?);
+                    targets.insert(device_id, target);
+                }
+                Ok(targets)
             })
             .await
             .map_err(TransactionError::into_error)

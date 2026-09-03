@@ -39,12 +39,10 @@ export function BindingsPage() {
           params: { path: { device_id: deviceId } },
         }),
       ),
-    onSuccess: async (_, deviceId) => {
+    onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["bindings"] }),
-        queryClient.invalidateQueries({
-          queryKey: ["device-convergence", deviceId],
-        }),
+        queryClient.invalidateQueries({ queryKey: ["devices"] }),
       ]);
     },
   });

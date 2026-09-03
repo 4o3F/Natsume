@@ -135,7 +135,7 @@ function DeviceTargets({
       ),
     onSuccess: async (target) => {
       queryClient.setQueryData(["device-session-control", deviceId], target);
-      await invalidateConvergence(queryClient, deviceId);
+      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
   const terminate = useMutation({
@@ -148,7 +148,7 @@ function DeviceTargets({
       ),
     onSuccess: async (target) => {
       queryClient.setQueryData(["device-session-control", deviceId], target);
-      await invalidateConvergence(queryClient, deviceId);
+      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
   const reset = useMutation({
@@ -160,7 +160,7 @@ function DeviceTargets({
       ),
     onSuccess: async (target) => {
       queryClient.setQueryData(["device-home", deviceId], target);
-      await invalidateConvergence(queryClient, deviceId);
+      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
 
@@ -312,13 +312,4 @@ function MutationError({
       </AlertTitle>
     </Alert>
   );
-}
-
-async function invalidateConvergence(
-  queryClient: ReturnType<typeof useQueryClient>,
-  deviceId: string,
-) {
-  await queryClient.invalidateQueries({
-    queryKey: ["device-convergence", deviceId],
-  });
 }

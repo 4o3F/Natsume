@@ -334,16 +334,16 @@ export interface components {
       credential_revision: number;
       domjudge_username: string;
     };
-    /** @description Latest valid Binding artifact Actual reported by the current lease. */
+    /** @description Latest validated Binding artifact Actual reported by the current lease. */
     BindingActualResponse: {
       /**
-       * @description Binding artifact state vocabulary from the Device protocol.
+       * @description Binding artifact state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       assignment_state: "absent" | "applied" | "failed";
       context: null | components["schemas"]["BindingContextResponse"];
       /**
-       * @description Binding artifact state vocabulary from the Device protocol.
+       * @description Binding artifact state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       credential_state: "absent" | "applied" | "failed";
@@ -373,7 +373,7 @@ export interface components {
     /** @description Latest rejected Binding submission associated with an unbound intent. */
     BindingEvaluationResponse: {
       /**
-       * @description Closed Binding rejection vocabulary exposed by the API.
+       * @description Closed Binding rejection vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       error_code: "not_found" | "unmapped" | "occupied";
@@ -404,7 +404,7 @@ export interface components {
     CanonicalUuidV5: string;
     /** Format: uuid */
     CanonicalUuidV7: string;
-    /** @description Current Server target and latest valid Client Actual for one Device. */
+    /** @description Current durable targets and latest validated Actual for one Device. */
     DeviceConvergenceResponse: {
       binding: components["schemas"]["BindingConvergenceResponse"];
       /** @enum {string} */
@@ -416,8 +416,10 @@ export interface components {
       runtime_config: components["schemas"]["RuntimeConfigConvergenceResponse"];
       session_control: components["schemas"]["SessionConvergenceResponse"];
     };
-    /** @description Durable Device lifecycle and Enrollment evidence shown by the Operator Panel. */
+    /** @description Durable Device identity and lifecycle with its current complete convergence view. */
     DeviceResponse: {
+      /** @description Current durable targets and latest validated Actual for this Device. */
+      convergence: components["schemas"]["DeviceConvergenceResponse"];
       /** Format: int64 */
       created_at_unix_ms: number;
       device_id: components["schemas"]["CanonicalUuidV7"];
@@ -456,13 +458,13 @@ export interface components {
       status: number;
       title: string;
     };
-    /** @description Latest valid Gateway Actual reported by the current lease. */
+    /** @description Latest validated Gateway Actual reported by the current lease. */
     GatewayActualResponse: {
       /** Format: uuid */
       credential_id: string | null;
       gateway_leaf_sha256: string | null;
       /**
-       * @description Gateway Actual state vocabulary from the Device protocol.
+       * @description Gateway Actual state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       state:
@@ -493,12 +495,12 @@ export interface components {
     HealthResponse: {
       status: string;
     };
-    /** @description Latest valid Home Actual reported by the current lease. */
+    /** @description Latest validated Home Actual reported by the current lease. */
     HomeActualResponse: {
       /** Format: int64 */
       completed_reset_epoch: number | null;
       /**
-       * @description Home Actual state vocabulary from the Device protocol.
+       * @description Home Actual state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       state: "steady" | "resetting" | "recovery_required";
@@ -574,11 +576,11 @@ export interface components {
       /** @enum {string} */
       state: "closed" | "open";
     };
-    /** @description Latest valid Runtime Config Actual reported by the current lease. */
+    /** @description Latest validated Runtime Config Actual reported by the current lease. */
     RuntimeConfigActualResponse: {
       applied_domjudge_origin: string | null;
       /**
-       * @description Runtime Config Actual state vocabulary from the Device protocol.
+       * @description Runtime Config Actual state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       state: "absent" | "applied" | "failed";
@@ -598,12 +600,12 @@ export interface components {
       seat_code: string;
       seat_id: string;
     };
-    /** @description Latest valid Session Control Actual reported by the current lease. */
+    /** @description Latest validated Session Control Actual reported by the current lease. */
     SessionActualResponse: {
       /** Format: int64 */
       completed_terminate_epoch: number | null;
       /**
-       * @description Session state vocabulary from the Device protocol.
+       * @description Session state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       session_state:
@@ -751,7 +753,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Current durable Devices */
+      /** @description Current durable Devices and complete convergence */
       200: {
         headers: {
           [name: string]: unknown;
@@ -792,7 +794,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Current durable Device */
+      /** @description Current durable Device and complete convergence */
       200: {
         headers: {
           [name: string]: unknown;

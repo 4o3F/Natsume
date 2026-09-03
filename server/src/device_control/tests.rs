@@ -551,6 +551,7 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
 async fn registry_accepts_six_hundred_devices() {
     let registry = DeviceRegistry::new();
     let mut sessions = HashSet::new();
+    let mut device_ids = Vec::with_capacity(601);
     let mut outgoing = Vec::with_capacity(600);
 
     timeout(Duration::from_secs(10), async {
@@ -563,12 +564,94 @@ async fn registry_accepts_six_hundred_devices() {
                 .await
                 .unwrap_or_else(|| panic!("the registry rejected a Device"));
             assert!(sessions.insert(session_id));
+            device_ids.push(device_id);
             outgoing.push(receiver);
         }
     })
     .await
     .unwrap_or_else(|_| panic!("the registry did not accept 600 Devices in time"));
     assert_eq!(sessions.len(), 600);
+
+    let unseen = DeviceId::parse(&Uuid::now_v7().hyphenated().to_string())
+        .unwrap_or_else(|| panic!("the unseen fixture ID was invalid"));
+    device_ids.push(unseen);
+    let states = timeout(
+        Duration::from_secs(10),
+        registry.connection_states(&device_ids),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the registry did not read 600 states concurrently in time"));
+    assert_eq!(states.len(), 601);
+    assert!(matches!(
+        states.get(&unseen),
+        Some(DeviceConnectionState::Offline)
+    ));
+    assert!(device_ids[..600].iter().all(|device_id| matches!(
+        states.get(device_id),
+        Some(DeviceConnectionState::AwaitingFreshState)
+    )));
+}
+
+#[tokio::test]
+async fn batch_and_single_active_device_status_have_the_same_convergence() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x70; 32])).await;
+    fixture
+        .state
+        .session()
+        .set_lock(device_id, LockState::Locked)
+        .await
+        .unwrap_or_else(|error| panic!("Session target setup failed: {error}"));
+    fixture
+        .state
+        .session()
+        .terminate(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("Session terminate setup failed: {error}"));
+    fixture
+        .state
+        .home()
+        .reset(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("Home target setup failed: {error}"));
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+    assert!(
+        handle
+            .client_state(Arc::clone(&fixture.state), session_id, valid_snapshot(),)
+            .await
+    );
+    timeout(Duration::from_secs(5), outgoing.recv())
+        .await
+        .unwrap_or_else(|_| panic!("the initial target was not emitted"))
+        .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
+
+    let single = fixture
+        .state
+        .device_control()
+        .read_device_status(&fixture.state, device_id)
+        .await
+        .unwrap_or_else(|_| panic!("single Device status failed"))
+        .unwrap_or_else(|| panic!("single Device status was absent"));
+    let (_, single_convergence) = single.into_parts();
+    let mut batch = fixture
+        .state
+        .device_control()
+        .read_all_device_statuses(&fixture.state)
+        .await
+        .unwrap_or_else(|_| panic!("batch Device status failed"));
+    assert_eq!(batch.len(), 1);
+    let (device, batch_convergence) = batch
+        .pop()
+        .unwrap_or_else(|| panic!("batch Device status was absent"))
+        .into_parts();
+    assert_eq!(device.device_id(), device_id);
+    assert_eq!(
+        serde_json::to_value(single_convergence)
+            .unwrap_or_else(|error| panic!("single convergence serialization failed: {error}")),
+        serde_json::to_value(batch_convergence)
+            .unwrap_or_else(|error| panic!("batch convergence serialization failed: {error}"))
+    );
 }
 
 #[tokio::test]

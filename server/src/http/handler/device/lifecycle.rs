@@ -9,12 +9,15 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::component::device::{DeviceProjection, DeviceState, EvidenceQuality, LifecycleOutcome};
+use crate::{
+    component::device::{DeviceState, EvidenceQuality, LifecycleOutcome},
+    device_control::{DeviceConvergenceResponse, DeviceStatus},
+};
 
 use super::super::super::{AppState, error::ApiError};
-use super::{DevicePath, invalid_device_id, parse_device_id};
+use super::{DevicePath, convergence::convergence_error, invalid_device_id, parse_device_id};
 
-/// Durable Device lifecycle and Enrollment evidence shown by the Operator Panel.
+/// Durable Device identity and lifecycle with its current complete convergence view.
 #[derive(Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeviceResponse {
@@ -25,6 +28,8 @@ pub(crate) struct DeviceResponse {
     #[schema(inline)]
     state: DeviceStateResponse,
     created_at_unix_ms: u64,
+    /// Current durable targets and latest validated Actual for this Device.
+    convergence: DeviceConvergenceResponse,
 }
 
 /// Closed Device Enrollment evidence-quality vocabulary exposed by the API.
@@ -52,8 +57,9 @@ pub(crate) struct DeviceUpdateRequest {
     state: DeviceStateResponse,
 }
 
-impl From<DeviceProjection> for DeviceResponse {
-    fn from(device: DeviceProjection) -> Self {
+impl From<DeviceStatus> for DeviceResponse {
+    fn from(status: DeviceStatus) -> Self {
+        let (device, convergence) = status.into_parts();
         Self {
             device_id: device.device_id().as_text(),
             machine_hardware_id: device.machine_hardware_id().as_text(),
@@ -67,6 +73,7 @@ impl From<DeviceProjection> for DeviceResponse {
                 DeviceState::Revoked => DeviceStateResponse::Revoked,
             },
             created_at_unix_ms: device.created_at_unix_ms(),
+            convergence,
         }
     }
 }
@@ -77,21 +84,25 @@ impl From<DeviceProjection> for DeviceResponse {
     operation_id = "listDevices",
     security(("sessionCookie" = [])),
     responses(
-        (status = 200, description = "Current durable Devices", body = [DeviceResponse]),
+        (status = 200, description = "Current durable Devices and complete convergence", body = [DeviceResponse]),
         (status = 401, description = "Session authentication failed"),
         (status = 500, description = "Internal failure")
     )
 )]
 pub(crate) async fn list_devices(State(state): State<AppState>) -> Response {
-    match state.device().list_devices().await {
-        Ok(devices) => Json(
-            devices
+    match state
+        .device_control()
+        .read_all_device_statuses(&state)
+        .await
+    {
+        Ok(statuses) => Json(
+            statuses
                 .into_iter()
                 .map(DeviceResponse::from)
                 .collect::<Vec<_>>(),
         )
         .into_response(),
-        Err(error) => ApiError::from_device(error).into_response(),
+        Err(error) => convergence_error(error).into_response(),
     }
 }
 
@@ -102,7 +113,7 @@ pub(crate) async fn list_devices(State(state): State<AppState>) -> Response {
     params(DevicePath),
     security(("sessionCookie" = [])),
     responses(
-        (status = 200, description = "Current durable Device", body = DeviceResponse),
+        (status = 200, description = "Current durable Device and complete convergence", body = DeviceResponse),
         (status = 400, description = "Invalid Device ID"),
         (status = 401, description = "Session authentication failed"),
         (status = 404, description = "Device not found"),
@@ -116,10 +127,14 @@ pub(crate) async fn get_device(
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state.device().find_device(device_id).await {
-        Ok(Some(device)) => Json(DeviceResponse::from(device)).into_response(),
+    match state
+        .device_control()
+        .read_device_status(&state, device_id)
+        .await
+    {
+        Ok(Some(status)) => Json(DeviceResponse::from(status)).into_response(),
         Ok(None) => ApiError::not_found("device_not_found").into_response(),
-        Err(error) => ApiError::from_device(error).into_response(),
+        Err(error) => convergence_error(error).into_response(),
     }
 }
 

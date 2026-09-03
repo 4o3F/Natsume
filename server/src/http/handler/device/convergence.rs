@@ -45,7 +45,7 @@ pub(crate) async fn get_device_convergence(
     Ok(Json(convergence))
 }
 
-fn convergence_error(error: DeviceConvergenceError) -> ApiError {
+pub(super) fn convergence_error(error: DeviceConvergenceError) -> ApiError {
     match error {
         DeviceConvergenceError::Device(error) => ApiError::from_device(error),
         DeviceConvergenceError::Gateway(error) => gateway_error(error),

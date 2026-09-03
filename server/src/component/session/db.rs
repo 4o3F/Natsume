@@ -32,6 +32,19 @@ pub(in crate::component::session) fn find_target(
         .map_err(|_| PersistenceError::OperationFailed)
 }
 
+pub(in crate::component::session) fn list_targets(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(String, String, Option<i64>)>, PersistenceError> {
+    device_session_targets::table
+        .select((
+            device_session_targets::device_id,
+            device_session_targets::lock_state,
+            device_session_targets::terminate_epoch,
+        ))
+        .load(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)
+}
+
 pub(in crate::component::session) fn insert_default_target(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,

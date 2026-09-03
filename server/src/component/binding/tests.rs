@@ -334,6 +334,41 @@ async fn ineligible_devices_and_invalid_persisted_evaluations_fail_closed() {
     }
 }
 
+#[tokio::test]
+async fn batch_read_rejects_a_device_with_both_bound_and_negotiating_facts() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.insert_device("enabled").await;
+    fixture
+        .insert_mapped_seat("A-01", "team-alpha", b"password")
+        .await;
+    let negotiation_id = fixture.negotiation_id(device_id).await;
+    fixture
+        .ingest(device_id, negotiation_id, 1, "A-01")
+        .await
+        .unwrap_or_else(|error| panic!("binding setup failed: {error}"));
+    let device_id_text = device_id.as_text();
+    fixture
+        .database
+        .write(move |transaction| {
+            diesel::insert_into(binding_negotiations::table)
+                .values((
+                    binding_negotiations::device_id.eq(device_id_text),
+                    binding_negotiations::negotiation_id
+                        .eq(Uuid::now_v7().hyphenated().to_string()),
+                ))
+                .execute(transaction.connection())
+                .map_err(|_| PersistenceError::OperationFailed)?;
+            Ok::<(), PersistenceError>(())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("invalid Binding fixture failed: {error:?}"));
+
+    assert!(matches!(
+        fixture.component.read_all_current().await,
+        Err(BindingError::InvalidPersistedFacts)
+    ));
+}
+
 fn input(negotiation_id: BindingNegotiationId, epoch: u64, seat_code: &str) -> BindingInput {
     BindingInput::new(
         negotiation_id,

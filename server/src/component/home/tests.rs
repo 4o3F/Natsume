@@ -82,6 +82,10 @@ async fn missing_device_invalid_epoch_and_overflow_fail_closed() {
         fixture.component.materialize(device_id).await,
         Err(HomeError::InvalidPersistedFacts)
     );
+    assert!(matches!(
+        fixture.component.read_all_current().await,
+        Err(HomeError::InvalidPersistedFacts)
+    ));
     fixture.set_persisted_epoch(device_id, -1).await;
     assert_eq!(
         fixture.component.reset(device_id).await,

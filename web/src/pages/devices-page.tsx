@@ -41,7 +41,7 @@ const DEVICES_KEY = ["devices"] as const;
 export function DevicesPage() {
   const session = useSession().data;
   const queryClient = useQueryClient();
-  const [selectedDevice, setSelectedDevice] = useState<Device | null>(null);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const devices = useQuery({
     queryKey: DEVICES_KEY,
     queryFn: async () => unwrap<Device[]>(await api.GET("/api/v2/devices")),
@@ -61,15 +61,13 @@ export function DevicesPage() {
           body: { state },
         }),
       ),
-    onSuccess: async (_, { deviceId }) => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: DEVICES_KEY }),
-        queryClient.invalidateQueries({
-          queryKey: ["device-convergence", deviceId],
-        }),
-      ]);
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
+  const selectedDevice = devices.data?.find(
+    (device) => device.device_id === selectedDeviceId,
+  );
 
   const isAdmin = session?.role === "admin";
   const columns: ColumnDef<Device>[] = [
@@ -87,20 +85,53 @@ export function DevicesPage() {
     },
     { accessorKey: "evidence_quality", header: "Evidence" },
     {
+      id: "convergence",
+      header: "Convergence",
+      cell: ({ row }) => {
+        const convergence = row.original.convergence;
+        const statuses = [
+          ["Connection", convergence.connection_state],
+          ["Gateway", convergence.gateway.status],
+          ["Binding", convergence.binding.status],
+          ["Runtime", convergence.runtime_config.status],
+          ["Session", convergence.session_control.status],
+          ["Home", convergence.home.status],
+        ];
+        return (
+          <div className="flex flex-wrap gap-1">
+            {statuses.map(([name, status]) => (
+              <Badge
+                key={name}
+                variant={
+                  status === "failed"
+                    ? "destructive"
+                    : status === "active" || status === "converged"
+                      ? "default"
+                      : "outline"
+                }
+              >
+                {name}: {label(status)}
+              </Badge>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
       accessorKey: "created_at_unix_ms",
       header: "Created",
       cell: ({ row }) =>
         new Date(row.original.created_at_unix_ms).toLocaleString(),
     },
     {
-      id: "status",
-      header: "Status",
+      id: "details",
+      header: "Details",
       cell: ({ row }) => (
         <Button
           type="button"
           variant="outline"
           size="sm"
-          onClick={() => setSelectedDevice(row.original)}
+          onClick={() => setSelectedDeviceId(row.original.device_id)}
         >
           View
         </Button>
@@ -228,17 +259,6 @@ export function DevicesPage() {
 }
 
 function DeviceConvergence({ device }: { device: Device }) {
-  const convergence = useQuery({
-    queryKey: ["device-convergence", device.device_id],
-    queryFn: async () =>
-      unwrap<Convergence>(
-        await api.GET("/api/v2/devices/{device_id}/convergence", {
-          params: { path: { device_id: device.device_id } },
-        }),
-      ),
-    refetchInterval: LIST_POLL_MS,
-  });
-
   return (
     <Card>
       <CardHeader>
@@ -248,14 +268,7 @@ function DeviceConvergence({ device }: { device: Device }) {
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <DataState
-          isLoading={convergence.isLoading}
-          error={convergence.data ? null : convergence.error}
-          isEmpty={false}
-          emptyLabel=""
-        >
-          {convergence.data && <ConvergenceDetails data={convergence.data} />}
-        </DataState>
+        <ConvergenceDetails data={device.convergence} />
       </CardContent>
     </Card>
   );

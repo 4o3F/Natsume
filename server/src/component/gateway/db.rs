@@ -68,6 +68,37 @@ pub(in crate::component::gateway) fn find_by_device_id(
         .map_err(|_| PersistenceError::OperationFailed)
 }
 
+pub(in crate::component::gateway) fn list(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<(String, PersistedGatewayRow)>, PersistenceError> {
+    gateway_credentials::table
+        .select((
+            gateway_credentials::device_id,
+            gateway_credentials::credential_id,
+            gateway_credentials::gateway_csr_der,
+            gateway_credentials::gateway_leaf_der,
+            gateway_credentials::issuer_chain_der,
+        ))
+        .load::<(
+            String,
+            String,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+        )>(transaction.connection())
+        .map(|rows| {
+            rows.into_iter()
+                .map(|(device_id, credential_id, csr, leaf, chain)| {
+                    (
+                        device_id,
+                        PersistedGatewayRow::new(credential_id, csr, leaf, chain),
+                    )
+                })
+                .collect()
+        })
+        .map_err(|_| PersistenceError::OperationFailed)
+}
+
 pub(in crate::component::gateway) fn insert_initial_generation(
     transaction: &mut Transaction<'_>,
     device_id: &str,

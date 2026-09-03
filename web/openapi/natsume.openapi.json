@@ -101,7 +101,7 @@
         "operationId": "listDevices",
         "responses": {
           "200": {
-            "description": "Current durable Devices",
+            "description": "Current durable Devices and complete convergence",
             "content": {
               "application/json": {
                 "schema": {
@@ -157,7 +157,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Current durable Device",
+            "description": "Current durable Device and complete convergence",
             "content": {
               "application/json": {
                 "schema": {
@@ -1695,12 +1695,12 @@
       },
       "BindingActualResponse": {
         "type": "object",
-        "description": "Latest valid Binding artifact Actual reported by the current lease.",
+        "description": "Latest validated Binding artifact Actual reported by the current lease.",
         "required": ["assignment_state", "credential_state", "context"],
         "properties": {
           "assignment_state": {
             "type": "string",
-            "description": "Binding artifact state vocabulary from the Device protocol.",
+            "description": "Binding artifact state vocabulary exposed by the convergence projection.",
             "enum": ["absent", "applied", "failed"]
           },
           "context": {
@@ -1715,7 +1715,7 @@
           },
           "credential_state": {
             "type": "string",
-            "description": "Binding artifact state vocabulary from the Device protocol.",
+            "description": "Binding artifact state vocabulary exposed by the convergence projection.",
             "enum": ["absent", "applied", "failed"]
           }
         },
@@ -1802,7 +1802,7 @@
         "properties": {
           "error_code": {
             "type": "string",
-            "description": "Closed Binding rejection vocabulary exposed by the API.",
+            "description": "Closed Binding rejection vocabulary exposed by the convergence projection.",
             "enum": ["not_found", "unmapped", "occupied"]
           },
           "submission_epoch": {
@@ -1884,7 +1884,7 @@
       },
       "DeviceConvergenceResponse": {
         "type": "object",
-        "description": "Current Server target and latest valid Client Actual for one Device.",
+        "description": "Current durable targets and latest validated Actual for one Device.",
         "required": [
           "connection_state",
           "received_at_unix_ms",
@@ -1923,15 +1923,20 @@
       },
       "DeviceResponse": {
         "type": "object",
-        "description": "Durable Device lifecycle and Enrollment evidence shown by the Operator Panel.",
+        "description": "Durable Device identity and lifecycle with its current complete convergence view.",
         "required": [
           "device_id",
           "machine_hardware_id",
           "evidence_quality",
           "state",
-          "created_at_unix_ms"
+          "created_at_unix_ms",
+          "convergence"
         ],
         "properties": {
+          "convergence": {
+            "$ref": "#/components/schemas/DeviceConvergenceResponse",
+            "description": "Current durable targets and latest validated Actual for this Device."
+          },
           "created_at_unix_ms": {
             "type": "integer",
             "format": "int64",
@@ -2024,7 +2029,7 @@
       },
       "GatewayActualResponse": {
         "type": "object",
-        "description": "Latest valid Gateway Actual reported by the current lease.",
+        "description": "Latest validated Gateway Actual reported by the current lease.",
         "required": ["credential_id", "state", "gateway_leaf_sha256"],
         "properties": {
           "credential_id": {
@@ -2040,7 +2045,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Gateway Actual state vocabulary from the Device protocol.",
+            "description": "Gateway Actual state vocabulary exposed by the convergence projection.",
             "enum": [
               "absent",
               "blocked",
@@ -2123,7 +2128,7 @@
       },
       "HomeActualResponse": {
         "type": "object",
-        "description": "Latest valid Home Actual reported by the current lease.",
+        "description": "Latest validated Home Actual reported by the current lease.",
         "required": ["state", "completed_reset_epoch"],
         "properties": {
           "completed_reset_epoch": {
@@ -2133,7 +2138,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Home Actual state vocabulary from the Device protocol.",
+            "description": "Home Actual state vocabulary exposed by the convergence projection.",
             "enum": ["steady", "resetting", "recovery_required"]
           }
         },
@@ -2372,7 +2377,7 @@
       },
       "RuntimeConfigActualResponse": {
         "type": "object",
-        "description": "Latest valid Runtime Config Actual reported by the current lease.",
+        "description": "Latest validated Runtime Config Actual reported by the current lease.",
         "required": ["state", "applied_domjudge_origin"],
         "properties": {
           "applied_domjudge_origin": {
@@ -2380,7 +2385,7 @@
           },
           "state": {
             "type": "string",
-            "description": "Runtime Config Actual state vocabulary from the Device protocol.",
+            "description": "Runtime Config Actual state vocabulary exposed by the convergence projection.",
             "enum": ["absent", "applied", "failed"]
           }
         },
@@ -2433,7 +2438,7 @@
       },
       "SessionActualResponse": {
         "type": "object",
-        "description": "Latest valid Session Control Actual reported by the current lease.",
+        "description": "Latest validated Session Control Actual reported by the current lease.",
         "required": ["session_state", "completed_terminate_epoch"],
         "properties": {
           "completed_terminate_epoch": {
@@ -2443,7 +2448,7 @@
           },
           "session_state": {
             "type": "string",
-            "description": "Session state vocabulary from the Device protocol.",
+            "description": "Session state vocabulary exposed by the convergence projection.",
             "enum": [
               "none",
               "starting",

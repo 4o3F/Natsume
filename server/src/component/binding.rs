@@ -1,6 +1,6 @@
 mod db;
 
-use std::{fmt, sync::Arc};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
@@ -126,6 +126,38 @@ impl BindingComponent {
                         .map(Some),
                     (false, None) => Ok(None),
                 }
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    /// Reads and validates every current redacted Binding projection in two queries.
+    pub(crate) async fn read_all_current(
+        &self,
+    ) -> Result<HashMap<DeviceId, BindingProjection>, BindingError> {
+        self.database
+            .read(|transaction| {
+                let negotiations = db::list_negotiations(transaction)?;
+                let contexts = db::list_bound_contexts(transaction)?;
+                let mut projections = HashMap::with_capacity(negotiations.len() + contexts.len());
+                for (device_id, row) in negotiations {
+                    let device_id =
+                        DeviceId::parse(&device_id).ok_or(BindingError::InvalidPersistedFacts)?;
+                    let projection = BindingProjection::Unbound(
+                        NegotiationFact::from_persisted(&row)?.into_intent(),
+                    );
+                    projections.insert(device_id, projection);
+                }
+                for (device_id, row) in contexts {
+                    let device_id =
+                        DeviceId::parse(&device_id).ok_or(BindingError::InvalidPersistedFacts)?;
+                    let projection =
+                        BindingProjection::Bound(BindingContext::from_persisted(&row)?);
+                    if projections.insert(device_id, projection).is_some() {
+                        return Err(BindingError::InvalidPersistedFacts);
+                    }
+                }
+                Ok(projections)
             })
             .await
             .map_err(TransactionError::into_error)

@@ -8,6 +8,7 @@ use natsume_device_protocol::generated::{
     ClientStateSnapshot, ServerActiveEnvelope, server_active_envelope,
 };
 use tokio::sync::{Mutex, mpsc, oneshot};
+use tokio::task::JoinSet;
 use uuid::Uuid;
 
 use crate::{component::device::DeviceId, server_state::ServerState};
@@ -94,6 +95,37 @@ impl DeviceRegistry {
             Some(handle) => handle.connection_state().await,
             None => DeviceConnectionState::Offline,
         }
+    }
+
+    /// Reads current states concurrently without creating actors for unseen Devices.
+    pub(super) async fn connection_states(
+        &self,
+        device_ids: &[DeviceId],
+    ) -> HashMap<DeviceId, DeviceConnectionState> {
+        let handles = {
+            let devices = self.devices.lock().await;
+            device_ids
+                .iter()
+                .filter_map(|device_id| {
+                    devices
+                        .get(device_id)
+                        .cloned()
+                        .map(|handle| (*device_id, handle))
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut states = device_ids
+            .iter()
+            .map(|device_id| (*device_id, DeviceConnectionState::Offline))
+            .collect::<HashMap<_, _>>();
+        let mut queries = JoinSet::new();
+        for (device_id, handle) in handles {
+            queries.spawn(async move { (device_id, handle.connection_state().await) });
+        }
+        for (device_id, state) in queries.join_all().await {
+            states.insert(device_id, state);
+        }
+        states
     }
 }
 

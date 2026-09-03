@@ -1,5 +1,7 @@
 mod db;
 
+use std::collections::HashMap;
+
 use snafu::Snafu;
 
 use crate::{
@@ -40,6 +42,26 @@ impl HomeComponent {
                     .map(parse_reset_epoch)
                     .transpose()
                     .map(Option::flatten)
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    /// Reads and validates every initialized Home target in one query.
+    pub(crate) async fn read_all_current(
+        &self,
+    ) -> Result<HashMap<DeviceId, Option<u64>>, HomeError> {
+        self.database
+            .read(|transaction| {
+                let rows = db::list_reset_epochs(transaction)?;
+                let mut targets = HashMap::with_capacity(rows.len());
+                for row in rows {
+                    let device_id =
+                        DeviceId::parse(&row.0).ok_or(HomeError::InvalidPersistedFacts)?;
+                    let target = parse_reset_epoch(row)?;
+                    targets.insert(device_id, target);
+                }
+                Ok(targets)
             })
             .await
             .map_err(TransactionError::into_error)
