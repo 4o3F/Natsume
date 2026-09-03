@@ -8,12 +8,13 @@ use crate::{component::provisioning::ProvisioningComponent, db::Database};
 
 use self::enrollment::EnrollmentReviewRegistry;
 pub(crate) use self::enrollment::{
-    EnrollmentApprovalError, EnrollmentReviewId, EnrollmentStartError, EnrollmentStartOutcome,
-    PendingEnrollmentReview, ValidatedEnrollmentEvidence,
+    EnrollmentApproval, EnrollmentApprovalError, EnrollmentReviewDecision, EnrollmentReviewId,
+    EnrollmentStartError, EnrollmentStartOutcome, PendingEnrollmentReview,
+    ValidatedEnrollmentEvidence,
 };
 pub(crate) use self::types::{
-    ActivationError, ControlAuthority, ControlPublicKey, DeviceError, DeviceId, DeviceState,
-    EvidenceQuality, LifecycleOutcome, MachineHardwareId,
+    ActivationError, ControlAuthority, ControlPublicKey, DeviceError, DeviceId, DeviceProjection,
+    DeviceState, EvidenceQuality, LifecycleOutcome, MachineHardwareId,
 };
 
 /// Owns Device authority, lifecycle, and process-local Enrollment review invariants.
@@ -34,6 +35,27 @@ impl DeviceComponent {
         }
     }
 
+    /// Lists the durable, non-secret Device fields required by the Operator Panel.
+    pub(crate) async fn list_devices(&self) -> Result<Vec<DeviceProjection>, DeviceError> {
+        self.database
+            .read(db::list)
+            .await
+            .map_err(crate::db::TransactionError::into_error)
+            .map_err(DeviceError::from)
+    }
+
+    /// Reads one durable Device projection without changing its lifecycle.
+    pub(crate) async fn find_device(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<Option<DeviceProjection>, DeviceError> {
+        self.database
+            .read(move |transaction| db::find_projection(transaction, &device_id))
+            .await
+            .map_err(crate::db::TransactionError::into_error)
+            .map_err(DeviceError::from)
+    }
+
     /// Selects the database's current control authority for a Machine Hardware ID.
     pub(crate) async fn find_current_authority(
         &self,
@@ -50,10 +72,11 @@ impl DeviceComponent {
         provisioning: &ProvisioningComponent,
         evidence: ValidatedEnrollmentEvidence,
     ) -> Result<EnrollmentStartOutcome, EnrollmentStartError> {
-        if let Some(authority) = self
+        let current_authority = self
             .find_current_authority(evidence.machine_hardware_id())
-            .await?
-            .filter(|authority| authority.control_public_key() == evidence.candidate_public_key())
+            .await?;
+        if let Some(authority) = current_authority
+            && authority.control_public_key() == evidence.candidate_public_key()
         {
             return Ok(EnrollmentStartOutcome::Replay(authority));
         }
@@ -64,17 +87,29 @@ impl DeviceComponent {
         Ok(EnrollmentStartOutcome::Pending(review, activation))
     }
 
-    /// Rechecks the gate, atomically claims the exact attached review, then
-    /// commits Device/control-key activation without holding the review lock.
+    /// Returns the immutable Machine Hardware ID attached to a pending review.
+    pub(crate) async fn enrollment_review_machine_hardware_id(
+        &self,
+        review_id: EnrollmentReviewId,
+    ) -> Result<MachineHardwareId, EnrollmentApprovalError> {
+        self.reviews
+            .machine_hardware_id(review_id)
+            .await
+            .ok_or(EnrollmentApprovalError::ReviewNotFound)
+    }
+
+    /// Rechecks the gate, atomically claims the exact attached review, then commits
+    /// Device/control-key activation without holding the review lock.
     ///
-    /// Once the review is claimed, the same activation success or failure is sent
-    /// once to the originating connection. If that connection has gone away, delivery
-    /// failure does not roll back the terminal claim or database activation attempt.
+    /// Activation failure is sent directly to the originating connection. Success
+    /// returns an [`EnrollmentApproval`] so application coordination can evict the old
+    /// lease before notifying that connection. Dropping the success notification never
+    /// rolls back the terminal claim or committed authority.
     pub(crate) async fn approve_enrollment(
         &self,
         provisioning: &ProvisioningComponent,
         review_id: EnrollmentReviewId,
-    ) -> Result<ControlAuthority, EnrollmentApprovalError> {
+    ) -> Result<EnrollmentApproval, EnrollmentApprovalError> {
         if !provisioning.read_window().await.is_open() {
             return Err(EnrollmentApprovalError::ProvisioningClosed);
         }
@@ -83,16 +118,33 @@ impl DeviceComponent {
             .take(review_id)
             .await
             .ok_or(EnrollmentApprovalError::ReviewNotFound)?;
-        let result = authority::activate(
+        match authority::activate(
             &self.database,
             evidence.machine_hardware_id(),
             evidence.candidate_public_key(),
             evidence.evidence_quality(),
         )
         .await
-        .map_err(EnrollmentApprovalError::from);
-        let _ = activation.send(result);
-        result
+        {
+            Ok(authority) => Ok(EnrollmentApproval {
+                authority,
+                completion: activation,
+            }),
+            Err(error) => {
+                let error = EnrollmentApprovalError::from(error);
+                let _ = activation.send(Err(error));
+                Err(error)
+            }
+        }
+    }
+
+    /// Claims one pending review and attempts to notify only its originating connection.
+    pub(crate) async fn deny_enrollment_review(&self, review_id: EnrollmentReviewId) -> bool {
+        let Some((_, completion)) = self.reviews.take(review_id).await else {
+            return false;
+        };
+        let _ = completion.send(Ok(EnrollmentReviewDecision::Denied));
+        true
     }
 
     /// Cancels one process-local review and wakes its waiting connection by dropping

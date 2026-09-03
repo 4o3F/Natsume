@@ -1,15 +1,10 @@
 use natsume_device_protocol::generated::{
-    ActualState, BindingAccessActualState, BindingAccessTarget, BindingArtifactState,
-    BindingContext, BindingEvaluation, BindingInput as WireBindingInput, BindingNegotiationIntent,
-    BoundTarget, ClientStateSnapshot, ConcreteTargetState,
-    GatewayActualState as WireGatewayActualState, GatewayCertificateGrant,
-    GatewayCredentialInput as WireGatewayCredentialInput, GatewayCredentialIntent, GatewayState,
-    GatewayTarget, HomeActualState, HomeState, HomeTarget, LockState as WireLockState,
-    RuntimeConfigActualState, RuntimeConfigState, RuntimeConfigTarget, SecretBytes,
-    ServerIntentState, ServerStateSnapshot, SessionControlActualState, SessionControlTarget,
-    SessionState,
+    BindingAccessTarget, BindingContext, BindingEvaluation, BindingInput as WireBindingInput,
+    BindingNegotiationIntent, BoundTarget, ClientStateSnapshot, ConcreteTargetState,
+    GatewayCertificateGrant, GatewayCredentialInput as WireGatewayCredentialInput,
+    GatewayCredentialIntent, GatewayTarget, HomeTarget, LockState as WireLockState,
+    RuntimeConfigTarget, SecretBytes, ServerIntentState, ServerStateSnapshot, SessionControlTarget,
 };
-use uuid::{Uuid, Variant, Version};
 
 use crate::{
     component::{
@@ -18,20 +13,19 @@ use crate::{
             BindingNegotiationId, BindingSubmissionEpoch, MaterializedBinding,
         },
         device::DeviceId,
-        gateway::{
-            GatewayActualState, GatewayCredentialId, GatewayCredentialInput, MaterializedGateway,
-        },
-        runtime::is_canonical_https_origin,
+        gateway::{GatewayCredentialId, GatewayCredentialInput, MaterializedGateway},
         session::LockState,
     },
     server_state::ServerState,
 };
 
+use super::convergence::{self, ObservedActualState};
+
 const SEAT_CODE_LENGTH_LIMIT: usize = 64;
-const USERNAME_LENGTH_LIMIT: usize = 128;
 
 /// Validates one complete Client snapshot, applies its consumed inputs, and
-/// materializes one complete Server snapshot.
+/// materializes one complete Server snapshot together with the validated Actual
+/// retained by the current Device lease.
 ///
 /// All wire-level Input and Actual validation finishes before the first component
 /// call, so malformed or partial snapshots cause no component writes. Gateway and
@@ -43,7 +37,7 @@ pub(super) async fn reconcile(
     state: &ServerState,
     device_id: DeviceId,
     snapshot: ClientStateSnapshot,
-) -> Option<ServerStateSnapshot> {
+) -> Option<(ServerStateSnapshot, ObservedActualState)> {
     let input = snapshot.input?;
     let actual = snapshot.actual?;
     let gateway_input = match input.gateway_credential {
@@ -54,7 +48,7 @@ pub(super) async fn reconcile(
         Some(input) => Some(parse_binding_input(input)?),
         None => None,
     };
-    let gateway_actual = parse_actual(actual)?;
+    let (gateway_actual, observed) = convergence::parse_actual(actual)?;
 
     state
         .gateway()
@@ -67,6 +61,18 @@ pub(super) async fn reconcile(
         .await
         .ok()?;
 
+    Some((materialize(state, device_id).await?, observed))
+}
+
+/// Materializes one complete Server snapshot without replaying Client input.
+///
+/// The Device actor uses this after an Operator target mutation has committed.
+/// Component order matches initial reconciliation so every outbound message keeps
+/// the same complete wire shape.
+pub(super) async fn materialize(
+    state: &ServerState,
+    device_id: DeviceId,
+) -> Option<ServerStateSnapshot> {
     let gateway = state.gateway().materialize(device_id).await.ok()?;
     let binding = state.binding().materialize(device_id).await.ok()?;
     let runtime = state.runtime().materialize().await.ok()?;
@@ -133,113 +139,6 @@ fn parse_binding_input(input: WireBindingInput) -> Option<BindingInput> {
     ))
 }
 
-/// Requires structurally valid Actual values for all five active resources and
-/// returns the Gateway Actual consumed by the current component implementation.
-///
-/// The other Actual values are validated but intentionally not passed to components
-/// that do not consume them in WP7.
-fn parse_actual(actual: ActualState) -> Option<GatewayActualState> {
-    if !validate_binding_actual(actual.binding_access.as_ref()?)
-        || !validate_runtime_actual(actual.runtime_config?)
-        || !validate_session_actual(actual.session_control?)
-        || !validate_home_actual(actual.home?)
-    {
-        return None;
-    }
-    parse_gateway_actual(actual.gateway?)
-}
-
-/// Enforces the wire-field combinations permitted for each Gateway state before
-/// constructing component-owned Actual state.
-fn parse_gateway_actual(actual: WireGatewayActualState) -> Option<GatewayActualState> {
-    let state = GatewayState::try_from(actual.state).ok()?;
-    match (state, actual.credential_id, actual.gateway_leaf_sha256) {
-        (GatewayState::Absent, None, None) => Some(GatewayActualState::Absent),
-        (GatewayState::Restoring, Some(credential_id), None) => {
-            Some(GatewayActualState::Tracking {
-                credential_id: GatewayCredentialId::parse(&credential_id)?,
-            })
-        }
-        (GatewayState::RecoveryRequired, Some(credential_id), None) => {
-            Some(GatewayActualState::RecoveryRequired {
-                credential_id: GatewayCredentialId::parse(&credential_id)?,
-            })
-        }
-        (
-            GatewayState::Blocked | GatewayState::Ready | GatewayState::UpstreamUnhealthy,
-            Some(credential_id),
-            Some(leaf_sha256),
-        ) => Some(GatewayActualState::Loaded {
-            credential_id: GatewayCredentialId::parse(&credential_id)?,
-            leaf_sha256: leaf_sha256.try_into().ok()?,
-        }),
-        _ => None,
-    }
-}
-
-/// Requires Binding context exactly when both managed artifacts report `Applied`.
-fn validate_binding_actual(actual: &BindingAccessActualState) -> bool {
-    let Ok(assignment) = BindingArtifactState::try_from(actual.assignment_state) else {
-        return false;
-    };
-    let Ok(credential) = BindingArtifactState::try_from(actual.credential_state) else {
-        return false;
-    };
-    if matches!(assignment, BindingArtifactState::Unspecified)
-        || matches!(credential, BindingArtifactState::Unspecified)
-    {
-        return false;
-    }
-    if assignment == BindingArtifactState::Applied && credential == BindingArtifactState::Applied {
-        actual
-            .context
-            .as_ref()
-            .is_some_and(validate_binding_context)
-    } else {
-        actual.context.is_none()
-    }
-}
-
-fn validate_binding_context(context: &BindingContext) -> bool {
-    is_canonical_uuid_v7(&context.binding_id)
-        && is_canonical_uuid_v7(&context.account_id)
-        && valid_text(&context.seat_code, SEAT_CODE_LENGTH_LIMIT)
-        && valid_text(&context.domjudge_username, USERNAME_LENGTH_LIMIT)
-        && context.credential_revision > 0
-        && context.credential_revision <= i64::MAX.cast_unsigned()
-}
-
-fn validate_runtime_actual(actual: RuntimeConfigActualState) -> bool {
-    let Ok(state) = RuntimeConfigState::try_from(actual.state) else {
-        return false;
-    };
-    match (state, actual.applied_domjudge_origin) {
-        (RuntimeConfigState::Absent | RuntimeConfigState::Failed, None) => true,
-        (RuntimeConfigState::Applied | RuntimeConfigState::Failed, Some(origin)) => {
-            is_canonical_https_origin(&origin)
-        }
-        _ => false,
-    }
-}
-
-fn validate_session_actual(actual: SessionControlActualState) -> bool {
-    SessionState::try_from(actual.session_state).is_ok_and(|state| {
-        !matches!(state, SessionState::Unspecified)
-            && actual
-                .completed_terminate_epoch
-                .is_none_or(|epoch| epoch > 0 && epoch <= i64::MAX.cast_unsigned())
-    })
-}
-
-fn validate_home_actual(actual: HomeActualState) -> bool {
-    HomeState::try_from(actual.state).is_ok_and(|state| {
-        !matches!(state, HomeState::Unspecified)
-            && actual
-                .completed_reset_epoch
-                .is_none_or(|epoch| epoch > 0 && epoch <= i64::MAX.cast_unsigned())
-    })
-}
-
 /// Encodes the already-materialized Gateway intent and target without performing
 /// additional reads or mutations.
 fn encode_gateway_target(materialized: &MaterializedGateway) -> GatewayTarget {
@@ -276,14 +175,6 @@ fn encode_binding_context(context: &ComponentBindingContext) -> BindingContext {
         domjudge_username: context.domjudge_username().to_owned(),
         credential_revision: context.credential_revision(),
     }
-}
-
-fn is_canonical_uuid_v7(value: &str) -> bool {
-    Uuid::parse_str(value).is_ok_and(|parsed| {
-        parsed.hyphenated().to_string() == value
-            && parsed.get_version() == Some(Version::SortRand)
-            && parsed.get_variant() == Variant::RFC4122
-    })
 }
 
 fn valid_text(value: &str, length_limit: usize) -> bool {

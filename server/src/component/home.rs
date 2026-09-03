@@ -20,21 +20,33 @@ impl HomeComponent {
         self.database
             .write(move |transaction| {
                 require_existing_device(transaction, &device_id)?;
-                match db::find_reset_epoch(transaction, &device_id)? {
-                    Some((_, None)) => Ok(None),
-                    Some((_, Some(epoch))) if epoch > 0 => Ok(Some(epoch.cast_unsigned())),
-                    Some(_) => Err(HomeError::InvalidPersistedFacts),
-                    None => {
-                        require_one(db::insert_target(transaction, &device_id, None)?)?;
-                        Ok(None)
-                    }
+                if let Some(row) = db::find_reset_epoch(transaction, &device_id)? {
+                    parse_reset_epoch(row)
+                } else {
+                    require_one(db::insert_target(transaction, &device_id, None)?)?;
+                    Ok(None)
                 }
             })
             .await
             .map_err(TransactionError::into_error)
     }
 
-    async fn reset(&self, device_id: DeviceId) -> Result<u64, HomeError> {
+    /// Reads the current durable reset epoch without creating a target row.
+    pub(crate) async fn read_current(&self, device_id: DeviceId) -> Result<Option<u64>, HomeError> {
+        self.database
+            .read(move |transaction| {
+                require_existing_device(transaction, &device_id)?;
+                db::find_reset_epoch(transaction, &device_id)?
+                    .map(parse_reset_epoch)
+                    .transpose()
+                    .map(Option::flatten)
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    /// Advances the durable Home reset epoch for the Device.
+    pub(crate) async fn reset(&self, device_id: DeviceId) -> Result<u64, HomeError> {
         self.database
             .write(move |transaction| {
                 require_existing_device(transaction, &device_id)?;
@@ -55,6 +67,14 @@ impl HomeComponent {
             })
             .await
             .map_err(TransactionError::into_error)
+    }
+}
+
+fn parse_reset_epoch((_, epoch): (String, Option<i64>)) -> Result<Option<u64>, HomeError> {
+    match epoch {
+        None => Ok(None),
+        Some(epoch) if epoch > 0 => Ok(Some(epoch.cast_unsigned())),
+        Some(_) => Err(HomeError::InvalidPersistedFacts),
     }
 }
 

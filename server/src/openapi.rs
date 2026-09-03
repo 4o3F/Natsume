@@ -11,11 +11,13 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionLock, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
     "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
+const CANONICAL_UUID_V5_PATTERN: &str =
+    "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
@@ -29,10 +31,22 @@ const CANONICAL_UUID_V7_PATTERN: &str =
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
         crate::http::handler::import::commit_import,
-        crate::http::handler::import::discard_import,
+        crate::http::handler::import::delete_import,
         crate::http::handler::provisioning::get_provisioning_window,
-        crate::http::handler::provisioning::open_provisioning_window,
-        crate::http::handler::provisioning::close_provisioning_window
+        crate::http::handler::provisioning::update_provisioning_window,
+        crate::http::handler::enrollment::list_enrollment_reviews,
+        crate::http::handler::enrollment::approve_enrollment_review,
+        crate::http::handler::enrollment::deny_enrollment_review,
+        crate::http::handler::device::lifecycle::list_devices,
+        crate::http::handler::device::lifecycle::get_device,
+        crate::http::handler::device::lifecycle::update_device,
+        crate::http::handler::device::binding::delete_device_binding,
+        crate::http::handler::device::session::get_session_control,
+        crate::http::handler::device::session::set_session_lock,
+        crate::http::handler::device::session::terminate_session,
+        crate::http::handler::device::home::get_home,
+        crate::http::handler::device::home::reset_home,
+        crate::http::handler::device::convergence::get_device_convergence
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -48,7 +62,15 @@ const CANONICAL_UUID_V7_PATTERN: &str =
         crate::http::handler::import::ImportPendingSummary,
         crate::http::handler::import::ImportPendingResponse,
         crate::http::handler::import::ImportCommitRequest,
-        crate::http::handler::provisioning::ProvisioningWindowResponse
+        crate::http::handler::provisioning::ProvisioningWindowResponse,
+        crate::http::handler::provisioning::ProvisioningWindowRequest,
+        crate::http::handler::enrollment::EnrollmentReviewResponse,
+        crate::http::handler::device::lifecycle::DeviceResponse,
+        crate::http::handler::device::lifecycle::DeviceUpdateRequest,
+        crate::http::handler::device::session::SessionControlResponse,
+        crate::http::handler::device::session::SessionLockRequest,
+        crate::http::handler::device::home::HomeResponse,
+        crate::http::handler::device::convergence::DeviceConvergenceResponse
     ))
 )]
 struct MountedDocument;
@@ -83,6 +105,10 @@ fn configure_components(components: &mut utoipa::openapi::Components) {
         "CanonicalUuidV7".to_owned(),
         canonical_uuid_v7_schema().into(),
     );
+    components.schemas.insert(
+        "CanonicalUuidV5".to_owned(),
+        canonical_uuid_v5_schema().into(),
+    );
     components
         .schemas
         .insert("ErrorResponse".to_owned(), error_response_schema().into());
@@ -106,28 +132,49 @@ fn configure_components(components: &mut utoipa::openapi::Components) {
             Ref::from_schema_name("CanonicalUuidV7").into(),
         );
     }
+    for schema_name in ["DeviceResponse", "EnrollmentReviewResponse"] {
+        if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
+            let property_name = if schema_name == "DeviceResponse" {
+                "device_id"
+            } else {
+                "review_id"
+            };
+            schema.properties.insert(
+                property_name.to_owned(),
+                Ref::from_schema_name("CanonicalUuidV7").into(),
+            );
+            schema.properties.insert(
+                "machine_hardware_id".to_owned(),
+                Ref::from_schema_name("CanonicalUuidV5").into(),
+            );
+        }
+    }
 }
 
 fn canonicalize_path_parameters(paths: &mut Paths) {
-    for (path, parameter_name) in [
-        ("/api/v2/imports/{import_id}/actions/commit", "import_id"),
-        ("/api/v2/imports/{import_id}/actions/discard", "import_id"),
-    ] {
-        let Some(parameters) = paths
-            .paths
-            .get_mut(path)
-            .and_then(|path_item| path_item.post.as_mut())
-            .and_then(|operation| operation.parameters.as_mut())
-        else {
-            continue;
-        };
-        let Some(parameter) = parameters
-            .iter_mut()
-            .find(|parameter| parameter.name == parameter_name)
-        else {
-            continue;
-        };
-        parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
+    for path in paths.paths.values_mut() {
+        for operation in [
+            path.get.as_mut(),
+            path.post.as_mut(),
+            path.put.as_mut(),
+            path.delete.as_mut(),
+            path.patch.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Some(parameters) = operation.parameters.as_mut() else {
+                continue;
+            };
+            for parameter in parameters.iter_mut().filter(|parameter| {
+                matches!(
+                    parameter.name.as_str(),
+                    "device_id" | "review_id" | "import_id"
+                )
+            }) {
+                parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
+            }
+        }
     }
 }
 
@@ -158,6 +205,13 @@ fn canonical_uuid_v7_schema() -> ObjectBuilder {
         .pattern(Some(CANONICAL_UUID_V7_PATTERN))
 }
 
+fn canonical_uuid_v5_schema() -> ObjectBuilder {
+    ObjectBuilder::new()
+        .schema_type(Type::String)
+        .format(Some(SchemaFormat::KnownFormat(KnownFormat::Uuid)))
+        .pattern(Some(CANONICAL_UUID_V5_PATTERN))
+}
+
 fn error_response_schema() -> Schema {
     ObjectBuilder::new()
         .schema_type(Type::Object)
@@ -178,6 +232,7 @@ fn enrich_responses(paths: &mut utoipa::openapi::path::Paths) {
         enrich_operation(path_item.post.as_mut());
         enrich_operation(path_item.put.as_mut());
         enrich_operation(path_item.delete.as_mut());
+        enrich_operation(path_item.patch.as_mut());
     }
 }
 

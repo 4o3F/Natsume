@@ -2,6 +2,7 @@ use axum::{
     Extension, Router,
     extract::State,
     response::{IntoResponse, Response},
+    routing::get,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -11,7 +12,10 @@ use crate::component::{contest::BindingFacts, operator::OperatorIdentity};
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new().route("/bindings", middleware::operator_get(state, list_bindings))
+    Router::new().route(
+        "/bindings",
+        middleware::require_operator(state, get(list_bindings)),
+    )
 }
 
 #[derive(Serialize, ToSchema)]

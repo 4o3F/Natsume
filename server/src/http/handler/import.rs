@@ -1,69 +1,43 @@
+use std::sync::Arc;
+
 use axum::{
-    Extension, Json, Router,
+    Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Request, State, rejection::BytesRejection},
+    extract::{Path, Request, State, rejection::JsonRejection},
     http::{StatusCode, header},
     middleware as axum_middleware,
     middleware::Next,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::component::{
-    import::{PendingImportCandidate, RedactedImportPreview},
-    operator::OperatorIdentity,
-};
+use crate::component::import::{PendingImportCandidate, RedactedImportPreview};
 
-use super::super::{AppState, error::ApiError, middleware, not_found};
-
-pub(crate) const CSV_IMPORT_BODY_LIMIT_BYTES: usize = 4_194_304;
-pub(crate) const IMPORT_COMMIT_BODY_LIMIT_BYTES: usize = CSV_IMPORT_BODY_LIMIT_BYTES + 4_096;
+use super::super::{AppState, error::ApiError, middleware};
 
 const PREVIEW_TOKEN_BYTES: usize = 32;
 const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    let upload = post(create_import)
-        .layer(DefaultBodyLimit::max(CSV_IMPORT_BODY_LIMIT_BYTES))
-        .route_layer(axum_middleware::from_fn(require_csv_content_type))
-        .route_layer(axum_middleware::from_fn(require_admin_role));
-    let upload = middleware::require_operator(state.clone(), upload)
-        .layer(RequestBodyLimitLayer::new(CSV_IMPORT_BODY_LIMIT_BYTES));
-    let commit = post(commit_import)
-        .layer(DefaultBodyLimit::max(IMPORT_COMMIT_BODY_LIMIT_BYTES))
-        .route_layer(axum_middleware::from_fn(require_admin_role));
-    let discard = post(discard_import).route_layer(axum_middleware::from_fn(require_admin_role));
-    let read = get(get_import)
-        .route_layer(axum_middleware::from_fn(require_admin_role))
-        .head(not_found);
-    let imports = upload.merge(middleware::require_operator(state.clone(), read));
+    let upload =
+        post(create_import).route_layer(axum_middleware::from_fn(require_csv_content_type));
+    let upload = middleware::require_admin(state.clone(), upload);
+    let imports = upload.merge(middleware::require_admin(state.clone(), get(get_import)));
     Router::new()
         .route("/imports", imports)
         .route(
             "/imports/{import_id}/actions/commit",
-            middleware::require_operator(state.clone(), commit),
+            middleware::require_admin(state.clone(), post(commit_import)),
         )
         .route(
-            "/imports/{import_id}/actions/discard",
-            middleware::require_operator(state, discard),
+            "/imports/{import_id}",
+            middleware::require_admin(state, delete(delete_import)),
         )
-}
-
-async fn require_admin_role(
-    Extension(identity): Extension<OperatorIdentity>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if let Err(error) = identity.require_admin() {
-        return ApiError::from_operator(error).into_response();
-    }
-    next.run(request).await
 }
 
 async fn require_csv_content_type(request: Request, next: Next) -> Response {
@@ -170,23 +144,11 @@ pub(crate) struct ImportCommitRequest {
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
         (status = 409, description = "An import candidate is already pending"),
-        (status = 413, description = "CSV request body exceeds the import ingress limit"),
+        (status = 413, description = "Request body exceeds the API ingress limit"),
         (status = 500, description = "Internal failure")
     )
 )]
-pub(crate) async fn create_import(
-    State(state): State<AppState>,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
-    let body = match body {
-        Ok(body) => body,
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return rejection.into_response();
-        }
-        Err(_) => {
-            return ApiError::invalid_request("import_request_body_rejected").into_response();
-        }
-    };
+pub(crate) async fn create_import(State(state): State<AppState>, body: Bytes) -> Response {
     match state.import().create_candidate(&body).await {
         Ok(created) => {
             let response = ImportPreviewResponse {
@@ -239,26 +201,20 @@ pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
         (status = 403, description = "Administrator role required"),
         (status = 404, description = "Import candidate unavailable"),
         (status = 409, description = "Import preview baseline is stale"),
-        (status = 413, description = "Commit request body exceeds the import ingress limit"),
+        (status = 413, description = "Request body exceeds the API ingress limit"),
         (status = 500, description = "Internal failure")
     )
 )]
 pub(crate) async fn commit_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,
-    request: Result<Json<ImportCommitRequest>, axum::extract::rejection::JsonRejection>,
+    request: Result<Json<ImportCommitRequest>, JsonRejection>,
 ) -> Response {
     let Some(import_id) = canonical_uuid_v7(&path.import_id) else {
         return ApiError::invalid_request("import_id_not_canonical_uuid_v7").into_response();
     };
-    let Json(request) = match request {
-        Ok(request) => request,
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return rejection.into_response();
-        }
-        Err(_) => {
-            return ApiError::invalid_request("import_commit_body_rejected").into_response();
-        }
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("import_commit_body_rejected").into_response();
     };
     let Some(token) = decode_preview_token(&request.preview_token) else {
         return ApiError::invalid_request("import_preview_token_rejected").into_response();
@@ -268,15 +224,18 @@ pub(crate) async fn commit_import(
         .commit(import_id, &token, request.csv.as_bytes())
         .await
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            state.device_control().dirty_all(Arc::clone(&state)).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(error) => ApiError::from_import(error).into_response(),
     }
 }
 
 #[utoipa::path(
-    post,
-    path = "/api/v2/imports/{import_id}/actions/discard",
-    operation_id = "discardCsvImport",
+    delete,
+    path = "/api/v2/imports/{import_id}",
+    operation_id = "deleteCsvImport",
     params(ImportPath),
     security(("sessionCookie" = [])),
     responses(
@@ -288,7 +247,7 @@ pub(crate) async fn commit_import(
         (status = 500, description = "Internal failure")
     )
 )]
-pub(crate) async fn discard_import(
+pub(crate) async fn delete_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,
 ) -> Response {

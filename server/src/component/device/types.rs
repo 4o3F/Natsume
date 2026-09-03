@@ -221,6 +221,60 @@ pub(crate) enum LifecycleOutcome {
     RejectedTerminal,
 }
 
+/// Non-secret durable Device fields shown by the Operator Panel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeviceProjection {
+    device_id: DeviceId,
+    machine_hardware_id: MachineHardwareId,
+    evidence_quality: EvidenceQuality,
+    state: DeviceState,
+    created_at_unix_ms: u64,
+}
+
+impl DeviceProjection {
+    pub(in crate::component::device) fn from_persisted(
+        device_id: &str,
+        machine_hardware_id: &str,
+        evidence_quality: &str,
+        state: &str,
+        created_at_unix_ms: i64,
+    ) -> Result<Self, PersistenceError> {
+        Ok(Self {
+            device_id: DeviceId::parse(device_id).ok_or(PersistenceError::InvalidPersistedData)?,
+            machine_hardware_id: MachineHardwareId::parse(machine_hardware_id)
+                .ok_or(PersistenceError::InvalidPersistedData)?,
+            evidence_quality: EvidenceQuality::from_persisted(evidence_quality)
+                .ok_or(PersistenceError::InvalidPersistedData)?,
+            state: DeviceState::from_persisted(state)
+                .ok_or(PersistenceError::InvalidPersistedData)?,
+            created_at_unix_ms: u64::try_from(created_at_unix_ms)
+                .ok()
+                .filter(|value| *value > 0)
+                .ok_or(PersistenceError::InvalidPersistedData)?,
+        })
+    }
+
+    pub(crate) const fn device_id(self) -> DeviceId {
+        self.device_id
+    }
+
+    pub(crate) const fn machine_hardware_id(self) -> MachineHardwareId {
+        self.machine_hardware_id
+    }
+
+    pub(crate) const fn evidence_quality(self) -> EvidenceQuality {
+        self.evidence_quality
+    }
+
+    pub(crate) const fn state(self) -> DeviceState {
+        self.state
+    }
+
+    pub(crate) const fn created_at_unix_ms(self) -> u64 {
+        self.created_at_unix_ms
+    }
+}
+
 pub(in crate::component::device) struct DeviceRecord {
     device_id: DeviceId,
     state: DeviceState,

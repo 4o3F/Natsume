@@ -32,6 +32,10 @@ type PersistedGatewayRow = (String, Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec
 async fn first_materialization_creates_one_waiting_intent() {
     let fixture = Fixture::new().await;
 
+    assert_eq!(
+        fixture.component.read_current(fixture.device_id).await,
+        Ok(None)
+    );
     let materialized = fixture.materialize().await;
     let credential_id = materialized.intent().credential_id();
 
@@ -42,6 +46,10 @@ async fn first_materialization_creates_one_waiting_intent() {
         (credential_id.as_text(), None, None, None,)
     );
     assert_eq!(fixture.issue_count.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        fixture.component.read_current(fixture.device_id).await,
+        Ok(Some(materialized))
+    );
 }
 
 #[tokio::test]

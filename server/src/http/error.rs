@@ -25,6 +25,7 @@ enum ApiErrorCode {
     AuthenticationFailed,
     AuthorizationDenied,
     InvalidRequest,
+    ResourceConflict,
     ResourceNotFound,
     InternalError,
     ImportCandidateInvalid,
@@ -40,6 +41,7 @@ impl ApiErrorCode {
             Self::AuthenticationFailed => "AUTHENTICATION_FAILED",
             Self::AuthorizationDenied => "AUTHORIZATION_DENIED",
             Self::InvalidRequest => "INVALID_REQUEST",
+            Self::ResourceConflict => "RESOURCE_CONFLICT",
             Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
             Self::InternalError => "INTERNAL_ERROR",
             Self::ImportCandidateInvalid => "IMPORT_CANDIDATE_INVALID",
@@ -94,6 +96,15 @@ impl ApiError {
             StatusCode::NOT_FOUND,
             "Not Found",
             ApiErrorCode::ResourceNotFound,
+            cause,
+        )
+    }
+
+    pub(super) fn conflict(cause: &'static str) -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "Conflict",
+            ApiErrorCode::ResourceConflict,
             cause,
         )
     }
@@ -163,15 +174,14 @@ impl ApiError {
         }
     }
 
-    #[allow(dead_code)]
     pub(super) fn from_device(error: DeviceError) -> Self {
         match error {
-            DeviceError::InvalidDeviceId => Self::invalid_request("contest_invalid_device_id"),
-            DeviceError::DeviceNotFound => Self::not_found("contest_device_not_found"),
+            DeviceError::InvalidDeviceId => Self::invalid_request("device_invalid_device_id"),
+            DeviceError::DeviceNotFound => Self::not_found("device_not_found"),
             DeviceError::InvalidPersistedFacts => {
-                Self::internal_error("contest_invalid_persisted_facts")
+                Self::internal_error("device_invalid_persisted_facts")
             }
-            DeviceError::PersistenceFailed => Self::internal_error("contest_persistence_failed"),
+            DeviceError::PersistenceFailed => Self::internal_error("device_persistence_failed"),
         }
     }
 

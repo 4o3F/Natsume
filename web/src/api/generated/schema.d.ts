@@ -36,6 +36,182 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/devices": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listDevices"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getDevice"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch: operations["updateDevice"];
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/binding": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete: operations["deleteDeviceBinding"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/convergence": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getDeviceConvergence"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/home": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getDeviceHome"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/home/actions/reset": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["resetDeviceHome"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/session-control": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getDeviceSessionControl"];
+    put: operations["setDeviceSessionLock"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/devices/{device_id}/session-control/actions/terminate": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["terminateDeviceSession"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/enrollment-reviews": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listEnrollmentReviews"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/enrollment-reviews/{review_id}/actions/approve": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["approveEnrollmentReview"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/enrollment-reviews/{review_id}/actions/deny": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["denyEnrollmentReview"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/health": {
     parameters: {
       query?: never;
@@ -68,6 +244,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/imports/{import_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete: operations["deleteCsvImport"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/imports/{import_id}/actions/commit": {
     parameters: {
       query?: never;
@@ -84,22 +276,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/imports/{import_id}/actions/discard": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations["discardCsvImport"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v2/provisioning-window": {
     parameters: {
       query?: never;
@@ -108,40 +284,8 @@ export interface paths {
       cookie?: never;
     };
     get: operations["getProvisioningWindow"];
-    put?: never;
+    put: operations["updateProvisioningWindow"];
     post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/provisioning-window/actions/close": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations["closeProvisioningWindow"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/provisioning-window/actions/open": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations["openProvisioningWindow"];
     delete?: never;
     options?: never;
     head?: never;
@@ -190,20 +334,194 @@ export interface components {
       credential_revision: number;
       domjudge_username: string;
     };
+    /** @description Latest valid Binding artifact Actual reported by the current lease. */
+    BindingActualResponse: {
+      /**
+       * @description Binding artifact state vocabulary from the Device protocol.
+       * @enum {string}
+       */
+      assignment_state: "absent" | "applied" | "failed";
+      context: null | components["schemas"]["BindingContextResponse"];
+      /**
+       * @description Binding artifact state vocabulary from the Device protocol.
+       * @enum {string}
+       */
+      credential_state: "absent" | "applied" | "failed";
+    };
+    /** @description Non-secret Binding identity context shared by target and Actual. */
+    BindingContextResponse: {
+      /** Format: uuid */
+      account_id: string;
+      /** Format: uuid */
+      binding_id: string;
+      /** Format: int64 */
+      credential_revision: number;
+      domjudge_username: string;
+      seat_code: string;
+    };
+    /** @description Redacted Binding target, Actual, and convergence result. */
+    BindingConvergenceResponse: {
+      actual: null | components["schemas"]["BindingActualResponse"];
+      /**
+       * @description Typed comparison of one current target with one fresh Actual.
+       * @enum {string}
+       */
+      status:
+        "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
+      target: null | components["schemas"]["BindingTargetResponse"];
+    };
+    /** @description Latest rejected Binding submission associated with an unbound intent. */
+    BindingEvaluationResponse: {
+      /**
+       * @description Closed Binding rejection vocabulary exposed by the API.
+       * @enum {string}
+       */
+      error_code: "not_found" | "unmapped" | "occupied";
+      /** Format: int64 */
+      submission_epoch: number;
+    };
     BindingResponse: {
       binding_id: string;
       device_id: string;
       seat_id: string;
     };
+    /** @description Current Binding intent or bound public context, excluding credentials. */
+    BindingTargetResponse:
+      | {
+          evaluation?:
+            null | components["schemas"]["BindingEvaluationResponse"];
+          /** Format: uuid */
+          negotiation_id: string;
+          /** @enum {string} */
+          state: "unbound";
+        }
+      | {
+          context: components["schemas"]["BindingContextResponse"];
+          /** @enum {string} */
+          state: "bound";
+        };
+    /** Format: uuid */
+    CanonicalUuidV5: string;
     /** Format: uuid */
     CanonicalUuidV7: string;
+    /** @description Current Server target and latest valid Client Actual for one Device. */
+    DeviceConvergenceResponse: {
+      binding: components["schemas"]["BindingConvergenceResponse"];
+      /** @enum {string} */
+      connection_state: "offline" | "awaiting_fresh_state" | "active";
+      gateway: components["schemas"]["GatewayConvergenceResponse"];
+      home: components["schemas"]["HomeConvergenceResponse"];
+      /** Format: int64 */
+      received_at_unix_ms: number | null;
+      runtime_config: components["schemas"]["RuntimeConfigConvergenceResponse"];
+      session_control: components["schemas"]["SessionConvergenceResponse"];
+    };
+    /** @description Durable Device lifecycle and Enrollment evidence shown by the Operator Panel. */
+    DeviceResponse: {
+      /** Format: int64 */
+      created_at_unix_ms: number;
+      device_id: components["schemas"]["CanonicalUuidV7"];
+      /**
+       * @description Closed Device Enrollment evidence-quality vocabulary exposed by the API.
+       * @enum {string}
+       */
+      evidence_quality: "medium" | "strong";
+      machine_hardware_id: components["schemas"]["CanonicalUuidV5"];
+      /**
+       * @description Closed durable Device lifecycle vocabulary exposed by the API.
+       * @enum {string}
+       */
+      state: "enabled" | "disabled" | "revoked";
+    };
+    /** @description Complete replacement of the mutable Device lifecycle field. */
+    DeviceUpdateRequest: {
+      /**
+       * @description Closed durable Device lifecycle vocabulary exposed by the API.
+       * @enum {string}
+       */
+      state: "enabled" | "disabled" | "revoked";
+    };
+    /** @description Non-secret evidence awaiting an Administrator decision in this process. */
+    EnrollmentReviewResponse: {
+      agent_version: string;
+      candidate_public_key: string;
+      daemon_version: string;
+      /** @enum {string} */
+      evidence_quality: "medium" | "strong";
+      machine_hardware_id: components["schemas"]["CanonicalUuidV5"];
+      review_id: components["schemas"]["CanonicalUuidV7"];
+    };
     ErrorResponse: {
       code: string;
       status: number;
       title: string;
     };
+    /** @description Latest valid Gateway Actual reported by the current lease. */
+    GatewayActualResponse: {
+      /** Format: uuid */
+      credential_id: string | null;
+      gateway_leaf_sha256: string | null;
+      /**
+       * @description Gateway Actual state vocabulary from the Device protocol.
+       * @enum {string}
+       */
+      state:
+        | "absent"
+        | "blocked"
+        | "restoring"
+        | "ready"
+        | "upstream_unhealthy"
+        | "recovery_required";
+    };
+    /** @description Redacted Gateway target, Actual, and convergence result. */
+    GatewayConvergenceResponse: {
+      actual: null | components["schemas"]["GatewayActualResponse"];
+      /**
+       * @description Typed comparison of one current target with one fresh Actual.
+       * @enum {string}
+       */
+      status:
+        "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
+      target: null | components["schemas"]["GatewayTargetResponse"];
+    };
+    /** @description Public fields required to compare the current Gateway target. */
+    GatewayTargetResponse: {
+      /** Format: uuid */
+      credential_id: string;
+      gateway_leaf_sha256: string | null;
+    };
     HealthResponse: {
       status: string;
+    };
+    /** @description Latest valid Home Actual reported by the current lease. */
+    HomeActualResponse: {
+      /** Format: int64 */
+      completed_reset_epoch: number | null;
+      /**
+       * @description Home Actual state vocabulary from the Device protocol.
+       * @enum {string}
+       */
+      state: "steady" | "resetting" | "recovery_required";
+    };
+    /** @description Home target, Actual, and convergence result. */
+    HomeConvergenceResponse: {
+      actual: null | components["schemas"]["HomeActualResponse"];
+      /**
+       * @description Typed comparison of one current target with one fresh Actual.
+       * @enum {string}
+       */
+      status:
+        "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
+      /** Format: int64 */
+      target_reset_epoch: number | null;
+    };
+    /**
+     * @description Current durable Home target, if any reset has been requested.
+     *     Process-local Device connection state at query time.
+     */
+    HomeResponse: {
+      /** Format: int64 */
+      reset_epoch: number | null;
     };
     ImportBindingImpactResponse: {
       device_id: string;
@@ -246,13 +564,89 @@ export interface components {
       seats_removed: string[];
       unchanged_count: number;
     };
+    /** @description Complete replacement of the process-local provisioning-window state. */
+    ProvisioningWindowRequest: {
+      /** @enum {string} */
+      state: "closed" | "open";
+    };
+    /** @description Current process-local provisioning-window state. */
     ProvisioningWindowResponse: {
       /** @enum {string} */
       state: "closed" | "open";
     };
+    /** @description Latest valid Runtime Config Actual reported by the current lease. */
+    RuntimeConfigActualResponse: {
+      applied_domjudge_origin: string | null;
+      /**
+       * @description Runtime Config Actual state vocabulary from the Device protocol.
+       * @enum {string}
+       */
+      state: "absent" | "applied" | "failed";
+    };
+    /** @description Runtime Config target, Actual, and convergence result. */
+    RuntimeConfigConvergenceResponse: {
+      actual: null | components["schemas"]["RuntimeConfigActualResponse"];
+      /**
+       * @description Typed comparison of one current target with one fresh Actual.
+       * @enum {string}
+       */
+      status:
+        "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
+      target_domjudge_origin: string | null;
+    };
     SeatResponse: {
       seat_code: string;
       seat_id: string;
+    };
+    /** @description Latest valid Session Control Actual reported by the current lease. */
+    SessionActualResponse: {
+      /** Format: int64 */
+      completed_terminate_epoch: number | null;
+      /**
+       * @description Session state vocabulary from the Device protocol.
+       * @enum {string}
+       */
+      session_state:
+        | "none"
+        | "starting"
+        | "active"
+        | "locked"
+        | "terminating"
+        | "ambiguous"
+        | "error";
+    };
+    /** @description Current durable Session Control target, if it has been initialized. */
+    SessionControlResponse: {
+      target: null | components["schemas"]["SessionControlTargetResponse"];
+    };
+    /** @description Concrete initialized Session Control target. */
+    SessionControlTargetResponse: {
+      /**
+       * @description Desired Session lock level accepted and returned by the API.
+       * @enum {string}
+       */
+      lock_state: "unlocked" | "locked";
+      /** Format: int64 */
+      terminate_epoch: number | null;
+    };
+    /** @description Session Control target, Actual, and convergence result. */
+    SessionConvergenceResponse: {
+      actual: null | components["schemas"]["SessionActualResponse"];
+      /**
+       * @description Typed comparison of one current target with one fresh Actual.
+       * @enum {string}
+       */
+      status:
+        "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
+      target: null | components["schemas"]["SessionControlTargetResponse"];
+    };
+    /** @description Complete Session lock mutation body. */
+    SessionLockRequest: {
+      /**
+       * @description Desired Session lock level accepted and returned by the API.
+       * @enum {string}
+       */
+      lock_state: "unlocked" | "locked";
     };
     SessionRequest: {
       login_name: string;
@@ -339,6 +733,826 @@ export interface operations {
       };
       /** @description Internal failure */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listDevices: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current durable Devices */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeviceResponse"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getDevice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current durable Device */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeviceResponse"];
+        };
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  updateDevice: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["DeviceUpdateRequest"];
+      };
+    };
+    responses: {
+      /** @description Device lifecycle updated or already at the requested state */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid Device ID or request body */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Revoked Device cannot return to a non-terminal state */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body exceeds the API ingress limit */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  deleteDeviceBinding: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Device Binding removed or already absent */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getDeviceConvergence: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current redacted Server targets and latest valid Client Actual */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DeviceConvergenceResponse"];
+        };
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getDeviceHome: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current durable Home target */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HomeResponse"];
+        };
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  resetDeviceHome: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Home reset epoch advanced */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HomeResponse"];
+        };
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Home reset epoch exhausted */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getDeviceSessionControl: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current durable Session Control target */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionControlResponse"];
+        };
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  setDeviceSessionLock: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["SessionLockRequest"];
+      };
+    };
+    responses: {
+      /** @description Session lock target committed */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionControlResponse"];
+        };
+      };
+      /** @description Invalid Device ID or request body */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body exceeds the API ingress limit */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  terminateDeviceSession: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
+        device_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Session terminate epoch advanced */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["SessionControlResponse"];
+        };
+      };
+      /** @description Invalid Device ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Device not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Terminate epoch exhausted */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listEnrollmentReviews: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Enrollment reviews pending in this Server process */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["EnrollmentReviewResponse"][];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  approveEnrollmentReview: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` review ID. */
+        review_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Enrollment authority committed and connection notification attempted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid review ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Enrollment review unavailable */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Provisioning gate closed or candidate authority rejected */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  denyEnrollmentReview: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` review ID. */
+        review_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Enrollment review terminally denied and connection notification attempted */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid review ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Enrollment review unavailable */
+      404: {
         headers: {
           [name: string]: unknown;
         };
@@ -482,12 +1696,78 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description CSV request body exceeds the import ingress limit */
+      /** @description Request body exceeds the API ingress limit */
       413: {
         headers: {
           [name: string]: unknown;
         };
         content?: never;
+      };
+      /** @description Internal failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  deleteCsvImport: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
+        import_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description CSV import candidate discarded */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid import ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Import candidate unavailable */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
       };
       /** @description Internal failure */
       500: {
@@ -568,78 +1848,12 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Commit request body exceeds the import ingress limit */
+      /** @description Request body exceeds the API ingress limit */
       413: {
         headers: {
           [name: string]: unknown;
         };
         content?: never;
-      };
-      /** @description Internal failure */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  discardCsvImport: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
-        import_id: components["schemas"]["CanonicalUuidV7"];
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description CSV import candidate discarded */
-      204: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Invalid import ID */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Session authentication failed */
-      401: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Administrator role required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Import candidate unavailable */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
       };
       /** @description Internal failure */
       500: {
@@ -681,22 +1895,35 @@ export interface operations {
       };
     };
   };
-  closeProvisioningWindow: {
+  updateProvisioningWindow: {
     parameters: {
       query?: never;
       header?: never;
       path?: never;
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProvisioningWindowRequest"];
+      };
+    };
     responses: {
-      /** @description Provisioning window closed or already closed */
+      /** @description Provisioning window replaced */
       200: {
         headers: {
           [name: string]: unknown;
         };
         content: {
           "application/json": components["schemas"]["ProvisioningWindowResponse"];
+        };
+      };
+      /** @description Invalid request body */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
         };
       };
       /** @description Session authentication failed */
@@ -717,43 +1944,12 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-    };
-  };
-  openProvisioningWindow: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Provisioning window opened or already open */
-      200: {
+      /** @description Request body exceeds the API ingress limit */
+      413: {
         headers: {
           [name: string]: unknown;
         };
-        content: {
-          "application/json": components["schemas"]["ProvisioningWindowResponse"];
-        };
-      };
-      /** @description Session authentication failed */
-      401: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Administrator role required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
+        content?: never;
       };
     };
   };
@@ -873,7 +2069,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Request body exceeds the session ingress limit */
+      /** @description Request body exceeds the API ingress limit */
       413: {
         headers: {
           [name: string]: unknown;

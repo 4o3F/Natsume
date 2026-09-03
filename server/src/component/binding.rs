@@ -98,13 +98,47 @@ impl BindingComponent {
             .await
             .map_err(TransactionError::into_error)?;
 
+        self.resolve(fact)
+    }
+
+    /// Reads the current durable Binding target without creating a negotiation.
+    pub(crate) async fn read_current(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<Option<BindingProjection>, BindingError> {
+        self.database
+            .read(move |transaction| {
+                require_existing_device(transaction, &device_id)?;
+                let has_binding = db::device_has_binding(transaction, &device_id)?;
+                let negotiation = db::find_negotiation(transaction, &device_id)?;
+                match (has_binding, negotiation) {
+                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts),
+                    (true, None) => db::find_bound_context(transaction, &device_id)?
+                        .as_ref()
+                        .map(BindingContext::from_persisted)
+                        .transpose()?
+                        .map(BindingProjection::Bound)
+                        .ok_or(BindingError::InvalidPersistedFacts)
+                        .map(Some),
+                    (false, Some(row)) => NegotiationFact::from_persisted(&row)
+                        .map(NegotiationFact::into_intent)
+                        .map(BindingProjection::Unbound)
+                        .map(Some),
+                    (false, None) => Ok(None),
+                }
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    fn resolve(&self, fact: BindingFact) -> Result<MaterializedBinding, BindingError> {
         match fact {
             BindingFact::Unbound(negotiation) => Ok(MaterializedBinding {
                 intent: Some(negotiation.into_intent()),
                 target: BindingAccessTarget { bound: None },
             }),
             BindingFact::Bound(row) => {
-                let context = BindingContext::from_persisted(&row)?;
+                let context = BindingContext::from_persisted(row.context())?;
                 let plaintext = self
                     .vault
                     .open(row.nonce(), row.ciphertext())
@@ -120,6 +154,7 @@ impl BindingComponent {
         }
     }
 
+    /// Removes the current Binding and starts a fresh negotiation if needed.
     pub(crate) async fn unbind(&self, device_id: DeviceId) -> Result<(), BindingError> {
         let replacement_negotiation_id = BindingNegotiationId::new();
         self.database
@@ -417,6 +452,13 @@ enum BindingFact {
     Bound(db::PersistedBoundTargetRow),
 }
 
+/// Redacted durable Binding state shown by the Operator Panel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BindingProjection {
+    Unbound(BindingNegotiationIntent),
+    Bound(BindingContext),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BindingNegotiationIntent {
     negotiation_id: BindingNegotiationId,
@@ -459,7 +501,7 @@ pub(crate) struct BindingContext {
 }
 
 impl BindingContext {
-    fn from_persisted(row: &db::PersistedBoundTargetRow) -> Result<Self, BindingError> {
+    fn from_persisted(row: &db::PersistedBoundContextRow) -> Result<Self, BindingError> {
         let seat_code = row.seat_code();
         let domjudge_username = row.domjudge_username();
         if !valid_public_text(seat_code) || !valid_public_text(domjudge_username) {

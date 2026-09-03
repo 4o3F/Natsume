@@ -48,7 +48,8 @@ use crate::{
 };
 
 use super::{
-    AppState, error::ApiError, handler::health, middleware::request_context, not_found, router,
+    API_REQUEST_BODY_LIMIT_BYTES, AppState, error::ApiError, handler::health,
+    middleware::request_context, not_found, router,
 };
 
 pub(crate) fn health_router() -> Router {
@@ -464,7 +465,6 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
         StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
     ];
     for (response, expected_status) in mounted.iter().zip(expected_statuses) {
         if response.status != expected_status {
@@ -475,6 +475,23 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
         }
     }
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn api_root_owns_the_request_body_limit() -> Result<(), TestFailure> {
+    let fixture = TestDatabase::new().await?;
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri("/api/v2/session")
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CONTENT_LENGTH, API_REQUEST_BODY_LIMIT_BYTES + 1)
+        .body(Body::empty())
+        .map_err(|_| TestFailure::RequestBuildFailed)?;
+    if drive(&application, request).await?.status != StatusCode::PAYLOAD_TOO_LARGE {
+        return Err(TestFailure::MountedRouteWasNotReachable);
+    }
     Ok(())
 }
 
@@ -497,16 +514,7 @@ async fn mounted_route_responses(
         .await?,
         drive(
             application,
-            request(Method::POST, "/api/v2/provisioning-window/actions/open", "")?,
-        )
-        .await?,
-        drive(
-            application,
-            request(
-                Method::POST,
-                "/api/v2/provisioning-window/actions/close",
-                "",
-            )?,
+            request(Method::PUT, "/api/v2/provisioning-window", "")?,
         )
         .await?,
         drive(
@@ -531,8 +539,8 @@ async fn mounted_route_responses(
         drive(
             application,
             request(
-                Method::POST,
-                "/api/v2/imports/01900000-0000-7000-8000-000000000000/actions/discard",
+                Method::DELETE,
+                "/api/v2/imports/01900000-0000-7000-8000-000000000000",
                 "",
             )?,
         )
@@ -944,12 +952,9 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
     Ok(())
 }
 
-/// `authenticate_operator` short-circuits `HEAD` before authenticating, so every
-/// protected route must answer `HEAD` without reaching a real handler. The
-/// GET routes are built by `middleware::operator_get`, and the action routes are
-/// `post`-only, so `HEAD` is rejected by method routing before the auth layer.
+/// The `/api/v2` root rejects `HEAD` before route authentication or handlers.
 #[tokio::test]
-async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), TestFailure> {
+async fn head_on_every_api_route_is_rejected_at_the_root() -> Result<(), TestFailure> {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
@@ -964,21 +969,28 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
         .ok_or(TestFailure::CookieContractChanged)?
         .to_owned();
 
-    for (path, expected_status) in [
-        ("/api/v2/session", StatusCode::NOT_FOUND),
-        ("/api/v2/seats", StatusCode::NOT_FOUND),
-        ("/api/v2/accounts", StatusCode::NOT_FOUND),
-        ("/api/v2/bindings", StatusCode::NOT_FOUND),
-        ("/api/v2/imports", StatusCode::NOT_FOUND),
-        ("/api/v2/provisioning-window", StatusCode::NOT_FOUND),
-        (
-            "/api/v2/provisioning-window/actions/open",
-            StatusCode::METHOD_NOT_ALLOWED,
-        ),
-        (
-            "/api/v2/provisioning-window/actions/close",
-            StatusCode::METHOD_NOT_ALLOWED,
-        ),
+    for path in [
+        "/api/v2/health",
+        "/api/v2/device/control",
+        "/api/v2/session",
+        "/api/v2/seats",
+        "/api/v2/accounts",
+        "/api/v2/bindings",
+        "/api/v2/imports",
+        "/api/v2/provisioning-window",
+        "/api/v2/enrollment-reviews",
+        "/api/v2/devices",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000/session-control",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000/home",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000/convergence",
+        "/api/v2/runtime-config",
+        "/api/v2/enrollment-reviews/01900000-0000-7000-8000-000000000000/actions/approve",
+        "/api/v2/enrollment-reviews/01900000-0000-7000-8000-000000000000/actions/deny",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000/binding",
+        "/api/v2/imports/01900000-0000-7000-8000-000000000000",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000/session-control/actions/terminate",
+        "/api/v2/devices/01900000-0000-7000-8000-000000000000/home/actions/reset",
     ] {
         for cookie in [None, Some(cookie_pair.as_str())] {
             let head = match cookie {
@@ -986,17 +998,14 @@ async fn head_on_every_protected_route_never_reaches_a_handler() -> Result<(), T
                 None => request(Method::HEAD, path, "")?,
             };
             let response = drive(&application, head).await?;
-            if response.status != expected_status {
+            if response.status != StatusCode::NOT_FOUND {
                 return Err(TestFailure::HeadRouteWasReachable);
             }
             if response.headers.contains_key("x-correlation-id") {
                 return Err(TestFailure::CorrelationContractWasRetained);
             }
-            // A reached handler would answer 200; `HEAD` bodies are stripped, so
-            // the status and the uniform JSON error shape are the evidence.
-            if expected_status == StatusCode::NOT_FOUND
-                && (header_text(&response.headers, &header::CONTENT_TYPE)? != "application/json"
-                    || !response.body.is_empty())
+            if header_text(&response.headers, &header::CONTENT_TYPE)? != "application/json"
+                || !response.body.is_empty()
             {
                 return Err(TestFailure::HeadRouteWasReachable);
             }

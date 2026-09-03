@@ -132,6 +132,23 @@ impl GatewayComponent {
         self.read_current_fact(device_id).await.map(resolve)
     }
 
+    /// Reads the current durable Gateway target without creating or replacing a generation.
+    pub(crate) async fn read_current(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<Option<MaterializedGateway>, GatewayError> {
+        self.database
+            .read(move |transaction| {
+                db::find_by_device_id(transaction, &device_id.as_text())?
+                    .as_ref()
+                    .map(GatewayFact::from_persisted)
+                    .transpose()
+                    .map(|fact| fact.map(resolve))
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
     async fn ensure_generation(&self, device_id: DeviceId) -> Result<(), GatewayError> {
         let initial_id = GatewayCredentialId::new();
         self.database

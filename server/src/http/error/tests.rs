@@ -58,6 +58,7 @@ async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result
                 ApiError::invalid_request(CAUSE_CANARY),
                 StatusCode::BAD_REQUEST,
             ),
+            (ApiError::conflict(CAUSE_CANARY), StatusCode::CONFLICT),
             (ApiError::not_found(CAUSE_CANARY), StatusCode::NOT_FOUND),
             (
                 ApiError::internal_error(CAUSE_CANARY),
@@ -212,22 +213,22 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 4] {
     [
         (
             DeviceError::InvalidDeviceId,
-            "contest_invalid_device_id",
+            "device_invalid_device_id",
             StatusCode::BAD_REQUEST,
         ),
         (
             DeviceError::DeviceNotFound,
-            "contest_device_not_found",
+            "device_not_found",
             StatusCode::NOT_FOUND,
         ),
         (
             DeviceError::InvalidPersistedFacts,
-            "contest_invalid_persisted_facts",
+            "device_invalid_persisted_facts",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
             DeviceError::PersistenceFailed,
-            "contest_persistence_failed",
+            "device_persistence_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
     ]

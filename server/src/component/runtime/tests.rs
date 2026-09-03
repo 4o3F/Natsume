@@ -8,7 +8,7 @@ use crate::{
     diesel_schema::runtime_config,
 };
 
-use super::{RuntimeConfigComponent, RuntimeConfigError};
+use super::{RuntimeConfigComponent, RuntimeConfigError, is_canonical_https_origin};
 
 #[tokio::test]
 async fn accepts_only_exact_canonical_https_origins() {
@@ -19,18 +19,18 @@ async fn accepts_only_exact_canonical_https_origins() {
         "https://192.0.2.10",
         "https://[2001:db8::1]:8443",
     ] {
-        fixture
-            .component
-            .set_domjudge_origin(origin)
-            .await
-            .unwrap_or_else(|error| panic!("canonical origin was rejected: {error}"));
+        assert!(is_canonical_https_origin(origin));
+        fixture.persist(1, origin).await;
         assert_eq!(fixture.materialize().await, origin);
+        assert_eq!(
+            fixture.component.read_current().await,
+            Ok(Some(origin.to_owned()))
+        );
     }
 }
 
-#[tokio::test]
-async fn rejects_invalid_or_noncanonical_origins() {
-    let fixture = Fixture::new().await;
+#[test]
+fn rejects_invalid_or_noncanonical_origins() {
     for origin in [
         "http://judge.example.test",
         "https://user@judge.example.test",
@@ -43,17 +43,14 @@ async fn rejects_invalid_or_noncanonical_origins() {
         "https://judge.example.test:443",
         "not a URL",
     ] {
-        assert_eq!(
-            fixture.component.set_domjudge_origin(origin).await,
-            Err(RuntimeConfigError::InvalidOrigin),
-            "origin should have been rejected: {origin}"
-        );
+        assert!(!is_canonical_https_origin(origin));
     }
 }
 
 #[tokio::test]
 async fn missing_config_fails_closed() {
     let fixture = Fixture::new().await;
+    assert_eq!(fixture.component.read_current().await, Ok(None));
     assert_eq!(
         fixture.component.materialize().await,
         Err(RuntimeConfigError::MissingConfiguration)
@@ -63,16 +60,8 @@ async fn missing_config_fails_closed() {
 #[tokio::test]
 async fn replacement_survives_component_rebuild() {
     let fixture = Fixture::new().await;
-    fixture
-        .component
-        .set_domjudge_origin("https://first.example.test")
-        .await
-        .unwrap_or_else(|error| panic!("initial Runtime Config failed: {error}"));
-    fixture
-        .component
-        .set_domjudge_origin("https://second.example.test:8443")
-        .await
-        .unwrap_or_else(|error| panic!("replacement Runtime Config failed: {error}"));
+    fixture.persist(1, "https://first.example.test").await;
+    fixture.persist(1, "https://second.example.test:8443").await;
 
     let rebuilt = RuntimeConfigComponent::new(fixture.database.clone());
     assert_eq!(
@@ -87,11 +76,13 @@ async fn replacement_survives_component_rebuild() {
 #[tokio::test]
 async fn invalid_persisted_fact_fails_closed() {
     let fixture = Fixture::new().await;
-    fixture
-        .insert_persisted(1, "http://judge.example.test")
-        .await;
+    fixture.persist(1, "http://judge.example.test").await;
     assert_eq!(
         fixture.component.materialize().await,
+        Err(RuntimeConfigError::InvalidPersistedFacts)
+    );
+    assert_eq!(
+        fixture.component.read_current().await,
         Err(RuntimeConfigError::InvalidPersistedFacts)
     );
 }
@@ -126,10 +117,10 @@ impl Fixture {
             .unwrap_or_else(|error| panic!("Runtime Config materialization failed: {error}"))
     }
 
-    async fn insert_persisted(&self, singleton: i32, origin: &'static str) {
+    async fn persist(&self, singleton: i32, origin: &'static str) {
         self.database
             .write(move |transaction| {
-                diesel::insert_into(runtime_config::table)
+                diesel::replace_into(runtime_config::table)
                     .values((
                         runtime_config::singleton.eq(singleton),
                         runtime_config::domjudge_origin.eq(origin),

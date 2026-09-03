@@ -72,16 +72,34 @@ impl PersistedSubmissionSeatRow {
 }
 
 pub(in crate::component::binding) struct PersistedBoundTargetRow {
-    binding_id: Uuid,
-    account_id: Uuid,
-    seat_code: String,
-    domjudge_username: String,
-    credential_revision: i64,
+    context: PersistedBoundContextRow,
     nonce: Vec<u8>,
     ciphertext: Vec<u8>,
 }
 
 impl PersistedBoundTargetRow {
+    pub(in crate::component::binding) const fn context(&self) -> &PersistedBoundContextRow {
+        &self.context
+    }
+
+    pub(in crate::component::binding) fn nonce(&self) -> &[u8] {
+        &self.nonce
+    }
+
+    pub(in crate::component::binding) fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+}
+
+pub(in crate::component::binding) struct PersistedBoundContextRow {
+    binding_id: Uuid,
+    account_id: Uuid,
+    seat_code: String,
+    domjudge_username: String,
+    credential_revision: i64,
+}
+
+impl PersistedBoundContextRow {
     pub(in crate::component::binding) const fn binding_id(&self) -> Uuid {
         self.binding_id
     }
@@ -100,14 +118,6 @@ impl PersistedBoundTargetRow {
 
     pub(in crate::component::binding) const fn credential_revision(&self) -> i64 {
         self.credential_revision
-    }
-
-    pub(in crate::component::binding) fn nonce(&self) -> &[u8] {
-        &self.nonce
-    }
-
-    pub(in crate::component::binding) fn ciphertext(&self) -> &[u8] {
-        &self.ciphertext
     }
 }
 
@@ -286,6 +296,30 @@ pub(in crate::component::binding) fn find_bound_target(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
 ) -> Result<Option<PersistedBoundTargetRow>, PersistenceError> {
+    let Some(context) = find_bound_context(transaction, device_id)? else {
+        return Ok(None);
+    };
+    let (nonce, ciphertext) = server_vault_records::table
+        .select((
+            server_vault_records::nonce,
+            server_vault_records::ciphertext,
+        ))
+        .filter(server_vault_records::account_id.eq(context.account_id.hyphenated().to_string()))
+        .first::<(Vec<u8>, Vec<u8>)>(transaction.connection())
+        .optional()
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .ok_or(PersistenceError::InvalidPersistedData)?;
+    Ok(Some(PersistedBoundTargetRow {
+        context,
+        nonce,
+        ciphertext,
+    }))
+}
+
+pub(in crate::component::binding) fn find_bound_context(
+    transaction: &mut Transaction<'_>,
+    device_id: &DeviceId,
+) -> Result<Option<PersistedBoundContextRow>, PersistenceError> {
     let Some((binding_id, seat_id, seat_code)) = device_bindings::table
         .inner_join(seats::table)
         .select((
@@ -320,24 +354,12 @@ pub(in crate::component::binding) fn find_bound_target(
     if credential_revision < 1 {
         return Err(PersistenceError::InvalidPersistedData);
     }
-    let (nonce, ciphertext) = server_vault_records::table
-        .select((
-            server_vault_records::nonce,
-            server_vault_records::ciphertext,
-        ))
-        .filter(server_vault_records::account_id.eq(account_id.hyphenated().to_string()))
-        .first::<(Vec<u8>, Vec<u8>)>(transaction.connection())
-        .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
-        .ok_or(PersistenceError::InvalidPersistedData)?;
-    Ok(Some(PersistedBoundTargetRow {
+    Ok(Some(PersistedBoundContextRow {
         binding_id,
         account_id,
         seat_code,
         domjudge_username,
         credential_revision,
-        nonce,
-        ciphertext,
     }))
 }
 

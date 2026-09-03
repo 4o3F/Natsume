@@ -8,8 +8,8 @@ use natsume_device_protocol::{
     generated::{
         ActualState, BindingAccessActualState, BindingArtifactState, ClientActiveEnvelope,
         ClientHandshakeEnvelope, ClientInputState, ClientProof, ClientStateSnapshot,
-        EnrollmentAttempt, EnrollmentEvidenceQuality, GatewayActualState, GatewayState,
-        HomeActualState, HomeState, RuntimeConfigActualState, RuntimeConfigState,
+        EnrollmentAttempt, EnrollmentEvidenceQuality, EnrollmentReviewState, GatewayActualState,
+        GatewayState, HomeActualState, HomeState, RuntimeConfigActualState, RuntimeConfigState,
         ServerActiveEnvelope, ServerHandshakeEnvelope, SessionControlActualState, SessionState,
         client_active_envelope, client_handshake_envelope, client_proof, server_active_envelope,
         server_handshake_envelope,
@@ -30,9 +30,10 @@ use uuid::Uuid;
 
 use crate::{
     component::device::{
-        ControlPublicKey, DeviceId, EnrollmentStartOutcome, EvidenceQuality, MachineHardwareId,
-        ValidatedEnrollmentEvidence,
+        ControlPublicKey, DeviceId, EnrollmentReviewDecision, EnrollmentStartOutcome,
+        EvidenceQuality, LifecycleOutcome, MachineHardwareId, ValidatedEnrollmentEvidence,
     },
+    component::session::LockState,
     db::{Database, DatabaseConfig, PersistenceError},
     diesel_schema::{
         binding_negotiations, device_home_targets, device_session_targets, gateway_credentials,
@@ -41,7 +42,7 @@ use crate::{
     server_state::{self, ServerState},
 };
 
-use super::{DeviceRegistry, actor::DeviceHandle};
+use super::actor::{DeviceConnectionState, DeviceHandle, DeviceRegistry};
 
 const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 const DOMJUDGE_ORIGIN: &str = "https://domjudge.example.test";
@@ -131,6 +132,422 @@ async fn full_outbound_queue_terminates_the_current_lease() {
 }
 
 #[tokio::test]
+async fn dirty_refreshes_the_complete_target_after_commit() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x63; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+
+    assert!(
+        handle
+            .client_state(Arc::clone(&fixture.state), session_id, valid_snapshot())
+            .await
+    );
+    let _initial = timeout(Duration::from_secs(5), outgoing.recv())
+        .await
+        .unwrap_or_else(|_| panic!("the initial target was not emitted"))
+        .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
+
+    fixture
+        .state
+        .session()
+        .set_lock(device_id, LockState::Locked)
+        .await
+        .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
+    fixture
+        .state
+        .device_control()
+        .dirty_one(Arc::clone(&fixture.state), device_id)
+        .await;
+
+    let refreshed = timeout(Duration::from_secs(5), outgoing.recv())
+        .await
+        .unwrap_or_else(|_| panic!("Dirty did not refresh the target"))
+        .unwrap_or_else(|| panic!("Dirty closed the active lease"));
+    let Some(server_active_envelope::Body::ServerState(snapshot)) = refreshed.body else {
+        panic!("Dirty did not emit ServerState");
+    };
+    assert_eq!(
+        snapshot
+            .target
+            .and_then(|target| target.session_control)
+            .map(|target| target.lock_state),
+        Some(natsume_device_protocol::generated::LockState::Locked.into())
+    );
+}
+
+#[tokio::test]
+async fn connection_query_is_lease_scoped_and_evict_closes_the_outbound_path() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x64; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .connection_state(device_id)
+            .await,
+        DeviceConnectionState::AwaitingFreshState
+    ));
+    let expected_actual = valid_snapshot()
+        .actual
+        .unwrap_or_else(|| panic!("the fixture Actual is absent"));
+    let (_, expected_observation) = super::convergence::parse_actual(expected_actual.clone())
+        .unwrap_or_else(|| panic!("the fixture Actual is valid"));
+    assert!(
+        handle
+            .client_state(
+                Arc::clone(&fixture.state),
+                session_id,
+                ClientStateSnapshot {
+                    input: Some(ClientInputState {
+                        gateway_credential: None,
+                        binding: None,
+                    }),
+                    actual: Some(expected_actual.clone()),
+                },
+            )
+            .await
+    );
+    let _target = timeout(Duration::from_secs(5), outgoing.recv())
+        .await
+        .unwrap_or_else(|_| panic!("the initial target was not emitted"))
+        .unwrap_or_else(|| panic!("the active lease closed unexpectedly"));
+    match fixture
+        .state
+        .device_control()
+        .registry
+        .connection_state(device_id)
+        .await
+    {
+        DeviceConnectionState::Active {
+            actual,
+            received_at_unix_ms,
+        } => {
+            assert_eq!(*actual, expected_observation);
+            assert!(received_at_unix_ms > 0);
+        }
+        _ => panic!("the current fresh Actual was not reported"),
+    }
+
+    fixture.state.device_control().evict(device_id).await;
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .connection_state(device_id)
+            .await,
+        DeviceConnectionState::Offline
+    ));
+    assert!(
+        timeout(Duration::from_secs(5), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("Evict did not close the outbound path"))
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn authority_commit_fences_a_waiting_old_client_state_before_component_writes() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x6b; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+
+    let gate = handle.authority_fence.lock().await;
+    let state = Arc::clone(&fixture.state);
+    let disable = tokio::spawn(async move {
+        state
+            .device_control()
+            .disable_device(Arc::clone(&state), device_id)
+            .await
+    });
+    tokio::task::yield_now().await;
+    assert!(
+        handle
+            .client_state(Arc::clone(&fixture.state), session_id, valid_snapshot())
+            .await
+    );
+    drop(gate);
+
+    assert_eq!(
+        disable
+            .await
+            .unwrap_or_else(|error| panic!("disable task failed: {error}")),
+        Ok(LifecycleOutcome::Changed)
+    );
+    assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
+    assert!(outgoing.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn cancelled_request_does_not_cancel_authority_fence_completion() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x6c; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (_session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+
+    let gate = handle.authority_fence.lock().await;
+    let mut disable = Box::pin(
+        fixture
+            .state
+            .device_control()
+            .disable_device(Arc::clone(&fixture.state), device_id),
+    );
+    assert!(futures_util::poll!(&mut disable).is_pending());
+    drop(disable);
+    drop(gate);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            let device = fixture
+                .state
+                .device()
+                .find_device(device_id)
+                .await
+                .unwrap_or_else(|error| panic!("Device lookup failed: {error:?}"))
+                .unwrap_or_else(|| panic!("the Device disappeared"));
+            if device.state() == crate::component::device::DeviceState::Disabled {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("detached authority mutation did not complete"));
+    assert!(outgoing.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn approval_uses_current_authority_instead_of_review_creation_state() {
+    let fixture = Fixture::new().await;
+    fixture.state.provisioning().open_window().await;
+    let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
+        .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
+    let first_evidence = ValidatedEnrollmentEvidence::new(
+        machine_hardware_id,
+        ControlPublicKey::parse(
+            &SigningKey::from_bytes(&[0x6d; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap_or_else(|| panic!("the first control key is valid")),
+        EvidenceQuality::Strong,
+        "2.0.0".to_owned(),
+        "2.0.0".to_owned(),
+    );
+    let second_evidence = ValidatedEnrollmentEvidence::new(
+        machine_hardware_id,
+        ControlPublicKey::parse(
+            &SigningKey::from_bytes(&[0x6e; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap_or_else(|| panic!("the second control key is valid")),
+        EvidenceQuality::Strong,
+        "2.0.0".to_owned(),
+        "2.0.0".to_owned(),
+    );
+    let EnrollmentStartOutcome::Pending(first_review, first_activation) = fixture
+        .state
+        .device()
+        .start_enrollment(fixture.state.provisioning(), first_evidence)
+        .await
+        .unwrap_or_else(|error| panic!("first Enrollment start failed: {error:?}"))
+    else {
+        panic!("the first authority unexpectedly replayed");
+    };
+    let EnrollmentStartOutcome::Pending(second_review, second_activation) = fixture
+        .state
+        .device()
+        .start_enrollment(fixture.state.provisioning(), second_evidence)
+        .await
+        .unwrap_or_else(|error| panic!("second Enrollment start failed: {error:?}"))
+    else {
+        panic!("the second authority unexpectedly replayed");
+    };
+    let first_authority = fixture
+        .state
+        .device_control()
+        .approve_enrollment(Arc::clone(&fixture.state), first_review.review_id())
+        .await
+        .unwrap_or_else(|error| panic!("first approval failed: {error:?}"));
+    assert_eq!(
+        first_activation.await,
+        Ok(Ok(EnrollmentReviewDecision::Activated(first_authority)))
+    );
+
+    let device_id = first_authority.device_id();
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+
+    let gate = handle.authority_fence.lock().await;
+    let state = Arc::clone(&fixture.state);
+    let approval = tokio::spawn(async move {
+        state
+            .device_control()
+            .approve_enrollment(Arc::clone(&state), second_review.review_id())
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        handle
+            .client_state(Arc::clone(&fixture.state), session_id, valid_snapshot())
+            .await
+    );
+    drop(gate);
+
+    let authority = approval
+        .await
+        .unwrap_or_else(|error| panic!("approval task failed: {error}"))
+        .unwrap_or_else(|error| panic!("replacement approval failed: {error:?}"));
+    assert_eq!(authority.device_id(), device_id);
+    assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
+    assert!(outgoing.recv().await.is_none());
+    assert_eq!(
+        second_activation.await,
+        Ok(Ok(EnrollmentReviewDecision::Activated(authority)))
+    );
+}
+
+#[tokio::test]
+async fn replacement_attach_clears_actual_and_old_session_cannot_restore_it() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x65; 32])).await;
+    let (first_outbound, mut first_outgoing) = mpsc::channel(1);
+    let (first_session, first_handle) = attach(&fixture.state, device_id, first_outbound).await;
+    assert!(
+        first_handle
+            .client_state(Arc::clone(&fixture.state), first_session, valid_snapshot())
+            .await
+    );
+    let _target = first_outgoing
+        .recv()
+        .await
+        .unwrap_or_else(|| panic!("the initial lease closed unexpectedly"));
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .connection_state(device_id)
+            .await,
+        DeviceConnectionState::Active { .. }
+    ));
+
+    let (replacement_outbound, _replacement_outgoing) = mpsc::channel(1);
+    let (_replacement_session, _) = attach(&fixture.state, device_id, replacement_outbound).await;
+    assert!(first_outgoing.recv().await.is_none());
+    assert!(
+        first_handle
+            .client_state(Arc::clone(&fixture.state), first_session, valid_snapshot())
+            .await
+    );
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .connection_state(device_id)
+            .await,
+        DeviceConnectionState::AwaitingFreshState
+    ));
+}
+
+#[tokio::test]
+async fn authority_change_after_precheck_is_rejected_after_attach() {
+    let fixture = Fixture::new().await;
+    let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
+        .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x66; 32])).await;
+    let authority = fixture
+        .state
+        .device()
+        .find_current_authority(machine_hardware_id)
+        .await
+        .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
+        .unwrap_or_else(|| panic!("the fixture authority was absent"));
+
+    fixture
+        .state
+        .device()
+        .disable(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("Device disable failed: {error:?}"));
+    fixture.state.device_control().evict(device_id).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    assert!(
+        super::attach_authority(&fixture.state, machine_hardware_id, authority, outbound,)
+            .await
+            .is_none()
+    );
+    assert!(outgoing.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x67; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = attach(&fixture.state, device_id, outbound).await;
+    assert!(
+        handle
+            .client_state(Arc::clone(&fixture.state), session_id, valid_snapshot())
+            .await
+    );
+    let _target = outgoing
+        .recv()
+        .await
+        .unwrap_or_else(|| panic!("the old lease closed unexpectedly"));
+
+    let replacement = ValidatedEnrollmentEvidence::new(
+        MachineHardwareId::parse(MACHINE_HARDWARE_ID)
+            .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid")),
+        ControlPublicKey::parse(
+            &SigningKey::from_bytes(&[0x68; 32])
+                .verifying_key()
+                .to_bytes(),
+        )
+        .unwrap_or_else(|| panic!("the replacement control key is valid")),
+        EvidenceQuality::Strong,
+        "2.0.0".to_owned(),
+        "2.0.0".to_owned(),
+    );
+    let EnrollmentStartOutcome::Pending(review, mut activation) = fixture
+        .state
+        .device()
+        .start_enrollment(fixture.state.provisioning(), replacement)
+        .await
+        .unwrap_or_else(|error| panic!("replacement Enrollment start failed: {error:?}"))
+    else {
+        panic!("the replacement authority unexpectedly replayed");
+    };
+    assert!(!outgoing.is_closed());
+    assert!(matches!(
+        activation.try_recv(),
+        Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+    ));
+
+    let authority = fixture
+        .state
+        .device_control()
+        .approve_enrollment(Arc::clone(&fixture.state), review.review_id())
+        .await;
+    let authority =
+        authority.unwrap_or_else(|error| panic!("replacement approval failed: {error:?}"));
+    assert_eq!(authority.device_id(), device_id);
+    assert!(outgoing.recv().await.is_none());
+    assert_eq!(
+        activation.await,
+        Ok(Ok(EnrollmentReviewDecision::Activated(authority)))
+    );
+}
+
+#[tokio::test]
 async fn registry_accepts_six_hundred_devices() {
     let registry = DeviceRegistry::new();
     let mut sessions = HashSet::new();
@@ -181,6 +598,37 @@ async fn production_websocket_delivers_enrollment_and_a_complete_target() {
     server.abort();
 }
 
+#[tokio::test]
+async fn enrollment_denial_is_delivered_to_the_originating_connection() {
+    let fixture = Fixture::new().await;
+    fixture.state.provisioning().open_window().await;
+    let (mut socket, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut socket).await;
+
+    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    assert_eq!(reviews.len(), 1);
+    assert!(
+        fixture
+            .state
+            .device()
+            .deny_enrollment_review(reviews[0].review_id())
+            .await
+    );
+    let Some(server_handshake_envelope::Body::EnrollmentReviewStatus(status)) =
+        receive_handshake(&mut socket).await.body
+    else {
+        panic!("Server did not deliver the Enrollment denial");
+    };
+    assert_eq!(
+        EnrollmentReviewState::try_from(status.state),
+        Ok(EnrollmentReviewState::Denied)
+    );
+    assert_eq!(status.error_code, "ENROLLMENT_DENIED");
+
+    drop(socket);
+    server.abort();
+}
+
 async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -220,6 +668,44 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
 }
 
 async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
+    submit_enrollment_proof(socket).await;
+
+    let reviews = fixture.state.device().pending_enrollment_reviews().await;
+    assert_eq!(reviews.len(), 1);
+    let authority = fixture
+        .state
+        .device_control()
+        .approve_enrollment(Arc::clone(&fixture.state), reviews[0].review_id())
+        .await
+        .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
+    let Some(server_handshake_envelope::Body::EnrollmentActivated(enrollment_authority)) =
+        receive_handshake(socket).await.body
+    else {
+        panic!("Server did not deliver the committed Enrollment authority");
+    };
+    assert_eq!(
+        enrollment_authority.device_id,
+        authority.device_id().as_text()
+    );
+    send_handshake(
+        socket,
+        ClientHandshakeEnvelope {
+            body: Some(client_handshake_envelope::Body::EnrollmentReady(
+                enrollment_authority,
+            )),
+        },
+    )
+    .await;
+    let Some(server_handshake_envelope::Body::SessionReady(ready)) =
+        receive_handshake(socket).await.body
+    else {
+        panic!("Server did not establish the active session");
+    };
+    assert_eq!(ready.session_id.len(), 16);
+    ready.session_id
+}
+
+async fn submit_enrollment_proof(socket: &mut TestSocket) {
     let Some(server_handshake_envelope::Body::ServerChallenge(challenge)) =
         receive_handshake(socket).await.body
     else {
@@ -251,40 +737,6 @@ async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
         receive_handshake(socket).await.body,
         Some(server_handshake_envelope::Body::EnrollmentReviewStatus(_))
     ));
-
-    let reviews = fixture.state.device().pending_enrollment_reviews().await;
-    assert_eq!(reviews.len(), 1);
-    let authority = fixture
-        .state
-        .device()
-        .approve_enrollment(fixture.state.provisioning(), reviews[0].review_id())
-        .await
-        .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
-    let Some(server_handshake_envelope::Body::EnrollmentActivated(enrollment_authority)) =
-        receive_handshake(socket).await.body
-    else {
-        panic!("Server did not deliver the committed Enrollment authority");
-    };
-    assert_eq!(
-        enrollment_authority.device_id,
-        authority.device_id().as_text()
-    );
-    send_handshake(
-        socket,
-        ClientHandshakeEnvelope {
-            body: Some(client_handshake_envelope::Body::EnrollmentReady(
-                enrollment_authority,
-            )),
-        },
-    )
-    .await;
-    let Some(server_handshake_envelope::Body::SessionReady(ready)) =
-        receive_handshake(socket).await.body
-    else {
-        panic!("Server did not establish the active session");
-    };
-    assert_eq!(ready.session_id.len(), 16);
-    ready.session_id
 }
 
 async fn attach(
@@ -293,7 +745,7 @@ async fn attach(
     outbound: mpsc::Sender<ServerActiveEnvelope>,
 ) -> ([u8; 16], DeviceHandle) {
     state
-        .device_registry()
+        .device_control()
         .attach(device_id, outbound)
         .await
         .unwrap_or_else(|| panic!("the Device registry rejected an attach"))
@@ -433,13 +885,18 @@ impl Fixture {
             EnrollmentStartOutcome::Pending(review, activation) => (review, activation),
             EnrollmentStartOutcome::Replay(_) => panic!("a new fixture authority was replayed"),
         };
-        let authority = self
+        let approval = self
             .state
             .device()
             .approve_enrollment(self.state.provisioning(), review.review_id())
             .await
             .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
-        assert_eq!(activation.await, Ok(Ok(authority)));
+        let authority = approval.authority();
+        approval.complete();
+        assert_eq!(
+            activation.await,
+            Ok(Ok(super::EnrollmentReviewDecision::Activated(authority)))
+        );
         authority.device_id()
     }
 

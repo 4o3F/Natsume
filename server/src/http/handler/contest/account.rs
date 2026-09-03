@@ -2,6 +2,7 @@ use axum::{
     Extension, Router,
     extract::State,
     response::{IntoResponse, Response},
+    routing::get,
 };
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -11,7 +12,10 @@ use crate::component::{contest::AccountFacts, operator::OperatorIdentity};
 use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new().route("/accounts", middleware::operator_get(state, list_accounts))
+    Router::new().route(
+        "/accounts",
+        middleware::require_operator(state, get(list_accounts)),
+    )
 }
 
 #[derive(Serialize, ToSchema)]

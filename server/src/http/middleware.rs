@@ -2,14 +2,30 @@ mod authentication;
 mod request_context;
 
 use axum::{
-    handler::Handler,
+    Extension,
+    body::Body,
+    extract::Request,
+    http::Method,
     middleware as axum_middleware,
-    routing::{MethodRouter, get},
+    middleware::Next,
+    response::{IntoResponse as _, Response},
+    routing::MethodRouter,
 };
 
-use super::{AppState, not_found};
+use crate::component::operator::OperatorIdentity;
+
+use super::{AppState, error::ApiError};
 
 pub(super) use request_context::request_context;
+
+pub(super) async fn reject_head(request: Request, next: Next) -> Response {
+    if request.method() == Method::HEAD {
+        let mut response = ApiError::not_found("unmounted_route").into_response();
+        *response.body_mut() = Body::empty();
+        return response;
+    }
+    next.run(request).await
+}
 
 pub(in crate::http) fn require_operator(
     state: AppState,
@@ -21,15 +37,24 @@ pub(in crate::http) fn require_operator(
     ))
 }
 
-/// Builds an operator-authenticated GET route. HEAD is answered with the
-/// uniform not-found response so the method-level bypass in
-/// `authenticate_operator` can never reach a real handler. Routing protected
-/// GETs through this helper keeps that invariant structural instead of a
-/// per-callsite convention that `get()`'s implicit HEAD support would break.
-pub(in crate::http) fn operator_get<H, T>(state: AppState, handler: H) -> MethodRouter<AppState>
-where
-    H: Handler<T, AppState>,
-    T: 'static,
-{
-    require_operator(state, get(handler).head(not_found))
+/// Protects routes with operator authentication and the Administrator role.
+pub(in crate::http) fn require_admin(
+    state: AppState,
+    routes: MethodRouter<AppState>,
+) -> MethodRouter<AppState> {
+    require_operator(
+        state,
+        routes.route_layer(axum_middleware::from_fn(require_admin_role)),
+    )
+}
+
+async fn require_admin_role(
+    Extension(identity): Extension<OperatorIdentity>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if let Err(error) = identity.require_admin() {
+        return ApiError::from_operator(error).into_response();
+    }
+    next.run(request).await
 }

@@ -1,59 +1,44 @@
 use axum::{
-    Extension, Json, Router,
-    extract::{Request, State},
-    middleware as axum_middleware,
-    middleware::Next,
+    Json, Router,
+    extract::{State, rejection::JsonRejection},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, put},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::component::{operator::OperatorIdentity, provisioning::ProvisioningWindow};
+use crate::component::provisioning::ProvisioningWindow;
 
 use super::super::{AppState, error::ApiError, middleware};
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    let open =
-        post(open_provisioning_window).route_layer(axum_middleware::from_fn(require_admin_role));
-    let close =
-        post(close_provisioning_window).route_layer(axum_middleware::from_fn(require_admin_role));
-    Router::new()
-        .route(
-            "/provisioning-window",
-            middleware::operator_get(state.clone(), get_provisioning_window),
-        )
-        .route(
-            "/provisioning-window/actions/open",
-            middleware::require_operator(state.clone(), open),
-        )
-        .route(
-            "/provisioning-window/actions/close",
-            middleware::require_operator(state, close),
-        )
+    Router::new().route(
+        "/provisioning-window",
+        middleware::require_operator(state.clone(), get(get_provisioning_window)).merge(
+            middleware::require_admin(state, put(update_provisioning_window)),
+        ),
+    )
 }
 
-async fn require_admin_role(
-    Extension(identity): Extension<OperatorIdentity>,
-    request: Request,
-    next: Next,
-) -> Response {
-    if let Err(error) = identity.require_admin() {
-        return ApiError::from_operator(error).into_response();
-    }
-    next.run(request).await
-}
-
+/// Current process-local provisioning-window state.
 #[derive(Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProvisioningWindowResponse {
     #[schema(inline)]
-    state: ProvisioningWindowResponseState,
+    state: ProvisioningWindowState,
 }
 
-#[derive(Serialize, ToSchema)]
+/// Complete replacement of the process-local provisioning-window state.
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProvisioningWindowRequest {
+    #[schema(inline)]
+    state: ProvisioningWindowState,
+}
+
+#[derive(Deserialize, Serialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
-enum ProvisioningWindowResponseState {
+enum ProvisioningWindowState {
     Closed,
     Open,
 }
@@ -62,9 +47,9 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     fn from(window: ProvisioningWindow) -> Self {
         Self {
             state: if window.is_open() {
-                ProvisioningWindowResponseState::Open
+                ProvisioningWindowState::Open
             } else {
-                ProvisioningWindowResponseState::Closed
+                ProvisioningWindowState::Closed
             },
         }
     }
@@ -86,33 +71,30 @@ pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Re
 }
 
 #[utoipa::path(
-    post,
-    path = "/api/v2/provisioning-window/actions/open",
-    operation_id = "openProvisioningWindow",
+    put,
+    path = "/api/v2/provisioning-window",
+    operation_id = "updateProvisioningWindow",
     security(("sessionCookie" = [])),
+    request_body = ProvisioningWindowRequest,
     responses(
-        (status = 200, description = "Provisioning window opened or already open", body = ProvisioningWindowResponse),
+        (status = 200, description = "Provisioning window replaced", body = ProvisioningWindowResponse),
+        (status = 400, description = "Invalid request body"),
         (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required")
+        (status = 403, description = "Administrator role required"),
+        (status = 413, description = "Request body exceeds the API ingress limit")
     )
 )]
-pub(crate) async fn open_provisioning_window(State(state): State<AppState>) -> Response {
-    let window = state.provisioning().open_window().await;
-    Json(ProvisioningWindowResponse::from(window)).into_response()
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v2/provisioning-window/actions/close",
-    operation_id = "closeProvisioningWindow",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Provisioning window closed or already closed", body = ProvisioningWindowResponse),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required")
-    )
-)]
-pub(crate) async fn close_provisioning_window(State(state): State<AppState>) -> Response {
-    let window = state.provisioning().close_window().await;
+pub(crate) async fn update_provisioning_window(
+    State(state): State<AppState>,
+    request: Result<Json<ProvisioningWindowRequest>, JsonRejection>,
+) -> Response {
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("provisioning_window_request_body_rejected")
+            .into_response();
+    };
+    let window = match request.state {
+        ProvisioningWindowState::Closed => state.provisioning().close_window().await,
+        ProvisioningWindowState::Open => state.provisioning().open_window().await,
+    };
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }

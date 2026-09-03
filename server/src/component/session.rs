@@ -26,7 +26,24 @@ impl SessionControlComponent {
             .map_err(TransactionError::into_error)
     }
 
-    async fn set_lock(
+    /// Reads the current durable target without creating the default target.
+    pub(crate) async fn read_current(
+        &self,
+        device_id: DeviceId,
+    ) -> Result<Option<SessionControlTarget>, SessionControlError> {
+        self.database
+            .read(move |transaction| {
+                require_existing_device(transaction, &device_id)?;
+                db::find_target(transaction, &device_id)?
+                    .map(parse_target)
+                    .transpose()
+            })
+            .await
+            .map_err(TransactionError::into_error)
+    }
+
+    /// Sets the durable lock target while preserving the terminate epoch.
+    pub(crate) async fn set_lock(
         &self,
         device_id: DeviceId,
         lock_state: LockState,
@@ -53,7 +70,8 @@ impl SessionControlComponent {
             .map_err(TransactionError::into_error)
     }
 
-    async fn terminate(
+    /// Advances the durable terminate epoch for the Device.
+    pub(crate) async fn terminate(
         &self,
         device_id: DeviceId,
     ) -> Result<SessionControlTarget, SessionControlError> {
@@ -82,9 +100,7 @@ fn find_or_insert_target(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
 ) -> Result<SessionControlTarget, SessionControlError> {
-    if !db::device_exists(transaction, device_id)? {
-        return Err(SessionControlError::DeviceNotFound);
-    }
+    require_existing_device(transaction, device_id)?;
     let Some((lock_state, terminate_epoch)) = db::find_target(transaction, device_id)? else {
         require_one(db::insert_default_target(transaction, device_id)?)?;
         return Ok(SessionControlTarget {
@@ -92,6 +108,23 @@ fn find_or_insert_target(
             terminate_epoch: None,
         });
     };
+    parse_target((lock_state, terminate_epoch))
+}
+
+fn require_existing_device(
+    transaction: &mut Transaction<'_>,
+    device_id: &DeviceId,
+) -> Result<(), SessionControlError> {
+    if db::device_exists(transaction, device_id)? {
+        Ok(())
+    } else {
+        Err(SessionControlError::DeviceNotFound)
+    }
+}
+
+fn parse_target(
+    (lock_state, terminate_epoch): (String, Option<i64>),
+) -> Result<SessionControlTarget, SessionControlError> {
     let lock_state = match lock_state.as_str() {
         "unlocked" => LockState::Unlocked,
         "locked" => LockState::Locked,

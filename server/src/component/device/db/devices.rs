@@ -6,10 +6,51 @@ use crate::{
 };
 
 use super::super::types::{
-    DeviceId, DeviceRecord, DeviceState, EvidenceQuality, MachineHardwareId,
+    DeviceId, DeviceProjection, DeviceRecord, DeviceState, EvidenceQuality, MachineHardwareId,
 };
 
 type PersistedDevice = (String, String);
+type PersistedDeviceProjection = (String, String, String, String, i64);
+
+pub(in crate::component::device) fn list(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<DeviceProjection>, PersistenceError> {
+    devices::table
+        .select((
+            devices::device_id,
+            devices::machine_hardware_id,
+            devices::evidence_quality,
+            devices::state,
+            devices::created_at_unix_ms,
+        ))
+        .order(devices::device_id)
+        .load::<PersistedDeviceProjection>(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .iter()
+        .map(parse_projection)
+        .collect()
+}
+
+pub(in crate::component::device) fn find_projection(
+    transaction: &mut Transaction<'_>,
+    device_id: &DeviceId,
+) -> Result<Option<DeviceProjection>, PersistenceError> {
+    devices::table
+        .select((
+            devices::device_id,
+            devices::machine_hardware_id,
+            devices::evidence_quality,
+            devices::state,
+            devices::created_at_unix_ms,
+        ))
+        .filter(devices::device_id.eq(device_id.as_text()))
+        .first::<PersistedDeviceProjection>(transaction.connection())
+        .optional()
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .as_ref()
+        .map(parse_projection)
+        .transpose()
+}
 
 pub(in crate::component::device) fn find_by_id(
     transaction: &mut Transaction<'_>,
@@ -83,4 +124,8 @@ pub(in crate::component::device) fn update_state(
 
 fn parse(row: &PersistedDevice) -> Result<DeviceRecord, PersistenceError> {
     DeviceRecord::from_persisted(&row.0, &row.1)
+}
+
+fn parse_projection(row: &PersistedDeviceProjection) -> Result<DeviceProjection, PersistenceError> {
+    DeviceProjection::from_persisted(&row.0, &row.1, &row.2, &row.3, row.4)
 }

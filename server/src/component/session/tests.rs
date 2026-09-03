@@ -16,6 +16,9 @@ async fn materialize_creates_the_default_target_for_an_existing_device() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
 
+    assert_eq!(fixture.component.read_current(device_id).await, Ok(None));
+    assert_eq!(fixture.target_count(device_id).await, 0);
+
     assert_eq!(
         fixture
             .component
@@ -28,6 +31,13 @@ async fn materialize_creates_the_default_target_for_an_existing_device() {
         }
     );
     assert_eq!(fixture.target_count(device_id).await, 1);
+    assert_eq!(
+        fixture.component.read_current(device_id).await,
+        Ok(Some(SessionControlTarget {
+            lock_state: LockState::Unlocked,
+            terminate_epoch: None,
+        }))
+    );
 }
 
 #[tokio::test]
@@ -158,6 +168,10 @@ async fn missing_device_returns_the_typed_error_without_creating_a_target() {
 
     assert_eq!(
         fixture.component.materialize(missing).await,
+        Err(SessionControlError::DeviceNotFound)
+    );
+    assert_eq!(
+        fixture.component.read_current(missing).await,
         Err(SessionControlError::DeviceNotFound)
     );
     assert_eq!(fixture.target_count(missing).await, 0);

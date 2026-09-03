@@ -1,9 +1,9 @@
 use axum::{
     Extension, Json, Router,
-    extract::{DefaultBodyLimit, State, rejection::JsonRejection},
+    extract::{State, rejection::JsonRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, post},
+    routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -13,19 +13,17 @@ use crate::component::operator::OperatorIdentity;
 
 use super::super::{AppState, cookie, error::ApiError, middleware};
 
-const SESSION_REQUEST_BODY_LIMIT_BYTES: usize = 4_096;
-
 pub(in crate::http) fn public_routes() -> Router<AppState> {
     Router::new()
-        .route(
-            "/session",
-            post(create_session).layer(DefaultBodyLimit::max(SESSION_REQUEST_BODY_LIMIT_BYTES)),
-        )
+        .route("/session", post(create_session))
         .route("/session", delete(delete_session))
 }
 
 pub(in crate::http) fn protected_routes(state: AppState) -> Router<AppState> {
-    Router::new().route("/session", middleware::operator_get(state, read_session))
+    Router::new().route(
+        "/session",
+        middleware::require_operator(state, get(read_session)),
+    )
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -52,7 +50,7 @@ pub(crate) struct SessionResponse {
         (status = 200, description = "Session established", body = SessionResponse),
         (status = 400, description = "Invalid closed request"),
         (status = 401, description = "Authentication failed"),
-        (status = 413, description = "Request body exceeds the session ingress limit"),
+        (status = 413, description = "Request body exceeds the API ingress limit"),
         (status = 500, description = "Internal failure")
     )
 )]
@@ -60,16 +58,9 @@ pub(crate) async fn create_session(
     State(state): State<AppState>,
     request: Result<Json<SessionRequest>, JsonRejection>,
 ) -> Response {
-    let Json(request) = match request {
-        Ok(request) => request,
-        Err(rejection) if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            return rejection.into_response();
-        }
-        Err(_) => {
-            return ApiError::invalid_request("session_request_body_rejected").into_response();
-        }
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("session_request_body_rejected").into_response();
     };
-
     let signed_in = match state
         .operator()
         .sign_in(&request.login_name, request.password)

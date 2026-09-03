@@ -62,6 +62,9 @@ test("successful login reaches the authenticated shell", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Seats" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Accounts" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Bindings" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Devices" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Enrollment" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Targets" })).toBeVisible();
   await expect(page.getByText("ADMIN", { exact: true })).toBeVisible();
 });
 

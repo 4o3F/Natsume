@@ -17,7 +17,7 @@ use crate::{
     },
     config::{GatewaySiteConfig, ServerConfig},
     db::Database,
-    device_control::DeviceRegistry,
+    device_control::DeviceControl,
     vault::{self, VaultSession},
 };
 
@@ -37,7 +37,7 @@ pub(crate) struct ServerState {
     runtime: RuntimeConfigComponent,
     session: SessionControlComponent,
     home: HomeComponent,
-    device_registry: DeviceRegistry,
+    device_control: DeviceControl,
 }
 
 impl ServerState {
@@ -85,7 +85,7 @@ impl ServerState {
             runtime: RuntimeConfigComponent::new(database.clone()),
             session: SessionControlComponent::new(database.clone()),
             home: HomeComponent::new(database),
-            device_registry: DeviceRegistry::new(),
+            device_control: DeviceControl::new(),
         }
     }
 
@@ -129,9 +129,9 @@ impl ServerState {
         &self.home
     }
 
-    /// Returns the process-local owner of one serialized event loop per Device.
-    pub(crate) const fn device_registry(&self) -> &DeviceRegistry {
-        &self.device_registry
+    /// Returns the process-local coordinator for active Device connections.
+    pub(crate) const fn device_control(&self) -> &DeviceControl {
+        &self.device_control
     }
 }
 

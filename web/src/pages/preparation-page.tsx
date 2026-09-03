@@ -56,7 +56,6 @@ interface Notice {
 }
 
 const PENDING_IMPORT_KEY = ["imports", "pending"] as const;
-const CSV_IMPORT_BODY_LIMIT_BYTES = 4_194_304;
 
 const seatChangeColumns: ColumnDef<SeatChange>[] = [
   { accessorKey: "seat_code", header: "Seat code" },
@@ -190,7 +189,7 @@ export function PreparationPage() {
   const discard = useMutation({
     mutationFn: async (candidateId: string) =>
       unwrap<void>(
-        await api.POST("/api/v2/imports/{import_id}/actions/discard", {
+        await api.DELETE("/api/v2/imports/{import_id}", {
           params: { path: { import_id: candidateId } },
         }),
       ),
@@ -215,14 +214,6 @@ export function PreparationPage() {
   function submitUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedFile) {
-      return;
-    }
-    if (selectedFile.size > CSV_IMPORT_BODY_LIMIT_BYTES) {
-      setNotice({
-        tone: "error",
-        title: "CSV file is too large",
-        detail: "CSV imports are limited to 4 MiB.",
-      });
       return;
     }
     setNotice(null);
@@ -483,7 +474,7 @@ function noticeFromError(error: unknown): Notice {
     return {
       tone: "error",
       title: "Request too large",
-      detail: "The request exceeded the route's size limit.",
+      detail: "The request exceeded the server's size limit.",
     };
   }
 

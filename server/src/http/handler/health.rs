@@ -8,7 +8,7 @@ use serde::Serialize;
 use utoipa::ToSchema;
 
 pub(in crate::http) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
-    Router::new().route("/health", get(health).head(super::super::not_found))
+    Router::new().route("/health", get(health))
 }
 
 #[utoipa::path(

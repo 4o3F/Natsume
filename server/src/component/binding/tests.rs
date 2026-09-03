@@ -16,8 +16,32 @@ use crate::{
 
 use super::{
     BindingComponent, BindingError, BindingEvaluationCode, BindingInput, BindingNegotiationId,
-    BindingPassword, BindingSubmissionEpoch, MaterializedBinding,
+    BindingPassword, BindingProjection, BindingSubmissionEpoch, MaterializedBinding,
 };
+
+#[tokio::test]
+async fn current_read_does_not_create_a_negotiation() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.insert_device("enabled").await;
+
+    assert!(matches!(
+        fixture.component.read_current(device_id).await,
+        Ok(None)
+    ));
+    assert_eq!(fixture.negotiation_count(device_id).await, 0);
+
+    let materialized = fixture.materialize(device_id).await;
+    let current = fixture
+        .component
+        .read_current(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("Binding current read failed: {error}"))
+        .unwrap_or_else(|| panic!("materialized Binding target was absent"));
+    let BindingProjection::Unbound(current) = current else {
+        panic!("unbound Device returned a bound projection");
+    };
+    assert_eq!(Some(&current), materialized.intent());
+}
 
 #[tokio::test]
 async fn negotiation_fences_replay_conflict_and_stale_epochs() {
@@ -100,6 +124,32 @@ async fn accepted_binding_materializes_one_redacted_current_credential() {
     assert!(!debug.contains("password-canary"));
     assert_eq!(fixture.binding_count(device_id).await, 1);
     assert_eq!(fixture.negotiation_count(device_id).await, 0);
+
+    let account_id_text = account_id.hyphenated().to_string();
+    fixture
+        .database
+        .write(move |transaction| {
+            diesel::delete(
+                server_vault_records::table
+                    .filter(server_vault_records::account_id.eq(account_id_text)),
+            )
+            .execute(transaction.connection())
+            .map_err(|_| PersistenceError::OperationFailed)?;
+            Ok::<(), PersistenceError>(())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("Vault removal fixture failed: {error:?}"));
+    let projection = fixture
+        .component
+        .read_current(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("redacted Binding read failed: {error}"))
+        .unwrap_or_else(|| panic!("bound Binding projection was absent"));
+    let BindingProjection::Bound(context) = projection else {
+        panic!("bound Device returned an unbound projection");
+    };
+    assert_eq!(context.account_id(), account_id);
+    assert_eq!(context.domjudge_username(), "team-alpha");
 }
 
 #[tokio::test]

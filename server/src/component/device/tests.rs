@@ -49,6 +49,32 @@ async fn first_activation_is_atomic_and_exact_replay_is_a_no_op() {
 }
 
 #[tokio::test]
+async fn operator_projection_lists_and_finds_only_valid_durable_fields() {
+    let fixture = Fixture::new().await;
+    let machine = machine(FIRST_MACHINE);
+    let activated = activate(&fixture, machine, key(0x12), EvidenceQuality::Strong)
+        .await
+        .unwrap_or_else(|error| panic!("Device activation failed: {error}"));
+
+    let devices = fixture
+        .component
+        .list_devices()
+        .await
+        .unwrap_or_else(|error| panic!("Device list failed: {error}"));
+    assert_eq!(devices.len(), 1);
+    let projection = devices[0];
+    assert_eq!(projection.device_id(), activated.device_id());
+    assert_eq!(projection.machine_hardware_id(), machine);
+    assert_eq!(projection.evidence_quality(), EvidenceQuality::Strong);
+    assert_eq!(projection.state(), DeviceState::Enabled);
+    assert!(projection.created_at_unix_ms() > 0);
+    assert_eq!(
+        fixture.component.find_device(activated.device_id()).await,
+        Ok(Some(projection))
+    );
+}
+
+#[tokio::test]
 async fn replacement_keeps_the_device_and_retires_the_old_key() {
     let fixture = Fixture::new().await;
     let machine = machine(FIRST_MACHINE);
@@ -298,6 +324,20 @@ async fn invalid_persisted_lifecycle_fails_closed() {
         fixture.component.find_current_authority(machine).await,
         Err(DeviceError::InvalidPersistedFacts)
     );
+    assert_eq!(
+        fixture.component.list_devices().await,
+        Err(DeviceError::InvalidPersistedFacts)
+    );
+    assert_eq!(
+        fixture
+            .component
+            .find_device(
+                DeviceId::parse("01900000-0000-7000-8000-000000000091")
+                    .unwrap_or_else(|| panic!("invalid persisted fixture Device ID")),
+            )
+            .await,
+        Err(DeviceError::InvalidPersistedFacts)
+    );
 }
 
 #[tokio::test]
@@ -368,13 +408,13 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
     };
 
     provisioning.close_window().await;
-    assert_eq!(
+    assert!(matches!(
         fixture
             .component
             .approve_enrollment(&provisioning, pending.review_id())
             .await,
         Err(EnrollmentApprovalError::ProvisioningClosed)
-    );
+    ));
     assert_eq!(
         fixture.component.pending_enrollment_reviews().await.len(),
         1
@@ -385,17 +425,19 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
     );
 
     provisioning.open_window().await;
-    let activated = fixture
+    let approval = fixture
         .component
         .approve_enrollment(&provisioning, pending.review_id())
         .await
         .unwrap_or_else(|error| panic!("fenced approval failed: {error:?}"));
+    let activated = approval.authority();
     assert_eq!(activated.control_public_key(), candidate);
+    approval.complete();
     assert_eq!(
         activation
             .await
             .unwrap_or_else(|error| panic!("activation notification failed: {error}")),
-        Ok(activated)
+        Ok(super::EnrollmentReviewDecision::Activated(activated))
     );
     assert!(
         fixture
@@ -404,13 +446,13 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
             .await
             .is_empty()
     );
-    assert_eq!(
+    assert!(matches!(
         fixture
             .component
             .approve_enrollment(&provisioning, pending.review_id())
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -435,13 +477,13 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
             .await
     );
     assert!(first_activation.await.is_err());
-    assert_eq!(
+    assert!(matches!(
         fixture
             .component
             .approve_enrollment(&provisioning, first.review_id())
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
-    );
+    ));
     assert_eq!(
         fixture.component.find_current_authority(machine).await,
         Ok(None)
@@ -455,16 +497,18 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
     let EnrollmentStartOutcome::Pending(second, second_activation) = second else {
         panic!("uncommitted authority candidate unexpectedly replayed");
     };
-    let activated = fixture
+    let approval = fixture
         .component
         .approve_enrollment(&provisioning, second.review_id())
         .await
         .unwrap_or_else(|error| panic!("second review activation failed: {error:?}"));
+    let activated = approval.authority();
+    approval.complete();
     assert_eq!(
         second_activation
             .await
             .unwrap_or_else(|error| panic!("activation notification failed: {error}")),
-        Ok(activated)
+        Ok(super::EnrollmentReviewDecision::Activated(activated))
     );
 
     provisioning.close_window().await;
@@ -482,6 +526,40 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
             .pending_enrollment_reviews()
             .await
             .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn denial_claims_the_review_and_notifies_only_its_connection() {
+    let fixture = Fixture::new().await;
+    let provisioning = ProvisioningComponent::new();
+    provisioning.open_window().await;
+    let pending = fixture
+        .component
+        .start_enrollment(&provisioning, evidence(machine(FIRST_MACHINE), key(0x75)))
+        .await
+        .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
+    let EnrollmentStartOutcome::Pending(review, decision) = pending else {
+        panic!("new authority candidate unexpectedly replayed");
+    };
+
+    assert!(
+        fixture
+            .component
+            .deny_enrollment_review(review.review_id())
+            .await
+    );
+    assert_eq!(
+        decision
+            .await
+            .unwrap_or_else(|error| panic!("denial notification failed: {error}")),
+        Ok(super::EnrollmentReviewDecision::Denied)
+    );
+    assert!(
+        !fixture
+            .component
+            .deny_enrollment_review(review.review_id())
+            .await
     );
 }
 

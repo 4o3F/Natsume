@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionLock, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.0.0"
   },
   "paths": {
@@ -80,6 +80,983 @@
           },
           "500": {
             "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "responses": {
+          "200": {
+            "description": "Current durable Devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DeviceResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}": {
+      "get": {
+        "operationId": "getDevice",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable Device",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateDevice",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Device lifecycle updated or already at the requested state"
+          },
+          "400": {
+            "description": "Invalid Device ID or request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Revoked Device cannot return to a non-terminal state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the API ingress limit"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}/binding": {
+      "delete": {
+        "operationId": "deleteDeviceBinding",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Device Binding removed or already absent"
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}/convergence": {
+      "get": {
+        "operationId": "getDeviceConvergence",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current redacted Server targets and latest valid Client Actual",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceConvergenceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}/home": {
+      "get": {
+        "operationId": "getDeviceHome",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable Home target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}/home/actions/reset": {
+      "post": {
+        "operationId": "resetDeviceHome",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Home reset epoch advanced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HomeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Home reset epoch exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}/session-control": {
+      "get": {
+        "operationId": "getDeviceSessionControl",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current durable Session Control target",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionControlResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "put": {
+        "operationId": "setDeviceSessionLock",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionLockRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session lock target committed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionControlResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID or request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the API ingress limit"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/devices/{device_id}/session-control/actions/terminate": {
+      "post": {
+        "operationId": "terminateDeviceSession",
+        "parameters": [
+          {
+            "name": "device_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session terminate epoch advanced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionControlResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid Device ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Device not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Terminate epoch exhausted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/enrollment-reviews": {
+      "get": {
+        "operationId": "listEnrollmentReviews",
+        "responses": {
+          "200": {
+            "description": "Enrollment reviews pending in this Server process",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/EnrollmentReviewResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/enrollment-reviews/{review_id}/actions/approve": {
+      "post": {
+        "operationId": "approveEnrollmentReview",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` review ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Enrollment authority committed and connection notification attempted"
+          },
+          "400": {
+            "description": "Invalid review ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enrollment review unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Provisioning gate closed or candidate authority rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/enrollment-reviews/{review_id}/actions/deny": {
+      "post": {
+        "operationId": "denyEnrollmentReview",
+        "parameters": [
+          {
+            "name": "review_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` review ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Enrollment review terminally denied and connection notification attempted"
+          },
+          "400": {
+            "description": "Invalid review ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enrollment review unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -238,7 +1215,83 @@
             }
           },
           "413": {
-            "description": "CSV request body exceeds the import ingress limit"
+            "description": "Request body exceeds the API ingress limit"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/imports/{import_id}": {
+      "delete": {
+        "operationId": "deleteCsvImport",
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "CSV import candidate discarded"
+          },
+          "400": {
+            "description": "Invalid import ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Import candidate unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal failure",
@@ -337,83 +1390,7 @@
             }
           },
           "413": {
-            "description": "Commit request body exceeds the import ingress limit"
-          },
-          "500": {
-            "description": "Internal failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ]
-      }
-    },
-    "/api/v2/imports/{import_id}/actions/discard": {
-      "post": {
-        "operationId": "discardCsvImport",
-        "parameters": [
-          {
-            "name": "import_id",
-            "in": "path",
-            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/CanonicalUuidV7"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "CSV import candidate discarded"
-          },
-          "400": {
-            "description": "Invalid import ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Session authentication failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Administrator role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Import candidate unavailable",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
+            "description": "Request body exceeds the API ingress limit"
           },
           "500": {
             "description": "Internal failure",
@@ -463,60 +1440,36 @@
             "sessionCookie": []
           }
         ]
-      }
-    },
-    "/api/v2/provisioning-window/actions/close": {
-      "post": {
-        "operationId": "closeProvisioningWindow",
-        "responses": {
-          "200": {
-            "description": "Provisioning window closed or already closed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProvisioningWindowResponse"
-                }
+      },
+      "put": {
+        "operationId": "updateProvisioningWindow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProvisioningWindowRequest"
               }
             }
           },
-          "401": {
-            "description": "Session authentication failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Administrator role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
+          "required": true
         },
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ]
-      }
-    },
-    "/api/v2/provisioning-window/actions/open": {
-      "post": {
-        "operationId": "openProvisioningWindow",
         "responses": {
           "200": {
-            "description": "Provisioning window opened or already open",
+            "description": "Provisioning window replaced",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProvisioningWindowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -540,6 +1493,9 @@
                 }
               }
             }
+          },
+          "413": {
+            "description": "Request body exceeds the API ingress limit"
           }
         },
         "security": [
@@ -679,7 +1635,7 @@
             }
           },
           "413": {
-            "description": "Request body exceeds the session ingress limit"
+            "description": "Request body exceeds the API ingress limit"
           },
           "500": {
             "description": "Internal failure",
@@ -737,6 +1693,126 @@
         },
         "additionalProperties": false
       },
+      "BindingActualResponse": {
+        "type": "object",
+        "description": "Latest valid Binding artifact Actual reported by the current lease.",
+        "required": ["assignment_state", "credential_state", "context"],
+        "properties": {
+          "assignment_state": {
+            "type": "string",
+            "description": "Binding artifact state vocabulary from the Device protocol.",
+            "enum": ["absent", "applied", "failed"]
+          },
+          "context": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BindingContextResponse"
+              }
+            ]
+          },
+          "credential_state": {
+            "type": "string",
+            "description": "Binding artifact state vocabulary from the Device protocol.",
+            "enum": ["absent", "applied", "failed"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "BindingContextResponse": {
+        "type": "object",
+        "description": "Non-secret Binding identity context shared by target and Actual.",
+        "required": [
+          "binding_id",
+          "account_id",
+          "seat_code",
+          "domjudge_username",
+          "credential_revision"
+        ],
+        "properties": {
+          "account_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "binding_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "credential_revision": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "domjudge_username": {
+            "type": "string"
+          },
+          "seat_code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "BindingConvergenceResponse": {
+        "type": "object",
+        "description": "Redacted Binding target, Actual, and convergence result.",
+        "required": ["status", "target", "actual"],
+        "properties": {
+          "actual": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BindingActualResponse"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Typed comparison of one current target with one fresh Actual.",
+            "enum": [
+              "awaiting_actual",
+              "converged",
+              "reconciling",
+              "drifted",
+              "failed"
+            ]
+          },
+          "target": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BindingTargetResponse"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "BindingEvaluationResponse": {
+        "type": "object",
+        "description": "Latest rejected Binding submission associated with an unbound intent.",
+        "required": ["submission_epoch", "error_code"],
+        "properties": {
+          "error_code": {
+            "type": "string",
+            "description": "Closed Binding rejection vocabulary exposed by the API.",
+            "enum": ["not_found", "unmapped", "occupied"]
+          },
+          "submission_epoch": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "BindingResponse": {
         "type": "object",
         "required": ["binding_id", "seat_id", "device_id"],
@@ -753,10 +1829,182 @@
         },
         "additionalProperties": false
       },
+      "BindingTargetResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["negotiation_id", "state"],
+            "properties": {
+              "evaluation": {
+                "oneOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "$ref": "#/components/schemas/BindingEvaluationResponse"
+                  }
+                ]
+              },
+              "negotiation_id": {
+                "type": "string",
+                "format": "uuid",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "state": {
+                "type": "string",
+                "enum": ["unbound"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["context", "state"],
+            "properties": {
+              "context": {
+                "$ref": "#/components/schemas/BindingContextResponse"
+              },
+              "state": {
+                "type": "string",
+                "enum": ["bound"]
+              }
+            }
+          }
+        ],
+        "description": "Current Binding intent or bound public context, excluding credentials."
+      },
+      "CanonicalUuidV5": {
+        "type": "string",
+        "format": "uuid",
+        "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
       "CanonicalUuidV7": {
         "type": "string",
         "format": "uuid",
         "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      },
+      "DeviceConvergenceResponse": {
+        "type": "object",
+        "description": "Current Server target and latest valid Client Actual for one Device.",
+        "required": [
+          "connection_state",
+          "received_at_unix_ms",
+          "gateway",
+          "binding",
+          "runtime_config",
+          "session_control",
+          "home"
+        ],
+        "properties": {
+          "binding": {
+            "$ref": "#/components/schemas/BindingConvergenceResponse"
+          },
+          "connection_state": {
+            "type": "string",
+            "enum": ["offline", "awaiting_fresh_state", "active"]
+          },
+          "gateway": {
+            "$ref": "#/components/schemas/GatewayConvergenceResponse"
+          },
+          "home": {
+            "$ref": "#/components/schemas/HomeConvergenceResponse"
+          },
+          "received_at_unix_ms": {
+            "type": ["integer", "null"],
+            "format": "int64"
+          },
+          "runtime_config": {
+            "$ref": "#/components/schemas/RuntimeConfigConvergenceResponse"
+          },
+          "session_control": {
+            "$ref": "#/components/schemas/SessionConvergenceResponse"
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceResponse": {
+        "type": "object",
+        "description": "Durable Device lifecycle and Enrollment evidence shown by the Operator Panel.",
+        "required": [
+          "device_id",
+          "machine_hardware_id",
+          "evidence_quality",
+          "state",
+          "created_at_unix_ms"
+        ],
+        "properties": {
+          "created_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "device_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "evidence_quality": {
+            "type": "string",
+            "description": "Closed Device Enrollment evidence-quality vocabulary exposed by the API.",
+            "enum": ["medium", "strong"]
+          },
+          "machine_hardware_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV5"
+          },
+          "state": {
+            "type": "string",
+            "description": "Closed durable Device lifecycle vocabulary exposed by the API.",
+            "enum": ["enabled", "disabled", "revoked"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceUpdateRequest": {
+        "type": "object",
+        "description": "Complete replacement of the mutable Device lifecycle field.",
+        "required": ["state"],
+        "properties": {
+          "state": {
+            "type": "string",
+            "description": "Closed durable Device lifecycle vocabulary exposed by the API.",
+            "enum": ["enabled", "disabled", "revoked"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "EnrollmentReviewResponse": {
+        "type": "object",
+        "description": "Non-secret evidence awaiting an Administrator decision in this process.",
+        "required": [
+          "review_id",
+          "machine_hardware_id",
+          "candidate_public_key",
+          "evidence_quality",
+          "daemon_version",
+          "agent_version"
+        ],
+        "properties": {
+          "agent_version": {
+            "type": "string"
+          },
+          "candidate_public_key": {
+            "type": "string",
+            "maxLength": 43,
+            "minLength": 43,
+            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
+          },
+          "daemon_version": {
+            "type": "string"
+          },
+          "evidence_quality": {
+            "type": "string",
+            "enum": ["medium", "strong"]
+          },
+          "machine_hardware_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV5"
+          },
+          "review_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          }
+        },
+        "additionalProperties": false
       },
       "ErrorResponse": {
         "type": "object",
@@ -774,12 +2022,166 @@
         },
         "additionalProperties": false
       },
+      "GatewayActualResponse": {
+        "type": "object",
+        "description": "Latest valid Gateway Actual reported by the current lease.",
+        "required": ["credential_id", "state", "gateway_leaf_sha256"],
+        "properties": {
+          "credential_id": {
+            "type": ["string", "null"],
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "gateway_leaf_sha256": {
+            "type": ["string", "null"],
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "state": {
+            "type": "string",
+            "description": "Gateway Actual state vocabulary from the Device protocol.",
+            "enum": [
+              "absent",
+              "blocked",
+              "restoring",
+              "ready",
+              "upstream_unhealthy",
+              "recovery_required"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "GatewayConvergenceResponse": {
+        "type": "object",
+        "description": "Redacted Gateway target, Actual, and convergence result.",
+        "required": ["status", "target", "actual"],
+        "properties": {
+          "actual": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GatewayActualResponse"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Typed comparison of one current target with one fresh Actual.",
+            "enum": [
+              "awaiting_actual",
+              "converged",
+              "reconciling",
+              "drifted",
+              "failed"
+            ]
+          },
+          "target": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/GatewayTargetResponse"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "GatewayTargetResponse": {
+        "type": "object",
+        "description": "Public fields required to compare the current Gateway target.",
+        "required": ["credential_id", "gateway_leaf_sha256"],
+        "properties": {
+          "credential_id": {
+            "type": "string",
+            "format": "uuid",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "gateway_leaf_sha256": {
+            "type": ["string", "null"],
+            "maxLength": 64,
+            "minLength": 64,
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
       "HealthResponse": {
         "type": "object",
         "required": ["status"],
         "properties": {
           "status": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "HomeActualResponse": {
+        "type": "object",
+        "description": "Latest valid Home Actual reported by the current lease.",
+        "required": ["state", "completed_reset_epoch"],
+        "properties": {
+          "completed_reset_epoch": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string",
+            "description": "Home Actual state vocabulary from the Device protocol.",
+            "enum": ["steady", "resetting", "recovery_required"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "HomeConvergenceResponse": {
+        "type": "object",
+        "description": "Home target, Actual, and convergence result.",
+        "required": ["status", "target_reset_epoch", "actual"],
+        "properties": {
+          "actual": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HomeActualResponse"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Typed comparison of one current target with one fresh Actual.",
+            "enum": [
+              "awaiting_actual",
+              "converged",
+              "reconciling",
+              "drifted",
+              "failed"
+            ]
+          },
+          "target_reset_epoch": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "HomeResponse": {
+        "type": "object",
+        "description": "Current durable Home target, if any reset has been requested.\nProcess-local Device connection state at query time.",
+        "required": ["reset_epoch"],
+        "properties": {
+          "reset_epoch": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -944,13 +2346,74 @@
         },
         "additionalProperties": false
       },
-      "ProvisioningWindowResponse": {
+      "ProvisioningWindowRequest": {
         "type": "object",
+        "description": "Complete replacement of the process-local provisioning-window state.",
         "required": ["state"],
         "properties": {
           "state": {
             "type": "string",
             "enum": ["closed", "open"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProvisioningWindowResponse": {
+        "type": "object",
+        "description": "Current process-local provisioning-window state.",
+        "required": ["state"],
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": ["closed", "open"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuntimeConfigActualResponse": {
+        "type": "object",
+        "description": "Latest valid Runtime Config Actual reported by the current lease.",
+        "required": ["state", "applied_domjudge_origin"],
+        "properties": {
+          "applied_domjudge_origin": {
+            "type": ["string", "null"]
+          },
+          "state": {
+            "type": "string",
+            "description": "Runtime Config Actual state vocabulary from the Device protocol.",
+            "enum": ["absent", "applied", "failed"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RuntimeConfigConvergenceResponse": {
+        "type": "object",
+        "description": "Runtime Config target, Actual, and convergence result.",
+        "required": ["status", "target_domjudge_origin", "actual"],
+        "properties": {
+          "actual": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/RuntimeConfigActualResponse"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Typed comparison of one current target with one fresh Actual.",
+            "enum": [
+              "awaiting_actual",
+              "converged",
+              "reconciling",
+              "drifted",
+              "failed"
+            ]
+          },
+          "target_domjudge_origin": {
+            "type": ["string", "null"]
           }
         },
         "additionalProperties": false
@@ -964,6 +2427,120 @@
           },
           "seat_id": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionActualResponse": {
+        "type": "object",
+        "description": "Latest valid Session Control Actual reported by the current lease.",
+        "required": ["session_state", "completed_terminate_epoch"],
+        "properties": {
+          "completed_terminate_epoch": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0
+          },
+          "session_state": {
+            "type": "string",
+            "description": "Session state vocabulary from the Device protocol.",
+            "enum": [
+              "none",
+              "starting",
+              "active",
+              "locked",
+              "terminating",
+              "ambiguous",
+              "error"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionControlResponse": {
+        "type": "object",
+        "description": "Current durable Session Control target, if it has been initialized.",
+        "required": ["target"],
+        "properties": {
+          "target": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SessionControlTargetResponse"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionControlTargetResponse": {
+        "type": "object",
+        "description": "Concrete initialized Session Control target.",
+        "required": ["lock_state", "terminate_epoch"],
+        "properties": {
+          "lock_state": {
+            "type": "string",
+            "description": "Desired Session lock level accepted and returned by the API.",
+            "enum": ["unlocked", "locked"]
+          },
+          "terminate_epoch": {
+            "type": ["integer", "null"],
+            "format": "int64",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionConvergenceResponse": {
+        "type": "object",
+        "description": "Session Control target, Actual, and convergence result.",
+        "required": ["status", "target", "actual"],
+        "properties": {
+          "actual": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SessionActualResponse"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Typed comparison of one current target with one fresh Actual.",
+            "enum": [
+              "awaiting_actual",
+              "converged",
+              "reconciling",
+              "drifted",
+              "failed"
+            ]
+          },
+          "target": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SessionControlTargetResponse"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionLockRequest": {
+        "type": "object",
+        "description": "Complete Session lock mutation body.",
+        "required": ["lock_state"],
+        "properties": {
+          "lock_state": {
+            "type": "string",
+            "description": "Desired Session lock level accepted and returned by the API.",
+            "enum": ["unlocked", "locked"]
           }
         },
         "additionalProperties": false

@@ -102,8 +102,8 @@ async function mockPreparationApi(
     }
 
     if (
-      pathname === `/api/v2/imports/${candidateId}/actions/discard` &&
-      request.method() === "POST"
+      pathname === `/api/v2/imports/${candidateId}` &&
+      request.method() === "DELETE"
     ) {
       pending = null;
       return route.fulfill({

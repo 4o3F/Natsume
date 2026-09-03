@@ -1,6 +1,5 @@
 use axum::{
     extract::{Request, State},
-    http::Method,
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -12,9 +11,6 @@ pub(super) async fn authenticate_operator(
     mut request: Request,
     next: Next,
 ) -> Response {
-    if request.method() == Method::HEAD {
-        return next.run(request).await;
-    }
     let Ok(wire_credential) = cookie::session_credential(request.headers()) else {
         return ApiError::authentication_failed("missing_session_cookie").into_response();
     };

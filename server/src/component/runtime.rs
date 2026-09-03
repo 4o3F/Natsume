@@ -14,31 +14,25 @@ impl RuntimeConfigComponent {
         Self { database }
     }
 
-    async fn set_domjudge_origin(&self, origin: &str) -> Result<(), RuntimeConfigError> {
-        if !is_canonical_https_origin(origin) {
-            return Err(RuntimeConfigError::InvalidOrigin);
-        }
-        let origin = origin.to_owned();
+    /// Reads the durable `DOMjudge` origin without requiring it to be configured.
+    pub(crate) async fn read_current(&self) -> Result<Option<String>, RuntimeConfigError> {
         self.database
-            .write(move |transaction| {
-                db::replace(transaction, &origin).map_err(RuntimeConfigError::from)
+            .read(|transaction| {
+                let rows = db::read_all(transaction)?;
+                match rows.as_slice() {
+                    [] => Ok(None),
+                    [(1, origin)] if is_canonical_https_origin(origin) => Ok(Some(origin.clone())),
+                    _ => Err(RuntimeConfigError::InvalidPersistedFacts),
+                }
             })
             .await
             .map_err(TransactionError::into_error)
     }
 
     pub(crate) async fn materialize(&self) -> Result<String, RuntimeConfigError> {
-        self.database
-            .read(|transaction| {
-                let rows = db::read_all(transaction)?;
-                match rows.as_slice() {
-                    [] => Err(RuntimeConfigError::MissingConfiguration),
-                    [(1, origin)] if is_canonical_https_origin(origin) => Ok(origin.clone()),
-                    _ => Err(RuntimeConfigError::InvalidPersistedFacts),
-                }
-            })
-            .await
-            .map_err(TransactionError::into_error)
+        self.read_current()
+            .await?
+            .ok_or(RuntimeConfigError::MissingConfiguration)
     }
 }
 
@@ -58,8 +52,6 @@ pub(crate) fn is_canonical_https_origin(value: &str) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum RuntimeConfigError {
-    #[snafu(display("the DOMjudge origin is not a canonical HTTPS origin"))]
-    InvalidOrigin,
     #[snafu(display("Runtime Config has not been configured"))]
     MissingConfiguration,
     #[snafu(display("persisted Runtime Config facts are invalid"))]

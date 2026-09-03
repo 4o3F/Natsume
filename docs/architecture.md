@@ -135,7 +135,8 @@ Server 是唯一业务 authority，拥有：
 - Binding negotiation 与 occupancy；
 - Gateway credential generation 与 Origin CA；
 - Runtime、Session 和 Home 的 Server target；
-- 当前lease的完整Client Input/Actual，仅存在于对应DeviceActor内存；
+- 当前lease的latest Actual与receive-time，仅存在于对应DeviceActor内存；Client Input
+  经整体校验和组件消费后丢弃；
 - Operator HTTP API、Web 静态资源和 Device WSS。
 
 Server 不直接操作工作站文件、Caddy、图形 Session 或 Home。
@@ -189,7 +190,9 @@ Caddy 只负责本机数据面：
 - 只在 `/login` 注入 `X-DOMjudge-Login` 和 base64 password header；
 - 其他 route 不注入 credential。
 
-Runtime Config 可以改变 DOMjudge HTTPS origin，但不能改变 Control Endpoint、Server trust root、fleet namespace 或 Gateway hostname。Control Endpoint 是部署期不可远程修改的 bootstrap 参数。
+Runtime Config 的 DOMjudge HTTPS origin 只由Server部署配置提供和修改，不暴露
+Operator HTTP/Web mutation。它不能改变Control Endpoint、Server trust root、fleet
+namespace或Gateway hostname；这些都是部署期不可远程修改的bootstrap参数。
 
 ## 5. 信任、身份与秘密
 
@@ -267,7 +270,7 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Runtime Config | Runtime Config Component | 当前 DOMjudge HTTPS origin |
 | Session target | Session Control Component | lock level + terminate epoch |
 | Home target | Home Component | reset epoch |
-| 当前lease的Client Input/Actual | DeviceActor memory | fresh snapshot，重连或重启后必须重报 |
+| 当前lease的latest Actual与receive-time | DeviceActor memory | fresh snapshot；Input消费后丢弃，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
 
 Import 不修改 Binding，不创建远端操作，不产生 Device I/O。Binding 和 Gateway 互不授予对方 authority。Client Input 和 Actual 都是不可信报告。
@@ -424,9 +427,10 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 4. Pending registry以`review_id`保存经过验证的非秘密evidence；到WP7接入
    production WSS时，同一entry再持有一个进程内一次性完成通知sender，
    originating connection持有receiver。registry中仍存在该`review_id`就表示
-   当前连接仍持有该review，它不是authority。
+   当前连接仍持有该review，它不是authority，也不缓存可能漂移的current Device ID。
 5. Operator只能批准当前仍存在的review，批准前再次检查Gate并原子移除对应
-   `review_id`；activation完成后通过该entry的一次性通知把结果交回原连接。
+   `review_id`；同一进程内的审批串行，并在activation前按evidence中的Machine
+   Hardware ID实时读取current authority。activation完成后通过该entry的一次性通知把结果交回原连接。
    连接断开也移除同一个ID，不建立第二个attachment标识，不轮询审批结果。
 6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device lifecycle/denylist authority，不能复用attempt状态。
 7. 连接在activation commit前断开时直接删除pending review；Client重连后重新审核。
@@ -571,6 +575,7 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 
 Runtime Config 当前只包含 canonical HTTPS DOMjudge origin：
 
+- 唯一配置源是Server部署配置，Operator Panel只在Device convergence中查看target/actual；
 - 禁止 userinfo、path、query、fragment；
 - Control Endpoint、trust root、fleet namespace 和 Gateway hostname 永不进入远程配置；
 - Client 不持久化密码到 Runtime Config；
@@ -692,10 +697,11 @@ pub(crate) struct ServerState {
     runtime: RuntimeConfigComponent,
     session: SessionControlComponent,
     home: HomeComponent,
+    device_control: DeviceControl,
 }
 ```
 
-Active 资源和 DeviceRegistry 到达各自 WP 时直接增加为明确字段；
+`DeviceControl`私有持有`DeviceRegistry`和仅用于Enrollment审批的进程内串行门；
 不增加单层 `Components` wrapper，也不建立 service locator。生产构造入口统一为
 `ServerState::load(database, &config)`：它加载一次`VaultSession`，提取每个组件的
 窄依赖，并调用组件自己的concrete constructor。完整`ServerConfig`不下传给各组件，
@@ -738,15 +744,14 @@ Database + ServerConfig
   → ServerState::load
       → VaultSession
       → GatewayComponent { Origin CA }
-      → Operator, Contest, Import, Provisioning, Device
-  → ServerState { Operator, Contest, Import, Provisioning, Device, Gateway }
+      → concrete business components
+      → DeviceControl { DeviceRegistry }
   → Arc<ServerState>
-  → HTTP
+  → HTTP + Device WSS
 ```
 
-后续在同一个 `ServerState` 中加入 Active Components 与 DeviceRegistry，
-WSS、DeviceActor 和 HTTP 共享该对象。`GatewayIssuer` 在 Gateway
-Component 到达时由它持有。不存在全局 singleton，也不允许 transport 重新组装
+WSS、DeviceActor和HTTP共享该对象。`GatewayIssuer`由Gateway Component持有。
+不存在全局 singleton，也不允许transport重新组装
 组件依赖。Database连接/迁移、TLS listener和HTTP生命周期仍由`serve`启动入口负责；
 `ServerState`不持有完整`ServerConfig`，组件也不自行重复加载共享依赖。
 
@@ -781,7 +786,10 @@ HWID 并发和一个 non-revoked Device 约束由数据库 unique constraint 最
 ```rust
 enum DeviceEvent {
     Attach { session_id, outbound },
-    ClientState { session_id, snapshot },
+    ClientState { state, session_id, snapshot, received_at_unix_ms },
+    Dirty { state },
+    Evict { evicted },
+    ConnectionState { respond },
     Disconnected { session_id },
 }
 ```
@@ -791,7 +799,8 @@ Actor 只拥有临时协调状态：
 - current lease；
 - 首个有效 ClientState 到达前不生成target；
 - 有界 mailbox；
-- current outbound sender。
+- current outbound sender；
+- current lease的latest fully-validated typed Actual与receive-time。
 
 Actor 不拥有：
 
@@ -807,6 +816,7 @@ Actor 不拥有：
 ```text
 validate current lease
   → validate complete snapshot
+  → construct typed Actual observation
   → Gateway ingest
   → Binding ingest
   → Gateway materialize
@@ -816,36 +826,40 @@ validate current lease
   → Home materialize
   → encode complete ServerStateSnapshot
   → send on current lease
+  → retain typed Actual observation
 ```
 
 初期顺序执行。SQLite 是单写者，提前并行只会增加 cancellation、错误聚合和 race。只有测量证明瓶颈后才考虑并行 materialize。
 
-跨组件读取不要求同一数据库 snapshot。组件必须语义独立；`TODO(WP8)`：Operator
-mutation接入后在commit后发送`Dirty`，若发生在materialize期间，会排队触发下一份
+跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation在commit后
+发送`Dirty`，若发生在materialize期间，会排队触发下一份
 完整`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
 
 ### 11.5 Dirty、Evict 与周期收敛
 
-`TODO(WP8)`：会改变Active resource target的Server mutation接入时：
+会改变Active resource target的Server mutation接入时：
 
 1. 先提交业务；
-2. 再返回 `ChangeImpact`；
-3. `DeviceControl` 对一个、多个或全部在线 Device 发送 best-effort `Dirty`。
+2. application coordination根据当前mutation的具体语义确定影响一个Device还是全部在线Device；
+3. `DeviceControl` 发送best-effort `Dirty`。
 
 组件不能反向持有 Registry。
 
 Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期完整上报或低频 Server 全量 refresh 会恢复。当前规模允许 Import/Runtime 全局变化后直接 dirty all connected actors。
 
-`TODO(WP8)`：Device disable、revoke和current control-key replacement不是普通target变更。它们在
+Device disable、revoke和current control-key replacement不是普通target变更。它们在
 Device Component commit后对准确`device_id`发送`Evict`，终止current lease；
 `Evict`不能合并为或降级为best-effort `Dirty`。组件仍不反向持有Registry，
-该commit后动作由`DeviceControl`执行。
+该commit后动作由`DeviceControl`执行。为保证authority commit后旧lease零写入，
+`DeviceControl`先与该Device正在执行的ClientState/Dirty互斥，再提交authority mutation，
+在释放互斥前标记lease fenced，随后发送并等待`Evict`确认；组件提交失败时不fence。
+该mutation→fence→evict序列由进程持有的任务完成，不因发起它的HTTP请求取消而中断。
 
 ### 11.6 Channel 与背压
 
 - Actor mailbox 和每 lease outbound queue 都必须有界；
 - ClientState 不能静默丢弃；
-- `TODO(WP8)`：重复 Dirty 可以合并或 best-effort 丢弃；
+- 重复 Dirty 可以合并或best-effort丢弃；
 - outbound queue满时终止 lease；
 - 不为每个资源创建 channel；
 - 不创建持久化网络 outbox。
@@ -938,7 +952,8 @@ Binding成功后旧Input由“没有current negotiation”自然fence；Unbind�
 - Gateway接受的exact CSR直接进入`gateway_credentials`；
 - Binding被拒绝的最新submission直接进入`binding_negotiations`，接受则进入`device_bindings`；
 - Runtime、Session与Home只持久化Server target；
-- 原始Input与所有Actual只保留在当前DeviceActor内存，lease结束即丢弃。
+- 原始Input经整体校验和组件消费后丢弃；latest Actual与receive-time只保留在当前
+  DeviceActor lease内存，lease结束即丢弃。
 
 Server重启会丢失所有Client observation，但同时也会使所有lease失效；Client重连后的fresh barrier要求重新发送完整snapshot，因此不影响恢复、Resolve或transition completion。旧Actual不得参与新lease决策。
 
@@ -1092,25 +1107,24 @@ strict parse
 
 旧 `/commands` API和Panel Command模型删除。Operator操作直接调用 owning component：
 
-- Binding unbind/open policy；
-- Runtime Config更新；
-- Session lock level；
-- terminate epoch推进；
-- Home reset epoch推进；
-- Device enable/disable/revoke；
-- Enrollment approve/deny。
+- 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态，
+  `PATCH /devices/{device_id}`修改Device lifecycle，
+  `PUT /devices/{device_id}/session-control`替换lock level；
+- 资源移除使用`DELETE`：解绑`/devices/{device_id}/binding`，丢弃pending import
+  `/imports/{import_id}`；Binding UI是否开放由当前unbound与eligibility事实推导，
+  不增加operator-owned open policy；
+- 只有实际推进workflow、epoch或一次性终态决策的操作保留
+  `POST .../actions/...`：Import commit、terminate epoch、Home reset epoch与
+  Enrollment approve/deny；
+- 创建Session和Import preview使用collection `POST`。
 
-`TODO(WP8)`：Operator mutation接入后，将提交结果转换为：
+HTTP方法表达资源语义，不为动词机械创建伪资源，也不把实际transition伪装成普通字段
+覆盖。`/api/v2`根层在认证和路由handler前统一拒绝`HEAD`并执行请求体大小上限；
+业务handler不重复声明这些transport策略。
 
-```rust
-enum AffectedDevices {
-    One(DeviceId),
-    Many(Vec<DeviceId>),
-    AllConnected,
-}
-```
-
-DeviceControl据此发送Dirty。HTTP handler不直接访问组件表。
+Operator target mutation由application coordination在commit后调用
+`DeviceControl`的单Device或全部在线Device Dirty入口。当前没有Many的真实调用方，
+不预建通用impact enum。HTTP handler不直接访问组件表。
 
 ### 15.4 Panel状态
 
@@ -1123,6 +1137,13 @@ Panel展示：
 - Enrollment/Binding evaluation；
 
 Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
+
+`DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation，
+不缓存target或convergence。单Device convergence query由`DeviceControl`读取各组件当前
+durable target，与Registry返回的current-lease observation即时比较；HTTP handler只处理
+请求、错误映射和序列化。这样离线Device、进程重启后尚未创建Actor的Device，以及丢失
+best-effort Dirty的Device仍以数据库当前target为准。当前Panel只有单Device详情调用方，
+不预建批量查询、跨组件缓存或通用collection abstraction。
 
 ## 16. 错误与可观测性
 
@@ -1422,22 +1443,24 @@ just api
 
 ### 当前实现基线
 
-2026-09-01 的实现基线：
+2026-09-02 的实现基线：
 
 - split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在
   `natsume-device-protocol` 中形成；
 - 唯一 initial migration 和 Diesel schema 已统一到 17 张目标表，不再包含
   Command、Observed、Token 或 Bundle 旧模型；
-- Server 已建立纵向 `component` 结构和进程级 `ServerState`；Operator、Contest、
-  Import、Provisioning 持有自己的 concrete dependency，HTTP 只调用组件；
+- Server 已建立纵向 `component` 结构和进程级 `ServerState`；所有业务组件持有自己的
+  concrete dependency，HTTP 只调用组件；
 - Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
   属于 HTTP；
 - Device Component 拥有 Device/current control key 的 durable authority、连接期
   Enrollment review registry 和 lifecycle，并统一编排 Gate 复查、review claim
   与 activation transaction；`device_control/admission.rs` 拥有纯
   Challenge/Proof 准入与 Enrollment Ready barrier；
-- Server 尚无 production Device WSS、DeviceActor、DeviceRegistry 或 Active State
-  Component；
+- Server 已实现production Device WSS、每Device Actor/Registry、lease fencing、fresh
+  barrier、完整snapshot处理和当前在线Actual查询；
+- Operator HTTP与Panel已接入Enrollment、Device lifecycle、五资源target mutation和
+  convergence查询，mutation在commit后按语义触发Dirty或Evict；
 - Daemon 只有 identity、control key/manifest 等 foundation，尚无完整连接循环和
   五资源 Reconciler；
 - `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建，
@@ -1562,8 +1585,8 @@ just api
 
 - 只实现Server concrete Runtime Config、Session Control与Home组件，不预建
   统一component trait、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
-- 实现三个Unit-input资源的durable target与concrete operator mutation method，不恢复
-  已删除的lock/unlock/terminate/reset Command API；
+- 实现三个Unit-input资源的durable target；Runtime只接受部署配置，Session/Home提供
+  concrete operator mutation method，不恢复已删除的lock/unlock/terminate/reset Command API；
 - concrete component当前不接收不会参与Server transition的Actual；
   production `DeviceActor`在组件调用前校验fresh Actual；
 - `TODO(WP9)`：Client负责捕获exact graphical session且terminate不得retarget，并负责
@@ -1588,7 +1611,7 @@ just api
 - 串行组件ingest/materialize；
 - 完整snapshot编解码；
 - bounded mailbox与outbound背压；
-- `TODO(WP8)`：随真实Operator mutation接入Registry `Dirty`/`Evict`入口。
+- Registry为Operator mutation提供`Dirty`/`Evict`入口。
 
 验收：
 
@@ -1604,7 +1627,7 @@ just api
 
 目标：
 
-- 保持HTTP handler只调用组件；
+- 保持HTTP handler只调用component facade或`DeviceControl` application coordination；
 - 增加Enrollment、target mutation与convergence查询；
 - Operator/Panel query汇总durable current fact与当前在线Actor状态，不在更早WP预建
   read DTO；
@@ -1612,9 +1635,13 @@ just api
 
 验收：
 
-- 代码库无Command/Bundle/Token/Observed旧业务symbol；
+- Server、OpenAPI与Web无Device Command/Bundle/Token/Observed旧业务symbol；普通CLI
+  Command、Import preview token与协议ErrorCode token不属于该旧模型；
+- `TODO(WP9)`：删除仍由Client旧控制路径使用的Command journal、device token与对应
+  local-control字段；WP8不提前实现半套Client Reconciler；
 - Web不复制Rust enum；
-- 所有mutation commit后Dirty；
+- 所有Active resource target mutation在commit后Dirty；Device disable、revoke与
+  current control-key replacement在commit后Evict；
 - API/generated clean diff。
 
 ### WP9：Client InputProvider与Reconciler

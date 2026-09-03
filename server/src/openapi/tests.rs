@@ -21,7 +21,7 @@ use crate::{
 
 use super::document;
 
-const UNMOUNTED_DESCRIPTION_PREFIX: &str = "Declared but not mounted in Stage 5B operation IDs: ";
+const UNMOUNTED_DESCRIPTION_PREFIX: &str = "Declared but not mounted in WP8 operation IDs: ";
 const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
 const ALLOWED_CREDENTIAL_PATHS: [&str; 3] = [
     "/components/schemas/SessionRequest/properties/password",
@@ -29,7 +29,7 @@ const ALLOWED_CREDENTIAL_PATHS: [&str; 3] = [
     "/components/schemas/ImportCommitRequest/properties/preview_token",
 ];
 type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
-const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
+const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 2] = [
     (
         "get",
         "/api/v2/provisioning-window",
@@ -37,16 +37,10 @@ const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 3] = [
         &["200", "401"],
     ),
     (
-        "post",
-        "/api/v2/provisioning-window/actions/open",
-        "openProvisioningWindow",
-        &["200", "401", "403"],
-    ),
-    (
-        "post",
-        "/api/v2/provisioning-window/actions/close",
-        "closeProvisioningWindow",
-        &["200", "401", "403"],
+        "put",
+        "/api/v2/provisioning-window",
+        "updateProvisioningWindow",
+        &["200", "400", "401", "403", "413"],
     ),
 ];
 
@@ -63,8 +57,7 @@ fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let expected = expected_operation_table();
-    if actual != expected {
+    if actual != expected_operation_table() {
         return Err(TestFailure::OperationTableChanged);
     }
     Ok(())
@@ -101,6 +94,84 @@ fn expected_operation_table() -> OperationTable {
         ),
         (
             "get",
+            "/api/v2/enrollment-reviews",
+            "listEnrollmentReviews",
+            &["200", "401"],
+        ),
+        (
+            "post",
+            "/api/v2/enrollment-reviews/{review_id}/actions/approve",
+            "approveEnrollmentReview",
+            &["204", "400", "401", "403", "404", "409", "500"],
+        ),
+        (
+            "post",
+            "/api/v2/enrollment-reviews/{review_id}/actions/deny",
+            "denyEnrollmentReview",
+            &["204", "400", "401", "403", "404"],
+        ),
+        (
+            "get",
+            "/api/v2/devices",
+            "listDevices",
+            &["200", "401", "500"],
+        ),
+        (
+            "get",
+            "/api/v2/devices/{device_id}",
+            "getDevice",
+            &["200", "400", "401", "404", "500"],
+        ),
+        (
+            "patch",
+            "/api/v2/devices/{device_id}",
+            "updateDevice",
+            &["204", "400", "401", "403", "404", "409", "413", "500"],
+        ),
+        (
+            "delete",
+            "/api/v2/devices/{device_id}/binding",
+            "deleteDeviceBinding",
+            &["204", "400", "401", "403", "404", "500"],
+        ),
+        (
+            "get",
+            "/api/v2/devices/{device_id}/session-control",
+            "getDeviceSessionControl",
+            &["200", "400", "401", "404", "500"],
+        ),
+        (
+            "put",
+            "/api/v2/devices/{device_id}/session-control",
+            "setDeviceSessionLock",
+            &["200", "400", "401", "403", "404", "413", "500"],
+        ),
+        (
+            "post",
+            "/api/v2/devices/{device_id}/session-control/actions/terminate",
+            "terminateDeviceSession",
+            &["200", "400", "401", "403", "404", "409", "500"],
+        ),
+        (
+            "get",
+            "/api/v2/devices/{device_id}/home",
+            "getDeviceHome",
+            &["200", "400", "401", "404", "500"],
+        ),
+        (
+            "post",
+            "/api/v2/devices/{device_id}/home/actions/reset",
+            "resetDeviceHome",
+            &["200", "400", "401", "403", "404", "409", "500"],
+        ),
+        (
+            "get",
+            "/api/v2/devices/{device_id}/convergence",
+            "getDeviceConvergence",
+            &["200", "400", "401", "404", "500"],
+        ),
+        (
+            "get",
             "/api/v2/imports",
             "getCsvImport",
             &["200", "401", "403", "500"],
@@ -124,9 +195,9 @@ fn expected_operation_table() -> OperationTable {
             &["204", "400", "401", "403", "404", "409", "413", "500"],
         ),
         (
-            "post",
-            "/api/v2/imports/{import_id}/actions/discard",
-            "discardCsvImport",
+            "delete",
+            "/api/v2/imports/{import_id}",
+            "deleteCsvImport",
             &["204", "400", "401", "403", "404", "500"],
         ),
     ];
@@ -210,7 +281,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted Stage 5B operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, discardCsvImport, getProvisioningWindow, openProvisioningWindow, closeProvisioningWindow.\nDeclared but not mounted in Stage 5B operation IDs: none."
+        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionLock, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -218,7 +289,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
 }
 
 #[test]
-fn device_lifecycle_path_parameters_are_exact() -> Result<(), TestFailure> {
+fn operator_identifiers_and_digests_are_canonical_and_exact() -> Result<(), TestFailure> {
     let value = serialized_document()?;
     let canonical_uuid_v7 = value
         .pointer("/components/schemas/CanonicalUuidV7")
@@ -231,6 +302,110 @@ fn device_lifecycle_path_parameters_are_exact() -> Result<(), TestFailure> {
     {
         return Err(TestFailure::LifecyclePathContractChanged);
     }
+    let canonical_uuid_v5 = value
+        .pointer("/components/schemas/CanonicalUuidV5")
+        .and_then(Value::as_object)
+        .ok_or(TestFailure::DocumentShapeInvalid)?;
+    if canonical_uuid_v5.get("type").and_then(Value::as_str) != Some("string")
+        || canonical_uuid_v5.get("format").and_then(Value::as_str) != Some("uuid")
+        || canonical_uuid_v5.get("pattern").and_then(Value::as_str)
+            != Some("^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    {
+        return Err(TestFailure::LifecyclePathContractChanged);
+    }
+
+    for record in operation_records(&value)? {
+        let parameter_name = ["device_id", "review_id", "import_id"]
+            .into_iter()
+            .find(|name| record.path.contains(&format!("{{{name}}}")));
+        let Some(parameter_name) = parameter_name else {
+            continue;
+        };
+        let parameter = operation_at(&value, &record.path, &record.method)?
+            .get("parameters")
+            .and_then(Value::as_array)
+            .and_then(|parameters| {
+                parameters.iter().find(|parameter| {
+                    parameter.get("name").and_then(Value::as_str) == Some(parameter_name)
+                })
+            })
+            .ok_or(TestFailure::LifecyclePathContractChanged)?;
+        if parameter.pointer("/schema/$ref").and_then(Value::as_str)
+            != Some("#/components/schemas/CanonicalUuidV7")
+        {
+            return Err(TestFailure::LifecyclePathContractChanged);
+        }
+    }
+
+    for schema_name in ["DeviceResponse", "EnrollmentReviewResponse"] {
+        let schema = value
+            .pointer(&format!("/components/schemas/{schema_name}/properties"))
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::LifecyclePathContractChanged)?;
+        let id_property = if schema_name == "DeviceResponse" {
+            "device_id"
+        } else {
+            "review_id"
+        };
+        if schema
+            .get(id_property)
+            .and_then(|property| property.get("$ref"))
+            .and_then(Value::as_str)
+            != Some("#/components/schemas/CanonicalUuidV7")
+            || schema
+                .get("machine_hardware_id")
+                .and_then(|property| property.get("$ref"))
+                .and_then(Value::as_str)
+                != Some("#/components/schemas/CanonicalUuidV5")
+        {
+            return Err(TestFailure::LifecyclePathContractChanged);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn convergence_identifiers_and_digests_are_exact() -> Result<(), TestFailure> {
+    let value = serialized_document()?;
+    for pointer in [
+        "/components/schemas/BindingContextResponse/properties/account_id",
+        "/components/schemas/BindingContextResponse/properties/binding_id",
+        "/components/schemas/BindingTargetResponse/oneOf/0/properties/negotiation_id",
+        "/components/schemas/GatewayActualResponse/properties/credential_id",
+        "/components/schemas/GatewayTargetResponse/properties/credential_id",
+    ] {
+        let schema = value
+            .pointer(pointer)
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::LifecyclePathContractChanged)?;
+        if schema.get("format").and_then(Value::as_str) != Some("uuid")
+            || schema.get("pattern").and_then(Value::as_str)
+                != Some("^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+        {
+            return Err(TestFailure::LifecyclePathContractChanged);
+        }
+    }
+    for pointer in [
+        "/components/schemas/GatewayActualResponse/properties/gateway_leaf_sha256",
+        "/components/schemas/GatewayTargetResponse/properties/gateway_leaf_sha256",
+    ] {
+        let schema = value
+            .pointer(pointer)
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::LifecyclePathContractChanged)?;
+        if schema.get("minLength").and_then(Value::as_u64) != Some(64)
+            || schema.get("maxLength").and_then(Value::as_u64) != Some(64)
+            || schema.get("pattern").and_then(Value::as_str) != Some("^[0-9a-f]{64}$")
+        {
+            return Err(TestFailure::LifecyclePathContractChanged);
+        }
+    }
+    if value
+        .pointer("/components/schemas/GatewayTargetResponse/properties/certificate_ready")
+        .is_some()
+    {
+        return Err(TestFailure::LifecyclePathContractChanged);
+    }
     Ok(())
 }
 
@@ -238,78 +413,89 @@ fn device_lifecycle_path_parameters_are_exact() -> Result<(), TestFailure> {
 fn provisioning_window_operations_and_response_schema_are_closed_and_exact()
 -> Result<(), TestFailure> {
     let value = serialized_document()?;
-    for (path, method) in [
-        ("/api/v2/provisioning-window", "get"),
-        ("/api/v2/provisioning-window/actions/open", "post"),
-        ("/api/v2/provisioning-window/actions/close", "post"),
-    ] {
-        let operation = operation_at(&value, path, method)?;
-        if operation.get("requestBody").is_some()
-            || nested_value(
-                operation,
-                &[
-                    "responses",
-                    "200",
-                    "content",
-                    "application/json",
-                    "schema",
-                    "$ref",
-                ],
-            )
-            .and_then(Value::as_str)
-                != Some("#/components/schemas/ProvisioningWindowResponse")
+    let read = operation_at(&value, "/api/v2/provisioning-window", "get")?;
+    let update = operation_at(&value, "/api/v2/provisioning-window", "put")?;
+    if read.get("requestBody").is_some()
+        || nested_value(
+            update,
+            &[
+                "requestBody",
+                "content",
+                "application/json",
+                "schema",
+                "$ref",
+            ],
+        )
+        .and_then(Value::as_str)
+            != Some("#/components/schemas/ProvisioningWindowRequest")
+    {
+        return Err(TestFailure::ProvisioningWindowContractChanged);
+    }
+    for operation in [read, update] {
+        if nested_value(
+            operation,
+            &[
+                "responses",
+                "200",
+                "content",
+                "application/json",
+                "schema",
+                "$ref",
+            ],
+        )
+        .and_then(Value::as_str)
+            != Some("#/components/schemas/ProvisioningWindowResponse")
         {
             return Err(TestFailure::ProvisioningWindowContractChanged);
         }
     }
 
-    let response = value
-        .pointer("/components/schemas/ProvisioningWindowResponse")
-        .and_then(Value::as_object)
-        .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
-    let properties = response
-        .get("properties")
-        .and_then(Value::as_object)
-        .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
-    let required = response
-        .get("required")
-        .and_then(Value::as_array)
-        .and_then(|values| {
-            values
-                .iter()
-                .map(Value::as_str)
-                .collect::<Option<BTreeSet<_>>>()
-        })
-        .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
-    let states = properties
-        .get("state")
-        .and_then(|state| state.get("enum"))
-        .and_then(Value::as_array)
-        .and_then(|values| {
-            values
-                .iter()
-                .map(Value::as_str)
-                .collect::<Option<BTreeSet<_>>>()
-        })
-        .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
-    if properties
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>()
-        != BTreeSet::from(["state"])
-        || required != BTreeSet::from(["state"])
-        || states != BTreeSet::from(["closed", "open"])
-        || properties
+    for schema_name in ["ProvisioningWindowRequest", "ProvisioningWindowResponse"] {
+        let schema = value
+            .pointer(&format!("/components/schemas/{schema_name}"))
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        let properties = schema
+            .get("properties")
+            .and_then(Value::as_object)
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        let required = schema
+            .get("required")
+            .and_then(Value::as_array)
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<BTreeSet<_>>>()
+            })
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        let states = properties
             .get("state")
-            .and_then(|state| state.get("type"))
-            .and_then(Value::as_str)
-            != Some("string")
-        || response
-            .get("additionalProperties")
-            .and_then(Value::as_bool)
-            != Some(false)
-    {
-        return Err(TestFailure::ProvisioningWindowContractChanged);
+            .and_then(|state| state.get("enum"))
+            .and_then(Value::as_array)
+            .and_then(|values| {
+                values
+                    .iter()
+                    .map(Value::as_str)
+                    .collect::<Option<BTreeSet<_>>>()
+            })
+            .ok_or(TestFailure::ProvisioningWindowContractChanged)?;
+        if properties
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != BTreeSet::from(["state"])
+            || required != BTreeSet::from(["state"])
+            || states != BTreeSet::from(["closed", "open"])
+            || properties
+                .get("state")
+                .and_then(|state| state.get("type"))
+                .and_then(Value::as_str)
+                != Some("string")
+            || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(TestFailure::ProvisioningWindowContractChanged);
+        }
     }
     Ok(())
 }
@@ -322,11 +508,11 @@ fn import_paths_and_schemas_are_closed_and_exact() -> Result<(), TestFailure> {
 }
 
 fn assert_import_operations(value: &Value) -> Result<(), TestFailure> {
-    for path in [
-        "/api/v2/imports/{import_id}/actions/commit",
-        "/api/v2/imports/{import_id}/actions/discard",
+    for (path, method) in [
+        ("/api/v2/imports/{import_id}/actions/commit", "post"),
+        ("/api/v2/imports/{import_id}", "delete"),
     ] {
-        let parameter = operation_at(value, path, "post")?
+        let parameter = operation_at(value, path, method)?
             .get("parameters")
             .and_then(Value::as_array)
             .and_then(|parameters| {
@@ -347,7 +533,7 @@ fn assert_import_operations(value: &Value) -> Result<(), TestFailure> {
     let upload = operation_at(value, "/api/v2/imports", "post")?;
     let read = operation_at(value, "/api/v2/imports", "get")?;
     let commit = operation_at(value, "/api/v2/imports/{import_id}/actions/commit", "post")?;
-    let discard = operation_at(value, "/api/v2/imports/{import_id}/actions/discard", "post")?;
+    let discard = operation_at(value, "/api/v2/imports/{import_id}", "delete")?;
     if nested_value(
         upload,
         &["requestBody", "content", "text/csv", "schema", "type"],
@@ -746,7 +932,7 @@ fn operation_records(value: &Value) -> Result<Vec<OperationRecord>, TestFailure>
     let mut records = Vec::new();
     for (path, item) in paths {
         let item = item.as_object().ok_or(TestFailure::DocumentShapeInvalid)?;
-        for method in ["get", "head", "post", "put", "delete"] {
+        for method in ["get", "head", "post", "put", "delete", "patch"] {
             let Some(operation) = item.get(method) else {
                 continue;
             };
@@ -862,7 +1048,7 @@ async fn probe_live_router(
     let mut mounted = BTreeSet::new();
     for path in paths {
         let concrete_path = concrete_path(&path);
-        for method in ["get", "head", "post", "put", "delete"] {
+        for method in ["get", "head", "post", "put", "delete", "patch"] {
             let request = probe_request(method, &concrete_path)?;
             let response = application
                 .clone()
@@ -886,6 +1072,7 @@ fn probe_request(method: &str, path: &str) -> Result<Request<Body>, TestFailure>
         "post" => Method::POST,
         "put" => Method::PUT,
         "delete" => Method::DELETE,
+        "patch" => Method::PATCH,
         _ => return Err(TestFailure::DocumentShapeInvalid),
     };
     let is_session_post = path == "/api/v2/session" && method == Method::POST;
@@ -903,6 +1090,7 @@ fn probe_request(method: &str, path: &str) -> Result<Request<Body>, TestFailure>
 
 fn concrete_path(path: &str) -> String {
     path.replace("{device_id}", "01900000-0000-7000-8000-000000000000")
+        .replace("{review_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{import_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{request_id}", "01900000-0000-7000-8000-000000000000")
 }

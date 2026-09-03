@@ -1,4 +1,4 @@
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
+use diesel::{QueryDsl, RunQueryDsl};
 
 use crate::{
     db::{PersistenceError, Transaction},
@@ -11,19 +11,5 @@ pub(in crate::component::runtime) fn read_all(
     runtime_config::table
         .select((runtime_config::singleton, runtime_config::domjudge_origin))
         .load(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
-}
-
-pub(in crate::component::runtime) fn replace(
-    transaction: &mut Transaction<'_>,
-    domjudge_origin: &str,
-) -> Result<(), PersistenceError> {
-    diesel::replace_into(runtime_config::table)
-        .values((
-            runtime_config::singleton.eq(1),
-            runtime_config::domjudge_origin.eq(domjudge_origin),
-        ))
-        .execute(transaction.connection())
-        .map(|_| ())
         .map_err(|_| PersistenceError::OperationFailed)
 }

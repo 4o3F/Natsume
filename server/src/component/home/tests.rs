@@ -16,11 +16,15 @@ async fn materialize_creates_default_and_reset_advances() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
 
+    assert_eq!(fixture.component.read_current(device_id).await, Ok(None));
+    assert_eq!(fixture.target_count(device_id).await, 0);
     assert_eq!(fixture.component.materialize(device_id).await, Ok(None));
     assert_eq!(fixture.target_count(device_id).await, 1);
+    assert_eq!(fixture.component.read_current(device_id).await, Ok(None));
     assert_eq!(fixture.component.reset(device_id).await, Ok(1));
     assert_eq!(fixture.component.reset(device_id).await, Ok(2));
     assert_eq!(fixture.component.materialize(device_id).await, Ok(Some(2)));
+    assert_eq!(fixture.component.read_current(device_id).await, Ok(Some(2)));
 }
 
 #[tokio::test]
@@ -59,6 +63,10 @@ async fn missing_device_invalid_epoch_and_overflow_fail_closed() {
         .unwrap_or_else(|| panic!("fixture generated an invalid Device ID"));
     assert_eq!(
         fixture.component.materialize(missing).await,
+        Err(HomeError::DeviceNotFound)
+    );
+    assert_eq!(
+        fixture.component.read_current(missing).await,
         Err(HomeError::DeviceNotFound)
     );
     assert_eq!(
