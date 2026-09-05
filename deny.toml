@@ -53,7 +53,6 @@ skip = [
   { crate = "nom@7.1.3", reason = "bindgen's cexpr dependency retains nom 7 while the Slint image closure uses nom 8; remove when cexpr upgrades" },
   { crate = "png@0.17.16", reason = "tiny-skia 0.11.4 in Slint's SVG closure retains png 0.17 while image uses png 0.18; remove when tiny-skia upgrades" },
   { crate = "read-fonts@0.35.0", reason = "Slint 1.15 fontique uses read-fonts 0.35 while swash uses read-fonts 0.41; remove when the Slint text stack converges" },
-  { crate = "roxmltree@0.21.1", reason = "Slint's usvg 0.46 uses roxmltree 0.21 while the workspace contract parser is pinned to 0.20; remove when those consumers converge" },
   { crate = "rustc-hash@1.1.0", reason = "rowan 0.16 in the Slint compiler retains rustc-hash 1 while bindgen and current tooling use rustc-hash 2; remove when rowan upgrades" },
   { crate = "rustix@0.38.44", reason = "winit 0.30 retains rustix 0.38 while the workspace graph otherwise uses rustix 1; remove when winit upgrades" },
   { crate = "shlex@1.3.0", reason = "bindgen 0.72 in skia-bindings retains shlex 1 while cc uses shlex 2; remove when bindgen upgrades" },
