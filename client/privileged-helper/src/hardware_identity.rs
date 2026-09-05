@@ -1,10 +1,9 @@
-//! Linux hardware collection belongs to the privileged helper, not the shared crate.
+//! Linux hardware collection and identity policy belong to the privileged helper.
 //!
 //! Collection order:
 //! 1. DMI system UUID and motherboard serial from `/sys/class/dmi/id`.
 //! 2. `smbios-lib` only to fill missing DMI values and cross-check present values.
-//! 3. `raw-cpuid` only when a genuine Processor Serial Number leaf is advertised.
-//! 4. `procfs::process::MountInfo` plus sysfs and udev data for one root whole disk.
+//! 3. `procfs::process::MountInfo` plus sysfs and udev data for one root whole disk.
 //!
 //! No app-local or `/etc/machine-id` fallback is accepted because it can be copied with the disk.
 //! Raw serials are normalized and hashed in this process, then zeroized or dropped. No shell
@@ -12,13 +11,10 @@
 
 use std::path::Path;
 
-use natsume_local_control_api::{HardwareCandidate, SanitizedHardwareClaim};
-use natsume_machine_identity::{
-    ANCHOR_ORDER, CollectionCompleteness, EvidenceQuality, EvidenceStatus, MachineIdentityDecision,
-    ReadOutcome, decide_machine_identity, evaluate_slot,
+use natsume_local_control_api::{
+    DerivedMachineIdentity, MachineIdentityError, MachineIdentityQuality,
 };
-use procfs::{process::MountInfo, process::Process};
-use raw_cpuid::CpuId;
+use procfs::process::Process;
 use uuid::Uuid;
 use zeroize::Zeroize as _;
 
@@ -41,21 +37,24 @@ enum SourceStatus {
 
 mod disk;
 mod dmi;
+mod policy;
 mod smbios;
 mod source;
 
 use self::{
     disk::{first_disk_serial, proc_error_status},
     dmi::collect_dmi,
+    policy::{
+        ANCHOR_ORDER, EvidenceQuality, EvidenceStatus, MachineIdentityDecision, ReadOutcome,
+        decide_machine_identity, evaluate_slot,
+    },
     source::outcome_from_status,
 };
 
 /// Collects the three frozen hardware readings from a filesystem rooted at `filesystem_root`.
 /// Production passes `/`; tests pass an isolated fixture root.
-#[must_use]
-pub fn collect(filesystem_root: &Path) -> [ReadOutcome; 3] {
+fn collect(filesystem_root: &Path) -> [ReadOutcome; 3] {
     let [system_uuid, board_serial] = collect_dmi(filesystem_root);
-    processor_serial_conflict_check();
     let disk_serial = match Process::myself().and_then(|process| process.mountinfo()) {
         Ok(mounts) => first_disk_serial(filesystem_root, &mounts.0),
         Err(error) => outcome_from_status(proc_error_status(&error)),
@@ -63,57 +62,16 @@ pub fn collect(filesystem_root: &Path) -> [ReadOutcome; 3] {
     [system_uuid, board_serial, disk_serial]
 }
 
-pub(crate) fn collect_with_mountinfo(
+/// Runs collection and the frozen pure derivation pipeline without exposing source evidence.
+///
+/// # Errors
+///
+/// Returns the closed unavailable classification when the fixed sources cannot derive an ID.
+pub(super) fn derive_identity(
     filesystem_root: &Path,
-    mountinfo: &[MountInfo],
-) -> [ReadOutcome; 3] {
-    let [system_uuid, board_serial] = collect_dmi(filesystem_root);
-    processor_serial_conflict_check();
-    let disk_serial = first_disk_serial(filesystem_root, mountinfo);
-    [system_uuid, board_serial, disk_serial]
-}
-
-/// Runs collection and the frozen pure derivation pipeline without exposing normalized values.
-#[must_use]
-pub fn derive_claim(filesystem_root: &Path, fleet_namespace: Uuid) -> SanitizedHardwareClaim {
-    claim_from_readings(collect(filesystem_root), fleet_namespace)
-}
-
-pub(crate) fn derive_claim_with_mountinfo(
-    filesystem_root: &Path,
-    mountinfo: &[MountInfo],
     fleet_namespace: Uuid,
-) -> SanitizedHardwareClaim {
-    claim_from_readings(
-        collect_with_mountinfo(filesystem_root, mountinfo),
-        fleet_namespace,
-    )
-}
-
-/// Processor Serial Number is not one of the three frozen slots. Until a PSN-capable fixture
-/// defines a cross-source comparison, this seam only verifies the real feature bit before reading
-/// leaf 0x03, then zeroizes the result without changing any slot or fabricating evidence.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn processor_serial_conflict_check() {
-    let cpuid = CpuId::new();
-    let psn_is_real = cpuid
-        .get_feature_info()
-        .is_some_and(|features| features.has_psn());
-    if psn_is_real && let Some(serial) = cpuid.get_processor_serial() {
-        let mut bytes = serial.serial_all().to_ne_bytes();
-        bytes.zeroize();
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn processor_serial_conflict_check() {}
-
-fn quality_label(quality: EvidenceQuality) -> &'static str {
-    match quality {
-        EvidenceQuality::Weak => "weak",
-        EvidenceQuality::Medium => "medium",
-        EvidenceQuality::Strong => "strong",
-    }
+) -> Result<DerivedMachineIdentity, MachineIdentityError> {
+    identity_from_readings(collect(filesystem_root), fleet_namespace)
 }
 
 fn zeroize_readings(readings: &mut [ReadOutcome; 3]) {
@@ -126,61 +84,46 @@ fn zeroize_readings(readings: &mut [ReadOutcome; 3]) {
     }
 }
 
-fn claim_from_readings(
+fn identity_from_readings(
     mut readings: [ReadOutcome; 3],
     fleet_namespace: Uuid,
-) -> SanitizedHardwareClaim {
+) -> Result<DerivedMachineIdentity, MachineIdentityError> {
     let evaluations = std::array::from_fn(|index| {
         evaluate_slot(ANCHOR_ORDER[index], &readings[index], fleet_namespace)
     });
     let decision = decide_machine_identity(&evaluations);
     zeroize_readings(&mut readings);
 
-    let candidates = evaluations
-        .iter()
-        .enumerate()
-        .filter_map(|(index, evaluation)| {
-            if evaluation.status != EvidenceStatus::Present {
-                return None;
-            }
-            evaluation
-                .candidate_id
-                .map(|candidate_id| HardwareCandidate {
-                    anchor_kind: ANCHOR_ORDER[index].label().to_owned(),
-                    candidate_id: candidate_id.to_string(),
-                    quality: quality_label(evaluation.quality).to_owned(),
-                })
-        })
-        .collect();
-    let collection_complete =
-        decision.collection_completeness() == CollectionCompleteness::Complete;
-    let (decision, machine_hardware_id, present_slot_count) = match decision {
+    match decision {
         MachineIdentityDecision::Derived {
             machine_hardware_id,
-            present_slot_count,
-        } => (
-            "derived".to_owned(),
-            Some(machine_hardware_id.to_string()),
-            u32::try_from(present_slot_count).unwrap_or(u32::MAX),
-        ),
-        MachineIdentityDecision::InsufficientSources { present_slot_count } => (
-            "insufficient_sources".to_owned(),
-            None,
-            u32::try_from(present_slot_count).unwrap_or(u32::MAX),
-        ),
-        MachineIdentityDecision::Unsupported { present_slot_count } => (
-            "unsupported".to_owned(),
-            None,
-            u32::try_from(present_slot_count).unwrap_or(u32::MAX),
-        ),
-    };
-
-    SanitizedHardwareClaim {
-        candidates,
-        collection_complete,
-        decision,
-        machine_hardware_id,
-        present_slot_count,
+            ..
+        } => {
+            let strong_sources = evaluations
+                .iter()
+                .filter(|evaluation| {
+                    evaluation.status == EvidenceStatus::Present
+                        && evaluation.quality == EvidenceQuality::Strong
+                })
+                .count();
+            let quality = if strong_sources >= 2 {
+                MachineIdentityQuality::Strong
+            } else {
+                MachineIdentityQuality::Medium
+            };
+            Ok(DerivedMachineIdentity {
+                machine_hardware_id: machine_hardware_id.to_string(),
+                quality,
+            })
+        }
+        MachineIdentityDecision::InsufficientSources => {
+            Err(MachineIdentityError::InsufficientSources(
+                "machine identity requires at least two hardware sources".to_owned(),
+            ))
+        }
+        MachineIdentityDecision::Unsupported => Err(MachineIdentityError::Unsupported(
+            "machine identity is unsupported on this platform".to_owned(),
+        )),
     }
 }
 

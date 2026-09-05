@@ -5,12 +5,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use natsume_machine_identity::ReadOutcome;
 use procfs::{ProcError, process::MountInfo};
 use zeroize::Zeroize as _;
 
 use super::{
     SYS_DEV_BLOCK, SYS_VIRTUAL_BLOCK, SourceStatus, UDEV_DATA_DIRECTORY,
+    policy::ReadOutcome,
     source::{
         bytes_as_value, interface_status, io_status, outcome_from_status, read_bytes, rooted,
     },

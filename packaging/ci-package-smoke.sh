@@ -19,7 +19,7 @@ download() {
     "$1" --output "$2"
 }
 
-for command in cargo curl cut dpkg-deb envsubst grep node openssl pnpm python3 readelf sed sha256sum shellcheck systemd-analyze tar; do
+for command in cargo cp curl cut dpkg-deb envsubst grep node openssl pnpm python3 readelf sed sha256sum shellcheck systemctl systemd-analyze tar; do
   require_command "${command}"
 done
 
@@ -132,10 +132,10 @@ CARGO_TARGET_DIR="${production_target}" cargo build \
   -p natsume-privileged-helper \
   -p natsume-session-agent \
   -p natsume-server
-canonical_endpoint="$("${production_release}/natsume-device-daemon" --print-canonical-endpoint '2001:0db8:0:0:0:0:0:10' '8443')"
+canonical_endpoint="$("${production_release}/natsume-device-daemon" canonicalize-endpoint '2001:0db8:0:0:0:0:0:10' '8443')"
 [[ ${canonical_endpoint} == '2001:db8::10 8443' ]] ||
   fail 'Device Daemon did not emit the canonical IPv6 endpoint'
-if "${production_release}/natsume-device-daemon" --print-canonical-endpoint 'server.example' '8443' >/dev/null 2>&1; then
+if "${production_release}/natsume-device-daemon" canonicalize-endpoint 'server.example' '8443' >/dev/null 2>&1; then
   fail 'Device Daemon accepted a hostname as an install endpoint'
 fi
 pnpm --filter @natsume/web build
@@ -209,15 +209,10 @@ for path in \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
   /usr/lib/systemd/system/natsume-caddy.service \
-  /usr/lib/systemd/system/natsume-caddy.path \
   /etc/natsume/config.toml \
   /etc/xdg/autostart/org.natsume.SessionAgent.desktop \
   /usr/share/dbus-1/system.d/org.natsume.Device1.conf \
-  /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf \
-  /usr/share/natsume/gateway-status/index.html \
-  /usr/share/natsume/gateway-status/status.css \
-  /usr/share/natsume/gateway-status/status.js \
-  /usr/share/natsume/gateway-status/icons.svg; do
+  /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf; do
   require_package_path "${work_root}/client.contents" "${path}"
 done
 
@@ -270,29 +265,53 @@ dpkg-deb --extract "${client_deb}" "${extract_root}/client"
 
 client_caddyfile="${extract_root}/client/etc/natsume/caddy/bootstrap.caddyfile"
 client_config_placeholder="${extract_root}/client/etc/natsume/config.toml"
-client_status_root="${extract_root}/client/usr/share/natsume/gateway-status"
+client_caddy_unit="${extract_root}/client/usr/lib/systemd/system/natsume-caddy.service"
+client_daemon_unit="${extract_root}/client/usr/lib/systemd/system/natsume-device-daemon.service"
+client_helper_unit="${extract_root}/client/usr/lib/systemd/system/natsume-privileged-helper.service"
+client_tmpfiles="${extract_root}/client/usr/lib/tmpfiles.d/natsume.conf"
 grep -Fxq '# Natsume endpoint is written by postinstall after debconf validation.' \
   "${client_config_placeholder}" ||
   fail 'packaged endpoint conffile is not the fail-closed placeholder'
 if grep -Eq '^[[:space:]]*(ip|port)[[:space:]]*=' "${client_config_placeholder}"; then
   fail 'packaged endpoint placeholder contains an unvalidated endpoint'
 fi
-node --check "${client_status_root}/status.js"
-grep -Fq 'Content-Security-Policy' "${client_caddyfile}" ||
-  fail 'packaged bootstrap Caddyfile does not set Content-Security-Policy'
-grep -Fq 'status 503' "${client_caddyfile}" ||
-  fail 'packaged bootstrap Caddyfile does not force the bootstrap response to 503'
-if grep -RFiq -- 'session_locked' "${client_caddyfile}" "${client_status_root}"; then
-  fail 'session_locked must not appear in packaged Gateway status surfaces'
+grep -Fq 'admin unix//run/natsume/caddy-admin.sock|0660' "${client_caddyfile}" ||
+  fail 'packaged bootstrap Caddyfile does not expose the group-writable local admin socket'
+if grep -Eq '^[[:space:]]*(https?://|tls |reverse_proxy)' "${client_caddyfile}"; then
+  fail 'packaged bootstrap Caddyfile must not expose a listener or upstream'
 fi
+grep -Fxq 'Group=natsume-gateway' "${client_caddy_unit}" ||
+  fail 'packaged Caddy service does not own its admin socket through natsume-gateway'
+grep -Fxq 'ReadWritePaths=/run/natsume' "${client_caddy_unit}" ||
+  fail 'packaged Caddy service cannot create its runtime artifacts'
+grep -Fxq 'ExecStart=/usr/bin/natsume-device-daemon run' "${client_daemon_unit}" ||
+  fail 'packaged Device Daemon service does not use the explicit run command'
+grep -Fxq 'ExecStopPost=+/usr/bin/systemctl kill --kill-whom=all --signal=SIGKILL natsume-caddy.service' \
+  "${client_daemon_unit}" || fail 'packaged Daemon stop does not hard-stop the loaded Caddy config'
+if grep -Eq '^(ProtectSystem|ProtectHome)=' "${client_helper_unit}"; then
+  fail 'packaged privileged helper would isolate the managed Home mount'
+fi
+grep -Fxq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN' \
+  "${client_helper_unit}" || fail 'packaged privileged helper has an unexpected capability set'
+grep -Fxq 'd /run/natsume 2770 natsume natsume-gateway -' "${client_tmpfiles}" ||
+  fail 'packaged Caddy runtime directory cannot inherit the gateway group'
+grep -Fxq 'd /var/lib/natsume 0750 root natsume-gateway -' "${client_tmpfiles}" ||
+  fail 'packaged Device state root is not protected from the Daemon user'
+grep -Fxq 'd /var/lib/natsume/state 0700 natsume natsume -' "${client_tmpfiles}" ||
+  fail 'packaged Device state directory is not fixed before Daemon startup'
+grep -Fxq 'd /var/lib/natsume-privileged/home-reset 0700 root root -' "${client_tmpfiles}" ||
+  fail 'packaged Home reset state is not rooted outside Daemon-owned storage'
+
+# The target base system supplies systemctl; make it visible to --root verification.
+mkdir -p "${extract_root}/client/usr/bin"
+cp "$(command -v systemctl)" "${extract_root}/client/usr/bin/systemctl"
 
 systemd-analyze --recursive-errors=no --root="${extract_root}/server" verify \
   /usr/lib/systemd/system/natsume-server.service
 systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
-  /usr/lib/systemd/system/natsume-caddy.service \
-  /usr/lib/systemd/system/natsume-caddy.path
+  /usr/lib/systemd/system/natsume-caddy.service
 
 session_autostart="${extract_root}/client/etc/xdg/autostart/org.natsume.SessionAgent.desktop"
 grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${session_autostart}" ||

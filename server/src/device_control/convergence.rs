@@ -198,7 +198,7 @@ impl DeviceControl {
             session_control,
             home,
         };
-        let connection = self.registry.connection_state(device_id).await;
+        let connection = self.registry.read_connection_state(device_id).await;
         Ok(Some(DeviceStatus {
             device,
             convergence: build_convergence(connection, targets),
@@ -244,7 +244,7 @@ impl DeviceControl {
             .read_all_current()
             .await
             .map_err(DeviceConvergenceError::Home)?;
-        let mut connections = self.registry.connection_states(&device_ids).await;
+        let mut connections = self.registry.read_connection_states(&device_ids).await;
 
         Ok(devices
             .into_iter()

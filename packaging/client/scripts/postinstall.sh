@@ -37,7 +37,7 @@ record_debconf_endpoint() {
 }
 
 canonicalize_endpoint() {
-  endpoint=$(/usr/bin/natsume-device-daemon --print-canonical-endpoint "$1" "$2") ||
+  endpoint=$(/usr/bin/natsume-device-daemon canonicalize-endpoint "$1" "$2") ||
     return 1
   canonical_ip=${endpoint% *}
   canonical_port=${endpoint##* }

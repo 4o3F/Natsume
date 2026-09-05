@@ -2,7 +2,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 toolchain:
     test "$(node --version)" = "v24.1.0"
-    test "$(pnpm --version)" = "11.1.0"
+    pnpm --version | grep -Eq '^11\.'
     rustc --version | grep -Eq '^rustc 1\.97\.1 '
     grep -Exq '2\.11\.4' packaging/client/caddy.version
     grep -Exq '[0-9a-f]{64}  caddy_2\.11\.4_linux_amd64\.tar\.gz' packaging/client/caddy.archive.sha256

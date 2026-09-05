@@ -119,7 +119,6 @@ impl GatewayComponent {
                     &expected_id.as_text(),
                     &expected_csr,
                     &leaf_der,
-                    &[],
                 )?;
                 if updated > 1 {
                     return Err(GatewayError::InvalidPersistedFacts);
@@ -235,7 +234,7 @@ fn ingest_in_transaction(
             &device_id_text,
             &initial_id.as_text(),
         )?)?;
-        db::PersistedGatewayRow::new(initial_id.as_text(), None, None, None)
+        db::PersistedGatewayRow::new(initial_id.as_text(), None, None)
     };
     let mut fact = GatewayFact::from_persisted(&row)?;
 
@@ -450,15 +449,10 @@ impl GatewayFact {
         let credential_id = GatewayCredentialId::parse(row.credential_id())
             .ok_or(GatewayError::InvalidPersistedFacts)?;
         let csr_der = row.gateway_csr_der().map(<[u8]>::to_vec);
-        let grant = match (
-            csr_der.as_ref(),
-            row.gateway_leaf_der(),
-            row.issuer_chain_der(),
-        ) {
-            (None | Some(_), None, None) => None,
-            (Some(_), Some(leaf_der), Some([])) => Some(GatewayCertificateGrant {
+        let grant = match (csr_der.as_ref(), row.gateway_leaf_der()) {
+            (None | Some(_), None) => None,
+            (Some(_), Some(leaf_der)) => Some(GatewayCertificateGrant {
                 leaf_der: leaf_der.to_vec(),
-                issuer_chain_der: Vec::new(),
             }),
             _ => return Err(GatewayError::InvalidPersistedFacts),
         };
@@ -484,16 +478,11 @@ impl GatewayIntent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GatewayCertificateGrant {
     leaf_der: Vec<u8>,
-    issuer_chain_der: Vec<Vec<u8>>,
 }
 
 impl GatewayCertificateGrant {
     pub(crate) fn leaf_der(&self) -> &[u8] {
         &self.leaf_der
-    }
-
-    pub(crate) fn issuer_chain_der(&self) -> &[Vec<u8>] {
-        &self.issuer_chain_der
     }
 }
 

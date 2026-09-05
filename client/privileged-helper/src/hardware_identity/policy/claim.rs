@@ -1,62 +1,27 @@
 //! Whole-machine identity composition and claim decisions.
 //!
-//! [`CollectionCompleteness`] remains the R6 collection-health report: one `unsupported`
-//! slot makes the collection unsupported, while every other non-present slot makes it
-//! temporarily unavailable. Claim eligibility is deliberately layered on top of that report.
-//! `Unsupported` is terminal, but `TemporarilyUnavailable` does not prevent derivation when
-//! two slots are present. Every non-present slot occupies its frozen [`ANCHOR_ORDER`] position
-//! with the single-byte `0x01` marker, and slot quality never gates the 2-of-3 decision.
+//! One `unsupported` slot makes the platform unsupported. Otherwise, any two present slots can
+//! derive the identity. Every non-present slot occupies its frozen [`ANCHOR_ORDER`] position with
+//! the single-byte `0x01` marker.
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{
-    ANCHOR_ORDER, CollectionCompleteness, EvidenceStatus, SlotEvaluation, collection_completeness,
-};
+use super::{ANCHOR_ORDER, EvidenceStatus, SlotEvaluation};
 
 const MISSING_SLOT_MARKER: u8 = 0x01;
 
 /// The closed result of applying the whole-machine 2-of-3 claim policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "decision")]
-pub enum MachineIdentityDecision {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::hardware_identity) enum MachineIdentityDecision {
     /// At least two slots were present and the collection contained no unsupported slot.
     Derived {
         /// The whole-machine `UUIDv5` derived from all three frozen slot positions.
         machine_hardware_id: Uuid,
-        /// The number of present slots; either two or three.
-        present_slot_count: usize,
     },
     /// Fewer than two slots were present and none was unsupported.
-    InsufficientSources {
-        /// The number of present slots; either zero or one.
-        present_slot_count: usize,
-    },
+    InsufficientSources,
     /// At least one slot is unsupported on this platform.
-    Unsupported {
-        /// The number of present slots, retained for collection-health reporting.
-        present_slot_count: usize,
-    },
-}
-
-impl MachineIdentityDecision {
-    /// Returns the independently computed R6 collection-health classification.
-    ///
-    /// A derived 2-of-3 identity can therefore report
-    /// [`CollectionCompleteness::TemporarilyUnavailable`].
-    #[must_use]
-    pub const fn collection_completeness(&self) -> CollectionCompleteness {
-        match self {
-            Self::Unsupported { .. } => CollectionCompleteness::Unsupported,
-            Self::Derived {
-                present_slot_count: 3,
-                ..
-            } => CollectionCompleteness::Complete,
-            Self::Derived { .. } | Self::InsufficientSources { .. } => {
-                CollectionCompleteness::TemporarilyUnavailable
-            }
-        }
-    }
+    Unsupported,
 }
 
 fn whole_machine_name_bytes(evaluations: &[SlotEvaluation; 3]) -> Vec<u8> {
@@ -82,27 +47,28 @@ fn whole_machine_name_bytes(evaluations: &[SlotEvaluation; 3]) -> Vec<u8> {
     name
 }
 
-/// Applies R6 reporting, the terminal unsupported rule, the 2-of-3 claim decision, and the
-/// frozen whole-machine byte recipe.
+/// Applies the terminal unsupported rule, the 2-of-3 claim decision, and the frozen whole-machine
+/// byte recipe.
 ///
 /// The evaluations must occupy [`ANCHOR_ORDER`] positions and must have been produced with the
 /// same immutable Fleet namespace. The namespace retained by the first evaluation is the same
-/// namespace used by the per-slot R7 derivation and by the whole-machine `UUIDv5` derivation.
+/// namespace used by the whole-machine `UUIDv5` derivation.
 #[must_use]
-pub fn decide_machine_identity(evaluations: &[SlotEvaluation; 3]) -> MachineIdentityDecision {
+pub(in crate::hardware_identity) fn decide_machine_identity(
+    evaluations: &[SlotEvaluation; 3],
+) -> MachineIdentityDecision {
     let statuses = evaluations.each_ref().map(|evaluation| evaluation.status);
-    let completeness = collection_completeness(&statuses);
     let present_slot_count = statuses
         .iter()
         .filter(|status| **status == EvidenceStatus::Present)
         .count();
 
-    if completeness == CollectionCompleteness::Unsupported {
-        return MachineIdentityDecision::Unsupported { present_slot_count };
+    if statuses.contains(&EvidenceStatus::Unsupported) {
+        return MachineIdentityDecision::Unsupported;
     }
 
     if present_slot_count < 2 {
-        return MachineIdentityDecision::InsufficientSources { present_slot_count };
+        return MachineIdentityDecision::InsufficientSources;
     }
 
     let namespace = evaluations[0].fleet_namespace;
@@ -116,84 +82,13 @@ pub fn decide_machine_identity(evaluations: &[SlotEvaluation; 3]) -> MachineIden
 
     MachineIdentityDecision::Derived {
         machine_hardware_id: Uuid::new_v5(&namespace, &name),
-        present_slot_count,
-    }
-}
-
-/// Startup identity result after comparing a whole-machine claim with persisted state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StartupIdentityDecision {
-    /// No identity was stored and the current claim produced the first immutable ID.
-    FirstStart {
-        /// The newly derived whole-machine ID.
-        machine_hardware_id: Uuid,
-    },
-    /// Recomputed and persisted whole-machine IDs are byte-for-byte equal.
-    Matched,
-    /// Too few sources were available to recompute an identity safely.
-    Indeterminate,
-    /// The platform is unsupported, or a first start has no derivable identity.
-    IdentityUnavailable,
-    /// A derivable current identity differs from the persisted immutable ID.
-    ResetRequired {
-        /// The persisted whole-machine ID.
-        stored: Uuid,
-        /// The current whole-machine recomputation.
-        recomputed_machine_hardware_id: Uuid,
-    },
-}
-
-/// Compares the whole-machine recomputation with persisted state using strict UUID equality.
-///
-/// No per-slot candidate match, priority, or nearest-match path exists. Insufficient sources
-/// preserve existing state as indeterminate; an unsupported platform is terminal.
-#[must_use]
-pub fn evaluate_startup_identity(
-    stored_machine_hardware_id: Option<Uuid>,
-    current: &MachineIdentityDecision,
-) -> StartupIdentityDecision {
-    match (stored_machine_hardware_id, current) {
-        (
-            None,
-            MachineIdentityDecision::Derived {
-                machine_hardware_id,
-                ..
-            },
-        ) => StartupIdentityDecision::FirstStart {
-            machine_hardware_id: *machine_hardware_id,
-        },
-        (None, _) => StartupIdentityDecision::IdentityUnavailable,
-        (
-            Some(stored),
-            MachineIdentityDecision::Derived {
-                machine_hardware_id,
-                ..
-            },
-        ) if stored == *machine_hardware_id => StartupIdentityDecision::Matched,
-        (
-            Some(stored),
-            MachineIdentityDecision::Derived {
-                machine_hardware_id,
-                ..
-            },
-        ) => StartupIdentityDecision::ResetRequired {
-            stored,
-            recomputed_machine_hardware_id: *machine_hardware_id,
-        },
-        (Some(_), MachineIdentityDecision::InsufficientSources { .. }) => {
-            StartupIdentityDecision::Indeterminate
-        }
-        (Some(_), MachineIdentityDecision::Unsupported { .. }) => {
-            StartupIdentityDecision::IdentityUnavailable
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{AnchorKind, ReadOutcome, evaluate_slot};
     use super::*;
-    use crate::{AnchorKind, EvidenceQuality, ReadOutcome, evaluate_slot};
 
     const TEST_NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
     const SYSTEM_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -230,14 +125,13 @@ mod tests {
         let mut evaluation = evaluate_slot(kind, &reading, TEST_NAMESPACE);
         if status != EvidenceStatus::Present {
             evaluation.status = status;
-            evaluation.candidate_id = None;
             evaluation.normalized_value = None;
         }
         evaluation
     }
 
     #[test]
-    fn claim_decision_table_covers_all_343_status_combinations() {
+    fn claim_decision_table_covers_all_216_status_combinations() {
         fn exhaustive_status_entry(status: EvidenceStatus) -> (usize, EvidenceStatus) {
             match status {
                 EvidenceStatus::Present => (0, EvidenceStatus::Present),
@@ -246,7 +140,6 @@ mod tests {
                 EvidenceStatus::PermissionDenied => (3, EvidenceStatus::PermissionDenied),
                 EvidenceStatus::Malformed => (4, EvidenceStatus::Malformed),
                 EvidenceStatus::RejectedPlaceholder => (5, EvidenceStatus::RejectedPlaceholder),
-                EvidenceStatus::Conflict => (6, EvidenceStatus::Conflict),
             }
         }
 
@@ -257,7 +150,6 @@ mod tests {
             exhaustive_status_entry(EvidenceStatus::PermissionDenied),
             exhaustive_status_entry(EvidenceStatus::Malformed),
             exhaustive_status_entry(EvidenceStatus::RejectedPlaceholder),
-            exhaustive_status_entry(EvidenceStatus::Conflict),
         ];
         for (expected_index, (actual_index, _)) in status_entries.iter().enumerate() {
             assert_eq!(expected_index, *actual_index);
@@ -281,31 +173,13 @@ mod tests {
                     let has_unsupported = status_combination
                         .iter()
                         .any(|status| *status == EvidenceStatus::Unsupported);
-                    let expected_completeness = if has_unsupported {
-                        CollectionCompleteness::Unsupported
-                    } else if present_slot_count == 3 {
-                        CollectionCompleteness::Complete
-                    } else {
-                        CollectionCompleteness::TemporarilyUnavailable
-                    };
-
                     let actual = decide_machine_identity(&evaluations);
-                    assert_eq!(actual.collection_completeness(), expected_completeness);
                     match actual {
-                        MachineIdentityDecision::Unsupported {
-                            present_slot_count: actual_count,
-                        } if has_unsupported => assert_eq!(actual_count, present_slot_count),
-                        MachineIdentityDecision::Derived {
-                            present_slot_count: actual_count,
-                            ..
-                        } if !has_unsupported && present_slot_count >= 2 => {
-                            assert_eq!(actual_count, present_slot_count);
-                        }
-                        MachineIdentityDecision::InsufficientSources {
-                            present_slot_count: actual_count,
-                        } if !has_unsupported && present_slot_count < 2 => {
-                            assert_eq!(actual_count, present_slot_count);
-                        }
+                        MachineIdentityDecision::Unsupported if has_unsupported => {}
+                        MachineIdentityDecision::Derived { .. }
+                            if !has_unsupported && present_slot_count >= 2 => {}
+                        MachineIdentityDecision::InsufficientSources
+                            if !has_unsupported && present_slot_count < 2 => {}
                         unexpected => {
                             panic!("wrong decision for {status_combination:?}: {unexpected:?}")
                         }
@@ -392,7 +266,7 @@ mod tests {
         );
 
         assert_eq!(evaluation.status, EvidenceStatus::Malformed);
-        assert_eq!(evaluation.candidate_id, None);
+        assert_eq!(evaluation.normalized_value, None);
     }
 
     #[test]
@@ -418,74 +292,5 @@ mod tests {
         ])));
 
         assert_ne!(original, swapped);
-    }
-
-    #[test]
-    fn quality_does_not_gate_two_present_slots() {
-        let mut evaluations = evaluate_fixture([Some(SYSTEM_UUID), Some("board-42"), None]);
-        for evaluation in &mut evaluations {
-            evaluation.quality = EvidenceQuality::Weak;
-        }
-
-        assert!(matches!(
-            decide_machine_identity(&evaluations),
-            MachineIdentityDecision::Derived {
-                present_slot_count: 2,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn startup_requires_exact_whole_machine_equality() {
-        let current = decide_machine_identity(&evaluate_fixture([
-            Some(SYSTEM_UUID),
-            Some("board-42"),
-            Some("disk-99"),
-        ]));
-        let machine_hardware_id = derived_id(current);
-
-        assert_eq!(
-            evaluate_startup_identity(None, &current),
-            StartupIdentityDecision::FirstStart {
-                machine_hardware_id,
-            }
-        );
-        assert_eq!(
-            evaluate_startup_identity(Some(machine_hardware_id), &current),
-            StartupIdentityDecision::Matched
-        );
-        assert_eq!(
-            evaluate_startup_identity(Some(Uuid::from_u128(1)), &current),
-            StartupIdentityDecision::ResetRequired {
-                stored: Uuid::from_u128(1),
-                recomputed_machine_hardware_id: machine_hardware_id,
-            }
-        );
-    }
-
-    #[test]
-    fn startup_preserves_state_when_sources_are_insufficient() {
-        let current = decide_machine_identity(&evaluate_fixture([Some(SYSTEM_UUID), None, None]));
-
-        assert_eq!(
-            evaluate_startup_identity(Some(Uuid::from_u128(1)), &current),
-            StartupIdentityDecision::Indeterminate
-        );
-    }
-
-    #[test]
-    fn startup_treats_unsupported_platform_as_terminal() {
-        let evaluations = [
-            evaluation_with_status(ANCHOR_ORDER[0], EvidenceStatus::Present),
-            evaluation_with_status(ANCHOR_ORDER[1], EvidenceStatus::Present),
-            evaluation_with_status(ANCHOR_ORDER[2], EvidenceStatus::Unsupported),
-        ];
-        let current = decide_machine_identity(&evaluations);
-
-        assert_eq!(
-            evaluate_startup_identity(Some(Uuid::from_u128(1)), &current),
-            StartupIdentityDecision::IdentityUnavailable
-        );
     }
 }

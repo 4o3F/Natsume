@@ -5,9 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use natsume_machine_identity::ReadOutcome;
-
-use super::SourceStatus;
+use super::{SourceStatus, policy::ReadOutcome};
 
 pub(super) fn rooted(filesystem_root: &Path, absolute_path: &str) -> PathBuf {
     let relative = Path::new(absolute_path)

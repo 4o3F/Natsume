@@ -1,10 +1,9 @@
 {
   "name": "@natsume/repository",
   "private": true,
-  "packageManager": "pnpm@11.1.0",
   "engines": {
     "node": "24.1.0",
-    "pnpm": "11.1.0"
+    "pnpm": ">=11 <12"
   },
   "scripts": {
     "web:dev": "pnpm --filter @natsume/web dev",

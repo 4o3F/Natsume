@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     Json, Router,
     body::Bytes,
@@ -225,7 +223,7 @@ pub(crate) async fn commit_import(
         .await
     {
         Ok(()) => {
-            state.device_control().dirty_all(Arc::clone(&state)).await;
+            state.device_control().dirty_all().await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => ApiError::from_import(error).into_response(),

@@ -1,7 +1,11 @@
-use std::cell::RefCell;
+use std::{
+    cell::RefCell,
+    sync::{Mutex, OnceLock},
+};
 
-use natsume_local_control_api::{SeatInputPolicy, SessionScreenKind, SessionUiSnapshot};
+use natsume_local_control_api::{BindingSubmission, SessionScreenKind, SessionUiSnapshot};
 use slint::ComponentHandle as _;
+use tokio::sync::mpsc::Sender;
 
 // Slint owns this generated surface. First-party source remains subject to the
 // workspace lint policy; generated implementation details are isolated here.
@@ -21,63 +25,115 @@ pub use generated::SessionWindow;
 
 thread_local! {
     static WINDOW: RefCell<Option<SessionWindow>> = const { RefCell::new(None) };
+    static CURRENT_SNAPSHOT: RefCell<Option<SessionUiSnapshot>> = const { RefCell::new(None) };
 }
+
+static PENDING_SNAPSHOT: Mutex<Option<SessionUiSnapshot>> = Mutex::new(None);
+static BINDING_SUBMISSIONS: OnceLock<Sender<BindingSubmission>> = OnceLock::new();
 
 #[must_use]
 pub fn seat_input_visible(snapshot: &SessionUiSnapshot) -> bool {
     snapshot.screen == SessionScreenKind::BindingPrompt
-        && snapshot.seat_input_policy == Some(SeatInputPolicy::SeatCode)
+        && snapshot.negotiation_id.is_some()
+        && snapshot.submission_epoch.is_some_and(|epoch| epoch != 0)
+}
+
+#[must_use]
+pub fn dismissible(snapshot: &SessionUiSnapshot) -> bool {
+    snapshot.screen != SessionScreenKind::BindingPrompt
+}
+
+fn current_snapshot_is_dismissible() -> bool {
+    CURRENT_SNAPSHOT.with(|current| current.borrow().as_ref().is_none_or(dismissible))
 }
 
 #[must_use]
 pub const fn screen_kind_label(kind: SessionScreenKind) -> &'static str {
     match kind {
         SessionScreenKind::Hidden => "hidden",
-        SessionScreenKind::IdleStatus => "idle_status",
         SessionScreenKind::BindingPrompt => "binding_prompt",
         SessionScreenKind::BindingPending => "binding_pending",
-        SessionScreenKind::BindingResult => "binding_result",
-        SessionScreenKind::RecoveryStatus => "recovery_status",
-        SessionScreenKind::LockPresentation => "lock_presentation",
-        SessionScreenKind::FatalLocalError => "fatal_local_error",
     }
 }
 
 fn snapshot_text(snapshot: &SessionUiSnapshot) -> (String, String) {
-    let title = snapshot
-        .parameters
-        .iter()
-        .find(|parameter| parameter.name == "title")
-        .map_or_else(
-            || snapshot.message_id.clone(),
-            |parameter| parameter.value.clone(),
-        );
-    let details = snapshot
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.name != "title")
-        .map(|parameter| format!("{}: {}", parameter.name, parameter.value))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let message = if details.is_empty() {
-        snapshot.message_id.clone()
-    } else {
-        format!("{}\n{details}", snapshot.message_id)
+    let (title, message) = match snapshot.screen {
+        SessionScreenKind::Hidden => ("", ""),
+        SessionScreenKind::BindingPrompt => ("Bind workstation", "Enter your seat code"),
+        SessionScreenKind::BindingPending => ("Binding workstation", "Waiting for the server"),
     };
-    (title, message)
+    let message = snapshot.binding_error_code.as_ref().map_or_else(
+        || message.to_owned(),
+        |error_code| format!("{message}\n{error_code}"),
+    );
+    (title.to_owned(), message)
+}
+
+fn binding_submission(
+    snapshot: &SessionUiSnapshot,
+    seat_code: String,
+) -> Option<BindingSubmission> {
+    if snapshot.screen != SessionScreenKind::BindingPrompt {
+        return None;
+    }
+    Some(BindingSubmission {
+        session: snapshot.session.clone(),
+        negotiation_id: snapshot.negotiation_id.clone()?,
+        submission_epoch: snapshot.submission_epoch.filter(|epoch| *epoch != 0)?,
+        seat_code,
+    })
+}
+
+/// Installs the sole channel used by UI callbacks to submit Binding input.
+///
+/// # Errors
+///
+/// Returns the sender when a channel was already installed.
+pub fn set_binding_submission_sender(
+    sender: Sender<BindingSubmission>,
+) -> Result<(), Sender<BindingSubmission>> {
+    BINDING_SUBMISSIONS.set(sender)
+}
+
+/// Stores the latest Daemon snapshot and asks the Slint thread to apply it.
+pub fn queue(snapshot: SessionUiSnapshot) {
+    match PENDING_SNAPSHOT.lock() {
+        Ok(mut pending) => *pending = Some(snapshot),
+        Err(poisoned) => *poisoned.into_inner() = Some(snapshot),
+    }
+    let _queue_result = slint::invoke_from_event_loop(|| {
+        if let Err(error) = apply_pending() {
+            tracing::error!(error = %error, "Session Agent presentation failed");
+        }
+    });
+}
+
+/// Applies a queued snapshot after the Slint event loop becomes available.
+///
+/// # Errors
+///
+/// Returns a platform error when window creation or presentation fails.
+pub fn apply_pending() -> Result<(), slint::PlatformError> {
+    let snapshot = match PENDING_SNAPSHOT.lock() {
+        Ok(mut pending) => pending.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    };
+    match snapshot {
+        Some(snapshot) => apply(&snapshot),
+        None => Ok(()),
+    }
 }
 
 /// Applies one typed Daemon snapshot to the lazily created Session Agent window.
 ///
 /// Must be called on the Slint event-loop thread: the window handle lives in a
-/// thread-local slot and Slint window operations are not thread-safe. The slot
-/// borrow is released before every Slint call, so window callbacks may re-enter
-/// `apply` without a `RefCell` borrow panic.
+/// thread-local slot and Slint window operations are not thread-safe.
 ///
 /// # Errors
 ///
 /// Returns a platform error when window creation, visibility, or presentation fails.
 pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
+    CURRENT_SNAPSHOT.with(|current| *current.borrow_mut() = Some(snapshot.clone()));
     let existing = WINDOW.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -95,9 +151,19 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window
     } else {
         let window = SessionWindow::new()?;
+        window.window().on_close_requested(|| {
+            if current_snapshot_is_dismissible() {
+                slint::CloseRequestResponse::HideWindow
+            } else {
+                slint::CloseRequestResponse::KeepWindowShown
+            }
+        });
         window.on_cancel({
             let weak = window.as_weak();
             move || {
+                if !current_snapshot_is_dismissible() {
+                    return;
+                }
                 if let Some(window) = weak.upgrade() {
                     if let Err(error) = window.hide() {
                         tracing::error!(
@@ -117,15 +183,32 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window.on_confirm_seat({
             let weak = window.as_weak();
             move |seat_code| {
-                if weak.upgrade().is_none() {
+                let Some(window) = weak.upgrade() else {
                     tracing::warn!(
                         reason = "session_window_gone",
                         "seat confirmation raced window teardown"
                     );
                     return;
+                };
+                let submission = CURRENT_SNAPSHOT.with(|current| {
+                    current
+                        .borrow()
+                        .as_ref()
+                        .and_then(|snapshot| binding_submission(snapshot, seat_code.to_string()))
+                });
+                let Some(submission) = submission else {
+                    tracing::warn!("Binding confirmation has no current intent");
+                    return;
+                };
+                let Some(sender) = BINDING_SUBMISSIONS.get() else {
+                    tracing::warn!("Binding submission channel is unavailable");
+                    return;
+                };
+                if sender.try_send(submission).is_err() {
+                    tracing::warn!("Binding submission is already pending or unavailable");
+                    return;
                 }
-                // Probe round-trip only; Phase 6 wires the typed D-Bus submission.
-                tracing::info!(seat_code = %seat_code, "seat code confirmed");
+                window.set_seat_code(String::new().into());
             }
         });
         WINDOW.with(|slot| *slot.borrow_mut() = Some(window.clone_strong()));
@@ -137,84 +220,56 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
     window.set_title_text(title.into());
     window.set_message_text(message.into());
     window.set_seat_input_visible(seat_input_visible(snapshot));
+    window.set_close_allowed(dismissible(snapshot));
     window.show()?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use natsume_local_control_api::{
-        SeatInputPolicy, SessionScreenKind, SessionTarget, SessionUiSnapshot, UiPresentationState,
-        UiTextParameter,
+    use natsume_local_control_api::{GraphicalSession, SessionScreenKind, SessionUiSnapshot};
+
+    use super::{
+        binding_submission, dismissible, screen_kind_label, seat_input_visible, snapshot_text,
     };
 
-    use super::{screen_kind_label, seat_input_visible, snapshot_text};
-
-    fn snapshot(
-        screen: SessionScreenKind,
-        seat_input_policy: Option<SeatInputPolicy>,
-    ) -> SessionUiSnapshot {
+    fn snapshot(screen: SessionScreenKind) -> SessionUiSnapshot {
         SessionUiSnapshot {
-            schema_version: 1,
-            target: SessionTarget {
-                session_instance_id: "test-session".to_owned(),
-                session_epoch: 1,
+            session: GraphicalSession {
+                logind_session_id: "test-session".to_owned(),
+                boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
             },
             ui_revision: 1,
             screen,
-            message_id: "test.message".to_owned(),
-            parameters: Vec::new(),
-            machine_short_id: "machine".to_owned(),
-            seat_label: None,
-            prompt_command_id: None,
-            prompt_nonce: None,
-            expires_at_unix_ms: None,
-            seat_input_policy,
-            presentation: UiPresentationState::Hidden,
+            binding_error_code: None,
+            negotiation_id: None,
+            submission_epoch: None,
         }
     }
 
     #[test]
-    fn snapshot_text_falls_back_to_the_message_id_without_a_title_parameter() {
-        let probe = snapshot(SessionScreenKind::IdleStatus, None);
+    fn snapshot_text_uses_the_selected_screen() {
+        let probe = snapshot(SessionScreenKind::BindingPending);
         let (title, message) = snapshot_text(&probe);
-        assert_eq!(title, "test.message");
-        assert_eq!(message, "test.message");
+        assert_eq!(title, "Binding workstation");
+        assert_eq!(message, "Waiting for the server");
     }
 
     #[test]
-    fn snapshot_text_uses_the_first_title_and_passes_cjk_through_untouched() {
-        let mut probe = snapshot(SessionScreenKind::BindingPrompt, None);
-        probe.parameters = vec![
-            UiTextParameter {
-                name: "title".to_owned(),
-                value: "中文渲染样例".to_owned(),
-            },
-            UiTextParameter {
-                name: "title".to_owned(),
-                value: "second-title".to_owned(),
-            },
-            UiTextParameter {
-                name: "seat".to_owned(),
-                value: "座位 A-01".to_owned(),
-            },
-        ];
+    fn snapshot_text_includes_the_current_binding_error() {
+        let mut probe = snapshot(SessionScreenKind::BindingPrompt);
+        probe.binding_error_code = Some("SEAT_OCCUPIED".to_owned());
         let (title, message) = snapshot_text(&probe);
-        assert_eq!(title, "中文渲染样例");
-        assert_eq!(message, "test.message\nseat: 座位 A-01");
+        assert_eq!(title, "Bind workstation");
+        assert_eq!(message, "Enter your seat code\nSEAT_OCCUPIED");
     }
 
     #[test]
     fn screen_kind_labels_cover_the_typed_contract() {
         let cases = [
             (SessionScreenKind::Hidden, "hidden"),
-            (SessionScreenKind::IdleStatus, "idle_status"),
             (SessionScreenKind::BindingPrompt, "binding_prompt"),
             (SessionScreenKind::BindingPending, "binding_pending"),
-            (SessionScreenKind::BindingResult, "binding_result"),
-            (SessionScreenKind::RecoveryStatus, "recovery_status"),
-            (SessionScreenKind::LockPresentation, "lock_presentation"),
-            (SessionScreenKind::FatalLocalError, "fatal_local_error"),
         ];
 
         for (kind, expected) in cases {
@@ -223,22 +278,38 @@ mod tests {
     }
 
     #[test]
-    fn seat_code_is_visible_only_for_the_binding_prompt_policy() {
-        assert!(seat_input_visible(&snapshot(
-            SessionScreenKind::BindingPrompt,
-            Some(SeatInputPolicy::SeatCode),
-        )));
+    fn seat_code_is_visible_only_for_a_complete_binding_intent() {
+        let mut prompt = snapshot(SessionScreenKind::BindingPrompt);
+        prompt.negotiation_id = Some("019c1234-5678-7abc-8def-0123456789ab".to_owned());
+        prompt.submission_epoch = Some(1);
+        assert!(seat_input_visible(&prompt));
         assert!(!seat_input_visible(&snapshot(
-            SessionScreenKind::BindingPrompt,
-            Some(SeatInputPolicy::OperatorSelectedSeat),
+            SessionScreenKind::BindingPrompt
         )));
-        assert!(!seat_input_visible(&snapshot(
-            SessionScreenKind::BindingPrompt,
-            None,
-        )));
-        assert!(!seat_input_visible(&snapshot(
-            SessionScreenKind::BindingPending,
-            Some(SeatInputPolicy::SeatCode),
-        )));
+        prompt.screen = SessionScreenKind::BindingPending;
+        assert!(!seat_input_visible(&prompt));
+    }
+
+    #[test]
+    fn binding_prompt_cannot_be_dismissed() {
+        assert!(!dismissible(&snapshot(SessionScreenKind::BindingPrompt)));
+        assert!(dismissible(&snapshot(SessionScreenKind::BindingPending)));
+    }
+
+    #[test]
+    fn binding_confirmation_echoes_the_current_intent_generation() {
+        let mut prompt = snapshot(SessionScreenKind::BindingPrompt);
+        prompt.negotiation_id = Some("019c1234-5678-7abc-8def-0123456789ab".to_owned());
+        prompt.submission_epoch = Some(3);
+
+        let submission = binding_submission(&prompt, "A-01".to_owned())
+            .unwrap_or_else(|| panic!("complete Binding intent must submit"));
+        assert_eq!(submission.session, prompt.session);
+        assert_eq!(
+            submission.negotiation_id,
+            "019c1234-5678-7abc-8def-0123456789ab"
+        );
+        assert_eq!(submission.submission_epoch, 3);
+        assert_eq!(submission.seat_code, "A-01");
     }
 }

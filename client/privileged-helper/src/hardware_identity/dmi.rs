@@ -1,10 +1,10 @@
 use std::path::Path;
 
-use natsume_machine_identity::ReadOutcome;
 use zeroize::Zeroize as _;
 
 use super::{
     DMI_BOARD_SERIAL, DMI_DIRECTORY, DMI_SYSTEM_UUID, SourceStatus,
+    policy::ReadOutcome,
     smbios::{SmbiosReadings, smbios_readings},
     source::{interface_status, outcome_from_status, read_value, rooted},
 };

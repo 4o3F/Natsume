@@ -1,14 +1,17 @@
 use std::{
     collections::HashMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    sync::{Arc, Weak},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use natsume_device_protocol::generated::{
     ClientStateSnapshot, ServerActiveEnvelope, server_active_envelope,
 };
-use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio::task::JoinSet;
+use tokio::{
+    sync::{Mutex, mpsc, oneshot, watch},
+    time::{Instant, MissedTickBehavior},
+};
 use uuid::Uuid;
 
 use crate::{component::device::DeviceId, server_state::ServerState};
@@ -16,6 +19,7 @@ use crate::{component::device::DeviceId, server_state::ServerState};
 use super::{convergence::ObservedActualState, state};
 
 const MAILBOX_CAPACITY: usize = 8;
+pub(super) const TARGET_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Process-local directory of the single event consumer assigned to each Device.
 ///
@@ -33,50 +37,28 @@ impl DeviceRegistry {
         }
     }
 
-    /// Installs a new current lease for `device_id` and waits until its actor has
-    /// observed the replacement.
-    ///
-    /// Once this returns, events carrying an older session ID are fenced by the
-    /// actor. `None` means the actor mailbox or acknowledgement path has closed, so
-    /// the caller must close the WebSocket rather than enter the active phase.
-    pub(super) async fn attach(
-        &self,
-        device_id: DeviceId,
-        outbound: mpsc::Sender<ServerActiveEnvelope>,
-    ) -> Option<([u8; 16], DeviceHandle)> {
-        let handle = self.get_or_spawn(device_id).await;
-        let session_id = Uuid::now_v7().into_bytes();
-        let (attached, received) = oneshot::channel();
-        handle
-            .sender
-            .send(DeviceEvent::Attach {
-                session_id,
-                outbound,
-                attached,
-            })
-            .await
-            .ok()?;
-        received.await.ok()?;
-        Some((session_id, handle))
-    }
-
     pub(super) async fn get_or_spawn(&self, device_id: DeviceId) -> DeviceHandle {
         self.devices
             .lock()
             .await
             .entry(device_id)
-            .or_insert_with(|| DeviceHandle::spawn(device_id))
+            .or_insert_with(|| DeviceHandle::spawn_actor(device_id))
             .clone()
     }
 
-    pub(super) async fn dirty_one(&self, state: Arc<ServerState>, device_id: DeviceId) {
+    /// Returns an existing actor without allocating process-lifetime state.
+    pub(super) async fn get(&self, device_id: DeviceId) -> Option<DeviceHandle> {
+        self.devices.lock().await.get(&device_id).cloned()
+    }
+
+    pub(super) async fn dirty_one(&self, device_id: DeviceId) {
         let handle = self.devices.lock().await.get(&device_id).cloned();
         if let Some(handle) = handle {
-            handle.dirty(state);
+            handle.dirty();
         }
     }
 
-    pub(super) async fn dirty_all(&self, state: Arc<ServerState>) {
+    pub(super) async fn dirty_all(&self) {
         let handles = self
             .devices
             .lock()
@@ -85,20 +67,20 @@ impl DeviceRegistry {
             .cloned()
             .collect::<Vec<_>>();
         for handle in handles {
-            handle.dirty(Arc::clone(&state));
+            handle.dirty();
         }
     }
 
-    pub(super) async fn connection_state(&self, device_id: DeviceId) -> DeviceConnectionState {
+    pub(super) async fn read_connection_state(&self, device_id: DeviceId) -> DeviceConnectionState {
         let handle = self.devices.lock().await.get(&device_id).cloned();
         match handle {
-            Some(handle) => handle.connection_state().await,
+            Some(handle) => handle.read_connection_state().await,
             None => DeviceConnectionState::Offline,
         }
     }
 
     /// Reads current states concurrently without creating actors for unseen Devices.
-    pub(super) async fn connection_states(
+    pub(super) async fn read_connection_states(
         &self,
         device_ids: &[DeviceId],
     ) -> HashMap<DeviceId, DeviceConnectionState> {
@@ -120,7 +102,7 @@ impl DeviceRegistry {
             .collect::<HashMap<_, _>>();
         let mut queries = JoinSet::new();
         for (device_id, handle) in handles {
-            queries.spawn(async move { (device_id, handle.connection_state().await) });
+            queries.spawn(async move { (device_id, handle.read_connection_state().await) });
         }
         for (device_id, state) in queries.join_all().await {
             states.insert(device_id, state);
@@ -151,64 +133,86 @@ pub(super) enum DeviceConnectionState {
 #[derive(Clone)]
 pub(super) struct DeviceHandle {
     sender: mpsc::Sender<DeviceEvent>,
+    dirty: watch::Sender<()>,
     /// Excludes authority commits from in-flight component writes and fences queued work.
     pub(super) authority_fence: Arc<Mutex<bool>>,
 }
 
 impl DeviceHandle {
     /// Starts the sole event loop for a Device with a bounded mailbox.
-    fn spawn(device_id: DeviceId) -> Self {
+    fn spawn_actor(device_id: DeviceId) -> Self {
         let (sender, receiver) = mpsc::channel(MAILBOX_CAPACITY);
+        let (dirty, dirty_receiver) = watch::channel(());
         let authority_fence = Arc::new(Mutex::new(false));
-        tokio::spawn(run_actor(device_id, Arc::clone(&authority_fence), receiver));
+        tokio::spawn(run_actor(
+            device_id,
+            Arc::clone(&authority_fence),
+            receiver,
+            dirty_receiver,
+        ));
         Self {
             sender,
+            dirty,
             authority_fence,
         }
     }
 
+    /// Replaces the current connection lease and waits until stale sessions are fenced.
+    pub(super) async fn replace_current_lease(
+        &self,
+        state: Weak<ServerState>,
+        outbound: mpsc::Sender<ServerActiveEnvelope>,
+    ) -> Option<Uuid> {
+        let (replaced, received) = oneshot::channel();
+        self.sender
+            .send(DeviceEvent::ReplaceCurrentLease {
+                state,
+                outbound,
+                replaced,
+            })
+            .await
+            .ok()?;
+        received.await.ok()
+    }
+
     /// Queues a complete Client snapshot for the named lease.
     ///
-    /// Waiting for mailbox capacity applies backpressure to the WebSocket reader.
-    /// `false` means the Device actor is gone and the connection must close.
-    pub(super) async fn client_state(
+    /// Waiting for mailbox capacity applies backpressure to the WebSocket reader. Success means
+    /// only that the snapshot was queued; the actor still owns validation and reconciliation.
+    pub(super) async fn enqueue_client_state(
         &self,
-        state: Arc<ServerState>,
-        session_id: [u8; 16],
+        session_id: Uuid,
         snapshot: ClientStateSnapshot,
-    ) -> bool {
-        let Some(received_at_unix_ms) = current_unix_ms() else {
-            return false;
-        };
+    ) -> Result<(), mpsc::error::SendError<()>> {
+        let received_at_unix_ms = current_unix_ms().ok_or(mpsc::error::SendError(()))?;
         self.sender
-            .send(DeviceEvent::ClientState {
-                state,
+            .send(DeviceEvent::ReconcileClientState {
                 session_id,
                 snapshot: Box::new(snapshot),
                 received_at_unix_ms,
             })
             .await
-            .is_ok()
+            .map_err(|_| mpsc::error::SendError(()))
     }
 
     /// Announces connection loss without allowing an old session to clear a newer
     /// lease. Failure to enqueue is terminal only for the already-closing caller.
-    pub(super) async fn disconnected(&self, session_id: [u8; 16]) {
+    pub(super) async fn clear_lease_if_current(&self, session_id: Uuid) {
         let _ = self
             .sender
-            .send(DeviceEvent::Disconnected { session_id })
+            .send(DeviceEvent::ClearLeaseIfCurrent { session_id })
             .await;
     }
 
-    fn dirty(&self, state: Arc<ServerState>) {
-        let _ = self.sender.try_send(DeviceEvent::Dirty { state });
+    fn dirty(&self) {
+        self.dirty.send_replace(());
     }
 
-    pub(super) async fn evict(&self) {
+    pub(super) async fn evict_current_lease(&self) {
         let (evicted, received) = oneshot::channel();
         if self
             .sender
-            .send(DeviceEvent::Evict { evicted })
+            .send(DeviceEvent::EvictCurrentLease { evicted })
             .await
             .is_ok()
         {
@@ -216,11 +220,11 @@ impl DeviceHandle {
         }
     }
 
-    async fn connection_state(&self) -> DeviceConnectionState {
+    async fn read_connection_state(&self) -> DeviceConnectionState {
         let (respond, received) = oneshot::channel();
         if self
             .sender
-            .send(DeviceEvent::ConnectionState { respond })
+            .send(DeviceEvent::ReadConnectionState { respond })
             .await
             .is_err()
         {
@@ -237,30 +241,27 @@ impl DeviceHandle {
 /// only to keep mailbox events small; it adds no separate lifecycle.
 enum DeviceEvent {
     /// Replaces any current lease and acknowledges when fencing is effective.
-    Attach {
-        session_id: [u8; 16],
+    ReplaceCurrentLease {
+        state: Weak<ServerState>,
         outbound: mpsc::Sender<ServerActiveEnvelope>,
-        attached: oneshot::Sender<()>,
+        replaced: oneshot::Sender<Uuid>,
     },
     /// Reconciles one complete snapshot if `session_id` is still current.
-    ClientState {
-        state: Arc<ServerState>,
-        session_id: [u8; 16],
+    ReconcileClientState {
+        session_id: Uuid,
         snapshot: Box<ClientStateSnapshot>,
         received_at_unix_ms: i64,
     },
-    /// Re-materializes the complete target after a committed Operator mutation.
-    Dirty { state: Arc<ServerState> },
     /// Clears the current lease and acknowledges once its outbound path is closed.
-    Evict { evicted: oneshot::Sender<()> },
+    EvictCurrentLease { evicted: oneshot::Sender<()> },
     /// Reads the current lease observation without introducing a durable projection.
-    ConnectionState {
+    ReadConnectionState {
         respond: oneshot::Sender<DeviceConnectionState>,
     },
     /// Clears the lease only when the disconnect belongs to the current session.
-    Disconnected {
+    ClearLeaseIfCurrent {
         /// Identifies the lease being closed, not necessarily the current lease.
-        session_id: [u8; 16],
+        session_id: Uuid,
     },
 }
 
@@ -270,9 +271,10 @@ enum DeviceEvent {
 /// failure, outbound backpressure, and matching disconnect all terminate the lease
 /// by clearing this value.
 struct CurrentLease {
-    session_id: [u8; 16],
+    session_id: Uuid,
     outbound: mpsc::Sender<ServerActiveEnvelope>,
     observation: Option<(ObservedActualState, i64)>,
+    state: Weak<ServerState>,
 }
 
 /// Serial Device event loop.
@@ -289,33 +291,64 @@ async fn run_actor(
     device_id: DeviceId,
     authority_fence: Arc<Mutex<bool>>,
     mut receiver: mpsc::Receiver<DeviceEvent>,
+    mut dirty: watch::Receiver<()>,
 ) {
     let mut current: Option<CurrentLease> = None;
-    while let Some(event) = receiver.recv().await {
+    let mut refresh = tokio::time::interval_at(
+        Instant::now() + TARGET_REFRESH_INTERVAL,
+        TARGET_REFRESH_INTERVAL,
+    );
+    refresh.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    loop {
+        let event = tokio::select! {
+            event = receiver.recv() => event,
+            changed = dirty.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                dirty.borrow_and_update();
+                refresh_target(device_id, &authority_fence, &mut current).await;
+                continue;
+            }
+            _ = refresh.tick() => {
+                refresh_target(device_id, &authority_fence, &mut current).await;
+                continue;
+            }
+        };
+        let Some(event) = event else {
+            break;
+        };
         match event {
-            DeviceEvent::Attach {
-                session_id,
+            DeviceEvent::ReplaceCurrentLease {
+                state,
                 outbound,
-                attached,
+                replaced,
             } => {
+                let session_id = Uuid::now_v7();
+                refresh.reset_at(Instant::now() + target_refresh_delay(&session_id));
                 *authority_fence.lock().await = false;
                 current = Some(CurrentLease {
                     session_id,
                     outbound,
                     observation: None,
+                    state,
                 });
-                let _ = attached.send(());
+                let _ = replaced.send(session_id);
             }
-            DeviceEvent::ClientState {
-                state,
+            DeviceEvent::ReconcileClientState {
                 session_id,
                 snapshot,
                 received_at_unix_ms,
             } => {
-                let Some(outbound) = current
+                let Some((outbound, state)) = current
                     .as_ref()
                     .filter(|lease| lease.session_id == session_id)
-                    .map(|lease| lease.outbound.clone())
+                    .and_then(|lease| {
+                        lease
+                            .state
+                            .upgrade()
+                            .map(|state| (lease.outbound.clone(), state))
+                    })
                 else {
                     continue;
                 };
@@ -330,7 +363,7 @@ async fn run_actor(
                     continue;
                 };
                 let envelope = ServerActiveEnvelope {
-                    session_id: session_id.to_vec(),
+                    session_id: session_id.as_bytes().to_vec(),
                     body: Some(server_active_envelope::Body::ServerState(snapshot)),
                 };
                 if outbound.try_send(envelope).is_err() {
@@ -339,36 +372,11 @@ async fn run_actor(
                     lease.observation = Some((actual, received_at_unix_ms));
                 }
             }
-            DeviceEvent::Dirty { state } => {
-                let Some((session_id, outbound)) = current
-                    .as_ref()
-                    .filter(|lease| lease.observation.is_some())
-                    .map(|lease| (lease.session_id, lease.outbound.clone()))
-                else {
-                    continue;
-                };
-                let fenced = authority_fence.lock().await;
-                if *fenced {
-                    current = None;
-                    continue;
-                }
-                let Some(snapshot) = state::materialize(&state, device_id).await else {
-                    current = None;
-                    continue;
-                };
-                let envelope = ServerActiveEnvelope {
-                    session_id: session_id.to_vec(),
-                    body: Some(server_active_envelope::Body::ServerState(snapshot)),
-                };
-                if outbound.try_send(envelope).is_err() {
-                    current = None;
-                }
-            }
-            DeviceEvent::Evict { evicted } => {
+            DeviceEvent::EvictCurrentLease { evicted } => {
                 current = None;
                 let _ = evicted.send(());
             }
-            DeviceEvent::ConnectionState { respond } => {
+            DeviceEvent::ReadConnectionState { respond } => {
                 let state = match current.as_ref() {
                     None => DeviceConnectionState::Offline,
                     Some(lease) => match lease.observation.as_ref() {
@@ -381,7 +389,7 @@ async fn run_actor(
                 };
                 let _ = respond.send(state);
             }
-            DeviceEvent::Disconnected { session_id } => {
+            DeviceEvent::ClearLeaseIfCurrent { session_id } => {
                 if current
                     .as_ref()
                     .is_some_and(|lease| lease.session_id == session_id)
@@ -393,10 +401,86 @@ async fn run_actor(
     }
 }
 
+fn target_refresh_delay(session_id: &Uuid) -> Duration {
+    Duration::from_secs(u64::from(session_id.as_bytes()[15] % 60) + 1)
+}
+
+async fn refresh_target(
+    device_id: DeviceId,
+    authority_fence: &Mutex<bool>,
+    current: &mut Option<CurrentLease>,
+) {
+    let Some((session_id, outbound, state)) = current
+        .as_ref()
+        .filter(|lease| lease.observation.is_some())
+        .and_then(|lease| {
+            lease
+                .state
+                .upgrade()
+                .map(|state| (lease.session_id, lease.outbound.clone(), state))
+        })
+    else {
+        return;
+    };
+    let fenced = authority_fence.lock().await;
+    if *fenced {
+        *current = None;
+        return;
+    }
+    let Some(snapshot) = state::materialize(&state, device_id).await else {
+        *current = None;
+        return;
+    };
+    let envelope = ServerActiveEnvelope {
+        session_id: session_id.as_bytes().to_vec(),
+        body: Some(server_active_envelope::Body::ServerState(snapshot)),
+    };
+    if outbound.try_send(envelope).is_err() {
+        *current = None;
+    }
+}
+
 fn current_unix_ms() -> Option<i64> {
     let milliseconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()?
         .as_millis();
     i64::try_from(milliseconds).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn dirty_notification_is_independent_of_mailbox_capacity() {
+        let (sender, _receiver) = mpsc::channel(MAILBOX_CAPACITY);
+        for _ in 0..MAILBOX_CAPACITY {
+            assert!(
+                sender
+                    .try_send(DeviceEvent::ClearLeaseIfCurrent {
+                        session_id: Uuid::nil(),
+                    })
+                    .is_ok()
+            );
+        }
+        let (dirty, mut dirty_receiver) = watch::channel(());
+        let handle = DeviceHandle {
+            sender,
+            dirty,
+            authority_fence: Arc::new(Mutex::new(false)),
+        };
+
+        handle.dirty();
+
+        assert!(dirty_receiver.changed().await.is_ok());
+    }
+
+    #[test]
+    fn target_refresh_phase_is_spread_within_one_interval() {
+        let session_id = Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_0000);
+        assert_eq!(target_refresh_delay(&session_id), Duration::from_secs(1));
+        let session_id = Uuid::from_u128(0x0190_0000_0000_7000_8000_0000_0000_003b);
+        assert_eq!(target_refresh_delay(&session_id), TARGET_REFRESH_INTERVAL);
+    }
 }

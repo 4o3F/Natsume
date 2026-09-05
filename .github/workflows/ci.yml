@@ -43,11 +43,11 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Enable pinned pnpm
+      - name: Enable pnpm 11
         run: |
           set -euo pipefail
           corepack enable
-          corepack prepare pnpm@11.1.0 --activate
+          corepack prepare pnpm@11 --activate
 
       - name: Verify pinned toolchain
         run: just toolchain
@@ -83,11 +83,11 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Enable pinned pnpm
+      - name: Enable pnpm 11
         run: |
           set -euo pipefail
           corepack enable
-          corepack prepare pnpm@11.1.0 --activate
+          corepack prepare pnpm@11 --activate
 
       - name: Frozen install
         run: pnpm install --frozen-lockfile
@@ -154,11 +154,11 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Enable pinned pnpm
+      - name: Enable pnpm 11
         run: |
           set -euo pipefail
           corepack enable
-          corepack prepare pnpm@11.1.0 --activate
+          corepack prepare pnpm@11 --activate
 
       - name: Frozen install
         run: pnpm install --frozen-lockfile
@@ -266,11 +266,11 @@ jobs:
         with:
           node-version-file: .node-version
 
-      - name: Enable pinned pnpm
+      - name: Enable pnpm 11
         run: |
           set -euo pipefail
           corepack enable
-          corepack prepare pnpm@11.1.0 --activate
+          corepack prepare pnpm@11 --activate
 
       - name: Frozen install
         run: pnpm install --frozen-lockfile

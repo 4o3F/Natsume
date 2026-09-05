@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
@@ -123,10 +121,7 @@ pub(crate) async fn set_session_lock(
     };
     match state.session().set_lock(device_id, lock_state).await {
         Ok(target) => {
-            state
-                .device_control()
-                .dirty_one(Arc::clone(&state), device_id)
-                .await;
+            state.device_control().dirty_one(device_id).await;
             Json(SessionControlResponse {
                 target: Some(SessionControlTargetResponse::from(target)),
             })
@@ -161,10 +156,7 @@ pub(crate) async fn terminate_session(
     };
     match state.session().terminate(device_id).await {
         Ok(target) => {
-            state
-                .device_control()
-                .dirty_one(Arc::clone(&state), device_id)
-                .await;
+            state.device_control().dirty_one(device_id).await;
             Json(SessionControlResponse {
                 target: Some(SessionControlTargetResponse::from(target)),
             })

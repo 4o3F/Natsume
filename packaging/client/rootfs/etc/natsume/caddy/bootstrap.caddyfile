@@ -1,41 +1,6 @@
 {
-	admin unix//run/natsume/caddy-admin.sock
+	admin unix//run/natsume/caddy-admin.sock|0660
 	persist_config off
 	auto_https off
 	grace_period 10s
-}
-
-https://contest.natsume.test {
-	bind 127.0.0.1 ::1
-	tls /run/natsume/gateway-tls/fullchain.pem /run/natsume/gateway-tls/key.pem
-
-	@status path /.well-known/natsume/gateway-status.json
-	handle @status {
-		root * /run/natsume/gateway-status
-		rewrite * /status.json
-		header Cache-Control "no-store, max-age=0"
-		header Content-Type "application/json; charset=utf-8"
-		header X-Content-Type-Options "nosniff"
-		file_server
-	}
-
-	handle_path /_natsume/* {
-		root * /usr/share/natsume/gateway-status
-		header Cache-Control "public, max-age=31536000, immutable"
-		header X-Content-Type-Options "nosniff"
-		file_server
-	}
-
-	handle {
-		root * /usr/share/natsume/gateway-status
-		rewrite * /index.html
-		header Cache-Control "no-store, max-age=0"
-		header Content-Security-Policy "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
-		header Referrer-Policy "no-referrer"
-		header X-Content-Type-Options "nosniff"
-		header X-Frame-Options "DENY"
-		file_server {
-			status 503
-		}
-	}
 }

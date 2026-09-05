@@ -16,8 +16,8 @@ pub const ERROR_CODE_MAX_BYTES: usize = 64;
 
 /// Returns whether `value` is a well-formed open `ErrorCode` token.
 ///
-/// Receiver behavior must come from the accompanying typed state or action,
-/// never from this diagnostic token.
+/// Receiver behavior must come from the accompanying typed state, never from
+/// this diagnostic token.
 #[must_use]
 pub fn is_valid_error_code_token(value: &str) -> bool {
     let bytes = value.as_bytes();

@@ -30,7 +30,7 @@ helpers.
 
 ## Endpoint conffile lifecycle
 
-`/etc/natsume/config.toml` is a Debian `config|noreplace` file whose packaged form contains no endpoint. On first configure, postinstall obtains one complete IP-literal/port pair from debconf or one complete paired environment override, validates it through `natsume-device-daemon --print-canonical-endpoint`, and writes atomically. Upgrade/reinstall preserves an existing canonical config unless `dpkg-reconfigure`/`DEBCONF_RECONFIGURE=1` or a paired environment override explicitly replaces it. A partial override, invalid existing config, failed sysusers invocation or failed tmpfiles invocation fails package configuration closed.
+`/etc/natsume/config.toml` is a Debian `config|noreplace` file whose packaged form contains no endpoint. On first configure, postinstall obtains one complete IP-literal/port pair from debconf or one complete paired environment override, validates it through `natsume-device-daemon canonicalize-endpoint <ip> <port>`, and writes atomically. Upgrade/reinstall preserves an existing canonical config unless `dpkg-reconfigure`/`DEBCONF_RECONFIGURE=1` or a paired environment override explicitly replaces it. A partial override, invalid existing config, failed sysusers invocation or failed tmpfiles invocation fails package configuration closed.
 
 `packaging/target-vm/phase0-lifecycle.sh` is the destructive disposable-VM harness for install, reinstall/upgrade, explicit reconfigure, reboot, remove and purge. Shared-runner package-content smoke is not target-OS/G0 lifecycle evidence.
 

@@ -81,10 +81,7 @@ CREATE TABLE gateway_credentials (
     device_id TEXT PRIMARY KEY REFERENCES devices(device_id) ON DELETE CASCADE,
     credential_id TEXT NOT NULL,
     gateway_csr_der BLOB,
-    gateway_leaf_der BLOB,
-    -- Leaf-nearest issuer certificates concatenated as self-delimiting DER.
-    -- Empty BLOB is the exact representation of a direct-issue empty chain.
-    issuer_chain_der BLOB
+    gateway_leaf_der BLOB
 ) STRICT;
 CREATE UNIQUE INDEX gateway_credentials_by_credential_id
     ON gateway_credentials(credential_id);

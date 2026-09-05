@@ -1,6 +1,6 @@
 [package]
 name = "natsume-session-agent"
-description = "Contest-session Natsume user agent for binding prompts and browser launch"
+description = "Contest-session Natsume user agent for binding prompts"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,12 +10,16 @@ build = "build.rs"
 
 [dependencies]
 natsume-local-control-api = { path = "../../crates/local-control-api" }
-serde.workspace = true
+rustix.workspace = true
 slint.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [build-dependencies]
 slint-build = "1.15"

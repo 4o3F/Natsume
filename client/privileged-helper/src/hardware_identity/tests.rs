@@ -5,10 +5,14 @@ use std::{
     str::FromStr as _,
 };
 
-use natsume_machine_identity::{AnchorKind, EvidenceStatus, evaluate_slot};
+use procfs::process::MountInfo;
 use tempfile::TempDir;
 
-use super::{source::rooted, *};
+use super::{
+    policy::{EvidenceStatus, evaluate_slot},
+    source::rooted,
+    *,
+};
 
 const TEST_NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
 const SYSTEM_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
@@ -122,7 +126,7 @@ fn assert_value(reading: &ReadOutcome, expected: &str) {
 fn both_sysfs_dmi_values_are_primary() {
     let fixture = tempdir();
     install_dmi(fixture.path(), SYSTEM_UUID.as_bytes(), b"board-42\n");
-    let readings = collect_with_mountinfo(fixture.path(), &[]);
+    let readings = collect_dmi(fixture.path());
 
     assert_value(&readings[0], SYSTEM_UUID);
     assert_value(&readings[1], "board-42");
@@ -133,7 +137,7 @@ fn smbios_fills_a_missing_sysfs_value_from_byte_fixtures() {
     let fixture = tempdir();
     write_fixture(fixture.path(), DMI_BOARD_SERIAL, b"board-42\n");
     install_smbios(fixture.path(), SYSTEM_UUID, "board-42");
-    let readings = collect_with_mountinfo(fixture.path(), &[]);
+    let readings = collect_dmi(fixture.path());
 
     assert_value(&readings[0], SYSTEM_UUID);
     assert_value(&readings[1], "board-42");
@@ -144,7 +148,7 @@ fn sysfs_smbios_conflict_is_conservatively_unavailable() {
     let fixture = tempdir();
     install_dmi(fixture.path(), SYSTEM_UUID.as_bytes(), b"board-sysfs\n");
     install_smbios(fixture.path(), SYSTEM_UUID, "board-smbios");
-    let readings = collect_with_mountinfo(fixture.path(), &[]);
+    let readings = collect_dmi(fixture.path());
 
     assert!(matches!(readings[1], ReadOutcome::Unavailable));
     let evaluation = evaluate_slot(ANCHOR_ORDER[1], &readings[1], TEST_NAMESPACE);
@@ -159,7 +163,7 @@ fn permission_denied_is_preserved() {
     if let Err(error) = fs::set_permissions(&product_uuid, fs::Permissions::from_mode(0o000)) {
         panic!("fixture mode must be changed: {error}");
     }
-    let readings = collect_with_mountinfo(fixture.path(), &[]);
+    let readings = collect_dmi(fixture.path());
 
     assert!(matches!(readings[0], ReadOutcome::PermissionDenied));
 }
@@ -172,7 +176,7 @@ fn placeholder_reaches_the_pure_rejection_policy() {
         SYSTEM_UUID.as_bytes(),
         b"To Be Filled By OEM\n",
     );
-    let readings = collect_with_mountinfo(fixture.path(), &[]);
+    let readings = collect_dmi(fixture.path());
     let evaluation = evaluate_slot(ANCHOR_ORDER[1], &readings[1], TEST_NAMESPACE);
 
     assert_eq!(evaluation.status, EvidenceStatus::RejectedPlaceholder);
@@ -183,9 +187,9 @@ fn root_partition_resolves_to_parent_whole_disk_and_short_udev_serial() {
     let fixture = tempdir();
     install_partition_disk(fixture.path(), b"disk-99");
     let mountinfo = [mount("36 25 8:2 / / rw,relatime - ext4 /dev/sda2 rw")];
-    let readings = collect_with_mountinfo(fixture.path(), &mountinfo);
+    let reading = first_disk_serial(fixture.path(), &mountinfo);
 
-    assert_value(&readings[2], "disk-99");
+    assert_value(&reading, "disk-99");
 }
 
 #[test]
@@ -196,9 +200,9 @@ fn ambiguous_root_mount_is_unavailable() {
         mount("36 25 8:2 / / rw,relatime - ext4 /dev/sda2 rw"),
         mount("40 25 8:3 / / rw,relatime - ext4 /dev/sda3 rw"),
     ];
-    let readings = collect_with_mountinfo(fixture.path(), &mountinfo);
+    let reading = first_disk_serial(fixture.path(), &mountinfo);
 
-    assert!(matches!(readings[2], ReadOutcome::Unavailable));
+    assert!(matches!(reading, ReadOutcome::Unavailable));
 }
 
 #[test]
@@ -239,9 +243,9 @@ fn one_disk_lvm_with_two_slave_partitions_resolves_the_shared_whole_disk() {
     let mountinfo = [mount(
         "36 25 253:0 / / rw,relatime - ext4 /dev/mapper/root rw",
     )];
-    let readings = collect_with_mountinfo(fixture.path(), &mountinfo);
+    let reading = first_disk_serial(fixture.path(), &mountinfo);
 
-    assert_value(&readings[2], "lvm-disk-7");
+    assert_value(&reading, "lvm-disk-7");
 }
 
 #[test]
@@ -277,9 +281,9 @@ fn root_spanning_two_whole_disks_is_unavailable() {
     let mountinfo = [mount(
         "36 25 253:0 / / rw,relatime - ext4 /dev/mapper/root rw",
     )];
-    let readings = collect_with_mountinfo(fixture.path(), &mountinfo);
+    let reading = first_disk_serial(fixture.path(), &mountinfo);
 
-    assert!(matches!(readings[2], ReadOutcome::Unavailable));
+    assert!(matches!(reading, ReadOutcome::Unavailable));
 }
 
 #[test]
@@ -292,52 +296,82 @@ fn fixture_collection_derives_the_wp1_golden_machine_id() {
     );
     install_partition_disk(fixture.path(), b"DISK_99");
     let mountinfo = [mount("36 25 8:2 / / rw,relatime - ext4 /dev/sda2 rw")];
-    let claim = derive_claim_with_mountinfo(fixture.path(), &mountinfo, TEST_NAMESPACE);
+    let [system_uuid, board_serial] = collect_dmi(fixture.path());
+    let disk_serial = first_disk_serial(fixture.path(), &mountinfo);
+    let identity = identity_from_readings([system_uuid, board_serial, disk_serial], TEST_NAMESPACE)
+        .unwrap_or_else(|error| panic!("fixture identity must derive: {error}"));
 
-    assert_eq!(claim.decision, "derived");
     assert_eq!(
-        claim.machine_hardware_id.as_deref(),
-        Some("a9aa9d04-3ece-5567-8260-910930ff5e03")
+        identity.machine_hardware_id,
+        "a9aa9d04-3ece-5567-8260-910930ff5e03"
     );
-    assert_eq!(claim.present_slot_count, 3);
-    assert!(claim.collection_complete);
-    assert_eq!(claim.candidates.len(), 3);
+    assert_eq!(identity.quality, MachineIdentityQuality::Strong);
 }
 
 #[test]
 fn absent_platform_interfaces_are_unsupported() {
     let fixture = tempdir();
-    let readings = collect_with_mountinfo(
+    let [system_uuid, board_serial] = collect_dmi(fixture.path());
+    let disk_serial = first_disk_serial(
         fixture.path(),
         &[mount("36 25 8:2 / / rw,relatime - ext4 /dev/sda2 rw")],
     );
 
-    assert!(matches!(readings[0], ReadOutcome::Unsupported));
-    assert!(matches!(readings[1], ReadOutcome::Unsupported));
-    assert!(matches!(readings[2], ReadOutcome::Unsupported));
+    assert!(matches!(system_uuid, ReadOutcome::Unsupported));
+    assert!(matches!(board_serial, ReadOutcome::Unsupported));
+    assert!(matches!(disk_serial, ReadOutcome::Unsupported));
 }
 
 #[test]
-fn frozen_slot_labels_are_used_for_candidates() {
-    let claim = claim_from_readings(
+fn aggregate_quality_comes_from_the_derived_sources() {
+    let strong = identity_from_readings(
         [
             ReadOutcome::Value(SYSTEM_UUID.to_owned()),
             ReadOutcome::Value("board-42".to_owned()),
             ReadOutcome::Unavailable,
         ],
         TEST_NAMESPACE,
+    )
+    .unwrap_or_else(|error| panic!("two strong sources must derive: {error}"));
+    let medium = identity_from_readings(
+        [
+            ReadOutcome::Value(SYSTEM_UUID.to_owned()),
+            ReadOutcome::Unavailable,
+            ReadOutcome::Value("disk-99".to_owned()),
+        ],
+        TEST_NAMESPACE,
+    )
+    .unwrap_or_else(|error| panic!("strong and medium sources must derive: {error}"));
+
+    assert_eq!(strong.quality, MachineIdentityQuality::Strong);
+    assert_eq!(medium.quality, MachineIdentityQuality::Medium);
+}
+
+#[test]
+fn unavailable_decisions_are_typed() {
+    let insufficient = identity_from_readings(
+        [
+            ReadOutcome::Value(SYSTEM_UUID.to_owned()),
+            ReadOutcome::Unavailable,
+            ReadOutcome::Unavailable,
+        ],
+        TEST_NAMESPACE,
+    );
+    let unsupported = identity_from_readings(
+        [
+            ReadOutcome::Unsupported,
+            ReadOutcome::Unsupported,
+            ReadOutcome::Unsupported,
+        ],
+        TEST_NAMESPACE,
     );
 
-    assert_eq!(claim.candidates.len(), 2);
-    assert_eq!(
-        claim
-            .candidates
-            .iter()
-            .map(|candidate| candidate.anchor_kind.as_str())
-            .collect::<Vec<_>>(),
-        [
-            AnchorKind::DmiSystemUuid.label(),
-            AnchorKind::DmiBoardSerial.label()
-        ]
-    );
+    assert!(matches!(
+        insufficient,
+        Err(MachineIdentityError::InsufficientSources(_))
+    ));
+    assert!(matches!(
+        unsupported,
+        Err(MachineIdentityError::Unsupported(_))
+    ));
 }

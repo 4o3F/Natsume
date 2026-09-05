@@ -1,62 +1,67 @@
 use std::{fs, io, path::Path, path::PathBuf};
 
+use natsume_device_protocol::generated::EnrollmentEvidenceQuality;
 use natsume_local_control_api::{
-    HardwareCandidate, Privileged1Proxy, SanitizedHardwareClaim, StartupIdentityState,
-};
-use natsume_machine_identity::{
-    CollectionCompleteness, EvidenceQuality, IdentityRecordState, LocalIdentityPreflightDecision,
-    MachineIdentityDecision, StartupIdentityDecision, evaluate_local_identity_preflight,
-    evaluate_startup_identity,
+    DerivedMachineIdentity, MachineIdentityError, MachineIdentityQuality, Privileged1Proxy,
 };
 use serde::Deserialize;
 use snafu::Snafu;
+use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 
 use crate::{
     atomic_write::ATOMIC_TEMP_PREFIX,
     canonical_uuid,
-    client_configuration::KEYS_DIRECTORY_PATH,
-    control::{self, DormantControlIdentityError},
-    identity_record,
+    control::{self, ControlIdentityError},
+    identity_record::{self, IdentityRecordState},
+    reconcile::SnapshotReconciler,
 };
 
-#[derive(Clone)]
+const LOCAL_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
+
 struct StartupPaths {
     site_config: PathBuf,
     identity_directory: PathBuf,
     control_directory: PathBuf,
     keys_directory: PathBuf,
+    state_directory: PathBuf,
 }
 
 impl StartupPaths {
-    #[must_use]
     fn production() -> Self {
         Self {
             site_config: PathBuf::from("/etc/natsume/site.toml"),
             identity_directory: PathBuf::from("/var/lib/natsume/identity"),
             control_directory: PathBuf::from("/var/lib/natsume/control"),
-            keys_directory: PathBuf::from(KEYS_DIRECTORY_PATH),
+            keys_directory: PathBuf::from("/var/lib/natsume/keys"),
+            state_directory: PathBuf::from("/var/lib/natsume/state"),
         }
     }
 }
 
 #[derive(Debug, Snafu)]
 #[snafu(module)]
-pub enum StartupError {
+pub(crate) enum StartupError {
     #[snafu(display("device startup site identity configuration is missing or invalid"))]
     SiteConfiguration,
 
     #[snafu(display("device startup identity-bound artifact scan failed"))]
     ArtifactScan,
 
-    #[snafu(display("device identity startup failed closed: {}", state_label(*state)))]
-    FailClosed { state: StartupIdentityState },
+    #[snafu(display("device identity startup failed closed: {state}"))]
+    FailClosed { state: &'static str },
 
     #[snafu(display("device startup could not persist its first identity record"))]
     IdentityPersistence,
 
-    #[snafu(display("device dormant control identity startup failed closed"))]
-    DormantControlIdentity { source: DormantControlIdentityError },
+    #[snafu(display("device control identity startup failed closed: {source}"))]
+    ControlIdentity { source: ControlIdentityError },
+
+    #[snafu(display("device state reconciliation startup failed closed"))]
+    Reconciliation,
+
+    #[snafu(display("device control loop failed closed: {source}"))]
+    Control { source: control::ControlLoopError },
 }
 
 #[derive(Deserialize)]
@@ -65,7 +70,6 @@ struct SiteIdentityConfig {
     gateway_hostname: String,
 }
 
-#[derive(Clone)]
 struct StartupContext {
     configured_namespace: Uuid,
     stored_machine_hardware_id: Option<Uuid>,
@@ -78,13 +82,20 @@ struct SiteIdentity {
 }
 
 struct IdentityReady {
-    #[allow(dead_code)]
     state: StartupIdentityState,
     machine_hardware_id: Uuid,
-    #[allow(dead_code)]
-    hardware_identity_quality: EvidenceQuality,
-    #[allow(dead_code)]
-    gateway_hostname: String,
+    hardware_identity_quality: MachineIdentityQuality,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupIdentityState {
+    CleanFirstStart,
+    Matched,
+    Indeterminate,
+    IdentityUnavailable,
+    IdentityRecordMissingOrCorrupt,
+    SiteNamespaceMismatch,
+    ResetRequired,
 }
 
 fn state_label(state: StartupIdentityState) -> &'static str {
@@ -98,9 +109,6 @@ fn state_label(state: StartupIdentityState) -> &'static str {
         }
         StartupIdentityState::SiteNamespaceMismatch => "site_namespace_mismatch",
         StartupIdentityState::ResetRequired => "reset_required",
-        StartupIdentityState::VaultCorrupt => "vault_corrupt",
-        StartupIdentityState::EnrollmentPending => "enrollment_pending",
-        StartupIdentityState::Enrolled => "enrolled",
     }
 }
 
@@ -109,7 +117,9 @@ fn fail_closed(state: StartupIdentityState) -> StartupError {
         startup_identity_state = state_label(state),
         "device identity startup failed closed"
     );
-    StartupError::FailClosed { state }
+    StartupError::FailClosed {
+        state: state_label(state),
+    }
 }
 
 fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
@@ -134,9 +144,42 @@ fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
         );
         StartupError::SiteConfiguration
     })?;
+    if !is_canonical_dns_hostname(&config.gateway_hostname) {
+        tracing::error!(
+            startup_identity_state = "site_configuration_invalid",
+            "device startup gateway hostname is not canonical"
+        );
+        return Err(StartupError::SiteConfiguration);
+    }
     Ok(SiteIdentity {
         fleet_namespace_uuid,
         gateway_hostname: config.gateway_hostname,
+    })
+}
+
+fn is_canonical_dns_hostname(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 253
+        || value.ends_with('.')
+        || value.parse::<std::net::IpAddr>().is_ok()
+        || !value.bytes().any(|byte| byte.is_ascii_lowercase())
+    {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
     })
 }
 
@@ -182,135 +225,79 @@ fn scan_identity_bound_directory(directory: &Path) -> Result<bool, StartupError>
 fn identity_bound_artifacts_present(
     keys_directory: &Path,
     control_directory: &Path,
+    state_directory: &Path,
 ) -> Result<bool, StartupError> {
-    // Identity-bound regular files include the current Token/Gateway keys and the dormant
-    // Device control identity. Future stores extend this closed scan with their first writer.
+    // Identity-bound regular files include Gateway material, reconciliation artifacts,
+    // and the Device control identity.
     let keys_present = scan_identity_bound_directory(keys_directory)?;
     let control_present = scan_identity_bound_directory(control_directory)?;
-    Ok(keys_present || control_present)
+    let state_present = scan_identity_bound_directory(state_directory)?;
+    Ok(keys_present || control_present || state_present)
 }
 
-fn preflight(paths: &StartupPaths) -> Result<StartupContext, StartupError> {
+fn preflight(
+    paths: &StartupPaths,
+    privileged_home_state_present: bool,
+) -> Result<StartupContext, StartupError> {
     let site = read_site_identity(&paths.site_config)?;
     let configured_namespace = site.fleet_namespace_uuid;
     let gateway_hostname = site.gateway_hostname;
-    let artifacts_present =
-        identity_bound_artifacts_present(&paths.keys_directory, &paths.control_directory)?;
+    let artifacts_present = privileged_home_state_present
+        || identity_bound_artifacts_present(
+            &paths.keys_directory,
+            &paths.control_directory,
+            &paths.state_directory,
+        )?;
     let record = identity_record::read(&paths.identity_directory);
 
-    match evaluate_local_identity_preflight(configured_namespace, record, artifacts_present) {
-        LocalIdentityPreflightDecision::CleanFirstStart => Ok(StartupContext {
+    match record {
+        IdentityRecordState::Absent if artifacts_present => Err(fail_closed(
+            StartupIdentityState::IdentityRecordMissingOrCorrupt,
+        )),
+        IdentityRecordState::Absent => Ok(StartupContext {
             configured_namespace,
             stored_machine_hardware_id: None,
             gateway_hostname,
         }),
-        LocalIdentityPreflightDecision::ReadyForHardwareCheck {
-            stored_machine_hardware_id,
-        } => Ok(StartupContext {
-            configured_namespace,
-            stored_machine_hardware_id: Some(stored_machine_hardware_id),
-            gateway_hostname,
-        }),
-        LocalIdentityPreflightDecision::IdentityRecordMissingWithState
-        | LocalIdentityPreflightDecision::IdentityRecordCorrupt => Err(fail_closed(
+        IdentityRecordState::Corrupt => Err(fail_closed(
             StartupIdentityState::IdentityRecordMissingOrCorrupt,
         )),
-        LocalIdentityPreflightDecision::SiteNamespaceMismatch { .. } => {
+        IdentityRecordState::Valid {
+            fleet_namespace_uuid,
+            ..
+        } if fleet_namespace_uuid != configured_namespace => {
             Err(fail_closed(StartupIdentityState::SiteNamespaceMismatch))
         }
-    }
-}
-
-fn candidate_slot(candidate: &HardwareCandidate) -> Option<usize> {
-    match candidate.anchor_kind.as_str() {
-        "dmi_system_uuid" => Some(0),
-        "dmi_board_serial" => Some(1),
-        "first_disk_serial" => Some(2),
-        _ => None,
-    }
-}
-
-fn candidate_quality(candidate: &HardwareCandidate) -> Option<EvidenceQuality> {
-    match candidate.quality.as_str() {
-        "weak" => Some(EvidenceQuality::Weak),
-        "medium" => Some(EvidenceQuality::Medium),
-        "strong" => Some(EvidenceQuality::Strong),
-        _ => None,
-    }
-}
-
-fn whole_machine_quality(claim: &SanitizedHardwareClaim) -> Option<EvidenceQuality> {
-    let present_slot_count = usize::try_from(claim.present_slot_count).ok()?;
-    if claim.candidates.len() != present_slot_count {
-        return None;
-    }
-    let mut seen = [false; 3];
-    let mut minimum: Option<EvidenceQuality> = None;
-    for candidate in &claim.candidates {
-        let slot = candidate_slot(candidate)?;
-        if seen[slot]
-            || canonical_uuid(&candidate.candidate_id)
-                .as_ref()
-                .is_none_or(|candidate_id| candidate_id.get_version_num() != 5)
-        {
-            return None;
-        }
-        seen[slot] = true;
-        let quality = candidate_quality(candidate)?;
-        minimum = Some(minimum.map_or(quality, |current| current.min(quality)));
-    }
-    minimum
-}
-
-fn decision_from_claim(claim: &SanitizedHardwareClaim) -> Option<MachineIdentityDecision> {
-    let present_slot_count = usize::try_from(claim.present_slot_count).ok()?;
-    let decision = match claim.decision.as_str() {
-        "derived" if (2..=3).contains(&present_slot_count) => MachineIdentityDecision::Derived {
-            machine_hardware_id: canonical_uuid(claim.machine_hardware_id.as_deref()?)?,
-            present_slot_count,
-        },
-        "insufficient_sources"
-            if present_slot_count <= 1 && claim.machine_hardware_id.is_none() =>
-        {
-            MachineIdentityDecision::InsufficientSources { present_slot_count }
-        }
-        "unsupported" if present_slot_count <= 3 && claim.machine_hardware_id.is_none() => {
-            MachineIdentityDecision::Unsupported { present_slot_count }
-        }
-        _ => return None,
-    };
-    let expected_complete = decision.collection_completeness() == CollectionCompleteness::Complete;
-    (claim.collection_complete == expected_complete).then_some(decision)
-}
-
-fn apply_claim(
-    paths: &StartupPaths,
-    context: StartupContext,
-    claim: &SanitizedHardwareClaim,
-) -> Result<IdentityReady, StartupError> {
-    let Some(decision) = decision_from_claim(claim) else {
-        return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
-    };
-    let machine_hardware_id = match decision {
-        MachineIdentityDecision::Derived {
+        IdentityRecordState::Valid {
             machine_hardware_id,
             ..
-        } => Some(machine_hardware_id),
-        MachineIdentityDecision::InsufficientSources { .. }
-        | MachineIdentityDecision::Unsupported { .. } => None,
+        } => Ok(StartupContext {
+            configured_namespace,
+            stored_machine_hardware_id: Some(machine_hardware_id),
+            gateway_hostname,
+        }),
+    }
+}
+
+fn apply_identity_decision(
+    paths: &StartupPaths,
+    context: &StartupContext,
+    decision: Result<DerivedMachineIdentity, MachineIdentityError>,
+) -> Result<IdentityReady, StartupError> {
+    let identity = match decision {
+        Ok(identity) => identity,
+        Err(MachineIdentityError::InsufficientSources(_))
+            if context.stored_machine_hardware_id.is_some() =>
+        {
+            return Err(fail_closed(StartupIdentityState::Indeterminate));
+        }
+        Err(_) => return Err(fail_closed(StartupIdentityState::IdentityUnavailable)),
     };
-    let hardware_identity_quality = match decision {
-        MachineIdentityDecision::Derived { .. } => Some(
-            whole_machine_quality(claim)
-                .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?,
-        ),
-        MachineIdentityDecision::InsufficientSources { .. }
-        | MachineIdentityDecision::Unsupported { .. } => None,
-    };
-    match evaluate_startup_identity(context.stored_machine_hardware_id, &decision) {
-        StartupIdentityDecision::FirstStart {
-            machine_hardware_id,
-        } => {
+    let machine_hardware_id = canonical_uuid(&identity.machine_hardware_id)
+        .filter(|machine_hardware_id| machine_hardware_id.get_version_num() == 5)
+        .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?;
+    let state = match context.stored_machine_hardware_id {
+        None => {
             identity_record::write_first_start(
                 &paths.identity_directory,
                 context.configured_namespace,
@@ -328,60 +315,29 @@ fn apply_claim(
                 startup_identity_state = state_label(StartupIdentityState::CleanFirstStart),
                 "device identity established on first start"
             );
-            identity_ready(
-                StartupIdentityState::CleanFirstStart,
-                Some(machine_hardware_id),
-                hardware_identity_quality,
-                context.gateway_hostname,
-            )
+            StartupIdentityState::CleanFirstStart
         }
-        StartupIdentityDecision::Matched => {
+        Some(stored) if stored == machine_hardware_id => {
             tracing::info!(
                 startup_identity_state = state_label(StartupIdentityState::Matched),
                 "device identity matched"
             );
-            identity_ready(
-                StartupIdentityState::Matched,
-                machine_hardware_id,
-                hardware_identity_quality,
-                context.gateway_hostname,
-            )
+            StartupIdentityState::Matched
         }
-        StartupIdentityDecision::Indeterminate => {
-            Err(fail_closed(StartupIdentityState::Indeterminate))
-        }
-        StartupIdentityDecision::IdentityUnavailable => {
-            Err(fail_closed(StartupIdentityState::IdentityUnavailable))
-        }
-        StartupIdentityDecision::ResetRequired { .. } => {
-            Err(fail_closed(StartupIdentityState::ResetRequired))
-        }
-    }
-}
-
-fn identity_ready(
-    state: StartupIdentityState,
-    machine_hardware_id: Option<Uuid>,
-    hardware_identity_quality: Option<EvidenceQuality>,
-    gateway_hostname: String,
-) -> Result<IdentityReady, StartupError> {
-    let machine_hardware_id = machine_hardware_id
-        .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?;
-    let hardware_identity_quality = hardware_identity_quality
-        .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?;
+        Some(_) => return Err(fail_closed(StartupIdentityState::ResetRequired)),
+    };
     Ok(IdentityReady {
         state,
         machine_hardware_id,
-        hardware_identity_quality,
-        gateway_hostname,
+        hardware_identity_quality: identity.quality,
     })
 }
 
-fn persisted_machine_hardware_id(
+fn load_control_identity(
     paths: &StartupPaths,
     expected: Uuid,
-) -> Result<Uuid, StartupError> {
-    match identity_record::read(&paths.identity_directory) {
+) -> Result<control::ControlIdentity, StartupError> {
+    let machine_hardware_id = match identity_record::read(&paths.identity_directory) {
         IdentityRecordState::Valid {
             machine_hardware_id,
             ..
@@ -390,44 +346,65 @@ fn persisted_machine_hardware_id(
         IdentityRecordState::Absent | IdentityRecordState::Corrupt => Err(fail_closed(
             StartupIdentityState::IdentityRecordMissingOrCorrupt,
         )),
-    }
+    }?;
+    control::load_or_create_identity(&paths.control_directory, machine_hardware_id)
+        .map_err(|source| StartupError::ControlIdentity { source })
 }
 
-fn ensure_dormant_control_identity(
-    paths: &StartupPaths,
-    expected: Uuid,
-) -> Result<Uuid, StartupError> {
-    let machine_hardware_id = persisted_machine_hardware_id(paths, expected)?;
-    control::ensure_dormant_identity(&paths.control_directory, machine_hardware_id)
-        .map_err(|source| StartupError::DormantControlIdentity { source })?;
-    Ok(machine_hardware_id)
-}
-
-async fn run_with_paths(paths: &StartupPaths) -> Result<(), StartupError> {
-    let context = preflight(paths)?;
-    let namespace = context.configured_namespace.to_string();
-    let Ok(connection) = zbus::Connection::system().await else {
+/// Runs identity-first production startup and the single Device control loop.
+///
+/// # Errors
+///
+/// Returns a redacted fail-closed startup error.
+pub(crate) async fn run_production() -> Result<(), StartupError> {
+    let paths = StartupPaths::production();
+    let Ok(builder) = zbus::connection::Builder::system() else {
+        return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
+    };
+    let Ok(Ok(connection)) = timeout(
+        LOCAL_CONTROL_TIMEOUT,
+        builder.method_timeout(LOCAL_CONTROL_TIMEOUT).build(),
+    )
+    .await
+    else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
     let Ok(proxy) = Privileged1Proxy::new(&connection).await else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
-    let Ok(claim) = proxy.collect_hardware_candidates(&namespace).await else {
+    let Ok(privileged_home_state_present) = proxy.has_home_reset_state().await else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
-    let identity = apply_claim(paths, context, &claim)?;
-    ensure_dormant_control_identity(paths, identity.machine_hardware_id)?;
-    Ok(())
-}
-
-/// Runs identity-first production startup and establishes the dormant control key.
-///
-/// # Errors
-///
-/// Returns a redacted fail-closed startup error.
-pub async fn run_production() -> Result<(), StartupError> {
-    run_with_paths(&StartupPaths::production()).await?;
-    Ok(())
+    let context = preflight(&paths, privileged_home_state_present)?;
+    let namespace = context.configured_namespace.to_string();
+    let decision = proxy.derive_machine_identity(&namespace).await;
+    let identity = apply_identity_decision(&paths, &context, decision)?;
+    let gateway_hostname = context.gateway_hostname;
+    let control_identity = load_control_identity(&paths, identity.machine_hardware_id)?;
+    let IdentityReady {
+        state,
+        machine_hardware_id,
+        hardware_identity_quality,
+    } = identity;
+    let evidence_quality = match hardware_identity_quality {
+        MachineIdentityQuality::Medium => EnrollmentEvidenceQuality::Medium,
+        MachineIdentityQuality::Strong => EnrollmentEvidenceQuality::Strong,
+    };
+    let snapshots = SnapshotReconciler::production(gateway_hostname, connection)
+        .await
+        .map_err(|_| StartupError::Reconciliation)?;
+    tracing::info!(
+        startup_identity_state = state_label(state),
+        "starting Device control loop"
+    );
+    control::connection::run(
+        control_identity,
+        machine_hardware_id,
+        evidence_quality,
+        snapshots,
+    )
+    .await
+    .map_err(|source| StartupError::Control { source })
 }
 
 #[cfg(test)]

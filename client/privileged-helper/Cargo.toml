@@ -10,10 +10,8 @@ publish.workspace = true
 [dependencies]
 snafu.workspace = true
 natsume-local-control-api = { path = "../../crates/local-control-api" }
-natsume-machine-identity = { path = "../../crates/machine-identity" }
 procfs = { version = "0.18", default-features = false }
-raw-cpuid = "11.6"
-serde.workspace = true
+rustix.workspace = true
 smbios-lib = "0.9"
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -23,7 +21,6 @@ zbus.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 tempfile.workspace = true
 
 [lints]

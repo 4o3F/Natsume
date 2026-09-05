@@ -7,12 +7,10 @@ message GatewayCredentialIntent {
   string credential_id = 1;
 }
 
-// Immutable public grant produced by the Server-owned Origin CA. The leaf is
-// complete DER. issuer_chain_der is leaf-nearest first and excludes the
-// deployment-pinned Local Origin Trust Root; it may be empty for direct issue.
+// Immutable public grant produced directly by the Server-owned Origin CA.
+// gateway_leaf_der is the complete leaf certificate DER.
 message GatewayCertificateGrant {
-  bytes          gateway_leaf_der = 1;
-  repeated bytes issuer_chain_der = 2;
+  bytes gateway_leaf_der = 1;
 }
 
 // Concrete target derived from current Server intent and Client input. A

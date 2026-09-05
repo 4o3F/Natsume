@@ -19,7 +19,6 @@ client/
 crates/
   device-protocol/
   local-control-api/
-  machine-identity/
 web/                     Operator Web Panel
 packaging/
 docs/architecture.md     唯一架构文档

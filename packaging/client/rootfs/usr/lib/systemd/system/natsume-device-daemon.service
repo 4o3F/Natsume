@@ -4,9 +4,9 @@ Description=Natsume V2 Device Daemon
 # udev-settle gates the first identity collection: the D-Bus-activated helper reads
 # /run/udev/data for the root disk serial, and a first start before the udev database
 # is populated would pin a two-slot identity that later recomputes as three slots.
-After=network-online.target dbus.service local-fs.target systemd-udev-settle.service natsume-privileged-helper.service
+After=network-online.target dbus.service local-fs.target systemd-udev-settle.service natsume-caddy.service natsume-privileged-helper.service
 Wants=network-online.target systemd-udev-settle.service
-Requires=natsume-privileged-helper.service
+Requires=natsume-caddy.service natsume-privileged-helper.service
 ConditionPathExists=/etc/natsume/config.toml
 ConditionPathExists=/etc/natsume/site.toml
 ConditionPathExists=/etc/natsume/trust/control-ca.crt
@@ -16,7 +16,9 @@ ConditionPathExists=/etc/natsume/trust/local-origin-ca.crt
 Type=simple
 User=natsume
 SupplementaryGroups=natsume-gateway
-ExecStart=/usr/bin/natsume-device-daemon
+ExecStart=/usr/bin/natsume-device-daemon run
+# A Daemon exit invalidates READY; hard-stop Caddy so Restart=on-failure loads bootstrap.
+ExecStopPost=+/usr/bin/systemctl kill --kill-whom=all --signal=SIGKILL natsume-caddy.service
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes

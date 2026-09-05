@@ -74,7 +74,6 @@ diesel::table! {
         credential_id -> Text,
         gateway_csr_der -> Nullable<Binary>,
         gateway_leaf_der -> Nullable<Binary>,
-        issuer_chain_der -> Nullable<Binary>,
     }
 }
 

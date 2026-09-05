@@ -2,19 +2,15 @@
 
 use std::fmt;
 
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-pub mod claim;
+mod claim;
 
-pub use claim::{
-    MachineIdentityDecision, StartupIdentityDecision, decide_machine_identity,
-    evaluate_startup_identity,
-};
+pub(super) use claim::{MachineIdentityDecision, decide_machine_identity};
 
 /// A frozen hardware-evidence source slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnchorKind {
+pub(super) enum AnchorKind {
     /// The DMI system UUID.
     DmiSystemUuid,
     /// The DMI motherboard serial.
@@ -26,7 +22,7 @@ pub enum AnchorKind {
 impl AnchorKind {
     /// Returns the frozen domain-separation label for this source slot.
     #[must_use]
-    pub const fn label(&self) -> &'static str {
+    pub(super) const fn label(self) -> &'static str {
         match self {
             Self::DmiSystemUuid => "dmi_system_uuid",
             Self::DmiBoardSerial => "dmi_board_serial",
@@ -36,14 +32,14 @@ impl AnchorKind {
 }
 
 /// The frozen hardware-evidence collection order.
-pub const ANCHOR_ORDER: [AnchorKind; 3] = [
+pub(super) const ANCHOR_ORDER: [AnchorKind; 3] = [
     AnchorKind::DmiSystemUuid,
     AnchorKind::DmiBoardSerial,
     AnchorKind::FirstDiskSerial,
 ];
 
 /// The I/O outcome supplied to the pure identity-policy evaluator.
-pub enum ReadOutcome {
+pub(super) enum ReadOutcome {
     /// Text read from the source. A Unicode replacement marker denotes a failed byte decoding.
     Value(String),
     /// The source is temporarily unavailable.
@@ -56,13 +52,11 @@ pub enum ReadOutcome {
 
 /// The policy result for one frozen hardware-evidence source slot.
 #[derive(Clone, PartialEq, Eq)]
-pub struct SlotEvaluation {
+pub(super) struct SlotEvaluation {
     /// The classified collection status.
-    pub status: EvidenceStatus,
+    pub(super) status: EvidenceStatus,
     /// The source slot's inherent quality grade.
-    pub quality: EvidenceQuality,
-    /// The anonymized `UUIDv5` candidate, present only for valid evidence.
-    pub candidate_id: Option<Uuid>,
+    pub(super) quality: EvidenceQuality,
     // Claim-layer input retained inside the pure-computation boundary. The custom Debug
     // implementation intentionally keeps normalized hardware values out of logs.
     normalized_value: Option<String>,
@@ -75,37 +69,24 @@ impl fmt::Debug for SlotEvaluation {
             .debug_struct("SlotEvaluation")
             .field("status", &self.status)
             .field("quality", &self.quality)
-            .field("candidate_id", &self.candidate_id)
             .finish_non_exhaustive()
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EvidenceQuality {
-    Weak,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum EvidenceQuality {
     Medium,
     Strong,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EvidenceStatus {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EvidenceStatus {
     Present,
     Unavailable,
     Unsupported,
     PermissionDenied,
     Malformed,
     RejectedPlaceholder,
-    Conflict,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CollectionCompleteness {
-    Complete,
-    TemporarilyUnavailable,
-    Unsupported,
 }
 
 /// Initial vendor placeholders frozen by the 2026-08-15 ADR-0032 amendment; additions require
@@ -178,20 +159,12 @@ fn normalize_value(kind: AnchorKind, value: &str) -> NormalizedValue {
     NormalizedValue::Present(normalized)
 }
 
-fn derive_slot_candidate(namespace: Uuid, kind: AnchorKind, normalized_value: &str) -> Uuid {
-    let mut name = Vec::with_capacity(kind.label().len() + normalized_value.len() + 1);
-    name.extend_from_slice(kind.label().as_bytes());
-    name.push(0);
-    name.extend_from_slice(normalized_value.as_bytes());
-    Uuid::new_v5(&namespace, &name)
-}
-
-/// Normalizes and classifies one source reading and derives its anonymized candidate.
+/// Normalizes and classifies one source reading.
 ///
 /// This function is pure: callers map platform I/O into [`ReadOutcome`], while normalization,
-/// placeholder rejection, quality assignment and candidate derivation remain here.
+/// placeholder rejection and quality assignment remain here.
 #[must_use]
-pub fn evaluate_slot(
+pub(super) fn evaluate_slot(
     kind: AnchorKind,
     reading: &ReadOutcome,
     fleet_namespace: Uuid,
@@ -199,27 +172,21 @@ pub fn evaluate_slot(
     let quality = anchor_quality(kind);
     match reading {
         ReadOutcome::Value(value) => match normalize_value(kind, value) {
-            NormalizedValue::Present(normalized) => {
-                let candidate_id = derive_slot_candidate(fleet_namespace, kind, &normalized);
-                SlotEvaluation {
-                    status: EvidenceStatus::Present,
-                    quality,
-                    candidate_id: Some(candidate_id),
-                    normalized_value: Some(normalized),
-                    fleet_namespace,
-                }
-            }
+            NormalizedValue::Present(normalized) => SlotEvaluation {
+                status: EvidenceStatus::Present,
+                quality,
+                normalized_value: Some(normalized),
+                fleet_namespace,
+            },
             NormalizedValue::Malformed => SlotEvaluation {
                 status: EvidenceStatus::Malformed,
                 quality,
-                candidate_id: None,
                 normalized_value: None,
                 fleet_namespace,
             },
             NormalizedValue::RejectedPlaceholder => SlotEvaluation {
                 status: EvidenceStatus::RejectedPlaceholder,
                 quality,
-                candidate_id: None,
                 normalized_value: None,
                 fleet_namespace,
             },
@@ -227,99 +194,20 @@ pub fn evaluate_slot(
         ReadOutcome::Unavailable => SlotEvaluation {
             status: EvidenceStatus::Unavailable,
             quality,
-            candidate_id: None,
             normalized_value: None,
             fleet_namespace,
         },
         ReadOutcome::PermissionDenied => SlotEvaluation {
             status: EvidenceStatus::PermissionDenied,
             quality,
-            candidate_id: None,
             normalized_value: None,
             fleet_namespace,
         },
         ReadOutcome::Unsupported => SlotEvaluation {
             status: EvidenceStatus::Unsupported,
             quality,
-            candidate_id: None,
             normalized_value: None,
             fleet_namespace,
-        },
-    }
-}
-
-/// Classifies the completeness of the three frozen source slots.
-#[must_use]
-pub fn collection_completeness(statuses: &[EvidenceStatus; 3]) -> CollectionCompleteness {
-    if statuses.contains(&EvidenceStatus::Unsupported) {
-        CollectionCompleteness::Unsupported
-    } else if statuses
-        .iter()
-        .all(|status| *status == EvidenceStatus::Present)
-    {
-        CollectionCompleteness::Complete
-    } else {
-        CollectionCompleteness::TemporarilyUnavailable
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "state")]
-pub enum IdentityRecordState {
-    Absent,
-    Corrupt,
-    Valid {
-        fleet_namespace_uuid: Uuid,
-        machine_hardware_id: Uuid,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "decision")]
-pub enum LocalIdentityPreflightDecision {
-    CleanFirstStart,
-    ReadyForHardwareCheck {
-        stored_machine_hardware_id: Uuid,
-    },
-    IdentityRecordMissingWithState,
-    IdentityRecordCorrupt,
-    SiteNamespaceMismatch {
-        configured_namespace: Uuid,
-        stored_namespace: Uuid,
-    },
-}
-
-/// Evaluates local files before hardware collection or any vault open.
-///
-/// `identity_bound_artifacts_present` means at least one Client database, root key,
-/// certificate, LKG or initialization journal exists. An absent identity record is
-/// only a clean first start when all of those artifacts are also absent.
-#[must_use]
-pub fn evaluate_local_identity_preflight(
-    configured_namespace: Uuid,
-    identity_record: IdentityRecordState,
-    identity_bound_artifacts_present: bool,
-) -> LocalIdentityPreflightDecision {
-    match identity_record {
-        IdentityRecordState::Absent if identity_bound_artifacts_present => {
-            LocalIdentityPreflightDecision::IdentityRecordMissingWithState
-        }
-        IdentityRecordState::Absent => LocalIdentityPreflightDecision::CleanFirstStart,
-        IdentityRecordState::Corrupt => LocalIdentityPreflightDecision::IdentityRecordCorrupt,
-        IdentityRecordState::Valid {
-            fleet_namespace_uuid,
-            ..
-        } if fleet_namespace_uuid != configured_namespace => {
-            LocalIdentityPreflightDecision::SiteNamespaceMismatch {
-                configured_namespace,
-                stored_namespace: fleet_namespace_uuid,
-            }
-        }
-        IdentityRecordState::Valid {
-            machine_hardware_id,
-            ..
-        } => LocalIdentityPreflightDecision::ReadyForHardwareCheck {
-            stored_machine_hardware_id: machine_hardware_id,
         },
     }
 }
@@ -368,7 +256,7 @@ mod tests {
                 let evaluation =
                     evaluate_slot(kind, &ReadOutcome::Value(value.to_owned()), namespace);
                 assert_eq!(evaluation.status, EvidenceStatus::RejectedPlaceholder);
-                assert_eq!(evaluation.candidate_id, None);
+                assert_eq!(evaluation.normalized_value, None);
             }
         }
     }
@@ -402,22 +290,21 @@ mod tests {
                 namespace,
             );
             assert_eq!(evaluation.status, EvidenceStatus::Present);
-            assert!(evaluation.candidate_id.is_some());
+            assert!(evaluation.normalized_value.is_some());
         }
     }
 
     #[test]
-    fn placeholder_projection_does_not_change_candidate_input() {
+    fn placeholder_projection_does_not_change_normalized_value() {
         let namespace = Uuid::from_u128(107);
         let evaluation = evaluate_slot(
             AnchorKind::DmiBoardSerial,
             &ReadOutcome::Value(" Board/42 ".to_owned()),
             namespace,
         );
-        let expected = Uuid::new_v5(&namespace, b"dmi_board_serial\0board/42");
 
         assert_eq!(evaluation.status, EvidenceStatus::Present);
-        assert_eq!(evaluation.candidate_id, Some(expected));
+        assert_eq!(evaluation.normalized_value.as_deref(), Some("board/42"));
     }
 
     #[test]
@@ -435,7 +322,7 @@ mod tests {
         );
 
         assert_eq!(noisy.status, EvidenceStatus::Present);
-        assert_eq!(noisy.candidate_id, canonical.candidate_id);
+        assert_eq!(noisy.normalized_value, canonical.normalized_value);
     }
 
     #[test]
@@ -451,15 +338,13 @@ mod tests {
             &ReadOutcome::Value(" 550E8400-E29B-41D4-A716-446655440000\r\n".to_owned()),
             namespace,
         );
-        let expected = Uuid::new_v5(
-            &namespace,
-            concat!("dmi_system_uuid", "\0", "550e8400e29b41d4a716446655440000").as_bytes(),
-        );
-
         assert_eq!(malformed.status, EvidenceStatus::Malformed);
-        assert_eq!(malformed.candidate_id, None);
+        assert_eq!(malformed.normalized_value, None);
         assert_eq!(mixed_case.status, EvidenceStatus::Present);
-        assert_eq!(mixed_case.candidate_id, Some(expected));
+        assert_eq!(
+            mixed_case.normalized_value.as_deref(),
+            Some("550e8400e29b41d4a716446655440000")
+        );
     }
 
     #[test]
@@ -490,7 +375,7 @@ mod tests {
             let evaluation = evaluate_slot(AnchorKind::DmiBoardSerial, &reading, namespace);
             assert_eq!(evaluation.status, expected);
             assert_eq!(
-                evaluation.candidate_id.is_some(),
+                evaluation.normalized_value.is_some(),
                 expected == EvidenceStatus::Present
             );
         }
@@ -523,134 +408,5 @@ mod tests {
             assert_eq!(present.quality, expected);
             assert_eq!(unsupported.quality, expected);
         }
-    }
-
-    #[test]
-    fn completeness_decision_table_covers_every_status_combination() {
-        fn exhaustive_status_entry(status: EvidenceStatus) -> (usize, EvidenceStatus) {
-            match status {
-                EvidenceStatus::Present => (0, EvidenceStatus::Present),
-                EvidenceStatus::Unavailable => (1, EvidenceStatus::Unavailable),
-                EvidenceStatus::Unsupported => (2, EvidenceStatus::Unsupported),
-                EvidenceStatus::PermissionDenied => (3, EvidenceStatus::PermissionDenied),
-                EvidenceStatus::Malformed => (4, EvidenceStatus::Malformed),
-                EvidenceStatus::RejectedPlaceholder => (5, EvidenceStatus::RejectedPlaceholder),
-                EvidenceStatus::Conflict => (6, EvidenceStatus::Conflict),
-            }
-        }
-
-        let status_entries = [
-            exhaustive_status_entry(EvidenceStatus::Present),
-            exhaustive_status_entry(EvidenceStatus::Unavailable),
-            exhaustive_status_entry(EvidenceStatus::Unsupported),
-            exhaustive_status_entry(EvidenceStatus::PermissionDenied),
-            exhaustive_status_entry(EvidenceStatus::Malformed),
-            exhaustive_status_entry(EvidenceStatus::RejectedPlaceholder),
-            exhaustive_status_entry(EvidenceStatus::Conflict),
-        ];
-        for (expected_index, (actual_index, _)) in status_entries.iter().enumerate() {
-            assert_eq!(expected_index, *actual_index);
-        }
-        let statuses = status_entries.map(|(_, status)| status);
-
-        for first in statuses {
-            for second in statuses {
-                for third in statuses {
-                    let readings = [first, second, third];
-                    // Keep the oracle in the reviewer-specified `any` form instead of sharing the
-                    // implementation's `contains`/`all` operator chain.
-                    #[allow(clippy::manual_contains)]
-                    let has_unsupported = readings
-                        .iter()
-                        .any(|status| *status == EvidenceStatus::Unsupported);
-                    let expected = if has_unsupported {
-                        CollectionCompleteness::Unsupported
-                    } else if readings
-                        .iter()
-                        .any(|status| *status != EvidenceStatus::Present)
-                    {
-                        CollectionCompleteness::TemporarilyUnavailable
-                    } else {
-                        CollectionCompleteness::Complete
-                    };
-                    assert_eq!(collection_completeness(&readings), expected);
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn candidate_derivation_is_domain_separated_and_deterministic() {
-        let namespace = Uuid::from_u128(105);
-        let reading = ReadOutcome::Value("AB-12 cd".to_owned());
-        let board = evaluate_slot(AnchorKind::DmiBoardSerial, &reading, namespace);
-        let disk = evaluate_slot(AnchorKind::FirstDiskSerial, &reading, namespace);
-        let repeated = evaluate_slot(AnchorKind::DmiBoardSerial, &reading, namespace);
-        let expected = Uuid::new_v5(&namespace, b"dmi_board_serial\0ab12cd");
-
-        assert_ne!(board.candidate_id, disk.candidate_id);
-        assert_eq!(board.candidate_id, repeated.candidate_id);
-        assert_eq!(board.candidate_id, Some(expected));
-    }
-
-    #[test]
-    fn only_a_fully_empty_local_state_is_a_clean_first_start() {
-        let namespace = Uuid::from_u128(10);
-        assert_eq!(
-            evaluate_local_identity_preflight(namespace, IdentityRecordState::Absent, false),
-            LocalIdentityPreflightDecision::CleanFirstStart,
-        );
-        assert_eq!(
-            evaluate_local_identity_preflight(namespace, IdentityRecordState::Absent, true),
-            LocalIdentityPreflightDecision::IdentityRecordMissingWithState,
-        );
-    }
-
-    #[test]
-    fn corrupt_identity_record_is_never_treated_as_first_start() {
-        assert_eq!(
-            evaluate_local_identity_preflight(
-                Uuid::from_u128(10),
-                IdentityRecordState::Corrupt,
-                false,
-            ),
-            LocalIdentityPreflightDecision::IdentityRecordCorrupt,
-        );
-    }
-
-    #[test]
-    fn site_namespace_mismatch_fails_before_hardware_or_vault_checks() {
-        assert_eq!(
-            evaluate_local_identity_preflight(
-                Uuid::from_u128(10),
-                IdentityRecordState::Valid {
-                    fleet_namespace_uuid: Uuid::from_u128(11),
-                    machine_hardware_id: Uuid::from_u128(1),
-                },
-                true,
-            ),
-            LocalIdentityPreflightDecision::SiteNamespaceMismatch {
-                configured_namespace: Uuid::from_u128(10),
-                stored_namespace: Uuid::from_u128(11),
-            },
-        );
-    }
-
-    #[test]
-    fn valid_local_record_proceeds_with_its_stored_machine_id() {
-        let namespace = Uuid::from_u128(10);
-        assert_eq!(
-            evaluate_local_identity_preflight(
-                namespace,
-                IdentityRecordState::Valid {
-                    fleet_namespace_uuid: namespace,
-                    machine_hardware_id: Uuid::from_u128(1),
-                },
-                true,
-            ),
-            LocalIdentityPreflightDecision::ReadyForHardwareCheck {
-                stored_machine_hardware_id: Uuid::from_u128(1),
-            },
-        );
     }
 }

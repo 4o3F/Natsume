@@ -7,8 +7,10 @@ use std::{
 use natsume_local_control_api::{PRIVILEGED1_PATH, PRIVILEGED1_SERVICE};
 use natsume_privileged_helper::PrivilegedService;
 use snafu::Snafu;
+use tokio::time::{Duration, timeout};
 
 const LOGGING_FAILURE_ID: &str = "NATSUME_PRIVILEGED_HELPER_LOGGING_INIT_FAILED";
+const SYSTEM_BUS_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Snafu)]
 enum ServiceError {
@@ -33,7 +35,13 @@ async fn serve() -> Result<(), ServiceError> {
     let builder = builder
         .serve_at(PRIVILEGED1_PATH, PrivilegedService::production())
         .map_err(|_| ServiceError::Bus)?;
-    let _connection = builder.build().await.map_err(|_| ServiceError::Bus)?;
+    let _connection = timeout(
+        SYSTEM_BUS_TIMEOUT,
+        builder.method_timeout(SYSTEM_BUS_TIMEOUT).build(),
+    )
+    .await
+    .map_err(|_| ServiceError::Bus)?
+    .map_err(|_| ServiceError::Bus)?;
     tracing::info!(service = PRIVILEGED1_SERVICE, "privileged helper ready");
     future::pending::<()>().await;
     Ok(())

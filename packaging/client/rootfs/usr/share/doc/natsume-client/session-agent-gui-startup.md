@@ -1,4 +1,4 @@
-# Runbook: XDG-Autostart Session Agent and lazy Slint UI
+# Runbook: XDG-Autostart Session Agent and Binding UI
 
 ## Expected chain
 
@@ -7,57 +7,50 @@ display manager authenticates the contest user
 → selected desktop session starts
 → desktop processes /etc/xdg/autostart/org.natsume.SessionAgent.desktop
 → /usr/bin/natsume-session-agent --autostart
-→ Agent validates its own PID/session through logind
 → Agent acquires $XDG_RUNTIME_DIR/natsume/session-agent.lock
-→ Agent registers with org.natsume.Device1 and renews its lease
-→ Agent enters the Slint event loop with no visible window
-→ a typed UI snapshot lazily creates/shows the Slint component
+→ Agent declares its current session ID and boot ID to org.natsume.Device1
+→ Device Daemon resolves the D-Bus caller PID and verifies that exact session through logind
+→ Agent registers, renews its lease and polls the current typed UI snapshot
+→ Slint shows only the state selected by the Device Daemon
 ```
 
-GDM and LightDM are not Session Agent IPC peers. They authenticate and start the selected desktop. Runtime session intent belongs to the Device Daemon and Privileged Helper/logind boundary.
+GDM and LightDM are not Session Agent IPC peers. They authenticate and start the selected desktop. The Device Daemon, not the Agent, is responsible for binding the D-Bus caller to the declared exact graphical session.
+
+## UI states
+
+- `Hidden`: no window is shown.
+- `BindingPrompt`: the current `negotiation_id` and `submission_epoch` allow seat-code submission. The mandatory prompt cannot be closed.
+- `BindingPending`: the submitted Binding input is awaiting the next Daemon snapshot; seat-code input is unavailable.
+
+If the Device1 connection, registration, lease renewal, snapshot read or submission fails, the Agent immediately applies `Hidden`, then retries the Device1 connection. A previous Binding prompt must never remain visible after disconnect.
 
 ## Healthy evidence
 
-- exactly one local, active contest-user graphical logind session;
-- session type is `wayland` or `x11`, class is `user`, remote is false, and seat matches deployment;
+- the Agent's D-Bus caller PID resolves through logind to the exact session declared at registration;
+- the resolved session is the single local, active contest-user graphical session on the deployment seat;
 - the system XDG entry exists once, uses absolute `--autostart`, and has no `OnlyShowIn`/`NotShowIn`;
 - no `natsume-session-agent.service` user unit is installed;
 - the exact user shadow path `~/.config/autostart/org.natsume.SessionAgent.desktop` is absent;
-- one owner-only singleton exists below the current `XDG_RUNTIME_DIR`;
-- Agent registration reports the expected display backend and a current lease;
-- the normal steady state is `ready + hidden`: no window, tray or splash;
-- a Binding snapshot results in focused or explicitly unfocused presentation, never silent absence.
+- one owner-only exclusive singleton lock exists at `$XDG_RUNTIME_DIR/natsume/session-agent.lock`;
+- Device1 has one current lease for that exact session;
+- the Agent continues lease renewal and snapshot polling while its Slint event loop is running;
+- the visible screen matches `BindingPrompt` or `BindingPending`; `Hidden` has no visible window.
 
 ## Diagnosis order
 
-1. Resolve the Agent PID through logind. Reject greeter, SSH, TTY, remote, inactive, wrong-UID/seat or ambiguous sessions.
+1. From the Device Daemon, resolve the Device1 caller PID and its logind session. Confirm it exactly matches the session and boot ID declared by the Agent.
 2. Verify that the desktop implements XDG Autostart and launched the package entry. Do not inspect LightDM/GDM private APIs from the Agent.
 3. Check the exact user-level shadow path only; never delete unrelated autostart entries.
 4. Verify the singleton owner/path and that the Agent was invoked only with `--autostart`.
-5. Check Agent registration, lease, display backend and `ready + hidden` observation.
-6. On a typed UI trigger, check Slint presentation state. `presented_unfocused` is valid under Wayland; do not add focus-stealing loops.
-7. If the Agent crashed or the display connection was lost, keep the Browser gated and create a fresh managed desktop session. The Daemon must not fabricate `DISPLAY`/`WAYLAND_DISPLAY` or spawn the GUI.
-
-## Stable conditions
-
-- `SESSION_INELIGIBLE`: wrong UID/class/type/active/remote/seat.
-- `SESSION_AMBIGUOUS`: more than one eligible graphical session.
-- `SESSION_AGENT_DUPLICATE`: singleton already owned by the current session.
-- `SESSION_AUTOSTART_SHADOWED`: same-name user override exists.
-- `SESSION_AGENT_MISSING`: an eligible session exists but no valid lease arrived.
-- `SESSION_DISPLAY_UNAVAILABLE`: Slint cannot open the inherited Wayland/X11 connection.
-- `SESSION_DISPLAY_LOST`: an established display connection ended.
-- `SESSION_UI_PRESENTED_UNFOCUSED`: window is mapped but focus was denied.
-- `SESSION_LOCK_UNSUPPORTED` / `SESSION_UNLOCK_UNSUPPORTED`: desktop lock state cannot be safely requested or verified.
+5. Check Device1 registration and lease renewal. A rejected registration must be diagnosed at the Daemon caller/session check.
+6. Check the latest Device1 snapshot. A disconnect must immediately hide any existing prompt before reconnecting.
 
 ## Recovery
 
-- Wrong/ambiguous session: terminate extra sessions and create one fresh managed session.
+- Wrong or ambiguous session: terminate extra sessions and create one fresh managed session.
 - User-level shadow: run fixed-path managed-Home repair, then recreate the desktop session.
-- Missing Agent lease or crash: keep Browser gated; terminate/recreate the managed desktop session so XDG Autostart starts a new process.
-- Display loss: stop the managed Browser, expire registration and recreate the desktop session.
-- Focus denied: use the standard notification or manual activation; this is not a security failure.
-- Slint backend failure: verify target OS libraries, fonts/IME and package dependency closure; do not fall back to external GUI helpers.
+- Missing Agent lease or crash: terminate and recreate the managed desktop session so XDG Autostart starts a new process.
+- Slint startup failure: verify target OS libraries and package dependency closure; do not fall back to external GUI helpers.
 
 ## Security checks
 

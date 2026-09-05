@@ -1,24 +1,72 @@
+#![forbid(unsafe_code)]
+
+mod atomic_write;
+mod control;
+mod identity_record;
+mod reconcile;
+mod startup;
+
 use std::{
-    env,
     io::{self, Write as _},
+    net::IpAddr,
+    num::NonZeroU16,
+    str::FromStr,
 };
 
-use clap::{ArgGroup, Parser};
-use natsume_device_daemon::{EndpointError, parse_endpoint, startup};
+use clap::{CommandFactory as _, Parser, Subcommand};
+use serde::Deserialize;
 use snafu::Snafu;
+use uuid::{Uuid, Variant, Version};
+
+fn canonical_uuid(value: &str) -> Option<Uuid> {
+    Uuid::parse_str(value)
+        .ok()
+        .filter(|uuid| uuid.hyphenated().to_string() == value)
+}
+
+fn canonical_uuid_v7(value: &str) -> Option<Uuid> {
+    canonical_uuid(value).filter(|uuid| {
+        uuid.get_version() == Some(Version::SortRand) && uuid.get_variant() == Variant::RFC4122
+    })
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+struct CanonicalEndpoint {
+    ip: IpAddr,
+    port: NonZeroU16,
+}
+
+#[derive(Debug, Snafu)]
+enum EndpointError {
+    #[snafu(display("invalid Natsume Server IP literal"))]
+    Ip,
+
+    #[snafu(display("invalid Natsume Server port"))]
+    Port,
+}
+
+/// Parses an IP literal and non-zero TCP/UDP port into canonical typed values.
+///
+/// # Errors
+///
+/// Returns [`EndpointError::Ip`] for a hostname, bracketed address or malformed IP literal,
+/// and [`EndpointError::Port`] for zero or a value outside the `u16` range.
+fn parse_endpoint(ip: &str, port: &str) -> Result<CanonicalEndpoint, EndpointError> {
+    let ip = IpAddr::from_str(ip).map_err(|_| EndpointError::Ip)?;
+    let port = port.parse::<u16>().map_err(|_| EndpointError::Port)?;
+    let Some(port) = NonZeroU16::new(port) else {
+        return Err(EndpointError::Port);
+    };
+    Ok(CanonicalEndpoint { ip, port })
+}
 
 #[derive(Debug, Snafu)]
 enum Error {
-    #[snafu(display(
-        "usage: natsume-device-daemon [--validate-endpoint|--print-canonical-endpoint] <ip> <port>"
-    ))]
+    #[snafu(display("{}", Args::command().render_usage()))]
     Arguments,
 
-    #[snafu(display("{code}: {error}"))]
-    Endpoint {
-        code: &'static str,
-        error: EndpointError,
-    },
+    #[snafu(display("INVALID_REQUEST: {error}"))]
+    Endpoint { error: EndpointError },
 
     #[snafu(display("the canonical endpoint could not be written"))]
     Output,
@@ -30,132 +78,84 @@ enum Error {
     Startup { source: startup::StartupError },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RunMode {
-    Daemon,
-    Completed,
+#[derive(Subcommand)]
+enum Command {
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    Run,
+    #[command(disable_help_flag = true, disable_version_flag = true)]
+    CanonicalizeEndpoint { ip: String, port: String },
 }
 
 #[derive(Parser)]
 #[command(
     name = "natsume-device-daemon",
     disable_help_flag = true,
-    disable_version_flag = true,
-    group = ArgGroup::new("mode").multiple(false),
+    disable_version_flag = true
 )]
 struct Args {
-    #[arg(
-        long = "validate-endpoint",
-        num_args = 2,
-        value_names = ["ip", "port"],
-        group = "mode"
-    )]
-    validate_endpoint: Option<Vec<String>>,
-
-    #[arg(
-        long = "print-canonical-endpoint",
-        num_args = 2,
-        value_names = ["ip", "port"],
-        group = "mode"
-    )]
-    print_canonical_endpoint: Option<Vec<String>>,
+    #[command(subcommand)]
+    command: Command,
 }
 
-fn endpoint_error(error: EndpointError) -> Error {
-    Error::Endpoint {
-        code: error.error_code(),
-        error,
-    }
-}
-
-fn run_args(args: &[String]) -> Result<RunMode, Error> {
-    let full_args: Vec<String> = std::iter::once("natsume-device-daemon".to_owned())
-        .chain(args.iter().cloned())
-        .collect();
-    let cli = Args::try_parse_from(&full_args).map_err(|_| Error::Arguments)?;
-
-    match (cli.validate_endpoint, cli.print_canonical_endpoint) {
-        (None, None) => Ok(RunMode::Daemon),
-        (Some(values), None) => match values.as_slice() {
-            [ip, port] => parse_endpoint(ip, port)
-                .map(|_| RunMode::Completed)
-                .map_err(endpoint_error),
-            _ => Err(Error::Arguments),
-        },
-        (None, Some(values)) => match values.as_slice() {
-            [ip, port] => {
-                let endpoint = parse_endpoint(ip, port).map_err(endpoint_error)?;
-                writeln!(io::stdout().lock(), "{} {}", endpoint.ip(), endpoint.port())
-                    .map_err(|_| Error::Output)?;
-                Ok(RunMode::Completed)
-            }
-            _ => Err(Error::Arguments),
-        },
-        _ => Err(Error::Arguments),
-    }
-}
-
-async fn run() -> Result<(), Error> {
-    let args = env::args().skip(1).collect::<Vec<_>>();
-    match run_args(&args)? {
-        RunMode::Completed => Ok(()),
-        RunMode::Daemon => {
+async fn execute(command: Command) -> Result<(), Error> {
+    match command {
+        Command::Run => {
             startup::run_production()
                 .await
                 .map_err(|source| Error::Startup { source })?;
-            std::future::pending::<()>().await;
             Ok(())
         }
+        Command::CanonicalizeEndpoint { ip, port } => {
+            let endpoint = parse_endpoint(&ip, &port).map_err(|error| Error::Endpoint { error })?;
+            writeln!(io::stdout().lock(), "{} {}", endpoint.ip, endpoint.port)
+                .map_err(|_| Error::Output)
+        }
     }
-}
-
-fn initialize_logging() -> Result<(), Error> {
-    tracing_subscriber::fmt()
-        .with_ansi(false)
-        .without_time()
-        .with_target(false)
-        .try_init()
-        .map_err(|_| Error::Logging)
 }
 
 #[tokio::main]
 #[snafu::report]
 async fn main() -> Result<(), Error> {
-    initialize_logging()?;
-    run().await
+    tracing_subscriber::fmt()
+        .with_ansi(false)
+        .without_time()
+        .with_target(false)
+        .try_init()
+        .map_err(|_| Error::Logging)?;
+    let command = Args::try_parse().map_err(|_| Error::Arguments)?.command;
+    execute(command).await
 }
 
 #[cfg(test)]
 mod tests {
-    use natsume_device_daemon::EndpointError;
-
     use super::*;
 
-    const USAGE: &str =
-        "usage: natsume-device-daemon [--validate-endpoint|--print-canonical-endpoint] <ip> <port>";
+    fn parse_test_args(args: &[&str]) -> Result<Command, Error> {
+        Args::try_parse_from(std::iter::once("natsume-device-daemon").chain(args.iter().copied()))
+            .map(|args| args.command)
+            .map_err(|_| Error::Arguments)
+    }
 
-    fn assert_usage_error(args: &[String]) {
-        let Err(error) = run_args(args) else {
+    fn assert_usage_error(args: &[&str]) {
+        let Err(error) = parse_test_args(args) else {
             panic!("expected usage error");
         };
         let display = format!("{error}");
-        assert_eq!(display, USAGE);
+        assert_eq!(display, Args::command().render_usage().to_string());
     }
 
-    #[test]
-    fn endpoint_errors_map_to_stable_invalid_request() {
-        assert_eq!(EndpointError::Ip.error_code(), "INVALID_REQUEST");
-        assert_eq!(EndpointError::Port.error_code(), "INVALID_REQUEST");
-    }
-
-    #[test]
-    fn report_contains_only_reviewed_text_and_code() {
+    #[tokio::test]
+    async fn report_contains_only_reviewed_text_and_code() {
         let rejected_ip = "/sensitive/path secret-value source-chain-canary";
-        let Err(error) = parse_endpoint(rejected_ip, "8443") else {
+        let Err(error) = execute(Command::CanonicalizeEndpoint {
+            ip: rejected_ip.to_owned(),
+            port: "8443".to_owned(),
+        })
+        .await
+        else {
             panic!("invalid IP must be rejected");
         };
-        let report = endpoint_error(error);
-        let display = format!("{report}");
+        let display = format!("{error}");
         assert_eq!(
             display,
             "INVALID_REQUEST: invalid Natsume Server IP literal"
@@ -167,83 +167,81 @@ mod tests {
     }
 
     #[test]
-    fn no_args_selects_identity_first_daemon_startup() {
-        let result = run_args(&[]);
-        assert!(matches!(result, Ok(RunMode::Daemon)));
+    fn run_command_selects_daemon_startup_without_starting_it() {
+        assert!(matches!(parse_test_args(&["run"]), Ok(Command::Run)));
     }
 
     #[test]
-    fn validate_endpoint_mode_with_valid_args_succeeds() {
-        let args = vec![
-            "--validate-endpoint".to_owned(),
-            "192.0.2.10".to_owned(),
-            "8443".to_owned(),
-        ];
-        assert!(
-            matches!(run_args(&args), Ok(RunMode::Completed)),
-            "valid --validate-endpoint must succeed"
-        );
+    fn canonicalize_endpoint_command_preserves_valid_arguments() {
+        let Ok(Command::CanonicalizeEndpoint { ip, port }) =
+            parse_test_args(&["canonicalize-endpoint", "192.0.2.10", "8443"])
+        else {
+            panic!("canonicalize-endpoint command must parse");
+        };
+        assert_eq!(ip, "192.0.2.10");
+        assert_eq!(port, "8443");
     }
 
     #[test]
-    fn print_canonical_endpoint_mode_with_valid_args_succeeds() {
-        let args = vec![
-            "--print-canonical-endpoint".to_owned(),
-            "192.0.2.10".to_owned(),
-            "8443".to_owned(),
-        ];
-        assert!(
-            matches!(run_args(&args), Ok(RunMode::Completed)),
-            "valid --print-canonical-endpoint must succeed"
-        );
+    fn missing_command_produces_usage() {
+        assert_usage_error(&[]);
     }
 
     #[test]
-    fn cli_usage_error_is_local_and_has_no_stable_code() {
-        let args = vec!["--unknown".to_owned()];
-        let Err(error) = run_args(&args) else {
-            panic!("unknown arguments must be rejected");
+    fn canonicalize_endpoint_missing_port_produces_usage() {
+        assert_usage_error(&["canonicalize-endpoint", "192.0.2.10"]);
+    }
+
+    #[test]
+    fn canonicalize_endpoint_extra_args_produce_usage() {
+        assert_usage_error(&["canonicalize-endpoint", "192.0.2.10", "8443", "extra"]);
+    }
+
+    #[test]
+    fn run_extra_args_produce_usage() {
+        assert_usage_error(&["run", "extra"]);
+    }
+
+    #[test]
+    fn unknown_command_is_a_local_usage_error_without_a_stable_code() {
+        let Err(error) = parse_test_args(&["unknown"]) else {
+            panic!("unknown command must be rejected");
         };
         let display = format!("{error}");
-        assert_eq!(display, USAGE);
+        assert_eq!(display, Args::command().render_usage().to_string());
         assert!(!display.contains("INVALID_REQUEST"));
     }
 
     #[test]
     fn help_flag_produces_usage() {
-        assert_usage_error(&["--help".to_owned()]);
+        assert_usage_error(&["--help"]);
     }
 
     #[test]
     fn version_flag_produces_usage() {
-        assert_usage_error(&["--version".to_owned()]);
+        assert_usage_error(&["--version"]);
     }
 
     #[test]
-    fn validate_endpoint_missing_port_produces_usage() {
-        assert_usage_error(&["--validate-endpoint".to_owned(), "192.0.2.10".to_owned()]);
+    fn canonicalizes_ipv4_and_ipv6_literals() {
+        let Ok(ipv4) = parse_endpoint("192.0.2.10", "8443") else {
+            panic!("valid IPv4 endpoint must parse");
+        };
+        assert_eq!(ipv4.ip.to_string(), "192.0.2.10");
+        assert_eq!(ipv4.port.get(), 8443);
+
+        let Ok(ipv6) = parse_endpoint("2001:0db8:0:0:0:0:0:1", "443") else {
+            panic!("valid IPv6 endpoint must parse");
+        };
+        assert_eq!(ipv6.ip.to_string(), "2001:db8::1");
+        assert_eq!(ipv6.port.get(), 443);
     }
 
     #[test]
-    fn validate_endpoint_extra_args_produce_usage() {
-        assert_usage_error(&[
-            "--validate-endpoint".to_owned(),
-            "192.0.2.10".to_owned(),
-            "8443".to_owned(),
-            "extra".to_owned(),
-        ]);
-    }
-
-    #[test]
-    fn conflicting_flags_produce_usage() {
-        let args = vec![
-            "--validate-endpoint".to_owned(),
-            "192.0.2.10".to_owned(),
-            "8443".to_owned(),
-            "--print-canonical-endpoint".to_owned(),
-            "2001:db8::1".to_owned(),
-            "443".to_owned(),
-        ];
-        assert_usage_error(&args);
+    fn rejects_hostnames_brackets_and_zero_port() {
+        assert!(parse_endpoint("server.example", "8443").is_err());
+        assert!(parse_endpoint("[2001:db8::1]", "8443").is_err());
+        assert!(parse_endpoint("192.0.2.10", "0").is_err());
+        assert!(parse_endpoint("192.0.2.10", "65536").is_err());
     }
 }

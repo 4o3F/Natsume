@@ -1,7 +1,7 @@
-// Development-only probe harness; never packaged. Close/Cancel hides the
-// window while the process stays resident (product semantics for the lazy
-// window contract) — exit the probe with Ctrl-C. `ui_probe hidden` creates no
-// window at all and parks in the event loop, demonstrating the same invariant.
+// Development-only probe harness; never packaged. Close hides non-mandatory
+// screens while the process stays resident. A Binding prompt cannot be closed.
+// Exit the probe with Ctrl-C. `ui_probe hidden` creates no window at all and
+// parks in the event loop, demonstrating the same invariant.
 use std::{
     env,
     ffi::OsString,
@@ -9,69 +9,30 @@ use std::{
     process::ExitCode,
 };
 
-use natsume_local_control_api::{
-    SeatInputPolicy, SessionScreenKind, SessionTarget, SessionUiSnapshot, UiPresentationState,
-    UiTextParameter,
-};
+use natsume_local_control_api::{GraphicalSession, SessionScreenKind, SessionUiSnapshot};
 use natsume_session_agent::ui;
 
 fn parse_screen_kind(value: &str) -> Option<SessionScreenKind> {
     match value {
         "hidden" => Some(SessionScreenKind::Hidden),
-        "idle_status" => Some(SessionScreenKind::IdleStatus),
         "binding_prompt" => Some(SessionScreenKind::BindingPrompt),
         "binding_pending" => Some(SessionScreenKind::BindingPending),
-        "binding_result" => Some(SessionScreenKind::BindingResult),
-        "recovery_status" => Some(SessionScreenKind::RecoveryStatus),
-        "lock_presentation" => Some(SessionScreenKind::LockPresentation),
-        "fatal_local_error" => Some(SessionScreenKind::FatalLocalError),
         _ => None,
-    }
-}
-
-fn parameters(screen: SessionScreenKind) -> Vec<UiTextParameter> {
-    if screen == SessionScreenKind::BindingPrompt {
-        vec![
-            UiTextParameter {
-                name: "title".to_owned(),
-                value: "中文渲染样例".to_owned(),
-            },
-            UiTextParameter {
-                name: "message".to_owned(),
-                value: "请输入座位 A-01、混排 CJK+Latin，并检查 HiDPI。".to_owned(),
-            },
-        ]
-    } else {
-        vec![UiTextParameter {
-            name: "message".to_owned(),
-            value: format!("Session Agent probe: {}", ui::screen_kind_label(screen)),
-        }]
     }
 }
 
 fn snapshot(screen: SessionScreenKind) -> SessionUiSnapshot {
     let binding_prompt = screen == SessionScreenKind::BindingPrompt;
     SessionUiSnapshot {
-        schema_version: 1,
-        target: SessionTarget {
-            session_instance_id: "ui-probe-session".to_owned(),
-            session_epoch: 1,
+        session: GraphicalSession {
+            logind_session_id: "ui-probe-session".to_owned(),
+            boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
         },
         ui_revision: 1,
         screen,
-        message_id: format!("session_agent.probe.{}", ui::screen_kind_label(screen)),
-        parameters: parameters(screen),
-        machine_short_id: "VM-PROBE".to_owned(),
-        seat_label: binding_prompt.then(|| "A-01".to_owned()),
-        prompt_command_id: binding_prompt.then(|| "probe-command".to_owned()),
-        prompt_nonce: binding_prompt.then(|| "probe-nonce".to_owned()),
-        expires_at_unix_ms: binding_prompt.then_some(4_102_444_800_000),
-        seat_input_policy: binding_prompt.then_some(SeatInputPolicy::SeatCode),
-        presentation: if screen == SessionScreenKind::Hidden {
-            UiPresentationState::Hidden
-        } else {
-            UiPresentationState::Presenting
-        },
+        binding_error_code: None,
+        negotiation_id: binding_prompt.then(|| "probe-negotiation".to_owned()),
+        submission_epoch: binding_prompt.then_some(1),
     }
 }
 

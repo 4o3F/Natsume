@@ -1,17 +1,26 @@
 use std::{fs, io::ErrorKind, path::Path};
 
-use natsume_machine_identity::IdentityRecordState;
 use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use uuid::Uuid;
 
 use crate::{
-    atomic_write::{AtomicWriteError, WritePolicy, atomic_write},
+    atomic_write::{WritePolicy, atomic_write},
     canonical_uuid,
 };
 
 const IDENTITY_RECORD_NAME: &str = "identity.json";
 const IDENTITY_RECORD_MODE: u32 = 0o600;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum IdentityRecordState {
+    Absent,
+    Corrupt,
+    Valid {
+        fleet_namespace_uuid: Uuid,
+        machine_hardware_id: Uuid,
+    },
+}
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -21,19 +30,8 @@ struct IdentityRecordDocument {
 }
 
 #[derive(Debug, Snafu)]
-pub(super) enum IdentityRecordWriteError {
-    #[snafu(display("identity record already contains a different identity"))]
-    ExistingIdentity,
-
-    #[snafu(display("a corrupt identity record may not be overwritten"))]
-    ExistingCorrupt,
-
-    #[snafu(display("identity record could not be serialized"))]
-    Serialize,
-
-    #[snafu(display("identity record atomic persistence failed"))]
-    Atomic { source: AtomicWriteError },
-}
+#[snafu(display("identity record could not be persisted"))]
+pub(super) struct IdentityRecordWriteError;
 
 fn record_path(identity_directory: &Path) -> std::path::PathBuf {
     identity_directory.join(IDENTITY_RECORD_NAME)
@@ -68,7 +66,7 @@ pub(super) fn write_first_start(
 ) -> Result<(), IdentityRecordWriteError> {
     match read(identity_directory) {
         IdentityRecordState::Absent => {}
-        IdentityRecordState::Corrupt => return Err(IdentityRecordWriteError::ExistingCorrupt),
+        IdentityRecordState::Corrupt => return Err(IdentityRecordWriteError),
         IdentityRecordState::Valid {
             fleet_namespace_uuid: stored_namespace,
             machine_hardware_id: stored_machine_hardware_id,
@@ -78,7 +76,7 @@ pub(super) fn write_first_start(
             return Ok(());
         }
         IdentityRecordState::Valid { .. } => {
-            return Err(IdentityRecordWriteError::ExistingIdentity);
+            return Err(IdentityRecordWriteError);
         }
     }
 
@@ -86,14 +84,14 @@ pub(super) fn write_first_start(
         fleet_namespace_uuid: fleet_namespace_uuid.to_string(),
         machine_hardware_id: machine_hardware_id.to_string(),
     };
-    let bytes = serde_json::to_vec(&document).map_err(|_| IdentityRecordWriteError::Serialize)?;
+    let bytes = serde_json::to_vec(&document).map_err(|_| IdentityRecordWriteError)?;
     atomic_write(
         &record_path(identity_directory),
         &bytes,
         IDENTITY_RECORD_MODE,
         WritePolicy::CreateOnly,
     )
-    .map_err(|source| IdentityRecordWriteError::Atomic { source })
+    .map_err(|_| IdentityRecordWriteError)
 }
 
 #[cfg(test)]
@@ -203,10 +201,7 @@ mod tests {
         }
         let result = write_first_start(directory.path(), NAMESPACE, Uuid::from_u128(1));
 
-        assert!(matches!(
-            result,
-            Err(IdentityRecordWriteError::ExistingIdentity)
-        ));
+        assert!(result.is_err());
         assert_eq!(
             read(directory.path()),
             IdentityRecordState::Valid {

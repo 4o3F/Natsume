@@ -26,7 +26,7 @@ use super::{
 const DEVICE_ID: &str = "01900000-0000-7000-8000-000000000081";
 const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 
-type PersistedGatewayRow = (String, Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>);
+type PersistedGatewayRow = (String, Option<Vec<u8>>, Option<Vec<u8>>);
 
 #[tokio::test]
 async fn first_materialization_creates_one_waiting_intent() {
@@ -43,7 +43,7 @@ async fn first_materialization_creates_one_waiting_intent() {
     assert!(materialized.target().certificate().is_none());
     assert_eq!(
         fixture.gateway_row().await,
-        (credential_id.as_text(), None, None, None,)
+        (credential_id.as_text(), None, None)
     );
     assert_eq!(fixture.issue_count.load(Ordering::Relaxed), 0);
     assert_eq!(
@@ -102,7 +102,6 @@ async fn accepted_csr_is_issued_once_and_replayed_exactly_after_component_rebuil
 
     assert_eq!(replayed, issued);
     assert_eq!(replayed_grant.leaf_der(), issued_leaf);
-    assert!(replayed_grant.issuer_chain_der().is_empty());
     assert_eq!(fixture.issue_count.load(Ordering::Relaxed), 1);
 }
 
@@ -196,7 +195,7 @@ async fn stale_input_and_recovery_actual_do_not_modify_the_current_generation() 
 
     assert_eq!(
         fixture.gateway_row().await,
-        (current_id.as_text(), None, None, None)
+        (current_id.as_text(), None, None)
     );
 }
 
@@ -265,7 +264,7 @@ async fn missing_current_csr_recovery_and_loaded_leaf_mismatch_each_replace_gene
 async fn invalid_persisted_presence_and_der_fail_closed() {
     let invalid_presence = Fixture::new().await;
     invalid_presence
-        .insert_gateway_row(None, Some(vec![0x01]), Some(Vec::new()))
+        .insert_gateway_row(None, Some(vec![0x01]))
         .await;
     assert_eq!(
         invalid_presence
@@ -281,7 +280,7 @@ async fn invalid_persisted_presence_and_der_fail_closed() {
 
     let invalid_csr = Fixture::new().await;
     invalid_csr
-        .insert_gateway_row(Some(vec![0x30, 0x00]), None, None)
+        .insert_gateway_row(Some(vec![0x30, 0x00]), None)
         .await;
     assert_eq!(
         invalid_csr
@@ -293,7 +292,7 @@ async fn invalid_persisted_presence_and_der_fail_closed() {
 
     let invalid_leaf = Fixture::new().await;
     invalid_leaf
-        .insert_gateway_row(Some(valid_csr()), Some(vec![0x30, 0x00]), Some(Vec::new()))
+        .insert_gateway_row(Some(valid_csr()), Some(vec![0x30, 0x00]))
         .await;
     assert_eq!(
         invalid_leaf
@@ -308,11 +307,7 @@ async fn invalid_persisted_presence_and_der_fail_closed() {
 async fn valid_but_expired_persisted_grant_replaces_the_generation() {
     let fixture = Fixture::new().await;
     let expired_id = fixture
-        .insert_gateway_row(
-            Some(valid_csr()),
-            Some(expired_leaf_der()),
-            Some(Vec::new()),
-        )
+        .insert_gateway_row(Some(valid_csr()), Some(expired_leaf_der()))
         .await;
 
     let materialized = fixture.materialize().await;
@@ -415,7 +410,7 @@ impl Fixture {
     async fn assert_waiting_generation(&self, credential_id: GatewayCredentialId) {
         assert_eq!(
             self.gateway_row().await,
-            (credential_id.as_text(), None, None, None)
+            (credential_id.as_text(), None, None)
         );
     }
 
@@ -428,7 +423,6 @@ impl Fixture {
                         gateway_credentials::credential_id,
                         gateway_credentials::gateway_csr_der,
                         gateway_credentials::gateway_leaf_der,
-                        gateway_credentials::issuer_chain_der,
                     ))
                     .filter(gateway_credentials::device_id.eq(device_id))
                     .first::<PersistedGatewayRow>(transaction.connection())
@@ -442,7 +436,6 @@ impl Fixture {
         &self,
         csr_der: Option<Vec<u8>>,
         leaf_der: Option<Vec<u8>>,
-        issuer_chain_der: Option<Vec<u8>>,
     ) -> GatewayCredentialId {
         let device_id = self.device_id.as_text();
         let credential_id = GatewayCredentialId::new();
@@ -455,7 +448,6 @@ impl Fixture {
                         gateway_credentials::credential_id.eq(credential_id_text),
                         gateway_credentials::gateway_csr_der.eq(csr_der),
                         gateway_credentials::gateway_leaf_der.eq(leaf_der),
-                        gateway_credentials::issuer_chain_der.eq(issuer_chain_der),
                     ))
                     .execute(transaction.connection())
                     .map_err(|_| PersistenceError::OperationFailed)?;

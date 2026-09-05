@@ -173,11 +173,12 @@ Helper 不联网，不持有 DOMjudge 密码、control private key、Gateway pri
 Agent 由系统级 XDG Autostart 直接启动，拥有当前图形会话内的 UI：
 
 - Binding 窗口；
-- Lock presentation；
-- typed 状态展示；
-- focus 和窗口生命周期结果。
+- Binding pending状态；
+- 窗口生命周期。
 
 Agent 不连接 Server，不管理 Caddy，不读取 credential，不使用 systemd user service。
+Session lock/unlock/terminate由Daemon通过Helper的fixed logind capability执行，不另建
+Agent command或通用状态展示协议。
 
 ### 4.5 Caddy、Browser 与 DOMjudge
 
@@ -185,9 +186,9 @@ Caddy 只负责本机数据面：
 
 - 固定 loopback HTTPS origin；
 - 加载 Server 授予的 Gateway leaf；
-- BLOCKED 页面；
+- BLOCKED 503响应；
 - 代理固定 HTTPS DOMjudge upstream；
-- 只在 `/login` 注入 `X-DOMjudge-Login` 和 base64 password header；
+- 只在 `/login` 注入`X-DOMjudge-Login`和base64编码的`X-DOMjudge-Pass`；
 - 其他 route 不注入 credential。
 
 Runtime Config 的 DOMjudge HTTPS origin 只由Server部署配置提供和修改，不暴露
@@ -417,16 +418,15 @@ EnrollmentAttempt
 
 Server另外从proof context取得Machine Hardware ID和版本信息。Client必须在proof前crash-safe持久化candidate private key，但pending review本身不持久化。Server为Panel生成仅在当前进程和连接内有效的`review_id`。
 
-`PENDING_REVIEW`和`DENIED`都是当前WSS上的状态，不是跨连接authority；没有offline approval、attempt TTL、activation deadline或sweeper。
+`PENDING_REVIEW`和`DENIED`都是当前WSS上的状态，不是跨连接authority；没有offline approval、attempt TTL、业务activation deadline或sweeper。Pending期间Client通过WebSocket Ping/Pong证明连接活性，任一端超过固定静默期限即关闭连接，Server同时移除仍未被审批领取的review。
 
 完整规则：
 
 1. Client在发送proof前持久化candidate control key；重连可以继续使用该key，但每条连接都建立全新review。
 2. Server先检查candidate public key是否已经是该Machine Hardware ID对应Device的current control key；若是，直接重放已提交authority，不再次审核。
 3. 其他Enrollment只有在进程内Provisioning Gate开启时才能进入pending review，且必须人工审核。
-4. Pending registry以`review_id`保存经过验证的非秘密evidence；到WP7接入
-   production WSS时，同一entry再持有一个进程内一次性完成通知sender，
-   originating connection持有receiver。registry中仍存在该`review_id`就表示
+4. Pending registry以`review_id`保存经过验证的非秘密evidence；同一entry持有一个
+   进程内一次性完成通知sender，originating connection持有receiver。registry中仍存在该`review_id`就表示
    当前连接仍持有该review，它不是authority，也不缓存可能漂移的current Device ID。
 5. Operator只能批准当前仍存在的review，批准前再次检查Gate并原子移除对应
    `review_id`；同一进程内的审批串行，并在activation前按evidence中的Machine
@@ -463,7 +463,8 @@ revoke或control-key replacement的竞态，但完全封装在`device_control`�
 - lease 不落库；
 - 新 Attach 原子替换旧 lease；
 - 旧 socket 的晚到 frame 因 session fencing 零写入拒绝；
-- best-effort Close 不参与 authority 转移；
+- Client每30秒发送携带当前`session_id`的WebSocket Ping；只有匹配的Pong或合法Server Active frame刷新60秒静默期限；
+- Active写入最多等待5秒；写入超时或Server静默超时都结束lease，Client先切换本地数据面为BLOCKED再重连；若无法确认BLOCKED，Daemon失败退出，systemd硬终止Caddy并由其fail-closed bootstrap重启；
 - Server restart 使所有 lease 失效。
 
 ### 8.4 Freshness barrier
@@ -524,7 +525,7 @@ Gateway leaf profile 固定为：
 - serial 的值字节是 `credential_id` UUID 的 16 bytes；
 - `not_before` 是签发时刻减 5 分钟，`not_after` 是部署配置的绝对
   `gateway_not_after`；
-- Local Origin CA 直接签发 leaf；没有中间 CA，因此 grant 的 issuer chain 为空。
+- Local Origin CA 直接签发 leaf；grant 只携带完整 leaf DER。
 
 Gateway Actual 的 leaf hash是 Caddy 实际加载的完整 leaf DER 的 SHA-256，不是 PEM、SPKI、chain、serial 或磁盘候选文件。
 
@@ -551,7 +552,7 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 
 规则：
 
-- 比赛部署阶段，所有未绑定且本地 Session/Home eligible 的 Device 自动显示 Binding UI；
+- 比赛部署阶段，只有未绑定、Session为`Active`或`Locked`且Home为`Steady`的Device自动显示Binding UI；
 - Server 不发送 `OPEN_BINDING_PROMPT`；
 - 每个 UNBOUND Device 恰有一个 current negotiation；
 - 志愿者确认时 Client 先持久化新 `submission_epoch` 和 Seat，再发布完整 Input；
@@ -559,6 +560,7 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 - same epoch + same Seat 是 replay；
 - same epoch + different Seat 是 protocol violation；
 - 较旧 negotiation/epoch 不改变 current authority；
+- Binding提交authority绑定当前Target plan；replacement在同一内存锁内先撤销旧plan eligibility，旧plan之后不能重新开放提交；
 - 可修正业务拒绝写入 current negotiation 的 bounded evaluation，error code 只允许
   `SEAT_NOT_FOUND`、`SEAT_UNMAPPED`、`SEAT_OCCUPIED`；
 - 接受 Binding 时在一个组件事务内重检 Device 仍为 enabled 且 unbound、Seat、
@@ -579,7 +581,7 @@ Runtime Config 当前只包含 canonical HTTPS DOMjudge origin：
 - 禁止 userinfo、path、query、fragment；
 - Control Endpoint、trust root、fleet namespace 和 Gateway hostname 永不进入远程配置；
 - Client 不持久化密码到 Runtime Config；
-- 应用新配置失败时 Gateway 数据面保持 BLOCKED，不继续代理已失效旧目标；
+- 应用新配置失败时 Gateway 数据面必须确认BLOCKED；BLOCKED也无法加载时Daemon失败退出，systemd硬终止仍可能持有旧READY配置的Caddy，并只从无listener的bootstrap配置重启；
 - Target 重发必须幂等。
 
 ### 9.4 Session Control
@@ -597,6 +599,8 @@ SessionControlTarget
 - 同时只能有一个 eligible graphical session；
 - 零个或多个 eligible session 时 fail closed；
 - terminate 必须捕获目标 Session，副作用前重检，不得 retarget 到 replacement Session；
+- Helper串行执行lock、unlock与terminate mutation，超时的旧调用不能晚于新调用落地；
+- `/var/lib/natsume/state`由tmpfiles在Daemon启动前固定创建；Daemon不在运行时重建丢失的状态根目录；
 - Client 只在 durable completion 后推进 completed epoch。
 
 ### 9.5 Home
@@ -605,6 +609,10 @@ Home reset 使用单调 `reset_epoch`：
 
 - same epoch 可重入；
 - Client 通过 Prepare/Apply/Verify/Recover 完成；
+- Helper状态固定在root-owned的`/var/lib/natsume-privileged/home-reset`，Daemon不能重命名或替换其目录树；
+- Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
+- `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
+- 当前generation验证成功后，Helper删除其他generation并fsync `generations/`，完成前不发布`Verified`；
 - 完成记录必须 durable 后才能发布；
 - 进行中继续报告上一个 completed epoch；
 - reset 只影响 contestant Home；
@@ -787,7 +795,6 @@ HWID 并发和一个 non-revoked Device 约束由数据库 unique constraint 最
 enum DeviceEvent {
     Attach { session_id, outbound },
     ClientState { state, session_id, snapshot, received_at_unix_ms },
-    Dirty { state },
     Evict { evicted },
     ConnectionState { respond },
     Disconnected { session_id },
@@ -799,6 +806,8 @@ Actor 只拥有临时协调状态：
 - current lease；
 - 首个有效 ClientState 到达前不生成target；
 - 有界 mailbox；
+- 独立于mailbox容量、可合并的Dirty watch；
+- 首个有效ClientState提供的进程共享`ServerState`引用与低频完整Target刷新计时器；
 - current outbound sender；
 - current lease的latest fully-validated typed Actual与receive-time。
 
@@ -832,7 +841,7 @@ validate current lease
 初期顺序执行。SQLite 是单写者，提前并行只会增加 cancellation、错误聚合和 race。只有测量证明瓶颈后才考虑并行 materialize。
 
 跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation在commit后
-发送`Dirty`，若发生在materialize期间，会排队触发下一份
+推进Actor独立的Dirty watch，重复通知可以合并；若发生在materialize期间，watch仍会触发下一份
 完整`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
 
 ### 11.5 Dirty、Evict 与周期收敛
@@ -841,11 +850,11 @@ validate current lease
 
 1. 先提交业务；
 2. application coordination根据当前mutation的具体语义确定影响一个Device还是全部在线Device；
-3. `DeviceControl` 发送best-effort `Dirty`。
+3. `DeviceControl` 推进对应Actor的可合并`Dirty` watch。
 
 组件不能反向持有 Registry。
 
-Dirty 不携带业务数据。丢失 Dirty 不损坏 authority；Client 周期完整上报或低频 Server 全量 refresh 会恢复。当前规模允许 Import/Runtime 全局变化后直接 dirty all connected actors。
+Dirty不携带业务数据，也不占用业务mailbox；Actor在首个有效ClientState后另以固定低频周期从数据库重新生成并发送完整Target，作为独立反熵路径。各lease使用现有随机session ID将首次刷新分散到一分钟内，避免批量上线的Actor同相读取数据库。Client对与current/queued Target完全相同的周期帧直接合并；idle时仅在它刚发布了变化的Actual、正在等待Server回应时，才用相同Target重新执行收敛。当前规模允许Import/Runtime全局变化后直接dirty all connected actors。
 
 Device disable、revoke和current control-key replacement不是普通target变更。它们在
 Device Component commit后对准确`device_id`发送`Evict`，终止current lease；
@@ -853,13 +862,15 @@ Device Component commit后对准确`device_id`发送`Evict`，终止current leas
 该commit后动作由`DeviceControl`执行。为保证authority commit后旧lease零写入，
 `DeviceControl`先与该Device正在执行的ClientState/Dirty互斥，再提交authority mutation，
 在释放互斥前标记lease fenced，随后发送并等待`Evict`确认；组件提交失败时不fence。
+Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不能留下Registry entry。
 该mutation→fence→evict序列由进程持有的任务完成，不因发起它的HTTP请求取消而中断。
 
 ### 11.6 Channel 与背压
 
 - Actor mailbox 和每 lease outbound queue 都必须有界；
 - ClientState 不能静默丢弃；
-- 重复 Dirty 可以合并或best-effort丢弃；
+- 重复 Dirty 可以合并，但mailbox饱和不能丢失尚未观察的Dirty状态；
+- Active Client每30秒发送携带exact session ID的Ping；Server只由该Ping推进一分钟Client silence deadline，超时即清除lease；
 - outbound queue满时终止 lease；
 - 不为每个资源创建 channel；
 - 不创建持久化网络 outbox。
@@ -921,7 +932,7 @@ Provisioning Gate同样不落库；每次Server启动都构造closed状态。ope
 - `device_id` primary key；
 - unique current `credential_id`；
 - accepted exact CSR DER；
-- exact leaf DER与issuer chain DER。
+- exact leaf DER。
 
 不存在terminal row或独立status。Replacement在同一Device row原子换入新`credential_id`并清空CSR/grant；旧generation不保留。CSR hash、leaf hash、serial、validity与certificate policy都从exact DER或当前issuer policy派生，不复制为数据库列。字段presence和状态组合由Gateway组件的Rust validated types与事务规则保证。Gateway不再引用Enrollment。
 
@@ -1001,43 +1012,20 @@ semantic validation，也不拥有authority key选择。
 `prost`负责decode与wire类型约束，Server/Client各自在所属admission、component或
 reconciler边界校验业务presence、ID、epoch、state组合和cross-field不变量。
 
-### 14.1 Client-local traits
+### 14.1 Client-local concrete implementation
 
-需要协商输入的资源实现 Client-local `InputProvider`：
+Gateway和Binding各自由所属concrete implementation生成、持久化并重放协商输入；五个
+target资源各自暴露具体的`reconcile`与`observe`方法，由`SnapshotReconciler`按固定资源图
+直接调用。当前没有第二种实现、运行时替换或多态消费者，因此不建立统一
+`InputProvider`/`Reconciler` trait、dynamic registry或resource-erased payload。
 
-```rust
-trait InputProvider {
-    type PublicIntent;
-    type ClientInput;
-
-    fn current_input(
-        &self,
-        intent: &Self::PublicIntent,
-    ) -> Result<Option<Self::ClientInput>, Self::Error>;
-}
-```
-
-所有 target资源实现 Client-local `Reconciler`：
-
-```rust
-trait Reconciler {
-    type ConcreteTarget;
-    type ActualState;
-
-    async fn reconcile(
-        &self,
-        target: &Self::ConcreteTarget,
-    ) -> Result<Self::ActualState, Self::Error>;
-
-    async fn observe(&self) -> Result<Self::ActualState, Self::Error>;
-}
-```
-
-实际实现可以把纯 `plan`、副作用执行和 `verify` 继续分离。成功 Actual只能来自 durable artifact或真实runtime重采样，不能直接复用apply返回值。
+具体实现可以在确有需要时把纯`plan`、副作用执行和`verify`分离。成功Actual只能来自
+durable artifact或真实runtime重采样，不能直接复用apply返回值。
 
 ### 14.2 不创建共享 component crate
 
-Server使用concrete component method；`InputProvider`/`Reconciler`只在Client。双方职责和dependency完全不同。
+Server和Client都直接使用各自的concrete method；双方职责和dependency完全不同，不共享
+component interface。
 
 暂不创建 `device-control-model`、`core` 或 `shared-components`。完成 Gateway 和 Binding 双端实现后，只有出现至少两个真实消费者使用的完全相同纯逻辑，才允许提取具体命名的共享 crate。共享 crate禁止依赖：
 
@@ -1052,7 +1040,10 @@ Server使用concrete component method；`InputProvider`/`Reconciler`只在Client
 Daemon 可以有一个有界 effect executor，但它处理 latest target计划，不是 Command queue：
 
 - 新完整 `ServerStateSnapshot` 通过验证后原子替换当前 target；
-- 旧 plan在副作用前检查 receive generation并取消；
+- 与current/queued完全相同的target不替换plan；idle时只有Client刚发布变化Actual并等待回应，才允许相同target重跑；
+- 旧 plan在副作用之间检查cooperative fence；该fence不声称取消已经发出的外部操作；
+- Caddy子进程、Admin HTTP、local TLS采样和D-Bus method各有10秒deadline；Caddy子进程超时时kill-on-drop；
+- D-Bus deadline只把结果分类为未知，远端调用仍可能完成；后续plan必须通过durable progress或重新观察继续收敛；
 - 资源副作用按安全依赖排序；
 - Gateway数据面先BLOCKED，再变更credential/config；
 - password不进入非秘密LKG；
@@ -1146,7 +1137,7 @@ Runtime Config、Session Control和Home各一条查询，Binding以negotiation�
 context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle，
 释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。这样数据库业务
 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建
-Actor的Device，以及丢失best-effort Dirty的Device仍以数据库当前target为准。该Panel投影不是
+Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是
 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
 
 ## 16. 错误与可观测性
@@ -1234,7 +1225,6 @@ client/privileged-helper/
 client/session-agent/
 crates/device-protocol/
 crates/local-control-api/
-crates/machine-identity/
 ```
 
 共享 crate准入条件：
@@ -1317,7 +1307,6 @@ client/device-daemon/src/
   control/
     connection.rs
     enrollment.rs
-    snapshot.rs
   reconcile.rs
   reconcile/
     gateway.rs
@@ -1378,11 +1367,13 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - 首ClientState barrier；
 - 完整snapshot校验先于任何写入；
 - 组件partial ingest后crash与重放；
-- Dirty丢失和周期恢复；
+- mailbox饱和下的Dirty合并和周期恢复；
+- 周期重复Target不重启plan，Actual漂移后的相同Target仍重新收敛；
+- Active exact-session heartbeat续期、错误heartbeat和Client silence deadline；
 - outbound背压；
 - Server restart全部lease失效；
 - `error_code`语法边界与未知合法token保持opaque；
-- frame上限和typed Close。
+- frame上限和非法envelope关闭连接。
 
 ### 19.3 资源故障测试
 
@@ -1447,7 +1438,7 @@ just api
 
 ### 当前实现基线
 
-2026-09-02 的实现基线：
+2026-09-03 的实现基线：
 
 - split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在
   `natsume-device-protocol` 中形成；
@@ -1465,8 +1456,8 @@ just api
   barrier、完整snapshot处理和当前在线Actual查询；
 - Operator HTTP与Panel已接入Enrollment、Device lifecycle、五资源target mutation和
   convergence查询，mutation在commit后按语义触发Dirty或Evict；
-- Daemon 只有 identity、control key/manifest 等 foundation，尚无完整连接循环和
-  五资源 Reconciler；
+- Daemon 已实现单一 pinned WSS 连接循环、Gateway/Binding concrete input、
+  五资源 concrete reconciliation，并接通 Helper、Session Agent 与 Caddy；
 - `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建，
   组件、协议和 IPC 单元契约不得在此复制。
 
@@ -1521,7 +1512,7 @@ just api
 - 组件DB私有；
 - Operator/Import既有行为测试保持。
 
-### WP3：Device authority与Admission（已实现，待审查）
+### WP3：Device authority与Admission（已完成）
 
 目标：
 
@@ -1541,7 +1532,7 @@ just api
 - revoked旧key永久拒绝；
 - Enrollment不包含Gateway/Binding。
 
-### WP4：Gateway Component
+### WP4：Gateway Component（已完成）
 
 目标：
 
@@ -1558,7 +1549,7 @@ just api
 - exact replay不重签；
 - secret/DER日志扫描通过。
 
-### WP5：Binding Component
+### WP5：Binding Component（已完成）
 
 目标：
 
@@ -1571,8 +1562,9 @@ just api
 - 一致性读取Contest/Vault；
 - 生成Bound/Unbound target；
 - Server不建立Prompt Command或HTTP/Panel入口；
-- 不实现Client artifact、Binding UI或InputProvider；
-- `TODO(WP9)`：清理Client侧遗留的`prompt_command_id`并由Intent自动展示Binding UI。
+- 不实现Client artifact、Binding UI或input generation；
+- Client侧遗留的`prompt_command_id`已在WP9删除；Binding UI由current Intent与
+  本地Session/Home eligibility自动展示。
 
 验收：
 
@@ -1581,9 +1573,9 @@ just api
 - password/context来自同一次数据库快照，密码在事务外解密；
 - bounded evaluation只产生`SEAT_NOT_FOUND`、`SEAT_UNMAPPED`、`SEAT_OCCUPIED`；
 - Binding authority只由accepted Input或显式Unbind改变；
-- Server代码不包含Prompt Command，Client UI切换留待`TODO(WP9)`。
+- Server代码不包含Prompt Command，Client UI由Intent自动切换。
 
-### WP6：Runtime、Session与Home Components
+### WP6：Runtime、Session与Home Components（已完成）
 
 目标：
 
@@ -1593,8 +1585,8 @@ just api
   concrete operator mutation method，不恢复已删除的lock/unlock/terminate/reset Command API；
 - concrete component当前不接收不会参与Server transition的Actual；
   production `DeviceActor`在组件调用前校验fresh Actual；
-- `TODO(WP9)`：Client负责捕获exact graphical session且terminate不得retarget，并负责
-  Home reset的Prepare/Apply/Verify/Recover与durable completion。
+- WP9已实现Client侧exact graphical session捕获与terminate fencing，以及Home reset的
+  Prepare/Apply/Verify/Recover与durable completion。
 
 验收：
 
@@ -1603,7 +1595,7 @@ just api
 - Home reset target跨组件重建保持durable；
 - Runtime Config不允许修改Control Endpoint。
 
-### WP7：DeviceActor与生产WSS
+### WP7：DeviceActor与生产WSS（已完成）
 
 目标：
 
@@ -1627,7 +1619,7 @@ just api
 - partial component commit crash可恢复；
 - 500–600 Device模拟负载满足容量目标。
 
-### WP8：Operator HTTP、Web与旧面删除
+### WP8：Operator HTTP、Web与旧面删除（已完成）
 
 目标：
 
@@ -1641,20 +1633,20 @@ just api
 
 - Server、OpenAPI与Web无Device Command/Bundle/Token/Observed旧业务symbol；普通CLI
   Command、Import preview token与协议ErrorCode token不属于该旧模型；
-- `TODO(WP9)`：删除仍由Client旧控制路径使用的Command journal、device token与对应
-  local-control字段；WP8不提前实现半套Client Reconciler；
+- WP9已删除Client旧控制路径使用的Command journal、device token与对应
+  local-control字段；
 - Web不复制Rust enum；
 - 所有Active resource target mutation在commit后Dirty；Device disable、revoke与
   current control-key replacement在commit后Evict；
 - API/generated clean diff。
 
-### WP9：Client InputProvider与Reconciler
+### WP9：Client Input与Reconciliation（已实现，待审查）
 
 目标：
 
 - 实现Daemon单一连接循环；
-- Gateway/Binding InputProvider；
-- 五资源Reconciler；
+- Gateway/Binding concrete input generation；
+- 五资源concrete reconciliation；
 - secret splitting、durable artifact和Actual采样；
 - 接通Helper/Agent/Caddy。
 
@@ -1664,6 +1656,7 @@ just api
 - Input durable-before-publish；
 - Actual verify/re-sample-before-publish；
 - 新Target取消旧plan；
+- Control建连、握手和发送具有固定deadline，Pending Enrollment通过WebSocket heartbeat有界检测半开连接；
 - 离线稳态保持安全。
 
 ### WP10：全链路故障与部署签收

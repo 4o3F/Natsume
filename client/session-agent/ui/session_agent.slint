@@ -5,6 +5,7 @@ export component SessionWindow inherits Window {
     in property <string> message-text: "";
     in property <string> screen-kind-text: "";
     in property <bool> seat-input-visible: false;
+    in property <bool> close-allowed: true;
     in-out property <string> seat-code: "";
 
     callback confirm-seat(string);
@@ -57,6 +58,7 @@ export component SessionWindow inherits Window {
             }
 
             Button {
+                visible: root.close-allowed;
                 text: "Close";
                 clicked => {
                     root.cancel();

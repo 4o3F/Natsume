@@ -1,6 +1,9 @@
 //! Device Control connection-bound protocol coordination.
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use axum::extract::ws::{Message as WebSocketMessage, WebSocket};
 use natsume_device_protocol::generated::{
@@ -10,8 +13,9 @@ use natsume_device_protocol::generated::{
 use prost::Message as _;
 use tokio::{
     sync::{Mutex, mpsc},
-    time::timeout,
+    time::{Instant, Sleep, sleep_until, timeout},
 };
+use uuid::Uuid;
 
 mod actor;
 mod admission;
@@ -51,26 +55,31 @@ impl DeviceControl {
         }
     }
 
-    async fn attach(
+    async fn replace_current_lease(
         &self,
         device_id: crate::component::device::DeviceId,
+        state: Weak<ServerState>,
         outbound: mpsc::Sender<natsume_device_protocol::generated::ServerActiveEnvelope>,
-    ) -> Option<([u8; 16], DeviceHandle)> {
-        self.registry.attach(device_id, outbound).await
-    }
-
-    pub(crate) async fn dirty_one(&self, state: Arc<ServerState>, device_id: DeviceId) {
-        self.registry.dirty_one(state, device_id).await;
-    }
-
-    pub(crate) async fn dirty_all(&self, state: Arc<ServerState>) {
-        self.registry.dirty_all(state).await;
-    }
-
-    pub(crate) async fn evict(&self, device_id: DeviceId) {
+    ) -> Option<(Uuid, DeviceHandle)> {
         let handle = self.registry.get_or_spawn(device_id).await;
+        let session_id = handle.replace_current_lease(state, outbound).await?;
+        Some((session_id, handle))
+    }
+
+    pub(crate) async fn dirty_one(&self, device_id: DeviceId) {
+        self.registry.dirty_one(device_id).await;
+    }
+
+    pub(crate) async fn dirty_all(&self) {
+        self.registry.dirty_all().await;
+    }
+
+    pub(crate) async fn evict_current_lease(&self, device_id: DeviceId) {
+        let Some(handle) = self.registry.get(device_id).await else {
+            return;
+        };
         *handle.authority_fence.lock().await = true;
-        handle.evict().await;
+        handle.evict_current_lease().await;
     }
 
     /// Completes disable, fencing, and eviction independently of request cancellation.
@@ -94,7 +103,14 @@ impl DeviceControl {
         state: &ServerState,
         device_id: DeviceId,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        let handle = self.registry.get_or_spawn(device_id).await;
+        let handle = if let Some(handle) = self.registry.get(device_id).await {
+            handle
+        } else {
+            if state.device().find_device(device_id).await?.is_none() {
+                return Err(DeviceError::DeviceNotFound);
+            }
+            self.registry.get_or_spawn(device_id).await
+        };
         let authority_fence = Arc::clone(&handle.authority_fence);
         let mut fenced = authority_fence.lock().await;
         let outcome = state.device().disable(device_id).await?;
@@ -109,7 +125,7 @@ impl DeviceControl {
             outcome,
             LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
         ) {
-            handle.evict().await;
+            handle.evict_current_lease().await;
         }
         Ok(outcome)
     }
@@ -135,7 +151,14 @@ impl DeviceControl {
         state: &ServerState,
         device_id: DeviceId,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        let handle = self.registry.get_or_spawn(device_id).await;
+        let handle = if let Some(handle) = self.registry.get(device_id).await {
+            handle
+        } else {
+            if state.device().find_device(device_id).await?.is_none() {
+                return Err(DeviceError::DeviceNotFound);
+            }
+            self.registry.get_or_spawn(device_id).await
+        };
         let authority_fence = Arc::clone(&handle.authority_fence);
         let mut fenced = authority_fence.lock().await;
         let outcome = state.device().revoke(device_id).await?;
@@ -150,7 +173,7 @@ impl DeviceControl {
             outcome,
             LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
         ) {
-            handle.evict().await;
+            handle.evict_current_lease().await;
         }
         Ok(outcome)
     }
@@ -210,8 +233,8 @@ impl DeviceControl {
         }
         drop(fenced);
         match handle {
-            Some(handle) => handle.evict().await,
-            None => self.evict(authority.device_id()).await,
+            Some(handle) => handle.evict_current_lease().await,
+            None => self.evict_current_lease(authority.device_id()).await,
         }
         approval.complete();
         Ok(authority)
@@ -222,6 +245,7 @@ impl DeviceControl {
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65_536;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
+const CLIENT_SILENCE_TIMEOUT: Duration = Duration::from_mins(1);
 const OUTBOUND_CAPACITY: usize = 1;
 
 /// Drives one upgraded WebSocket through admission, lease attachment, and the active
@@ -258,30 +282,30 @@ pub(crate) async fn serve_connection(mut socket: WebSocket, state: Arc<ServerSta
         ServerHandshakeEnvelope {
             body: Some(server_handshake_envelope::Body::SessionReady(
                 SessionReady {
-                    session_id: session_id.to_vec(),
+                    session_id: session_id.as_bytes().to_vec(),
                 },
             )),
         },
     )
     .await
     {
-        handle.disconnected(session_id).await;
+        handle.clear_lease_if_current(session_id).await;
         return;
     }
 
-    run_active(socket, state, session_id, handle, &mut outgoing).await;
+    run_active(socket, session_id, handle, &mut outgoing).await;
 }
 
-/// Attaches one lease and then closes the precheck-to-attach authority race.
+/// Replaces the current lease and then closes the precheck-to-replacement authority race.
 async fn attach_authority(
     state: &Arc<ServerState>,
     machine_hardware_id: MachineHardwareId,
     authority: ControlAuthority,
     outbound: mpsc::Sender<natsume_device_protocol::generated::ServerActiveEnvelope>,
-) -> Option<([u8; 16], DeviceHandle)> {
+) -> Option<(Uuid, DeviceHandle)> {
     let (session_id, handle) = state
         .device_control()
-        .attach(authority.device_id(), outbound)
+        .replace_current_lease(authority.device_id(), Arc::downgrade(state), outbound)
         .await?;
     if state
         .device()
@@ -290,7 +314,7 @@ async fn attach_authority(
         .ok()
         != Some(Some(authority))
     {
-        handle.disconnected(session_id).await;
+        handle.clear_lease_if_current(session_id).await;
         return None;
     }
     Some((session_id, handle))
@@ -359,7 +383,7 @@ async fn admit_enrollment(
         .ok()?
     {
         EnrollmentStartOutcome::Replay(authority) => authority,
-        EnrollmentStartOutcome::Pending(review, activation) => {
+        EnrollmentStartOutcome::Pending(review, mut activation) => {
             if !send_handshake(
                 socket,
                 ServerHandshakeEnvelope {
@@ -383,11 +407,26 @@ async fn admit_enrollment(
                     .await;
                 return None;
             }
-            let decision = tokio::select! {
-                result = activation => result.ok()?.ok()?,
-                _ = socket.recv() => {
-                    state.device().remove_enrollment_review(review.review_id()).await;
-                    return None;
+            let client_deadline = sleep_until(Instant::now() + CLIENT_SILENCE_TIMEOUT);
+            tokio::pin!(client_deadline);
+            let decision = loop {
+                tokio::select! {
+                    result = &mut activation => break result.ok()?.ok()?,
+                    message = socket.recv() => match message {
+                        Some(Ok(WebSocketMessage::Ping(payload))) if payload.is_empty() => {
+                            client_deadline
+                                .as_mut()
+                                .reset(Instant::now() + CLIENT_SILENCE_TIMEOUT);
+                        }
+                        _ => {
+                            state.device().remove_enrollment_review(review.review_id()).await;
+                            return None;
+                        }
+                    },
+                    () = &mut client_deadline => {
+                        state.device().remove_enrollment_review(review.review_id()).await;
+                        return None;
+                    }
                 }
             };
             match decision {
@@ -436,27 +475,44 @@ async fn admit_enrollment(
 /// carries the local attached session ID, so it cannot clear a replacement lease.
 async fn run_active(
     mut socket: WebSocket,
-    state: Arc<ServerState>,
-    session_id: [u8; 16],
+    session_id: Uuid,
     handle: DeviceHandle,
     outgoing: &mut mpsc::Receiver<natsume_device_protocol::generated::ServerActiveEnvelope>,
 ) {
+    let client_deadline = sleep_until(Instant::now() + CLIENT_SILENCE_TIMEOUT);
+    tokio::pin!(client_deadline);
     loop {
         tokio::select! {
+            biased;
+            () = &mut client_deadline => break,
             message = socket.recv() => {
-                let Some(envelope) = decode_active(message) else {
+                let bytes = match message {
+                    Some(Ok(WebSocketMessage::Binary(bytes))) if bytes.len() <= MAX_MESSAGE_BYTES => bytes,
+                    Some(Ok(WebSocketMessage::Ping(payload))) if refresh_active_client_deadline(
+                        client_deadline.as_mut(),
+                        payload.as_ref(),
+                        &session_id,
+                    ) => {
+                            continue;
+                        }
+                    _ => break,
+                };
+                let Ok(envelope) = ClientActiveEnvelope::decode(bytes) else {
                     break;
                 };
-                let Ok(received_session_id) = envelope.session_id.try_into() else {
+                let Ok(received_session_id) = Uuid::from_slice(&envelope.session_id) else {
                     break;
                 };
                 match envelope.body {
                     Some(client_active_envelope::Body::ClientState(snapshot)) => {
-                        if !handle
-                            .client_state(Arc::clone(&state), received_session_id, snapshot)
-                            .await
-                        {
-                            break;
+                        tokio::select! {
+                            biased;
+                            () = &mut client_deadline => break,
+                            result = handle.enqueue_client_state(received_session_id, snapshot) => {
+                                if result.is_err() {
+                                    break;
+                                }
+                            }
                         }
                     }
                     _ => break,
@@ -480,7 +536,22 @@ async fn run_active(
             }
         }
     }
-    handle.disconnected(session_id).await;
+    drop(socket);
+    handle.clear_lease_if_current(session_id).await;
+}
+
+fn refresh_active_client_deadline(
+    mut deadline: std::pin::Pin<&mut Sleep>,
+    payload: &[u8],
+    session_id: &Uuid,
+) -> bool {
+    if payload != session_id.as_bytes() {
+        return false;
+    }
+    deadline
+        .as_mut()
+        .reset(Instant::now() + CLIENT_SILENCE_TIMEOUT);
+    true
 }
 
 /// Sends one handshake envelope within the fixed transport timeout.
@@ -501,19 +572,6 @@ async fn receive_handshake(socket: &mut WebSocket) -> Option<ClientHandshakeEnve
     match timeout(HANDSHAKE_TIMEOUT, socket.recv()).await {
         Ok(Some(Ok(WebSocketMessage::Binary(bytes)))) if bytes.len() <= MAX_MESSAGE_BYTES => {
             ClientHandshakeEnvelope::decode(bytes).ok()
-        }
-        _ => None,
-    }
-}
-
-/// Decodes one bounded binary active envelope; every other WebSocket outcome is
-/// terminal for the active connection.
-fn decode_active(
-    message: Option<Result<WebSocketMessage, axum::Error>>,
-) -> Option<ClientActiveEnvelope> {
-    match message {
-        Some(Ok(WebSocketMessage::Binary(bytes))) if bytes.len() <= MAX_MESSAGE_BYTES => {
-            ClientActiveEnvelope::decode(bytes).ok()
         }
         _ => None,
     }

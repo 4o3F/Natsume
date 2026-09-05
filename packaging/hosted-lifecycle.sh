@@ -29,7 +29,7 @@ client_deb=$(realpath -- "${client_deb}")
 config=/etc/natsume/config.toml
 
 canonical_endpoint() {
-  /usr/bin/natsume-device-daemon --print-canonical-endpoint "$1" "$2"
+  /usr/bin/natsume-device-daemon canonicalize-endpoint "$1" "$2"
 }
 
 assert_endpoint() {
@@ -132,50 +132,45 @@ assert_group natsume
 assert_user natsume-caddy
 assert_group natsume-caddy
 
-assert_tmpfiles_path /var/lib/natsume 'natsume:natsume 750'
+assert_tmpfiles_path /var/lib/natsume 'natsume:natsume-gateway 750'
 assert_tmpfiles_path /var/lib/natsume/control 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/identity 'natsume:natsume 750'
-assert_tmpfiles_path /var/lib/natsume/journal 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/keys 'natsume:natsume-gateway 2750'
-assert_tmpfiles_path /run/natsume 'natsume:natsume-gateway 770'
-assert_tmpfiles_path /run/natsume/gateway-tls 'natsume:natsume-gateway 750'
-assert_tmpfiles_path /run/natsume/gateway-status 'natsume:natsume-gateway 750'
+assert_tmpfiles_path /run/natsume 'natsume:natsume-gateway 2770'
 
 systemd-analyze --recursive-errors=no verify \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
-  /usr/lib/systemd/system/natsume-caddy.service \
-  /usr/lib/systemd/system/natsume-caddy.path
+  /usr/lib/systemd/system/natsume-caddy.service
 
 identity_file=/var/lib/natsume/identity/identity.json
 control_key_file=/var/lib/natsume/control/control-key-1.pk8
 control_manifest_file=/var/lib/natsume/control/manifest.json
-gateway_key_file=/var/lib/natsume/keys/gateway-key.pk8
-device_token_file=/var/lib/natsume/keys/device-token
-for path in "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${gateway_key_file}" "${device_token_file}"; do
+gateway_generation_directory=/var/lib/natsume/keys/gateway/0198f3b4-5c6d-7e8f-9abc-def012345678
+gateway_key_file=${gateway_generation_directory}/key.pem
+for path in "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${gateway_key_file}"; do
   [[ ! -e ${path} ]] || fail "client lifecycle seed path already exists: ${path}"
 done
+install -d -o natsume -g natsume-gateway -m 2750 "${gateway_generation_directory}"
+assert_tmpfiles_path "${gateway_generation_directory}" 'natsume:natsume-gateway 2750'
 printf '%s' '{"identity":"hosted-lifecycle-fixed"}' >"${identity_file}"
 printf '%s' 'hosted-lifecycle-fixed-control-key' >"${control_key_file}"
 printf '%s' '{"control":"hosted-lifecycle-fixed"}' >"${control_manifest_file}"
 printf '%s' 'hosted-lifecycle-fixed-gateway-key' >"${gateway_key_file}"
-printf '%s' 'hosted-lifecycle-fixed-device-token' >"${device_token_file}"
 chown natsume:natsume \
-  "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${device_token_file}"
+  "${identity_file}" "${control_key_file}" "${control_manifest_file}"
 chown natsume:natsume-gateway "${gateway_key_file}"
 chmod 0600 \
-  "${identity_file}" "${control_key_file}" "${control_manifest_file}" "${device_token_file}"
+  "${identity_file}" "${control_key_file}" "${control_manifest_file}"
 chmod 0640 "${gateway_key_file}"
 identity_hash_before=$(sha256sum "${identity_file}" | cut -d' ' -f1)
 control_key_hash_before=$(sha256sum "${control_key_file}" | cut -d' ' -f1)
 control_manifest_hash_before=$(sha256sum "${control_manifest_file}" | cut -d' ' -f1)
 gateway_key_hash_before=$(sha256sum "${gateway_key_file}" | cut -d' ' -f1)
-device_token_hash_before=$(sha256sum "${device_token_file}" | cut -d' ' -f1)
 identity_metadata_before=$(stat --format='%U:%G %a' "${identity_file}")
 control_key_metadata_before=$(stat --format='%U:%G %a' "${control_key_file}")
 control_manifest_metadata_before=$(stat --format='%U:%G %a' "${control_manifest_file}")
 gateway_key_metadata_before=$(stat --format='%U:%G %a' "${gateway_key_file}")
-device_token_metadata_before=$(stat --format='%U:%G %a' "${device_token_file}")
 
 before_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${client_deb}"
@@ -190,11 +185,10 @@ assert_preserved_file \
   "${control_manifest_file}" "${control_manifest_hash_before}" "${control_manifest_metadata_before}"
 assert_preserved_file \
   "${gateway_key_file}" "${gateway_key_hash_before}" "${gateway_key_metadata_before}"
-assert_preserved_file \
-  "${device_token_file}" "${device_token_hash_before}" "${device_token_metadata_before}"
 rm -f -- \
   "${identity_file}" "${control_key_file}" "${control_manifest_file}" \
-  "${gateway_key_file}" "${device_token_file}"
+  "${gateway_key_file}"
+rmdir -- "${gateway_generation_directory}"
 
 printf 'natsume-client natsume-client/server-ip string %s\n' "${reconfigure_ip}" |
   debconf-set-selections
@@ -221,8 +215,6 @@ dpkg --purge natsume-client
   fail 'purge left the Privileged Helper unit behind'
 [[ ! -e /usr/lib/systemd/system/natsume-caddy.service ]] ||
   fail 'purge left the Caddy service unit behind'
-[[ ! -e /usr/lib/systemd/system/natsume-caddy.path ]] ||
-  fail 'purge left the Caddy path unit behind'
 [[ ! -e /usr/share/dbus-1/system.d/org.natsume.Device1.conf ]] ||
   fail 'purge left the Device1 policy behind'
 [[ ! -e /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf ]] ||

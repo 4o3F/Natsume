@@ -9,39 +9,7 @@ package natsume.device.control;
 // Secret-bearing protobuf field wrapper. The containing message owns presence
 // and value-domain validation. Generated Rust must suppress ordinary Debug
 // output for this type; its value is never legal in logs, ClientStateSnapshot,
-// audit, metrics, ServerClose, ClientClose, or ordinary durable target state.
+// audit, metrics, or ordinary durable target state.
 message SecretBytes {
   bytes value = 1;
-}
-
-// Client behavior after ServerClose. UNSPECIFIED is the proto3 default trap:
-// reject after decode. RETRY uses the Client's single ordinary backoff policy;
-// STOP ends this local connection intent until locally observable state changes
-// or a local operator explicitly re-arms it.
-enum ServerCloseAction {
-  SERVER_CLOSE_ACTION_UNSPECIFIED = 0;
-  SERVER_CLOSE_ACTION_RETRY       = 1;
-  SERVER_CLOSE_ACTION_STOP        = 2;
-}
-
-// Server → Device terminal outcome, legal in Handshake and Active phases. The
-// Server sends at most one, sends no later business message, and then closes the
-// socket. This connection-local fact is not a durable Enrollment review result.
-message ServerClose {
-  // Required non-empty bounded ErrorCode token; never human-readable text or
-  // peer-provided detail. Unknown well-formed tokens remain opaque.
-  string error_code = 1;
-  // Must not be UNSPECIFIED. Client behavior is selected only by this value,
-  // never inferred from error_code.
-  ServerCloseAction action = 2;
-}
-
-// Device → Server terminal report, legal in Handshake and Active phases. The
-// Device sends at most one, sends no later business message, and then closes the
-// socket. It is best-effort connection diagnostics, not a durable transaction
-// result or a request that the Server choose a retry policy.
-message ClientClose {
-  // Required non-empty bounded ErrorCode token; never human-readable text or
-  // peer-provided detail. Unknown well-formed tokens remain opaque.
-  string error_code = 1;
 }

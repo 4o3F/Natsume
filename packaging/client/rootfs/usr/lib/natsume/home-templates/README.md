@@ -1,3 +1,5 @@
 # Home templates
 
-The real package installs a versioned immutable `lower/` tree generated from the target OS `/etc/skel` plus managed Browser/IDE defaults. Runtime reset creates a new OverlayFS upper/work pair; it does not recreate the Unix user.
+TODO(WP10): install a versioned immutable `current/lower/` tree from the signed
+client image's `/etc/skel` and managed Browser/IDE defaults. WP9 only supplies
+the fixed-path reset mechanism; it does not recreate the Unix user.

@@ -1,6 +1,6 @@
 use std::{
     fs::{self, File},
-    io::Write as _,
+    io::{self, Write as _},
     os::unix::fs::PermissionsExt as _,
     path::Path,
 };
@@ -13,32 +13,16 @@ pub(crate) const ATOMIC_TEMP_PREFIX: &str = ".natsume-tmp";
 #[derive(Clone, Copy)]
 pub(super) enum WritePolicy {
     CreateOnly,
-    #[allow(dead_code)]
     Replace,
 }
 
 #[derive(Debug, Snafu)]
 pub(super) enum AtomicWriteError {
-    #[snafu(display("atomic file target has no parent directory"))]
-    Parent,
+    #[snafu(display("atomic file target already exists"))]
+    Conflict,
 
-    #[snafu(display("atomic file temporary file could not be created"))]
-    Create,
-
-    #[snafu(display("atomic file mode could not be set"))]
-    Mode,
-
-    #[snafu(display("atomic file content could not be written"))]
-    Write,
-
-    #[snafu(display("atomic file content could not be synchronized"))]
-    SyncFile,
-
-    #[snafu(display("atomic file could not be renamed into place"))]
-    Rename,
-
-    #[snafu(display("atomic file directory could not be synchronized"))]
-    SyncDirectory,
+    #[snafu(display("atomic file persistence failed"))]
+    Failed,
 }
 
 /// Writes one complete file through a same-directory temporary file, fsync, rename, and directory
@@ -49,38 +33,53 @@ pub(super) fn atomic_write(
     mode: u32,
     policy: WritePolicy,
 ) -> Result<(), AtomicWriteError> {
-    let parent = target.parent().ok_or(AtomicWriteError::Parent)?;
+    let parent = target.parent().ok_or(AtomicWriteError::Failed)?;
     let mut temporary = Builder::new()
         .prefix(ATOMIC_TEMP_PREFIX)
         .tempfile_in(parent)
-        .map_err(|_| AtomicWriteError::Create)?;
+        .map_err(|_| AtomicWriteError::Failed)?;
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(mode))
-        .map_err(|_| AtomicWriteError::Mode)?;
+        .map_err(|_| AtomicWriteError::Failed)?;
     temporary
         .write_all(content)
-        .map_err(|_| AtomicWriteError::Write)?;
+        .map_err(|_| AtomicWriteError::Failed)?;
     temporary
         .as_file()
         .sync_all()
-        .map_err(|_| AtomicWriteError::SyncFile)?;
+        .map_err(|_| AtomicWriteError::Failed)?;
     match policy {
-        WritePolicy::CreateOnly => rustix::fs::renameat_with(
+        WritePolicy::CreateOnly => match rustix::fs::renameat_with(
             rustix::fs::CWD,
             temporary.path(),
             rustix::fs::CWD,
             target,
             rustix::fs::RenameFlags::NOREPLACE,
-        )
-        .map_err(|_| AtomicWriteError::Rename)?,
+        ) {
+            Ok(()) => {}
+            Err(rustix::io::Errno::EXIST) => return Err(AtomicWriteError::Conflict),
+            Err(_) => return Err(AtomicWriteError::Failed),
+        },
         WritePolicy::Replace => {
-            fs::rename(temporary.path(), target).map_err(|_| AtomicWriteError::Rename)?;
+            fs::rename(temporary.path(), target).map_err(|_| AtomicWriteError::Failed)?;
         }
     }
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| AtomicWriteError::SyncDirectory)
+        .map_err(|_| AtomicWriteError::Failed)
+}
+
+/// Removes a file if present and makes the removed directory entry durable before returning.
+pub(super) fn durable_remove(target: &Path) -> io::Result<()> {
+    match fs::remove_file(target) {
+        Ok(()) => {
+            let parent = target.parent().ok_or(io::ErrorKind::InvalidInput)?;
+            File::open(parent)?.sync_all()
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -137,7 +136,7 @@ mod tests {
 
         let result = atomic_write(&target, &new, 0o600, WritePolicy::CreateOnly);
 
-        assert!(matches!(result, Err(AtomicWriteError::Rename)));
+        assert!(matches!(result, Err(AtomicWriteError::Conflict)));
         let actual = match fs::read(&target) {
             Ok(content) => content,
             Err(error) => panic!("old version must remain readable: {error}"),
@@ -149,6 +148,16 @@ mod tests {
             Err(error) => panic!("test directory must be readable: {error}"),
         };
         assert_eq!(entries, 1, "failed temporary file must be cleaned up");
+    }
+
+    #[test]
+    fn non_conflict_failures_are_not_reported_as_conflicts() {
+        let directory = tempdir();
+        let target = directory.path().join("missing").join("record.json");
+
+        let result = atomic_write(&target, b"content", 0o600, WritePolicy::CreateOnly);
+
+        assert!(matches!(result, Err(AtomicWriteError::Failed)));
     }
 
     #[test]
@@ -183,5 +192,22 @@ mod tests {
             entries, 1,
             "temporary file must not remain after replacement"
         );
+    }
+
+    #[test]
+    fn durable_remove_is_idempotent() {
+        let directory = tempdir();
+        let target = directory.path().join("record.json");
+        if let Err(error) = fs::write(&target, b"content") {
+            panic!("fixture must be written: {error}");
+        }
+
+        if let Err(error) = durable_remove(&target) {
+            panic!("existing file must be removed durably: {error}");
+        }
+        assert!(!target.exists());
+        if let Err(error) = durable_remove(&target) {
+            panic!("absent file removal must be idempotent: {error}");
+        }
     }
 }

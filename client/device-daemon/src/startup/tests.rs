@@ -1,19 +1,19 @@
 use std::fs;
 
-use natsume_machine_identity::IdentityRecordState;
 use tempfile::TempDir;
 
 use super::*;
+use crate::{control::ControlLoopError, identity_record::IdentityRecordState};
 
 const NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
 const MACHINE_ID: Uuid = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
 
-fn run_with_claim(
+fn run_with_decision(
     paths: &StartupPaths,
-    claim: &SanitizedHardwareClaim,
+    decision: Result<DerivedMachineIdentity, MachineIdentityError>,
 ) -> Result<StartupIdentityState, StartupError> {
-    let context = preflight(paths)?;
-    apply_claim(paths, context, claim).map(|ready| ready.state)
+    let context = preflight(paths, false)?;
+    apply_identity_decision(paths, &context, decision).map(|ready| ready.state)
 }
 
 fn tempdir() -> TempDir {
@@ -29,12 +29,14 @@ fn fixture_paths(directory: &TempDir) -> StartupPaths {
         identity_directory: directory.path().join("var/lib/natsume/identity"),
         control_directory: directory.path().join("var/lib/natsume/control"),
         keys_directory: directory.path().join("var/lib/natsume/keys"),
+        state_directory: directory.path().join("var/lib/natsume/state"),
     };
     for path in [
         paths.site_config.parent(),
         Some(paths.identity_directory.as_path()),
         Some(paths.control_directory.as_path()),
         Some(paths.keys_directory.as_path()),
+        Some(paths.state_directory.as_path()),
     ] {
         let Some(path) = path else {
             panic!("fixture path must have a parent");
@@ -48,52 +50,31 @@ fn fixture_paths(directory: &TempDir) -> StartupPaths {
 }
 
 fn write_site(paths: &StartupPaths, namespace: &str) {
+    write_site_with_hostname(paths, namespace, "gateway.example");
+}
+
+fn write_site_with_hostname(paths: &StartupPaths, namespace: &str, gateway_hostname: &str) {
     let content = format!(
-        "schema_version = 1\nfleet_namespace_uuid = \"{namespace}\"\ngateway_hostname = \"gateway.example\"\n"
+        "schema_version = 1\nfleet_namespace_uuid = \"{namespace}\"\ngateway_hostname = \"{gateway_hostname}\"\n"
     );
     if let Err(error) = fs::write(&paths.site_config, content) {
         panic!("site fixture must be written: {error}");
     }
 }
 
-fn derived_claim(machine_hardware_id: Uuid) -> SanitizedHardwareClaim {
-    SanitizedHardwareClaim {
-        candidates: vec![
-            HardwareCandidate {
-                anchor_kind: "dmi_system_uuid".to_owned(),
-                candidate_id: Uuid::new_v5(&NAMESPACE, b"system").to_string(),
-                quality: "strong".to_owned(),
-            },
-            HardwareCandidate {
-                anchor_kind: "dmi_board_serial".to_owned(),
-                candidate_id: Uuid::new_v5(&NAMESPACE, b"board").to_string(),
-                quality: "strong".to_owned(),
-            },
-            HardwareCandidate {
-                anchor_kind: "first_disk_serial".to_owned(),
-                candidate_id: Uuid::new_v5(&NAMESPACE, b"disk").to_string(),
-                quality: "medium".to_owned(),
-            },
-        ],
-        collection_complete: true,
-        decision: "derived".to_owned(),
-        machine_hardware_id: Some(machine_hardware_id.to_string()),
-        present_slot_count: 3,
+fn derived_identity(machine_hardware_id: Uuid) -> DerivedMachineIdentity {
+    DerivedMachineIdentity {
+        machine_hardware_id: machine_hardware_id.to_string(),
+        quality: MachineIdentityQuality::Strong,
     }
 }
 
-fn insufficient_claim() -> SanitizedHardwareClaim {
-    SanitizedHardwareClaim {
-        candidates: vec![HardwareCandidate {
-            anchor_kind: "dmi_system_uuid".to_owned(),
-            candidate_id: Uuid::new_v5(&NAMESPACE, b"system").to_string(),
-            quality: "strong".to_owned(),
-        }],
-        collection_complete: false,
-        decision: "insufficient_sources".to_owned(),
-        machine_hardware_id: None,
-        present_slot_count: 1,
-    }
+fn insufficient_identity() -> Result<DerivedMachineIdentity, MachineIdentityError> {
+    Err(MachineIdentityError::InsufficientSources(String::new()))
+}
+
+fn unsupported_identity() -> Result<DerivedMachineIdentity, MachineIdentityError> {
+    Err(MachineIdentityError::Unsupported(String::new()))
 }
 
 fn assert_failure_state(
@@ -101,10 +82,26 @@ fn assert_failure_state(
     expected: StartupIdentityState,
 ) {
     match result {
-        Err(StartupError::FailClosed { state }) => assert_eq!(state, expected),
+        Err(StartupError::FailClosed { state }) => assert_eq!(state, state_label(expected)),
         Err(other) => panic!("unexpected startup failure: {other}"),
         Ok(state) => panic!("startup unexpectedly succeeded in state {state:?}"),
     }
+}
+
+#[test]
+fn control_failure_keeps_its_safe_source_visible() {
+    let error = StartupError::Control {
+        source: ControlLoopError::EndpointConfiguration,
+    };
+
+    assert_eq!(
+        error.to_string(),
+        "device control loop failed closed: the Device control endpoint configuration is invalid"
+    );
+    assert_eq!(
+        std::error::Error::source(&error).map(ToString::to_string),
+        Some("the Device control endpoint configuration is invalid".to_owned())
+    );
 }
 
 #[test]
@@ -112,7 +109,7 @@ fn clean_first_start_writes_the_pinned_record() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
 
-    let result = run_with_claim(&paths, &derived_claim(MACHINE_ID));
+    let result = run_with_decision(&paths, Ok(derived_identity(MACHINE_ID)));
 
     assert!(matches!(result, Ok(StartupIdentityState::CleanFirstStart)));
     assert_eq!(
@@ -142,7 +139,7 @@ fn matching_recomputed_identity_is_ready() {
         panic!("identity fixture must be written: {error}");
     }
 
-    let result = run_with_claim(&paths, &derived_claim(MACHINE_ID));
+    let result = run_with_decision(&paths, Ok(derived_identity(MACHINE_ID)));
 
     assert!(matches!(result, Ok(StartupIdentityState::Matched)));
 }
@@ -159,7 +156,7 @@ fn corrupt_record_fails_closed() {
     }
 
     assert_failure_state(
-        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
         StartupIdentityState::IdentityRecordMissingOrCorrupt,
     );
 }
@@ -177,7 +174,7 @@ fn site_namespace_mismatch_fails_closed() {
     }
 
     assert_failure_state(
-        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
         StartupIdentityState::SiteNamespaceMismatch,
     );
 }
@@ -193,7 +190,13 @@ fn changed_recomputed_identity_requires_reset() {
     }
 
     assert_failure_state(
-        run_with_claim(&paths, &derived_claim(Uuid::from_u128(2))),
+        run_with_decision(
+            &paths,
+            Ok(derived_identity(Uuid::new_v5(
+                &NAMESPACE,
+                b"different-machine",
+            ))),
+        ),
         StartupIdentityState::ResetRequired,
     );
 }
@@ -209,8 +212,24 @@ fn too_few_recomputed_sources_are_indeterminate() {
     }
 
     assert_failure_state(
-        run_with_claim(&paths, &insufficient_claim()),
+        run_with_decision(&paths, insufficient_identity()),
         StartupIdentityState::Indeterminate,
+    );
+}
+
+#[test]
+fn unsupported_recomputed_identity_is_unavailable() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    if let Err(error) =
+        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
+    {
+        panic!("identity fixture must be written: {error}");
+    }
+
+    assert_failure_state(
+        run_with_decision(&paths, unsupported_identity()),
+        StartupIdentityState::IdentityUnavailable,
     );
 }
 
@@ -227,8 +246,26 @@ fn artifacts_without_a_record_fail_closed_before_identity_claim() {
     }
 
     assert_failure_state(
-        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
         StartupIdentityState::IdentityRecordMissingOrCorrupt,
+    );
+}
+
+#[test]
+fn privileged_home_state_without_a_record_fails_closed_before_identity_claim() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+
+    assert_failure_state(
+        preflight(&paths, true).and_then(|context| {
+            apply_identity_decision(&paths, &context, Ok(derived_identity(MACHINE_ID)))
+                .map(|ready| ready.state)
+        }),
+        StartupIdentityState::IdentityRecordMissingOrCorrupt,
+    );
+    assert_eq!(
+        identity_record::read(&paths.identity_directory),
+        IdentityRecordState::Absent
     );
 }
 
@@ -245,7 +282,7 @@ fn control_artifacts_without_a_record_fail_closed_before_identity_claim() {
     }
 
     assert_failure_state(
-        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
         StartupIdentityState::IdentityRecordMissingOrCorrupt,
     );
 }
@@ -256,7 +293,7 @@ fn first_start_without_two_sources_has_no_identity() {
     let paths = fixture_paths(&directory);
 
     assert_failure_state(
-        run_with_claim(&paths, &insufficient_claim()),
+        run_with_decision(&paths, insufficient_identity()),
         StartupIdentityState::IdentityUnavailable,
     );
 }
@@ -267,7 +304,7 @@ fn site_configuration_must_exist_and_use_canonical_uuid() {
     let paths = fixture_paths(&directory);
     write_site(&paths, "12345678-1234-5678-9234-56781234567A");
     assert!(matches!(
-        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
         Err(StartupError::SiteConfiguration)
     ));
 
@@ -275,59 +312,41 @@ fn site_configuration_must_exist_and_use_canonical_uuid() {
         panic!("site fixture must be removed: {error}");
     }
     assert!(matches!(
-        run_with_claim(&paths, &derived_claim(MACHINE_ID)),
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
         Err(StartupError::SiteConfiguration)
     ));
 }
 
 #[test]
-fn inconsistent_sanitized_claim_fails_closed() {
+fn site_configuration_requires_a_canonical_dns_gateway_hostname() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    let mut claim = derived_claim(MACHINE_ID);
-    claim.machine_hardware_id = None;
 
-    assert_failure_state(
-        run_with_claim(&paths, &claim),
-        StartupIdentityState::IdentityUnavailable,
-    );
+    for hostname in [
+        "Gateway.example",
+        "gateway.example.",
+        "192.0.2.1",
+        "-gateway.example",
+    ] {
+        write_site_with_hostname(&paths, &NAMESPACE.to_string(), hostname);
+        assert!(matches!(
+            read_site_identity(&paths.site_config),
+            Err(StartupError::SiteConfiguration)
+        ));
+    }
 }
 
 #[test]
-fn completeness_inconsistent_claim_fails_closed() {
+fn invalid_derived_machine_id_fails_before_first_identity_write() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    let mut claim = derived_claim(MACHINE_ID);
-    claim.collection_complete = false;
+    let decision = Ok(DerivedMachineIdentity {
+        machine_hardware_id: "not-a-machine-id".to_owned(),
+        quality: MachineIdentityQuality::Strong,
+    });
 
     assert_failure_state(
-        run_with_claim(&paths, &claim),
-        StartupIdentityState::IdentityUnavailable,
-    );
-}
-
-#[test]
-fn reported_whole_machine_quality_is_the_minimum_present_slot_quality() {
-    let mut claim = derived_claim(MACHINE_ID);
-    assert_eq!(whole_machine_quality(&claim), Some(EvidenceQuality::Medium));
-
-    claim.candidates[2].quality = "weak".to_owned();
-    assert_eq!(whole_machine_quality(&claim), Some(EvidenceQuality::Weak));
-
-    claim.candidates.pop();
-    claim.present_slot_count = 2;
-    assert_eq!(whole_machine_quality(&claim), Some(EvidenceQuality::Strong));
-}
-
-#[test]
-fn malformed_candidate_quality_fails_before_first_identity_write() {
-    let directory = tempdir();
-    let paths = fixture_paths(&directory);
-    let mut claim = derived_claim(MACHINE_ID);
-    claim.candidates[0].quality = "unreviewed".to_owned();
-
-    assert_failure_state(
-        run_with_claim(&paths, &claim),
+        run_with_decision(&paths, decision),
         StartupIdentityState::IdentityUnavailable,
     );
     assert_eq!(
@@ -343,6 +362,7 @@ fn orphaned_atomic_temporaries_are_not_identity_bound_artifacts() {
     for path in [
         paths.keys_directory.join(".natsume-tmp-key"),
         paths.control_directory.join(".natsume-tmp-manifest"),
+        paths.state_directory.join(".natsume-tmp-state"),
     ] {
         if let Err(error) = fs::write(path, b"incomplete") {
             panic!("orphaned temporary fixture must be written: {error}");
@@ -350,7 +370,11 @@ fn orphaned_atomic_temporaries_are_not_identity_bound_artifacts() {
     }
 
     assert!(matches!(
-        identity_bound_artifacts_present(&paths.keys_directory, &paths.control_directory),
+        identity_bound_artifacts_present(
+            &paths.keys_directory,
+            &paths.control_directory,
+            &paths.state_directory,
+        ),
         Ok(false)
     ));
 }
@@ -359,18 +383,39 @@ fn orphaned_atomic_temporaries_are_not_identity_bound_artifacts() {
 fn normal_regular_file_is_an_identity_bound_artifact() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    if let Err(error) = fs::write(paths.keys_directory.join("gateway-key.pk8"), b"durable") {
+    if let Err(error) = fs::write(paths.keys_directory.join("existing-artifact"), b"durable") {
         panic!("identity-bound artifact fixture must be written: {error}");
     }
 
     assert!(matches!(
-        identity_bound_artifacts_present(&paths.keys_directory, &paths.control_directory),
+        identity_bound_artifacts_present(
+            &paths.keys_directory,
+            &paths.control_directory,
+            &paths.state_directory,
+        ),
         Ok(true)
     ));
 }
 
 #[test]
-fn dormant_control_identity_is_created_after_the_gate_even_when_token_exists() {
+fn reconciliation_artifact_without_identity_record_fails_closed() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    if let Err(error) = fs::write(
+        paths.state_directory.join("runtime-config.json"),
+        b"durable",
+    ) {
+        panic!("reconciliation artifact fixture must be written: {error}");
+    }
+
+    assert_failure_state(
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
+        StartupIdentityState::IdentityRecordMissingOrCorrupt,
+    );
+}
+
+#[test]
+fn control_identity_is_loaded_after_the_identity_gate() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
     if let Err(error) =
@@ -378,16 +423,9 @@ fn dormant_control_identity_is_created_after_the_gate_even_when_token_exists() {
     {
         panic!("identity fixture must be written: {error}");
     }
-    if let Err(error) = fs::write(paths.keys_directory.join("device-token"), b"opaque") {
-        panic!("Device Token fixture must be written: {error}");
-    }
+    let result = load_control_identity(&paths, MACHINE_ID);
 
-    let result = ensure_dormant_control_identity(&paths, MACHINE_ID);
-
-    assert!(matches!(
-        result,
-        Ok(machine_hardware_id) if machine_hardware_id == MACHINE_ID
-    ));
+    assert!(result.is_ok());
     assert!(paths.control_directory.join("control-key-1.pk8").is_file());
     assert!(paths.control_directory.join("manifest.json").is_file());
 }
@@ -397,11 +435,11 @@ fn absent_or_mismatched_persisted_identity_causes_zero_control_writes() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
 
-    let absent = ensure_dormant_control_identity(&paths, MACHINE_ID);
+    let absent = load_control_identity(&paths, MACHINE_ID);
     assert!(matches!(
         absent,
         Err(StartupError::FailClosed {
-            state: StartupIdentityState::IdentityRecordMissingOrCorrupt
+            state: "identity_record_missing_or_corrupt"
         })
     ));
 
@@ -410,11 +448,11 @@ fn absent_or_mismatched_persisted_identity_causes_zero_control_writes() {
     {
         panic!("mismatched identity fixture must be written: {error}");
     }
-    let mismatched = ensure_dormant_control_identity(&paths, MACHINE_ID);
+    let mismatched = load_control_identity(&paths, MACHINE_ID);
     assert!(matches!(
         mismatched,
         Err(StartupError::FailClosed {
-            state: StartupIdentityState::ResetRequired
+            state: "reset_required"
         })
     ));
     let entry_count = match fs::read_dir(&paths.control_directory) {

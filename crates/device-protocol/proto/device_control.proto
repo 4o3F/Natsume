@@ -1,7 +1,6 @@
 syntax = "proto3";
 package natsume.device.control;
 
-import "device_control_common.proto";
 import "device_control_handshake.proto";
 import "device_control_state.proto";
 
@@ -13,7 +12,6 @@ message ServerHandshakeEnvelope {
     // are not part of these authority facts.
     EnrollmentAuthority    enrollment_activated     = 3;
     SessionReady           session_ready            = 4;
-    ServerClose            server_close             = 5;
   }
 }
 
@@ -23,7 +21,6 @@ message ClientHandshakeEnvelope {
     // Connection-local barrier proving the exact preceding authority facts
     // were installed crash-safely. Retry on this connection is idempotent.
     EnrollmentAuthority enrollment_ready = 2;
-    ClientClose     client_close     = 3;
   }
 }
 
@@ -33,17 +30,14 @@ message ClientActiveEnvelope {
   oneof body {
     // Complete replace-latest Client input plus target-derived actual state.
     ClientStateSnapshot client_state = 2;
-    ClientClose         client_close = 3;
   }
 }
 
 message ServerActiveEnvelope {
-  // Exact 16-byte echo of this socket's SessionReady UUIDv7 control lease. A
-  // terminal ServerClose may carry the just-superseded lease for this socket.
+  // Exact 16-byte echo of this socket's SessionReady UUIDv7 control lease.
   bytes session_id = 1;
   oneof body {
     // Complete replace-latest Server intent plus resolved concrete targets.
     ServerStateSnapshot server_state = 2;
-    ServerClose         server_close = 3;
   }
 }

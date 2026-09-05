@@ -149,7 +149,6 @@ fn encode_gateway_target(materialized: &MaterializedGateway) -> GatewayTarget {
             .certificate()
             .map(|certificate| GatewayCertificateGrant {
                 gateway_leaf_der: certificate.leaf_der().to_vec(),
-                issuer_chain_der: certificate.issuer_chain_der().to_vec(),
             }),
     }
 }

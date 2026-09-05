@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -35,10 +33,7 @@ pub(crate) async fn delete_device_binding(
     };
     match state.binding().unbind(device_id).await {
         Ok(()) => {
-            state
-                .device_control()
-                .dirty_one(Arc::clone(&state), device_id)
-                .await;
+            state.device_control().dirty_one(device_id).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => binding_error(error).into_response(),

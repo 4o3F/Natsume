@@ -17,7 +17,7 @@ state_file=${state_dir}/expected-config.sha256
 config=/etc/natsume/config.toml
 
 canonical_endpoint() {
-  /usr/bin/natsume-device-daemon --print-canonical-endpoint "$1" "$2"
+  /usr/bin/natsume-device-daemon canonicalize-endpoint "$1" "$2"
 }
 
 assert_endpoint() {
