@@ -1,6 +1,4 @@
-use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use utoipa::ToSchema;
 
 use natsume_device_protocol::generated::{
     GatewayActualState as WireGatewayActualState, GatewayState as WireGatewayState,
@@ -8,63 +6,34 @@ use natsume_device_protocol::generated::{
 
 use crate::component::gateway::{GatewayActualState, GatewayCredentialId, MaterializedGateway};
 
-use super::ConvergenceStatusResponse;
+use super::ConvergenceStatus;
 
 /// Redacted Gateway target, Actual, and convergence result.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct GatewayConvergenceResponse {
-    #[schema(inline)]
-    pub(super) status: ConvergenceStatusResponse,
-    #[schema(required = true)]
-    pub(super) target: Option<GatewayTargetResponse>,
-    #[schema(required = true)]
-    pub(super) actual: Option<GatewayActualResponse>,
+#[derive(PartialEq, Eq)]
+pub(crate) struct GatewayConvergence {
+    pub(crate) status: ConvergenceStatus,
+    pub(crate) target: Option<GatewayTarget>,
+    pub(crate) actual: Option<GatewayActual>,
 }
 
 /// Public fields required to compare the current Gateway target.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct GatewayTargetResponse {
-    #[schema(
-        format = Uuid,
-        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-    )]
-    pub(super) credential_id: String,
-    #[schema(
-        required = true,
-        min_length = 64,
-        max_length = 64,
-        pattern = "^[0-9a-f]{64}$"
-    )]
-    pub(super) gateway_leaf_sha256: Option<String>,
+#[derive(PartialEq, Eq)]
+pub(crate) struct GatewayTarget {
+    pub(crate) credential_id: String,
+    pub(crate) gateway_leaf_sha256: Option<String>,
 }
 
 /// Latest validated Gateway Actual reported by the current lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct GatewayActualResponse {
-    #[schema(
-        required = true,
-        format = Uuid,
-        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-    )]
-    pub(super) credential_id: Option<String>,
-    #[schema(inline)]
-    pub(super) state: GatewayStateResponse,
-    #[schema(
-        required = true,
-        min_length = 64,
-        max_length = 64,
-        pattern = "^[0-9a-f]{64}$"
-    )]
-    pub(super) gateway_leaf_sha256: Option<String>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct GatewayActual {
+    pub(crate) credential_id: Option<String>,
+    pub(crate) state: GatewayState,
+    pub(crate) gateway_leaf_sha256: Option<String>,
 }
 
 /// Gateway Actual state vocabulary exposed by the convergence projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum GatewayStateResponse {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GatewayState {
     Absent,
     Blocked,
     Restoring,
@@ -73,27 +42,27 @@ pub(super) enum GatewayStateResponse {
     RecoveryRequired,
 }
 
-pub(super) fn gateway_target_response(target: &MaterializedGateway) -> GatewayTargetResponse {
+pub(super) fn gateway_target(target: &MaterializedGateway) -> GatewayTarget {
     let target = target.target();
     let gateway_leaf_sha256 = target
         .certificate()
         .map(|grant| hex::encode(Sha256::digest(grant.leaf_der())));
-    GatewayTargetResponse {
+    GatewayTarget {
         credential_id: target.credential_id().as_text(),
         gateway_leaf_sha256,
     }
 }
 
-pub(super) fn gateway_actual_response(
+pub(super) fn parse_gateway_actual(
     actual: WireGatewayActualState,
-) -> Option<(GatewayActualState, GatewayActualResponse)> {
+) -> Option<(GatewayActualState, GatewayActual)> {
     let state = WireGatewayState::try_from(actual.state).ok()?;
     match (state, actual.credential_id, actual.gateway_leaf_sha256) {
         (WireGatewayState::Absent, None, None) => Some((
             GatewayActualState::Absent,
-            GatewayActualResponse {
+            GatewayActual {
                 credential_id: None,
-                state: GatewayStateResponse::Absent,
+                state: GatewayState::Absent,
                 gateway_leaf_sha256: None,
             },
         )),
@@ -101,9 +70,9 @@ pub(super) fn gateway_actual_response(
             let credential_id = GatewayCredentialId::parse(&credential_id)?;
             Some((
                 GatewayActualState::Tracking { credential_id },
-                GatewayActualResponse {
+                GatewayActual {
                     credential_id: Some(credential_id.as_text()),
-                    state: GatewayStateResponse::Restoring,
+                    state: GatewayState::Restoring,
                     gateway_leaf_sha256: None,
                 },
             ))
@@ -112,9 +81,9 @@ pub(super) fn gateway_actual_response(
             let credential_id = GatewayCredentialId::parse(&credential_id)?;
             Some((
                 GatewayActualState::RecoveryRequired { credential_id },
-                GatewayActualResponse {
+                GatewayActual {
                     credential_id: Some(credential_id.as_text()),
-                    state: GatewayStateResponse::RecoveryRequired,
+                    state: GatewayState::RecoveryRequired,
                     gateway_leaf_sha256: None,
                 },
             ))
@@ -128,10 +97,10 @@ pub(super) fn gateway_actual_response(
         ) => {
             let credential_id = GatewayCredentialId::parse(&credential_id)?;
             let leaf_sha256: [u8; 32] = leaf_sha256.try_into().ok()?;
-            let response_state = match state {
-                WireGatewayState::Blocked => GatewayStateResponse::Blocked,
-                WireGatewayState::Ready => GatewayStateResponse::Ready,
-                WireGatewayState::UpstreamUnhealthy => GatewayStateResponse::UpstreamUnhealthy,
+            let observed_state = match state {
+                WireGatewayState::Blocked => GatewayState::Blocked,
+                WireGatewayState::Ready => GatewayState::Ready,
+                WireGatewayState::UpstreamUnhealthy => GatewayState::UpstreamUnhealthy,
                 _ => return None,
             };
             Some((
@@ -139,9 +108,9 @@ pub(super) fn gateway_actual_response(
                     credential_id,
                     leaf_sha256,
                 },
-                GatewayActualResponse {
+                GatewayActual {
                     credential_id: Some(credential_id.as_text()),
-                    state: response_state,
+                    state: observed_state,
                     gateway_leaf_sha256: Some(hex::encode(leaf_sha256)),
                 },
             ))
@@ -151,26 +120,24 @@ pub(super) fn gateway_actual_response(
 }
 
 pub(super) fn gateway_convergence_status(
-    target: Option<&GatewayTargetResponse>,
-    actual: Option<&GatewayActualResponse>,
-) -> ConvergenceStatusResponse {
+    target: Option<&GatewayTarget>,
+    actual: Option<&GatewayActual>,
+) -> ConvergenceStatus {
     let (Some(target), Some(actual)) = (target, actual) else {
-        return ConvergenceStatusResponse::AwaitingActual;
+        return ConvergenceStatus::AwaitingActual;
     };
-    if actual.state == GatewayStateResponse::RecoveryRequired {
-        return ConvergenceStatusResponse::Failed;
+    if actual.state == GatewayState::RecoveryRequired {
+        return ConvergenceStatus::Failed;
     }
     if target.gateway_leaf_sha256.is_none() {
-        return ConvergenceStatusResponse::Reconciling;
+        return ConvergenceStatus::Reconciling;
     }
     let exact = actual.credential_id.as_deref() == Some(target.credential_id.as_str())
         && actual.gateway_leaf_sha256 == target.gateway_leaf_sha256;
     match (exact, actual.state) {
-        (true, GatewayStateResponse::Ready) => ConvergenceStatusResponse::Converged,
-        (true, GatewayStateResponse::UpstreamUnhealthy) => ConvergenceStatusResponse::Failed,
-        (true, GatewayStateResponse::Blocked | GatewayStateResponse::Restoring) => {
-            ConvergenceStatusResponse::Reconciling
-        }
-        _ => ConvergenceStatusResponse::Drifted,
+        (true, GatewayState::Ready) => ConvergenceStatus::Converged,
+        (true, GatewayState::UpstreamUnhealthy) => ConvergenceStatus::Failed,
+        (true, GatewayState::Blocked | GatewayState::Restoring) => ConvergenceStatus::Reconciling,
+        _ => ConvergenceStatus::Drifted,
     }
 }

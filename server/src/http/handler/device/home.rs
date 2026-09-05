@@ -72,7 +72,7 @@ pub(crate) async fn reset_home(
     };
     match state.home().reset(device_id).await {
         Ok(reset_epoch) => {
-            state.device_control().dirty_one(device_id).await;
+            state.device_control().dirty_device(device_id).await;
             Json(HomeResponse {
                 reset_epoch: Some(reset_epoch),
             })

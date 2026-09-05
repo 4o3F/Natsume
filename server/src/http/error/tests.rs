@@ -209,13 +209,8 @@ fn contest_causes() -> [(ContestError, &'static str, StatusCode); 1] {
     )]
 }
 
-fn device_causes() -> [(DeviceError, &'static str, StatusCode); 4] {
+fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
     [
-        (
-            DeviceError::InvalidDeviceId,
-            "device_invalid_device_id",
-            StatusCode::BAD_REQUEST,
-        ),
         (
             DeviceError::DeviceNotFound,
             "device_not_found",

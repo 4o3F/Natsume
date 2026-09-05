@@ -14,9 +14,9 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::{component::device::DeviceId, server_state::ServerState};
+use crate::component::device::DeviceId;
 
-use super::{convergence::ObservedActualState, state};
+use super::{DeviceControl, convergence::ObservedActualState, state};
 
 const MAILBOX_CAPACITY: usize = 8;
 pub(super) const TARGET_REFRESH_INTERVAL: Duration = Duration::from_mins(1);
@@ -160,13 +160,13 @@ impl DeviceHandle {
     /// Replaces the current connection lease and waits until stale sessions are fenced.
     pub(super) async fn replace_current_lease(
         &self,
-        state: Weak<ServerState>,
+        control: Weak<DeviceControl>,
         outbound: mpsc::Sender<ServerActiveEnvelope>,
     ) -> Option<Uuid> {
         let (replaced, received) = oneshot::channel();
         self.sender
             .send(DeviceEvent::ReplaceCurrentLease {
-                state,
+                control,
                 outbound,
                 replaced,
             })
@@ -242,7 +242,7 @@ impl DeviceHandle {
 enum DeviceEvent {
     /// Replaces any current lease and acknowledges when fencing is effective.
     ReplaceCurrentLease {
-        state: Weak<ServerState>,
+        control: Weak<DeviceControl>,
         outbound: mpsc::Sender<ServerActiveEnvelope>,
         replaced: oneshot::Sender<Uuid>,
     },
@@ -274,7 +274,7 @@ struct CurrentLease {
     session_id: Uuid,
     outbound: mpsc::Sender<ServerActiveEnvelope>,
     observation: Option<(ObservedActualState, i64)>,
-    state: Weak<ServerState>,
+    control: Weak<DeviceControl>,
 }
 
 /// Serial Device event loop.
@@ -320,7 +320,7 @@ async fn run_actor(
         };
         match event {
             DeviceEvent::ReplaceCurrentLease {
-                state,
+                control,
                 outbound,
                 replaced,
             } => {
@@ -331,7 +331,7 @@ async fn run_actor(
                     session_id,
                     outbound,
                     observation: None,
-                    state,
+                    control,
                 });
                 let _ = replaced.send(session_id);
             }
@@ -340,14 +340,14 @@ async fn run_actor(
                 snapshot,
                 received_at_unix_ms,
             } => {
-                let Some((outbound, state)) = current
+                let Some((outbound, control)) = current
                     .as_ref()
                     .filter(|lease| lease.session_id == session_id)
                     .and_then(|lease| {
                         lease
-                            .state
+                            .control
                             .upgrade()
-                            .map(|state| (lease.outbound.clone(), state))
+                            .map(|control| (lease.outbound.clone(), control))
                     })
                 else {
                     continue;
@@ -357,7 +357,8 @@ async fn run_actor(
                     current = None;
                     continue;
                 }
-                let Some((snapshot, actual)) = state::reconcile(&state, device_id, *snapshot).await
+                let Some((snapshot, actual)) =
+                    state::reconcile(&control, device_id, *snapshot).await
                 else {
                     current = None;
                     continue;
@@ -410,14 +411,14 @@ async fn refresh_target(
     authority_fence: &Mutex<bool>,
     current: &mut Option<CurrentLease>,
 ) {
-    let Some((session_id, outbound, state)) = current
+    let Some((session_id, outbound, control)) = current
         .as_ref()
         .filter(|lease| lease.observation.is_some())
         .and_then(|lease| {
             lease
-                .state
+                .control
                 .upgrade()
-                .map(|state| (lease.session_id, lease.outbound.clone(), state))
+                .map(|control| (lease.session_id, lease.outbound.clone(), control))
         })
     else {
         return;
@@ -427,7 +428,7 @@ async fn refresh_target(
         *current = None;
         return;
     }
-    let Some(snapshot) = state::materialize(&state, device_id).await else {
+    let Some(snapshot) = state::materialize(&control, device_id).await else {
         *current = None;
         return;
     };

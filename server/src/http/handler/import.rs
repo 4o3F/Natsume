@@ -155,7 +155,7 @@ pub(crate) async fn create_import(State(state): State<AppState>, body: Bytes) ->
                 expires_at_unix_ms: created.expires_at_unix_ms(),
                 diff: ImportRedactedDiff::from(created.diff()),
             };
-            json_response(StatusCode::CREATED, &response)
+            (StatusCode::CREATED, Json(response)).into_response()
         }
         Err(error) => ApiError::from_import(error).into_response(),
     }
@@ -175,12 +175,10 @@ pub(crate) async fn create_import(State(state): State<AppState>, body: Bytes) ->
 )]
 pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
     match state.import().read_pending().await {
-        Ok(pending) => json_response(
-            StatusCode::OK,
-            &ImportPendingResponse {
-                pending: pending.as_ref().map(ImportPendingSummary::from),
-            },
-        ),
+        Ok(pending) => Json(ImportPendingResponse {
+            pending: pending.as_ref().map(ImportPendingSummary::from),
+        })
+        .into_response(),
         Err(error) => ApiError::from_import(error).into_response(),
     }
 }
@@ -223,7 +221,7 @@ pub(crate) async fn commit_import(
         .await
     {
         Ok(()) => {
-            state.device_control().dirty_all().await;
+            state.device_control().dirty_all_devices().await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => ApiError::from_import(error).into_response(),
@@ -318,17 +316,4 @@ fn decode_preview_token(value: &str) -> Option<[u8; PREVIEW_TOKEN_BYTES]> {
         .ok()?
         .try_into()
         .ok()
-}
-
-fn json_response<T: Serialize>(status: StatusCode, body: &T) -> Response {
-    let encoded = serde_json::to_vec(body).unwrap_or_else(|_| {
-        tracing::error!("import response serialization invariant failed");
-        panic!("import response serialization invariant failed");
-    });
-    (
-        status,
-        [(header::CONTENT_TYPE, "application/json")],
-        encoded,
-    )
-        .into_response()
 }

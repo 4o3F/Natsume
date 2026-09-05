@@ -23,21 +23,19 @@ use crate::{
 
 /// Process-wide business composition shared by every transport.
 ///
-/// Raw infrastructure stays inside concrete components. HTTP, WSS, and actors
-/// receive this state and call business methods instead of assembling their own
-/// dependency graphs.
+/// Startup assembles concrete components and the Device Control coordinator once.
+/// HTTP receives their shared handles; Device Control and actors never depend on
+/// this composition object.
 pub(crate) struct ServerState {
     operator: OperatorComponent,
     contest: ContestComponent,
     import: ImportComponent,
-    provisioning: ProvisioningComponent,
-    device: DeviceComponent,
-    gateway: GatewayComponent,
-    binding: BindingComponent,
-    runtime: RuntimeConfigComponent,
-    session: SessionControlComponent,
-    home: HomeComponent,
-    device_control: DeviceControl,
+    provisioning: Arc<ProvisioningComponent>,
+    device: Arc<DeviceComponent>,
+    binding: Arc<BindingComponent>,
+    session: Arc<SessionControlComponent>,
+    home: Arc<HomeComponent>,
+    device_control: Arc<DeviceControl>,
 }
 
 impl ServerState {
@@ -74,19 +72,35 @@ impl ServerState {
 
     fn from_parts(database: Database, vault: VaultSession, gateway: GatewayComponent) -> Self {
         let vault = Arc::new(vault);
+        let provisioning = Arc::new(ProvisioningComponent::new());
+        let device = Arc::new(DeviceComponent::new(database.clone()));
+        let binding = Arc::new(BindingComponent::new(database.clone(), Arc::clone(&vault)));
+        let session = Arc::new(SessionControlComponent::new(database.clone()));
+        let home = Arc::new(HomeComponent::new(database.clone()));
+        let device_control = Arc::new(DeviceControl::new(
+            Arc::clone(&provisioning),
+            Arc::clone(&device),
+            gateway,
+            Arc::clone(&binding),
+            RuntimeConfigComponent::new(database.clone()),
+            Arc::clone(&session),
+            Arc::clone(&home),
+        ));
         Self {
             operator: OperatorComponent::new(database.clone()),
             contest: ContestComponent::new(database.clone()),
-            import: ImportComponent::new(database.clone(), Arc::clone(&vault)),
-            provisioning: ProvisioningComponent::new(),
-            device: DeviceComponent::new(database.clone()),
-            gateway,
-            binding: BindingComponent::new(database.clone(), vault),
-            runtime: RuntimeConfigComponent::new(database.clone()),
-            session: SessionControlComponent::new(database.clone()),
-            home: HomeComponent::new(database),
-            device_control: DeviceControl::new(),
+            import: ImportComponent::new(database, vault),
+            provisioning,
+            device,
+            binding,
+            session,
+            home,
+            device_control,
         }
+    }
+
+    pub(crate) const fn device_control(&self) -> &Arc<DeviceControl> {
+        &self.device_control
     }
 
     pub(crate) const fn operator(&self) -> &OperatorComponent {
@@ -101,45 +115,31 @@ impl ServerState {
         &self.import
     }
 
-    pub(crate) const fn provisioning(&self) -> &ProvisioningComponent {
+    pub(crate) fn provisioning(&self) -> &ProvisioningComponent {
         &self.provisioning
     }
 
-    pub(crate) const fn device(&self) -> &DeviceComponent {
+    pub(crate) fn device(&self) -> &DeviceComponent {
         &self.device
     }
 
-    pub(crate) const fn gateway(&self) -> &GatewayComponent {
-        &self.gateway
-    }
-
-    pub(crate) const fn binding(&self) -> &BindingComponent {
+    pub(crate) fn binding(&self) -> &BindingComponent {
         &self.binding
     }
 
-    pub(crate) const fn runtime(&self) -> &RuntimeConfigComponent {
-        &self.runtime
-    }
-
-    pub(crate) const fn session(&self) -> &SessionControlComponent {
+    pub(crate) fn session(&self) -> &SessionControlComponent {
         &self.session
     }
 
-    pub(crate) const fn home(&self) -> &HomeComponent {
+    pub(crate) fn home(&self) -> &HomeComponent {
         &self.home
-    }
-
-    /// Returns the process-local coordinator for active Device connections.
-    pub(crate) const fn device_control(&self) -> &DeviceControl {
-        &self.device_control
     }
 }
 
 fn map_gateway_load_error(error: GatewayLoadError) -> ServerStateError {
-    if error.is_trust_root_mismatch() {
-        ServerStateError::OriginCaTrustRootMismatch
-    } else {
-        ServerStateError::OriginCa
+    match error {
+        GatewayLoadError::TrustRootMismatch => ServerStateError::OriginCaTrustRootMismatch,
+        GatewayLoadError::OriginCa => ServerStateError::OriginCa,
     }
 }
 

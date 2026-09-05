@@ -6,35 +6,9 @@ use crate::{
 };
 
 pub(in crate::component::gateway) struct PersistedGatewayRow {
-    credential_id: String,
-    gateway_csr_der: Option<Vec<u8>>,
-    gateway_leaf_der: Option<Vec<u8>>,
-}
-
-impl PersistedGatewayRow {
-    pub(in crate::component::gateway) fn new(
-        credential_id: String,
-        gateway_csr_der: Option<Vec<u8>>,
-        gateway_leaf_der: Option<Vec<u8>>,
-    ) -> Self {
-        Self {
-            credential_id,
-            gateway_csr_der,
-            gateway_leaf_der,
-        }
-    }
-
-    pub(in crate::component::gateway) fn credential_id(&self) -> &str {
-        &self.credential_id
-    }
-
-    pub(in crate::component::gateway) fn gateway_csr_der(&self) -> Option<&[u8]> {
-        self.gateway_csr_der.as_deref()
-    }
-
-    pub(in crate::component::gateway) fn gateway_leaf_der(&self) -> Option<&[u8]> {
-        self.gateway_leaf_der.as_deref()
-    }
+    pub(in crate::component::gateway) credential_id: String,
+    pub(in crate::component::gateway) gateway_csr_der: Option<Vec<u8>>,
+    pub(in crate::component::gateway) gateway_leaf_der: Option<Vec<u8>>,
 }
 
 pub(in crate::component::gateway) fn find_by_device_id(
@@ -51,7 +25,11 @@ pub(in crate::component::gateway) fn find_by_device_id(
         .first::<(String, Option<Vec<u8>>, Option<Vec<u8>>)>(transaction.connection())
         .optional()
         .map(|row| {
-            row.map(|(credential_id, csr, leaf)| PersistedGatewayRow::new(credential_id, csr, leaf))
+            row.map(|(credential_id, csr, leaf)| PersistedGatewayRow {
+                credential_id,
+                gateway_csr_der: csr,
+                gateway_leaf_der: leaf,
+            })
         })
         .map_err(|_| PersistenceError::OperationFailed)
 }
@@ -72,7 +50,11 @@ pub(in crate::component::gateway) fn list(
                 .map(|(device_id, credential_id, csr, leaf)| {
                     (
                         device_id,
-                        PersistedGatewayRow::new(credential_id, csr, leaf),
+                        PersistedGatewayRow {
+                            credential_id,
+                            gateway_csr_der: csr,
+                            gateway_leaf_der: leaf,
+                        },
                     )
                 })
                 .collect()

@@ -139,7 +139,6 @@ impl GatewayComponent {
         self.database
             .read(move |transaction| {
                 db::find_by_device_id(transaction, &device_id.as_text())?
-                    .as_ref()
                     .map(GatewayFact::from_persisted)
                     .transpose()
                     .map(|fact| fact.map(resolve))
@@ -159,7 +158,7 @@ impl GatewayComponent {
                 for (device_id, row) in rows {
                     let device_id =
                         DeviceId::parse(&device_id).ok_or(GatewayError::InvalidPersistedFacts)?;
-                    let target = resolve(GatewayFact::from_persisted(&row)?);
+                    let target = resolve(GatewayFact::from_persisted(row)?);
                     targets.insert(device_id, target);
                 }
                 Ok(targets)
@@ -190,7 +189,7 @@ impl GatewayComponent {
             .read(move |transaction| {
                 let row = db::find_by_device_id(transaction, &device_id.as_text())?
                     .ok_or(GatewayError::InvalidPersistedFacts)?;
-                GatewayFact::from_persisted(&row)
+                GatewayFact::from_persisted(row)
             })
             .await
             .map_err(TransactionError::into_error)
@@ -234,9 +233,13 @@ fn ingest_in_transaction(
             &device_id_text,
             &initial_id.as_text(),
         )?)?;
-        db::PersistedGatewayRow::new(initial_id.as_text(), None, None)
+        db::PersistedGatewayRow {
+            credential_id: initial_id.as_text(),
+            gateway_csr_der: None,
+            gateway_leaf_der: None,
+        }
     };
-    let mut fact = GatewayFact::from_persisted(&row)?;
+    let mut fact = GatewayFact::from_persisted(row)?;
 
     if actual.requires_replacement(&fact) {
         require_change(replace_generation(
@@ -333,18 +336,20 @@ fn grant_is_expired(grant: &GatewayCertificateGrant) -> Result<bool, GatewayErro
 }
 
 fn map_persisted_issuer_error(error: GatewayIssuerError) -> GatewayError {
-    if error.is_invalid_csr() {
-        GatewayError::InvalidPersistedFacts
-    } else {
-        GatewayError::IssuanceFailed
+    match error {
+        GatewayIssuerError::InvalidCsr => GatewayError::InvalidPersistedFacts,
+        GatewayIssuerError::OriginCa
+        | GatewayIssuerError::TrustRootMismatch
+        | GatewayIssuerError::IssuanceFailed => GatewayError::IssuanceFailed,
     }
 }
 
 fn map_load_error(error: GatewayIssuerError) -> GatewayLoadError {
-    if error.is_trust_root_mismatch() {
-        GatewayLoadError::TrustRootMismatch
-    } else {
-        GatewayLoadError::OriginCa
+    match error {
+        GatewayIssuerError::TrustRootMismatch => GatewayLoadError::TrustRootMismatch,
+        GatewayIssuerError::OriginCa
+        | GatewayIssuerError::InvalidCsr
+        | GatewayIssuerError::IssuanceFailed => GatewayLoadError::OriginCa,
     }
 }
 
@@ -445,15 +450,13 @@ impl GatewayFact {
         }
     }
 
-    fn from_persisted(row: &db::PersistedGatewayRow) -> Result<Self, GatewayError> {
-        let credential_id = GatewayCredentialId::parse(row.credential_id())
+    fn from_persisted(row: db::PersistedGatewayRow) -> Result<Self, GatewayError> {
+        let credential_id = GatewayCredentialId::parse(&row.credential_id)
             .ok_or(GatewayError::InvalidPersistedFacts)?;
-        let csr_der = row.gateway_csr_der().map(<[u8]>::to_vec);
-        let grant = match (csr_der.as_ref(), row.gateway_leaf_der()) {
+        let csr_der = row.gateway_csr_der;
+        let grant = match (csr_der.as_ref(), row.gateway_leaf_der) {
             (None | Some(_), None) => None,
-            (Some(_), Some(leaf_der)) => Some(GatewayCertificateGrant {
-                leaf_der: leaf_der.to_vec(),
-            }),
+            (Some(_), Some(leaf_der)) => Some(GatewayCertificateGrant { leaf_der }),
             _ => return Err(GatewayError::InvalidPersistedFacts),
         };
         Ok(Self {
@@ -547,12 +550,6 @@ pub(crate) enum GatewayLoadError {
     OriginCa,
     #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
     TrustRootMismatch,
-}
-
-impl GatewayLoadError {
-    pub(crate) const fn is_trust_root_mismatch(self) -> bool {
-        matches!(self, Self::TrustRootMismatch)
-    }
 }
 
 #[cfg(test)]

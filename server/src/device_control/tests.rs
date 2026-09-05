@@ -1,6 +1,6 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
 
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
+use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection};
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt as _, StreamExt as _};
 use natsume_device_protocol::{
@@ -46,6 +46,61 @@ use super::actor::{DeviceConnectionState, DeviceHandle, DeviceRegistry, TARGET_R
 
 const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 const DOMJUDGE_ORIGIN: &str = "https://domjudge.example.test";
+
+#[tokio::test]
+async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
+    // The fixture keeps database files alive, independently of this composition.
+    let composition = Arc::new(
+        server_state::tests::for_test(fixture.database.clone())
+            .unwrap_or_else(|error| panic!("independent composition failed: {error}")),
+    );
+    let composition_lifetime = Arc::downgrade(&composition);
+    let control = Arc::clone(composition.device_control());
+    drop(composition);
+    assert!(composition_lifetime.upgrade().is_none());
+
+    let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
+        .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
+    let authority = control
+        .device
+        .find_current_authority(machine_hardware_id)
+        .await
+        .unwrap_or_else(|error| panic!("authority lookup failed: {error}"))
+        .unwrap_or_else(|| panic!("the fixture authority is absent"));
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = control
+        .attach_device_lease(machine_hardware_id, authority, outbound)
+        .await
+        .unwrap_or_else(|| panic!("coordinator could not attach without ServerState"));
+    assert!(
+        handle
+            .enqueue_client_state(session_id, valid_snapshot())
+            .await
+            .is_ok()
+    );
+    let snapshot = timeout(Duration::from_secs(5), outgoing.recv())
+        .await
+        .unwrap_or_else(|_| panic!("coordinator did not reconcile without ServerState"))
+        .unwrap_or_else(|| panic!("the current lease unexpectedly closed"));
+    assert_complete_target(snapshot);
+    assert!(matches!(
+        control.registry.read_connection_state(device_id).await,
+        DeviceConnectionState::Active { .. }
+    ));
+
+    let coordinator_lifetime = Arc::downgrade(&control);
+    drop(control);
+    assert!(coordinator_lifetime.upgrade().is_none());
+    drop(handle);
+    assert!(
+        timeout(Duration::from_secs(5), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("the actor did not release its current lease"))
+            .is_none()
+    );
+}
 
 #[tokio::test]
 async fn actor_rejects_stale_and_invalid_frames_before_component_writes() {
@@ -155,7 +210,7 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
         .set_lock(device_id, LockState::Locked)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
-    fixture.state.device_control().dirty_one(device_id).await;
+    fixture.state.device_control().dirty_device(device_id).await;
 
     let refreshed = timeout(Duration::from_secs(5), outgoing.recv())
         .await
@@ -304,12 +359,8 @@ async fn authority_commit_fences_a_waiting_old_client_state_before_component_wri
 
     let gate = handle.authority_fence.lock().await;
     let state = Arc::clone(&fixture.state);
-    let disable = tokio::spawn(async move {
-        state
-            .device_control()
-            .disable_device(Arc::clone(&state), device_id)
-            .await
-    });
+    let disable =
+        tokio::spawn(async move { state.device_control().disable_device(device_id).await });
     tokio::task::yield_now().await;
     assert!(
         handle
@@ -337,12 +388,7 @@ async fn cancelled_request_does_not_cancel_authority_fence_completion() {
     let (_session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
 
     let gate = handle.authority_fence.lock().await;
-    let mut disable = Box::pin(
-        fixture
-            .state
-            .device_control()
-            .disable_device(Arc::clone(&fixture.state), device_id),
-    );
+    let mut disable = Box::pin(fixture.state.device_control().disable_device(device_id));
     assert!(futures_util::poll!(&mut disable).is_pending());
     drop(disable);
     drop(gate);
@@ -373,12 +419,19 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
     let missing = DeviceId::parse("01900000-0000-7000-8000-000000000099")
         .unwrap_or_else(|| panic!("missing Device fixture ID is invalid"));
 
-    assert_eq!(
+    assert!(
         fixture
             .state
             .device_control()
-            .disable_device(Arc::clone(&fixture.state), missing)
-            .await,
+            .read_device_status(missing)
+            .await
+            .unwrap_or_else(|_| panic!("missing Device query failed"))
+            .is_none()
+    );
+    fixture.state.device_control().dirty_device(missing).await;
+    fixture.state.device_control().dirty_all_devices().await;
+    assert_eq!(
+        fixture.state.device_control().disable_device(missing).await,
         Err(DeviceError::DeviceNotFound)
     );
     assert!(
@@ -391,11 +444,7 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
             .is_none()
     );
     assert_eq!(
-        fixture
-            .state
-            .device_control()
-            .revoke_device(Arc::clone(&fixture.state), missing)
-            .await,
+        fixture.state.device_control().revoke_device(missing).await,
         Err(DeviceError::DeviceNotFound)
     );
     assert!(
@@ -460,7 +509,7 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let first_authority = fixture
         .state
         .device_control()
-        .approve_enrollment(Arc::clone(&fixture.state), first_review.review_id())
+        .approve_enrollment(first_review.review_id())
         .await
         .unwrap_or_else(|error| panic!("first approval failed: {error:?}"));
     assert_eq!(
@@ -477,7 +526,7 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let approval = tokio::spawn(async move {
         state
             .device_control()
-            .approve_enrollment(Arc::clone(&state), second_review.review_id())
+            .approve_enrollment(second_review.review_id())
             .await
     });
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -564,24 +613,103 @@ async fn authority_change_after_precheck_is_rejected_after_attach() {
         .unwrap_or_else(|error| panic!("authority lookup failed: {error:?}"))
         .unwrap_or_else(|| panic!("the fixture authority was absent"));
 
+    let (old_outbound, mut old_outgoing) = mpsc::channel(1);
+    let (_, handle) = replace_current_lease(&fixture.state, device_id, old_outbound).await;
+    let gate = handle.authority_fence.lock().await;
+    let prior_weak_count = Arc::weak_count(fixture.state.device_control());
+    let state = Arc::clone(&fixture.state);
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let attach = tokio::spawn(async move {
+        state
+            .device_control()
+            .attach_device_lease(machine_hardware_id, authority, outbound)
+            .await
+    });
+    // Only a successful precheck creates the new lease's Weak. The held fence
+    // keeps the actor from completing replacement while authority is changed.
+    timeout(Duration::from_secs(5), async {
+        while Arc::weak_count(fixture.state.device_control()) == prior_weak_count {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("attach did not pass its authority precheck"));
     fixture
         .state
         .device()
         .disable(device_id)
         .await
         .unwrap_or_else(|error| panic!("Device disable failed: {error:?}"));
-    fixture
-        .state
-        .device_control()
-        .evict_current_lease(device_id)
-        .await;
-    let (outbound, mut outgoing) = mpsc::channel(1);
+    drop(gate);
     assert!(
-        super::attach_authority(&fixture.state, machine_hardware_id, authority, outbound,)
+        timeout(Duration::from_secs(5), attach)
             .await
+            .unwrap_or_else(|_| panic!("attach did not finish"))
+            .unwrap_or_else(|error| panic!("attach task failed: {error}"))
             .is_none()
     );
+    assert!(old_outgoing.recv().await.is_none());
     assert!(outgoing.recv().await.is_none());
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::Offline
+    ));
+}
+
+#[tokio::test]
+async fn failed_authority_commits_leave_the_current_lease_unfenced() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x76; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    fixture
+        .database
+        .write(|transaction| {
+            transaction
+                .connection()
+                .batch_execute(
+                    "CREATE TRIGGER reject_lifecycle BEFORE UPDATE OF state ON devices
+             BEGIN SELECT RAISE(ABORT, 'fixture commit rejected'); END;",
+                )
+                .map_err(|_| PersistenceError::OperationFailed)
+        })
+        .await
+        .unwrap_or_else(|error| panic!("failure fixture: {error:?}"));
+
+    assert_eq!(
+        fixture
+            .state
+            .device_control()
+            .disable_device(device_id)
+            .await,
+        Err(DeviceError::PersistenceFailed)
+    );
+    assert_eq!(
+        fixture
+            .state
+            .device_control()
+            .revoke_device(device_id)
+            .await,
+        Err(DeviceError::PersistenceFailed)
+    );
+    assert!(!*handle.authority_fence.lock().await);
+    assert!(!outgoing.is_closed());
+    assert!(
+        handle
+            .enqueue_client_state(session_id, valid_snapshot())
+            .await
+            .is_ok()
+    );
+    let snapshot = timeout(Duration::from_secs(5), outgoing.recv())
+        .await
+        .unwrap_or_else(|_| panic!("unfenced lease did not reconcile"))
+        .unwrap_or_else(|| panic!("failed commit evicted the current lease"));
+    assert_complete_target(snapshot);
 }
 
 #[tokio::test]
@@ -632,7 +760,7 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
     let authority = fixture
         .state
         .device_control()
-        .approve_enrollment(Arc::clone(&fixture.state), review.review_id())
+        .approve_enrollment(review.review_id())
         .await;
     let authority =
         authority.unwrap_or_else(|error| panic!("replacement approval failed: {error:?}"));
@@ -728,29 +856,25 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
     let single = fixture
         .state
         .device_control()
-        .read_device_status(&fixture.state, device_id)
+        .read_device_status(device_id)
         .await
         .unwrap_or_else(|_| panic!("single Device status failed"))
         .unwrap_or_else(|| panic!("single Device status was absent"));
-    let (_, single_convergence) = single.into_parts();
+    let single_convergence = single.convergence;
     let mut batch = fixture
         .state
         .device_control()
-        .read_all_device_statuses(&fixture.state)
+        .read_all_device_statuses()
         .await
         .unwrap_or_else(|_| panic!("batch Device status failed"));
     assert_eq!(batch.len(), 1);
-    let (device, batch_convergence) = batch
+    let batch_status = batch
         .pop()
-        .unwrap_or_else(|| panic!("batch Device status was absent"))
-        .into_parts();
+        .unwrap_or_else(|| panic!("batch Device status was absent"));
+    let device = batch_status.device;
+    let batch_convergence = batch_status.convergence;
     assert_eq!(device.device_id(), device_id);
-    assert_eq!(
-        serde_json::to_value(single_convergence)
-            .unwrap_or_else(|error| panic!("single convergence serialization failed: {error}")),
-        serde_json::to_value(batch_convergence)
-            .unwrap_or_else(|error| panic!("batch convergence serialization failed: {error}"))
-    );
+    assert!(single_convergence == batch_convergence);
 }
 
 #[tokio::test]
@@ -1078,7 +1202,7 @@ async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
     let authority = fixture
         .state
         .device_control()
-        .approve_enrollment(Arc::clone(&fixture.state), reviews[0].review_id())
+        .approve_enrollment(reviews[0].review_id())
         .await
         .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
     let Some(server_handshake_envelope::Body::EnrollmentActivated(enrollment_authority)) =
@@ -1147,11 +1271,13 @@ async fn replace_current_lease(
     device_id: DeviceId,
     outbound: mpsc::Sender<ServerActiveEnvelope>,
 ) -> (Uuid, DeviceHandle) {
-    state
-        .device_control()
-        .replace_current_lease(device_id, Arc::downgrade(state), outbound)
+    let control = state.device_control();
+    let handle = control.registry.get_or_spawn(device_id).await;
+    let session_id = handle
+        .replace_current_lease(Arc::downgrade(control), outbound)
         .await
-        .unwrap_or_else(|| panic!("the Device actor rejected a lease replacement"))
+        .unwrap_or_else(|| panic!("the Device actor rejected a lease replacement"));
+    (session_id, handle)
 }
 
 fn valid_snapshot() -> ClientStateSnapshot {

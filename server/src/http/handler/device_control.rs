@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Router,
     extract::{State, ws::WebSocketUpgrade},
@@ -32,9 +34,10 @@ async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Re
     if !valid_protocol {
         return StatusCode::BAD_REQUEST.into_response();
     }
+    let control = Arc::clone(state.device_control());
     upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .max_frame_size(MAX_MESSAGE_BYTES)
         .protocols([CONTROL_SUBPROTOCOL])
-        .on_upgrade(move |socket| serve_connection(socket, state))
+        .on_upgrade(move |socket| serve_connection(socket, control))
 }

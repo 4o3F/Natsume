@@ -218,16 +218,6 @@ pub(in crate::component::gateway) enum GatewayIssuerError {
     IssuanceFailed,
 }
 
-impl GatewayIssuerError {
-    pub(in crate::component::gateway) const fn is_invalid_csr(self) -> bool {
-        matches!(self, Self::InvalidCsr)
-    }
-
-    pub(in crate::component::gateway) const fn is_trust_root_mismatch(self) -> bool {
-        matches!(self, Self::TrustRootMismatch)
-    }
-}
-
 struct CsrPublicKey {
     raw: Vec<u8>,
 }
@@ -481,7 +471,7 @@ mod tests {
             let error = GatewayIssuer::validate_csr(invalid)
                 .err()
                 .ok_or(TestError::Assertion)?;
-            if !error.is_invalid_csr() {
+            if !matches!(error, GatewayIssuerError::InvalidCsr) {
                 return Err(TestError::Assertion);
             }
         }
@@ -512,7 +502,7 @@ mod tests {
         )
         .err()
         .ok_or(TestError::Assertion)?;
-        if !root_error.is_trust_root_mismatch() {
+        if !matches!(root_error, GatewayIssuerError::TrustRootMismatch) {
             return Err(TestError::Assertion);
         }
         Ok(())

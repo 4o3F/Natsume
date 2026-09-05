@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Router,
+    Extension, Json, Router,
     extract::State,
     response::{IntoResponse, Response},
     routing::get,
@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 
 use crate::component::{contest::SeatFacts, operator::OperatorIdentity};
 
-use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
+use super::{super::super::error::ApiError, AppState, middleware};
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new().route(
@@ -27,7 +27,7 @@ pub(crate) struct SeatResponse {
 
 impl From<SeatFacts> for SeatResponse {
     fn from(facts: SeatFacts) -> Self {
-        let (seat_id, seat_code) = facts.into_parts();
+        let SeatFacts { seat_id, seat_code } = facts;
         Self { seat_id, seat_code }
     }
 }
@@ -53,7 +53,7 @@ pub(crate) async fn list_seats(
                 .into_iter()
                 .map(SeatResponse::from)
                 .collect::<Vec<_>>();
-            current_facts_response(&response)
+            Json(response).into_response()
         }
         Err(error) => ApiError::from_contest(error).into_response(),
     }

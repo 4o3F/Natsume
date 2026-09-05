@@ -1,5 +1,6 @@
 use axum::{
-    http::{StatusCode, header},
+    Json,
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -176,7 +177,6 @@ impl ApiError {
 
     pub(super) fn from_device(error: DeviceError) -> Self {
         match error {
-            DeviceError::InvalidDeviceId => Self::invalid_request("device_invalid_device_id"),
             DeviceError::DeviceNotFound => Self::not_found("device_not_found"),
             DeviceError::InvalidPersistedFacts => {
                 Self::internal_error("device_invalid_persisted_facts")
@@ -202,38 +202,38 @@ impl ApiError {
                     CsvImportErrorCategory::TooManyRows => "import_csv_too_many_rows",
                     CsvImportErrorCategory::ZeroDataRows => "import_csv_zero_data_rows",
                 };
-                Self::import_error(
+                Self::new(
                     StatusCode::BAD_REQUEST,
                     "Bad Request",
                     ApiErrorCode::ImportCandidateInvalid,
                     cause,
                 )
             }
-            ImportError::CandidateInvalid => Self::import_error(
+            ImportError::CandidateInvalid => Self::new(
                 StatusCode::BAD_REQUEST,
                 "Bad Request",
                 ApiErrorCode::ImportCandidateInvalid,
                 "import_candidate_invalid",
             ),
-            ImportError::CandidatePending => Self::import_error(
+            ImportError::CandidatePending => Self::new(
                 StatusCode::CONFLICT,
                 "Conflict",
                 ApiErrorCode::ImportCandidatePending,
                 "import_candidate_pending",
             ),
-            ImportError::CandidateUnavailable => Self::import_error(
+            ImportError::CandidateUnavailable => Self::new(
                 StatusCode::NOT_FOUND,
                 "Not Found",
                 ApiErrorCode::ImportCandidateUnavailable,
                 "import_candidate_unavailable",
             ),
-            ImportError::PreviewStale => Self::import_error(
+            ImportError::PreviewStale => Self::new(
                 StatusCode::CONFLICT,
                 "Conflict",
                 ApiErrorCode::ImportPreviewStale,
                 "import_preview_stale",
             ),
-            ImportError::SeatOccupied => Self::import_error(
+            ImportError::SeatOccupied => Self::new(
                 StatusCode::CONFLICT,
                 "Conflict",
                 ApiErrorCode::ImportSeatOccupied,
@@ -242,20 +242,6 @@ impl ApiError {
             ImportError::EntropyUnavailable => Self::internal_error("import_entropy_unavailable"),
             ImportError::VaultFailure => Self::internal_error("import_vault_failure"),
             ImportError::PersistenceFailure => Self::internal_error("import_persistence_failure"),
-        }
-    }
-
-    fn import_error(
-        status: StatusCode,
-        title: &'static str,
-        code: ApiErrorCode,
-        cause: &'static str,
-    ) -> Self {
-        Self {
-            status,
-            title,
-            code,
-            cause,
         }
     }
 
@@ -281,15 +267,6 @@ impl IntoResponse for ApiError {
             status: self.status.as_u16(),
             code: self.code.as_str(),
         };
-        let body = serde_json::to_vec(&error_response).unwrap_or_else(|_| {
-            tracing::error!(
-                code = ApiErrorCode::InternalError.as_str(),
-                cause = "http_error_response_serialization_failed",
-                "HTTP error response serialization invariant failed"
-            );
-            panic!("HTTP error response serialization invariant failed");
-        });
-
         if self.status.is_server_error() {
             tracing::error!(
                 code = self.code.as_str(),
@@ -303,12 +280,7 @@ impl IntoResponse for ApiError {
                 "HTTP request rejected"
             );
         }
-        (
-            self.status,
-            [(header::CONTENT_TYPE, "application/json")],
-            body,
-        )
-            .into_response()
+        (self.status, Json(error_response)).into_response()
     }
 }
 

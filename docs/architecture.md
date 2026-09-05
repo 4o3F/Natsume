@@ -396,7 +396,7 @@ production WSS route
       → Active full snapshots
 ```
 
-WSS route只移交socket和进程共享的`ServerState`，不编排Device、
+WSS route只移交socket和进程共享的`Arc<DeviceControl>`，不编排Device、
 Provisioning、admission和Registry的中间步骤。`serve_connection`是单条连接的
 唯一application orchestration入口；admission的proof、pre-auth和ready barrier都不
 泄漏到transport或其他组件。连接期最终只向attach流程交付现有
@@ -672,7 +672,7 @@ concrete component method；固定顺序和完整wire字段在调用点可见。
 ### 10.3 Active 资源的静态编排
 
 WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过
-`ServerState`的窄accessor按固定wire structure显式调用它们，不增加
+`DeviceControl`的显式组件依赖按固定wire structure调用它们，不增加
 `StateComponents` wrapper。
 
 不使用：
@@ -687,9 +687,9 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过
 
 ### 10.4 `ServerState`
 
-`ServerState` 是进程内唯一业务组合对象，由启动入口创建并通过 `Arc` 共享给所有
-transport。HTTP 的 `AppState` 只是 `Arc<ServerState>` 类型别名，不再建立第二个
-依赖容器。
+`ServerState::load/from_parts`是进程依赖的组装入口，`ServerState`是组装后的共享句柄集合，
+不执行设备应用用例。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；
+WSS连接处理和Actor只取得设备协调器，不依赖整个组合对象。
 
 当前已实现的组成是：
 
@@ -698,22 +698,42 @@ pub(crate) struct ServerState {
     operator: OperatorComponent,
     contest: ContestComponent,
     import: ImportComponent,
-    provisioning: ProvisioningComponent,
-    device: DeviceComponent,
-    gateway: GatewayComponent,
-    binding: BindingComponent,
-    runtime: RuntimeConfigComponent,
-    session: SessionControlComponent,
-    home: HomeComponent,
-    device_control: DeviceControl,
+    provisioning: Arc<ProvisioningComponent>,
+    device: Arc<DeviceComponent>,
+    binding: Arc<BindingComponent>,
+    session: Arc<SessionControlComponent>,
+    home: Arc<HomeComponent>,
+    device_control: Arc<DeviceControl>,
 }
 ```
 
-`DeviceControl`私有持有`DeviceRegistry`和仅用于Enrollment审批的进程内串行门；
-不增加单层 `Components` wrapper，也不建立 service locator。生产构造入口统一为
-`ServerState::load(database, &config)`：它加载一次`VaultSession`，提取每个组件的
-窄依赖，并调用组件自己的concrete constructor。完整`ServerConfig`不下传给各组件，
-transport也只能取得component reference。
+`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和五个资源组件，
+并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。
+同时被HTTP使用的五个组件共享同一`Arc`实例；Gateway和Runtime Config目前只有协调器消费，
+构造后直接移交给它，`ServerState`不保留无消费者的副本或accessor。
+
+生产构造入口统一为`ServerState::load(database, &config)`：加载一次`VaultSession`，
+调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。
+完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、
+`DeviceService → DeviceControl`转发层或通用用例执行器。
+HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例；
+不能取得Registry、actor handle、审批锁或authority fence。
+
+跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。
+当前仅提供八个有实际消费者的入口：
+
+- `read_device_status`、`read_all_device_statuses`汇总组件当前事实和lease observation；
+  HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
+- `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction；
+  三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
+- `dirty_device`、`dirty_all_devices`向已有Actor发出提交后通知，不创建Actor。
+- `attach_device_lease`负责attach前后exact authority重检与lease替换；
+  只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
+
+单资源mutation仍直接调用owning component，成功后调用上述Dirty入口，不再增加一层
+一对一业务包装。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。
+Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade，
+不建立协调器、Registry与Actor之间的长期强引用环。
 
 ### 10.5 组件内部数据库
 
@@ -753,18 +773,19 @@ Database + ServerConfig
       → VaultSession
       → GatewayComponent { Origin CA }
       → concrete business components
-      → DeviceControl { DeviceRegistry }
+      → Arc<DeviceControl> { concrete dependencies, DeviceRegistry }
   → Arc<ServerState>
-  → HTTP + Device WSS
+  → HTTP
+      → Device WSS { Arc<DeviceControl> }
 ```
 
-WSS、DeviceActor和HTTP共享该对象。`GatewayIssuer`由Gateway Component持有。
+HTTP持有组合对象，WSS和DeviceActor使用其中构造的同一协调器。`GatewayIssuer`由Gateway Component持有。
 不存在全局 singleton，也不允许transport重新组装
 组件依赖。Database连接/迁移、TLS listener和HTTP生命周期仍由`serve`启动入口负责；
 `ServerState`不持有完整`ServerConfig`，组件也不自行重复加载共享依赖。
 
 Production WSS handler只把socket交给`device_control::serve_connection`。该入口在模块
-内完成admission、Device authority查询/激活、最终复查和Registry attach；
+内完成admission与Enrollment握手，通过`DeviceControl::attach_device_lease`完成最终复查和Registry attach；
 handler不传递或match admission中间状态。
 
 ### 11.2 Registry
@@ -778,7 +799,8 @@ HashMap<DeviceId, DeviceHandle>
 Registry：
 
 - 启动为空；
-- `serve_connection`完成exact authority/lifecycle复查后按`device_id`懒创建Actor；
+- `DeviceControl::attach_device_lease`完成exact authority/lifecycle预检查后按`device_id`懒创建Actor，
+  替换lease后再次复查；authority mutation也只为已存在的Device取得或创建Actor；
 - 锁只保护 map，不跨 `.await`、DB 或 channel send；
 - 不按 HWID 创建 MachineActor；
 - 不维护 public-key/HWID alias authority；
@@ -793,11 +815,11 @@ HWID 并发和一个 non-revoked Device 约束由数据库 unique constraint 最
 
 ```rust
 enum DeviceEvent {
-    Attach { session_id, outbound },
-    ClientState { state, session_id, snapshot, received_at_unix_ms },
-    Evict { evicted },
-    ConnectionState { respond },
-    Disconnected { session_id },
+    ReplaceCurrentLease { control: Weak<DeviceControl>, outbound, replaced },
+    ReconcileClientState { session_id, snapshot, received_at_unix_ms },
+    EvictCurrentLease { evicted },
+    ReadConnectionState { respond },
+    ClearLeaseIfCurrent { session_id },
 }
 ```
 
@@ -807,7 +829,9 @@ Actor 只拥有临时协调状态：
 - 首个有效 ClientState 到达前不生成target；
 - 有界 mailbox；
 - 独立于mailbox容量、可合并的Dirty watch；
-- 首个有效ClientState提供的进程共享`ServerState`引用与低频完整Target刷新计时器；
+- attach时保存在current lease中的`Weak<DeviceControl>`，处理事件时临时upgrade，
+  不在Actor内长期持有强引用，也不在ClientState事件中反复传递状态；
+- 首个有效ClientState之后才可使用的低频完整Target刷新计时器；
 - current outbound sender；
 - current lease的latest fully-validated typed Actual与receive-time。
 
@@ -850,7 +874,8 @@ validate current lease
 
 1. 先提交业务；
 2. application coordination根据当前mutation的具体语义确定影响一个Device还是全部在线Device；
-3. `DeviceControl` 推进对应Actor的可合并`Dirty` watch。
+3. 调用`DeviceControl::dirty_device/dirty_all_devices`，
+   推进对应Actor的可合并`Dirty` watch。
 
 组件不能反向持有 Registry。
 
@@ -859,11 +884,14 @@ Dirty不携带业务数据，也不占用业务mailbox；Actor在首个有效Cli
 Device disable、revoke和current control-key replacement不是普通target变更。它们在
 Device Component commit后对准确`device_id`发送`Evict`，终止current lease；
 `Evict`不能合并为或降级为best-effort `Dirty`。组件仍不反向持有Registry，
-该commit后动作由`DeviceControl`执行。为保证authority commit后旧lease零写入，
-`DeviceControl`先与该Device正在执行的ClientState/Dirty互斥，再提交authority mutation，
+该用例顺序和runtime原语都封装在`DeviceControl`内，组合对象不参与执行。
+为保证authority commit后旧lease零写入，协调器先取得该Device的authority fence，
+与正在执行的ClientState/Dirty互斥，再调用Device Component提交authority mutation，
 在释放互斥前标记lease fenced，随后发送并等待`Evict`确认；组件提交失败时不fence。
 Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不能留下Registry entry。
 该mutation→fence→evict序列由进程持有的任务完成，不因发起它的HTTP请求取消而中断。
+审批另持有`DeviceControl`的串行门，在读取当前authority后取得其fence；
+完成旧lease eviction后才交付activation通知。组件仍拥有review claim、Gate复查和数据库事务。
 
 ### 11.6 Channel 与背压
 
@@ -1096,7 +1124,8 @@ strict parse
 
 ### 15.3 Desired-state Operator API
 
-旧 `/commands` API和Panel Command模型删除。Operator操作直接调用 owning component：
+旧 `/commands` API和Panel Command模型删除。单组件Operator操作直接调用owning component；
+跨组件查询及authority变更使用`DeviceControl`应用入口：
 
 - 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态，
   `PATCH /devices/{device_id}`修改Device lifecycle，
@@ -1114,7 +1143,7 @@ HTTP方法表达资源语义，不为动词机械创建伪资源，也不把实�
 业务handler不重复声明这些transport策略。
 
 Operator target mutation由application coordination在commit后调用
-`DeviceControl`的单Device或全部在线Device Dirty入口。当前没有Many的真实调用方，
+`DeviceControl`的单Device或全部已有Actor Dirty入口。当前没有Many的真实调用方，
 不预建通用impact enum。HTTP handler不直接访问组件表。
 
 ### 15.4 Panel状态
@@ -1130,8 +1159,13 @@ Panel展示：
 Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
 `DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation，
-不缓存target或convergence。`DeviceControl`负责把各组件当前durable target与Registry返回的
-current-lease observation即时比较；HTTP handler只处理请求、错误映射和序列化。单Device
+不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的
+current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。
+该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Utoipa；
+`convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的
+查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。
+HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、
+校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device
 详情保留直接读取路径；Device collection为完整fleet状态执行固定批量读取：Device、Gateway、
 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public
 context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle，
@@ -1279,13 +1313,26 @@ server/src/
   device_control.rs
   device_control/
     actor.rs
-    registry.rs
     admission.rs
-    snapshot.rs
-    types.rs
+    application.rs
+    state.rs
+    convergence.rs
+    convergence/
+      gateway.rs
+      binding.rs
+      runtime.rs
+      session.rs
+      home.rs
   http.rs
   http/handler/
     device_control.rs
+    device/convergence.rs
+    device/convergence/
+      gateway.rs
+      binding.rs
+      runtime.rs
+      session.rs
+      home.rs
   db.rs
   vault.rs
   pki.rs
@@ -1296,6 +1343,11 @@ server/src/
 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning
 component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际
 变大后才拆`types.rs`或`resolve.rs`。
+
+Contest的三个只读查询只占`contest.rs`与`contest/db.rs`，不按每个查询拆子模块；
+Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字段只在owning component内
+可见，领域转换继续验证；不为直接字段读写增加无校验constructor/getter。
+普通HTTP JSON响应使用Axum `Json`，不维护重复的手工序列化response wrapper。
 
 现有Operator/Import代码迁移时保持行为测试，不借本次重构增加新功能。
 
@@ -1438,14 +1490,15 @@ just api
 
 ### 当前实现基线
 
-2026-09-03 的实现基线：
+2026-09-03 的实现基线（Server组合边界于2026-09-05修正）：
 
 - split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在
   `natsume-device-protocol` 中形成；
 - 唯一 initial migration 和 Diesel schema 已统一到 17 张目标表，不再包含
   Command、Observed、Token 或 Bundle 旧模型；
 - Server 已建立纵向 `component` 结构和进程级 `ServerState`；所有业务组件持有自己的
-  concrete dependency，HTTP只调用component facade或`DeviceControl` application coordination；
+  concrete dependency，HTTP只调用component facade或显式持有依赖的`DeviceControl`；
+  `ServerState`只负责组装，Actor/WSS不再依赖该根对象；
 - Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
   属于 HTTP；
 - Device Component 拥有 Device/current control key 的 durable authority、连接期
@@ -1499,7 +1552,7 @@ just api
 目标：
 
 - 建立`component`纵向结构；
-- 建立进程级`ServerState`，由HTTP和后续WSS/Actor共享；
+- 建立进程级`ServerState`组合入口；HTTP使用其组件句柄，WSS/Actor使用其中组装的设备协调器；
 - 让Operator、Contest、Import、Provisioning持有自己的concrete dependency；
 - Vault在启动时加载一次，Provisioning gate归属组件；
 - 定义application-owned validated types。
@@ -1602,16 +1655,16 @@ just api
 - 实现单连接`device_control::serve_connection`编排入口；
 - 使用同一`review_id`的一次性通知交付Enrollment activation结果；
 - 实现Registry、Actor、lease fencing、fresh barrier；
-- production Actor直接调用`ServerState`中的concrete components，不增加
+- production Actor使用`DeviceControl`中的concrete components，不增加
   `StateComponent`、`StateComponents`或dynamic registry；
 - 串行组件ingest/materialize；
 - 完整snapshot编解码；
 - bounded mailbox与outbound背压；
-- Registry为Operator mutation提供`Dirty`/`Evict`入口。
+- Registry的`Dirty`/`Evict`原语封装在`DeviceControl`应用用例内部。
 
 验收：
 
-- admission中间状态不泄漏到WSS handler，attach前exact authority与
+- admission中间状态不泄漏到WSS handler，attach前后exact authority与
   lifecycle复查覆盖disable/revoke/replacement竞态；
 - 每Device一个current lease；
 - 旧frame零写入；

@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -128,11 +126,7 @@ pub(crate) async fn approve_enrollment_review(
         return ApiError::invalid_request("enrollment_review_id_not_canonical_uuid_v7")
             .into_response();
     };
-    match state
-        .device_control()
-        .approve_enrollment(Arc::clone(&state), review_id)
-        .await
-    {
+    match state.device_control().approve_enrollment(review_id).await {
         Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => enrollment_approval_error(error).into_response(),
     }

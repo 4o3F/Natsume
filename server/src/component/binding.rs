@@ -170,10 +170,10 @@ impl BindingComponent {
                 target: BindingAccessTarget { bound: None },
             }),
             BindingFact::Bound(row) => {
-                let context = BindingContext::from_persisted(row.context())?;
+                let context = BindingContext::from_persisted(&row.context)?;
                 let plaintext = self
                     .vault
-                    .open(row.nonce(), row.ciphertext())
+                    .open(&row.nonce, &row.ciphertext)
                     .map_err(|_| BindingError::VaultFailure)?;
                 let password = BindingPassword::new(plaintext)?;
                 Ok(MaterializedBinding {
@@ -246,8 +246,8 @@ fn ingest_submission(
     let seat = db::find_submission_seat(transaction, &input.seat_code)?;
     let evaluation = match seat.as_ref() {
         None => Some(BindingEvaluationCode::NotFound),
-        Some(seat) if !seat.is_mapped() => Some(BindingEvaluationCode::Unmapped),
-        Some(seat) if seat.is_occupied() => Some(BindingEvaluationCode::Occupied),
+        Some(seat) if !seat.mapped => Some(BindingEvaluationCode::Unmapped),
+        Some(seat) if seat.occupied => Some(BindingEvaluationCode::Occupied),
         Some(_) => None,
     };
     if let Some(evaluation) = evaluation {
@@ -266,7 +266,7 @@ fn ingest_submission(
         transaction,
         binding_id.value(),
         device_id,
-        seat.seat_id(),
+        seat.seat_id,
     )?)?;
     require_one(db::delete_negotiation(
         transaction,
@@ -445,15 +445,15 @@ impl NegotiationFact {
     }
 
     fn from_persisted(row: &db::PersistedNegotiationRow) -> Result<Self, BindingError> {
-        let rejected_submission = if let Some(submission) = row.rejected_submission() {
+        let rejected_submission = if let Some(submission) = row.rejected_submission.as_ref() {
             Some(RejectedSubmission {
                 submission_epoch: BindingSubmissionEpoch::from_persisted(
-                    submission.submission_epoch(),
+                    submission.submission_epoch,
                 )
                 .ok_or(BindingError::InvalidPersistedFacts)?,
-                seat_code: submission.seat_code().to_owned(),
+                seat_code: submission.seat_code.clone(),
                 evaluation_code: BindingEvaluationCode::from_error_code(
-                    submission.evaluation_error_code(),
+                    &submission.evaluation_error_code,
                 )
                 .ok_or(BindingError::InvalidPersistedFacts)?,
             })
@@ -461,7 +461,7 @@ impl NegotiationFact {
             None
         };
         Ok(Self {
-            negotiation_id: BindingNegotiationId::from_uuid(row.negotiation_id()),
+            negotiation_id: BindingNegotiationId::from_uuid(row.negotiation_id),
             rejected_submission,
         })
     }
@@ -534,17 +534,17 @@ pub(crate) struct BindingContext {
 
 impl BindingContext {
     fn from_persisted(row: &db::PersistedBoundContextRow) -> Result<Self, BindingError> {
-        let seat_code = row.seat_code();
-        let domjudge_username = row.domjudge_username();
+        let seat_code = &row.seat_code;
+        let domjudge_username = &row.domjudge_username;
         if !valid_public_text(seat_code) || !valid_public_text(domjudge_username) {
             return Err(BindingError::InvalidPersistedFacts);
         }
         Ok(Self {
-            binding_id: BindingId::from_uuid(row.binding_id()),
-            account_id: row.account_id(),
+            binding_id: BindingId::from_uuid(row.binding_id),
+            account_id: row.account_id,
             seat_code: seat_code.to_owned(),
             domjudge_username: domjudge_username.to_owned(),
-            credential_revision: u64::try_from(row.credential_revision())
+            credential_revision: u64::try_from(row.credential_revision)
                 .ok()
                 .filter(|revision| *revision >= 1)
                 .ok_or(BindingError::InvalidPersistedFacts)?,

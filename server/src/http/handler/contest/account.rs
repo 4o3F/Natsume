@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Router,
+    Extension, Json, Router,
     extract::State,
     response::{IntoResponse, Response},
     routing::get,
@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 
 use crate::component::{contest::AccountFacts, operator::OperatorIdentity};
 
-use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
+use super::{super::super::error::ApiError, AppState, middleware};
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new().route(
@@ -28,7 +28,11 @@ pub(crate) struct AccountResponse {
 
 impl From<AccountFacts> for AccountResponse {
     fn from(facts: AccountFacts) -> Self {
-        let (account_id, domjudge_username, credential_revision) = facts.into_parts();
+        let AccountFacts {
+            account_id,
+            domjudge_username,
+            credential_revision,
+        } = facts;
         Self {
             account_id,
             domjudge_username,
@@ -58,7 +62,7 @@ pub(crate) async fn list_accounts(
                 .into_iter()
                 .map(AccountResponse::from)
                 .collect::<Vec<_>>();
-            current_facts_response(&response)
+            Json(response).into_response()
         }
         Err(error) => ApiError::from_contest(error).into_response(),
     }

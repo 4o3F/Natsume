@@ -1,9 +1,4 @@
-use axum::{
-    Router,
-    http::{StatusCode, header},
-    response::{IntoResponse, Response},
-};
-use serde::Serialize;
+use axum::Router;
 
 use super::super::{AppState, middleware};
 
@@ -16,17 +11,4 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         .merge(seat::routes(state.clone()))
         .merge(account::routes(state.clone()))
         .merge(binding::routes(state))
-}
-
-fn current_facts_response<T: Serialize>(facts: &[T]) -> Response {
-    let body = serde_json::to_string(&facts).unwrap_or_else(|_| {
-        tracing::error!("current facts response serialization invariant failed");
-        panic!("current facts response serialization invariant failed");
-    });
-    (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
 }

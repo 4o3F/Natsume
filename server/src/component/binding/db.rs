@@ -25,110 +25,34 @@ type PersistedBoundContext = (
 );
 
 pub(in crate::component::binding) struct PersistedNegotiationRow {
-    negotiation_id: Uuid,
-    rejected_submission: Option<PersistedRejectedSubmissionRow>,
-}
-
-impl PersistedNegotiationRow {
-    pub(in crate::component::binding) const fn negotiation_id(&self) -> Uuid {
-        self.negotiation_id
-    }
-
-    pub(in crate::component::binding) const fn rejected_submission(
-        &self,
-    ) -> Option<&PersistedRejectedSubmissionRow> {
-        self.rejected_submission.as_ref()
-    }
+    pub(in crate::component::binding) negotiation_id: Uuid,
+    pub(in crate::component::binding) rejected_submission: Option<PersistedRejectedSubmissionRow>,
 }
 
 pub(in crate::component::binding) struct PersistedRejectedSubmissionRow {
-    submission_epoch: i64,
-    seat_code: String,
-    evaluation_error_code: String,
-}
-
-impl PersistedRejectedSubmissionRow {
-    pub(in crate::component::binding) const fn submission_epoch(&self) -> i64 {
-        self.submission_epoch
-    }
-
-    pub(in crate::component::binding) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    pub(in crate::component::binding) fn evaluation_error_code(&self) -> &str {
-        &self.evaluation_error_code
-    }
+    pub(in crate::component::binding) submission_epoch: i64,
+    pub(in crate::component::binding) seat_code: String,
+    pub(in crate::component::binding) evaluation_error_code: String,
 }
 
 pub(in crate::component::binding) struct PersistedSubmissionSeatRow {
-    seat_id: Uuid,
-    mapped: bool,
-    occupied: bool,
-}
-
-impl PersistedSubmissionSeatRow {
-    pub(in crate::component::binding) const fn seat_id(&self) -> Uuid {
-        self.seat_id
-    }
-
-    pub(in crate::component::binding) const fn is_mapped(&self) -> bool {
-        self.mapped
-    }
-
-    pub(in crate::component::binding) const fn is_occupied(&self) -> bool {
-        self.occupied
-    }
+    pub(in crate::component::binding) seat_id: Uuid,
+    pub(in crate::component::binding) mapped: bool,
+    pub(in crate::component::binding) occupied: bool,
 }
 
 pub(in crate::component::binding) struct PersistedBoundTargetRow {
-    context: PersistedBoundContextRow,
-    nonce: Vec<u8>,
-    ciphertext: Vec<u8>,
-}
-
-impl PersistedBoundTargetRow {
-    pub(in crate::component::binding) const fn context(&self) -> &PersistedBoundContextRow {
-        &self.context
-    }
-
-    pub(in crate::component::binding) fn nonce(&self) -> &[u8] {
-        &self.nonce
-    }
-
-    pub(in crate::component::binding) fn ciphertext(&self) -> &[u8] {
-        &self.ciphertext
-    }
+    pub(in crate::component::binding) context: PersistedBoundContextRow,
+    pub(in crate::component::binding) nonce: Vec<u8>,
+    pub(in crate::component::binding) ciphertext: Vec<u8>,
 }
 
 pub(in crate::component::binding) struct PersistedBoundContextRow {
-    binding_id: Uuid,
-    account_id: Uuid,
-    seat_code: String,
-    domjudge_username: String,
-    credential_revision: i64,
-}
-
-impl PersistedBoundContextRow {
-    pub(in crate::component::binding) const fn binding_id(&self) -> Uuid {
-        self.binding_id
-    }
-
-    pub(in crate::component::binding) const fn account_id(&self) -> Uuid {
-        self.account_id
-    }
-
-    pub(in crate::component::binding) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    pub(in crate::component::binding) fn domjudge_username(&self) -> &str {
-        &self.domjudge_username
-    }
-
-    pub(in crate::component::binding) const fn credential_revision(&self) -> i64 {
-        self.credential_revision
-    }
+    pub(in crate::component::binding) binding_id: Uuid,
+    pub(in crate::component::binding) account_id: Uuid,
+    pub(in crate::component::binding) seat_code: String,
+    pub(in crate::component::binding) domjudge_username: String,
+    pub(in crate::component::binding) credential_revision: i64,
 }
 
 pub(in crate::component::binding) fn find_device_state(

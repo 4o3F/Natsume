@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{fs, net::SocketAddr, path::Path, path::PathBuf};
 
 use serde::Deserialize;
@@ -20,7 +18,6 @@ pub struct ServerConfig {
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
     site_config_path: PathBuf,
-    control_root_path: PathBuf,
     local_origin_root_path: PathBuf,
 }
 
@@ -62,14 +59,13 @@ impl ServerConfig {
             tls_certificate_path: raw.tls.certificate,
             tls_private_key_path: raw.tls.private_key,
             site_config_path: raw.site.config,
-            control_root_path: raw.site.control_root,
             local_origin_root_path: raw.site.local_origin_root,
         };
-        config.validate_paths()?;
+        config.validate_paths(&raw.site.control_root)?;
         Ok(config)
     }
 
-    fn validate_paths(&self) -> Result<(), ConfigError> {
+    fn validate_paths(&self, control_root: &Path) -> Result<(), ConfigError> {
         require_absolute(&self.database_path, ConfigError::RelativeDatabasePath)?;
         require_absolute(
             &self.vault_master_key_path,
@@ -84,10 +80,7 @@ impl ServerConfig {
             ConfigError::RelativeTlsPrivateKeyPath,
         )?;
         require_absolute(&self.site_config_path, ConfigError::RelativeSiteConfigPath)?;
-        require_absolute(
-            &self.control_root_path,
-            ConfigError::RelativeControlRootPath,
-        )?;
+        require_absolute(control_root, ConfigError::RelativeControlRootPath)?;
         require_absolute(
             &self.local_origin_root_path,
             ConfigError::RelativeLocalOriginRootPath,
@@ -211,7 +204,6 @@ struct RawSitePathsConfig {
 pub(crate) struct GatewaySiteConfig {
     gateway_hostname: String,
     gateway_not_after: GatewayNotAfter,
-    contest_end: GatewayNotAfter,
 }
 
 impl GatewaySiteConfig {
@@ -226,15 +218,14 @@ impl GatewaySiteConfig {
         if !is_canonical_dns_hostname(&raw.gateway_hostname) {
             return Err(SiteConfigError::InvalidGatewayHostname);
         }
-        let gateway_not_after = GatewayNotAfter::parse(raw.gateway_not_after)
+        let gateway_not_after = GatewayNotAfter::parse(&raw.gateway_not_after)
             .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
         let contest_end =
-            GatewayNotAfter::parse(raw.contest_end).ok_or(SiteConfigError::InvalidContestEnd)?;
+            GatewayNotAfter::parse(&raw.contest_end).ok_or(SiteConfigError::InvalidContestEnd)?;
         validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
         Ok(Self {
             gateway_hostname: raw.gateway_hostname,
             gateway_not_after,
-            contest_end,
         })
     }
 
@@ -244,10 +235,6 @@ impl GatewaySiteConfig {
 
     pub(crate) const fn gateway_not_after(&self) -> &GatewayNotAfter {
         &self.gateway_not_after
-    }
-
-    pub(crate) fn has_required_validity_coverage(&self) -> bool {
-        validate_gateway_validity_coverage(&self.gateway_not_after, &self.contest_end).is_ok()
     }
 }
 
@@ -300,15 +287,14 @@ fn is_canonical_dns_hostname(value: &str) -> bool {
     })
 }
 
-/// Parsed RFC 3339 UTC timestamp retained in its policy wire representation.
+/// Strictly validated RFC 3339 UTC policy timestamp.
 #[derive(Clone)]
 pub(crate) struct GatewayNotAfter {
-    encoded: String,
     timestamp: OffsetDateTime,
 }
 
 impl GatewayNotAfter {
-    fn parse(encoded: String) -> Option<Self> {
+    fn parse(encoded: &str) -> Option<Self> {
         // Strict shell over the library parser. The frozen contract is narrower than
         // RFC 3339 and than the library's leniency: an uppercase `T` separator, a
         // literal trailing `Z` (no numeric offsets, which also excludes lowercase
@@ -328,19 +314,11 @@ impl GatewayNotAfter {
         {
             return None;
         }
-        let timestamp = OffsetDateTime::parse(&encoded, &Rfc3339).ok()?;
+        let timestamp = OffsetDateTime::parse(encoded, &Rfc3339).ok()?;
         if !(1970..=9999).contains(&timestamp.year()) {
             return None;
         }
-        Some(Self { encoded, timestamp })
-    }
-
-    pub(crate) fn encoded(&self) -> &str {
-        &self.encoded
-    }
-
-    pub(crate) const fn unix_seconds(&self) -> i64 {
-        self.timestamp.unix_timestamp()
+        Some(Self { timestamp })
     }
 
     pub(crate) const fn timestamp(&self) -> OffsetDateTime {
@@ -404,16 +382,11 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        ConfigError, GatewayNotAfter, GatewaySiteConfig, LogLevel, OffsetDateTime, ServerConfig,
-        SiteConfigError, is_canonical_dns_hostname, validate_gateway_validity_coverage,
+        ConfigError, GatewayNotAfter, GatewaySiteConfig, LogLevel, ServerConfig, SiteConfigError,
+        is_canonical_dns_hostname, validate_gateway_validity_coverage,
     };
 
     impl GatewaySiteConfig {
-        pub(crate) const fn contest_end(&self) -> &GatewayNotAfter {
-            &self.contest_end
-        }
-
-        #[allow(dead_code)]
         pub(crate) fn for_test(
             gateway_hostname: &str,
             gateway_not_after: &str,
@@ -422,15 +395,14 @@ mod tests {
             if !is_canonical_dns_hostname(gateway_hostname) {
                 return Err(SiteConfigError::InvalidGatewayHostname);
             }
-            let gateway_not_after = GatewayNotAfter::parse(gateway_not_after.to_owned())
+            let gateway_not_after = GatewayNotAfter::parse(gateway_not_after)
                 .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
-            let contest_end = GatewayNotAfter::parse(contest_end.to_owned())
-                .ok_or(SiteConfigError::InvalidContestEnd)?;
+            let contest_end =
+                GatewayNotAfter::parse(contest_end).ok_or(SiteConfigError::InvalidContestEnd)?;
             validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
             Ok(Self {
                 gateway_hostname: gateway_hostname.to_owned(),
                 gateway_not_after,
-                contest_end,
             })
         }
     }
@@ -504,8 +476,6 @@ control_root_sha256 = "ignored-by-server"
             .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
         let timestamp = site.gateway_not_after().timestamp();
         if site.gateway_hostname() != "gateway.contest.example"
-            || site.gateway_not_after().encoded() != "2028-02-29T23:59:58.123456789Z"
-            || site.contest_end().encoded() != "2028-02-28T23:59:58.123456789Z"
             || timestamp.year() != 2028
             || u8::from(timestamp.month()) != 2
             || timestamp.day() != 29
@@ -513,8 +483,6 @@ control_root_sha256 = "ignored-by-server"
             || timestamp.minute() != 59
             || timestamp.second() != 58
             || timestamp.nanosecond() != 123_456_789
-            || OffsetDateTime::from_unix_timestamp(site.gateway_not_after().unix_seconds()).ok()
-                != Some(timestamp - time::Duration::nanoseconds(123_456_789))
         {
             return Err(TestFailure::SitePolicyChanged);
         }

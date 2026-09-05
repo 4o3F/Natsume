@@ -86,8 +86,6 @@ impl fmt::Debug for ControlPublicKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub(crate) enum DeviceError {
-    #[snafu(display("the Device ID is invalid"))]
-    InvalidDeviceId,
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("persisted Device facts are invalid"))]

@@ -1,9 +1,6 @@
-//! Device Control connection-bound protocol coordination.
+//! Device-specific application coordination and connection-bound protocol handling.
 
-use std::{
-    sync::{Arc, Weak},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 use axum::extract::ws::{Message as WebSocketMessage, WebSocket};
 use natsume_device_protocol::generated::{
@@ -19,17 +16,29 @@ use uuid::Uuid;
 
 mod actor;
 mod admission;
+mod application;
 mod convergence;
 mod state;
 
-pub(crate) use convergence::{DeviceConvergenceError, DeviceConvergenceResponse, DeviceStatus};
+pub(crate) use convergence::{
+    BindingActual, BindingArtifactState, BindingContext, BindingConvergence, BindingEvaluation,
+    BindingEvaluationCode, BindingTarget, ConnectionState, ConvergenceStatus, DeviceConvergence,
+    DeviceConvergenceError, DeviceStatus, GatewayActual, GatewayConvergence, GatewayState,
+    GatewayTarget, HomeActual, HomeConvergence, HomeState, RuntimeConfigActual,
+    RuntimeConfigConvergence, RuntimeConfigState, SessionActual, SessionConvergence, SessionState,
+};
 
-use crate::{
-    component::device::{
-        ControlAuthority, DeviceError, DeviceId, EnrollmentApprovalError, EnrollmentReviewDecision,
-        EnrollmentReviewId, EnrollmentStartOutcome, LifecycleOutcome, MachineHardwareId,
+use crate::component::{
+    binding::BindingComponent,
+    device::{
+        ControlAuthority, DeviceComponent, DeviceId, EnrollmentReviewDecision,
+        EnrollmentStartOutcome, MachineHardwareId,
     },
-    server_state::ServerState,
+    gateway::GatewayComponent,
+    home::HomeComponent,
+    provisioning::ProvisioningComponent,
+    runtime::RuntimeConfigComponent,
+    session::SessionControlComponent,
 };
 
 use self::{
@@ -37,207 +46,53 @@ use self::{
     admission::{EnrollmentPreAuth, ProofSubmission, ProofWindow},
 };
 
-/// Process-wide coordinator for active Device connections.
+/// Device application use cases and their process-local runtime.
 ///
-/// It owns the actor registry and the ordering needed by WP8 target refresh,
-/// authority mutations, Enrollment approval, and current connection observation.
+/// Components own business rules and transactions. This coordinator owns the
+/// ordering between those operations and current leases, with explicit dependencies
+/// instead of a reference back to the process composition object.
 pub(crate) struct DeviceControl {
+    provisioning: Arc<ProvisioningComponent>,
+    device: Arc<DeviceComponent>,
+    gateway: GatewayComponent,
+    binding: Arc<BindingComponent>,
+    runtime: RuntimeConfigComponent,
+    session: Arc<SessionControlComponent>,
+    home: Arc<HomeComponent>,
     registry: DeviceRegistry,
     /// Prevents concurrent approvals from acting on the same stale authority read.
     enrollment_approval: Mutex<()>,
 }
 
 impl DeviceControl {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(
+        provisioning: Arc<ProvisioningComponent>,
+        device: Arc<DeviceComponent>,
+        gateway: GatewayComponent,
+        binding: Arc<BindingComponent>,
+        runtime: RuntimeConfigComponent,
+        session: Arc<SessionControlComponent>,
+        home: Arc<HomeComponent>,
+    ) -> Self {
         Self {
+            provisioning,
+            device,
+            gateway,
+            binding,
+            runtime,
+            session,
+            home,
             registry: DeviceRegistry::new(),
             enrollment_approval: Mutex::new(()),
         }
     }
 
-    async fn replace_current_lease(
-        &self,
-        device_id: crate::component::device::DeviceId,
-        state: Weak<ServerState>,
-        outbound: mpsc::Sender<natsume_device_protocol::generated::ServerActiveEnvelope>,
-    ) -> Option<(Uuid, DeviceHandle)> {
-        let handle = self.registry.get_or_spawn(device_id).await;
-        let session_id = handle.replace_current_lease(state, outbound).await?;
-        Some((session_id, handle))
-    }
-
-    pub(crate) async fn dirty_one(&self, device_id: DeviceId) {
-        self.registry.dirty_one(device_id).await;
-    }
-
-    pub(crate) async fn dirty_all(&self) {
-        self.registry.dirty_all().await;
-    }
-
-    pub(crate) async fn evict_current_lease(&self, device_id: DeviceId) {
+    async fn evict_current_lease(&self, device_id: DeviceId) {
         let Some(handle) = self.registry.get(device_id).await else {
             return;
         };
         *handle.authority_fence.lock().await = true;
         handle.evict_current_lease().await;
-    }
-
-    /// Completes disable, fencing, and eviction independently of request cancellation.
-    pub(crate) async fn disable_device(
-        &self,
-        state: Arc<ServerState>,
-        device_id: DeviceId,
-    ) -> Result<LifecycleOutcome, DeviceError> {
-        tokio::spawn(async move {
-            state
-                .device_control()
-                .disable_device_inner(&state, device_id)
-                .await
-        })
-        .await
-        .unwrap_or(Err(DeviceError::PersistenceFailed))
-    }
-
-    async fn disable_device_inner(
-        &self,
-        state: &ServerState,
-        device_id: DeviceId,
-    ) -> Result<LifecycleOutcome, DeviceError> {
-        let handle = if let Some(handle) = self.registry.get(device_id).await {
-            handle
-        } else {
-            if state.device().find_device(device_id).await?.is_none() {
-                return Err(DeviceError::DeviceNotFound);
-            }
-            self.registry.get_or_spawn(device_id).await
-        };
-        let authority_fence = Arc::clone(&handle.authority_fence);
-        let mut fenced = authority_fence.lock().await;
-        let outcome = state.device().disable(device_id).await?;
-        if matches!(
-            outcome,
-            LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
-        ) {
-            *fenced = true;
-        }
-        drop(fenced);
-        if matches!(
-            outcome,
-            LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
-        ) {
-            handle.evict_current_lease().await;
-        }
-        Ok(outcome)
-    }
-
-    /// Completes revoke, fencing, and eviction independently of request cancellation.
-    pub(crate) async fn revoke_device(
-        &self,
-        state: Arc<ServerState>,
-        device_id: DeviceId,
-    ) -> Result<LifecycleOutcome, DeviceError> {
-        tokio::spawn(async move {
-            state
-                .device_control()
-                .revoke_device_inner(&state, device_id)
-                .await
-        })
-        .await
-        .unwrap_or(Err(DeviceError::PersistenceFailed))
-    }
-
-    async fn revoke_device_inner(
-        &self,
-        state: &ServerState,
-        device_id: DeviceId,
-    ) -> Result<LifecycleOutcome, DeviceError> {
-        let handle = if let Some(handle) = self.registry.get(device_id).await {
-            handle
-        } else {
-            if state.device().find_device(device_id).await?.is_none() {
-                return Err(DeviceError::DeviceNotFound);
-            }
-            self.registry.get_or_spawn(device_id).await
-        };
-        let authority_fence = Arc::clone(&handle.authority_fence);
-        let mut fenced = authority_fence.lock().await;
-        let outcome = state.device().revoke(device_id).await?;
-        if matches!(
-            outcome,
-            LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
-        ) {
-            *fenced = true;
-        }
-        drop(fenced);
-        if matches!(
-            outcome,
-            LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
-        ) {
-            handle.evict_current_lease().await;
-        }
-        Ok(outcome)
-    }
-
-    /// Completes approval, fencing, eviction, and notification independently of the request.
-    pub(crate) async fn approve_enrollment(
-        &self,
-        state: Arc<ServerState>,
-        review_id: EnrollmentReviewId,
-    ) -> Result<ControlAuthority, EnrollmentApprovalError> {
-        tokio::spawn(async move {
-            state
-                .device_control()
-                .approve_enrollment_inner(&state, review_id)
-                .await
-        })
-        .await
-        .unwrap_or(Err(EnrollmentApprovalError::Activation(
-            crate::component::device::ActivationError::AuthorityPersistenceFailed,
-        )))
-    }
-
-    async fn approve_enrollment_inner(
-        &self,
-        state: &ServerState,
-        review_id: EnrollmentReviewId,
-    ) -> Result<ControlAuthority, EnrollmentApprovalError> {
-        let _approval = self.enrollment_approval.lock().await;
-        let machine_hardware_id = state
-            .device()
-            .enrollment_review_machine_hardware_id(review_id)
-            .await?;
-        let current_device_id = state
-            .device()
-            .find_current_authority(machine_hardware_id)
-            .await
-            .map_err(EnrollmentApprovalError::Authority)?
-            .map(ControlAuthority::device_id);
-        let handle = match current_device_id {
-            Some(device_id) => Some(self.registry.get_or_spawn(device_id).await),
-            None => None,
-        };
-        let authority_fence = handle
-            .as_ref()
-            .map(|handle| Arc::clone(&handle.authority_fence));
-        let mut fenced = match authority_fence.as_ref() {
-            Some(fence) => Some(fence.lock().await),
-            None => None,
-        };
-        let approval = state
-            .device()
-            .approve_enrollment(state.provisioning(), review_id)
-            .await?;
-        let authority = approval.authority();
-        if let Some(fenced) = fenced.as_mut() {
-            **fenced = true;
-        }
-        drop(fenced);
-        match handle {
-            Some(handle) => handle.evict_current_lease().await,
-            None => self.evict_current_lease(authority.device_id()).await,
-        }
-        approval.complete();
-        Ok(authority)
     }
 }
 
@@ -257,23 +112,14 @@ const OUTBOUND_CAPACITY: usize = 1;
 /// failed stage returns and drops the socket. Once a lease is attached, all exits
 /// either notify the Device actor directly or pass through [`run_active`], which does
 /// so before returning.
-pub(crate) async fn serve_connection(mut socket: WebSocket, state: Arc<ServerState>) {
-    let Some((machine_hardware_id, authority)) = admit(&mut socket, &state).await else {
+pub(crate) async fn serve_connection(mut socket: WebSocket, control: Arc<DeviceControl>) {
+    let Some((machine_hardware_id, authority)) = admit(&mut socket, &control).await else {
         return;
     };
-    if state
-        .device()
-        .find_current_authority(machine_hardware_id)
-        .await
-        .ok()
-        != Some(Some(authority))
-    {
-        return;
-    }
-
     let (outbound, mut outgoing) = mpsc::channel(OUTBOUND_CAPACITY);
-    let Some((session_id, handle)) =
-        attach_authority(&state, machine_hardware_id, authority, outbound).await
+    let Some((session_id, handle)) = control
+        .attach_device_lease(machine_hardware_id, authority, outbound)
+        .await
     else {
         return;
     };
@@ -296,30 +142,6 @@ pub(crate) async fn serve_connection(mut socket: WebSocket, state: Arc<ServerSta
     run_active(socket, session_id, handle, &mut outgoing).await;
 }
 
-/// Replaces the current lease and then closes the precheck-to-replacement authority race.
-async fn attach_authority(
-    state: &Arc<ServerState>,
-    machine_hardware_id: MachineHardwareId,
-    authority: ControlAuthority,
-    outbound: mpsc::Sender<natsume_device_protocol::generated::ServerActiveEnvelope>,
-) -> Option<(Uuid, DeviceHandle)> {
-    let (session_id, handle) = state
-        .device_control()
-        .replace_current_lease(authority.device_id(), Arc::downgrade(state), outbound)
-        .await?;
-    if state
-        .device()
-        .find_current_authority(machine_hardware_id)
-        .await
-        .ok()
-        != Some(Some(authority))
-    {
-        handle.clear_lease_if_current(session_id).await;
-        return None;
-    }
-    Some((session_id, handle))
-}
-
 /// Performs the single proof exchange and returns the exact authority authenticated
 /// for this connection.
 ///
@@ -328,7 +150,7 @@ async fn attach_authority(
 /// rejected, or inactive path returns `None` and closes the connection.
 async fn admit(
     socket: &mut WebSocket,
-    state: &Arc<ServerState>,
+    control: &Arc<DeviceControl>,
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
     let mut proof_window = ProofWindow::new().ok()?;
     let challenge = proof_window.server_challenge()?.clone();
@@ -346,8 +168,8 @@ async fn admit(
     match proof_window.submit(proof).ok()? {
         ProofSubmission::Resume(resume) => {
             let machine_hardware_id = resume.machine_hardware_id();
-            let authority = state
-                .device()
+            let authority = control
+                .device
                 .find_current_authority(machine_hardware_id)
                 .await
                 .ok()?;
@@ -357,7 +179,7 @@ async fn admit(
             ))
         }
         ProofSubmission::Enrollment(enrollment) => {
-            admit_enrollment(socket, state, enrollment).await
+            admit_enrollment(socket, control, enrollment).await
         }
     }
 }
@@ -371,14 +193,14 @@ async fn admit(
 /// the enabled authority.
 async fn admit_enrollment(
     socket: &mut WebSocket,
-    state: &Arc<ServerState>,
+    control: &Arc<DeviceControl>,
     enrollment: EnrollmentPreAuth,
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
     let evidence = enrollment.review_evidence();
     let machine_hardware_id = evidence.machine_hardware_id();
-    let authority = match state
-        .device()
-        .start_enrollment(state.provisioning(), evidence)
+    let authority = match control
+        .device
+        .start_enrollment(&control.provisioning, evidence)
         .await
         .ok()?
     {
@@ -398,11 +220,11 @@ async fn admit_enrollment(
             .await
             {
                 // A pending review belongs to this proved connection. If the Client
-                // cannot receive its pending state, retaining the review would leave
+                // cannot receive its pending control, retaining the review would leave
                 // an operator-visible request with no connection able to complete
                 // the activation/ready exchange.
-                state
-                    .device()
+                control
+                    .device
                     .remove_enrollment_review(review.review_id())
                     .await;
                 return None;
@@ -419,12 +241,12 @@ async fn admit_enrollment(
                                 .reset(Instant::now() + CLIENT_SILENCE_TIMEOUT);
                         }
                         _ => {
-                            state.device().remove_enrollment_review(review.review_id()).await;
+                            control.device.remove_enrollment_review(review.review_id()).await;
                             return None;
                         }
                     },
                     () = &mut client_deadline => {
-                        state.device().remove_enrollment_review(review.review_id()).await;
+                        control.device.remove_enrollment_review(review.review_id()).await;
                         return None;
                     }
                 }

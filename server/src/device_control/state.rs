@@ -6,20 +6,20 @@ use natsume_device_protocol::generated::{
     RuntimeConfigTarget, SecretBytes, ServerIntentState, ServerStateSnapshot, SessionControlTarget,
 };
 
-use crate::{
-    component::{
-        binding::{
-            BindingContext as ComponentBindingContext, BindingEvaluationCode, BindingInput,
-            BindingNegotiationId, BindingSubmissionEpoch, MaterializedBinding,
-        },
-        device::DeviceId,
-        gateway::{GatewayCredentialId, GatewayCredentialInput, MaterializedGateway},
-        session::LockState,
+use crate::component::{
+    binding::{
+        BindingContext as ComponentBindingContext, BindingEvaluationCode, BindingInput,
+        BindingNegotiationId, BindingSubmissionEpoch, MaterializedBinding,
     },
-    server_state::ServerState,
+    device::DeviceId,
+    gateway::{GatewayCredentialId, GatewayCredentialInput, MaterializedGateway},
+    session::LockState,
 };
 
-use super::convergence::{self, ObservedActualState};
+use super::{
+    DeviceControl,
+    convergence::{self, ObservedActualState},
+};
 
 const SEAT_CODE_LENGTH_LIMIT: usize = 64;
 
@@ -34,7 +34,7 @@ const SEAT_CODE_LENGTH_LIMIT: usize = 64;
 /// actor gives both the same terminal lease behavior and therefore does not need a
 /// richer error type.
 pub(super) async fn reconcile(
-    state: &ServerState,
+    control: &DeviceControl,
     device_id: DeviceId,
     snapshot: ClientStateSnapshot,
 ) -> Option<(ServerStateSnapshot, ObservedActualState)> {
@@ -50,18 +50,18 @@ pub(super) async fn reconcile(
     };
     let (gateway_actual, observed) = convergence::parse_actual(actual)?;
 
-    state
-        .gateway()
+    control
+        .gateway
         .ingest(device_id, gateway_input, gateway_actual)
         .await
         .ok()?;
-    state
-        .binding()
+    control
+        .binding
         .ingest(device_id, binding_input)
         .await
         .ok()?;
 
-    Some((materialize(state, device_id).await?, observed))
+    Some((materialize(control, device_id).await?, observed))
 }
 
 /// Materializes one complete Server snapshot without replaying Client input.
@@ -70,14 +70,14 @@ pub(super) async fn reconcile(
 /// Component order matches initial reconciliation so every outbound message keeps
 /// the same complete wire shape.
 pub(super) async fn materialize(
-    state: &ServerState,
+    control: &DeviceControl,
     device_id: DeviceId,
 ) -> Option<ServerStateSnapshot> {
-    let gateway = state.gateway().materialize(device_id).await.ok()?;
-    let binding = state.binding().materialize(device_id).await.ok()?;
-    let runtime = state.runtime().materialize().await.ok()?;
-    let session = state.session().materialize(device_id).await.ok()?;
-    let home = state.home().materialize(device_id).await.ok()?;
+    let gateway = control.gateway.materialize(device_id).await.ok()?;
+    let binding = control.binding.materialize(device_id).await.ok()?;
+    let runtime = control.runtime.materialize().await.ok()?;
+    let session = control.session.materialize(device_id).await.ok()?;
+    let home = control.home.materialize(device_id).await.ok()?;
 
     Some(ServerStateSnapshot {
         intent: Some(ServerIntentState {

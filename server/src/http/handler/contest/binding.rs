@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Router,
+    Extension, Json, Router,
     extract::State,
     response::{IntoResponse, Response},
     routing::get,
@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 
 use crate::component::{contest::BindingFacts, operator::OperatorIdentity};
 
-use super::{super::super::error::ApiError, AppState, current_facts_response, middleware};
+use super::{super::super::error::ApiError, AppState, middleware};
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new().route(
@@ -29,7 +29,11 @@ pub(crate) struct BindingResponse {
 
 impl From<BindingFacts> for BindingResponse {
     fn from(facts: BindingFacts) -> Self {
-        let (binding_id, seat_id, device_id) = facts.into_parts();
+        let BindingFacts {
+            binding: binding_id,
+            seat: seat_id,
+            device: device_id,
+        } = facts;
         Self {
             binding_id,
             seat_id,
@@ -59,7 +63,7 @@ pub(crate) async fn list_bindings(
                 .into_iter()
                 .map(BindingResponse::from)
                 .collect::<Vec<_>>();
-            current_facts_response(&response)
+            Json(response).into_response()
         }
         Err(error) => ApiError::from_contest(error).into_response(),
     }

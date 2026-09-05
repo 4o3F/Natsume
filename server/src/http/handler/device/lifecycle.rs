@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
@@ -11,11 +9,15 @@ use utoipa::ToSchema;
 
 use crate::{
     component::device::{DeviceState, EvidenceQuality, LifecycleOutcome},
-    device_control::{DeviceConvergenceResponse, DeviceStatus},
+    device_control::DeviceStatus,
 };
 
 use super::super::super::{AppState, error::ApiError};
-use super::{DevicePath, convergence::convergence_error, invalid_device_id, parse_device_id};
+use super::{
+    DevicePath,
+    convergence::{DeviceConvergenceResponse, convergence_error},
+    invalid_device_id, parse_device_id,
+};
 
 /// Durable Device identity and lifecycle with its current complete convergence view.
 #[derive(Serialize, ToSchema)]
@@ -59,7 +61,10 @@ pub(crate) struct DeviceUpdateRequest {
 
 impl From<DeviceStatus> for DeviceResponse {
     fn from(status: DeviceStatus) -> Self {
-        let (device, convergence) = status.into_parts();
+        let DeviceStatus {
+            device,
+            convergence,
+        } = status;
         Self {
             device_id: device.device_id().as_text(),
             machine_hardware_id: device.machine_hardware_id().as_text(),
@@ -73,7 +78,7 @@ impl From<DeviceStatus> for DeviceResponse {
                 DeviceState::Revoked => DeviceStateResponse::Revoked,
             },
             created_at_unix_ms: device.created_at_unix_ms(),
-            convergence,
+            convergence: convergence.into(),
         }
     }
 }
@@ -90,11 +95,7 @@ impl From<DeviceStatus> for DeviceResponse {
     )
 )]
 pub(crate) async fn list_devices(State(state): State<AppState>) -> Response {
-    match state
-        .device_control()
-        .read_all_device_statuses(&state)
-        .await
-    {
+    match state.device_control().read_all_device_statuses().await {
         Ok(statuses) => Json(
             statuses
                 .into_iter()
@@ -127,11 +128,7 @@ pub(crate) async fn get_device(
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state
-        .device_control()
-        .read_device_status(&state, device_id)
-        .await
-    {
+    match state.device_control().read_device_status(device_id).await {
         Ok(Some(status)) => Json(DeviceResponse::from(status)).into_response(),
         Ok(None) => ApiError::not_found("device_not_found").into_response(),
         Err(error) => convergence_error(error).into_response(),
@@ -169,18 +166,8 @@ pub(crate) async fn update_device(
     };
     let outcome = match request.state {
         DeviceStateResponse::Enabled => state.device().enable(device_id).await,
-        DeviceStateResponse::Disabled => {
-            state
-                .device_control()
-                .disable_device(Arc::clone(&state), device_id)
-                .await
-        }
-        DeviceStateResponse::Revoked => {
-            state
-                .device_control()
-                .revoke_device(Arc::clone(&state), device_id)
-                .await
-        }
+        DeviceStateResponse::Disabled => state.device_control().disable_device(device_id).await,
+        DeviceStateResponse::Revoked => state.device_control().revoke_device(device_id).await,
     };
     match outcome {
         Ok(LifecycleOutcome::Changed | LifecycleOutcome::Unchanged) => {

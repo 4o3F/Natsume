@@ -119,16 +119,7 @@ fn identity_response(identity: OperatorIdentity, session_cookie: Option<HeaderVa
         operator_id: identity.operator_id(),
         role: identity.role_name(),
     };
-    let encoded = serde_json::to_string(&body).unwrap_or_else(|_| {
-        tracing::error!("session response serialization invariant failed");
-        panic!("session response serialization invariant failed");
-    });
-    let mut response = (
-        StatusCode::OK,
-        [(header::CONTENT_TYPE, "application/json")],
-        encoded,
-    )
-        .into_response();
+    let mut response = Json(body).into_response();
     if let Some(session_cookie) = session_cookie {
         response
             .headers_mut()

@@ -1,42 +1,29 @@
-use serde::Serialize;
-use utoipa::ToSchema;
-
 use natsume_device_protocol::generated::{
     SessionControlActualState, SessionState as WireSessionState,
 };
 
-use crate::{
-    component::session::LockState, http::handler::device::session::SessionControlTargetResponse,
-};
+use crate::component::session::{LockState, SessionControlTarget};
 
-use super::ConvergenceStatusResponse;
+use super::ConvergenceStatus;
 
 /// Session Control target, Actual, and convergence result.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SessionConvergenceResponse {
-    #[schema(inline)]
-    pub(super) status: ConvergenceStatusResponse,
-    #[schema(required = true)]
-    pub(super) target: Option<SessionControlTargetResponse>,
-    #[schema(required = true)]
-    pub(super) actual: Option<SessionActualResponse>,
+#[derive(PartialEq, Eq)]
+pub(crate) struct SessionConvergence {
+    pub(crate) status: ConvergenceStatus,
+    pub(crate) target: Option<SessionControlTarget>,
+    pub(crate) actual: Option<SessionActual>,
 }
 
 /// Latest validated Session Control Actual reported by the current lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct SessionActualResponse {
-    #[schema(inline)]
-    pub(super) session_state: SessionStateResponse,
-    #[schema(required = true)]
-    pub(super) completed_terminate_epoch: Option<u64>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionActual {
+    pub(crate) session_state: SessionState,
+    pub(crate) completed_terminate_epoch: Option<u64>,
 }
 
 /// Session state vocabulary exposed by the convergence projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum SessionStateResponse {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionState {
     None,
     Starting,
     Active,
@@ -46,18 +33,16 @@ pub(super) enum SessionStateResponse {
     Error,
 }
 
-pub(super) fn session_actual_response(
-    actual: SessionControlActualState,
-) -> Option<SessionActualResponse> {
+pub(super) fn parse_session_actual(actual: SessionControlActualState) -> Option<SessionActual> {
     let session_state = match WireSessionState::try_from(actual.session_state).ok()? {
         WireSessionState::Unspecified => return None,
-        WireSessionState::None => SessionStateResponse::None,
-        WireSessionState::Starting => SessionStateResponse::Starting,
-        WireSessionState::Active => SessionStateResponse::Active,
-        WireSessionState::Locked => SessionStateResponse::Locked,
-        WireSessionState::Terminating => SessionStateResponse::Terminating,
-        WireSessionState::Ambiguous => SessionStateResponse::Ambiguous,
-        WireSessionState::Error => SessionStateResponse::Error,
+        WireSessionState::None => SessionState::None,
+        WireSessionState::Starting => SessionState::Starting,
+        WireSessionState::Active => SessionState::Active,
+        WireSessionState::Locked => SessionState::Locked,
+        WireSessionState::Terminating => SessionState::Terminating,
+        WireSessionState::Ambiguous => SessionState::Ambiguous,
+        WireSessionState::Error => SessionState::Error,
     };
     if actual
         .completed_terminate_epoch
@@ -65,7 +50,7 @@ pub(super) fn session_actual_response(
     {
         return None;
     }
-    Some(SessionActualResponse {
+    Some(SessionActual {
         session_state,
         completed_terminate_epoch: actual.completed_terminate_epoch,
     })
@@ -73,29 +58,29 @@ pub(super) fn session_actual_response(
 
 pub(super) fn session_convergence_status(
     target: Option<(LockState, Option<u64>)>,
-    actual: Option<&SessionActualResponse>,
-) -> ConvergenceStatusResponse {
+    actual: Option<&SessionActual>,
+) -> ConvergenceStatus {
     let (Some((lock_state, terminate_epoch)), Some(actual)) = (target, actual) else {
-        return ConvergenceStatusResponse::AwaitingActual;
+        return ConvergenceStatus::AwaitingActual;
     };
     if matches!(
         actual.session_state,
-        SessionStateResponse::Ambiguous | SessionStateResponse::Error
+        SessionState::Ambiguous | SessionState::Error
     ) {
-        return ConvergenceStatusResponse::Failed;
+        return ConvergenceStatus::Failed;
     }
     if terminate_epoch > actual.completed_terminate_epoch
-        || actual.session_state == SessionStateResponse::Terminating
+        || actual.session_state == SessionState::Terminating
     {
-        return ConvergenceStatusResponse::Reconciling;
+        return ConvergenceStatus::Reconciling;
     }
     let lock_converged = match lock_state {
-        LockState::Locked => actual.session_state == SessionStateResponse::Locked,
-        LockState::Unlocked => actual.session_state != SessionStateResponse::Locked,
+        LockState::Locked => actual.session_state == SessionState::Locked,
+        LockState::Unlocked => actual.session_state != SessionState::Locked,
     };
     if lock_converged && terminate_epoch == actual.completed_terminate_epoch {
-        ConvergenceStatusResponse::Converged
+        ConvergenceStatus::Converged
     } else {
-        ConvergenceStatusResponse::Drifted
+        ConvergenceStatus::Drifted
     }
 }

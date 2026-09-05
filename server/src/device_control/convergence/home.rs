@@ -1,47 +1,36 @@
-use serde::Serialize;
-use utoipa::ToSchema;
-
 use natsume_device_protocol::generated::{HomeActualState, HomeState as WireHomeState};
 
-use super::ConvergenceStatusResponse;
+use super::ConvergenceStatus;
 
 /// Home target, Actual, and convergence result.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct HomeConvergenceResponse {
-    #[schema(inline)]
-    pub(super) status: ConvergenceStatusResponse,
-    #[schema(required = true)]
-    pub(super) target_reset_epoch: Option<u64>,
-    #[schema(required = true)]
-    pub(super) actual: Option<HomeActualResponse>,
+#[derive(PartialEq, Eq)]
+pub(crate) struct HomeConvergence {
+    pub(crate) status: ConvergenceStatus,
+    pub(crate) target_reset_epoch: Option<u64>,
+    pub(crate) actual: Option<HomeActual>,
 }
 
 /// Latest validated Home Actual reported by the current lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub(super) struct HomeActualResponse {
-    #[schema(inline)]
-    pub(super) state: HomeStateResponse,
-    #[schema(required = true)]
-    pub(super) completed_reset_epoch: Option<u64>,
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HomeActual {
+    pub(crate) state: HomeState,
+    pub(crate) completed_reset_epoch: Option<u64>,
 }
 
 /// Home Actual state vocabulary exposed by the convergence projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub(super) enum HomeStateResponse {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HomeState {
     Steady,
     Resetting,
     RecoveryRequired,
 }
 
-pub(super) fn home_actual_response(actual: HomeActualState) -> Option<HomeActualResponse> {
+pub(super) fn parse_home_actual(actual: HomeActualState) -> Option<HomeActual> {
     let state = match WireHomeState::try_from(actual.state).ok()? {
         WireHomeState::Unspecified => return None,
-        WireHomeState::Steady => HomeStateResponse::Steady,
-        WireHomeState::Resetting => HomeStateResponse::Resetting,
-        WireHomeState::RecoveryRequired => HomeStateResponse::RecoveryRequired,
+        WireHomeState::Steady => HomeState::Steady,
+        WireHomeState::Resetting => HomeState::Resetting,
+        WireHomeState::RecoveryRequired => HomeState::RecoveryRequired,
     };
     if actual
         .completed_reset_epoch
@@ -49,7 +38,7 @@ pub(super) fn home_actual_response(actual: HomeActualState) -> Option<HomeActual
     {
         return None;
     }
-    Some(HomeActualResponse {
+    Some(HomeActual {
         state,
         completed_reset_epoch: actual.completed_reset_epoch,
     })
@@ -57,17 +46,15 @@ pub(super) fn home_actual_response(actual: HomeActualState) -> Option<HomeActual
 
 pub(super) fn home_convergence_status(
     target: Option<u64>,
-    actual: Option<&HomeActualResponse>,
-) -> ConvergenceStatusResponse {
+    actual: Option<&HomeActual>,
+) -> ConvergenceStatus {
     let Some(actual) = actual else {
-        return ConvergenceStatusResponse::AwaitingActual;
+        return ConvergenceStatus::AwaitingActual;
     };
     match actual.state {
-        HomeStateResponse::RecoveryRequired => ConvergenceStatusResponse::Failed,
-        HomeStateResponse::Resetting => ConvergenceStatusResponse::Reconciling,
-        HomeStateResponse::Steady if target == actual.completed_reset_epoch => {
-            ConvergenceStatusResponse::Converged
-        }
-        HomeStateResponse::Steady => ConvergenceStatusResponse::Drifted,
+        HomeState::RecoveryRequired => ConvergenceStatus::Failed,
+        HomeState::Resetting => ConvergenceStatus::Reconciling,
+        HomeState::Steady if target == actual.completed_reset_epoch => ConvergenceStatus::Converged,
+        HomeState::Steady => ConvergenceStatus::Drifted,
     }
 }
