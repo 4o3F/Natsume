@@ -291,6 +291,14 @@ grep -Fxq 'ExecStopPost=+/usr/bin/systemctl kill --kill-whom=all --signal=SIGKIL
 if grep -Eq '^(ProtectSystem|ProtectHome)=' "${client_helper_unit}"; then
   fail 'packaged privileged helper would isolate the managed Home mount'
 fi
+grep -Fxq 'PrivateNetwork=yes' "${client_helper_unit}" ||
+  fail 'packaged privileged helper must retain its private network namespace'
+grep -Fxq 'PrivateMounts=no' "${client_helper_unit}" ||
+  fail 'packaged privileged helper must explicitly share the host mount namespace'
+grep -Fxq 'OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only' "${client_helper_unit}" ||
+  fail 'packaged privileged helper must receive the host mount namespace descriptor'
+grep -Fxq 'RestrictAddressFamilies=AF_UNIX' "${client_helper_unit}" ||
+  fail 'packaged privileged helper must restrict sockets to AF_UNIX'
 grep -Fxq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN' \
   "${client_helper_unit}" || fail 'packaged privileged helper has an unexpected capability set'
 grep -Fxq 'd /run/natsume 2770 natsume natsume-gateway -' "${client_tmpfiles}" ||

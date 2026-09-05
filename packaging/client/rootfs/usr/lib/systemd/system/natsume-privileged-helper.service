@@ -8,6 +8,10 @@ BusName=org.natsume.Privileged1
 ExecStart=/usr/lib/natsume/natsume-privileged-helper
 User=root
 PrivateNetwork=yes
+# Home mounts must be visible in the host mount namespace.
+PrivateMounts=no
+# Pass the host namespace without granting the Helper CAP_SYS_PTRACE.
+OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=yes
 LimitCORE=0

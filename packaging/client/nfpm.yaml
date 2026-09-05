@@ -19,7 +19,7 @@ depends:
   - libstdc++6
   - libsystemd0
   - libudev1
-  - systemd
+  - systemd (>= 253)
 
 contents:
   - src: ${RUST_RELEASE_DIR}/natsume-device-daemon

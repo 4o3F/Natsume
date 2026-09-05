@@ -609,6 +609,9 @@ Home reset 使用单调 `reset_epoch`：
 
 - same epoch 可重入；
 - Client 通过 Prepare/Apply/Verify/Recover 完成；
+- Helper与原生systemd主机的PID 1共享mount namespace，Home的挂载和验证都在该域内执行；unit显式设置`PrivateMounts=no`，同时保留`PrivateNetwork=yes`与`RestrictAddressFamilies=AF_UNIX`；
+- systemd通过`OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only`预先打开固定宿主namespace，以唯一的fd 3交给Helper；Helper现有capability集合保持不变，无需`CAP_SYS_PTRACE`；该部署要求systemd支持`OpenFile`（253及以上）；
+- Helper注册D-Bus服务前核验`LISTEN_PID/FDS/FDNAMES`，跟随`/proc/self/ns/mnt`与`/proc/self/fd/3`并比较namespace对象的device/inode；缺失交接、读取失败或不一致都拒绝启动，防止其他unit配置或drop-in引入私有挂载域后仍报告`Verified`；
 - Helper状态固定在root-owned的`/var/lib/natsume-privileged/home-reset`，Daemon不能重命名或替换其目录树；
 - Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
 - `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
