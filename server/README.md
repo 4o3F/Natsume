@@ -19,8 +19,9 @@ carries configuration, paths, or secrets.
 - `natsume-server reset-operator-password` opens the existing database, runs
   migrations, and reads the target login name and new password from a TTY
   (password twice without echo). In one transaction it replaces that operator's
-  PHC string and purges all of that operator's current sessions. It never creates accounts or touches the
-  vault master key. An unknown login name exits non-zero with zero writes.
+  PHC string, advances its credential revision, and purges all of that operator's
+  current sessions. It never creates accounts or touches the vault master key.
+  An unknown login name exits non-zero with zero writes.
 
 ## TLS and Origin CA material
 
@@ -74,8 +75,10 @@ sudo -u natsume-server -- /usr/bin/natsume-server reset-operator-password
 ```
 
 Enter the target login name and the same new password twice at the prompts. The
-command replaces that operator's PHC string, purges all of that operator's
-current sessions, and exits. It
+command atomically replaces that operator's PHC string, advances its credential
+revision, purges all of that operator's current sessions, and exits. Pending
+sign-ins can create a session only while their verified credential revision is
+still current; even resetting to the same password fences older sign-ins. It
 never creates an account and never touches the vault master key; an unknown
 login name exits non-zero with zero writes. Never run it as root or from
 automation. The package `postinstall` must not call it because install-time

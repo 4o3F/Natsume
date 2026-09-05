@@ -83,6 +83,7 @@ diesel::table! {
         username -> Text,
         role -> Text,
         password_hash -> Text,
+        credential_revision -> BigInt,
     }
 }
 

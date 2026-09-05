@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf};
+use std::{fs, future::Future, path::PathBuf, pin::Pin, task::Poll};
 
 use argon2::{
     Algorithm, Argon2, KeyId, Params, ParamsBuilder, Version,
@@ -20,7 +20,7 @@ use super::{
     },
     require_admin,
     session::{
-        SessionCredential, authenticate_session, sign_in,
+        SessionCredential, SignedInSession, authenticate_session, sign_in,
         tests::{SESSION_CREDENTIAL_LENGTH, decode_lower_hex},
     },
 };
@@ -445,6 +445,282 @@ async fn gated_sign_in_fails(database: &Database) -> Result<(), TestFailure> {
     Ok(())
 }
 
+#[tokio::test]
+async fn password_reset_fences_pending_sign_in_even_when_the_phc_is_unchanged()
+-> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    let password = "reset-fence-password";
+    let phc = password_phc("reset-admin", password)?;
+    test_insert_admin_account(&fixture.database, "reset-admin", &phc)
+        .await
+        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+    let mut pending = Box::pin(sign_in(
+        &fixture.database,
+        "reset-admin",
+        password.to_owned(),
+    ));
+    pause_before_password_verification(pending.as_mut()).await?;
+
+    super::account::reset_operator_password(&fixture.database, "reset-admin", &phc)
+        .await
+        .map_err(|_| TestFailure::PasswordResetFailed)?;
+    assert_eq!(
+        pending.await.err(),
+        Some(OperatorError::AuthenticationFailed)
+    );
+    assert_eq!(
+        db_operator::test_session_count(&fixture.database).await,
+        Ok(0)
+    );
+    let fresh = sign_in(&fixture.database, "reset-admin", password.to_owned())
+        .await
+        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    assert_eq!(
+        authenticate_session(&fixture.database, fresh.wire_credential()).await,
+        Ok(fresh.identity())
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelled_sign_in_keeps_its_permit_until_the_blocking_verification_finishes()
+-> Result<(), TestFailure> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .max_blocking_threads(1)
+        .build()
+        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+    runtime.block_on(async {
+        let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+        let fixture = TestDatabase::new().await?;
+        let mut pending = Box::pin(sign_in(
+            &fixture.database,
+            "cancelled-unknown-login",
+            "cancelled-password".to_owned(),
+        ));
+        pause_before_password_verification(pending.as_mut()).await?;
+
+        // Occupy the only blocking worker before submitting verification, so
+        // cancellation cannot race with completion of the expensive work.
+        let (started, started_rx) = tokio::sync::oneshot::channel();
+        let (release, release_rx) = std::sync::mpsc::channel::<()>();
+        let blocker = tokio::task::spawn_blocking(move || {
+            let _ = started.send(());
+            let _ = release_rx.recv();
+        });
+        started_rx
+            .await
+            .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+        assert!(futures_util::poll!(pending.as_mut()).is_pending());
+        drop(pending);
+        let available_while_queued = PASSWORD_VERIFICATION_GATE.available_permits();
+
+        drop(release);
+        blocker
+            .await
+            .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+        let permits = u32::try_from(PASSWORD_VERIFICATION_CONCURRENCY)
+            .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
+        let restored = tokio::time::timeout(
+            GATE_RELEASE_TIMEOUT,
+            PASSWORD_VERIFICATION_GATE.acquire_many(permits),
+        )
+        .await
+        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
+        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+        drop(restored);
+        assert_eq!(
+            available_while_queued,
+            PASSWORD_VERIFICATION_CONCURRENCY - 1
+        );
+        assert_eq!(
+            PASSWORD_VERIFICATION_GATE.available_permits(),
+            PASSWORD_VERIFICATION_CONCURRENCY
+        );
+        Ok(())
+    })
+}
+
+#[tokio::test]
+async fn password_reset_advances_revision_and_revokes_only_its_operators_sessions()
+-> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    let phc = password_phc("reset-admin", "old-password")?;
+    let new_phc = password_phc("reset-admin", "new-password")?;
+    super::account::create_first_admin(&fixture.database, "reset-admin", &phc)
+        .await
+        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+    test_insert_admin_account(&fixture.database, "other-admin", &phc)
+        .await
+        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+    let old = sign_in(&fixture.database, "reset-admin", "old-password".to_owned())
+        .await
+        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    let other = sign_in(&fixture.database, "other-admin", "old-password".to_owned())
+        .await
+        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    assert_eq!(
+        db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
+        Ok((phc.clone(), 1))
+    );
+
+    super::account::reset_operator_password(&fixture.database, "reset-admin", &new_phc)
+        .await
+        .map_err(|_| TestFailure::PasswordResetFailed)?;
+    assert_eq!(
+        db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
+        Ok((new_phc, 2))
+    );
+    assert_eq!(
+        db_operator::test_account_credentials(&fixture.database, "other-admin").await,
+        Ok((phc, 1))
+    );
+    assert_eq!(
+        db_operator::test_session_count(&fixture.database).await,
+        Ok(1)
+    );
+    assert_eq!(
+        authenticate_session(&fixture.database, old.wire_credential()).await,
+        Err(OperatorError::SessionAuthenticationFailed)
+    );
+    assert_eq!(
+        authenticate_session(&fixture.database, other.wire_credential()).await,
+        Ok(other.identity())
+    );
+    assert_eq!(
+        sign_in(&fixture.database, "reset-admin", "old-password".to_owned())
+            .await
+            .err(),
+        Some(OperatorError::AuthenticationFailed)
+    );
+    let fresh = sign_in(&fixture.database, "reset-admin", "new-password".to_owned())
+        .await
+        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    assert_eq!(
+        authenticate_session(&fixture.database, fresh.wire_credential()).await,
+        Ok(fresh.identity())
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_password_reset_preserves_the_phc_revision_and_sessions() -> Result<(), TestFailure>
+{
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let phc = password_phc("reset-admin", "old-password")?;
+    let new_phc = password_phc("reset-admin", "new-password")?;
+    for revision in [1, i64::MAX] {
+        let fixture = TestDatabase::new().await?;
+        test_insert_admin_account(&fixture.database, "reset-admin", &phc)
+            .await
+            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        db_operator::test_set_credential_revision(&fixture.database, "reset-admin", revision)
+            .await
+            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        let session = sign_in(&fixture.database, "reset-admin", "old-password".to_owned())
+            .await
+            .map_err(|_| TestFailure::CorrectSignInFailed)?;
+        if revision == 1 {
+            // Fails after the PHC and revision update, proving transaction rollback.
+            db_operator::test_reject_session_deletion(&fixture.database)
+                .await
+                .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        }
+        assert_eq!(
+            super::account::reset_operator_password(&fixture.database, "reset-admin", &new_phc)
+                .await,
+            Err(OperatorError::PersistenceFailed)
+        );
+        assert_eq!(
+            db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
+            Ok((phc.clone(), revision))
+        );
+        assert_eq!(
+            db_operator::test_session_count(&fixture.database).await,
+            Ok(1)
+        );
+        assert_eq!(
+            authenticate_session(&fixture.database, session.wire_credential()).await,
+            Ok(session.identity())
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn invalid_persisted_credential_revisions_fail_closed() -> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    test_insert_admin_account(&fixture.database, "invalid-revision", DUMMY_PASSWORD_PHC)
+        .await
+        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+    for revision in [0, -1] {
+        db_operator::test_set_credential_revision(&fixture.database, "invalid-revision", revision)
+            .await
+            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        assert_eq!(
+            sign_in(&fixture.database, "invalid-revision", "password".to_owned())
+                .await
+                .err(),
+            Some(OperatorError::PersistenceFailed)
+        );
+        assert_eq!(
+            super::account::reset_operator_password(
+                &fixture.database,
+                "invalid-revision",
+                DUMMY_PASSWORD_PHC
+            )
+            .await,
+            Err(OperatorError::PersistenceFailed)
+        );
+        assert_eq!(
+            db_operator::test_account_credentials(&fixture.database, "invalid-revision").await,
+            Ok((DUMMY_PASSWORD_PHC.to_owned(), revision))
+        );
+    }
+    assert_eq!(
+        db_operator::test_session_count(&fixture.database).await,
+        Ok(0)
+    );
+    Ok(())
+}
+
+/// Polls the real login until it has read the account and queued for its
+/// verification permit. The local future stays parked until the caller polls it.
+async fn pause_before_password_verification(
+    mut pending: Pin<&mut impl Future<Output = Result<SignedInSession, OperatorError>>>,
+) -> Result<(), TestFailure> {
+    let permits = u32::try_from(PASSWORD_VERIFICATION_CONCURRENCY)
+        .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
+    let _held = PASSWORD_VERIFICATION_GATE
+        .acquire_many(permits - 1)
+        .await
+        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+    let mut probe = Some(
+        PASSWORD_VERIFICATION_GATE
+            .acquire()
+            .await
+            .map_err(|_| TestFailure::VerificationGateWasClosed)?,
+    );
+    std::future::poll_fn(|context| {
+        if pending.as_mut().poll(context).is_ready() {
+            return Poll::Ready(Err(TestFailure::VerificationGateDidNotBoundConcurrency));
+        }
+        drop(probe.take());
+        match PASSWORD_VERIFICATION_GATE.try_acquire() {
+            Ok(permit) => {
+                probe = Some(permit);
+                Poll::Pending
+            }
+            // A queued login receives the released permit before try_acquire.
+            Err(_) => Poll::Ready(Ok(())),
+        }
+    })
+    .await
+}
+
 #[test]
 fn admin_authorization_is_closed() -> Result<(), TestFailure> {
     if require_admin(OperatorRole::Admin).is_err()
@@ -568,6 +844,8 @@ impl Drop for TestDatabase {
 
 #[derive(Debug, Snafu)]
 enum TestFailure {
+    #[snafu(display("operator password reset failed unexpectedly"))]
+    PasswordResetFailed,
     #[snafu(display("persisted operator roles did not remain closed"))]
     PersistedRolesWereNotClosed,
     #[snafu(display("a bootstrap input failure was expected"))]

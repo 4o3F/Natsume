@@ -43,7 +43,8 @@ impl SignedInSession {
 }
 
 /// Establishes an operator session after one frozen-profile password
-/// verification.
+/// verification, provided its account credential revision is still current at
+/// session insertion. Password verification never holds a database transaction.
 ///
 /// # Errors
 ///
@@ -76,13 +77,18 @@ pub(super) async fn sign_in(
     // `static` semaphore is never closed, so the only reachable acquire failure
     // is treated as a blocking-task failure.
     let verification = {
-        let _permit = PASSWORD_VERIFICATION_GATE
+        let permit = PASSWORD_VERIFICATION_GATE
             .acquire()
             .await
             .map_err(|_| OperatorError::PasswordTaskFailed)?;
-        tokio::task::spawn_blocking(move || verify_password_once(&password, &candidate_phc))
-            .await
-            .map_err(|_| OperatorError::PasswordTaskFailed)?
+        tokio::task::spawn_blocking(move || {
+            // Request cancellation must not release capacity while the blocking
+            // verification is still queued or running.
+            let _permit = permit;
+            verify_password_once(&password, &candidate_phc)
+        })
+        .await
+        .map_err(|_| OperatorError::PasswordTaskFailed)?
     };
     let password_verified = verification?;
 
@@ -100,7 +106,13 @@ pub(super) async fn sign_in(
     record_actor(identity);
     let credential = SessionCredential::generate()?;
     let credential_hash = credential.sha256();
-    create_session(database, &credential_hash, identity).await?;
+    create_session(
+        database,
+        &credential_hash,
+        identity,
+        account.credential_revision,
+    )
+    .await?;
 
     Ok(SignedInSession {
         identity,
@@ -112,15 +124,24 @@ async fn create_session(
     database: &Database,
     credential_hash: &SessionCredentialHash,
     identity: OperatorIdentity,
+    expected_revision: i64,
 ) -> Result<(), OperatorError> {
     let credential_hash = Zeroizing::new(*credential_hash.as_bytes());
     database
         .write(move |transaction| {
-            crate::component::operator::db::insert_session(transaction, &credential_hash, identity)
+            let inserted = crate::component::operator::db::insert_session_if_current(
+                transaction,
+                &credential_hash,
+                identity,
+                expected_revision,
+            )?;
+            if inserted == 0 {
+                return Err(OperatorError::AuthenticationFailed);
+            }
+            Ok(())
         })
         .await
         .map_err(TransactionError::into_error)
-        .map_err(OperatorError::from)
 }
 
 /// Authenticates a caller-supplied session credential.

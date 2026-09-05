@@ -20,16 +20,21 @@ pub(in crate::component::operator) fn find_account(
             operator_accounts::operator_id,
             operator_accounts::role,
             operator_accounts::password_hash,
+            operator_accounts::credential_revision,
         ))
-        .first::<(String, String, String)>(transaction.connection())
+        .first::<(String, String, String, i64)>(transaction.connection())
         .optional()
         .map_err(|_| PersistenceError::OperationFailed)?;
-    row.map(|(operator_id, role, password_hash)| {
+    row.map(|(operator_id, role, password_hash, credential_revision)| {
+        if credential_revision < 1 {
+            return Err(PersistenceError::InvalidPersistedData);
+        }
         let identity = OperatorIdentity::from_persisted(&operator_id, &role)
             .map_err(|_| PersistenceError::InvalidPersistedData)?;
         Ok(AccountFacts {
             identity,
             password_hash,
+            credential_revision,
         })
     })
     .transpose()
@@ -58,6 +63,7 @@ pub(in crate::component::operator) fn insert_account(
             operator_accounts::username.eq(login_name),
             operator_accounts::role.eq(role.as_persisted()),
             operator_accounts::password_hash.eq(password_hash),
+            operator_accounts::credential_revision.eq(1_i64),
         ))
         .execute(transaction.connection())
         .map(|_| ())
@@ -68,11 +74,15 @@ pub(in crate::component::operator) fn update_password(
     transaction: &mut Transaction<'_>,
     operator_id: Uuid,
     password_hash: &str,
+    next_revision: i64,
 ) -> Result<(), PersistenceError> {
     let updated = diesel::update(
         operator_accounts::table.filter(operator_accounts::operator_id.eq(operator_id.to_string())),
     )
-    .set(operator_accounts::password_hash.eq(password_hash))
+    .set((
+        operator_accounts::password_hash.eq(password_hash),
+        operator_accounts::credential_revision.eq(next_revision),
+    ))
     .execute(transaction.connection())
     .map_err(|_| PersistenceError::OperationFailed)?;
     if updated != 1 {

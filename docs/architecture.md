@@ -927,7 +927,7 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 | 表 | Owner | 关键约束 |
 |---|---|---|
 | `site_identity` | Core | singleton fleet namespace |
-| `operator_accounts` | Operator | username unique，role封闭 |
+| `operator_accounts` | Operator | username unique，role封闭，credential revision正数 |
 | `operator_sessions` | Operator | 只存cookie hash和绝对过期 |
 | `seats` | Contest/Import | seat code unique |
 | `accounts` | Contest/Import | username unique，credential revision正数 |
@@ -1084,6 +1084,10 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 角色固定为 `admin` 和 `viewer`。Operator账户与session在Server数据库：
 
 - password使用Argon2id PHC；
+- `operator_accounts.credential_revision`从1开始，只由Operator组件在密码重置事务中递增；
+- 登录读取PHC与revision，在事务外完成Argon2验证，再以exact expected revision条件插入session；零行表示凭据已失效，返回认证失败；
+- 密码重置原子更新PHC、递增revision并删除该账户全部session；相同密码重置也递增，溢出或任一步失败均回滚；revision fence未完成的登录，删除操作撤销已签发session，session不保存revision副本；
+- Argon2并发许可由阻塞验证任务持有至完成，请求取消不能提前释放排队或执行中的许可；
 - session cookie明文只在浏览器与响应，数据库只存SHA-256；
 - 绝对过期，不滑动续期；
 - logout/password reset删除session；

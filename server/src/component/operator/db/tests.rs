@@ -118,3 +118,71 @@ pub(in crate::component::operator) async fn test_insert_account(
         .map_err(TransactionError::into_error)
         .map_err(OperatorError::from)
 }
+
+pub(in crate::component::operator) async fn test_account_credentials(
+    database: &Database,
+    login_name: &str,
+) -> Result<(String, i64), OperatorError> {
+    let login_name = login_name.to_owned();
+    database
+        .read(move |transaction| {
+            use crate::diesel_schema::operator_accounts;
+            use diesel::{ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _};
+
+            operator_accounts::table
+                .filter(operator_accounts::username.eq(login_name))
+                .select((
+                    operator_accounts::password_hash,
+                    operator_accounts::credential_revision,
+                ))
+                .first(transaction.connection())
+                .map_err(|_| PersistenceError::OperationFailed)
+        })
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
+}
+
+pub(in crate::component::operator) async fn test_set_credential_revision(
+    database: &Database,
+    login_name: &str,
+    revision: i64,
+) -> Result<(), OperatorError> {
+    let login_name = login_name.to_owned();
+    database
+        .write(move |transaction| {
+            use crate::diesel_schema::operator_accounts;
+            use diesel::{ExpressionMethods as _, QueryDsl as _, RunQueryDsl as _};
+
+            diesel::update(
+                operator_accounts::table.filter(operator_accounts::username.eq(login_name)),
+            )
+            .set(operator_accounts::credential_revision.eq(revision))
+            .execute(transaction.connection())
+            .map(|_| ())
+            .map_err(|_| PersistenceError::OperationFailed)
+        })
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
+}
+
+pub(in crate::component::operator) async fn test_reject_session_deletion(
+    database: &Database,
+) -> Result<(), OperatorError> {
+    database
+        .write(|transaction| {
+            use diesel::connection::SimpleConnection as _;
+
+            transaction
+                .connection()
+                .batch_execute(
+                    "CREATE TRIGGER reject_session_deletion BEFORE DELETE ON operator_sessions \
+                 BEGIN SELECT RAISE(ABORT, 'test session deletion failure'); END;",
+                )
+                .map_err(|_| PersistenceError::OperationFailed)
+        })
+        .await
+        .map_err(TransactionError::into_error)
+        .map_err(OperatorError::from)
+}

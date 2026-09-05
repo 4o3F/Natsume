@@ -13,7 +13,8 @@ CREATE TABLE operator_accounts (
     operator_id TEXT PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     role TEXT NOT NULL,
-    password_hash TEXT NOT NULL
+    password_hash TEXT NOT NULL,
+    credential_revision INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE operator_sessions (
