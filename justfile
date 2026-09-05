@@ -27,6 +27,7 @@ fmt: shell-format
 
 shell-format:
     #!/usr/bin/env bash
+    set -euo pipefail
     version="$(<tools/shfmt.version)"
     test "$(shfmt --version)" = "v${version}"
     git ls-files -z -- '*.sh' | xargs -0r shfmt -d
@@ -39,6 +40,7 @@ openapi-lint:
 
 secret-scan:
     #!/usr/bin/env bash
+    set -euo pipefail
     version="$(<tools/gitleaks.version)"
     test "$(gitleaks version)" = "${version}"
     gitleaks git --redact --no-banner --no-color --config .gitleaks.toml .

@@ -8,3 +8,13 @@ description = "Generated and dependency trees"
 paths = [
   '''(?:^|/)(?:dist|node_modules|playwright-report|target|test-results)(?:/|$)''',
 ]
+
+[[allowlists]]
+description = "Rust PEM encoder statements contain delimiters without private key material"
+targetRules = ["private-key"]
+condition = "AND"
+paths = ['''^client/device-daemon/src/reconcile/gateway\.rs$''']
+regexTarget = "match"
+regexes = [
+  '''^-----BEGIN PRIVATE KEY-----\\n"\)\);\s*for chunk in encoded\.as_bytes\(\)\.chunks\(64\) \{\s*pem\.push_str\(std::str::from_utf8\(chunk\)\.unwrap_or_default\(\)\);\s*pem\.push\('\\n'\);\s*\}\s*pem\.push_str\("-----END PRIVATE KEY-----$''',
+]
