@@ -1,7 +1,8 @@
 use std::{fs, path::Path};
 
 use natsume_local_control_api::{
-    ContestSessionObservation, ContestSessionState, GraphicalSession, SessionLockLevel,
+    ContestSessionObservation, ContestSessionState, GraphicalSession, ResourceControlError,
+    SessionLockLevel,
 };
 use uuid::Uuid;
 use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
@@ -22,16 +23,37 @@ struct LocalGraphicalSession {
     locked: bool,
 }
 
-fn service_error(message: &'static str) -> zbus::fdo::Error {
-    zbus::fdo::Error::Failed(message.to_owned())
+fn unavailable(message: &'static str) -> ResourceControlError {
+    ResourceControlError::Unavailable(message.to_owned())
 }
 
-fn read_boot_id(filesystem_root: &Path) -> zbus::fdo::Result<String> {
+fn rejected(message: &'static str) -> ResourceControlError {
+    ResourceControlError::Rejected(message.to_owned())
+}
+
+fn logind_error(error: zbus::Error) -> ResourceControlError {
+    match zbus::fdo::Error::from(error) {
+        zbus::fdo::Error::Failed(_)
+        | zbus::fdo::Error::NoReply(_)
+        | zbus::fdo::Error::Timeout(_)
+        | zbus::fdo::Error::Disconnected(_)
+        | zbus::fdo::Error::ServiceUnknown(_)
+        | zbus::fdo::Error::NameHasNoOwner(_)
+        | zbus::fdo::Error::IOError(_)
+        | zbus::fdo::Error::NoMemory(_)
+        | zbus::fdo::Error::ZBus(zbus::Error::InputOutput(_)) => {
+            unavailable("logind operation is unavailable")
+        }
+        _ => rejected("logind operation was rejected"),
+    }
+}
+
+fn read_boot_id(filesystem_root: &Path) -> Result<String, ResourceControlError> {
     let value = fs::read_to_string(filesystem_root.join(BOOT_ID_PATH))
-        .map_err(|_| service_error("boot identity is unavailable"))?;
+        .map_err(|_| unavailable("boot identity is unavailable"))?;
     let value = value.trim();
     if !valid_boot_id(value) {
-        return Err(service_error("boot identity is invalid"));
+        return Err(rejected("boot identity is invalid"));
     }
     Ok(value.to_owned())
 }
@@ -42,7 +64,7 @@ fn valid_boot_id(value: &str) -> bool {
 
 async fn local_graphical_sessions(
     connection: &Connection,
-) -> zbus::fdo::Result<Vec<LocalGraphicalSession>> {
+) -> Result<Vec<LocalGraphicalSession>, ResourceControlError> {
     let manager = Proxy::new(
         connection,
         LOGIN1_SERVICE,
@@ -50,11 +72,11 @@ async fn local_graphical_sessions(
         LOGIN1_MANAGER_INTERFACE,
     )
     .await
-    .map_err(|_| service_error("logind is unavailable"))?;
+    .map_err(logind_error)?;
     let listed: Vec<(String, u32, String, String, OwnedObjectPath)> = manager
         .call("ListSessions", &())
         .await
-        .map_err(|_| service_error("logind session query failed"))?;
+        .map_err(logind_error)?;
     let mut sessions = Vec::new();
     for (id, _uid, user, seat, path) in listed {
         if user != CONTEST_USER {
@@ -67,30 +89,18 @@ async fn local_graphical_sessions(
             LOGIN1_SESSION_INTERFACE,
         )
         .await
-        .map_err(|_| service_error("logind session query failed"))?;
-        let active: bool = session
-            .get_property("Active")
-            .await
-            .map_err(|_| service_error("logind session query failed"))?;
-        let remote: bool = session
-            .get_property("Remote")
-            .await
-            .map_err(|_| service_error("logind session query failed"))?;
-        let class: String = session
-            .get_property("Class")
-            .await
-            .map_err(|_| service_error("logind session query failed"))?;
-        let kind: String = session
-            .get_property("Type")
-            .await
-            .map_err(|_| service_error("logind session query failed"))?;
+        .map_err(logind_error)?;
+        let active: bool = session.get_property("Active").await.map_err(logind_error)?;
+        let remote: bool = session.get_property("Remote").await.map_err(logind_error)?;
+        let class: String = session.get_property("Class").await.map_err(logind_error)?;
+        let kind: String = session.get_property("Type").await.map_err(logind_error)?;
         if remote || class != "user" || !matches!(kind.as_str(), "x11" | "wayland") {
             continue;
         }
         let locked = session
             .get_property("LockedHint")
             .await
-            .map_err(|_| service_error("logind session query failed"))?;
+            .map_err(logind_error)?;
         sessions.push(LocalGraphicalSession {
             id,
             path,
@@ -105,7 +115,7 @@ async fn local_graphical_sessions(
 pub(super) async fn observe(
     connection: &Connection,
     filesystem_root: &Path,
-) -> zbus::fdo::Result<ContestSessionObservation> {
+) -> Result<ContestSessionObservation, ResourceControlError> {
     let boot_id = read_boot_id(filesystem_root)?;
     let sessions = local_graphical_sessions(connection).await?;
     Ok(observe_sessions(&sessions, boot_id))
@@ -142,26 +152,26 @@ async fn exact_lock_session<'a>(
     connection: &'a Connection,
     filesystem_root: &Path,
     target: &GraphicalSession,
-) -> zbus::fdo::Result<Proxy<'a>> {
+) -> Result<Proxy<'a>, ResourceControlError> {
     if read_boot_id(filesystem_root)? != target.boot_id {
-        return Err(service_error("graphical session target is stale"));
+        return Err(rejected("graphical session target is stale"));
     }
     let sessions = local_graphical_sessions(connection).await?;
     let path = exact_active_session_path(&sessions, &target.logind_session_id)?;
     Proxy::new(connection, LOGIN1_SERVICE, path, LOGIN1_SESSION_INTERFACE)
         .await
-        .map_err(|_| service_error("logind session query failed"))
+        .map_err(logind_error)
 }
 
 fn exact_active_session_path(
     sessions: &[LocalGraphicalSession],
     target_id: &str,
-) -> zbus::fdo::Result<OwnedObjectPath> {
+) -> Result<OwnedObjectPath, ResourceControlError> {
     let [session] = sessions else {
-        return Err(service_error("graphical session target is not unique"));
+        return Err(rejected("graphical session target is not unique"));
     };
     if session.id != target_id || !session.active || session.seat != CONTEST_SEAT {
-        return Err(service_error("graphical session target is stale"));
+        return Err(rejected("graphical session target is stale"));
     }
     Ok(session.path.clone())
 }
@@ -169,11 +179,11 @@ fn exact_active_session_path(
 fn exact_termination_path(
     sessions: &[LocalGraphicalSession],
     target_id: &str,
-) -> zbus::fdo::Result<Option<OwnedObjectPath>> {
+) -> Result<Option<OwnedObjectPath>, ResourceControlError> {
     let mut matches = sessions.iter().filter(|session| session.id == target_id);
     let target = matches.next();
     if matches.next().is_some() {
-        return Err(service_error("graphical session target is not unique"));
+        return Err(rejected("graphical session target is not unique"));
     }
     Ok(target.map(|target| target.path.clone()))
 }
@@ -183,23 +193,23 @@ pub(super) async fn set_lock(
     filesystem_root: &Path,
     target: &GraphicalSession,
     level: SessionLockLevel,
-) -> zbus::fdo::Result<()> {
+) -> Result<(), ResourceControlError> {
     let session = exact_lock_session(connection, filesystem_root, target).await?;
     let method = match level {
         SessionLockLevel::Unlocked => "Unlock",
         SessionLockLevel::Locked => "Lock",
     };
     let result: Result<(), _> = session.call(method, &()).await;
-    result.map_err(|_| service_error("logind lock transition failed"))
+    result.map_err(logind_error)
 }
 
 pub(super) async fn terminate(
     connection: &Connection,
     filesystem_root: &Path,
     target: &GraphicalSession,
-) -> zbus::fdo::Result<()> {
+) -> Result<(), ResourceControlError> {
     if !valid_boot_id(&target.boot_id) {
-        return Err(service_error("graphical session target is invalid"));
+        return Err(rejected("graphical session target is invalid"));
     }
     if read_boot_id(filesystem_root)? != target.boot_id {
         return Ok(());
@@ -210,12 +220,12 @@ pub(super) async fn terminate(
     };
     let session = Proxy::new(connection, LOGIN1_SERVICE, path, LOGIN1_SESSION_INTERFACE)
         .await
-        .map_err(|_| service_error("logind session query failed"))?;
+        .map_err(logind_error)?;
     let result: Result<(), _> = session.call("Terminate", &()).await;
-    result.map_err(|_| service_error("logind session termination failed"))?;
+    result.map_err(logind_error)?;
     let remaining = local_graphical_sessions(connection).await?;
     if exact_termination_path(&remaining, &target.logind_session_id)?.is_some() {
-        return Err(service_error("logind session termination is incomplete"));
+        return Err(unavailable("logind session termination is incomplete"));
     }
     Ok(())
 }
@@ -248,6 +258,22 @@ mod tests {
     }
 
     #[test]
+    fn logind_availability_and_safety_errors_stay_distinct() {
+        assert!(matches!(
+            super::logind_error(zbus::fdo::Error::NoReply("timeout".to_owned()).into()),
+            natsume_local_control_api::ResourceControlError::Unavailable(_)
+        ));
+        assert!(matches!(
+            super::logind_error(zbus::fdo::Error::AccessDenied("denied".to_owned()).into()),
+            natsume_local_control_api::ResourceControlError::Rejected(_)
+        ));
+        assert!(matches!(
+            super::logind_error(zbus::Error::Failure("unknown".to_owned())),
+            natsume_local_control_api::ResourceControlError::Rejected(_)
+        ));
+    }
+
+    #[test]
     fn boot_id_requires_canonical_lowercase_uuid() {
         let fixture = TempDir::new().unwrap_or_else(|error| panic!("fixture failed: {error}"));
         let path = fixture.path().join("proc/sys/kernel/random");
@@ -259,17 +285,20 @@ mod tests {
         )
         .unwrap_or_else(|error| panic!("fixture write failed: {error}"));
 
-        assert_eq!(
+        assert!(matches!(
             read_boot_id(fixture.path()).as_deref(),
             Ok("550e8400-e29b-41d4-a716-446655440000")
-        );
+        ));
 
         fs::write(
             path.join("boot_id"),
             "550E8400-E29B-41D4-A716-446655440000\n",
         )
         .unwrap_or_else(|error| panic!("fixture rewrite failed: {error}"));
-        assert!(read_boot_id(fixture.path()).is_err());
+        assert!(matches!(
+            read_boot_id(fixture.path()),
+            Err(natsume_local_control_api::ResourceControlError::Rejected(_))
+        ));
         assert!(!valid_boot_id("not-a-boot-id"));
     }
 

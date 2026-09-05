@@ -754,7 +754,7 @@ fn failed_actual() -> BindingAccessActualState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::{os::unix::fs::MetadataExt as _, sync::Barrier};
 
     use natsume_device_protocol::generated::{
@@ -768,7 +768,7 @@ mod tests {
         TempDir::new().unwrap_or_else(|error| panic!("test directory must be created: {error}"))
     }
 
-    fn input_provider(directory: &TempDir) -> BindingInputProvider {
+    pub(in crate::reconcile) fn input_provider(directory: &TempDir) -> BindingInputProvider {
         BindingInputProvider {
             input_path: directory.path().join("binding-input.json"),
             state: Mutex::new(BindingInputState {
@@ -778,6 +778,12 @@ mod tests {
                 ui_revision: 1,
             }),
             changed: Notify::new(),
+        }
+    }
+
+    pub(in crate::reconcile) fn reconciler(directory: &TempDir) -> BindingReconciler {
+        BindingReconciler {
+            assignment_path: directory.path().join("binding-assignment.json"),
         }
     }
 

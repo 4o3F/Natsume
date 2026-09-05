@@ -29,6 +29,18 @@ pub enum MachineIdentityError {
     Unsupported(String),
 }
 
+/// Closed failure classification for fixed Home and Session capabilities.
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.natsume.Privileged1.Error", impl_display = true)]
+pub enum ResourceControlError {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    /// The operation may be retried after rechecking its durable progress and guards.
+    Unavailable(String),
+    /// A safety precondition or persisted state must be repaired before applying effects.
+    Rejected(String),
+}
+
 /// Exact logind graphical-session identity captured within one boot.
 ///
 /// Both fields must match before a privileged session effect is applied. A
@@ -181,35 +193,41 @@ pub trait Privileged1 {
     ) -> Result<DerivedMachineIdentity, MachineIdentityError>;
 
     #[zbus(name = "HasHomeResetState")]
-    fn has_home_reset_state(&self) -> zbus::Result<bool>;
+    fn has_home_reset_state(&self) -> Result<bool, ResourceControlError>;
 
     #[zbus(name = "QueryContestSession")]
-    fn query_contest_session(&self) -> zbus::Result<ContestSessionObservation>;
+    fn query_contest_session(&self) -> Result<ContestSessionObservation, ResourceControlError>;
 
     #[zbus(name = "SetContestSessionLock")]
     fn set_contest_session_lock(
         &self,
         session: &GraphicalSession,
         level: SessionLockLevel,
-    ) -> zbus::Result<()>;
+    ) -> Result<(), ResourceControlError>;
 
     #[zbus(name = "TerminateContestSession")]
-    fn terminate_contest_session(&self, session: &GraphicalSession) -> zbus::Result<()>;
+    fn terminate_contest_session(
+        &self,
+        session: &GraphicalSession,
+    ) -> Result<(), ResourceControlError>;
 
     #[zbus(name = "PrepareHomeReset")]
-    fn prepare_home_reset(&self, reset_epoch: u64) -> zbus::Result<()>;
+    fn prepare_home_reset(&self, reset_epoch: u64) -> Result<(), ResourceControlError>;
 
     #[zbus(name = "QueryHomeReset")]
-    fn query_home_reset(&self) -> zbus::Result<Option<HomeResetProgress>>;
+    fn query_home_reset(&self) -> Result<Option<HomeResetProgress>, ResourceControlError>;
 
     #[zbus(name = "ApplyHomeReset")]
-    fn apply_home_reset(&self, reset_epoch: u64) -> zbus::Result<()>;
+    fn apply_home_reset(&self, reset_epoch: u64) -> Result<(), ResourceControlError>;
 
     #[zbus(name = "VerifyHomeReset")]
-    fn verify_home_reset(&self, reset_epoch: u64) -> zbus::Result<HomeResetProgress>;
+    fn verify_home_reset(
+        &self,
+        reset_epoch: u64,
+    ) -> Result<HomeResetProgress, ResourceControlError>;
 
     #[zbus(name = "RecoverHomeReset")]
-    fn recover_home_reset(&self, reset_epoch: u64) -> zbus::Result<()>;
+    fn recover_home_reset(&self, reset_epoch: u64) -> Result<(), ResourceControlError>;
 }
 
 #[cfg(test)]

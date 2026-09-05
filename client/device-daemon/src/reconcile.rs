@@ -5,6 +5,7 @@ use natsume_device_protocol::generated::{
     RuntimeConfigActualState, RuntimeConfigState, ServerStateSnapshot, SessionControlActualState,
     SessionState,
 };
+use natsume_local_control_api::ResourceControlError;
 use snafu::Snafu;
 use tokio_util::sync::CancellationToken;
 
@@ -47,6 +48,62 @@ pub(crate) enum SnapshotError {
 
     #[snafu(display("stale local Binding input was rejected"))]
     StaleLocalInput,
+}
+
+/// Resource observation and the independently owned decision to retry local work.
+pub(crate) struct ReconcileOutcome<T> {
+    pub(crate) actual: T,
+    pub(crate) retry: bool,
+}
+
+impl<T> ReconcileOutcome<T> {
+    fn idle(actual: T) -> Self {
+        Self {
+            actual,
+            retry: false,
+        }
+    }
+
+    fn retry(actual: T) -> Self {
+        Self {
+            actual,
+            retry: true,
+        }
+    }
+
+    fn control_error(actual: T, error: &ResourceControlError) -> Self {
+        Self {
+            actual,
+            retry: retryable_control_error(error),
+        }
+    }
+}
+
+fn retryable_control_error(error: &ResourceControlError) -> bool {
+    match error {
+        ResourceControlError::Unavailable(_) => true,
+        ResourceControlError::Rejected(_) => false,
+        ResourceControlError::ZBus(error) => match error {
+            zbus::Error::InputOutput(_) => true,
+            zbus::Error::MethodError(name, _, _) => matches!(
+                name.as_str(),
+                "org.freedesktop.DBus.Error.NoReply"
+                    | "org.freedesktop.DBus.Error.Timeout"
+                    | "org.freedesktop.DBus.Error.Disconnected"
+                    | "org.freedesktop.DBus.Error.ServiceUnknown"
+                    | "org.freedesktop.DBus.Error.NameHasNoOwner"
+            ),
+            zbus::Error::FDO(error) => matches!(
+                error.as_ref(),
+                zbus::fdo::Error::NoReply(_)
+                    | zbus::fdo::Error::Timeout(_)
+                    | zbus::fdo::Error::Disconnected(_)
+                    | zbus::fdo::Error::ServiceUnknown(_)
+                    | zbus::fdo::Error::NameHasNoOwner(_)
+            ),
+            _ => false,
+        },
+    }
 }
 
 /// Static coordinator for the two negotiated inputs and five concrete Client resources.
@@ -125,11 +182,15 @@ impl SnapshotReconciler {
     }
 
     /// Applies one complete validated Server projection and returns a freshly sampled snapshot.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keep the fixed resource effect order and retry aggregation visible"
+    )]
     pub(crate) async fn reconcile(
         &self,
         snapshot: &ValidatedSnapshot,
         cancellation: CancellationToken,
-    ) -> Result<ClientStateSnapshot, SnapshotError> {
+    ) -> Result<ReconcileOutcome<ClientStateSnapshot>, SnapshotError> {
         check_cancellation(&cancellation)?;
         let gateway_before = self.gateway.current_material(&snapshot.gateway_target);
         let runtime = self.runtime.observe();
@@ -160,11 +221,11 @@ impl SnapshotReconciler {
             GatewayMaterialState::RecoveryRequired => self
                 .gateway
                 .reconcile(&snapshot.gateway_target, &cancellation)?,
-            current => current,
+            current => ReconcileOutcome::idle(current),
         };
         check_cancellation(&cancellation)?;
         let runtime_actual = if origin_applied {
-            runtime
+            ReconcileOutcome::idle(runtime)
         } else {
             self.runtime
                 .reconcile(&snapshot.runtime_origin, &cancellation)?
@@ -179,10 +240,10 @@ impl SnapshotReconciler {
             (caddy, false)
         } else {
             self.load_caddy(
-                &gateway_material,
+                &gateway_material.actual,
                 &snapshot.binding_target,
                 &snapshot.runtime_origin,
-                &runtime_actual,
+                &runtime_actual.actual,
                 blocked_caddy,
                 &cancellation,
             )
@@ -200,27 +261,39 @@ impl SnapshotReconciler {
             .await?;
         self.binding_input.set_eligible(
             &cancellation,
-            binding_input_is_eligible(&snapshot.binding_target, &session_actual, &home_actual),
+            binding_input_is_eligible(
+                &snapshot.binding_target,
+                &session_actual.actual,
+                &home_actual.actual,
+            ),
         )?;
         check_cancellation(&cancellation)?;
         let gateway_actual = if caddy_failed {
             gateway::recovery_required(&snapshot.gateway_target.credential_id.to_string())
         } else {
-            gateway::actual(&snapshot.gateway_target, &gateway_material, &caddy)
+            gateway::actual(&snapshot.gateway_target, &gateway_material.actual, &caddy)
         };
         let binding_actual = self.binding.observe(&caddy);
-        Ok(ClientStateSnapshot {
-            input: Some(ClientInputState {
-                gateway_credential: gateway_input,
-                binding: binding_input,
-            }),
-            actual: Some(ActualState {
-                gateway: Some(gateway_actual),
-                binding_access: Some(binding_actual),
-                runtime_config: Some(runtime_actual),
-                session_control: Some(session_actual),
-                home: Some(home_actual),
-            }),
+        let retry = gateway_material.retry
+            || runtime_actual.retry
+            || caddy_failed
+            || session_actual.retry
+            || home_actual.retry;
+        Ok(ReconcileOutcome {
+            retry,
+            actual: ClientStateSnapshot {
+                input: Some(ClientInputState {
+                    gateway_credential: gateway_input,
+                    binding: binding_input,
+                }),
+                actual: Some(ActualState {
+                    gateway: Some(gateway_actual),
+                    binding_access: Some(binding_actual),
+                    runtime_config: Some(runtime_actual.actual),
+                    session_control: Some(session_actual.actual),
+                    home: Some(home_actual.actual),
+                }),
+            },
         })
     }
 
@@ -434,7 +507,7 @@ fn applied_runtime_origin<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use natsume_device_protocol::generated::{
         BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState,
         GatewayCredentialIntent, GatewayTarget, HomeTarget, LockState, RuntimeConfigTarget,
@@ -444,7 +517,204 @@ mod tests {
 
     use super::*;
 
-    fn snapshot() -> ServerStateSnapshot {
+    #[test]
+    fn helper_retry_policy_uses_error_types_and_rejects_unknown_failures() {
+        assert!(retryable_control_error(&ResourceControlError::Unavailable(
+            "same text".to_owned()
+        )));
+        assert!(!retryable_control_error(&ResourceControlError::Rejected(
+            "same text".to_owned()
+        )));
+        assert!(retryable_control_error(&ResourceControlError::ZBus(
+            zbus::fdo::Error::NoReply("timeout".to_owned()).into()
+        )));
+        assert!(!retryable_control_error(&ResourceControlError::ZBus(
+            zbus::fdo::Error::AccessDenied("denied".to_owned()).into()
+        )));
+        assert!(!retryable_control_error(&ResourceControlError::ZBus(
+            zbus::Error::Failure("unknown".to_owned())
+        )));
+    }
+
+    use natsume_local_control_api::{
+        ContestSessionObservation, ContestSessionState, GraphicalSession, HomeResetPhase,
+        HomeResetProgress, PRIVILEGED1_PATH, ResourceControlError,
+    };
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    pub(crate) struct HelperState {
+        pub(crate) termination_calls: Vec<GraphicalSession>,
+        pub(crate) home_calls: Vec<u64>,
+        pub(crate) terminate_failures: usize,
+        pub(crate) home_failures: usize,
+        pub(crate) rejected: bool,
+        pub(crate) progress: Option<HomeResetProgress>,
+    }
+
+    struct FaultyHelper(Arc<Mutex<HelperState>>);
+
+    #[zbus::interface(name = "org.natsume.Privileged1")]
+    impl FaultyHelper {
+        #[zbus(name = "QueryContestSession")]
+        fn query_contest_session(&self) -> ContestSessionObservation {
+            let state = self
+                .0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            ContestSessionObservation {
+                state: ContestSessionState::Active,
+                session: Some(GraphicalSession {
+                    logind_session_id: if state.termination_calls.is_empty() {
+                        "c2"
+                    } else {
+                        "c3"
+                    }
+                    .to_owned(),
+                    boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+                }),
+            }
+        }
+
+        #[zbus(name = "TerminateContestSession")]
+        fn terminate_contest_session(
+            &mut self,
+            session: GraphicalSession,
+        ) -> Result<(), ResourceControlError> {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.termination_calls.push(session);
+            if state.rejected {
+                Err(ResourceControlError::Rejected(
+                    "invalid session target".to_owned(),
+                ))
+            } else if state.termination_calls.len() <= state.terminate_failures {
+                Err(ResourceControlError::Unavailable(
+                    "temporary logind failure".to_owned(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        #[zbus(name = "QueryHomeReset")]
+        fn query_home_reset(&self) -> Option<HomeResetProgress> {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"))
+                .progress
+                .clone()
+        }
+
+        #[zbus(name = "PrepareHomeReset")]
+        fn prepare_home_reset(&mut self, epoch: u64) {
+            self.0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"))
+                .progress = Some(HomeResetProgress {
+                reset_epoch: epoch,
+                phase: HomeResetPhase::Prepared,
+            });
+        }
+
+        #[zbus(name = "ApplyHomeReset")]
+        fn apply_home_reset(&mut self, epoch: u64) -> Result<(), ResourceControlError> {
+            self.finish_home(epoch)
+        }
+
+        #[zbus(name = "RecoverHomeReset")]
+        fn recover_home_reset(&mut self, epoch: u64) -> Result<(), ResourceControlError> {
+            self.finish_home(epoch)
+        }
+
+        #[zbus(name = "VerifyHomeReset")]
+        fn verify_home_reset(&mut self, epoch: u64) -> HomeResetProgress {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            let phase = if state.home_calls.len() > state.home_failures && !state.rejected {
+                HomeResetPhase::Verified
+            } else {
+                HomeResetPhase::RecoveryRequired
+            };
+            let progress = HomeResetProgress {
+                reset_epoch: epoch,
+                phase,
+            };
+            state.progress = Some(progress.clone());
+            progress
+        }
+    }
+
+    impl FaultyHelper {
+        fn finish_home(&self, epoch: u64) -> Result<(), ResourceControlError> {
+            let mut state = self
+                .0
+                .lock()
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.home_calls.push(epoch);
+            if state.rejected {
+                Err(ResourceControlError::Rejected("unmanaged mount".to_owned()))
+            } else if state.home_calls.len() <= state.home_failures {
+                Err(ResourceControlError::Unavailable(
+                    "temporary mount failure".to_owned(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) struct Fixture {
+        pub(crate) snapshots: Arc<SnapshotReconciler>,
+        pub(crate) helper: Arc<Mutex<HelperState>>,
+        pub(crate) directory: tempfile::TempDir,
+        _service: zbus::Connection,
+        caddy_task: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            self.caddy_task.abort();
+        }
+    }
+
+    pub(crate) async fn fixture(state: HelperState) -> Result<Fixture, Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let helper = Arc::new(Mutex::new(state));
+        let (server_stream, client_stream) = tokio::net::UnixStream::pair()?;
+        let server = zbus::connection::Builder::unix_stream(server_stream)
+            .server(zbus::Guid::generate())?
+            .p2p()
+            .serve_at(PRIVILEGED1_PATH, FaultyHelper(Arc::clone(&helper)))?
+            .build();
+        let client = zbus::connection::Builder::unix_stream(client_stream)
+            .p2p()
+            .build();
+        let (server, connection) = tokio::try_join!(server, client)?;
+        let (caddy, caddy_task) = caddy::tests::fixture(&directory)?;
+        let snapshots = Arc::new(SnapshotReconciler {
+            gateway: gateway::tests::reconciler(&directory),
+            binding_input: Arc::new(binding::tests::input_provider(&directory)),
+            binding: binding::tests::reconciler(&directory),
+            runtime: runtime::tests::reconciler(&directory),
+            session: session::tests::reconciler(&directory, connection.clone()),
+            home: home::tests::reconciler(&directory, connection),
+            caddy,
+        });
+        Ok(Fixture {
+            snapshots,
+            helper,
+            directory,
+            _service: server,
+            caddy_task,
+        })
+    }
+
+    pub(crate) fn snapshot() -> ServerStateSnapshot {
         let credential_id = Uuid::now_v7().hyphenated().to_string();
         ServerStateSnapshot {
             intent: Some(ServerIntentState {

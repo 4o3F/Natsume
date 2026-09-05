@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use natsume_local_control_api::{HomeResetPhase, HomeResetProgress};
+use natsume_local_control_api::{HomeResetPhase, HomeResetProgress, ResourceControlError};
 use procfs::process::Process;
 use rustix::{
     fs::{Gid, Uid, chown},
@@ -17,13 +17,17 @@ const TEMPLATE_RELATIVE_PATH: &str = "usr/lib/natsume/home-templates/current/low
 const STATE_RELATIVE_PATH: &str = "var/lib/natsume-privileged/home-reset";
 const CONTEST_HOME_RELATIVE_PATH: &str = "home/contest";
 
-fn service_error(message: &'static str) -> zbus::fdo::Error {
-    zbus::fdo::Error::Failed(message.to_owned())
+fn unavailable(message: &'static str) -> ResourceControlError {
+    ResourceControlError::Unavailable(message.to_owned())
 }
 
-fn require_epoch(epoch: u64) -> zbus::fdo::Result<()> {
+fn rejected(message: &'static str) -> ResourceControlError {
+    ResourceControlError::Rejected(message.to_owned())
+}
+
+fn require_epoch(epoch: u64) -> Result<(), ResourceControlError> {
     if epoch == 0 || i64::try_from(epoch).is_err() {
-        return Err(zbus::fdo::Error::InvalidArgs(
+        return Err(ResourceControlError::Rejected(
             "reset epoch must be in 1..=i64::MAX".to_owned(),
         ));
     }
@@ -34,15 +38,15 @@ fn state_directory(root: &Path) -> PathBuf {
     root.join(STATE_RELATIVE_PATH)
 }
 
-pub(super) fn state_exists(root: &Path) -> zbus::fdo::Result<bool> {
+pub(super) fn state_exists(root: &Path) -> Result<bool, ResourceControlError> {
     let mut entries = match fs::read_dir(state_directory(root)) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => return Err(service_error("Home reset state cannot be inspected")),
+        Err(_) => return Err(unavailable("Home reset state cannot be inspected")),
     };
     match entries.next() {
         Some(Ok(_)) => Ok(true),
-        Some(Err(_)) => Err(service_error("Home reset state cannot be inspected")),
+        Some(Err(_)) => Err(unavailable("Home reset state cannot be inspected")),
         None => Ok(false),
     }
 }
@@ -63,20 +67,20 @@ fn directory_metadata(path: &Path) -> Option<fs::Metadata> {
         .filter(|metadata| metadata.file_type().is_dir())
 }
 
-fn ensure_directory(path: &Path) -> zbus::fdo::Result<()> {
+fn ensure_directory(path: &Path) -> Result<(), ResourceControlError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
-        Ok(_) => Err(service_error("Home reset generation path is invalid")),
+        Ok(_) => Err(rejected("Home reset generation path is invalid")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(path)
-            .map_err(|_| service_error("Home reset generation cannot be prepared")),
-        Err(_) => Err(service_error("Home reset generation cannot be prepared")),
+            .map_err(|_| unavailable("Home reset generation cannot be prepared")),
+        Err(_) => Err(unavailable("Home reset generation cannot be prepared")),
     }
 }
 
-fn sync_directory(path: &Path) -> zbus::fdo::Result<()> {
+fn sync_directory(path: &Path) -> Result<(), ResourceControlError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| service_error("Home reset generation cannot be persisted"))
+        .map_err(|_| unavailable("Home reset generation cannot be persisted"))
 }
 
 fn generation_layout_exists(root: &Path, epoch: u64) -> bool {
@@ -97,36 +101,38 @@ fn generation_is_complete(root: &Path, epoch: u64, home: &fs::Metadata) -> bool 
     })
 }
 
-fn remove_other_generations(root: &Path, current_epoch: u64) -> zbus::fdo::Result<()> {
+fn remove_other_generations(root: &Path, current_epoch: u64) -> Result<(), ResourceControlError> {
     let generations = state_directory(root).join("generations");
     let current = current_epoch.to_string();
     let entries = fs::read_dir(&generations)
-        .map_err(|_| service_error("Old Home reset generations cannot be removed"))?;
+        .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
     for entry in entries {
         let entry =
-            entry.map_err(|_| service_error("Old Home reset generations cannot be removed"))?;
+            entry.map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
         if entry.file_name().as_os_str() == OsStr::new(&current) {
             continue;
         }
         if !entry
             .file_type()
-            .map_err(|_| service_error("Old Home reset generations cannot be removed"))?
+            .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?
             .is_dir()
         {
-            return Err(service_error(
-                "Old Home reset generations cannot be removed",
-            ));
+            return Err(rejected("Old Home reset generations cannot be removed"));
         }
         fs::remove_dir_all(entry.path())
-            .map_err(|_| service_error("Old Home reset generations cannot be removed"))?;
+            .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
     }
     sync_directory(&generations)
 }
 
-fn prepare_generation(root: &Path, epoch: u64, home: &fs::Metadata) -> zbus::fdo::Result<()> {
+fn prepare_generation(
+    root: &Path,
+    epoch: u64,
+    home: &fs::Metadata,
+) -> Result<(), ResourceControlError> {
     let state = state_directory(root);
     if directory_metadata(&state).is_none() {
-        return Err(service_error("Home reset state directory is unavailable"));
+        return Err(unavailable("Home reset state directory is unavailable"));
     }
     let generations = state.join("generations");
     ensure_directory(&generations)?;
@@ -138,17 +144,17 @@ fn prepare_generation(root: &Path, epoch: u64, home: &fs::Metadata) -> zbus::fdo
     ensure_directory(&work)?;
 
     let upper_metadata = directory_metadata(&upper)
-        .ok_or_else(|| service_error("Home reset generation cannot be prepared"))?;
+        .ok_or_else(|| unavailable("Home reset generation cannot be prepared"))?;
     if upper_metadata.uid() != home.uid() || upper_metadata.gid() != home.gid() {
         chown(
             &upper,
             Some(Uid::from_raw(home.uid())),
             Some(Gid::from_raw(home.gid())),
         )
-        .map_err(|_| service_error("Home reset generation cannot be prepared"))?;
+        .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
     }
     fs::set_permissions(&upper, fs::Permissions::from_mode(home.mode() & 0o7777))
-        .map_err(|_| service_error("Home reset generation cannot be prepared"))?;
+        .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
 
     for directory in [&upper, &work, &generation, &generations, &state] {
         sync_directory(directory)?;
@@ -175,27 +181,32 @@ fn parse_phase(value: &str) -> Option<HomeResetPhase> {
     }
 }
 
-fn read_progress(root: &Path) -> zbus::fdo::Result<Option<HomeResetProgress>> {
+fn read_progress(root: &Path) -> Result<Option<HomeResetProgress>, ResourceControlError> {
     let mut file = match File::open(marker_path(root)) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(service_error("Home reset progress is unreadable")),
+        Err(_) => return Err(unavailable("Home reset progress is unreadable")),
     };
     let mut encoded = String::new();
-    file.read_to_string(&mut encoded)
-        .map_err(|_| service_error("Home reset progress is unreadable"))?;
+    file.read_to_string(&mut encoded).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            rejected("Home reset progress is invalid")
+        } else {
+            unavailable("Home reset progress is unreadable")
+        }
+    })?;
     let mut lines = encoded.lines();
     let epoch = lines
         .next()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|epoch| *epoch != 0 && i64::try_from(*epoch).is_ok())
-        .ok_or_else(|| service_error("Home reset progress is invalid"))?;
+        .ok_or_else(|| rejected("Home reset progress is invalid"))?;
     let phase = lines
         .next()
         .and_then(parse_phase)
-        .ok_or_else(|| service_error("Home reset progress is invalid"))?;
+        .ok_or_else(|| rejected("Home reset progress is invalid"))?;
     if lines.next().is_some() {
-        return Err(service_error("Home reset progress is invalid"));
+        return Err(rejected("Home reset progress is invalid"));
     }
     Ok(Some(HomeResetProgress {
         reset_epoch: epoch,
@@ -203,10 +214,14 @@ fn read_progress(root: &Path) -> zbus::fdo::Result<Option<HomeResetProgress>> {
     }))
 }
 
-fn write_progress(root: &Path, epoch: u64, phase: HomeResetPhase) -> zbus::fdo::Result<()> {
+fn write_progress(
+    root: &Path,
+    epoch: u64,
+    phase: HomeResetPhase,
+) -> Result<(), ResourceControlError> {
     let directory = state_directory(root);
     if directory_metadata(&directory).is_none() {
-        return Err(service_error("Home reset progress cannot be persisted"));
+        return Err(unavailable("Home reset progress cannot be persisted"));
     }
     let temporary = directory.join("progress.tmp");
     let mut file = OpenOptions::new()
@@ -214,38 +229,41 @@ fn write_progress(root: &Path, epoch: u64, phase: HomeResetPhase) -> zbus::fdo::
         .create(true)
         .truncate(true)
         .open(&temporary)
-        .map_err(|_| service_error("Home reset progress cannot be persisted"))?;
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
     write!(file, "{}\n{}\n", epoch, phase_name(phase))
-        .map_err(|_| service_error("Home reset progress cannot be persisted"))?;
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
     file.sync_all()
-        .map_err(|_| service_error("Home reset progress cannot be persisted"))?;
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
     fs::rename(temporary, marker_path(root))
-        .map_err(|_| service_error("Home reset progress cannot be persisted"))?;
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
     File::open(directory)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| service_error("Home reset progress cannot be persisted"))
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))
 }
 
-fn require_target_progress(root: &Path, epoch: u64) -> zbus::fdo::Result<HomeResetPhase> {
+fn require_target_progress(
+    root: &Path,
+    epoch: u64,
+) -> Result<HomeResetPhase, ResourceControlError> {
     let progress =
-        read_progress(root)?.ok_or_else(|| service_error("Home reset has not been prepared"))?;
+        read_progress(root)?.ok_or_else(|| rejected("Home reset has not been prepared"))?;
     if progress.reset_epoch != epoch {
-        return Err(service_error("another Home reset epoch is in progress"));
+        return Err(rejected("another Home reset epoch is in progress"));
     }
     Ok(progress.phase)
 }
 
-pub(super) fn prepare(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
+pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
     require_epoch(epoch)?;
     let template = root.join(TEMPLATE_RELATIVE_PATH);
     if !template.is_dir() {
-        return Err(service_error("managed Home template is unavailable"));
+        return Err(unavailable("managed Home template is unavailable"));
     }
     let contest_home = root.join(CONTEST_HOME_RELATIVE_PATH);
     let home_metadata = fs::metadata(&contest_home)
         .ok()
         .filter(std::fs::Metadata::is_dir)
-        .ok_or_else(|| service_error("contestant Home is unavailable"))?;
+        .ok_or_else(|| unavailable("contestant Home is unavailable"))?;
     if let Some(progress) = read_progress(root)? {
         if progress.reset_epoch == epoch {
             return match progress.phase {
@@ -257,30 +275,30 @@ pub(super) fn prepare(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
                 }
                 HomeResetPhase::Applied | HomeResetPhase::Verified => {
                     write_progress(root, epoch, HomeResetPhase::RecoveryRequired)?;
-                    Err(service_error("Home reset recovery is required"))
+                    Err(unavailable("Home reset recovery is required"))
                 }
                 HomeResetPhase::RecoveryRequired => {
-                    Err(service_error("Home reset recovery is required"))
+                    Err(unavailable("Home reset recovery is required"))
                 }
             };
         }
         if progress.phase != HomeResetPhase::Verified {
-            return Err(service_error("another Home reset epoch is in progress"));
+            return Err(rejected("another Home reset epoch is in progress"));
         }
     }
     prepare_generation(root, epoch, &home_metadata)?;
     write_progress(root, epoch, HomeResetPhase::Prepared)
 }
 
-pub(super) fn query(root: &Path) -> zbus::fdo::Result<Option<HomeResetProgress>> {
+pub(super) fn query(root: &Path) -> Result<Option<HomeResetProgress>, ResourceControlError> {
     read_progress(root)
 }
 
-fn mounted_generation(root: &Path, epoch: u64) -> zbus::fdo::Result<bool> {
-    let process = Process::myself().map_err(|_| service_error("mount state is unavailable"))?;
+fn mounted_generation(root: &Path, epoch: u64) -> Result<bool, ResourceControlError> {
+    let process = Process::myself().map_err(|_| unavailable("mount state is unavailable"))?;
     let mounts = process
         .mountinfo()
-        .map_err(|_| service_error("mount state is unavailable"))?;
+        .map_err(|_| unavailable("mount state is unavailable"))?;
     let mount_point = root.join(CONTEST_HOME_RELATIVE_PATH);
     let mut at_target = mounts
         .iter()
@@ -327,9 +345,9 @@ fn natsume_generation(root: &Path, mount: &procfs::process::MountInfo) -> Option
     Some(epoch)
 }
 
-fn mount_generation(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
+fn mount_generation(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
     if !generation_layout_exists(root, epoch) {
-        return Err(service_error("Home reset generation is unavailable"));
+        return Err(rejected("Home reset generation is unavailable"));
     }
     if root != Path::new("/") {
         return Ok(());
@@ -338,19 +356,19 @@ fn mount_generation(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
         return Ok(());
     }
     let mount_point = root.join(CONTEST_HOME_RELATIVE_PATH);
-    let process = Process::myself().map_err(|_| service_error("mount state is unavailable"))?;
+    let process = Process::myself().map_err(|_| unavailable("mount state is unavailable"))?;
     let mounts = process
         .mountinfo()
-        .map_err(|_| service_error("mount state is unavailable"))?;
+        .map_err(|_| unavailable("mount state is unavailable"))?;
     let mut at_target = mounts
         .iter()
         .filter(|mount| mount.mount_point == mount_point);
     if let Some(existing) = at_target.next() {
         if at_target.next().is_some() || natsume_generation(root, existing).is_none() {
-            return Err(service_error("contestant Home contains an unmanaged mount"));
+            return Err(rejected("contestant Home contains an unmanaged mount"));
         }
         unmount(&mount_point, UnmountFlags::empty())
-            .map_err(|_| service_error("contestant Home cannot be unmounted"))?;
+            .map_err(|_| unavailable("contestant Home cannot be unmounted"))?;
     }
 
     let generation = generation_directory(root, epoch);
@@ -360,8 +378,8 @@ fn mount_generation(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
         generation.join("upper").display(),
         generation.join("work").display()
     );
-    let options = CString::new(options)
-        .map_err(|_| service_error("contestant Home mount options are invalid"))?;
+    let options =
+        CString::new(options).map_err(|_| rejected("contestant Home mount options are invalid"))?;
     // TODO(WP10): validate the fixed overlay layout on the signed client image.
     mount(
         "overlay",
@@ -370,10 +388,10 @@ fn mount_generation(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
         MountFlags::empty(),
         Some(options.as_c_str()),
     )
-    .map_err(|_| service_error("contestant Home cannot be mounted"))
+    .map_err(|_| unavailable("contestant Home cannot be mounted"))
 }
 
-pub(super) fn apply(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
+pub(super) fn apply(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
     require_epoch(epoch)?;
     match require_target_progress(root, epoch)? {
         HomeResetPhase::Prepared | HomeResetPhase::RecoveryRequired => {
@@ -388,7 +406,7 @@ fn record_verification(
     root: &Path,
     epoch: u64,
     mounted: bool,
-) -> zbus::fdo::Result<HomeResetProgress> {
+) -> Result<HomeResetProgress, ResourceControlError> {
     let phase = require_target_progress(root, epoch)?;
     if phase == HomeResetPhase::Prepared || !mounted {
         write_progress(root, epoch, HomeResetPhase::RecoveryRequired)?;
@@ -407,12 +425,12 @@ fn record_verification(
     })
 }
 
-pub(super) fn verify(root: &Path, epoch: u64) -> zbus::fdo::Result<HomeResetProgress> {
+pub(super) fn verify(root: &Path, epoch: u64) -> Result<HomeResetProgress, ResourceControlError> {
     require_epoch(epoch)?;
     record_verification(root, epoch, mounted_generation(root, epoch)?)
 }
 
-pub(super) fn recover(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
+pub(super) fn recover(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
     require_epoch(epoch)?;
     match read_progress(root)? {
         Some(progress)
@@ -426,13 +444,13 @@ pub(super) fn recover(root: &Path, epoch: u64) -> zbus::fdo::Result<()> {
             mount_generation(root, epoch)?;
             write_progress(root, epoch, HomeResetPhase::Applied)
         }
-        Some(_) => Err(service_error("another Home reset epoch is in progress")),
+        Some(_) => Err(rejected("another Home reset epoch is in progress")),
         None if generation_layout_exists(root, epoch) => {
             write_progress(root, epoch, HomeResetPhase::Prepared)?;
             mount_generation(root, epoch)?;
             write_progress(root, epoch, HomeResetPhase::Applied)
         }
-        None => Err(service_error("Home reset has not been prepared")),
+        None => Err(rejected("Home reset has not been prepared")),
     }
 }
 
@@ -485,6 +503,19 @@ mod tests {
         assert_eq!(upper.uid(), home.uid());
         assert_eq!(upper.gid(), home.gid());
         assert_eq!(upper.mode() & 0o7777, home.mode() & 0o7777);
+    }
+
+    #[test]
+    fn corrupt_progress_is_rejected_instead_of_retrying() {
+        let directory = fixture();
+        for content in [b"not a marker".as_slice(), b"\xff".as_slice()] {
+            fs::write(super::marker_path(directory.path()), content)
+                .unwrap_or_else(|error| panic!("fixture write: {error}"));
+            assert!(matches!(
+                query(directory.path()),
+                Err(natsume_local_control_api::ResourceControlError::Rejected(_))
+            ));
+        }
     }
 
     #[test]

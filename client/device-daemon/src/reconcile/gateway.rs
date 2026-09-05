@@ -28,7 +28,7 @@ use x509_parser::{
 use zeroize::Zeroizing;
 
 use super::{
-    SnapshotError,
+    ReconcileOutcome, SnapshotError,
     caddy::{CaddyModeArtifact, CaddyObservation},
     check_cancellation,
 };
@@ -341,48 +341,62 @@ impl GatewayReconciler {
             .join(credential_id.hyphenated().to_string())
     }
 
-    fn install_certificate(&self, target: &ValidatedGatewayTarget) -> Option<GatewayMaterial> {
+    fn install_certificate(
+        &self,
+        target: &ValidatedGatewayTarget,
+    ) -> ReconcileOutcome<Option<GatewayMaterial>> {
         let credential_id = target.credential_id;
-        let grant = target.certificate.as_ref()?;
+        let Some(grant) = target.certificate.as_ref() else {
+            return ReconcileOutcome::idle(None);
+        };
         let directory = self.generation_directory(credential_id);
         let input_path = directory.join(GATEWAY_INPUT_NAME);
         let key_path = directory.join(GATEWAY_KEY_NAME);
-        let (_, key) = read_input_and_key(&input_path, &key_path, credential_id)?;
+        let Some((_, key)) = read_input_and_key(&input_path, &key_path, credential_id) else {
+            return ReconcileOutcome::idle(None);
+        };
         if grant.leaf_public_key.as_slice() != key.public_key_raw() {
-            return None;
+            return ReconcileOutcome::idle(None);
         }
         let pem = pem_certificate(&grant.leaf_der);
         let certificate_path = directory.join(GATEWAY_CERTIFICATE_NAME);
-        atomic_write(
+        if atomic_write(
             &certificate_path,
             pem.as_bytes(),
             0o640,
             WritePolicy::Replace,
         )
-        .ok()?;
-        Some(GatewayMaterial {
+        .is_err()
+        {
+            return ReconcileOutcome::retry(None);
+        }
+        ReconcileOutcome::idle(Some(GatewayMaterial {
             credential_id: credential_id.hyphenated().to_string(),
             certificate_path,
             private_key_path: key_path,
             leaf_sha256: Sha256::digest(&grant.leaf_der).to_vec(),
-        })
+        }))
     }
 
     pub(super) fn reconcile(
         &self,
         target: &ValidatedGatewayTarget,
         cancellation: &CancellationToken,
-    ) -> Result<GatewayMaterialState, SnapshotError> {
+    ) -> Result<ReconcileOutcome<GatewayMaterialState>, SnapshotError> {
         let credential_id = target.credential_id.hyphenated().to_string();
         check_cancellation(cancellation)?;
         if target.certificate.is_none() {
-            return Ok(GatewayMaterialState::Restoring);
+            return Ok(ReconcileOutcome::idle(GatewayMaterialState::Restoring));
         }
-        let Some(material) = self
-            .installed_target_material(target)
-            .or_else(|| self.install_certificate(target))
-        else {
-            return Ok(GatewayMaterialState::RecoveryRequired);
+        let installation = self.installed_target_material(target).map_or_else(
+            || self.install_certificate(target),
+            |material| ReconcileOutcome::idle(Some(material)),
+        );
+        let Some(material) = installation.actual else {
+            return Ok(ReconcileOutcome {
+                actual: GatewayMaterialState::RecoveryRequired,
+                retry: installation.retry,
+            });
         };
         check_cancellation(cancellation)?;
         if self.active_credential_id() != Some(target.credential_id) {
@@ -394,7 +408,9 @@ impl GatewayReconciler {
             atomic_write(&self.active_path, &encoded, 0o600, WritePolicy::Replace)
                 .map_err(|_| SnapshotError::Artifact)?;
         }
-        Ok(GatewayMaterialState::Available(material))
+        Ok(ReconcileOutcome::idle(GatewayMaterialState::Available(
+            material,
+        )))
     }
 
     pub(super) fn observe(&self, caddy: &CaddyObservation) -> GatewayActualState {
@@ -535,7 +551,7 @@ pub(super) fn recovery_required(credential_id: &str) -> GatewayActualState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::os::unix::fs::MetadataExt as _;
 
     use tempfile::TempDir;
@@ -546,7 +562,7 @@ mod tests {
         TempDir::new().unwrap_or_else(|error| panic!("test directory must be created: {error}"))
     }
 
-    fn reconciler(directory: &TempDir) -> GatewayReconciler {
+    pub(in crate::reconcile) fn reconciler(directory: &TempDir) -> GatewayReconciler {
         GatewayReconciler {
             intent: Mutex::new(None),
             generations_directory: directory.path().join("gateway"),
@@ -825,7 +841,7 @@ mod tests {
         let first = reconciler
             .reconcile(&target, &CancellationToken::new())
             .unwrap_or_else(|error| panic!("target must reconcile: {error}"));
-        assert!(matches!(first, GatewayMaterialState::Available(_)));
+        assert!(matches!(first.actual, GatewayMaterialState::Available(_)));
         let certificate_path = generation.join(GATEWAY_CERTIFICATE_NAME);
         let certificate_inode = fs::metadata(&certificate_path)
             .unwrap_or_else(|error| panic!("certificate metadata must load: {error}"))
@@ -838,7 +854,7 @@ mod tests {
             .reconcile(&target, &CancellationToken::new())
             .unwrap_or_else(|error| panic!("target replay must reconcile: {error}"));
 
-        assert!(matches!(replay, GatewayMaterialState::Available(_)));
+        assert!(matches!(replay.actual, GatewayMaterialState::Available(_)));
         assert_eq!(
             fs::metadata(certificate_path)
                 .unwrap_or_else(|error| panic!("certificate metadata must reload: {error}"))

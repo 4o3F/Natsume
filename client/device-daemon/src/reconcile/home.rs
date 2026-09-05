@@ -7,7 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::atomic_write::{WritePolicy, atomic_write};
 
-use super::{SnapshotError, check_cancellation, invalid_epoch};
+use super::{ReconcileOutcome, SnapshotError, check_cancellation, invalid_epoch};
 
 const ARTIFACT_FORMAT_VERSION: u32 = 1;
 
@@ -43,97 +43,80 @@ impl HomeReconciler {
         &self,
         target_epoch: Option<u64>,
         cancellation: &CancellationToken,
-    ) -> Result<HomeActualState, SnapshotError> {
+    ) -> Result<ReconcileOutcome<HomeActualState>, SnapshotError> {
         let mut completed = match read_completion(&self.artifact_path) {
             CompletionState::Absent => None,
             CompletionState::Valid(epoch) => Some(epoch),
-            CompletionState::Failed => return Ok(recovery_required(None)),
+            CompletionState::Failed => return Ok(ReconcileOutcome::idle(recovery_required(None))),
         };
         let proxy = self.proxy().await?;
 
         check_cancellation(cancellation)?;
-        let Ok(progress) = proxy.query_home_reset().await else {
-            return Ok(recovery_required(completed));
+        let progress = match proxy.query_home_reset().await {
+            Ok(progress) => progress,
+            Err(error) => {
+                return Ok(ReconcileOutcome::control_error(
+                    recovery_required(completed),
+                    &error,
+                ));
+            }
         };
         let mut verified_epoch = None;
         if let Some(progress) = progress {
             if !progress_within_target(&progress, target_epoch) {
-                return Ok(recovery_required(completed));
+                return Ok(ReconcileOutcome::idle(recovery_required(completed)));
             }
-            if progress.phase == HomeResetPhase::Verified {
-                check_cancellation(cancellation)?;
-                let Ok(verified) = proxy.verify_home_reset(progress.reset_epoch).await else {
-                    return Ok(recovery_required(completed));
-                };
-                if verified.reset_epoch != progress.reset_epoch
-                    || verified.phase != HomeResetPhase::Verified
-                {
-                    return Ok(recovery_required(completed));
-                }
-                verified_epoch = Some(progress.reset_epoch);
-                completed =
-                    advance_completion(&self.artifact_path, completed, progress.reset_epoch)?;
-            } else {
-                if !finish_progress(&proxy, &progress, cancellation).await? {
-                    return Ok(recovery_required(completed));
-                }
-                verified_epoch = Some(progress.reset_epoch);
-                completed =
-                    advance_completion(&self.artifact_path, completed, progress.reset_epoch)?;
+            let finished = finish_progress(&proxy, &progress, cancellation).await?;
+            if !finished.actual {
+                return Ok(ReconcileOutcome {
+                    actual: recovery_required(completed),
+                    retry: finished.retry,
+                });
             }
+            verified_epoch = Some(progress.reset_epoch);
+            completed = advance_completion(&self.artifact_path, completed, progress.reset_epoch)?;
         }
 
         let Some(epoch) = target_epoch else {
-            return Ok(if completed.is_none() || verified_epoch == completed {
-                steady(completed)
-            } else {
-                recovery_required(completed)
-            });
+            return Ok(ReconcileOutcome::idle(
+                if completed.is_none() || verified_epoch == completed {
+                    steady(completed)
+                } else {
+                    recovery_required(completed)
+                },
+            ));
         };
         if completed.is_some_and(|value| value >= epoch) {
-            return Ok(
+            return Ok(ReconcileOutcome::idle(
                 if verified_epoch.is_some_and(|verified| verified >= epoch) {
                     steady(completed)
                 } else {
                     recovery_required(completed)
                 },
-            );
+            ));
         }
 
         check_cancellation(cancellation)?;
-        if proxy.prepare_home_reset(epoch).await.is_err() {
-            return Ok(recovery_required(completed));
+        if let Err(error) = proxy.prepare_home_reset(epoch).await {
+            return Ok(ReconcileOutcome::control_error(
+                recovery_required(completed),
+                &error,
+            ));
         }
-        check_cancellation(cancellation)?;
-        if proxy.apply_home_reset(epoch).await.is_err() {
-            return Ok(recovery_required(completed));
-        }
-        check_cancellation(cancellation)?;
-        let Ok(progress) = proxy.verify_home_reset(epoch).await else {
-            return Ok(recovery_required(completed));
+        let prepared = HomeResetProgress {
+            reset_epoch: epoch,
+            phase: HomeResetPhase::Prepared,
         };
-        if progress.reset_epoch != epoch {
-            return Ok(recovery_required(completed));
+        let finished = finish_progress(&proxy, &prepared, cancellation).await?;
+        if !finished.actual {
+            return Ok(ReconcileOutcome {
+                actual: recovery_required(completed),
+                retry: finished.retry,
+            });
         }
-        if progress.phase == HomeResetPhase::RecoveryRequired {
-            check_cancellation(cancellation)?;
-            if proxy.recover_home_reset(epoch).await.is_err() {
-                return Ok(recovery_required(completed));
-            }
-            check_cancellation(cancellation)?;
-            let Ok(recovered) = proxy.verify_home_reset(epoch).await else {
-                return Ok(recovery_required(completed));
-            };
-            if recovered.reset_epoch != epoch || recovered.phase != HomeResetPhase::Verified {
-                return Ok(recovery_required(completed));
-            }
-        } else if progress.phase != HomeResetPhase::Verified {
-            return Ok(recovery_required(completed));
-        }
-
         check_cancellation(cancellation)?;
-        advance_completion(&self.artifact_path, completed, epoch)?;
-        self.observe().await
+        let completed = advance_completion(&self.artifact_path, completed, epoch)?;
+        Ok(ReconcileOutcome::idle(steady(completed)))
     }
 
     pub(super) async fn observe(&self) -> Result<HomeActualState, SnapshotError> {
@@ -176,34 +159,32 @@ async fn finish_progress(
     proxy: &Privileged1Proxy<'_>,
     progress: &HomeResetProgress,
     cancellation: &CancellationToken,
-) -> Result<bool, SnapshotError> {
+) -> Result<ReconcileOutcome<bool>, SnapshotError> {
     if invalid_epoch(progress.reset_epoch) {
-        return Ok(false);
-    }
-    match progress.phase {
-        HomeResetPhase::Prepared => {
-            check_cancellation(cancellation)?;
-            if proxy.apply_home_reset(progress.reset_epoch).await.is_err() {
-                return Ok(false);
-            }
-        }
-        HomeResetPhase::Applied | HomeResetPhase::Verified => {}
-        HomeResetPhase::RecoveryRequired => {
-            check_cancellation(cancellation)?;
-            if proxy
-                .recover_home_reset(progress.reset_epoch)
-                .await
-                .is_err()
-            {
-                return Ok(false);
-            }
-        }
+        return Ok(ReconcileOutcome::idle(false));
     }
     check_cancellation(cancellation)?;
-    let Ok(verified) = proxy.verify_home_reset(progress.reset_epoch).await else {
-        return Ok(false);
+    let applied = match progress.phase {
+        HomeResetPhase::Prepared => proxy.apply_home_reset(progress.reset_epoch).await,
+        HomeResetPhase::RecoveryRequired => proxy.recover_home_reset(progress.reset_epoch).await,
+        HomeResetPhase::Applied | HomeResetPhase::Verified => Ok(()),
     };
-    Ok(verified.reset_epoch == progress.reset_epoch && verified.phase == HomeResetPhase::Verified)
+    if let Err(error) = applied {
+        return Ok(ReconcileOutcome::control_error(false, &error));
+    }
+    check_cancellation(cancellation)?;
+    let verified = match proxy.verify_home_reset(progress.reset_epoch).await {
+        Ok(verified) => verified,
+        Err(error) => return Ok(ReconcileOutcome::control_error(false, &error)),
+    };
+    if verified.reset_epoch != progress.reset_epoch {
+        return Ok(ReconcileOutcome::idle(false));
+    }
+    Ok(if verified.phase == HomeResetPhase::Verified {
+        ReconcileOutcome::idle(true)
+    } else {
+        ReconcileOutcome::retry(false)
+    })
 }
 
 fn progress_within_target(progress: &HomeResetProgress, target_epoch: Option<u64>) -> bool {
@@ -274,10 +255,20 @@ fn recovery_required(completed_reset_epoch: Option<u64>) -> HomeActualState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    pub(in crate::reconcile) fn reconciler(
+        directory: &TempDir,
+        connection: zbus::Connection,
+    ) -> HomeReconciler {
+        HomeReconciler {
+            connection,
+            artifact_path: directory.path().join("home-completion.json"),
+        }
+    }
 
     #[test]
     fn completed_epoch_is_persisted_before_it_can_be_observed() {

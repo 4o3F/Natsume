@@ -13,7 +13,7 @@ use uuid::Uuid;
 
 use crate::atomic_write::{WritePolicy, atomic_write};
 
-use super::{SnapshotError, check_cancellation, invalid_epoch};
+use super::{ReconcileOutcome, SnapshotError, check_cancellation, invalid_epoch};
 
 const ARTIFACT_FORMAT_VERSION: u32 = 1;
 
@@ -80,7 +80,7 @@ impl SessionReconciler {
         &self,
         target: &ValidatedSessionTarget,
         cancellation: &CancellationToken,
-    ) -> Result<SessionControlActualState, SnapshotError> {
+    ) -> Result<ReconcileOutcome<SessionControlActualState>, SnapshotError> {
         let mut completion = match read_completion(&self.artifact_path) {
             CompletionState::Valid(completion) => completion,
             CompletionState::Absent => SessionCompletionArtifact {
@@ -88,7 +88,7 @@ impl SessionReconciler {
                 completed_terminate_epoch: None,
                 pending: None,
             },
-            CompletionState::Failed => return Ok(error_actual(None)),
+            CompletionState::Failed => return Ok(ReconcileOutcome::idle(error_actual(None))),
         };
         let proxy = self.proxy().await?;
 
@@ -124,7 +124,21 @@ impl SessionReconciler {
         {
             return Ok(actual);
         }
-        self.observe().await
+        let observed = match proxy.query_contest_session().await {
+            Ok(observation) => ReconcileOutcome {
+                retry: matches!(
+                    (observation.state, target.desired_lock),
+                    (ContestSessionState::Active, SessionLockLevel::Locked)
+                        | (ContestSessionState::Locked, SessionLockLevel::Unlocked)
+                ),
+                actual: observation_actual(&observation, completion.completed_terminate_epoch),
+            },
+            Err(error) => ReconcileOutcome::control_error(
+                error_actual(completion.completed_terminate_epoch),
+                &error,
+            ),
+        };
+        Ok(observed)
     }
 
     async fn resume_pending(
@@ -133,21 +147,20 @@ impl SessionReconciler {
         completion: &mut SessionCompletionArtifact,
         target_epoch: Option<u64>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<SessionControlActualState>, SnapshotError> {
+    ) -> Result<Option<ReconcileOutcome<SessionControlActualState>>, SnapshotError> {
         let Some(pending) = completion.pending.as_ref() else {
             return Ok(None);
         };
         if !may_resume_pending(pending, target_epoch) {
-            return Ok(Some(error_actual(completion.completed_terminate_epoch)));
+            return Ok(Some(ReconcileOutcome::idle(error_actual(
+                completion.completed_terminate_epoch,
+            ))));
         }
         check_cancellation(cancellation)?;
-        if proxy
-            .terminate_contest_session(&pending.session)
-            .await
-            .is_err()
-        {
-            return Ok(Some(terminating_actual(
-                completion.completed_terminate_epoch,
+        if let Err(error) = proxy.terminate_contest_session(&pending.session).await {
+            return Ok(Some(ReconcileOutcome::control_error(
+                terminating_actual(completion.completed_terminate_epoch),
+                &error,
             )));
         }
         check_cancellation(cancellation)?;
@@ -163,7 +176,7 @@ impl SessionReconciler {
         completion: &mut SessionCompletionArtifact,
         target_epoch: Option<u64>,
         cancellation: &CancellationToken,
-    ) -> Result<Option<SessionControlActualState>, SnapshotError> {
+    ) -> Result<Option<ReconcileOutcome<SessionControlActualState>>, SnapshotError> {
         let Some(epoch) = target_epoch.filter(|epoch| {
             completion
                 .completed_terminate_epoch
@@ -172,15 +185,22 @@ impl SessionReconciler {
             return Ok(None);
         };
         check_cancellation(cancellation)?;
-        let observation = proxy
-            .query_contest_session()
-            .await
-            .map_err(|_| SnapshotError::LocalControl)?;
+        let observation = match proxy.query_contest_session().await {
+            Ok(observation) => observation,
+            Err(error) => {
+                return Ok(Some(ReconcileOutcome::control_error(
+                    error_actual(completion.completed_terminate_epoch),
+                    &error,
+                )));
+            }
+        };
         match observation.state {
-            ContestSessionState::Ambiguous => Ok(Some(SessionControlActualState {
-                session_state: SessionState::Ambiguous.into(),
-                completed_terminate_epoch: completion.completed_terminate_epoch,
-            })),
+            ContestSessionState::Ambiguous => {
+                Ok(Some(ReconcileOutcome::idle(SessionControlActualState {
+                    session_state: SessionState::Ambiguous.into(),
+                    completed_terminate_epoch: completion.completed_terminate_epoch,
+                })))
+            }
             ContestSessionState::None => {
                 completion.completed_terminate_epoch = Some(epoch);
                 persist_completion(&self.artifact_path, completion)?;
@@ -188,7 +208,9 @@ impl SessionReconciler {
             }
             ContestSessionState::Active | ContestSessionState::Locked => {
                 let Some(session) = observation.session.as_ref() else {
-                    return Ok(Some(error_actual(completion.completed_terminate_epoch)));
+                    return Ok(Some(ReconcileOutcome::idle(error_actual(
+                        completion.completed_terminate_epoch,
+                    ))));
                 };
                 completion.pending = Some(PendingTermination {
                     terminate_epoch: epoch,
@@ -196,9 +218,10 @@ impl SessionReconciler {
                 });
                 persist_completion(&self.artifact_path, completion)?;
                 check_cancellation(cancellation)?;
-                if proxy.terminate_contest_session(session).await.is_err() {
-                    return Ok(Some(terminating_actual(
-                        completion.completed_terminate_epoch,
+                if let Err(error) = proxy.terminate_contest_session(session).await {
+                    return Ok(Some(ReconcileOutcome::control_error(
+                        terminating_actual(completion.completed_terminate_epoch),
+                        &error,
                     )));
                 }
                 check_cancellation(cancellation)?;
@@ -236,32 +259,45 @@ async fn apply_lock(
     desired: SessionLockLevel,
     completed_epoch: Option<u64>,
     cancellation: &CancellationToken,
-) -> Result<Option<SessionControlActualState>, SnapshotError> {
+) -> Result<Option<ReconcileOutcome<SessionControlActualState>>, SnapshotError> {
     check_cancellation(cancellation)?;
-    let observation = proxy
-        .query_contest_session()
-        .await
-        .map_err(|_| SnapshotError::LocalControl)?;
+    let observation = match proxy.query_contest_session().await {
+        Ok(observation) => observation,
+        Err(error) => {
+            return Ok(Some(ReconcileOutcome::control_error(
+                error_actual(completed_epoch),
+                &error,
+            )));
+        }
+    };
     let Some(session) = observation.session.as_ref() else {
-        return Ok(Some(observation_actual(&observation, completed_epoch)));
+        return Ok(Some(ReconcileOutcome::idle(observation_actual(
+            &observation,
+            completed_epoch,
+        ))));
     };
     let current = match observation.state {
         ContestSessionState::Active => SessionLockLevel::Unlocked,
         ContestSessionState::Locked => SessionLockLevel::Locked,
         ContestSessionState::None | ContestSessionState::Ambiguous => {
-            return Ok(Some(observation_actual(&observation, completed_epoch)));
+            return Ok(Some(ReconcileOutcome::idle(observation_actual(
+                &observation,
+                completed_epoch,
+            ))));
         }
     };
     if current == desired {
-        return Ok(Some(observation_actual(&observation, completed_epoch)));
+        return Ok(Some(ReconcileOutcome::idle(observation_actual(
+            &observation,
+            completed_epoch,
+        ))));
     }
     check_cancellation(cancellation)?;
-    if proxy
-        .set_contest_session_lock(session, desired)
-        .await
-        .is_err()
-    {
-        return Ok(Some(error_actual(completed_epoch)));
+    if let Err(error) = proxy.set_contest_session_lock(session, desired).await {
+        return Ok(Some(ReconcileOutcome::control_error(
+            error_actual(completed_epoch),
+            &error,
+        )));
     }
     Ok(None)
 }
@@ -348,10 +384,20 @@ fn error_actual(completed_terminate_epoch: Option<u64>) -> SessionControlActualS
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    pub(in crate::reconcile) fn reconciler(
+        directory: &TempDir,
+        connection: zbus::Connection,
+    ) -> SessionReconciler {
+        SessionReconciler {
+            connection,
+            artifact_path: directory.path().join("session-completion.json"),
+        }
+    }
 
     #[test]
     fn pending_termination_is_durable_and_keeps_previous_completion_visible() {

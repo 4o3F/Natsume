@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use natsume_local_control_api::{
     ContestSessionObservation, DerivedMachineIdentity, GraphicalSession, HomeResetProgress,
-    MachineIdentityError, SessionLockLevel,
+    MachineIdentityError, ResourceControlError, SessionLockLevel,
 };
 use uuid::Uuid;
 
@@ -49,7 +49,7 @@ impl PrivilegedService {
     }
 
     #[zbus(name = "HasHomeResetState")]
-    fn has_home_reset_state(&self) -> zbus::fdo::Result<bool> {
+    fn has_home_reset_state(&self) -> Result<bool, ResourceControlError> {
         home::state_exists(&self.filesystem_root)
     }
 
@@ -57,7 +57,7 @@ impl PrivilegedService {
     async fn query_contest_session(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> zbus::fdo::Result<ContestSessionObservation> {
+    ) -> Result<ContestSessionObservation, ResourceControlError> {
         session::observe(connection, &self.filesystem_root).await
     }
 
@@ -67,7 +67,7 @@ impl PrivilegedService {
         target: GraphicalSession,
         level: SessionLockLevel,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), ResourceControlError> {
         session::set_lock(connection, &self.filesystem_root, &target, level).await
     }
 
@@ -76,7 +76,7 @@ impl PrivilegedService {
         &mut self,
         target: GraphicalSession,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), ResourceControlError> {
         session::terminate(connection, &self.filesystem_root, &target).await
     }
 
@@ -85,7 +85,7 @@ impl PrivilegedService {
         &mut self,
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), ResourceControlError> {
         require_no_contest_session(connection, &self.filesystem_root).await?;
         home::prepare(&self.filesystem_root, reset_epoch)
     }
@@ -95,18 +95,21 @@ impl PrivilegedService {
         &mut self,
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), ResourceControlError> {
         require_no_contest_session(connection, &self.filesystem_root).await?;
         home::apply(&self.filesystem_root, reset_epoch)
     }
 
     #[zbus(name = "QueryHomeReset")]
-    fn query_home_reset(&self) -> zbus::fdo::Result<Option<HomeResetProgress>> {
+    fn query_home_reset(&self) -> Result<Option<HomeResetProgress>, ResourceControlError> {
         home::query(&self.filesystem_root)
     }
 
     #[zbus(name = "VerifyHomeReset")]
-    fn verify_home_reset(&mut self, reset_epoch: u64) -> zbus::fdo::Result<HomeResetProgress> {
+    fn verify_home_reset(
+        &mut self,
+        reset_epoch: u64,
+    ) -> Result<HomeResetProgress, ResourceControlError> {
         home::verify(&self.filesystem_root, reset_epoch)
     }
 
@@ -115,7 +118,7 @@ impl PrivilegedService {
         &mut self,
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> zbus::fdo::Result<()> {
+    ) -> Result<(), ResourceControlError> {
         require_no_contest_session(connection, &self.filesystem_root).await?;
         home::recover(&self.filesystem_root, reset_epoch)
     }
@@ -124,12 +127,12 @@ impl PrivilegedService {
 async fn require_no_contest_session(
     connection: &zbus::Connection,
     filesystem_root: &Path,
-) -> zbus::fdo::Result<()> {
+) -> Result<(), ResourceControlError> {
     let observation = session::observe(connection, filesystem_root).await?;
     if observation.state == natsume_local_control_api::ContestSessionState::None {
         Ok(())
     } else {
-        Err(zbus::fdo::Error::Failed(
+        Err(ResourceControlError::Rejected(
             "contestant graphical session must be absent during Home reset".to_owned(),
         ))
     }

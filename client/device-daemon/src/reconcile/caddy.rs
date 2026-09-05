@@ -427,7 +427,7 @@ fn caddy_quote_path(path: &std::path::Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use uuid::Uuid;
 
     use super::*;
@@ -441,6 +441,30 @@ mod tests {
             mode_path: PathBuf::from("/run/test/caddy-mode.json"),
             origin_root_path: PathBuf::from("/etc/test/origin.crt"),
         }
+    }
+
+    pub(in crate::reconcile) fn fixture(
+        directory: &tempfile::TempDir,
+    ) -> Result<(Caddy, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let mut caddy = caddy();
+        caddy.binary_path = directory.path().join("caddy-fixture");
+        caddy.admin_socket_path = directory.path().join("admin.sock");
+        caddy.configuration_path = directory.path().join("caddyfile");
+        caddy.mode_path = directory.path().join("caddy-mode.json");
+        fs::write(&caddy.binary_path, "#!/bin/sh\nprintf '{}\\n'\n")?;
+        fs::set_permissions(&caddy.binary_path, fs::Permissions::from_mode(0o700))?;
+        let listener = tokio::net::UnixListener::bind(&caddy.admin_socket_path)?;
+        let task = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let mut request = [0_u8; 2048];
+                let _ = stream.read(&mut request).await;
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}").await;
+            }
+        });
+        Ok((caddy, task))
     }
 
     fn material() -> GatewayMaterial {

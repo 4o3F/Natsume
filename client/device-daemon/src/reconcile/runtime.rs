@@ -7,7 +7,7 @@ use url::Url;
 
 use crate::atomic_write::{WritePolicy, atomic_write};
 
-use super::{SnapshotError, check_cancellation};
+use super::{ReconcileOutcome, SnapshotError, check_cancellation};
 
 const ARTIFACT_FORMAT_VERSION: u32 = 1;
 
@@ -35,12 +35,12 @@ impl RuntimeReconciler {
         &self,
         domjudge_origin: &str,
         cancellation: &CancellationToken,
-    ) -> Result<RuntimeConfigActualState, SnapshotError> {
+    ) -> Result<ReconcileOutcome<RuntimeConfigActualState>, SnapshotError> {
         check_cancellation(cancellation)?;
         if let ArtifactState::Applied(applied) = read_artifact(&self.artifact_path)
             && applied == domjudge_origin
         {
-            return Ok(applied_actual(applied));
+            return Ok(ReconcileOutcome::idle(applied_actual(applied)));
         }
         let artifact = RuntimeConfigArtifact {
             format_version: ARTIFACT_FORMAT_VERSION,
@@ -52,9 +52,9 @@ impl RuntimeReconciler {
                 ArtifactState::Applied(origin) => Some(origin),
                 ArtifactState::Absent | ArtifactState::Failed => None,
             };
-            return Ok(failed_actual(previous));
+            return Ok(ReconcileOutcome::retry(failed_actual(previous)));
         }
-        Ok(self.observe())
+        Ok(ReconcileOutcome::idle(self.observe()))
     }
 
     pub(super) fn observe(&self) -> RuntimeConfigActualState {
@@ -121,14 +121,14 @@ fn failed_actual(previous: Option<String>) -> RuntimeConfigActualState {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::os::unix::fs::MetadataExt as _;
 
     use tempfile::TempDir;
 
     use super::*;
 
-    fn reconciler(directory: &TempDir) -> RuntimeReconciler {
+    pub(in crate::reconcile) fn reconciler(directory: &TempDir) -> RuntimeReconciler {
         RuntimeReconciler {
             artifact_path: directory.path().join("runtime-config.json"),
         }
@@ -148,16 +148,17 @@ mod tests {
         let replay = reconciler
             .reconcile("https://judge.example", &CancellationToken::new())
             .unwrap_or_else(|error| panic!("runtime replay must succeed: {error}"));
-        assert_eq!(applied, replay);
+        assert_eq!(applied.actual, replay.actual);
+        assert!(!applied.retry && !replay.retry);
         assert_eq!(
             fs::metadata(&reconciler.artifact_path)
                 .unwrap_or_else(|error| panic!("runtime metadata must reload: {error}"))
                 .ino(),
             inode
         );
-        assert_eq!(applied.state, i32::from(RuntimeConfigState::Applied));
+        assert_eq!(applied.actual.state, i32::from(RuntimeConfigState::Applied));
         assert_eq!(
-            applied.applied_domjudge_origin.as_deref(),
+            applied.actual.applied_domjudge_origin.as_deref(),
             Some("https://judge.example")
         );
     }
@@ -176,5 +177,26 @@ mod tests {
         ] {
             assert!(!is_canonical_https_origin(invalid), "accepted {invalid}");
         }
+    }
+
+    #[test]
+    fn failed_runtime_write_requests_retry_until_it_is_durable() {
+        let directory = TempDir::new().unwrap_or_else(|e| panic!("fixture: {e}"));
+        let reconciler = reconciler(&directory);
+        fs::create_dir(&reconciler.artifact_path).unwrap_or_else(|e| panic!("fixture: {e}"));
+        let failed = reconciler
+            .reconcile("https://judge.example", &CancellationToken::new())
+            .unwrap_or_else(|e| panic!("reconcile: {e}"));
+        assert!(failed.retry);
+        assert_eq!(failed.actual.state, i32::from(RuntimeConfigState::Failed));
+        fs::remove_dir(&reconciler.artifact_path).unwrap_or_else(|e| panic!("fixture: {e}"));
+        let completed = reconciler
+            .reconcile("https://judge.example", &CancellationToken::new())
+            .unwrap_or_else(|e| panic!("reconcile: {e}"));
+        assert!(!completed.retry);
+        assert_eq!(
+            completed.actual.state,
+            i32::from(RuntimeConfigState::Applied)
+        );
     }
 }
