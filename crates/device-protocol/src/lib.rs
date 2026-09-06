@@ -13,6 +13,22 @@ pub const CONTROL_SUBPROTOCOL: &str = "natsume.control";
 pub const CONTROL_ROUTE: &str = "/api/v2/device/control";
 /// Maximum encoded length of one Device Control `ErrorCode` token.
 pub const ERROR_CODE_MAX_BYTES: usize = 64;
+/// Maximum encoded length of a `DOMjudge` account username in Natsume.
+pub const DOMJUDGE_USERNAME_MAX_BYTES: usize = 64;
+
+/// Natsume's `DOMjudge` username contract: `[A-Za-z0-9_.@+-]{1,64}`.
+///
+/// Shared by import, persisted Binding facts and the Client snapshot boundary.
+/// This alphabet preserves literal usernames through both Caddyfile environment
+/// expansion and runtime request-header placeholder substitution.
+#[must_use]
+pub fn is_valid_domjudge_username(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= DOMJUDGE_USERNAME_MAX_BYTES
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'@' | b'+' | b'-')
+        })
+}
 
 /// Returns whether `value` is a well-formed open `ErrorCode` token.
 ///
@@ -52,6 +68,36 @@ impl std::fmt::Debug for generated::SecretBytes {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn domjudge_usernames_have_one_literal_ascii_contract() {
+        for valid in ["A", "team-1", "Team_1.test+contest@example.org", "_.@+-"] {
+            assert!(is_valid_domjudge_username(valid), "rejected {valid:?}");
+        }
+        assert!(is_valid_domjudge_username(&"u".repeat(64)));
+        assert!(!is_valid_domjudge_username(&"u".repeat(65)));
+        for invalid in [
+            "",
+            "队伍一",
+            "{$ENV:default}",
+            "{http.request.host}",
+            "team$1",
+            "team\\1",
+            "team\"1",
+            "team 1",
+            "team\n1",
+        ] {
+            assert!(!is_valid_domjudge_username(invalid), "accepted {invalid:?}");
+        }
+        for byte in 0_u8..=127 {
+            let value = char::from(byte).to_string();
+            assert_eq!(
+                is_valid_domjudge_username(&value),
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.@+-"
+                    .contains(char::from(byte))
+            );
+        }
+    }
 
     #[test]
     fn error_code_tokens_preserve_the_open_wire_grammar() {

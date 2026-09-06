@@ -7,6 +7,7 @@ use std::{
 };
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use natsume_device_protocol::is_valid_domjudge_username;
 use reqwest::Client;
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::{CertificateDer, ServerName, pem::PemObject as _};
@@ -260,7 +261,13 @@ impl Caddy {
     pub(super) async fn observe(&self) -> CaddyObservation {
         let mode = fs::read(&self.mode_path)
             .ok()
-            .and_then(|encoded| serde_json::from_slice::<CaddyModeArtifact>(&encoded).ok());
+            .and_then(|encoded| serde_json::from_slice::<CaddyModeArtifact>(&encoded).ok())
+            .filter(|mode| match mode {
+                CaddyModeArtifact::Ready { binding, .. } => {
+                    is_valid_domjudge_username(&binding.domjudge_username)
+                }
+                CaddyModeArtifact::Blocked { .. } => true,
+            });
         let Some(mode) = mode else {
             return CaddyObservation {
                 mode: None,
@@ -363,6 +370,8 @@ impl Caddy {
         password: &str,
     ) -> String {
         let password = Zeroizing::new(STANDARD.encode(password.as_bytes()));
+        // The shared username alphabet excludes both Caddyfile environment
+        // expansion and runtime placeholders; JSON quoting alone cannot do so.
         format!(
             "{}\n{} {{\n\tbind 127.0.0.1 ::1\n\ttls {} {}\n\t@login path /login\n\thandle @login {{\n\t\treverse_proxy {} {{\n\t\t\theader_up X-DOMjudge-Login {}\n\t\t\theader_up X-DOMjudge-Pass {}\n\t\t}}\n\t}}\n\thandle {{\n\t\treverse_proxy {} {{\n\t\t\theader_up -X-DOMjudge-Login\n\t\t\theader_up -X-DOMjudge-Pass\n\t\t}}\n\t}}\n}}\n",
             self.global_options(),
@@ -602,5 +611,213 @@ pub(super) mod tests {
 
         assert!(!encoded.contains(password));
         assert!(!encoded.contains(&STANDARD.encode(password)));
+    }
+
+    #[tokio::test]
+    async fn unsupported_username_in_a_persisted_mode_cannot_be_ready()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::TempDir::new()?;
+        let (caddy, admin_task) = fixture(&directory)?;
+        let mut binding = binding();
+        binding.domjudge_username = "{http.request.host}".to_owned();
+        let mode = CaddyModeArtifact::Ready {
+            format_version: MODE_FORMAT_VERSION,
+            credential_id: Uuid::now_v7().hyphenated().to_string(),
+            domjudge_origin: "https://judge.example".to_owned(),
+            binding,
+        };
+        fs::write(&caddy.mode_path, serde_json::to_vec(&mode)?)?;
+        assert!(caddy.observe().await.mode.is_none());
+        admin_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the packaged Caddy binary via CADDY_BIN and loopback sockets"]
+    async fn packaged_caddy_preserves_literal_usernames() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use tokio::net::TcpListener;
+
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let directory = tempfile::TempDir::new()?;
+        let binary = PathBuf::from(std::env::var("CADDY_BIN")?);
+        let expected_sha = include_str!("../../../../packaging/client/caddy.sha256")
+            .split_whitespace()
+            .next()
+            .ok_or("missing packaged Caddy hash")?;
+        assert_eq!(
+            hex::encode(Sha256::digest(fs::read(&binary)?)),
+            expected_sha
+        );
+
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])?;
+        let mut material = material();
+        material.certificate_path = directory.path().join("certificate.pem");
+        material.private_key_path = directory.path().join("key.pem");
+        fs::write(
+            &material.certificate_path,
+            format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                STANDARD.encode(certificate.cert.der())
+            ),
+        )?;
+        fs::write(
+            &material.private_key_path,
+            format!(
+                "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+                STANDARD.encode(certificate.signing_key.serialize_der())
+            ),
+        )?;
+        let upstream_tls = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![certificate.cert.der().clone()],
+                rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der())
+                    .into(),
+            )?;
+        let upstream = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let origin = format!("https://{}", upstream.local_addr()?);
+        let upstream_task = tokio::spawn(record_upstream_requests(upstream, upstream_tls));
+        let client = Client::builder()
+            .no_proxy()
+            .add_root_certificate(reqwest::Certificate::from_der(certificate.cert.der())?)
+            .timeout(Duration::from_secs(2))
+            .build()?;
+        let mut caddy = caddy();
+        caddy.admin_socket_path = directory.path().join("admin.sock");
+        caddy.configuration_path = directory.path().join("Caddyfile");
+        for username in [
+            "A".to_owned(),
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789".to_owned(),
+            "_.@+-".to_owned(),
+            "Team_1.test+contest@example.org".to_owned(),
+            "u".repeat(64),
+        ] {
+            assert!(is_valid_domjudge_username(&username));
+            let port_reservation = TcpListener::bind(("127.0.0.1", 0)).await?;
+            caddy.gateway_hostname = port_reservation.local_addr()?.to_string();
+            drop(port_reservation);
+            let mut binding = binding();
+            binding.domjudge_username = username.clone();
+            fs::write(
+                &caddy.configuration_path,
+                caddy.render_ready(&material, &origin, &binding, "password-canary"),
+            )?;
+            let log_path = directory.path().join("caddy.log");
+            let mut process = Command::new(&binary)
+                .args(["run", "--adapter", "caddyfile", "--config"])
+                .arg(&caddy.configuration_path)
+                .env("SSL_CERT_FILE", &material.certificate_path)
+                .env("SSL_CERT_DIR", directory.path())
+                .env("XDG_DATA_HOME", directory.path())
+                .env("XDG_CONFIG_HOME", directory.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(fs::File::create(&log_path)?)
+                .kill_on_drop(true)
+                .spawn()?;
+            let url = format!("https://{}", caddy.gateway_hostname);
+            let result = assert_forwarded_credentials(&client, &url, &username).await;
+            assert!(
+                result.is_ok(),
+                "Caddy credential forwarding failed: {result:?}; {}",
+                fs::read_to_string(&log_path)?
+            );
+            process.kill().await?;
+        }
+        upstream_task.abort();
+        Ok(())
+    }
+
+    async fn assert_forwarded_credentials(
+        client: &Client,
+        url: &str,
+        username: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        timeout(Duration::from_secs(10), async {
+            loop {
+                if client
+                    .get(format!("{url}/"))
+                    .send()
+                    .await
+                    .is_ok_and(|response| response.status().is_success())
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await?;
+        for (path, is_login) in [
+            ("/login", true),
+            ("/login?next=%2F", true),
+            ("/", false),
+            ("/login/other", false),
+        ] {
+            let response = client
+                .get(format!("{url}{path}"))
+                .header("X-DOMjudge-Login", "spoofed-username")
+                .header("X-DOMjudge-Pass", "spoofed-password")
+                .send()
+                .await?
+                .error_for_status()?
+                .text()
+                .await?;
+            let headers: Vec<_> = response
+                .lines()
+                .filter_map(|line| line.split_once(": "))
+                .collect();
+            for (name, expected) in [
+                ("X-DOMjudge-Login", username.to_owned()),
+                ("X-DOMjudge-Pass", STANDARD.encode("password-canary")),
+            ] {
+                let values: Vec<_> = headers
+                    .iter()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| *value)
+                    .collect();
+                if is_login {
+                    assert_eq!(values, [expected.as_str()], "{path} {name}");
+                } else {
+                    assert!(values.is_empty(), "credential forwarded to {path}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn record_upstream_requests(
+        listener: tokio::net::TcpListener,
+        tls: rustls::ServerConfig,
+    ) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+        while let Ok((stream, _)) = listener.accept().await {
+            let acceptor = acceptor.clone();
+            tokio::spawn(async move {
+                let Ok(mut stream) = acceptor.accept(stream).await else {
+                    return;
+                };
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let Ok(count) = stream.read(&mut buffer).await else {
+                        return;
+                    };
+                    if count == 0 {
+                        return;
+                    }
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    request.len()
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+                let _ = stream.write_all(&request).await;
+                let _ = stream.shutdown().await;
+            });
+        }
     }
 }

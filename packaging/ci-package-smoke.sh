@@ -96,6 +96,9 @@ fi
   --config packaging/client/rootfs/etc/natsume/caddy/bootstrap.caddyfile \
   >/dev/null
 
+CADDY_BIN="${caddy_binary}" cargo test --locked -p natsume-device-daemon \
+  reconcile::caddy::tests::packaged_caddy_preserves_literal_usernames -- --ignored --exact
+
 cat >"${input_root}/site.toml" <<'EOF'
 schema_version = 1
 fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"

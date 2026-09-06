@@ -17,6 +17,29 @@ const CAUSE_CANARY: &str = "internal_cause_canary";
 const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
 
 #[tokio::test]
+async fn invalid_username_response_identifies_the_csv_line_and_supported_contract() {
+    let response = ApiError::from_import(ImportError::InvalidCsv {
+        line: 3,
+        category: CsvImportErrorCategory::InvalidAccountUsername,
+    })
+    .into_response();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
+        .await
+        .unwrap_or_else(|error| panic!("error response must be readable: {error}"));
+    let body: serde_json::Value = serde_json::from_slice(&body)
+        .unwrap_or_else(|error| panic!("error response must be JSON: {error}"));
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "title": "CSV line 3: account must be 1-64 ASCII characters using only letters, digits, _, ., @, + or -",
+            "status": 400,
+            "code": "IMPORT_CANDIDATE_INVALID",
+        })
+    );
+}
+
+#[tokio::test]
 async fn the_internal_cause_is_logged_and_never_reaches_the_response() -> Result<(), TestFailure> {
     let _subscriber_guard = SubscriberTestGuard::acquire();
     let captured = CapturedLogs::default();
@@ -242,7 +265,10 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
 fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
     [
         (
-            ImportError::InvalidCsv(CsvImportErrorCategory::ZeroDataRows),
+            ImportError::InvalidCsv {
+                line: 1,
+                category: CsvImportErrorCategory::ZeroDataRows,
+            },
             "import_csv_zero_data_rows",
             StatusCode::BAD_REQUEST,
         ),

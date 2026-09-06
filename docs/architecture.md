@@ -1130,6 +1130,8 @@ strict parse
 规则：
 
 - preview不持久化密码；
+- DOMjudge Account用户名固定为 `[A-Za-z0-9_.@+-]{1,64}`，由共享协议crate定义，Import、Server Binding持久化读取及Client接收/恢复绑定共同校验；不截断、不规范化；
+- 不支持的用户名在preview阶段拒绝，错误只返回行号与固定规则提示；已有非法Account仍允许查看与重新导入修复，但不能物化Binding凭据；
 - pending candidate不含原始CSV；
 - commit请求重新携带密码；
 - candidate fingerprint只覆盖排序后的Seat/Account非秘密结构，不覆盖密码；

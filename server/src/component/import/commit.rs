@@ -26,7 +26,10 @@ pub(super) async fn commit_import(
     presented_token: &[u8; 32],
     raw_csv: &[u8],
 ) -> Result<(), ImportError> {
-    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv(error.category()))?;
+    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv {
+        line: error.line(),
+        category: error.category(),
+    })?;
     let candidate_rows = parsed.candidate_rows();
     let candidate_hash = candidate_fingerprint(&candidate_rows);
     let sealed_rows = seal_rows(vault, parsed.rows())?;

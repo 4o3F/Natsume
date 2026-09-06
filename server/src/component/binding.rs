@@ -2,6 +2,7 @@ mod db;
 
 use std::{collections::HashMap, fmt, sync::Arc};
 
+use natsume_device_protocol::is_valid_domjudge_username;
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
 use zeroize::Zeroizing;
@@ -536,7 +537,7 @@ impl BindingContext {
     fn from_persisted(row: &db::PersistedBoundContextRow) -> Result<Self, BindingError> {
         let seat_code = &row.seat_code;
         let domjudge_username = &row.domjudge_username;
-        if !valid_public_text(seat_code) || !valid_public_text(domjudge_username) {
+        if !valid_public_text(seat_code) || !is_valid_domjudge_username(domjudge_username) {
             return Err(BindingError::InvalidPersistedFacts);
         }
         Ok(Self {

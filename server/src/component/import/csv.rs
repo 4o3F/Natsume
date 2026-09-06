@@ -5,6 +5,7 @@ use std::{
     str,
 };
 
+use natsume_device_protocol::is_valid_domjudge_username;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::candidate::CandidateRowFacts;
@@ -14,7 +15,6 @@ const MAX_IMPORT_ROWS: usize = 10_000;
 const CSV_HEADER: &str = "seat,account,password";
 const UTF8_BOM: &[u8] = &[0xef, 0xbb, 0xbf];
 const SEAT_CODE_LENGTH_LIMIT: usize = 64;
-const ACCOUNT_USERNAME_LENGTH_LIMIT: usize = 64;
 const PASSWORD_LENGTH_LIMIT: usize = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,6 +25,7 @@ pub(crate) enum CsvImportErrorCategory {
     EmptyField,
     FieldTooLong,
     ControlCharacter,
+    InvalidAccountUsername,
     DuplicateSeatCode,
     DuplicateAccountUsername,
     TooManyRows,
@@ -45,6 +46,10 @@ impl CsvImportError {
     #[must_use]
     pub(super) const fn category(&self) -> CsvImportErrorCategory {
         self.category
+    }
+
+    pub(super) const fn line(&self) -> usize {
+        self.line
     }
 }
 
@@ -147,16 +152,19 @@ pub(super) fn parse_csv(raw: &[u8]) -> Result<ParsedImport, CsvImportError> {
                 CsvImportErrorCategory::WrongColumnCount,
             ));
         }
+        if !is_valid_domjudge_username(fields[1]) {
+            return Err(CsvImportError::new(
+                line_number,
+                CsvImportErrorCategory::InvalidAccountUsername,
+            ));
+        }
         if fields.iter().any(|field| field.is_empty()) {
             return Err(CsvImportError::new(
                 line_number,
                 CsvImportErrorCategory::EmptyField,
             ));
         }
-        if fields[0].len() > SEAT_CODE_LENGTH_LIMIT
-            || fields[1].len() > ACCOUNT_USERNAME_LENGTH_LIMIT
-            || fields[2].len() > PASSWORD_LENGTH_LIMIT
-        {
+        if fields[0].len() > SEAT_CODE_LENGTH_LIMIT || fields[2].len() > PASSWORD_LENGTH_LIMIT {
             return Err(CsvImportError::new(
                 line_number,
                 CsvImportErrorCategory::FieldTooLong,
@@ -206,14 +214,7 @@ fn csv_line(encoded_line: &str) -> &str {
 mod tests {
     use std::fmt::Write as _;
 
-    use super::{CsvImportError, CsvImportErrorCategory, MAX_IMPORT_ROWS, parse_csv};
-
-    impl CsvImportError {
-        #[must_use]
-        const fn line(&self) -> usize {
-            self.line
-        }
-    }
+    use super::{CsvImportErrorCategory, MAX_IMPORT_ROWS, parse_csv};
 
     struct RejectionCase {
         input: Vec<u8>,
@@ -339,6 +340,49 @@ mod tests {
         assert_eq!(parsed.rows()[0].password(), "beta-password");
         assert_eq!(parsed.rows()[1].seat_code(), "A-01");
         assert_eq!(parsed.rows()[1].domjudge_username(), "team-alpha");
+    }
+
+    #[test]
+    fn parser_rejects_caddy_syntax_and_unsupported_usernames() {
+        for username in [
+            "",
+            "{$NATSUME_UNSET_FOR_REVIEW:literal_changed}",
+            "{http.request.host}",
+            "team$1",
+            "team\\1",
+            "team\"1",
+            "team 1",
+            "team\t1",
+            "队伍一",
+        ] {
+            let csv =
+                format!("seat,account,password\nA-01,team-1,first\nA-02,{username},secret-canary");
+            let Err(error) = parse_csv(csv.as_bytes()) else {
+                panic!("unsupported username was accepted: {username:?}");
+            };
+            assert_eq!(error.line(), 3);
+            assert_eq!(
+                error.category(),
+                CsvImportErrorCategory::InvalidAccountUsername
+            );
+            if !username.is_empty() {
+                assert!(!format!("{error:?}").contains(username));
+            }
+            assert!(!error.to_string().contains("secret-canary"));
+        }
+    }
+
+    #[test]
+    fn parser_preserves_allowed_usernames_and_rejects_the_length_overflow() {
+        for username in ["Team_1.test+contest@example.org".to_owned(), "u".repeat(64)] {
+            let csv = format!("seat,account,password\nA-01,{username},password");
+            let parsed = parse_csv(csv.as_bytes())
+                .unwrap_or_else(|error| panic!("valid username was rejected: {error}"));
+            assert_eq!(parsed.rows()[0].domjudge_username(), username);
+        }
+        let csv = format!("seat,account,password\nA-01,{},password", "u".repeat(65));
+        assert!(matches!(parse_csv(csv.as_bytes()), Err(error)
+            if error.category() == CsvImportErrorCategory::InvalidAccountUsername && error.line() == 2));
     }
 
     #[test]

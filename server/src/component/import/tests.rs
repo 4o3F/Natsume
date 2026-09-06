@@ -12,7 +12,90 @@ use crate::{
     vault,
 };
 
-use super::{ImportError, candidate::create_import_candidate, commit::commit_import};
+use super::{
+    CsvImportErrorCategory, ImportError, candidate::create_import_candidate, commit::commit_import,
+};
+
+#[tokio::test]
+async fn unsupported_username_is_rejected_before_a_preview_is_persisted() {
+    let fixture = Fixture::new().await;
+    let csv = b"seat,account,password\nA-01,team-1,first\nA-02,{$NATSUME_UNSET_FOR_REVIEW:literal_changed},secret-canary";
+    assert!(matches!(
+        create_import_candidate(&fixture.database, csv).await,
+        Err(ImportError::InvalidCsv {
+            line: 3,
+            category: CsvImportErrorCategory::InvalidAccountUsername
+        })
+    ));
+    assert!(
+        super::candidate::read_pending_import_candidate(&fixture.database)
+            .await
+            .unwrap_or_else(|error| panic!("pending import must remain readable: {error}"))
+            .is_none()
+    );
+    assert_eq!(vault_record_count(&fixture.database).await, 0);
+}
+
+#[tokio::test]
+async fn reimport_can_repair_an_unsupported_legacy_username_on_an_occupied_seat() {
+    let fixture = Fixture::new().await;
+    let csv = b"seat,account,password\nA-01,team-alpha,password";
+    let initial = create_import_candidate(&fixture.database, csv)
+        .await
+        .unwrap_or_else(|error| panic!("initial preview failed: {error}"));
+    commit_import(
+        &fixture.database,
+        &fixture.vault,
+        initial.candidate_id(),
+        initial.preview_token_bytes(),
+        csv,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("initial commit failed: {error}"));
+    install_binding(&fixture.database).await;
+    fixture
+        .database
+        .write(|transaction| {
+            diesel::sql_query("UPDATE accounts SET domjudge_username = ?")
+                .bind::<Text, _>("{http.request.host}")
+                .execute(transaction.connection())
+                .map_err(|_| ImportError::PersistenceFailure)?;
+            Ok::<(), ImportError>(())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("legacy account fixture failed: {error:?}"));
+
+    let replacement = create_import_candidate(&fixture.database, csv)
+        .await
+        .unwrap_or_else(|error| panic!("legacy account must remain repairable: {error}"));
+    assert!(
+        pending_preview_json(&fixture.database)
+            .await
+            .contains("{http.request.host}")
+    );
+    commit_import(
+        &fixture.database,
+        &fixture.vault,
+        replacement.candidate_id(),
+        replacement.preview_token_bytes(),
+        csv,
+    )
+    .await
+    .unwrap_or_else(|error| panic!("repair commit failed: {error}"));
+    assert_eq!(binding_and_seat_counts(&fixture.database).await, (1, 1));
+    let username = fixture
+        .database
+        .read(|transaction| {
+            diesel::sql_query("SELECT domjudge_username AS value FROM accounts")
+                .get_result::<TextValue>(transaction.connection())
+                .map(|row| row.value)
+                .map_err(|_| ImportError::PersistenceFailure)
+        })
+        .await
+        .unwrap_or_else(|error| panic!("repaired account must be readable: {error:?}"));
+    assert_eq!(username, "team-alpha");
+    assert_eq!(contest_evidence(&fixture.database).await.accounts, 1);
+}
 
 #[derive(QueryableByName)]
 struct ContestEvidence {

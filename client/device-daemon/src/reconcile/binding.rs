@@ -9,6 +9,7 @@ use natsume_device_protocol::generated::{
     BindingAccessActualState, BindingAccessTarget, BindingArtifactState, BindingContext,
     BindingInput, BindingNegotiationIntent,
 };
+use natsume_device_protocol::is_valid_domjudge_username;
 use natsume_local_control_api::{
     BindingSubmission, ContestSessionState, DEVICE1_PATH, DEVICE1_SERVICE, GraphicalSession,
     Privileged1Proxy, SessionAgentLease, SessionScreenKind, SessionUiSnapshot,
@@ -33,7 +34,6 @@ use super::{
 
 const INPUT_FORMAT_VERSION: u32 = 1;
 const SEAT_CODE_LENGTH_LIMIT: usize = 64;
-const USERNAME_LENGTH_LIMIT: usize = 128;
 const LOGIN1_SERVICE: &str = "org.freedesktop.login1";
 const LOGIN1_MANAGER_PATH: &str = "/org/freedesktop/login1";
 const LOGIN1_MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
@@ -83,7 +83,7 @@ impl ValidatedBindingContext {
         (canonical_uuid_v7(&self.binding_id).is_some()
             && canonical_uuid_v7(&self.account_id).is_some()
             && valid_text(&self.seat_code, SEAT_CODE_LENGTH_LIMIT)
-            && valid_text(&self.domjudge_username, USERNAME_LENGTH_LIMIT)
+            && is_valid_domjudge_username(&self.domjudge_username)
             && self.credential_revision > 0
             && self.credential_revision <= i64::MAX.cast_unsigned())
         .then_some(self)
@@ -1107,7 +1107,9 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn domjudge_username_uses_the_server_length_contract() {
+    fn domjudge_username_uses_the_import_contract_on_wire_and_disk() {
+        let directory = tempdir();
+        let assignment_path = directory.path().join("binding-assignment.json");
         let context = |username: String| BindingContext {
             binding_id: Uuid::now_v7().hyphenated().to_string(),
             account_id: Uuid::now_v7().hyphenated().to_string(),
@@ -1116,8 +1118,41 @@ pub(super) mod tests {
             credential_revision: 1,
         };
 
-        assert!(ValidatedBindingContext::from_wire(context("u".repeat(65))).is_some());
-        assert!(ValidatedBindingContext::from_wire(context("u".repeat(128))).is_some());
-        assert!(ValidatedBindingContext::from_wire(context("u".repeat(129))).is_none());
+        for (username, accepted) in [
+            ("Team_1.test+contest@example.org".to_owned(), true),
+            ("u".repeat(64), true),
+            ("u".repeat(65), false),
+            (
+                "{$NATSUME_UNSET_FOR_REVIEW:literal_changed}".to_owned(),
+                false,
+            ),
+            ("{http.request.host}".to_owned(), false),
+            ("team$1".to_owned(), false),
+            ("team\\1".to_owned(), false),
+            ("team\"1".to_owned(), false),
+            ("team 1".to_owned(), false),
+            ("队伍一".to_owned(), false),
+        ] {
+            let wire = context(username);
+            let persisted = ValidatedBindingContext {
+                binding_id: wire.binding_id.clone(),
+                account_id: wire.account_id.clone(),
+                seat_code: wire.seat_code.clone(),
+                domjudge_username: wire.domjudge_username.clone(),
+                credential_revision: wire.credential_revision,
+            };
+            let encoded = serde_json::to_vec(&persisted)
+                .unwrap_or_else(|error| panic!("assignment must encode: {error}"));
+            fs::write(&assignment_path, encoded)
+                .unwrap_or_else(|error| panic!("assignment must be written: {error}"));
+            assert_eq!(ValidatedBindingContext::from_wire(wire).is_some(), accepted);
+            assert_eq!(
+                matches!(
+                    read_assignment(&assignment_path),
+                    AssignmentRead::Applied(_)
+                ),
+                accepted
+            );
+        }
     }
 }

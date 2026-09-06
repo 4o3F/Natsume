@@ -234,7 +234,10 @@ pub(super) async fn create_import_candidate(
     database: &Database,
     raw_csv: &[u8],
 ) -> Result<CreatedImportCandidate, ImportError> {
-    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv(error.category()))?;
+    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv {
+        line: error.line(),
+        category: error.category(),
+    })?;
     let candidate_rows = parsed.candidate_rows();
     let candidate_hash = candidate_fingerprint(&candidate_rows);
     drop(parsed);
@@ -348,7 +351,10 @@ enum DiscardOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ImportError {
-    InvalidCsv(CsvImportErrorCategory),
+    InvalidCsv {
+        line: usize,
+        category: CsvImportErrorCategory,
+    },
     CandidateInvalid,
     CandidatePending,
     CandidateUnavailable,
@@ -372,7 +378,7 @@ impl From<PersistenceError> for ImportError {
 impl Display for ImportError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidCsv(_) | Self::CandidateInvalid => "the import candidate is invalid",
+            Self::InvalidCsv { .. } | Self::CandidateInvalid => "the import candidate is invalid",
             Self::CandidatePending => "an import candidate is already pending",
             Self::CandidateUnavailable => "the import candidate is unavailable",
             Self::PreviewStale => "the import preview is stale",

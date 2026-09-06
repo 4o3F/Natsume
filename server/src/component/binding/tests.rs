@@ -335,6 +335,39 @@ async fn ineligible_devices_and_invalid_persisted_evaluations_fail_closed() {
 }
 
 #[tokio::test]
+async fn unsupported_persisted_username_cannot_materialize_credentials() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.insert_device("enabled").await;
+    fixture
+        .insert_mapped_seat(
+            "A-01",
+            "{$NATSUME_UNSET_FOR_REVIEW:literal_changed}",
+            b"password-canary",
+        )
+        .await;
+    let negotiation_id = fixture.negotiation_id(device_id).await;
+    fixture
+        .ingest(device_id, negotiation_id, 1, "A-01")
+        .await
+        .unwrap_or_else(|error| panic!("legacy binding setup failed: {error}"));
+
+    assert!(matches!(
+        fixture.component.materialize(device_id).await,
+        Err(BindingError::InvalidPersistedFacts)
+    ));
+    assert!(matches!(
+        fixture.component.read_current(device_id).await,
+        Err(BindingError::InvalidPersistedFacts)
+    ));
+    fixture
+        .component
+        .unbind(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("invalid legacy binding must remain removable: {error}"));
+    assert_eq!(fixture.binding_count(device_id).await, 0);
+}
+
+#[tokio::test]
 async fn batch_read_rejects_a_device_with_both_bound_and_negotiating_facts() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device("enabled").await;
