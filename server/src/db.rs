@@ -330,6 +330,19 @@ pub(crate) mod tests {
     };
 
     impl Database {
+        pub(crate) fn test_exhaust_pool(
+            &self,
+        ) -> Vec<diesel::r2d2::PooledConnection<diesel::r2d2::ConnectionManager<SqliteConnection>>>
+        {
+            (0..self.pool.max_size())
+                .map(|_| {
+                    self.pool
+                        .get()
+                        .unwrap_or_else(|error| panic!("test pool checkout failed: {error}"))
+                })
+                .collect()
+        }
+
         pub(crate) async fn test_read<T, F>(&self, operation: F) -> Result<T, PersistenceError>
         where
             T: Send + 'static,

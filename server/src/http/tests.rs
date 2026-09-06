@@ -376,6 +376,65 @@ pub(crate) fn server_state(database: Database) -> Result<AppState, SupportFailur
 }
 
 #[tokio::test]
+async fn login_rejects_oversized_slow_and_excess_requests_before_database_work()
+-> Result<(), TestFailure> {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
+    let permits = db_operator::occupy_sign_in_capacity().await;
+    let connections = fixture.database.test_exhaust_pool();
+    let response = drive(&application, login_request("admin", "password")?).await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.headers[header::RETRY_AFTER], "1");
+    for (login, password) in [
+        ("a".repeat(129), "p".to_owned()),
+        ("admin".to_owned(), "密".repeat(342)),
+    ] {
+        assert_eq!(
+            drive(&application, login_request(&login, &password)?)
+                .await?
+                .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    // Check both a declared length and a body delivered without Content-Length.
+    for declared in [false, true] {
+        let mut request = login_request("admin", &"p".repeat(8192))?;
+        if declared {
+            request.headers_mut().insert(
+                header::CONTENT_LENGTH,
+                "9000"
+                    .parse()
+                    .map_err(|_| SupportFailure::HelperRequestBuildFailed)?,
+            );
+        }
+        assert_eq!(
+            drive(&application, request).await?.status,
+            StatusCode::PAYLOAD_TOO_LARGE
+        );
+    }
+    let mut slow = login_request("admin", "password")?;
+    *slow.body_mut() = Body::from_stream(futures_util::stream::pending::<
+        Result<axum::body::Bytes, std::io::Error>,
+    >());
+    tokio::time::pause();
+    assert_eq!(
+        drive(&application, slow).await?.status,
+        StatusCode::REQUEST_TIMEOUT
+    );
+    tokio::time::resume();
+    drop(connections);
+    drop(permits);
+    assert_eq!(
+        drive(&application, login_request("unknown", "password")?)
+            .await?
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn packaged_web_panel_and_api_fallbacks_are_isolated() -> Result<(), TestFailure> {
     let web_root = TestWebRoot::new()?;
     let fixture = TestDatabase::new().await?;

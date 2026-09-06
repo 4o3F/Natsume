@@ -651,7 +651,9 @@ export interface components {
       lock_state: "unlocked" | "locked";
     };
     SessionRequest: {
+      /** @description Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated. */
       login_name: string;
+      /** @description At most 1024 UTF-8 bytes; never normalized or truncated. */
       password: string;
     };
     SessionResponse: {
@@ -2071,7 +2073,14 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Request body exceeds the API ingress limit */
+      /** @description Login body was not received within 5 seconds */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Login request body exceeds 8 KiB */
       413: {
         headers: {
           [name: string]: unknown;
@@ -2081,6 +2090,17 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Sign-in capacity exhausted; retry after 1 second */
+      503: {
+        headers: {
+          /** @description Seconds before retrying; always 1 */
+          "Retry-After"?: number;
           [name: string]: unknown;
         };
         content: {

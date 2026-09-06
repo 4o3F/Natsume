@@ -140,6 +140,10 @@ const fn require_admin(role: OperatorRole) -> Result<(), OperatorError> {
 pub(crate) enum OperatorError {
     #[snafu(display("operator authentication failed"))]
     AuthenticationFailed,
+    #[snafu(display("operator sign-in capacity is exhausted"))]
+    SignInBusy,
+    #[snafu(display("operator credentials exceed the byte limits"))]
+    CredentialsTooLong,
     #[snafu(display("operator session authentication failed"))]
     SessionAuthenticationFailed,
     #[snafu(display("operator authorization was denied"))]

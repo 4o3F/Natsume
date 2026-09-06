@@ -9,7 +9,7 @@ use natsume_device_protocol::generated::{
 };
 use prost::Message as _;
 use tokio::{
-    sync::{Mutex, mpsc},
+    sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc},
     time::{Instant, Sleep, sleep_until, timeout},
 };
 use uuid::Uuid;
@@ -62,6 +62,7 @@ pub(crate) struct DeviceControl {
     registry: DeviceRegistry,
     /// Prevents concurrent approvals from acting on the same stale authority read.
     enrollment_approval: Mutex<()>,
+    handshakes: Arc<Semaphore>,
 }
 
 impl DeviceControl {
@@ -84,7 +85,13 @@ impl DeviceControl {
             home,
             registry: DeviceRegistry::new(),
             enrollment_approval: Mutex::new(()),
+            handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
         }
+    }
+
+    /// Reserves short-lived protocol work before HTTP upgrades the connection.
+    pub(crate) fn try_reserve_handshake(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.handshakes).try_acquire_owned().ok()
     }
 
     async fn evict_current_lease(&self, device_id: DeviceId) {
@@ -99,6 +106,7 @@ impl DeviceControl {
 /// Maximum accepted Device Control WebSocket frame and protobuf message size.
 pub(crate) const MAX_MESSAGE_BYTES: usize = 65_536;
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_HANDSHAKES: usize = 64;
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const CLIENT_SILENCE_TIMEOUT: Duration = Duration::from_mins(1);
 const OUTBOUND_CAPACITY: usize = 1;
@@ -112,8 +120,14 @@ const OUTBOUND_CAPACITY: usize = 1;
 /// failed stage returns and drops the socket. Once a lease is attached, all exits
 /// either notify the Device actor directly or pass through [`run_active`], which does
 /// so before returning.
-pub(crate) async fn serve_connection(mut socket: WebSocket, control: Arc<DeviceControl>) {
-    let Some((machine_hardware_id, authority)) = admit(&mut socket, &control).await else {
+pub(crate) async fn serve_connection(
+    mut socket: WebSocket,
+    control: Arc<DeviceControl>,
+    permit: OwnedSemaphorePermit,
+) {
+    let mut permit = Some(permit);
+    let Some((machine_hardware_id, authority)) = admit(&mut socket, &control, &mut permit).await
+    else {
         return;
     };
     let (outbound, mut outgoing) = mpsc::channel(OUTBOUND_CAPACITY);
@@ -139,6 +153,7 @@ pub(crate) async fn serve_connection(mut socket: WebSocket, control: Arc<DeviceC
         return;
     }
 
+    drop(permit);
     run_active(socket, session_id, handle, &mut outgoing).await;
 }
 
@@ -151,6 +166,7 @@ pub(crate) async fn serve_connection(mut socket: WebSocket, control: Arc<DeviceC
 async fn admit(
     socket: &mut WebSocket,
     control: &Arc<DeviceControl>,
+    permit: &mut Option<OwnedSemaphorePermit>,
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
     let mut proof_window = ProofWindow::new().ok()?;
     let challenge = proof_window.server_challenge()?.clone();
@@ -179,7 +195,7 @@ async fn admit(
             ))
         }
         ProofSubmission::Enrollment(enrollment) => {
-            admit_enrollment(socket, control, enrollment).await
+            admit_enrollment(socket, control, enrollment, permit).await
         }
     }
 }
@@ -195,6 +211,7 @@ async fn admit_enrollment(
     socket: &mut WebSocket,
     control: &Arc<DeviceControl>,
     enrollment: EnrollmentPreAuth,
+    permit: &mut Option<OwnedSemaphorePermit>,
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
     let evidence = enrollment.review_evidence();
     let machine_hardware_id = evidence.machine_hardware_id();
@@ -206,6 +223,9 @@ async fn admit_enrollment(
     {
         EnrollmentStartOutcome::Replay(authority) => authority,
         EnrollmentStartOutcome::Pending(review, mut activation) => {
+            // The bounded review registry now owns this connection's admission
+            // capacity. Manual review must not occupy a short handshake slot.
+            drop(permit.take());
             if !send_handshake(
                 socket,
                 ServerHandshakeEnvelope {

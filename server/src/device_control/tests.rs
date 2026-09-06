@@ -1145,6 +1145,156 @@ async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     server.abort();
 }
 
+#[tokio::test]
+async fn handshake_capacity_rejects_before_upgrade_and_recovers_after_timeout() {
+    let fixture = Fixture::new().await;
+    let control = fixture.state.device_control();
+    let held = Arc::clone(&control.handshakes)
+        .acquire_many_owned(63)
+        .await
+        .unwrap_or_else(|error| panic!("handshake gate closed: {error}"));
+    let (mut socket, server) = connect(&fixture).await;
+    receive_handshake(&mut socket).await;
+    assert_eq!(control.handshakes.available_permits(), 0);
+    let request = repeat_connection_request(&socket);
+    let failure = connect_async(request.clone())
+        .await
+        .err()
+        .unwrap_or_else(|| panic!("overload upgraded"));
+    let tokio_tungstenite::tungstenite::Error::Http(response) = failure else {
+        panic!("expected HTTP rejection")
+    };
+    assert_eq!(response.status(), 503);
+    assert_eq!(response.headers()["retry-after"], "1");
+    tokio::time::pause();
+    tokio::time::advance(super::HANDSHAKE_TIMEOUT + Duration::from_secs(1)).await;
+    tokio::time::resume();
+    assert_closed(&mut socket).await;
+    assert_eq!(control.handshakes.available_permits(), 1);
+    let (mut replacement, _) = connect_async(request)
+        .await
+        .unwrap_or_else(|error| panic!("capacity not restored: {error}"));
+    receive_handshake(&mut replacement).await;
+    drop(replacement);
+    drop(held);
+    server.abort();
+}
+
+#[tokio::test]
+async fn full_manual_review_capacity_does_not_block_resume_or_existing_control() {
+    let fixture = Fixture::new().await;
+    let signing_key = SigningKey::from_bytes(&[0x72; 32]);
+    fixture.activate(&signing_key).await;
+    let control = fixture.state.device_control();
+    let held = Arc::clone(&control.handshakes)
+        .acquire_many_owned(63)
+        .await
+        .unwrap_or_else(|error| panic!("handshake gate closed: {error}"));
+    let (mut pending, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut pending).await;
+    assert_eq!(control.handshakes.available_permits(), 1);
+    let evidence = ValidatedEnrollmentEvidence::new(
+        MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("fixture HWID")),
+        ControlPublicKey::parse(&[0x61; 32]).unwrap_or_else(|| panic!("fixture key")),
+        EvidenceQuality::Strong,
+        "2.0.0".to_owned(),
+        "2.0.0".to_owned(),
+    );
+    let mut reviews = Vec::new();
+    for _ in 1..640 {
+        reviews.push(
+            fixture
+                .state
+                .device()
+                .start_enrollment(fixture.state.provisioning(), evidence.clone())
+                .await
+                .unwrap_or_else(|error| panic!("review capacity too small: {error:?}")),
+        );
+    }
+    assert!(matches!(
+        fixture
+            .state
+            .device()
+            .start_enrollment(fixture.state.provisioning(), evidence)
+            .await,
+        Err(crate::component::device::EnrollmentStartError::ReviewCapacityReached)
+    ));
+    let request = repeat_connection_request(&pending);
+    let (mut resumed, _) = connect_async(request)
+        .await
+        .unwrap_or_else(|error| panic!("Resume upgrade failed: {error}"));
+    let Some(server_handshake_envelope::Body::ServerChallenge(challenge)) =
+        receive_handshake(&mut resumed).await.body
+    else {
+        panic!("missing challenge")
+    };
+    let proof = sign_client_proof(
+        &signing_key,
+        &challenge,
+        ClientProof {
+            daemon_version: "2.0.0".to_owned(),
+            agent_version: "2.0.0".to_owned(),
+            machine_hardware_id: MACHINE_HARDWARE_ID.to_owned(),
+            signature: Vec::new(),
+            purpose: Some(client_proof::Purpose::Resume(
+                natsume_device_protocol::generated::ResumeSession::default(),
+            )),
+        },
+    );
+    send_handshake(
+        &mut resumed,
+        ClientHandshakeEnvelope {
+            body: Some(client_handshake_envelope::Body::ClientProof(proof)),
+        },
+    )
+    .await;
+    let Some(server_handshake_envelope::Body::SessionReady(ready)) =
+        receive_handshake(&mut resumed).await.body
+    else {
+        panic!("Resume did not activate")
+    };
+    assert_eq!(control.handshakes.available_permits(), 1);
+    // Saturate short handshakes as well; the established lease still answers.
+    let last = control
+        .try_reserve_handshake()
+        .unwrap_or_else(|| panic!("missing released slot"));
+    send_active_heartbeat(&mut resumed, &ready.session_id).await;
+    drop(last);
+    drop(held);
+    drop(pending);
+    drop(resumed);
+    drop(reviews);
+    server.abort();
+}
+
+fn repeat_connection_request(
+    socket: &TestSocket,
+) -> tokio_tungstenite::tungstenite::http::Request<()> {
+    let MaybeTlsStream::Plain(stream) = socket.get_ref() else {
+        panic!("expected fixture TCP stream")
+    };
+    let address = stream
+        .peer_addr()
+        .unwrap_or_else(|error| panic!("peer address: {error}"));
+    let mut request = format!("ws://{address}{CONTROL_ROUTE}")
+        .into_client_request()
+        .unwrap_or_else(|error| panic!("request build: {error}"));
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        CONTROL_SUBPROTOCOL
+            .parse()
+            .unwrap_or_else(|error| panic!("protocol header: {error}")),
+    );
+    request
+}
+
+async fn assert_closed(socket: &mut TestSocket) {
+    assert!(matches!(
+        timeout(Duration::from_secs(5), socket.next()).await,
+        Ok(None | Some(Err(_) | Ok(ClientMessage::Close(_))))
+    ));
+}
+
 async fn send_active_heartbeat(socket: &mut TestSocket, session_id: &[u8]) {
     socket
         .send(ClientMessage::Ping(session_id.to_vec().into()))

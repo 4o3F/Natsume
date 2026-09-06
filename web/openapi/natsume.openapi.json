@@ -1634,11 +1634,34 @@
               }
             }
           },
+          "408": {
+            "description": "Login body was not received within 5 seconds"
+          },
           "413": {
-            "description": "Request body exceeds the API ingress limit"
+            "description": "Login request body exceeds 8 KiB"
           },
           "500": {
             "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Sign-in capacity exhausted; retry after 1 second",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying; always 1"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -2555,10 +2578,12 @@
         "required": ["login_name", "password"],
         "properties": {
           "login_name": {
-            "type": "string"
+            "type": "string",
+            "description": "Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated."
           },
           "password": {
             "type": "string",
+            "description": "At most 1024 UTF-8 bytes; never normalized or truncated.",
             "writeOnly": true
           }
         },

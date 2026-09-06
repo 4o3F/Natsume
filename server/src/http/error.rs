@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    http::StatusCode,
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -29,6 +29,7 @@ enum ApiErrorCode {
     ResourceConflict,
     ResourceNotFound,
     InternalError,
+    ServiceUnavailable,
     ImportCandidateInvalid,
     ImportCandidatePending,
     ImportCandidateUnavailable,
@@ -45,6 +46,7 @@ impl ApiErrorCode {
             Self::ResourceConflict => "RESOURCE_CONFLICT",
             Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
             Self::InternalError => "INTERNAL_ERROR",
+            Self::ServiceUnavailable => "SERVICE_UNAVAILABLE",
             Self::ImportCandidateInvalid => "IMPORT_CANDIDATE_INVALID",
             Self::ImportCandidatePending => "IMPORT_CANDIDATE_PENDING",
             Self::ImportCandidateUnavailable => "IMPORT_CANDIDATE_UNAVAILABLE",
@@ -65,6 +67,15 @@ pub(super) struct ApiError {
 }
 
 impl ApiError {
+    pub(super) fn unavailable(cause: &'static str) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Service Unavailable",
+            ApiErrorCode::ServiceUnavailable,
+            cause,
+        )
+    }
+
     pub(super) fn authentication_failed(cause: &'static str) -> Self {
         Self::new(
             StatusCode::UNAUTHORIZED,
@@ -124,6 +135,10 @@ impl ApiError {
     /// published `code`.
     pub(super) fn from_operator(error: OperatorError) -> Self {
         match error {
+            OperatorError::SignInBusy => Self::unavailable("operator_sign_in_busy"),
+            OperatorError::CredentialsTooLong => {
+                Self::invalid_request("operator_credentials_too_long")
+            }
             OperatorError::AuthenticationFailed => {
                 Self::authentication_failed("operator_authentication_failed")
             }
@@ -161,10 +176,7 @@ impl ApiError {
             OperatorError::PasswordHashingFailed => {
                 Self::internal_error("operator_password_hashing_failed")
             }
-            // These two are bootstrap-only input failures. If either ever
-            // crosses an HTTP boundary, it is an internal wiring fault rather
-            // than a newly published request-validation semantic.
-            OperatorError::EmptyLoginName => Self::internal_error("operator_empty_login_name"),
+            OperatorError::EmptyLoginName => Self::invalid_request("operator_empty_login_name"),
             OperatorError::PasswordMismatch => Self::internal_error("operator_password_mismatch"),
         }
     }
@@ -267,7 +279,7 @@ impl IntoResponse for ApiError {
             status: self.status.as_u16(),
             code: self.code.as_str(),
         };
-        if self.status.is_server_error() {
+        if self.status.is_server_error() && self.status != StatusCode::SERVICE_UNAVAILABLE {
             tracing::error!(
                 code = self.code.as_str(),
                 cause = self.cause,
@@ -280,7 +292,13 @@ impl IntoResponse for ApiError {
                 "HTTP request rejected"
             );
         }
-        (self.status, Json(error_response)).into_response()
+        let mut response = (self.status, Json(error_response)).into_response();
+        if self.status == StatusCode::SERVICE_UNAVAILABLE {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        response
     }
 }
 

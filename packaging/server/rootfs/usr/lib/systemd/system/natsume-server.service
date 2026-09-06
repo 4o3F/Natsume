@@ -20,6 +20,7 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/natsume-server /etc/natsume /usr/share/natsume-server
 ReadWritePaths=/var/lib/natsume-server /var/log/natsume-server
 LimitCORE=0
+LimitNOFILE=4096
 Restart=on-failure
 
 [Install]

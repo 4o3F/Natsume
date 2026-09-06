@@ -246,7 +246,7 @@ fn enrich_operation(operation: Option<&mut Operation>) {
         };
         if matches!(
             status.as_str(),
-            "400" | "401" | "403" | "404" | "409" | "500"
+            "400" | "401" | "403" | "404" | "409" | "500" | "503"
         ) {
             response.content.insert(
                 "application/json".to_owned(),

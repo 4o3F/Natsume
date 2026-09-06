@@ -158,6 +158,8 @@ impl EnrollmentApproval {
 pub(crate) enum EnrollmentStartError {
     /// A new candidate cannot create a review while the process-local gate is closed.
     ProvisioningClosed,
+    /// The process already holds the maximum number of pending reviews.
+    ReviewCapacityReached,
     /// Current-authority lookup failed before replay classification.
     Authority(DeviceError),
 }
@@ -197,6 +199,8 @@ pub(in crate::component::device) struct EnrollmentReviewRegistry {
     reviews: Mutex<HashMap<EnrollmentReviewId, EnrollmentReviewEntry>>,
 }
 
+const MAX_PENDING_REVIEWS: usize = 640;
+
 impl EnrollmentReviewRegistry {
     pub(in crate::component::device) fn new() -> Self {
         Self {
@@ -209,20 +213,22 @@ impl EnrollmentReviewRegistry {
     pub(in crate::component::device) async fn create(
         &self,
         evidence: ValidatedEnrollmentEvidence,
-    ) -> (PendingEnrollmentReview, oneshot::Receiver<EnrollmentResult>) {
+    ) -> Result<(PendingEnrollmentReview, oneshot::Receiver<EnrollmentResult>), EnrollmentStartError>
+    {
+        let mut reviews = self.reviews.lock().await;
+        if reviews.len() >= MAX_PENDING_REVIEWS {
+            return Err(EnrollmentStartError::ReviewCapacityReached);
+        }
         let review_id = EnrollmentReviewId::new();
         let (sender, receiver) = oneshot::channel();
-        self.reviews
-            .lock()
-            .await
-            .insert(review_id, (evidence.clone(), sender));
-        (
+        reviews.insert(review_id, (evidence.clone(), sender));
+        Ok((
             PendingEnrollmentReview {
                 review_id,
                 evidence,
             },
             receiver,
-        )
+        ))
     }
 
     /// Returns display projections without exposing or consuming result senders.
@@ -288,10 +294,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_review_creation_is_bounded_and_removal_restores_capacity() {
+        let registry = Arc::new(EnrollmentReviewRegistry::new());
+        let mut creations = tokio::task::JoinSet::new();
+        for _ in 0..super::MAX_PENDING_REVIEWS + 16 {
+            let registry = Arc::clone(&registry);
+            creations.spawn(async move { registry.create(evidence(1)).await });
+        }
+        let mut accepted = Vec::new();
+        let mut rejected = 0;
+        while let Some(result) = creations.join_next().await {
+            match result.unwrap_or_else(|error| panic!("creation task failed: {error}")) {
+                Ok(review) => accepted.push(review),
+                Err(super::EnrollmentStartError::ReviewCapacityReached) => rejected += 1,
+                Err(error) => panic!("unexpected creation failure: {error:?}"),
+            }
+        }
+        assert_eq!(accepted.len(), super::MAX_PENDING_REVIEWS);
+        assert_eq!(rejected, 16);
+        let (review, activation) = accepted
+            .pop()
+            .unwrap_or_else(|| panic!("no accepted review"));
+        assert!(registry.remove(review.review_id()).await);
+        assert!(activation.await.is_err());
+        assert!(registry.create(evidence(2)).await.is_ok());
+        assert_eq!(registry.list().await.len(), super::MAX_PENDING_REVIEWS);
+    }
+
+    #[tokio::test]
     async fn create_lists_the_review_and_take_is_terminal() {
         let registry = EnrollmentReviewRegistry::new();
         let expected = evidence(7);
-        let (created, activation) = registry.create(expected.clone()).await;
+        let (created, activation) = registry
+            .create(expected.clone())
+            .await
+            .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
 
         assert_eq!(created.review_id.0.get_version(), Some(Version::SortRand));
         assert_eq!(created.evidence(), &expected);
@@ -314,8 +351,14 @@ mod tests {
     #[tokio::test]
     async fn remove_deletes_only_the_selected_review() {
         let registry = EnrollmentReviewRegistry::new();
-        let (first, _) = registry.create(evidence(1)).await;
-        let (second, _) = registry.create(evidence(2)).await;
+        let (first, _) = registry
+            .create(evidence(1))
+            .await
+            .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
+        let (second, _) = registry
+            .create(evidence(2))
+            .await
+            .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
 
         assert!(registry.remove(first.review_id()).await);
         assert!(!registry.remove(first.review_id()).await);
@@ -325,7 +368,10 @@ mod tests {
     #[tokio::test]
     async fn concurrent_terminal_actions_have_one_winner() {
         let registry = Arc::new(EnrollmentReviewRegistry::new());
-        let (review, _) = registry.create(evidence(9)).await;
+        let (review, _) = registry
+            .create(evidence(9))
+            .await
+            .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
         let review_id = review.review_id();
 
         let first_registry = Arc::clone(&registry);
@@ -348,7 +394,10 @@ mod tests {
     #[tokio::test]
     async fn a_new_registry_has_no_old_process_reviews() {
         let old_registry = EnrollmentReviewRegistry::new();
-        old_registry.create(evidence(4)).await;
+        old_registry
+            .create(evidence(4))
+            .await
+            .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
         assert_eq!(old_registry.list().await.len(), 1);
 
         assert!(EnrollmentReviewRegistry::new().list().await.is_empty());

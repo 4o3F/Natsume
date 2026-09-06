@@ -5,7 +5,6 @@ use argon2::{
     },
 };
 use secrecy::{ExposeSecret, SecretString};
-use tokio::sync::Semaphore;
 
 use super::OperatorError;
 
@@ -15,17 +14,6 @@ const ARGON2_PARALLELISM: u32 = 1;
 const PASSWORD_SALT_LENGTH: usize = 16;
 pub(in crate::component::operator) const DUMMY_PASSWORD_PHC: &str = "$argon2id$v=19$m=19456,t=2,p=1$\
     bmF0c3VtZS1kdW1teS1zbA$KQCQGYQS75NixY7KaNGTRwtboqGCDKN5SXQjAFrx+7w";
-// One in-flight verification holds `ARGON2_MEMORY_COST_KIB` of memory, and the
-// unauthenticated sign-in path always performs one, so without a bound the
-// blocking pool lets anonymous callers allocate hundreds at once. Both inputs
-// are frozen: the Argon2 memory cost above and the roughly three operator
-// browsers a site runs. Device Enrollment and Device WSS never verify a
-// password, so fleet size cannot raise this bound.
-pub(in crate::component::operator) const PASSWORD_VERIFICATION_CONCURRENCY: usize = 4;
-
-pub(in crate::component::operator) static PASSWORD_VERIFICATION_GATE: Semaphore =
-    Semaphore::const_new(PASSWORD_VERIFICATION_CONCURRENCY);
-
 pub(super) struct OperatorPassword(SecretString);
 
 impl OperatorPassword {

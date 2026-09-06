@@ -1,4 +1,4 @@
-use std::{fs, future::Future, path::PathBuf, pin::Pin, task::Poll};
+use std::{fs, future::Future, path::PathBuf, pin::Pin, sync::Arc, task::Context};
 
 use argon2::{
     Algorithm, Argon2, KeyId, Params, ParamsBuilder, Version,
@@ -15,17 +15,17 @@ use super::{
     OperatorCredentials, OperatorError, OperatorIdentity, OperatorRole,
     db::tests as db_operator,
     password::{
-        DUMMY_PASSWORD_PHC, OperatorPassword, PASSWORD_VERIFICATION_CONCURRENCY,
-        PASSWORD_VERIFICATION_GATE, hash_password as hash_raw_password, verify_password_once,
+        DUMMY_PASSWORD_PHC, OperatorPassword, hash_password as hash_raw_password,
+        verify_password_once,
     },
     require_admin,
     session::{
-        SessionCredential, SignedInSession, authenticate_session, sign_in,
+        SIGN_IN_CONCURRENCY, SIGN_IN_GATE, SessionCredential, SignedInSession,
+        authenticate_session, sign_in,
         tests::{SESSION_CREDENTIAL_LENGTH, decode_lower_hex},
     },
 };
 
-const GATE_OBSERVATION_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 const GATE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 static PASSWORD_VERIFICATION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -396,38 +396,61 @@ async fn failed_sign_in_once(
 async fn password_verification_concurrency_is_bounded() -> Result<(), TestFailure> {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    let permits = u32::try_from(PASSWORD_VERIFICATION_CONCURRENCY)
+    let permits = u32::try_from(SIGN_IN_CONCURRENCY)
         .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
 
     // All but one permit held: the gate must still admit one verification.
-    let held = PASSWORD_VERIFICATION_GATE
+    let held = SIGN_IN_GATE
         .acquire_many(permits - 1)
         .await
         .map_err(|_| TestFailure::VerificationGateWasClosed)?;
     gated_sign_in_fails(&fixture.database).await?;
 
-    // Every permit held: the next verification must not proceed.
-    let last = PASSWORD_VERIFICATION_GATE
+    // Every permit held: reject before even attempting the account lookup.
+    let last = SIGN_IN_GATE
         .acquire()
         .await
         .map_err(|_| TestFailure::VerificationGateWasClosed)?;
-    let database = fixture.database.clone();
-    let blocked = tokio::spawn(async move { gated_sign_in_fails(&database).await });
-    tokio::time::sleep(GATE_OBSERVATION_WINDOW).await;
-    if blocked.is_finished() {
-        return Err(TestFailure::VerificationGateDidNotBoundConcurrency);
-    }
-
+    let _connections = fixture.database.test_exhaust_pool();
+    let rejected = tokio::time::timeout(
+        GATE_RELEASE_TIMEOUT,
+        sign_in(&fixture.database, "unknown", "password".to_owned()),
+    )
+    .await
+    .map_err(|_| TestFailure::VerificationGateDidNotBoundConcurrency)?;
+    assert_eq!(rejected.err(), Some(OperatorError::SignInBusy));
     drop(last);
     drop(held);
-    tokio::time::timeout(GATE_RELEASE_TIMEOUT, blocked)
-        .await
-        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
-        .map_err(|_| TestFailure::VerificationGateDidNotRelease)??;
-    if PASSWORD_VERIFICATION_GATE.available_permits() != PASSWORD_VERIFICATION_CONCURRENCY {
+    if SIGN_IN_GATE.available_permits() != SIGN_IN_CONCURRENCY {
         return Err(TestFailure::VerificationGateLeakedPermits);
     }
     Ok(())
+}
+
+#[tokio::test]
+async fn cancelling_a_queued_account_read_keeps_the_sign_in_slot() -> Result<(), TestFailure> {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    let connections = fixture.database.test_exhaust_pool();
+    let mut pending = Box::pin(sign_in(&fixture.database, "unknown", "password".to_owned()));
+    assert!(futures_util::poll!(pending.as_mut()).is_pending());
+    drop(pending);
+    assert_eq!(SIGN_IN_GATE.available_permits(), SIGN_IN_CONCURRENCY - 1);
+    drop(connections);
+    let permits = tokio::time::timeout(GATE_RELEASE_TIMEOUT, SIGN_IN_GATE.acquire_many(4))
+        .await
+        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
+        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+    drop(permits);
+    assert_eq!(SIGN_IN_GATE.available_permits(), SIGN_IN_CONCURRENCY);
+    Ok(())
+}
+
+pub(crate) async fn occupy_sign_in_capacity() -> tokio::sync::SemaphorePermit<'static> {
+    SIGN_IN_GATE
+        .acquire_many(4)
+        .await
+        .unwrap_or_else(|error| panic!("sign-in gate closed: {error}"))
 }
 
 async fn gated_sign_in_fails(database: &Database) -> Result<(), TestFailure> {
@@ -460,7 +483,7 @@ async fn password_reset_fences_pending_sign_in_even_when_the_phc_is_unchanged()
         "reset-admin",
         password.to_owned(),
     ));
-    pause_before_password_verification(pending.as_mut()).await?;
+    pause_before_password_verification(&fixture.database, pending.as_mut()).await?;
 
     super::account::reset_operator_password(&fixture.database, "reset-admin", &phc)
         .await
@@ -499,7 +522,7 @@ fn cancelled_sign_in_keeps_its_permit_until_the_blocking_verification_finishes()
             "cancelled-unknown-login",
             "cancelled-password".to_owned(),
         ));
-        pause_before_password_verification(pending.as_mut()).await?;
+        pause_before_password_verification(&fixture.database, pending.as_mut()).await?;
 
         // Occupy the only blocking worker before submitting verification, so
         // cancellation cannot race with completion of the expensive work.
@@ -514,30 +537,22 @@ fn cancelled_sign_in_keeps_its_permit_until_the_blocking_verification_finishes()
             .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
         assert!(futures_util::poll!(pending.as_mut()).is_pending());
         drop(pending);
-        let available_while_queued = PASSWORD_VERIFICATION_GATE.available_permits();
+        let available_while_queued = SIGN_IN_GATE.available_permits();
 
         drop(release);
         blocker
             .await
             .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
-        let permits = u32::try_from(PASSWORD_VERIFICATION_CONCURRENCY)
+        let permits = u32::try_from(SIGN_IN_CONCURRENCY)
             .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
-        let restored = tokio::time::timeout(
-            GATE_RELEASE_TIMEOUT,
-            PASSWORD_VERIFICATION_GATE.acquire_many(permits),
-        )
-        .await
-        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
-        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+        let restored =
+            tokio::time::timeout(GATE_RELEASE_TIMEOUT, SIGN_IN_GATE.acquire_many(permits))
+                .await
+                .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
+                .map_err(|_| TestFailure::VerificationGateWasClosed)?;
         drop(restored);
-        assert_eq!(
-            available_while_queued,
-            PASSWORD_VERIFICATION_CONCURRENCY - 1
-        );
-        assert_eq!(
-            PASSWORD_VERIFICATION_GATE.available_permits(),
-            PASSWORD_VERIFICATION_CONCURRENCY
-        );
+        assert_eq!(available_while_queued, SIGN_IN_CONCURRENCY - 1);
+        assert_eq!(SIGN_IN_GATE.available_permits(), SIGN_IN_CONCURRENCY);
         Ok(())
     })
 }
@@ -687,38 +702,33 @@ async fn invalid_persisted_credential_revisions_fail_closed() -> Result<(), Test
     Ok(())
 }
 
-/// Polls the real login until it has read the account and queued for its
-/// verification permit. The local future stays parked until the caller polls it.
+struct NotifyWhenReady(tokio::sync::Notify);
+
+impl futures_util::task::ArcWake for NotifyWhenReady {
+    fn wake_by_ref(this: &Arc<Self>) {
+        this.0.notify_one();
+    }
+}
+
+/// Leave the real login parked with its completed account read, before hashing.
 async fn pause_before_password_verification(
+    database: &Database,
     mut pending: Pin<&mut impl Future<Output = Result<SignedInSession, OperatorError>>>,
 ) -> Result<(), TestFailure> {
-    let permits = u32::try_from(PASSWORD_VERIFICATION_CONCURRENCY)
-        .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
-    let _held = PASSWORD_VERIFICATION_GATE
-        .acquire_many(permits - 1)
-        .await
-        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
-    let mut probe = Some(
-        PASSWORD_VERIFICATION_GATE
-            .acquire()
-            .await
-            .map_err(|_| TestFailure::VerificationGateWasClosed)?,
+    let connections = database.test_exhaust_pool();
+    let notification = Arc::new(NotifyWhenReady(tokio::sync::Notify::new()));
+    let waker = futures_util::task::waker(Arc::clone(&notification));
+    assert!(
+        pending
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
     );
-    std::future::poll_fn(|context| {
-        if pending.as_mut().poll(context).is_ready() {
-            return Poll::Ready(Err(TestFailure::VerificationGateDidNotBoundConcurrency));
-        }
-        drop(probe.take());
-        match PASSWORD_VERIFICATION_GATE.try_acquire() {
-            Ok(permit) => {
-                probe = Some(permit);
-                Poll::Pending
-            }
-            // A queued login receives the released permit before try_acquire.
-            Err(_) => Poll::Ready(Ok(())),
-        }
-    })
-    .await
+    drop(connections);
+    tokio::time::timeout(GATE_RELEASE_TIMEOUT, notification.0.notified())
+        .await
+        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+    Ok(())
 }
 
 #[test]

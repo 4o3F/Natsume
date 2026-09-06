@@ -11,7 +11,7 @@ use natsume_device_protocol::CONTROL_SUBPROTOCOL;
 
 use crate::device_control::{MAX_MESSAGE_BYTES, serve_connection};
 
-use super::super::AppState;
+use super::super::{AppState, error::ApiError};
 
 /// Registers the production Device Control WebSocket endpoint.
 pub(in crate::http) fn routes() -> Router<AppState> {
@@ -35,9 +35,12 @@ async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Re
         return StatusCode::BAD_REQUEST.into_response();
     }
     let control = Arc::clone(state.device_control());
+    let Some(permit) = control.try_reserve_handshake() else {
+        return ApiError::unavailable("device_handshake_capacity_exhausted").into_response();
+    };
     upgrade
         .max_message_size(MAX_MESSAGE_BYTES)
         .max_frame_size(MAX_MESSAGE_BYTES)
         .protocols([CONTROL_SUBPROTOCOL])
-        .on_upgrade(move |socket| serve_connection(socket, control))
+        .on_upgrade(move |socket| serve_connection(socket, control, permit))
 }

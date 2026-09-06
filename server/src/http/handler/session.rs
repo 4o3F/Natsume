@@ -1,11 +1,13 @@
 use axum::{
     Extension, Json, Router,
-    extract::{State, rejection::JsonRejection},
+    extract::{FromRequest, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
+use tower_http::limit::RequestBodyLimitLayer;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -13,9 +15,15 @@ use crate::component::operator::OperatorIdentity;
 
 use super::super::{AppState, cookie, error::ApiError, middleware};
 
+const LOGIN_BODY_LIMIT: usize = 8 * 1024;
+const LOGIN_BODY_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(in crate::http) fn public_routes() -> Router<AppState> {
     Router::new()
-        .route("/session", post(create_session))
+        .route(
+            "/session",
+            post(create_session).layer(RequestBodyLimitLayer::new(LOGIN_BODY_LIMIT)),
+        )
         .route("/session", delete(delete_session))
 }
 
@@ -29,7 +37,9 @@ pub(in crate::http) fn protected_routes(state: AppState) -> Router<AppState> {
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionRequest {
+    /// Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated.
     login_name: String,
+    /// At most 1024 UTF-8 bytes; never normalized or truncated.
     #[schema(write_only)]
     password: String,
 }
@@ -50,16 +60,28 @@ pub(crate) struct SessionResponse {
         (status = 200, description = "Session established", body = SessionResponse),
         (status = 400, description = "Invalid closed request"),
         (status = 401, description = "Authentication failed"),
-        (status = 413, description = "Request body exceeds the API ingress limit"),
-        (status = 500, description = "Internal failure")
+        (status = 408, description = "Login body was not received within 5 seconds"),
+        (status = 413, description = "Login request body exceeds 8 KiB"),
+        (status = 500, description = "Internal failure"),
+        (status = 503, description = "Sign-in capacity exhausted; retry after 1 second",
+            headers(("Retry-After" = u32, description = "Seconds before retrying; always 1")))
     )
 )]
-pub(crate) async fn create_session(
-    State(state): State<AppState>,
-    request: Result<Json<SessionRequest>, JsonRejection>,
-) -> Response {
-    let Ok(Json(request)) = request else {
-        return ApiError::invalid_request("session_request_body_rejected").into_response();
+pub(crate) async fn create_session(State(state): State<AppState>, request: Request) -> Response {
+    let request = match tokio::time::timeout(
+        LOGIN_BODY_TIMEOUT,
+        Json::<SessionRequest>::from_request(request, &state),
+    )
+    .await
+    {
+        Ok(Ok(Json(request))) => request,
+        Ok(Err(error)) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+            return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+        }
+        Ok(Err(_)) => {
+            return ApiError::invalid_request("session_request_body_rejected").into_response();
+        }
+        Err(_) => return StatusCode::REQUEST_TIMEOUT.into_response(),
     };
     let signed_in = match state
         .operator()

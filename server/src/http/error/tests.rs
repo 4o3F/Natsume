@@ -121,8 +121,18 @@ async fn assert_cause_stays_internal(
     Ok(())
 }
 
-fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 15] {
+fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
     [
+        (
+            OperatorError::SignInBusy,
+            "operator_sign_in_busy",
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        (
+            OperatorError::CredentialsTooLong,
+            "operator_credentials_too_long",
+            StatusCode::BAD_REQUEST,
+        ),
         (
             OperatorError::AuthenticationFailed,
             "operator_authentication_failed",
@@ -191,7 +201,7 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 15] {
         (
             OperatorError::EmptyLoginName,
             "operator_empty_login_name",
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_REQUEST,
         ),
         (
             OperatorError::PasswordMismatch,

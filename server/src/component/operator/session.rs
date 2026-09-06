@@ -1,3 +1,4 @@
+use tokio::sync::{Semaphore, SemaphorePermit};
 use zeroize::Zeroizing;
 
 use crate::db::{Database, PersistenceError, TransactionError};
@@ -8,10 +9,13 @@ pub(crate) use self::credentials::SessionCredentialHex;
 pub(super) use self::credentials::{SessionCredential, SessionCredentialHash};
 use super::{
     OperatorError, OperatorIdentity,
-    password::{
-        DUMMY_PASSWORD_PHC, OperatorPassword, PASSWORD_VERIFICATION_GATE, verify_password_once,
-    },
+    password::{DUMMY_PASSWORD_PHC, OperatorPassword, verify_password_once},
 };
+
+// Four complete sign-ins bound both database submissions and Argon2 memory.
+// Anonymous callers never queue for capacity.
+pub(super) const SIGN_IN_CONCURRENCY: usize = 4;
+pub(super) static SIGN_IN_GATE: Semaphore = Semaphore::const_new(SIGN_IN_CONCURRENCY);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SessionFacts {
@@ -56,10 +60,15 @@ pub(super) async fn sign_in(
     submitted_password: String,
 ) -> Result<SignedInSession, OperatorError> {
     let password = OperatorPassword::new(submitted_password);
+    super::credentials::validate_input(login_name, password.expose())?;
+    let permit = SIGN_IN_GATE
+        .try_acquire()
+        .map_err(|_| OperatorError::SignInBusy)?;
     let login_name = login_name.to_owned();
-    let account = database
+    let (account, permit) = database
         .read(move |transaction| {
             crate::component::operator::db::find_account(transaction, &login_name)
+                .map(|account| (account, permit))
         })
         .await
         .map_err(TransactionError::into_error)
@@ -69,28 +78,13 @@ pub(super) async fn sign_in(
         |facts| facts.password_hash.clone(),
     );
 
-    // The permit is taken after the account read so both the known-login and
-    // unknown-login paths pass through the same gate, preserving the timing
-    // equalization below. The wait queue is unbounded on purpose: Argon2 memory
-    // is only allocated inside the blocking closure, so queued waiters are
-    // cheap, and connection capacity stays a separate deferred question. A
-    // `static` semaphore is never closed, so the only reachable acquire failure
-    // is treated as a blocking-task failure.
-    let verification = {
-        let permit = PASSWORD_VERIFICATION_GATE
-            .acquire()
-            .await
-            .map_err(|_| OperatorError::PasswordTaskFailed)?;
-        tokio::task::spawn_blocking(move || {
-            // Request cancellation must not release capacity while the blocking
-            // verification is still queued or running.
-            let _permit = permit;
-            verify_password_once(&password, &candidate_phc)
-        })
-        .await
-        .map_err(|_| OperatorError::PasswordTaskFailed)?
-    };
-    let password_verified = verification?;
+    // Ownership moves through each blocking task and its result. Cancellation
+    // cannot free a slot while database or hashing work is queued or running.
+    let (password_verified, permit) = tokio::task::spawn_blocking(move || {
+        verify_password_once(&password, &candidate_phc).map(|verified| (verified, permit))
+    })
+    .await
+    .map_err(|_| OperatorError::PasswordTaskFailed)??;
 
     // The unknown-login path verifies the fixed dummy PHC to equalize the
     // expensive work, but it can never authenticate: the result is discarded
@@ -111,6 +105,7 @@ pub(super) async fn sign_in(
         &credential_hash,
         identity,
         account.credential_revision,
+        permit,
     )
     .await?;
 
@@ -125,6 +120,7 @@ async fn create_session(
     credential_hash: &SessionCredentialHash,
     identity: OperatorIdentity,
     expected_revision: i64,
+    permit: SemaphorePermit<'static>,
 ) -> Result<(), OperatorError> {
     let credential_hash = Zeroizing::new(*credential_hash.as_bytes());
     database
@@ -138,9 +134,10 @@ async fn create_session(
             if inserted == 0 {
                 return Err(OperatorError::AuthenticationFailed);
             }
-            Ok(())
+            Ok(permit)
         })
         .await
+        .map(|_| ())
         .map_err(TransactionError::into_error)
 }
 

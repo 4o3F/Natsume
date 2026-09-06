@@ -314,6 +314,9 @@ grep -Fxq 'd /var/lib/natsume-privileged/home-reset 0700 root root -' "${client_
 mkdir -p "${extract_root}/client/usr/bin"
 cp "$(command -v systemctl)" "${extract_root}/client/usr/bin/systemctl"
 
+grep -Fxq 'LimitNOFILE=4096' "${extract_root}/server/usr/lib/systemd/system/natsume-server.service" ||
+  fail 'packaged Server FD limit must leave room above its 1024 connection budget'
+
 systemd-analyze --recursive-errors=no --root="${extract_root}/server" verify \
   /usr/lib/systemd/system/natsume-server.service
 systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \

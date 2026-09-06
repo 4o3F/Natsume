@@ -1,5 +1,12 @@
 use std::{
-    fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, sync::Arc, time::Duration,
+    fs,
+    net::SocketAddr,
+    os::unix::fs::PermissionsExt,
+    path::Path,
+    pin::Pin,
+    sync::Arc,
+    task::{Context, Poll},
+    time::Duration,
 };
 
 use axum::serve::Listener;
@@ -7,7 +14,9 @@ use rustls::sign::{CertifiedKey, SigningKey};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use snafu::Snafu;
 use tokio::{
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpListener, TcpStream},
+    sync::{OwnedSemaphorePermit, Semaphore},
     task::JoinSet,
     time::{sleep, timeout},
 };
@@ -16,6 +25,8 @@ use zeroize::Zeroize;
 
 const ALPN_HTTP_1_1: &[u8] = b"http/1.1";
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_CONNECTIONS: usize = 1024;
+const MAX_HANDSHAKES: usize = 64;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const PRIVATE_FILE_FORBIDDEN_BITS: u32 = 0o177;
 const PRIVATE_DIRECTORY_FORBIDDEN_BITS: u32 = 0o077;
@@ -24,7 +35,42 @@ const PRIVATE_DIRECTORY_FORBIDDEN_BITS: u32 = 0o077;
 pub(crate) struct TlsListener {
     tcp_listener: TcpListener,
     tls_acceptor: TlsAcceptor,
-    handshakes: JoinSet<Option<(TlsStream<TcpStream>, SocketAddr)>>,
+    handshakes: JoinSet<Option<(TlsStream<AcceptedTcpStream>, SocketAddr)>>,
+    connections: Arc<Semaphore>,
+}
+
+/// Keeps the connection slot through TLS, HTTP keep-alive and WebSocket upgrade.
+pub(crate) struct AcceptedTcpStream {
+    stream: TcpStream,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl AsyncRead for AcceptedTcpStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for AcceptedTcpStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
 }
 
 impl TlsListener {
@@ -47,21 +93,35 @@ impl TlsListener {
             tcp_listener,
             tls_acceptor: TlsAcceptor::from(server_config),
             handshakes: JoinSet::new(),
+            connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
         })
     }
 }
 
 impl Listener for TlsListener {
-    type Io = TlsStream<TcpStream>;
+    type Io = TlsStream<AcceptedTcpStream>;
     type Addr = SocketAddr;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
             let has_in_flight_handshakes = !self.handshakes.is_empty();
             tokio::select! {
+                biased;
+                completed = self.handshakes.join_next(), if has_in_flight_handshakes => {
+                    if let Some(Ok(Some(connection))) = completed {
+                        return connection;
+                    }
+                }
                 accepted = self.tcp_listener.accept() => {
                     match accepted {
                         Ok((tcp_stream, remote_address)) => {
+                            if self.handshakes.len() >= MAX_HANDSHAKES {
+                                continue;
+                            }
+                            let Ok(permit) = Arc::clone(&self.connections).try_acquire_owned() else {
+                                continue;
+                            };
+                            let tcp_stream = AcceptedTcpStream { stream: tcp_stream, _permit: permit };
                             let tls_acceptor = self.tls_acceptor.clone();
                             self.handshakes.spawn(async move {
                                 match timeout(HANDSHAKE_TIMEOUT, tls_acceptor.accept(tcp_stream)).await {
@@ -71,11 +131,6 @@ impl Listener for TlsListener {
                             });
                         }
                         Err(_) => sleep(ACCEPT_RETRY_DELAY).await,
-                    }
-                }
-                completed = self.handshakes.join_next(), if has_in_flight_handshakes => {
-                    if let Some(Ok(Some(connection))) = completed {
-                        return connection;
                     }
                 }
             }
@@ -605,6 +660,143 @@ pub(crate) mod tests {
             .send(())
             .map_err(|()| TestFailure::ShutdownSignalFailed)?;
         await_server(server).await
+    }
+
+    #[tokio::test]
+    async fn connection_capacity_covers_idle_tls_and_websocket_upgrade()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use futures_util::{SinkExt as _, StreamExt as _};
+        let identity = TestIdentity::new(LOCALHOST).map_err(|_| "identity fixture")?;
+        let mut listener = bind_identity(&identity).await?;
+        listener.connections = Arc::new(tokio::sync::Semaphore::new(1));
+        let capacity = Arc::clone(&listener.connections);
+        let address = listener.local_addr()?;
+        let application = axum::Router::new().route(
+            "/echo",
+            axum::routing::get(|upgrade: axum::extract::ws::WebSocketUpgrade| async move {
+                upgrade.on_upgrade(|mut socket| async move {
+                    while let Some(Ok(message)) = socket.recv().await {
+                        if socket.send(message).await.is_err() {
+                            break;
+                        }
+                    }
+                })
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, application).await });
+        let tls = connect_client(
+            address,
+            identity.ca_certificate(),
+            IpAddr::V4(LOCALHOST),
+            &[&rustls::version::TLS13],
+            vec![ALPN_HTTP_1_1.to_vec()],
+        )
+        .await?;
+        assert_eq!(capacity.available_permits(), 0);
+        let mut excess = TcpStream::connect(address).await?;
+        let mut byte = [0];
+        assert!(matches!(
+            timeout(TEST_TIMEOUT, excess.read(&mut byte)).await?,
+            Ok(0) | Err(_)
+        ));
+        let (mut socket, response) =
+            tokio_tungstenite::client_async(format!("wss://{address}/echo"), tls).await?;
+        assert_eq!(response.status(), 101);
+        assert_eq!(capacity.available_permits(), 0);
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                "still active".into(),
+            ))
+            .await?;
+        assert!(matches!(
+            socket.next().await,
+            Some(Ok(tokio_tungstenite::tungstenite::Message::Text(_)))
+        ));
+        drop(socket);
+        timeout(TEST_TIMEOUT, async {
+            while capacity.available_permits() != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        server.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn repeated_slow_handshake_overload_is_bounded_and_recovers()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let identity = TestIdentity::new(LOCALHOST).map_err(|_| "identity fixture")?;
+        let listener = bind_identity(&identity).await?;
+        let capacity = Arc::clone(&listener.connections);
+        let address = listener.local_addr()?;
+        let (shutdown, server) = spawn_server(listener);
+        let mut peak_fds = 0;
+        for _ in 0..3 {
+            let mut sockets = Vec::new();
+            for _ in 0..super::MAX_HANDSHAKES {
+                sockets.push(TcpStream::connect(address).await?);
+            }
+            timeout(TEST_TIMEOUT, async {
+                while capacity.available_permits() != super::MAX_CONNECTIONS - super::MAX_HANDSHAKES
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            for _ in 0..512 {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+                let mut excess = TcpStream::connect(address).await?;
+                let mut byte = [0];
+                assert!(matches!(
+                    timeout(TEST_TIMEOUT, excess.read(&mut byte)).await?,
+                    Ok(0) | Err(_)
+                ));
+                assert_eq!(
+                    capacity.available_permits(),
+                    super::MAX_CONNECTIONS - super::MAX_HANDSHAKES
+                );
+            }
+            peak_fds = peak_fds.max(fs::read_dir("/proc/self/fd")?.count());
+            // Exercise expiry, not just voluntary client disconnects.
+            for socket in &mut sockets {
+                assert!(matches!(socket.read(&mut [0]).await, Ok(0) | Err(_)));
+            }
+            drop(sockets);
+            timeout(TEST_TIMEOUT, async {
+                while capacity.available_permits() != super::MAX_CONNECTIONS {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            let started = std::time::Instant::now();
+            let mut tls = connect_client(
+                address,
+                identity.ca_certificate(),
+                IpAddr::V4(LOCALHOST),
+                &[&rustls::version::TLS13],
+                vec![ALPN_HTTP_1_1.to_vec()],
+            )
+            .await?;
+            let response = request_health(&mut tls).await?;
+            assert!(response.starts_with(b"HTTP/1.1 200"));
+            eprintln!(
+                "TLS overload recovery health latency: {:?}",
+                started.elapsed()
+            );
+        }
+        eprintln!(
+            "TLS overload: 3 rounds, 64 stalled + 512 rejected connections per round; peak process FDs (including test clients): {peak_fds}"
+        );
+        for line in fs::read_to_string("/proc/self/status")?
+            .lines()
+            .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
+        {
+            eprintln!("{line}");
+        }
+        shutdown.send(()).map_err(|()| "shutdown channel")?;
+        await_server(server).await?;
+        Ok(())
     }
 
     async fn bind_identity(identity: &TestIdentity) -> Result<TlsListener, TestFailure> {

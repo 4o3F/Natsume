@@ -791,6 +791,14 @@ Production WSS handler只把socket交给`device_control::serve_connection`。该
 内完成admission与Enrollment握手，通过`DeviceControl::attach_device_lease`完成最终复查和Registry attach；
 handler不传递或match admission中间状态。
 
+匿名入口采用固定容量与快速拒绝：
+
+- TLS listener最多保留1024条已接受连接，TCP连接许可随底层IO存活，覆盖TLS、HTTP keep-alive与WebSocket upgrade，直到socket关闭；打包Server的`LimitNOFILE=4096`为数据库、日志等FD留出空间；
+- TLS在途握手最多64个，保持5秒deadline；容量不足时关闭新连接，不创建等待任务。已完成握手优先交付，失败与超时释放连接容量；
+- DeviceControl在HTTP upgrade前预留最多64个短期认证名额，满额返回503与`Retry-After: 1`；失败、断线或SessionReady后释放，active lease不占用短期名额；
+- Enrollment review registry在创建时原子检查640条上限；新review成功登记后释放短期认证名额，长期人工审核由registry条目约束，删除或认领即释放名额。exact committed replay和Resume不占用待审核容量；
+- 各容量由既有owner维护，不建立统一admission manager；上限限制资源积累，不承诺同一匿名网络入口在持续饱和时仍能保证新连接公平性。现场验收须测量RSS、FD、拒绝行为及已有控制连接延迟。
+
 ### 11.2 Registry
 
 `DeviceRegistry` 是小型内存 map：
@@ -1094,7 +1102,8 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 - `operator_accounts.credential_revision`从1开始，只由Operator组件在密码重置事务中递增；
 - 登录读取PHC与revision，在事务外完成Argon2验证，再以exact expected revision条件插入session；零行表示凭据已失效，返回认证失败；
 - 密码重置原子更新PHC、递增revision并删除该账户全部session；相同密码重置也递增，溢出或任一步失败均回滚；revision fence未完成的登录，删除操作撤销已签发session，session不保存revision副本；
-- Argon2并发许可由阻塞验证任务持有至完成，请求取消不能提前释放排队或执行中的许可；
+- 登录JSON body最多8 KiB，读取deadline为5秒；用户名为1～128 UTF-8字节，密码最多1024 UTF-8字节，登录与TTY bootstrap/reset使用同一字段规则，不截断或规范化；超出body上限返回413，读取超时返回408，非法字段返回400；
+- 最多4条在途登录，读账户前立即尝试取得许可；满额返回503与`Retry-After: 1`，不设匿名等待队列。许可依次随账户读取、Argon2验证、session写入的阻塞任务及其结果存活，请求取消不能提前释放排队或执行中的容量；
 - session cookie明文只在浏览器与响应，数据库只存SHA-256；
 - 绝对过期，不滑动续期；
 - logout/password reset删除session；

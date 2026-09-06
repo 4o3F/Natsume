@@ -180,7 +180,7 @@ fn expected_operation_table() -> OperationTable {
             "post",
             "/api/v2/session",
             "createSession",
-            &["200", "400", "401", "413", "500"],
+            &["200", "400", "401", "408", "413", "500", "503"],
         ),
         (
             "post",
@@ -855,7 +855,7 @@ fn error_response_shape_has_no_correlation_contract() -> Result<(), TestFailure>
                 == Some("#/components/schemas/ErrorResponse");
             if matches!(
                 status.as_str(),
-                "400" | "401" | "403" | "404" | "409" | "500"
+                "400" | "401" | "403" | "404" | "409" | "500" | "503"
             ) != has_error_response
             {
                 return Err(TestFailure::ErrorResponseMappingChanged);

@@ -83,7 +83,7 @@ impl DeviceComponent {
         if !provisioning.read_window().await.is_open() {
             return Err(EnrollmentStartError::ProvisioningClosed);
         }
-        let (review, activation) = self.reviews.create(evidence).await;
+        let (review, activation) = self.reviews.create(evidence).await?;
         Ok(EnrollmentStartOutcome::Pending(review, activation))
     }
 
