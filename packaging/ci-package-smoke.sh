@@ -304,6 +304,11 @@ grep -Fxq 'RestrictAddressFamilies=AF_UNIX' "${client_helper_unit}" ||
   fail 'packaged privileged helper must restrict sockets to AF_UNIX'
 grep -Fxq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN' \
   "${client_helper_unit}" || fail 'packaged privileged helper has an unexpected capability set'
+for directive in 'Type=dbus' 'BusName=org.natsume.Privileged1' \
+  'Restart=on-failure' 'RestartSec=2s' 'StartLimitIntervalSec=60s' 'StartLimitBurst=5'; do
+  grep -Fxq "${directive}" "${client_helper_unit}" ||
+    fail "packaged privileged helper is missing ${directive}"
+done
 grep -Fxq 'd /run/natsume 2770 natsume natsume-gateway -' "${client_tmpfiles}" ||
   fail 'packaged Caddy runtime directory cannot inherit the gateway group'
 grep -Fxq 'd /var/lib/natsume 0750 root natsume-gateway -' "${client_tmpfiles}" ||

@@ -1,11 +1,15 @@
 [Unit]
 Description=Natsume V2 Privileged Helper
 After=dbus.service local-fs.target
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=dbus
 BusName=org.natsume.Privileged1
 ExecStart=/usr/lib/natsume/natsume-privileged-helper
+Restart=on-failure
+RestartSec=2s
 User=root
 PrivateNetwork=yes
 # Home mounts must be visible in the host mount namespace.

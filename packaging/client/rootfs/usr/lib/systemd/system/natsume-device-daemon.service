@@ -1,7 +1,7 @@
 
 [Unit]
 Description=Natsume V2 Device Daemon
-# udev-settle gates the first identity collection: the D-Bus-activated helper reads
+# udev-settle gates the first identity collection: the systemd-managed helper reads
 # /run/udev/data for the root disk serial, and a first start before the udev database
 # is populated would pin a two-slot identity that later recomputes as three slots.
 After=network-online.target dbus.service local-fs.target systemd-udev-settle.service natsume-caddy.service natsume-privileged-helper.service

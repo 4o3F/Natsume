@@ -42,3 +42,6 @@ The pre-reboot phase refuses to run when `natsume-client` is already installed o
 After provisioning the contestant account and Home template on a separate disposable
 VM snapshot, run the [Home mount acceptance checks](home-reset.md) for host visibility,
 namespace isolation rejection and same-epoch recovery.
+
+Use the [Helper crash recovery checks](helper-recovery.md) on a separate snapshot
+to verify automatic restart, start limiting, maintenance stops and Daemon recovery.

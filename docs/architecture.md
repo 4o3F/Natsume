@@ -1092,6 +1092,10 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 - password不进入非秘密LKG；
 - 重启从durable input/artifact/completion重新采样并收敛。
 
+Helper进程由systemd独占监督；`Type=dbus`以取得`org.natsume.Privileged1`作为启动就绪条件，不安装D-Bus activation service。`Restart=on-failure`、`RestartSec=2s`和`StartLimitIntervalSec=60s`/`StartLimitBurst=5`使异常退出后延迟重启，并限制60秒内最多5次启动（包括首次和手动启动）。触发限制后不再自动尝试；修复故障后显式`reset-failed`并启动服务。`systemctl stop`是维护停机，不触发自动重启。
+
+Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原system bus连接重新创建指向well-known name的代理，Helper更换bus owner不改变Session/Home的持久化epoch或pending确切会话。观测失败终止active lease时，仍先确认Caddy为BLOCKED再重连；不能确认BLOCKED则失败退出并触发现有Caddy硬终止。新lease从本地重新观测，旧Actual不跨lease复用。Helper的启动成功本身不代表任何资源已经完成。
+
 ## 15. Operator、Import 与业务 API
 
 ### 15.1 Operator

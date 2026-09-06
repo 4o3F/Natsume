@@ -668,6 +668,151 @@ pub(crate) mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn helper_owner_replacement_preserves_pending_session_and_home_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use natsume_local_control_api::{PRIVILEGED1_SERVICE, Privileged1Proxy};
+        use tokio::time::{Duration, timeout};
+
+        let directory = tempfile::tempdir()?;
+        let (mut bus, address) = private_bus(&directory).await?;
+        let connection = zbus::connection::Builder::address(address.as_str())?
+            .method_timeout(Duration::from_secs(2))
+            .build()
+            .await?;
+        let daemon_owner = connection.unique_name().cloned();
+        let helper = Arc::new(Mutex::new(HelperState {
+            terminate_failures: 1,
+            home_failures: 1,
+            ..HelperState::default()
+        }));
+        let service = register_helper(&address, Arc::clone(&helper)).await?;
+        let old_owner = service.unique_name().cloned();
+        let session = session::tests::reconciler(&directory, connection.clone());
+        let home = home::tests::reconciler(&directory, connection.clone());
+        let target = session::validate_target(SessionControlTarget {
+            lock_state: LockState::Unlocked.into(),
+            terminate_epoch: Some(7),
+        })
+        .ok_or("invalid fixture target")?;
+        let cancellation = CancellationToken::new();
+
+        let pending = session.reconcile(&target, &cancellation).await?;
+        assert!(pending.retry);
+        assert_eq!(pending.actual.completed_terminate_epoch, None);
+        let pending = home.reconcile(Some(8), &cancellation).await?;
+        assert!(pending.retry);
+        assert_eq!(pending.actual.completed_reset_epoch, None);
+        let session_path = directory.path().join("session-completion.json");
+        let persisted_pending = std::fs::read(&session_path)?;
+
+        service.close().await?;
+        let bus_proxy = zbus::fdo::DBusProxy::new(&connection).await?;
+        timeout(Duration::from_secs(2), async {
+            while bus_proxy
+                .name_has_owner(PRIVILEGED1_SERVICE.try_into()?)
+                .await?
+            {
+                tokio::task::yield_now().await;
+            }
+            Ok::<_, zbus::Error>(())
+        })
+        .await??;
+        let unavailable = session.reconcile(&target, &cancellation).await?;
+        assert!(unavailable.retry);
+        assert_eq!(unavailable.actual.completed_terminate_epoch, None);
+        let unavailable = home.reconcile(Some(8), &cancellation).await?;
+        assert!(unavailable.retry);
+        assert_eq!(unavailable.actual.completed_reset_epoch, None);
+        assert_eq!(
+            session.observe().await?.session_state,
+            i32::from(SessionState::Terminating)
+        );
+        assert_eq!(
+            home.observe().await?.state,
+            i32::from(HomeState::RecoveryRequired)
+        );
+        assert_eq!(std::fs::read(&session_path)?, persisted_pending);
+        assert!(!directory.path().join("home-completion.json").exists());
+
+        // A new bus owner reads the same Helper-owned durable progress; it may
+        // observe a new graphical session, but the pending operation stays on c2.
+        let replacement = register_helper(&address, Arc::clone(&helper)).await?;
+        assert_ne!(replacement.unique_name(), old_owner.as_ref());
+        assert_eq!(connection.unique_name(), daemon_owner.as_ref());
+        let fresh = Privileged1Proxy::new(&connection)
+            .await?
+            .query_contest_session()
+            .await?;
+        assert_eq!(
+            fresh
+                .session
+                .ok_or("missing replacement session")?
+                .logind_session_id,
+            "c3"
+        );
+        let completed = session.reconcile(&target, &cancellation).await?;
+        assert!(!completed.retry);
+        assert_eq!(completed.actual.completed_terminate_epoch, Some(7));
+        let completed = home.reconcile(Some(8), &cancellation).await?;
+        assert!(!completed.retry);
+        assert_eq!(completed.actual.completed_reset_epoch, Some(8));
+        assert_eq!(session.observe().await?.completed_terminate_epoch, Some(7));
+        assert_eq!(home.observe().await?.completed_reset_epoch, Some(8));
+        {
+            let state = helper
+                .lock()
+                .unwrap_or_else(|error| panic!("fixture lock: {error}"));
+            assert_eq!(state.termination_calls.len(), 2);
+            assert_eq!(state.termination_calls[0], state.termination_calls[1]);
+            assert_eq!(state.termination_calls[1].logind_session_id, "c2");
+            assert_eq!(state.home_calls, [8, 8]);
+        }
+        replacement.close().await?;
+        bus.kill().await?;
+        Ok(())
+    }
+
+    async fn private_bus(
+        directory: &tempfile::TempDir,
+    ) -> Result<(tokio::process::Child, String), Box<dyn std::error::Error>> {
+        use std::process::Stdio;
+        use tokio::{
+            io::{AsyncBufReadExt as _, BufReader},
+            time::{Duration, timeout},
+        };
+
+        let mut bus = tokio::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--nopidfile", "--print-address=1"])
+            .arg(format!(
+                "--address=unix:path={}",
+                directory.path().join("bus.sock").display()
+            ))
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?;
+        let mut output = BufReader::new(bus.stdout.take().ok_or("missing bus stdout")?);
+        let mut address = String::new();
+        timeout(Duration::from_secs(5), output.read_line(&mut address)).await??;
+        if address.trim().is_empty() {
+            return Err("private bus did not publish its address".into());
+        }
+        Ok((bus, address.trim().to_owned()))
+    }
+
+    async fn register_helper(
+        address: &str,
+        helper: Arc<Mutex<HelperState>>,
+    ) -> Result<zbus::Connection, zbus::Error> {
+        zbus::connection::Builder::address(address)?
+            .name(natsume_local_control_api::PRIVILEGED1_SERVICE)?
+            .serve_at(PRIVILEGED1_PATH, FaultyHelper(helper))?
+            .build()
+            .await
+    }
+
     pub(crate) struct Fixture {
         pub(crate) snapshots: Arc<SnapshotReconciler>,
         pub(crate) helper: Arc<Mutex<HelperState>>,

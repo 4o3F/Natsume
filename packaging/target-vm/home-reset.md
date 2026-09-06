@@ -92,6 +92,9 @@ sudo busctl --system call org.freedesktop.DBus /org/freedesktop/DBus \
 
 The restart must fail, with `ExecMainStatus=1` and the error
 `privileged helper must share the host mount namespace` for this invocation.
+The Helper now retries failed starts every two seconds, with at most five starts
+per 60 seconds. Wait for `Result=start-limit-hit` before recording the final
+failed state; every attempt must reject the namespace before acquiring its bus name.
 There must be no readiness message from this invocation, and `NameHasOwner` must
 return `b false`. Do not count an inspection failure as a successful mismatch test:
 it means the VM baseline cannot inspect the namespaces and needs investigation.
