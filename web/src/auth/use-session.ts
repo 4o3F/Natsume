@@ -1,26 +1,26 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 
-import { api } from "@/api/client";
 import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { SESSION_POLL_MS } from "@/api/polling";
+import { SESSION_KEY } from "./session";
+import { useSessionScope } from "./session-context";
 
 type SessionRequest = components["schemas"]["SessionRequest"];
 type SessionResponse = components["schemas"]["SessionResponse"];
 
-export const SESSION_KEY = ["session"] as const;
-
 export function useSession() {
+  const scope = useSessionScope();
   return useQuery({
     queryKey: SESSION_KEY,
-    queryFn: async (): Promise<SessionResponse | null> => {
-      const result = await api.GET("/api/v2/session");
-
-      if (result.response.status === 401) {
-        return null;
-      }
-
-      return unwrap<SessionResponse>(result);
+    queryFn: async ({ signal }): Promise<SessionResponse | null> => {
+      const result = await scope.api.GET("/api/v2/session", { signal });
+      const identity =
+        result.response.status === 401
+          ? null
+          : await unwrap<SessionResponse>(result);
+      scope.observe(identity);
+      return identity;
     },
     refetchInterval: SESSION_POLL_MS,
     retry: false,
@@ -28,33 +28,25 @@ export function useSession() {
 }
 
 export function useLogin() {
-  const queryClient = useQueryClient();
+  const scope = useSessionScope();
 
   return useMutation({
     mutationFn: async (body: SessionRequest) =>
       unwrap<SessionResponse>(
-        await api.POST("/api/v2/session", {
+        await scope.api.POST("/api/v2/session", {
           body,
         }),
       ),
-    onSuccess: async (session) => {
-      await queryClient.cancelQueries({ queryKey: SESSION_KEY });
-      queryClient.setQueryData(SESSION_KEY, session);
-    },
+    onSuccess: scope.login,
   });
 }
 
 export function useLogout() {
-  const queryClient = useQueryClient();
+  const scope = useSessionScope();
 
   return useMutation({
-    mutationFn: async () => unwrap<void>(await api.DELETE("/api/v2/session")),
-    onSuccess: async () => {
-      await queryClient.cancelQueries();
-      queryClient.setQueryData(SESSION_KEY, null);
-      queryClient.removeQueries({
-        predicate: (query) => query.queryKey[0] !== "session",
-      });
-    },
+    mutationFn: async () =>
+      unwrap<void>(await scope.api.DELETE("/api/v2/session")),
+    onSuccess: scope.logout,
   });
 }

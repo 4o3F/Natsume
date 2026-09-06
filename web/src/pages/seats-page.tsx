@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { api } from "@/api/client";
+import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
@@ -16,6 +16,7 @@ const columns: ColumnDef<Seat>[] = [
 ];
 
 export function SeatsPage() {
+  const { api } = useSessionScope();
   const seats = useQuery({
     queryKey: ["seats"],
     queryFn: async () => unwrap<Seat[]>(await api.GET("/api/v2/seats")),

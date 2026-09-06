@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { api } from "@/api/client";
+import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
@@ -28,6 +28,7 @@ type EnrollmentReview = components["schemas"]["EnrollmentReviewResponse"];
 const ENROLLMENT_REVIEWS_KEY = ["enrollment-reviews"] as const;
 
 export function EnrollmentPage() {
+  const { api } = useSessionScope();
   const session = useSession().data;
   const queryClient = useQueryClient();
   const reviews = useQuery({

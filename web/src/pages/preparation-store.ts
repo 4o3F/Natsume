@@ -3,16 +3,18 @@ export interface PreparationPreview {
   preview_token: string;
 }
 
-let preview: PreparationPreview | null = null;
-
-export function getPreparationPreview(): PreparationPreview | null {
-  return preview;
-}
-
-export function setPreparationPreview(value: PreparationPreview): void {
-  preview = { ...value };
-}
-
-export function clearPreparationPreview(): void {
-  preview = null;
+export function createPreparationStore(signal: AbortSignal) {
+  let preview: PreparationPreview | null = null;
+  return {
+    get(): PreparationPreview | null {
+      return preview;
+    },
+    set(value: PreparationPreview): void {
+      signal.throwIfAborted();
+      preview = { ...value };
+    },
+    clear(): void {
+      preview = null;
+    },
+  };
 }

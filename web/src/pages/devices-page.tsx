@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { api } from "@/api/client";
+import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
@@ -39,6 +39,7 @@ type DeviceLifecycleState = Device["state"];
 const DEVICES_KEY = ["devices"] as const;
 
 export function DevicesPage() {
+  const { api } = useSessionScope();
   const session = useSession().data;
   const queryClient = useQueryClient();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);

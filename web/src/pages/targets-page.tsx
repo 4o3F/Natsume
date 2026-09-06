@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
-import { api } from "@/api/client";
+import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
@@ -40,6 +40,7 @@ type TargetOperation = SessionLock | "terminate" | "reset";
 const DEVICES_KEY = ["devices"] as const;
 
 export function TargetsPage() {
+  const { api } = useSessionScope();
   const session = useSession().data;
   const [deviceId, setDeviceId] = useState("");
   const devices = useQuery({
@@ -147,6 +148,7 @@ function DeviceTargets({
   isAdmin: boolean;
   previous: boolean;
 }) {
+  const { api } = useSessionScope();
   const queryClient = useQueryClient();
   const { session_control: session, home } = device.convergence;
   const updateTarget = useMutation({

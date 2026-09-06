@@ -2,7 +2,7 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { api } from "@/api/client";
+import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
@@ -31,12 +31,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  clearPreparationPreview,
-  getPreparationPreview,
-  type PreparationPreview,
-  setPreparationPreview,
-} from "@/pages/preparation-store";
+import type { PreparationPreview } from "@/pages/preparation-store";
 
 type ImportMappingChange = components["schemas"]["ImportMappingChangeResponse"];
 type ImportPendingResponse = components["schemas"]["ImportPendingResponse"];
@@ -81,10 +76,11 @@ const bindingColumns: ColumnDef<ImportBindingImpact>[] = [
 ];
 
 export function PreparationPage() {
+  const { api, preparation } = useSessionScope();
   const queryClient = useQueryClient();
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [localPreview, setLocalPreview] = useState<PreparationPreview | null>(
-    () => getPreparationPreview(),
+    () => preparation.get(),
   );
   const [notice, setNotice] = useState<Notice | null>(null);
 
@@ -96,7 +92,7 @@ export function PreparationPage() {
   });
 
   function forgetPreview() {
-    clearPreparationPreview();
+    preparation.clear();
     setLocalPreview(null);
   }
 
@@ -130,14 +126,14 @@ export function PreparationPage() {
           headers: { "Content-Type": "text/csv" },
         }),
       );
-      setPreparationPreview({
+      preparation.set({
         candidate_id: preview.candidate_id,
         preview_token: preview.preview_token,
       });
       return { candidate_id: preview.candidate_id };
     },
     onSuccess: async ({ candidate_id }) => {
-      const preview = getPreparationPreview();
+      const preview = preparation.get();
       if (preview?.candidate_id === candidate_id) {
         setLocalPreview(preview);
       }
@@ -153,7 +149,7 @@ export function PreparationPage() {
 
   const commit = useMutation({
     mutationFn: async (candidateId: string): Promise<void> => {
-      const preview = getPreparationPreview();
+      const preview = preparation.get();
       if (!preview || preview.candidate_id !== candidateId) {
         throw new Error("the preview token is unavailable");
       }
@@ -397,7 +393,7 @@ function PendingImportCard({
         {!commitTokenAvailable && (
           <p className="text-sm text-muted-foreground">
             Preview authorization and the reviewed CSV are unavailable after a
-            reload; discard and re-upload to commit.
+            reload or session change; discard and re-upload to commit.
           </p>
         )}
       </CardContent>

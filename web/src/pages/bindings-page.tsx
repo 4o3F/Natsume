@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
-import { api } from "@/api/client";
+import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
@@ -25,6 +25,7 @@ import { Button } from "@/components/ui/button";
 type Binding = components["schemas"]["BindingResponse"];
 
 export function BindingsPage() {
+  const { api } = useSessionScope();
   const session = useSession().data;
   const queryClient = useQueryClient();
   const bindings = useQuery({

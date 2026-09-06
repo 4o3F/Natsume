@@ -184,7 +184,7 @@ test("a restored pending candidate disables commit but leaves discard available"
   ).toBeEnabled();
   await expect(
     page.getByText(
-      "Preview authorization and the reviewed CSV are unavailable after a reload; discard and re-upload to commit.",
+      "Preview authorization and the reviewed CSV are unavailable after a reload or session change; discard and re-upload to commit.",
       { exact: true },
     ),
   ).toBeVisible();
@@ -245,7 +245,7 @@ test("reload loses the token but preserves tokenless discard recovery", async ({
   ).toBeDisabled();
   await expect(
     page.getByText(
-      "Preview authorization and the reviewed CSV are unavailable after a reload; discard and re-upload to commit.",
+      "Preview authorization and the reviewed CSV are unavailable after a reload or session change; discard and re-upload to commit.",
       { exact: true },
     ),
   ).toBeVisible();
