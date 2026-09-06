@@ -7,7 +7,7 @@ import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataState } from "@/components/data-state";
-import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -34,6 +34,8 @@ type Device = components["schemas"]["DeviceResponse"];
 type SessionControl = components["schemas"]["SessionControlResponse"];
 type SessionLock = components["schemas"]["SessionLockRequest"]["lock_state"];
 type Home = components["schemas"]["HomeResponse"];
+type Convergence = components["schemas"]["DeviceConvergenceResponse"];
+type TargetOperation = SessionLock | "terminate" | "reset";
 
 const DEVICES_KEY = ["devices"] as const;
 
@@ -42,9 +44,13 @@ export function TargetsPage() {
   const [deviceId, setDeviceId] = useState("");
   const devices = useQuery({
     queryKey: DEVICES_KEY,
-    queryFn: async () => unwrap<Device[]>(await api.GET("/api/v2/devices")),
+    queryFn: async ({ signal }) =>
+      unwrap<Device[]>(await api.GET("/api/v2/devices", { signal })),
     refetchInterval: LIST_POLL_MS,
   });
+  const selectedDevice = devices.data?.find(
+    (device) => device.device_id === deviceId,
+  );
   return (
     <div className="space-y-6">
       <div>
@@ -63,6 +69,26 @@ export function TargetsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          {devices.isError && (
+            <Alert variant="destructive">
+              <AlertTitle>Refresh failed</AlertTitle>
+              <AlertDescription>
+                <p>
+                  {devices.data
+                    ? "Showing the last successful result; it may be outdated."
+                    : "Device targets are unavailable."}
+                </p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={devices.isFetching}
+                  onClick={() => void devices.refetch()}
+                >
+                  Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
           <DataState
             isLoading={devices.isLoading}
             error={devices.data ? null : devices.error}
@@ -87,10 +113,23 @@ export function TargetsPage() {
             </div>
           </DataState>
 
-          {deviceId && (
+          {devices.data && (
+            <div className="text-sm text-muted-foreground">
+              <p>
+                Last successful refresh:{" "}
+                {formatTimestamp(devices.dataUpdatedAt)}
+              </p>
+              {devices.isFetching && (
+                <p role="status">Refreshing. Showing previous result.</p>
+              )}
+            </div>
+          )}
+          {selectedDevice && (
             <DeviceTargets
-              deviceId={deviceId}
+              key={deviceId}
+              device={selectedDevice}
               isAdmin={session?.role === "admin"}
+              previous={devices.isFetching || devices.isError}
             />
           )}
         </CardContent>
@@ -100,158 +139,208 @@ export function TargetsPage() {
 }
 
 function DeviceTargets({
-  deviceId,
+  device,
   isAdmin,
+  previous,
 }: {
-  deviceId: string;
+  device: Device;
   isAdmin: boolean;
+  previous: boolean;
 }) {
   const queryClient = useQueryClient();
-  const sessionControl = useQuery({
-    queryKey: ["device-session-control", deviceId],
-    queryFn: async () =>
-      unwrap<SessionControl>(
-        await api.GET("/api/v2/devices/{device_id}/session-control", {
-          params: { path: { device_id: deviceId } },
-        }),
-      ),
-  });
-  const home = useQuery({
-    queryKey: ["device-home", deviceId],
-    queryFn: async () =>
-      unwrap<Home>(
-        await api.GET("/api/v2/devices/{device_id}/home", {
-          params: { path: { device_id: deviceId } },
-        }),
-      ),
-  });
-  const setLock = useMutation({
-    mutationFn: async (lockState: SessionLock) =>
-      unwrap<SessionControl>(
-        await api.PUT("/api/v2/devices/{device_id}/session-control", {
-          params: { path: { device_id: deviceId } },
-          body: { lock_state: lockState },
-        }),
-      ),
-    onSuccess: async (target) => {
-      queryClient.setQueryData(["device-session-control", deviceId], target);
-      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
+  const { session_control: session, home } = device.convergence;
+  const updateTarget = useMutation({
+    mutationFn: async (operation: TargetOperation) => {
+      const params = { path: { device_id: device.device_id } };
+      switch (operation) {
+        case "locked":
+        case "unlocked":
+          return unwrap<SessionControl>(
+            await api.PUT("/api/v2/devices/{device_id}/session-control", {
+              params,
+              body: { lock_state: operation },
+            }),
+          );
+        case "terminate":
+          return unwrap<SessionControl>(
+            await api.POST(
+              "/api/v2/devices/{device_id}/session-control/actions/terminate",
+              { params },
+            ),
+          );
+        case "reset":
+          return unwrap<Home>(
+            await api.POST("/api/v2/devices/{device_id}/home/actions/reset", {
+              params,
+            }),
+          );
+      }
     },
-  });
-  const terminate = useMutation({
-    mutationFn: async () =>
-      unwrap<SessionControl>(
-        await api.POST(
-          "/api/v2/devices/{device_id}/session-control/actions/terminate",
-          { params: { path: { device_id: deviceId } } },
-        ),
-      ),
-    onSuccess: async (target) => {
-      queryClient.setQueryData(["device-session-control", deviceId], target);
-      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
-    },
-  });
-  const reset = useMutation({
-    mutationFn: async () =>
-      unwrap<Home>(
-        await api.POST("/api/v2/devices/{device_id}/home/actions/reset", {
-          params: { path: { device_id: deviceId } },
-        }),
-      ),
-    onSuccess: async (target) => {
-      queryClient.setQueryData(["device-home", deviceId], target);
+    onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
 
-  const mutationError = setLock.error ?? terminate.error ?? reset.error;
-  const isMutating =
-    setLock.isPending || terminate.isPending || reset.isPending;
+  const showPrevious = previous || updateTarget.isPending;
   return (
     <div className="space-y-4">
-      {mutationError && (
-        <MutationError error={mutationError} fallback="Target update failed" />
+      {updateTarget.error && (
+        <MutationError
+          error={updateTarget.error}
+          fallback="Target update failed"
+        />
       )}
+      {updateTarget.isPending && (
+        <p role="status" className="text-sm text-muted-foreground">
+          Submitting target and refreshing status. Showing previous result.
+        </p>
+      )}
+      {updateTarget.isSuccess && (
+        <p role="status" className="text-sm">
+          Target submitted. Check the convergence state below for device
+          completion.
+        </p>
+      )}
+      <div className="space-y-2 text-sm text-muted-foreground">
+        <p>Connection: {label(device.convergence.connection_state)}</p>
+        <p>
+          Last device report:{" "}
+          {formatTimestamp(device.convergence.received_at_unix_ms)}
+        </p>
+        {device.convergence.connection_state === "offline" && (
+          <p>
+            Device offline. Waiting for a connection and a fresh state report.
+          </p>
+        )}
+        {device.convergence.connection_state === "awaiting_fresh_state" && (
+          <p>Device connected. Waiting for a fresh state report.</p>
+        )}
+      </div>
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="space-y-3 rounded-md border p-4">
-          <h3 className="font-medium">Session Control</h3>
-          <DataState
-            isLoading={sessionControl.isLoading}
-            error={sessionControl.data ? null : sessionControl.error}
-            isEmpty={false}
-            emptyLabel=""
-          >
-            {sessionControl.data && (
-              <div className="space-y-3">
-                <Badge variant="outline">
-                  {sessionControl.data.target?.lock_state ?? "unlocked"}
-                </Badge>
-                <p className="text-sm text-muted-foreground">
-                  Terminate epoch:{" "}
-                  {sessionControl.data.target?.terminate_epoch ?? "none"}
-                </p>
-                {isAdmin && (
-                  <div className="flex gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      disabled={isMutating}
-                      onClick={() =>
-                        setLock.mutate(
-                          sessionControl.data.target?.lock_state === "locked"
-                            ? "unlocked"
-                            : "locked",
-                        )
-                      }
-                    >
-                      {sessionControl.data.target?.lock_state === "locked"
-                        ? "Unlock"
-                        : "Lock"}
-                    </Button>
-                    <TargetAction
-                      label="Terminate"
-                      title="Terminate the current session?"
-                      description="This advances the durable terminate epoch for this device."
-                      disabled={isMutating}
-                      onConfirm={() => terminate.mutate()}
-                    />
-                  </div>
-                )}
-              </div>
+        <section
+          aria-labelledby="session-control-title"
+          className="space-y-3 rounded-md border p-4"
+        >
+          <h3 id="session-control-title" className="font-medium">
+            Session Control
+          </h3>
+          <ConvergenceStatus status={session.status} previous={showPrevious} />
+          <div className="space-y-1 text-sm">
+            <p>
+              Target lock: {session.target?.lock_state ?? "not initialized"}
+            </p>
+            <p>Terminate epoch: {session.target?.terminate_epoch ?? "none"}</p>
+            <p>
+              Actual session:{" "}
+              {session.actual
+                ? label(session.actual.session_state)
+                : "not received"}
+            </p>
+            <p>
+              Completed terminate epoch:{" "}
+              {session.actual?.completed_terminate_epoch ?? "none"}
+            </p>
+            {session.actual?.session_state === "ambiguous" && (
+              <p className="text-destructive">
+                Cannot identify a single session.
+              </p>
             )}
-          </DataState>
-        </div>
+            {session.actual?.session_state === "error" && (
+              <p className="text-destructive">
+                The device reported a session error.
+              </p>
+            )}
+          </div>
+          {isAdmin && (
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={updateTarget.isPending}
+                onClick={() => updateTarget.mutate("locked")}
+              >
+                Lock
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={updateTarget.isPending}
+                onClick={() => updateTarget.mutate("unlocked")}
+              >
+                Unlock
+              </Button>
+              <TargetAction
+                label="Terminate"
+                title="Terminate the current session?"
+                description="Request termination of this device's current session. Check its reported state to confirm completion."
+                disabled={updateTarget.isPending}
+                onConfirm={() => updateTarget.mutate("terminate")}
+              />
+            </div>
+          )}
+        </section>
 
-        <div className="space-y-3 rounded-md border p-4">
-          <h3 className="font-medium">Home</h3>
-          <DataState
-            isLoading={home.isLoading}
-            error={home.data ? null : home.error}
-            isEmpty={false}
-            emptyLabel=""
-          >
-            {home.data && (
-              <div className="space-y-3">
-                <p className="text-sm text-muted-foreground">
-                  Reset epoch: {home.data.reset_epoch ?? "none"}
-                </p>
-                {isAdmin && (
-                  <TargetAction
-                    label="Reset home"
-                    title="Reset this device home?"
-                    description="This advances the durable Home reset epoch."
-                    disabled={isMutating}
-                    onConfirm={() => reset.mutate()}
-                  />
-                )}
-              </div>
+        <section
+          aria-labelledby="home-title"
+          className="space-y-3 rounded-md border p-4"
+        >
+          <h3 id="home-title" className="font-medium">
+            Home
+          </h3>
+          <ConvergenceStatus status={home.status} previous={showPrevious} />
+          <div className="space-y-1 text-sm">
+            <p>Reset epoch: {home.target_reset_epoch ?? "none"}</p>
+            <p>
+              Actual home:{" "}
+              {home.actual ? label(home.actual.state) : "not received"}
+            </p>
+            <p>
+              Completed reset epoch:{" "}
+              {home.actual?.completed_reset_epoch ?? "none"}
+            </p>
+            {home.actual?.state === "recovery_required" && (
+              <p className="text-destructive">
+                The device requires Home recovery.
+              </p>
             )}
-          </DataState>
-        </div>
+          </div>
+          {isAdmin && (
+            <TargetAction
+              label="Reset home"
+              title="Reset this device home?"
+              description="Request a reset of this device's Home. Check its reported state to confirm completion."
+              disabled={updateTarget.isPending}
+              onConfirm={() => updateTarget.mutate("reset")}
+            />
+          )}
+        </section>
       </div>
     </div>
   );
+}
+
+function ConvergenceStatus({
+  status,
+  previous,
+}: {
+  status: Convergence["home"]["status"];
+  previous: boolean;
+}) {
+  return (
+    <Badge variant={status === "failed" ? "destructive" : "outline"}>
+      {previous ? "Last known convergence" : "Convergence"}: {label(status)}
+    </Badge>
+  );
+}
+
+function label(value: string) {
+  return value.replaceAll("_", " ");
+}
+
+function formatTimestamp(value: number | null) {
+  return value === null ? "not received" : new Date(value).toLocaleString();
 }
 
 function TargetAction({
@@ -288,6 +377,7 @@ function TargetAction({
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
             className="bg-destructive text-white hover:bg-destructive/90"
+            disabled={disabled}
             onClick={onConfirm}
           >
             {label}
