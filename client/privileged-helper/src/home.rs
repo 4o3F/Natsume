@@ -17,6 +17,8 @@ const TEMPLATE_RELATIVE_PATH: &str = "usr/lib/natsume/home-templates/current/low
 const STATE_RELATIVE_PATH: &str = "var/lib/natsume-privileged/home-reset";
 const CONTEST_HOME_RELATIVE_PATH: &str = "home/contest";
 
+pub(super) mod window;
+
 fn unavailable(message: &'static str) -> ResourceControlError {
     ResourceControlError::Unavailable(message.to_owned())
 }
@@ -219,22 +221,30 @@ fn write_progress(
     epoch: u64,
     phase: HomeResetPhase,
 ) -> Result<(), ResourceControlError> {
+    write_state(
+        root,
+        "progress",
+        &format!("{}\n{}\n", epoch, phase_name(phase)),
+    )
+}
+
+fn write_state(root: &Path, name: &str, encoded: &str) -> Result<(), ResourceControlError> {
     let directory = state_directory(root);
     if directory_metadata(&directory).is_none() {
         return Err(unavailable("Home reset progress cannot be persisted"));
     }
-    let temporary = directory.join("progress.tmp");
+    let temporary = directory.join(format!("{name}.tmp"));
     let mut file = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(&temporary)
         .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
-    write!(file, "{}\n{}\n", epoch, phase_name(phase))
+    file.write_all(encoded.as_bytes())
         .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
     file.sync_all()
         .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
-    fs::rename(temporary, marker_path(root))
+    fs::rename(temporary, directory.join(name))
         .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
     File::open(directory)
         .and_then(|directory| directory.sync_all())
@@ -253,17 +263,21 @@ fn require_target_progress(
     Ok(progress.phase)
 }
 
-pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+fn prepare_metadata(root: &Path, epoch: u64) -> Result<fs::Metadata, ResourceControlError> {
     require_epoch(epoch)?;
     let template = root.join(TEMPLATE_RELATIVE_PATH);
     if !template.is_dir() {
         return Err(unavailable("managed Home template is unavailable"));
     }
     let contest_home = root.join(CONTEST_HOME_RELATIVE_PATH);
-    let home_metadata = fs::metadata(&contest_home)
+    fs::metadata(&contest_home)
         .ok()
         .filter(std::fs::Metadata::is_dir)
-        .ok_or_else(|| unavailable("contestant Home is unavailable"))?;
+        .ok_or_else(|| unavailable("contestant Home is unavailable"))
+}
+
+pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    let home_metadata = prepare_metadata(root, epoch)?;
     if let Some(progress) = read_progress(root)? {
         if progress.reset_epoch == epoch {
             return match progress.phase {

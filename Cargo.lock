@@ -3390,6 +3390,7 @@ dependencies = [
 name = "natsume-privileged-helper"
 version = "2.0.0"
 dependencies = [
+ "futures-util",
  "natsume-local-control-api",
  "procfs",
  "rustix 1.1.4",

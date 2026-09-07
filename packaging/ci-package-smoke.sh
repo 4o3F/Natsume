@@ -271,6 +271,7 @@ client_config_placeholder="${extract_root}/client/etc/natsume/config.toml"
 client_caddy_unit="${extract_root}/client/usr/lib/systemd/system/natsume-caddy.service"
 client_daemon_unit="${extract_root}/client/usr/lib/systemd/system/natsume-device-daemon.service"
 client_helper_unit="${extract_root}/client/usr/lib/systemd/system/natsume-privileged-helper.service"
+client_display_dropin="${extract_root}/client/usr/lib/systemd/system/display-manager.service.d/50-natsume-home.conf"
 client_tmpfiles="${extract_root}/client/usr/lib/tmpfiles.d/natsume.conf"
 grep -Fxq '# Natsume endpoint is written by postinstall after debconf validation.' \
   "${client_config_placeholder}" ||
@@ -309,6 +310,14 @@ for directive in 'Type=dbus' 'BusName=org.natsume.Privileged1' \
   grep -Fxq "${directive}" "${client_helper_unit}" ||
     fail "packaged privileged helper is missing ${directive}"
 done
+for directive in 'Wants=natsume-privileged-helper.service' \
+  'After=natsume-privileged-helper.service' \
+  'ConditionPathExists=/run/natsume-privileged/home-ready'; do
+  grep -Fxq "${directive}" "${client_display_dropin}" ||
+    fail "packaged display manager Home interlock is missing ${directive}"
+done
+grep -Fxq 'd /run/natsume-privileged 0700 root root -' "${client_tmpfiles}" ||
+  fail 'packaged Home login permit directory is not root-only'
 grep -Fxq 'd /run/natsume 2770 natsume natsume-gateway -' "${client_tmpfiles}" ||
   fail 'packaged Caddy runtime directory cannot inherit the gateway group'
 grep -Fxq 'd /var/lib/natsume 0750 root natsume-gateway -' "${client_tmpfiles}" ||
@@ -331,6 +340,17 @@ systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
   /usr/lib/systemd/system/natsume-caddy.service
+
+# The target image provides the display manager. This extracted-root-only unit
+# checks the packaged alias drop-in syntax without running a desktop.
+cat >"${extract_root}/client/usr/lib/systemd/system/natsume-test-display.service" <<'EOF'
+[Service]
+ExecStart=/usr/bin/systemctl --version
+EOF
+ln -s natsume-test-display.service \
+  "${extract_root}/client/usr/lib/systemd/system/display-manager.service"
+systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \
+  /usr/lib/systemd/system/display-manager.service
 
 session_autostart="${extract_root}/client/etc/xdg/autostart/org.natsume.SessionAgent.desktop"
 grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${session_autostart}" ||

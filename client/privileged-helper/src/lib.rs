@@ -25,6 +25,28 @@ impl PrivilegedService {
             filesystem_root: PathBuf::from("/"),
         }
     }
+
+    /// Restores Home before publishing the Helper's systemd readiness bus name.
+    ///
+    /// # Errors
+    /// Returns an error while keeping new graphical logins blocked if recovery fails.
+    pub async fn restore_home_before_ready(
+        &mut self,
+        connection: &zbus::Connection,
+    ) -> Result<(), ResourceControlError> {
+        home::window::restore_home(&self.filesystem_root, connection).await
+    }
+
+    /// Restores a login service owned by a completed maintenance window.
+    ///
+    /// # Errors
+    /// Returns an error without discarding the durable restart obligation.
+    pub async fn restore_login_after_ready(
+        &mut self,
+        connection: &zbus::Connection,
+    ) -> Result<(), ResourceControlError> {
+        home::window::restore_login(&self.filesystem_root, connection).await
+    }
 }
 
 fn canonical_uuid(value: &str) -> Option<Uuid> {
@@ -86,8 +108,7 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        require_no_contest_session(connection, &self.filesystem_root).await?;
-        home::prepare(&self.filesystem_root, reset_epoch)
+        home::window::prepare(&self.filesystem_root, connection, reset_epoch).await
     }
 
     #[zbus(name = "ApplyHomeReset")]
@@ -96,8 +117,7 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        require_no_contest_session(connection, &self.filesystem_root).await?;
-        home::apply(&self.filesystem_root, reset_epoch)
+        home::window::apply(&self.filesystem_root, connection, reset_epoch).await
     }
 
     #[zbus(name = "QueryHomeReset")]
@@ -106,11 +126,12 @@ impl PrivilegedService {
     }
 
     #[zbus(name = "VerifyHomeReset")]
-    fn verify_home_reset(
+    async fn verify_home_reset(
         &mut self,
         reset_epoch: u64,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<HomeResetProgress, ResourceControlError> {
-        home::verify(&self.filesystem_root, reset_epoch)
+        home::window::verify(&self.filesystem_root, connection, reset_epoch).await
     }
 
     #[zbus(name = "RecoverHomeReset")]
@@ -119,8 +140,7 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        require_no_contest_session(connection, &self.filesystem_root).await?;
-        home::recover(&self.filesystem_root, reset_epoch)
+        home::window::recover(&self.filesystem_root, connection, reset_epoch).await
     }
 }
 

@@ -6,7 +6,7 @@ use std::{
     process::{self, ExitCode},
 };
 
-use natsume_local_control_api::{PRIVILEGED1_PATH, PRIVILEGED1_SERVICE};
+use natsume_local_control_api::{PRIVILEGED1_PATH, PRIVILEGED1_SERVICE, ResourceControlError};
 use natsume_privileged_helper::PrivilegedService;
 use snafu::Snafu;
 use tokio::time::{Duration, timeout};
@@ -24,6 +24,8 @@ enum ServiceError {
     MountNamespaceMismatch,
     #[snafu(display("privileged helper could not acquire its system D-Bus service"))]
     Bus,
+    #[snafu(display("privileged helper Home recovery failed: {source}"))]
+    HomeRecovery { source: ResourceControlError },
 }
 
 fn initialize_logging() -> Result<(), ()> {
@@ -61,19 +63,41 @@ async fn serve() -> Result<(), ServiceError> {
     // Inspecting PID 1's procfs link directly would require CAP_SYS_PTRACE.
     verify_mount_namespace(Path::new("/proc/self/ns/mnt"), Path::new("/proc/self/fd/3"))?;
     let builder = zbus::connection::Builder::system().map_err(|_| ServiceError::Bus)?;
-    let builder = builder
-        .name(PRIVILEGED1_SERVICE)
-        .map_err(|_| ServiceError::Bus)?;
-    let builder = builder
-        .serve_at(PRIVILEGED1_PATH, PrivilegedService::production())
-        .map_err(|_| ServiceError::Bus)?;
-    let _connection = timeout(
+    let connection = timeout(
         SYSTEM_BUS_TIMEOUT,
         builder.method_timeout(SYSTEM_BUS_TIMEOUT).build(),
     )
     .await
     .map_err(|_| ServiceError::Bus)?
     .map_err(|_| ServiceError::Bus)?;
+    let mut service = PrivilegedService::production();
+    service
+        .restore_home_before_ready(&connection)
+        .await
+        .map_err(|source| ServiceError::HomeRecovery { source })?;
+    connection
+        .object_server()
+        .at(PRIVILEGED1_PATH, service)
+        .await
+        .map_err(|_| ServiceError::Bus)?;
+    let interface = connection
+        .object_server()
+        .interface::<_, PrivilegedService>(PRIVILEGED1_PATH)
+        .await
+        .map_err(|_| ServiceError::Bus)?;
+    {
+        // Serialize startup completion with RPC mutations. Display-manager start
+        // jobs wait for Type=dbus readiness, so acquire the name before awaiting them.
+        let mut service = interface.get_mut().await;
+        connection
+            .request_name(PRIVILEGED1_SERVICE)
+            .await
+            .map_err(|_| ServiceError::Bus)?;
+        service
+            .restore_login_after_ready(&connection)
+            .await
+            .map_err(|source| ServiceError::HomeRecovery { source })?;
+    }
     tracing::info!(service = PRIVILEGED1_SERVICE, "privileged helper ready");
     future::pending::<()>().await;
     Ok(())

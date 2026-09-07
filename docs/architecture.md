@@ -615,6 +615,10 @@ Home reset 使用单调 `reset_epoch`：
 - systemd通过`OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only`预先打开固定宿主namespace，以唯一的fd 3交给Helper；Helper现有capability集合保持不变，无需`CAP_SYS_PTRACE`；该部署要求systemd支持`OpenFile`（253及以上）；
 - Helper注册D-Bus服务前核验`LISTEN_PID/FDS/FDNAMES`，跟随`/proc/self/ns/mnt`与`/proc/self/fd/3`并比较namespace对象的device/inode；缺失交接、读取失败或不一致都拒绝启动，防止其他unit配置或drop-in引入私有挂载域后仍报告`Verified`；
 - Helper状态固定在root-owned的`/var/lib/natsume-privileged/home-reset`，Daemon不能重命名或替换其目录树；
+- Helper持有覆盖Prepare/Apply/Verify/Recover的Home维护窗口。进入前已有contestant图形会话则拒绝；允许取消建立窗口期间竞态启动的登录。窗口以版本1记录绑定`reset_epoch`及是否需恢复原本运行的登录服务，先原子落盘，再撤销root-only、每次开机重建的`/run/natsume-privileged/home-ready`许可；
+- 固定`display-manager.service`通过drop-in设置`Wants`/`After=natsume-privileged-helper.service`与必需的`ConditionPathExists`许可条件；Helper检查这些条件，停止登录服务并等待systemd的停止job完成，再确认无contestant会话，才允许Home文件及挂载操作。停止失败、超时或残留会话均保留窗口、阻止后续登录；不开放任意unit控制；
+- 当前epoch的真实挂载通过Verify后才恢复登录许可；窗口原先接管了运行中的登录服务时才主动启动它，启动成功后删除窗口。登录恢复失败保留同epoch恢复责任；原先停用的登录服务不被主动拉起；
+- 开机先按窗口或Home进度恢复同一epoch并验证实际挂载，再取得Helper的`Type=dbus`就绪名称释放登录启动顺序；需主动恢复的登录服务在取得名称后启动，避免互相等待。持久化`Verified`不能替代本次开机的挂载证据；无既有重置状态时直接允许镜像原始Home。正常Helper重启若已有挂载仍有效则保留当前桌面，`Wants`不传播Helper维护停机到登录服务；
 - Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
 - `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
 - 当前generation验证成功后，Helper删除其他generation并fsync `generations/`，完成前不发布`Verified`；
