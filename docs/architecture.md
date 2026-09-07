@@ -2,10 +2,11 @@
 
 > 状态：`ACCEPTED TARGET`
 > 基线日期：2026-08-28
+> Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面
 > 适用范围：Natsume V2 全系统
 > 实施策略：预发布 flag day；协议、数据库、Server、Client、Web 与测试同步切换
 
-本文是仓库中唯一的人工维护架构文档。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。旧 ADR、Phase、Gate、规划和分主题规范均已删除；设计理由只通过本文与 Git 历史追溯，不再维护平行文档体系。
+本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。功能 PRD 补充产品范围与验收，验证记录保留实验事实，不建立另一套架构规则。GNOME 双会话的产品范围见[功能 PRD](prd-gnome-dual-session.zh-CN.md)，前期实测见[VM 验证记录](gnome-dual-session-validation.zh-CN.md)。
 
 本文描述的是目标状态，不是完成声明。当前代码与本文冲突时，冲突属于待实施债务，不能反向限制目标架构。
 
@@ -28,7 +29,7 @@
 
 规则：
 
-1. 不在第二个 Markdown 文件复制本文规则。
+1. 不在第二个 Markdown 文件建立并行架构 authority；PRD 与验证材料引用本文，历史实验不覆盖当前目标语义。
 2. Proto 和 migration 是机器可执行契约，但不能自行创造与本文相反的业务语义。
 3. 生成代码不能手工编辑。
 4. 当前 migration、Rust adapter、OpenAPI 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务。
@@ -64,7 +65,7 @@ Natsume 服务一场现场竞赛，目标规模约 500–600 台工作站。一�
 - 多桌面环境同时支持；
 - 可编辑角色和权限策略；
 - 业务审计账本、操作历史或审计Panel；
-- 将 UI 遮罩、Session lock 或 Caddy 状态页当作强隔离边界。
+- 将 UI 遮罩、会话切换或 Caddy 状态页当作强隔离边界。
 
 ## 3. 核心设计原则
 
@@ -163,22 +164,25 @@ Daemon 不把网络字段直接解释成任意路径、UID、unit、命令或配
 Helper 只提供封闭的 root capability：
 
 - 读取固定硬件身份来源；
-- 对固定 contestant user 执行受限 Session/Home 操作；
+- 对固定 waiting/contest 角色执行受限 Session 查询、激活和恢复，仅对 contest 执行 Home 操作；
 - 对固定目录和固定 policy 执行必要的特权文件操作。
 
 Helper 不联网，不持有 DOMjudge 密码、control private key、Gateway private key 或 Server trust decision，不接受任意 shell、路径、UID、unit 或环境变量。
 
 ### 4.4 `natsume-session-agent`
 
-Agent 由系统级 XDG Autostart 直接启动，拥有当前图形会话内的 UI：
+Agent 由系统级 XDG Autostart 在固定 waiting 图形会话内启动，拥有：
 
-- Binding 窗口；
+- 普通等待时的全屏静态占位：本期默认纯黑色块，也可由镜像随包提供单张 ICPC logo，缺图时回退纯黑；
+- 既有部署 Binding 窗口；
 - Binding pending状态；
-- 窗口生命周期。
+- 窗口生命周期、首帧就绪和 UI lease。
 
-Agent 不连接 Server，不管理 Caddy，不读取 credential，不使用 systemd user service。
-Session lock/unlock/terminate由Daemon通过Helper的fixed logind capability执行，不另建
-Agent command或通用状态展示协议。
+等待占位复用现有 Slint/Skia 渲染能力，保持一个随窗口尺寸变化的无装饰全屏窗口。普通等待、重置和恢复期间均可显示同一占位，不要求动态文案、进度条或动画；详细状态由 Panel/Actual 展示。Binding 是既有部署流程的专用页面，不新增绑定协议。未来复杂 Skia 页面只替换 Agent 内的等待内容；本期不预建页面插件、主题协议或远程图片下发能力。
+
+Agent 不连接 Server，不管理 Caddy，不读取 credential，不安装 systemd user unit。“显示等待界面 / 显示比赛桌面”由 Daemon 通过 Helper 激活 waiting/contest 实现，不调用桌面 Lock/Unlock，也不向 Agent 发送会话切换命令。失联撤销 Binding 输入并保留占位，不能隐藏窗口暴露可操作桌面。
+
+Agent 通过自己的用户总线连接向 GNOME SessionManager 注册，XDG entry 使用 `X-GNOME-AutoRestart=true`，不标为 RequiredComponent。GNOME 恢复单次崩溃；触发连续崩溃限流时，Helper 冷却至少 60 秒后最多自动重建 waiting 一次，本次 boot 的次数不因 lease 更新而重置。再次失败报告展示不可用，等待维护；不终止 contest 或重启 GDM。
 
 ### 4.5 Caddy、Browser 与 DOMjudge
 
@@ -204,7 +208,7 @@ namespace或Gateway hostname；这些都是部署期不可远程修改的bootstr
 | Operator → Server | 数据库中的 Operator session 与固定角色 | 拒绝，按可观测性规则记录诊断结果 |
 | Device → Server | pinned server-auth TLS + connection challenge + Ed25519 proof | protobuf 前后均 fail closed |
 | Daemon → Helper | system D-Bus policy + 封闭方法 | 拒绝，不降级 |
-| Agent ↔ Daemon | 当前本地 Session identity + typed IPC | stale Session 失效 |
+| Agent ↔ Daemon | 总线调用者 PID/UID + 精确 waiting boot/session + typed IPC | stale Session/lease 失效 |
 | Browser → Caddy | loopback HTTPS | BLOCKED 或不可用 |
 | Caddy → DOMjudge | 固定 HTTPS upstream | 非 TLS、验证失败或配置不完整时 BLOCKED |
 
@@ -269,7 +273,7 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Gateway generation/grant | Gateway Component | 每 Device 至多一个 current generation |
 | Binding negotiation/occupancy | Binding Component | Binding ID 是每次 occupancy 的 UUID |
 | Runtime Config | Runtime Config Component | 当前 DOMjudge HTTPS origin |
-| Session target | Session Control Component | lock level + terminate epoch |
+| Session target | Session Control Component | foreground target + terminate epoch |
 | Home target | Home Component | reset epoch |
 | 当前lease的latest Actual与receive-time | DeviceActor memory | fresh snapshot；Input消费后丢弃，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
@@ -335,7 +339,7 @@ Level 持续要求 exact convergence：
 - Gateway leaf；
 - Binding access；
 - Runtime Config；
-- Session lock。
+- Session 前台选择（`foreground_target`：waiting 显示等待界面，contest 显示比赛桌面）。
 
 Transition 通过单调 epoch 表达需要至少执行一次的目标：
 
@@ -554,7 +558,7 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 
 规则：
 
-- 比赛部署阶段，只有未绑定、Session为`Active`或`Locked`且Home为`Steady`的Device自动显示Binding UI；
+- 比赛部署阶段，只有未绑定、唯一 contest 已就绪且 Home 为 `Steady`，并满足 §9.6 本地许可的 Device 在前台 waiting 中显示既有 Binding UI；普通等待画面仍为静态占位；
 - Server 不发送 `OPEN_BINDING_PROMPT`；
 - 每个 UNBOUND Device 恰有一个 current negotiation；
 - 志愿者确认时 Client 先持久化新 `submission_epoch` 和 Seat，再发布完整 Input；
@@ -588,22 +592,31 @@ Runtime Config 当前只包含 canonical HTTPS DOMjudge origin：
 
 ### 9.4 Session Control
 
-Session Control 是 Device-level target，所有登录用户共享，不存在 per-user target：
+Session Control 是 Device-level target，固定控制 seat0 的 waiting/contest 两个原生 GNOME/X11 会话，不存在 per-user target：
 
 ```text
 SessionControlTarget
-  lock_state
+  foreground_target: waiting | contest
   terminate_epoch?
 ```
 
-- lock 是持续 Level；
-- terminate 是单调 Transition；
-- 同时只能有一个 eligible graphical session；
-- 零个或多个eligible session时禁止新Binding输入，并将本机Caddy数据面置为BLOCKED；完整规则见9.6；
-- terminate 必须捕获目标 Session，副作用前重检，不得 retarget 到 replacement Session；
-- Helper串行执行lock、unlock与terminate mutation，超时的旧调用不能晚于新调用落地；
+- `foreground_target` 是持续的前台选择 Level；waiting 表示“显示等待界面”，contest 表示“显示比赛桌面”。它选择固定会话角色，不表示 GNOME screensaver 的锁定状态；
+- 普通切换只调用受限 logind 激活能力，不调用 `LockSession`/`UnlockSession`，不结束任一会话，不改变 Home generation；两边比赛/等待进程继续运行；
+- 两个不同 Unix 用户各自拥有 Xorg、GNOME、用户总线和 Home，均由官方 GDM 创建和管理；每个角色最多一个合法会话，waiting 与 contest 各一个不构成 Ambiguous，后台 contest 也不是歧义；
+- 分开观测 contest 生命周期、两边精确 boot/session、桌面就绪、seat0 实际前台及 `waiting_ready`。健康 contest 生命周期统一为 `Running`，不再用 `Active`/`Locked` 表示 GNOME 锁屏或业务前台；精确机器枚举由 Proto/local-control-api 同步落地；
+- waiting 目标收敛需占位首帧已就绪且在前台；contest 目标收敛需当前 Home/Binding/epoch 条件满足、比赛桌面已就绪且在前台。GDM 创建桌面或 API 返回成功不等于已完成呈现；
+- 镜像对两个受管会话禁用自动锁屏及普通锁屏入口。意外出现的桌面锁屏属于显示异常，不能作为 waiting 目标已收敛的证据，也不通过“显示比赛桌面”自动绕过；
+- 开机无有效 Target 或设备未绑定时显示 waiting；Home 健康后可通过固定 GDM API 预备 contest，再返回 waiting，不恢复旧 lease 的比赛放行。已经比赛中断网时保持现有会话，不因断网自动切换或重置；
+- terminate 是仅作用于捕获的 contest 会话的单调 Transition；副作用前重检 boot/session，不得追逐 replacement。完成后正常收敛可经 GDM 重新准备 contest，不隐式 reset Home；
+- Helper 串行执行激活、登录、terminate 与 Home mutation，共享固定排他边界；新 plan 的最终呈现必须晚于旧副作用重新观测，不能把 D-Bus 超时解释为已取消；
 - `/var/lib/natsume/state`由tmpfiles在Daemon启动前固定创建；Daemon不在运行时重建丢失的状态根目录；
 - Client 只在 durable completion 后推进 completed epoch。
+
+`foreground_target` 只允许 waiting/contest；Actual 的 `foreground` 另可报告 greeter、other、none、unknown，不能把这些观测值作为远程目标。原 `lock_state` 及 locked/unlocked 命名在本功能实施时统一迁移，不保留并行业务别名；Proto、本地 IPC、HTTP/OpenAPI、持久目标字段、Server/Client 和 Panel 生成类型同步更新。仍通过 session-control 的 PUT 替换目标，不新增切换 Command、toggle 或两套操作接口。
+
+Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm 身份单次入口，调用 GDM/libgdm 的 greeter API：创建或复用 greeter，选择镜像的 X11 session entry，以固定 `gdm-contest`/`gdm-waiting` PAM 服务开始验证并请求启动桌面。调用者退出不影响由 GDM 管理的桌面；不接受任意账户、session entry、PAM 名或 unit，不直接启动 Xorg/GNOME，不修改 GDM/GNOME 程序或资源。
+
+waiting 不可用时报告切换失败，必要时显示 greeter；不得以锁住 contest 冒充“显示等待界面”成功。故障修复只恢复 waiting，普通前台切换不触发重建。
 
 ### 9.5 Home
 
@@ -615,10 +628,14 @@ Home reset 使用单调 `reset_epoch`：
 - systemd通过`OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only`预先打开固定宿主namespace，以唯一的fd 3交给Helper；Helper现有capability集合保持不变，无需`CAP_SYS_PTRACE`；该部署要求systemd支持`OpenFile`（253及以上）；
 - Helper注册D-Bus服务前核验`LISTEN_PID/FDS/FDNAMES`，跟随`/proc/self/ns/mnt`与`/proc/self/fd/3`并比较namespace对象的device/inode；缺失交接、读取失败或不一致都拒绝启动，防止其他unit配置或drop-in引入私有挂载域后仍报告`Verified`；
 - Helper状态固定在root-owned的`/var/lib/natsume-privileged/home-reset`，Daemon不能重命名或替换其目录树；
-- Helper持有覆盖Prepare/Apply/Verify/Recover的Home维护窗口。进入前已有contestant图形会话则拒绝；允许取消建立窗口期间竞态启动的登录。窗口以版本1记录绑定`reset_epoch`及是否需恢复原本运行的登录服务，先原子落盘，再撤销root-only、每次开机重建的`/run/natsume-privileged/home-ready`许可；
-- 固定`display-manager.service`通过drop-in设置`Wants`/`After=natsume-privileged-helper.service`与必需的`ConditionPathExists`许可条件；Helper检查这些条件，停止登录服务并等待systemd的停止job完成，再确认无contestant会话，才允许Home文件及挂载操作。停止失败、超时或残留会话均保留窗口、阻止后续登录；不开放任意unit控制；
-- 当前epoch的真实挂载通过Verify后才恢复登录许可；窗口原先接管了运行中的登录服务时才主动启动它，启动成功后删除窗口。登录恢复失败保留同epoch恢复责任；原先停用的登录服务不被主动拉起；
-- 开机先按窗口或Home进度恢复同一epoch并验证实际挂载，再取得Helper的`Type=dbus`就绪名称释放登录启动顺序；需主动恢复的登录服务在取得名称后启动，避免互相等待。持久化`Verified`不能替代本次开机的挂载证据；无既有重置状态时直接允许镜像原始Home。正常Helper重启若已有挂载仍有效则保留当前桌面，`Wants`不传播Helper维护停机到登录服务；
+- reset 是切到 waiting、关闭 contest 登录入口、结束旧 contest、清 Home、由 GDM 重建 contest 的完整流程；正常 reset 保持 waiting 的 session/Xorg/GNOME/Agent 及 GDM 实例不变，允许 greeter、闪屏及短暂前台变化；
+- Helper 持有覆盖 Prepare/Apply/Verify/Recover 的 root-only 维护窗口。确认 waiting 可展示并激活后，先持久化 reset epoch、阶段和捕获的 contest boot/session，再撤销每次开机重建的 `/run/natsume-privileged/home-ready` 许可；Prepare 负责结束捕获的比赛会话，不要求管理员另发 terminate；
+- 采用发行版 pam_exec 调用固定 Helper 门禁子命令，覆盖允许的 contest 图形登录栈的 auth/account/open_session。门禁在共享短锁内确认许可并原子登记 GDM worker 的 boot/PID/start-time；登记保留到精确 worker 退出，不因 pam_exec 返回或 close_session 提前删除；
+- Helper 关闭许可、取消/排空登录事务，在同一文件排他锁内确认无存活的登记 worker、contest 会话、UID 进程、用户 manager 及 Home 占用，才允许普通卸载或更换 Home。单独取得 flock 不足以证明登录已排空；未知/损坏记录及超时保持门禁关闭，禁止 force/lazy umount；
+- 移除旧的全局 home-ready/GDM 启动互锁，不停止 display-manager。waiting/greeter 不受 contest 门禁阻塞；双方禁用其他登录入口及 linger。只操作固定角色，不开放任意 unit 控制；
+- 当前 epoch 的宿主挂载和模板通过 Verify、完成进度 durable 后才允许 contest 登录；登录失败只重试桌面准备，不再次清空同一 generation。Home 完成与桌面/前台收敛独立上报，最终按最新 foreground_target 留在 waiting 或返回 contest；
+- 开机 GDM 自动登录 waiting，Home 恢复独立执行；固定启动预备经同一 Helper 排他规则等待 Home 许可，再请求 GDM 创建 contest 并返回 waiting。Home 失败或 Helper 未就绪不阻止 waiting 启动；持久化 Verified 不能替代本次宿主挂载证据。健康 Helper 重启保留已有桌面与挂载，不恢复旧业务授权；
+- 新维护窗口显式版本化并删除 restart-display 语义。发现进行中的旧版窗口就拒绝升级，由兼容旧 Helper 恢复完成后再升级；不静默转换或删除旧记录绕过门禁；
 - Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
 - `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
 - 当前generation验证成功后，Helper删除其他generation并fsync `generations/`，完成前不发布`Verified`；
@@ -630,18 +647,20 @@ Home reset 使用单调 `reset_epoch`：
 
 ### 9.6 Session/Home 的访问关闭范围
 
-Daemon在现有`SnapshotReconciler`中从当前Target与新鲜Actual推导本地访问许可，不持久化另一份许可状态。Session必须为`Active`或`Locked`，Home必须为`Steady`，`completed_terminate_epoch`与`completed_reset_epoch`必须分别精确匹配当前目标（包括双方均无epoch）；旧完成记录、超前记录和未知状态均不能放行。
+Daemon 在现有 `SnapshotReconciler` 中从当前 Target 与新鲜 Actual 推导本地访问许可，不持久化另一份许可状态。唯一 contest 必须为 `Running` 且桌面已就绪，Home 必须为 `Steady`，`completed_terminate_epoch` 与 `completed_reset_epoch` 必须分别精确匹配当前目标（包括双方均无 epoch）；旧完成记录、超前记录和未知状态均不能放行。Binding 输入另要求前台 waiting、有效 Agent lease 和现有部署资格。
 
 | Session/Home 状态 | 新Binding输入 | 经本机Caddy的上游访问 |
 |---|---|---|
-| 满足本地许可，且未绑定 | 允许 | 无Binding仍BLOCKED |
+| 满足本地许可，且未绑定 | 前台 waiting 和 UI 资格均有效时允许 | 无Binding仍BLOCKED |
 | 满足本地许可，且已绑定 | 不开放新绑定 | 同时满足Gateway/Binding/Runtime条件才READY |
 | Home为Resetting、RecoveryRequired，或reset epoch未完成 | 禁止 | BLOCKED |
 | Session为None、Starting、Terminating、Ambiguous、Error、未知，或terminate epoch未完成 | 禁止 | BLOCKED |
 
-锁屏本身允许保留上游访问。关闭访问保留Server的Binding关系、身份及凭据，控制通信、状态上报和资源恢复仍可继续；观测错误沿用现有lease撤销、BLOCKED确认和重连路径。这里约束本机Caddy后续的代理请求，不构成主机防火墙或对已在途请求的回滚。Home维护窗口的图形登录互锁仍由Helper独立持有。
+切到 waiting 本身允许保留上游访问，不撤销既有 Binding，不因前台切换必然重载 Caddy。关闭访问保留 Server 的 Binding 关系、身份及凭据，控制通信、状态上报和资源恢复仍可继续；观测错误沿用现有 lease 撤销、BLOCKED 确认和重连路径。这里约束本机 Caddy 后续的代理请求，不构成主机防火墙或对已在途请求的回滚。Home 维护窗口的图形登录互锁仍由 Helper 独立持有。
 
-新reset/terminate目标执行前，Daemon先确认Caddy已加载BLOCKED；Session/Home收敛后重新观测两者，防止Home停止登录服务后沿用先前的Active事实。仅当前有效Target计划能恢复READY和Binding资格。周期观测只撤销访问，不授予访问；撤销资格不改变已排队的新Target的plan归属。发现异常或观测失败后先阻断，再上报或返回错误；无法确认BLOCKED则沿用Daemon失败退出、systemd硬终止Caddy的处理。
+新 reset/terminate 目标执行前，Daemon 先确认 Caddy 已加载 BLOCKED；reset 先激活 waiting，再执行旧 contest 清理、Home 恢复和 GDM 登录，最后按最新目标呈现。存在未完成 reset 时，旧 Session 收敛顺序不能提前返回 contest；维护后重新观测会话、Home 和前台，不能沿用旧事实。仅当前有效 Target 计划能恢复 READY 和 Binding 资格。周期观测只撤销访问，不授予访问；撤销资格不改变已排队的新 Target 的 plan 归属。发现异常或观测失败后先阻断，再上报或返回错误；无法确认 BLOCKED 则沿用 Daemon 失败退出、systemd 硬终止 Caddy 的处理。
+
+GNOME 应用可运行在 `user@UID.service` 下的 scope，Agent 的 `GetSessionByPID` 不一定直接返回图形会话。Daemon 从总线取得调用者 PID/UID；直接查询成功时必须匹配精确 waiting，返回其他会话则拒绝。只有明确无所属会话时，才检查 `GetUserByPID` 为 waiting、系统 systemd `GetUnitByPID` 为该用户 manager，且 logind 的唯一用户会话与 `User.Display` 均指向声称的 waiting/seat0/X11。未知结果不降级，不信任自报环境变量。前后台不改变 lease 身份；waiting replacement 前必须排空旧用户 manager 和 UID 进程，旧 lease 随精确会话失效。
 
 本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。真实镜像验收见`packaging/target-vm/local-access.md`。
 
@@ -660,7 +679,7 @@ Server 业务采用纵向组件：
 | Gateway | 是 | Gateway intent/input/target/actual |
 | Binding | 是 | negotiation、occupancy、access target/actual |
 | Runtime Config | 是 | DOMjudge origin target/actual |
-| Session Control | 是 | lock/terminate target/actual |
+| Session Control | 是 | foreground/terminate target/actual |
 | Home | 是 | reset target/actual |
 
 组件化不意味着一个 trait 统治所有业务。Active资源由`DeviceActor`按固定wire结构
@@ -974,7 +993,7 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 | `binding_negotiations` | Binding | 每UNBOUND Device一个current negotiation及最新拒绝元组 |
 | `device_bindings` | Binding | Binding/Seat/Device唯一occupancy |
 | `runtime_config` | Runtime | singleton canonical HTTPS origin |
-| `device_session_targets` | Session | 每Device lock level/terminate epoch |
+| `device_session_targets` | Session | 每 Device foreground target/terminate epoch |
 | `device_home_targets` | Home | 每Device reset epoch |
 
 具体列由 Proto 和组件 typed facts推导，但以下 shape 已冻结。
@@ -1111,6 +1130,7 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 - Caddy子进程、Admin HTTP、local TLS采样和D-Bus method各有10秒deadline；Caddy子进程超时时kill-on-drop；
 - D-Bus deadline只把结果分类为未知，远端调用仍可能完成；后续plan必须通过durable progress或重新观察继续收敛；
 - 资源副作用按安全依赖排序；
+- Session/Home 按 §9.5～9.6 的双会话恢复顺序收敛，呈现只取最新 foreground_target；保持具体 reconciler，不新增通用操作队列；
 - Gateway数据面先BLOCKED，再变更credential/config；
 - password不进入非秘密LKG；
 - 重启从durable input/artifact/completion重新采样并收敛。
@@ -1182,7 +1202,7 @@ strict parse
 
 - 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态，
   `PATCH /devices/{device_id}`修改Device lifecycle，
-  `PUT /devices/{device_id}/session-control`替换lock level；
+  `PUT /devices/{device_id}/session-control`替换 foreground_target；
 - 资源移除使用`DELETE`：解绑`/devices/{device_id}/binding`，丢弃pending import
   `/imports/{import_id}`；Binding UI是否开放由当前unbound与eligibility事实推导，
   不增加operator-owned open policy；
@@ -1434,7 +1454,10 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - Session Agent不安装systemd user unit；
 - Control Endpoint由安装配置确定，赛事期间不轮换；
 - Runtime Config只远程下发DOMjudge origin；
-- 工作站目标基线是Ubuntu Client镜像、Xfce + X11；
+- 工作站目标基线是 Ubuntu Client 镜像、官方 GDM/GNOME + 原生 X11，固定 waiting/contest 两个独立会话；禁止嵌套桌面和图形组件 patch；
+- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；
+- waiting 使用独立 dconf profile，禁用镜像比赛桌面的 ArcMenu 等扩展、自动锁屏和常规退出/切换入口；contest 保持独立桌面配置并关闭自动锁屏。首期等待界面默认纯黑，可随包使用一张静态 ICPC logo；
+- `environment.d`、PAM、XDG、dconf、Xorg 及 Home 恢复依赖随镜像交付；移除旧全局停 GDM 门禁，升级不得带入进行中的旧版维护窗口；
 - Server目标是单Ubuntu Server节点；
 - 确切OS point release、kernel和package evidence由部署测试记录，不写入业务状态机；
 - 更换Client镜像必须重新验证identity、Session、Home、IME、Caddy和package lifecycle；
@@ -1505,7 +1528,11 @@ Runtime/Session/Home：
 
 - invalid origin；
 - 配置切换失败BLOCKED；
-- 单eligible session；
+- waiting/contest 各一个原生会话，普通前台切换只改变实际前台，双方 PID/session/Home generation 不变；
+- 业务切换不调用桌面 Lock/Unlock，不能只凭 LockedHint 或 API 返回报告成功；
+- 纯黑占位、可选本地单图缺失回退、全屏首帧和失联保留占位；
+- reset 只重建 contest，PAM 检查后且 logind 注册前的竞态、各阶段崩溃恢复、Home 失败时 waiting 仍可用；
+- waiting 应用 scope 的精确身份、后台 lease 与禁止 Binding 输入、replacement 撤销旧 lease；
 - terminate不retarget；
 - Home epoch可重入与completion durability。
 
@@ -1748,6 +1775,8 @@ just api
 
 ### WP9：Client Input与Reconciliation（已实现，待审查）
 
+本节原实现状态不涵盖 2026-09-07 的双会话修订。TODO：按 §4.4、§9.4～9.6 接入角色激活、Home 门禁/GDM 重建、Running/foreground 观测及静态 waiting 占位，完成相应协议和 UI 回归后再声明该增量完成。
+
 目标：
 
 - 实现Daemon单一连接循环；
@@ -1771,7 +1800,7 @@ just api
 
 - 端到端Enrollment→Gateway→Binding→Runtime→Session/Home；
 - fault injection；
-- 真实Caddy、DOMjudge contract、Xfce/X11和package lifecycle；
+- 真实 Caddy、DOMjudge contract、GDM/GNOME 原生 X11 双会话和 package lifecycle；
 - backup/restore与rollback rehearsal。
 
 验收：
