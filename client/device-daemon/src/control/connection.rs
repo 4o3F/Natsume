@@ -35,7 +35,9 @@ use super::{ControlIdentity, ControlLoopError, enrollment::HandshakeOutcome};
 pub(super) const MAX_MESSAGE_BYTES: usize = 65_536;
 const CLIENT_CONFIG_PATH: &str = "/etc/natsume/config.toml";
 const CONTROL_ROOT_PATH: &str = "/etc/natsume/trust/control-ca.crt";
-const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+const INITIAL_RECONNECT_WINDOW_MS: u32 = 5_000;
+const MAX_RECONNECT_WINDOW_MS: u32 = 30_000;
+const STABLE_ACTIVE_DURATION: Duration = Duration::from_mins(1);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -48,6 +50,33 @@ pub(super) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 struct ConnectionSettings {
     endpoint: CanonicalEndpoint,
     tls: Arc<ClientConfig>,
+}
+
+/// Retained by the connection loop across transport, handshake and short Active failures.
+struct ReconnectBackoff {
+    window_ms: u32,
+}
+
+impl ReconnectBackoff {
+    fn new() -> Self {
+        Self {
+            window_ms: INITIAL_RECONNECT_WINDOW_MS,
+        }
+    }
+
+    fn delay(&self, sample: u32) -> Duration {
+        Duration::from_millis(u64::from(sample % (self.window_ms + 1)))
+    }
+
+    async fn wait(&self) -> Result<(), ControlLoopError> {
+        let sample = getrandom::u32().map_err(|_| ControlLoopError::ReconnectEntropy)?;
+        tokio::time::sleep(self.delay(sample)).await;
+        Ok(())
+    }
+
+    fn advance(&mut self) {
+        self.window_ms = (self.window_ms * 2).min(MAX_RECONNECT_WINDOW_MS);
+    }
 }
 
 #[derive(Deserialize)]
@@ -131,30 +160,33 @@ pub(crate) async fn run(
         .await
         .map_err(|_| ControlLoopError::LocalDeactivation)?;
     let settings = ConnectionSettings::production()?;
+    let mut backoff = ReconnectBackoff::new();
+    // Spread a simultaneous boot without consuming the first failure's window.
+    backoff.wait().await?;
     loop {
-        let Some(mut socket) = settings.connect().await else {
-            tracing::warn!("Device control connection failed");
-            reconnect_delay().await;
-            continue;
-        };
-        let outcome = super::enrollment::handshake(
-            &mut socket,
-            &mut identity,
-            machine_hardware_id,
-            evidence_quality,
-        )
-        .await?;
-        match outcome {
-            HandshakeOutcome::Active(session_id) => {
-                run_active(socket, session_id, Arc::clone(&snapshots)).await;
+        if let Some(mut socket) = settings.connect().await {
+            let outcome = super::enrollment::handshake(
+                &mut socket,
+                &mut identity,
+                machine_hardware_id,
+                evidence_quality,
+            )
+            .await?;
+            if let HandshakeOutcome::Active(session_id) = outcome {
+                let stable = run_active(socket, session_id, Arc::clone(&snapshots)).await;
                 snapshots
                     .deactivate()
                     .await
                     .map_err(|_| ControlLoopError::LocalDeactivation)?;
+                if stable {
+                    backoff = ReconnectBackoff::new();
+                }
             }
-            HandshakeOutcome::Retry => {}
+        } else {
+            tracing::warn!("Device control connection failed");
         }
-        reconnect_delay().await;
+        backoff.wait().await?;
+        backoff.advance();
     }
 }
 
@@ -210,7 +242,13 @@ impl RetrySchedule {
     clippy::too_many_lines,
     reason = "the active pump keeps deadline and single local-work scheduling visible"
 )]
-async fn run_active(mut socket: Socket, session_id: [u8; 16], snapshots: Arc<SnapshotReconciler>) {
+async fn run_active(
+    mut socket: Socket,
+    session_id: [u8; 16],
+    snapshots: Arc<SnapshotReconciler>,
+) -> bool {
+    let stable_at = Instant::now() + STABLE_ACTIVE_DURATION;
+    let mut stable = false;
     let mut last_sent = None::<ClientStateSnapshot>;
     let (mut current, mut queued) = (None::<CurrentPlan>, None::<PendingPlan>);
     let mut observation = Some(start_observation(Arc::clone(&snapshots)));
@@ -256,9 +294,9 @@ async fn run_active(mut socket: Socket, session_id: [u8; 16], snapshots: Arc<Sna
                 current = Some(start_plan(Arc::clone(&snapshots), PendingPlan { fence, target: Arc::clone(target) }));
             }
             message = socket.next() => {
+                let received_at = Instant::now();
                 match decode_active(message, session_id) {
                     ActiveInput::Target(target) => {
-                        server_deadline = Instant::now() + SERVER_SILENCE_TIMEOUT;
                         if let Err(error) = queue_latest_plan(
                             &snapshots,
                             &mut current,
@@ -274,13 +312,14 @@ async fn run_active(mut socket: Socket, session_id: [u8; 16], snapshots: Arc<Sna
                         }
                         awaiting_target = false;
                     }
-                    ActiveInput::Alive => {
-                        server_deadline = Instant::now() + SERVER_SILENCE_TIMEOUT;
-                    }
+                    ActiveInput::Alive => {}
                     ActiveInput::Retry => {
                         break;
                     }
                 }
+                server_deadline = received_at + SERVER_SILENCE_TIMEOUT;
+                // Only valid traffic after the stability threshold earns a reset.
+                stable |= received_at >= stable_at;
             }
             result = plan_finished => {
                 let Some(finished) = current.take() else {
@@ -369,6 +408,7 @@ async fn run_active(mut socket: Socket, session_id: [u8; 16], snapshots: Arc<Sna
     } else if let Some(task) = failed_task {
         tracing::error!(task, "Device active snapshot task terminated unexpectedly");
     }
+    stable
 }
 
 fn queue_latest_plan(
@@ -554,10 +594,6 @@ async fn send_snapshot(
         )
 }
 
-async fn reconnect_delay() {
-    tokio::time::sleep(RECONNECT_DELAY).await;
-}
-
 fn control_url(endpoint: CanonicalEndpoint) -> String {
     match endpoint.ip {
         std::net::IpAddr::V4(ip) => {
@@ -588,7 +624,7 @@ mod tests {
     struct ActiveFixture {
         resources: Fixture,
         socket: WebSocketStream<TcpStream>,
-        pump: JoinHandle<()>,
+        pump: JoinHandle<bool>,
         session_id: [u8; 16],
     }
 
@@ -665,6 +701,137 @@ mod tests {
         };
         fixture.next_snapshot().await?;
         Ok(fixture)
+    }
+
+    #[test]
+    fn reconnect_windows_grow_to_a_cap_and_allow_the_full_delay_range() {
+        let mut backoff = ReconnectBackoff::new();
+        for window in [5_000, 10_000, 20_000, 30_000, 30_000] {
+            let ceiling = Duration::from_millis(u64::from(window));
+            assert_eq!(backoff.delay(0), Duration::ZERO);
+            assert_eq!(backoff.delay(window), ceiling);
+            assert!(backoff.delay(u32::MAX) <= ceiling);
+            backoff.advance();
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_reconnect_wait_does_not_consume_the_first_retry_window()
+    -> Result<(), ControlLoopError> {
+        let backoff = ReconnectBackoff::new();
+        let started = Instant::now();
+        backoff.wait().await?;
+        assert!(started.elapsed() <= Duration::from_secs(5));
+        assert_eq!(backoff.window_ms, 5_000);
+        Ok(())
+    }
+
+    #[test]
+    fn reconnect_attempts_are_spread_across_a_600_device_outage()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use sha2::{Digest as _, Sha256};
+
+        let mut startup = [0_u32; 6];
+        let mut attempts_per_second = [0_u32; 120];
+        for device in 0..600 {
+            let mut backoff = ReconnectBackoff::new();
+            let mut elapsed = Duration::ZERO;
+            for attempt in 0.. {
+                // Fixed independent samples keep this distribution check reproducible.
+                let digest = Sha256::digest(format!("{device}:{attempt}").as_bytes());
+                let sample = u32::from_le_bytes([digest[0], digest[1], digest[2], digest[3]]);
+                elapsed += backoff.delay(sample);
+                if elapsed >= Duration::from_mins(2) {
+                    break;
+                }
+                let second = usize::try_from(elapsed.as_secs())?;
+                attempts_per_second[second] += 1;
+                if attempt == 0 {
+                    startup[second] += 1;
+                } else {
+                    backoff.advance();
+                }
+            }
+        }
+        assert_eq!(startup.iter().sum::<u32>(), 600);
+        assert!(startup[..5].iter().all(|count| (60..180).contains(count)));
+        let peak = attempts_per_second
+            .into_iter()
+            .max()
+            .ok_or("empty timeline")?;
+        // Fixed five-second waits put all 600 attempts in the same second.
+        assert!(
+            peak < 300,
+            "reconnect attempts clustered: {attempts_per_second:?}"
+        );
+        println!("600-device simulation: startup per second = {startup:?}; peak = {peak}/s");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn active_stability_requires_valid_traffic_after_sixty_seconds()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (later_seconds, ending, expected) in [
+            (10, "pong", false),
+            (26, "pong", true),
+            (26, "target", true),
+            (26, "stale_pong", false),
+            (26, "invalid_target", false),
+        ] {
+            let mut active = active_fixture(HelperState::default()).await?;
+            // Advance only between I/O exchanges so virtual time cannot outrun
+            // the socket and Helper/Caddy fixture responses.
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(35)).await;
+            tokio::time::resume();
+            active.target(snapshot()).await?;
+            active.next_snapshot().await?;
+
+            tokio::time::pause();
+            tokio::time::advance(Duration::from_secs(later_seconds)).await;
+            tokio::time::resume();
+            let final_message = match ending {
+                "pong" => WsMessage::Pong(active.session_id.to_vec().into()),
+                "stale_pong" => WsMessage::Pong(vec![0; 16].into()),
+                "target" | "invalid_target" => WsMessage::Binary(
+                    ServerActiveEnvelope {
+                        session_id: active.session_id.to_vec(),
+                        body: Some(server_active_envelope::Body::ServerState(
+                            if ending == "target" {
+                                snapshot()
+                            } else {
+                                ServerStateSnapshot::default()
+                            },
+                        )),
+                    }
+                    .encode_to_vec()
+                    .into(),
+                ),
+                _ => return Err("unknown test ending".into()),
+            };
+            active.socket.feed(final_message).await?;
+            active.socket.feed(WsMessage::Close(None)).await?;
+            active.socket.flush().await?;
+            let stable = timeout(Duration::from_secs(10), &mut active.pump).await??;
+            assert_eq!(
+                stable,
+                expected,
+                "{ending} after {} seconds",
+                35 + later_seconds
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_silent_active_session_does_not_earn_a_backoff_reset()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut active = active_fixture(HelperState::default()).await?;
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(61)).await;
+        tokio::time::resume();
+        assert!(!timeout(Duration::from_secs(10), &mut active.pump).await??);
+        Ok(())
     }
 
     fn destructive_target() -> ServerStateSnapshot {

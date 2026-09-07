@@ -54,6 +54,9 @@ pub(crate) enum ControlLoopError {
     #[snafu(display("the Device control TLS configuration is invalid"))]
     Tls,
 
+    #[snafu(display("entropy for the Device control reconnect delay is unavailable"))]
+    ReconnectEntropy,
+
     #[snafu(display("Device local access could not be deactivated"))]
     LocalDeactivation,
 
