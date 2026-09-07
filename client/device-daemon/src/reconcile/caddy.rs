@@ -379,7 +379,25 @@ impl Caddy {
         // The shared username alphabet excludes both Caddyfile environment
         // expansion and runtime placeholders; JSON quoting alone cannot do so.
         format!(
-            "{}\n{} {{\n\tbind 127.0.0.1 ::1\n\ttls {} {}\n\t@login path /login\n\thandle @login {{\n\t\treverse_proxy {} {{\n\t\t\theader_up X-DOMjudge-Login {}\n\t\t\theader_up X-DOMjudge-Pass {}\n\t\t}}\n\t}}\n\thandle {{\n\t\treverse_proxy {} {{\n\t\t\theader_up -X-DOMjudge-Login\n\t\t\theader_up -X-DOMjudge-Pass\n\t\t}}\n\t}}\n}}\n",
+            r"{}
+{} {{
+	bind 127.0.0.1 ::1
+	tls {} {}
+	@login path /login
+	handle @login {{
+		reverse_proxy {} {{
+			header_up X-DOMjudge-Login {}
+			header_up X-DOMjudge-Pass {}
+		}}
+	}}
+	handle {{
+		reverse_proxy {} {{
+			header_up -X-DOMjudge-Login
+			header_up -X-DOMjudge-Pass
+		}}
+	}}
+}}
+",
             self.global_options(),
             caddy_quote(&format!("https://{}", self.gateway_hostname)),
             caddy_quote_path(&material.certificate_path),
@@ -393,7 +411,13 @@ impl Caddy {
 
     fn global_options(&self) -> String {
         format!(
-            "{{\n\tadmin {}|0660\n\tpersist_config off\n\tauto_https off\n\tgrace_period 10s\n}}\n",
+            r"{{
+	admin {}|0660
+	persist_config off
+	auto_https off
+	grace_period 10s
+}}
+",
             self.admin_address()
         )
     }
