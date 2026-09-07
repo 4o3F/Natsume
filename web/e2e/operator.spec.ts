@@ -150,9 +150,12 @@ test("an administrator can approve an enrollment review", async ({ page }) => {
 
 async function mockTargets(
   context: BrowserContext,
-  currentDevice: typeof device,
+  currentDevices: typeof device | (typeof device)[],
   operatorId = operator.operator_id,
 ) {
+  const devices = Array.isArray(currentDevices)
+    ? currentDevices
+    : [currentDevices];
   await context.route("**/api/v2/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
@@ -161,11 +164,19 @@ async function mockTargets(
       return fulfillJson(route, 200, { ...operator, operator_id: operatorId });
     }
     if (pathname === "/api/v2/devices") {
-      return fulfillJson(route, 200, [currentDevice]);
+      return fulfillJson(route, 200, devices);
     }
+    const currentDevice = devices.find((entry) =>
+      pathname.startsWith(`/api/v2/devices/${entry.device_id}/`),
+    );
+    if (!currentDevice) return fulfillJson(route, 404, {});
+    const devicePath = `/api/v2/devices/${currentDevice.device_id}`;
     const session = currentDevice.convergence.session_control;
     const home = currentDevice.convergence.home;
-    if (pathname.endsWith("/session-control") && request.method() === "PUT") {
+    if (
+      pathname === `${devicePath}/session-control` &&
+      request.method() === "PUT"
+    ) {
       session.target = {
         terminate_epoch: session.target?.terminate_epoch ?? null,
         lock_state: request.postDataJSON().lock_state,
@@ -173,7 +184,10 @@ async function mockTargets(
       session.status = "drifted";
       return fulfillJson(route, 200, { target: session.target });
     }
-    if (pathname.endsWith("/session-control/actions/terminate")) {
+    if (
+      pathname === `${devicePath}/session-control/actions/terminate` &&
+      request.method() === "POST"
+    ) {
       session.target = {
         lock_state: session.target?.lock_state ?? "unlocked",
         terminate_epoch: (session.target?.terminate_epoch ?? 0) + 1,
@@ -181,7 +195,10 @@ async function mockTargets(
       session.status = session.actual ? "reconciling" : "awaiting_actual";
       return fulfillJson(route, 200, { target: session.target });
     }
-    if (pathname.endsWith("/home/actions/reset")) {
+    if (
+      pathname === `${devicePath}/home/actions/reset` &&
+      request.method() === "POST"
+    ) {
       home.target_reset_epoch = (home.target_reset_epoch ?? 0) + 1;
       home.status = home.actual ? "drifted" : "awaiting_actual";
       return fulfillJson(route, 200, { reset_epoch: home.target_reset_epoch });
@@ -219,17 +236,30 @@ test("target controls call their generated API operations", async ({
         request.url().endsWith("/session-control"),
     );
     await page.getByRole("button", { name, exact: true }).click();
-    expect((await request).postDataJSON()).toEqual({ lock_state: lockState });
+    const sent = await request;
+    expect(new URL(sent.url()).pathname).toBe(
+      `/api/v2/devices/${device.device_id}/session-control`,
+    );
+    expect(sent.postDataJSON()).toEqual({ lock_state: lockState });
     await expect(
       page.getByText(`Target lock: ${lockState}`, { exact: true }),
     ).toBeVisible();
   }
 
-  await confirmTarget(page, "Terminate");
-  await expect(page.getByText("Terminate epoch: 1")).toBeVisible();
-
-  await confirmTarget(page, "Reset home");
-  await expect(page.getByText("Reset epoch: 1")).toBeVisible();
+  for (const [name, path, target] of [
+    ["Terminate", "session-control/actions/terminate", "Terminate epoch: 1"],
+    ["Reset home", "home/actions/reset", "Reset epoch: 1"],
+  ]) {
+    const request = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" && request.url().endsWith(`/${path}`),
+    );
+    await confirmTarget(page, name);
+    expect(new URL((await request).url()).pathname).toBe(
+      `/api/v2/devices/${device.device_id}/${path}`,
+    );
+    await expect(page.getByText(target, { exact: true })).toBeVisible();
+  }
 });
 
 test("target submission stays distinct from reported progress, failure and completion", async ({
@@ -484,54 +514,158 @@ test("a delayed pre-mutation poll cannot replace the refreshed target", async ({
   await expect(page.getByText("Completed reset epoch: none")).toBeVisible();
 });
 
-test("switching devices isolates an in-flight target submission", async ({
-  page,
-  context,
-}) => {
-  const firstDevice = structuredClone(device);
-  const secondDevice = {
-    ...structuredClone(device),
-    device_id: "01923456-789a-7bcd-8ef0-123456789abd",
-    machine_hardware_id: "machine-02",
-  };
-  await mockTargets(context, firstDevice);
-  await context.route("**/api/v2/devices", (route) =>
-    fulfillJson(route, 200, [firstDevice, secondDevice]),
-  );
-  const heldWrites: Route[] = [];
-  await context.route("**/session-control", (route) => {
-    heldWrites.push(route);
-  });
-  await openTargets(page);
-  await page.getByRole("button", { name: "Lock", exact: true }).click();
-  await expect.poll(() => heldWrites.length).toBe(1);
-  await expect(
-    page.getByRole("button", { name: "Lock", exact: true }),
-  ).toBeDisabled();
+for (const outcome of ["success", "failure"]) {
+  test(`switching devices isolates an in-flight target ${outcome}`, async ({
+    page,
+    context,
+  }) => {
+    const firstDevice = structuredClone(device);
+    const secondDevice = {
+      ...structuredClone(device),
+      device_id: "01923456-789a-7bcd-8ef0-123456789abd",
+      machine_hardware_id: "machine-02",
+    };
+    await mockTargets(context, [firstDevice, secondDevice]);
+    const heldWrites: Route[] = [];
+    await context.route("**/session-control", (route) => {
+      heldWrites.push(route);
+    });
+    await page.clock.install();
+    await openTargets(page);
+    await page.getByRole("button", { name: "Lock", exact: true }).click();
+    await expect.poll(() => heldWrites.length).toBe(1);
+    const request = heldWrites[0].request();
+    expect(new URL(request.url()).pathname).toBe(
+      `/api/v2/devices/${firstDevice.device_id}/session-control`,
+    );
+    expect(request.method()).toBe("PUT");
+    expect(request.postDataJSON()).toEqual({ lock_state: "locked" });
+    await expect(
+      page.getByRole("button", { name: "Lock", exact: true }),
+    ).toBeDisabled();
 
-  await page.getByLabel("Device").selectOption(secondDevice.device_id);
-  await expect(
-    page.getByRole("button", { name: "Lock", exact: true }),
-  ).toBeEnabled();
-  await expect(
-    page.getByText("Target lock: unlocked", { exact: true }),
-  ).toBeVisible();
-  const refreshed = page.waitForResponse((response) =>
-    response.url().endsWith("/api/v2/devices"),
-  );
-  await heldWrites[0].fallback();
-  await refreshed;
-  await expect(
-    page.getByText("Target lock: unlocked", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Target submitted.", { exact: false }),
-  ).toHaveCount(0);
-  await page.getByLabel("Device").selectOption(firstDevice.device_id);
-  await expect(
-    page.getByText("Target lock: locked", { exact: true }),
-  ).toBeVisible();
-});
+    await page.getByLabel("Device").selectOption(secondDevice.device_id);
+    await expect(
+      page.getByRole("button", { name: "Lock", exact: true }),
+    ).toBeEnabled();
+    await expect(
+      page.getByText("Target lock: unlocked", { exact: true }),
+    ).toBeVisible();
+    if (outcome === "success") {
+      const refreshed = page.waitForResponse((response) =>
+        response.url().endsWith("/api/v2/devices"),
+      );
+      await heldWrites[0].fallback();
+      await (await refreshed).finished();
+    } else {
+      const failed = page.waitForResponse(request.url());
+      await fulfillJson(heldWrites[0], 409, {
+        title: "Device A target rejected",
+        status: 409,
+        code: "CONFLICT",
+      });
+      await (await failed).finished();
+    }
+    // Flush mutation notifications before checking that B stayed untouched.
+    await page.clock.runFor(100);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Lock", exact: true }),
+    ).toBeEnabled();
+    await expect(
+      page.getByText("Target lock: unlocked", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Target submitted.", { exact: false }),
+    ).toHaveCount(0);
+    await page.getByLabel("Device").selectOption(firstDevice.device_id);
+    await expect(
+      page.getByText(
+        `Target lock: ${outcome === "success" ? "locked" : "unlocked"}`,
+        { exact: true },
+      ),
+    ).toBeVisible();
+  });
+}
+
+for (const order of ["A then B", "B then A"]) {
+  test(`device target submissions stay isolated when responses arrive ${order}`, async ({
+    page,
+    context,
+  }) => {
+    const firstDevice = structuredClone(device);
+    const secondDevice = {
+      ...structuredClone(device),
+      device_id: "01923456-789a-7bcd-8ef0-123456789abd",
+      machine_hardware_id: "machine-02",
+    };
+    await mockTargets(context, [firstDevice, secondDevice]);
+    const heldWrites: Route[] = [];
+    await context.route("**/actions/*", (route) => {
+      heldWrites.push(route);
+    });
+    await page.clock.install();
+    await openTargets(page);
+    await confirmTarget(page, "Terminate");
+    await expect.poll(() => heldWrites.length).toBe(1);
+    await page.getByLabel("Device").selectOption(secondDevice.device_id);
+    await confirmTarget(page, "Reset home");
+    await expect.poll(() => heldWrites.length).toBe(2);
+    expect(
+      heldWrites.map((route) => [
+        route.request().method(),
+        new URL(route.request().url()).pathname,
+      ]),
+    ).toEqual([
+      [
+        "POST",
+        `/api/v2/devices/${firstDevice.device_id}/session-control/actions/terminate`,
+      ],
+      ["POST", `/api/v2/devices/${secondDevice.device_id}/home/actions/reset`],
+    ]);
+    const reset = page.getByRole("button", { name: "Reset home", exact: true });
+    await expect(reset).toBeDisabled();
+
+    let secondCompleted = false;
+    for (const index of order === "A then B" ? [0, 1] : [1, 0]) {
+      const refreshed = page.waitForResponse((response) =>
+        response.url().endsWith("/api/v2/devices"),
+      );
+      await heldWrites[index].fallback();
+      await (await refreshed).finished();
+      await page.clock.runFor(100);
+      secondCompleted ||= index === 1;
+      await expect(reset).toBeEnabled({ enabled: secondCompleted });
+      await expect(page.getByRole("alert")).toHaveCount(0);
+      await expect(
+        page.getByText("Target submitted.", { exact: false }),
+      ).toHaveCount(secondCompleted ? 1 : 0);
+      await expect(
+        page.getByText("Submitting target and refreshing status.", {
+          exact: false,
+        }),
+      ).toHaveCount(secondCompleted ? 0 : 1);
+      await expect(
+        page.getByText("Terminate epoch: none", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByText(`Reset epoch: ${secondCompleted ? "1" : "none"}`, {
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
+    await page.getByLabel("Device").selectOption(firstDevice.device_id);
+    await expect(
+      page.getByText("Terminate epoch: 1", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Reset epoch: none", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Target submitted.", { exact: false }),
+    ).toHaveCount(0);
+  });
+}
 
 test("foreground targets follow another operator within one polling interval", async ({
   page,
