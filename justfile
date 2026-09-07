@@ -106,7 +106,18 @@ ci-web: install
     ! grep -rq '@apply' web/dist/assets
     grep -rq 'min-h-screen' web/dist/assets
 
-ci-contracts: install diesel-schema
+schema-contract:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output="$(mktemp /tmp/natsume-schema-contract.XXXXXX)"
+    trap 'rm -f -- "$output"' EXIT
+    cargo test -p natsume-server --locked --test schema_contract -- --color never --format pretty | tee "$output"
+    if ! grep -Eq '^test result: ok\. [1-9][0-9]* passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$output"; then
+        printf '%s\n' 'schema_contract must execute at least one test, with none failed, ignored, or filtered out.' >&2
+        exit 1
+    fi
+
+ci-contracts: install diesel-schema schema-contract
     cargo run -p natsume-server --locked --bin export-openapi -- web/openapi/natsume.openapi.json
     pnpm --filter @natsume/web openapi:lint
     pnpm --filter @natsume/web api:generate

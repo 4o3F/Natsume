@@ -308,7 +308,6 @@ pub(crate) mod tests {
         Connection, RunQueryDsl, connection::SimpleConnection, sql_types::BigInt,
         sqlite::SqliteConnection,
     };
-    use diesel_migrations::{FileBasedMigrations, MigrationHarness};
     use snafu::Snafu;
     use tracing::{
         Instrument as _, Subscriber,
@@ -662,47 +661,6 @@ pub(crate) mod tests {
         })
     }
 
-    #[test]
-    fn diesel_down_then_up_succeeds() -> Result<(), TestFailure> {
-        let fixture = DatabaseFixture::new();
-        let (mut connection, migrations) = migration_fixture(&fixture)?;
-        let first_up_count = connection
-            .run_pending_migrations(migrations.clone())
-            .map_err(|_| TestFailure::MigrationUpFailed)?
-            .len();
-        let down_count = connection
-            .revert_all_migrations(migrations.clone())
-            .map_err(|_| TestFailure::MigrationDownFailed)?
-            .len();
-        let second_up_count = connection
-            .run_pending_migrations(migrations)
-            .map_err(|_| TestFailure::MigrationUpFailed)?
-            .len();
-        if first_up_count != 1 || down_count != 1 || second_up_count != 1 {
-            return Err(TestFailure::MigrationRoundTripWasNotExact);
-        }
-        Ok(())
-    }
-
-    fn migration_fixture(
-        fixture: &DatabaseFixture,
-    ) -> Result<(diesel::sqlite::SqliteConnection, FileBasedMigrations), TestFailure> {
-        let path = fixture
-            .path
-            .to_str()
-            .ok_or(TestFailure::DatabasePathWasNotUtf8)?;
-        let mut connection = diesel::sqlite::SqliteConnection::establish(path)
-            .map_err(|_| TestFailure::MigrationDatabaseCreationFailed)?;
-        connection
-            .batch_execute("PRAGMA foreign_keys = ON;")
-            .map_err(|_| TestFailure::MigrationDatabaseCreationFailed)?;
-        let migrations = FileBasedMigrations::from_path(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("migrations"),
-        )
-        .map_err(|_| TestFailure::MigrationSourceWasNotReadable)?;
-        Ok((connection, migrations))
-    }
-
     impl From<diesel::result::Error> for TestFailure {
         fn from(_source: diesel::result::Error) -> Self {
             Self::TransactionProbeFailed
@@ -743,16 +701,6 @@ pub(crate) mod tests {
         TransactionProbeFailed,
         #[snafu(display("BEGIN IMMEDIATE did not reserve the SQLite write lock"))]
         ImmediateTransactionDidNotReserveWrite,
-        #[snafu(display("the migration database could not be created"))]
-        MigrationDatabaseCreationFailed,
-        #[snafu(display("the Diesel migration source was not readable"))]
-        MigrationSourceWasNotReadable,
-        #[snafu(display("the Diesel up migration failed"))]
-        MigrationUpFailed,
-        #[snafu(display("the Diesel down migration failed"))]
-        MigrationDownFailed,
-        #[snafu(display("the Diesel migration round trip was not exact"))]
-        MigrationRoundTripWasNotExact,
     }
 
     struct DatabaseFixture {

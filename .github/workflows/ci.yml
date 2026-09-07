@@ -184,6 +184,9 @@ jobs:
       - name: Diesel schema clean diff
         run: just diesel-schema
 
+      - name: Server schema contract
+        run: just schema-contract
+
   policy-scan:
     name: policy-scan
     runs-on: ubuntu-24.04
@@ -237,9 +240,6 @@ jobs:
           test -f packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
           test ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service
           grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
-
-      - name: Server schema contract
-        run: cargo test -p natsume-server --locked db::provisioning::schema_contract_tests
 
   packages:
     name: packages
