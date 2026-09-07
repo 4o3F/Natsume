@@ -33,7 +33,7 @@ use crate::{
         ControlPublicKey, DeviceError, DeviceId, EnrollmentReviewDecision, EnrollmentStartOutcome,
         EvidenceQuality, LifecycleOutcome, MachineHardwareId, ValidatedEnrollmentEvidence,
     },
-    component::session::LockState,
+    component::session::ForegroundTarget,
     db::{Database, DatabaseConfig, PersistenceError},
     diesel_schema::{
         binding_negotiations, device_home_targets, device_session_targets, gateway_credentials,
@@ -207,7 +207,7 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
     fixture
         .state
         .session()
-        .set_lock(device_id, LockState::Locked)
+        .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
     fixture.state.device_control().dirty_device(device_id).await;
@@ -223,8 +223,8 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
         snapshot
             .target
             .and_then(|target| target.session_control)
-            .map(|target| target.lock_state),
-        Some(natsume_device_protocol::generated::LockState::Locked.into())
+            .map(|target| target.foreground_target),
+        Some(natsume_device_protocol::generated::ForegroundTarget::Waiting.into())
     );
 }
 
@@ -249,7 +249,7 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
     fixture
         .state
         .session()
-        .set_lock(device_id, LockState::Locked)
+        .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
     tokio::time::pause();
@@ -266,8 +266,8 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
         snapshot
             .target
             .and_then(|target| target.session_control)
-            .map(|target| target.lock_state),
-        Some(natsume_device_protocol::generated::LockState::Locked.into())
+            .map(|target| target.foreground_target),
+        Some(natsume_device_protocol::generated::ForegroundTarget::Waiting.into())
     );
 }
 
@@ -825,7 +825,7 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
     fixture
         .state
         .session()
-        .set_lock(device_id, LockState::Locked)
+        .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
         .unwrap_or_else(|error| panic!("Session target setup failed: {error}"));
     fixture
@@ -1452,6 +1452,9 @@ fn valid_snapshot() -> ClientStateSnapshot {
                 applied_domjudge_origin: None,
             }),
             session_control: Some(SessionControlActualState {
+                contest_ready: false,
+                waiting_ready: false,
+                foreground: natsume_device_protocol::generated::SessionForeground::Unknown.into(),
                 session_state: SessionState::None.into(),
                 completed_terminate_epoch: None,
             }),

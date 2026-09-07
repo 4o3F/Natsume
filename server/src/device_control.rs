@@ -25,7 +25,8 @@ pub(crate) use convergence::{
     BindingEvaluationCode, BindingTarget, ConnectionState, ConvergenceStatus, DeviceConvergence,
     DeviceConvergenceError, DeviceStatus, GatewayActual, GatewayConvergence, GatewayState,
     GatewayTarget, HomeActual, HomeConvergence, HomeState, RuntimeConfigActual,
-    RuntimeConfigConvergence, RuntimeConfigState, SessionActual, SessionConvergence, SessionState,
+    RuntimeConfigConvergence, RuntimeConfigState, SessionActual, SessionConvergence,
+    SessionForeground, SessionState,
 };
 
 use crate::component::{

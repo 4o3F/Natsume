@@ -23,7 +23,7 @@ pub(in crate::component::session) fn find_target(
 ) -> Result<Option<(String, Option<i64>)>, PersistenceError> {
     device_session_targets::table
         .select((
-            device_session_targets::lock_state,
+            device_session_targets::foreground_target,
             device_session_targets::terminate_epoch,
         ))
         .filter(device_session_targets::device_id.eq(device_id.as_text()))
@@ -38,7 +38,7 @@ pub(in crate::component::session) fn list_targets(
     device_session_targets::table
         .select((
             device_session_targets::device_id,
-            device_session_targets::lock_state,
+            device_session_targets::foreground_target,
             device_session_targets::terminate_epoch,
         ))
         .load(transaction.connection())
@@ -52,22 +52,22 @@ pub(in crate::component::session) fn insert_default_target(
     diesel::insert_into(device_session_targets::table)
         .values((
             device_session_targets::device_id.eq(device_id.as_text()),
-            device_session_targets::lock_state.eq("unlocked"),
+            device_session_targets::foreground_target.eq("contest"),
         ))
         .execute(transaction.connection())
         .map_err(|_| PersistenceError::OperationFailed)
 }
 
-pub(in crate::component::session) fn update_lock_state(
+pub(in crate::component::session) fn update_foreground_target(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
-    lock_state: &str,
+    foreground_target: &str,
 ) -> Result<usize, PersistenceError> {
     diesel::update(
         device_session_targets::table
             .filter(device_session_targets::device_id.eq(device_id.as_text())),
     )
-    .set(device_session_targets::lock_state.eq(lock_state))
+    .set(device_session_targets::foreground_target.eq(foreground_target))
     .execute(transaction.connection())
     .map_err(|_| PersistenceError::OperationFailed)
 }

@@ -12,6 +12,13 @@ const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
 };
+const bindingContext: components["schemas"]["BindingContextResponse"] = {
+  binding_id: "01912345-6789-7abc-8def-0123456789ac",
+  account_id: "01912345-6789-7abc-8def-0123456789ad",
+  credential_revision: 1,
+  domjudge_username: "team1",
+  seat_code: "A-01",
+};
 const convergence: components["schemas"]["DeviceConvergenceResponse"] = {
   connection_state: "active",
   received_at_unix_ms: 1_700_000_100_000,
@@ -27,7 +34,15 @@ const convergence: components["schemas"]["DeviceConvergenceResponse"] = {
       gateway_leaf_sha256: "leaf-1",
     },
   },
-  binding: { status: "awaiting_actual", target: null, actual: null },
+  binding: {
+    status: "converged",
+    target: { state: "bound", context: bindingContext },
+    actual: {
+      assignment_state: "applied",
+      credential_state: "applied",
+      context: bindingContext,
+    },
+  },
   runtime_config: {
     status: "converged",
     target_domjudge_origin: "https://domjudge.example",
@@ -38,8 +53,14 @@ const convergence: components["schemas"]["DeviceConvergenceResponse"] = {
   },
   session_control: {
     status: "converged",
-    target: { lock_state: "unlocked", terminate_epoch: null },
-    actual: { session_state: "none", completed_terminate_epoch: null },
+    target: { foreground_target: "contest", terminate_epoch: null },
+    actual: {
+      session_state: "running",
+      completed_terminate_epoch: null,
+      foreground: "contest",
+      waiting_ready: true,
+      contest_ready: true,
+    },
   },
   home: {
     status: "converged",
@@ -93,7 +114,7 @@ test("device lifecycle and convergence use the operator API", async ({
   await expect(page.getByText("machine-01", { exact: true })).toBeVisible();
   await expect(page.getByText("Connection: active")).toBeVisible();
   await expect(page.getByText("Gateway: converged")).toBeVisible();
-  await expect(page.getByText("Binding: awaiting actual")).toBeVisible();
+  await expect(page.getByText("Binding: converged")).toBeVisible();
   await expect(page.getByText("Runtime: converged")).toBeVisible();
   await expect(page.getByText("Session: converged")).toBeVisible();
   await expect(page.getByText("Home: converged")).toBeVisible();
@@ -179,7 +200,7 @@ async function mockTargets(
     ) {
       session.target = {
         terminate_epoch: session.target?.terminate_epoch ?? null,
-        lock_state: request.postDataJSON().lock_state,
+        foreground_target: request.postDataJSON().foreground_target,
       };
       session.status = "drifted";
       return fulfillJson(route, 200, { target: session.target });
@@ -189,7 +210,7 @@ async function mockTargets(
       request.method() === "POST"
     ) {
       session.target = {
-        lock_state: session.target?.lock_state ?? "unlocked",
+        foreground_target: session.target?.foreground_target ?? "contest",
         terminate_epoch: (session.target?.terminate_epoch ?? 0) + 1,
       };
       session.status = session.actual ? "reconciling" : "awaiting_actual";
@@ -226,9 +247,9 @@ test("target controls call their generated API operations", async ({
 }) => {
   await mockTargets(context, structuredClone(device));
   await openTargets(page);
-  for (const [name, lockState] of [
-    ["Unlock", "unlocked"],
-    ["Lock", "locked"],
+  for (const [name, foregroundTarget] of [
+    ["Show contest desktop", "contest"],
+    ["Show waiting screen", "waiting"],
   ]) {
     const request = page.waitForRequest(
       (request) =>
@@ -240,9 +261,11 @@ test("target controls call their generated API operations", async ({
     expect(new URL(sent.url()).pathname).toBe(
       `/api/v2/devices/${device.device_id}/session-control`,
     );
-    expect(sent.postDataJSON()).toEqual({ lock_state: lockState });
+    expect(sent.postDataJSON()).toEqual({
+      foreground_target: foregroundTarget,
+    });
     await expect(
-      page.getByText(`Target lock: ${lockState}`, { exact: true }),
+      page.getByText(`Target foreground: ${foregroundTarget}`, { exact: true }),
     ).toBeVisible();
   }
 
@@ -260,6 +283,46 @@ test("target controls call their generated API operations", async ({
     );
     await expect(page.getByText(target, { exact: true })).toBeVisible();
   }
+});
+
+test("ready desktops still wait for binding before contest presentation", async ({
+  page,
+  context,
+}) => {
+  const currentDevice = structuredClone(device);
+  currentDevice.convergence.binding = {
+    status: "converged",
+    target: {
+      state: "unbound",
+      negotiation_id: "01912345-6789-7abc-8def-0123456789ae",
+      evaluation: null,
+    },
+    actual: {
+      assignment_state: "absent",
+      credential_state: "absent",
+      context: null,
+    },
+  };
+  currentDevice.convergence.session_control.status = "reconciling";
+  currentDevice.convergence.session_control.actual!.foreground = "waiting";
+  await mockTargets(context, currentDevice);
+  await openTargets(page);
+
+  const sessionRegion = page.getByRole("region", { name: "Session Control" });
+  for (const text of [
+    "Target foreground: contest",
+    "Actual foreground: waiting",
+    "Actual session: running",
+    "Waiting display ready: true",
+    "Contest desktop ready: true",
+    "Waiting for binding before showing the contest desktop.",
+    "Convergence: reconciling",
+  ]) {
+    await expect(sessionRegion.getByText(text, { exact: true })).toBeVisible();
+  }
+  await expect(
+    sessionRegion.getByText("Convergence: converged", { exact: true }),
+  ).toHaveCount(0);
 });
 
 test("target submission stays distinct from reported progress, failure and completion", async ({
@@ -302,6 +365,9 @@ test("target submission stays distinct from reported progress, failure and compl
 
   const { session_control: session, home } = currentDevice.convergence;
   session.actual = {
+    foreground: "waiting",
+    waiting_ready: true,
+    contest_ready: false,
     session_state: "terminating",
     completed_terminate_epoch: null,
   };
@@ -337,7 +403,13 @@ test("target submission stays distinct from reported progress, failure and compl
     page.getByText("Convergence: converged", { exact: true }),
   ).toHaveCount(0);
 
-  session.actual = { session_state: "none", completed_terminate_epoch: 1 };
+  session.actual = {
+    session_state: "running",
+    completed_terminate_epoch: 1,
+    foreground: "contest",
+    waiting_ready: true,
+    contest_ready: true,
+  };
   session.status = "converged";
   home.actual = { state: "steady", completed_reset_epoch: 1 };
   home.status = "converged";
@@ -377,7 +449,9 @@ test("offline and reconnecting devices wait for fresh Actual after submission", 
   await mockTargets(context, currentDevice);
   await page.clock.install();
   await openTargets(page);
-  await expect(page.getByText("Target lock: not initialized")).toBeVisible();
+  await expect(
+    page.getByText("Target foreground: not initialized"),
+  ).toBeVisible();
   await confirmTarget(page, "Reset home");
   await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
   await expect(
@@ -497,7 +571,7 @@ test("a delayed pre-mutation poll cannot replace the refreshed target", async ({
     page.getByRole("button", { name: "Terminate", exact: true }),
   ).toBeDisabled();
   await expect(
-    page.getByRole("button", { name: "Lock", exact: true }),
+    page.getByRole("button", { name: "Show waiting screen", exact: true }),
   ).toBeDisabled();
   await expect(
     page.getByText("Last known convergence: converged", { exact: true }),
@@ -532,24 +606,26 @@ for (const outcome of ["success", "failure"]) {
     });
     await page.clock.install();
     await openTargets(page);
-    await page.getByRole("button", { name: "Lock", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Show waiting screen", exact: true })
+      .click();
     await expect.poll(() => heldWrites.length).toBe(1);
     const request = heldWrites[0].request();
     expect(new URL(request.url()).pathname).toBe(
       `/api/v2/devices/${firstDevice.device_id}/session-control`,
     );
     expect(request.method()).toBe("PUT");
-    expect(request.postDataJSON()).toEqual({ lock_state: "locked" });
+    expect(request.postDataJSON()).toEqual({ foreground_target: "waiting" });
     await expect(
-      page.getByRole("button", { name: "Lock", exact: true }),
+      page.getByRole("button", { name: "Show waiting screen", exact: true }),
     ).toBeDisabled();
 
     await page.getByLabel("Device").selectOption(secondDevice.device_id);
     await expect(
-      page.getByRole("button", { name: "Lock", exact: true }),
+      page.getByRole("button", { name: "Show waiting screen", exact: true }),
     ).toBeEnabled();
     await expect(
-      page.getByText("Target lock: unlocked", { exact: true }),
+      page.getByText("Target foreground: contest", { exact: true }),
     ).toBeVisible();
     if (outcome === "success") {
       const refreshed = page.waitForResponse((response) =>
@@ -570,10 +646,10 @@ for (const outcome of ["success", "failure"]) {
     await page.clock.runFor(100);
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(
-      page.getByRole("button", { name: "Lock", exact: true }),
+      page.getByRole("button", { name: "Show waiting screen", exact: true }),
     ).toBeEnabled();
     await expect(
-      page.getByText("Target lock: unlocked", { exact: true }),
+      page.getByText("Target foreground: contest", { exact: true }),
     ).toBeVisible();
     await expect(
       page.getByText("Target submitted.", { exact: false }),
@@ -581,7 +657,7 @@ for (const outcome of ["success", "failure"]) {
     await page.getByLabel("Device").selectOption(firstDevice.device_id);
     await expect(
       page.getByText(
-        `Target lock: ${outcome === "success" ? "locked" : "unlocked"}`,
+        `Target foreground: ${outcome === "success" ? "waiting" : "contest"}`,
         { exact: true },
       ),
     ).toBeVisible();

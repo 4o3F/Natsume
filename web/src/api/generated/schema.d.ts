@@ -140,7 +140,7 @@ export interface paths {
       cookie?: never;
     };
     get: operations["getDeviceSessionControl"];
-    put: operations["setDeviceSessionLock"];
+    put: operations["setDeviceSessionForeground"];
     post?: never;
     delete?: never;
     options?: never;
@@ -604,18 +604,20 @@ export interface components {
     SessionActualResponse: {
       /** Format: int64 */
       completed_terminate_epoch: number | null;
+      contest_ready: boolean;
+      /**
+       * @description The physical foreground is separate from the requested managed role.
+       * @enum {string}
+       */
+      foreground:
+        "unknown" | "waiting" | "contest" | "greeter" | "other" | "none";
       /**
        * @description Session state vocabulary exposed by the convergence projection.
        * @enum {string}
        */
       session_state:
-        | "none"
-        | "starting"
-        | "active"
-        | "locked"
-        | "terminating"
-        | "ambiguous"
-        | "error";
+        "none" | "starting" | "running" | "terminating" | "ambiguous" | "error";
+      waiting_ready: boolean;
     };
     /** @description Current durable Session Control target, if it has been initialized. */
     SessionControlResponse: {
@@ -624,10 +626,10 @@ export interface components {
     /** @description Concrete initialized Session Control target. */
     SessionControlTargetResponse: {
       /**
-       * @description Desired Session lock level accepted and returned by the API.
+       * @description Desired Session foreground role accepted and returned by the API.
        * @enum {string}
        */
-      lock_state: "unlocked" | "locked";
+      foreground_target: "contest" | "waiting";
       /** Format: int64 */
       terminate_epoch: number | null;
     };
@@ -642,13 +644,13 @@ export interface components {
         "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
       target: null | components["schemas"]["SessionControlTargetResponse"];
     };
-    /** @description Complete Session lock mutation body. */
-    SessionLockRequest: {
+    /** @description Complete Session foreground mutation body. */
+    SessionForegroundRequest: {
       /**
-       * @description Desired Session lock level accepted and returned by the API.
+       * @description Desired Session foreground role accepted and returned by the API.
        * @enum {string}
        */
-      lock_state: "unlocked" | "locked";
+      foreground_target: "contest" | "waiting";
     };
     SessionRequest: {
       /** @description Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated. */
@@ -1249,7 +1251,7 @@ export interface operations {
       };
     };
   };
-  setDeviceSessionLock: {
+  setDeviceSessionForeground: {
     parameters: {
       query?: never;
       header?: never;
@@ -1261,11 +1263,11 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["SessionLockRequest"];
+        "application/json": components["schemas"]["SessionForegroundRequest"];
       };
     };
     responses: {
-      /** @description Session lock target committed */
+      /** @description Session foreground target committed */
       200: {
         headers: {
           [name: string]: unknown;

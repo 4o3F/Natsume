@@ -20,7 +20,7 @@ use binding::delete_device_binding;
 use convergence::get_device_convergence;
 use home::{get_home, reset_home};
 use lifecycle::{get_device, list_devices, update_device};
-use session::{get_session_control, set_session_lock, terminate_session};
+use session::{get_session_control, set_session_foreground, terminate_session};
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
@@ -41,7 +41,7 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         .route(
             "/devices/{device_id}/session-control",
             middleware::require_operator(state.clone(), get(get_session_control)).merge(
-                middleware::require_admin(state.clone(), put(set_session_lock)),
+                middleware::require_admin(state.clone(), put(set_session_foreground)),
             ),
         )
         .route(

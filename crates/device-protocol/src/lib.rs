@@ -148,4 +148,63 @@ mod tests {
         let golden = include_bytes!("../testdata/device_control.pb");
         assert_eq!(generated.as_slice(), golden.as_slice());
     }
+
+    #[test]
+    fn foreground_targets_and_fresh_display_facts_round_trip_without_epoch_aliasing() {
+        use generated::{
+            ActualState, ClientInputState, ClientStateSnapshot, ForegroundTarget, HomeActualState,
+            HomeState, SessionControlActualState, SessionControlTarget, SessionForeground,
+            SessionState,
+        };
+        use prost::Message as _;
+
+        for role in [ForegroundTarget::Waiting, ForegroundTarget::Contest] {
+            let target = SessionControlTarget {
+                foreground_target: role.into(),
+                terminate_epoch: Some(7),
+            };
+            let decoded = SessionControlTarget::decode(target.encode_to_vec().as_slice())
+                .unwrap_or_else(|error| panic!("target decode: {error}"));
+            assert_eq!(target, decoded);
+        }
+        let snapshot = ClientStateSnapshot {
+            input: Some(ClientInputState::default()),
+            actual: Some(ActualState {
+                gateway: Some(generated::GatewayActualState {
+                    state: generated::GatewayState::Absent.into(),
+                    credential_id: None,
+                    gateway_leaf_sha256: None,
+                }),
+                binding_access: Some(generated::BindingAccessActualState {
+                    assignment_state: generated::BindingArtifactState::Absent.into(),
+                    credential_state: generated::BindingArtifactState::Absent.into(),
+                    context: None,
+                }),
+                runtime_config: Some(generated::RuntimeConfigActualState {
+                    state: generated::RuntimeConfigState::Absent.into(),
+                    applied_domjudge_origin: None,
+                }),
+                session_control: Some(SessionControlActualState {
+                    session_state: SessionState::Running.into(),
+                    completed_terminate_epoch: Some(7),
+                    foreground: SessionForeground::Waiting.into(),
+                    waiting_ready: true,
+                    contest_ready: true,
+                }),
+                home: Some(HomeActualState {
+                    state: HomeState::Steady.into(),
+                    completed_reset_epoch: Some(9),
+                }),
+            }),
+        };
+        assert_eq!(
+            ClientStateSnapshot::decode(snapshot.encode_to_vec().as_slice())
+                .unwrap_or_else(|error| panic!("snapshot decode: {error}")),
+            snapshot
+        );
+        let missing = SessionControlActualState::decode(&[][..])
+            .unwrap_or_else(|error| panic!("empty message decode: {error}"));
+        assert_eq!(missing.foreground, i32::from(SessionForeground::Unknown));
+        assert!(!missing.waiting_ready && !missing.contest_ready);
+    }
 }

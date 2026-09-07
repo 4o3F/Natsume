@@ -39,18 +39,9 @@ pub fn seat_input_visible(snapshot: &SessionUiSnapshot) -> bool {
 }
 
 #[must_use]
-pub fn dismissible(snapshot: &SessionUiSnapshot) -> bool {
-    snapshot.screen != SessionScreenKind::BindingPrompt
-}
-
-fn current_snapshot_is_dismissible() -> bool {
-    CURRENT_SNAPSHOT.with(|current| current.borrow().as_ref().is_none_or(dismissible))
-}
-
-#[must_use]
 pub const fn screen_kind_label(kind: SessionScreenKind) -> &'static str {
     match kind {
-        SessionScreenKind::Hidden => "hidden",
+        SessionScreenKind::Waiting => "waiting",
         SessionScreenKind::BindingPrompt => "binding_prompt",
         SessionScreenKind::BindingPending => "binding_pending",
     }
@@ -58,7 +49,7 @@ pub const fn screen_kind_label(kind: SessionScreenKind) -> &'static str {
 
 fn snapshot_text(snapshot: &SessionUiSnapshot) -> (String, String) {
     let (title, message) = match snapshot.screen {
-        SessionScreenKind::Hidden => ("", ""),
+        SessionScreenKind::Waiting => ("", ""),
         SessionScreenKind::BindingPrompt => ("Bind workstation", "Enter your seat code"),
         SessionScreenKind::BindingPending => ("Binding workstation", "Waiting for the server"),
     };
@@ -140,46 +131,13 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
             .map(slint::ComponentHandle::clone_strong)
     });
 
-    if snapshot.screen == SessionScreenKind::Hidden {
-        if let Some(window) = existing {
-            window.hide()?;
-        }
-        return Ok(());
-    }
-
     let window = if let Some(window) = existing {
         window
     } else {
         let window = SessionWindow::new()?;
-        window.window().on_close_requested(|| {
-            if current_snapshot_is_dismissible() {
-                slint::CloseRequestResponse::HideWindow
-            } else {
-                slint::CloseRequestResponse::KeepWindowShown
-            }
-        });
-        window.on_cancel({
-            let weak = window.as_weak();
-            move || {
-                if !current_snapshot_is_dismissible() {
-                    return;
-                }
-                if let Some(window) = weak.upgrade() {
-                    if let Err(error) = window.hide() {
-                        tracing::error!(
-                            reason = "session_window_hide_failed",
-                            error = %error,
-                            "session window cancellation failed"
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        reason = "session_window_gone",
-                        "cancellation raced window teardown"
-                    );
-                }
-            }
-        });
+        window
+            .window()
+            .on_close_requested(|| slint::CloseRequestResponse::KeepWindowShown);
         window.on_confirm_seat({
             let weak = window.as_weak();
             move |seat_code| {
@@ -216,11 +174,12 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
     };
 
     let (title, message) = snapshot_text(snapshot);
+    window.set_waiting_visible(snapshot.screen == SessionScreenKind::Waiting);
+    window.window().set_fullscreen(true);
     window.set_screen_kind_text(screen_kind_label(snapshot.screen).into());
     window.set_title_text(title.into());
     window.set_message_text(message.into());
     window.set_seat_input_visible(seat_input_visible(snapshot));
-    window.set_close_allowed(dismissible(snapshot));
     window.show()?;
     Ok(())
 }
@@ -229,9 +188,7 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
 mod tests {
     use natsume_local_control_api::{GraphicalSession, SessionScreenKind, SessionUiSnapshot};
 
-    use super::{
-        binding_submission, dismissible, screen_kind_label, seat_input_visible, snapshot_text,
-    };
+    use super::{binding_submission, screen_kind_label, seat_input_visible, snapshot_text};
 
     fn snapshot(screen: SessionScreenKind) -> SessionUiSnapshot {
         SessionUiSnapshot {
@@ -267,7 +224,7 @@ mod tests {
     #[test]
     fn screen_kind_labels_cover_the_typed_contract() {
         let cases = [
-            (SessionScreenKind::Hidden, "hidden"),
+            (SessionScreenKind::Waiting, "waiting"),
             (SessionScreenKind::BindingPrompt, "binding_prompt"),
             (SessionScreenKind::BindingPending, "binding_pending"),
         ];
@@ -288,12 +245,6 @@ mod tests {
         )));
         prompt.screen = SessionScreenKind::BindingPending;
         assert!(!seat_input_visible(&prompt));
-    }
-
-    #[test]
-    fn binding_prompt_cannot_be_dismissed() {
-        assert!(!dismissible(&snapshot(SessionScreenKind::BindingPrompt)));
-        assert!(dismissible(&snapshot(SessionScreenKind::BindingPending)));
     }
 
     #[test]

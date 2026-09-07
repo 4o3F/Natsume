@@ -7,8 +7,8 @@ mod session;
 use std::path::{Path, PathBuf};
 
 use natsume_local_control_api::{
-    ContestSessionObservation, DerivedMachineIdentity, GraphicalSession, HomeResetProgress,
-    MachineIdentityError, ResourceControlError, SessionLockLevel,
+    DerivedMachineIdentity, GraphicalSession, HomeResetProgress, MachineIdentityError,
+    ManagedSessionsObservation, ResourceControlError,
 };
 use uuid::Uuid;
 
@@ -75,22 +75,12 @@ impl PrivilegedService {
         home::state_exists(&self.filesystem_root)
     }
 
-    #[zbus(name = "QueryContestSession")]
-    async fn query_contest_session(
+    #[zbus(name = "QueryManagedSessions")]
+    async fn query_managed_sessions(
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
-    ) -> Result<ContestSessionObservation, ResourceControlError> {
+    ) -> Result<ManagedSessionsObservation, ResourceControlError> {
         session::observe(connection, &self.filesystem_root).await
-    }
-
-    #[zbus(name = "SetContestSessionLock")]
-    async fn set_contest_session_lock(
-        &mut self,
-        target: GraphicalSession,
-        level: SessionLockLevel,
-        #[zbus(connection)] connection: &zbus::Connection,
-    ) -> Result<(), ResourceControlError> {
-        session::set_lock(connection, &self.filesystem_root, &target, level).await
     }
 
     #[zbus(name = "TerminateContestSession")]
@@ -149,7 +139,7 @@ async fn require_no_contest_session(
     filesystem_root: &Path,
 ) -> Result<(), ResourceControlError> {
     let observation = session::observe(connection, filesystem_root).await?;
-    if observation.state == natsume_local_control_api::ContestSessionState::None {
+    if observation.contest.state == natsume_local_control_api::GraphicalSessionState::None {
         Ok(())
     } else {
         Err(ResourceControlError::Rejected(

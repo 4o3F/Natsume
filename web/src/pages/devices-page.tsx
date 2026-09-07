@@ -291,10 +291,10 @@ function ConvergenceDetails({ data }: { data: Convergence }) {
     ? `assignment ${data.binding.actual.assignment_state}; credential ${data.binding.actual.credential_state}; seat ${data.binding.actual.context?.seat_code ?? "absent"}`
     : "none";
   const sessionTarget = data.session_control.target
-    ? `${data.session_control.target.lock_state}; terminate epoch ${data.session_control.target.terminate_epoch ?? "none"}`
+    ? `${data.session_control.target.foreground_target}; terminate epoch ${data.session_control.target.terminate_epoch ?? "none"}`
     : "none";
   const sessionActual = data.session_control.actual
-    ? `${data.session_control.actual.session_state}; completed epoch ${data.session_control.actual.completed_terminate_epoch ?? "none"}`
+    ? `${data.session_control.actual.session_state}; foreground ${data.session_control.actual.foreground}; waiting ready ${data.session_control.actual.waiting_ready}; contest ready ${data.session_control.actual.contest_ready}; completed epoch ${data.session_control.actual.completed_terminate_epoch ?? "none"}`
     : "none";
 
   return (

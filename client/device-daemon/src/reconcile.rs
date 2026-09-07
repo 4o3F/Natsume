@@ -261,7 +261,7 @@ impl SnapshotReconciler {
             self.guard_local_access(Some(snapshot)).await?;
         if matches!(
             SessionState::try_from(session_actual.actual.session_state),
-            Ok(SessionState::Active | SessionState::Locked)
+            Ok(SessionState::Running)
         ) {
             session_actual.actual = session_observed;
         }
@@ -281,7 +281,11 @@ impl SnapshotReconciler {
             .await?;
         self.binding_input.set_eligible(
             &cancellation,
-            allowed && snapshot.binding_target.bound.is_none(),
+            allowed
+                && snapshot.binding_target.bound.is_none()
+                && session_actual.actual.waiting_ready
+                && session_actual.actual.foreground
+                    == i32::from(natsume_device_protocol::generated::SessionForeground::Waiting),
         )?;
         check_cancellation(&cancellation)?;
         let gateway_actual = if caddy_failed {
@@ -470,8 +474,9 @@ fn session_access_is_allowed(
 ) -> bool {
     matches!(
         SessionState::try_from(session.session_state),
-        Ok(SessionState::Active | SessionState::Locked)
-    ) && target.session_target.termination_is_complete(session)
+        Ok(SessionState::Running)
+    ) && session.contest_ready
+        && target.session_target.termination_is_complete(session)
 }
 
 pub(crate) fn validate_server_snapshot(
@@ -556,9 +561,9 @@ fn applied_runtime_origin<'a>(
 #[cfg(test)]
 pub(crate) mod tests {
     use natsume_device_protocol::generated::{
-        BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState,
-        GatewayCredentialIntent, GatewayTarget, HomeTarget, LockState, RuntimeConfigTarget,
-        ServerIntentState, SessionControlTarget,
+        BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState, ForegroundTarget,
+        GatewayCredentialIntent, GatewayTarget, HomeTarget, RuntimeConfigTarget, ServerIntentState,
+        SessionControlTarget,
     };
     use uuid::Uuid;
 
@@ -584,15 +589,17 @@ pub(crate) mod tests {
     }
 
     use natsume_local_control_api::{
-        ContestSessionObservation, ContestSessionState, GraphicalSession, HomeResetPhase,
-        HomeResetProgress, PRIVILEGED1_PATH, ResourceControlError,
+        GraphicalSession, GraphicalSessionObservation, GraphicalSessionState, HomeResetPhase,
+        HomeResetProgress, ManagedSessionsObservation, PRIVILEGED1_PATH, ResourceControlError,
+        SessionForeground,
     };
     use std::sync::Mutex;
 
     #[derive(Default)]
     pub(crate) struct HelperState {
-        pub(crate) session_state: Option<ContestSessionState>,
-        pub(crate) session_after_home: Option<ContestSessionState>,
+        pub(crate) session_state: Option<GraphicalSessionState>,
+        pub(crate) foreground: Option<SessionForeground>,
+        pub(crate) session_after_home: Option<GraphicalSessionState>,
         pub(crate) require_blocked: Option<std::path::PathBuf>,
         pub(crate) termination_calls: Vec<GraphicalSession>,
         pub(crate) home_calls: Vec<u64>,
@@ -606,23 +613,46 @@ pub(crate) mod tests {
 
     #[zbus::interface(name = "org.natsume.Privileged1")]
     impl FaultyHelper {
-        #[zbus(name = "QueryContestSession")]
-        fn query_contest_session(&self) -> ContestSessionObservation {
+        #[zbus(name = "QueryManagedSessions")]
+        fn query_managed_sessions(&self) -> ManagedSessionsObservation {
             let state = self
                 .0
                 .lock()
                 .unwrap_or_else(|e| panic!("fixture lock: {e}"));
-            ContestSessionObservation {
-                state: state.session_state.unwrap_or(ContestSessionState::Active),
-                session: Some(GraphicalSession {
-                    logind_session_id: if state.termination_calls.is_empty() {
-                        "c2"
-                    } else {
-                        "c3"
-                    }
-                    .to_owned(),
-                    boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
-                }),
+            let lifecycle = state
+                .session_state
+                .unwrap_or(GraphicalSessionState::Running);
+            ManagedSessionsObservation {
+                contest: GraphicalSessionObservation {
+                    state: lifecycle,
+                    session: matches!(
+                        lifecycle,
+                        GraphicalSessionState::Running
+                            | GraphicalSessionState::Starting
+                            | GraphicalSessionState::Terminating
+                    )
+                    .then(|| GraphicalSession {
+                        logind_session_id: if state.termination_calls.is_empty() {
+                            "c2"
+                        } else {
+                            "c3"
+                        }
+                        .to_owned(),
+                        boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+                    }),
+                    desktop_ready: lifecycle == GraphicalSessionState::Running,
+                    locked_hint: false,
+                },
+                waiting: GraphicalSessionObservation {
+                    state: GraphicalSessionState::Running,
+                    session: Some(GraphicalSession {
+                        logind_session_id: "w1".to_owned(),
+                        boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+                    }),
+                    desktop_ready: true,
+                    locked_hint: false,
+                },
+                foreground: state.foreground.unwrap_or(SessionForeground::Contest),
             }
         }
 
@@ -762,7 +792,7 @@ pub(crate) mod tests {
         let session = session::tests::reconciler(&directory, connection.clone());
         let home = home::tests::reconciler(&directory, connection.clone());
         let target = session::validate_target(SessionControlTarget {
-            lock_state: LockState::Unlocked.into(),
+            foreground_target: ForegroundTarget::Contest.into(),
             terminate_epoch: Some(7),
         })
         .ok_or("invalid fixture target")?;
@@ -813,10 +843,11 @@ pub(crate) mod tests {
         assert_eq!(connection.unique_name(), daemon_owner.as_ref());
         let fresh = Privileged1Proxy::new(&connection)
             .await?
-            .query_contest_session()
+            .query_managed_sessions()
             .await?;
         assert_eq!(
             fresh
+                .contest
                 .session
                 .ok_or("missing replacement session")?
                 .logind_session_id,
@@ -1018,7 +1049,7 @@ pub(crate) mod tests {
                     domjudge_origin: "https://judge.example".to_owned(),
                 }),
                 session_control: Some(SessionControlTarget {
-                    lock_state: LockState::Unlocked.into(),
+                    foreground_target: ForegroundTarget::Contest.into(),
                     terminate_epoch: None,
                 }),
                 home: Some(HomeTarget { reset_epoch: None }),
@@ -1063,7 +1094,7 @@ pub(crate) mod tests {
             .helper
             .lock()
             .map_err(|_| "fixture lock")?
-            .session_state = Some(ContestSessionState::Ambiguous);
+            .session_state = Some(GraphicalSessionState::Ambiguous);
         fixture.snapshots.observe(Some(&target)).await?;
         assert!(matches!(
             fixture
@@ -1143,23 +1174,37 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn local_access_requires_a_live_session() {
+    fn local_access_requires_a_ready_contest_in_either_foreground() {
         let target = validate_server_snapshot(snapshot())
             .unwrap_or_else(|error| panic!("fixture target: {error}"));
         let home = HomeActualState {
             state: HomeState::Steady.into(),
             completed_reset_epoch: None,
         };
-        for state in [SessionState::Active, SessionState::Locked] {
+        for foreground in [
+            natsume_device_protocol::generated::SessionForeground::Contest,
+            natsume_device_protocol::generated::SessionForeground::Waiting,
+        ] {
             assert!(local_access_is_allowed(
                 &target,
                 &SessionControlActualState {
-                    session_state: state.into(),
+                    contest_ready: true,
+                    waiting_ready: false,
+                    foreground: foreground.into(),
+                    session_state: SessionState::Running.into(),
                     completed_terminate_epoch: None,
                 },
                 &home,
             ));
         }
+        assert!(!local_access_is_allowed(
+            &target,
+            &SessionControlActualState {
+                session_state: SessionState::Running.into(),
+                ..SessionControlActualState::default()
+            },
+            &home
+        ));
         for state in [
             SessionState::Unspecified,
             SessionState::None,
@@ -1171,6 +1216,10 @@ pub(crate) mod tests {
             assert!(!local_access_is_allowed(
                 &target,
                 &SessionControlActualState {
+                    contest_ready: true,
+                    waiting_ready: false,
+                    foreground: natsume_device_protocol::generated::SessionForeground::Contest
+                        .into(),
                     session_state: state.into(),
                     completed_terminate_epoch: None,
                 },
@@ -1184,7 +1233,7 @@ pub(crate) mod tests {
         let mut target = validate_server_snapshot(snapshot())?;
         target.home_epoch = Some(7);
         target.session_target = session::validate_target(SessionControlTarget {
-            lock_state: LockState::Unlocked.into(),
+            foreground_target: ForegroundTarget::Contest.into(),
             terminate_epoch: Some(8),
         })
         .ok_or(SnapshotError::InvalidServerSnapshot)?;
@@ -1200,7 +1249,12 @@ pub(crate) mod tests {
                         local_access_is_allowed(
                             &target,
                             &SessionControlActualState {
-                                session_state: SessionState::Active.into(),
+                                contest_ready: true,
+                                waiting_ready: false,
+                                foreground:
+                                    natsume_device_protocol::generated::SessionForeground::Contest
+                                        .into(),
+                                session_state: SessionState::Running.into(),
                                 completed_terminate_epoch: session_epoch,
                             },
                             &HomeActualState {
@@ -1218,6 +1272,9 @@ pub(crate) mod tests {
         assert!(!local_access_is_allowed(
             &target,
             &SessionControlActualState {
+                contest_ready: true,
+                waiting_ready: false,
+                foreground: natsume_device_protocol::generated::SessionForeground::Contest.into(),
                 session_state: 999,
                 completed_terminate_epoch: Some(8)
             },
@@ -1234,7 +1291,10 @@ pub(crate) mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (fixture, target) = ready_fixture().await?;
         let binding = std::fs::read(fixture.directory.path().join("binding-assignment.json"))?;
-        for state in [ContestSessionState::None, ContestSessionState::Ambiguous] {
+        for state in [
+            GraphicalSessionState::None,
+            GraphicalSessionState::Ambiguous,
+        ] {
             fixture
                 .helper
                 .lock()
@@ -1249,7 +1309,7 @@ pub(crate) mod tests {
                 .helper
                 .lock()
                 .map_err(|_| "fixture lock")?
-                .session_state = Some(ContestSessionState::Active);
+                .session_state = Some(GraphicalSessionState::Running);
             // Observation has no authority to grant access again.
             fixture.snapshots.observe(Some(&target)).await?;
             assert!(matches!(
@@ -1277,7 +1337,7 @@ pub(crate) mod tests {
         let (fixture, mut target) = ready_fixture().await?;
         target.home_epoch = Some(7);
         target.session_target = session::validate_target(SessionControlTarget {
-            lock_state: LockState::Unlocked.into(),
+            foreground_target: ForegroundTarget::Contest.into(),
             terminate_epoch: Some(8),
         })
         .ok_or(SnapshotError::InvalidServerSnapshot)?;
@@ -1323,7 +1383,7 @@ pub(crate) mod tests {
             .helper
             .lock()
             .map_err(|_| "fixture lock")?
-            .session_after_home = Some(ContestSessionState::None);
+            .session_after_home = Some(GraphicalSessionState::None);
         let fence = CancellationToken::new();
         fixture.snapshots.begin_plan(&fence)?;
         let actual = fixture
@@ -1357,7 +1417,7 @@ pub(crate) mod tests {
         let (fixture, mut target) = ready_fixture().await?;
         target.home_epoch = Some(7);
         target.session_target = session::validate_target(SessionControlTarget {
-            lock_state: LockState::Unlocked.into(),
+            foreground_target: ForegroundTarget::Contest.into(),
             terminate_epoch: Some(8),
         })
         .ok_or(SnapshotError::InvalidServerSnapshot)?;
@@ -1378,7 +1438,7 @@ pub(crate) mod tests {
                     && state.home_calls.is_empty()
                     && state.progress.is_none()
             );
-            state.session_state = Some(ContestSessionState::Ambiguous);
+            state.session_state = Some(GraphicalSessionState::Ambiguous);
         }
         assert!(matches!(
             fixture.snapshots.observe(Some(&target)).await,
@@ -1388,24 +1448,24 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn locked_and_repeated_targets_keep_ready_without_reloading_caddy()
+    async fn foreground_and_repeated_targets_keep_ready_without_reloading_caddy()
     -> Result<(), Box<dyn std::error::Error>> {
         use std::os::unix::fs::MetadataExt as _;
         let (fixture, mut target) = ready_fixture().await?;
         let mode = fixture.directory.path().join("caddy-mode.json");
         let inode = std::fs::metadata(&mode)?.ino();
-        for lock in [LockState::Unlocked, LockState::Locked] {
+        for foreground in [ForegroundTarget::Contest, ForegroundTarget::Waiting] {
             fixture
                 .helper
                 .lock()
                 .map_err(|_| "fixture lock")?
-                .session_state = Some(if lock == LockState::Locked {
-                ContestSessionState::Locked
+                .foreground = Some(if foreground == ForegroundTarget::Waiting {
+                SessionForeground::Waiting
             } else {
-                ContestSessionState::Active
+                SessionForeground::Contest
             });
             target.session_target = session::validate_target(SessionControlTarget {
-                lock_state: lock.into(),
+                foreground_target: foreground.into(),
                 terminate_epoch: None,
             })
             .ok_or("fixture Session target")?;
@@ -1434,13 +1494,13 @@ pub(crate) mod tests {
             .helper
             .lock()
             .map_err(|_| "fixture lock")?
-            .session_state = Some(ContestSessionState::Ambiguous);
+            .session_state = Some(GraphicalSessionState::Ambiguous);
         fixture.snapshots.observe(Some(&target)).await?;
         fixture
             .helper
             .lock()
             .map_err(|_| "fixture lock")?
-            .session_state = Some(ContestSessionState::Active);
+            .session_state = Some(GraphicalSessionState::Running);
         assert!(matches!(
             fixture.snapshots.reconcile(&target, old).await,
             Err(SnapshotError::Cancelled)

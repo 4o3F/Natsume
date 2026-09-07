@@ -9,7 +9,7 @@ use crate::{
     diesel_schema::{device_session_targets, devices},
 };
 
-use super::{LockState, SessionControlComponent, SessionControlError, SessionControlTarget};
+use super::{ForegroundTarget, SessionControlComponent, SessionControlError, SessionControlTarget};
 
 #[tokio::test]
 async fn materialize_creates_the_default_target_for_an_existing_device() {
@@ -26,7 +26,7 @@ async fn materialize_creates_the_default_target_for_an_existing_device() {
             .await
             .unwrap_or_else(|error| panic!("default target failed: {error}")),
         SessionControlTarget {
-            lock_state: LockState::Unlocked,
+            foreground_target: ForegroundTarget::Contest,
             terminate_epoch: None,
         }
     );
@@ -34,14 +34,14 @@ async fn materialize_creates_the_default_target_for_an_existing_device() {
     assert_eq!(
         fixture.component.read_current(device_id).await,
         Ok(Some(SessionControlTarget {
-            lock_state: LockState::Unlocked,
+            foreground_target: ForegroundTarget::Contest,
             terminate_epoch: None,
         }))
     );
 }
 
 #[tokio::test]
-async fn set_lock_is_idempotent_and_preserves_the_terminate_epoch() {
+async fn set_foreground_is_idempotent_and_preserves_the_terminate_epoch() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
     fixture
@@ -50,20 +50,20 @@ async fn set_lock_is_idempotent_and_preserves_the_terminate_epoch() {
         .await
         .unwrap_or_else(|error| panic!("terminate setup failed: {error}"));
 
-    let locked = fixture
+    let waiting = fixture
         .component
-        .set_lock(device_id, LockState::Locked)
+        .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
-        .unwrap_or_else(|error| panic!("lock failed: {error}"));
+        .unwrap_or_else(|error| panic!("foreground update failed: {error}"));
     let replay = fixture
         .component
-        .set_lock(device_id, LockState::Locked)
+        .set_foreground(device_id, ForegroundTarget::Waiting)
         .await
-        .unwrap_or_else(|error| panic!("lock replay failed: {error}"));
+        .unwrap_or_else(|error| panic!("foreground replay failed: {error}"));
 
-    assert_eq!(locked, replay);
-    assert_eq!(locked.lock_state, LockState::Locked);
-    assert_eq!(locked.terminate_epoch, Some(1));
+    assert_eq!(waiting, replay);
+    assert_eq!(waiting.foreground_target, ForegroundTarget::Waiting);
+    assert_eq!(waiting.terminate_epoch, Some(1));
     assert_eq!(fixture.target_count(device_id).await, 1);
 }
 
@@ -121,12 +121,12 @@ async fn concurrent_terminate_requests_advance_once_each() {
 #[tokio::test]
 async fn invalid_or_exhausted_persisted_targets_fail_closed() {
     let fixture = Fixture::new().await;
-    let unknown_lock = fixture.insert_device().await;
+    let unknown_foreground = fixture.insert_device().await;
     fixture
-        .insert_raw_target(unknown_lock, "unknown", None)
+        .insert_raw_target(unknown_foreground, "unknown", None)
         .await;
     assert_eq!(
-        fixture.component.materialize(unknown_lock).await,
+        fixture.component.materialize(unknown_foreground).await,
         Err(SessionControlError::InvalidPersistedFacts)
     );
     assert!(matches!(
@@ -137,7 +137,7 @@ async fn invalid_or_exhausted_persisted_targets_fail_closed() {
     for invalid_epoch in [0, -1] {
         let device_id = fixture.insert_device().await;
         fixture
-            .insert_raw_target(device_id, "unlocked", Some(invalid_epoch))
+            .insert_raw_target(device_id, "contest", Some(invalid_epoch))
             .await;
         assert_eq!(
             fixture.component.materialize(device_id).await,
@@ -147,7 +147,7 @@ async fn invalid_or_exhausted_persisted_targets_fail_closed() {
 
     let exhausted = fixture.insert_device().await;
     fixture
-        .insert_raw_target(exhausted, "locked", Some(i64::MAX))
+        .insert_raw_target(exhausted, "waiting", Some(i64::MAX))
         .await;
     assert_eq!(
         fixture.component.terminate(exhausted).await,
@@ -233,7 +233,7 @@ impl Fixture {
     async fn insert_raw_target(
         &self,
         device_id: DeviceId,
-        lock_state: &'static str,
+        foreground_target: &'static str,
         terminate_epoch: Option<i64>,
     ) {
         let device_id = device_id.as_text();
@@ -242,7 +242,7 @@ impl Fixture {
                 diesel::insert_into(device_session_targets::table)
                     .values((
                         device_session_targets::device_id.eq(device_id),
-                        device_session_targets::lock_state.eq(lock_state),
+                        device_session_targets::foreground_target.eq(foreground_target),
                         device_session_targets::terminate_epoch.eq(terminate_epoch),
                     ))
                     .execute(transaction.connection())

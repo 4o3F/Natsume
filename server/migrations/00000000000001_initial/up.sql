@@ -114,7 +114,7 @@ CREATE TABLE runtime_config (
 
 CREATE TABLE device_session_targets (
     device_id TEXT PRIMARY KEY REFERENCES devices(device_id) ON DELETE CASCADE,
-    lock_state TEXT NOT NULL,
+    foreground_target TEXT NOT NULL,
     terminate_epoch INTEGER
 ) STRICT;
 

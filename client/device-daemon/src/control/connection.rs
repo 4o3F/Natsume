@@ -610,9 +610,9 @@ fn control_url(endpoint: CanonicalEndpoint) -> String {
 mod tests {
     use crate::parse_endpoint;
     use natsume_device_protocol::generated::{
-        BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState,
-        GatewayCredentialIntent, GatewayTarget, HomeTarget, LockState, RuntimeConfigTarget,
-        ServerIntentState, SessionControlTarget,
+        BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState, ForegroundTarget,
+        GatewayCredentialIntent, GatewayTarget, HomeTarget, RuntimeConfigTarget, ServerIntentState,
+        SessionControlTarget,
     };
     use std::os::unix::fs::MetadataExt as _;
     use uuid::Uuid;
@@ -716,7 +716,7 @@ mod tests {
             .helper
             .lock()
             .map_err(|_| "fixture lock")?
-            .session_state = Some(natsume_local_control_api::ContestSessionState::Ambiguous);
+            .session_state = Some(natsume_local_control_api::GraphicalSessionState::Ambiguous);
         tokio::time::pause();
         tokio::time::advance(HEARTBEAT_INTERVAL).await;
         tokio::time::resume();
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn retry_delay_is_bounded_and_cleared_when_local_work_finishes() {
-        let target = Arc::new(target(LockState::Unlocked));
+        let target = Arc::new(target(ForegroundTarget::Contest));
         let mut retry = RetrySchedule::new();
         for ceiling in [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000] {
             let now = Instant::now();
@@ -1119,8 +1119,8 @@ mod tests {
 
     #[test]
     fn periodic_repeats_are_coalesced_before_plan_authority_changes() {
-        let current = target(LockState::Unlocked);
-        let queued = target(LockState::Locked);
+        let current = target(ForegroundTarget::Contest);
+        let queued = target(ForegroundTarget::Waiting);
 
         assert!(target_is_redundant(
             Some(&current),
@@ -1154,7 +1154,7 @@ mod tests {
 
     #[test]
     fn changed_actual_allows_the_same_idle_target_to_run_again() {
-        let previous = target(LockState::Unlocked);
+        let previous = target(ForegroundTarget::Contest);
 
         assert!(!target_is_redundant(
             None,
@@ -1165,7 +1165,7 @@ mod tests {
         ));
     }
 
-    fn target(lock_state: LockState) -> ValidatedSnapshot {
+    fn target(foreground_target: ForegroundTarget) -> ValidatedSnapshot {
         let credential_id = "01900000-0000-7000-8000-000000000001".to_owned();
         validate_server_snapshot(ServerStateSnapshot {
             intent: Some(ServerIntentState {
@@ -1187,7 +1187,7 @@ mod tests {
                     domjudge_origin: "https://judge.example".to_owned(),
                 }),
                 session_control: Some(SessionControlTarget {
-                    lock_state: lock_state.into(),
+                    foreground_target: foreground_target.into(),
                     terminate_epoch: None,
                 }),
                 home: Some(HomeTarget { reset_epoch: None }),

@@ -32,10 +32,11 @@ import { Label } from "@/components/ui/label";
 
 type Device = components["schemas"]["DeviceResponse"];
 type SessionControl = components["schemas"]["SessionControlResponse"];
-type SessionLock = components["schemas"]["SessionLockRequest"]["lock_state"];
+type SessionForeground =
+  components["schemas"]["SessionForegroundRequest"]["foreground_target"];
 type Home = components["schemas"]["HomeResponse"];
 type Convergence = components["schemas"]["DeviceConvergenceResponse"];
-type TargetOperation = SessionLock | "terminate" | "reset";
+type TargetOperation = SessionForeground | "terminate" | "reset";
 
 const DEVICES_KEY = ["devices"] as const;
 
@@ -155,12 +156,12 @@ function DeviceTargets({
     mutationFn: async (operation: TargetOperation) => {
       const params = { path: { device_id: device.device_id } };
       switch (operation) {
-        case "locked":
-        case "unlocked":
+        case "waiting":
+        case "contest":
           return unwrap<SessionControl>(
             await api.PUT("/api/v2/devices/{device_id}/session-control", {
               params,
-              body: { lock_state: operation },
+              body: { foreground_target: operation },
             }),
           );
         case "terminate":
@@ -229,8 +230,28 @@ function DeviceTargets({
           <ConvergenceStatus status={session.status} previous={showPrevious} />
           <div className="space-y-1 text-sm">
             <p>
-              Target lock: {session.target?.lock_state ?? "not initialized"}
+              Target foreground:{" "}
+              {session.target?.foreground_target ?? "not initialized"}
             </p>
+            <p>
+              Actual foreground: {session.actual?.foreground ?? "not received"}
+            </p>
+            <p>
+              Waiting display ready:{" "}
+              {session.actual
+                ? String(session.actual.waiting_ready)
+                : "not received"}
+            </p>
+            <p>
+              Contest desktop ready:{" "}
+              {session.actual
+                ? String(session.actual.contest_ready)
+                : "not received"}
+            </p>
+            {session.target?.foreground_target === "contest" &&
+              device.convergence.binding.target?.state === "unbound" && (
+                <p>Waiting for binding before showing the contest desktop.</p>
+              )}
             <p>Terminate epoch: {session.target?.terminate_epoch ?? "none"}</p>
             <p>
               Actual session:{" "}
@@ -260,18 +281,18 @@ function DeviceTargets({
                 variant="outline"
                 size="sm"
                 disabled={updateTarget.isPending}
-                onClick={() => updateTarget.mutate("locked")}
+                onClick={() => updateTarget.mutate("waiting")}
               >
-                Lock
+                Show waiting screen
               </Button>
               <Button
                 type="button"
                 variant="outline"
                 size="sm"
                 disabled={updateTarget.isPending}
-                onClick={() => updateTarget.mutate("unlocked")}
+                onClick={() => updateTarget.mutate("contest")}
               >
-                Unlock
+                Show contest desktop
               </Button>
               <TargetAction
                 label="Terminate"

@@ -97,7 +97,7 @@ fn foreign_keys_reject_orphans_and_cascade_owned_rows() -> Result<(), TestError>
         "INSERT INTO server_vault_records VALUES ('missing', x'01', x'02');",
         "INSERT INTO gateway_credentials VALUES ('missing', 'credential', NULL, NULL);",
         "INSERT INTO binding_negotiations VALUES ('missing', 'negotiation', NULL, NULL, NULL);",
-        "INSERT INTO device_session_targets VALUES ('missing', 'unlocked', NULL);",
+        "INSERT INTO device_session_targets VALUES ('missing', 'contest', NULL);",
         "INSERT INTO device_home_targets VALUES ('missing', NULL);",
     ] {
         rejects(
@@ -117,7 +117,7 @@ fn foreign_keys_reject_orphans_and_cascade_owned_rows() -> Result<(), TestError>
         INSERT INTO devices VALUES ('d1', 'machine-1', 'strong', 'enabled', 1);
         INSERT INTO gateway_credentials VALUES ('d1', 'credential', NULL, NULL);
         INSERT INTO binding_negotiations VALUES ('d1', 'negotiation', NULL, NULL, NULL);
-        INSERT INTO device_session_targets VALUES ('d1', 'unlocked', NULL);
+        INSERT INTO device_session_targets VALUES ('d1', 'contest', NULL);
         INSERT INTO device_home_targets VALUES ('d1', NULL);
     ",
     )?;

@@ -1,11 +1,12 @@
 use std::{fs, path::PathBuf};
 
 use natsume_device_protocol::generated::{
-    LockState, SessionControlActualState, SessionControlTarget, SessionState,
+    ForegroundTarget, SessionControlActualState, SessionControlTarget,
+    SessionForeground as WireForeground, SessionState,
 };
 use natsume_local_control_api::{
-    ContestSessionObservation, ContestSessionState, GraphicalSession, Privileged1Proxy,
-    SessionLockLevel,
+    GraphicalSession, GraphicalSessionState, ManagedSessionsObservation, Privileged1Proxy,
+    SessionForeground, SessionRole,
 };
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -37,7 +38,7 @@ struct PendingTermination {
 /// Session target parsed at the complete Server snapshot boundary.
 #[derive(PartialEq)]
 pub(super) struct ValidatedSessionTarget {
-    desired_lock: SessionLockLevel,
+    foreground_target: SessionRole,
     terminate_epoch: Option<u64>,
 }
 
@@ -48,16 +49,16 @@ impl ValidatedSessionTarget {
 }
 
 pub(super) fn validate_target(target: SessionControlTarget) -> Option<ValidatedSessionTarget> {
-    let desired_lock = match LockState::try_from(target.lock_state).ok()? {
-        LockState::Unlocked => SessionLockLevel::Unlocked,
-        LockState::Locked => SessionLockLevel::Locked,
-        LockState::Unspecified => return None,
+    let foreground_target = match ForegroundTarget::try_from(target.foreground_target).ok()? {
+        ForegroundTarget::Contest => SessionRole::Contest,
+        ForegroundTarget::Waiting => SessionRole::Waiting,
+        ForegroundTarget::Unspecified => return None,
     };
     if target.terminate_epoch.is_some_and(invalid_epoch) {
         return None;
     }
     Some(ValidatedSessionTarget {
-        desired_lock,
+        foreground_target,
         terminate_epoch: target.terminate_epoch,
     })
 }
@@ -120,25 +121,17 @@ impl SessionReconciler {
         {
             return Ok(actual);
         }
-        if let Some(actual) = apply_lock(
-            &proxy,
-            target.desired_lock,
-            completion.completed_terminate_epoch,
-            cancellation,
-        )
-        .await?
-        {
-            return Ok(actual);
-        }
-        let observed = match proxy.query_contest_session().await {
-            Ok(observation) => ReconcileOutcome {
-                retry: matches!(
-                    (observation.state, target.desired_lock),
-                    (ContestSessionState::Active, SessionLockLevel::Locked)
-                        | (ContestSessionState::Locked, SessionLockLevel::Unlocked)
-                ),
-                actual: observation_actual(&observation, completion.completed_terminate_epoch),
-            },
+        check_cancellation(cancellation)?;
+        // TODO(R1/R4): activate the exact role after the Home and Binding guards.
+        // Foreground targets must never be implemented through desktop Lock/Unlock.
+        let observed = match proxy.query_managed_sessions().await {
+            Ok(observation) => {
+                let actual = observation_actual(&observation, completion.completed_terminate_epoch);
+                ReconcileOutcome {
+                    retry: !foreground_is_ready(target.foreground_target, &actual),
+                    actual,
+                }
+            }
             Err(error) => ReconcileOutcome::control_error(
                 error_actual(completion.completed_terminate_epoch),
                 &error,
@@ -191,7 +184,7 @@ impl SessionReconciler {
             return Ok(None);
         };
         check_cancellation(cancellation)?;
-        let observation = match proxy.query_contest_session().await {
+        let observation = match proxy.query_managed_sessions().await {
             Ok(observation) => observation,
             Err(error) => {
                 return Ok(Some(ReconcileOutcome::control_error(
@@ -200,20 +193,22 @@ impl SessionReconciler {
                 )));
             }
         };
-        match observation.state {
-            ContestSessionState::Ambiguous => {
-                Ok(Some(ReconcileOutcome::idle(SessionControlActualState {
-                    session_state: SessionState::Ambiguous.into(),
-                    completed_terminate_epoch: completion.completed_terminate_epoch,
-                })))
+        match observation.contest.state {
+            GraphicalSessionState::Ambiguous | GraphicalSessionState::Error => {
+                Ok(Some(ReconcileOutcome::idle(observation_actual(
+                    &observation,
+                    completion.completed_terminate_epoch,
+                ))))
             }
-            ContestSessionState::None => {
+            GraphicalSessionState::None => {
                 completion.completed_terminate_epoch = Some(epoch);
                 persist_completion(&self.artifact_path, completion)?;
                 Ok(None)
             }
-            ContestSessionState::Active | ContestSessionState::Locked => {
-                let Some(session) = observation.session.as_ref() else {
+            GraphicalSessionState::Running
+            | GraphicalSessionState::Starting
+            | GraphicalSessionState::Terminating => {
+                let Some(session) = observation.contest.session.as_ref() else {
                     return Ok(Some(ReconcileOutcome::idle(error_actual(
                         completion.completed_terminate_epoch,
                     ))));
@@ -253,59 +248,24 @@ impl SessionReconciler {
         let observation = self
             .proxy()
             .await?
-            .query_contest_session()
+            .query_managed_sessions()
             .await
             .map_err(|_| SnapshotError::LocalControl)?;
         Ok(observation_actual(&observation, completion))
     }
 }
 
-async fn apply_lock(
-    proxy: &Privileged1Proxy<'_>,
-    desired: SessionLockLevel,
-    completed_epoch: Option<u64>,
-    cancellation: &CancellationToken,
-) -> Result<Option<ReconcileOutcome<SessionControlActualState>>, SnapshotError> {
-    check_cancellation(cancellation)?;
-    let observation = match proxy.query_contest_session().await {
-        Ok(observation) => observation,
-        Err(error) => {
-            return Ok(Some(ReconcileOutcome::control_error(
-                error_actual(completed_epoch),
-                &error,
-            )));
+fn foreground_is_ready(role: SessionRole, actual: &SessionControlActualState) -> bool {
+    match role {
+        SessionRole::Waiting => {
+            actual.foreground == i32::from(WireForeground::Waiting) && actual.waiting_ready
         }
-    };
-    let Some(session) = observation.session.as_ref() else {
-        return Ok(Some(ReconcileOutcome::idle(observation_actual(
-            &observation,
-            completed_epoch,
-        ))));
-    };
-    let current = match observation.state {
-        ContestSessionState::Active => SessionLockLevel::Unlocked,
-        ContestSessionState::Locked => SessionLockLevel::Locked,
-        ContestSessionState::None | ContestSessionState::Ambiguous => {
-            return Ok(Some(ReconcileOutcome::idle(observation_actual(
-                &observation,
-                completed_epoch,
-            ))));
+        SessionRole::Contest => {
+            actual.foreground == i32::from(WireForeground::Contest)
+                && actual.session_state == i32::from(SessionState::Running)
+                && actual.contest_ready
         }
-    };
-    if current == desired {
-        return Ok(Some(ReconcileOutcome::idle(observation_actual(
-            &observation,
-            completed_epoch,
-        ))));
     }
-    check_cancellation(cancellation)?;
-    if let Err(error) = proxy.set_contest_session_lock(session, desired).await {
-        return Ok(Some(ReconcileOutcome::control_error(
-            error_actual(completed_epoch),
-            &error,
-        )));
-    }
-    Ok(None)
 }
 
 enum CompletionState {
@@ -360,18 +320,35 @@ fn may_resume_pending(pending: &PendingTermination, target_epoch: Option<u64>) -
 }
 
 fn observation_actual(
-    observation: &ContestSessionObservation,
+    observation: &ManagedSessionsObservation,
     completed_terminate_epoch: Option<u64>,
 ) -> SessionControlActualState {
-    let state = match observation.state {
-        ContestSessionState::None => SessionState::None,
-        ContestSessionState::Active => SessionState::Active,
-        ContestSessionState::Locked => SessionState::Locked,
-        ContestSessionState::Ambiguous => SessionState::Ambiguous,
+    let state = match observation.contest.state {
+        GraphicalSessionState::None => SessionState::None,
+        GraphicalSessionState::Starting => SessionState::Starting,
+        GraphicalSessionState::Running => SessionState::Running,
+        GraphicalSessionState::Terminating => SessionState::Terminating,
+        GraphicalSessionState::Ambiguous => SessionState::Ambiguous,
+        GraphicalSessionState::Error => SessionState::Error,
+    };
+    let foreground = match observation.foreground {
+        SessionForeground::Unknown => WireForeground::Unknown,
+        SessionForeground::Waiting => WireForeground::Waiting,
+        SessionForeground::Contest => WireForeground::Contest,
+        SessionForeground::Greeter => WireForeground::Greeter,
+        SessionForeground::Other => WireForeground::Other,
+        SessionForeground::None => WireForeground::None,
     };
     SessionControlActualState {
         session_state: state.into(),
         completed_terminate_epoch,
+        foreground: foreground.into(),
+        // TODO(R3): combine fresh waiting observations with the exact Agent frame/lease.
+        waiting_ready: false,
+        contest_ready: state == SessionState::Running
+            && observation.contest.session.is_some()
+            && observation.contest.desktop_ready
+            && !observation.contest.locked_hint,
     }
 }
 
@@ -379,6 +356,7 @@ fn terminating_actual(completed_terminate_epoch: Option<u64>) -> SessionControlA
     SessionControlActualState {
         session_state: SessionState::Terminating.into(),
         completed_terminate_epoch,
+        ..SessionControlActualState::default()
     }
 }
 
@@ -386,6 +364,7 @@ fn error_actual(completed_terminate_epoch: Option<u64>) -> SessionControlActualS
     SessionControlActualState {
         session_state: SessionState::Error.into(),
         completed_terminate_epoch,
+        ..SessionControlActualState::default()
     }
 }
 
@@ -482,5 +461,72 @@ pub(super) mod tests {
             .unwrap_or_else(|error| panic!("fixture must persist: {error}"));
 
         assert!(matches!(read_completion(&path), CompletionState::Failed));
+    }
+    #[test]
+    fn targets_accept_only_waiting_contest_and_valid_transition_epochs() {
+        for (wire, role) in [
+            (ForegroundTarget::Waiting, SessionRole::Waiting),
+            (ForegroundTarget::Contest, SessionRole::Contest),
+        ] {
+            let target = validate_target(SessionControlTarget {
+                foreground_target: wire.into(),
+                terminate_epoch: Some(1),
+            })
+            .unwrap_or_else(|| panic!("managed role"));
+            assert_eq!(target.foreground_target, role);
+            assert_eq!(target.terminate_epoch, Some(1));
+        }
+        for foreground in [0, 3, 4, 5, 99, -1] {
+            assert!(
+                validate_target(SessionControlTarget {
+                    foreground_target: foreground,
+                    terminate_epoch: None
+                })
+                .is_none()
+            );
+        }
+        for epoch in [0, u64::MAX] {
+            assert!(
+                validate_target(SessionControlTarget {
+                    foreground_target: ForegroundTarget::Waiting.into(),
+                    terminate_epoch: Some(epoch)
+                })
+                .is_none()
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_observations_do_not_substitute_for_waiting_frame_confirmation() {
+        use natsume_local_control_api::GraphicalSessionObservation;
+        let role = |id: &str| GraphicalSessionObservation {
+            state: GraphicalSessionState::Running,
+            session: Some(GraphicalSession {
+                logind_session_id: id.to_owned(),
+                boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+            }),
+            desktop_ready: true,
+            locked_hint: false,
+        };
+        let mut observed = ManagedSessionsObservation {
+            waiting: role("w1"),
+            contest: role("c2"),
+            foreground: SessionForeground::Waiting,
+        };
+        let actual = observation_actual(&observed, Some(3));
+        assert_eq!(actual.session_state, i32::from(SessionState::Running));
+        assert_eq!(actual.foreground, i32::from(WireForeground::Waiting));
+        assert_eq!(actual.completed_terminate_epoch, Some(3));
+        assert!(actual.contest_ready);
+        assert!(!actual.waiting_ready);
+        assert!(!foreground_is_ready(SessionRole::Waiting, &actual));
+        assert!(!foreground_is_ready(SessionRole::Contest, &actual));
+        observed.foreground = SessionForeground::Contest;
+        observed.contest.locked_hint = true;
+        let locked = observation_actual(&observed, Some(3));
+        assert_eq!(locked.session_state, i32::from(SessionState::Running));
+        assert!(!locked.contest_ready);
+        assert!(!locked.waiting_ready);
+        assert!(!foreground_is_ready(SessionRole::Contest, &locked));
     }
 }

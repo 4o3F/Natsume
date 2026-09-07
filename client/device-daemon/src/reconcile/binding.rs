@@ -11,8 +11,8 @@ use natsume_device_protocol::generated::{
 };
 use natsume_device_protocol::is_valid_domjudge_username;
 use natsume_local_control_api::{
-    BindingSubmission, ContestSessionState, DEVICE1_PATH, DEVICE1_SERVICE, GraphicalSession,
-    Privileged1Proxy, SessionAgentLease, SessionScreenKind, SessionUiSnapshot,
+    BindingSubmission, DEVICE1_PATH, DEVICE1_SERVICE, GraphicalSession, GraphicalSessionState,
+    Privileged1Proxy, SessionAgentLease, SessionPresentation, SessionScreenKind, SessionUiSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
@@ -339,7 +339,7 @@ impl BindingInputProvider {
             return Ok(SessionUiSnapshot {
                 session,
                 ui_revision: state.ui_revision,
-                screen: SessionScreenKind::Hidden,
+                screen: SessionScreenKind::Waiting,
                 binding_error_code: None,
                 negotiation_id: None,
                 submission_epoch: None,
@@ -502,12 +502,12 @@ impl DeviceService {
             return false;
         };
         matches!(
-            proxy.query_contest_session().await,
+            proxy.query_managed_sessions().await,
             Ok(observation)
                 if matches!(
-                    observation.state,
-                    ContestSessionState::Active | ContestSessionState::Locked
-                ) && observation.session.as_ref() == Some(session)
+                    observation.waiting.state,
+                    GraphicalSessionState::Running
+                ) && observation.waiting.session.as_ref() == Some(session)
         )
     }
 
@@ -629,6 +629,27 @@ impl DeviceService {
         self.provider
             .ui_snapshot(session)
             .map_err(|_| service_error("Session UI state is unavailable"))
+    }
+
+    #[zbus(name = "ConfirmSessionPresentation")]
+    fn confirm_session_presentation(
+        &self,
+        lease_id: &str,
+        presentation: SessionPresentation,
+    ) -> zbus::fdo::Result<()> {
+        let SessionPresentation { session, .. } = presentation;
+        let registered = self
+            .registered
+            .lock()
+            .map_err(|_| service_error("Session Agent state is unavailable"))?;
+        if !registration_matches(registered.as_ref(), lease_id, &session, unix_time_ms()) {
+            return Err(service_error("Session Agent lease is stale"));
+        }
+        // TODO(R3): authenticate the connection/lease and validate the presented revision.
+        // R0 defines the typed boundary but must not acknowledge unverified frames.
+        Err(service_error(
+            "Session presentation verification is unavailable",
+        ))
     }
 
     #[zbus(name = "SubmitBinding")]
@@ -946,7 +967,7 @@ pub(super) mod tests {
             .ui_snapshot(session)
             .unwrap_or_else(|error| panic!("UI snapshot must be available: {error}"));
 
-        assert_eq!(ineligible.screen, SessionScreenKind::Hidden);
+        assert_eq!(ineligible.screen, SessionScreenKind::Waiting);
         assert_eq!(eligible.screen, SessionScreenKind::BindingPrompt);
     }
 
@@ -1065,6 +1086,9 @@ pub(super) mod tests {
             &super::super::validate_server_snapshot(super::super::tests::snapshot())
                 .unwrap_or_else(|error| panic!("fixture target: {error}")),
             &SessionControlActualState {
+                contest_ready: true,
+                waiting_ready: false,
+                foreground: natsume_device_protocol::generated::SessionForeground::Contest.into(),
                 session_state: SessionState::None.into(),
                 completed_terminate_epoch: Some(1),
             },

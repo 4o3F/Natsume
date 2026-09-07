@@ -51,39 +51,63 @@ pub struct GraphicalSession {
     pub boot_id: String,
 }
 
-/// Exact lock level requested for the current graphical session.
+/// The only two roles accepted by privileged graphical-session operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-pub enum SessionLockLevel {
-    Unlocked,
-    Locked,
+pub enum SessionRole {
+    Waiting,
+    Contest,
 }
 
-/// Bounded observation of the fixed contestant user's eligible graphical session.
+/// Lifecycle of one fixed role, independent of foreground and GNOME locking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
-pub enum ContestSessionState {
+pub enum GraphicalSessionState {
     None,
-    Active,
-    Locked,
+    Starting,
+    Running,
+    Terminating,
     Ambiguous,
+    Error,
 }
 
-/// Re-sampled contestant session state returned by the privileged helper.
+/// Actual seat0 foreground; these observation values are not remote targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionForeground {
+    Unknown,
+    Waiting,
+    Contest,
+    Greeter,
+    Other,
+    None,
+}
+
+/// Helper-owned observation of one role. Display evidence is always fresh.
 ///
-/// `session` is present exactly for `Active` and `Locked`. Ambiguous or absent
-/// sessions intentionally expose no candidate target.
+/// Only Starting/Running/Terminating may carry an exact session identity.
+/// A Running lifecycle does not imply desktop readiness or foreground ownership.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
-pub struct ContestSessionObservation {
-    pub state: ContestSessionState,
+pub struct GraphicalSessionObservation {
+    pub state: GraphicalSessionState,
     pub session: Option<GraphicalSession>,
+    pub desktop_ready: bool,
+    pub locked_hint: bool,
+}
+
+/// The helper owns OS observations; the Daemon separately owns Agent UI leases.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct ManagedSessionsObservation {
+    pub waiting: GraphicalSessionObservation,
+    pub contest: GraphicalSessionObservation,
+    pub foreground: SessionForeground,
 }
 
 /// Screen selected by the Daemon for the current graphical session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionScreenKind {
-    Hidden,
+    Waiting,
     BindingPrompt,
     BindingPending,
 }
@@ -109,6 +133,20 @@ pub struct SessionAgentLease {
     pub lease_id: String,
     pub session: GraphicalSession,
     pub expires_at_unix_ms: i64,
+}
+
+/// Frame evidence for one exact UI revision and graphical session.
+///
+/// Device1 authenticates the caller connection and lease separately. A first
+/// frame with nonzero fullscreen dimensions is necessary, not sufficient, for
+/// `waiting_ready`: fresh Helper desktop/session observations are also required.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct SessionPresentation {
+    pub session: GraphicalSession,
+    pub ui_revision: u64,
+    pub first_frame_presented: bool,
+    pub fullscreen_width: u32,
+    pub fullscreen_height: u32,
 }
 
 /// A user-confirmed Binding input for the exact current negotiation generation.
@@ -175,6 +213,13 @@ pub trait Device1 {
         session: &GraphicalSession,
     ) -> zbus::Result<SessionUiSnapshot>;
 
+    #[zbus(name = "ConfirmSessionPresentation")]
+    fn confirm_session_presentation(
+        &self,
+        lease_id: &str,
+        presentation: &SessionPresentation,
+    ) -> zbus::Result<()>;
+
     #[zbus(name = "SubmitBinding")]
     fn submit_binding(&self, lease_id: &str, submission: &BindingSubmission) -> zbus::Result<()>;
 }
@@ -195,15 +240,8 @@ pub trait Privileged1 {
     #[zbus(name = "HasHomeResetState")]
     fn has_home_reset_state(&self) -> Result<bool, ResourceControlError>;
 
-    #[zbus(name = "QueryContestSession")]
-    fn query_contest_session(&self) -> Result<ContestSessionObservation, ResourceControlError>;
-
-    #[zbus(name = "SetContestSessionLock")]
-    fn set_contest_session_lock(
-        &self,
-        session: &GraphicalSession,
-        level: SessionLockLevel,
-    ) -> Result<(), ResourceControlError>;
+    #[zbus(name = "QueryManagedSessions")]
+    fn query_managed_sessions(&self) -> Result<ManagedSessionsObservation, ResourceControlError>;
 
     #[zbus(name = "TerminateContestSession")]
     fn terminate_contest_session(
@@ -237,7 +275,15 @@ mod tests {
     #[test]
     fn local_control_types_have_stable_dbus_signatures() {
         assert_eq!(<SessionUiSnapshot as Type>::SIGNATURE, "((ss)tuasasat)");
-        assert_eq!(<ContestSessionObservation as Type>::SIGNATURE, "(ua(ss))");
+        assert_eq!(
+            <GraphicalSessionObservation as Type>::SIGNATURE,
+            "(ua(ss)bb)"
+        );
+        assert_eq!(
+            <ManagedSessionsObservation as Type>::SIGNATURE,
+            "((ua(ss)bb)(ua(ss)bb)u)"
+        );
+        assert_eq!(<SessionPresentation as Type>::SIGNATURE, "((ss)tbuu)");
         assert_eq!(<Option<HomeResetProgress> as Type>::SIGNATURE, "a(tu)");
     }
 }

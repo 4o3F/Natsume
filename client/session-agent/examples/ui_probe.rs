@@ -1,7 +1,6 @@
-// Development-only probe harness; never packaged. Close hides non-mandatory
-// screens while the process stays resident. A Binding prompt cannot be closed.
-// Exit the probe with Ctrl-C. `ui_probe hidden` creates no window at all and
-// parks in the event loop, demonstrating the same invariant.
+// Development-only probe harness; never packaged. All screens remain visible
+// when closing is requested. Exit the probe with Ctrl-C.
+// `ui_probe waiting` displays the black waiting placeholder.
 use std::{
     env,
     ffi::OsString,
@@ -14,7 +13,7 @@ use natsume_session_agent::ui;
 
 fn parse_screen_kind(value: &str) -> Option<SessionScreenKind> {
     match value {
-        "hidden" => Some(SessionScreenKind::Hidden),
+        "waiting" => Some(SessionScreenKind::Waiting),
         "binding_prompt" => Some(SessionScreenKind::BindingPrompt),
         "binding_pending" => Some(SessionScreenKind::BindingPending),
         _ => None,
@@ -53,7 +52,7 @@ fn write_error(message: &str) {
 }
 
 fn main() -> ExitCode {
-    // The probe observes the confirm/cancel round-trip through tracing lines
+    // The probe observes the confirm round-trip through tracing lines
     // emitted by ui::apply's callbacks, so the subscriber must be installed.
     if tracing_subscriber::fmt()
         .with_ansi(false)

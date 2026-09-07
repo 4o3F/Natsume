@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionLock, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.0.0"
   },
   "paths": {
@@ -699,7 +699,7 @@
         ]
       },
       "put": {
-        "operationId": "setDeviceSessionLock",
+        "operationId": "setDeviceSessionForeground",
         "parameters": [
           {
             "name": "device_id",
@@ -715,7 +715,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/SessionLockRequest"
+                "$ref": "#/components/schemas/SessionForegroundRequest"
               }
             }
           },
@@ -723,7 +723,7 @@
         },
         "responses": {
           "200": {
-            "description": "Session lock target committed",
+            "description": "Session foreground target committed",
             "content": {
               "application/json": {
                 "schema": {
@@ -2462,12 +2462,33 @@
       "SessionActualResponse": {
         "type": "object",
         "description": "Latest validated Session Control Actual reported by the current lease.",
-        "required": ["session_state", "completed_terminate_epoch"],
+        "required": [
+          "session_state",
+          "completed_terminate_epoch",
+          "foreground",
+          "waiting_ready",
+          "contest_ready"
+        ],
         "properties": {
           "completed_terminate_epoch": {
             "type": ["integer", "null"],
             "format": "int64",
             "minimum": 0
+          },
+          "contest_ready": {
+            "type": "boolean"
+          },
+          "foreground": {
+            "type": "string",
+            "description": "The physical foreground is separate from the requested managed role.",
+            "enum": [
+              "unknown",
+              "waiting",
+              "contest",
+              "greeter",
+              "other",
+              "none"
+            ]
           },
           "session_state": {
             "type": "string",
@@ -2475,12 +2496,14 @@
             "enum": [
               "none",
               "starting",
-              "active",
-              "locked",
+              "running",
               "terminating",
               "ambiguous",
               "error"
             ]
+          },
+          "waiting_ready": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -2506,12 +2529,12 @@
       "SessionControlTargetResponse": {
         "type": "object",
         "description": "Concrete initialized Session Control target.",
-        "required": ["lock_state", "terminate_epoch"],
+        "required": ["foreground_target", "terminate_epoch"],
         "properties": {
-          "lock_state": {
+          "foreground_target": {
             "type": "string",
-            "description": "Desired Session lock level accepted and returned by the API.",
-            "enum": ["unlocked", "locked"]
+            "description": "Desired Session foreground role accepted and returned by the API.",
+            "enum": ["contest", "waiting"]
           },
           "terminate_epoch": {
             "type": ["integer", "null"],
@@ -2560,15 +2583,15 @@
         },
         "additionalProperties": false
       },
-      "SessionLockRequest": {
+      "SessionForegroundRequest": {
         "type": "object",
-        "description": "Complete Session lock mutation body.",
-        "required": ["lock_state"],
+        "description": "Complete Session foreground mutation body.",
+        "required": ["foreground_target"],
         "properties": {
-          "lock_state": {
+          "foreground_target": {
             "type": "string",
-            "description": "Desired Session lock level accepted and returned by the API.",
-            "enum": ["unlocked", "locked"]
+            "description": "Desired Session foreground role accepted and returned by the API.",
+            "enum": ["contest", "waiting"]
           }
         },
         "additionalProperties": false

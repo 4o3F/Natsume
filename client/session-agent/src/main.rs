@@ -67,6 +67,39 @@ fn session_identity() -> Result<GraphicalSession, RunError> {
     })
 }
 
+async fn is_waiting_user() -> Result<bool, RunError> {
+    use std::os::unix::fs::MetadataExt as _;
+    let uid = fs::metadata("/proc/self").map_err(RunError::Runtime)?.uid();
+    let connection = zbus::Connection::system()
+        .await
+        .map_err(|_| RunError::Identity("system D-Bus is unavailable"))?;
+    let manager = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await
+    .map_err(|_| RunError::Identity("logind is unavailable"))?;
+    let path: zbus::zvariant::OwnedObjectPath = manager
+        .call("GetUser", &(uid,))
+        .await
+        .map_err(|_| RunError::Identity("local user is unavailable"))?;
+    let user = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.login1",
+        path,
+        "org.freedesktop.login1.User",
+    )
+    .await
+    .map_err(|_| RunError::Identity("local user is unavailable"))?;
+    let name: String = user
+        .get_property("Name")
+        .await
+        .map_err(|_| RunError::Identity("local user name is unavailable"))?;
+    Ok(name == "waiting")
+}
+
 fn singleton_lock(runtime_directory: &Path) -> io::Result<File> {
     let lock_path = runtime_directory.join(SESSION_AGENT_SINGLETON_RELATIVE_PATH);
     let lock_directory = lock_path.parent().ok_or_else(|| {
@@ -96,11 +129,11 @@ fn renew_after(lease: &SessionAgentLease) -> Duration {
     Duration::from_millis(u64::try_from((remaining / 2).max(1_000)).unwrap_or(1_000))
 }
 
-fn hidden_snapshot(session: &GraphicalSession) -> SessionUiSnapshot {
+fn waiting_snapshot(session: &GraphicalSession) -> SessionUiSnapshot {
     SessionUiSnapshot {
         session: session.clone(),
         ui_revision: 0,
-        screen: SessionScreenKind::Hidden,
+        screen: SessionScreenKind::Waiting,
         binding_error_code: None,
         negotiation_id: None,
         submission_epoch: None,
@@ -186,7 +219,7 @@ async fn device_loop(
         match connected(&session, &mut submissions, &mut shutdown).await {
             Err(ConnectionEnd::Disconnected(reason)) => {
                 tracing::warn!(reason, "Session Agent disconnected from Device1");
-                ui::queue(hidden_snapshot(&session));
+                ui::queue(waiting_snapshot(&session));
             }
             Err(ConnectionEnd::Shutdown) => return,
             Ok(()) => {}
@@ -206,6 +239,15 @@ fn run() -> Result<(), RunError> {
     let mut args = env::args_os().skip(1);
     match (args.next().as_deref(), args.next()) {
         (Some(mode), None) if mode == OsStr::new("--autostart") => {
+            let runtime = tokio::runtime::Runtime::new().map_err(RunError::Runtime)?;
+            let waiting = runtime
+                .block_on(async {
+                    tokio::time::timeout(Duration::from_secs(10), is_waiting_user()).await
+                })
+                .map_err(|_| RunError::Identity("local user inspection timed out"))??;
+            if !waiting {
+                return Ok(());
+            }
             let session = session_identity()?;
             let runtime_directory = env::var_os("XDG_RUNTIME_DIR")
                 .filter(|value| !value.is_empty())
@@ -213,15 +255,18 @@ fn run() -> Result<(), RunError> {
                 .filter(|path| path.is_absolute())
                 .ok_or(RunError::Identity("XDG_RUNTIME_DIR is unavailable"))?;
             let _singleton_lock = singleton_lock(&runtime_directory).map_err(RunError::Runtime)?;
-            let runtime = tokio::runtime::Runtime::new().map_err(RunError::Runtime)?;
             let runtime_guard = runtime.enter();
             let (submission_sender, submission_receiver) = mpsc::channel(1);
             let (shutdown_sender, shutdown_receiver) = watch::channel(false);
             ui::set_binding_submission_sender(submission_sender)
                 .map_err(|_| RunError::Identity("Binding submission channel is duplicated"))?;
-            let device_task =
-                runtime.spawn(device_loop(session, submission_receiver, shutdown_receiver));
+            let device_task = runtime.spawn(device_loop(
+                session.clone(),
+                submission_receiver,
+                shutdown_receiver,
+            ));
 
+            ui::queue(waiting_snapshot(&session));
             std::thread::spawn(|| {
                 for _ in 0..100 {
                     let queued = slint::invoke_from_event_loop(|| {
@@ -290,18 +335,18 @@ mod tests {
     };
     use tempfile::TempDir;
 
-    use super::{hidden_snapshot, singleton_lock};
+    use super::{singleton_lock, waiting_snapshot};
 
     #[test]
-    fn disconnect_snapshot_hides_the_exact_session_without_stale_binding_data() {
+    fn disconnect_snapshot_keeps_waiting_without_stale_binding_data() {
         let session = GraphicalSession {
             logind_session_id: "c2".to_owned(),
             boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
         };
-        let snapshot = hidden_snapshot(&session);
+        let snapshot = waiting_snapshot(&session);
 
         assert_eq!(snapshot.session, session);
-        assert_eq!(snapshot.screen, SessionScreenKind::Hidden);
+        assert_eq!(snapshot.screen, SessionScreenKind::Waiting);
         assert!(snapshot.binding_error_code.is_none());
         assert!(snapshot.negotiation_id.is_none());
         assert!(snapshot.submission_epoch.is_none());

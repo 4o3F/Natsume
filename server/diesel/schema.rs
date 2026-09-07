@@ -53,7 +53,7 @@ diesel::table! {
 diesel::table! {
     device_session_targets (device_id) {
         device_id -> Text,
-        lock_state -> Text,
+        foreground_target -> Text,
         terminate_epoch -> Nullable<BigInt>,
     }
 }

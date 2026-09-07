@@ -1,16 +1,16 @@
 syntax = "proto3";
 package natsume.device.control;
 
-enum LockState {
-  LOCK_STATE_UNSPECIFIED = 0;
-  LOCK_STATE_UNLOCKED    = 1;
-  LOCK_STATE_LOCKED      = 2;
+enum ForegroundTarget {
+  FOREGROUND_TARGET_UNSPECIFIED = 0;
+  FOREGROUND_TARGET_CONTEST     = 1;
+  FOREGROUND_TARGET_WAITING     = 2;
 }
 
 // Device-level current target. terminate_epoch is a monotonic Transition in
 // 1..=i64::MAX; absence means no terminate has ever been requested.
 message SessionControlTarget {
-  LockState        lock_state      = 1;
+  ForegroundTarget foreground_target = 1;
   optional uint64  terminate_epoch = 2;
 }
 
@@ -18,11 +18,20 @@ enum SessionState {
   SESSION_STATE_UNSPECIFIED = 0;
   SESSION_STATE_NONE        = 1;
   SESSION_STATE_STARTING    = 2;
-  SESSION_STATE_ACTIVE      = 3;
-  SESSION_STATE_LOCKED      = 4;
-  SESSION_STATE_TERMINATING = 5;
-  SESSION_STATE_AMBIGUOUS   = 6;
-  SESSION_STATE_ERROR       = 7;
+  SESSION_STATE_RUNNING     = 3;
+  SESSION_STATE_TERMINATING = 4;
+  SESSION_STATE_AMBIGUOUS   = 5;
+  SESSION_STATE_ERROR       = 6;
+}
+
+// Observed seat0 foreground, never accepted as a desired role.
+enum SessionForeground {
+  SESSION_FOREGROUND_UNKNOWN = 0;
+  SESSION_FOREGROUND_WAITING = 1;
+  SESSION_FOREGROUND_CONTEST = 2;
+  SESSION_FOREGROUND_GREETER = 3;
+  SESSION_FOREGROUND_OTHER   = 4;
+  SESSION_FOREGROUND_NONE    = 5;
 }
 
 message SessionControlActualState {
@@ -30,6 +39,12 @@ message SessionControlActualState {
   // Latest durably completed terminate epoch; never advances by retargeting an
   // old intent to a replacement graphical session.
   optional uint64 completed_terminate_epoch = 2;
+  SessionForeground foreground             = 3;
+  // Fresh display evidence. Absence/false never grants access or convergence.
+  // waiting_ready includes an exact Agent lease and presented fullscreen frame;
+  // neither readiness field implies that its session occupies the foreground.
+  bool waiting_ready                       = 4;
+  bool contest_ready                       = 5;
 }
 
 // reset_epoch is a monotonic Transition in 1..=i64::MAX. Home reset affects only

@@ -52,10 +52,10 @@ impl SessionControlComponent {
             .read(|transaction| {
                 let rows = db::list_targets(transaction)?;
                 let mut targets = HashMap::with_capacity(rows.len());
-                for (device_id, lock_state, terminate_epoch) in rows {
+                for (device_id, foreground_target, terminate_epoch) in rows {
                     let device_id = DeviceId::parse(&device_id)
                         .ok_or(SessionControlError::InvalidPersistedFacts)?;
-                    let target = parse_target((lock_state, terminate_epoch))?;
+                    let target = parse_target((foreground_target, terminate_epoch))?;
                     targets.insert(device_id, target);
                 }
                 Ok(targets)
@@ -64,28 +64,28 @@ impl SessionControlComponent {
             .map_err(TransactionError::into_error)
     }
 
-    /// Sets the durable lock target while preserving the terminate epoch.
-    pub(crate) async fn set_lock(
+    /// Sets the durable foreground target while preserving the terminate epoch.
+    pub(crate) async fn set_foreground(
         &self,
         device_id: DeviceId,
-        lock_state: LockState,
+        foreground_target: ForegroundTarget,
     ) -> Result<SessionControlTarget, SessionControlError> {
         self.database
             .write(move |transaction| {
                 let mut target = find_or_insert_target(transaction, &device_id)?;
-                if target.lock_state == lock_state {
+                if target.foreground_target == foreground_target {
                     return Ok(target);
                 }
-                let persisted_lock_state = match lock_state {
-                    LockState::Unlocked => "unlocked",
-                    LockState::Locked => "locked",
+                let persisted_foreground_target = match foreground_target {
+                    ForegroundTarget::Contest => "contest",
+                    ForegroundTarget::Waiting => "waiting",
                 };
-                require_one(db::update_lock_state(
+                require_one(db::update_foreground_target(
                     transaction,
                     &device_id,
-                    persisted_lock_state,
+                    persisted_foreground_target,
                 )?)?;
-                target.lock_state = lock_state;
+                target.foreground_target = foreground_target;
                 Ok(target)
             })
             .await
@@ -123,14 +123,15 @@ fn find_or_insert_target(
     device_id: &DeviceId,
 ) -> Result<SessionControlTarget, SessionControlError> {
     require_existing_device(transaction, device_id)?;
-    let Some((lock_state, terminate_epoch)) = db::find_target(transaction, device_id)? else {
+    let Some((foreground_target, terminate_epoch)) = db::find_target(transaction, device_id)?
+    else {
         require_one(db::insert_default_target(transaction, device_id)?)?;
         return Ok(SessionControlTarget {
-            lock_state: LockState::Unlocked,
+            foreground_target: ForegroundTarget::Contest,
             terminate_epoch: None,
         });
     };
-    parse_target((lock_state, terminate_epoch))
+    parse_target((foreground_target, terminate_epoch))
 }
 
 fn require_existing_device(
@@ -145,11 +146,11 @@ fn require_existing_device(
 }
 
 fn parse_target(
-    (lock_state, terminate_epoch): (String, Option<i64>),
+    (foreground_target, terminate_epoch): (String, Option<i64>),
 ) -> Result<SessionControlTarget, SessionControlError> {
-    let lock_state = match lock_state.as_str() {
-        "unlocked" => LockState::Unlocked,
-        "locked" => LockState::Locked,
+    let foreground_target = match foreground_target.as_str() {
+        "contest" => ForegroundTarget::Contest,
+        "waiting" => ForegroundTarget::Waiting,
         _ => return Err(SessionControlError::InvalidPersistedFacts),
     };
     let terminate_epoch = match terminate_epoch {
@@ -158,7 +159,7 @@ fn parse_target(
         Some(_) => return Err(SessionControlError::InvalidPersistedFacts),
     };
     Ok(SessionControlTarget {
-        lock_state,
+        foreground_target,
         terminate_epoch,
     })
 }
@@ -172,20 +173,20 @@ fn require_one(updated: usize) -> Result<(), SessionControlError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LockState {
-    Unlocked,
-    Locked,
+pub(crate) enum ForegroundTarget {
+    Contest,
+    Waiting,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SessionControlTarget {
-    lock_state: LockState,
+    foreground_target: ForegroundTarget,
     terminate_epoch: Option<u64>,
 }
 
 impl SessionControlTarget {
-    pub(crate) const fn lock_state(&self) -> LockState {
-        self.lock_state
+    pub(crate) const fn foreground_target(&self) -> ForegroundTarget {
+        self.foreground_target
     }
 
     pub(crate) const fn terminate_epoch(&self) -> Option<u64> {

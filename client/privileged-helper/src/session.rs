@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
 use natsume_local_control_api::{
-    ContestSessionObservation, ContestSessionState, GraphicalSession, ResourceControlError,
-    SessionLockLevel,
+    GraphicalSession, GraphicalSessionObservation, GraphicalSessionState,
+    ManagedSessionsObservation, ResourceControlError, SessionForeground, SessionRole,
 };
 use uuid::Uuid;
 use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
@@ -11,16 +11,15 @@ const LOGIN1_SERVICE: &str = "org.freedesktop.login1";
 const LOGIN1_MANAGER_PATH: &str = "/org/freedesktop/login1";
 const LOGIN1_MANAGER_INTERFACE: &str = "org.freedesktop.login1.Manager";
 const LOGIN1_SESSION_INTERFACE: &str = "org.freedesktop.login1.Session";
-const CONTEST_USER: &str = "contest";
-const CONTEST_SEAT: &str = "seat0";
+const MANAGED_SEAT: &str = "seat0";
 const BOOT_ID_PATH: &str = "proc/sys/kernel/random/boot_id";
 
 struct LocalGraphicalSession {
     id: String,
     path: OwnedObjectPath,
-    active: bool,
     seat: String,
     locked: bool,
+    is_x11: bool,
 }
 
 fn unavailable(message: &'static str) -> ResourceControlError {
@@ -64,7 +63,9 @@ fn valid_boot_id(value: &str) -> bool {
 
 async fn local_graphical_sessions(
     connection: &Connection,
+    role: SessionRole,
 ) -> Result<Vec<LocalGraphicalSession>, ResourceControlError> {
+    // TODO(R1): verify the fixed UID and native GNOME runtime for each role.
     let manager = Proxy::new(
         connection,
         LOGIN1_SERVICE,
@@ -79,7 +80,12 @@ async fn local_graphical_sessions(
         .map_err(logind_error)?;
     let mut sessions = Vec::new();
     for (id, _uid, user, seat, path) in listed {
-        if user != CONTEST_USER {
+        if user
+            != match role {
+                SessionRole::Waiting => "waiting",
+                SessionRole::Contest => "contest",
+            }
+        {
             continue;
         }
         let session = Proxy::new(
@@ -90,7 +96,6 @@ async fn local_graphical_sessions(
         )
         .await
         .map_err(logind_error)?;
-        let active: bool = session.get_property("Active").await.map_err(logind_error)?;
         let remote: bool = session.get_property("Remote").await.map_err(logind_error)?;
         let class: String = session.get_property("Class").await.map_err(logind_error)?;
         let kind: String = session.get_property("Type").await.map_err(logind_error)?;
@@ -104,9 +109,9 @@ async fn local_graphical_sessions(
         sessions.push(LocalGraphicalSession {
             id,
             path,
-            active,
             seat,
             locked,
+            is_x11: kind == "x11",
         });
     }
     Ok(sessions)
@@ -115,65 +120,41 @@ async fn local_graphical_sessions(
 pub(super) async fn observe(
     connection: &Connection,
     filesystem_root: &Path,
-) -> Result<ContestSessionObservation, ResourceControlError> {
+) -> Result<ManagedSessionsObservation, ResourceControlError> {
     let boot_id = read_boot_id(filesystem_root)?;
-    let sessions = local_graphical_sessions(connection).await?;
-    Ok(observe_sessions(&sessions, boot_id))
+    let waiting = local_graphical_sessions(connection, SessionRole::Waiting).await?;
+    let contest = local_graphical_sessions(connection, SessionRole::Contest).await?;
+    Ok(ManagedSessionsObservation {
+        waiting: observe_sessions(&waiting, boot_id.clone()),
+        contest: observe_sessions(&contest, boot_id),
+        // TODO(R1): sample seat0's actual foreground independently of role lifecycle.
+        foreground: SessionForeground::Unknown,
+    })
 }
 
 fn observe_sessions(
     sessions: &[LocalGraphicalSession],
     boot_id: String,
-) -> ContestSessionObservation {
-    match sessions {
-        [] => ContestSessionObservation {
-            state: ContestSessionState::None,
-            session: None,
-        },
-        [session] if session.active && session.seat == CONTEST_SEAT => ContestSessionObservation {
-            state: if session.locked {
-                ContestSessionState::Locked
-            } else {
-                ContestSessionState::Active
-            },
-            session: Some(GraphicalSession {
+) -> GraphicalSessionObservation {
+    let (state, session, locked_hint) = match sessions {
+        [] => (GraphicalSessionState::None, None, false),
+        [session] if session.seat == MANAGED_SEAT && session.is_x11 => (
+            GraphicalSessionState::Running,
+            Some(GraphicalSession {
                 logind_session_id: session.id.clone(),
                 boot_id,
             }),
-        },
-        _ => ContestSessionObservation {
-            state: ContestSessionState::Ambiguous,
-            session: None,
-        },
-    }
-}
-
-async fn exact_lock_session<'a>(
-    connection: &'a Connection,
-    filesystem_root: &Path,
-    target: &GraphicalSession,
-) -> Result<Proxy<'a>, ResourceControlError> {
-    if read_boot_id(filesystem_root)? != target.boot_id {
-        return Err(rejected("graphical session target is stale"));
-    }
-    let sessions = local_graphical_sessions(connection).await?;
-    let path = exact_active_session_path(&sessions, &target.logind_session_id)?;
-    Proxy::new(connection, LOGIN1_SERVICE, path, LOGIN1_SESSION_INTERFACE)
-        .await
-        .map_err(logind_error)
-}
-
-fn exact_active_session_path(
-    sessions: &[LocalGraphicalSession],
-    target_id: &str,
-) -> Result<OwnedObjectPath, ResourceControlError> {
-    let [session] = sessions else {
-        return Err(rejected("graphical session target is not unique"));
+            session.locked,
+        ),
+        _ => (GraphicalSessionState::Ambiguous, None, false),
     };
-    if session.id != target_id || !session.active || session.seat != CONTEST_SEAT {
-        return Err(rejected("graphical session target is stale"));
+    GraphicalSessionObservation {
+        state,
+        session,
+        // TODO(R1): verify the native GNOME desktop; a logind session is insufficient.
+        desktop_ready: false,
+        locked_hint,
     }
-    Ok(session.path.clone())
 }
 
 fn exact_termination_path(
@@ -188,21 +169,6 @@ fn exact_termination_path(
     Ok(target.map(|target| target.path.clone()))
 }
 
-pub(super) async fn set_lock(
-    connection: &Connection,
-    filesystem_root: &Path,
-    target: &GraphicalSession,
-    level: SessionLockLevel,
-) -> Result<(), ResourceControlError> {
-    let session = exact_lock_session(connection, filesystem_root, target).await?;
-    let method = match level {
-        SessionLockLevel::Unlocked => "Unlock",
-        SessionLockLevel::Locked => "Lock",
-    };
-    let result: Result<(), _> = session.call(method, &()).await;
-    result.map_err(logind_error)
-}
-
 pub(super) async fn terminate(
     connection: &Connection,
     filesystem_root: &Path,
@@ -214,7 +180,7 @@ pub(super) async fn terminate(
     if read_boot_id(filesystem_root)? != target.boot_id {
         return Ok(());
     }
-    let sessions = local_graphical_sessions(connection).await?;
+    let sessions = local_graphical_sessions(connection, SessionRole::Contest).await?;
     let Some(path) = exact_termination_path(&sessions, &target.logind_session_id)? else {
         return Ok(());
     };
@@ -223,7 +189,7 @@ pub(super) async fn terminate(
         .map_err(logind_error)?;
     let result: Result<(), _> = session.call("Terminate", &()).await;
     result.map_err(logind_error)?;
-    let remaining = local_graphical_sessions(connection).await?;
+    let remaining = local_graphical_sessions(connection, SessionRole::Contest).await?;
     if exact_termination_path(&remaining, &target.logind_session_id)?.is_some() {
         return Err(unavailable("logind session termination is incomplete"));
     }
@@ -238,22 +204,22 @@ mod tests {
 
     use zbus::zvariant::OwnedObjectPath;
 
-    use natsume_local_control_api::ContestSessionState;
+    use natsume_local_control_api::GraphicalSessionState;
 
     use super::{
-        LocalGraphicalSession, exact_active_session_path, exact_termination_path, observe_sessions,
-        read_boot_id, valid_boot_id,
+        LocalGraphicalSession, exact_termination_path, observe_sessions, read_boot_id,
+        valid_boot_id,
     };
 
-    fn candidate(id: &str, path: &str, active: bool, seat: &str) -> LocalGraphicalSession {
+    fn candidate(id: &str, path: &str, seat: &str) -> LocalGraphicalSession {
         let path = OwnedObjectPath::try_from(path)
             .unwrap_or_else(|error| panic!("fixture object path failed: {error}"));
         LocalGraphicalSession {
             id: id.to_owned(),
             path,
-            active,
             seat: seat.to_owned(),
             locked: false,
+            is_x11: true,
         }
     }
 
@@ -307,10 +273,8 @@ mod tests {
         let replacement = [candidate(
             "c3",
             "/org/freedesktop/login1/session/c3",
-            true,
             "seat0",
         )];
-        assert!(exact_active_session_path(&replacement, "c2").is_err());
         assert_eq!(
             exact_termination_path(&replacement, "c2")
                 .unwrap_or_else(|error| panic!("absent session lookup failed: {error}")),
@@ -318,10 +282,9 @@ mod tests {
         );
 
         let ambiguous = [
-            candidate("c2", "/org/freedesktop/login1/session/c2", true, "seat0"),
-            candidate("c3", "/org/freedesktop/login1/session/c3", true, "seat0"),
+            candidate("c2", "/org/freedesktop/login1/session/c2", "seat0"),
+            candidate("c3", "/org/freedesktop/login1/session/c3", "seat0"),
         ];
-        assert!(exact_active_session_path(&ambiguous, "c2").is_err());
         assert_eq!(
             exact_termination_path(&ambiguous, "c2")
                 .unwrap_or_else(|error| panic!("old session lookup failed: {error}"))
@@ -332,28 +295,59 @@ mod tests {
     }
 
     #[test]
-    fn inactive_or_non_contest_seat_sessions_are_never_absent() {
+    fn a_background_session_is_running_but_another_seat_is_ambiguous() {
         let boot_id = "550e8400-e29b-41d4-a716-446655440000".to_owned();
         let inactive = [candidate(
             "c2",
             "/org/freedesktop/login1/session/c2",
-            false,
             "seat0",
         )];
         assert_eq!(
             observe_sessions(&inactive, boot_id.clone()).state,
-            ContestSessionState::Ambiguous
+            GraphicalSessionState::Running
         );
 
         let other_seat = [candidate(
             "c3",
             "/org/freedesktop/login1/session/c3",
-            true,
             "seat1",
         )];
         assert_eq!(
             observe_sessions(&other_seat, boot_id).state,
-            ContestSessionState::Ambiguous
+            GraphicalSessionState::Ambiguous
         );
+    }
+
+    #[test]
+    fn lock_hint_and_session_presence_cannot_claim_desktop_readiness() {
+        let mut session = candidate("c2", "/org/freedesktop/login1/session/c2", "seat0");
+        session.locked = true;
+        let observed = observe_sessions(
+            &[session],
+            "550e8400-e29b-41d4-a716-446655440000".to_owned(),
+        );
+        assert_eq!(observed.state, GraphicalSessionState::Running);
+        assert!(observed.locked_hint);
+        assert!(!observed.desktop_ready);
+        assert!(observed.session.is_some());
+    }
+
+    #[test]
+    fn unsupported_graphics_and_multiple_candidates_are_not_absent_or_running() {
+        let boot = "550e8400-e29b-41d4-a716-446655440000".to_owned();
+        let mut unsupported = candidate("c2", "/org/freedesktop/login1/session/c2", "seat0");
+        unsupported.is_x11 = false;
+        assert_eq!(
+            observe_sessions(&[unsupported], boot.clone()).state,
+            GraphicalSessionState::Ambiguous
+        );
+        let multiple = [
+            candidate("c2", "/org/freedesktop/login1/session/c2", "seat0"),
+            candidate("c3", "/org/freedesktop/login1/session/c3", "seat0"),
+        ];
+        let observed = observe_sessions(&multiple, boot);
+        assert_eq!(observed.state, GraphicalSessionState::Ambiguous);
+        assert!(observed.session.is_none());
+        assert!(!observed.desktop_ready);
     }
 }

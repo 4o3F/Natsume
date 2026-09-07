@@ -1,9 +1,10 @@
 use natsume_device_protocol::generated::{
     BindingAccessTarget, BindingContext, BindingEvaluation, BindingInput as WireBindingInput,
     BindingNegotiationIntent, BoundTarget, ClientStateSnapshot, ConcreteTargetState,
-    GatewayCertificateGrant, GatewayCredentialInput as WireGatewayCredentialInput,
-    GatewayCredentialIntent, GatewayTarget, HomeTarget, LockState as WireLockState,
-    RuntimeConfigTarget, SecretBytes, ServerIntentState, ServerStateSnapshot, SessionControlTarget,
+    ForegroundTarget as WireForegroundTarget, GatewayCertificateGrant,
+    GatewayCredentialInput as WireGatewayCredentialInput, GatewayCredentialIntent, GatewayTarget,
+    HomeTarget, RuntimeConfigTarget, SecretBytes, ServerIntentState, ServerStateSnapshot,
+    SessionControlTarget,
 };
 
 use crate::component::{
@@ -13,7 +14,7 @@ use crate::component::{
     },
     device::DeviceId,
     gateway::{GatewayCredentialId, GatewayCredentialInput, MaterializedGateway},
-    session::LockState,
+    session::ForegroundTarget,
 };
 
 use super::{
@@ -104,9 +105,9 @@ pub(super) async fn materialize(
                 domjudge_origin: runtime,
             }),
             session_control: Some(SessionControlTarget {
-                lock_state: match session.lock_state() {
-                    LockState::Unlocked => WireLockState::Unlocked.into(),
-                    LockState::Locked => WireLockState::Locked.into(),
+                foreground_target: match session.foreground_target() {
+                    ForegroundTarget::Contest => WireForegroundTarget::Contest.into(),
+                    ForegroundTarget::Waiting => WireForegroundTarget::Waiting.into(),
                 },
                 terminate_epoch: session.terminate_epoch(),
             }),

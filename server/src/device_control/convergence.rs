@@ -24,7 +24,7 @@ pub(crate) use binding::{
 pub(crate) use gateway::{GatewayActual, GatewayConvergence, GatewayState, GatewayTarget};
 pub(crate) use home::{HomeActual, HomeConvergence, HomeState};
 pub(crate) use runtime::{RuntimeConfigActual, RuntimeConfigConvergence, RuntimeConfigState};
-pub(crate) use session::{SessionActual, SessionConvergence, SessionState};
+pub(crate) use session::{SessionActual, SessionConvergence, SessionForeground, SessionState};
 
 use binding::{binding_convergence_status, binding_target, parse_binding_actual};
 use gateway::{gateway_convergence_status, gateway_target, parse_gateway_actual};
@@ -147,8 +147,12 @@ pub(super) fn build_convergence(
     let session_status = session_convergence_status(
         session_control
             .as_ref()
-            .map(|target| (target.lock_state(), target.terminate_epoch())),
+            .map(|target| (target.foreground_target(), target.terminate_epoch())),
         session_actual.as_ref(),
+        home,
+        home_actual.as_ref(),
+        binding.as_ref(),
+        binding_actual.as_ref(),
     );
 
     DeviceConvergence {
@@ -203,7 +207,7 @@ fn connection_observation(
 
 #[cfg(test)]
 mod tests {
-    use crate::component::session::LockState;
+    use crate::component::session::ForegroundTarget;
 
     use super::{
         BindingActual, ConvergenceStatus, GatewayActual, RuntimeConfigActual, SessionActual,
@@ -243,7 +247,14 @@ mod tests {
             ConvergenceStatus::AwaitingActual
         );
         assert_eq!(
-            session_convergence_status(Some((LockState::Unlocked, None)), None),
+            session_convergence_status(
+                Some((ForegroundTarget::Contest, None)),
+                None,
+                None,
+                None,
+                None,
+                None
+            ),
             ConvergenceStatus::AwaitingActual
         );
         assert_eq!(
@@ -278,8 +289,11 @@ mod tests {
             applied_domjudge_origin: Some("https://example.test".to_owned()),
         };
         let session_actual = SessionActual {
-            session_state: SessionState::Active,
+            session_state: SessionState::Running,
             completed_terminate_epoch: None,
+            foreground: super::SessionForeground::Waiting,
+            waiting_ready: true,
+            contest_ready: true,
         };
         let home_actual = HomeActual {
             state: HomeState::Steady,
@@ -299,7 +313,14 @@ mod tests {
             ConvergenceStatus::Converged
         );
         assert_eq!(
-            session_convergence_status(Some((LockState::Unlocked, None)), Some(&session_actual)),
+            session_convergence_status(
+                Some((ForegroundTarget::Waiting, None)),
+                Some(&session_actual),
+                None,
+                Some(&home_actual),
+                Some(&binding),
+                Some(&binding_actual)
+            ),
             ConvergenceStatus::Converged
         );
         assert_eq!(
