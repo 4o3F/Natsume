@@ -251,7 +251,7 @@ async fn run_active(
     let mut stable = false;
     let mut last_sent = None::<ClientStateSnapshot>;
     let (mut current, mut queued) = (None::<CurrentPlan>, None::<PendingPlan>);
-    let mut observation = Some(start_observation(Arc::clone(&snapshots)));
+    let mut observation = Some(start_observation(Arc::clone(&snapshots), None));
     let mut retry = RetrySchedule::new();
     let mut local_change_pending = false;
     let mut awaiting_target = false;
@@ -343,7 +343,7 @@ async fn run_active(
                 retry.completed(finished.target, outcome.retry);
                 if local_change_pending {
                     local_change_pending = false;
-                    observation = Some(start_observation(Arc::clone(&snapshots)));
+                    observation = Some(start_observation(Arc::clone(&snapshots), retry.target.clone()));
                     continue;
                 }
                 let Ok(sent) = send_changed_snapshot(&mut socket, session_id, &mut last_sent, outcome.actual).await else {
@@ -370,7 +370,7 @@ async fn run_active(
                 };
                 if local_change_pending {
                     local_change_pending = false;
-                    observation = Some(start_observation(Arc::clone(&snapshots)));
+                    observation = Some(start_observation(Arc::clone(&snapshots), retry.target.clone()));
                     continue;
                 }
                 let Ok(sent) = send_changed_snapshot(&mut socket, session_id, &mut last_sent, snapshot).await else {
@@ -387,12 +387,12 @@ async fn run_active(
                 if heartbeat_due && !send_heartbeat(&mut socket, session_id).await {
                     break;
                 }
-                if current.is_some() || awaiting_target {
+                if current.is_some() {
                     local_change_pending = true;
                 } else if observation.is_some() {
                     local_change_pending |= !heartbeat_due;
                 } else {
-                    observation = Some(start_observation(Arc::clone(&snapshots)));
+                    observation = Some(start_observation(Arc::clone(&snapshots), retry.target.clone()));
                 }
             }
         }
@@ -495,8 +495,9 @@ fn start_plan(snapshots: Arc<SnapshotReconciler>, pending: PendingPlan) -> Curre
 
 fn start_observation(
     snapshots: Arc<SnapshotReconciler>,
+    target: Option<Arc<ValidatedSnapshot>>,
 ) -> JoinHandle<Result<ClientStateSnapshot, SnapshotError>> {
-    tokio::spawn(async move { snapshots.observe().await })
+    tokio::spawn(async move { snapshots.observe(target.as_deref()).await })
 }
 
 async fn fence_plans(
@@ -701,6 +702,38 @@ mod tests {
         };
         fixture.next_snapshot().await?;
         Ok(fixture)
+    }
+
+    #[tokio::test]
+    async fn local_safety_observation_continues_while_waiting_for_the_server()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut active = active_fixture(HelperState::default()).await?;
+        active.target(snapshot()).await?;
+        active.next_snapshot().await?;
+        // Leave the ClientState unanswered. Only the local observation changes.
+        active
+            .resources
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .session_state = Some(natsume_local_control_api::ContestSessionState::Ambiguous);
+        tokio::time::pause();
+        tokio::time::advance(HEARTBEAT_INTERVAL).await;
+        tokio::time::resume();
+        let actual = active
+            .next_snapshot()
+            .await?
+            .actual
+            .ok_or("missing actual")?;
+        assert_eq!(
+            actual
+                .session_control
+                .ok_or("missing Session")?
+                .session_state,
+            i32::from(natsume_device_protocol::generated::SessionState::Ambiguous)
+        );
+        assert!(!active.pump.is_finished());
+        Ok(())
     }
 
     #[test]

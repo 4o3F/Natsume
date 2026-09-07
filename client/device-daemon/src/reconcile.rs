@@ -162,8 +162,9 @@ impl SnapshotReconciler {
         self.binding_input.changed().await;
     }
 
-    /// Removes local access whenever no active Control lease authorizes it.
+    /// Revokes Binding input and confirms the loaded data plane is blocked.
     pub(crate) async fn deactivate(&self) -> Result<(), SnapshotError> {
+        self.binding_input.revoke_eligibility()?;
         let material = self.gateway.active_material();
         self.caddy
             .ensure_blocked(material.as_ref(), &CancellationToken::new())
@@ -192,21 +193,20 @@ impl SnapshotReconciler {
         cancellation: CancellationToken,
     ) -> Result<ReconcileOutcome<ClientStateSnapshot>, SnapshotError> {
         check_cancellation(&cancellation)?;
+        let (_, home_before, access_before) = self.guard_local_access(Some(snapshot)).await?;
         let gateway_before = self.gateway.current_material(&snapshot.gateway_target);
         let runtime = self.runtime.observe();
         let origin_applied = applied_runtime_origin(&snapshot.runtime_origin, &runtime).is_some();
         let binding_is_applied = self.binding.is_applied(&snapshot.binding_target);
-        let current_caddy = if origin_applied && binding_is_applied {
+        let current_caddy = if access_before && origin_applied && binding_is_applied {
             self.current_caddy(snapshot, &gateway_before).await
         } else {
             None
         };
         check_cancellation(&cancellation)?;
-        let blocked_caddy = if current_caddy.is_none() {
-            Some(self.caddy.ensure_blocked(None, &cancellation).await?)
-        } else {
-            None
-        };
+        if current_caddy.is_none() {
+            self.deactivate().await?;
+        }
         check_cancellation(&cancellation)?;
         let gateway_input = Some(self.gateway.current_input(&snapshot.gateway_target)?);
         let binding_input = if let Some(binding_intent) = snapshot.binding_intent.clone() {
@@ -236,36 +236,52 @@ impl SnapshotReconciler {
                 .reconcile(&snapshot.binding_target, &cancellation)?;
         }
         check_cancellation(&cancellation)?;
-        let (caddy, caddy_failed) = if let Some(caddy) = current_caddy {
-            (caddy, false)
-        } else {
-            self.load_caddy(
-                &gateway_material.actual,
-                &snapshot.binding_target,
-                &snapshot.runtime_origin,
-                &runtime_actual.actual,
-                blocked_caddy,
-                &cancellation,
-            )
-            .await?
-        };
-        check_cancellation(&cancellation)?;
-        let session_actual = self
+        let mut session_actual = self
             .session
             .reconcile(&snapshot.session_target, &cancellation)
             .await?;
+        if access_before && !local_access_is_allowed(snapshot, &session_actual.actual, &home_before)
+        {
+            self.deactivate().await?;
+        }
         check_cancellation(&cancellation)?;
-        let home_actual = self
+        let mut home_actual = self
             .home
             .reconcile(snapshot.home_epoch, &cancellation)
             .await?;
+        let reconciled_access =
+            local_access_is_allowed(snapshot, &session_actual.actual, &home_actual.actual);
+        if !reconciled_access {
+            self.deactivate().await?;
+        }
+        check_cancellation(&cancellation)?;
+        // Home may stop the display manager after Session reconciliation. Sample
+        // both again before opening access, while retaining resource failures.
+        let (session_observed, home_observed, observed_access) =
+            self.guard_local_access(Some(snapshot)).await?;
+        if matches!(
+            SessionState::try_from(session_actual.actual.session_state),
+            Ok(SessionState::Active | SessionState::Locked)
+        ) {
+            session_actual.actual = session_observed;
+        }
+        if home_actual.actual.state == i32::from(HomeState::Steady) {
+            home_actual.actual = home_observed;
+        }
+        let allowed = reconciled_access && observed_access;
+        check_cancellation(&cancellation)?;
+        let (caddy, caddy_failed) = self
+            .load_caddy(
+                snapshot,
+                &gateway_material.actual,
+                &runtime_actual.actual,
+                allowed,
+                &cancellation,
+            )
+            .await?;
         self.binding_input.set_eligible(
             &cancellation,
-            binding_input_is_eligible(
-                &snapshot.binding_target,
-                &session_actual.actual,
-                &home_actual.actual,
-            ),
+            allowed && snapshot.binding_target.bound.is_none(),
         )?;
         check_cancellation(&cancellation)?;
         let gateway_actual = if caddy_failed {
@@ -330,20 +346,20 @@ impl SnapshotReconciler {
 
     async fn load_caddy(
         &self,
+        snapshot: &ValidatedSnapshot,
         gateway: &GatewayMaterialState,
-        binding_target: &ValidatedBindingTarget,
-        runtime_origin: &str,
         runtime_actual: &RuntimeConfigActualState,
-        blocked_caddy: Option<CaddyObservation>,
+        local_access: bool,
         cancellation: &CancellationToken,
     ) -> Result<(CaddyObservation, bool), SnapshotError> {
         let material = match gateway {
             GatewayMaterialState::Available(material) => Some(material),
             GatewayMaterialState::Restoring | GatewayMaterialState::RecoveryRequired => None,
         };
-        let origin = applied_runtime_origin(runtime_origin, runtime_actual);
+        let origin = applied_runtime_origin(&snapshot.runtime_origin, runtime_actual);
         if let (Some(material), Some(origin), Some(bound)) =
-            (material, origin, binding_target.bound.as_ref())
+            (material, origin, snapshot.binding_target.bound.as_ref())
+            && local_access
         {
             match self
                 .caddy
@@ -375,19 +391,43 @@ impl SnapshotReconciler {
                 Err(error) => return Err(error),
             }
         }
-        if material.is_none()
-            && let Some(caddy) = blocked_caddy
-        {
-            return Ok((caddy, false));
-        }
         self.caddy
             .ensure_blocked(material, cancellation)
             .await
             .map(|caddy| (caddy, false))
     }
 
-    /// Re-samples all local artifacts and runtime state into one complete Client projection.
-    pub(crate) async fn observe(&self) -> Result<ClientStateSnapshot, SnapshotError> {
+    /// Samples current OS facts and closes access before returning unsafe facts or errors.
+    /// This path never grants access, so observing an old target cannot reopen it.
+    async fn guard_local_access(
+        &self,
+        target: Option<&ValidatedSnapshot>,
+    ) -> Result<(SessionControlActualState, HomeActualState, bool), SnapshotError> {
+        let session = self.session.observe().await;
+        let session_allowed = match (target, &session) {
+            (Some(target), Ok(session)) => session_access_is_allowed(target, session),
+            _ => false,
+        };
+        if !session_allowed {
+            self.deactivate().await?;
+        }
+        let home = self.home.observe().await;
+        let allowed = match (target, &session, &home) {
+            (Some(target), Ok(session), Ok(home)) => local_access_is_allowed(target, session, home),
+            _ => false,
+        };
+        if session_allowed && !allowed {
+            self.deactivate().await?;
+        }
+        Ok((session?, home?, allowed))
+    }
+
+    /// Samples local state and withdraws unsafe access without waiting for a Server target.
+    pub(crate) async fn observe(
+        &self,
+        target: Option<&ValidatedSnapshot>,
+    ) -> Result<ClientStateSnapshot, SnapshotError> {
+        let (session, home, _) = self.guard_local_access(target).await?;
         let input = self.observe_input()?;
         let caddy = self.caddy.observe().await;
 
@@ -397,8 +437,8 @@ impl SnapshotReconciler {
                 gateway: Some(self.gateway.observe(&caddy)),
                 binding_access: Some(self.binding.observe(&caddy)),
                 runtime_config: Some(self.runtime.observe()),
-                session_control: Some(self.session.observe().await?),
-                home: Some(self.home.observe().await?),
+                session_control: Some(session),
+                home: Some(home),
             }),
         })
     }
@@ -414,17 +454,24 @@ impl SnapshotReconciler {
     }
 }
 
-fn binding_input_is_eligible(
-    target: &ValidatedBindingTarget,
+fn local_access_is_allowed(
+    target: &ValidatedSnapshot,
     session: &SessionControlActualState,
     home: &HomeActualState,
 ) -> bool {
-    target.bound.is_none()
-        && matches!(
-            SessionState::try_from(session.session_state),
-            Ok(SessionState::Active | SessionState::Locked)
-        )
+    session_access_is_allowed(target, session)
         && home.state == i32::from(HomeState::Steady)
+        && home.completed_reset_epoch == target.home_epoch
+}
+
+fn session_access_is_allowed(
+    target: &ValidatedSnapshot,
+    session: &SessionControlActualState,
+) -> bool {
+    matches!(
+        SessionState::try_from(session.session_state),
+        Ok(SessionState::Active | SessionState::Locked)
+    ) && target.session_target.termination_is_complete(session)
 }
 
 pub(crate) fn validate_server_snapshot(
@@ -544,6 +591,9 @@ pub(crate) mod tests {
 
     #[derive(Default)]
     pub(crate) struct HelperState {
+        pub(crate) session_state: Option<ContestSessionState>,
+        pub(crate) session_after_home: Option<ContestSessionState>,
+        pub(crate) require_blocked: Option<std::path::PathBuf>,
         pub(crate) termination_calls: Vec<GraphicalSession>,
         pub(crate) home_calls: Vec<u64>,
         pub(crate) terminate_failures: usize,
@@ -563,7 +613,7 @@ pub(crate) mod tests {
                 .lock()
                 .unwrap_or_else(|e| panic!("fixture lock: {e}"));
             ContestSessionObservation {
-                state: ContestSessionState::Active,
+                state: state.session_state.unwrap_or(ContestSessionState::Active),
                 session: Some(GraphicalSession {
                     logind_session_id: if state.termination_calls.is_empty() {
                         "c2"
@@ -585,6 +635,7 @@ pub(crate) mod tests {
                 .0
                 .lock()
                 .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.assert_blocked();
             state.termination_calls.push(session);
             if state.rejected {
                 Err(ResourceControlError::Rejected(
@@ -610,10 +661,12 @@ pub(crate) mod tests {
 
         #[zbus(name = "PrepareHomeReset")]
         fn prepare_home_reset(&mut self, epoch: u64) {
-            self.0
+            let mut state = self
+                .0
                 .lock()
-                .unwrap_or_else(|e| panic!("fixture lock: {e}"))
-                .progress = Some(HomeResetProgress {
+                .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.assert_blocked();
+            state.progress = Some(HomeResetProgress {
                 reset_epoch: epoch,
                 phase: HomeResetPhase::Prepared,
             });
@@ -655,6 +708,7 @@ pub(crate) mod tests {
                 .0
                 .lock()
                 .unwrap_or_else(|e| panic!("fixture lock: {e}"));
+            state.assert_blocked();
             state.home_calls.push(epoch);
             if state.rejected {
                 Err(ResourceControlError::Rejected("unmanaged mount".to_owned()))
@@ -663,7 +717,24 @@ pub(crate) mod tests {
                     "temporary mount failure".to_owned(),
                 ))
             } else {
+                if let Some(session) = state.session_after_home {
+                    state.session_state = Some(session);
+                }
                 Ok(())
+            }
+        }
+    }
+
+    impl HelperState {
+        fn assert_blocked(&self) {
+            if let Some(path) = &self.require_blocked {
+                let mode = std::fs::read(path).ok().and_then(|encoded| {
+                    serde_json::from_slice::<caddy::CaddyModeArtifact>(&encoded).ok()
+                });
+                assert!(
+                    matches!(mode, Some(caddy::CaddyModeArtifact::Blocked { .. })),
+                    "Home/terminate effect started without confirmed BLOCKED"
+                );
             }
         }
     }
@@ -819,11 +890,15 @@ pub(crate) mod tests {
         pub(crate) directory: tempfile::TempDir,
         _service: zbus::Connection,
         caddy_task: tokio::task::JoinHandle<()>,
+        gateway_task: Option<tokio::task::JoinHandle<()>>,
     }
 
     impl Drop for Fixture {
         fn drop(&mut self) {
             self.caddy_task.abort();
+            if let Some(task) = &self.gateway_task {
+                task.abort();
+            }
         }
     }
 
@@ -856,7 +931,69 @@ pub(crate) mod tests {
             directory,
             _service: server,
             caddy_task,
+            gateway_task: None,
         })
+    }
+
+    async fn ready_fixture() -> Result<(Fixture, ValidatedSnapshot), Box<dyn std::error::Error>> {
+        use natsume_device_protocol::generated::{GatewayCertificateGrant, GatewayState};
+        use rustls_pki_types::pem::PemObject as _;
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut fixture = fixture(HelperState::default()).await?;
+        let mut target = validate_server_snapshot(snapshot())?;
+        let resources = Arc::get_mut(&mut fixture.snapshots).ok_or("fixture already shared")?;
+        resources.gateway.current_input(&target.gateway_target)?;
+        let key_pem = zeroize::Zeroizing::new(std::fs::read(
+            fixture
+                .directory
+                .path()
+                .join("gateway")
+                .join(target.gateway_target.credential_id.to_string())
+                .join("key.pem"),
+        )?);
+        let key = rcgen::KeyPair::from_pkcs8_der_and_sign_algo(
+            &rustls_pki_types::PrivatePkcs8KeyDer::from_pem_slice(&key_pem)?,
+            &rcgen::PKCS_ECDSA_P256_SHA256,
+        )?;
+        let (certificate, task) =
+            caddy::tests::serve_gateway(&mut resources.caddy, &fixture.directory, &key).await?;
+        fixture.gateway_task = Some(task);
+        target.gateway_target = gateway::validate_target(GatewayTarget {
+            credential_id: target.gateway_target.credential_id.to_string(),
+            certificate: Some(GatewayCertificateGrant {
+                gateway_leaf_der: certificate.der().to_vec(),
+            }),
+        })
+        .ok_or("fixture certificate")?;
+        target.binding_target.bound = Some(binding::ValidatedBoundTarget {
+            context: binding::ValidatedBindingContext {
+                binding_id: Uuid::now_v7().to_string(),
+                account_id: Uuid::now_v7().to_string(),
+                seat_code: "A-01".to_owned(),
+                domjudge_username: "team-alpha".to_owned(),
+                credential_revision: 1,
+            },
+            password: zeroize::Zeroizing::new("password-canary".to_owned()),
+        });
+        target.binding_intent = None;
+        let fence = CancellationToken::new();
+        resources.begin_plan(&fence)?;
+        let actual = resources
+            .reconcile(&target, fence)
+            .await?
+            .actual
+            .actual
+            .ok_or("missing actual")?;
+        assert_eq!(
+            actual.gateway.ok_or("missing gateway")?.state,
+            i32::from(GatewayState::Ready)
+        );
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .require_blocked = Some(fixture.directory.path().join("caddy-mode.json"));
+        Ok((fixture, target))
     }
 
     pub(crate) fn snapshot() -> ServerStateSnapshot {
@@ -887,6 +1024,59 @@ pub(crate) mod tests {
                 home: Some(HomeTarget { reset_epoch: None }),
             }),
         }
+    }
+
+    #[tokio::test]
+    async fn observation_revokes_binding_and_loaded_access_without_a_new_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = fixture(HelperState::default()).await?;
+        let wire = snapshot();
+        let negotiation = wire
+            .intent
+            .as_ref()
+            .and_then(|intent| intent.binding.as_ref())
+            .ok_or("missing intent")?
+            .negotiation_id
+            .clone();
+        let target = validate_server_snapshot(wire)?;
+        let fence = CancellationToken::new();
+        fixture.snapshots.begin_plan(&fence)?;
+        fixture.snapshots.reconcile(&target, fence).await?;
+        // The Caddy fixture exercises real mode/config persistence and admin I/O.
+        // Seed a previously loaded READY mode without requiring a public TLS port.
+        std::fs::write(
+            fixture.directory.path().join("caddy-mode.json"),
+            serde_json::to_vec(&caddy::CaddyModeArtifact::Ready {
+                format_version: 1,
+                credential_id: target.gateway_target.credential_id.to_string(),
+                domjudge_origin: target.runtime_origin.clone(),
+                binding: binding::ValidatedBindingContext {
+                    binding_id: Uuid::now_v7().to_string(),
+                    account_id: Uuid::now_v7().to_string(),
+                    seat_code: "A-01".to_owned(),
+                    domjudge_username: "team-alpha".to_owned(),
+                    credential_revision: 1,
+                },
+            })?,
+        )?;
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .session_state = Some(ContestSessionState::Ambiguous);
+        fixture.snapshots.observe(Some(&target)).await?;
+        assert!(matches!(
+            fixture
+                .snapshots
+                .binding_input
+                .submit(&negotiation, 1, "A-01"),
+            Err(SnapshotError::StaleLocalInput)
+        ));
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Blocked { .. })
+        ));
+        Ok(())
     }
 
     #[test]
@@ -953,14 +1143,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn binding_eligibility_requires_a_live_session() {
-        let target = ValidatedBindingTarget { bound: None };
+    fn local_access_requires_a_live_session() {
+        let target = validate_server_snapshot(snapshot())
+            .unwrap_or_else(|error| panic!("fixture target: {error}"));
         let home = HomeActualState {
             state: HomeState::Steady.into(),
             completed_reset_epoch: None,
         };
         for state in [SessionState::Active, SessionState::Locked] {
-            assert!(binding_input_is_eligible(
+            assert!(local_access_is_allowed(
                 &target,
                 &SessionControlActualState {
                     session_state: state.into(),
@@ -970,13 +1161,14 @@ pub(crate) mod tests {
             ));
         }
         for state in [
+            SessionState::Unspecified,
             SessionState::None,
             SessionState::Starting,
             SessionState::Terminating,
             SessionState::Ambiguous,
             SessionState::Error,
         ] {
-            assert!(!binding_input_is_eligible(
+            assert!(!local_access_is_allowed(
                 &target,
                 &SessionControlActualState {
                     session_state: state.into(),
@@ -985,6 +1177,327 @@ pub(crate) mod tests {
                 &home,
             ));
         }
+    }
+
+    #[test]
+    fn local_access_requires_steady_home_and_exact_completed_epochs() -> Result<(), SnapshotError> {
+        let mut target = validate_server_snapshot(snapshot())?;
+        target.home_epoch = Some(7);
+        target.session_target = session::validate_target(SessionControlTarget {
+            lock_state: LockState::Unlocked.into(),
+            terminate_epoch: Some(8),
+        })
+        .ok_or(SnapshotError::InvalidServerSnapshot)?;
+        for home_epoch in [None, Some(6), Some(7), Some(9)] {
+            for session_epoch in [None, Some(7), Some(8), Some(9)] {
+                for state in [
+                    HomeState::Unspecified,
+                    HomeState::Resetting,
+                    HomeState::RecoveryRequired,
+                    HomeState::Steady,
+                ] {
+                    assert_eq!(
+                        local_access_is_allowed(
+                            &target,
+                            &SessionControlActualState {
+                                session_state: SessionState::Active.into(),
+                                completed_terminate_epoch: session_epoch,
+                            },
+                            &HomeActualState {
+                                state: state.into(),
+                                completed_reset_epoch: home_epoch
+                            }
+                        ),
+                        home_epoch == Some(7)
+                            && session_epoch == Some(8)
+                            && state == HomeState::Steady
+                    );
+                }
+            }
+        }
+        assert!(!local_access_is_allowed(
+            &target,
+            &SessionControlActualState {
+                session_state: 999,
+                completed_terminate_epoch: Some(8)
+            },
+            &HomeActualState {
+                state: HomeState::Steady.into(),
+                completed_reset_epoch: Some(7)
+            }
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn loaded_ready_is_blocked_on_local_failure_and_restored_by_current_plan()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, target) = ready_fixture().await?;
+        let binding = std::fs::read(fixture.directory.path().join("binding-assignment.json"))?;
+        for state in [ContestSessionState::None, ContestSessionState::Ambiguous] {
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "fixture lock")?
+                .session_state = Some(state);
+            fixture.snapshots.observe(Some(&target)).await?;
+            assert!(matches!(
+                fixture.snapshots.caddy.observe().await.mode,
+                Some(caddy::CaddyModeArtifact::Blocked { .. })
+            ));
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "fixture lock")?
+                .session_state = Some(ContestSessionState::Active);
+            // Observation has no authority to grant access again.
+            fixture.snapshots.observe(Some(&target)).await?;
+            assert!(matches!(
+                fixture.snapshots.caddy.observe().await.mode,
+                Some(caddy::CaddyModeArtifact::Blocked { .. })
+            ));
+            let fence = CancellationToken::new();
+            fixture.snapshots.begin_plan(&fence)?;
+            fixture.snapshots.reconcile(&target, fence).await?;
+            assert!(matches!(
+                fixture.snapshots.caddy.observe().await.mode,
+                Some(caddy::CaddyModeArtifact::Ready { .. })
+            ));
+            assert_eq!(
+                std::fs::read(fixture.directory.path().join("binding-assignment.json"))?,
+                binding
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pending_epochs_block_ready_before_helper_effects_and_wait_for_completion()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, mut target) = ready_fixture().await?;
+        target.home_epoch = Some(7);
+        target.session_target = session::validate_target(SessionControlTarget {
+            lock_state: LockState::Unlocked.into(),
+            terminate_epoch: Some(8),
+        })
+        .ok_or(SnapshotError::InvalidServerSnapshot)?;
+        {
+            let mut state = fixture.helper.lock().map_err(|_| "fixture lock")?;
+            state.terminate_failures = 1;
+            state.home_failures = 1;
+        }
+        for complete in [false, true] {
+            let fence = CancellationToken::new();
+            fixture.snapshots.begin_plan(&fence)?;
+            let outcome = fixture.snapshots.reconcile(&target, fence).await?;
+            let actual = outcome.actual.actual.ok_or("missing actual")?;
+            assert_eq!(outcome.retry, !complete);
+            assert_eq!(
+                actual.home.ok_or("missing Home")?.completed_reset_epoch,
+                complete.then_some(7)
+            );
+            assert_eq!(
+                actual
+                    .session_control
+                    .ok_or("missing Session")?
+                    .completed_terminate_epoch,
+                complete.then_some(8)
+            );
+            assert_eq!(
+                matches!(
+                    fixture.snapshots.caddy.observe().await.mode,
+                    Some(caddy::CaddyModeArtifact::Ready { .. })
+                ),
+                complete
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn home_effect_cannot_reopen_access_from_the_pre_reset_session_observation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, mut target) = ready_fixture().await?;
+        target.home_epoch = Some(7);
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .session_after_home = Some(ContestSessionState::None);
+        let fence = CancellationToken::new();
+        fixture.snapshots.begin_plan(&fence)?;
+        let actual = fixture
+            .snapshots
+            .reconcile(&target, fence)
+            .await?
+            .actual
+            .actual
+            .ok_or("missing actual")?;
+        assert_eq!(
+            actual.home.ok_or("missing Home")?.state,
+            i32::from(HomeState::Steady)
+        );
+        assert_eq!(
+            actual
+                .session_control
+                .ok_or("missing Session")?
+                .session_state,
+            i32::from(SessionState::None)
+        );
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Blocked { .. })
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_blocking_aborts_before_any_home_or_terminate_effect()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, mut target) = ready_fixture().await?;
+        target.home_epoch = Some(7);
+        target.session_target = session::validate_target(SessionControlTarget {
+            lock_state: LockState::Unlocked.into(),
+            terminate_epoch: Some(8),
+        })
+        .ok_or(SnapshotError::InvalidServerSnapshot)?;
+        std::fs::write(
+            fixture.directory.path().join("caddy-fixture"),
+            "#!/bin/sh\nexit 1\n",
+        )?;
+        let fence = CancellationToken::new();
+        fixture.snapshots.begin_plan(&fence)?;
+        assert!(matches!(
+            fixture.snapshots.reconcile(&target, fence).await,
+            Err(SnapshotError::Caddy)
+        ));
+        {
+            let mut state = fixture.helper.lock().map_err(|_| "fixture lock")?;
+            assert!(
+                state.termination_calls.is_empty()
+                    && state.home_calls.is_empty()
+                    && state.progress.is_none()
+            );
+            state.session_state = Some(ContestSessionState::Ambiguous);
+        }
+        assert!(matches!(
+            fixture.snapshots.observe(Some(&target)).await,
+            Err(SnapshotError::Caddy)
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn locked_and_repeated_targets_keep_ready_without_reloading_caddy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::MetadataExt as _;
+        let (fixture, mut target) = ready_fixture().await?;
+        let mode = fixture.directory.path().join("caddy-mode.json");
+        let inode = std::fs::metadata(&mode)?.ino();
+        for lock in [LockState::Unlocked, LockState::Locked] {
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "fixture lock")?
+                .session_state = Some(if lock == LockState::Locked {
+                ContestSessionState::Locked
+            } else {
+                ContestSessionState::Active
+            });
+            target.session_target = session::validate_target(SessionControlTarget {
+                lock_state: lock.into(),
+                terminate_epoch: None,
+            })
+            .ok_or("fixture Session target")?;
+            let fence = CancellationToken::new();
+            fixture.snapshots.begin_plan(&fence)?;
+            fixture.snapshots.reconcile(&target, fence).await?;
+            assert!(matches!(
+                fixture.snapshots.caddy.observe().await.mode,
+                Some(caddy::CaddyModeArtifact::Ready { .. })
+            ));
+            assert_eq!(std::fs::metadata(&mode)?.ino(), inode);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn observation_cannot_revoke_replacement_plan_ownership_or_reopen_old_access()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, mut target) = ready_fixture().await?;
+        let old = CancellationToken::new();
+        fixture.snapshots.begin_plan(&old)?;
+        let replacement = CancellationToken::new();
+        old.cancel();
+        fixture.snapshots.begin_plan(&replacement)?;
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .session_state = Some(ContestSessionState::Ambiguous);
+        fixture.snapshots.observe(Some(&target)).await?;
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .session_state = Some(ContestSessionState::Active);
+        assert!(matches!(
+            fixture.snapshots.reconcile(&target, old).await,
+            Err(SnapshotError::Cancelled)
+        ));
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Blocked { .. })
+        ));
+        target.home_epoch = Some(7);
+        fixture.snapshots.reconcile(&target, replacement).await?;
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Ready { .. })
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn observation_blocks_a_previously_verified_home_that_needs_recovery()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (fixture, mut target) = ready_fixture().await?;
+        target.home_epoch = Some(7);
+        let fence = CancellationToken::new();
+        fixture.snapshots.begin_plan(&fence)?;
+        fixture.snapshots.reconcile(&target, fence).await?;
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .home_failures = usize::MAX;
+        let actual = fixture
+            .snapshots
+            .observe(Some(&target))
+            .await?
+            .actual
+            .ok_or("missing actual")?;
+        assert_eq!(
+            actual.home.ok_or("missing Home")?.state,
+            i32::from(HomeState::RecoveryRequired)
+        );
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Blocked { .. })
+        ));
+        fixture
+            .helper
+            .lock()
+            .map_err(|_| "fixture lock")?
+            .home_failures = 0;
+        let fence = CancellationToken::new();
+        fixture.snapshots.begin_plan(&fence)?;
+        fixture.snapshots.reconcile(&target, fence).await?;
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Ready { .. })
+        ));
+        Ok(())
     }
 
     #[test]

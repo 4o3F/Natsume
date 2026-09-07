@@ -41,6 +41,12 @@ pub(super) struct ValidatedSessionTarget {
     terminate_epoch: Option<u64>,
 }
 
+impl ValidatedSessionTarget {
+    pub(super) fn termination_is_complete(&self, actual: &SessionControlActualState) -> bool {
+        actual.completed_terminate_epoch == self.terminate_epoch
+    }
+}
+
 pub(super) fn validate_target(target: SessionControlTarget) -> Option<ValidatedSessionTarget> {
     let desired_lock = match LockState::try_from(target.lock_state).ok()? {
         LockState::Unlocked => SessionLockLevel::Unlocked,

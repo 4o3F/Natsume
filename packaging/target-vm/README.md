@@ -45,3 +45,6 @@ namespace isolation rejection and same-epoch recovery.
 
 Use the [Helper crash recovery checks](helper-recovery.md) on a separate snapshot
 to verify automatic restart, start limiting, maintenance stops and Daemon recovery.
+
+Use the [Session/Home access checks](local-access.md) with a bound device and the
+real Caddy/DOMjudge path to verify local failure blocking and recovery.

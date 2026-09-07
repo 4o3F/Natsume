@@ -59,6 +59,7 @@ pub(super) struct CaddyObservation {
 /// Concrete controller for the one packaged Caddy instance.
 pub(super) struct Caddy {
     gateway_hostname: String,
+    gateway_port: u16,
     binary_path: PathBuf,
     admin_socket_path: PathBuf,
     configuration_path: PathBuf,
@@ -70,6 +71,7 @@ impl Caddy {
     pub(super) fn production(gateway_hostname: String) -> Self {
         Self {
             gateway_hostname,
+            gateway_port: 443,
             binary_path: PathBuf::from("/usr/lib/natsume/caddy"),
             admin_socket_path: PathBuf::from("/run/natsume/caddy-admin.sock"),
             configuration_path: PathBuf::from("/run/natsume/caddy.caddyfile"),
@@ -336,9 +338,13 @@ impl Caddy {
             CaddyModeArtifact::Ready { .. } => true,
         };
         let gateway_leaf_sha256 = if has_gateway {
-            sample_leaf(&self.gateway_hostname, &self.origin_root_path)
-                .await
-                .map(|leaf| Sha256::digest(leaf).to_vec())
+            sample_leaf(
+                &self.gateway_hostname,
+                &self.origin_root_path,
+                self.gateway_port,
+            )
+            .await
+            .map(|leaf| Sha256::digest(leaf).to_vec())
         } else {
             None
         };
@@ -397,7 +403,7 @@ impl Caddy {
     }
 }
 
-async fn sample_leaf(hostname: &str, root_path: &Path) -> Option<Vec<u8>> {
+async fn sample_leaf(hostname: &str, root_path: &Path, port: u16) -> Option<Vec<u8>> {
     timeout(CADDY_OPERATION_TIMEOUT, async {
         let encoded = fs::read(root_path).ok()?;
         let roots = CertificateDer::pem_slice_iter(&encoded)
@@ -412,7 +418,7 @@ async fn sample_leaf(hostname: &str, root_path: &Path) -> Option<Vec<u8>> {
             .with_root_certificates(root_store)
             .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(configuration));
-        let stream = TcpStream::connect(("127.0.0.1", 443)).await.ok()?;
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
         let server_name = ServerName::try_from(hostname.to_owned()).ok()?;
         let stream = connector.connect(server_name, stream).await.ok()?;
         stream
@@ -444,6 +450,7 @@ pub(super) mod tests {
     fn caddy() -> Caddy {
         Caddy {
             gateway_hostname: "contest.natsume.test".to_owned(),
+            gateway_port: 443,
             binary_path: PathBuf::from("/test/caddy"),
             admin_socket_path: PathBuf::from("/run/test/admin.sock"),
             configuration_path: PathBuf::from("/run/test/caddy.caddyfile"),
@@ -474,6 +481,41 @@ pub(super) mod tests {
             }
         });
         Ok((caddy, task))
+    }
+
+    pub(in crate::reconcile) async fn serve_gateway(
+        caddy: &mut Caddy,
+        directory: &tempfile::TempDir,
+        key: &rcgen::KeyPair,
+    ) -> Result<(rcgen::Certificate, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+        let certificate = rcgen::CertificateParams::new(vec![caddy.gateway_hostname.clone()])?
+            .self_signed(key)?;
+        caddy.origin_root_path = directory.path().join("origin.crt");
+        fs::write(
+            &caddy.origin_root_path,
+            format!(
+                "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+                STANDARD.encode(certificate.der())
+            ),
+        )?;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+        caddy.gateway_port = listener.local_addr()?.port();
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certificate.der().clone()],
+            rustls_pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+        )?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                let _ = acceptor.accept(stream).await;
+            }
+        });
+        Ok((certificate, task))
     }
 
     fn material() -> GatewayMaterial {

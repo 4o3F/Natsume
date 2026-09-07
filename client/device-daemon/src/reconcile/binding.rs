@@ -228,6 +228,16 @@ impl BindingInputProvider {
         Ok(())
     }
 
+    /// Observation may withdraw permission, including while a new plan is queued.
+    pub(super) fn revoke_eligibility(&self) -> Result<(), SnapshotError> {
+        let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
+        if state.eligible {
+            state.eligible = false;
+            state.advance_ui_revision();
+        }
+        Ok(())
+    }
+
     pub(super) fn clear_intent(&self, plan: &CancellationToken) -> Result<(), SnapshotError> {
         let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
         require_current_plan(&state, plan)?;
@@ -1051,8 +1061,9 @@ pub(super) mod tests {
         provider
             .current_input(&replacement, validated_intent(negotiation_id))
             .unwrap_or_else(|error| panic!("replacement intent must be accepted: {error}"));
-        let eligible = super::super::binding_input_is_eligible(
-            &ValidatedBindingTarget { bound: None },
+        let eligible = super::super::local_access_is_allowed(
+            &super::super::validate_server_snapshot(super::super::tests::snapshot())
+                .unwrap_or_else(|error| panic!("fixture target: {error}")),
             &SessionControlActualState {
                 session_state: SessionState::None.into(),
                 completed_terminate_epoch: Some(1),

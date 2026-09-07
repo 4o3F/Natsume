@@ -599,7 +599,7 @@ SessionControlTarget
 - lock 是持续 Level；
 - terminate 是单调 Transition；
 - 同时只能有一个 eligible graphical session；
-- 零个或多个 eligible session 时 fail closed；
+- 零个或多个eligible session时禁止新Binding输入，并将本机Caddy数据面置为BLOCKED；完整规则见9.6；
 - terminate 必须捕获目标 Session，副作用前重检，不得 retarget 到 replacement Session；
 - Helper串行执行lock、unlock与terminate mutation，超时的旧调用不能晚于新调用落地；
 - `/var/lib/natsume/state`由tmpfiles在Daemon启动前固定创建；Daemon不在运行时重建丢失的状态根目录；
@@ -627,6 +627,23 @@ Home reset 使用单调 `reset_epoch`：
 - reset 只影响 contestant Home；
 - 不得删除 control key、Gateway material、Binding credential artifact 或系统配置；
 - 损坏或无法验证时报告 recovery required 并 fail closed。
+
+### 9.6 Session/Home 的访问关闭范围
+
+Daemon在现有`SnapshotReconciler`中从当前Target与新鲜Actual推导本地访问许可，不持久化另一份许可状态。Session必须为`Active`或`Locked`，Home必须为`Steady`，`completed_terminate_epoch`与`completed_reset_epoch`必须分别精确匹配当前目标（包括双方均无epoch）；旧完成记录、超前记录和未知状态均不能放行。
+
+| Session/Home 状态 | 新Binding输入 | 经本机Caddy的上游访问 |
+|---|---|---|
+| 满足本地许可，且未绑定 | 允许 | 无Binding仍BLOCKED |
+| 满足本地许可，且已绑定 | 不开放新绑定 | 同时满足Gateway/Binding/Runtime条件才READY |
+| Home为Resetting、RecoveryRequired，或reset epoch未完成 | 禁止 | BLOCKED |
+| Session为None、Starting、Terminating、Ambiguous、Error、未知，或terminate epoch未完成 | 禁止 | BLOCKED |
+
+锁屏本身允许保留上游访问。关闭访问保留Server的Binding关系、身份及凭据，控制通信、状态上报和资源恢复仍可继续；观测错误沿用现有lease撤销、BLOCKED确认和重连路径。这里约束本机Caddy后续的代理请求，不构成主机防火墙或对已在途请求的回滚。Home维护窗口的图形登录互锁仍由Helper独立持有。
+
+新reset/terminate目标执行前，Daemon先确认Caddy已加载BLOCKED；Session/Home收敛后重新观测两者，防止Home停止登录服务后沿用先前的Active事实。仅当前有效Target计划能恢复READY和Binding资格。周期观测只撤销访问，不授予访问；撤销资格不改变已排队的新Target的plan归属。发现异常或观测失败后先阻断，再上报或返回错误；无法确认BLOCKED则沿用Daemon失败退出、systemd硬终止Caddy的处理。
+
+本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。真实镜像验收见`packaging/target-vm/local-access.md`。
 
 ## 10. Server 组件架构
 
