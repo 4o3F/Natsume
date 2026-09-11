@@ -17,12 +17,12 @@ pub struct ServerConfig {
     vault_master_key_path: PathBuf,
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
-    site_config_path: PathBuf,
+    site: GatewaySiteConfig,
     local_origin_root_path: PathBuf,
 }
 
 impl ServerConfig {
-    /// Loads the fixed package-owned Server configuration.
+    /// Loads the fixed deployment-owned Server configuration.
     ///
     /// # Errors
     ///
@@ -58,10 +58,10 @@ impl ServerConfig {
             vault_master_key_path: raw.storage.root_key,
             tls_certificate_path: raw.tls.certificate,
             tls_private_key_path: raw.tls.private_key,
-            site_config_path: raw.site.config,
-            local_origin_root_path: raw.site.local_origin_root,
+            site: GatewaySiteConfig::validate(raw.site)?,
+            local_origin_root_path: raw.trust.local_origin_root,
         };
-        config.validate_paths(&raw.site.control_root)?;
+        config.validate_paths(&raw.trust.control_root)?;
         Ok(config)
     }
 
@@ -79,7 +79,6 @@ impl ServerConfig {
             &self.tls_private_key_path,
             ConfigError::RelativeTlsPrivateKeyPath,
         )?;
-        require_absolute(&self.site_config_path, ConfigError::RelativeSiteConfigPath)?;
         require_absolute(control_root, ConfigError::RelativeControlRootPath)?;
         require_absolute(
             &self.local_origin_root_path,
@@ -115,8 +114,8 @@ impl ServerConfig {
         &self.tls_private_key_path
     }
 
-    pub(crate) fn site_config_path(&self) -> &Path {
-        &self.site_config_path
+    pub(crate) fn site(&self) -> &GatewaySiteConfig {
+        &self.site
     }
 
     pub(crate) fn local_origin_root_path(&self) -> &Path {
@@ -155,7 +154,8 @@ struct RawServerConfig {
     log: RawLogConfig,
     storage: RawStorageConfig,
     tls: RawTlsConfig,
-    site: RawSitePathsConfig,
+    site: RawGatewaySiteConfig,
+    trust: RawTrustConfig,
 }
 
 #[derive(Deserialize, Default)]
@@ -193,8 +193,7 @@ struct RawTlsConfig {
 }
 
 #[derive(Deserialize)]
-struct RawSitePathsConfig {
-    config: PathBuf,
+struct RawTrustConfig {
     control_root: PathBuf,
     local_origin_root: PathBuf,
 }
@@ -207,21 +206,14 @@ pub(crate) struct GatewaySiteConfig {
 }
 
 impl GatewaySiteConfig {
-    /// Loads the shared site file and validates the three issuance-owned keys.
-    ///
-    /// Other site keys remain owned by their respective Client consumers and
-    /// are deliberately ignored by this Server projection.
-    pub(crate) fn load_from(path: &Path) -> Result<Self, SiteConfigError> {
-        let encoded = fs::read_to_string(path).map_err(|_| SiteConfigError::ReadFailed)?;
-        let raw: RawGatewaySiteConfig =
-            toml::from_str(&encoded).map_err(|_| SiteConfigError::DecodeFailed)?;
+    fn validate(raw: RawGatewaySiteConfig) -> Result<Self, ConfigError> {
         if !is_canonical_dns_hostname(&raw.gateway_hostname) {
-            return Err(SiteConfigError::InvalidGatewayHostname);
+            return Err(ConfigError::InvalidGatewayHostname);
         }
         let gateway_not_after = GatewayNotAfter::parse(&raw.gateway_not_after)
-            .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
+            .ok_or(ConfigError::InvalidGatewayNotAfter)?;
         let contest_end =
-            GatewayNotAfter::parse(&raw.contest_end).ok_or(SiteConfigError::InvalidContestEnd)?;
+            GatewayNotAfter::parse(&raw.contest_end).ok_or(ConfigError::InvalidContestEnd)?;
         validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
         Ok(Self {
             gateway_hostname: raw.gateway_hostname,
@@ -248,13 +240,13 @@ struct RawGatewaySiteConfig {
 fn validate_gateway_validity_coverage(
     gateway_not_after: &GatewayNotAfter,
     contest_end: &GatewayNotAfter,
-) -> Result<(), SiteConfigError> {
+) -> Result<(), ConfigError> {
     let required_not_after = contest_end
         .timestamp()
         .checked_add(Duration::seconds(GATEWAY_VALIDITY_MARGIN_SECONDS))
-        .ok_or(SiteConfigError::GatewayValidityCoverageTooShort)?;
+        .ok_or(ConfigError::GatewayValidityCoverageTooShort)?;
     if gateway_not_after.timestamp() < required_not_after {
-        return Err(SiteConfigError::GatewayValidityCoverageTooShort);
+        return Err(ConfigError::GatewayValidityCoverageTooShort);
     }
     Ok(())
 }
@@ -326,24 +318,6 @@ impl GatewayNotAfter {
     }
 }
 
-/// Redacted shared-site configuration failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-#[snafu(module)]
-pub(crate) enum SiteConfigError {
-    #[snafu(display("the site configuration could not be read"))]
-    ReadFailed,
-    #[snafu(display("the site configuration could not be decoded"))]
-    DecodeFailed,
-    #[snafu(display("the Gateway hostname is invalid"))]
-    InvalidGatewayHostname,
-    #[snafu(display("the Gateway certificate not-after policy is invalid"))]
-    InvalidGatewayNotAfter,
-    #[snafu(display("the contest end policy is invalid"))]
-    InvalidContestEnd,
-    #[snafu(display("the Gateway certificate validity does not cover the contest margin"))]
-    GatewayValidityCoverageTooShort,
-}
-
 /// Redacted Server configuration failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub enum ConfigError {
@@ -361,14 +335,20 @@ pub enum ConfigError {
     RelativeTlsCertificatePath,
     #[snafu(display("the configured TLS private key path must be absolute"))]
     RelativeTlsPrivateKeyPath,
-    #[snafu(display("the configured site file path must be absolute"))]
-    RelativeSiteConfigPath,
     #[snafu(display("the configured control root path must be absolute"))]
     RelativeControlRootPath,
     #[snafu(display("the configured local origin root path must be absolute"))]
     RelativeLocalOriginRootPath,
     #[snafu(display("the configured private keys directory is invalid"))]
     InvalidPrivateKeysDirectory,
+    #[snafu(display("the Gateway hostname is invalid"))]
+    InvalidGatewayHostname,
+    #[snafu(display("the Gateway certificate not-after policy is invalid"))]
+    InvalidGatewayNotAfter,
+    #[snafu(display("the contest end policy is invalid"))]
+    InvalidContestEnd,
+    #[snafu(display("the Gateway certificate validity does not cover the contest margin"))]
+    GatewayValidityCoverageTooShort,
 }
 
 #[cfg(test)]
@@ -381,28 +361,18 @@ mod tests {
     use snafu::Snafu;
     use uuid::Uuid;
 
-    use super::{
-        ConfigError, GatewayNotAfter, GatewaySiteConfig, LogLevel, ServerConfig, SiteConfigError,
-        is_canonical_dns_hostname, validate_gateway_validity_coverage,
-    };
+    use super::{ConfigError, GatewaySiteConfig, LogLevel, ServerConfig};
 
     impl GatewaySiteConfig {
         pub(crate) fn for_test(
             gateway_hostname: &str,
             gateway_not_after: &str,
             contest_end: &str,
-        ) -> Result<Self, SiteConfigError> {
-            if !is_canonical_dns_hostname(gateway_hostname) {
-                return Err(SiteConfigError::InvalidGatewayHostname);
-            }
-            let gateway_not_after = GatewayNotAfter::parse(gateway_not_after)
-                .ok_or(SiteConfigError::InvalidGatewayNotAfter)?;
-            let contest_end =
-                GatewayNotAfter::parse(contest_end).ok_or(SiteConfigError::InvalidContestEnd)?;
-            validate_gateway_validity_coverage(&gateway_not_after, &contest_end)?;
-            Ok(Self {
+        ) -> Result<Self, ConfigError> {
+            Self::validate(super::RawGatewaySiteConfig {
                 gateway_hostname: gateway_hostname.to_owned(),
-                gateway_not_after,
+                gateway_not_after: gateway_not_after.to_owned(),
+                contest_end: contest_end.to_owned(),
             })
         }
     }
@@ -419,21 +389,14 @@ root_key = "/var/lib/natsume-server/keys/server-root.key"
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
 private_key = "/var/lib/natsume-server/keys/server-tls-key.pk8"
 
-[site]
-config = "/etc/natsume/site.toml"
+[trust]
 control_root = "/etc/natsume/trust/control-ca.crt"
 local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"
-"#;
 
-    const VALID_SITE_CONFIG: &str = r#"
-schema_version = 1
-fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
+[site]
 gateway_hostname = "gateway.contest.example"
 gateway_not_after = "2028-02-29T23:59:58.123456789Z"
 contest_end = "2028-02-28T23:59:58.123456789Z"
-
-[trust]
-control_root_sha256 = "ignored-by-server"
 "#;
 
     #[test]
@@ -445,11 +408,10 @@ control_root_sha256 = "ignored-by-server"
     }
 
     #[test]
-    fn packaged_config_with_site_paths_parses_and_derives_fixed_origin_filenames()
-    -> Result<(), TestFailure> {
+    fn deployment_example_parses_and_derives_fixed_origin_filenames() -> Result<(), TestFailure> {
         let config = ServerConfig::load_from(Path::new(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../packaging/server/rootfs/etc/natsume-server/config.toml"
+            "/../packaging/server/config.example.toml"
         )))
         .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
         if config
@@ -469,11 +431,11 @@ control_root_sha256 = "ignored-by-server"
     }
 
     #[test]
-    fn site_issuance_policy_is_strict_but_tolerates_other_consumers_keys() -> Result<(), TestFailure>
-    {
-        let fixture = ConfigFixture::new(VALID_SITE_CONFIG)?;
-        let site = GatewaySiteConfig::load_from(fixture.path())
+    fn site_issuance_policy_is_loaded_from_the_single_server_config() -> Result<(), TestFailure> {
+        let fixture = ConfigFixture::new(VALID_CONFIG)?;
+        let config = ServerConfig::load_from(fixture.path())
             .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+        let site = config.site();
         let timestamp = site.gateway_not_after().timestamp();
         if site.gateway_hostname() != "gateway.contest.example"
             || timestamp.year() != 2028
@@ -493,90 +455,90 @@ control_root_sha256 = "ignored-by-server"
     fn invalid_site_policy_is_rejected_without_echoing_input() -> Result<(), TestFailure> {
         for (contents, expected, canary) in [
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "gateway.contest.example",
                     "Gateway.invalid-host-canary.example",
                 ),
-                SiteConfigError::InvalidGatewayHostname,
+                ConfigError::InvalidGatewayHostname,
                 "invalid-host-canary",
             ),
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-29T23:59:58.123456789Z",
                     "2028-02-30T23:59:58Z-not-after-canary",
                 ),
-                SiteConfigError::InvalidGatewayNotAfter,
+                ConfigError::InvalidGatewayNotAfter,
                 "not-after-canary",
             ),
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-28T23:59:58.123456789Z",
                     "2028-02-30T23:59:58Z-contest-end-canary",
                 ),
-                SiteConfigError::InvalidContestEnd,
+                ConfigError::InvalidContestEnd,
                 "contest-end-canary",
             ),
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-28T23:59:58.123456789Z",
                     "2028-02-29T00:00:00Z-coverage-canary",
                 ),
-                SiteConfigError::InvalidContestEnd,
+                ConfigError::InvalidContestEnd,
                 "coverage-canary",
             ),
             (
-                VALID_SITE_CONFIG.replace("2028-02-28T23:59:58.123456789Z", "2028-02-29T00:00:00Z"),
-                SiteConfigError::GatewayValidityCoverageTooShort,
+                VALID_CONFIG.replace("2028-02-28T23:59:58.123456789Z", "2028-02-29T00:00:00Z"),
+                ConfigError::GatewayValidityCoverageTooShort,
                 "gateway.contest.example",
             ),
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-28T23:59:58.123456789Z",
                     "2028-02-28T23:59:58.223456789Z",
                 ),
-                SiteConfigError::GatewayValidityCoverageTooShort,
+                ConfigError::GatewayValidityCoverageTooShort,
                 "gateway.contest.example",
             ),
             // The strict shell is narrower than RFC 3339: numeric offsets, lowercase
             // separators, pre-epoch years, over-long fractions, and leap seconds are
             // all rejected even where the grammar or the library would accept them.
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-29T23:59:58.123456789Z",
                     "2028-02-29T23:59:58.123456789+00:00",
                 ),
-                SiteConfigError::InvalidGatewayNotAfter,
+                ConfigError::InvalidGatewayNotAfter,
                 "gateway.contest.example",
             ),
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-29T23:59:58.123456789Z",
                     "2028-02-29t23:59:58.123456789Z",
                 ),
-                SiteConfigError::InvalidGatewayNotAfter,
+                ConfigError::InvalidGatewayNotAfter,
                 "gateway.contest.example",
             ),
             (
-                VALID_SITE_CONFIG.replace("2028-02-29T23:59:58.123456789Z", "1969-12-31T23:59:59Z"),
-                SiteConfigError::InvalidGatewayNotAfter,
+                VALID_CONFIG.replace("2028-02-29T23:59:58.123456789Z", "1969-12-31T23:59:59Z"),
+                ConfigError::InvalidGatewayNotAfter,
                 "gateway.contest.example",
             ),
             (
-                VALID_SITE_CONFIG.replace(
+                VALID_CONFIG.replace(
                     "2028-02-29T23:59:58.123456789Z",
                     "2028-02-29T23:59:58.1234567891Z",
                 ),
-                SiteConfigError::InvalidGatewayNotAfter,
+                ConfigError::InvalidGatewayNotAfter,
                 "gateway.contest.example",
             ),
             (
-                VALID_SITE_CONFIG.replace("2028-02-29T23:59:58.123456789Z", "2028-02-29T23:59:60Z"),
-                SiteConfigError::InvalidGatewayNotAfter,
+                VALID_CONFIG.replace("2028-02-29T23:59:58.123456789Z", "2028-02-29T23:59:60Z"),
+                ConfigError::InvalidGatewayNotAfter,
                 "gateway.contest.example",
             ),
         ] {
             let fixture = ConfigFixture::new(&contents)?;
-            let Err(error) = GatewaySiteConfig::load_from(fixture.path()) else {
+            let Err(error) = ServerConfig::load_from(fixture.path()) else {
                 return Err(TestFailure::ExpectedConfigurationFailure);
             };
             let display = error.to_string();

@@ -25,14 +25,14 @@ fn tempdir() -> TempDir {
 
 fn fixture_paths(directory: &TempDir) -> StartupPaths {
     let paths = StartupPaths {
-        site_config: directory.path().join("etc/natsume/site.toml"),
+        config: directory.path().join("etc/natsume/config.toml"),
         identity_directory: directory.path().join("var/lib/natsume/identity"),
         control_directory: directory.path().join("var/lib/natsume/control"),
         keys_directory: directory.path().join("var/lib/natsume/keys"),
         state_directory: directory.path().join("var/lib/natsume/state"),
     };
     for path in [
-        paths.site_config.parent(),
+        paths.config.parent(),
         Some(paths.identity_directory.as_path()),
         Some(paths.control_directory.as_path()),
         Some(paths.keys_directory.as_path()),
@@ -55,9 +55,9 @@ fn write_site(paths: &StartupPaths, namespace: &str) {
 
 fn write_site_with_hostname(paths: &StartupPaths, namespace: &str, gateway_hostname: &str) {
     let content = format!(
-        "schema_version = 1\nfleet_namespace_uuid = \"{namespace}\"\ngateway_hostname = \"{gateway_hostname}\"\n"
+        "[server]\nip = \"192.0.2.10\"\nport = 8443\n\n[site]\nfleet_namespace_uuid = \"{namespace}\"\ngateway_hostname = \"{gateway_hostname}\"\n"
     );
-    if let Err(error) = fs::write(&paths.site_config, content) {
+    if let Err(error) = fs::write(&paths.config, content) {
         panic!("site fixture must be written: {error}");
     }
 }
@@ -299,6 +299,28 @@ fn first_start_without_two_sources_has_no_identity() {
 }
 
 #[test]
+fn deployment_example_reads_identity_from_site_section() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    let example = include_str!("../../../../packaging/client/config.example.toml")
+        .replace("REPLACE-WITH-STABLE-SITE-UUID", &NAMESPACE.to_string());
+    fs::write(&paths.config, &example)
+        .unwrap_or_else(|error| panic!("configuration fixture must be written: {error}"));
+    assert_eq!(
+        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))).unwrap_or_else(|error| panic!(
+            "single configuration must initialize identity: {error}"
+        )),
+        StartupIdentityState::CleanFirstStart
+    );
+    fs::write(&paths.config, example.replace("[site]", "[unrelated]"))
+        .unwrap_or_else(|error| panic!("configuration fixture must be written: {error}"));
+    assert!(matches!(
+        read_site_identity(&paths.config),
+        Err(StartupError::SiteConfiguration)
+    ));
+}
+
+#[test]
 fn site_configuration_must_exist_and_use_canonical_uuid() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
@@ -308,7 +330,7 @@ fn site_configuration_must_exist_and_use_canonical_uuid() {
         Err(StartupError::SiteConfiguration)
     ));
 
-    if let Err(error) = fs::remove_file(&paths.site_config) {
+    if let Err(error) = fs::remove_file(&paths.config) {
         panic!("site fixture must be removed: {error}");
     }
     assert!(matches!(
@@ -330,7 +352,7 @@ fn site_configuration_requires_a_canonical_dns_gateway_hostname() {
     ] {
         write_site_with_hostname(&paths, &NAMESPACE.to_string(), hostname);
         assert!(matches!(
-            read_site_identity(&paths.site_config),
+            read_site_identity(&paths.config),
             Err(StartupError::SiteConfiguration)
         ));
     }

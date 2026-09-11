@@ -7,12 +7,12 @@
 | 项目 | 通过标准 |
 | --- | --- |
 | 交接目录 | 从单独归档解压后运行 `python3 image/check.py` 成功，无原仓库/Git/目录外资料依赖 |
-| Client 输入 | 可信 SHA-256、包名/架构正确；`check.py --deb` 通过且包内不含 site.toml 或 CA；缺少站点文件时仍可预装完整包及 Depends |
-| 站点注入 | 安装 Client 后注入部署方的 site.toml 和两个 PEM CA；路径、root:root/0644、站点/证书匹配；缺失或不匹配使构建失败；Client 重装/移除/purge 保留这些文件 |
-| 必需输入拒绝 | 启用时缺包、错误摘要/架构、半对/非法端点、目录与 Deb 不匹配，均使构建失败；禁用时不要求 Deb |
-| 内容缓存 | 相同输入使用同一内容键；保持文件名不变但修改 Deb、站点配置或任一 CA 会失效；CONFIG_DIR 的读取/键/只读挂载一致 |
+| Client 输入 | 可信 SHA-256、包名/架构正确；`check.py --deb` 通过且包内仅有文档配置示例，不含 /etc 下的 config.toml 或 CA；缺少站点文件时仍可预装完整包及 Depends |
+| 站点注入 | autoinstall 落地部署方生成的完整 config.toml 和两个 PEM CA；路径、root:root/0644、站点/证书匹配；缺失或不匹配不能交付安装系统；Client 安装/重装/重新配置/移除/purge 不改写这些文件 |
+| 必需输入拒绝 | 启用时缺包、错误摘要/架构、目录与 Deb 不匹配均使构建失败；缺失或非法端点使运行时配置校验失败；禁用时不要求 Deb |
+| 内容缓存 | 相同输入使用同一内容键；修改 Deb 会失效；部署 config.toml 和 CA 只进入 autoinstall，内容变化重新生成部署输入；CONFIG_DIR 的读取/键/只读挂载一致 |
 | 账号 | waiting/teams 独立 UID/GID/Home，与管理员不冲突；不在管理组；密码锁定、无 linger 文件或可重新拉起 UID 的任务 |
-| Client 固定文件 | inputs.md 列出的程序/PAM/unit/IPC/config 存在，root 所有，执行位/配置模式正确；只有一个 Agent 启动所有者 |
+| Client 固定文件 | inputs.md 列出的程序/PAM/unit/IPC 存在，root 所有，执行位/配置模式正确；只有一个 Agent 启动所有者 |
 | 全部 30 项配置 | 按 manifest.tsv 逐项记录实际路径、替换后的占位符、owner/group/mode、内容摘要；不能只记录“模块执行成功” |
 | 官方栈 | GDM/PAM 合并保留官方完整栈、全部 smartcard alternatives、root 工具 account；无程序/资源补丁及不受控覆盖 |
 | 最终模板 | 每档安装源最终 Browser/IDE/skel 进入模板；镜像根和内容是实际 teams UID/GID、正常 owner 写位；摘要/metadata/选择版本一致 |

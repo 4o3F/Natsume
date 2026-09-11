@@ -647,7 +647,6 @@ fn control_url(endpoint: CanonicalEndpoint) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::parse_endpoint;
     use natsume_device_protocol::generated::{
         BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState, ForegroundTarget,
         GatewayCredentialIntent, GatewayTarget, HomeTarget, RuntimeConfigTarget, ServerIntentState,
@@ -1296,15 +1295,33 @@ mod tests {
     }
 
     #[test]
+    fn deployment_config_reads_server_section_and_rejects_invalid_endpoints() {
+        let example = include_str!("../../../../packaging/client/config.example.toml");
+        let config: ProductionConfig = toml::from_str(example)
+            .unwrap_or_else(|error| panic!("deployment example must parse: {error}"));
+        assert_eq!(config.server.ip.to_string(), "192.0.2.10");
+        assert_eq!(config.server.port.get(), 8443);
+        for invalid in [
+            example.replace("192.0.2.10", "server.example"),
+            example.replace("192.0.2.10", "[2001:db8::1]"),
+            example.replace("port = 8443", "port = 0"),
+            example.replace("port = 8443", "port = 65536"),
+            example.replace("[server]", "[unrelated]"),
+        ] {
+            assert!(toml::from_str::<ProductionConfig>(&invalid).is_err());
+        }
+    }
+
+    #[test]
     fn control_url_uses_only_the_fixed_route_and_configured_ip_endpoint() {
-        let ipv4 = parse_endpoint("192.0.2.10", "8443")
+        let ipv4 = toml::from_str::<CanonicalEndpoint>("ip = \"192.0.2.10\"\nport = 8443")
             .unwrap_or_else(|error| panic!("IPv4 fixture must parse: {error}"));
         assert_eq!(
             control_url(ipv4),
             "wss://192.0.2.10:8443/api/v2/device/control"
         );
 
-        let ipv6 = parse_endpoint("2001:db8::1", "443")
+        let ipv6 = toml::from_str::<CanonicalEndpoint>("ip = \"2001:db8::1\"\nport = 443")
             .unwrap_or_else(|error| panic!("IPv6 fixture must parse: {error}"));
         assert_eq!(
             control_url(ipv6),

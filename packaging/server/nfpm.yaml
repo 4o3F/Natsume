@@ -17,9 +17,8 @@ contents:
   - src: web/dist/
     dst: /usr/share/natsume-server/web/
     type: tree
-  - src: packaging/server/rootfs/etc/natsume-server/config.toml
-    dst: /etc/natsume-server/config.toml
-    type: config|noreplace
+  - src: packaging/server/config.example.toml
+    dst: /usr/share/doc/natsume-server/config.example.toml
     file_info: {mode: 0o644}
   - src: packaging/server/rootfs/usr/
     dst: /usr/

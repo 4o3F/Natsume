@@ -21,7 +21,7 @@ waiting 本期纯黑全屏，同一 Agent 窗口承载 Binding，不需要 logo 
 
 | 位置 | 修改责任 |
 | --- | --- |
-| 构建参数、配置目录 | 固定提供完整通用 Client Deb，以及独立的正式 site.toml 和两个公共 CA 文件；构建侧没有启用开关或手填摘要，端点只进入 autoinstall 配置 |
+| 构建参数、配置目录 | 构建提供完整通用 Client Deb；完整 config.toml 和两个公共 CA 文件仅由部署方交给 autoinstall，构建侧没有启用开关或手填摘要 |
 | `lib/stamp.sh` 或实际缓存键实现 | 将 Deb 实际内容/模式、交接目录和三个站点公共文件计入 extra 和后继层；同名文件内容变化须失效，部署端点不参与层键 |
 | `lib/chroot.sh` / 构建入口 | 配置读取、缓存键和 chroot 只读输入挂载使用同一个实际 CONFIG_DIR；不能仍绑定硬编码仓库 config；构建用独立临时 /run |
 | IDE 层之后的 extra 模块，如 `310-natsume` | 安装官方依赖和完整 Client，注入并检查站点公共文件，创建受管账号，应用除最终模板以外的 IMG 配置，离线 enable |
@@ -162,26 +162,15 @@ Client 包已删除自身旧全局入口，镜像仍须清理历史副本与站�
 
 ## 10. IMG-08：安装、缓存、Live 与首次启动
 
-镜像预装通过目标 root 的正常包管理安装完整 Client 并解析 Depends，明确延后部署端点配置：
+镜像预装通过目标 root 的正常包管理安装完整 Client 并解析 Depends，不提供部署配置或 CA：
 
 ```sh
-DEBIAN_FRONTEND=noninteractive NATSUME_DEFER_ENDPOINT=1 \
-apt-get install -y /path/visible/in/chroot/natsume-client.deb
+DEBIAN_FRONTEND=noninteractive apt-get install -y /path/to/natsume-client.deb
 ```
 
-包仍初始化 sysusers/tmpfiles，但不保留 `/etc/natsume/config.toml` 或 debconf 端点。此模式只接受未配置的新镜像，已有端点或显式端点环境变量会失败；不能借此清除在用工位配置，也不能用临时 Server 地址生成镜像。
+包初始化 sysusers/tmpfiles；部署文件缺失时允许安装，服务保持跳过启动。autoinstall 将部署方生成的完整 `/etc/natsume/config.toml` 和两份 CA 写入目标系统，路径、内容与权限遵循 [inputs.md](inputs.md#2-公共站点配置与身份)。配置只含 `[server]` 和 `[site]` 中的 Client 参数，不调用 debconf、端点配置命令或包脚本生成配置。文件缺失、内容非法或与配套 Server 不匹配时不能交付系统；已存在的非空可读检查只是包安装阶段的基本检查。
 
-真实端点由 autoinstall 在安装后的目标 root 中配置，例如 late-command 参数数组：
-
-```yaml
-- [curtin, in-target, --target=/target, --, env, DEBIAN_FRONTEND=noninteractive,
-   NATSUME_SERVER_IP=192.0.2.10, NATSUME_SERVER_PORT=8443,
-   dpkg-reconfigure, -f, noninteractive, natsume-client]
-```
-
-包内 canonicalize-endpoint 验证 IP/端口并原子写入 conffile。重装保留已有有效端点；显式成对 override/reconfigure 才更改。半对、非法输入、已有配置损坏或 sysusers/tmpfiles 失败都必须报错。
-
-缓存键覆盖 Deb 实际字节/模式、交接目录和相关依赖层；Server 端点不进入构建参数、层键或发布 rootfs。自定义 CONFIG_DIR 的宿主读取、键计算、chroot 只读挂载须一致。
+缓存键覆盖 Deb 实际字节/模式、交接目录和相关依赖层；部署配置和 CA 不进入构建参数、层键或发布 rootfs。自定义 CONFIG_DIR 的宿主读取、键计算、chroot 只读挂载须一致。
 
 在离线目标 root 启用 natsume-privileged-helper.service、natsume-device-daemon.service 和模板 mount（使用 builder 的 `systemctl --root=... enable` 等价封装，不带 --now）。按发行版正常机制选择 GDM 为 display manager。Caddy 由 Daemon 管理；prepare instance 不独立 enable；Agent 随官方 Kiosk session 启动。
 

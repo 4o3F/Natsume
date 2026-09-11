@@ -33,7 +33,7 @@ CLIENT_PROGRAMS = {
     "usr/lib/natsume/natsume-privileged-helper", "usr/lib/natsume/caddy",
 }
 SITE_FILES = {
-    "etc/natsume/site.toml", "etc/natsume/trust/control-ca.crt",
+    "etc/natsume/config.toml", "etc/natsume/site.toml", "etc/natsume/trust/control-ca.crt",
     "etc/natsume/trust/local-origin-ca.crt",
 }
 

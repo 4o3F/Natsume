@@ -13,6 +13,7 @@ No ignored VM experiment is a release input.
 | [image/](image/README.md) | Standalone image-builder handoff: all configuration inputs, dependencies, implementation requirements, acceptance criteria and checker |
 | `ci-package-smoke.sh` | Build/inspect both real Debs and their runtime/image contracts |
 | `check-image-inputs.py` | Verify the source input closure and actual Client Deb image payload |
+| `check-maintainer-scripts.py` | Verify non-mutating postinstall file checks in temporary roots |
 | `hosted-lifecycle.sh` | Existing acknowledgement-gated disposable-runner lifecycle harness |
 | `target-vm/` | Ignored local experiments and evidence; never required by build or installation |
 
@@ -24,15 +25,15 @@ builder reads that installed directory and applies its [manifest](image/manifest
 after provisioning the official desktop and fixed accounts. Upstream stack merges,
 actual UID substitutions, final skel/template generation and offline enablement
 remain image build steps; Deb configuration alone does not make a boot-ready image.
-The Client Deb contains no `site.toml` or CA certificates. Image construction
-installs the deployer's matching public files under `/etc/natsume/` before first
-startup; they remain image-owned across Client reinstall, removal and purge.
+The Client Deb contains no deployment configuration or CA certificates. Autoinstall
+installs the deployer's complete `config.toml` and matching public CA files under
+`/etc/natsume/` before first startup. Package scripts never rewrite or delete them.
 
 The entire `image/` directory can also be archived and handed to an image-builder
 project independently. Its README, input contract, implementation guide and
 acceptance document contain all required design context; its `check.py` runs
-without this repository or Git. The matching Client Deb and site endpoint are
-explicit build dependencies described inside the handoff.
+without this repository or Git. The handoff distinguishes the matching Client Deb build dependency from the
+complete configuration and CA files supplied by deployment.
 
 The contest role uses Unix user `teams` and `/home/teams`; waiting uses `waiting`
 and `/home/waiting`. Protocol/CLI role tokens and `gdm-contest` remain `contest`.
@@ -60,7 +61,8 @@ Client additionally requires `CADDY_BIN`; Server requires the built `web/dist`.
 Neither manifest consumes `SITE_CONFIG`, `CONTROL_CA_CERT` or `LOCAL_ORIGIN_CA_CERT`.
 The matching public site configuration and trust roots are separate deployment
 inputs for both packages; no root private key or per-device identity enters either Deb or the image.
-`site-config.example.toml` describes the public site input and is not packaged.
+`client/config.example.toml` and `server/config.example.toml` describe each side's
+complete configuration. They are packaged only under `/usr/share/doc/natsume-{client,server}/`.
 
 `just package-client` / `just package-server` render these variables with
 `envsubst` and consume the prebuilt inputs. The Client recipe also checks the
@@ -108,30 +110,41 @@ publish job; it needs no site secrets. The tag must already exist remotely, and
 an existing release is not overwritten. The weekly hosted lifecycle lane and
 target-image acceptance remain separate from this release CI.
 
-For both packages, deployment supplies `/etc/natsume/site.toml`,
-`/etc/natsume/trust/control-ca.crt` and `/etc/natsume/trust/local-origin-ca.crt`
-as `root:root`, mode `0644`, with parent directories mode `0755`. Reinstall,
-remove and purge preserve these externally owned files. Missing files prevent
-service startup through systemd conditions; their presence alone does not
-complete provisioning. Server also needs its [configuration, TLS/Origin issuing
-material and bootstrap](../server/README.md); Client needs the image handoff above.
+## Deployment configuration
 
-## Endpoint and upgrade contract
+Deployment supplies one complete configuration per side:
 
-`/etc/natsume/config.toml` is a `config|noreplace` conffile whose packaged form
-contains no endpoint. First configuration receives a complete IP-literal/port
-pair through debconf or `NATSUME_SERVER_IP`/`NATSUME_SERVER_PORT`, validates with
-`natsume-device-daemon canonicalize-endpoint`, and writes atomically. An existing
-valid endpoint survives reinstall/upgrade unless explicitly reconfigured or
-replaced by a complete environment override. Partial overrides, invalid existing
-configuration or failed sysusers/tmpfiles fail configuration.
+- Client: `/etc/natsume/config.toml`, containing `[server]` (IP literal and port)
+  and `[site]` (fleet namespace UUID and Gateway hostname).
+- Server: `/etc/natsume-server/config.toml`, containing `[listen]`, `[log]`,
+  `[storage]`, `[tls]`, `[site]` (Gateway hostname, certificate expiry and contest
+  end), and `[trust]` (Control/Local Origin CA paths).
 
-Image builders set `NATSUME_DEFER_ENDPOINT=1` for first-time package installation.
-This still initializes sysusers/tmpfiles but leaves no `/etc/natsume/config.toml`
-or debconf endpoint values. It rejects an existing endpoint or environment
-override. Supply the real IP/port later through autoinstall's `curtin in-target`
-command running `dpkg-reconfigure -f noninteractive natsume-client` with the pair
-in its environment. Deployment endpoints never enter the cloned image.
+Both sides also use `/etc/natsume/trust/control-ca.crt` and
+`/etc/natsume/trust/local-origin-ca.crt`. Configuration and public certificates
+are `root:root`, mode `0644`, with parent directories mode `0755`. The Gateway
+hostname and CA files must match the paired deployment. See the Server's
+[TLS/Origin issuing material and bootstrap](../server/README.md).
+
+The packages do not own these deployment paths as Debian conffiles. Fresh
+install, reinstall, reconfiguration, removal and purge do not generate, rewrite,
+change permissions or delete them. Maintainer scripts initialize package users
+and directories, report missing inputs and reject existing empty/unreadable
+inputs. systemd skips service startup until the configuration and two CA paths
+exist; the processes validate their complete configuration when starting.
+
+Generic packages can be preinstalled without deployment inputs. Autoinstall
+later installs the complete Client configuration and certificates into the
+installed system before first boot. There are no debconf endpoint questions,
+endpoint environment overrides, deferral flag or configuration CLI commands.
+The deployer owns any later changes to configuration.
+
+The former separate `site.toml` format is no longer read. Move Client identity
+and Gateway hostname into `[site]` of its configuration. Move Server Gateway
+issuance fields into `[site]`, and CA paths into `[trust]`. Unused schema/fingerprint
+metadata and Server-only issuance fields are not Client configuration inputs.
+This configuration format change requires updating deployment generation before
+upgrading the paired packages; it does not migrate old configuration files.
 
 Image construction enables services against the target root without starting
 them. Identity is initialized only on the actual machine's first boot. Upgrade

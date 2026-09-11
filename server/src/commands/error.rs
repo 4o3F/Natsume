@@ -11,8 +11,6 @@ pub enum CommandError {
     Logging,
     #[snafu(display("database startup failed"))]
     Database,
-    #[snafu(display("site configuration startup failed"))]
-    SiteConfiguration,
     #[snafu(display("vault startup failed"))]
     Vault,
     #[snafu(display("web assets startup failed"))]
@@ -37,7 +35,6 @@ impl From<ServerStateError> for CommandError {
     fn from(error: ServerStateError) -> Self {
         match error {
             ServerStateError::Configuration => Self::Configuration,
-            ServerStateError::SiteConfiguration => Self::SiteConfiguration,
             ServerStateError::Vault => Self::Vault,
             ServerStateError::OriginCa => Self::OriginCa,
             ServerStateError::OriginCaTrustRootMismatch => Self::OriginCaTrustRootMismatch,

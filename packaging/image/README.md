@@ -6,7 +6,7 @@
 
 ## 接收后按此顺序执行
 
-1. 阅读 [构建输入与 Client 契约](inputs.md)，落实部署输入，核对完整 Client Deb 与本目录一致。Deb 是单独的版本化构建依赖；站点配置和两份正式公共 CA 由部署方独立提供，在镜像构建中注入；官方系统依赖由镜像项目的包来源提供。
+1. 阅读 [构建输入与 Client 契约](inputs.md)，落实部署输入，核对完整 Client Deb 与本目录一致。Deb 是单独的版本化构建依赖；完整 Client config.toml 和两份正式公共 CA 由部署方独立提供，通过 autoinstall 安装到目标系统；官方系统依赖由镜像项目的包来源提供。
 2. 按 [镜像实施要求](integration.md)修改 image builder。它覆盖全部 IMG-01～08、已有镜像项目的修改位置、构建顺序、账号、桌面、PAM、模板、Live 分层与维护要求。
 3. 按 [部署清单](manifest.tsv)应用配置。每个占位符、合并规则、权限和归属均在实施要求中说明。
 4. 按 [验收与交付记录](acceptance.md)进行构建检查和新镜像实测，提交逐项结果及实际版本。静态检查或包安装成功不能代替系统验收。
@@ -51,7 +51,7 @@ python3 image/check.py
 python3 image/check.py --deb /absolute/path/natsume-client.deb
 ```
 
-`check.py` 只需要 Python 3.10+、POSIX sh；检查 Deb 还需要 `dpkg-deb`。它检查文件闭包、模式、部署映射、目录内文档链接，以及 Deb 中本目录副本的字节/归属/模式和关键 Client 入口，并拒绝包含站点配置或 CA 的 Client 包。它不安装包、不检查镜像注入的站点文件、不修改目标系统，也不声称已经验收桌面。
+`check.py` 只需要 Python 3.10+、POSIX sh；检查 Deb 还需要 `dpkg-deb`。它检查文件闭包、模式、部署映射、目录内文档链接，以及 Deb 中本目录副本的字节/归属/模式和关键 Client 入口，并拒绝包含站点配置或 CA 的 Client 包。它不安装包、不检查 autoinstall 落地的部署文件、不修改目标系统，也不声称已经验收桌面。
 
 Client Deb 同时将本目录原样放在 `/usr/share/natsume/image-integration/`。镜像构建先验证收到的目录与实际 Deb 一致，再以已安装包内副本为应用来源。不一致时取得匹配交接目录或重新发布 Client，不能混用另一版本的配置绕过检查。
 

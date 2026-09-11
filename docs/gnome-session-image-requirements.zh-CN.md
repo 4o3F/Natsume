@@ -33,7 +33,7 @@ Client 文件来源见[附录 A](gnome-session-image-configuration.zh-CN.md#clie
 按以下顺序处理每个实际安装源；运行中系统的 Home 与配置变更另见[维护要求](#maintenance)。
 
 1. 锁定兼容的 Client Deb、公共站点配置及官方依赖，预留管理员与受管账号，检查名称/UID/GID 冲突。
-2. 安装通用 Client，确认包提供的 PAM、unit 和程序存在；注入部署方独立提供的 site.toml 和两份公共 CA，再从包内 `/usr/share/natsume/image-integration/` 接入 GDM/PAM/登录入口配置。
+2. 安装通用 Client，确认包提供的 PAM、unit 和程序存在；将完整 config.toml 和两份公共 CA 留给 autoinstall 落地，并从包内 `/usr/share/natsume/image-integration/` 接入 GDM/PAM/登录入口配置。
 3. 安装 dconf、英文键盘、中文字体、Xorg、VT 和退出顺序配置；退出旧 OOBE、登录、锁屏和 Agent 启动链。
 4. 所有桌面、语言、Browser/IDE 层写完 `/etc/skel` 后，生成该安装源的正式模板，校验摘要并安装 mount 与 Helper drop-in。
 5. 在目标 root 中离线 enable；分离 Live 安装环境与实际安装源；检查没有带入机器身份和运行态数据。
@@ -174,9 +174,9 @@ Client 已删除自身旧全局入口，镜像仍须清点历史副本。Agent �
 <a id="img-08"></a>
 ## 10. IMG-08：构建、安装与首次启动
 
-- 输入使用完整通用 `natsume-client` Deb，核对版本、架构和 SHA-256，按包依赖安装运行库；公共站点配置和两份正式 CA 独立提供，在镜像构建中注入并检查匹配关系，不使用包内测试 CA。Client 重装或 purge 不管理这些镜像文件；只复制二进制不算包部署。
-- 安装提供成对 `NATSUME_SERVER_IP` / `NATSUME_SERVER_PORT`，或 debconf 的 `natsume-client/server-ip`、`natsume-client/server-port`。由包内 `canonicalize-endpoint` 校验；保留已有有效配置遵循包脚本语义。缺失必要输入、半对输入、非法端点必须失败，不能交付半配置 root。
-- 缓存键覆盖 Deb、site.toml 和两份 CA 的**实际内容**及依赖层/配置；同名文件内容变化须失效。自定义配置目录的宿主输入、缓存键、chroot 只读挂载必须一致；部署端点仍由 autoinstall 提供，不进入镜像层键。禁用 Natsume 的安装源不依赖此 Deb。
+- 输入使用完整通用 `natsume-client` Deb，核对版本、架构和 SHA-256，按包依赖安装运行库；完整 Client config.toml 和两份正式 CA 由部署方独立生成，在 autoinstall 中落地并检查匹配关系，不使用包内测试 CA。Client 重装或 purge 不管理这些镜像文件；只复制二进制不算包部署。
+- Client 包只提供配置示例，不在 `/etc` 安装占位配置。autoinstall 直接写完整 `/etc/natsume/config.toml`：`[server]` 保存 IP 字面量和端口，`[site]` 保存站点命名空间及 Gateway 域名。包安装、重新配置和卸载都不改写配置；缺配置可预装，已提供的空文件或不可读文件使包配置失败，内容由 Client 启动时校验。
+- 缓存键覆盖 Deb 的**实际内容**及依赖层/镜像配置；同名文件内容变化须失效。自定义配置目录的宿主输入、缓存键、chroot 只读挂载必须一致；完整部署配置和两份 CA 只进入 autoinstall，不进入镜像层键，修改后重新生成部署输入。禁用 Natsume 的安装源不依赖此 Deb。
 - Client postinstall 做 sysusers/tmpfiles 和适用的 daemon-reload，**不负责开机 enable**。镜像在目标 root 离线启用 `natsume-privileged-helper.service`、`natsume-device-daemon.service`、模板 mount；GDM 按发行版设为显示管理器。Caddy 由 Daemon 管理，prepare unit 不单独 enable，Agent 随官方 Kiosk session 启动。
 - 构建不启动 GDM、用户 manager、Client，不把运行主机 `/run` 绑定进离线 root。按发行版首次启动机制准备 machine-id；不克隆设备身份、私钥、Enrollment、Binding 或 Home 维护状态。
 - **实际安装源**保留固定 waiting 及 Client/模板启动；**Live 层**保留 Casper 临时管理员和可见安装器，关闭该层 Client/模板自动启动和继承的 waiting 自动登录。Live 专用覆盖不能复制进已安装系统。

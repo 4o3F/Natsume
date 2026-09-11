@@ -24,6 +24,7 @@ for command in cargo cp curl cut dpkg-deb envsubst grep node pnpm python3 readel
 done
 
 python3 packaging/check-image-inputs.py
+python3 packaging/check-maintainer-scripts.py
 
 session_kiosk_source='packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf'
 test -f "${session_kiosk_source}" || fail 'GNOME Kiosk Agent drop-in is missing'
@@ -109,12 +110,6 @@ CARGO_TARGET_DIR="${production_target}" cargo build \
   -p natsume-privileged-helper \
   -p natsume-session-agent \
   -p natsume-server
-canonical_endpoint="$("${production_release}/natsume-device-daemon" canonicalize-endpoint '2001:0db8:0:0:0:0:0:10' '8443')"
-[[ ${canonical_endpoint} == '2001:db8::10 8443' ]] ||
-  fail 'Device Daemon did not emit the canonical IPv6 endpoint'
-if "${production_release}/natsume-device-daemon" canonicalize-endpoint 'server.example' '8443' >/dev/null 2>&1; then
-  fail 'Device Daemon accepted a hostname as an install endpoint'
-fi
 pnpm --filter @natsume/web build
 
 export VERSION="${VERSION:-2.0.0~ci1}"
@@ -173,6 +168,7 @@ require_package_path() {
 
 for path in \
   /usr/bin/natsume-server \
+  /usr/share/doc/natsume-server/config.example.toml \
   /usr/lib/systemd/system/natsume-server.service \
   /usr/share/natsume-server/web/index.html; do
   require_package_path "${work_root}/server.contents" "${path}"
@@ -190,7 +186,7 @@ for path in \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
   /usr/lib/systemd/system/natsume-caddy.service \
-  /etc/natsume/config.toml \
+  /usr/share/doc/natsume-client/config.example.toml \
   /usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf \
   /usr/share/dbus-1/system.d/org.natsume.Device1.conf \
   /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf; do
@@ -226,7 +222,6 @@ for package in libfontconfig1 libfreetype6 libstdc++6 libpam-modules util-linux;
 done
 
 shellcheck -x \
-  packaging/client/debconf/config \
   packaging/client/scripts/postinstall.sh \
   packaging/client/scripts/preremove.sh \
   packaging/client/scripts/postremove.sh \
@@ -236,18 +231,21 @@ shellcheck -x \
 
 server_control="${work_root}/server-control"
 dpkg-deb --control "${server_deb}" "${server_control}"
-grep -Fxq '/etc/natsume-server/config.toml' "${server_control}/conffiles" ||
-  fail 'server config is not registered as a Debian conffile'
 client_control="${work_root}/client-control"
 dpkg-deb --control "${client_deb}" "${client_control}"
+cmp packaging/server/scripts/postinstall.sh "${server_control}/postinst" ||
+  fail 'Server postinst differs from the checked deployment contract'
+cmp packaging/client/scripts/postinstall.sh "${client_control}/postinst" ||
+  fail 'Client postinst differs from the checked deployment contract'
+if [[ -e ${client_control}/config || -e ${client_control}/templates ]]; then
+  fail 'Client package still contains the retired debconf interface'
+fi
 cmp packaging/client/scripts/preremove.sh "${client_control}/prerm" ||
   fail 'Client prerm does not carry the maintenance removal guard'
 cmp packaging/client/scripts/postremove.sh "${client_control}/postrm" ||
   fail 'Client postrm does not carry removal and purge cleanup'
 test -x "${client_control}/prerm" || fail 'Client prerm is not executable'
 test -x "${client_control}/postrm" || fail 'Client postrm is not executable'
-grep -Fxq '/etc/natsume/config.toml' "${client_control}/conffiles" ||
-  fail 'endpoint config is not registered as a Debian conffile'
 if grep -Eq 'systemd-(sysusers|tmpfiles).*[|][|][[:space:]]*true' \
   packaging/client/scripts/postinstall.sh packaging/server/scripts/postinstall.sh; then
   fail 'required sysusers/tmpfiles failures are suppressed'
@@ -257,32 +255,35 @@ dpkg-deb --extract "${server_deb}" "${extract_root}/server"
 dpkg-deb --extract "${client_deb}" "${extract_root}/client"
 
 client_caddyfile="${extract_root}/client/etc/natsume/caddy/bootstrap.caddyfile"
-client_config_placeholder="${extract_root}/client/etc/natsume/config.toml"
 client_caddy_unit="${extract_root}/client/usr/lib/systemd/system/natsume-caddy.service"
 client_daemon_unit="${extract_root}/client/usr/lib/systemd/system/natsume-device-daemon.service"
 client_helper_unit="${extract_root}/client/usr/lib/systemd/system/natsume-privileged-helper.service"
 server_unit="${extract_root}/server/usr/lib/systemd/system/natsume-server.service"
-for path in /etc/natsume/site.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt; do
+for path in /etc/natsume/config.toml /etc/natsume-server/config.toml /etc/natsume/site.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt; do
   for package in server client; do
     test ! -e "${extract_root}/${package}${path}" ||
       fail "${package} package contains deployment-supplied site input: ${path}"
-    if grep -Fxq "${path}" "${work_root}/${package}-control/conffiles"; then
+    if [[ -f ${work_root}/${package}-control/conffiles ]] &&
+      grep -Fxq "${path}" "${work_root}/${package}-control/conffiles"; then
       fail "${package} package owns deployment-supplied site input: ${path}"
     fi
   done
-  grep -Fxq "ConditionPathExists=${path}" "${server_unit}" ||
-    fail "Server can start without deployment-supplied site input: ${path}"
-  grep -Fxq "ConditionPathExists=${path}" "${client_daemon_unit}" ||
-    fail "Device Daemon can start without image-supplied site input: ${path}"
+done
+for package in server client; do
+  unit=${server_unit}
+  config=/etc/natsume-server/config.toml
+  if [[ ${package} == client ]]; then
+    unit=${client_daemon_unit}
+    config=/etc/natsume/config.toml
+  fi
+  for path in "${config}" /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt; do
+    grep -Fxq "ConditionPathExists=${path}" "${unit}" ||
+      fail "${package} can start without deployment input: ${path}"
+  done
 done
 client_display_dropin="${extract_root}/client/usr/lib/systemd/system/display-manager.service.d/50-natsume-home.conf"
 client_tmpfiles="${extract_root}/client/usr/lib/tmpfiles.d/natsume.conf"
-grep -Fxq '# Natsume endpoint is written by postinstall after debconf validation.' \
-  "${client_config_placeholder}" ||
-  fail 'packaged endpoint conffile is not the fail-closed placeholder'
-if grep -Eq '^[[:space:]]*(ip|port)[[:space:]]*=' "${client_config_placeholder}"; then
-  fail 'packaged endpoint placeholder contains an unvalidated endpoint'
-fi
+
 grep -Fq 'admin unix//run/natsume/caddy-admin.sock|0660' "${client_caddyfile}" ||
   fail 'packaged bootstrap Caddyfile does not expose the group-writable local admin socket'
 if grep -Eq '^[[:space:]]*(https?://|tls |reverse_proxy)' "${client_caddyfile}"; then

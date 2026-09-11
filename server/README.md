@@ -25,14 +25,20 @@ carries configuration, paths, or secrets.
 
 ## TLS and Origin CA material
 
-The generic Server Deb includes the binary, Web assets, service and default
-`/etc/natsume-server/config.toml`. It contains no site configuration or CA
-certificates. After installation, provision `/etc/natsume/site.toml`,
-`/etc/natsume/trust/control-ca.crt` and
-`/etc/natsume/trust/local-origin-ca.crt` as `root:root`, mode `0644`, with parent
-directories mode `0755`. These public files must match the Client image inputs;
-package reinstall, removal and purge leave them untouched. The systemd service
-skips startup while any of the three files is missing.
+The generic Server Deb includes the binary, Web assets, service and
+`/usr/share/doc/natsume-server/config.example.toml`. Deployment supplies the
+complete `/etc/natsume-server/config.toml`, `/etc/natsume/trust/control-ca.crt`
+and `/etc/natsume/trust/local-origin-ca.crt`, all `root:root`, mode `0644`, with
+parent directories mode `0755`. Package scripts never generate or rewrite these
+files; fresh install, reinstall, removal and purge preserve deployment inputs.
+The systemd service skips startup while any required file is missing.
+
+The single configuration contains `[listen]`, `[log]`, `[storage]`, `[tls]`,
+`[site]` and `[trust]`; see the [deployment example](../packaging/server/config.example.toml).
+`[site]` holds `gateway_hostname`, `gateway_not_after` and `contest_end`; the
+expiry must cover contest end plus one day. `[trust]` holds `control_root` and
+`local_origin_root` paths. The Gateway hostname and two CA certificates must
+match the Client deployment. There is no second site configuration file.
 
 Before `natsume-server serve` starts, the deployer must provision the Origin CA
 issuing material exactly as it provisions the Server TLS leaf/key pair. Packaging

@@ -15,7 +15,7 @@ use crate::{
         runtime::RuntimeConfigComponent,
         session::SessionControlComponent,
     },
-    config::{GatewaySiteConfig, ServerConfig},
+    config::ServerConfig,
     db::Database,
     device_control::DeviceControl,
     vault::{self, VaultSession},
@@ -50,8 +50,6 @@ impl ServerState {
     ) -> Result<Self, ServerStateError> {
         let vault =
             vault::load(config.vault_master_key_path()).map_err(|_| ServerStateError::Vault)?;
-        let site = GatewaySiteConfig::load_from(config.site_config_path())
-            .map_err(|_| ServerStateError::SiteConfiguration)?;
         let ca_certificate_path = config
             .origin_ca_certificate_path()
             .map_err(|_| ServerStateError::Configuration)?;
@@ -63,7 +61,7 @@ impl ServerState {
             &ca_certificate_path,
             &ca_private_key_path,
             config.local_origin_root_path(),
-            &site,
+            config.site(),
         )
         .map_err(map_gateway_load_error)?;
 
@@ -147,8 +145,6 @@ fn map_gateway_load_error(error: GatewayLoadError) -> ServerStateError {
 pub(crate) enum ServerStateError {
     #[snafu(display("server configuration failed"))]
     Configuration,
-    #[snafu(display("site configuration startup failed"))]
-    SiteConfiguration,
     #[snafu(display("vault startup failed"))]
     Vault,
     #[snafu(display("Origin CA startup failed"))]

@@ -1,0 +1,9 @@
+# Deployment example for /etc/natsume/config.toml. No credentials or private keys.
+# The deployer supplies the complete file; package scripts never rewrite it.
+[server]
+ip = "192.0.2.10"
+port = 8443
+
+[site]
+fleet_namespace_uuid = "REPLACE-WITH-STABLE-SITE-UUID"
+gateway_hostname = "gateway.contest.example"

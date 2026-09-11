@@ -26,7 +26,7 @@
 | `/usr/share/natsume/image-integration/` | [镜像集成输入](../packaging/image/README.md)，由镜像构建进一步应用 |
 | Helper/Daemon unit、IPC policy、sysusers/tmpfiles、程序 | [Deb 清单](../packaging/client/nfpm.yaml) |
 
-`/etc/natsume/site.toml` 和 `/etc/natsume/trust/{control-ca,local-origin-ca}.crt` 由部署方独立提供，镜像构建在安装 Client 后注入；通用 Client Deb 不包含这些文件。固定路径、权限和检查要求见[站点输入约定](../packaging/image/inputs.md#2-公共站点配置与身份)。
+`/etc/natsume/config.toml` 和 `/etc/natsume/trust/{control-ca,local-origin-ca}.crt` 由部署方独立提供，autoinstall 在目标系统中直接安装完整配置和证书；通用 Client Deb 不包含这些文件。固定路径、权限和检查要求见[站点输入约定](../packaging/image/inputs.md#2-公共站点配置与身份)。
 
 以下 B～F 的系统目标由镜像复制/合并/生成；Deb 只安装它们的输入副本，不自动写入这些目标。账号和最终 Home 内容依赖具体安装源，不能由包安装脚本猜测。输入随 Client 版本升级后，镜像须在维护期完成对应系统配置交接。
 

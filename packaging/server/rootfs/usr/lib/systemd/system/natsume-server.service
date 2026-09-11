@@ -3,7 +3,7 @@
 Description=Natsume V2 Server
 After=network-online.target local-fs.target
 Wants=network-online.target
-ConditionPathExists=/etc/natsume/site.toml
+ConditionPathExists=/etc/natsume-server/config.toml
 ConditionPathExists=/etc/natsume/trust/control-ca.crt
 ConditionPathExists=/etc/natsume/trust/local-origin-ca.crt
 

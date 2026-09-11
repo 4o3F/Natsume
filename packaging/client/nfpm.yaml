@@ -13,7 +13,6 @@ umask: 0o022
 depends:
   - ca-certificates
   - dbus
-  - debconf
   - libfontconfig1
   - libpam-modules
   - libfreetype6
@@ -48,17 +47,11 @@ contents:
   - src: packaging/client/rootfs/etc/natsume/caddy/
     dst: /etc/natsume/caddy/
     type: tree
-  - src: packaging/client/rootfs/etc/natsume/config.toml
-    dst: /etc/natsume/config.toml
-    type: config|noreplace
-    file_info: {mode: 0o640, owner: root, group: root}
+  - src: packaging/client/config.example.toml
+    dst: /usr/share/doc/natsume-client/config.example.toml
+    file_info: {mode: 0o644}
 
 scripts:
   postinstall: packaging/client/scripts/postinstall.sh
   preremove: packaging/client/scripts/preremove.sh
   postremove: packaging/client/scripts/postremove.sh
-
-deb:
-  scripts:
-    templates: packaging/client/debconf/templates
-    config: packaging/client/debconf/config

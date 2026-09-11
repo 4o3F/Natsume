@@ -15,6 +15,11 @@ certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
 private_key = "/var/lib/natsume-server/keys/server-tls-key.pk8"
 
 [site]
-config = "/etc/natsume/site.toml"
+# Set these deployment values before starting the Server.
+gateway_hostname = "gateway.contest.example"
+gateway_not_after = "2030-01-01T00:00:00Z"
+contest_end = "2029-12-31T00:00:00Z"
+
+[trust]
 control_root = "/etc/natsume/trust/control-ca.crt"
 local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"

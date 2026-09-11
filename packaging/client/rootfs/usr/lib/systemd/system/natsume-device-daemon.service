@@ -8,7 +8,6 @@ After=network-online.target dbus.service local-fs.target systemd-udev-settle.ser
 Wants=network-online.target systemd-udev-settle.service
 Requires=natsume-caddy.service natsume-privileged-helper.service
 ConditionPathExists=/etc/natsume/config.toml
-ConditionPathExists=/etc/natsume/site.toml
 ConditionPathExists=/etc/natsume/trust/control-ca.crt
 ConditionPathExists=/etc/natsume/trust/local-origin-ca.crt
 

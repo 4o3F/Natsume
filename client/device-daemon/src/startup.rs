@@ -20,7 +20,7 @@ use crate::{
 const LOCAL_CONTROL_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct StartupPaths {
-    site_config: PathBuf,
+    config: PathBuf,
     identity_directory: PathBuf,
     control_directory: PathBuf,
     keys_directory: PathBuf,
@@ -30,7 +30,7 @@ struct StartupPaths {
 impl StartupPaths {
     fn production() -> Self {
         Self {
-            site_config: PathBuf::from("/etc/natsume/site.toml"),
+            config: PathBuf::from("/etc/natsume/config.toml"),
             identity_directory: PathBuf::from("/var/lib/natsume/identity"),
             control_directory: PathBuf::from("/var/lib/natsume/control"),
             keys_directory: PathBuf::from("/var/lib/natsume/keys"),
@@ -62,6 +62,11 @@ pub(crate) enum StartupError {
 
     #[snafu(display("device control loop failed closed: {source}"))]
     Control { source: control::ControlLoopError },
+}
+
+#[derive(Deserialize)]
+struct StartupConfig {
+    site: SiteIdentityConfig,
 }
 
 #[derive(Deserialize)]
@@ -130,13 +135,14 @@ fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
         );
         StartupError::SiteConfiguration
     })?;
-    let config = toml::from_str::<SiteIdentityConfig>(&text).map_err(|_| {
+    let config = toml::from_str::<StartupConfig>(&text).map_err(|_| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
             "device startup site identity configuration is invalid"
         );
         StartupError::SiteConfiguration
     })?;
+    let config = config.site;
     let fleet_namespace_uuid = canonical_uuid(&config.fleet_namespace_uuid).ok_or_else(|| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
@@ -239,7 +245,7 @@ fn preflight(
     paths: &StartupPaths,
     privileged_home_state_present: bool,
 ) -> Result<StartupContext, StartupError> {
-    let site = read_site_identity(&paths.site_config)?;
+    let site = read_site_identity(&paths.config)?;
     let configured_namespace = site.fleet_namespace_uuid;
     let gateway_hostname = site.gateway_hostname;
     let artifacts_present = privileged_home_state_present

@@ -28,28 +28,6 @@ client_deb=$(realpath -- "${client_deb}")
 
 config=/etc/natsume/config.toml
 
-canonical_endpoint() {
-  /usr/bin/natsume-device-daemon canonicalize-endpoint "$1" "$2"
-}
-
-assert_endpoint() {
-  local expected ip port
-  expected=$(canonical_endpoint "$1" "$2")
-  ip=${expected% *}
-  port=${expected##* }
-  grep -Fxq "ip = \"${ip}\"" "${config}" ||
-    fail "config does not contain canonical IP ${ip}"
-  grep -Fxq "port = ${port}" "${config}" ||
-    fail "config does not contain canonical port ${port}"
-}
-
-assert_config_metadata() {
-  local actual
-  actual=$(stat --format='%U:%G %a' "${config}")
-  [[ ${actual} == 'root:natsume 640' ]] ||
-    fail "endpoint config metadata is ${actual}, expected root:natsume 640"
-}
-
 assert_user() {
   getent passwd "$1" >/dev/null || fail "required user does not exist: $1"
 }
@@ -78,7 +56,7 @@ assert_preserved_file() {
 }
 
 # Generate disposable public inputs here; release packages contain none.
-site_files=(/etc/natsume/site.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt)
+site_files=(/etc/natsume-server/config.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt)
 site_inputs=$(mktemp -d)
 trap 'rm -rf "${site_inputs}"' EXIT HUP INT TERM
 mkdir -p "${site_inputs}/etc/natsume/trust"
@@ -89,17 +67,10 @@ for authority in control local-origin; do
     -days 1 -subj "/CN=Natsume Lifecycle ${authority} Test CA" >/dev/null 2>&1
 done
 rm -f "${site_inputs}/test-ca.key"
-cat >"${site_inputs}/etc/natsume/site.toml" <<'EOF'
-schema_version = 1
-fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
-gateway_hostname = "gateway.contest.example"
-gateway_not_after = "2030-01-01T00:00:00Z"
-contest_end = "2029-12-31T00:00:00Z"
-
-[trust]
-control_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
-local_origin_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000002"
-EOF
+install -D -m 0644 packaging/server/config.example.toml "${site_inputs}/etc/natsume-server/config.toml"
+install -D -m 0644 packaging/client/config.example.toml "${site_inputs}/etc/natsume/config.toml"
+sed -i 's/REPLACE-WITH-STABLE-SITE-UUID/00000000-0000-4000-8000-000000000001/' \
+  "${site_inputs}/etc/natsume/config.toml"
 
 assert_site_inputs_absent() {
   local path
@@ -145,40 +116,24 @@ assert_tmpfiles_path /var/log/natsume-server 'natsume-server:natsume-server 750'
 systemd-analyze --recursive-errors=no verify \
   /usr/lib/systemd/system/natsume-server.service
 
-printf '\n# Site configuration must survive package maintenance.\n' >>/etc/natsume-server/config.toml
-server_config_sha256=$(sha256sum /etc/natsume-server/config.toml)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${server_deb}"
-[[ $(sha256sum /etc/natsume-server/config.toml) == "${server_config_sha256}" ]] ||
-  fail 'server reinstall replaced the site configuration'
 assert_site_inputs_preserved
 
 dpkg --remove natsume-server
 [[ -e /etc/natsume-server/config.toml ]] ||
-  fail 'remove deleted server conffile /etc/natsume-server/config.toml'
+  fail 'remove deleted deployment-owned Server configuration /etc/natsume-server/config.toml'
 assert_site_inputs_preserved
 
 dpkg --purge natsume-server
-[[ ! -e /etc/natsume-server/config.toml ]] ||
-  fail 'purge left server conffile /etc/natsume-server/config.toml behind'
 assert_site_inputs_preserved
 [[ ! -e /usr/lib/systemd/system/natsume-server.service ]] ||
   fail 'purge left the natsume-server unit behind'
 # Remove only our injected fixtures so Client also starts without site inputs.
 rm -f -- "${site_files[@]}"
 
-server_ip=${NATSUME_TEST_SERVER_IP:-192.0.2.10}
-server_port=${NATSUME_TEST_SERVER_PORT:-8443}
-reconfigure_ip=${NATSUME_TEST_RECONFIGURE_IP:-2001:db8::10}
-reconfigure_port=${NATSUME_TEST_RECONFIGURE_PORT:-9443}
-
-printf 'natsume-client natsume-client/server-ip string %s\n' "${server_ip}" |
-  debconf-set-selections
-printf 'natsume-client natsume-client/server-port string %s\n' "${server_port}" |
-  debconf-set-selections
-
+site_files=(/etc/natsume/config.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt)
+assert_site_inputs_absent
 DEBIAN_FRONTEND=noninteractive apt-get install --yes "${client_deb}"
-assert_endpoint "${server_ip}" "${server_port}"
-assert_config_metadata
 assert_site_inputs_absent
 mapfile -t daemon_conditions < <(grep '^ConditionPathExists=' /usr/lib/systemd/system/natsume-device-daemon.service)
 if systemd-analyze condition "${daemon_conditions[@]}"; then
@@ -231,7 +186,7 @@ control_key_metadata_before=$(stat --format='%U:%G %a' "${control_key_file}")
 control_manifest_metadata_before=$(stat --format='%U:%G %a' "${control_manifest_file}")
 gateway_key_metadata_before=$(stat --format='%U:%G %a' "${gateway_key_file}")
 
-# Simulate image construction after the generic Client has been installed.
+# Simulate deployment after the generic Client has been preinstalled.
 inject_site_inputs
 systemd-analyze condition "${daemon_conditions[@]}" || fail 'Device Daemon conditions failed after site injection'
 
@@ -239,8 +194,7 @@ before_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${client_deb}"
 after_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
 [[ ${before_reinstall} == "${after_reinstall}" ]] ||
-  fail 'reinstall changed the existing endpoint config'
-assert_config_metadata
+  fail 'reinstall changed the deployment configuration'
 assert_preserved_file "${identity_file}" "${identity_hash_before}" "${identity_metadata_before}"
 assert_site_inputs_preserved
 assert_preserved_file \
@@ -254,19 +208,13 @@ rm -f -- \
   "${gateway_key_file}"
 rmdir -- "${gateway_generation_directory}"
 
-printf 'natsume-client natsume-client/server-ip string %s\n' "${reconfigure_ip}" |
-  debconf-set-selections
-printf 'natsume-client natsume-client/server-port string %s\n' "${reconfigure_port}" |
-  debconf-set-selections
 DEBIAN_FRONTEND=noninteractive dpkg-reconfigure natsume-client
-assert_endpoint "${reconfigure_ip}" "${reconfigure_port}"
-assert_config_metadata
+assert_site_inputs_preserved
 
 dpkg --remove natsume-client
-[[ -e ${config} ]] || fail 'remove must preserve the endpoint conffile until purge'
+[[ -e ${config} ]] || fail 'remove must preserve deployment configuration'
 
 dpkg --purge natsume-client
-[[ ! -e ${config} ]] || fail 'purge left the endpoint conffile behind'
 assert_site_inputs_preserved
 [[ ! -e /usr/lib/systemd/system/natsume-device-daemon.service ]] ||
   fail 'purge left the Device Daemon unit behind'
