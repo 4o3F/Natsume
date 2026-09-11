@@ -1,0 +1,18 @@
+[Unit]
+Description=Natsume fixed GDM preparation for %i
+After=dbus.service gdm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/natsume/natsume-privileged-helper prepare-session %i
+User=root
+TimeoutStartSec=45s
+TimeoutStopSec=5s
+KillMode=control-group
+Restart=no
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+NoNewPrivileges=yes
+LimitCORE=0
+CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_SETUID

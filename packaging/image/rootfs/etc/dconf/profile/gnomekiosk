@@ -1,0 +1,5 @@
+# Kiosk 46 explicitly chooses this profile. Preserve its official defaults.
+user-db:user
+system-db:natsume-session
+system-db:natsume-waiting
+file-db:/usr/share/gnome-kiosk/gnomekiosk.dconf.compiled

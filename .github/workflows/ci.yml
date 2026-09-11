@@ -234,12 +234,14 @@ jobs:
 
       - name: Static policy, shell format, and secret scan
         run: just ci-policy
-      - name: XDG-only Session Agent package contract
+      - name: GNOME Kiosk and image input package contracts
         run: |
           set -euo pipefail
-          test -f packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
+          test ! -e packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
           test ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service
-          grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
+          grep -Fxq 'ConditionUser=waiting' packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf
+          grep -Fxq 'ExecStart=/usr/bin/natsume-session-agent run' packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf
+          python3 packaging/check-image-inputs.py
 
   packages:
     name: packages

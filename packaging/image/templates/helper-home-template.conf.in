@@ -1,0 +1,3 @@
+[Unit]
+Wants=@TEMPLATE_MOUNT_UNIT@
+After=@TEMPLATE_MOUNT_UNIT@

@@ -132,10 +132,14 @@ ci-packages:
 verify: toolchain install fmt lint unit api diesel-schema secret-scan
 
 package-server:
-    nfpm package --packager deb --config packaging/server/nfpm.yaml --target dist/packages/
+    mkdir -p dist/packages
+    envsubst '${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${SITE_CONFIG} ${CONTROL_CA_CERT} ${LOCAL_ORIGIN_CA_CERT}' < packaging/server/nfpm.yaml | nfpm package --packager deb --config /dev/stdin --target dist/packages/
 
 package-client:
     grep -Exq '[0-9a-f]{64}  caddy' packaging/client/caddy.sha256
-    nfpm package --packager deb --config packaging/client/nfpm.yaml --target dist/packages/
+    python3 packaging/check-image-inputs.py
+    mkdir -p dist/packages
+    envsubst '${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN} ${SITE_CONFIG} ${CONTROL_CA_CERT} ${LOCAL_ORIGIN_CA_CERT}' < packaging/client/nfpm.yaml | nfpm package --packager deb --config /dev/stdin --target dist/packages/
+    python3 packaging/check-image-inputs.py --deb "dist/packages/natsume-client_${VERSION}_${ARCH}.deb"
 
 package: package-server package-client

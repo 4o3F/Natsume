@@ -1,0 +1,4 @@
+# Included before the distribution gdm-autologin and gdm-password stacks.
+auth requisite pam_exec.so quiet /usr/lib/natsume/natsume-privileged-helper pam-gate
+account requisite pam_exec.so quiet /usr/lib/natsume/natsume-privileged-helper pam-gate
+session requisite pam_exec.so quiet /usr/lib/natsume/natsume-privileged-helper pam-gate

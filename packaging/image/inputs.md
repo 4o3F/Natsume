@@ -1,0 +1,74 @@
+# 构建输入与 Client 契约
+
+本页列完接收方需要落实的外部输入。配置和设计说明已经包含在交接目录中；不要求取得 Natsume 源码或旧试验附件。回到 [交接入口](README.md)。
+
+## 1. 部署方必须提供
+
+| 输入 | 约束和用途 | 缺失或不匹配时 |
+| --- | --- | --- |
+| 完整 `natsume-client` Deb 及可信 SHA-256 | 目标架构匹配；支持 waiting/contest 原生双会话、teams 账号及本交接目录；从部署方指定的发行产物来源取得，不猜测下载 URL | 停止镜像构建，不只复制几个二进制 |
+| 匹配的 Natsume Server/协议版本 | 用于首次 Enrollment、Binding 和验收，由同一发行交付方确认兼容组合 | 可以做离线构建检查，不能签收业务闭环 |
+| `NATSUME_SERVER_IP` | 由 autoinstall 在目标系统中提供；工位可访问的 IPv4/IPv6 字面量；Server TLS 证书包含该 IP SAN，不能填写主机名 | 与端口成对缺失/非法时失败 |
+| `NATSUME_SERVER_PORT` | 由 autoinstall 在目标系统中提供；合法 TCP 端口；HTTPS 与设备 WSS 使用同一端口 | 不能静默选用测试端点 |
+| 站点公共配置和两个 CA 证书 | 已包含在站点配置好的 Client Deb 中，见下文 | 不使用示例 CA 或其他站点的旧包 |
+| 镜像发行版、目标架构、安装源、构建时间基准 | 用于官方依赖解析、每档 skel、模板和可复现输入 | 不把一档模板当作所有安装源的最终模板 |
+| 独立管理员及账号保留规则 | 管理员不得命名 waiting/teams，UID 不与受管账号共用；凭据遵循镜像项目现有私密输入机制 | 名称/UID 冲突必须停止，不能接管不相干的旧账号 |
+
+外部 Deb 是本目录的运行依赖，不能嵌入本目录后又随同一个 Deb 打包。交接目录可独立压缩分发；镜像项目按自己的依赖管理方式保存/获取 Deb，记录其真实内容摘要。所需官方系统包同样从该项目的官方包仓库或离线包池解析。
+
+本地候选 `2.0.0~r5.14` 已包含 teams 账号改动，但不是最终发行承诺，且它早于本次完整交接文档。仅按版本号或文件名放行不够：安装前运行 `python3 image/check.py --deb CLIENT_DEB`，要求实际包内副本与交接目录匹配；再验证发行方确认的程序/协议版本。
+
+## 2. 公共站点配置与身份
+
+Client 包必须已经包含以下文件，镜像项目不重新生成信任关系：
+
+| 安装目标 | 内容 |
+| --- | --- |
+| `/etc/natsume/site.toml` | `schema_version=1`、站点 `fleet_namespace_uuid`、`gateway_hostname`、`gateway_not_after`、`contest_end`；`[trust]` 下 control/local-origin 根证书 SHA-256 |
+| `/etc/natsume/trust/control-ca.crt` | 控制平面公共 CA 证书 |
+| `/etc/natsume/trust/local-origin-ca.crt` | 本地 Origin 公共 CA 证书 |
+| `/etc/natsume/config.toml` | 由 Client 安装脚本校验后写入 Server 端点；Deb 原始文件是无端点占位 conffile，镜像预装以 NATSUME_DEFER_ENDPOINT=1 延后配置并移除占位文件 |
+
+Server root key、CA 私钥、每设备控制/网关私钥不进入交接包或可克隆镜像。首次启动前，`/var/lib/natsume/{identity,control,keys,state}` 与 `/var/lib/natsume-privileged/home-reset` 不得携带运行状态；允许包初始化空目录。不要把已运行工位清空后当作可信新镜像来源。已部署工位的升级必须保留这些状态，不能套用新镜像初始化清理。
+
+按发行版机制准备首次生成的 machine-id。Natsume 自身首次身份还依赖真实机器硬件证据；QEMU 克隆须配置独立、有效的 SMBIOS/系统及主板标识，不能让多台工位共享同一硬件身份。身份就绪后仍需 Server 打开 Provisioning Gate、管理员审批 Enrollment，再由 waiting 的 Agent 进行 Binding；包非交互安装不等于注册或业务授权。
+
+## 3. 官方依赖与实际文件
+
+参考基线为 Ubuntu Noble 系列、GDM 46.2、GNOME Kiosk 46.0、原生 X11。版本是已测试的参考，不要求永久冻结官方安全更新；更换版本应检查下列路径/API 和完整验收。当前目标架构为 amd64；其他架构需要匹配 Deb 和对应验证。
+
+| 依赖 | 官方包/必须存在的能力 |
+| --- | --- |
+| GDM | `gdm3`、`libgdm1`；`gdm.service`/`display-manager.service`、`/usr/libexec/gdm-runtime-config`、官方 GDM D-Bus 登录 API 和 worker |
+| waiting | `gnome-kiosk`、`gnome-kiosk-script-session`；`/usr/share/xsessions/gnome-kiosk-script-xorg.desktop`、`org.gnome.Kiosk.Script.service`、`org.gnome.Kiosk@x11.service` |
+| teams 桌面 | 官方 Ubuntu/GNOME session、GNOME Shell；`/usr/share/xsessions/ubuntu-xorg.desktop`，由所选发行版的 Ubuntu session 与完整桌面依赖提供 |
+| 图形与输入 | 官方 Xorg、对应 kernel/DRM/输入驱动；RandR、DPMS、XInput2 及真实 `/dev/input/eventN` Device Node |
+| 键盘与字体 | 仅要求 US 英文键盘，不额外安装输入法引擎；保留可正常显示中文的字体，例如发行版 `fonts-noto-cjk` 提供的 Noto Sans CJK |
+| 配置/权限 | dconf 工具与编译数据库、polkit、发行版 `pam-auth-update`、`libpam-modules` 的 pam_exec/pam_succeed_if、OpenSSH（若提供远程维护） |
+| Home | 内核 OverlayFS、SquashFS、loop，官方 `squashfs-tools`、`util-linux`；systemd 253+，支持包内 OpenFile/namespace 配置 |
+| Client 运行库 | 以 Deb `Depends` 为准，当前包括 ca-certificates、dbus、debconf、libfontconfig1、libfreetype6、libstdc++6、libsystemd0、libudev1、systemd、util-linux、libpam-modules |
+| 构建检查 | Python 3.10+、sh、dpkg-deb、sha256sum；模板生成需要 mksquashfs、dpkg-query、systemd-escape |
+
+保留发行版正常内核和显卡选择；不修改 GNOME/GDM 程序、资源或 greeter，不引入 nested Xorg/Wayland、不用 QEMU 显卡试验选项代替生产策略。Xauthority 保留官方 `/run/user/<uid>/gdm/Xauthority`；角色需要读取自身合成器环境和访问自身 Xorg/用户总线，不新增跨用户读取权限。
+
+## 4. Client 包直接提供的运行文件
+
+下列文件由完整 Client 包独占。image builder 检查它们存在并保留其包版本，不复制第二份、不自制替代启动器：
+
+| 安装目标 | 契约 |
+| --- | --- |
+| `/usr/bin/natsume-device-daemon` | `run` 常驻；`canonicalize-endpoint IP PORT` 校验端点；独占与 Server 的通信和 Caddy 配置 |
+| `/usr/lib/natsume/natsume-privileged-helper` | root 服务；受限 GDM/logind/Home 能力，必须处于宿主 mount namespace |
+| `/usr/bin/natsume-session-agent` | `run`，waiting 纯黑全屏/Binding 窗口，由官方 Kiosk Script service 管理 |
+| `/usr/lib/natsume/caddy` | 包内已校验版本，由 Daemon 管理；镜像不额外启动第二个网关 |
+| `/usr/lib/systemd/system/natsume-{device-daemon,privileged-helper,caddy}.service` | 主机服务；只离线 enable 前两者，Caddy 的启停归 Daemon |
+| `/usr/lib/systemd/system/natsume-session-prepare@.service` | 固定 root 登录入口，实例名只用 waiting/contest；不单独 enable |
+| `/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf` | `ConditionUser=waiting`，ExecStart 为 Agent run；它是 Agent 唯一启动/重启所有者 |
+| `/etc/pam.d/gdm-contest` | 只允许 Unix teams，包含 Home admission 与官方 gdm-autologin |
+| `/etc/pam.d/gdm-waiting` | 只允许 Unix waiting，包含官方 gdm-autologin |
+| `/etc/pam.d/natsume-contest-admission` | auth/account/session 使用 pam_exec 调用 Helper pam-gate；teams 在 auth/account/open_session 受互锁，close_session 不阻塞 |
+| `/usr/share/dbus-1/system.d/org.natsume.{Device1,Privileged1}.conf` | 固定系统 IPC 权限；不放宽为所有本地用户均可调用 |
+| `/usr/lib/sysusers.d/natsume.conf`、`/usr/lib/tmpfiles.d/natsume.conf` | 服务账号和状态/运行目录；不创建 waiting/teams 桌面账号 |
+| `/usr/share/natsume/image-integration/` | 本交接目录原样副本；由镜像构建继续应用 |
+
+Client 安装脚本执行 sysusers/tmpfiles；正常配置时校验并原子写入端点、适用时 daemon-reload，镜像预装模式则将端点配置留给 autoinstall；不创建桌面用户、合并官方 PAM/GDM、生成 Home 模板或 enable/start 桌面。image builder 必须实现 [实施要求](integration.md) 中的剩余步骤。

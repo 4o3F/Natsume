@@ -1,0 +1,27 @@
+[org/gnome/desktop/background]
+picture-uri=''
+picture-uri-dark=''
+picture-options='none'
+color-shading-type='solid'
+primary-color='#000000'
+secondary-color='#000000'
+
+[org/gnome/mutter]
+overlay-key=''
+
+[org/gnome/desktop/wm/keybindings]
+close=@as []
+switch-applications=@as []
+switch-applications-backward=@as []
+switch-windows=@as []
+switch-windows-backward=@as []
+panel-main-menu=@as []
+panel-run-dialog=@as []
+
+[org/gnome/desktop/lockdown]
+# GNOME 46 also rejects its own shutdown when this is true. Kiosk has no
+# logout menu; disable the interactive shortcut below instead.
+disable-log-out=false
+
+[org/gnome/settings-daemon/plugins/media-keys]
+logout=@as []

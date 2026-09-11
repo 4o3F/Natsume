@@ -1,0 +1,4 @@
+# Image policy: ordinary authentication is unavailable to managed accounts.
+# Keep the release-owned stack after this include for administrator accounts.
+auth requisite pam_succeed_if.so quiet_success user notin teams:waiting
+account requisite pam_succeed_if.so quiet_success user notin teams:waiting

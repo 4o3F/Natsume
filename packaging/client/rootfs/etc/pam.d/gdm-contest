@@ -1,0 +1,4 @@
+# Fixed GDM API login; preserve the distribution autologin stack.
+auth requisite pam_succeed_if.so user = teams quiet
+@include natsume-contest-admission
+@include gdm-autologin

@@ -96,6 +96,18 @@ if [ -e "$config" ]; then
   fi
 fi
 
+# Image builders preinstall the complete package without a deployment endpoint.
+# Never erase an already configured workstation or override an explicit endpoint.
+if [ "${NATSUME_DEFER_ENDPOINT:-0}" = 1 ]; then
+  if [ "$existing_state" != missing ] || [ "$env_ip_set" -ne 0 ]; then
+    fail 'endpoint deferral requires an unconfigured image without endpoint overrides'
+  fi
+  rm -f "$config"
+  db_set natsume-client/server-ip '' || fail 'failed to clear deferred Server IP'
+  db_set natsume-client/server-port '' || fail 'failed to clear deferred Server port'
+  exit 0
+fi
+
 explicit_reconfigure=${DEBCONF_RECONFIGURE:-${DEBIAN_RECONFIGURE:-0}}
 if [ "$env_ip_set" -eq 0 ] && [ "$explicit_reconfigure" != 1 ]; then
   case "$existing_state" in

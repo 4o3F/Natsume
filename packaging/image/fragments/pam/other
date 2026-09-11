@@ -1,0 +1,3 @@
+auth requisite pam_succeed_if.so quiet user notin teams:waiting
+account requisite pam_succeed_if.so quiet user notin teams:waiting
+session requisite pam_succeed_if.so quiet user notin teams:waiting

@@ -1,0 +1,16 @@
+/org/gnome/desktop/background/picture-uri
+/org/gnome/desktop/background/picture-uri-dark
+/org/gnome/desktop/background/picture-options
+/org/gnome/desktop/background/color-shading-type
+/org/gnome/desktop/background/primary-color
+/org/gnome/desktop/background/secondary-color
+/org/gnome/mutter/overlay-key
+/org/gnome/desktop/wm/keybindings/close
+/org/gnome/desktop/wm/keybindings/switch-applications
+/org/gnome/desktop/wm/keybindings/switch-applications-backward
+/org/gnome/desktop/wm/keybindings/switch-windows
+/org/gnome/desktop/wm/keybindings/switch-windows-backward
+/org/gnome/desktop/wm/keybindings/panel-main-menu
+/org/gnome/desktop/wm/keybindings/panel-run-dialog
+/org/gnome/desktop/lockdown/disable-log-out
+/org/gnome/settings-daemon/plugins/media-keys/logout

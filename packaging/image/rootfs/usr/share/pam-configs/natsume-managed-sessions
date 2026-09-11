@@ -1,0 +1,9 @@
+Name: Natsume managed account entry points
+Default: yes
+Priority: 1024
+Account-Type: Primary
+Account:
+	[success=3 default=ignore] pam_succeed_if.so quiet user notin teams:waiting
+	[success=2 default=ignore] pam_succeed_if.so quiet service in gdm-contest:gdm-waiting:gdm-autologin:systemd-user
+	[success=1 default=ignore] pam_succeed_if.so quiet use_uid uid = 0 service in runuser:runuser-l:su:su-l
+	requisite pam_deny.so

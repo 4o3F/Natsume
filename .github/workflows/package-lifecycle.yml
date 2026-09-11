@@ -1,7 +1,7 @@
 # Weekly and pre-release package lifecycle lane on a shared GitHub-hosted runner.
 # This performs real install/reinstall/reconfigure/remove/purge for both packages, but it is
-# not the target OS and has no reboot coverage. The reboot half runs manually through
-# packaging/target-vm/phase0-lifecycle.sh; this workflow alone is not G0 item-12 evidence.
+# not the target OS and has no reboot coverage. Target-image acceptance is defined
+# in packaging/image/acceptance.md.
 name: package-lifecycle
 
 on:

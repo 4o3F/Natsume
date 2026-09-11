@@ -1,0 +1,3 @@
+# Fixed recovery login for the independent waiting desktop.
+auth requisite pam_succeed_if.so user = waiting quiet
+@include gdm-autologin

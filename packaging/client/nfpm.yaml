@@ -15,11 +15,13 @@ depends:
   - dbus
   - debconf
   - libfontconfig1
+  - libpam-modules
   - libfreetype6
   - libstdc++6
   - libsystemd0
   - libudev1
   - systemd (>= 253)
+  - util-linux
 
 contents:
   - src: ${RUST_RELEASE_DIR}/natsume-device-daemon
@@ -49,8 +51,11 @@ contents:
   - src: packaging/client/rootfs/usr/
     dst: /usr/
     type: tree
-  - src: packaging/client/rootfs/etc/xdg/
-    dst: /etc/xdg/
+  - src: packaging/image/
+    dst: /usr/share/natsume/image-integration/
+    type: tree
+  - src: packaging/client/rootfs/etc/pam.d/
+    dst: /etc/pam.d/
     type: tree
   - src: packaging/client/rootfs/etc/natsume/caddy/
     dst: /etc/natsume/caddy/
@@ -62,6 +67,8 @@ contents:
 
 scripts:
   postinstall: packaging/client/scripts/postinstall.sh
+  preremove: packaging/client/scripts/preremove.sh
+  postremove: packaging/client/scripts/postremove.sh
 
 deb:
   scripts:

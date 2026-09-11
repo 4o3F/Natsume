@@ -1,39 +1,112 @@
 # Packaging
 
-This directory owns the two Debian package manifests, package-owned root files and maintainer scripts. It does not compile Rust, build Web assets or download Caddy; nFPM maps already verified outputs directly into `natsume-server` and `natsume-client`.
+This directory owns the Server/Client Debian manifests, package-owned runtime
+files, image integration inputs and release checks. nFPM packages already-built
+Rust/Web outputs, verified Caddy and public site configuration. Image builds
+consume the complete Client Deb; no ignored VM experiment is a release input.
 
-The Client package is site-specific at build time. It must receive `SITE_CONFIG`, `CONTROL_CA_CERT` and `LOCAL_ORIGIN_CA_CERT` as verified public inputs. No offline root private key is ever a package input. Debconf asks only for Server IP/port.
+| Path | Responsibility |
+| --- | --- |
+| `server/` | `natsume-server` manifest, runtime rootfs and postinstall |
+| `client/` | `natsume-client` manifest, runtime rootfs, fixed PAM/Kiosk entry points, maintainer scripts and supply-chain pins |
+| [image/](image/README.md) | Standalone image-builder handoff: all configuration inputs, dependencies, implementation requirements, acceptance criteria and checker |
+| `ci-package-smoke.sh` | Build/inspect both real Debs and their runtime/image contracts |
+| `check-image-inputs.py` | Verify the source input closure and actual Client Deb image payload |
+| `hosted-lifecycle.sh` | Existing acknowledgement-gated disposable-runner lifecycle harness |
+| `target-vm/` | Ignored local experiments and evidence; never required by build or installation |
+
+## Client and image handoff
+
+The Client package installs Helper/Daemon/Agent and its fixed runtime integration.
+It also installs `image/` at `/usr/share/natsume/image-integration/`. The image
+builder reads that installed directory and applies its [manifest](image/manifest.tsv)
+after provisioning the official desktop and fixed accounts. Upstream stack merges,
+actual UID substitutions, final skel/template generation and offline enablement
+remain image build steps; Deb configuration alone does not make a boot-ready image.
+
+The entire `image/` directory can also be archived and handed to an image-builder
+project independently. Its README, input contract, implementation guide and
+acceptance document contain all required design context; its `check.py` runs
+without this repository or Git. The matching Client Deb and site endpoint are
+explicit build dependencies described inside the handoff.
+
+The contest role uses Unix user `teams` and `/home/teams`; waiting uses `waiting`
+and `/home/waiting`. Protocol/CLI role tokens and `gdm-contest` remain `contest`.
+The Client stays installed; this handoff does not depend on an uninstall workflow.
+The [image requirements](../docs/gnome-session-image-requirements.zh-CN.md) define
+all IMG-01–08 delivery obligations. Release checks and evidence requirements are
+in the [image acceptance guide](image/acceptance.md).
 
 ## Supply-chain pins
 
 | Tool | Release artifact | Verification |
-|---|---|---|
-| Caddy `2.11.4` | `caddy_2.11.4_linux_amd64.tar.gz` from the [official GitHub release](https://github.com/caddyserver/caddy/releases/tag/v2.11.4) | `client/caddy.archive.sha256` verifies the archive; `client/caddy.sha256` verifies the extracted binary |
-| nFPM `2.47.0` | `nfpm_2.47.0_Linux_x86_64.tar.gz` from the [official GitHub release](https://github.com/goreleaser/nfpm/releases/tag/v2.47.0) | `nfpm.sha256` verifies the host build-tool archive |
+| --- | --- | --- |
+| Caddy `2.11.4` | `caddy_2.11.4_linux_amd64.tar.gz` from the [official release](https://github.com/caddyserver/caddy/releases/tag/v2.11.4) | `client/caddy.archive.sha256` and extracted `client/caddy.sha256` |
+| nFPM `2.47.0` | `nfpm_2.47.0_Linux_x86_64.tar.gz` from the [official release](https://github.com/goreleaser/nfpm/releases/tag/v2.47.0) | `nfpm.sha256` |
 
-`client/caddy.modules` records the required standard modules. The pinned Caddy binary contains only the official standard module set; custom modules are not allowed. Package builds consume a previously verified binary through `CADDY_BIN`; maintainer scripts and runtime services must not download it.
+`client/caddy.modules` lists required official standard modules. Builds consume
+verified Caddy through `CADDY_BIN`; maintainer scripts/runtime do not download it.
+The `linux_amd64` pins identify the packaging tool/input baseline, not completed
+final-image or GPU acceptance.
 
-The `linux_amd64` records are the Phase 0 packaging candidate, not target-environment architecture sign-off. They remain `ENV-PROPOSED` until locked CI and target OS evidence exist.
+## Build inputs and checks
 
-## Site-owned public inputs
+Both manifests require `VERSION`, `ARCH`, `RUST_RELEASE_DIR`, `SITE_CONFIG`,
+`CONTROL_CA_CERT` and `LOCAL_ORIGIN_CA_CERT`; Client also requires `CADDY_BIN`.
+Server consumes the built `web/dist`. Site configuration and trust roots are
+public inputs; no root private key or per-device identity enters either Deb.
+`site-config.example.toml` describes the public site input and is not packaged.
 
-Both nFPM manifests require `SITE_CONFIG`, `CONTROL_CA_CERT` and `LOCAL_ORIGIN_CA_CERT`. They are non-secret, site-stable release inputs: the immutable fleet namespace, the public Control Trust Root and the public Local Origin Root. Private root keys are never package inputs. `packaging/site-config.example.toml` documents the shape but is not packaged.
+`just package-client` / `just package-server` render these variables with
+`envsubst` and consume the prebuilt inputs. The Client recipe also checks the
+resulting Deb's image payload.
+`just ci-packages` downloads and verifies pinned tools, builds production
+binaries/Web, creates test public site inputs, produces both real Debs and checks
+their contents. Its output remains `dist/packages/ci/*.deb`; image inputs travel
+inside the Client Deb and need no third package or separate VM archive.
 
-## Session Agent package invariant
+```sh
+python3 packaging/check-image-inputs.py
+python3 packaging/check-image-inputs.py --deb /absolute/path/natsume-client.deb
+```
 
-The Client package installs exactly one system-wide XDG Autostart entry and no
-Session Agent systemd user unit. The
-[target architecture](../docs/architecture.md#18-部署与运行边界) owns the
-deployment invariant. Package verification must reject a user unit,
-bootstrap/runtime descriptor, runtime `.slint` interpretation and external GUI
-helpers.
+The first command verifies that all image files are listed, correctly mapped and
+not ignored. The second also compares every input's bytes and metadata with the
+actual Deb and rejects missing/extra inputs or accidental direct installation
+of image-owned configuration. Package CI runs both checks. It does not execute
+image configuration, create users, mount Home or start a desktop on the host.
 
-## Endpoint conffile lifecycle
+The Agent has one startup owner: official `org.gnome.Kiosk.Script.service` with
+Client's `50-natsume.conf` drop-in, restricted to waiting and executing
+`/usr/bin/natsume-session-agent run`. Reject the retired global XDG entry, a
+second Agent user service or external GUI helpers. The image adds only the
+profile/keyboard/font/scale configuration described in its input set.
 
-`/etc/natsume/config.toml` is a Debian `config|noreplace` file whose packaged form contains no endpoint. On first configure, postinstall obtains one complete IP-literal/port pair from debconf or one complete paired environment override, validates it through `natsume-device-daemon canonicalize-endpoint <ip> <port>`, and writes atomically. Upgrade/reinstall preserves an existing canonical config unless `dpkg-reconfigure`/`DEBCONF_RECONFIGURE=1` or a paired environment override explicitly replaces it. A partial override, invalid existing config, failed sysusers invocation or failed tmpfiles invocation fails package configuration closed.
+## Endpoint and upgrade contract
 
-`packaging/target-vm/phase0-lifecycle.sh` is the destructive disposable-VM harness for install, reinstall/upgrade, explicit reconfigure, reboot, remove and purge. Shared-runner package-content smoke is not target-OS/G0 lifecycle evidence.
+`/etc/natsume/config.toml` is a `config|noreplace` conffile whose packaged form
+contains no endpoint. First configuration receives a complete IP-literal/port
+pair through debconf or `NATSUME_SERVER_IP`/`NATSUME_SERVER_PORT`, validates with
+`natsume-device-daemon canonicalize-endpoint`, and writes atomically. An existing
+valid endpoint survives reinstall/upgrade unless explicitly reconfigured or
+replaced by a complete environment override. Partial overrides, invalid existing
+configuration or failed sysusers/tmpfiles fail configuration.
 
-## Hosted package lifecycle
+Image builders set `NATSUME_DEFER_ENDPOINT=1` for first-time package installation.
+This still initializes sysusers/tmpfiles but leaves no `/etc/natsume/config.toml`
+or debconf endpoint values. It rejects an existing endpoint or environment
+override. Supply the real IP/port later through autoinstall's `curtin in-target`
+command running `dpkg-reconfigure -f noninteractive natsume-client` with the pair
+in its environment. Deployment endpoints never enter the cloned image.
 
-`.github/workflows/package-lifecycle.yml` runs the weekly and pre-release shared-runner install, reinstall, reconfigure, remove and purge lifecycle for both packages. It deliberately has no justfile entry point because the harness is destructive, acknowledgement-gated and restricted to CI or a disposable host. Known limits: reinstall is same-version only — a previous-version upgrade path needs a released predecessor and stays with the target-VM harness — and reboot coverage remains owned by `packaging/target-vm/phase0-lifecycle.sh` on the target VM.
+Image construction enables services against the target root without starting
+them. Identity is initialized only on the actual machine's first boot. Upgrade
+of Client plus applied image configuration is a planned maintenance operation;
+updating `/usr/share/natsume/image-integration` does not silently rewrite vendor
+PAM/GDM or a live Home. See the image input README for the exact account/template
+handoff and [maintenance requirements](image/integration.md#11-维护与回退) for
+whole-system version/state handling. This release uses the current database,
+Home-window format and waiting/teams accounts; it provides no pre-refactor migration.
+
+Hosted destructive lifecycle checks remain isolated from image inputs and are
+not a requirement to uninstall a deployed workstation Client.

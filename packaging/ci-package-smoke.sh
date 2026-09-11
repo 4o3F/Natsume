@@ -23,15 +23,16 @@ for command in cargo cp curl cut dpkg-deb envsubst grep node openssl pnpm python
   require_command "${command}"
 done
 
-session_autostart_source='packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop'
-session_user_unit_source='packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service'
-test -f "${session_autostart_source}" || fail 'XDG Autostart entry is missing from the Client rootfs'
-test ! -e "${session_user_unit_source}" || fail 'Session Agent systemd user unit must not be packaged'
-grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${session_autostart_source}" ||
-  fail 'XDG Autostart entry has an unexpected Exec'
-if grep -Eq '^(OnlyShowIn|NotShowIn)=' "${session_autostart_source}"; then
-  fail 'XDG Autostart entry must remain desktop-neutral'
-fi
+python3 packaging/check-image-inputs.py
+
+session_kiosk_source='packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf'
+test -f "${session_kiosk_source}" || fail 'GNOME Kiosk Agent drop-in is missing'
+grep -Fxq 'ExecStart=/usr/bin/natsume-session-agent run' "${session_kiosk_source}" ||
+  fail 'GNOME Kiosk Agent drop-in has an unexpected command'
+grep -Fxq 'ConditionUser=waiting' "${session_kiosk_source}" ||
+  fail 'GNOME Kiosk Agent drop-in must restrict the waiting user'
+test ! -e packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop ||
+  fail 'Session Agent must have only the GNOME Kiosk startup owner'
 
 work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/natsume-package-smoke.XXXXXX")"
 trap 'rm -rf "${work_root}"' EXIT HUP INT TERM
@@ -151,6 +152,8 @@ export SITE_CONFIG="${input_root}/site.toml"
 export CONTROL_CA_CERT="${input_root}/control-ca.crt"
 export LOCAL_ORIGIN_CA_CERT="${input_root}/local-origin-ca.crt"
 
+# envsubst takes literal variable names, not their values.
+# shellcheck disable=SC2016
 nfpm_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN} ${SITE_CONFIG} ${CONTROL_CA_CERT} ${LOCAL_ORIGIN_CA_CERT}'
 server_config="${work_root}/server.nfpm.yaml"
 client_config="${work_root}/client.nfpm.yaml"
@@ -173,6 +176,7 @@ server_deb="${output_root}/natsume-server_${VERSION}_${ARCH}.deb"
 client_deb="${output_root}/natsume-client_${VERSION}_${ARCH}.deb"
 test -f "${server_deb}" || fail "server Deb was not produced at ${server_deb}"
 test -f "${client_deb}" || fail "client Deb was not produced at ${client_deb}"
+python3 packaging/check-image-inputs.py --deb "${client_deb}"
 
 dpkg-deb --info "${server_deb}" >/dev/null
 dpkg-deb --info "${client_deb}" >/dev/null
@@ -213,14 +217,14 @@ for path in \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
   /usr/lib/systemd/system/natsume-caddy.service \
   /etc/natsume/config.toml \
-  /etc/xdg/autostart/org.natsume.SessionAgent.desktop \
+  /usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf \
   /usr/share/dbus-1/system.d/org.natsume.Device1.conf \
   /usr/share/dbus-1/system.d/org.natsume.Privileged1.conf; do
   require_package_path "${work_root}/client.contents" "${path}"
 done
 
-if grep -Fq 'natsume-session-agent.service' "${work_root}/client.contents"; then
-  fail 'client package unexpectedly contains a Session Agent user unit'
+if grep -Fq 'org.natsume.SessionAgent.desktop' "${work_root}/client.contents"; then
+  fail 'client package unexpectedly contains a second Agent startup entry'
 fi
 if grep -Fiq 'identity-guard' "${work_root}/server.contents" "${work_root}/client.contents"; then
   fail 'Identity Guard path is present in a package'
@@ -230,9 +234,9 @@ grep -E '^-rwxr-xr-x .*\./usr/bin/natsume-device-daemon$' "${work_root}/client.c
   fail 'device daemon package mode is not 0755'
 grep -E '^-rwxr-xr-x .*\./usr/lib/natsume/caddy$' "${work_root}/client.contents" >/dev/null ||
   fail 'Caddy package mode is not 0755'
-grep -E '^-rw-r--r-- .*\./etc/xdg/autostart/org.natsume.SessionAgent.desktop$' \
+grep -E '^-rw-r--r-- .*\./usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf$' \
   "${work_root}/client.contents" >/dev/null ||
-  fail 'XDG Autostart entry package mode is not 0644'
+  fail 'GNOME Kiosk Agent drop-in package mode is not 0644'
 
 # The Session Agent links the Slint/Skia closure; its direct ELF NEEDED set is
 # frozen in session-agent.needed and every non-baseline library must be a
@@ -242,7 +246,7 @@ readelf -d "${production_release}/natsume-session-agent" |
 diff -u packaging/client/session-agent.needed "${work_root}/session-agent.needed.actual" ||
   fail 'Session Agent ELF NEEDED set drifted from packaging/client/session-agent.needed'
 client_depends="$(dpkg-deb --field "${client_deb}" Depends)"
-for package in libfontconfig1 libfreetype6 libstdc++6; do
+for package in libfontconfig1 libfreetype6 libstdc++6 libpam-modules util-linux; do
   printf '%s\n' "${client_depends}" | grep -Fq "${package}" ||
     fail "client package does not declare required dependency: ${package}"
 done
@@ -250,12 +254,24 @@ done
 shellcheck -x \
   packaging/client/debconf/config \
   packaging/client/scripts/postinstall.sh \
+  packaging/client/scripts/preremove.sh \
+  packaging/client/scripts/postremove.sh \
   packaging/hosted-lifecycle.sh \
   packaging/server/scripts/postinstall.sh \
-  packaging/target-vm/phase0-lifecycle.sh
+  packaging/image/fragments/gdm/PostLogin.sh
 
+server_control="${work_root}/server-control"
+dpkg-deb --control "${server_deb}" "${server_control}"
+grep -Fxq '/etc/natsume-server/config.toml' "${server_control}/conffiles" ||
+  fail 'server config is not registered as a Debian conffile'
 client_control="${work_root}/client-control"
 dpkg-deb --control "${client_deb}" "${client_control}"
+cmp packaging/client/scripts/preremove.sh "${client_control}/prerm" ||
+  fail 'Client prerm does not carry the maintenance removal guard'
+cmp packaging/client/scripts/postremove.sh "${client_control}/postrm" ||
+  fail 'Client postrm does not carry removal and purge cleanup'
+test -x "${client_control}/prerm" || fail 'Client prerm is not executable'
+test -x "${client_control}/postrm" || fail 'Client postrm is not executable'
 grep -Fxq '/etc/natsume/config.toml' "${client_control}/conffiles" ||
   fail 'endpoint config is not registered as a Debian conffile'
 if grep -Eq 'systemd-(sysusers|tmpfiles).*[|][|][[:space:]]*true' \
@@ -303,21 +319,44 @@ grep -Fxq 'OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only' "${client_hel
   fail 'packaged privileged helper must receive the host mount namespace descriptor'
 grep -Fxq 'RestrictAddressFamilies=AF_UNIX' "${client_helper_unit}" ||
   fail 'packaged privileged helper must restrict sockets to AF_UNIX'
-grep -Fxq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN' \
+grep -Fxq 'CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL CAP_SYS_ADMIN CAP_SETUID CAP_SETGID' \
   "${client_helper_unit}" || fail 'packaged privileged helper has an unexpected capability set'
 for directive in 'Type=dbus' 'BusName=org.natsume.Privileged1' \
+  'ExecStopPost=/usr/lib/natsume/natsume-privileged-helper close-admission' \
+  'ExecStart=/usr/lib/natsume/natsume-privileged-helper serve' 'AmbientCapabilities=CAP_SETUID' \
   'Restart=on-failure' 'RestartSec=2s' 'StartLimitIntervalSec=60s' 'StartLimitBurst=5'; do
   grep -Fxq "${directive}" "${client_helper_unit}" ||
     fail "packaged privileged helper is missing ${directive}"
 done
-for directive in 'Wants=natsume-privileged-helper.service' \
-  'After=natsume-privileged-helper.service' \
-  'ConditionPathExists=/run/natsume-privileged/home-ready'; do
-  grep -Fxq "${directive}" "${client_display_dropin}" ||
-    fail "packaged display manager Home interlock is missing ${directive}"
+client_prepare_unit="${extract_root}/client/usr/lib/systemd/system/natsume-session-prepare@.service"
+for directive in 'Type=oneshot' 'User=root' 'Restart=no' 'TimeoutStartSec=45s' \
+  'TimeoutStopSec=5s' 'KillMode=control-group' 'AmbientCapabilities=CAP_SETUID' \
+  'CapabilityBoundingSet=CAP_DAC_OVERRIDE CAP_KILL CAP_SETUID CAP_SETGID' \
+  'ExecStart=/usr/lib/natsume/natsume-privileged-helper prepare-session %i'; do
+  grep -Fxq "${directive}" "${client_prepare_unit}" || fail "fixed GDM entry lacks ${directive}"
 done
+for role in waiting contest; do
+  pam_stack="${extract_root}/client/etc/pam.d/gdm-${role}"
+  account=${role}
+  [[ ${role} != contest ]] || account=teams
+  grep -Fxq "auth requisite pam_succeed_if.so user = ${account} quiet" "${pam_stack}" ||
+    fail "GDM ${role} stack does not restrict its user"
+  grep -Fxq '@include gdm-autologin' "${pam_stack}" || fail 'fixed GDM stack must include the vendor stack'
+done
+grep -Fxq '@include natsume-contest-admission' "${extract_root}/client/etc/pam.d/gdm-contest" ||
+  fail 'fixed contest entry must carry its own admission gate'
+for phase in auth account session; do
+  grep -Fxq "${phase} requisite pam_exec.so quiet /usr/lib/natsume/natsume-privileged-helper pam-gate" \
+    "${extract_root}/client/etc/pam.d/natsume-contest-admission" || fail "PAM gate lacks ${phase}"
+done
+for vendor in gdm-autologin gdm-password; do
+  test ! -e "${extract_root}/client/etc/pam.d/${vendor}" || fail 'Client must not own vendor GDM PAM files'
+done
+test ! -e "${client_display_dropin}" || fail 'global GDM Home interlock must be removed'
 grep -Fxq 'd /run/natsume-privileged 0700 root root -' "${client_tmpfiles}" ||
   fail 'packaged Home login permit directory is not root-only'
+grep -Fxq 'd /run/natsume-privileged/contest-workers 0700 root root -' "${client_tmpfiles}" ||
+  fail 'packaged PAM worker directory is not root-only'
 grep -Fxq 'd /run/natsume 2770 natsume natsume-gateway -' "${client_tmpfiles}" ||
   fail 'packaged Caddy runtime directory cannot inherit the gateway group'
 grep -Fxq 'd /var/lib/natsume 0750 root natsume-gateway -' "${client_tmpfiles}" ||
@@ -339,25 +378,12 @@ systemd-analyze --recursive-errors=no --root="${extract_root}/server" verify \
 systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
+  /usr/lib/systemd/system/natsume-session-prepare@contest.service \
   /usr/lib/systemd/system/natsume-caddy.service
 
-# The target image provides the display manager. This extracted-root-only unit
-# checks the packaged alias drop-in syntax without running a desktop.
-cat >"${extract_root}/client/usr/lib/systemd/system/natsume-test-display.service" <<'EOF'
-[Service]
-ExecStart=/usr/bin/systemctl --version
-EOF
-ln -s natsume-test-display.service \
-  "${extract_root}/client/usr/lib/systemd/system/display-manager.service"
-systemd-analyze --recursive-errors=no --root="${extract_root}/client" verify \
-  /usr/lib/systemd/system/display-manager.service
-
-session_autostart="${extract_root}/client/etc/xdg/autostart/org.natsume.SessionAgent.desktop"
-grep -Fxq 'Exec=/usr/bin/natsume-session-agent --autostart' "${session_autostart}" ||
-  fail 'packaged XDG Autostart entry has an unexpected Exec'
-if grep -Eq '^(OnlyShowIn|NotShowIn)=' "${session_autostart}"; then
-  fail 'packaged XDG Autostart entry must remain desktop-neutral'
-fi
+session_kiosk="${extract_root}/client/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf"
+cmp "${session_kiosk_source}" "${session_kiosk}" ||
+  fail 'packaged GNOME Kiosk Agent configuration differs from its source'
 
 python3 - "${extract_root}/client" <<'PY'
 from pathlib import Path

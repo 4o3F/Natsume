@@ -7,7 +7,8 @@ StartLimitBurst=5
 [Service]
 Type=dbus
 BusName=org.natsume.Privileged1
-ExecStart=/usr/lib/natsume/natsume-privileged-helper
+ExecStart=/usr/lib/natsume/natsume-privileged-helper serve
+ExecStopPost=/usr/lib/natsume/natsume-privileged-helper close-admission
 Restart=on-failure
 RestartSec=2s
 User=root
@@ -19,7 +20,9 @@ OpenFile=/proc/1/ns/mnt:host-mount-namespace:read-only
 RestrictAddressFamilies=AF_UNIX
 NoNewPrivileges=yes
 LimitCORE=0
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL CAP_SYS_ADMIN CAP_SETUID CAP_SETGID
+# Preserve the fixed UID transition across systemd's seccomp setup and exec.
+AmbientCapabilities=CAP_SETUID
 
 [Install]
 WantedBy=multi-user.target

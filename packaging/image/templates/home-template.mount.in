@@ -1,0 +1,13 @@
+[Unit]
+Description=Natsume immutable teams Home template
+Before=natsume-privileged-helper.service
+
+[Mount]
+What=/usr/lib/natsume/home-templates/@TEMPLATE_VERSION@/home.squashfs
+Where=/usr/lib/natsume/home-templates/current/lower
+Type=squashfs
+Options=loop,ro,nodev,nosuid
+TimeoutSec=15
+
+[Install]
+WantedBy=multi-user.target

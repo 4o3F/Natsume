@@ -1,0 +1,13 @@
+// Managed accounts cannot enable linger or request machine-wide changes.
+// Root/administrator maintenance retains its normal distribution policy.
+polkit.addRule(function(action, subject) {
+    if (subject.user !== "teams" && subject.user !== "waiting") {
+        return undefined;
+    }
+    if (action.id.indexOf("org.freedesktop.login1.") === 0 ||
+        action.id.indexOf("org.freedesktop.accounts.") === 0 ||
+        action.id.indexOf("org.freedesktop.systemd1.") === 0 ||
+        action.id.indexOf("org.freedesktop.udisks2.") === 0) {
+        return polkit.Result.NO;
+    }
+});
