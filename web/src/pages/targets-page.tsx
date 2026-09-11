@@ -296,8 +296,8 @@ function DeviceTargets({
               </Button>
               <TargetAction
                 label="Terminate"
-                title="Terminate the current session?"
-                description="Request termination of this device's current session. Check its reported state to confirm completion."
+                title="Terminate the contest session?"
+                description="End and restart this device's contest session. Home files are preserved. Check its reported state to confirm completion."
                 disabled={updateTarget.isPending}
                 onConfirm={() => updateTarget.mutate("terminate")}
               />
@@ -332,8 +332,8 @@ function DeviceTargets({
           {isAdmin && (
             <TargetAction
               label="Reset home"
-              title="Reset this device home?"
-              description="Request a reset of this device's Home. Check its reported state to confirm completion."
+              title="Reset the contest Home?"
+              description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
               disabled={updateTarget.isPending}
               onConfirm={() => updateTarget.mutate("reset")}
             />
