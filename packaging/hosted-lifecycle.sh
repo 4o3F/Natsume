@@ -92,9 +92,15 @@ assert_tmpfiles_path /var/log/natsume-server 'natsume-server:natsume-server 750'
 systemd-analyze --recursive-errors=no verify \
   /usr/lib/systemd/system/natsume-server.service
 
+printf '\n# Site configuration must survive package maintenance.\n' >>/etc/natsume-server/config.toml
+server_config_sha256=$(sha256sum /etc/natsume-server/config.toml)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${server_deb}"
+[[ $(sha256sum /etc/natsume-server/config.toml) == "${server_config_sha256}" ]] ||
+  fail 'server reinstall replaced the site configuration'
 
 dpkg --remove natsume-server
+[[ -e /etc/natsume-server/config.toml ]] ||
+  fail 'remove deleted server conffile /etc/natsume-server/config.toml'
 [[ -e /etc/natsume/site.toml ]] ||
   fail 'remove deleted server conffile /etc/natsume/site.toml'
 [[ -e /etc/natsume/trust/control-ca.crt ]] ||
@@ -103,6 +109,8 @@ dpkg --remove natsume-server
   fail 'remove deleted server conffile /etc/natsume/trust/local-origin-ca.crt'
 
 dpkg --purge natsume-server
+[[ ! -e /etc/natsume-server/config.toml ]] ||
+  fail 'purge left server conffile /etc/natsume-server/config.toml behind'
 [[ ! -e /etc/natsume/site.toml ]] ||
   fail 'purge left server conffile /etc/natsume/site.toml behind'
 [[ ! -e /etc/natsume/trust/control-ca.crt ]] ||

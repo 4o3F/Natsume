@@ -29,8 +29,12 @@ contents:
     dst: /etc/natsume/trust/local-origin-ca.crt
     type: config|noreplace
     file_info: {mode: 0o644}
-  - src: packaging/server/rootfs/
-    dst: /
+  - src: packaging/server/rootfs/etc/natsume-server/config.toml
+    dst: /etc/natsume-server/config.toml
+    type: config|noreplace
+    file_info: {mode: 0o644}
+  - src: packaging/server/rootfs/usr/
+    dst: /usr/
     type: tree
 
 scripts:
