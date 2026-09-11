@@ -6,7 +6,7 @@
 > 适用范围：Natsume V2 全系统
 > 实施策略：预发布 flag day；协议、数据库、Server、Client、Web 与测试同步切换
 
-本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。功能 PRD 补充产品范围与验收，验证记录保留实验事实，不建立另一套架构规则。GNOME 双会话的产品范围见[功能 PRD](prd-gnome-dual-session.zh-CN.md)，前期实测见[VM 验证记录](gnome-dual-session-validation.zh-CN.md)。
+本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。功能 PRD 补充产品范围与验收，部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。GNOME 双会话的产品范围见[功能 PRD](prd-gnome-dual-session.zh-CN.md)。
 
 本文描述的是目标状态，不是完成声明。当前代码与本文冲突时，冲突属于待实施债务，不能反向限制目标架构。
 
@@ -171,7 +171,7 @@ Helper 不联网，不持有 DOMjudge 密码、control private key、Gateway pri
 
 ### 4.4 `natsume-session-agent`
 
-Agent 由系统级 XDG Autostart 在固定 waiting 图形会话内启动，拥有：
+waiting 使用发行版官方 GNOME Kiosk 的原生 X11 会话（当前入口 `gnome-kiosk-script-xorg`），contest 使用完整 GNOME（`ubuntu-xorg`）。Agent 由 Kiosk 的 `org.gnome.Kiosk.Script.service` 启动，包内固定 drop-in 将 ExecStart 指向 Agent，并限制为 waiting 用户。Agent 拥有：
 
 - 普通等待时的全屏静态占位：本期默认纯黑色块，也可由镜像随包提供单张 ICPC logo，缺图时回退纯黑；
 - 既有部署 Binding 窗口；
@@ -180,9 +180,9 @@ Agent 由系统级 XDG Autostart 在固定 waiting 图形会话内启动，拥�
 
 等待占位复用现有 Slint/Skia 渲染能力，保持一个随窗口尺寸变化的无装饰全屏窗口。普通等待、重置和恢复期间均可显示同一占位，不要求动态文案、进度条或动画；详细状态由 Panel/Actual 展示。Binding 是既有部署流程的专用页面，不新增绑定协议。未来复杂 Skia 页面只替换 Agent 内的等待内容；本期不预建页面插件、主题协议或远程图片下发能力。
 
-Agent 不连接 Server，不管理 Caddy，不读取 credential，不安装 systemd user unit。“显示等待界面 / 显示比赛桌面”由 Daemon 通过 Helper 激活 waiting/contest 实现，不调用桌面 Lock/Unlock，也不向 Agent 发送会话切换命令。失联撤销 Binding 输入并保留占位，不能隐藏窗口暴露可操作桌面。
+Agent 不连接 Server，不管理 Caddy，不读取 credential；不自行启动或控制用户服务。“显示等待界面 / 显示比赛桌面”由 Daemon 通过 Helper 激活 waiting/contest 实现，不调用桌面 Lock/Unlock，也不向 Agent 发送会话切换命令。失联撤销 Binding 输入并保留占位，不能隐藏窗口暴露可操作桌面。
 
-Agent 通过自己的用户总线连接向 GNOME SessionManager 注册，XDG entry 使用 `X-GNOME-AutoRestart=true`，不标为 RequiredComponent。GNOME 恢复单次崩溃；触发连续崩溃限流时，Helper 冷却至少 60 秒后最多自动重建 waiting 一次，本次 boot 的次数不因 lease 更新而重置。再次失败报告展示不可用，等待维护；不终止 contest 或重启 GDM。
+GNOME Kiosk 的用户服务是 Agent 的唯一启动与重启所有者；不同时使用全局 XDG Autostart、Agent RegisterClient 或另一个 keeper。服务配置 `Restart=always`、1 秒间隔及 60 秒内最多 5 次启动。Daemon 根据连续展示故障观测冷却至少 60 秒，再请求 Helper 自动重建 waiting；任何可信的就绪观测均结束该连续故障区间。Helper 持有本次 boot 最多一次的恢复预算，不因 lease 更新或服务重启而重置。再次失败报告展示不可用，等待维护；不终止 contest 或重启 GDM。若捕获的旧 waiting 已消失且 GDM 已自动建立唯一、健康的新 waiting，Helper 复用它并完成持有的恢复窗口，保留已消耗预算，不追杀 replacement。waiting readiness 核对 SessionManager 与 Kiosk，contest 核对 SessionManager 与 Shell；两边还需对应 Xorg 的电源与有效输出观测，不能依赖 Mutter 的缓存电源属性。Agent 的当前首帧与 lease 仍是独立必要条件，显示尺寸改变时撤销旧帧并等待实际重绘。
 
 ### 4.5 Caddy、Browser 与 DOMjudge
 
@@ -602,7 +602,7 @@ SessionControlTarget
 
 - `foreground_target` 是持续的前台选择 Level；waiting 表示“显示等待界面”，contest 表示“显示比赛桌面”。它选择固定会话角色，不表示 GNOME screensaver 的锁定状态；
 - 普通切换只调用受限 logind 激活能力，不调用 `LockSession`/`UnlockSession`，不结束任一会话，不改变 Home generation；两边比赛/等待进程继续运行；
-- 两个不同 Unix 用户各自拥有 Xorg、GNOME、用户总线和 Home，均由官方 GDM 创建和管理；每个角色最多一个合法会话，waiting 与 contest 各一个不构成 Ambiguous，后台 contest 也不是歧义；
+- 固定 Unix 用户 waiting 和 teams 分别对应 waiting/contest 角色，Home 为 `/home/waiting` 和 `/home/teams`；角色 token 与用户名分开。两个用户各自拥有 Xorg、GNOME、用户总线和 Home，均由官方 GDM 创建和管理；每个角色最多一个合法会话，waiting 与 contest 各一个不构成 Ambiguous，后台 contest 也不是歧义；
 - 分开观测 contest 生命周期、两边精确 boot/session、桌面就绪、seat0 实际前台及 `waiting_ready`/`contest_ready`。健康 contest 生命周期统一为 `Running`，不再用 `Active`/`Locked` 表示 GNOME 锁屏或业务前台；`Running` 本身不证明显示就绪；
 - waiting 目标收敛需占位首帧已就绪且在前台；contest 目标收敛需当前 Home/Binding/epoch 条件满足、比赛桌面已就绪且在前台。GDM 创建桌面或 API 返回成功不等于已完成呈现；
 - 镜像对两个受管会话禁用自动锁屏及普通锁屏入口。意外出现的桌面锁屏属于显示异常，不能作为 waiting 目标已收敛的证据，也不通过“显示比赛桌面”自动绕过；
@@ -616,9 +616,21 @@ SessionControlTarget
 
 Helper 的 `QueryManagedSessions` 分别返回 waiting/contest 的精确会话、生命周期、`desktop_ready`、`locked_hint` 和实际前台。Daemon 结合这些系统事实与 Agent 的当前展示确认生成 readiness：比赛需唯一 Running、精确身份、桌面已就绪且未锁屏；waiting 还需当前 Agent lease 对当前 UI revision 的首帧及实际全屏尺寸确认。`ConfirmSessionPresentation` 的参数携带 lease ID、boot/session、revision、首帧标记和宽高；总线调用者连接由 Device1 验证，不能由参数自报。确认本身不证明会话已激活。
 
+X11 探针在角色自身 UID 下检查 GNOME、输出和 `XFree86_has_VT`；Helper 比较探针前后的 logind 前台，只有前台稳定且 VT 属性与该角色的前后台身份一致时才报告桌面就绪。持有 VT 时还须通过 XInput 2 观察到至少一个已启用的物理输入设备：slave keyboard/pointer 的完整 `Device Node` 属性必须指向 `/dev/input/eventN`；虚拟 core/XTEST 设备不能代替。后台 Xorg 正常释放物理输入，不以该条件否定健康后台桌面。矛盾状态拒绝激活，持续的 waiting 故障进入既有有界恢复。这些是附加就绪门槛，不能单独证明实际画面及全部键鼠功能；发行验收仍须核对真实输出和输入。
+
+分辨率变化期间，Agent 可对当前 revision 提交首帧标记 false、宽高均为零的撤销报告，清除展示资格但保留已鉴权的 lease。显示器与窗口尺寸稳定且新帧完成后再确认；不通过重新注册恢复尺寸，不为健康静态页面开启持续重绘。
+
 原 `lock_state` 及 locked/unlocked 命名在本功能实施时统一迁移，不保留并行业务别名；Proto、本地 IPC、HTTP/OpenAPI、持久目标字段、Server/Client 和 Panel 生成类型同步更新。仍通过 session-control 的 PUT 替换目标，不新增切换 Command、toggle 或两套操作接口。
 
 Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm 身份单次入口，调用 GDM/libgdm 的 greeter API：创建或复用 greeter，选择镜像的 X11 session entry，以固定 `gdm-contest`/`gdm-waiting` PAM 服务开始验证并请求启动桌面。调用者退出不影响由 GDM 管理的桌面；不接受任意账户、session entry、PAM 名或 unit，不直接启动 Xorg/GNOME，不修改 GDM/GNOME 程序或资源。
+
+开始认证前，固定 gdm 入口必须等待同一 seat0 X11 greeter 的 GNOME 启动完成。logind 的 Active 不能独自证明 greeter 已能交接 VT：入口在 gdm UID 下定位属于该 greeter 的 GNOME Shell，核对其会话总线所有者与 `org.gnome.SessionManager.IsSessionRunning`，并重新确认进程身份和前台。等待包含在既有 40 秒准备期限内；失败后重新观测，不提前启动认证或额外补发 VT 激活。
+
+系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属、管理员会话影响和实际对照见 [IMG-02 停止顺序](gnome-session-image-requirements.zh-CN.md#img-02-stop-order)。这不改变普通前台切换或 Home 维护的所有权。
+
+镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。Natsume只调用已有会话API，不在运行时调整该配置或终止getty；配置和验证边界见 [IMG-02 图形VT隔离](gnome-session-image-requirements.zh-CN.md#img-02-vt)。
+
+当前测试镜像不是最终版。账号、GDM/PAM 接入、实际 Kiosk dconf profile、Xorg/空闲显示、正式 Home 模板与旧 OOBE 退出等镜像侧要求，统一记录在 [镜像交付要求](gnome-session-image-requirements.zh-CN.md)，具体文件与接入方式见[配置附录](gnome-session-image-configuration.zh-CN.md)。正式输入唯一维护在 [packaging/image](../packaging/image/README.md)，随 Client Deb 安装到 `/usr/share/natsume/image-integration/`；镜像构建按清单应用 UID、上游栈和模板相关配置，不依赖忽略的 VM 目录。IMG-01～08 是镜像必需交付项；历史 VM 证据不代替最终镜像验收。
 
 waiting 不可用时报告切换失败，必要时显示 greeter；不得以锁住 contest 冒充“显示等待界面”成功。故障修复只恢复 waiting，普通前台切换不触发重建。
 
@@ -633,13 +645,13 @@ Home reset 使用单调 `reset_epoch`：
 - Helper注册D-Bus服务前核验`LISTEN_PID/FDS/FDNAMES`，跟随`/proc/self/ns/mnt`与`/proc/self/fd/3`并比较namespace对象的device/inode；缺失交接、读取失败或不一致都拒绝启动，防止其他unit配置或drop-in引入私有挂载域后仍报告`Verified`；
 - Helper状态固定在root-owned的`/var/lib/natsume-privileged/home-reset`，Daemon不能重命名或替换其目录树；
 - reset 是切到 waiting、关闭 contest 登录入口、结束旧 contest、清 Home、由 GDM 重建 contest 的完整流程；正常 reset 保持 waiting 的 session/Xorg/GNOME/Agent 及 GDM 实例不变，允许 greeter、闪屏及短暂前台变化；
-- Helper 持有覆盖 Prepare/Apply/Verify/Recover 的 root-only 维护窗口。确认 waiting 可展示并激活后，先持久化 reset epoch、阶段和捕获的 contest boot/session，再撤销每次开机重建的 `/run/natsume-privileged/home-ready` 许可；Prepare 负责结束捕获的比赛会话，不要求管理员另发 terminate；
+- Helper 持有覆盖 Prepare/Apply/Verify/Recover 的 root-only 维护窗口。确认 waiting 可展示并激活后，先持久化 reset epoch、阶段和捕获的 contest boot/session，再撤销每次开机重建的 `/run/natsume-privileged/contest-permit` 许可；Prepare 负责结束捕获的比赛会话，不要求管理员另发 terminate；
 - 采用发行版 pam_exec 调用固定 Helper 门禁子命令，覆盖允许的 contest 图形登录栈的 auth/account/open_session。门禁在共享短锁内确认许可并原子登记 GDM worker 的 boot/PID/start-time；登记保留到精确 worker 退出，不因 pam_exec 返回或 close_session 提前删除；
 - Helper 关闭许可、取消/排空登录事务，在同一文件排他锁内确认无存活的登记 worker、contest 会话、UID 进程、用户 manager 及 Home 占用，才允许普通卸载或更换 Home。单独取得 flock 不足以证明登录已排空；未知/损坏记录及超时保持门禁关闭，禁止 force/lazy umount；
 - 移除旧的全局 home-ready/GDM 启动互锁，不停止 display-manager。waiting/greeter 不受 contest 门禁阻塞；双方禁用其他登录入口及 linger。只操作固定角色，不开放任意 unit 控制；
 - 当前 epoch 的宿主挂载和模板通过 Verify、完成进度 durable 后才允许 contest 登录；登录失败只重试桌面准备，不再次清空同一 generation。Home 完成与桌面/前台收敛独立上报，最终按最新 foreground_target 留在 waiting 或返回 contest；
 - 开机 GDM 自动登录 waiting，Home 恢复独立执行；固定启动预备经同一 Helper 排他规则等待 Home 许可，再请求 GDM 创建 contest 并返回 waiting。Home 失败或 Helper 未就绪不阻止 waiting 启动；持久化 Verified 不能替代本次宿主挂载证据。健康 Helper 重启保留已有桌面与挂载，不恢复旧业务授权；
-- 新维护窗口显式版本化并删除 restart-display 语义。发现进行中的旧版窗口就拒绝升级，由兼容旧 Helper 恢复完成后再升级；不静默转换或删除旧记录绕过门禁；
+- 维护窗口显式版本化，只解析当前格式；格式损坏或未知时保持门禁关闭，不转换或删除记录绕过；
 - Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
 - `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
 - 当前generation验证成功后，Helper删除其他generation并fsync `generations/`，完成前不发布`Verified`；
@@ -666,7 +678,7 @@ Daemon 在现有 `SnapshotReconciler` 中从当前 Target 与新鲜 Actual 推�
 
 GNOME 应用可运行在 `user@UID.service` 下的 scope，Agent 的 `GetSessionByPID` 不一定直接返回图形会话。Daemon 从总线取得调用者 PID/UID；直接查询成功时必须匹配精确 waiting，返回其他会话则拒绝。只有明确无所属会话时，才检查 `GetUserByPID` 为 waiting、系统 systemd `GetUnitByPID` 为该用户 manager，且 logind 的唯一用户会话与 `User.Display` 均指向声称的 waiting/seat0/X11。未知结果不降级，不信任自报环境变量。前后台不改变 lease 身份；waiting replacement 前必须排空旧用户 manager 和 UID 进程，旧 lease 随精确会话失效。
 
-本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。真实镜像验收见`packaging/target-vm/local-access.md`。
+本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。真实镜像验收见[镜像验收标准](../packaging/image/acceptance.md)。
 
 ## 10. Server 组件架构
 
@@ -1454,14 +1466,16 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - postinstall不生成CA、Server leaf、vault key或Operator；
 - Server `bootstrap`显式生成vault master key并创建first admin；
 - Server `serve`只读取已存在secret，缺失即失败；
-- Client package安装固定Caddy binary和系统级XDG Autostart；
-- Session Agent不安装systemd user unit；
+- Client package 安装固定 Caddy binary，以及官方 GNOME Kiosk Script 用户服务的 Agent drop-in；不保留第二个 XDG 启动入口；
 - Control Endpoint由安装配置确定，赛事期间不轮换；
 - Runtime Config只远程下发DOMjudge origin；
 - 工作站目标基线是 Ubuntu Client 镜像、官方 GDM/GNOME + 原生 X11，固定 waiting/contest 两个独立会话；禁止嵌套桌面和图形组件 patch；
-- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；
-- waiting 使用独立 dconf profile，禁用镜像比赛桌面的 ArcMenu 等扩展、自动锁屏和常规退出/切换入口；contest 保持独立桌面配置并关闭自动锁屏。首期等待界面默认纯黑，可随包使用一张静态 ICPC logo；
-- `environment.d`、PAM、XDG、dconf、Xorg 及 Home 恢复依赖随镜像交付；移除旧全局停 GDM 门禁，升级不得带入进行中的旧版维护窗口；
+- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；自动登录不得反复抢占后续greeter，每次GDM启动初始化一次自动登录的官方配置见[IMG-02](gnome-session-image-requirements.zh-CN.md#img-02-autologin)，Daemon不运行时改写该配置；
+- waiting 使用官方 GNOME Kiosk 和独立 dconf profile，不启动比赛桌面的 GNOME Shell/ArcMenu；contest 保持完整 GNOME 和独立配置并关闭自动锁屏。首期等待界面默认纯黑，可随包使用一张静态 ICPC logo；
+- `environment.d`、PAM、Kiosk session/用户服务、dconf、Xorg 及 Home 恢复依赖随镜像交付；Home 维护不停止全局 GDM；
+- 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护按[镜像维护要求](gnome-session-image-requirements.zh-CN.md#maintenance)完成控制连接退出、状态备份和整套恢复验证；
+- Client 持续安装，卸载不作为本次交付门槛；已有包移除脚本保留，不据此拆分镜像输入的所有权；
+- 镜像拥有具名 PAM 入口及 `other` fallback 的受管账号限制；删除 Client 的固定服务文件后仍不能回退到普通密码登录。缺失 PAM 服务或阶段必须仍拒绝受管登录，具体范围见[镜像维护范围](gnome-session-image-requirements.zh-CN.md#maintenance-remove)；
 - Server目标是单Ubuntu Server节点；
 - 确切OS point release、kernel和package evidence由部署测试记录，不写入业务状态机；
 - 更换Client镜像必须重新验证identity、Session、Home、IME、Caddy和package lifecycle；
@@ -1779,7 +1793,7 @@ just api
 
 ### WP9：Client Input与Reconciliation（已实现，待审查）
 
-本节原实现状态不涵盖 2026-09-07 的双会话修订。TODO：按 §4.4、§9.4～9.6 接入角色激活、Home 门禁/GDM 重建、Running/foreground 观测及静态 waiting 占位，完成相应协议和 UI 回归后再声明该增量完成。
+§4.4、§9.4～9.6 定义双会话增量的角色激活、Home 门禁/GDM 重建、Running/foreground 观测及静态 waiting 占位。实现审查与 WP10 的最终镜像/部署签收分别进行。
 
 目标：
 
@@ -1799,6 +1813,8 @@ just api
 - 离线稳态保持安全。
 
 ### WP10：全链路故障与部署签收
+
+TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重复、冷登录测量和 AT-01～26 签收，并核对发行版本一致。通过标准见[镜像验收标准](../packaging/image/acceptance.md)；阶段 VM 证据不代替 WP10 部署签收。
 
 目标：
 

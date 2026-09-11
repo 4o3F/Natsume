@@ -35,3 +35,9 @@ web/tsconfig.tsbuildinfo
 
 # Local-only ADR source archive used during consolidation review.
 /docs/adr/archive/
+
+# Local VM experiments and evidence; release inputs live in packaging/image/.
+/packaging/target-vm/
+
+# Local development notes, test records, and task handoffs.
+/context/

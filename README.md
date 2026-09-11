@@ -8,6 +8,8 @@ Natsume 是面向单场竞赛现场的工作站控制与访问编排系统。
 
 该文档定义产品范围、进程边界、Device Control 状态模型、Server/Client 组件、目标数据库、安全约束、验证矩阵和 flag-day 实施顺序。当前代码仍可能落后于目标架构；实现现状不能反向定义目标。
 
+产品要求、镜像接入和升级说明见[文档索引](docs/README.md)。
+
 ## 仓库拓扑
 
 ```text
@@ -21,7 +23,7 @@ crates/
   local-control-api/
 web/                     Operator Web Panel
 packaging/
-docs/architecture.md     唯一架构文档
+docs/                    正式文档；architecture.md 为唯一架构权威
 ```
 
 ## 常用命令

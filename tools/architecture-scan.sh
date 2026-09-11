@@ -7,8 +7,13 @@ fail() {
 }
 
 [[ -f docs/architecture.md ]] || fail 'docs/architecture.md is missing'
-extra_doc="$(find docs -type f -name '*.md' ! -path 'docs/architecture.md' -print -quit)"
-[[ -z ${extra_doc} ]] || fail "parallel architecture document remains: ${extra_doc}"
+while IFS= read -r doc; do
+  case ${doc} in
+  docs/README.md | docs/architecture.md | docs/prd-gnome-dual-session.zh-CN.md | \
+    docs/gnome-session-image-requirements.zh-CN.md | docs/gnome-session-image-configuration.zh-CN.md) ;;
+  *) fail "unexpected maintained document: ${doc}; development records belong in context/" ;;
+  esac
+done < <(rg --files --hidden docs -g '*.md')
 
 [[ ! -e crates/error-code ]] || fail 'the global error-code crate still exists'
 if rg -n 'natsume[-_]error[-_]code|crates/error-code' \
