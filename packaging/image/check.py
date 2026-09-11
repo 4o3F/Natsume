@@ -32,6 +32,10 @@ CLIENT_PROGRAMS = {
     "usr/bin/natsume-device-daemon", "usr/bin/natsume-session-agent",
     "usr/lib/natsume/natsume-privileged-helper", "usr/lib/natsume/caddy",
 }
+SITE_FILES = {
+    "etc/natsume/site.toml", "etc/natsume/trust/control-ca.crt",
+    "etc/natsume/trust/local-origin-ca.crt",
+}
 
 
 def check_source():
@@ -88,6 +92,8 @@ def check_deb(deb, files, rows):
             for entry in archive:
                 name = entry.name.removeprefix("./")
                 all_paths.add(name)
+                if name in SITE_FILES:
+                    raise ValueError("Client Deb contains image-owned site input: " + name)
                 if name in CLIENT_ENTRY_LINES or name in CLIENT_PROGRAMS:
                     mode = 0o755 if name in CLIENT_PROGRAMS else 0o644
                     if not entry.isfile() or entry.uid != 0 or entry.gid != 0 or entry.mode != mode:

@@ -10,7 +10,7 @@
 | 匹配的 Natsume Server/协议版本 | 用于首次 Enrollment、Binding 和验收，由同一发行交付方确认兼容组合 | 可以做离线构建检查，不能签收业务闭环 |
 | `NATSUME_SERVER_IP` | 由 autoinstall 在目标系统中提供；工位可访问的 IPv4/IPv6 字面量；Server TLS 证书包含该 IP SAN，不能填写主机名 | 与端口成对缺失/非法时失败 |
 | `NATSUME_SERVER_PORT` | 由 autoinstall 在目标系统中提供；合法 TCP 端口；HTTPS 与设备 WSS 使用同一端口 | 不能静默选用测试端点 |
-| 站点公共配置和两个 CA 证书 | 已包含在站点配置好的 Client Deb 中，见下文 | 不使用示例 CA 或其他站点的旧包 |
+| 站点公共配置和两个 CA 证书 | 部署方独立提供，镜像构建安装到下文固定路径；不包含在通用 Client Deb 中 | 缺失或与配套 Server 不匹配时停止构建，不生成测试 CA 回退 |
 | 镜像发行版、目标架构、安装源、构建时间基准 | 用于官方依赖解析、每档 skel、模板和可复现输入 | 不把一档模板当作所有安装源的最终模板 |
 | 独立管理员及账号保留规则 | 管理员不得命名 waiting/teams，UID 不与受管账号共用；凭据遵循镜像项目现有私密输入机制 | 名称/UID 冲突必须停止，不能接管不相干的旧账号 |
 
@@ -20,14 +20,17 @@
 
 ## 2. 公共站点配置与身份
 
-Client 包必须已经包含以下文件，镜像项目不重新生成信任关系：
+镜像构建在安装通用 Client 后，注入部署方提供的以下公共文件。镜像项目不生成 CA，也不从 CI 包提取测试信任关系；证书使用 PEM，三个文件均为 root:root/0644，父目录为 root:root/0755：
 
 | 安装目标 | 内容 |
 | --- | --- |
 | `/etc/natsume/site.toml` | `schema_version=1`、站点 `fleet_namespace_uuid`、`gateway_hostname`、`gateway_not_after`、`contest_end`；`[trust]` 下 control/local-origin 根证书 SHA-256 |
 | `/etc/natsume/trust/control-ca.crt` | 控制平面公共 CA 证书 |
 | `/etc/natsume/trust/local-origin-ca.crt` | 本地 Origin 公共 CA 证书 |
-| `/etc/natsume/config.toml` | 由 Client 安装脚本校验后写入 Server 端点；Deb 原始文件是无端点占位 conffile，镜像预装以 NATSUME_DEFER_ENDPOINT=1 延后配置并移除占位文件 |
+
+这些文件归镜像/部署方所有，Client 安装、重装、移除和 purge 均不写入或删除它们。构建检查必须确认站点与配套 Server 一致，两个根证书及其站点指纹匹配，并将三个文件的实际内容计入镜像缓存键。Daemon unit 对三条路径均有 `ConditionPathExists`；尚未注入时跳过启动，这不替代镜像构建的完整性检查。
+
+`/etc/natsume/config.toml` 仍由 Client 安装脚本校验后写入 Server 端点；Deb 原始文件是无端点占位 conffile。镜像预装以 `NATSUME_DEFER_ENDPOINT=1` 延后配置并移除占位文件，真实 IP/端口由 autoinstall 在目标系统中提供。
 
 Server root key、CA 私钥、每设备控制/网关私钥不进入交接包或可克隆镜像。首次启动前，`/var/lib/natsume/{identity,control,keys,state}` 与 `/var/lib/natsume-privileged/home-reset` 不得携带运行状态；允许包初始化空目录。不要把已运行工位清空后当作可信新镜像来源。已部署工位的升级必须保留这些状态，不能套用新镜像初始化清理。
 

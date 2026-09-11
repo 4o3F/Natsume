@@ -2,8 +2,9 @@
 
 This directory owns the Server/Client Debian manifests, package-owned runtime
 files, image integration inputs and release checks. nFPM packages already-built
-Rust/Web outputs, verified Caddy and public site configuration. Image builds
-consume the complete Client Deb; no ignored VM experiment is a release input.
+Rust/Web outputs and verified Caddy. The Server Deb also consumes public site
+configuration; Client images inject their site configuration and CA certificates
+after installing the generic Client Deb. No ignored VM experiment is a release input.
 
 | Path | Responsibility |
 | --- | --- |
@@ -23,6 +24,9 @@ builder reads that installed directory and applies its [manifest](image/manifest
 after provisioning the official desktop and fixed accounts. Upstream stack merges,
 actual UID substitutions, final skel/template generation and offline enablement
 remain image build steps; Deb configuration alone does not make a boot-ready image.
+The Client Deb contains no `site.toml` or CA certificates. Image construction
+installs the deployer's matching public files under `/etc/natsume/` before first
+startup; they remain image-owned across Client reinstall, removal and purge.
 
 The entire `image/` directory can also be archived and handed to an image-builder
 project independently. Its README, input contract, implementation guide and
@@ -51,18 +55,20 @@ final-image or GPU acceptance.
 
 ## Build inputs and checks
 
-Both manifests require `VERSION`, `ARCH`, `RUST_RELEASE_DIR`, `SITE_CONFIG`,
-`CONTROL_CA_CERT` and `LOCAL_ORIGIN_CA_CERT`; Client also requires `CADDY_BIN`.
-Server consumes the built `web/dist`. Site configuration and trust roots are
-public inputs; no root private key or per-device identity enters either Deb.
+Both manifests require `VERSION`, `ARCH` and `RUST_RELEASE_DIR`.
+Client additionally requires `CADDY_BIN`; Server requires `SITE_CONFIG`,
+`CONTROL_CA_CERT`, `LOCAL_ORIGIN_CA_CERT` and the built `web/dist`.
+The same public site configuration and trust roots are separate Client image
+inputs; no root private key or per-device identity enters either Deb or the image.
 `site-config.example.toml` describes the public site input and is not packaged.
 
 `just package-client` / `just package-server` render these variables with
 `envsubst` and consume the prebuilt inputs. The Client recipe also checks the
 resulting Deb's image payload.
 `just ci-packages` downloads and verifies pinned tools, builds production
-binaries/Web, creates test public site inputs, produces both real Debs and checks
-their contents. Its output remains `dist/packages/ci/*.deb`; image inputs travel
+binaries/Web, creates test public site inputs for Server only, produces both real
+Debs and checks that Client contains no site configuration or CA certificates.
+Its output remains `dist/packages/ci/*.deb`; image integration inputs travel
 inside the Client Deb and need no third package or separate VM archive.
 
 ```sh

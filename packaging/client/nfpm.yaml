@@ -36,18 +36,6 @@ contents:
   - src: ${CADDY_BIN}
     dst: /usr/lib/natsume/caddy
     file_info: {mode: 0o755}
-  - src: ${SITE_CONFIG}
-    dst: /etc/natsume/site.toml
-    type: config|noreplace
-    file_info: {mode: 0o644}
-  - src: ${CONTROL_CA_CERT}
-    dst: /etc/natsume/trust/control-ca.crt
-    type: config|noreplace
-    file_info: {mode: 0o644}
-  - src: ${LOCAL_ORIGIN_CA_CERT}
-    dst: /etc/natsume/trust/local-origin-ca.crt
-    type: config|noreplace
-    file_info: {mode: 0o644}
   - src: packaging/client/rootfs/usr/
     dst: /usr/
     type: tree

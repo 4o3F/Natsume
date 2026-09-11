@@ -42,7 +42,8 @@ The private keys directory must be owned by `natsume-server:natsume-server` with
 mode `0700`; both files must have the same ownership and mode `0600`. `serve`
 validates both encodings, their public-key match, and a probe signature before
 binding. The CA certificate must also be the exact certificate supplied to the
-package as `/etc/natsume/trust/local-origin-ca.crt` for Client trust (PEM there):
+Server package and separately injected into the Client image as
+`/etc/natsume/trust/local-origin-ca.crt` (PEM there):
 startup decodes that packaged certificate to DER and requires byte-for-byte
 equality with `origin-ca.der`. Missing, malformed, mismatched, or overly broad
 private material fails closed. `bootstrap`, reset, package install, and package

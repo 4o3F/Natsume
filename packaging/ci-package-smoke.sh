@@ -100,6 +100,7 @@ fi
 CADDY_BIN="${caddy_binary}" cargo test --locked -p natsume-device-daemon \
   reconcile::caddy::tests::packaged_caddy_preserves_literal_usernames -- --ignored --exact
 
+# Only the Server package consumes site inputs. Client images inject their own.
 cat >"${input_root}/site.toml" <<'EOF'
 schema_version = 1
 fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
@@ -154,11 +155,14 @@ export LOCAL_ORIGIN_CA_CERT="${input_root}/local-origin-ca.crt"
 
 # envsubst takes literal variable names, not their values.
 # shellcheck disable=SC2016
-nfpm_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN} ${SITE_CONFIG} ${CONTROL_CA_CERT} ${LOCAL_ORIGIN_CA_CERT}'
+server_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${SITE_CONFIG} ${CONTROL_CA_CERT} ${LOCAL_ORIGIN_CA_CERT}'
+# shellcheck disable=SC2016
+client_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN}'
 server_config="${work_root}/server.nfpm.yaml"
 client_config="${work_root}/client.nfpm.yaml"
-envsubst "${nfpm_variables}" <packaging/server/nfpm.yaml >"${server_config}"
-envsubst "${nfpm_variables}" <packaging/client/nfpm.yaml >"${client_config}"
+envsubst "${server_variables}" <packaging/server/nfpm.yaml >"${server_config}"
+env -u SITE_CONFIG -u CONTROL_CA_CERT -u LOCAL_ORIGIN_CA_CERT \
+  envsubst "${client_variables}" <packaging/client/nfpm.yaml >"${client_config}"
 if grep -Eq '\$\{[A-Z_]+\}' "${server_config}" "${client_config}"; then
   fail 'rendered nFPM configuration contains an unresolved environment variable'
 fi
@@ -167,7 +171,8 @@ fi
   --packager deb \
   --config "${server_config}" \
   --target "${output_root}/"
-"${nfpm_binary}" package \
+env -u SITE_CONFIG -u CONTROL_CA_CERT -u LOCAL_ORIGIN_CA_CERT \
+  "${nfpm_binary}" package \
   --packager deb \
   --config "${client_config}" \
   --target "${output_root}/"
@@ -287,6 +292,14 @@ client_config_placeholder="${extract_root}/client/etc/natsume/config.toml"
 client_caddy_unit="${extract_root}/client/usr/lib/systemd/system/natsume-caddy.service"
 client_daemon_unit="${extract_root}/client/usr/lib/systemd/system/natsume-device-daemon.service"
 client_helper_unit="${extract_root}/client/usr/lib/systemd/system/natsume-privileged-helper.service"
+for path in /etc/natsume/site.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt; do
+  test -f "${extract_root}/server${path}" || fail "server package is missing ${path}"
+  if grep -Fxq "${path}" "${client_control}/conffiles"; then
+    fail "Client package owns image-supplied site input: ${path}"
+  fi
+  grep -Fxq "ConditionPathExists=${path}" "${client_daemon_unit}" ||
+    fail "Device Daemon can start without image-supplied site input: ${path}"
+done
 client_display_dropin="${extract_root}/client/usr/lib/systemd/system/display-manager.service.d/50-natsume-home.conf"
 client_tmpfiles="${extract_root}/client/usr/lib/tmpfiles.d/natsume.conf"
 grep -Fxq '# Natsume endpoint is written by postinstall after debconf validation.' \

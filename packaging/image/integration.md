@@ -21,10 +21,10 @@ waiting 本期纯黑全屏，同一 Agent 窗口承载 Binding，不需要 logo 
 
 | 位置 | 修改责任 |
 | --- | --- |
-| 构建参数、配置目录 | 固定提供完整 Client Deb；构建侧没有启用开关或手填摘要，端点只进入 autoinstall 配置 |
-| `lib/stamp.sh` 或实际缓存键实现 | 将 Deb 实际内容/模式及其交接目录计入 extra 和后继层；同名 Deb 内容变化须失效，部署端点不参与层键 |
+| 构建参数、配置目录 | 固定提供完整通用 Client Deb，以及独立的正式 site.toml 和两个公共 CA 文件；构建侧没有启用开关或手填摘要，端点只进入 autoinstall 配置 |
+| `lib/stamp.sh` 或实际缓存键实现 | 将 Deb 实际内容/模式、交接目录和三个站点公共文件计入 extra 和后继层；同名文件内容变化须失效，部署端点不参与层键 |
 | `lib/chroot.sh` / 构建入口 | 配置读取、缓存键和 chroot 只读输入挂载使用同一个实际 CONFIG_DIR；不能仍绑定硬编码仓库 config；构建用独立临时 /run |
-| IDE 层之后的 extra 模块，如 `310-natsume` | 安装官方依赖和完整 Client，创建受管账号，应用除最终模板以外的 IMG 配置，离线 enable |
+| IDE 层之后的 extra 模块，如 `310-natsume` | 安装官方依赖和完整 Client，注入并检查站点公共文件，创建受管账号，应用除最终模板以外的 IMG 配置，离线 enable |
 | 旧 OOBE、streaming、monitoring 模块 | 移除旧 OOBE、probe、会话工具、VLC 推流及独立 exporter；工位监控由 Natsume 负责 |
 | 每个安装源最后的模块，如 `930-natsume-home` | 在 extra 的全部 skel/Browser/IDE 配置完成后生成完整安装源模板；其他构建层跳过 |
 | `810-installer` / Live 层 | 保留 Casper 临时管理员和可见安装器；关闭 Live 中继承的 Client/模板启动与 waiting 自动登录 |
