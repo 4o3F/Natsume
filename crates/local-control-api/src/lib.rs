@@ -136,6 +136,8 @@ pub struct SessionAgentLease {
 }
 
 /// Frame evidence for one exact UI revision and graphical session.
+/// A false frame flag with zero dimensions withdraws presentation while retaining
+/// the authenticated lease, for example during a monitor resize.
 ///
 /// Device1 authenticates the caller connection and lease separately. A first
 /// frame with nonzero fullscreen dimensions is necessary, not sufficient, for
@@ -165,6 +167,7 @@ pub struct BindingSubmission {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
 pub enum HomeResetPhase {
+    Draining,
     Prepared,
     Applied,
     Verified,
@@ -243,14 +246,62 @@ pub trait Privileged1 {
     #[zbus(name = "QueryManagedSessions")]
     fn query_managed_sessions(&self) -> Result<ManagedSessionsObservation, ResourceControlError>;
 
+    /// Completes local boot preparation before the first business foreground.
+    #[zbus(name = "PrepareBootSessions")]
+    fn prepare_boot_sessions(
+        &self,
+        waiting: &GraphicalSession,
+    ) -> Result<bool, ResourceControlError>;
+
+    /// Starts or observes the fixed GDM preparation service; never replaces a live role.
+    #[zbus(name = "PrepareSession")]
+    fn prepare_session(
+        &self,
+        role: SessionRole,
+    ) -> Result<GraphicalSessionObservation, ResourceControlError>;
+
+    /// After sustained presentation failure, spends at most one captured waiting
+    /// recovery attempt per boot. Replays resume that capture, never a replacement.
+    /// True means its fixed GDM preparation still needs observation.
+    #[zbus(name = "RecoverWaitingSession")]
+    fn recover_waiting_session(
+        &self,
+        expected: &Option<GraphicalSession>,
+    ) -> Result<bool, ResourceControlError>;
+
+    /// Resumes only an existing captured waiting attempt; never spends a new budget.
+    #[zbus(name = "ResumeWaitingRecovery")]
+    fn resume_waiting_recovery(&self) -> Result<bool, ResourceControlError>;
+
+    #[zbus(name = "ActivateSession")]
+    fn activate_session(
+        &self,
+        role: SessionRole,
+        session: &GraphicalSession,
+    ) -> Result<(), ResourceControlError>;
+
+    /// Withdraws contest login permission and cancels the fixed pending login.
+    #[zbus(name = "CloseContestAdmission")]
+    fn close_contest_admission(&self) -> Result<(), ResourceControlError>;
+
     #[zbus(name = "TerminateContestSession")]
     fn terminate_contest_session(
         &self,
         session: &GraphicalSession,
     ) -> Result<(), ResourceControlError>;
 
+    #[zbus(name = "RecoverLocalHome")]
+    fn recover_local_home(&self) -> Result<(), ResourceControlError>;
+
+    #[zbus(name = "IsHomeReady")]
+    fn is_home_ready(&self) -> Result<bool, ResourceControlError>;
+
     #[zbus(name = "PrepareHomeReset")]
-    fn prepare_home_reset(&self, reset_epoch: u64) -> Result<(), ResourceControlError>;
+    fn prepare_home_reset(
+        &self,
+        reset_epoch: u64,
+        waiting: &GraphicalSession,
+    ) -> Result<(), ResourceControlError>;
 
     #[zbus(name = "QueryHomeReset")]
     fn query_home_reset(&self) -> Result<Option<HomeResetProgress>, ResourceControlError>;

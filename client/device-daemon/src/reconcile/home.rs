@@ -1,7 +1,9 @@
 use std::{fs, path::PathBuf};
 
 use natsume_device_protocol::generated::{HomeActualState, HomeState};
-use natsume_local_control_api::{HomeResetPhase, HomeResetProgress, Privileged1Proxy};
+use natsume_local_control_api::{
+    GraphicalSession, HomeResetPhase, HomeResetProgress, Privileged1Proxy, ResourceControlError,
+};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -42,6 +44,7 @@ impl HomeReconciler {
     pub(super) async fn reconcile(
         &self,
         target_epoch: Option<u64>,
+        waiting: Option<&GraphicalSession>,
         cancellation: &CancellationToken,
     ) -> Result<ReconcileOutcome<HomeActualState>, SnapshotError> {
         let mut completed = match read_completion(&self.artifact_path) {
@@ -51,7 +54,6 @@ impl HomeReconciler {
         };
         let proxy = self.proxy().await?;
 
-        check_cancellation(cancellation)?;
         let progress = match proxy.query_home_reset().await {
             Ok(progress) => progress,
             Err(error) => {
@@ -63,10 +65,9 @@ impl HomeReconciler {
         };
         let mut verified_epoch = None;
         if let Some(progress) = progress {
-            if !progress_within_target(&progress, target_epoch) {
-                return Ok(ReconcileOutcome::idle(recovery_required(completed)));
-            }
-            let finished = finish_progress(&proxy, &progress, cancellation).await?;
+            // A durable Helper window owns its captured epoch independently of
+            // the current transport/Target. Finish it before considering new work.
+            let finished = finish_progress(&proxy, &progress).await?;
             if !finished.actual {
                 return Ok(ReconcileOutcome {
                     actual: recovery_required(completed),
@@ -78,8 +79,18 @@ impl HomeReconciler {
         }
 
         let Some(epoch) = target_epoch else {
+            if !proxy.is_home_ready().await.unwrap_or(false)
+                && let Err(error) = proxy.recover_local_home().await
+            {
+                return Ok(ReconcileOutcome::control_error(
+                    recovery_required(completed),
+                    &error,
+                ));
+            }
             return Ok(ReconcileOutcome::idle(
-                if completed.is_none() || verified_epoch == completed {
+                if (completed.is_none() || verified_epoch == completed)
+                    && proxy.is_home_ready().await.unwrap_or(false)
+                {
                     steady(completed)
                 } else {
                     recovery_required(completed)
@@ -97,7 +108,12 @@ impl HomeReconciler {
         }
 
         check_cancellation(cancellation)?;
-        if let Err(error) = proxy.prepare_home_reset(epoch).await {
+        // Only the coordinator can supply a current Agent presentation whose
+        // exact waiting session has also been confirmed in the foreground.
+        let Some(waiting) = waiting else {
+            return Ok(ReconcileOutcome::retry(recovery_required(completed)));
+        };
+        if let Err(error) = proxy.prepare_home_reset(epoch, waiting).await {
             return Ok(ReconcileOutcome::control_error(
                 recovery_required(completed),
                 &error,
@@ -107,14 +123,13 @@ impl HomeReconciler {
             reset_epoch: epoch,
             phase: HomeResetPhase::Prepared,
         };
-        let finished = finish_progress(&proxy, &prepared, cancellation).await?;
+        let finished = finish_progress(&proxy, &prepared).await?;
         if !finished.actual {
             return Ok(ReconcileOutcome {
                 actual: recovery_required(completed),
                 retry: finished.retry,
             });
         }
-        check_cancellation(cancellation)?;
         let completed = advance_completion(&self.artifact_path, completed, epoch)?;
         Ok(ReconcileOutcome::idle(steady(completed)))
     }
@@ -130,11 +145,13 @@ impl HomeReconciler {
             return Ok(recovery_required(completed));
         };
         let Some(progress) = progress else {
-            return Ok(if completed.is_none() {
-                steady(None)
-            } else {
-                recovery_required(completed)
-            });
+            return Ok(
+                if completed.is_none() && proxy.is_home_ready().await.unwrap_or(false) {
+                    steady(None)
+                } else {
+                    recovery_required(completed)
+                },
+            );
         };
         let verified = match proxy.verify_home_reset(progress.reset_epoch).await {
             Ok(verified) if verified.reset_epoch == progress.reset_epoch => verified,
@@ -147,10 +164,12 @@ impl HomeReconciler {
             HomeResetPhase::RecoveryRequired | HomeResetPhase::Verified => {
                 recovery_required(completed)
             }
-            HomeResetPhase::Prepared | HomeResetPhase::Applied => HomeActualState {
-                state: HomeState::Resetting.into(),
-                completed_reset_epoch: completed,
-            },
+            HomeResetPhase::Draining | HomeResetPhase::Prepared | HomeResetPhase::Applied => {
+                HomeActualState {
+                    state: HomeState::Resetting.into(),
+                    completed_reset_epoch: completed,
+                }
+            }
         })
     }
 }
@@ -158,24 +177,31 @@ impl HomeReconciler {
 async fn finish_progress(
     proxy: &Privileged1Proxy<'_>,
     progress: &HomeResetProgress,
-    cancellation: &CancellationToken,
 ) -> Result<ReconcileOutcome<bool>, SnapshotError> {
     if invalid_epoch(progress.reset_epoch) {
         return Ok(ReconcileOutcome::idle(false));
     }
-    check_cancellation(cancellation)?;
+    // This epoch is already owned by Helper. A rejected mount/template can be
+    // repaired without changing Target or the observed RecoveryRequired state.
+    // Keep the existing bounded backoff alive; Helper still checks every retry.
+    let pending_error = |error: &ResourceControlError| {
+        let mut outcome = ReconcileOutcome::control_error(false, error);
+        outcome.retry |= matches!(error, ResourceControlError::Rejected(_));
+        outcome
+    };
     let applied = match progress.phase {
         HomeResetPhase::Prepared => proxy.apply_home_reset(progress.reset_epoch).await,
-        HomeResetPhase::RecoveryRequired => proxy.recover_home_reset(progress.reset_epoch).await,
+        HomeResetPhase::Draining | HomeResetPhase::RecoveryRequired => {
+            proxy.recover_home_reset(progress.reset_epoch).await
+        }
         HomeResetPhase::Applied | HomeResetPhase::Verified => Ok(()),
     };
     if let Err(error) = applied {
-        return Ok(ReconcileOutcome::control_error(false, &error));
+        return Ok(pending_error(&error));
     }
-    check_cancellation(cancellation)?;
     let verified = match proxy.verify_home_reset(progress.reset_epoch).await {
         Ok(verified) => verified,
-        Err(error) => return Ok(ReconcileOutcome::control_error(false, &error)),
+        Err(error) => return Ok(pending_error(&error)),
     };
     if verified.reset_epoch != progress.reset_epoch {
         return Ok(ReconcileOutcome::idle(false));
@@ -185,10 +211,6 @@ async fn finish_progress(
     } else {
         ReconcileOutcome::retry(false)
     })
-}
-
-fn progress_within_target(progress: &HomeResetProgress, target_epoch: Option<u64>) -> bool {
-    target_epoch.is_some_and(|target| progress.reset_epoch <= target)
 }
 
 enum CompletionState {
@@ -307,17 +329,5 @@ pub(super) mod tests {
 
         assert_eq!(completed, Some(9));
         assert!(matches!(read_completion(&path), CompletionState::Valid(9)));
-    }
-
-    #[test]
-    fn newer_verified_progress_is_not_current_convergence() {
-        let progress = HomeResetProgress {
-            reset_epoch: 8,
-            phase: HomeResetPhase::Verified,
-        };
-
-        assert!(!progress_within_target(&progress, Some(7)));
-        assert!(progress_within_target(&progress, Some(8)));
-        assert!(!progress_within_target(&progress, None));
     }
 }

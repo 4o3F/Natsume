@@ -45,6 +45,7 @@ pub(super) const SERVER_SILENCE_TIMEOUT: Duration = Duration::from_mins(1);
 pub(super) const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type LocalSnapshotTask = JoinHandle<Result<ClientStateSnapshot, SnapshotError>>;
 
 /// Immutable endpoint and pinned TLS material shared by reconnect attempts.
 struct ConnectionSettings {
@@ -161,19 +162,40 @@ pub(crate) async fn run(
         .map_err(|_| ControlLoopError::LocalDeactivation)?;
     let settings = ConnectionSettings::production()?;
     let mut backoff = ReconnectBackoff::new();
-    // Spread a simultaneous boot without consuming the first failure's window.
-    backoff.wait().await?;
+    let mut first_attempt = true;
     loop {
-        if let Some(mut socket) = settings.connect().await {
-            let outcome = super::enrollment::handshake(
+        // One tracked local pass runs alongside backoff/connect/handshake. It
+        // owns only already-persisted work and transfers to the Active pump,
+        // where a received Target waits for it before starting new effects.
+        let recovery = Arc::clone(&snapshots);
+        let local = tokio::spawn(async move { recovery.recover_local().await });
+        let attempt = async {
+            backoff.wait().await?;
+            if !first_attempt {
+                backoff.advance();
+            }
+            let Some(mut socket) = settings.connect().await else {
+                tracing::warn!("Device control connection failed");
+                return Ok(None);
+            };
+            match super::enrollment::handshake(
                 &mut socket,
                 &mut identity,
                 machine_hardware_id,
                 evidence_quality,
             )
-            .await?;
-            if let HandshakeOutcome::Active(session_id) = outcome {
-                let stable = run_active(socket, session_id, Arc::clone(&snapshots)).await;
+            .await?
+            {
+                HandshakeOutcome::Active(session_id) => Ok(Some((socket, session_id))),
+                HandshakeOutcome::Retry => Ok(None),
+            }
+        }
+        .await;
+        first_attempt = false;
+        match attempt {
+            Ok(Some((socket, session_id))) => {
+                let stable =
+                    run_active(socket, session_id, Arc::clone(&snapshots), Some(local)).await;
                 snapshots
                     .deactivate()
                     .await
@@ -182,11 +204,20 @@ pub(crate) async fn run(
                     backoff = ReconnectBackoff::new();
                 }
             }
-        } else {
-            tracing::warn!("Device control connection failed");
+            result => {
+                match local.await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(SnapshotError::Caddy)) => {
+                        return Err(ControlLoopError::LocalDeactivation);
+                    }
+                    Ok(Err(error)) => {
+                        tracing::warn!(error = %error, "Local maintenance will retry");
+                    }
+                    Err(_) => tracing::error!("Local maintenance task terminated unexpectedly"),
+                }
+                result?;
+            }
         }
-        backoff.wait().await?;
-        backoff.advance();
     }
 }
 
@@ -246,12 +277,14 @@ async fn run_active(
     mut socket: Socket,
     session_id: [u8; 16],
     snapshots: Arc<SnapshotReconciler>,
+    initial_local_task: Option<LocalSnapshotTask>,
 ) -> bool {
     let stable_at = Instant::now() + STABLE_ACTIVE_DURATION;
     let mut stable = false;
     let mut last_sent = None::<ClientStateSnapshot>;
     let (mut current, mut queued) = (None::<CurrentPlan>, None::<PendingPlan>);
-    let mut observation = Some(start_observation(Arc::clone(&snapshots), None));
+    let mut observation =
+        Some(initial_local_task.unwrap_or_else(|| start_observation(Arc::clone(&snapshots), None)));
     let mut retry = RetrySchedule::new();
     let mut local_change_pending = false;
     let mut awaiting_target = false;
@@ -287,7 +320,7 @@ async fn run_active(
                 retry.deadline = None;
                 let Some(target) = retry.target.as_ref() else { break; };
                 let fence = tokio_util::sync::CancellationToken::new();
-                if let Err(error) = snapshots.begin_plan(&fence) {
+                if let Err(error) = snapshots.refresh_plan(&fence) {
                     snapshot_error = Some(error);
                     break;
                 }
@@ -398,11 +431,12 @@ async fn run_active(
         }
     }
     drop(socket);
+    fence_plans(&snapshots, current, queued).await;
     if let Some(task) = observation {
-        task.abort();
+        // The initial task can own a local Home/termination recovery. Closing
+        // WSS does not cancel a Helper mutation; join it before reconnecting.
         let _ = task.await;
     }
-    fence_plans(&snapshots, current, queued).await;
     if let Some(error) = snapshot_error {
         tracing::error!(error = %error, "Device active snapshot processing failed");
     } else if let Some(task) = failed_task {
@@ -430,9 +464,14 @@ fn queue_latest_plan(
     ) {
         return Ok(());
     }
+    let unchanged = retry.target.as_deref() == Some(target.as_ref());
     *retry = RetrySchedule::new();
     let fence = tokio_util::sync::CancellationToken::new();
-    snapshots.begin_plan(&fence)?;
+    if unchanged {
+        snapshots.refresh_plan(&fence)?;
+    } else {
+        snapshots.begin_plan(&fence)?;
+    }
     let latest = PendingPlan { fence, target };
     if current.is_some() || observation_running {
         if let Some(current) = current.as_ref() {
@@ -496,7 +535,7 @@ fn start_plan(snapshots: Arc<SnapshotReconciler>, pending: PendingPlan) -> Curre
 fn start_observation(
     snapshots: Arc<SnapshotReconciler>,
     target: Option<Arc<ValidatedSnapshot>>,
-) -> JoinHandle<Result<ClientStateSnapshot, SnapshotError>> {
+) -> LocalSnapshotTask {
     tokio::spawn(async move { snapshots.observe(target.as_deref()).await })
 }
 
@@ -693,6 +732,7 @@ mod tests {
             client,
             session_id,
             Arc::clone(&resources.snapshots),
+            None,
         ));
         let mut fixture = ActiveFixture {
             resources,
@@ -948,7 +988,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn safety_rejection_does_not_schedule_destructive_retries()
+    async fn rejected_new_operations_do_not_schedule_destructive_retries()
     -> Result<(), Box<dyn std::error::Error>> {
         let mut active = active_fixture(HelperState {
             rejected: true,
@@ -964,7 +1004,8 @@ mod tests {
             .lock()
             .unwrap_or_else(|e| panic!("fixture lock: {e}"));
         assert_eq!(state.termination_calls.len(), 1);
-        assert_eq!(state.home_calls, [8]);
+        assert!(state.home_calls.is_empty());
+        assert!(state.progress.is_none());
         assert!(
             !active
                 .resources
@@ -977,8 +1018,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn replacement_target_clears_the_previous_retry() -> Result<(), Box<dyn std::error::Error>>
-    {
+    async fn owned_home_rejection_retries_after_repair_without_a_new_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use natsume_local_control_api::{HomeResetPhase, HomeResetProgress};
+
+        let mut active = active_fixture(HelperState {
+            rejected: true,
+            progress: Some(HomeResetProgress {
+                reset_epoch: 8,
+                phase: HomeResetPhase::RecoveryRequired,
+            }),
+            ..HelperState::default()
+        })
+        .await?;
+        let mut target = snapshot();
+        target
+            .target
+            .as_mut()
+            .ok_or("missing target")?
+            .home
+            .as_mut()
+            .ok_or("missing Home")?
+            .reset_epoch = Some(8);
+        active.target(target).await?;
+        active.next_snapshot().await?;
+        // The same rejected mount remains observable. It must not clear the
+        // retry schedule for the already-owned epoch, even without new Targets.
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let attempts = active
+                    .resources
+                    .helper
+                    .lock()
+                    .map_err(|_| "fixture lock")?
+                    .home_calls
+                    .len();
+                if attempts >= 2 {
+                    break Ok::<_, Box<dyn std::error::Error>>(());
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await??;
+        let completed = active
+            .resources
+            .directory
+            .path()
+            .join("home-completion.json");
+        assert!(!completed.exists());
+        {
+            let mut state = active.resources.helper.lock().map_err(|_| "fixture lock")?;
+            // Rejected calls did not apply a mount. This fixture's verifier
+            // must still wait for a successful recovery after the repair.
+            state.home_failures = state.home_calls.len();
+            state.rejected = false;
+        }
+        // Repair only the Helper's environment; no target replay or reconnect.
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let actual = active
+                    .next_snapshot()
+                    .await?
+                    .actual
+                    .ok_or("missing actual")?;
+                if actual.home.and_then(|home| home.completed_reset_epoch) == Some(8) {
+                    break Ok::<_, Box<dyn std::error::Error>>(());
+                }
+            }
+        })
+        .await??;
+        let state = active.resources.helper.lock().map_err(|_| "fixture lock")?;
+        assert!(state.home_calls.len() >= 3);
+        assert!(state.home_calls.iter().all(|epoch| *epoch == 8));
+        assert!(state.termination_calls.is_empty());
+        assert!(completed.exists());
+        assert!(!active.pump.is_finished());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn replacement_target_finishes_owned_epochs_without_retargeting()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut active = active_fixture(HelperState {
             terminate_failures: 2,
             home_failures: 2,
@@ -996,15 +1116,138 @@ mod tests {
             .terminate_epoch = None;
         concrete.home.as_mut().ok_or("missing home")?.reset_epoch = None;
         active.target(target).await?;
-        active.next_snapshot().await?;
-        tokio::time::sleep(Duration::from_millis(1200)).await;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let actual = active
+                    .next_snapshot()
+                    .await?
+                    .actual
+                    .ok_or("missing actual")?;
+                if actual
+                    .session_control
+                    .as_ref()
+                    .is_some_and(|s| s.completed_terminate_epoch == Some(7))
+                    && actual
+                        .home
+                        .as_ref()
+                        .is_some_and(|h| h.completed_reset_epoch == Some(8))
+                {
+                    return Ok::<_, Box<dyn std::error::Error>>(());
+                }
+            }
+        })
+        .await??;
         let state = active
             .resources
             .helper
             .lock()
             .unwrap_or_else(|e| panic!("fixture lock: {e}"));
-        assert_eq!(state.termination_calls.len(), 1);
+        assert_eq!(state.termination_calls.len(), 3);
+        assert!(
+            state
+                .termination_calls
+                .iter()
+                .all(|session| session == &state.termination_calls[0])
+        );
+        assert_eq!(state.termination_calls[0].logind_session_id, "c2");
+        assert_eq!(state.home_calls, [8, 8, 8]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn silence_closes_transport_but_joins_owned_recovery_before_reconnect()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use natsume_local_control_api::{HomeResetPhase, HomeResetProgress};
+        let resources = fixture(HelperState {
+            progress: Some(HomeResetProgress {
+                reset_epoch: 8,
+                phase: HomeResetPhase::Prepared,
+            }),
+            ..HelperState::default()
+        })
+        .await?;
+        let release = Arc::new(tokio::sync::Notify::new());
+        let wake = Arc::clone(&release);
+        let recovery = Arc::clone(&resources.snapshots);
+        let local = tokio::spawn(async move {
+            wake.notified().await;
+            recovery.recover_local().await
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let client = TcpStream::connect(listener.local_addr()?).await?;
+        let (server, _) = listener.accept().await?;
+        let client =
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(client), Role::Client, None)
+                .await;
+        let socket = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
+        let session_id = *Uuid::now_v7().as_bytes();
+        let pump = tokio::spawn(run_active(
+            client,
+            session_id,
+            Arc::clone(&resources.snapshots),
+            Some(local),
+        ));
+        let mut active = ActiveFixture {
+            resources,
+            socket,
+            pump,
+            session_id,
+        };
+        let mut newer = destructive_target();
+        newer
+            .target
+            .as_mut()
+            .ok_or("missing target")?
+            .home
+            .as_mut()
+            .ok_or("missing home")?
+            .reset_epoch = Some(9);
+        active.target(newer).await?;
+        active.resources.wait_for_plan().await?;
+        tokio::time::pause();
+        tokio::time::advance(HEARTBEAT_INTERVAL + Duration::from_secs(1)).await;
+        tokio::time::resume();
+        let heartbeat = timeout(Duration::from_secs(2), active.socket.next())
+            .await
+            .map_err(|_| "local recovery blocked the heartbeat")?
+            .ok_or("missing heartbeat")??;
+        assert!(matches!(heartbeat, WsMessage::Ping(_)));
+        tokio::time::pause();
+        tokio::time::advance(SERVER_SILENCE_TIMEOUT + Duration::from_secs(1)).await;
+        tokio::time::resume();
+        timeout(Duration::from_secs(2), async {
+            while matches!(active.socket.next().await, Some(Ok(_))) {}
+        })
+        .await
+        .map_err(|_| "local recovery blocked transport shutdown")?;
+        assert!(!active.pump.is_finished(), "owned recovery must be joined");
+        assert!(
+            active
+                .resources
+                .helper
+                .lock()
+                .map_err(|_| "fixture lock")?
+                .home_calls
+                .is_empty()
+        );
+        release.notify_one();
+        timeout(Duration::from_secs(5), &mut active.pump)
+            .await
+            .map_err(|_| "owned recovery did not finish after release")??;
+        let state = active.resources.helper.lock().map_err(|_| "fixture lock")?;
         assert_eq!(state.home_calls, [8]);
+        assert!(
+            state.termination_calls.is_empty(),
+            "queued Target must stay fenced"
+        );
+        let completion: serde_json::Value = serde_json::from_slice(&fs::read(
+            active
+                .resources
+                .directory
+                .path()
+                .join("home-completion.json"),
+        )?)?;
+        assert_eq!(completion["completed_reset_epoch"], 8);
         Ok(())
     }
 

@@ -438,9 +438,12 @@ async fn sample_leaf(hostname: &str, root_path: &Path, port: u16) -> Option<Vec<
         };
         let mut root_store = RootCertStore::empty();
         root_store.add(root.clone()).ok()?;
-        let configuration = ClientConfig::builder()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
+        let configuration =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .ok()?
+                .with_root_certificates(root_store)
+                .with_no_client_auth();
         let connector = TlsConnector::from(Arc::new(configuration));
         let stream = TcpStream::connect(("127.0.0.1", port)).await.ok()?;
         let server_name = ServerName::try_from(hostname.to_owned()).ok()?;
@@ -699,12 +702,31 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_leaf_sampling_does_not_require_a_global_crypto_provider()
+    -> Result<(), Box<dyn std::error::Error>> {
+        assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+        let directory = tempfile::TempDir::new()?;
+        let mut caddy = caddy();
+        let key = rcgen::KeyPair::generate()?;
+        let (certificate, task) = serve_gateway(&mut caddy, &directory, &key).await?;
+        let sampled = sample_leaf(
+            &caddy.gateway_hostname,
+            &caddy.origin_root_path,
+            caddy.gateway_port,
+        )
+        .await;
+        task.abort();
+        assert_eq!(sampled.as_deref(), Some(certificate.der().as_ref()));
+        assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "requires the packaged Caddy binary via CADDY_BIN and loopback sockets"]
     async fn packaged_caddy_preserves_literal_usernames() -> Result<(), Box<dyn std::error::Error>>
     {
         use tokio::net::TcpListener;
 
-        let _ = rustls::crypto::ring::default_provider().install_default();
         let directory = tempfile::TempDir::new()?;
         let binary = PathBuf::from(std::env::var("CADDY_BIN")?);
         let expected_sha = include_str!("../../../../packaging/client/caddy.sha256")
@@ -734,13 +756,16 @@ pub(super) mod tests {
                 STANDARD.encode(certificate.signing_key.serialize_der())
             ),
         )?;
-        let upstream_tls = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![certificate.cert.der().clone()],
-                rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der())
-                    .into(),
-            )?;
+        let upstream_tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certificate.cert.der().clone()],
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der())
+                .into(),
+        )?;
         let upstream = TcpListener::bind(("127.0.0.1", 0)).await?;
         let origin = format!("https://{}", upstream.local_addr()?);
         let upstream_task = tokio::spawn(record_upstream_requests(upstream, upstream_tls));

@@ -6,7 +6,9 @@ use std::{
     process::{self, ExitCode},
 };
 
-use natsume_local_control_api::{PRIVILEGED1_PATH, PRIVILEGED1_SERVICE, ResourceControlError};
+use natsume_local_control_api::{
+    PRIVILEGED1_PATH, PRIVILEGED1_SERVICE, ResourceControlError, SessionRole,
+};
 use natsume_privileged_helper::PrivilegedService;
 use snafu::Snafu;
 use tokio::time::{Duration, timeout};
@@ -16,6 +18,12 @@ const SYSTEM_BUS_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Snafu)]
 enum ServiceError {
+    #[snafu(display(
+        "usage: natsume-privileged-helper serve | close-admission | pam-gate | prepare-session waiting|contest | gdm-login waiting|contest | desktop-status waiting|contest"
+    ))]
+    Arguments,
+    #[snafu(display("fixed graphical operation failed: {source}"))]
+    GraphicalOperation { source: ResourceControlError },
     #[snafu(display("privileged helper requires its systemd host mount namespace descriptor"))]
     MountNamespaceDescriptor,
     #[snafu(display("privileged helper could not inspect its host mount namespace"))]
@@ -24,8 +32,6 @@ enum ServiceError {
     MountNamespaceMismatch,
     #[snafu(display("privileged helper could not acquire its system D-Bus service"))]
     Bus,
-    #[snafu(display("privileged helper Home recovery failed: {source}"))]
-    HomeRecovery { source: ResourceControlError },
 }
 
 fn initialize_logging() -> Result<(), ()> {
@@ -70,11 +76,9 @@ async fn serve() -> Result<(), ServiceError> {
     .await
     .map_err(|_| ServiceError::Bus)?
     .map_err(|_| ServiceError::Bus)?;
-    let mut service = PrivilegedService::production();
-    service
-        .restore_home_before_ready(&connection)
-        .await
-        .map_err(|source| ServiceError::HomeRecovery { source })?;
+    natsume_privileged_helper::close_admission()
+        .map_err(|source| ServiceError::GraphicalOperation { source })?;
+    let service = PrivilegedService::production();
     connection
         .object_server()
         .at(PRIVILEGED1_PATH, service)
@@ -86,17 +90,16 @@ async fn serve() -> Result<(), ServiceError> {
         .await
         .map_err(|_| ServiceError::Bus)?;
     {
-        // Serialize startup completion with RPC mutations. Display-manager start
-        // jobs wait for Type=dbus readiness, so acquire the name before awaiting them.
+        // Publish the API even when Home recovery fails. Waiting observation and
+        // local recovery remain available while the contest gate stays closed.
         let mut service = interface.get_mut().await;
         connection
             .request_name(PRIVILEGED1_SERVICE)
             .await
             .map_err(|_| ServiceError::Bus)?;
-        service
-            .restore_login_after_ready(&connection)
-            .await
-            .map_err(|source| ServiceError::HomeRecovery { source })?;
+        if let Err(error) = service.recover_local_home(&connection).await {
+            tracing::error!(%error, "Home recovery incomplete; contest admission remains closed");
+        }
     }
     tracing::info!(service = PRIVILEGED1_SERVICE, "privileged helper ready");
     future::pending::<()>().await;
@@ -109,13 +112,42 @@ async fn main() -> ExitCode {
         let _write_result = writeln!(io::stderr().lock(), "{LOGGING_FAILURE_ID}");
         return ExitCode::FAILURE;
     }
-    match serve().await {
+    match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             tracing::error!(error = %error, "privileged helper stopped");
             ExitCode::FAILURE
         }
     }
+}
+
+async fn run() -> Result<(), ServiceError> {
+    let arguments: Vec<_> = env::args_os().skip(1).collect();
+    let role = |value: &std::ffi::OsStr| match value.to_str() {
+        Some("waiting") => Ok(SessionRole::Waiting),
+        Some("contest") => Ok(SessionRole::Contest),
+        _ => Err(ServiceError::Arguments),
+    };
+    // Dispatch before acquiring a bus name or requiring the Home namespace fd.
+    // PAM and the fixed GDM client never start the long-running service.
+    let result = match arguments.as_slice() {
+        [command] if command == "serve" => return serve().await,
+        [command] if command == "close-admission" => natsume_privileged_helper::close_admission(),
+        [command] if command == "pam-gate" => natsume_privileged_helper::pam_gate(),
+        [command, target] if command == "prepare-session" => {
+            natsume_privileged_helper::run_prepare(role(target)?).await
+        }
+        [command, target] if command == "gdm-login" => {
+            natsume_privileged_helper::run_gdm_client(role(target)?).await
+        }
+        [command, target] if command == "desktop-status" => {
+            natsume_privileged_helper::probe_desktop(role(target)?)
+                .await
+                .map(|has_vt| println!("{has_vt}"))
+        }
+        _ => return Err(ServiceError::Arguments),
+    };
+    result.map_err(|source| ServiceError::GraphicalOperation { source })
 }
 
 #[cfg(test)]

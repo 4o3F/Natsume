@@ -1,14 +1,35 @@
 #![forbid(unsafe_code)]
 
+mod admission;
+mod boot;
+mod display;
 mod hardware_identity;
 mod home;
+mod login;
+mod processes;
 mod session;
+mod waiting;
 
-use std::path::{Path, PathBuf};
+pub use admission::pam_gate;
+
+/// Withdraws contest permission during service shutdown, including crash cleanup.
+///
+/// # Errors
+/// Fails if not root or the runtime directory is unavailable.
+pub fn close_admission() -> Result<(), natsume_local_control_api::ResourceControlError> {
+    if !rustix::process::geteuid().is_root() {
+        return Err(session::rejected("admission withdrawal requires root"));
+    }
+    admission::close(std::path::Path::new("/"))
+}
+pub use login::{run_gdm_client, run_prepare};
+pub use session::probe_desktop;
+
+use std::path::PathBuf;
 
 use natsume_local_control_api::{
-    DerivedMachineIdentity, GraphicalSession, HomeResetProgress, MachineIdentityError,
-    ManagedSessionsObservation, ResourceControlError,
+    DerivedMachineIdentity, GraphicalSession, GraphicalSessionObservation, HomeResetProgress,
+    MachineIdentityError, ManagedSessionsObservation, ResourceControlError, SessionRole,
 };
 use uuid::Uuid;
 
@@ -25,34 +46,20 @@ impl PrivilegedService {
             filesystem_root: PathBuf::from("/"),
         }
     }
-
-    /// Restores Home before publishing the Helper's systemd readiness bus name.
-    ///
-    /// # Errors
-    /// Returns an error while keeping new graphical logins blocked if recovery fails.
-    pub async fn restore_home_before_ready(
-        &mut self,
-        connection: &zbus::Connection,
-    ) -> Result<(), ResourceControlError> {
-        home::window::restore_home(&self.filesystem_root, connection).await
-    }
-
-    /// Restores a login service owned by a completed maintenance window.
-    ///
-    /// # Errors
-    /// Returns an error without discarding the durable restart obligation.
-    pub async fn restore_login_after_ready(
-        &mut self,
-        connection: &zbus::Connection,
-    ) -> Result<(), ResourceControlError> {
-        home::window::restore_login(&self.filesystem_root, connection).await
-    }
 }
 
 fn canonical_uuid(value: &str) -> Option<Uuid> {
     Uuid::parse_str(value)
         .ok()
         .filter(|uuid| uuid.hyphenated().to_string() == value)
+}
+
+async fn bounded_session_operation<T>(
+    operation: impl std::future::Future<Output = Result<T, ResourceControlError>>,
+) -> Result<T, ResourceControlError> {
+    tokio::time::timeout(std::time::Duration::from_secs(8), operation)
+        .await
+        .map_err(|_| session::unavailable("session operation timed out; resample before retry"))?
 }
 
 #[zbus::interface(name = "org.natsume.Privileged1")]
@@ -70,6 +77,29 @@ impl PrivilegedService {
         hardware_identity::derive_identity(&self.filesystem_root, namespace)
     }
 
+    /// Retries local mount recovery without granting any remote foreground target.
+    ///
+    /// # Errors
+    /// Keeps admission closed on invalid state, incomplete drainage or mount failure.
+    #[zbus(name = "RecoverLocalHome")]
+    pub async fn recover_local_home(
+        &mut self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), ResourceControlError> {
+        bounded_session_operation(home::window::restore_home(
+            &self.filesystem_root,
+            connection,
+        ))
+        .await
+    }
+
+    #[zbus(name = "IsHomeReady")]
+    fn is_home_ready(&self) -> bool {
+        admission::require_open(&self.filesystem_root).is_ok()
+            && home::require_template(&self.filesystem_root).is_ok()
+            && admission::require_open(&self.filesystem_root).is_ok()
+    }
+
     #[zbus(name = "HasHomeResetState")]
     fn has_home_reset_state(&self) -> Result<bool, ResourceControlError> {
         home::state_exists(&self.filesystem_root)
@@ -80,7 +110,75 @@ impl PrivilegedService {
         &self,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<ManagedSessionsObservation, ResourceControlError> {
-        session::observe(connection, &self.filesystem_root).await
+        bounded_session_operation(login::observe(connection, &self.filesystem_root)).await
+    }
+
+    #[zbus(name = "PrepareBootSessions")]
+    async fn prepare_boot_sessions(
+        &mut self,
+        waiting: GraphicalSession,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<bool, ResourceControlError> {
+        bounded_session_operation(boot::prepare(connection, &self.filesystem_root, &waiting)).await
+    }
+
+    #[zbus(name = "PrepareSession")]
+    async fn prepare_session(
+        &mut self,
+        role: SessionRole,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<GraphicalSessionObservation, ResourceControlError> {
+        bounded_session_operation(login::start(connection, &self.filesystem_root, role)).await
+    }
+
+    #[zbus(name = "RecoverWaitingSession")]
+    async fn recover_waiting_session(
+        &mut self,
+        expected: Option<GraphicalSession>,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<bool, ResourceControlError> {
+        bounded_session_operation(waiting::rebuild(
+            connection,
+            &self.filesystem_root,
+            expected.as_ref(),
+        ))
+        .await
+    }
+
+    #[zbus(name = "ResumeWaitingRecovery")]
+    async fn resume_waiting_recovery(
+        &mut self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<bool, ResourceControlError> {
+        bounded_session_operation(waiting::resume(connection, &self.filesystem_root)).await
+    }
+
+    #[zbus(name = "ActivateSession")]
+    async fn activate_session(
+        &mut self,
+        role: SessionRole,
+        target: GraphicalSession,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), ResourceControlError> {
+        let _mutation = admission::mutation(&self.filesystem_root)?;
+        if role == SessionRole::Contest {
+            admission::require_open(&self.filesystem_root)?;
+        }
+        bounded_session_operation(session::activate(
+            connection,
+            &self.filesystem_root,
+            role,
+            &target,
+        ))
+        .await
+    }
+
+    #[zbus(name = "CloseContestAdmission")]
+    async fn close_contest_admission(
+        &mut self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), ResourceControlError> {
+        bounded_session_operation(login::close_contest(connection, &self.filesystem_root)).await
     }
 
     #[zbus(name = "TerminateContestSession")]
@@ -89,16 +187,29 @@ impl PrivilegedService {
         target: GraphicalSession,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        session::terminate(connection, &self.filesystem_root, &target).await
+        let _mutation = admission::mutation(&self.filesystem_root)?;
+        bounded_session_operation(session::terminate(
+            connection,
+            &self.filesystem_root,
+            &target,
+        ))
+        .await
     }
 
     #[zbus(name = "PrepareHomeReset")]
     async fn prepare_home_reset(
         &mut self,
         reset_epoch: u64,
+        waiting: GraphicalSession,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        home::window::prepare(&self.filesystem_root, connection, reset_epoch).await
+        bounded_session_operation(home::window::prepare(
+            &self.filesystem_root,
+            connection,
+            reset_epoch,
+            &waiting,
+        ))
+        .await
     }
 
     #[zbus(name = "ApplyHomeReset")]
@@ -107,21 +218,25 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        home::window::apply(&self.filesystem_root, connection, reset_epoch).await
+        bounded_session_operation(home::window::apply(
+            &self.filesystem_root,
+            connection,
+            reset_epoch,
+        ))
+        .await
     }
 
     #[zbus(name = "QueryHomeReset")]
     fn query_home_reset(&self) -> Result<Option<HomeResetProgress>, ResourceControlError> {
-        home::query(&self.filesystem_root)
+        home::window::query(&self.filesystem_root)
     }
 
     #[zbus(name = "VerifyHomeReset")]
-    async fn verify_home_reset(
+    fn verify_home_reset(
         &mut self,
         reset_epoch: u64,
-        #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<HomeResetProgress, ResourceControlError> {
-        home::window::verify(&self.filesystem_root, connection, reset_epoch).await
+        home::window::verify(&self.filesystem_root, reset_epoch)
     }
 
     #[zbus(name = "RecoverHomeReset")]
@@ -130,27 +245,18 @@ impl PrivilegedService {
         reset_epoch: u64,
         #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<(), ResourceControlError> {
-        home::window::recover(&self.filesystem_root, connection, reset_epoch).await
-    }
-}
-
-async fn require_no_contest_session(
-    connection: &zbus::Connection,
-    filesystem_root: &Path,
-) -> Result<(), ResourceControlError> {
-    let observation = session::observe(connection, filesystem_root).await?;
-    if observation.contest.state == natsume_local_control_api::GraphicalSessionState::None {
-        Ok(())
-    } else {
-        Err(ResourceControlError::Rejected(
-            "contestant graphical session must be absent during Home reset".to_owned(),
+        bounded_session_operation(home::window::recover(
+            &self.filesystem_root,
+            connection,
+            reset_epoch,
         ))
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{fs, os::unix::fs::PermissionsExt as _, path::Path};
 
     use natsume_local_control_api::{PRIVILEGED1_PATH, Privileged1Proxy};
     use tempfile::TempDir;
@@ -209,6 +315,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "One real peer-bus round trip checks the fixed capabilities and retained waiting budget together"
+    )]
     async fn generated_proxy_round_trips_the_real_service() {
         let (fixture, service) = service_fixture();
         let streams = UnixStream::pair();
@@ -265,6 +375,57 @@ mod tests {
                 .has_home_reset_state()
                 .await
                 .unwrap_or_else(|error| panic!("present Home state query failed: {error}"))
+        );
+        assert!(
+            !proxy
+                .resume_waiting_recovery()
+                .await
+                .unwrap_or_else(|e| panic!("resume: {e}"))
+        );
+        let boot = "550e8400-e29b-41d4-a716-446655440000";
+        let spent = format!("1\n{boot}\nw1\nfinished\n60\n");
+        write_fixture(
+            fixture.path(),
+            "proc/sys/kernel/random/boot_id",
+            boot.as_bytes(),
+        );
+        write_fixture(fixture.path(), "proc/uptime", b"100.00 0.00\n");
+        write_fixture(
+            fixture.path(),
+            "run/natsume-privileged/waiting-recovery",
+            spent.as_bytes(),
+        );
+        fs::set_permissions(
+            fixture.path().join("run/natsume-privileged"),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap_or_else(|e| panic!("runtime permissions: {e}"));
+        let replacement = Some(GraphicalSession {
+            boot_id: boot.to_owned(),
+            logind_session_id: "w2".to_owned(),
+        });
+        // No mock logind exists on this peer bus. A spent replay must return
+        // without trying to capture or terminate the newly supplied session.
+        assert!(
+            !proxy
+                .recover_waiting_session(&replacement)
+                .await
+                .unwrap_or_else(|e| panic!("spent replay: {e}"))
+        );
+        assert!(
+            !proxy
+                .resume_waiting_recovery()
+                .await
+                .unwrap_or_else(|e| panic!("spent resume: {e}"))
+        );
+        assert_eq!(
+            fs::read_to_string(
+                fixture
+                    .path()
+                    .join("run/natsume-privileged/waiting-recovery")
+            )
+            .unwrap_or_else(|e| panic!("record: {e}")),
+            spent
         );
     }
 

@@ -2,6 +2,7 @@ import { Button, HorizontalBox, LineEdit, VerticalBox } from "std-widgets.slint"
 
 export component SessionWindow inherits Window {
     in property <bool> waiting-visible: true;
+    in property <image> waiting-logo;
     in property <string> title-text: "Natsume";
     in property <string> message-text: "";
     in property <string> screen-kind-text: "";
@@ -16,7 +17,16 @@ export component SessionWindow inherits Window {
     no-frame: true;
     background: root.waiting-visible ? black : white;
 
+    if root.waiting-visible: Image {
+        width: root.width;
+        height: root.height;
+        source: root.waiting-logo;
+        image-fit: contain;
+    }
+
     if !root.waiting-visible: VerticalBox {
+        width: root.width;
+        height: root.height;
         padding: 24px;
         spacing: 14px;
 

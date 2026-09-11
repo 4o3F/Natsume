@@ -18,6 +18,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 tokio.workspace = true
 uuid.workspace = true
+x11rb = { version = "0.13.2", features = ["dpms", "randr", "xinput"] }
 zbus.workspace = true
 zeroize.workspace = true
 

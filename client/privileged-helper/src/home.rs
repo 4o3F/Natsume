@@ -6,7 +6,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use natsume_local_control_api::{HomeResetPhase, HomeResetProgress, ResourceControlError};
+use natsume_local_control_api::{
+    HomeResetPhase, HomeResetProgress, ResourceControlError, SessionRole,
+};
 use procfs::process::Process;
 use rustix::{
     fs::{Gid, Uid, chown},
@@ -15,8 +17,9 @@ use rustix::{
 
 const TEMPLATE_RELATIVE_PATH: &str = "usr/lib/natsume/home-templates/current/lower";
 const STATE_RELATIVE_PATH: &str = "var/lib/natsume-privileged/home-reset";
-const CONTEST_HOME_RELATIVE_PATH: &str = "home/contest";
+const CONTEST_HOME_RELATIVE_PATH: &str = "home/teams";
 
+mod template;
 pub(super) mod window;
 
 fn unavailable(message: &'static str) -> ResourceControlError {
@@ -166,6 +169,7 @@ fn prepare_generation(
 
 fn phase_name(phase: HomeResetPhase) -> &'static str {
     match phase {
+        HomeResetPhase::Draining => "draining",
         HomeResetPhase::Prepared => "prepared",
         HomeResetPhase::Applied => "applied",
         HomeResetPhase::Verified => "verified",
@@ -175,6 +179,7 @@ fn phase_name(phase: HomeResetPhase) -> &'static str {
 
 fn parse_phase(value: &str) -> Option<HomeResetPhase> {
     match value {
+        "draining" => Some(HomeResetPhase::Draining),
         "prepared" => Some(HomeResetPhase::Prepared),
         "applied" => Some(HomeResetPhase::Applied),
         "verified" => Some(HomeResetPhase::Verified),
@@ -265,15 +270,24 @@ fn require_target_progress(
 
 fn prepare_metadata(root: &Path, epoch: u64) -> Result<fs::Metadata, ResourceControlError> {
     require_epoch(epoch)?;
-    let template = root.join(TEMPLATE_RELATIVE_PATH);
-    if !template.is_dir() {
-        return Err(unavailable("managed Home template is unavailable"));
-    }
+    template_metadata(root)
+}
+
+fn template_metadata(root: &Path) -> Result<fs::Metadata, ResourceControlError> {
     let contest_home = root.join(CONTEST_HOME_RELATIVE_PATH);
-    fs::metadata(&contest_home)
-        .ok()
-        .filter(std::fs::Metadata::is_dir)
-        .ok_or_else(|| unavailable("contestant Home is unavailable"))
+    let metadata = directory_metadata(&contest_home)
+        .ok_or_else(|| unavailable("contestant Home is unavailable"))?;
+    let contest =
+        crate::session::account(root, crate::session::account_name(SessionRole::Contest))?;
+    if metadata.uid() != contest.uid || metadata.gid() != contest.gid {
+        return Err(rejected("contestant Home ownership is invalid"));
+    }
+    template::verify(root, &metadata)?;
+    Ok(metadata)
+}
+
+pub(crate) fn require_template(root: &Path) -> Result<(), ResourceControlError> {
+    template_metadata(root).map(|_| ())
 }
 
 pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
@@ -291,12 +305,12 @@ pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlErro
                     write_progress(root, epoch, HomeResetPhase::RecoveryRequired)?;
                     Err(unavailable("Home reset recovery is required"))
                 }
-                HomeResetPhase::RecoveryRequired => {
+                HomeResetPhase::Draining | HomeResetPhase::RecoveryRequired => {
                     Err(unavailable("Home reset recovery is required"))
                 }
             };
         }
-        if progress.phase != HomeResetPhase::Verified {
+        if progress.reset_epoch > epoch || progress.phase != HomeResetPhase::Verified {
             return Err(rejected("another Home reset epoch is in progress"));
         }
     }
@@ -309,9 +323,9 @@ pub(super) fn query(root: &Path) -> Result<Option<HomeResetProgress>, ResourceCo
 }
 
 fn mounted_generation(root: &Path, epoch: u64) -> Result<bool, ResourceControlError> {
-    let process = Process::myself().map_err(|_| unavailable("mount state is unavailable"))?;
-    let mounts = process
-        .mountinfo()
+    use procfs::FromRead as _;
+
+    let mounts = procfs::process::MountInfos::from_file(root.join("proc/self/mountinfo"))
         .map_err(|_| unavailable("mount state is unavailable"))?;
     let mount_point = root.join(CONTEST_HOME_RELATIVE_PATH);
     let mut at_target = mounts
@@ -320,7 +334,18 @@ fn mounted_generation(root: &Path, epoch: u64) -> Result<bool, ResourceControlEr
     let Some(mount) = at_target.next() else {
         return Ok(false);
     };
-    Ok(at_target.next().is_none() && natsume_generation(root, mount) == Some(epoch))
+    // OverlayFS may return success but fall back to a read-only mount when it
+    // cannot create its internal work directory (for example, after ENOSPC).
+    // Keep generation ownership separate so recovery can replace that mount.
+    if at_target.next().is_some()
+        || natsume_generation(root, mount) != Some(epoch)
+        || !mount.mount_options.contains_key("rw")
+        || !mount.super_options.contains_key("rw")
+    {
+        return Ok(false);
+    }
+    let metadata = prepare_metadata(root, epoch)?;
+    Ok(generation_is_complete(root, epoch, &metadata))
 }
 
 fn natsume_generation(root: &Path, mount: &procfs::process::MountInfo) -> Option<u64> {
@@ -360,6 +385,7 @@ fn natsume_generation(root: &Path, mount: &procfs::process::MountInfo) -> Option
 }
 
 fn mount_generation(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    prepare_metadata(root, epoch)?;
     if !generation_layout_exists(root, epoch) {
         return Err(rejected("Home reset generation is unavailable"));
     }
@@ -408,7 +434,7 @@ fn mount_generation(root: &Path, epoch: u64) -> Result<(), ResourceControlError>
 pub(super) fn apply(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
     require_epoch(epoch)?;
     match require_target_progress(root, epoch)? {
-        HomeResetPhase::Prepared | HomeResetPhase::RecoveryRequired => {
+        HomeResetPhase::Draining | HomeResetPhase::Prepared | HomeResetPhase::RecoveryRequired => {
             mount_generation(root, epoch)?;
             write_progress(root, epoch, HomeResetPhase::Applied)
         }
@@ -495,11 +521,35 @@ mod tests {
             .unwrap_or_else(|error| panic!("template fixture failed: {error}"));
         fs::set_permissions(&lower, fs::Permissions::from_mode(0o750))
             .unwrap_or_else(|error| panic!("template metadata fixture failed: {error}"));
-        let home = fixture.path().join("home/contest");
+        let home = fixture.path().join("home/teams");
         fs::create_dir_all(&home)
             .unwrap_or_else(|error| panic!("contestant Home fixture failed: {error}"));
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700))
             .unwrap_or_else(|error| panic!("contestant Home metadata fixture failed: {error}"));
+        if rustix::process::geteuid().is_root() {
+            for path in [&home, &lower] {
+                rustix::fs::chown(
+                    path,
+                    Some(rustix::fs::Uid::from_raw(1001)),
+                    Some(rustix::fs::Gid::from_raw(1001)),
+                )
+                .unwrap_or_else(|error| panic!("contest fixture ownership failed: {error}"));
+            }
+        }
+        let metadata = fs::metadata(&home).unwrap_or_else(|error| panic!("Home metadata: {error}"));
+        fs::create_dir_all(fixture.path().join("etc"))
+            .unwrap_or_else(|error| panic!("passwd directory: {error}"));
+        fs::write(
+            fixture.path().join("etc/passwd"),
+            format!(
+                "teams:x:{}:{}::/home/teams:/bin/bash\n",
+                metadata.uid(),
+                metadata.gid()
+            ),
+        )
+        .unwrap_or_else(|error| panic!("passwd fixture: {error}"));
+        super::template::tests::fixture(fixture.path())
+            .unwrap_or_else(|error| panic!("template mount fixture: {error}"));
         fs::create_dir_all(state_directory(fixture.path()))
             .unwrap_or_else(|error| panic!("Home reset state fixture failed: {error}"));
         fixture
@@ -509,7 +559,7 @@ mod tests {
     fn prepared_upper_inherits_the_contestant_home_metadata() {
         let fixture = fixture();
         prepare(fixture.path(), 7).unwrap_or_else(|error| panic!("prepare failed: {error}"));
-        let home = fs::metadata(fixture.path().join("home/contest"))
+        let home = fs::metadata(fixture.path().join("home/teams"))
             .unwrap_or_else(|error| panic!("contestant Home metadata failed: {error}"));
         let upper = fs::metadata(generation_directory(fixture.path(), 7).join("upper"))
             .unwrap_or_else(|error| panic!("upper metadata failed: {error}"));
@@ -517,6 +567,28 @@ mod tests {
         assert_eq!(upper.uid(), home.uid());
         assert_eq!(upper.gid(), home.gid());
         assert_eq!(upper.mode() & 0o7777, home.mode() & 0o7777);
+    }
+
+    #[test]
+    fn an_invalid_template_cannot_prepare_or_resume_home_changes() {
+        let root = fixture();
+        let backing = root.path().join("sys/dev/block/7:3/loop/backing_file");
+        let valid = fs::read(&backing).unwrap_or_else(|error| panic!("read fixture: {error}"));
+        fs::write(&backing, "/unexpected.squashfs\n")
+            .unwrap_or_else(|error| panic!("write fixture: {error}"));
+        assert!(prepare(root.path(), 7).is_err());
+        assert!(!generation_directory(root.path(), 7).exists());
+        assert_eq!(query(root.path()).ok().flatten(), None);
+
+        fs::write(&backing, &valid).unwrap_or_else(|error| panic!("restore fixture: {error}"));
+        prepare(root.path(), 7).unwrap_or_else(|error| panic!("prepare: {error}"));
+        fs::remove_file(&backing).unwrap_or_else(|error| panic!("remove fixture: {error}"));
+        assert!(apply(root.path(), 7).is_err());
+        assert!(recover(root.path(), 7).is_err());
+        assert_eq!(
+            query(root.path()).ok().flatten().map(|p| p.phase),
+            Some(HomeResetPhase::Prepared)
+        );
     }
 
     #[test]
@@ -673,20 +745,62 @@ mod tests {
     #[test]
     fn only_a_natsume_overlay_generation_is_replaceable() {
         let managed = MountInfo::from_line(
-            "36 25 0:42 / /home/contest rw,relatime - overlay overlay rw,lowerdir=/usr/lib/natsume/home-templates/current/lower,upperdir=/var/lib/natsume-privileged/home-reset/generations/7/upper,workdir=/var/lib/natsume-privileged/home-reset/generations/7/work",
+            "36 25 0:42 / /home/teams rw,relatime - overlay overlay rw,lowerdir=/usr/lib/natsume/home-templates/current/lower,upperdir=/var/lib/natsume-privileged/home-reset/generations/7/upper,workdir=/var/lib/natsume-privileged/home-reset/generations/7/work",
         )
         .unwrap_or_else(|error| panic!("managed mount fixture failed: {error}"));
         assert_eq!(natsume_generation(Path::new("/"), &managed), Some(7));
 
         let unknown =
-            MountInfo::from_line("36 25 8:2 / /home/contest rw,relatime - ext4 /dev/sda2 rw")
+            MountInfo::from_line("36 25 8:2 / /home/teams rw,relatime - ext4 /dev/sda2 rw")
                 .unwrap_or_else(|error| panic!("unknown mount fixture failed: {error}"));
         assert_eq!(natsume_generation(Path::new("/"), &unknown), None);
 
         let foreign_overlay = MountInfo::from_line(
-            "36 25 0:43 / /home/contest rw,relatime - overlay overlay rw,lowerdir=/srv/other,upperdir=/var/lib/natsume-privileged/home-reset/generations/7/upper,workdir=/var/lib/natsume-privileged/home-reset/generations/7/work",
+            "36 25 0:43 / /home/teams rw,relatime - overlay overlay rw,lowerdir=/srv/other,upperdir=/var/lib/natsume-privileged/home-reset/generations/7/upper,workdir=/var/lib/natsume-privileged/home-reset/generations/7/work",
         )
         .unwrap_or_else(|error| panic!("foreign overlay fixture failed: {error}"));
         assert_eq!(natsume_generation(Path::new("/"), &foreign_overlay), None);
+    }
+
+    #[test]
+    fn a_read_only_generation_cannot_verify_or_discard_the_previous_home()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (mount_options, super_options) in [("ro", "rw"), ("rw", "ro"), ("ro", "ro")] {
+            let root = fixture();
+            prepare(root.path(), 7)?;
+            apply(root.path(), 7)?;
+            let old = generation_directory(root.path(), 6);
+            fs::create_dir_all(&old)?;
+            fs::write(old.join("canary"), b"previous Home")?;
+            let mountinfo = root.path().join("proc/self/mountinfo");
+            let lower = fs::read_to_string(&mountinfo)?;
+            let overlay = |options, super_options| {
+                format!(
+                    "36 25 0:42 / {}/home/teams {options},relatime - overlay overlay {super_options},lowerdir={}/usr/lib/natsume/home-templates/current/lower,upperdir={}/upper,workdir={}/work\n",
+                    root.path().display(),
+                    root.path().display(),
+                    generation_directory(root.path(), 7).display(),
+                    generation_directory(root.path(), 7).display(),
+                )
+            };
+            let readonly = overlay(mount_options, super_options);
+            // A read-only mount remains ours to replace during recovery.
+            assert_eq!(
+                natsume_generation(root.path(), &MountInfo::from_line(readonly.trim_end())?),
+                Some(7)
+            );
+            fs::write(&mountinfo, format!("{lower}{readonly}"))?;
+            assert_eq!(
+                verify(root.path(), 7)?.phase,
+                HomeResetPhase::RecoveryRequired
+            );
+            assert_eq!(fs::read(old.join("canary"))?, b"previous Home");
+
+            fs::write(&mountinfo, format!("{lower}{}", overlay("rw", "rw")))?;
+            recover(root.path(), 7)?;
+            assert_eq!(verify(root.path(), 7)?.phase, HomeResetPhase::Verified);
+            assert!(!old.exists());
+        }
+        Ok(())
     }
 }

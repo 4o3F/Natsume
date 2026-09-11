@@ -1,11 +1,13 @@
 use std::{
     cell::RefCell,
-    sync::{Mutex, OnceLock},
+    sync::{LazyLock, Mutex, OnceLock},
 };
 
-use natsume_local_control_api::{BindingSubmission, SessionScreenKind, SessionUiSnapshot};
-use slint::ComponentHandle as _;
-use tokio::sync::mpsc::Sender;
+use natsume_local_control_api::{
+    BindingSubmission, SessionPresentation, SessionScreenKind, SessionUiSnapshot,
+};
+use slint::{ComponentHandle as _, winit_030::WinitWindowAccessor as _};
+use tokio::sync::{mpsc::Sender, watch};
 
 // Slint owns this generated surface. First-party source remains subject to the
 // workspace lint policy; generated implementation details are isolated here.
@@ -30,6 +32,104 @@ thread_local! {
 
 static PENDING_SNAPSHOT: Mutex<Option<SessionUiSnapshot>> = Mutex::new(None);
 static BINDING_SUBMISSIONS: OnceLock<Sender<BindingSubmission>> = OnceLock::new();
+
+static PRESENTED: LazyLock<watch::Sender<Option<SessionPresentation>>> =
+    LazyLock::new(|| watch::channel(None).0);
+
+/// Watches frames rendered at the actual native monitor size, on the UI thread.
+#[must_use]
+pub fn presentation_receiver() -> watch::Receiver<Option<SessionPresentation>> {
+    PRESENTED.subscribe()
+}
+
+/// Revalidates native geometry and retries after monitor/window events settle.
+/// Healthy static pages do not redraw on the periodic Device1 refresh.
+pub fn retry_presentation() {
+    let _queued = slint::invoke_from_event_loop(|| {
+        WINDOW.with(|window| {
+            if let Some(window) = window.borrow().as_ref() {
+                let observed = frame_geometry(window);
+                if observed
+                    .as_ref()
+                    .is_some_and(|frame| frame.first_frame_presented)
+                    && *PRESENTED.borrow() == observed
+                {
+                    return;
+                }
+                // Geometry alone cannot confirm a newly sized surface. Revoke
+                // the old frame now; only AfterRendering can confirm it again.
+                let invalid = observed.map(|mut frame| {
+                    frame.first_frame_presented = false;
+                    frame.fullscreen_width = 0;
+                    frame.fullscreen_height = 0;
+                    frame
+                });
+                publish_frame(invalid);
+                window.window().request_redraw();
+            }
+        });
+    });
+}
+
+fn frame_geometry(window: &SessionWindow) -> Option<SessionPresentation> {
+    let fullscreen = window
+        .window()
+        .with_winit_window(|native| {
+            native.fullscreen().is_some()
+                // On X11 current_monitor retains the window's last monitor
+                // snapshot when RandR changes size without changing DPI.
+                && native.available_monitors().any(|monitor| {
+                    native.inner_size() == monitor.size()
+                        && native.outer_position().ok() == Some(monitor.position())
+                })
+        })
+        .unwrap_or(false);
+    let size = window.window().size();
+    CURRENT_SNAPSHOT.with(|current| {
+        current
+            .borrow()
+            .as_ref()
+            .map(|snapshot| SessionPresentation {
+                session: snapshot.session.clone(),
+                ui_revision: snapshot.ui_revision,
+                first_frame_presented: fullscreen && size.width > 0 && size.height > 0,
+                fullscreen_width: if fullscreen { size.width } else { 0 },
+                fullscreen_height: if fullscreen { size.height } else { 0 },
+            })
+    })
+}
+
+fn publish_frame(frame: Option<SessionPresentation>) {
+    PRESENTED.send_if_modified(|current| {
+        if *current == frame {
+            false
+        } else {
+            *current = frame;
+            true
+        }
+    });
+}
+
+fn record_frame(window: &SessionWindow) {
+    let frame = frame_geometry(window);
+    // AfterRendering precedes the backend's buffer presentation. Publish on
+    // the next UI event-loop turn, and discard a revision superseded meanwhile.
+    let _queued = slint::invoke_from_event_loop(move || {
+        let current_revision = CURRENT_SNAPSHOT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .map(|snapshot| (snapshot.session.clone(), snapshot.ui_revision))
+        });
+        if frame
+            .as_ref()
+            .map(|frame| (frame.session.clone(), frame.ui_revision))
+            == current_revision
+        {
+            publish_frame(frame);
+        }
+    });
+}
 
 #[must_use]
 pub fn seat_input_visible(snapshot: &SessionUiSnapshot) -> bool {
@@ -125,6 +225,7 @@ pub fn apply_pending() -> Result<(), slint::PlatformError> {
 /// Returns a platform error when window creation, visibility, or presentation fails.
 pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
     CURRENT_SNAPSHOT.with(|current| *current.borrow_mut() = Some(snapshot.clone()));
+    PRESENTED.send_replace(None);
     let existing = WINDOW.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -135,6 +236,22 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window
     } else {
         let window = SessionWindow::new()?;
+        if let Ok(logo) =
+            slint::Image::load_from_path(std::path::Path::new("/usr/share/natsume/waiting.png"))
+        {
+            window.set_waiting_logo(logo);
+        }
+        let weak = window.as_weak();
+        window
+            .window()
+            .set_rendering_notifier(move |state, _| {
+                if matches!(state, slint::RenderingState::AfterRendering)
+                    && let Some(window) = weak.upgrade()
+                {
+                    record_frame(&window);
+                }
+            })
+            .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
         window
             .window()
             .on_close_requested(|| slint::CloseRequestResponse::KeepWindowShown);
@@ -181,6 +298,7 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
     window.set_message_text(message.into());
     window.set_seat_input_visible(seat_input_visible(snapshot));
     window.show()?;
+    window.window().request_redraw();
     Ok(())
 }
 
