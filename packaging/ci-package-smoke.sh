@@ -19,7 +19,7 @@ download() {
     "$1" --output "$2"
 }
 
-for command in cargo cp curl cut dpkg-deb envsubst grep node openssl pnpm python3 readelf sed sha256sum shellcheck systemctl systemd-analyze tar; do
+for command in cargo cp curl cut dpkg-deb envsubst grep node pnpm python3 readelf sed sha256sum shellcheck systemctl systemd-analyze tar; do
   require_command "${command}"
 done
 
@@ -38,10 +38,9 @@ work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/natsume-package-smoke.XXXXXX")"
 trap 'rm -rf "${work_root}"' EXIT HUP INT TERM
 
 tool_root="${work_root}/tools"
-input_root="${work_root}/inputs"
 extract_root="${work_root}/extract"
 output_root="${NATSUME_PACKAGE_OUTPUT:-${repository_root}/dist/packages/ci}"
-mkdir -p "${tool_root}" "${input_root}" "${extract_root}" "${output_root}"
+mkdir -p "${tool_root}" "${extract_root}" "${output_root}"
 
 caddy_version="$(tr -d '[:space:]' <packaging/client/caddy.version)"
 nfpm_version="$(tr -d '[:space:]' <packaging/nfpm.version)"
@@ -100,33 +99,6 @@ fi
 CADDY_BIN="${caddy_binary}" cargo test --locked -p natsume-device-daemon \
   reconcile::caddy::tests::packaged_caddy_preserves_literal_usernames -- --ignored --exact
 
-# Only the Server package consumes site inputs. Client images inject their own.
-cat >"${input_root}/site.toml" <<'EOF'
-schema_version = 1
-fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
-gateway_hostname = "gateway.contest.example"
-gateway_not_after = "2030-01-01T00:00:00Z"
-contest_end = "2029-12-31T00:00:00Z"
-
-[trust]
-control_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
-local_origin_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000002"
-EOF
-
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout "${input_root}/control-ca.key" \
-  -out "${input_root}/control-ca.crt" \
-  -days 1 \
-  -subj '/CN=Natsume CI Control Test CA' \
-  >/dev/null 2>&1
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout "${input_root}/local-origin-ca.key" \
-  -out "${input_root}/local-origin-ca.crt" \
-  -days 1 \
-  -subj '/CN=Natsume CI Local Origin Test CA' \
-  >/dev/null 2>&1
-rm -f "${input_root}/control-ca.key" "${input_root}/local-origin-ca.key"
-
 # Build only the binaries that enter the packages, in an isolated target directory.
 production_target="${work_root}/cargo-target-production"
 production_release="${production_target}/release"
@@ -149,20 +121,18 @@ export VERSION="${VERSION:-2.0.0~ci1}"
 export ARCH="${ARCH:-amd64}"
 export RUST_RELEASE_DIR="${production_release}"
 export CADDY_BIN="${caddy_binary}"
-export SITE_CONFIG="${input_root}/site.toml"
-export CONTROL_CA_CERT="${input_root}/control-ca.crt"
-export LOCAL_ORIGIN_CA_CERT="${input_root}/local-origin-ca.crt"
+# Both packages must build without deployment-specific inputs.
+unset SITE_CONFIG CONTROL_CA_CERT LOCAL_ORIGIN_CA_CERT
 
 # envsubst takes literal variable names, not their values.
 # shellcheck disable=SC2016
-server_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${SITE_CONFIG} ${CONTROL_CA_CERT} ${LOCAL_ORIGIN_CA_CERT}'
+server_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR}'
 # shellcheck disable=SC2016
 client_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN}'
 server_config="${work_root}/server.nfpm.yaml"
 client_config="${work_root}/client.nfpm.yaml"
 envsubst "${server_variables}" <packaging/server/nfpm.yaml >"${server_config}"
-env -u SITE_CONFIG -u CONTROL_CA_CERT -u LOCAL_ORIGIN_CA_CERT \
-  envsubst "${client_variables}" <packaging/client/nfpm.yaml >"${client_config}"
+envsubst "${client_variables}" <packaging/client/nfpm.yaml >"${client_config}"
 if grep -Eq '\$\{[A-Z_]+\}' "${server_config}" "${client_config}"; then
   fail 'rendered nFPM configuration contains an unresolved environment variable'
 fi
@@ -171,8 +141,7 @@ fi
   --packager deb \
   --config "${server_config}" \
   --target "${output_root}/"
-env -u SITE_CONFIG -u CONTROL_CA_CERT -u LOCAL_ORIGIN_CA_CERT \
-  "${nfpm_binary}" package \
+"${nfpm_binary}" package \
   --packager deb \
   --config "${client_config}" \
   --target "${output_root}/"
@@ -292,11 +261,17 @@ client_config_placeholder="${extract_root}/client/etc/natsume/config.toml"
 client_caddy_unit="${extract_root}/client/usr/lib/systemd/system/natsume-caddy.service"
 client_daemon_unit="${extract_root}/client/usr/lib/systemd/system/natsume-device-daemon.service"
 client_helper_unit="${extract_root}/client/usr/lib/systemd/system/natsume-privileged-helper.service"
+server_unit="${extract_root}/server/usr/lib/systemd/system/natsume-server.service"
 for path in /etc/natsume/site.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt; do
-  test -f "${extract_root}/server${path}" || fail "server package is missing ${path}"
-  if grep -Fxq "${path}" "${client_control}/conffiles"; then
-    fail "Client package owns image-supplied site input: ${path}"
-  fi
+  for package in server client; do
+    test ! -e "${extract_root}/${package}${path}" ||
+      fail "${package} package contains deployment-supplied site input: ${path}"
+    if grep -Fxq "${path}" "${work_root}/${package}-control/conffiles"; then
+      fail "${package} package owns deployment-supplied site input: ${path}"
+    fi
+  done
+  grep -Fxq "ConditionPathExists=${path}" "${server_unit}" ||
+    fail "Server can start without deployment-supplied site input: ${path}"
   grep -Fxq "ConditionPathExists=${path}" "${client_daemon_unit}" ||
     fail "Device Daemon can start without image-supplied site input: ${path}"
 done

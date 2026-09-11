@@ -25,6 +25,15 @@ carries configuration, paths, or secrets.
 
 ## TLS and Origin CA material
 
+The generic Server Deb includes the binary, Web assets, service and default
+`/etc/natsume-server/config.toml`. It contains no site configuration or CA
+certificates. After installation, provision `/etc/natsume/site.toml`,
+`/etc/natsume/trust/control-ca.crt` and
+`/etc/natsume/trust/local-origin-ca.crt` as `root:root`, mode `0644`, with parent
+directories mode `0755`. These public files must match the Client image inputs;
+package reinstall, removal and purge leave them untouched. The systemd service
+skips startup while any of the three files is missing.
+
 Before `natsume-server serve` starts, the deployer must provision the Origin CA
 issuing material exactly as it provisions the Server TLS leaf/key pair. Packaging
 must never generate either CA. The
@@ -41,10 +50,10 @@ The two Origin CA files have fixed names under the Server private keys directory
 The private keys directory must be owned by `natsume-server:natsume-server` with
 mode `0700`; both files must have the same ownership and mode `0600`. `serve`
 validates both encodings, their public-key match, and a probe signature before
-binding. The CA certificate must also be the exact certificate supplied to the
-Server package and separately injected into the Client image as
+binding. The CA certificate must also be the exact certificate provisioned on
+the Server and injected into the Client image as
 `/etc/natsume/trust/local-origin-ca.crt` (PEM there):
-startup decodes that packaged certificate to DER and requires byte-for-byte
+startup decodes that public certificate to DER and requires byte-for-byte
 equality with `origin-ca.der`. Missing, malformed, mismatched, or overly broad
 private material fails closed. `bootstrap`, reset, package install, and package
 upgrade never create or rewrite these files.

@@ -1467,7 +1467,7 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - Server `bootstrap`显式生成vault master key并创建first admin；
 - Server `serve`只读取已存在secret，缺失即失败；
 - Client package 安装固定 Caddy binary，以及官方 GNOME Kiosk Script 用户服务的 Agent drop-in；不保留第二个 XDG 启动入口；
-- Client package 不包含站点配置或 CA；镜像构建独立注入部署方提供的 `/etc/natsume/site.toml` 和两份公共根证书，首次启动前完成匹配与完整性检查；CA 私钥不进入 Client 包或镜像；
+- Server 与 Client package 均不包含站点配置或 CA；Server 部署和 Client 镜像构建独立注入部署方提供的 `/etc/natsume/site.toml` 和两份公共根证书，首次启动前完成匹配与完整性检查；CA 私钥不进入 Deb 包或 Client 镜像；
 - Control Endpoint由安装配置确定，赛事期间不轮换；
 - Runtime Config只远程下发DOMjudge origin；
 - 工作站目标基线是 Ubuntu Client 镜像、官方 GDM/GNOME + 原生 X11，固定 waiting/contest 两个独立会话；禁止嵌套桌面和图形组件 patch；

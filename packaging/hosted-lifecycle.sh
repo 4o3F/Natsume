@@ -77,12 +77,62 @@ assert_preserved_file() {
     fail "preserved file ${path} metadata is ${actual_metadata}, expected ${expected_metadata}"
 }
 
-# Keep the Server's test public inputs for the later image-injection scenario.
+# Generate disposable public inputs here; release packages contain none.
 site_files=(/etc/natsume/site.toml /etc/natsume/trust/control-ca.crt /etc/natsume/trust/local-origin-ca.crt)
 site_inputs=$(mktemp -d)
 trap 'rm -rf "${site_inputs}"' EXIT HUP INT TERM
+mkdir -p "${site_inputs}/etc/natsume/trust"
+for authority in control local-origin; do
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "${site_inputs}/test-ca.key" \
+    -out "${site_inputs}/etc/natsume/trust/${authority}-ca.crt" \
+    -days 1 -subj "/CN=Natsume Lifecycle ${authority} Test CA" >/dev/null 2>&1
+done
+rm -f "${site_inputs}/test-ca.key"
+cat >"${site_inputs}/etc/natsume/site.toml" <<'EOF'
+schema_version = 1
+fleet_namespace_uuid = "00000000-0000-4000-8000-000000000001"
+gateway_hostname = "gateway.contest.example"
+gateway_not_after = "2030-01-01T00:00:00Z"
+contest_end = "2029-12-31T00:00:00Z"
+
+[trust]
+control_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000001"
+local_origin_root_sha256 = "0000000000000000000000000000000000000000000000000000000000000002"
+EOF
+
+assert_site_inputs_absent() {
+  local path
+  for path in "${site_files[@]}"; do
+    [[ ! -e ${path} ]] || fail "unexpected deployment-owned site input: ${path}"
+  done
+}
+
+declare -A site_hashes
+inject_site_inputs() {
+  local path
+  for path in "${site_files[@]}"; do
+    install -D -o root -g root -m 0644 "${site_inputs}${path}" "${path}"
+    site_hashes[${path}]=$(sha256sum "${path}" | cut -d' ' -f1)
+  done
+}
+
+assert_site_inputs_preserved() {
+  local path
+  for path in "${site_files[@]}"; do
+    assert_preserved_file "${path}" "${site_hashes[${path}]}" 'root:root 644'
+  done
+}
+
+assert_site_inputs_absent
 DEBIAN_FRONTEND=noninteractive apt-get install --yes "${server_deb}"
-cp --parents "${site_files[@]}" "${site_inputs}"
+assert_site_inputs_absent
+mapfile -t server_conditions < <(grep '^ConditionPathExists=' /usr/lib/systemd/system/natsume-server.service)
+if systemd-analyze condition "${server_conditions[@]}"; then
+  fail 'Server startup condition passed without deployment-supplied CA'
+fi
+inject_site_inputs
+systemd-analyze condition "${server_conditions[@]}" || fail 'Server conditions failed after site injection'
 
 assert_user natsume-server
 assert_group natsume-server
@@ -100,28 +150,21 @@ server_config_sha256=$(sha256sum /etc/natsume-server/config.toml)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${server_deb}"
 [[ $(sha256sum /etc/natsume-server/config.toml) == "${server_config_sha256}" ]] ||
   fail 'server reinstall replaced the site configuration'
+assert_site_inputs_preserved
 
 dpkg --remove natsume-server
 [[ -e /etc/natsume-server/config.toml ]] ||
   fail 'remove deleted server conffile /etc/natsume-server/config.toml'
-[[ -e /etc/natsume/site.toml ]] ||
-  fail 'remove deleted server conffile /etc/natsume/site.toml'
-[[ -e /etc/natsume/trust/control-ca.crt ]] ||
-  fail 'remove deleted server conffile /etc/natsume/trust/control-ca.crt'
-[[ -e /etc/natsume/trust/local-origin-ca.crt ]] ||
-  fail 'remove deleted server conffile /etc/natsume/trust/local-origin-ca.crt'
+assert_site_inputs_preserved
 
 dpkg --purge natsume-server
 [[ ! -e /etc/natsume-server/config.toml ]] ||
   fail 'purge left server conffile /etc/natsume-server/config.toml behind'
-[[ ! -e /etc/natsume/site.toml ]] ||
-  fail 'purge left server conffile /etc/natsume/site.toml behind'
-[[ ! -e /etc/natsume/trust/control-ca.crt ]] ||
-  fail 'purge left server conffile /etc/natsume/trust/control-ca.crt behind'
-[[ ! -e /etc/natsume/trust/local-origin-ca.crt ]] ||
-  fail 'purge left server conffile /etc/natsume/trust/local-origin-ca.crt behind'
+assert_site_inputs_preserved
 [[ ! -e /usr/lib/systemd/system/natsume-server.service ]] ||
   fail 'purge left the natsume-server unit behind'
+# Remove only our injected fixtures so Client also starts without site inputs.
+rm -f -- "${site_files[@]}"
 
 server_ip=${NATSUME_TEST_SERVER_IP:-192.0.2.10}
 server_port=${NATSUME_TEST_SERVER_PORT:-8443}
@@ -136,9 +179,7 @@ printf 'natsume-client natsume-client/server-port string %s\n' "${server_port}" 
 DEBIAN_FRONTEND=noninteractive apt-get install --yes "${client_deb}"
 assert_endpoint "${server_ip}" "${server_port}"
 assert_config_metadata
-for path in "${site_files[@]}"; do
-  [[ ! -e ${path} ]] || fail "Client install supplied image-owned site input: ${path}"
-done
+assert_site_inputs_absent
 mapfile -t daemon_conditions < <(grep '^ConditionPathExists=' /usr/lib/systemd/system/natsume-device-daemon.service)
 if systemd-analyze condition "${daemon_conditions[@]}"; then
   fail 'Device Daemon startup condition passed without image-supplied CA'
@@ -150,7 +191,7 @@ assert_group natsume
 assert_user natsume-caddy
 assert_group natsume-caddy
 
-assert_tmpfiles_path /var/lib/natsume 'natsume:natsume-gateway 750'
+assert_tmpfiles_path /var/lib/natsume 'root:natsume-gateway 750'
 assert_tmpfiles_path /var/lib/natsume/control 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/identity 'natsume:natsume 750'
 assert_tmpfiles_path /var/lib/natsume/keys 'natsume:natsume-gateway 2750'
@@ -191,11 +232,7 @@ control_manifest_metadata_before=$(stat --format='%U:%G %a' "${control_manifest_
 gateway_key_metadata_before=$(stat --format='%U:%G %a' "${gateway_key_file}")
 
 # Simulate image construction after the generic Client has been installed.
-declare -A site_hashes
-for path in "${site_files[@]}"; do
-  install -D -o root -g root -m 0644 "${site_inputs}${path}" "${path}"
-  site_hashes[${path}]=$(sha256sum "${path}" | cut -d' ' -f1)
-done
+inject_site_inputs
 systemd-analyze condition "${daemon_conditions[@]}" || fail 'Device Daemon conditions failed after site injection'
 
 before_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
@@ -205,9 +242,7 @@ after_reinstall=$(sha256sum "${config}" | cut -d' ' -f1)
   fail 'reinstall changed the existing endpoint config'
 assert_config_metadata
 assert_preserved_file "${identity_file}" "${identity_hash_before}" "${identity_metadata_before}"
-for path in "${site_files[@]}"; do
-  assert_preserved_file "${path}" "${site_hashes[${path}]}" 'root:root 644'
-done
+assert_site_inputs_preserved
 assert_preserved_file \
   "${control_key_file}" "${control_key_hash_before}" "${control_key_metadata_before}"
 assert_preserved_file \
@@ -232,9 +267,7 @@ dpkg --remove natsume-client
 
 dpkg --purge natsume-client
 [[ ! -e ${config} ]] || fail 'purge left the endpoint conffile behind'
-for path in "${site_files[@]}"; do
-  assert_preserved_file "${path}" "${site_hashes[${path}]}" 'root:root 644'
-done
+assert_site_inputs_preserved
 [[ ! -e /usr/lib/systemd/system/natsume-device-daemon.service ]] ||
   fail 'purge left the Device Daemon unit behind'
 [[ ! -e /usr/lib/systemd/system/natsume-privileged-helper.service ]] ||

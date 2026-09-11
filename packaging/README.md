@@ -2,9 +2,9 @@
 
 This directory owns the Server/Client Debian manifests, package-owned runtime
 files, image integration inputs and release checks. nFPM packages already-built
-Rust/Web outputs and verified Caddy. The Server Deb also consumes public site
-configuration; Client images inject their site configuration and CA certificates
-after installing the generic Client Deb. No ignored VM experiment is a release input.
+Rust/Web outputs and verified Caddy. Both Debs are generic: deployment provisions
+the public site configuration and CA certificates after package installation.
+No ignored VM experiment is a release input.
 
 | Path | Responsibility |
 | --- | --- |
@@ -56,18 +56,18 @@ final-image or GPU acceptance.
 ## Build inputs and checks
 
 Both manifests require `VERSION`, `ARCH` and `RUST_RELEASE_DIR`.
-Client additionally requires `CADDY_BIN`; Server requires `SITE_CONFIG`,
-`CONTROL_CA_CERT`, `LOCAL_ORIGIN_CA_CERT` and the built `web/dist`.
-The same public site configuration and trust roots are separate Client image
-inputs; no root private key or per-device identity enters either Deb or the image.
+Client additionally requires `CADDY_BIN`; Server requires the built `web/dist`.
+Neither manifest consumes `SITE_CONFIG`, `CONTROL_CA_CERT` or `LOCAL_ORIGIN_CA_CERT`.
+The matching public site configuration and trust roots are separate deployment
+inputs for both packages; no root private key or per-device identity enters either Deb or the image.
 `site-config.example.toml` describes the public site input and is not packaged.
 
 `just package-client` / `just package-server` render these variables with
 `envsubst` and consume the prebuilt inputs. The Client recipe also checks the
 resulting Deb's image payload.
 `just ci-packages` downloads and verifies pinned tools, builds production
-binaries/Web, creates test public site inputs for Server only, produces both real
-Debs and checks that Client contains no site configuration or CA certificates.
+binaries/Web, produces both real Debs without site inputs, and checks that neither
+contains site configuration or CA certificates.
 Its output remains `dist/packages/ci/*.deb`; image integration inputs travel
 inside the Client Deb and need no third package or separate VM archive.
 
@@ -87,6 +87,34 @@ Client's `50-natsume.conf` drop-in, restricted to waiting and executing
 `/usr/bin/natsume-session-agent run`. Reject the retired global XDG entry, a
 second Agent user service or external GUI helpers. The image adds only the
 profile/keyboard/font/scale configuration described in its input set.
+
+## Version releases
+
+Push a tag such as `v2.0.0` to run [release.yml](../.github/workflows/release.yml).
+The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as
+`v2.0.0-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
+commit; all jobs must pass before GitHub Release publication. Branch/PR CI keeps
+its `2.0.0~ci1` package version.
+
+Each release includes `natsume-client_<version>_amd64.deb`,
+`natsume-server_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated
+release notes. For prereleases, `v2.0.0-rc.1` becomes Debian version `2.0.0~rc.1`,
+which sorts before `2.0.0`; the GitHub Release is marked as a prerelease and is
+not made latest. Download both packages and the checksum file into one directory
+and run `sha256sum --check SHA256SUMS` to verify them.
+
+Publishing uses the workflow's `GITHUB_TOKEN` with `contents: write` only in the
+publish job; it needs no site secrets. The tag must already exist remotely, and
+an existing release is not overwritten. The weekly hosted lifecycle lane and
+target-image acceptance remain separate from this release CI.
+
+For both packages, deployment supplies `/etc/natsume/site.toml`,
+`/etc/natsume/trust/control-ca.crt` and `/etc/natsume/trust/local-origin-ca.crt`
+as `root:root`, mode `0644`, with parent directories mode `0755`. Reinstall,
+remove and purge preserve these externally owned files. Missing files prevent
+service startup through systemd conditions; their presence alone does not
+complete provisioning. Server also needs its [configuration, TLS/Origin issuing
+material and bootstrap](../server/README.md); Client needs the image handoff above.
 
 ## Endpoint and upgrade contract
 

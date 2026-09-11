@@ -1,6 +1,6 @@
-# Example only; deployers provide SITE_CONFIG for Server packaging and inject
-# the same public site configuration separately during Client image construction.
-# This file is not copied into a package by default.
+# Example only; deployers provision the same public site configuration on the
+# Server and during Client image construction after installing the generic Debs.
+# This file is not copied into either package.
 schema_version = 1
 fleet_namespace_uuid = "REPLACE-WITH-STABLE-SITE-UUID"
 gateway_hostname = "gateway.contest.example"
