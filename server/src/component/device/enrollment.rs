@@ -112,12 +112,12 @@ impl PendingEnrollmentReview {
 ///
 /// `Replay` is an exact match with the already-current authority and permits the
 /// connection to repeat the activation/ready exchange without another review.
-/// `Pending` owns a fresh review and a one-shot receiver for that review's terminal
-/// decision. Dropping the registry sender wakes the receiver as cancelled.
+/// `Pending` owns a fresh review awaiting automatic or manual approval and a one-shot
+/// receiver for that review's terminal decision. Dropping the sender cancels it.
 pub(crate) enum EnrollmentStartOutcome {
     /// The same Machine Hardware ID and candidate key are already current.
     Replay(ControlAuthority),
-    /// Manual review is required before the connection can continue.
+    /// Automatic or administrator approval is required before the connection can continue.
     Pending(PendingEnrollmentReview, oneshot::Receiver<EnrollmentResult>),
 }
 
@@ -151,13 +151,8 @@ impl EnrollmentApproval {
 }
 
 /// Failure to start a new pending Enrollment review.
-///
-/// Exact committed replays are classified before the provisioning gate and therefore
-/// do not fail with `ProvisioningClosed`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EnrollmentStartError {
-    /// A new candidate cannot create a review while the process-local gate is closed.
-    ProvisioningClosed,
     /// The process already holds the maximum number of pending reviews.
     ReviewCapacityReached,
     /// Current-authority lookup failed before replay classification.
@@ -173,8 +168,6 @@ impl From<DeviceError> for EnrollmentStartError {
 /// Failure returned by an attempt to approve a pending Enrollment review.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EnrollmentApprovalError {
-    /// The gate closed before the review was claimed; the review remains pending.
-    ProvisioningClosed,
     /// The review never existed or another terminal action already claimed it.
     ReviewNotFound,
     /// Current-authority lookup failed before the review was claimed.

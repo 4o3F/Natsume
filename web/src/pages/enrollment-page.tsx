@@ -192,8 +192,10 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
       <CardHeader>
         <CardTitle>Enrollment window</CardTitle>
         <CardDescription>
-          Open the window to allow device enrollment. It closes whenever the
-          server restarts. Closing it does not revoke enrolled devices.
+          Open automatically approves new and pending enrollment requests.
+          Closed keeps requests here for administrator approval. The window
+          closes whenever the server restarts. Closing it does not revoke
+          enrolled devices.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">

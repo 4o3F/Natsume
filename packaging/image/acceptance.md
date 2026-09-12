@@ -30,7 +30,7 @@
 | 项目 | 实际检查 |
 | --- | --- |
 | 首次启动 | 无当前 Server Target/断开控制网络时，第一个稳定业务界面为 waiting；模板失败也保留 waiting/Helper 诊断，teams 门禁关闭 |
-| 注册与业务闭环 | 新设备按真实首次硬件身份生成记录；Provisioning Gate/人工审批后连上 Server，在 waiting 真实输入 Binding，再访问配置的网关/测试上游 |
+| 注册与业务闭环 | 新设备按真实首次硬件身份生成记录；分别验证 Open 自动批准新请求和在线待审请求、Closed 等待人工批准/拒绝，再在 waiting 真实输入 Binding 并访问配置的网关/测试上游 |
 | 双会话 | 每角色仅一个 seat0/X11 会话，各自 Xorg/桌面/总线/Xauthority/Home；GDM 管理双方，后台比赛会话不判歧义 |
 | 前台与输入 | Panel/Actual、logind Active/VT、实际画面一致；真实键盘/指针可用，前台 XInput2 实体 slave 有 Device Node，不能只看 ready=true |
 | 待机与快捷键 | 连续 660 秒无输入，waiting 保持全屏黑色；Alt+F4、Super、Alt+Tab、运行/锁屏/退出入口、Ctrl+Alt+Fn/Backspace 不逃出普通受管路径 |

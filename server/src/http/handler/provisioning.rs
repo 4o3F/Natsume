@@ -20,7 +20,7 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     )
 }
 
-/// Current process-local provisioning-window state.
+/// Current process-local automatic Enrollment approval state.
 #[derive(Serialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProvisioningWindowResponse {
@@ -28,7 +28,7 @@ pub(crate) struct ProvisioningWindowResponse {
     state: ProvisioningWindowState,
 }
 
-/// Complete replacement of the process-local provisioning-window state.
+/// Open automatically approves new and pending enrollments; closed requires administrator approval.
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProvisioningWindowRequest {
@@ -66,7 +66,7 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     )
 )]
 pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Response {
-    let window = state.provisioning().read_window().await;
+    let window = state.provisioning().read_window();
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }
 
@@ -93,8 +93,8 @@ pub(crate) async fn update_provisioning_window(
             .into_response();
     };
     let window = match request.state {
-        ProvisioningWindowState::Closed => state.provisioning().close_window().await,
-        ProvisioningWindowState::Open => state.provisioning().open_window().await,
+        ProvisioningWindowState::Closed => state.provisioning().close_window(),
+        ProvisioningWindowState::Open => state.provisioning().open_window(),
     };
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }

@@ -4,7 +4,7 @@ mod enrollment;
 mod lifecycle;
 mod types;
 
-use crate::{component::provisioning::ProvisioningComponent, db::Database};
+use crate::db::Database;
 
 use self::enrollment::EnrollmentReviewRegistry;
 pub(crate) use self::enrollment::{
@@ -64,12 +64,10 @@ impl DeviceComponent {
         authority::find_current_authority(&self.database, machine_hardware_id).await
     }
 
-    /// Classifies an exact committed authority replay before consulting the
-    /// process-local provisioning gate; only a new or replacement candidate
-    /// becomes a pending manual review.
+    /// Classifies an exact committed authority replay; a new or replacement candidate
+    /// gets a review that can be approved automatically or by an administrator.
     pub(crate) async fn start_enrollment(
         &self,
-        provisioning: &ProvisioningComponent,
         evidence: ValidatedEnrollmentEvidence,
     ) -> Result<EnrollmentStartOutcome, EnrollmentStartError> {
         let current_authority = self
@@ -79,9 +77,6 @@ impl DeviceComponent {
             && authority.control_public_key() == evidence.candidate_public_key()
         {
             return Ok(EnrollmentStartOutcome::Replay(authority));
-        }
-        if !provisioning.read_window().await.is_open() {
-            return Err(EnrollmentStartError::ProvisioningClosed);
         }
         let (review, activation) = self.reviews.create(evidence).await?;
         Ok(EnrollmentStartOutcome::Pending(review, activation))
@@ -98,8 +93,8 @@ impl DeviceComponent {
             .ok_or(EnrollmentApprovalError::ReviewNotFound)
     }
 
-    /// Rechecks the gate, atomically claims the exact attached review, then commits
-    /// Device/control-key activation without holding the review lock.
+    /// Atomically claims the exact attached review, then commits Device/control-key
+    /// activation without holding the review lock.
     ///
     /// Activation failure is sent directly to the originating connection. Success
     /// returns an [`EnrollmentApproval`] so application coordination can evict the old
@@ -107,12 +102,8 @@ impl DeviceComponent {
     /// rolls back the terminal claim or committed authority.
     pub(crate) async fn approve_enrollment(
         &self,
-        provisioning: &ProvisioningComponent,
         review_id: EnrollmentReviewId,
     ) -> Result<EnrollmentApproval, EnrollmentApprovalError> {
-        if !provisioning.read_window().await.is_open() {
-            return Err(EnrollmentApprovalError::ProvisioningClosed);
-        }
         let (evidence, activation) = self
             .reviews
             .take(review_id)

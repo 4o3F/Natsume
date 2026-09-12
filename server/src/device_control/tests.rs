@@ -461,7 +461,6 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
 #[tokio::test]
 async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
         .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid"));
     let first_evidence = ValidatedEnrollmentEvidence::new(
@@ -491,7 +490,7 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let EnrollmentStartOutcome::Pending(first_review, first_activation) = fixture
         .state
         .device()
-        .start_enrollment(fixture.state.provisioning(), first_evidence)
+        .start_enrollment(first_evidence)
         .await
         .unwrap_or_else(|error| panic!("first Enrollment start failed: {error:?}"))
     else {
@@ -500,7 +499,7 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     let EnrollmentStartOutcome::Pending(second_review, second_activation) = fixture
         .state
         .device()
-        .start_enrollment(fixture.state.provisioning(), second_evidence)
+        .start_enrollment(second_evidence)
         .await
         .unwrap_or_else(|error| panic!("second Enrollment start failed: {error:?}"))
     else {
@@ -745,7 +744,7 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
     let EnrollmentStartOutcome::Pending(review, mut activation) = fixture
         .state
         .device()
-        .start_enrollment(fixture.state.provisioning(), replacement)
+        .start_enrollment(replacement)
         .await
         .unwrap_or_else(|error| panic!("replacement Enrollment start failed: {error:?}"))
     else {
@@ -878,9 +877,8 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
 }
 
 #[tokio::test]
-async fn production_websocket_delivers_enrollment_and_a_complete_target() {
+async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let (mut socket, server) = connect(&fixture).await;
     let session_id = enroll(&fixture, &mut socket).await;
 
@@ -914,6 +912,141 @@ async fn production_websocket_delivers_enrollment_and_a_complete_target() {
     server.abort();
 }
 
+#[tokio::test]
+async fn open_window_automatically_enrolls_without_operator_approval() {
+    let fixture = Fixture::new().await;
+    fixture.state.provisioning().open_window();
+    let (mut socket, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut socket).await;
+    let (_, session_id) = finish_enrollment(&mut socket).await;
+    assert!(
+        fixture
+            .state
+            .device()
+            .pending_enrollment_reviews()
+            .await
+            .is_empty()
+    );
+    assert_eq!(
+        fixture
+            .state
+            .device()
+            .list_devices()
+            .await
+            .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
+            .len(),
+        1
+    );
+    send_active_heartbeat(&mut socket, &session_id).await;
+    drop(socket);
+    server.abort();
+}
+
+#[tokio::test]
+async fn automatic_approval_wait_does_not_block_pending_heartbeats() {
+    let fixture = Fixture::new().await;
+    fixture.state.provisioning().open_window();
+    let approval = fixture
+        .state
+        .device_control()
+        .enrollment_approval
+        .lock()
+        .await;
+    let (mut socket, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut socket).await;
+    socket
+        .send(ClientMessage::Ping(Vec::new().into()))
+        .await
+        .unwrap_or_else(|error| panic!("pending heartbeat send failed: {error}"));
+    match timeout(Duration::from_secs(5), socket.next()).await {
+        Ok(Some(Ok(ClientMessage::Pong(payload)))) if payload.is_empty() => {}
+        result => panic!("automatic approval blocked the pending heartbeat: {result:?}"),
+    }
+    drop(approval);
+    let (_, session_id) = finish_enrollment(&mut socket).await;
+    send_active_heartbeat(&mut socket, &session_id).await;
+    drop(socket);
+    server.abort();
+}
+
+#[tokio::test]
+async fn opening_window_approves_an_existing_review_on_the_same_connection() {
+    let fixture = Fixture::new().await;
+    let (mut socket, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut socket).await;
+    assert_eq!(
+        fixture
+            .state
+            .device()
+            .pending_enrollment_reviews()
+            .await
+            .len(),
+        1
+    );
+    assert!(
+        fixture
+            .state
+            .device()
+            .list_devices()
+            .await
+            .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
+            .is_empty()
+    );
+
+    fixture.state.provisioning().open_window();
+    let (_, session_id) = finish_enrollment(&mut socket).await;
+    assert!(
+        fixture
+            .state
+            .device()
+            .pending_enrollment_reviews()
+            .await
+            .is_empty()
+    );
+    send_active_heartbeat(&mut socket, &session_id).await;
+    drop(socket);
+    server.abort();
+}
+
+#[tokio::test]
+async fn closing_window_restores_manual_review_for_new_connections() {
+    let fixture = Fixture::new().await;
+    fixture.state.provisioning().open_window();
+    fixture.state.provisioning().close_window();
+    let (mut socket, server) = connect(&fixture).await;
+    let session_id = enroll(&fixture, &mut socket).await;
+    send_active_heartbeat(&mut socket, &session_id).await;
+    drop(socket);
+    server.abort();
+}
+
+#[tokio::test]
+async fn automatic_key_replacement_evicts_the_old_lease_before_activation_delivery() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x72; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (_session_id, _handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    fixture.state.provisioning().open_window();
+    let (mut socket, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut socket).await;
+    let (_, session_id) = finish_enrollment(&mut socket).await;
+    assert!(matches!(
+        outgoing.try_recv(),
+        Err(mpsc::error::TryRecvError::Disconnected)
+    ));
+    let devices = fixture
+        .state
+        .device()
+        .list_devices()
+        .await
+        .unwrap_or_else(|error| panic!("Device lookup failed: {error}"));
+    assert_eq!(devices.len(), 1);
+    assert_eq!(devices[0].device_id(), device_id);
+    send_active_heartbeat(&mut socket, &session_id).await;
+    drop(socket);
+    server.abort();
+}
+
 #[tokio::test(start_paused = true)]
 async fn exact_active_heartbeat_refreshes_the_client_deadline() {
     let session_id = Uuid::now_v7();
@@ -943,7 +1076,6 @@ async fn exact_active_heartbeat_refreshes_the_client_deadline() {
 #[tokio::test]
 async fn silent_active_connection_becomes_offline_after_the_client_deadline() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let (mut socket, server) = connect(&fixture).await;
     let session_id = enroll(&fixture, &mut socket).await;
     send_active_heartbeat(&mut socket, &session_id).await;
@@ -991,7 +1123,6 @@ async fn silent_active_connection_becomes_offline_after_the_client_deadline() {
 #[tokio::test]
 async fn full_actor_mailbox_cannot_starve_the_client_deadline() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let (mut socket, server) = connect(&fixture).await;
     let session_id = enroll(&fixture, &mut socket).await;
     let machine_hardware_id = MachineHardwareId::parse(MACHINE_HARDWARE_ID)
@@ -1048,7 +1179,6 @@ async fn full_actor_mailbox_cannot_starve_the_client_deadline() {
 #[tokio::test]
 async fn enrollment_denial_is_delivered_to_the_originating_connection() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
 
@@ -1079,7 +1209,6 @@ async fn enrollment_denial_is_delivered_to_the_originating_connection() {
 #[tokio::test]
 async fn pending_enrollment_heartbeat_keeps_the_review_attached() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
 
@@ -1105,7 +1234,6 @@ async fn pending_enrollment_heartbeat_keeps_the_review_attached() {
 #[tokio::test]
 async fn silent_pending_enrollment_is_removed_after_the_connection_deadline() {
     let fixture = Fixture::new().await;
-    fixture.state.provisioning().open_window().await;
     let (mut socket, server) = connect(&fixture).await;
     submit_enrollment_proof(&mut socket).await;
     assert_eq!(
@@ -1206,17 +1334,13 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
             fixture
                 .state
                 .device()
-                .start_enrollment(fixture.state.provisioning(), evidence.clone())
+                .start_enrollment(evidence.clone())
                 .await
                 .unwrap_or_else(|error| panic!("review capacity too small: {error:?}")),
         );
     }
     assert!(matches!(
-        fixture
-            .state
-            .device()
-            .start_enrollment(fixture.state.provisioning(), evidence)
-            .await,
+        fixture.state.device().start_enrollment(evidence).await,
         Err(crate::component::device::EnrollmentStartError::ReviewCapacityReached)
     ));
     let request = repeat_connection_request(&pending);
@@ -1355,15 +1479,19 @@ async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
         .approve_enrollment(reviews[0].review_id())
         .await
         .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
+    let (device_id, session_id) = finish_enrollment(socket).await;
+    assert_eq!(device_id, authority.device_id());
+    session_id
+}
+
+async fn finish_enrollment(socket: &mut TestSocket) -> (DeviceId, Vec<u8>) {
     let Some(server_handshake_envelope::Body::EnrollmentActivated(enrollment_authority)) =
         receive_handshake(socket).await.body
     else {
         panic!("Server did not deliver the committed Enrollment authority");
     };
-    assert_eq!(
-        enrollment_authority.device_id,
-        authority.device_id().as_text()
-    );
+    let device_id = DeviceId::parse(&enrollment_authority.device_id)
+        .unwrap_or_else(|| panic!("Server delivered an invalid Device ID"));
     send_handshake(
         socket,
         ClientHandshakeEnvelope {
@@ -1379,7 +1507,7 @@ async fn enroll(fixture: &Fixture, socket: &mut TestSocket) -> Vec<u8> {
         panic!("Server did not establish the active session");
     };
     assert_eq!(ready.session_id.len(), 16);
-    ready.session_id
+    (device_id, ready.session_id)
 }
 
 async fn submit_enrollment_proof(socket: &mut TestSocket) {
@@ -1547,7 +1675,6 @@ impl Fixture {
     }
 
     async fn activate(&self, signing_key: &SigningKey) -> DeviceId {
-        self.state.provisioning().open_window().await;
         let evidence = ValidatedEnrollmentEvidence::new(
             MachineHardwareId::parse(MACHINE_HARDWARE_ID)
                 .unwrap_or_else(|| panic!("the fixture Machine Hardware ID is valid")),
@@ -1560,7 +1687,7 @@ impl Fixture {
         let (review, activation) = match self
             .state
             .device()
-            .start_enrollment(self.state.provisioning(), evidence)
+            .start_enrollment(evidence)
             .await
             .unwrap_or_else(|error| panic!("Enrollment start failed: {error:?}"))
         {
@@ -1570,7 +1697,7 @@ impl Fixture {
         let approval = self
             .state
             .device()
-            .approve_enrollment(self.state.provisioning(), review.review_id())
+            .approve_enrollment(review.review_id())
             .await
             .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
         let authority = approval.authority();

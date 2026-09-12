@@ -32,8 +32,8 @@ pub(crate) use convergence::{
 use crate::component::{
     binding::BindingComponent,
     device::{
-        ControlAuthority, DeviceComponent, DeviceId, EnrollmentReviewDecision,
-        EnrollmentStartOutcome, MachineHardwareId,
+        ControlAuthority, DeviceComponent, DeviceId, EnrollmentApprovalError,
+        EnrollmentReviewDecision, EnrollmentStartOutcome, MachineHardwareId,
     },
     gateway::GatewayComponent,
     home::HomeComponent,
@@ -204,8 +204,9 @@ async fn admit(
 /// Completes the connection-local Enrollment path after candidate-key proof.
 ///
 /// An exact committed replay skips review. A new candidate sends `PendingReview` and
-/// waits for the one-shot result attached to that review. Connection failure attempts
-/// to remove the review if approval has not already claimed it. Both paths send the
+/// waits for automatic approval while the window is open or administrator approval
+/// while closed. Connection failure attempts to remove the review if approval has
+/// not already claimed it. Both paths send the
 /// activated Device ID and require its exact `EnrollmentReady` echo before returning
 /// the enabled authority.
 async fn admit_enrollment(
@@ -216,12 +217,7 @@ async fn admit_enrollment(
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
     let evidence = enrollment.review_evidence();
     let machine_hardware_id = evidence.machine_hardware_id();
-    let authority = match control
-        .device
-        .start_enrollment(&control.provisioning, evidence)
-        .await
-        .ok()?
-    {
+    let authority = match control.device.start_enrollment(evidence).await.ok()? {
         EnrollmentStartOutcome::Replay(authority) => authority,
         EnrollmentStartOutcome::Pending(review, mut activation) => {
             // The bounded review registry now owns this connection's admission
@@ -252,9 +248,23 @@ async fn admit_enrollment(
             }
             let client_deadline = sleep_until(Instant::now() + CLIENT_SILENCE_TIMEOUT);
             tokio::pin!(client_deadline);
+            let mut window = control.provisioning.subscribe();
+            let automatic_approval = async {
+                window.wait_for(|window| window.is_open()).await.ok()?;
+                Some(control.approve_enrollment(review.review_id()).await)
+            };
+            tokio::pin!(automatic_approval);
+            let mut automatic_approval_finished = false;
             let decision = loop {
                 tokio::select! {
                     result = &mut activation => break result.ok()?.ok()?,
+                    result = &mut automatic_approval, if !automatic_approval_finished => {
+                        automatic_approval_finished = true;
+                        if !matches!(result, Some(Ok(_) | Err(EnrollmentApprovalError::ReviewNotFound))) {
+                            control.device.remove_enrollment_review(review.review_id()).await;
+                            return None;
+                        }
+                    },
                     message = socket.recv() => match message {
                         Some(Ok(WebSocketMessage::Ping(payload))) if payload.is_empty() => {
                             client_deadline

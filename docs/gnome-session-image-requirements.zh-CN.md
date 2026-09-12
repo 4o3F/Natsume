@@ -22,7 +22,7 @@ waiting 使用独立账号的官方 **GNOME Kiosk Script X11**，contest 使用�
 | --- | --- | --- |
 | Natsume Client 包 | Helper、Daemon、Agent、固定登录 prepare unit、三个固定 PAM 文件、IPC policy、sysusers/tmpfiles、Kiosk Script 的 Agent drop-in、`/usr/share/natsume/image-integration/` 镜像输入 | 通过既有 API 编排，不在运行时重写 GDM/PAM/dconf，不直接托管 Xorg/GNOME |
 | 镜像项目 | IMG-01～08：账号、官方桌面、系统配置、上游 PAM 接入、模板、旧流程退出、构建和维护流程 | 只使用官方发布的 GDM/GNOME/Xorg/systemd，不修改程序或资源，不用嵌套桌面 |
-| 部署方 | 兼容的 Server/Client/镜像组合、公共端点与信任锚、独立管理员、注册和绑定 | 首次启动后按现有 Provisioning Gate 和人工审批完成 Enrollment，再进行 Binding |
+| 部署方 | 兼容的 Server/Client/镜像组合、公共端点与信任锚、独立管理员、注册和绑定 | 首次启动后按 Provisioning window 状态完成 Enrollment：Open 自动批准，Closed 人工审批，再进行 Binding |
 
 Client Deb 内的镜像输入由 [packaging/image](../packaging/image/README.md)唯一维护。镜像构建读取包内 `manifest.tsv`，按 copy/merge/render/initialize-home 应用到目标 root；安装 Client 本身不自动接管上游 PAM/GDM、创建账号或生成最终模板。输入版本与 Client Deb 一致，具体应用依赖实际 UID、上游栈和最终 skel。
 

@@ -980,7 +980,7 @@
             }
           },
           "409": {
-            "description": "Provisioning gate closed or candidate authority rejected",
+            "description": "Candidate authority rejected",
             "content": {
               "application/json": {
                 "schema": {
@@ -2376,7 +2376,7 @@
       },
       "ProvisioningWindowRequest": {
         "type": "object",
-        "description": "Complete replacement of the process-local provisioning-window state.",
+        "description": "Open automatically approves new and pending enrollments; closed requires administrator approval.",
         "required": ["state"],
         "properties": {
           "state": {
@@ -2388,7 +2388,7 @@
       },
       "ProvisioningWindowResponse": {
         "type": "object",
-        "description": "Current process-local provisioning-window state.",
+        "description": "Current process-local automatic Enrollment approval state.",
         "required": ["state"],
         "properties": {
           "state": {

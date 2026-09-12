@@ -566,12 +566,12 @@ export interface components {
       seats_removed: string[];
       unchanged_count: number;
     };
-    /** @description Complete replacement of the process-local provisioning-window state. */
+    /** @description Open automatically approves new and pending enrollments; closed requires administrator approval. */
     ProvisioningWindowRequest: {
       /** @enum {string} */
       state: "closed" | "open";
     };
-    /** @description Current process-local provisioning-window state. */
+    /** @description Current process-local automatic Enrollment approval state. */
     ProvisioningWindowResponse: {
       /** @enum {string} */
       state: "closed" | "open";
@@ -1491,7 +1491,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Provisioning gate closed or candidate authority rejected */
+      /** @description Candidate authority rejected */
       409: {
         headers: {
           [name: string]: unknown;

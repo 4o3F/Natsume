@@ -112,6 +112,53 @@ test("a viewer sees window changes from the server without a write control", asy
   expect(methods.every((method) => method === "GET")).toBe(true);
 });
 
+test("an administrator can approve a pending request while the window is closed", async ({
+  page,
+}) => {
+  const reviewId = "01912345-6789-7abc-8def-0123456789abc";
+  const review = {
+    review_id: reviewId,
+    machine_hardware_id: "a9aa9d04-3ece-5567-8260-910930ff5e03",
+    candidate_public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    evidence_quality: "strong",
+    daemon_version: "2.0.4",
+    agent_version: "2.0.4",
+  };
+  let approved = false;
+  await mockEnrollment(page, (route) => {
+    expect(route.request().method()).toBe("GET");
+    return fulfillJson(route, 200, { state: "closed" });
+  });
+  await page.route("**/api/v2/enrollment-reviews", (route) =>
+    fulfillJson(route, 200, approved ? [] : [review]),
+  );
+  await page.route(
+    `**/api/v2/enrollment-reviews/${reviewId}/actions/approve`,
+    (route) => {
+      expect(route.request().method()).toBe("POST");
+      approved = true;
+      return route.fulfill({ status: 204 });
+    },
+  );
+
+  await page.goto("/enrollment");
+  const window = page.getByRole("region", { name: "Enrollment window" });
+  await expect(window.getByRole("status")).toHaveText("Closed");
+  await expect(window).toContainText(
+    "Closed keeps requests here for administrator approval.",
+  );
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
+  await expect(
+    page.getByText("No enrollment reviews are pending."),
+  ).toBeVisible();
+  expect(approved).toBe(true);
+  await expect(window.getByRole("status")).toHaveText("Closed");
+});
+
 test("a failed window read is unavailable until a successful retry", async ({
   page,
 }) => {

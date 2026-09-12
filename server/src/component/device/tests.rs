@@ -4,15 +4,14 @@ use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 use uuid::Uuid;
 
 use crate::{
-    component::provisioning::ProvisioningComponent,
     db::{Database, DatabaseConfig, PersistenceError, TransactionError},
     diesel_schema::{device_control_keys, devices},
 };
 
 use super::{
     ActivationError, ControlPublicKey, DeviceComponent, DeviceError, DeviceId, DeviceState,
-    EnrollmentApprovalError, EnrollmentStartError, EnrollmentStartOutcome, EvidenceQuality,
-    LifecycleOutcome, MachineHardwareId, ValidatedEnrollmentEvidence, db,
+    EnrollmentApprovalError, EnrollmentStartOutcome, EvidenceQuality, LifecycleOutcome,
+    MachineHardwareId, ValidatedEnrollmentEvidence, db,
 };
 
 const FIRST_MACHINE: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
@@ -356,9 +355,8 @@ async fn lifecycle_mutation_rejects_an_unknown_device() {
 }
 
 #[tokio::test]
-async fn exact_replay_bypasses_the_closed_gate_but_a_new_candidate_does_not() {
+async fn exact_replay_skips_review_but_a_new_candidate_waits() {
     let fixture = Fixture::new().await;
-    let provisioning = ProvisioningComponent::new();
     let machine = machine(FIRST_MACHINE);
     let current_key = key(0x71);
     let current = activate(&fixture, machine, current_key, EvidenceQuality::Strong)
@@ -367,54 +365,38 @@ async fn exact_replay_bypasses_the_closed_gate_but_a_new_candidate_does_not() {
 
     let replay = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine, current_key))
+        .start_enrollment(evidence(machine, current_key))
         .await;
     assert!(matches!(
         replay,
         Ok(EnrollmentStartOutcome::Replay(authority)) if authority == current
     ));
 
-    let rejected = fixture
+    let pending = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine, key(0x72)))
+        .start_enrollment(evidence(machine, key(0x72)))
         .await;
-    assert!(matches!(
-        rejected,
-        Err(EnrollmentStartError::ProvisioningClosed)
-    ));
-    assert!(
-        fixture
-            .component
-            .pending_enrollment_reviews()
-            .await
-            .is_empty()
+    assert!(matches!(pending, Ok(EnrollmentStartOutcome::Pending(_, _))));
+    assert_eq!(
+        fixture.component.pending_enrollment_reviews().await.len(),
+        1
     );
 }
 
 #[tokio::test]
-async fn approval_rechecks_the_gate_and_claims_the_review_once() {
+async fn approval_claims_the_review_once() {
     let fixture = Fixture::new().await;
-    let provisioning = ProvisioningComponent::new();
-    provisioning.open_window().await;
     let machine = machine(FIRST_MACHINE);
     let candidate = key(0x73);
     let pending = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate))
         .await
         .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(pending, activation) = pending else {
         panic!("new authority candidate unexpectedly replayed");
     };
 
-    provisioning.close_window().await;
-    assert!(matches!(
-        fixture
-            .component
-            .approve_enrollment(&provisioning, pending.review_id())
-            .await,
-        Err(EnrollmentApprovalError::ProvisioningClosed)
-    ));
     assert_eq!(
         fixture.component.pending_enrollment_reviews().await.len(),
         1
@@ -424,10 +406,9 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
         Ok(None)
     );
 
-    provisioning.open_window().await;
     let approval = fixture
         .component
-        .approve_enrollment(&provisioning, pending.review_id())
+        .approve_enrollment(pending.review_id())
         .await
         .unwrap_or_else(|error| panic!("fenced approval failed: {error:?}"));
     let activated = approval.authority();
@@ -449,7 +430,7 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
     assert!(matches!(
         fixture
             .component
-            .approve_enrollment(&provisioning, pending.review_id())
+            .approve_enrollment(pending.review_id())
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
     ));
@@ -458,13 +439,11 @@ async fn approval_rechecks_the_gate_and_claims_the_review_once() {
 #[tokio::test]
 async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_replays() {
     let fixture = Fixture::new().await;
-    let provisioning = ProvisioningComponent::new();
-    provisioning.open_window().await;
     let machine = machine(FIRST_MACHINE);
     let candidate = key(0x74);
     let first = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate))
         .await
         .unwrap_or_else(|error| panic!("first review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(first, first_activation) = first else {
@@ -480,7 +459,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
     assert!(matches!(
         fixture
             .component
-            .approve_enrollment(&provisioning, first.review_id())
+            .approve_enrollment(first.review_id())
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
     ));
@@ -491,7 +470,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
 
     let second = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate))
         .await
         .unwrap_or_else(|error| panic!("second review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(second, second_activation) = second else {
@@ -499,7 +478,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
     };
     let approval = fixture
         .component
-        .approve_enrollment(&provisioning, second.review_id())
+        .approve_enrollment(second.review_id())
         .await
         .unwrap_or_else(|error| panic!("second review activation failed: {error:?}"));
     let activated = approval.authority();
@@ -511,10 +490,9 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
         Ok(super::EnrollmentReviewDecision::Activated(activated))
     );
 
-    provisioning.close_window().await;
     let replay = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate))
         .await;
     assert!(matches!(
         replay,
@@ -532,11 +510,9 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
 #[tokio::test]
 async fn denial_claims_the_review_and_notifies_only_its_connection() {
     let fixture = Fixture::new().await;
-    let provisioning = ProvisioningComponent::new();
-    provisioning.open_window().await;
     let pending = fixture
         .component
-        .start_enrollment(&provisioning, evidence(machine(FIRST_MACHINE), key(0x75)))
+        .start_enrollment(evidence(machine(FIRST_MACHINE), key(0x75)))
         .await
         .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(review, decision) = pending else {

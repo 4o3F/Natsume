@@ -24,7 +24,7 @@ PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client De
 2. 创建两套 CA、Server TLS leaf，导出所需格式。
 3. 安装 Server，部署完整配置和密钥，运行 bootstrap 初始化数据库。
 4. 导入比赛数据，从源码构建 Client Deb 并准备包外输入。
-5. 如需联调，在配套样机安装后开启注册窗口、审批、绑定并验收。
+5. 如需联调，在配套样机安装后按窗口状态完成自动或人工注册审批，再绑定并验收。
 6. 交付包与配置；联调/注册结束后关闭窗口，归档并备份。
 
 Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁移全部业务表，并在同一事务中初始化首个管理员和 Runtime Config，无需手工写数据库。
@@ -565,7 +565,7 @@ A-02,team002,REPLACE_WITH_REAL_TEAM_PASSWORD
 
 ### 5.3 检查注册窗口（可选 API 会话）
 
-Web **Enrollment** 的 **Enrollment window** 显示当前注册窗口状态，admin 可以点击 **Open window / Close window**，viewer 只能查看。Server 启动后窗口为 **Closed**；安装好要注册的机器后再开启。
+Web **Enrollment** 的 **Enrollment window** 显示当前注册窗口状态，admin 可以点击 **Open window / Close window**，viewer 只能查看。**Open** 自动批准新请求及当前在线的待审请求；**Closed** 保留请求等待 admin 批准或拒绝。Server 启动后窗口为 **Closed**；批量部署时可以开启自动审批。
 
 通过 Web 操作即可完成后续注册流程。若需从终端操作，也可以建立以下 API 会话；窗口使用 GET/PUT /api/v2/provisioning-window，PUT 需要 admin。
 
@@ -836,9 +836,9 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
 
 预期版本 2.0.4、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
 
-### 7.5 开启注册窗口、审批、绑定
+### 7.5 注册审批与绑定
 
-在 Web **Enrollment → Enrollment window** 点击 **Open window**，等待状态变为 **Open**。若提交失败，先根据页面错误排查。
+批量自动注册时，在 Web **Enrollment → Enrollment window** 点击 **Open window**，等待状态变为 **Open**。Server 会自动批准新请求和当前在线的待审请求；随后在 **Devices** 检查注册结果。若提交失败，先根据页面错误排查。
 
 也可在 **Server 管理员终端，使用 5.3 节变量与管理员 cookie** 执行：
 
@@ -850,9 +850,11 @@ curl --fail-with-body --silent --show-error --http1.1 \
   "$NATSUME_SERVER_ORIGIN/api/v2/provisioning-window"
 ~~~
 
-API 预期 state=open。Web **Enrollment** 出现 pending review 后，逐台核对物理工位、硬件 ID、证据质量、Daemon/Agent 版本和候选公钥，再点 **Approve**；未知设备使用 **Deny** 并排查。不要按列表顺序盲目审批。
+API 预期 state=open，此时不需要逐台点击 **Approve**。
 
-Server 每次重启窗口恢复关闭。安装包不等于自动注册，关闭窗口不代替已注册设备的 Revoke。
+需要逐台人工审核时，让窗口保持 **Closed**。Web **Enrollment** 仍会出现 pending review；逐台核对物理工位、硬件 ID、证据质量、Daemon/Agent 版本和候选公钥，再点 **Approve**；未知设备使用 **Deny** 并排查。不要按列表顺序盲目审批。
+
+Server 每次重启窗口恢复关闭，新请求改为人工审批。Client 完成身份初始化和连接后才开始注册；关闭窗口不代替已注册设备的 Revoke。
 
 样机显示 **Bind workstation / Enter your seat code** 时输入 CSV 工位码，如 A-01。在 **Bindings / Seats / Devices** 核对工位、设备和账号一致。工位不存在/被占时修正映射，不删除设备身份文件重试。
 
@@ -1024,7 +1026,7 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 | missing required field | 报错指出的 section 或字段 | 对照 4.3 节补齐完整配置 |
 | TOML syntax or field type | 报错的行列、引号和值类型 | 修正 TOML 后重试 |
 | runtime.domjudge_origin 校验失败 | 实际上游是否提供 HTTPS，地址是否只包含 origin | HTTP 地址不受支持；使用可用的 HTTPS 上游，不带末尾斜杠或路径 |
-| 无 Enrollment review | 窗口、连接、waiting Agent/Helper | Server 重启后窗口关闭，检查客户端图形会话与日志 |
+| 无 Enrollment review | 窗口、Devices 列表、控制连接与注册握手 | Open 会自动批准，先查 Devices；Closed 应有待审请求，检查 Client/Server 日志 |
 | 无法绑定 | CSV 是否 commit、工位是否存在/被占 | 处理数据与 Binding，不删除设备身份 |
 | Firefox 不信任 Gateway | about:policies、Install路径、CA/hostname/期限 | 修正策略并完全重启 Firefox |
 | Gateway 连接失败/503 | loopback解析、listener、Gateway/Binding/Runtime | 先完成注册配置，BLOCKED 不能靠关闭 TLS 验证解决 |

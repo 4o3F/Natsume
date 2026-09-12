@@ -114,7 +114,7 @@ pub(crate) async fn list_enrollment_reviews(State(state): State<AppState>) -> Re
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
         (status = 404, description = "Enrollment review unavailable"),
-        (status = 409, description = "Provisioning gate closed or candidate authority rejected"),
+        (status = 409, description = "Candidate authority rejected"),
         (status = 500, description = "Internal failure")
     )
 )]
@@ -163,9 +163,6 @@ pub(crate) async fn deny_enrollment_review(
 
 fn enrollment_approval_error(error: EnrollmentApprovalError) -> ApiError {
     match error {
-        EnrollmentApprovalError::ProvisioningClosed => {
-            ApiError::conflict("enrollment_provisioning_closed")
-        }
         EnrollmentApprovalError::ReviewNotFound => {
             ApiError::not_found("enrollment_review_not_found")
         }

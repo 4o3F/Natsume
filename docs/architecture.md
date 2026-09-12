@@ -427,12 +427,12 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 
 1. Client在发送proof前持久化candidate control key；重连可以继续使用该key，但每条连接都建立全新review。
 2. Server先检查candidate public key是否已经是该Machine Hardware ID对应Device的current control key；若是，直接重放已提交authority，不再次审核。
-3. 其他Enrollment只有在进程内Provisioning Gate开启时才能进入pending review，且必须人工审核。
+3. 其他Enrollment进入连接期pending review。Provisioning window为open时自动审批新请求及当前在线的待审请求；closed时保留请求等待管理员批准或拒绝。窗口控制自动审批，不阻止创建review。
 4. Pending registry以`review_id`保存经过验证的非秘密evidence；同一entry持有一个
    进程内一次性完成通知sender，originating connection持有receiver。registry中仍存在该`review_id`就表示
    当前连接仍持有该review，它不是authority，也不缓存可能漂移的current Device ID。
-5. Operator只能批准当前仍存在的review，批准前再次检查Gate并原子移除对应
-   `review_id`；同一进程内的审批串行，并在activation前按evidence中的Machine
+5. 自动审批与管理员审批都只能批准当前仍存在的review，原子移除对应
+   `review_id`；管理员审批不受窗口状态限制。同一进程内的审批串行，并在activation前按evidence中的Machine
    Hardware ID实时读取current authority。activation完成后通过该entry的一次性通知把结果交回原连接。
    连接断开也移除同一个ID，不建立第二个attachment标识，不轮询审批结果。
 6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device lifecycle/denylist authority，不能复用attempt状态。
@@ -446,7 +446,7 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 Client 本地 control manifest 直接保存 exact Ed25519 public key并与私钥文件重新派生的
 公钥比较；不再为同一自然authority建立派生 `ControlKeyId`。
 
-Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不落库。Server重启清空所有pending review并把Provisioning Gate恢复为closed。
+Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不落库。Server重启清空所有pending review并把Provisioning window恢复为closed；未提交的注册请求随Client重连重新进入人工审批。
 
 ### 8.3 Resume 与 lease
 
@@ -689,7 +689,7 @@ Server 业务采用纵向组件：
 |---|---|---|
 | Operator | 否 | 账户、会话、角色 |
 | Contest/Import | 否 | Seat、Account、mapping、vault import |
-| Provisioning | 否 | 进程内、重启即closed的Enrollment admission gate |
+| Provisioning | 否 | 进程内Enrollment自动审批窗口；open自动审批，closed人工审批，重启即closed |
 | Device | 否 | Device identity、control key、Enrollment review/activation、lifecycle |
 | Gateway | 是 | Gateway intent/input/target/actual |
 | Binding | 是 | negotiation、occupancy、access target/actual |
@@ -959,7 +959,7 @@ Device Component commit后对准确`device_id`发送`Evict`，终止current leas
 Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不能留下Registry entry。
 该mutation→fence→evict序列由进程持有的任务完成，不因发起它的HTTP请求取消而中断。
 审批另持有`DeviceControl`的串行门，在读取当前authority后取得其fence；
-完成旧lease eviction后才交付activation通知。组件仍拥有review claim、Gate复查和数据库事务。
+完成旧lease eviction后才交付activation通知。自动审批复用同一用例；Provisioning组件通知窗口状态变化，Device Component仍拥有review claim和数据库事务。
 
 ### 11.6 Channel 与背压
 
@@ -1019,7 +1019,7 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 
 `device_control_keys`不需要global authority revision。current key由partial unique index表达。Replacement activation事务原子supersede old、activate new并保留历史。已提交activation的恢复通过“proved Machine Hardware ID + exact current public key”查询完成，不依赖attempt记录。
 
-Provisioning Gate同样不落库；每次Server启动都构造closed状态。open/close请求只改变当前进程内状态。
+Provisioning window同样不落库；每次Server启动都构造closed状态，要求人工审批。open/close请求改变当前进程内的自动审批策略；开启时通知仍在线的待审连接执行自动审批。
 
 ### 12.4 Gateway
 
@@ -1600,7 +1600,7 @@ just api
 - Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
   属于 HTTP；
 - Device Component 拥有 Device/current control key 的 durable authority、连接期
-  Enrollment review registry 和 lifecycle，并统一编排 Gate 复查、review claim
+  Enrollment review registry 和 lifecycle，并统一编排 review claim
   与 activation transaction；`device_control/admission.rs` 拥有纯
   Challenge/Proof 准入与 Enrollment Ready barrier；
 - Server 已实现production Device WSS、每Device Actor/Registry、lease fencing、fresh

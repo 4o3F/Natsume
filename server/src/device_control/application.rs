@@ -253,10 +253,7 @@ impl DeviceControl {
             Some(fence) => Some(fence.lock().await),
             None => None,
         };
-        let approval = self
-            .device
-            .approve_enrollment(&self.provisioning, review_id)
-            .await?;
+        let approval = self.device.approve_enrollment(review_id).await?;
         let authority = approval.authority();
         if let Some(fenced) = fenced.as_mut() {
             **fenced = true;
