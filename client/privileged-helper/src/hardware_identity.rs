@@ -15,7 +15,6 @@ use natsume_local_control_api::{
     DerivedMachineIdentity, MachineIdentityError, MachineIdentityQuality,
 };
 use procfs::process::Process;
-use uuid::Uuid;
 use zeroize::Zeroize as _;
 
 const DMI_DIRECTORY: &str = "/sys/class/dmi/id";
@@ -69,9 +68,8 @@ fn collect(filesystem_root: &Path) -> [ReadOutcome; 3] {
 /// Returns the closed unavailable classification when the fixed sources cannot derive an ID.
 pub(super) fn derive_identity(
     filesystem_root: &Path,
-    fleet_namespace: Uuid,
 ) -> Result<DerivedMachineIdentity, MachineIdentityError> {
-    identity_from_readings(collect(filesystem_root), fleet_namespace)
+    identity_from_readings(collect(filesystem_root))
 }
 
 fn zeroize_readings(readings: &mut [ReadOutcome; 3]) {
@@ -86,11 +84,9 @@ fn zeroize_readings(readings: &mut [ReadOutcome; 3]) {
 
 fn identity_from_readings(
     mut readings: [ReadOutcome; 3],
-    fleet_namespace: Uuid,
 ) -> Result<DerivedMachineIdentity, MachineIdentityError> {
-    let evaluations = std::array::from_fn(|index| {
-        evaluate_slot(ANCHOR_ORDER[index], &readings[index], fleet_namespace)
-    });
+    let evaluations =
+        std::array::from_fn(|index| evaluate_slot(ANCHOR_ORDER[index], &readings[index]));
     let decision = decide_machine_identity(&evaluations);
     zeroize_readings(&mut readings);
 

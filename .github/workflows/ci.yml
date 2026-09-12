@@ -10,7 +10,7 @@ on:
       package_version:
         description: Debian package version
         type: string
-        default: "2.0.3~ci1"
+        default: "2.0.4~ci1"
 
 permissions:
   contents: read
@@ -286,7 +286,7 @@ jobs:
       - name: Build and inspect Deb packages
         run: bash packaging/ci-package-smoke.sh
         env:
-          VERSION: ${{ inputs.package_version || '2.0.3~ci1' }}
+          VERSION: ${{ inputs.package_version || '2.0.4~ci1' }}
 
       - name: Upload package artifacts
         uses: actions/upload-artifact@v7.0.1

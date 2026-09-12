@@ -3,7 +3,7 @@ package natsume.device.control;
 
 // First-generation fleet-global runtime target. domjudge_origin is one canonical
 // HTTPS origin with no userinfo, path, query, or fragment. Bootstrap control
-// endpoint, trust roots, fleet namespace, and Gateway hostname are never legal
+// endpoint, trust roots, and Gateway hostname are never legal
 // here.
 message RuntimeConfigTarget {
   string domjudge_origin = 1;

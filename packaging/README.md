@@ -92,16 +92,16 @@ profile/keyboard/font/scale configuration described in its input set.
 
 ## Version releases
 
-Push a tag such as `v2.0.3` to run [release.yml](../.github/workflows/release.yml).
+Push a tag such as `v2.0.4` to run [release.yml](../.github/workflows/release.yml).
 The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as
-`v2.0.3-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
+`v2.0.4-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
 commit; all jobs must pass before GitHub Release publication. Branch/PR CI keeps
-its `2.0.3~ci1` package version.
+its `2.0.4~ci1` package version.
 
 Each release includes `natsume-client_<version>_amd64.deb`,
 `natsume-server_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated
-release notes. For prereleases, `v2.0.3-rc.1` becomes Debian version `2.0.3~rc.1`,
-which sorts before `2.0.3`; the GitHub Release is marked as a prerelease and is
+release notes. For prereleases, `v2.0.4-rc.1` becomes Debian version `2.0.4~rc.1`,
+which sorts before `2.0.4`; the GitHub Release is marked as a prerelease and is
 not made latest. Download both packages and the checksum file into one directory
 and run `sha256sum --check SHA256SUMS` to verify them.
 
@@ -115,7 +115,7 @@ target-image acceptance remain separate from this release CI.
 Deployment supplies one complete configuration per side:
 
 - Client: `/etc/natsume/config.toml`, containing `[server]` (IP literal and port)
-  and `[site]` (fleet namespace UUID and Gateway hostname).
+  and `[site]` (Gateway hostname).
 - Server: `/etc/natsume-server/config.toml`, containing `[listen]`, `[log]`,
   `[storage]`, `[tls]`, `[site]` (Gateway hostname, certificate expiry and contest
   end), `[trust]` (Control/Local Origin CA paths), and `[runtime]` (the required

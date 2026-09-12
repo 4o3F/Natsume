@@ -5,8 +5,7 @@ use tempfile::TempDir;
 use super::*;
 use crate::{control::ControlLoopError, identity_record::IdentityRecordState};
 
-const NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
-const MACHINE_ID: Uuid = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
+const MACHINE_ID: Uuid = Uuid::from_u128(0x0c0f_ef01_1126_5297_a522_92cf_e494_ce48);
 
 fn run_with_decision(
     paths: &StartupPaths,
@@ -45,17 +44,13 @@ fn fixture_paths(directory: &TempDir) -> StartupPaths {
             panic!("fixture directory must be created: {error}");
         }
     }
-    write_site(&paths, NAMESPACE.to_string().as_str());
+    write_site(&paths, "gateway.example");
     paths
 }
 
-fn write_site(paths: &StartupPaths, namespace: &str) {
-    write_site_with_hostname(paths, namespace, "gateway.example");
-}
-
-fn write_site_with_hostname(paths: &StartupPaths, namespace: &str, gateway_hostname: &str) {
+fn write_site(paths: &StartupPaths, gateway_hostname: &str) {
     let content = format!(
-        "[server]\nip = \"192.0.2.10\"\nport = 8443\n\n[site]\nfleet_namespace_uuid = \"{namespace}\"\ngateway_hostname = \"{gateway_hostname}\"\n"
+        "[server]\nip = \"192.0.2.10\"\nport = 8443\n\n[site]\ngateway_hostname = \"{gateway_hostname}\"\n"
     );
     if let Err(error) = fs::write(&paths.config, content) {
         panic!("site fixture must be written: {error}");
@@ -115,7 +110,6 @@ fn clean_first_start_writes_the_pinned_record() {
     assert_eq!(
         identity_record::read(&paths.identity_directory),
         IdentityRecordState::Valid {
-            fleet_namespace_uuid: NAMESPACE,
             machine_hardware_id: MACHINE_ID,
         }
     );
@@ -125,7 +119,7 @@ fn clean_first_start_writes_the_pinned_record() {
     };
     assert_eq!(
         content,
-        r#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678","machine_hardware_id":"a9aa9d04-3ece-5567-8260-910930ff5e03"}"#
+        r#"{"machine_hardware_id":"0c0fef01-1126-5297-a522-92cfe494ce48"}"#
     );
 }
 
@@ -133,9 +127,7 @@ fn clean_first_start_writes_the_pinned_record() {
 fn matching_recomputed_identity_is_ready() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    if let Err(error) =
-        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
-    {
+    if let Err(error) = identity_record::write_first_start(&paths.identity_directory, MACHINE_ID) {
         panic!("identity fixture must be written: {error}");
     }
 
@@ -162,30 +154,10 @@ fn corrupt_record_fails_closed() {
 }
 
 #[test]
-fn site_namespace_mismatch_fails_closed() {
-    let directory = tempdir();
-    let paths = fixture_paths(&directory);
-    if let Err(error) = identity_record::write_first_start(
-        &paths.identity_directory,
-        Uuid::from_u128(1),
-        MACHINE_ID,
-    ) {
-        panic!("identity fixture must be written: {error}");
-    }
-
-    assert_failure_state(
-        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
-        StartupIdentityState::SiteNamespaceMismatch,
-    );
-}
-
-#[test]
 fn changed_recomputed_identity_requires_reset() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    if let Err(error) =
-        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
-    {
+    if let Err(error) = identity_record::write_first_start(&paths.identity_directory, MACHINE_ID) {
         panic!("identity fixture must be written: {error}");
     }
 
@@ -193,7 +165,7 @@ fn changed_recomputed_identity_requires_reset() {
         run_with_decision(
             &paths,
             Ok(derived_identity(Uuid::new_v5(
-                &NAMESPACE,
+                &Uuid::NAMESPACE_OID,
                 b"different-machine",
             ))),
         ),
@@ -205,9 +177,7 @@ fn changed_recomputed_identity_requires_reset() {
 fn too_few_recomputed_sources_are_indeterminate() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    if let Err(error) =
-        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
-    {
+    if let Err(error) = identity_record::write_first_start(&paths.identity_directory, MACHINE_ID) {
         panic!("identity fixture must be written: {error}");
     }
 
@@ -221,9 +191,7 @@ fn too_few_recomputed_sources_are_indeterminate() {
 fn unsupported_recomputed_identity_is_unavailable() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    if let Err(error) =
-        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
-    {
+    if let Err(error) = identity_record::write_first_start(&paths.identity_directory, MACHINE_ID) {
         panic!("identity fixture must be written: {error}");
     }
 
@@ -299,12 +267,11 @@ fn first_start_without_two_sources_has_no_identity() {
 }
 
 #[test]
-fn deployment_example_reads_identity_from_site_section() {
+fn deployment_example_initializes_identity_with_only_gateway_site_config() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    let example = include_str!("../../../../packaging/client/config.example.toml")
-        .replace("REPLACE-WITH-STABLE-SITE-UUID", &NAMESPACE.to_string());
-    fs::write(&paths.config, &example)
+    let example = include_str!("../../../../packaging/client/config.example.toml");
+    fs::write(&paths.config, example)
         .unwrap_or_else(|error| panic!("configuration fixture must be written: {error}"));
     assert_eq!(
         run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))).unwrap_or_else(|error| panic!(
@@ -315,20 +282,15 @@ fn deployment_example_reads_identity_from_site_section() {
     fs::write(&paths.config, example.replace("[site]", "[unrelated]"))
         .unwrap_or_else(|error| panic!("configuration fixture must be written: {error}"));
     assert!(matches!(
-        read_site_identity(&paths.config),
+        read_site_config(&paths.config),
         Err(StartupError::SiteConfiguration)
     ));
 }
 
 #[test]
-fn site_configuration_must_exist_and_use_canonical_uuid() {
+fn site_configuration_must_exist() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    write_site(&paths, "12345678-1234-5678-9234-56781234567A");
-    assert!(matches!(
-        run_with_decision(&paths, Ok(derived_identity(MACHINE_ID))),
-        Err(StartupError::SiteConfiguration)
-    ));
 
     if let Err(error) = fs::remove_file(&paths.config) {
         panic!("site fixture must be removed: {error}");
@@ -350,9 +312,9 @@ fn site_configuration_requires_a_canonical_dns_gateway_hostname() {
         "192.0.2.1",
         "-gateway.example",
     ] {
-        write_site_with_hostname(&paths, &NAMESPACE.to_string(), hostname);
+        write_site(&paths, hostname);
         assert!(matches!(
-            read_site_identity(&paths.config),
+            read_site_config(&paths.config),
             Err(StartupError::SiteConfiguration)
         ));
     }
@@ -440,9 +402,7 @@ fn reconciliation_artifact_without_identity_record_fails_closed() {
 fn control_identity_is_loaded_after_the_identity_gate() {
     let directory = tempdir();
     let paths = fixture_paths(&directory);
-    if let Err(error) =
-        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, MACHINE_ID)
-    {
+    if let Err(error) = identity_record::write_first_start(&paths.identity_directory, MACHINE_ID) {
         panic!("identity fixture must be written: {error}");
     }
     let result = load_control_identity(&paths, MACHINE_ID);
@@ -466,7 +426,7 @@ fn absent_or_mismatched_persisted_identity_causes_zero_control_writes() {
     ));
 
     if let Err(error) =
-        identity_record::write_first_start(&paths.identity_directory, NAMESPACE, Uuid::from_u128(2))
+        identity_record::write_first_start(&paths.identity_directory, Uuid::from_u128(2))
     {
         panic!("mismatched identity fixture must be written: {error}");
     }

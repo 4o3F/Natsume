@@ -69,8 +69,6 @@ done
 rm -f "${site_inputs}/test-ca.key"
 install -D -m 0644 packaging/server/config.example.toml "${site_inputs}/etc/natsume-server/config.toml"
 install -D -m 0644 packaging/client/config.example.toml "${site_inputs}/etc/natsume/config.toml"
-sed -i 's/REPLACE-WITH-STABLE-SITE-UUID/00000000-0000-4000-8000-000000000001/' \
-  "${site_inputs}/etc/natsume/config.toml"
 
 assert_site_inputs_absent() {
   local path

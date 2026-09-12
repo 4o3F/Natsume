@@ -42,7 +42,7 @@ impl StartupPaths {
 #[derive(Debug, Snafu)]
 #[snafu(module)]
 pub(crate) enum StartupError {
-    #[snafu(display("device startup site identity configuration is missing or invalid"))]
+    #[snafu(display("device startup site configuration is missing or invalid"))]
     SiteConfiguration,
 
     #[snafu(display("device startup identity-bound artifact scan failed"))]
@@ -66,23 +66,16 @@ pub(crate) enum StartupError {
 
 #[derive(Deserialize)]
 struct StartupConfig {
-    site: SiteIdentityConfig,
+    site: SiteConfig,
 }
 
 #[derive(Deserialize)]
-struct SiteIdentityConfig {
-    fleet_namespace_uuid: String,
+struct SiteConfig {
     gateway_hostname: String,
 }
 
 struct StartupContext {
-    configured_namespace: Uuid,
     stored_machine_hardware_id: Option<Uuid>,
-    gateway_hostname: String,
-}
-
-struct SiteIdentity {
-    fleet_namespace_uuid: Uuid,
     gateway_hostname: String,
 }
 
@@ -99,7 +92,6 @@ enum StartupIdentityState {
     Indeterminate,
     IdentityUnavailable,
     IdentityRecordMissingOrCorrupt,
-    SiteNamespaceMismatch,
     ResetRequired,
 }
 
@@ -112,7 +104,6 @@ fn state_label(state: StartupIdentityState) -> &'static str {
         StartupIdentityState::IdentityRecordMissingOrCorrupt => {
             "identity_record_missing_or_corrupt"
         }
-        StartupIdentityState::SiteNamespaceMismatch => "site_namespace_mismatch",
         StartupIdentityState::ResetRequired => "reset_required",
     }
 }
@@ -127,29 +118,22 @@ fn fail_closed(state: StartupIdentityState) -> StartupError {
     }
 }
 
-fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
+fn read_site_config(path: &Path) -> Result<SiteConfig, StartupError> {
     let text = fs::read_to_string(path).map_err(|_| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
-            "device startup site identity configuration is unavailable"
+            "device startup site configuration is unavailable"
         );
         StartupError::SiteConfiguration
     })?;
     let config = toml::from_str::<StartupConfig>(&text).map_err(|_| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
-            "device startup site identity configuration is invalid"
+            "device startup site configuration is invalid"
         );
         StartupError::SiteConfiguration
     })?;
     let config = config.site;
-    let fleet_namespace_uuid = canonical_uuid(&config.fleet_namespace_uuid).ok_or_else(|| {
-        tracing::error!(
-            startup_identity_state = "site_configuration_invalid",
-            "device startup site namespace is not canonical"
-        );
-        StartupError::SiteConfiguration
-    })?;
     if !is_canonical_dns_hostname(&config.gateway_hostname) {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
@@ -157,10 +141,7 @@ fn read_site_identity(path: &Path) -> Result<SiteIdentity, StartupError> {
         );
         return Err(StartupError::SiteConfiguration);
     }
-    Ok(SiteIdentity {
-        fleet_namespace_uuid,
-        gateway_hostname: config.gateway_hostname,
-    })
+    Ok(config)
 }
 
 fn is_canonical_dns_hostname(value: &str) -> bool {
@@ -245,8 +226,7 @@ fn preflight(
     paths: &StartupPaths,
     privileged_home_state_present: bool,
 ) -> Result<StartupContext, StartupError> {
-    let site = read_site_identity(&paths.config)?;
-    let configured_namespace = site.fleet_namespace_uuid;
+    let site = read_site_config(&paths.config)?;
     let gateway_hostname = site.gateway_hostname;
     let artifacts_present = privileged_home_state_present
         || identity_bound_artifacts_present(
@@ -261,7 +241,6 @@ fn preflight(
             StartupIdentityState::IdentityRecordMissingOrCorrupt,
         )),
         IdentityRecordState::Absent => Ok(StartupContext {
-            configured_namespace,
             stored_machine_hardware_id: None,
             gateway_hostname,
         }),
@@ -269,16 +248,8 @@ fn preflight(
             StartupIdentityState::IdentityRecordMissingOrCorrupt,
         )),
         IdentityRecordState::Valid {
-            fleet_namespace_uuid,
-            ..
-        } if fleet_namespace_uuid != configured_namespace => {
-            Err(fail_closed(StartupIdentityState::SiteNamespaceMismatch))
-        }
-        IdentityRecordState::Valid {
             machine_hardware_id,
-            ..
         } => Ok(StartupContext {
-            configured_namespace,
             stored_machine_hardware_id: Some(machine_hardware_id),
             gateway_hostname,
         }),
@@ -304,19 +275,15 @@ fn apply_identity_decision(
         .ok_or_else(|| fail_closed(StartupIdentityState::IdentityUnavailable))?;
     let state = match context.stored_machine_hardware_id {
         None => {
-            identity_record::write_first_start(
-                &paths.identity_directory,
-                context.configured_namespace,
-                machine_hardware_id,
-            )
-            .map_err(|_error| {
-                tracing::error!(
-                    startup_identity_state =
-                        state_label(StartupIdentityState::IdentityRecordMissingOrCorrupt),
-                    "device startup could not persist the first identity record"
-                );
-                StartupError::IdentityPersistence
-            })?;
+            identity_record::write_first_start(&paths.identity_directory, machine_hardware_id)
+                .map_err(|_error| {
+                    tracing::error!(
+                        startup_identity_state =
+                            state_label(StartupIdentityState::IdentityRecordMissingOrCorrupt),
+                        "device startup could not persist the first identity record"
+                    );
+                    StartupError::IdentityPersistence
+                })?;
             tracing::info!(
                 startup_identity_state = state_label(StartupIdentityState::CleanFirstStart),
                 "device identity established on first start"
@@ -346,7 +313,6 @@ fn load_control_identity(
     let machine_hardware_id = match identity_record::read(&paths.identity_directory) {
         IdentityRecordState::Valid {
             machine_hardware_id,
-            ..
         } if machine_hardware_id == expected => Ok(machine_hardware_id),
         IdentityRecordState::Valid { .. } => Err(fail_closed(StartupIdentityState::ResetRequired)),
         IdentityRecordState::Absent | IdentityRecordState::Corrupt => Err(fail_closed(
@@ -382,8 +348,7 @@ pub(crate) async fn run_production() -> Result<(), StartupError> {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
     let context = preflight(&paths, privileged_home_state_present)?;
-    let namespace = context.configured_namespace.to_string();
-    let decision = proxy.derive_machine_identity(&namespace).await;
+    let decision = proxy.derive_machine_identity().await;
     let identity = apply_identity_decision(&paths, &context, decision)?;
     let gateway_hostname = context.gateway_hostname;
     let control_identity = load_control_identity(&paths, identity.machine_hardware_id)?;

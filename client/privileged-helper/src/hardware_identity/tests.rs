@@ -7,6 +7,7 @@ use std::{
 
 use procfs::process::MountInfo;
 use tempfile::TempDir;
+use uuid::Uuid;
 
 use super::{
     policy::{EvidenceStatus, evaluate_slot},
@@ -14,7 +15,6 @@ use super::{
     *,
 };
 
-const TEST_NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
 const SYSTEM_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
 fn tempdir() -> TempDir {
@@ -151,7 +151,7 @@ fn sysfs_smbios_conflict_is_conservatively_unavailable() {
     let readings = collect_dmi(fixture.path());
 
     assert!(matches!(readings[1], ReadOutcome::Unavailable));
-    let evaluation = evaluate_slot(ANCHOR_ORDER[1], &readings[1], TEST_NAMESPACE);
+    let evaluation = evaluate_slot(ANCHOR_ORDER[1], &readings[1]);
     assert_eq!(evaluation.status, EvidenceStatus::Unavailable);
 }
 
@@ -177,7 +177,7 @@ fn placeholder_reaches_the_pure_rejection_policy() {
         b"To Be Filled By OEM\n",
     );
     let readings = collect_dmi(fixture.path());
-    let evaluation = evaluate_slot(ANCHOR_ORDER[1], &readings[1], TEST_NAMESPACE);
+    let evaluation = evaluate_slot(ANCHOR_ORDER[1], &readings[1]);
 
     assert_eq!(evaluation.status, EvidenceStatus::RejectedPlaceholder);
 }
@@ -287,7 +287,7 @@ fn root_spanning_two_whole_disks_is_unavailable() {
 }
 
 #[test]
-fn fixture_collection_derives_the_wp1_golden_machine_id() {
+fn fixture_collection_derives_the_fixed_natsume_machine_id() {
     let fixture = tempdir();
     install_dmi(
         fixture.path(),
@@ -298,12 +298,12 @@ fn fixture_collection_derives_the_wp1_golden_machine_id() {
     let mountinfo = [mount("36 25 8:2 / / rw,relatime - ext4 /dev/sda2 rw")];
     let [system_uuid, board_serial] = collect_dmi(fixture.path());
     let disk_serial = first_disk_serial(fixture.path(), &mountinfo);
-    let identity = identity_from_readings([system_uuid, board_serial, disk_serial], TEST_NAMESPACE)
+    let identity = identity_from_readings([system_uuid, board_serial, disk_serial])
         .unwrap_or_else(|error| panic!("fixture identity must derive: {error}"));
 
     assert_eq!(
         identity.machine_hardware_id,
-        "a9aa9d04-3ece-5567-8260-910930ff5e03"
+        "0c0fef01-1126-5297-a522-92cfe494ce48"
     );
     assert_eq!(identity.quality, MachineIdentityQuality::Strong);
 }
@@ -324,23 +324,17 @@ fn absent_platform_interfaces_are_unsupported() {
 
 #[test]
 fn aggregate_quality_comes_from_the_derived_sources() {
-    let strong = identity_from_readings(
-        [
-            ReadOutcome::Value(SYSTEM_UUID.to_owned()),
-            ReadOutcome::Value("board-42".to_owned()),
-            ReadOutcome::Unavailable,
-        ],
-        TEST_NAMESPACE,
-    )
+    let strong = identity_from_readings([
+        ReadOutcome::Value(SYSTEM_UUID.to_owned()),
+        ReadOutcome::Value("board-42".to_owned()),
+        ReadOutcome::Unavailable,
+    ])
     .unwrap_or_else(|error| panic!("two strong sources must derive: {error}"));
-    let medium = identity_from_readings(
-        [
-            ReadOutcome::Value(SYSTEM_UUID.to_owned()),
-            ReadOutcome::Unavailable,
-            ReadOutcome::Value("disk-99".to_owned()),
-        ],
-        TEST_NAMESPACE,
-    )
+    let medium = identity_from_readings([
+        ReadOutcome::Value(SYSTEM_UUID.to_owned()),
+        ReadOutcome::Unavailable,
+        ReadOutcome::Value("disk-99".to_owned()),
+    ])
     .unwrap_or_else(|error| panic!("strong and medium sources must derive: {error}"));
 
     assert_eq!(strong.quality, MachineIdentityQuality::Strong);
@@ -349,22 +343,16 @@ fn aggregate_quality_comes_from_the_derived_sources() {
 
 #[test]
 fn unavailable_decisions_are_typed() {
-    let insufficient = identity_from_readings(
-        [
-            ReadOutcome::Value(SYSTEM_UUID.to_owned()),
-            ReadOutcome::Unavailable,
-            ReadOutcome::Unavailable,
-        ],
-        TEST_NAMESPACE,
-    );
-    let unsupported = identity_from_readings(
-        [
-            ReadOutcome::Unsupported,
-            ReadOutcome::Unsupported,
-            ReadOutcome::Unsupported,
-        ],
-        TEST_NAMESPACE,
-    );
+    let insufficient = identity_from_readings([
+        ReadOutcome::Value(SYSTEM_UUID.to_owned()),
+        ReadOutcome::Unavailable,
+        ReadOutcome::Unavailable,
+    ]);
+    let unsupported = identity_from_readings([
+        ReadOutcome::Unsupported,
+        ReadOutcome::Unsupported,
+        ReadOutcome::Unsupported,
+    ]);
 
     assert!(matches!(
         insufficient,

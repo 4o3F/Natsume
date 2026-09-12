@@ -16,16 +16,12 @@ const IDENTITY_RECORD_MODE: u32 = 0o600;
 pub(super) enum IdentityRecordState {
     Absent,
     Corrupt,
-    Valid {
-        fleet_namespace_uuid: Uuid,
-        machine_hardware_id: Uuid,
-    },
+    Valid { machine_hardware_id: Uuid },
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct IdentityRecordDocument {
-    fleet_namespace_uuid: String,
     machine_hardware_id: String,
 }
 
@@ -37,19 +33,15 @@ fn record_path(identity_directory: &Path) -> std::path::PathBuf {
     identity_directory.join(IDENTITY_RECORD_NAME)
 }
 
-fn decode(bytes: &[u8]) -> Option<(Uuid, Uuid)> {
+fn decode(bytes: &[u8]) -> Option<Uuid> {
     let document = serde_json::from_slice::<IdentityRecordDocument>(bytes).ok()?;
-    Some((
-        canonical_uuid(&document.fleet_namespace_uuid)?,
-        canonical_uuid(&document.machine_hardware_id)?,
-    ))
+    canonical_uuid(&document.machine_hardware_id)
 }
 
 pub(super) fn read(identity_directory: &Path) -> IdentityRecordState {
     match fs::read(record_path(identity_directory)) {
         Ok(bytes) => match decode(&bytes) {
-            Some((fleet_namespace_uuid, machine_hardware_id)) => IdentityRecordState::Valid {
-                fleet_namespace_uuid,
+            Some(machine_hardware_id) => IdentityRecordState::Valid {
                 machine_hardware_id,
             },
             None => IdentityRecordState::Corrupt,
@@ -61,18 +53,14 @@ pub(super) fn read(identity_directory: &Path) -> IdentityRecordState {
 
 pub(super) fn write_first_start(
     identity_directory: &Path,
-    fleet_namespace_uuid: Uuid,
     machine_hardware_id: Uuid,
 ) -> Result<(), IdentityRecordWriteError> {
     match read(identity_directory) {
         IdentityRecordState::Absent => {}
         IdentityRecordState::Corrupt => return Err(IdentityRecordWriteError),
         IdentityRecordState::Valid {
-            fleet_namespace_uuid: stored_namespace,
             machine_hardware_id: stored_machine_hardware_id,
-        } if stored_namespace == fleet_namespace_uuid
-            && stored_machine_hardware_id == machine_hardware_id =>
-        {
+        } if stored_machine_hardware_id == machine_hardware_id => {
             return Ok(());
         }
         IdentityRecordState::Valid { .. } => {
@@ -81,7 +69,6 @@ pub(super) fn write_first_start(
     }
 
     let document = IdentityRecordDocument {
-        fleet_namespace_uuid: fleet_namespace_uuid.to_string(),
         machine_hardware_id: machine_hardware_id.to_string(),
     };
     let bytes = serde_json::to_vec(&document).map_err(|_| IdentityRecordWriteError)?;
@@ -102,8 +89,7 @@ mod tests {
 
     use super::*;
 
-    const NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
-    const MACHINE_ID: Uuid = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
+    const MACHINE_ID: Uuid = Uuid::from_u128(0x0c0f_ef01_1126_5297_a522_92cf_e494_ce48);
 
     fn tempdir() -> TempDir {
         match TempDir::new() {
@@ -129,13 +115,12 @@ mod tests {
         let directory = tempdir();
         write_raw(
             directory.path(),
-            br#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678","machine_hardware_id":"a9aa9d04-3ece-5567-8260-910930ff5e03"}"#,
+            br#"{"machine_hardware_id":"0c0fef01-1126-5297-a522-92cfe494ce48"}"#,
         );
 
         assert_eq!(
             read(directory.path()),
             IdentityRecordState::Valid {
-                fleet_namespace_uuid: NAMESPACE,
                 machine_hardware_id: MACHINE_ID,
             }
         );
@@ -145,11 +130,11 @@ mod tests {
     fn malformed_and_noncanonical_records_are_corrupt() {
         let cases: &[&[u8]] = &[
             b"{}",
-            br#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678","machine_hardware_id":"a9aa9d04-3ece-5567-8260-910930ff5e03","extra":true}"#,
-            br#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678","machine_hardware_id":"A9AA9D04-3ECE-5567-8260-910930FF5E03"}"#,
-            br#"{"fleet_namespace_uuid":"12345678123456789234567812345678","machine_hardware_id":"a9aa9d04-3ece-5567-8260-910930ff5e03"}"#,
-            br#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678"}"#,
-            br#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678","machine_hardware_id":"a9aa9d04""#,
+            br#"{"machine_hardware_id":"0c0fef01-1126-5297-a522-92cfe494ce48","extra":true}"#,
+            br#"{"machine_hardware_id":"0C0FEF01-1126-5297-A522-92CFE494CE48"}"#,
+            br#"{"machine_hardware_id":"0c0fef0111265297a52292cfe494ce48"}"#,
+            br#"{"machine_hardware_id":null}"#,
+            br#"{"machine_hardware_id":"a9aa9d04""#,
             b"not json",
             b"\xff\xfe\x00",
         ];
@@ -173,7 +158,7 @@ mod tests {
     #[test]
     fn first_start_write_is_exact_and_owner_only() {
         let directory = tempdir();
-        if let Err(error) = write_first_start(directory.path(), NAMESPACE, MACHINE_ID) {
+        if let Err(error) = write_first_start(directory.path(), MACHINE_ID) {
             panic!("identity record must be written: {error}");
         }
 
@@ -184,7 +169,7 @@ mod tests {
         };
         assert_eq!(
             content,
-            r#"{"fleet_namespace_uuid":"12345678-1234-5678-9234-567812345678","machine_hardware_id":"a9aa9d04-3ece-5567-8260-910930ff5e03"}"#
+            r#"{"machine_hardware_id":"0c0fef01-1126-5297-a522-92cfe494ce48"}"#
         );
         let metadata = match fs::metadata(path) {
             Ok(metadata) => metadata,
@@ -196,18 +181,32 @@ mod tests {
     #[test]
     fn existing_different_valid_record_is_never_overwritten() {
         let directory = tempdir();
-        if let Err(error) = write_first_start(directory.path(), NAMESPACE, MACHINE_ID) {
+        if let Err(error) = write_first_start(directory.path(), MACHINE_ID) {
             panic!("initial identity record must be written: {error}");
         }
-        let result = write_first_start(directory.path(), NAMESPACE, Uuid::from_u128(1));
+        let result = write_first_start(directory.path(), Uuid::from_u128(1));
 
         assert!(result.is_err());
         assert_eq!(
             read(directory.path()),
             IdentityRecordState::Valid {
-                fleet_namespace_uuid: NAMESPACE,
                 machine_hardware_id: MACHINE_ID,
             }
+        );
+    }
+
+    #[test]
+    fn incompatible_record_is_never_replaced_on_first_start() {
+        let directory = tempdir();
+        let record = br#"{"machine_hardware_id":"0c0fef01-1126-5297-a522-92cfe494ce48","obsolete_field":true}"#;
+        write_raw(directory.path(), record);
+
+        assert!(write_first_start(directory.path(), MACHINE_ID).is_err());
+        assert_eq!(read(directory.path()), IdentityRecordState::Corrupt);
+        assert_eq!(
+            fs::read(record_path(directory.path()))
+                .unwrap_or_else(|error| panic!("original record must remain readable: {error}")),
+            record
         );
     }
 }

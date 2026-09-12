@@ -24,7 +24,7 @@
 
 | 安装目标 | 内容 |
 | --- | --- |
-| `/etc/natsume/config.toml` | `[server]` 下 `ip`、`port`；`[site]` 下 `fleet_namespace_uuid`、`gateway_hostname` |
+| `/etc/natsume/config.toml` | `[server]` 下 `ip`、`port`；`[site]` 下 `gateway_hostname` |
 | `/etc/natsume/trust/control-ca.crt` | 控制平面公共 CA 证书 |
 | `/etc/natsume/trust/local-origin-ca.crt` | 本地 Origin 公共 CA 证书 |
 
@@ -36,7 +36,6 @@ ip = "192.0.2.10"
 port = 8443
 
 [site]
-fleet_namespace_uuid = "REPLACE-WITH-STABLE-SITE-UUID"
 gateway_hostname = "gateway.contest.example"
 ```
 
@@ -46,7 +45,7 @@ gateway_hostname = "gateway.contest.example"
 
 Server root key、CA 私钥、每设备控制/网关私钥不进入交接包或可克隆镜像。首次启动前，`/var/lib/natsume/{identity,control,keys,state}` 与 `/var/lib/natsume-privileged/home-reset` 不得携带运行状态；允许包初始化空目录。不要把已运行工位清空后当作可信新镜像来源。已部署工位的升级必须保留这些状态，不能套用新镜像初始化清理。
 
-按发行版机制准备首次生成的 machine-id。Natsume 自身首次身份还依赖真实机器硬件证据；QEMU 克隆须配置独立、有效的 SMBIOS/系统及主板标识，不能让多台工位共享同一硬件身份。身份就绪后仍需 Server 打开 Provisioning Gate、管理员审批 Enrollment，再由 waiting 的 Agent 进行 Binding；包非交互安装不等于注册或业务授权。
+按发行版机制准备首次生成的 machine-id。Natsume 自身首次身份还依赖真实机器硬件证据，使用程序内固定的 UUIDv5 命名空间，部署方无需生成站点 UUID。同样的硬件证据在不同部署中得到相同 Hardware ID。QEMU 克隆须配置独立、有效的 SMBIOS/系统及主板标识，不能让多台工位共享同一硬件身份。身份就绪后仍需 Server 打开 Provisioning Gate、管理员审批 Enrollment，再由 waiting 的 Agent 进行 Binding；包非交互安装不等于注册或业务授权。
 
 ## 3. 官方依赖与实际文件
 

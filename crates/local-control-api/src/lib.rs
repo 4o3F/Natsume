@@ -24,7 +24,6 @@ pub struct DerivedMachineIdentity {
 pub enum MachineIdentityError {
     #[zbus(error)]
     ZBus(zbus::Error),
-    InvalidArguments(String),
     InsufficientSources(String),
     Unsupported(String),
 }
@@ -235,10 +234,7 @@ pub trait Device1 {
 )]
 pub trait Privileged1 {
     #[zbus(name = "DeriveMachineIdentity")]
-    fn derive_machine_identity(
-        &self,
-        fleet_namespace_uuid: &str,
-    ) -> Result<DerivedMachineIdentity, MachineIdentityError>;
+    fn derive_machine_identity(&self) -> Result<DerivedMachineIdentity, MachineIdentityError>;
 
     #[zbus(name = "HasHomeResetState")]
     fn has_home_reset_state(&self) -> Result<bool, ResourceControlError>;

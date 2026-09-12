@@ -10,6 +10,10 @@ use super::{ANCHOR_ORDER, EvidenceStatus, SlotEvaluation};
 
 const MISSING_SLOT_MARKER: u8 = 0x01;
 
+/// Frozen `UUIDv5(NAMESPACE_URL, "urn:natsume:machine-hardware-id:v1")`.
+/// Changing this value changes every Machine Hardware ID.
+const MACHINE_ID_NAMESPACE: Uuid = Uuid::from_u128(0xde1a_e196_317f_5204_880f_0b52_56c9_8ce6);
+
 /// The closed result of applying the whole-machine 2-of-3 claim policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::hardware_identity) enum MachineIdentityDecision {
@@ -50,9 +54,8 @@ fn whole_machine_name_bytes(evaluations: &[SlotEvaluation; 3]) -> Vec<u8> {
 /// Applies the terminal unsupported rule, the 2-of-3 claim decision, and the frozen whole-machine
 /// byte recipe.
 ///
-/// The evaluations must occupy [`ANCHOR_ORDER`] positions and must have been produced with the
-/// same immutable Fleet namespace. The namespace retained by the first evaluation is the same
-/// namespace used by the whole-machine `UUIDv5` derivation.
+/// The evaluations must occupy [`ANCHOR_ORDER`] positions. Every deployment uses the same
+/// frozen Natsume namespace for the whole-machine `UUIDv5` derivation.
 #[must_use]
 pub(in crate::hardware_identity) fn decide_machine_identity(
     evaluations: &[SlotEvaluation; 3],
@@ -71,17 +74,10 @@ pub(in crate::hardware_identity) fn decide_machine_identity(
         return MachineIdentityDecision::InsufficientSources;
     }
 
-    let namespace = evaluations[0].fleet_namespace;
-    debug_assert!(
-        evaluations
-            .iter()
-            .all(|evaluation| evaluation.fleet_namespace == namespace),
-        "all slot evaluations must use one immutable Fleet namespace"
-    );
     let name = whole_machine_name_bytes(evaluations);
 
     MachineIdentityDecision::Derived {
-        machine_hardware_id: Uuid::new_v5(&namespace, &name),
+        machine_hardware_id: Uuid::new_v5(&MACHINE_ID_NAMESPACE, &name),
     }
 }
 
@@ -90,7 +86,6 @@ mod tests {
     use super::super::{AnchorKind, ReadOutcome, evaluate_slot};
     use super::*;
 
-    const TEST_NAMESPACE: Uuid = Uuid::from_u128(0x1234_5678_1234_5678_9234_5678_1234_5678);
     const SYSTEM_UUID: &str = "550e8400-e29b-41d4-a716-446655440000";
 
     fn evaluate_fixture(values: [Option<&str>; 3]) -> [SlotEvaluation; 3] {
@@ -98,7 +93,7 @@ mod tests {
             let reading = values[index].map_or(ReadOutcome::Unavailable, |value| {
                 ReadOutcome::Value(value.to_owned())
             });
-            evaluate_slot(ANCHOR_ORDER[index], &reading, TEST_NAMESPACE)
+            evaluate_slot(ANCHOR_ORDER[index], &reading)
         })
     }
 
@@ -122,7 +117,7 @@ mod tests {
 
     fn evaluation_with_status(kind: AnchorKind, status: EvidenceStatus) -> SlotEvaluation {
         let reading = ReadOutcome::Value(valid_value(kind).to_owned());
-        let mut evaluation = evaluate_slot(kind, &reading, TEST_NAMESPACE);
+        let mut evaluation = evaluate_slot(kind, &reading);
         if status != EvidenceStatus::Present {
             evaluation.status = status;
             evaluation.normalized_value = None;
@@ -207,8 +202,8 @@ mod tests {
         )
         .as_bytes();
 
-        assert_eq!(actual, Uuid::new_v5(&TEST_NAMESPACE, expected_name));
-        assert_eq!(actual.to_string(), "a9aa9d04-3ece-5567-8260-910930ff5e03");
+        assert_eq!(actual, Uuid::new_v5(&MACHINE_ID_NAMESPACE, expected_name));
+        assert_eq!(actual.to_string(), "0c0fef01-1126-5297-a522-92cfe494ce48");
     }
 
     #[test]
@@ -224,8 +219,8 @@ mod tests {
               dmi_board_serial\x00board42\x00\
               first_disk_serial\x00\x01\x00";
 
-        assert_eq!(actual, Uuid::new_v5(&TEST_NAMESPACE, expected_name));
-        assert_eq!(actual.to_string(), "7868c4db-ba77-52b9-a93c-f1ee2445e5f8");
+        assert_eq!(actual, Uuid::new_v5(&MACHINE_ID_NAMESPACE, expected_name));
+        assert_eq!(actual.to_string(), "939d8a7f-642f-583e-ad40-ba40c44b6b0e");
     }
 
     #[test]
@@ -262,7 +257,6 @@ mod tests {
         let evaluation = evaluate_slot(
             AnchorKind::DmiBoardSerial,
             &ReadOutcome::Value("\u{1}".to_owned()),
-            TEST_NAMESPACE,
         );
 
         assert_eq!(evaluation.status, EvidenceStatus::Malformed);

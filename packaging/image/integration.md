@@ -182,6 +182,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y /path/to/natsume-client.deb
 
 本期只支持当前数据库、Home 窗口格式和 waiting/teams 账号，不提供重构前数据库、窗口或账号的迁移路径。
 
+Client 已改用程序内固定的硬件 ID 派生命名空间，identity.json 只保存 machine_hardware_id，Daemon 与 Helper 的 DeriveMachineIdentity 调用也不再带参数。使用旧站点 UUID 的 Client 不支持原地身份迁移：先完成 Home 恢复并退出受管会话，备份所需数据，在 Server 解除旧 Binding 并 Revoke 旧设备，再从干净镜像重新部署、审批注册和绑定。不要单独删除 identity.json、改写 ID 或沿用旧 Control/Gateway 凭据；旧身份记录会被拒绝，不能把它当作首次启动。Daemon 和 Helper 必须使用配套的新版本。
+
 在用工位维护前保留独立管理员入口，让当前 Helper 完成已捕获的 Home 窗口，确认维护关闭后再停止服务和排空受管 UID。不得删除进度记录绕过恢复，也不在活跃会话或挂载下替换模板。
 
 停止新的业务操作和 Daemon/control 连接，确认 Server offline/原 Actual 已撤销。用一致私有备份保存 Server 数据库与密钥、Client 身份/凭据、Binding、完成 epoch、Home 和镜像配置，不在 image builder 中改写业务数据库。

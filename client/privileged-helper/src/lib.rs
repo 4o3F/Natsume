@@ -31,7 +31,6 @@ use natsume_local_control_api::{
     DerivedMachineIdentity, GraphicalSession, GraphicalSessionObservation, HomeResetProgress,
     MachineIdentityError, ManagedSessionsObservation, ResourceControlError, SessionRole,
 };
-use uuid::Uuid;
 
 /// Closed root capabilities exposed to the Device Daemon.
 pub struct PrivilegedService {
@@ -48,12 +47,6 @@ impl PrivilegedService {
     }
 }
 
-fn canonical_uuid(value: &str) -> Option<Uuid> {
-    Uuid::parse_str(value)
-        .ok()
-        .filter(|uuid| uuid.hyphenated().to_string() == value)
-}
-
 async fn bounded_session_operation<T>(
     operation: impl std::future::Future<Output = Result<T, ResourceControlError>>,
 ) -> Result<T, ResourceControlError> {
@@ -65,16 +58,8 @@ async fn bounded_session_operation<T>(
 #[zbus::interface(name = "org.natsume.Privileged1")]
 impl PrivilegedService {
     #[zbus(name = "DeriveMachineIdentity")]
-    fn derive_machine_identity(
-        &self,
-        fleet_namespace_uuid: &str,
-    ) -> Result<DerivedMachineIdentity, MachineIdentityError> {
-        let Some(namespace) = canonical_uuid(fleet_namespace_uuid) else {
-            return Err(MachineIdentityError::InvalidArguments(
-                "fleet namespace UUID must use canonical lowercase hyphenated form".to_owned(),
-            ));
-        };
-        hardware_identity::derive_identity(&self.filesystem_root, namespace)
+    fn derive_machine_identity(&self) -> Result<DerivedMachineIdentity, MachineIdentityError> {
+        hardware_identity::derive_identity(&self.filesystem_root)
     }
 
     /// Retries local mount recovery without granting any remote foreground target.
@@ -264,8 +249,6 @@ mod tests {
 
     use super::*;
 
-    const TEST_NAMESPACE: &str = "12345678-1234-5678-9234-567812345678";
-
     impl PrivilegedService {
         fn fixture(filesystem_root: &Path) -> Self {
             Self {
@@ -346,14 +329,14 @@ mod tests {
             Err(error) => panic!("generated proxy must be built: {error}"),
         };
 
-        let identity = match proxy.derive_machine_identity(TEST_NAMESPACE).await {
+        let identity = match proxy.derive_machine_identity().await {
             Ok(identity) => identity,
             Err(error) => panic!("machine identity must round trip: {error}"),
         };
 
         assert_eq!(
             identity.machine_hardware_id,
-            "7868c4db-ba77-52b9-a93c-f1ee2445e5f8"
+            "939d8a7f-642f-583e-ad40-ba40c44b6b0e"
         );
         assert_eq!(
             identity.quality,
@@ -427,13 +410,5 @@ mod tests {
             .unwrap_or_else(|e| panic!("record: {e}")),
             spent
         );
-    }
-
-    #[test]
-    fn namespace_validation_requires_exact_canonical_form() {
-        assert!(canonical_uuid(TEST_NAMESPACE).is_some());
-        assert!(canonical_uuid("12345678123456789234567812345678").is_none());
-        assert!(canonical_uuid("12345678-1234-5678-9234-56781234567A").is_none());
-        assert!(canonical_uuid("not-a-uuid").is_none());
     }
 }

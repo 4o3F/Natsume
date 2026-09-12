@@ -60,7 +60,6 @@ pub(super) struct SlotEvaluation {
     // Claim-layer input retained inside the pure-computation boundary. The custom Debug
     // implementation intentionally keeps normalized hardware values out of logs.
     normalized_value: Option<String>,
-    fleet_namespace: Uuid,
 }
 
 impl fmt::Debug for SlotEvaluation {
@@ -164,11 +163,7 @@ fn normalize_value(kind: AnchorKind, value: &str) -> NormalizedValue {
 /// This function is pure: callers map platform I/O into [`ReadOutcome`], while normalization,
 /// placeholder rejection and quality assignment remain here.
 #[must_use]
-pub(super) fn evaluate_slot(
-    kind: AnchorKind,
-    reading: &ReadOutcome,
-    fleet_namespace: Uuid,
-) -> SlotEvaluation {
+pub(super) fn evaluate_slot(kind: AnchorKind, reading: &ReadOutcome) -> SlotEvaluation {
     let quality = anchor_quality(kind);
     match reading {
         ReadOutcome::Value(value) => match normalize_value(kind, value) {
@@ -176,38 +171,32 @@ pub(super) fn evaluate_slot(
                 status: EvidenceStatus::Present,
                 quality,
                 normalized_value: Some(normalized),
-                fleet_namespace,
             },
             NormalizedValue::Malformed => SlotEvaluation {
                 status: EvidenceStatus::Malformed,
                 quality,
                 normalized_value: None,
-                fleet_namespace,
             },
             NormalizedValue::RejectedPlaceholder => SlotEvaluation {
                 status: EvidenceStatus::RejectedPlaceholder,
                 quality,
                 normalized_value: None,
-                fleet_namespace,
             },
         },
         ReadOutcome::Unavailable => SlotEvaluation {
             status: EvidenceStatus::Unavailable,
             quality,
             normalized_value: None,
-            fleet_namespace,
         },
         ReadOutcome::PermissionDenied => SlotEvaluation {
             status: EvidenceStatus::PermissionDenied,
             quality,
             normalized_value: None,
-            fleet_namespace,
         },
         ReadOutcome::Unsupported => SlotEvaluation {
             status: EvidenceStatus::Unsupported,
             quality,
             normalized_value: None,
-            fleet_namespace,
         },
     }
 }
@@ -233,7 +222,6 @@ mod tests {
 
     #[test]
     fn placeholder_decision_table_rejects_every_frozen_variant() {
-        let namespace = Uuid::from_u128(100);
         let cases = [
             " \t-_:\r\n",
             " 00-00_00:00 ",
@@ -253,8 +241,7 @@ mod tests {
 
         for kind in ANCHOR_ORDER {
             for value in cases {
-                let evaluation =
-                    evaluate_slot(kind, &ReadOutcome::Value(value.to_owned()), namespace);
+                let evaluation = evaluate_slot(kind, &ReadOutcome::Value(value.to_owned()));
                 assert_eq!(evaluation.status, EvidenceStatus::RejectedPlaceholder);
                 assert_eq!(evaluation.normalized_value, None);
             }
@@ -282,12 +269,10 @@ mod tests {
 
     #[test]
     fn placeholder_projection_near_misses_remain_present() {
-        let namespace = Uuid::from_u128(106);
         for value in ["unknown2", "01234567890", "0001"] {
             let evaluation = evaluate_slot(
                 AnchorKind::DmiBoardSerial,
                 &ReadOutcome::Value(value.to_owned()),
-                namespace,
             );
             assert_eq!(evaluation.status, EvidenceStatus::Present);
             assert!(evaluation.normalized_value.is_some());
@@ -296,11 +281,9 @@ mod tests {
 
     #[test]
     fn placeholder_projection_does_not_change_normalized_value() {
-        let namespace = Uuid::from_u128(107);
         let evaluation = evaluate_slot(
             AnchorKind::DmiBoardSerial,
             &ReadOutcome::Value(" Board/42 ".to_owned()),
-            namespace,
         );
 
         assert_eq!(evaluation.status, EvidenceStatus::Present);
@@ -309,16 +292,13 @@ mod tests {
 
     #[test]
     fn separator_case_and_space_normalization_is_equivalent() {
-        let namespace = Uuid::from_u128(101);
         let noisy = evaluate_slot(
             AnchorKind::DmiBoardSerial,
             &ReadOutcome::Value(" AB-12 cd ".to_owned()),
-            namespace,
         );
         let canonical = evaluate_slot(
             AnchorKind::DmiBoardSerial,
             &ReadOutcome::Value("ab12cd".to_owned()),
-            namespace,
         );
 
         assert_eq!(noisy.status, EvidenceStatus::Present);
@@ -327,16 +307,13 @@ mod tests {
 
     #[test]
     fn system_uuid_decision_table_parses_and_canonicalizes() {
-        let namespace = Uuid::from_u128(102);
         let malformed = evaluate_slot(
             AnchorKind::DmiSystemUuid,
             &ReadOutcome::Value("not-a-uuid".to_owned()),
-            namespace,
         );
         let mixed_case = evaluate_slot(
             AnchorKind::DmiSystemUuid,
             &ReadOutcome::Value(" 550E8400-E29B-41D4-A716-446655440000\r\n".to_owned()),
-            namespace,
         );
         assert_eq!(malformed.status, EvidenceStatus::Malformed);
         assert_eq!(malformed.normalized_value, None);
@@ -349,7 +326,6 @@ mod tests {
 
     #[test]
     fn read_outcome_decision_table_maps_every_status() {
-        let namespace = Uuid::from_u128(103);
         let cases = [
             (
                 ReadOutcome::Value("board-42".to_owned()),
@@ -372,7 +348,7 @@ mod tests {
         ];
 
         for (reading, expected) in cases {
-            let evaluation = evaluate_slot(AnchorKind::DmiBoardSerial, &reading, namespace);
+            let evaluation = evaluate_slot(AnchorKind::DmiBoardSerial, &reading);
             assert_eq!(evaluation.status, expected);
             assert_eq!(
                 evaluation.normalized_value.is_some(),
@@ -383,7 +359,6 @@ mod tests {
 
     #[test]
     fn quality_is_constant_for_each_anchor_kind() {
-        let namespace = Uuid::from_u128(104);
         let cases = [
             (
                 AnchorKind::DmiSystemUuid,
@@ -403,8 +378,8 @@ mod tests {
         ];
 
         for (kind, value, expected) in cases {
-            let present = evaluate_slot(kind, &ReadOutcome::Value(value.to_owned()), namespace);
-            let unsupported = evaluate_slot(kind, &ReadOutcome::Unsupported, namespace);
+            let present = evaluate_slot(kind, &ReadOutcome::Value(value.to_owned()));
+            let unsupported = evaluate_slot(kind, &ReadOutcome::Unsupported);
             assert_eq!(present.quality, expected);
             assert_eq!(unsupported.quality, expected);
         }

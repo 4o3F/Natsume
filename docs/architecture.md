@@ -196,8 +196,8 @@ Caddy 只负责本机数据面：
 - 其他 route 不注入 credential。
 
 Runtime Config 的 DOMjudge HTTPS origin 只由Server部署配置提供和修改，不暴露
-Operator HTTP/Web mutation。它不能改变Control Endpoint、Server trust root、fleet
-namespace或Gateway hostname；这些都是部署期不可远程修改的bootstrap参数。
+Operator HTTP/Web mutation。它不能改变Control Endpoint、Server trust root或Gateway
+hostname；这些都是部署期不可远程修改的bootstrap参数。
 
 ## 5. 信任、身份与秘密
 
@@ -222,7 +222,7 @@ Client 使用固定三个来源：
 2. DMI motherboard serial；
 3. 第一块 system disk serial。
 
-经过固定 normalization、placeholder 拒绝和 2-of-3 判定后，以 fleet namespace 派生稳定 ID。原始 serial 不发往 Server、不写日志、不进入 fixture。Enrollment wire 只携带派生 Hardware ID 外层 proof context和 aggregate `MEDIUM`/`STRONG` advisory quality。
+经过固定 normalization、placeholder 拒绝和 2-of-3 判定后，以 Helper 内固定的 Natsume 命名空间 `de1ae196-317f-5204-880f-0b5256c98ce6` 派生 UUIDv5。该常量由 `UUIDv5(NAMESPACE_URL, "urn:natsume:machine-hardware-id:v1")` 固定，不能随版本或部署改变；相同硬件证据跨部署得到相同 Hardware ID。配置和本地 IPC 不接收站点 UUID，identity.json 只保存 machine_hardware_id。原始 serial 不发往 Server、不写日志、不进入 fixture。Enrollment wire 只携带派生 Hardware ID 外层 proof context和 aggregate `MEDIUM`/`STRONG` advisory quality。
 
 无法形成 quorum 时必须停止 identity-bound adapter 初始化；不得读取旧 credential 后猜测身份。
 
@@ -264,7 +264,6 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 
 | 事实 | Owner | 备注 |
 |---|---|---|
-| Site/fleet identity | Server core | 单例、部署期固定 |
 | Seat、Account、Seat→Account | Contest/Import Component | Import 唯一修改者 |
 | Account password ciphertext/revision | Contest/Import + Vault | plaintext 只存在于短生命周期内存 |
 | Device lifecycle | Device Component | enabled/disabled/revoked |
@@ -585,7 +584,7 @@ Runtime Config 当前只包含 canonical HTTPS DOMjudge origin：
 
 - 唯一配置源是Server `config.toml` 的 `[runtime].domjudge_origin`，必须提供 canonical HTTPS origin；`bootstrap` 与首个管理员在同一事务中初始化 `runtime_config`，`serve` 启动时从部署配置同步；Operator Panel只在Device convergence中查看target/actual；
 - 禁止 userinfo、path、query、fragment；
-- Control Endpoint、trust root、fleet namespace 和 Gateway hostname 永不进入远程配置；
+- Control Endpoint、trust root 和 Gateway hostname 永不进入远程配置；
 - Client 不持久化密码到 Runtime Config；
 - 应用新配置失败时 Gateway 数据面必须确认BLOCKED；BLOCKED也无法加载时Daemon失败退出，systemd硬终止仍可能持有旧READY配置的Caddy，并只从无listener的bootstrap配置重启；
 - Target 重发必须幂等。
@@ -995,7 +994,7 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 
 | 表 | Owner | 关键约束 |
 |---|---|---|
-| `site_identity` | Core | singleton fleet namespace |
+| `site_identity` | 历史 schema | 当前运行路径不读写；Client 身份派生不依赖此表 |
 | `operator_accounts` | Operator | username unique，role封闭，credential revision正数 |
 | `operator_sessions` | Operator | 只存cookie hash和绝对过期 |
 | `seats` | Contest/Import | seat code unique |

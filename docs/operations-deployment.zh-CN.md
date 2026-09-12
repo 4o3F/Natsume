@@ -4,7 +4,7 @@
 
 ## 0. 适用范围与执行顺序
 
-核对基线：**Natsume v2.0.3、Ubuntu 24.04 LTS amd64**。Client 运行验收以完成配套 GNOME/GDM、X11 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。
+核对基线：**Natsume v2.0.4、Ubuntu 24.04 LTS amd64**。Client 运行验收以完成配套 GNOME/GDM、X11 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。
 
 PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client Deb 构建都在同一台 Ubuntu 24.04 Server 上执行。使用同一个具有 sudo 权限的管理员账号，以下 $HOME 均指该账号的 Home；需要服务用户执行的命令会显式使用 sudo -u natsume-server。各节环境变量在同一终端中沿用，换终端后按对应步骤重新设置。
 
@@ -20,7 +20,7 @@ PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client De
 
 执行顺序：
 
-1. 确定地址、域名、站点 UUID 和期限。
+1. 确定地址、域名和期限。
 2. 创建两套 CA、Server TLS leaf，导出所需格式。
 3. 安装 Server，部署完整配置和密钥，运行 bootstrap 初始化数据库。
 4. 导入比赛数据，从源码构建 Client Deb 并准备包外输入。
@@ -45,20 +45,13 @@ Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁
 | HTTPS 端口 | 8443 | Server 监听、Client 配置、防火墙保持一致 |
 | Gateway hostname | domjudge | 每台比赛机解析到自己的 127.0.0.1 和 ::1 |
 | DOMjudge 上游 origin | https://judge.contest.example | 真实 DOMjudge，不能指向 Client loopback |
-| fleet namespace UUID | 生成一次并归档 | 同一站点 Client 共用，重装时保留，不每台随机生成 |
 | contest end | 2026-12-06T10:00:00Z | 按实际赛事填写 UTC 比赛结束时间 |
 | Gateway not after | 2026-12-08T10:00:00Z | 至少覆盖 contest end 后 **86400 秒**，部署时尚未过期 |
-| 版本 | 2.0.3 | 两端 Deb 与镜像集成要求配套 |
+| 版本 | 2.0.4 | 两端 Deb 与镜像集成要求配套 |
 
 本文选择 domjudge，以匹配当前镜像默认的 https://domjudge/ 主页和书签。它只是本机 Gateway 名称，**不是实际上游地址，也不意味着预置了某个 CA**。若改用 gateway.contest.example 等名字，须同步两端配置、Client hosts、Firefox 主页和书签。
 
-在 Server 上生成一次 UUID，并记入部署清单：
-
-~~~bash
-python3 -c 'import uuid; print(uuid.uuid4())'
-~~~
-
-fleet_namespace_uuid 只属于 Client。两端必须匹配 Gateway hostname 和两份 CA；比赛结束时间和 Gateway 期限只属于 Server。
+Client 使用程序内固定的命名空间从硬件证据派生设备 ID，无需生成或配置站点 UUID。两端必须匹配 Gateway hostname 和两份 CA；比赛结束时间和 Gateway 期限只属于 Server。
 
 ### 1.2 网络、时间与 DOMjudge
 
@@ -346,20 +339,20 @@ chmod 0700 "$NATSUME_DEPLOY_DIR" "$NATSUME_DEPLOY_DIR/server"
 
 ### 3.2 下载并验证 Server 包
 
-在 Server 本机下载 [v2.0.3 Release](https://github.com/4o3F/Natsume/releases/tag/v2.0.3) 中的 Server 包（需先完成该版本发布）：
+在 Server 本机下载 [v2.0.4 Release](https://github.com/4o3F/Natsume/releases/tag/v2.0.4) 中的 Server 包（需先完成该版本发布）：
 
 ~~~bash
 cd "$NATSUME_DEPLOY_DIR/packages"
-NATSUME_RELEASE_URL='https://github.com/4o3F/Natsume/releases/download/v2.0.3'
+NATSUME_RELEASE_URL='https://github.com/4o3F/Natsume/releases/download/v2.0.4'
 
-curl --fail --location --remote-name "$NATSUME_RELEASE_URL/natsume-server_2.0.3_amd64.deb"
+curl --fail --location --remote-name "$NATSUME_RELEASE_URL/natsume-server_2.0.4_amd64.deb"
 curl --fail --location --remote-name "$NATSUME_RELEASE_URL/SHA256SUMS"
-test -s natsume-server_2.0.3_amd64.deb
+test -s natsume-server_2.0.4_amd64.deb
 sha256sum --check --ignore-missing SHA256SUMS
-dpkg-deb --field natsume-server_2.0.3_amd64.deb Package Version Architecture
+dpkg-deb --field natsume-server_2.0.4_amd64.deb Package Version Architecture
 ~~~
 
-Server 校验须为 OK，版本/架构为 2.0.3/amd64。Release 的 SHA256SUMS 同时列出两种包，此处用 --ignore-missing 跳过未下载的官方 Client 包，Client 在第 6 节从源码构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
+Server 校验须为 OK，版本/架构为 2.0.4/amd64。Release 的 SHA256SUMS 同时列出两种包，此处用 --ignore-missing 跳过未下载的官方 Client 包，Client 在第 6 节从源码构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
 
 ## 4. 在服务器安装 Server
 
@@ -395,7 +388,7 @@ Server Deb 直接使用第 3.2 节已下载并校验的本地文件。下一节�
 dpkg --print-architecture
 sudo apt-get update
 sudo apt-get install --yes ca-certificates openssl curl sqlite3 python3
-sudo apt-get install --yes "$NATSUME_DEPLOY_DIR/packages/natsume-server_2.0.3_amd64.deb"
+sudo apt-get install --yes "$NATSUME_DEPLOY_DIR/packages/natsume-server_2.0.4_amd64.deb"
 dpkg-query -W natsume-server
 getent passwd natsume-server
 ~~~
@@ -626,8 +619,8 @@ sudo apt-get install --yes build-essential pkg-config curl git ca-certificates \
   python3 binutils xz-utils
 mkdir -p "$HOME/src"
 cd "$HOME/src"
-git clone --branch v2.0.3 --depth 1 https://github.com/4o3F/Natsume.git Natsume-v2.0.3
-cd Natsume-v2.0.3
+git clone --branch v2.0.4 --depth 1 https://github.com/4o3F/Natsume.git Natsume-v2.0.4
+cd Natsume-v2.0.4
 git rev-parse HEAD
 ~~~
 
@@ -648,7 +641,7 @@ cargo --version
 
 ### 6.2 下载并校验 Caddy 和 nFPM
 
-v2.0.3 固定 Caddy 2.11.4、nFPM 2.47.0。版本和摘要由 packaging/client/caddy.version、caddy.archive.sha256、caddy.sha256 及 packaging/nfpm.version、nfpm.sha256 管理。
+v2.0.4 固定 Caddy 2.11.4、nFPM 2.47.0。版本和摘要由 packaging/client/caddy.version、caddy.archive.sha256、caddy.sha256 及 packaging/nfpm.version、nfpm.sha256 管理。
 
 ~~~bash
 NATSUME_SOURCE_DIR="$PWD"
@@ -703,7 +696,7 @@ ls -lh "$CARGO_TARGET_DIR/release/natsume-device-daemon" \
 下面与仓库 package-client recipe 使用同一 manifest，直接调用工具，不要求额外安装 just：
 
 ~~~bash
-export VERSION='2.0.3'
+export VERSION='2.0.4'
 export ARCH='amd64'
 export RUST_RELEASE_DIR="$CARGO_TARGET_DIR/release"
 export CADDY_BIN="$NATSUME_TOOL_DIR/caddy"
@@ -715,16 +708,16 @@ envsubst '$ARCH $VERSION $RUST_RELEASE_DIR $CADDY_BIN' \
 "$NATSUME_TOOL_DIR/nfpm" package --packager deb \
   --config "$NATSUME_TOOL_DIR/client.nfpm.yaml" --target dist/packages/
 
-dpkg-deb --field dist/packages/natsume-client_2.0.3_amd64.deb Package Version Architecture
-python3 packaging/check-image-inputs.py --deb dist/packages/natsume-client_2.0.3_amd64.deb
+dpkg-deb --field dist/packages/natsume-client_2.0.4_amd64.deb Package Version Architecture
+python3 packaging/check-image-inputs.py --deb dist/packages/natsume-client_2.0.4_amd64.deb
 (
   cd dist/packages
-  sha256sum natsume-client_2.0.3_amd64.deb > natsume-client_2.0.3_amd64.deb.sha256
-  sha256sum --check natsume-client_2.0.3_amd64.deb.sha256
+  sha256sum natsume-client_2.0.4_amd64.deb > natsume-client_2.0.4_amd64.deb.sha256
+  sha256sum --check natsume-client_2.0.4_amd64.deb.sha256
 )
 ~~~
 
-交付产物为 **dist/packages/natsume-client_2.0.3_amd64.deb** 及本次生成的 checksum。check-image-inputs 检查 Deb 内附带的桌面集成交接材料，并不构建 ISO，也不在 Server 上创建 Client 账号或启动 Client 服务。
+交付产物为 **dist/packages/natsume-client_2.0.4_amd64.deb** 及本次生成的 checksum。check-image-inputs 检查 Deb 内附带的桌面集成交接材料，并不构建 ISO，也不在 Server 上创建 Client 账号或启动 Client 服务。
 
 不传入 SITE_CONFIG、CONTROL_CA_CERT 或 LOCAL_ORIGIN_CA_CERT；通用 Deb 不包含测试/正式 CA 和部署配置。它包含程序、Caddy、包所属运行文件、配置示例及完整交接目录。
 
@@ -736,7 +729,7 @@ python3 packaging/check-image-inputs.py --deb dist/packages/natsume-client_2.0.3
 
 ### 7.1 准备包外输入并交接
 
-在 Server 本机创建完整 Client config.toml，替换实际 IP 和已归档的站点 UUID：
+在 Server 本机创建完整 Client config.toml，替换实际 IP、端口和 Gateway hostname：
 
 ~~~bash
 NATSUME_DEPLOY_DIR="$HOME/natsume-deploy"
@@ -746,7 +739,6 @@ ip = "192.0.2.10"
 port = 8443
 
 [site]
-fleet_namespace_uuid = "REPLACE-WITH-THE-RECORDED-SITE-UUID"
 gateway_hostname = "domjudge"
 EOF
 ~~~
@@ -771,9 +763,9 @@ EOF
 
 ~~~bash
 cd "$HOME/natsume-client-install"
-sha256sum --check natsume-client_2.0.3_amd64.deb.sha256
+sha256sum --check natsume-client_2.0.4_amd64.deb.sha256
 sudo apt-get update
-sudo apt-get install --yes "$PWD/natsume-client_2.0.3_amd64.deb"
+sudo apt-get install --yes "$PWD/natsume-client_2.0.4_amd64.deb"
 
 sudo install -d -o root -g root -m 0755 /etc/natsume /etc/natsume/trust
 sudo install -o root -g root -m 0644 config.toml /etc/natsume/config.toml
@@ -842,7 +834,7 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
   https://judge.contest.example/
 ~~~
 
-预期版本 2.0.3、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
+预期版本 2.0.4、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
 
 ### 7.5 开启注册窗口、审批、绑定
 
@@ -1008,7 +1000,6 @@ sudo systemctl start natsume-server.service
 | 同一 Control CA 续签 Server leaf | 在 Server 管理员的 PKI 目录签发、核对 SAN/期限/公钥；停服替换 leaf/key，保持权限；重启并从 Client 验证 |
 | 更换 Server IP | 先准备覆盖新 IP 的 leaf，再改 Client 配置/网络，重启 Daemon 并验收 |
 | 修改 Gateway hostname | 两端配置、hosts、主页/书签与新 Gateway leaf 配套迁移，不承诺只改 TOML 就更新旧 leaf |
-| 修改 fleet UUID | 影响设备身份，按新站点/重注册迁移处理，不是常规更新 |
 | 延长比赛或 Gateway 期限 | 核对 CA/Server leaf，更新配置；既有持久化 Gateway leaf 不保证自动重签，逐设备核对并安排凭据迁移 |
 | 轮换任一 CA | 当前不是多根无缝轮换方案；安排停机，两端/浏览器/设备凭据配套迁移 |
 | 修改 DOMjudge 上游 | 备份后修改 Server config.toml 的 [runtime].domjudge_origin，重启服务，核对 Runtime/Gateway |
@@ -1017,6 +1008,8 @@ sudo systemctl start natsume-server.service
 包不生成、覆盖、改权限或删除部署方 config/CA，更新文件由部署方负责。配置在进程启动时重新加载，不依赖安装脚本自动修正。
 
 Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升级/回退按[镜像维护要求](../packaging/image/integration.md#11-维护与回退)，不能只降级 Deb 然后沿用不兼容状态。不要克隆运行过机器的身份、Control/Gateway key、Enrollment 或 Home reset 状态到其他机器。
+
+旧版使用站点 UUID 的 Client 不能通过删除配置项完成原地升级：本版的硬件 ID 派生规则和 identity.json 格式均已改变。维护时先完成 Home 恢复、退出受管会话并备份所需数据，再在 Server 解除旧 Binding、Revoke 旧设备，从干净镜像重新部署，按 7.5 节重新审批和绑定。不要只删除 identity.json 或混用旧身份、Control/Gateway 凭据。Daemon 与 Helper 必须配套更新；未运行过的 Client 可直接使用本文的新配置。
 
 ## 9. 故障定位表
 
@@ -1039,7 +1032,7 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 | 页面可访问但登录错误 | 工位账号、密码、登录头支持、Cookie/重定向 | 在 teams Firefox 实测 /login，不打印 Caddy 凭据 |
 | 持续橙色桌面/无 Agent | waiting Kiosk、GDM/X11、Helper报告 | 独立管理员维护，不旁路再启动一个 Agent |
 | contest 不呈现/Home recovery_required | 模板 mount、Home、Binding、会话报告 | 保存现场数据，按镜像恢复流程处理，不自动删 Home |
-| 重装/克隆后身份冲突 | fleet UUID、硬件身份、镜像内旧状态 | 干净通用镜像、每台独立身份，按审批迁移 |
+| 重装/克隆后身份冲突 | 硬件身份、镜像内旧状态 | 干净通用镜像、每台独立身份，按审批迁移 |
 ## 10. 实施依据
 
 - [Server 命令、配置和私有材料](../server/README.md)、[Server 配置示例](../packaging/server/config.example.toml)、[Client 配置示例](../packaging/client/config.example.toml)。
