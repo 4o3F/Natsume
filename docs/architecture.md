@@ -583,7 +583,7 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 
 Runtime Config 当前只包含 canonical HTTPS DOMjudge origin：
 
-- 唯一配置源是Server部署配置，Operator Panel只在Device convergence中查看target/actual；
+- 唯一配置源是Server `config.toml` 的 `[runtime].domjudge_origin`，必须提供 canonical HTTPS origin；`bootstrap` 与首个管理员在同一事务中初始化 `runtime_config`，`serve` 启动时从部署配置同步；Operator Panel只在Device convergence中查看target/actual；
 - 禁止 userinfo、path、query、fragment；
 - Control Endpoint、trust root、fleet namespace 和 Gateway hostname 永不进入远程配置；
 - Client 不持久化密码到 Runtime Config；
@@ -1464,7 +1464,7 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - Server与Client使用原生Deb package；
 - 安装期不下载runtime；
 - postinstall不生成CA、Server leaf、vault key或Operator；
-- Server `bootstrap`显式生成vault master key并创建first admin；
+- Server `bootstrap`创建/迁移完整数据库 schema、显式生成缺失的vault master key，并在同一事务中创建first admin和初始化Runtime Config；重复执行不修改业务数据；比赛数据和设备数据由后续导入、注册产生；
 - Server `serve`只读取已存在secret，缺失即失败；
 - Client package 安装固定 Caddy binary，以及官方 GNOME Kiosk Script 用户服务的 Agent drop-in；不保留第二个 XDG 启动入口；
 - Server 与 Client package 均只附带文档配置示例，不包含部署配置或 CA；部署方生成完整 `/etc/natsume-server/config.toml` 与 `/etc/natsume/config.toml`，各自通过 TOML section 保存运行与站点参数，并提供两份公共根证书。Client 配置与 CA 由 autoinstall 在目标系统中落地，首次启动前完成匹配与完整性检查；包脚本不生成或改写配置，CA 私钥不进入 Deb 包或 Client 镜像；

@@ -4,6 +4,8 @@ use serde::Deserialize;
 use snafu::Snafu;
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
+use crate::component::runtime::is_canonical_https_origin;
+
 const CONFIG_PATH: &str = "/etc/natsume-server/config.toml";
 pub(crate) const ORIGIN_CA_CERTIFICATE_FILENAME: &str = "origin-ca.der";
 pub(crate) const ORIGIN_CA_PRIVATE_KEY_FILENAME: &str = "origin-ca-key.pk8";
@@ -19,6 +21,7 @@ pub struct ServerConfig {
     tls_private_key_path: PathBuf,
     site: GatewaySiteConfig,
     local_origin_root_path: PathBuf,
+    domjudge_origin: String,
 }
 
 impl ServerConfig {
@@ -51,6 +54,9 @@ impl ServerConfig {
             .https
             .parse::<SocketAddr>()
             .map_err(|_| ConfigError::InvalidListenAddress)?;
+        if !is_canonical_https_origin(&raw.runtime.domjudge_origin) {
+            return Err(ConfigError::InvalidDomjudgeOrigin);
+        }
         let config = Self {
             listen_address,
             log_level: raw.log.level,
@@ -60,6 +66,7 @@ impl ServerConfig {
             tls_private_key_path: raw.tls.private_key,
             site: GatewaySiteConfig::validate(raw.site)?,
             local_origin_root_path: raw.trust.local_origin_root,
+            domjudge_origin: raw.runtime.domjudge_origin,
         };
         config.validate_paths(&raw.trust.control_root)?;
         Ok(config)
@@ -122,6 +129,10 @@ impl ServerConfig {
         &self.local_origin_root_path
     }
 
+    pub(crate) fn domjudge_origin(&self) -> &str {
+        &self.domjudge_origin
+    }
+
     pub(crate) fn origin_ca_certificate_path(&self) -> Result<PathBuf, ConfigError> {
         self.private_keys_directory()
             .map(|directory| directory.join(ORIGIN_CA_CERTIFICATE_FILENAME))
@@ -156,6 +167,12 @@ struct RawServerConfig {
     tls: RawTlsConfig,
     site: RawGatewaySiteConfig,
     trust: RawTrustConfig,
+    runtime: RawRuntimeConfig,
+}
+
+#[derive(Deserialize)]
+struct RawRuntimeConfig {
+    domjudge_origin: String,
 }
 
 #[derive(Deserialize, Default)]
@@ -327,6 +344,8 @@ pub enum ConfigError {
     DecodeFailed,
     #[snafu(display("the configured listen address is invalid"))]
     InvalidListenAddress,
+    #[snafu(display("the configured DOMjudge origin must be a canonical HTTPS origin"))]
+    InvalidDomjudgeOrigin,
     #[snafu(display("the configured database path must be absolute"))]
     RelativeDatabasePath,
     #[snafu(display("the configured vault master key path must be absolute"))]
@@ -397,13 +416,56 @@ local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"
 gateway_hostname = "gateway.contest.example"
 gateway_not_after = "2028-02-29T23:59:58.123456789Z"
 contest_end = "2028-02-28T23:59:58.123456789Z"
+
+[runtime]
+domjudge_origin = "https://judge.contest.example"
 "#;
 
     #[test]
     fn valid_file_parses() -> Result<(), TestFailure> {
         let fixture = ConfigFixture::new(VALID_CONFIG)?;
-        ServerConfig::load_from(fixture.path())
+        let config = ServerConfig::load_from(fixture.path())
             .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+        assert_eq!(config.domjudge_origin(), "https://judge.contest.example");
+        Ok(())
+    }
+
+    #[test]
+    fn missing_runtime_configuration_is_rejected() -> Result<(), TestFailure> {
+        for contents in [
+            VALID_CONFIG.replace(
+                "[runtime]\ndomjudge_origin = \"https://judge.contest.example\"",
+                "",
+            ),
+            VALID_CONFIG.replace("domjudge_origin = \"https://judge.contest.example\"", ""),
+        ] {
+            let fixture = ConfigFixture::new(&contents)?;
+            assert_config_error(fixture.path(), ConfigError::DecodeFailed, &[])?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn invalid_runtime_origin_is_rejected_without_echoing_input() -> Result<(), TestFailure> {
+        for origin in [
+            "http://judge.contest.example",
+            "https://user:password-canary@judge.contest.example",
+            "https://judge.contest.example/login",
+            "https://judge.contest.example/",
+            "https://judge.contest.example?contest=1",
+            "https://judge.contest.example#fragment",
+            "https://JUDGE.contest.example",
+            "https://judge.contest.example:443",
+            "",
+        ] {
+            let fixture =
+                ConfigFixture::new(&VALID_CONFIG.replace("https://judge.contest.example", origin))?;
+            assert_config_error(
+                fixture.path(),
+                ConfigError::InvalidDomjudgeOrigin,
+                &["password-canary", "judge.contest.example"],
+            )?;
+        }
         Ok(())
     }
 

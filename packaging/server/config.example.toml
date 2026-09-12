@@ -23,3 +23,7 @@ contest_end = "2029-12-31T00:00:00Z"
 [trust]
 control_root = "/etc/natsume/trust/control-ca.crt"
 local_origin_root = "/etc/natsume/trust/local-origin-ca.crt"
+
+[runtime]
+# Canonical HTTPS origin only: no path, trailing slash, credentials, query or fragment.
+domjudge_origin = "https://judge.contest.example"

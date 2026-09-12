@@ -3,7 +3,7 @@ mod db;
 use snafu::Snafu;
 use url::Url;
 
-use crate::db::{Database, PersistenceError, TransactionError};
+use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 
 pub(crate) struct RuntimeConfigComponent {
     database: Database,
@@ -12,6 +12,18 @@ pub(crate) struct RuntimeConfigComponent {
 impl RuntimeConfigComponent {
     pub(crate) const fn new(database: Database) -> Self {
         Self { database }
+    }
+
+    /// Applies the validated deployment origin within the caller's transaction.
+    pub(crate) fn apply_deployment_config(
+        transaction: &mut Transaction<'_>,
+        origin: &str,
+    ) -> Result<(), RuntimeConfigError> {
+        match db::read_all(transaction)?.as_slice() {
+            [(1, current)] if current == origin => Ok(()),
+            [] | [(1, _)] => db::upsert(transaction, origin).map_err(RuntimeConfigError::from),
+            _ => Err(RuntimeConfigError::InvalidPersistedFacts),
+        }
     }
 
     /// Reads the durable `DOMjudge` origin without requiring it to be configured.

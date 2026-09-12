@@ -9,7 +9,8 @@ fail() {
 [[ -f docs/architecture.md ]] || fail 'docs/architecture.md is missing'
 while IFS= read -r doc; do
   case ${doc} in
-  docs/README.md | docs/architecture.md | docs/prd-gnome-dual-session.zh-CN.md | \
+  docs/README.md | docs/architecture.md | docs/operations-deployment.zh-CN.md | \
+    docs/prd-gnome-dual-session.zh-CN.md | \
     docs/gnome-session-image-requirements.zh-CN.md | docs/gnome-session-image-configuration.zh-CN.md) ;;
   *) fail "unexpected maintained document: ${doc}; development records belong in context/" ;;
   esac

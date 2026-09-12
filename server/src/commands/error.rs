@@ -27,6 +27,8 @@ pub enum CommandError {
     Signal,
     #[snafu(display("server bootstrap failed"))]
     Bootstrap,
+    #[snafu(display("server database has not been bootstrapped"))]
+    NotBootstrapped,
     #[snafu(display("operator password reset failed"))]
     PasswordReset,
 }

@@ -1,7 +1,7 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::db::{Database, PersistenceError};
+use crate::db::{Database, PersistenceError, Transaction};
 
 mod account;
 mod credentials;
@@ -26,12 +26,17 @@ impl OperatorComponent {
         Self { database }
     }
 
-    pub(crate) async fn create_first_admin(
-        &self,
+    /// Creates the first administrator within the caller's bootstrap transaction.
+    pub(crate) fn create_first_admin(
+        transaction: &mut Transaction<'_>,
         login_name: &str,
         password_hash: &str,
     ) -> Result<Uuid, OperatorError> {
-        account::create_first_admin(&self.database, login_name, password_hash).await
+        account::create_first_admin(transaction, login_name, password_hash)
+    }
+
+    pub(crate) fn is_initialized(transaction: &mut Transaction<'_>) -> Result<bool, OperatorError> {
+        db::any_account_exists(transaction).map_err(OperatorError::from)
     }
 
     pub(crate) async fn reset_password(

@@ -564,7 +564,12 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
     let fixture = TestDatabase::new().await?;
     let phc = password_phc("reset-admin", "old-password")?;
     let new_phc = password_phc("reset-admin", "new-password")?;
-    super::account::create_first_admin(&fixture.database, "reset-admin", &phc)
+    let bootstrap_phc = phc.clone();
+    fixture
+        .database
+        .write(move |transaction| {
+            super::account::create_first_admin(transaction, "reset-admin", &bootstrap_phc)
+        })
         .await
         .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
     test_insert_admin_account(&fixture.database, "other-admin", &phc)

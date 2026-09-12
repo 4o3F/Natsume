@@ -1,5 +1,9 @@
 # Server
 
+For the complete deployment procedure, see the Chinese
+[operations runbook](../docs/operations-deployment.zh-CN.md), including CA creation,
+Server installation, building the Client Deb from source and operational checks.
+
 Stage 3 provides a TLS 1.3-only, HTTP/1.1-only listener with the unauthenticated
 `GET /api/v2/health` process-liveness route.
 
@@ -9,11 +13,13 @@ carries configuration, paths, or secrets.
 
 - `natsume-server serve` opens an existing database, runs migrations and
   provisioning close-once recovery, requires an existing valid vault master
-  key, validates the TLS identity, and then binds. It never creates a database,
-  key, or account and never prompts.
+  key and initialized operator account, synchronizes the deployment's DOMjudge
+  origin to Runtime Config, validates the TLS identity, and then binds. It never
+  creates a database, key, or account and never prompts.
 - `natsume-server bootstrap` creates or migrates the database, creates the vault
   master key only when absent, reads the login name and password from a TTY
-  (password twice without echo), atomically creates the single first admin,
+  (password twice without echo), atomically creates the single first admin and
+  initializes Runtime Config from the deployment's DOMjudge origin,
   and exits without TLS preflight or a listener. Repeating
   it makes zero business writes and exits non-zero.
 - `natsume-server reset-operator-password` opens the existing database, runs
@@ -34,11 +40,21 @@ files; fresh install, reinstall, removal and purge preserve deployment inputs.
 The systemd service skips startup while any required file is missing.
 
 The single configuration contains `[listen]`, `[log]`, `[storage]`, `[tls]`,
-`[site]` and `[trust]`; see the [deployment example](../packaging/server/config.example.toml).
+`[site]`, `[trust]` and `[runtime]`; see the
+[deployment example](../packaging/server/config.example.toml).
 `[site]` holds `gateway_hostname`, `gateway_not_after` and `contest_end`; the
 expiry must cover contest end plus one day. `[trust]` holds `control_root` and
 `local_origin_root` paths. The Gateway hostname and two CA certificates must
 match the Client deployment. There is no second site configuration file.
+
+`[runtime].domjudge_origin` is required and must be a canonical HTTPS origin,
+such as `https://judge.contest.example`, without credentials, a path, trailing
+slash, query or fragment. `bootstrap` initializes its database row in the same
+transaction as the first administrator; either both are committed or neither is.
+Schema migrations and vault key creation happen before that transaction and may
+remain after a failed bootstrap. Contest and device tables are populated later by
+imports and enrollment. Changing the origin requires updating this configuration
+and restarting the service; no manual database writes are needed.
 
 Before `natsume-server serve` starts, the deployer must provision the Origin CA
 issuing material exactly as it provisions the Server TLS leaf/key pair. Packaging

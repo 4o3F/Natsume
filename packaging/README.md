@@ -92,16 +92,16 @@ profile/keyboard/font/scale configuration described in its input set.
 
 ## Version releases
 
-Push a tag such as `v2.0.1` to run [release.yml](../.github/workflows/release.yml).
+Push a tag such as `v2.0.2` to run [release.yml](../.github/workflows/release.yml).
 The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as
-`v2.0.1-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
+`v2.0.2-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
 commit; all jobs must pass before GitHub Release publication. Branch/PR CI keeps
-its `2.0.1~ci1` package version.
+its `2.0.2~ci1` package version.
 
 Each release includes `natsume-client_<version>_amd64.deb`,
 `natsume-server_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated
-release notes. For prereleases, `v2.0.1-rc.1` becomes Debian version `2.0.1~rc.1`,
-which sorts before `2.0.1`; the GitHub Release is marked as a prerelease and is
+release notes. For prereleases, `v2.0.2-rc.1` becomes Debian version `2.0.2~rc.1`,
+which sorts before `2.0.2`; the GitHub Release is marked as a prerelease and is
 not made latest. Download both packages and the checksum file into one directory
 and run `sha256sum --check SHA256SUMS` to verify them.
 
@@ -118,13 +118,19 @@ Deployment supplies one complete configuration per side:
   and `[site]` (fleet namespace UUID and Gateway hostname).
 - Server: `/etc/natsume-server/config.toml`, containing `[listen]`, `[log]`,
   `[storage]`, `[tls]`, `[site]` (Gateway hostname, certificate expiry and contest
-  end), and `[trust]` (Control/Local Origin CA paths).
+  end), `[trust]` (Control/Local Origin CA paths), and `[runtime]` (the required
+  canonical HTTPS `domjudge_origin`).
 
 Both sides also use `/etc/natsume/trust/control-ca.crt` and
 `/etc/natsume/trust/local-origin-ca.crt`. Configuration and public certificates
 are `root:root`, mode `0644`, with parent directories mode `0755`. The Gateway
 hostname and CA files must match the paired deployment. See the Server's
 [TLS/Origin issuing material and bootstrap](../server/README.md).
+
+Server `bootstrap` creates or migrates the database schema, then initializes the
+first admin and Runtime Config in one business transaction. Service startup synchronizes the
+origin from the deployment configuration; edit the configuration and restart the
+Server to change the upstream. Package scripts do not initialize business data.
 
 The packages do not own these deployment paths as Debian conffiles. Fresh
 install, reinstall, reconfiguration, removal and purge do not generate, rewrite,

@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::db::{Database, PersistenceError, TransactionError};
+use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 
 use super::{OperatorError, OperatorIdentity, OperatorRole};
 
@@ -11,31 +11,23 @@ pub(super) struct AccountFacts {
 }
 
 /// Creates the only bootstrap administrator.
-pub(super) async fn create_first_admin(
-    database: &Database,
+pub(super) fn create_first_admin(
+    transaction: &mut Transaction<'_>,
     login_name: &str,
     password_hash: &str,
 ) -> Result<Uuid, OperatorError> {
     let operator_id = Uuid::now_v7();
-    let login_name = login_name.to_owned();
-    let password_hash = password_hash.to_owned();
-    database
-        .write(move |transaction| {
-            if crate::component::operator::db::any_account_exists(transaction)? {
-                return Err(PersistenceError::InvalidPersistedData);
-            }
-            crate::component::operator::db::insert_account(
-                transaction,
-                operator_id,
-                &login_name,
-                OperatorRole::Admin,
-                &password_hash,
-            )?;
-            Ok(operator_id)
-        })
-        .await
-        .map_err(TransactionError::into_error)
-        .map_err(OperatorError::from)
+    if crate::component::operator::db::any_account_exists(transaction)? {
+        return Err(OperatorError::from(PersistenceError::InvalidPersistedData));
+    }
+    crate::component::operator::db::insert_account(
+        transaction,
+        operator_id,
+        login_name,
+        OperatorRole::Admin,
+        password_hash,
+    )?;
+    Ok(operator_id)
 }
 
 /// Advances one operator's credential revision with its password replacement and
