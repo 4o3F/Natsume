@@ -8,7 +8,7 @@ import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataTable } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
-import { Alert, AlertTitle } from "@/components/ui/alert";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -22,10 +22,19 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 type EnrollmentReview = components["schemas"]["EnrollmentReviewResponse"];
+type ProvisioningWindow = components["schemas"]["ProvisioningWindowResponse"];
 
 const ENROLLMENT_REVIEWS_KEY = ["enrollment-reviews"] as const;
+const PROVISIONING_WINDOW_KEY = ["provisioning-window"] as const;
 
 export function EnrollmentPage() {
   const { api } = useSessionScope();
@@ -127,6 +136,8 @@ export function EnrollmentPage() {
         </p>
       </div>
 
+      <EnrollmentWindow isAdmin={isAdmin} />
+
       {mutationError && (
         <Alert variant="destructive">
           <AlertTitle>
@@ -146,6 +157,101 @@ export function EnrollmentPage() {
         <DataTable columns={columns} data={reviews.data ?? []} />
       </DataState>
     </div>
+  );
+}
+
+function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
+  const { api } = useSessionScope();
+  const queryClient = useQueryClient();
+  const updateWindow = useMutation({
+    mutationFn: async (state: ProvisioningWindow["state"]) =>
+      unwrap<ProvisioningWindow>(
+        await api.PUT("/api/v2/provisioning-window", { body: { state } }),
+      ),
+    onMutate: () =>
+      queryClient.cancelQueries({ queryKey: PROVISIONING_WINDOW_KEY }),
+    onSuccess: (data) => {
+      queryClient.setQueryData(PROVISIONING_WINDOW_KEY, data);
+    },
+    onSettled: () =>
+      queryClient.invalidateQueries({ queryKey: PROVISIONING_WINDOW_KEY }),
+  });
+  const window = useQuery({
+    queryKey: PROVISIONING_WINDOW_KEY,
+    queryFn: async ({ signal }) =>
+      unwrap<ProvisioningWindow>(
+        await api.GET("/api/v2/provisioning-window", { signal }),
+      ),
+    enabled: !updateWindow.isPending,
+    refetchInterval: LIST_POLL_MS,
+  });
+  const isOpen = window.data?.state === "open";
+
+  return (
+    <Card role="region" aria-label="Enrollment window">
+      <CardHeader>
+        <CardTitle>Enrollment window</CardTitle>
+        <CardDescription>
+          Open the window to allow device enrollment. It closes whenever the
+          server restarts. Closing it does not revoke enrolled devices.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center gap-3">
+          <Badge
+            role="status"
+            variant={window.isSuccess && isOpen ? "default" : "outline"}
+          >
+            {window.isPending
+              ? "Loading..."
+              : window.isError
+                ? "Unavailable"
+                : isOpen
+                  ? "Open"
+                  : "Closed"}
+          </Badge>
+          {isAdmin && (
+            <Button
+              type="button"
+              variant={isOpen ? "outline" : "default"}
+              disabled={!window.isSuccess || updateWindow.isPending}
+              onClick={() => updateWindow.mutate(isOpen ? "closed" : "open")}
+            >
+              {updateWindow.isPending
+                ? "Updating..."
+                : isOpen
+                  ? "Close window"
+                  : "Open window"}
+            </Button>
+          )}
+        </div>
+        {window.isError && (
+          <Alert variant="destructive">
+            <AlertTitle>
+              Unable to load enrollment window: {window.error.message}
+            </AlertTitle>
+            <AlertDescription>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={window.isFetching}
+                onClick={() => void window.refetch()}
+              >
+                Retry
+              </Button>
+            </AlertDescription>
+          </Alert>
+        )}
+        {updateWindow.isError && (
+          <Alert variant="destructive">
+            <AlertTitle>
+              Unable to update enrollment window: {updateWindow.error.message}
+            </AlertTitle>
+          </Alert>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

@@ -570,9 +570,11 @@ A-02,team002,REPLACE_WITH_REAL_TEAM_PASSWORD
 
 导入替换整份比赛配置，不是追加，会推进账号凭据 revision。被 Binding 占用影响时先通过 **Bindings** 处理，不直接改库。预览后刷新会丢失授权和已选文件，需要 discard 再上传。
 
-### 5.3 建立注册窗口的 API 会话
+### 5.3 检查注册窗口（可选 API 会话）
 
-Web Enrollment 支持审批，但当前没有注册窗口开关。窗口使用 GET/PUT /api/v2/provisioning-window，PUT 需要 admin。
+Web **Enrollment** 的 **Enrollment window** 显示当前注册窗口状态，admin 可以点击 **Open window / Close window**，viewer 只能查看。Server 启动后窗口为 **Closed**；安装好要注册的机器后再开启。
+
+通过 Web 操作即可完成后续注册流程。若需从终端操作，也可以建立以下 API 会话；窗口使用 GET/PUT /api/v2/provisioning-window，PUT 需要 admin。
 
 **执行位置：Server 管理员终端。**密码从 TTY 读取，不放入命令历史：
 
@@ -844,7 +846,9 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
 
 ### 7.5 开启注册窗口、审批、绑定
 
-**执行位置：Server 管理员终端，使用 5.3 节变量与管理员 cookie。**
+在 Web **Enrollment → Enrollment window** 点击 **Open window**，等待状态变为 **Open**。若提交失败，先根据页面错误排查。
+
+也可在 **Server 管理员终端，使用 5.3 节变量与管理员 cookie** 执行：
 
 ~~~bash
 curl --fail-with-body --silent --show-error --http1.1 \
@@ -854,7 +858,7 @@ curl --fail-with-body --silent --show-error --http1.1 \
   "$NATSUME_SERVER_ORIGIN/api/v2/provisioning-window"
 ~~~
 
-预期 state=open。Web **Enrollment** 出现 pending review 后，逐台核对物理工位、硬件 ID、证据质量、Daemon/Agent 版本和候选公钥，再点 **Approve**；未知设备使用 **Deny** 并排查。不要按列表顺序盲目审批。
+API 预期 state=open。Web **Enrollment** 出现 pending review 后，逐台核对物理工位、硬件 ID、证据质量、Daemon/Agent 版本和候选公钥，再点 **Approve**；未知设备使用 **Deny** 并排查。不要按列表顺序盲目审批。
 
 Server 每次重启窗口恢复关闭。安装包不等于自动注册，关闭窗口不代替已注册设备的 Revoke。
 
@@ -901,7 +905,9 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
 
 ### 7.7 完成后关闭窗口，注销会话
 
-回到 Server 管理员终端，继续使用 5.3 节的 API 会话：
+在 Web **Enrollment → Enrollment window** 点击 **Close window**，确认状态变为 **Closed** 后点击 **Logout**。
+
+如果建立了 5.3 节的 API 会话，回到 Server 管理员终端，关闭窗口并注销、清理该会话：
 
 ~~~bash
 curl --fail-with-body --silent --show-error --http1.1 \

@@ -144,13 +144,26 @@ test("an administrator can approve an enrollment review", async ({ page }) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
 
-    if (pathname === "/api/v2/session") {
+    if (pathname === "/api/v2/session" && request.method() === "GET") {
       return fulfillJson(route, 200, operator);
     }
-    if (pathname === "/api/v2/enrollment-reviews") {
+    if (
+      pathname === "/api/v2/provisioning-window" &&
+      request.method() === "GET"
+    ) {
+      return fulfillJson(route, 200, { state: "open" });
+    }
+    if (
+      pathname === "/api/v2/enrollment-reviews" &&
+      request.method() === "GET"
+    ) {
       return fulfillJson(route, 200, reviews);
     }
-    if (pathname.endsWith("/actions/approve")) {
+    if (
+      pathname ===
+        "/api/v2/enrollment-reviews/01934567-89ab-7cde-8f01-23456789abcd/actions/approve" &&
+      request.method() === "POST"
+    ) {
       reviews = [];
       return fulfillJson(route, 204);
     }

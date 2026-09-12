@@ -8,4 +8,6 @@ The target Panel surface follows `docs/architecture.md`: contest preparation, pr
 
 Only routes present in the generated OpenAPI snapshot are mounted in the current Panel. Future component surfaces are added together with their Server HTTP adapter and regenerated contract; the Panel does not keep placeholder routes for unimplemented resources.
 
+Enrollment shows the enrollment window state and lets administrators open or close it through `/api/v2/provisioning-window`; viewers can only read the state. The window closes whenever the Server restarts, and the Panel polls for changes.
+
 CSV preview persists only a redacted diff and fingerprints. The browser keeps both preview authorization and the reviewed file in memory and resubmits the CSV on commit; a reload requires discard and re-upload.
