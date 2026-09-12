@@ -1,7 +1,9 @@
+use std::process::ExitCode;
+
 use clap::Parser;
 use natsume_server::{
-    commands::{self, Command, CommandError},
-    config::ServerConfig,
+    commands::{self, Command},
+    config::{CONFIG_PATH, ServerConfig},
 };
 
 #[derive(Parser)]
@@ -11,10 +13,22 @@ struct Cli {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), CommandError> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let config = ServerConfig::load().map_err(|_| CommandError::Configuration)?;
-    commands::run(config, cli.command).await
+    let config = match ServerConfig::load() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("error: {CONFIG_PATH}: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match commands::run(config, cli.command).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 #[cfg(test)]

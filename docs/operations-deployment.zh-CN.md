@@ -4,7 +4,7 @@
 
 ## 0. 适用范围与执行顺序
 
-核对基线：**Natsume v2.0.2、Ubuntu 24.04 LTS amd64**。Client 运行验收以完成配套 GNOME/GDM、X11 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。
+核对基线：**Natsume v2.0.3、Ubuntu 24.04 LTS amd64**。Client 运行验收以完成配套 GNOME/GDM、X11 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。
 
 PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client Deb 构建都在同一台 Ubuntu 24.04 Server 上执行。使用同一个具有 sudo 权限的管理员账号，以下 $HOME 均指该账号的 Home；需要服务用户执行的命令会显式使用 sudo -u natsume-server。各节环境变量在同一终端中沿用，换终端后按对应步骤重新设置。
 
@@ -48,7 +48,7 @@ Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁
 | fleet namespace UUID | 生成一次并归档 | 同一站点 Client 共用，重装时保留，不每台随机生成 |
 | contest end | 2026-12-06T10:00:00Z | 按实际赛事填写 UTC 比赛结束时间 |
 | Gateway not after | 2026-12-08T10:00:00Z | 至少覆盖 contest end 后 **86400 秒**，部署时尚未过期 |
-| 版本 | 2.0.2 | 两端 Deb 与镜像集成要求配套 |
+| 版本 | 2.0.3 | 两端 Deb 与镜像集成要求配套 |
 
 本文选择 domjudge，以匹配当前镜像默认的 https://domjudge/ 主页和书签。它只是本机 Gateway 名称，**不是实际上游地址，也不意味着预置了某个 CA**。若改用 gateway.contest.example 等名字，须同步两端配置、Client hosts、Firefox 主页和书签。
 
@@ -236,6 +236,54 @@ openssl pkcs8 -inform DER -nocrypt -in server/origin-ca-key.pk8 -out /dev/null
 
 **不要预先生成 Client 身份文件、Control key、Gateway key/leaf 或设备 token**；它们由真实机器首次启动和注册生成。
 
+### 2.7 用现有 Local Origin CA 签发 DOMjudge 上游证书（可选）
+
+DOMjudge 可以使用第 2.4 节的 Local Origin CA（Gateway CA）签发的服务器证书。它使用独立的叶子私钥；CA 私钥仍保存在 Natsume Server 的 PKI 目录。以下签发操作继续在 Natsume Server 上执行，先将 IP 换成实际 DOMjudge 上游地址：
+
+~~~bash
+umask 077
+NATSUME_PKI_DIR="$HOME/natsume-pki-2026"
+NATSUME_DOMJUDGE_IP='192.0.2.20'
+cd "$NATSUME_PKI_DIR"
+mkdir -m 0700 domjudge
+
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -out domjudge/domjudge-tls-key.pem
+openssl req -new -sha256 -key domjudge/domjudge-tls-key.pem \
+  -subj '/O=Contest Operations/CN=DOMjudge Upstream' \
+  -out domjudge/domjudge-tls.csr
+
+cat > domjudge/domjudge-tls.ext <<EOF
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature
+extendedKeyUsage=serverAuth
+subjectAltName=IP:$NATSUME_DOMJUDGE_IP
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid,issuer
+EOF
+
+openssl x509 -req -sha256 -days 365 \
+  -in domjudge/domjudge-tls.csr \
+  -CA public/local-origin-ca.crt -CAkey private/local-origin-ca-key.pem \
+  -CAcreateserial -CAserial private/local-origin-ca.srl \
+  -extfile domjudge/domjudge-tls.ext -out domjudge/domjudge-tls-leaf.pem
+
+openssl verify -CAfile public/local-origin-ca.crt -purpose sslserver \
+  -verify_ip "$NATSUME_DOMJUDGE_IP" domjudge/domjudge-tls-leaf.pem
+openssl x509 -in domjudge/domjudge-tls-leaf.pem -noout -dates -ext subjectAltName
+~~~
+
+签发时输入既有 CA 私钥口令。有效期不得超过该 CA；若使用域名访问，SAN 改为 DNS:实际上游域名，并用 openssl verify -verify_hostname 核验。不要把 Client loopback 的 Gateway hostname 当成上游地址。
+
+将 domjudge-tls-leaf.pem 和 domjudge-tls-key.pem 部署到 DOMjudge 的 HTTPS 入口；叶子私钥未加密，须以受限权限保存。只交付这对叶子材料，不交付 CA 私钥。具体 Web Server 或容器的 TLS 接入按 DOMjudge 部署方式完成。启用 HTTPS 后，从 Client 验证：
+
+~~~bash
+curl --fail --show-error --cacert /etc/natsume/trust/local-origin-ca.crt \
+  https://192.0.2.20/
+~~~
+
+随后将 Server config.toml 的 [runtime].domjudge_origin 设置为实际 HTTPS origin。第 7.3 节仍需把 Local Origin CA 加入 **Client 系统信任库**，并在信任库变更后重启 natsume-device-daemon.service，使 Caddy 重新加载信任。仅导入 Firefox 不能替代 Caddy 的上游 TLS 信任。完成后再用不带 --cacert 的 curl 验证系统信任。
+
 ## 3. 整理本机部署目录并下载 Release
 
 ### 3.1 整理部署目录
@@ -264,20 +312,20 @@ chmod 0700 "$NATSUME_DEPLOY_DIR" "$NATSUME_DEPLOY_DIR/server"
 
 ### 3.2 下载并验证 Server 包
 
-在 Server 本机下载 [v2.0.2 Release](https://github.com/4o3F/Natsume/releases/tag/v2.0.2) 中的 Server 包（需先完成该版本发布）：
+在 Server 本机下载 [v2.0.3 Release](https://github.com/4o3F/Natsume/releases/tag/v2.0.3) 中的 Server 包（需先完成该版本发布）：
 
 ~~~bash
 cd "$NATSUME_DEPLOY_DIR/packages"
-NATSUME_RELEASE_URL='https://github.com/4o3F/Natsume/releases/download/v2.0.2'
+NATSUME_RELEASE_URL='https://github.com/4o3F/Natsume/releases/download/v2.0.3'
 
-curl --fail --location --remote-name "$NATSUME_RELEASE_URL/natsume-server_2.0.2_amd64.deb"
+curl --fail --location --remote-name "$NATSUME_RELEASE_URL/natsume-server_2.0.3_amd64.deb"
 curl --fail --location --remote-name "$NATSUME_RELEASE_URL/SHA256SUMS"
-test -s natsume-server_2.0.2_amd64.deb
+test -s natsume-server_2.0.3_amd64.deb
 sha256sum --check --ignore-missing SHA256SUMS
-dpkg-deb --field natsume-server_2.0.2_amd64.deb Package Version Architecture
+dpkg-deb --field natsume-server_2.0.3_amd64.deb Package Version Architecture
 ~~~
 
-Server 校验须为 OK，版本/架构为 2.0.2/amd64。Release 的 SHA256SUMS 同时列出两种包，此处用 --ignore-missing 跳过未下载的官方 Client 包，Client 在第 6 节从源码构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
+Server 校验须为 OK，版本/架构为 2.0.3/amd64。Release 的 SHA256SUMS 同时列出两种包，此处用 --ignore-missing 跳过未下载的官方 Client 包，Client 在第 6 节从源码构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
 
 ## 4. 在服务器安装 Server
 
@@ -313,7 +361,7 @@ Server Deb 直接使用第 3.2 节已下载并校验的本地文件。下一节�
 dpkg --print-architecture
 sudo apt-get update
 sudo apt-get install --yes ca-certificates openssl curl sqlite3 python3
-sudo apt-get install --yes "$NATSUME_DEPLOY_DIR/packages/natsume-server_2.0.2_amd64.deb"
+sudo apt-get install --yes "$NATSUME_DEPLOY_DIR/packages/natsume-server_2.0.3_amd64.deb"
 dpkg-query -W natsume-server
 getent passwd natsume-server
 ~~~
@@ -542,8 +590,8 @@ sudo apt-get install --yes build-essential pkg-config curl git ca-certificates \
   python3 binutils xz-utils
 mkdir -p "$HOME/src"
 cd "$HOME/src"
-git clone --branch v2.0.2 --depth 1 https://github.com/4o3F/Natsume.git Natsume-v2.0.2
-cd Natsume-v2.0.2
+git clone --branch v2.0.3 --depth 1 https://github.com/4o3F/Natsume.git Natsume-v2.0.3
+cd Natsume-v2.0.3
 git rev-parse HEAD
 ~~~
 
@@ -564,7 +612,7 @@ cargo --version
 
 ### 6.2 下载并校验 Caddy 和 nFPM
 
-v2.0.2 固定 Caddy 2.11.4、nFPM 2.47.0。版本和摘要由 packaging/client/caddy.version、caddy.archive.sha256、caddy.sha256 及 packaging/nfpm.version、nfpm.sha256 管理。
+v2.0.3 固定 Caddy 2.11.4、nFPM 2.47.0。版本和摘要由 packaging/client/caddy.version、caddy.archive.sha256、caddy.sha256 及 packaging/nfpm.version、nfpm.sha256 管理。
 
 ~~~bash
 NATSUME_SOURCE_DIR="$PWD"
@@ -619,7 +667,7 @@ ls -lh "$CARGO_TARGET_DIR/release/natsume-device-daemon" \
 下面与仓库 package-client recipe 使用同一 manifest，直接调用工具，不要求额外安装 just：
 
 ~~~bash
-export VERSION='2.0.2'
+export VERSION='2.0.3'
 export ARCH='amd64'
 export RUST_RELEASE_DIR="$CARGO_TARGET_DIR/release"
 export CADDY_BIN="$NATSUME_TOOL_DIR/caddy"
@@ -631,16 +679,16 @@ envsubst '$ARCH $VERSION $RUST_RELEASE_DIR $CADDY_BIN' \
 "$NATSUME_TOOL_DIR/nfpm" package --packager deb \
   --config "$NATSUME_TOOL_DIR/client.nfpm.yaml" --target dist/packages/
 
-dpkg-deb --field dist/packages/natsume-client_2.0.2_amd64.deb Package Version Architecture
-python3 packaging/check-image-inputs.py --deb dist/packages/natsume-client_2.0.2_amd64.deb
+dpkg-deb --field dist/packages/natsume-client_2.0.3_amd64.deb Package Version Architecture
+python3 packaging/check-image-inputs.py --deb dist/packages/natsume-client_2.0.3_amd64.deb
 (
   cd dist/packages
-  sha256sum natsume-client_2.0.2_amd64.deb > natsume-client_2.0.2_amd64.deb.sha256
-  sha256sum --check natsume-client_2.0.2_amd64.deb.sha256
+  sha256sum natsume-client_2.0.3_amd64.deb > natsume-client_2.0.3_amd64.deb.sha256
+  sha256sum --check natsume-client_2.0.3_amd64.deb.sha256
 )
 ~~~
 
-交付产物为 **dist/packages/natsume-client_2.0.2_amd64.deb** 及本次生成的 checksum。check-image-inputs 检查 Deb 内附带的桌面集成交接材料，并不构建 ISO，也不在 Server 上创建 Client 账号或启动 Client 服务。
+交付产物为 **dist/packages/natsume-client_2.0.3_amd64.deb** 及本次生成的 checksum。check-image-inputs 检查 Deb 内附带的桌面集成交接材料，并不构建 ISO，也不在 Server 上创建 Client 账号或启动 Client 服务。
 
 不传入 SITE_CONFIG、CONTROL_CA_CERT 或 LOCAL_ORIGIN_CA_CERT；通用 Deb 不包含测试/正式 CA 和部署配置。它包含程序、Caddy、包所属运行文件、配置示例及完整交接目录。
 
@@ -687,9 +735,9 @@ EOF
 
 ~~~bash
 cd "$HOME/natsume-client-install"
-sha256sum --check natsume-client_2.0.2_amd64.deb.sha256
+sha256sum --check natsume-client_2.0.3_amd64.deb.sha256
 sudo apt-get update
-sudo apt-get install --yes "$PWD/natsume-client_2.0.2_amd64.deb"
+sudo apt-get install --yes "$PWD/natsume-client_2.0.3_amd64.deb"
 
 sudo install -d -o root -g root -m 0755 /etc/natsume /etc/natsume/trust
 sudo install -o root -g root -m 0644 config.toml /etc/natsume/config.toml
@@ -735,7 +783,7 @@ Linux Firefox 不能只靠 ImportEnterpriseRoots=true 导入系统 CA；[Mozilla
 
 上述路径适用于配套 Deb Firefox/Firefox ESR，换用 Snap 等发行形式需重验路径和访问能力。完全退出再启动 Firefox，通过 about:policies 的 Active/Errors 及证书颁发机构列表核对。
 
-如果 DOMjudge 上游使用额外私有 CA，将其公共 PEM 以 root:root 0644 安装至 /usr/local/share/ca-certificates/domjudge-upstream-ca.crt，执行 sudo update-ca-certificates。这与 Gateway CA 不同，不能靠关闭 TLS 校验解决。
+若按 2.7 节复用 Local Origin CA，以上系统信任步骤同时覆盖 DOMjudge 上游。若使用另一份私有 CA，将其公共 PEM 以 root:root 0644 安装至 /usr/local/share/ca-certificates/domjudge-upstream-ca.crt，执行 sudo update-ca-certificates。信任库变更后重启 natsume-device-daemon.service，再核对上游访问。
 
 ### 7.4 启动并检查配套样机
 
@@ -758,7 +806,7 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
   https://judge.contest.example/
 ~~~
 
-预期版本 2.0.2、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
+预期版本 2.0.3、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
 
 ### 7.5 开启注册窗口、审批、绑定
 
@@ -938,7 +986,10 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 | Server TLS identity invalid | DER/PKCS#8、公钥匹配、keys 0700/files 0600 | 按 2.6 节检查，不把 PEM 改后缀冒充 DER |
 | Origin CA mismatch | public PEM 解码与 origin-ca.der | 必须同一证书且私钥匹配，不能只比较 CN |
 | Client TLS 失败 | 时钟、Control CA、IP SAN、端口 | 从 Client 用不带 -k 的 curl/openssl 检查 |
-| Server 配置校验失败 | [runtime].domjudge_origin 是否为合法 canonical HTTPS origin | 修正完整 config.toml，重启后核对 Runtime/Gateway |
+| 配置读取失败（NotFound / PermissionDenied） | 报错中的配置路径、服务用户读取权限 | 确认 /etc/natsume-server/config.toml 存在且 natsume-server 可读 |
+| missing required field | 报错指出的 section 或字段 | 对照 4.3 节补齐完整配置 |
+| TOML syntax or field type | 报错的行列、引号和值类型 | 修正 TOML 后重试 |
+| runtime.domjudge_origin 校验失败 | 实际上游是否提供 HTTPS，地址是否只包含 origin | HTTP 地址不受支持；使用可用的 HTTPS 上游，不带末尾斜杠或路径 |
 | 无 Enrollment review | 窗口、连接、waiting Agent/Helper | Server 重启后窗口关闭，检查客户端图形会话与日志 |
 | 无法绑定 | CSV 是否 commit、工位是否存在/被占 | 处理数据与 Binding，不删除设备身份 |
 | Firefox 不信任 Gateway | about:policies、Install路径、CA/hostname/期限 | 修正策略并完全重启 Firefox |

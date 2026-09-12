@@ -11,6 +11,12 @@ The single `natsume-server` binary has exactly three mandatory modes and no cust
 arguments or flags. All three load only `/etc/natsume-server/config.toml`; argv never
 carries configuration, paths, or secrets.
 
+Configuration failures are printed to stderr before logging starts, with the
+configuration path and a specific reason: file read errors, missing required
+fields, TOML line/column, or a field's validation rule. Rejected values and source
+lines are not printed. For example, an HTTP DOMjudge origin reports that
+`runtime.domjudge_origin` requires HTTPS.
+
 - `natsume-server serve` opens an existing database, runs migrations and
   provisioning close-once recovery, requires an existing valid vault master
   key and initialized operator account, synchronizes the deployment's DOMjudge

@@ -6,7 +6,8 @@ use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::component::runtime::is_canonical_https_origin;
 
-const CONFIG_PATH: &str = "/etc/natsume-server/config.toml";
+/// Fixed location of the deployment-owned Server configuration.
+pub const CONFIG_PATH: &str = "/etc/natsume-server/config.toml";
 pub(crate) const ORIGIN_CA_CERTIFICATE_FILENAME: &str = "origin-ca.der";
 pub(crate) const ORIGIN_CA_PRIVATE_KEY_FILENAME: &str = "origin-ca-key.pk8";
 pub(crate) const GATEWAY_VALIDITY_MARGIN_SECONDS: i64 = 86_400;
@@ -42,9 +43,10 @@ impl ServerConfig {
     /// Returns a redacted [`ConfigError`] when the file cannot be read,
     /// decoded, or validated.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
-        let encoded = fs::read_to_string(path).map_err(|_| ConfigError::ReadFailed)?;
+        let encoded = fs::read_to_string(path)
+            .map_err(|error| ConfigError::ReadFailed { kind: error.kind() })?;
         let raw: RawServerConfig =
-            toml::from_str(&encoded).map_err(|_| ConfigError::DecodeFailed)?;
+            toml::from_str(&encoded).map_err(|error| decode_error(&error, &encoded))?;
         Self::validate(raw)
     }
 
@@ -148,6 +150,32 @@ impl ServerConfig {
             .parent()
             .ok_or(ConfigError::InvalidPrivateKeysDirectory)
     }
+}
+
+fn decode_error(error: &toml::de::Error, encoded: &str) -> ConfigError {
+    // Serde's missing-field names come from our derived configuration schema.
+    // Other messages can contain rejected values, so retain only their location.
+    if let Some(field) = error
+        .message()
+        .strip_prefix("missing field `")
+        .and_then(|message| message.strip_suffix('`'))
+    {
+        return ConfigError::MissingField {
+            field: field.to_owned(),
+        };
+    }
+    let offset = error.span().map_or(0, |span| span.start);
+    let (line, column) = encoded
+        .char_indices()
+        .take_while(|(index, _)| *index < offset)
+        .fold((1, 1), |(line, column), (_, character)| {
+            if character == '\n' {
+                (line + 1, 1)
+            } else {
+                (line, column + 1)
+            }
+        });
+    ConfigError::DecodeFailed { line, column }
 }
 
 fn require_absolute(path: &Path, error: ConfigError) -> Result<(), ConfigError> {
@@ -336,37 +364,51 @@ impl GatewayNotAfter {
 }
 
 /// Redacted Server configuration failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
 pub enum ConfigError {
-    #[snafu(display("the server configuration could not be read"))]
-    ReadFailed,
-    #[snafu(display("the server configuration could not be decoded"))]
-    DecodeFailed,
-    #[snafu(display("the configured listen address is invalid"))]
+    #[snafu(display(
+        "cannot read UTF-8 configuration ({kind:?}); check file existence and read permissions"
+    ))]
+    ReadFailed { kind: std::io::ErrorKind },
+    #[snafu(display("missing required field `{field}`"))]
+    MissingField { field: String },
+    #[snafu(display("invalid TOML syntax or field type near line {line}, column {column}"))]
+    DecodeFailed { line: usize, column: usize },
+    #[snafu(display("listen.https must be an IP address and port, such as 0.0.0.0:8443"))]
     InvalidListenAddress,
-    #[snafu(display("the configured DOMjudge origin must be a canonical HTTPS origin"))]
+    #[snafu(display(
+        "runtime.domjudge_origin must be a canonical HTTPS origin without credentials, path, trailing slash, query or fragment"
+    ))]
     InvalidDomjudgeOrigin,
-    #[snafu(display("the configured database path must be absolute"))]
+    #[snafu(display("storage.database must be an absolute path"))]
     RelativeDatabasePath,
-    #[snafu(display("the configured vault master key path must be absolute"))]
+    #[snafu(display("storage.root_key must be an absolute path"))]
     RelativeVaultMasterKeyPath,
-    #[snafu(display("the configured TLS certificate path must be absolute"))]
+    #[snafu(display("tls.certificate must be an absolute path"))]
     RelativeTlsCertificatePath,
-    #[snafu(display("the configured TLS private key path must be absolute"))]
+    #[snafu(display("tls.private_key must be an absolute path"))]
     RelativeTlsPrivateKeyPath,
-    #[snafu(display("the configured control root path must be absolute"))]
+    #[snafu(display("trust.control_root must be an absolute path"))]
     RelativeControlRootPath,
-    #[snafu(display("the configured local origin root path must be absolute"))]
+    #[snafu(display("trust.local_origin_root must be an absolute path"))]
     RelativeLocalOriginRootPath,
-    #[snafu(display("the configured private keys directory is invalid"))]
+    #[snafu(display("tls.private_key must have a parent directory for the Origin CA files"))]
     InvalidPrivateKeysDirectory,
-    #[snafu(display("the Gateway hostname is invalid"))]
+    #[snafu(display(
+        "site.gateway_hostname must be a lowercase DNS hostname without a trailing dot"
+    ))]
     InvalidGatewayHostname,
-    #[snafu(display("the Gateway certificate not-after policy is invalid"))]
+    #[snafu(display(
+        "site.gateway_not_after must be a valid UTC timestamp such as 2026-12-08T10:00:00Z"
+    ))]
     InvalidGatewayNotAfter,
-    #[snafu(display("the contest end policy is invalid"))]
+    #[snafu(display(
+        "site.contest_end must be a valid UTC timestamp such as 2026-12-06T10:00:00Z"
+    ))]
     InvalidContestEnd,
-    #[snafu(display("the Gateway certificate validity does not cover the contest margin"))]
+    #[snafu(display(
+        "site.gateway_not_after must cover site.contest_end plus at least 86400 seconds"
+    ))]
     GatewayValidityCoverageTooShort,
 }
 
@@ -432,15 +474,27 @@ domjudge_origin = "https://judge.contest.example"
 
     #[test]
     fn missing_runtime_configuration_is_rejected() -> Result<(), TestFailure> {
-        for contents in [
-            VALID_CONFIG.replace(
-                "[runtime]\ndomjudge_origin = \"https://judge.contest.example\"",
-                "",
+        for (contents, field) in [
+            (
+                VALID_CONFIG.replace(
+                    "[runtime]\ndomjudge_origin = \"https://judge.contest.example\"",
+                    "",
+                ),
+                "runtime",
             ),
-            VALID_CONFIG.replace("domjudge_origin = \"https://judge.contest.example\"", ""),
+            (
+                VALID_CONFIG.replace("domjudge_origin = \"https://judge.contest.example\"", ""),
+                "domjudge_origin",
+            ),
         ] {
             let fixture = ConfigFixture::new(&contents)?;
-            assert_config_error(fixture.path(), ConfigError::DecodeFailed, &[])?;
+            assert_config_error(
+                fixture.path(),
+                &ConfigError::MissingField {
+                    field: field.to_owned(),
+                },
+                &[],
+            )?;
         }
         Ok(())
     }
@@ -462,7 +516,7 @@ domjudge_origin = "https://judge.contest.example"
                 ConfigFixture::new(&VALID_CONFIG.replace("https://judge.contest.example", origin))?;
             assert_config_error(
                 fixture.path(),
-                ConfigError::InvalidDomjudgeOrigin,
+                &ConfigError::InvalidDomjudgeOrigin,
                 &["password-canary", "judge.contest.example"],
             )?;
         }
@@ -645,7 +699,10 @@ domjudge_origin = "https://judge.contest.example"
         ))?;
         assert_config_error(
             fixture.path(),
-            ConfigError::DecodeFailed,
+            &ConfigError::DecodeFailed {
+                line: VALID_CONFIG.lines().count() + 3,
+                column: 9,
+            },
             &["unknown-log-level-canary"],
         )
     }
@@ -668,7 +725,9 @@ domjudge_origin = "https://judge.contest.example"
         let directory = TestDirectory::new()?;
         assert_config_error(
             &directory.path.join("missing-config-canary.toml"),
-            ConfigError::ReadFailed,
+            &ConfigError::ReadFailed {
+                kind: std::io::ErrorKind::NotFound,
+            },
             &["missing-config-canary"],
         )
     }
@@ -678,7 +737,10 @@ domjudge_origin = "https://judge.contest.example"
         let fixture = ConfigFixture::new("malformed-value-canary = [")?;
         assert_config_error(
             fixture.path(),
-            ConfigError::DecodeFailed,
+            &ConfigError::DecodeFailed {
+                line: 1,
+                column: "malformed-value-canary = [".len() + 1,
+            },
             &["malformed-value-canary"],
         )
     }
@@ -691,9 +753,44 @@ domjudge_origin = "https://judge.contest.example"
         ))?;
         assert_config_error(
             fixture.path(),
-            ConfigError::DecodeFailed,
+            &ConfigError::MissingField {
+                field: "private_key".to_owned(),
+            },
             &["missing-key-canary"],
         )
+    }
+
+    #[test]
+    fn decode_errors_identify_missing_fields_and_syntax_locations() -> Result<(), TestFailure> {
+        for (contents, expected) in [
+            (
+                VALID_CONFIG.replace("domjudge_origin = \"https://judge.contest.example\"", ""),
+                "missing required field `domjudge_origin`",
+            ),
+            ("[runtime\n".to_owned(), "line 1, column 9"),
+        ] {
+            let fixture = ConfigFixture::new(&contents)?;
+            let error = ServerConfig::load_from(fixture.path())
+                .err()
+                .ok_or(TestFailure::ExpectedConfigurationFailure)?;
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn http_upstream_error_identifies_the_https_requirement() -> Result<(), TestFailure> {
+        let fixture = ConfigFixture::new(
+            &VALID_CONFIG.replace("https://judge.contest.example", "http://10.12.13.166"),
+        )?;
+        let error = ServerConfig::load_from(fixture.path())
+            .err()
+            .ok_or(TestFailure::ExpectedConfigurationFailure)?;
+        let message = error.to_string();
+        assert!(message.contains("runtime.domjudge_origin"));
+        assert!(message.contains("HTTPS"));
+        assert!(!message.contains("10.12.13.166"));
+        Ok(())
     }
 
     #[test]
@@ -704,7 +801,7 @@ domjudge_origin = "https://judge.contest.example"
         ))?;
         assert_config_error(
             fixture.path(),
-            ConfigError::RelativeDatabasePath,
+            &ConfigError::RelativeDatabasePath,
             &["relative-path-canary"],
         )
     }
@@ -715,7 +812,7 @@ domjudge_origin = "https://judge.contest.example"
             ConfigFixture::new(&VALID_CONFIG.replace("127.0.0.1:8443", "invalid-listen-canary"))?;
         assert_config_error(
             fixture.path(),
-            ConfigError::InvalidListenAddress,
+            &ConfigError::InvalidListenAddress,
             &["invalid-listen-canary"],
         )
     }
@@ -732,13 +829,14 @@ domjudge_origin = "https://judge.contest.example"
 
     fn assert_config_error(
         path: &std::path::Path,
-        expected: ConfigError,
+        expected: &ConfigError,
         canaries: &[&str],
     ) -> Result<(), TestFailure> {
         let Err(error) = ServerConfig::load_from(path) else {
             return Err(TestFailure::ExpectedConfigurationFailure);
         };
-        if error != expected {
+        if &error != expected {
+            eprintln!("expected {expected:?}, received {error:?}");
             return Err(TestFailure::UnexpectedConfigurationFailure);
         }
 
