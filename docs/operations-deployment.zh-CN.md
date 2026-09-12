@@ -275,7 +275,41 @@ openssl x509 -in domjudge/domjudge-tls-leaf.pem -noout -dates -ext subjectAltNam
 
 签发时输入既有 CA 私钥口令。有效期不得超过该 CA；若使用域名访问，SAN 改为 DNS:实际上游域名，并用 openssl verify -verify_hostname 核验。不要把 Client loopback 的 Gateway hostname 当成上游地址。
 
-将 domjudge-tls-leaf.pem 和 domjudge-tls-key.pem 部署到 DOMjudge 的 HTTPS 入口；叶子私钥未加密，须以受限权限保存。只交付这对叶子材料，不交付 CA 私钥。具体 Web Server 或容器的 TLS 接入按 DOMjudge 部署方式完成。启用 HTTPS 后，从 Client 验证：
+将 domjudge-tls-leaf.pem 和 domjudge-tls-key.pem 部署到 DOMjudge 的 HTTPS 入口；叶子私钥未加密，须以受限权限保存。只交付这对叶子材料，不交付 CA 私钥。
+
+若 HTTPS 入口是本机由 systemd 管理、master 进程以 root 运行的 Nginx，在 Server 管理员终端安装材料：
+
+~~~bash
+sudo install -d -o root -g root -m 0700 /etc/nginx/tls
+sudo install -o root -g root -m 0644 \
+  "$NATSUME_PKI_DIR/domjudge/domjudge-tls-leaf.pem" \
+  /etc/nginx/tls/domjudge-tls-leaf.pem
+sudo install -o root -g root -m 0600 \
+  "$NATSUME_PKI_DIR/domjudge/domjudge-tls-key.pem" \
+  /etc/nginx/tls/domjudge-tls-key.pem
+
+sudo stat -c '%U:%G %a %n' /etc/nginx/tls \
+  /etc/nginx/tls/domjudge-tls-leaf.pem \
+  /etc/nginx/tls/domjudge-tls-key.pem
+~~~
+
+预期全部归属 root:root，目录 700、证书 644、私钥 600。Nginx 使用 PEM 编码的证书和私钥，本节生成的两个 .pem 文件可以直接使用，文件名不必改成 .crt 或 .key；见 [Nginx SSL 配置说明](https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate)。
+
+用 sudoedit 编辑已启用的 DOMjudge 站点配置，在现有 server 块中增加或调整以下 TLS 指令，保留原有的页面、PHP 和反向代理配置：
+
+~~~nginx
+listen 443 ssl;
+ssl_certificate     /etc/nginx/tls/domjudge-tls-leaf.pem;
+ssl_certificate_key /etc/nginx/tls/domjudge-tls-key.pem;
+~~~
+
+证书和私钥由 root master 进程加载，因此配置检查也须使用 sudo。普通用户直接执行 nginx -t 可能因无法读取受限目录或私钥而报 Permission denied；这不表示证书格式错误。检查成功后再重载已运行的服务：
+
+~~~bash
+sudo nginx -t && sudo systemctl reload nginx
+~~~
+
+若 sudo nginx -t 仍然报错，根据错误中的路径检查文件和各级目录的权限。容器或非 root master 部署按其实际挂载路径和运行用户设置读取权限。启用 HTTPS 后，从 Client 验证：
 
 ~~~bash
 curl --fail --show-error --cacert /etc/natsume/trust/local-origin-ca.crt \
@@ -985,6 +1019,7 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 | unit skipped | 三个必需输入、systemctl status | 部署完整配置和 CA 后启动 |
 | Server TLS identity invalid | DER/PKCS#8、公钥匹配、keys 0700/files 0600 | 按 2.6 节检查，不把 PEM 改后缀冒充 DER |
 | Origin CA mismatch | public PEM 解码与 origin-ca.der | 必须同一证书且私钥匹配，不能只比较 CN |
+| Nginx 检查证书报 Permission denied | 是否以普通用户执行 nginx -t，证书路径及目录权限 | 按 2.7 节设置权限，用 sudo nginx -t 检查成功后再重载 |
 | Client TLS 失败 | 时钟、Control CA、IP SAN、端口 | 从 Client 用不带 -k 的 curl/openssl 检查 |
 | 配置读取失败（NotFound / PermissionDenied） | 报错中的配置路径、服务用户读取权限 | 确认 /etc/natsume-server/config.toml 存在且 natsume-server 可读 |
 | missing required field | 报错指出的 section 或字段 | 对照 4.3 节补齐完整配置 |
