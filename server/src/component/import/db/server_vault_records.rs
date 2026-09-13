@@ -1,42 +1,28 @@
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
-use uuid::Uuid;
+use diesel::{ExpressionMethods, RunQueryDsl};
 
 use crate::{
-    component::import::candidate::SealedCommitRow,
     db::{PersistenceError, Transaction},
     diesel_schema::server_vault_records,
 };
 
-use super::super::baseline::BaselineAccount;
-
-pub(in crate::component::import) fn insert_account_credential(
+pub(in crate::component::import) fn save(
     transaction: &mut Transaction<'_>,
-    account_id: Uuid,
-    credential: &SealedCommitRow,
+    account_id: &str,
+    nonce: &[u8; 24],
+    ciphertext: &[u8],
 ) -> Result<usize, PersistenceError> {
     diesel::insert_into(server_vault_records::table)
         .values((
-            server_vault_records::account_id.eq(account_id.to_string()),
-            server_vault_records::nonce.eq(credential.nonce().as_slice()),
-            server_vault_records::ciphertext.eq(credential.ciphertext()),
+            server_vault_records::account_id.eq(account_id),
+            server_vault_records::nonce.eq(nonce.as_slice()),
+            server_vault_records::ciphertext.eq(ciphertext),
+        ))
+        .on_conflict(server_vault_records::account_id)
+        .do_update()
+        .set((
+            server_vault_records::nonce.eq(nonce.as_slice()),
+            server_vault_records::ciphertext.eq(ciphertext),
         ))
         .execute(transaction.connection())
         .map_err(|_| PersistenceError::OperationFailed)
-}
-
-pub(in crate::component::import) fn update_account_credential(
-    transaction: &mut Transaction<'_>,
-    account: &BaselineAccount,
-    credential: &SealedCommitRow,
-) -> Result<usize, PersistenceError> {
-    diesel::update(
-        server_vault_records::table
-            .filter(server_vault_records::account_id.eq(account.account_id())),
-    )
-    .set((
-        server_vault_records::nonce.eq(credential.nonce().as_slice()),
-        server_vault_records::ciphertext.eq(credential.ciphertext()),
-    ))
-    .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
 }

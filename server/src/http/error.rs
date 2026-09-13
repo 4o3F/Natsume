@@ -8,10 +8,7 @@ use axum::{
 use serde::Serialize;
 
 use crate::component::{
-    contest::ContestError,
-    device::DeviceError,
-    import::{CsvImportErrorCategory, ImportError},
-    operator::OperatorError,
+    contest::ContestError, device::DeviceError, import::ImportError, operator::OperatorError,
 };
 
 #[derive(Serialize)]
@@ -201,35 +198,14 @@ impl ApiError {
 
     pub(super) fn from_import(error: ImportError) -> Self {
         match error {
-            ImportError::InvalidCsv { line, category } => {
-                let cause = match category {
-                    CsvImportErrorCategory::InvalidUtf8 => "import_csv_invalid_utf8",
-                    CsvImportErrorCategory::InvalidHeader => "import_csv_invalid_header",
-                    CsvImportErrorCategory::WrongColumnCount => "import_csv_wrong_column_count",
-                    CsvImportErrorCategory::EmptyField => "import_csv_empty_field",
-                    CsvImportErrorCategory::FieldTooLong => "import_csv_field_too_long",
-                    CsvImportErrorCategory::ControlCharacter => "import_csv_control_character",
-                    CsvImportErrorCategory::InvalidAccountUsername => {
-                        "import_csv_invalid_account_username"
-                    }
-                    CsvImportErrorCategory::DuplicateSeatCode => "import_csv_duplicate_seat_code",
-                    CsvImportErrorCategory::DuplicateAccountUsername => {
-                        "import_csv_duplicate_account_username"
-                    }
-                    CsvImportErrorCategory::TooManyRows => "import_csv_too_many_rows",
-                    CsvImportErrorCategory::ZeroDataRows => "import_csv_zero_data_rows",
-                };
+            ImportError::InvalidWorkbook(diagnostic) => {
                 let mut error = Self::new(
                     StatusCode::BAD_REQUEST,
                     "Bad Request",
                     ApiErrorCode::ImportCandidateInvalid,
-                    cause,
+                    "import_workbook_invalid",
                 );
-                if category == CsvImportErrorCategory::InvalidAccountUsername {
-                    error.title = format!(
-                        "CSV line {line}: account must be 1-64 ASCII characters using only letters, digits, _, ., @, + or -"
-                    ).into();
-                }
+                error.title = diagnostic.to_string().into();
                 error
             }
             ImportError::CandidateInvalid => Self::new(

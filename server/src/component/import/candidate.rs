@@ -1,6 +1,7 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
+    sync::Arc,
 };
 
 use sha2::{Digest, Sha256};
@@ -11,74 +12,13 @@ use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 
 use super::{
     FINGERPRINT_VERSION, candidate_fingerprint,
-    csv::{CsvImportErrorCategory, parse_csv},
     diff::{RedactedImportPreview, compute_diff},
+    parse_roster,
+    roster::{CandidateRoster, changed_passwords},
 };
 
 const IMPORT_CANDIDATE_TTL_MS: i64 = 1_800_000;
 const PREVIEW_TOKEN_LENGTH: usize = 32;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct CandidateRowFacts {
-    seat_code: String,
-    domjudge_username: String,
-}
-
-impl CandidateRowFacts {
-    pub(super) fn new(seat_code: String, domjudge_username: String) -> Self {
-        Self {
-            seat_code,
-            domjudge_username,
-        }
-    }
-
-    pub(super) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    pub(super) fn domjudge_username(&self) -> &str {
-        &self.domjudge_username
-    }
-}
-
-pub(super) struct SealedCommitRow {
-    seat_code: String,
-    domjudge_username: String,
-    nonce: [u8; 24],
-    ciphertext: Vec<u8>,
-}
-
-impl SealedCommitRow {
-    pub(super) fn new(
-        seat_code: String,
-        domjudge_username: String,
-        nonce: [u8; 24],
-        ciphertext: Vec<u8>,
-    ) -> Self {
-        Self {
-            seat_code,
-            domjudge_username,
-            nonce,
-            ciphertext,
-        }
-    }
-
-    pub(super) fn seat_code(&self) -> &str {
-        &self.seat_code
-    }
-
-    pub(super) fn domjudge_username(&self) -> &str {
-        &self.domjudge_username
-    }
-
-    pub(super) const fn nonce(&self) -> &[u8; 24] {
-        &self.nonce
-    }
-
-    pub(super) fn ciphertext(&self) -> &[u8] {
-        &self.ciphertext
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum CandidateExpiry {
@@ -232,15 +172,10 @@ impl PendingImportCandidate {
 
 pub(super) async fn create_import_candidate(
     database: &Database,
-    raw_csv: &[u8],
+    vault: Arc<crate::vault::VaultSession>,
+    raw_xlsx: &[u8],
 ) -> Result<CreatedImportCandidate, ImportError> {
-    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv {
-        line: error.line(),
-        category: error.category(),
-    })?;
-    let candidate_rows = parsed.candidate_rows();
-    let candidate_hash = candidate_fingerprint(&candidate_rows);
-    drop(parsed);
+    let parsed = parse_roster(raw_xlsx).await?;
 
     let preview_token = PreviewToken::generate()?;
     let preview_token_hash = preview_token.sha256();
@@ -257,7 +192,10 @@ pub(super) async fn create_import_candidate(
 
             let baseline = super::db::query::read_baseline(transaction)?;
             let baseline_hash = baseline.fingerprint();
-            let diff = compute_diff(baseline.seats(), &candidate_rows)?;
+            let roster = CandidateRoster::prepare(&baseline, &parsed)?;
+            let candidate_hash = candidate_fingerprint(&roster)?;
+            let changed = changed_passwords(&baseline, &parsed, &vault)?;
+            let diff = compute_diff(&baseline, &roster, changed);
             let now = super::db::pending_import_candidate::current_time_unix_ms(transaction)?;
             let expires_at_unix_ms = now
                 .checked_add(IMPORT_CANDIDATE_TTL_MS)
@@ -349,12 +287,9 @@ enum DiscardOutcome {
     Unavailable,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ImportError {
-    InvalidCsv {
-        line: usize,
-        category: CsvImportErrorCategory,
-    },
+    InvalidWorkbook(natsume_roster::InputError),
     CandidateInvalid,
     CandidatePending,
     CandidateUnavailable,
@@ -378,13 +313,13 @@ impl From<PersistenceError> for ImportError {
 impl Display for ImportError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::InvalidCsv { .. } | Self::CandidateInvalid => "the import candidate is invalid",
+            Self::InvalidWorkbook(_) | Self::CandidateInvalid => "the import candidate is invalid",
             Self::CandidatePending => "an import candidate is already pending",
             Self::CandidateUnavailable => "the import candidate is unavailable",
             Self::PreviewStale => "the import preview is stale",
             Self::SeatOccupied => "the import would remove an occupied seat",
             Self::EntropyUnavailable => "import candidate entropy is unavailable",
-            Self::VaultFailure => "an import credential could not be sealed",
+            Self::VaultFailure => "an import credential could not be accessed",
             Self::PersistenceFailure => "the import could not be persisted",
         })
     }

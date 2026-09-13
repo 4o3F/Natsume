@@ -235,9 +235,25 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    get: operations["getCsvImport"];
+    get: operations["getRosterImport"];
     put?: never;
-    post: operations["createCsvImport"];
+    post: operations["createRosterImport"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/imports/template": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getRosterTemplate"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -254,7 +270,7 @@ export interface paths {
     get?: never;
     put?: never;
     post?: never;
-    delete: operations["deleteCsvImport"];
+    delete: operations["deleteRosterImport"];
     options?: never;
     head?: never;
     patch?: never;
@@ -269,7 +285,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    post: operations["commitCsvImport"];
+    post: operations["commitRosterImport"];
     delete?: never;
     options?: never;
     head?: never;
@@ -526,21 +542,24 @@ export interface components {
       reset_epoch: number | null;
     };
     ImportBindingImpactResponse: {
+      blocks_commit: boolean;
       device_id: string;
       seat_code: string;
-    };
-    ImportCommitRequest: {
-      /**
-       * @description The same seat/account candidate reviewed in preview, with the passwords
-       *     supplied again because preview never persists them.
-       */
-      csv: string;
-      preview_token: string;
     };
     ImportMappingChangeResponse: {
       candidate_domjudge_username: string;
       current_domjudge_username: string | null;
       seat_code: string;
+    };
+    ImportOrganizationChangeResponse: {
+      candidate: null | components["schemas"]["ImportOrganizationResponse"];
+      current: null | components["schemas"]["ImportOrganizationResponse"];
+    };
+    ImportOrganizationResponse: {
+      country: string;
+      name_en: string;
+      name_zh: string;
+      organization_id: string;
     };
     ImportPendingResponse: {
       pending: null | components["schemas"]["ImportPendingSummary"];
@@ -559,12 +578,31 @@ export interface components {
       preview_token: string;
     };
     ImportRedactedDiff: {
+      accounts_added: string[];
+      accounts_removed: string[];
       affected_account_count: number;
       binding_impacts: components["schemas"]["ImportBindingImpactResponse"][];
       mappings_changed: components["schemas"]["ImportMappingChangeResponse"][];
+      organization_changes: components["schemas"]["ImportOrganizationChangeResponse"][];
+      organizations: components["schemas"]["ImportOrganizationResponse"][];
+      passwords_changed: string[];
       seats_added: string[];
       seats_removed: string[];
+      team_changes: components["schemas"]["ImportTeamChangeResponse"][];
       unchanged_count: number;
+    };
+    ImportTeamChangeResponse: {
+      account: string;
+      candidate: null | components["schemas"]["ImportTeamResponse"];
+      current: null | components["schemas"]["ImportTeamResponse"];
+    };
+    ImportTeamResponse: {
+      account: string;
+      category: string;
+      name_en: string;
+      name_zh: string;
+      organization_id: string;
+      seat: string | null;
     };
     /** @description Open automatically approves new and pending enrollments; closed requires administrator approval. */
     ProvisioningWindowRequest: {
@@ -1597,7 +1635,7 @@ export interface operations {
       };
     };
   };
-  getCsvImport: {
+  getRosterImport: {
     parameters: {
       query?: never;
       header?: never;
@@ -1606,7 +1644,7 @@ export interface operations {
     };
     requestBody?: never;
     responses: {
-      /** @description Current pending CSV import candidate */
+      /** @description Pending roster preview */
       200: {
         headers: {
           [name: string]: unknown;
@@ -1644,7 +1682,7 @@ export interface operations {
       };
     };
   };
-  createCsvImport: {
+  createRosterImport: {
     parameters: {
       query?: never;
       header?: never;
@@ -1653,11 +1691,11 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "text/csv": string;
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
       };
     };
     responses: {
-      /** @description CSV import candidate created */
+      /** @description Full-roster XLSX preview created */
       201: {
         headers: {
           [name: string]: unknown;
@@ -1666,7 +1704,7 @@ export interface operations {
           "application/json": components["schemas"]["ImportPreviewResponse"];
         };
       };
-      /** @description Invalid CSV import or request media type */
+      /** @description Invalid workbook or media type */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1693,7 +1731,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description An import candidate is already pending */
+      /** @description A candidate is already pending */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1702,7 +1740,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Request body exceeds the API ingress limit */
+      /** @description Workbook exceeds 8 MiB */
       413: {
         headers: {
           [name: string]: unknown;
@@ -1720,19 +1758,57 @@ export interface operations {
       };
     };
   };
-  deleteCsvImport: {
+  getRosterTemplate: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Blank Teams XLSX template */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  deleteRosterImport: {
     parameters: {
       query?: never;
       header?: never;
       path: {
-        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
+        /** @description Canonical lowercase hyphenated UUIDv7 import candidate ID. */
         import_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };
     requestBody?: never;
     responses: {
-      /** @description CSV import candidate discarded */
+      /** @description Roster preview discarded */
       204: {
         headers: {
           [name: string]: unknown;
@@ -1766,7 +1842,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Import candidate unavailable */
+      /** @description Candidate unavailable */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1786,30 +1862,33 @@ export interface operations {
       };
     };
   };
-  commitCsvImport: {
+  commitRosterImport: {
     parameters: {
       query?: never;
-      header?: never;
+      header: {
+        /** @description Secret authorization returned by preview */
+        "x-natsume-preview-token": string;
+      };
       path: {
-        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
+        /** @description Canonical lowercase hyphenated UUIDv7 import candidate ID. */
         import_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["ImportCommitRequest"];
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": string;
       };
     };
     responses: {
-      /** @description CSV import committed */
+      /** @description Complete roster committed atomically; only changed passwords advance revisions */
       204: {
         headers: {
           [name: string]: unknown;
         };
         content?: never;
       };
-      /** @description Invalid import ID or closed request */
+      /** @description Invalid workbook, token or media type */
       400: {
         headers: {
           [name: string]: unknown;
@@ -1836,7 +1915,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Import candidate unavailable */
+      /** @description Candidate unavailable */
       404: {
         headers: {
           [name: string]: unknown;
@@ -1845,7 +1924,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Import preview baseline is stale */
+      /** @description Preview stale or removed seat occupied */
       409: {
         headers: {
           [name: string]: unknown;
@@ -1854,7 +1933,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Request body exceeds the API ingress limit */
+      /** @description Workbook exceeds 8 MiB */
       413: {
         headers: {
           [name: string]: unknown;

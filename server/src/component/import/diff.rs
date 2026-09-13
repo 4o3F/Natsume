@@ -2,171 +2,233 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use super::{CandidateRowFacts, ImportError, baseline::BaselineSeat};
+use super::{
+    baseline::ImportBaseline,
+    roster::{CandidateRoster, OrganizationDetails, TeamDetails},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-struct ImportMappingChange {
-    seat_code: String,
-    current_domjudge_username: Option<String>,
-    candidate_domjudge_username: String,
-}
-
-impl ImportMappingChange {
-    fn new(
-        seat_code: String,
-        current_domjudge_username: Option<String>,
-        candidate_domjudge_username: String,
-    ) -> Self {
-        Self {
-            seat_code,
-            current_domjudge_username,
-            candidate_domjudge_username,
-        }
-    }
+pub(crate) struct ImportMappingChange {
+    pub(crate) seat_code: String,
+    pub(crate) current_domjudge_username: Option<String>,
+    pub(crate) candidate_domjudge_username: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
-struct ImportBindingImpact {
-    seat_code: String,
-    device_id: String,
-}
-
-impl ImportBindingImpact {
-    fn new(seat_code: String, device_id: String) -> Self {
-        Self {
-            seat_code,
-            device_id,
-        }
-    }
+pub(crate) struct ImportBindingImpact {
+    pub(crate) seat_code: String,
+    pub(crate) device_id: String,
+    pub(crate) blocks_commit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct OrganizationChange {
+    pub(crate) current: Option<OrganizationDetails>,
+    pub(crate) candidate: Option<OrganizationDetails>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct TeamChange {
+    pub(crate) account: String,
+    pub(crate) current: Option<TeamDetails>,
+    pub(crate) candidate: Option<TeamDetails>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct RedactedImportPreview {
-    seats_added: Vec<String>,
-    seats_removed: Vec<String>,
-    mappings_changed: Vec<ImportMappingChange>,
-    unchanged_count: usize,
-    affected_account_count: usize,
-    binding_impacts: Vec<ImportBindingImpact>,
+    pub(crate) seats_added: Vec<String>,
+    pub(crate) seats_removed: Vec<String>,
+    pub(crate) mappings_changed: Vec<ImportMappingChange>,
+    pub(crate) unchanged_count: usize,
+    pub(crate) affected_account_count: usize,
+    pub(crate) binding_impacts: Vec<ImportBindingImpact>,
+    pub(crate) accounts_added: Vec<String>,
+    pub(crate) accounts_removed: Vec<String>,
+    pub(crate) passwords_changed: Vec<String>,
+    pub(crate) organizations: Vec<OrganizationDetails>,
+    pub(crate) organization_changes: Vec<OrganizationChange>,
+    pub(crate) team_changes: Vec<TeamChange>,
 }
 
 impl RedactedImportPreview {
-    fn new(
-        seats_added: Vec<String>,
-        seats_removed: Vec<String>,
-        mappings_changed: Vec<ImportMappingChange>,
-        unchanged_count: usize,
-        affected_account_count: usize,
-        binding_impacts: Vec<ImportBindingImpact>,
-    ) -> Self {
-        Self {
-            seats_added,
-            seats_removed,
-            mappings_changed,
-            unchanged_count,
-            affected_account_count,
-            binding_impacts,
-        }
-    }
-
-    #[must_use]
-    pub(crate) fn seats_added(&self) -> &[String] {
-        &self.seats_added
-    }
-
-    #[must_use]
-    pub(crate) fn seats_removed(&self) -> &[String] {
-        &self.seats_removed
-    }
-
-    #[must_use]
-    pub(crate) fn mappings_changed(
-        &self,
-    ) -> impl ExactSizeIterator<Item = (&str, Option<&str>, &str)> {
-        self.mappings_changed.iter().map(|change| {
-            (
-                change.seat_code.as_str(),
-                change.current_domjudge_username.as_deref(),
-                change.candidate_domjudge_username.as_str(),
-            )
-        })
-    }
-
-    #[must_use]
-    pub(crate) const fn unchanged_count(&self) -> usize {
-        self.unchanged_count
-    }
-
-    #[must_use]
-    pub(crate) const fn affected_account_count(&self) -> usize {
-        self.affected_account_count
-    }
-
-    #[must_use]
-    pub(crate) fn binding_impacts(&self) -> impl ExactSizeIterator<Item = (&str, &str)> {
+    pub(super) fn blocks_commit(&self) -> bool {
         self.binding_impacts
             .iter()
-            .map(|impact| (impact.seat_code.as_str(), impact.device_id.as_str()))
+            .any(|impact| impact.blocks_commit)
+    }
+
+    pub(super) fn has_changes(&self) -> bool {
+        !self.seats_added.is_empty()
+            || !self.seats_removed.is_empty()
+            || !self.mappings_changed.is_empty()
+            || !self.accounts_added.is_empty()
+            || !self.accounts_removed.is_empty()
+            || !self.passwords_changed.is_empty()
+            || !self.organization_changes.is_empty()
+            || !self.team_changes.is_empty()
     }
 }
 
 pub(super) fn compute_diff(
-    current_rows: &BTreeMap<String, BaselineSeat>,
-    candidate_rows: &[CandidateRowFacts],
-) -> Result<RedactedImportPreview, ImportError> {
-    let mut candidate = BTreeMap::new();
-    let mut candidate_accounts = BTreeSet::new();
-    for row in candidate_rows {
-        if candidate
-            .insert(row.seat_code(), row.domjudge_username())
-            .is_some()
-            || !candidate_accounts.insert(row.domjudge_username())
-        {
-            return Err(ImportError::CandidateInvalid);
-        }
-    }
-    if candidate.is_empty() {
-        return Err(ImportError::CandidateInvalid);
-    }
-
-    let seats_added = candidate
+    baseline: &ImportBaseline,
+    roster: &CandidateRoster,
+    passwords_changed: Vec<String>,
+) -> RedactedImportPreview {
+    let seats = roster
+        .teams
+        .values()
+        .filter_map(|team| team.seat.as_ref().map(|seat| (seat, &team.account)))
+        .collect::<BTreeMap<_, _>>();
+    let seats_added = seats
         .keys()
-        .filter(|seat_code| !current_rows.contains_key(**seat_code))
-        .map(|seat_code| (*seat_code).to_owned())
+        .filter(|seat| !baseline.seats.contains_key(seat.as_str()))
+        .map(|seat| (*seat).clone())
         .collect();
     let mut seats_removed = Vec::new();
     let mut mappings_changed = Vec::new();
-    let mut unchanged_count = 0;
-    let mut binding_impacts = Vec::new();
-
-    for (seat_code, facts) in current_rows {
-        let Some(candidate_username) = candidate.get(seat_code.as_str()) else {
-            seats_removed.push(seat_code.to_owned());
-            if let Some(device_id) = facts.device_id() {
-                binding_impacts.push(ImportBindingImpact::new(
-                    seat_code.to_owned(),
-                    device_id.as_text(),
-                ));
+    for (code, current) in &baseline.seats {
+        match seats.get(code) {
+            None => seats_removed.push(code.clone()),
+            Some(account) if current.current_domjudge_username() != Some(account.as_str()) => {
+                mappings_changed.push(ImportMappingChange {
+                    seat_code: code.clone(),
+                    current_domjudge_username: current
+                        .current_domjudge_username()
+                        .map(str::to_owned),
+                    candidate_domjudge_username: (*account).clone(),
+                });
             }
-            continue;
-        };
-        if facts.current_domjudge_username() == Some(*candidate_username) {
-            unchanged_count += 1;
-        } else {
-            mappings_changed.push(ImportMappingChange::new(
-                seat_code.to_owned(),
-                facts.current_domjudge_username().map(str::to_owned),
-                (*candidate_username).to_owned(),
-            ));
+            Some(_) => {}
         }
     }
-
-    Ok(RedactedImportPreview::new(
+    let accounts_added = roster
+        .teams
+        .keys()
+        .filter(|key| !baseline.accounts.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let accounts_removed = baseline
+        .accounts
+        .keys()
+        .filter(|key| !roster.teams.contains_key(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    let team_changes = team_changes(baseline, roster);
+    let organization_changes = organization_changes(baseline, roster);
+    let changed_school_ids = organization_changes
+        .iter()
+        .flat_map(|change| [change.current.as_ref(), change.candidate.as_ref()])
+        .flatten()
+        .map(|school| school.organization_id)
+        .collect::<BTreeSet<_>>();
+    let mut affected = accounts_added
+        .iter()
+        .chain(&accounts_removed)
+        .chain(&passwords_changed)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    affected.extend(team_changes.iter().map(|change| change.account.clone()));
+    affected.extend(
+        baseline
+            .teams
+            .values()
+            .chain(roster.teams.values())
+            .filter(|team| changed_school_ids.contains(&team.organization_id))
+            .map(|team| team.account.clone()),
+    );
+    for change in &mappings_changed {
+        affected.extend(change.current_domjudge_username.iter().cloned());
+        affected.insert(change.candidate_domjudge_username.clone());
+    }
+    RedactedImportPreview {
         seats_added,
         seats_removed,
         mappings_changed,
-        unchanged_count,
-        candidate_accounts.len(),
-        binding_impacts,
-    ))
+        unchanged_count: roster
+            .teams
+            .keys()
+            .filter(|account| !affected.contains(*account))
+            .count(),
+        affected_account_count: affected.len(),
+        binding_impacts: binding_impacts(baseline, &seats, &affected),
+        accounts_added,
+        accounts_removed,
+        passwords_changed,
+        organizations: roster.organizations.values().cloned().collect(),
+        organization_changes,
+        team_changes,
+    }
+}
+
+fn team_changes(baseline: &ImportBaseline, roster: &CandidateRoster) -> Vec<TeamChange> {
+    let mut team_changes = Vec::new();
+    for account in baseline
+        .accounts
+        .keys()
+        .chain(roster.teams.keys())
+        .collect::<BTreeSet<_>>()
+    {
+        let current = baseline.teams.get(account);
+        let candidate = roster.teams.get(account);
+        if current != candidate || candidate.is_none() {
+            team_changes.push(TeamChange {
+                account: account.clone(),
+                current: current.cloned(),
+                candidate: candidate.cloned(),
+            });
+        }
+    }
+    team_changes
+}
+
+fn organization_changes(
+    baseline: &ImportBaseline,
+    roster: &CandidateRoster,
+) -> Vec<OrganizationChange> {
+    let mut organization_changes = Vec::new();
+    for key in baseline
+        .organizations
+        .keys()
+        .chain(roster.organizations.keys())
+        .collect::<BTreeSet<_>>()
+    {
+        let current = baseline.organizations.get(key);
+        let candidate = roster.organizations.get(key);
+        if current != candidate {
+            organization_changes.push(OrganizationChange {
+                current: current.cloned(),
+                candidate: candidate.cloned(),
+            });
+        }
+    }
+    organization_changes
+}
+
+fn binding_impacts(
+    baseline: &ImportBaseline,
+    seats: &BTreeMap<&String, &String>,
+    affected: &BTreeSet<String>,
+) -> Vec<ImportBindingImpact> {
+    let mut binding_impacts = Vec::new();
+    for (code, current) in &baseline.seats {
+        let Some(device) = current.device_id() else {
+            continue;
+        };
+        let next = seats.get(code);
+        if next.is_none()
+            || current.current_domjudge_username() != next.map(|account| account.as_str())
+            || current
+                .current_domjudge_username()
+                .is_some_and(|account| affected.contains(account))
+            || next.is_some_and(|account| affected.contains(*account))
+        {
+            binding_impacts.push(ImportBindingImpact {
+                seat_code: code.clone(),
+                device_id: device.as_text(),
+                blocks_commit: next.is_none(),
+            });
+        }
+    }
+    binding_impacts
 }

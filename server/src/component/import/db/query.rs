@@ -3,7 +3,7 @@ use diesel::{ExpressionMethods, JoinOnDsl, NullableExpressionMethods, QueryDsl, 
 use crate::{
     component::device::DeviceId,
     db::{PersistenceError, Transaction},
-    diesel_schema::{account_mappings, accounts, device_bindings, seats},
+    diesel_schema::{account_mappings, accounts, device_bindings, seats, server_vault_records},
 };
 
 use super::super::baseline::{BaselineAccount, BaselineSeat, ImportBaseline};
@@ -14,6 +14,9 @@ pub(in crate::component::import) fn read_baseline(
     ImportBaseline::new(
         read_current_seats(transaction)?,
         read_current_accounts(transaction)?,
+        super::organizations::read(transaction)?,
+        super::teams::read(transaction)?,
+        super::organizations::sequence(transaction)?,
     )
 }
 
@@ -55,22 +58,29 @@ fn read_current_seats(
 fn read_current_accounts(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<BaselineAccount>, PersistenceError> {
-    accounts::table
+    let rows = accounts::table
+        .left_join(server_vault_records::table)
         .select((
             accounts::account_id,
             accounts::domjudge_username,
             accounts::credential_revision,
+            server_vault_records::nonce.nullable(),
+            server_vault_records::ciphertext.nullable(),
         ))
         .order(accounts::domjudge_username)
-        .load::<(String, String, i64)>(transaction.connection())
-        .map(|rows| {
-            rows.into_iter()
-                .map(|(account_id, domjudge_username, credential_revision)| {
-                    BaselineAccount::new(account_id, domjudge_username, credential_revision)
-                })
-                .collect()
+        .load::<(String, String, i64, Option<Vec<u8>>, Option<Vec<u8>>)>(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)?;
+    rows.into_iter()
+        .map(|(id, username, revision, nonce, ciphertext)| {
+            Ok(BaselineAccount::new(
+                id,
+                username,
+                revision,
+                nonce.ok_or(PersistenceError::InvalidPersistedData)?,
+                ciphertext.ok_or(PersistenceError::InvalidPersistedData)?,
+            ))
         })
-        .map_err(|_| PersistenceError::OperationFailed)
+        .collect()
 }
 
 #[cfg(test)]

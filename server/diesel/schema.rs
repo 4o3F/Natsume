@@ -96,6 +96,16 @@ diesel::table! {
 }
 
 diesel::table! {
+    organizations (organization_id) {
+        organization_id -> BigInt,
+        name_key -> Text,
+        name_zh -> Text,
+        name_en -> Text,
+        country -> Text,
+    }
+}
+
+diesel::table! {
     pending_import_candidate (singleton) {
         singleton -> Integer,
         candidate_id -> Text,
@@ -137,6 +147,16 @@ diesel::table! {
     }
 }
 
+diesel::table! {
+    teams (account_id) {
+        account_id -> Text,
+        organization_id -> BigInt,
+        name_zh -> Text,
+        name_en -> Text,
+        category -> Text,
+    }
+}
+
 diesel::joinable!(account_mappings -> accounts (account_id));
 diesel::joinable!(account_mappings -> seats (seat_id));
 diesel::joinable!(binding_negotiations -> devices (device_id));
@@ -148,6 +168,8 @@ diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
 diesel::joinable!(server_vault_records -> accounts (account_id));
+diesel::joinable!(teams -> accounts (account_id));
+diesel::joinable!(teams -> organizations (organization_id));
 
 diesel::allow_tables_to_appear_in_same_query!(
     account_mappings,
@@ -161,9 +183,11 @@ diesel::allow_tables_to_appear_in_same_query!(
     gateway_credentials,
     operator_accounts,
     operator_sessions,
+    organizations,
     pending_import_candidate,
     runtime_config,
     seats,
     server_vault_records,
     site_identity,
+    teams,
 );

@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RosterDiff } from "@/pages/preparation-diff";
 import type { PreparationPreview } from "@/pages/preparation-store";
 
 type ImportMappingChange = components["schemas"]["ImportMappingChangeResponse"];
@@ -49,6 +50,10 @@ interface Notice {
   title: string;
   detail?: string;
 }
+
+const XLSX_CONTENT_TYPE =
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const MAX_WORKBOOK_BYTES = 8 * 1024 * 1024;
 
 const PENDING_IMPORT_KEY = ["imports", "pending"] as const;
 
@@ -73,6 +78,14 @@ const mappingColumns: ColumnDef<ImportMappingChange>[] = [
 const bindingColumns: ColumnDef<ImportBindingImpact>[] = [
   { accessorKey: "seat_code", header: "Seat code" },
   { accessorKey: "device_id", header: "Device ID" },
+  {
+    id: "impact",
+    header: "Impact",
+    cell: ({ row }) =>
+      row.original.blocks_commit
+        ? "Unbind before removing seat"
+        : "Bound team data will change",
+  },
 ];
 
 export function PreparationPage() {
@@ -118,21 +131,23 @@ export function PreparationPage() {
 
   const upload = useMutation({
     mutationFn: async (file: File) => {
-      const csv = await file.text();
       const preview = await unwrap<ImportPreviewResponse>(
         await api.POST("/api/v2/imports", {
-          body: csv,
-          bodySerializer: (body) => body,
-          headers: { "Content-Type": "text/csv" },
+          // OpenAPI models binary as a string; the serializer sends the File bytes.
+          body: "",
+          bodySerializer: () => file,
+          headers: { "Content-Type": XLSX_CONTENT_TYPE },
         }),
       );
       preparation.set({
         candidate_id: preview.candidate_id,
         preview_token: preview.preview_token,
+        file,
       });
       return { candidate_id: preview.candidate_id };
     },
     onSuccess: async ({ candidate_id }) => {
+      setSelectedFile(null);
       const preview = preparation.get();
       if (preview?.candidate_id === candidate_id) {
         setLocalPreview(preview);
@@ -153,14 +168,15 @@ export function PreparationPage() {
       if (!preview || preview.candidate_id !== candidateId) {
         throw new Error("the preview token is unavailable");
       }
-      if (!selectedFile) {
-        throw new Error("the reviewed CSV is unavailable");
-      }
-      const csv = await selectedFile.text();
       return unwrap<void>(
         await api.POST("/api/v2/imports/{import_id}/actions/commit", {
-          params: { path: { import_id: candidateId } },
-          body: { csv, preview_token: preview.preview_token },
+          params: {
+            path: { import_id: candidateId },
+            header: { "x-natsume-preview-token": preview.preview_token },
+          },
+          body: "",
+          bodySerializer: () => preview.file,
+          headers: { "Content-Type": XLSX_CONTENT_TYPE },
         }),
       );
     },
@@ -170,7 +186,8 @@ export function PreparationPage() {
       setNotice({
         tone: "success",
         title: "Import committed",
-        detail: "The confirmed contest configuration has been replaced.",
+        detail:
+          "The complete roster has been applied. Only changed passwords advance credential revisions.",
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: PENDING_IMPORT_KEY }),
@@ -191,6 +208,7 @@ export function PreparationPage() {
       ),
     onSuccess: async () => {
       forgetPreview();
+      setSelectedFile(null);
       setNotice({
         tone: "success",
         title: "Preview discarded",
@@ -203,13 +221,19 @@ export function PreparationPage() {
 
   const pending = pendingQuery.data?.pending ?? null;
   const commitTokenAvailable =
-    pending !== null &&
-    localPreview?.candidate_id === pending.candidate_id &&
-    selectedFile !== null;
+    pending !== null && localPreview?.candidate_id === pending.candidate_id;
 
   function submitUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selectedFile) {
+      return;
+    }
+    if (selectedFile.size > MAX_WORKBOOK_BYTES) {
+      setNotice({
+        tone: "error",
+        title: "Workbook too large",
+        detail: "Choose an XLSX file no larger than 8 MiB.",
+      });
       return;
     }
     setNotice(null);
@@ -242,22 +266,29 @@ export function PreparationPage() {
       {!pendingQuery.isLoading && !pending && (
         <Card>
           <CardHeader>
-            <CardTitle>Upload contest CSV</CardTitle>
+            <CardTitle>Upload complete roster</CardTitle>
             <CardDescription>
-              Select a CSV with the exact header seat,account,password.
+              Use the Teams sheet in the template. Include every team, school,
+              seat and account, even when only passwords change. Maximum 8 MiB.
             </CardDescription>
           </CardHeader>
           <form onSubmit={submitUpload}>
             <CardContent className="space-y-3">
-              <Label htmlFor="contest-csv">CSV file</Label>
+              <Label htmlFor="contest-xlsx">XLSX file</Label>
               <Input
-                id="contest-csv"
+                id="contest-xlsx"
                 type="file"
-                accept=".csv,text/csv"
+                accept=".xlsx"
+                disabled={upload.isPending}
                 onChange={(event) =>
                   setSelectedFile(event.target.files?.[0] ?? null)
                 }
               />
+              <Button asChild variant="outline">
+                <a href="/api/v2/imports/template" download>
+                  Download Excel template
+                </a>
+              </Button>
             </CardContent>
             <CardFooter className="mt-6">
               <Button
@@ -307,6 +338,9 @@ function PendingImportCard({
   onDiscard: () => void;
 }) {
   const remainingSeconds = useRemainingSeconds(pending.expires_at_unix_ms);
+  const blocked = pending.diff.binding_impacts.some(
+    (impact) => impact.blocks_commit,
+  );
   const seatChanges = useMemo(
     () =>
       [
@@ -343,12 +377,14 @@ function PendingImportCard({
       <CardContent className="space-y-6">
         <div className="flex flex-wrap gap-2">
           <Badge variant="secondary">
-            Unchanged seats {pending.diff.unchanged_count}
+            Unchanged teams {pending.diff.unchanged_count}
           </Badge>
           <Badge variant="secondary">
             Affected accounts {pending.diff.affected_account_count}
           </Badge>
         </div>
+
+        <RosterDiff diff={pending.diff} />
 
         <section className="space-y-2" aria-labelledby="seat-changes-heading">
           <h2 id="seat-changes-heading" className="font-medium">
@@ -371,12 +407,16 @@ function PendingImportCard({
         </section>
 
         {pending.diff.binding_impacts.length > 0 ? (
-          <Alert variant="destructive" className="grid-cols-1">
+          <Alert
+            variant={blocked ? "destructive" : "default"}
+            className="grid-cols-1"
+          >
             <AlertTitle className="col-start-1">Binding impacts</AlertTitle>
             <AlertDescription className="col-start-1 w-full">
               <p>
-                These occupied seats block the import until their bindings are
-                released.
+                {blocked
+                  ? "Removing an occupied seat requires releasing its binding first."
+                  : "These devices will receive updated team data. Their seat bindings and session targets are preserved."}
               </p>
               <div className="w-full text-foreground">
                 <DataTable
@@ -392,17 +432,18 @@ function PendingImportCard({
 
         {!commitTokenAvailable && (
           <p className="text-sm text-muted-foreground">
-            Preview authorization and the reviewed CSV are unavailable after a
+            Preview authorization and the reviewed XLSX are unavailable after a
             reload or session change; discard and re-upload to commit.
           </p>
         )}
       </CardContent>
-      <CardFooter className="gap-3">
+      <CardFooter className="sticky bottom-0 gap-3 border-t bg-card py-4">
         <AlertDialog>
           <AlertDialogTrigger asChild>
             <Button
               type="button"
               disabled={
+                blocked ||
                 !commitTokenAvailable ||
                 remainingSeconds <= 0 ||
                 commitPending ||
@@ -416,8 +457,9 @@ function PendingImportCard({
             <AlertDialogHeader>
               <AlertDialogTitle>Commit this import?</AlertDialogTitle>
               <AlertDialogDescription>
-                Replaces the entire confirmed configuration and advances every
-                account credential revision.
+                Applies the complete roster, including removals. Only changed
+                passwords advance credential revisions. Bindings remain on their
+                seats and session targets stay unchanged.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
@@ -479,7 +521,7 @@ function noticeFromError(error: unknown): Notice {
       return {
         tone: "error",
         title: error.title,
-        detail: "The CSV did not satisfy the import contract.",
+        detail: "The XLSX did not satisfy the import contract.",
       };
     case "IMPORT_CANDIDATE_PENDING":
       return {
@@ -491,7 +533,8 @@ function noticeFromError(error: unknown): Notice {
       return {
         tone: "error",
         title: "Import preview is stale",
-        detail: "Discard this preview and re-upload the CSV before committing.",
+        detail:
+          "Discard this preview and re-upload the XLSX before committing.",
       };
     case "IMPORT_CANDIDATE_UNAVAILABLE":
       return {

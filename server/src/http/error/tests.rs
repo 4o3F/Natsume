@@ -3,10 +3,7 @@ use snafu::Snafu;
 use tracing::instrument::WithSubscriber as _;
 
 use crate::{
-    component::{
-        device::DeviceError,
-        import::{CsvImportErrorCategory, ImportError},
-    },
+    component::{device::DeviceError, import::ImportError},
     config::LogLevel,
     logging::tests::{CapturedLogs, SubscriberTestGuard},
 };
@@ -17,12 +14,14 @@ const CAUSE_CANARY: &str = "internal_cause_canary";
 const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
 
 #[tokio::test]
-async fn invalid_username_response_identifies_the_csv_line_and_supported_contract() {
-    let response = ApiError::from_import(ImportError::InvalidCsv {
-        line: 3,
-        category: CsvImportErrorCategory::InvalidAccountUsername,
-    })
-    .into_response();
+async fn invalid_username_response_identifies_the_excel_cell_and_supported_contract() {
+    let response =
+        ApiError::from_import(ImportError::InvalidWorkbook(natsume_roster::InputError {
+            row: Some(3),
+            column: Some(4),
+            kind: natsume_roster::InputErrorKind::InvalidIdentifier,
+        }))
+        .into_response();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
         .await
@@ -32,7 +31,7 @@ async fn invalid_username_response_identifies_the_csv_line_and_supported_contrac
     assert_eq!(
         body,
         serde_json::json!({
-            "title": "CSV line 3: account must be 1-64 ASCII characters using only letters, digits, _, ., @, + or -",
+            "title": "Teams row 3, column 4: expected a CCS ID: 1-36 ASCII letters, digits, _, . or -; no leading . or -, no trailing .",
             "status": 400,
             "code": "IMPORT_CANDIDATE_INVALID",
         })
@@ -265,11 +264,12 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
 fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
     [
         (
-            ImportError::InvalidCsv {
-                line: 1,
-                category: CsvImportErrorCategory::ZeroDataRows,
-            },
-            "import_csv_zero_data_rows",
+            ImportError::InvalidWorkbook(natsume_roster::InputError {
+                row: None,
+                column: None,
+                kind: natsume_roster::InputErrorKind::EmptyRoster,
+            }),
+            "import_workbook_invalid",
             StatusCode::BAD_REQUEST,
         ),
         (

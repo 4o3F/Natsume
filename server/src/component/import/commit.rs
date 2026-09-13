@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{collections::BTreeMap, sync::Arc};
 
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -11,45 +11,66 @@ use crate::{
 
 use super::{
     FINGERPRINT_VERSION,
-    baseline::{BaselineAccount, BaselineSeat, ImportBaseline},
-    candidate::{CandidateExpiry, ImportError, SealedCommitRow, expire_candidate},
-    candidate_fingerprint,
-    csv::parse_csv,
+    baseline::ImportBaseline,
+    candidate::{CandidateExpiry, ImportError, expire_candidate},
+    candidate_fingerprint, db,
     diff::{RedactedImportPreview, compute_diff},
-    seal_rows,
+    parse_roster,
+    roster::{CandidateRoster, changed_passwords},
 };
 
 pub(super) async fn commit_import(
     database: &Database,
-    vault: &VaultSession,
+    vault: Arc<VaultSession>,
     candidate_id: Uuid,
     presented_token: &[u8; 32],
-    raw_csv: &[u8],
+    raw_xlsx: &[u8],
 ) -> Result<(), ImportError> {
-    let parsed = parse_csv(raw_csv).map_err(|error| ImportError::InvalidCsv {
-        line: error.line(),
-        category: error.category(),
-    })?;
-    let candidate_rows = parsed.candidate_rows();
-    let candidate_hash = candidate_fingerprint(&candidate_rows);
-    let sealed_rows = seal_rows(vault, parsed.rows())?;
-    drop(parsed);
-
-    let token_hash = Sha256::digest(presented_token).into();
+    let parsed = parse_roster(raw_xlsx).await?;
+    let token_hash: [u8; 32] = Sha256::digest(presented_token).into();
     let outcome = database
         .write(move |transaction| {
-            commit_in_transaction(
-                transaction,
-                candidate_id,
-                token_hash,
-                candidate_hash,
-                &candidate_rows,
-                &sealed_rows,
-            )
+            let Some(candidate) = db::pending_import_candidate::find(transaction)? else {
+                return Ok(CommitOutcome::Unavailable);
+            };
+            if candidate.candidate_id() != candidate_id {
+                return Ok(CommitOutcome::Unavailable);
+            }
+            if candidate.expiry() == CandidateExpiry::Expired {
+                expire_candidate(transaction, &candidate)?;
+                return Ok(CommitOutcome::Unavailable);
+            }
+            if !bool::from(token_hash.ct_eq(candidate.preview_token_hash())) {
+                return Ok(CommitOutcome::Unavailable);
+            }
+            let baseline = db::query::read_baseline(transaction)?;
+            if candidate.fingerprint_version() != FINGERPRINT_VERSION
+                || candidate.baseline_fingerprint_sha256() != &baseline.fingerprint()
+            {
+                return Ok(CommitOutcome::Stale);
+            }
+            let roster = CandidateRoster::prepare(&baseline, &parsed)?;
+            if candidate.candidate_fingerprint_sha256() != &candidate_fingerprint(&roster)? {
+                return Ok(CommitOutcome::Stale);
+            }
+            let changed = changed_passwords(&baseline, &parsed, &vault)?;
+            let diff = compute_diff(&baseline, &roster, changed);
+            if candidate.diff() != &diff {
+                return Ok(CommitOutcome::Stale);
+            }
+            if diff.blocks_commit() {
+                return Ok(CommitOutcome::SeatOccupied);
+            }
+            if diff.has_changes() {
+                apply_plan(transaction, &vault, &parsed, &baseline, &roster, &diff)?;
+            }
+            if db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
+                return Err(ImportError::PersistenceFailure);
+            }
+            Ok(CommitOutcome::Committed)
         })
         .await
         .map_err(TransactionError::into_error)?;
-
     match outcome {
         CommitOutcome::Committed => Ok(()),
         CommitOutcome::Unavailable => Err(ImportError::CandidateUnavailable),
@@ -58,186 +79,150 @@ pub(super) async fn commit_import(
     }
 }
 
-fn commit_in_transaction(
-    transaction: &mut Transaction<'_>,
-    candidate_id: Uuid,
-    token_hash: [u8; 32],
-    candidate_hash: [u8; 32],
-    candidate_rows: &[super::candidate::CandidateRowFacts],
-    sealed_rows: &[SealedCommitRow],
-) -> Result<CommitOutcome, ImportError> {
-    let Some(candidate) = super::db::pending_import_candidate::find(transaction)? else {
-        return Ok(CommitOutcome::Unavailable);
-    };
-    if candidate.candidate_id() != candidate_id {
-        return Ok(CommitOutcome::Unavailable);
-    }
-    if candidate.expiry() == CandidateExpiry::Expired {
-        expire_candidate(transaction, &candidate)?;
-        return Ok(CommitOutcome::Unavailable);
-    }
-    if !bool::from(
-        token_hash
-            .as_slice()
-            .ct_eq(candidate.preview_token_hash().as_slice()),
-    ) {
-        return Ok(CommitOutcome::Unavailable);
-    }
-    if candidate.fingerprint_version() != FINGERPRINT_VERSION
-        || candidate.candidate_fingerprint_sha256() != &candidate_hash
-    {
-        return Ok(CommitOutcome::Stale);
-    }
-
-    let baseline = super::db::query::read_baseline(transaction)?;
-    let baseline_hash = baseline.fingerprint();
-    if candidate.baseline_fingerprint_sha256() != &baseline_hash {
-        return Ok(CommitOutcome::Stale);
-    }
-
-    let plan = CommitPlan::prepare(baseline, candidate_rows)?;
-    if plan.diff.binding_impacts().len() != 0 {
-        return Ok(CommitOutcome::SeatOccupied);
-    }
-    apply_plan(transaction, sealed_rows, &plan)?;
-    if super::db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
+fn require_one(count: usize) -> Result<(), ImportError> {
+    if count != 1 {
         return Err(ImportError::PersistenceFailure);
     }
-    Ok(CommitOutcome::Committed)
-}
-
-struct CommitPlan {
-    current_seats: BTreeMap<String, BaselineSeat>,
-    current_accounts: BTreeMap<String, BaselineAccount>,
-    candidate_usernames: BTreeSet<String>,
-    next_credential_revisions: BTreeMap<String, i64>,
-    diff: RedactedImportPreview,
-}
-
-impl CommitPlan {
-    fn prepare(
-        baseline: ImportBaseline,
-        candidate_rows: &[super::candidate::CandidateRowFacts],
-    ) -> Result<Self, ImportError> {
-        let diff = compute_diff(baseline.seats(), candidate_rows)?;
-        let (current_seats, current_accounts) = baseline.into_parts();
-        let candidate_usernames = candidate_rows
-            .iter()
-            .map(|row| row.domjudge_username().to_owned())
-            .collect::<BTreeSet<_>>();
-        let mut next_credential_revisions = BTreeMap::new();
-        for username in &candidate_usernames {
-            if let Some(account) = current_accounts.get(username) {
-                let next = account
-                    .credential_revision()
-                    .checked_add(1)
-                    .ok_or(ImportError::PersistenceFailure)?;
-                next_credential_revisions.insert(username.clone(), next);
-            }
-        }
-        Ok(Self {
-            current_seats,
-            current_accounts,
-            candidate_usernames,
-            next_credential_revisions,
-            diff,
-        })
-    }
+    Ok(())
 }
 
 fn apply_plan(
     transaction: &mut Transaction<'_>,
-    sealed_rows: &[SealedCommitRow],
-    plan: &CommitPlan,
+    vault: &VaultSession,
+    parsed: &natsume_roster::Roster,
+    baseline: &ImportBaseline,
+    roster: &CandidateRoster,
+    diff: &RedactedImportPreview,
 ) -> Result<(), ImportError> {
-    let expected_mappings = plan
-        .current_seats
-        .values()
-        .filter(|seat| seat.current_domjudge_username().is_some())
-        .count();
-    if super::db::account_mappings::delete_all(transaction)? != expected_mappings {
-        return Err(ImportError::PersistenceFailure);
+    // Remove all changed mappings before inserting replacements, allowing seat swaps.
+    for code in diff
+        .seats_removed
+        .iter()
+        .chain(diff.mappings_changed.iter().map(|change| &change.seat_code))
+    {
+        let seat = baseline
+            .seats
+            .get(code)
+            .ok_or(ImportError::PersistenceFailure)?;
+        if seat.current_domjudge_username().is_some() {
+            require_one(db::account_mappings::delete_for_seat(
+                transaction,
+                seat.seat_id(),
+            )?)?;
+        }
     }
-
-    let mut final_seat_ids = plan
-        .current_seats
+    let mut seat_ids = baseline
+        .seats
         .iter()
         .map(|(code, seat)| (code.clone(), seat.seat_id().to_owned()))
         .collect::<BTreeMap<_, _>>();
-    for seat_code in plan.diff.seats_removed() {
-        let current = plan
-            .current_seats
-            .get(seat_code)
+    for code in &diff.seats_removed {
+        let seat = baseline
+            .seats
+            .get(code)
             .ok_or(ImportError::PersistenceFailure)?;
-        if super::db::seats::delete_exact(transaction, current)? != 1 {
-            return Err(ImportError::PersistenceFailure);
-        }
-        final_seat_ids.remove(seat_code);
+        require_one(db::seats::delete_exact(transaction, seat)?)?;
+        seat_ids.remove(code);
     }
-    for seat_code in plan.diff.seats_added() {
-        let seat_id = Uuid::now_v7().to_string();
-        if super::db::seats::insert(transaction, &seat_id, seat_code)? != 1 {
-            return Err(ImportError::PersistenceFailure);
-        }
-        final_seat_ids.insert(seat_code.clone(), seat_id);
+    for code in &diff.seats_added {
+        let id = Uuid::now_v7().to_string();
+        require_one(db::seats::insert(transaction, &id, code)?)?;
+        seat_ids.insert(code.clone(), id);
     }
-
-    for (username, account) in &plan.current_accounts {
-        if !plan.candidate_usernames.contains(username)
-            && super::db::accounts::delete_exact(transaction, account)? != 1
+    for account in &diff.accounts_removed {
+        require_one(db::accounts::delete_exact(
+            transaction,
+            baseline
+                .accounts
+                .get(account)
+                .ok_or(ImportError::PersistenceFailure)?,
+        )?)?;
+    }
+    // Allocate in name order so first import matches the former preprocessor.
+    for school in roster.organizations.values() {
+        if baseline.organizations.get(school.key()) != Some(school) {
+            require_one(db::organizations::save(transaction, school)?)?;
+        }
+    }
+    for team in parsed.teams() {
+        let id = save_account(transaction, vault, baseline, diff, team)?;
+        let details = roster
+            .teams
+            .get(team.account())
+            .ok_or(ImportError::PersistenceFailure)?;
+        if baseline.teams.get(team.account()) != Some(details) {
+            require_one(db::teams::save(transaction, &id, details)?)?;
+        }
+        if baseline
+            .seats
+            .get(team.seat())
+            .and_then(|seat| seat.current_domjudge_username())
+            != Some(team.account())
         {
-            return Err(ImportError::PersistenceFailure);
+            let seat_id = seat_ids
+                .get(team.seat())
+                .ok_or(ImportError::PersistenceFailure)?;
+            require_one(db::account_mappings::insert(transaction, seat_id, &id)?)?;
         }
     }
+    for school in baseline.organizations.values() {
+        if !roster.organizations.contains_key(school.key()) {
+            require_one(db::organizations::delete(
+                transaction,
+                school.organization_id,
+            )?)?;
+        }
+    }
+    Ok(())
+}
 
-    let mut final_account_ids = BTreeMap::new();
-    for row in sealed_rows {
-        let account_id = if let Some(current) = plan.current_accounts.get(row.domjudge_username()) {
-            let next = plan
-                .next_credential_revisions
-                .get(row.domjudge_username())
-                .copied()
+fn save_account(
+    transaction: &mut Transaction<'_>,
+    vault: &VaultSession,
+    baseline: &ImportBaseline,
+    diff: &RedactedImportPreview,
+    team: &natsume_roster::Team,
+) -> Result<String, ImportError> {
+    if let Some(current) = baseline.accounts.get(team.account()) {
+        if diff
+            .passwords_changed
+            .binary_search_by(|account| account.as_str().cmp(team.account()))
+            .is_ok()
+        {
+            let next = current
+                .credential_revision()
+                .checked_add(1)
                 .ok_or(ImportError::PersistenceFailure)?;
-            if super::db::server_vault_records::update_account_credential(
+            let (nonce, ciphertext) = vault
+                .seal(team.password().as_bytes())
+                .map_err(|_| ImportError::VaultFailure)?;
+            require_one(db::server_vault_records::save(
+                transaction,
+                current.account_id(),
+                &nonce,
+                &ciphertext,
+            )?)?;
+            require_one(db::accounts::advance_credential_revision(
                 transaction,
                 current,
-                row,
-            )? != 1
-                || super::db::accounts::advance_credential_revision(transaction, current, next)?
-                    != 1
-            {
-                return Err(ImportError::PersistenceFailure);
-            }
-            current.account_id().to_owned()
-        } else {
-            let account_id = Uuid::now_v7();
-            if super::db::accounts::insert(transaction, account_id, row.domjudge_username())? != 1
-                || super::db::server_vault_records::insert_account_credential(
-                    transaction,
-                    account_id,
-                    row,
-                )? != 1
-            {
-                return Err(ImportError::PersistenceFailure);
-            }
-            account_id.to_string()
-        };
-        final_account_ids.insert(row.domjudge_username().to_owned(), account_id);
-    }
-
-    for row in sealed_rows {
-        let seat_id = final_seat_ids
-            .get(row.seat_code())
-            .ok_or(ImportError::PersistenceFailure)?;
-        let account_id = final_account_ids
-            .get(row.domjudge_username())
-            .ok_or(ImportError::PersistenceFailure)?;
-        if super::db::account_mappings::insert(transaction, seat_id, account_id)? != 1 {
-            return Err(ImportError::PersistenceFailure);
+                next,
+            )?)?;
         }
+        Ok(current.account_id().to_owned())
+    } else {
+        let id = Uuid::now_v7();
+        require_one(db::accounts::insert(transaction, id, team.account())?)?;
+        let (nonce, ciphertext) = vault
+            .seal(team.password().as_bytes())
+            .map_err(|_| ImportError::VaultFailure)?;
+        require_one(db::server_vault_records::save(
+            transaction,
+            &id.to_string(),
+            &nonce,
+            &ciphertext,
+        )?)?;
+        Ok(id.to_string())
     }
-
-    Ok(())
 }
 
 enum CommitOutcome {

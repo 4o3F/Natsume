@@ -4,19 +4,34 @@ use sha2::{Digest, Sha256};
 
 use crate::{component::device::DeviceId, db::PersistenceError};
 
-use super::{write_field, write_optional_field};
+use super::{
+    roster::{OrganizationDetails, TeamDetails},
+    write_field, write_optional_field,
+};
 
 /// Import-owned snapshot used by preview, stale detection, and atomic commit planning.
 pub(super) struct ImportBaseline {
-    seats: BTreeMap<String, BaselineSeat>,
-    accounts: BTreeMap<String, BaselineAccount>,
+    pub(super) seats: BTreeMap<String, BaselineSeat>,
+    pub(super) accounts: BTreeMap<String, BaselineAccount>,
+    pub(super) organizations: BTreeMap<String, OrganizationDetails>,
+    pub(super) teams: BTreeMap<String, TeamDetails>,
+    pub(super) organization_sequence: i64,
 }
 
 impl ImportBaseline {
     pub(in crate::component::import) fn new(
         seats: Vec<BaselineSeat>,
         accounts: Vec<BaselineAccount>,
+        organizations: BTreeMap<String, OrganizationDetails>,
+        teams: BTreeMap<String, TeamDetails>,
+        organization_sequence: i64,
     ) -> Result<Self, PersistenceError> {
+        if organizations
+            .values()
+            .any(|school| school.organization_id > organization_sequence)
+        {
+            return Err(PersistenceError::InvalidPersistedData);
+        }
         let mut seats_by_code = BTreeMap::new();
         for seat in seats {
             if seats_by_code
@@ -41,12 +56,15 @@ impl ImportBaseline {
         Ok(Self {
             seats: seats_by_code,
             accounts: accounts_by_username,
+            organizations,
+            teams,
+            organization_sequence,
         })
     }
 
     pub(super) fn fingerprint(&self) -> [u8; 32] {
         let mut hasher = Sha256::new();
-        write_field(&mut hasher, b"natsume/import-baseline/v1");
+        write_field(&mut hasher, b"natsume/import-baseline/v2");
         for seat in self.seats.values() {
             write_field(&mut hasher, b"seat");
             write_field(&mut hasher, seat.seat_id().as_bytes());
@@ -63,21 +81,31 @@ impl ImportBaseline {
             write_field(&mut hasher, account.account_id().as_bytes());
             write_field(&mut hasher, account.domjudge_username().as_bytes());
             write_field(&mut hasher, &account.credential_revision().to_be_bytes());
+            write_field(&mut hasher, &account.nonce);
+            write_field(&mut hasher, &account.ciphertext);
+        }
+        write_field(&mut hasher, &self.organization_sequence.to_be_bytes());
+        for organization in self.organizations.values() {
+            write_field(&mut hasher, b"organization");
+            write_field(&mut hasher, &organization.organization_id.to_be_bytes());
+            for value in [
+                &organization.name_zh,
+                &organization.name_en,
+                &organization.country,
+            ] {
+                write_field(&mut hasher, value.as_bytes());
+            }
+        }
+        for team in self.teams.values() {
+            write_field(&mut hasher, b"team");
+            write_field(&mut hasher, team.account.as_bytes());
+            write_optional_field(&mut hasher, team.seat.as_deref().map(str::as_bytes));
+            write_field(&mut hasher, &team.organization_id.to_be_bytes());
+            for value in [&team.name_zh, &team.name_en, &team.category] {
+                write_field(&mut hasher, value.as_bytes());
+            }
         }
         hasher.finalize().into()
-    }
-
-    pub(super) const fn seats(&self) -> &BTreeMap<String, BaselineSeat> {
-        &self.seats
-    }
-
-    pub(super) fn into_parts(
-        self,
-    ) -> (
-        BTreeMap<String, BaselineSeat>,
-        BTreeMap<String, BaselineAccount>,
-    ) {
-        (self.seats, self.accounts)
     }
 }
 
@@ -124,6 +152,8 @@ pub(super) struct BaselineAccount {
     account_id: String,
     domjudge_username: String,
     credential_revision: i64,
+    pub(super) nonce: Vec<u8>,
+    pub(super) ciphertext: Vec<u8>,
 }
 
 impl BaselineAccount {
@@ -131,11 +161,15 @@ impl BaselineAccount {
         account_id: String,
         domjudge_username: String,
         credential_revision: i64,
+        nonce: Vec<u8>,
+        ciphertext: Vec<u8>,
     ) -> Self {
         Self {
             account_id,
             domjudge_username,
             credential_revision,
+            nonce,
+            ciphertext,
         }
     }
 

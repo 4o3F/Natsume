@@ -19,6 +19,7 @@ diesel_migrations.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 natsume-device-protocol = { path = "../crates/device-protocol" }
+natsume-roster = { path = "../crates/roster" }
 opentelemetry.workspace = true
 opentelemetry-otlp.workspace = true
 opentelemetry_sdk.workspace = true
@@ -57,6 +58,7 @@ rustls = { workspace = true, features = ["tls12"] }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true
 tower.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true

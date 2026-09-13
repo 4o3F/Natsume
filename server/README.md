@@ -122,6 +122,44 @@ login name exits non-zero with zero writes. Never run it as root or from
 automation. The package `postinstall` must not call it because install-time
 secret handling and a packaging-script TTY prompt are forbidden.
 
+## Complete roster import
+
+Preparation accepts the fixed [Teams XLSX template](../crates/roster/examples/template.xlsx).
+The [roster library](../crates/roster/README.md) defines all nine columns, school
+merging, text-only cells and size limits. Every upload contains the complete
+roster; omitted accounts, teams, schools and seats appear as removals. The old
+CSV and JSON commit bodies are rejected.
+
+Administrators download the template with `GET /api/v2/imports/template`, send
+raw XLSX bytes to `POST /api/v2/imports`, and review the non-secret diff. Commit
+resends the workbook to `POST /api/v2/imports/{import_id}/actions/commit` with
+`x-natsume-preview-token`. Both uploads use
+`application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` and have an
+8 MiB body limit. A pending preview expires after 30 minutes; the File and token
+stay in browser memory only. Reloading requires discard and a new upload.
+
+Import owns `organizations` and `teams` as well as the existing seats, accounts,
+mappings and encrypted credentials. Schools receive `INST-001`-style IDs in
+school-name order on first import. Later imports reuse current school IDs and
+allocate new ones after the persisted SQLite sequence, including after deletion.
+Renaming a school's matching name creates a new school and ID in the preview.
+No school IDs are allocated by preview alone.
+
+Commit rereads and verifies the baseline, non-secret candidate and password-change
+set in one SQLite transaction. Only changed passwords rewrite the vault and
+advance credential revisions. An identical roster causes no business writes.
+Metadata updates preserve account/seat IDs, device bindings and session targets;
+seat swaps preserve the binding on its seat. Removing an occupied seat is blocked.
+Failed commits roll back the whole roster and retain the candidate for recovery.
+
+The roster migration adds the new tables and discards obsolete pending previews;
+existing devices, control keys, bindings, accounts, vault records and session/home
+targets are preserved. Existing installations supply missing team and school
+metadata through the full XLSX import. Never clear the database to apply this migration.
+
+TODO(roster-export): connect the Logo directory, image HTTP service and complete
+DOMjudge ZIP export. The current import does not require Logo files.
+
 ## OpenTelemetry traces
 
 The Server always writes its ordinary `tracing` output to stderr. OTLP/gRPC

@@ -24,7 +24,7 @@ use self::error::ApiError;
 
 pub(crate) type AppState = Arc<ServerState>;
 
-const API_REQUEST_BODY_LIMIT_BYTES: usize = 4 * 1024 * 1024 + 4 * 1024;
+const API_REQUEST_BODY_LIMIT_BYTES: usize = natsume_roster::MAX_WORKBOOK_BYTES + 4 * 1024;
 
 /// Builds the mounted Server HTTP surface over process-wide business state.
 pub(crate) fn router(state: AppState, web_root: &Path) -> Router {

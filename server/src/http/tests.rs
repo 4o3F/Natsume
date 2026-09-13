@@ -568,6 +568,11 @@ async fn mounted_route_responses(
         drive(application, request(Method::GET, "/api/v2/imports", "")?).await?,
         drive(
             application,
+            request(Method::GET, "/api/v2/imports/template", "")?,
+        )
+        .await?,
+        drive(
+            application,
             request(Method::GET, "/api/v2/provisioning-window", "")?,
         )
         .await?,
@@ -581,7 +586,7 @@ async fn mounted_route_responses(
             Request::builder()
                 .method(Method::POST)
                 .uri("/api/v2/imports")
-                .header(header::CONTENT_TYPE, "text/csv")
+                .header(header::CONTENT_TYPE, XLSX_MEDIA_TYPE)
                 .body(Body::empty())
                 .map_err(|_| SupportFailure::HelperRequestBuildFailed)?,
         )
@@ -1127,4 +1132,148 @@ enum TestFailure {
     ExpiredCleanupCauseWasNotLogged,
     #[snafu(display("the expired-cleanup cause escaped into an HTTP response"))]
     ExpiredCleanupCauseEscapedIntoResponse,
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn roster_http_accepts_binary_xlsx_and_keeps_credentials_out_of_previews_and_logs()
+-> Result<(), SupportFailure> {
+    let _subscriber_guard = SubscriberTestGuard::acquire();
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
+    let application = router(server_state(fixture.database.clone())?, unused_web_root());
+    let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
+    let cookie = header_text(&login.headers, &header::SET_COOKIE)?
+        .split(';')
+        .next()
+        .ok_or(SupportFailure::ResponseHeaderInvalid)?;
+    let capture = CapturedLogs::default();
+    let token = async {
+        let template = drive(
+            &application,
+            cookie_request(Method::GET, "/api/v2/imports/template", cookie)?,
+        )
+        .await?;
+        assert_eq!(template.status, StatusCode::OK);
+        assert_eq!(
+            template.body,
+            include_bytes!("../../../crates/roster/examples/template.xlsx")
+        );
+        assert_eq!(template.headers[header::CONTENT_TYPE], XLSX_MEDIA_TYPE);
+        for content_type in ["text/csv", "application/json"] {
+            let response = drive(
+                &application,
+                roster_request(
+                    cookie,
+                    "/api/v2/imports",
+                    b"seat,account,password".to_vec(),
+                    None,
+                    content_type,
+                )?,
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::BAD_REQUEST);
+        }
+        let bytes = include_bytes!("../../../crates/roster/examples/roster.xlsx").to_vec();
+        let response = drive(
+            &application,
+            roster_request(
+                cookie,
+                "/api/v2/imports",
+                bytes.clone(),
+                None,
+                XLSX_MEDIA_TYPE,
+            )?,
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::CREATED);
+        let preview: Value = serde_json::from_slice(&response.body)
+            .map_err(|_| SupportFailure::ResponseJsonInvalid)?;
+        assert!(!String::from_utf8_lossy(&response.body).contains("example-password"));
+        assert_eq!(
+            preview["diff"]["organizations"][0]["organization_id"],
+            "INST-001"
+        );
+        assert_eq!(
+            preview["diff"]["team_changes"].as_array().map(Vec::len),
+            Some(3)
+        );
+        let pending = drive(
+            &application,
+            cookie_request(Method::GET, "/api/v2/imports", cookie)?,
+        )
+        .await?;
+        let pending_text = String::from_utf8_lossy(&pending.body);
+        assert!(!pending_text.contains("preview_token"));
+        assert!(!pending_text.contains("example-password"));
+        let token = preview["preview_token"]
+            .as_str()
+            .ok_or(SupportFailure::ResponseJsonInvalid)?;
+        let id = preview["candidate_id"]
+            .as_str()
+            .ok_or(SupportFailure::ResponseJsonInvalid)?;
+        let url = format!("/api/v2/imports/{id}/actions/commit");
+        let missing = drive(
+            &application,
+            roster_request(cookie, &url, bytes.clone(), None, XLSX_MEDIA_TYPE)?,
+        )
+        .await?;
+        assert_eq!(missing.status, StatusCode::BAD_REQUEST);
+        let wrong = drive(
+            &application,
+            roster_request(
+                cookie,
+                &url,
+                bytes.clone(),
+                Some(&"A".repeat(43)),
+                XLSX_MEDIA_TYPE,
+            )?,
+        )
+        .await?;
+        assert_eq!(wrong.status, StatusCode::NOT_FOUND);
+        let committed = drive(
+            &application,
+            roster_request(cookie, &url, bytes, Some(token), XLSX_MEDIA_TYPE)?,
+        )
+        .await?;
+        assert_eq!(committed.status, StatusCode::NO_CONTENT);
+        let accounts = drive(
+            &application,
+            cookie_request(Method::GET, "/api/v2/accounts", cookie)?,
+        )
+        .await?;
+        let accounts: Value = serde_json::from_slice(&accounts.body)
+            .map_err(|_| SupportFailure::ResponseJsonInvalid)?;
+        assert_eq!(accounts.as_array().map(Vec::len), Some(3));
+        Ok::<_, SupportFailure>(token.to_owned())
+    }
+    .with_subscriber(capture.subscriber(LogLevel::Trace))
+    .await?;
+    let logs = capture.text().map_err(|()| SupportFailure::FixtureFailed)?;
+    assert!(!logs.contains(&token));
+    assert!(!logs.contains("example-password"));
+    Ok(())
+}
+
+const XLSX_MEDIA_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+fn roster_request(
+    cookie: &str,
+    uri: &str,
+    body: Vec<u8>,
+    token: Option<&str>,
+    content_type: &str,
+) -> Result<Request<Body>, SupportFailure> {
+    let mut request = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::COOKIE, cookie)
+        .header(header::CONTENT_TYPE, content_type);
+    if let Some(token) = token {
+        request = request.header("x-natsume-preview-token", token);
+    }
+    request
+        .body(Body::from(body))
+        .map_err(|_| SupportFailure::HelperRequestBuildFailed)
 }

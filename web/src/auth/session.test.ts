@@ -3,7 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionController } from "./session";
 
 const admin = { operator_id: "admin-1", role: "admin" };
-const preview = { candidate_id: "candidate-1", preview_token: "old-token" };
+const preview = {
+  candidate_id: "candidate-1",
+  preview_token: "old-token",
+  file: new File(["synthetic workbook"], "roster.xlsx"),
+};
 const baseUrl = "https://natsume.test";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -125,7 +129,7 @@ describe("session ownership", () => {
     old.logout();
     controller.getSnapshot().login(admin);
     await expect(
-      old.api.POST("/api/v2/imports", { baseUrl, body: "old CSV" }),
+      old.api.POST("/api/v2/imports", { baseUrl, body: "old XLSX" }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -144,7 +148,7 @@ describe("session ownership", () => {
     const controller = new SessionController();
     controller.getSnapshot().login(admin);
     const old = controller.getSnapshot();
-    const pending = old.api.POST("/api/v2/imports", { baseUrl, body: "CSV" });
+    const pending = old.api.POST("/api/v2/imports", { baseUrl, body: "" });
     await vi.waitFor(() => expect(parse).toHaveBeenCalledOnce());
     old.logout();
     controller.getSnapshot().login(admin);
@@ -152,7 +156,9 @@ describe("session ownership", () => {
     current.preparation.set({ ...preview, preview_token: "new-token" });
     finish(preview);
     const result = await pending;
-    expect(() => old.preparation.set(result.data!)).toThrow();
+    expect(() =>
+      old.preparation.set({ ...result.data!, file: preview.file }),
+    ).toThrow();
     expect(current.preparation.get()?.preview_token).toBe("new-token");
   });
 });

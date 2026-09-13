@@ -1,14 +1,15 @@
-use diesel::{ExpressionMethods, RunQueryDsl};
+use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
 
 use crate::{
     db::{PersistenceError, Transaction},
     diesel_schema::account_mappings,
 };
 
-pub(in crate::component::import) fn delete_all(
+pub(in crate::component::import) fn delete_for_seat(
     transaction: &mut Transaction<'_>,
+    seat_id: &str,
 ) -> Result<usize, PersistenceError> {
-    diesel::delete(account_mappings::table)
+    diesel::delete(account_mappings::table.filter(account_mappings::seat_id.eq(seat_id)))
         .execute(transaction.connection())
         .map_err(|_| PersistenceError::OperationFailed)
 }

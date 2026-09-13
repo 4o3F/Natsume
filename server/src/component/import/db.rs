@@ -4,10 +4,12 @@ use crate::db::PersistenceError;
 
 pub(super) mod account_mappings;
 pub(super) mod accounts;
+pub(super) mod organizations;
 pub(super) mod pending_import_candidate;
 pub(super) mod query;
 pub(super) mod seats;
 pub(super) mod server_vault_records;
+pub(super) mod teams;
 
 fn canonical_uuid_v7(value: &str) -> Result<Uuid, PersistenceError> {
     let parsed = Uuid::parse_str(value).map_err(|_| PersistenceError::InvalidPersistedData)?;

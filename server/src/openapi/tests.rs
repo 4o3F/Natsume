@@ -23,10 +23,9 @@ use super::document;
 
 const UNMOUNTED_DESCRIPTION_PREFIX: &str = "Declared but not mounted in WP8 operation IDs: ";
 const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
-const ALLOWED_CREDENTIAL_PATHS: [&str; 3] = [
+const ALLOWED_CREDENTIAL_PATHS: [&str; 2] = [
     "/components/schemas/SessionRequest/properties/password",
     "/components/schemas/ImportPreviewResponse/properties/preview_token",
-    "/components/schemas/ImportCommitRequest/properties/preview_token",
 ];
 type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
 const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 2] = [
@@ -66,6 +65,12 @@ fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
 #[allow(clippy::too_many_lines)]
 fn expected_operation_table() -> OperationTable {
     let rows: &[(&str, &str, &str, &[&str])] = &[
+        (
+            "get",
+            "/api/v2/imports/template",
+            "getRosterTemplate",
+            &["200", "401", "403"],
+        ),
         (
             "delete",
             "/api/v2/session",
@@ -173,7 +178,7 @@ fn expected_operation_table() -> OperationTable {
         (
             "get",
             "/api/v2/imports",
-            "getCsvImport",
+            "getRosterImport",
             &["200", "401", "403", "500"],
         ),
         (
@@ -185,19 +190,19 @@ fn expected_operation_table() -> OperationTable {
         (
             "post",
             "/api/v2/imports",
-            "createCsvImport",
+            "createRosterImport",
             &["201", "400", "401", "403", "409", "413", "500"],
         ),
         (
             "post",
             "/api/v2/imports/{import_id}/actions/commit",
-            "commitCsvImport",
+            "commitRosterImport",
             &["204", "400", "401", "403", "404", "409", "413", "500"],
         ),
         (
             "delete",
             "/api/v2/imports/{import_id}",
-            "deleteCsvImport",
+            "deleteRosterImport",
             &["204", "400", "401", "403", "404", "500"],
         ),
     ];
@@ -281,7 +286,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none."
+        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -536,10 +541,16 @@ fn assert_import_operations(value: &Value) -> Result<(), TestFailure> {
     let discard = operation_at(value, "/api/v2/imports/{import_id}", "delete")?;
     if nested_value(
         upload,
-        &["requestBody", "content", "text/csv", "schema", "type"],
+        &[
+            "requestBody",
+            "content",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "schema",
+            "format",
+        ],
     )
     .and_then(Value::as_str)
-        != Some("string")
+        != Some("binary")
         || read.get("requestBody").is_some()
         || nested_value(
             read,
@@ -559,13 +570,13 @@ fn assert_import_operations(value: &Value) -> Result<(), TestFailure> {
             &[
                 "requestBody",
                 "content",
-                "application/json",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 "schema",
-                "$ref",
+                "format",
             ],
         )
         .and_then(Value::as_str)
-            != Some("#/components/schemas/ImportCommitRequest")
+            != Some("binary")
         || discard.get("requestBody").is_some()
         || nested_value(
             upload,
@@ -677,6 +688,12 @@ fn assert_import_diff_schema(value: &Value) -> Result<(), TestFailure> {
     let properties = schema_properties(diff)?;
     if property_names(properties)
         != BTreeSet::from([
+            "accounts_added",
+            "accounts_removed",
+            "passwords_changed",
+            "organizations",
+            "organization_changes",
+            "team_changes",
             "affected_account_count",
             "binding_impacts",
             "mappings_changed",
@@ -717,7 +734,8 @@ fn assert_import_mapping_schemas(value: &Value) -> Result<(), TestFailure> {
                 "current_domjudge_username",
                 "seat_code",
             ])
-        || property_names(schema_properties(binding)?) != BTreeSet::from(["device_id", "seat_code"])
+        || property_names(schema_properties(binding)?)
+            != BTreeSet::from(["device_id", "seat_code", "blocks_commit"])
         || !value_contains_string(
             mapping_properties
                 .get("current_domjudge_username")
@@ -731,25 +749,58 @@ fn assert_import_mapping_schemas(value: &Value) -> Result<(), TestFailure> {
 }
 
 fn assert_import_commit_schemas(value: &Value) -> Result<(), TestFailure> {
-    let schema = schema_object(value, "ImportCommitRequest")?;
-    if property_names(schema_properties(schema)?) != BTreeSet::from(["csv", "preview_token"])
-        || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+    let commit = operation_at(value, "/api/v2/imports/{import_id}/actions/commit", "post")?;
+    let token = commit
+        .get("parameters")
+        .and_then(Value::as_array)
+        .and_then(|values| {
+            values.iter().find(|value| {
+                value.get("name").and_then(Value::as_str) == Some("x-natsume-preview-token")
+            })
+        })
+        .ok_or(TestFailure::ImportContractChanged)?;
+    if token.get("in").and_then(Value::as_str) != Some("header")
+        || token.get("required").and_then(Value::as_bool) != Some(true)
+        || token.pointer("/schema/pattern").and_then(Value::as_str)
+            != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
+        || value
+            .pointer("/components/schemas/ImportCommitRequest")
+            .is_some()
     {
         return Err(TestFailure::ImportContractChanged);
     }
-    let commit_request = schema_properties(schema_object(value, "ImportCommitRequest")?)?;
-    if commit_request
-        .get("preview_token")
-        .and_then(|property| property.get("pattern"))
-        .and_then(Value::as_str)
-        != Some("^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")
-        || commit_request
-            .get("csv")
-            .and_then(|property| property.get("writeOnly"))
-            .and_then(Value::as_bool)
-            != Some(true)
-    {
-        return Err(TestFailure::ImportContractChanged);
+    for (name, properties) in [
+        (
+            "ImportOrganizationResponse",
+            &["organization_id", "name_zh", "name_en", "country"][..],
+        ),
+        (
+            "ImportTeamResponse",
+            &[
+                "account",
+                "seat",
+                "organization_id",
+                "name_zh",
+                "name_en",
+                "category",
+            ][..],
+        ),
+        (
+            "ImportOrganizationChangeResponse",
+            &["current", "candidate"][..],
+        ),
+        (
+            "ImportTeamChangeResponse",
+            &["account", "current", "candidate"][..],
+        ),
+    ] {
+        let schema = schema_object(value, name)?;
+        if property_names(schema_properties(schema)?) != properties.iter().copied().collect()
+            || required_property_names(schema)? != property_names(schema_properties(schema)?)
+            || schema.get("additionalProperties").and_then(Value::as_bool) != Some(false)
+        {
+            return Err(TestFailure::ImportContractChanged);
+        }
     }
     Ok(())
 }

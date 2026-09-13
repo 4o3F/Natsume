@@ -10,4 +10,6 @@ Only routes present in the generated OpenAPI snapshot are mounted in the current
 
 Enrollment shows the enrollment window state and lets administrators open or close it through `/api/v2/provisioning-window`; viewers can only read the state. The window closes whenever the Server restarts, and the Panel polls for changes.
 
-CSV preview persists only a redacted diff and fingerprints. The browser keeps both preview authorization and the reviewed file in memory and resubmits the CSV on commit; a reload requires discard and re-upload.
+Preparation downloads the fixed Teams XLSX template and previews a complete roster, including team/school metadata, generated INST IDs, account and password changes, seat mappings and affected devices. Removing an occupied seat blocks commit; other affected bindings are shown for confirmation.
+
+The Server persists only a redacted diff and fingerprints. The browser keeps the exact reviewed File and preview token in the current login session, including during page navigation. Upload and commit send raw XLSX bytes; commit sends authorization in `x-natsume-preview-token`. A reload or session change requires discard and re-upload. Passwords are never rendered or stored in browser storage.

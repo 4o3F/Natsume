@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.0.4"
   },
   "paths": {
@@ -1102,10 +1102,10 @@
     },
     "/api/v2/imports": {
       "get": {
-        "operationId": "getCsvImport",
+        "operationId": "getRosterImport",
         "responses": {
           "200": {
-            "description": "Current pending CSV import candidate",
+            "description": "Pending roster preview",
             "content": {
               "application/json": {
                 "schema": {
@@ -1152,12 +1152,13 @@
         ]
       },
       "post": {
-        "operationId": "createCsvImport",
+        "operationId": "createRosterImport",
         "requestBody": {
           "content": {
-            "text/csv": {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
               "schema": {
-                "type": "string"
+                "type": "string",
+                "format": "binary"
               }
             }
           },
@@ -1165,7 +1166,7 @@
         },
         "responses": {
           "201": {
-            "description": "CSV import candidate created",
+            "description": "Full-roster XLSX preview created",
             "content": {
               "application/json": {
                 "schema": {
@@ -1175,7 +1176,7 @@
             }
           },
           "400": {
-            "description": "Invalid CSV import or request media type",
+            "description": "Invalid workbook or media type",
             "content": {
               "application/json": {
                 "schema": {
@@ -1205,7 +1206,7 @@
             }
           },
           "409": {
-            "description": "An import candidate is already pending",
+            "description": "A candidate is already pending",
             "content": {
               "application/json": {
                 "schema": {
@@ -1215,7 +1216,7 @@
             }
           },
           "413": {
-            "description": "Request body exceeds the API ingress limit"
+            "description": "Workbook exceeds 8 MiB"
           },
           "500": {
             "description": "Internal failure",
@@ -1235,14 +1236,57 @@
         ]
       }
     },
+    "/api/v2/imports/template": {
+      "get": {
+        "operationId": "getRosterTemplate",
+        "responses": {
+          "200": {
+            "description": "Blank Teams XLSX template",
+            "content": {
+              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v2/imports/{import_id}": {
       "delete": {
-        "operationId": "deleteCsvImport",
+        "operationId": "deleteRosterImport",
         "parameters": [
           {
             "name": "import_id",
             "in": "path",
-            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
+            "description": "Canonical lowercase hyphenated UUIDv7 import candidate ID.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CanonicalUuidV7"
@@ -1251,7 +1295,7 @@
         ],
         "responses": {
           "204": {
-            "description": "CSV import candidate discarded"
+            "description": "Roster preview discarded"
           },
           "400": {
             "description": "Invalid import ID",
@@ -1284,7 +1328,7 @@
             }
           },
           "404": {
-            "description": "Import candidate unavailable",
+            "description": "Candidate unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -1313,23 +1357,36 @@
     },
     "/api/v2/imports/{import_id}/actions/commit": {
       "post": {
-        "operationId": "commitCsvImport",
+        "operationId": "commitRosterImport",
         "parameters": [
           {
             "name": "import_id",
             "in": "path",
-            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
+            "description": "Canonical lowercase hyphenated UUIDv7 import candidate ID.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          },
+          {
+            "name": "x-natsume-preview-token",
+            "in": "header",
+            "description": "Secret authorization returned by preview",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 43,
+              "minLength": 43,
+              "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
             }
           }
         ],
         "requestBody": {
           "content": {
-            "application/json": {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
               "schema": {
-                "$ref": "#/components/schemas/ImportCommitRequest"
+                "type": "string",
+                "format": "binary"
               }
             }
           },
@@ -1337,10 +1394,10 @@
         },
         "responses": {
           "204": {
-            "description": "CSV import committed"
+            "description": "Complete roster committed atomically; only changed passwords advance revisions"
           },
           "400": {
-            "description": "Invalid import ID or closed request",
+            "description": "Invalid workbook, token or media type",
             "content": {
               "application/json": {
                 "schema": {
@@ -1370,7 +1427,7 @@
             }
           },
           "404": {
-            "description": "Import candidate unavailable",
+            "description": "Candidate unavailable",
             "content": {
               "application/json": {
                 "schema": {
@@ -1380,7 +1437,7 @@
             }
           },
           "409": {
-            "description": "Import preview baseline is stale",
+            "description": "Preview stale or removed seat occupied",
             "content": {
               "application/json": {
                 "schema": {
@@ -1390,7 +1447,7 @@
             }
           },
           "413": {
-            "description": "Request body exceeds the API ingress limit"
+            "description": "Workbook exceeds 8 MiB"
           },
           "500": {
             "description": "Internal failure",
@@ -2216,32 +2273,16 @@
       },
       "ImportBindingImpactResponse": {
         "type": "object",
-        "required": ["seat_code", "device_id"],
+        "required": ["seat_code", "device_id", "blocks_commit"],
         "properties": {
+          "blocks_commit": {
+            "type": "boolean"
+          },
           "device_id": {
             "type": "string"
           },
           "seat_code": {
             "type": "string"
-          }
-        },
-        "additionalProperties": false
-      },
-      "ImportCommitRequest": {
-        "type": "object",
-        "required": ["preview_token", "csv"],
-        "properties": {
-          "csv": {
-            "type": "string",
-            "description": "The same seat/account candidate reviewed in preview, with the passwords\nsupplied again because preview never persists them.",
-            "writeOnly": true
-          },
-          "preview_token": {
-            "type": "string",
-            "writeOnly": true,
-            "maxLength": 43,
-            "minLength": 43,
-            "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
           }
         },
         "additionalProperties": false
@@ -2261,6 +2302,52 @@
             "type": ["string", "null"]
           },
           "seat_code": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportOrganizationChangeResponse": {
+        "type": "object",
+        "required": ["current", "candidate"],
+        "properties": {
+          "candidate": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImportOrganizationResponse"
+              }
+            ]
+          },
+          "current": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImportOrganizationResponse"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportOrganizationResponse": {
+        "type": "object",
+        "required": ["organization_id", "name_zh", "name_en", "country"],
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "name_en": {
+            "type": "string"
+          },
+          "name_zh": {
+            "type": "string"
+          },
+          "organization_id": {
             "type": "string"
           }
         },
@@ -2336,9 +2423,27 @@
           "mappings_changed",
           "unchanged_count",
           "affected_account_count",
-          "binding_impacts"
+          "binding_impacts",
+          "accounts_added",
+          "accounts_removed",
+          "passwords_changed",
+          "organizations",
+          "organization_changes",
+          "team_changes"
         ],
         "properties": {
+          "accounts_added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "accounts_removed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "affected_account_count": {
             "type": "integer",
             "minimum": 0
@@ -2355,6 +2460,24 @@
               "$ref": "#/components/schemas/ImportMappingChangeResponse"
             }
           },
+          "organization_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportOrganizationChangeResponse"
+            }
+          },
+          "organizations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportOrganizationResponse"
+            }
+          },
+          "passwords_changed": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "seats_added": {
             "type": "array",
             "items": {
@@ -2367,9 +2490,77 @@
               "type": "string"
             }
           },
+          "team_changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ImportTeamChangeResponse"
+            }
+          },
           "unchanged_count": {
             "type": "integer",
             "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportTeamChangeResponse": {
+        "type": "object",
+        "required": ["account", "current", "candidate"],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "candidate": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImportTeamResponse"
+              }
+            ]
+          },
+          "current": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ImportTeamResponse"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImportTeamResponse": {
+        "type": "object",
+        "required": [
+          "account",
+          "seat",
+          "organization_id",
+          "name_zh",
+          "name_en",
+          "category"
+        ],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "name_en": {
+            "type": "string"
+          },
+          "name_zh": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "seat": {
+            "type": ["string", "null"]
           }
         },
         "additionalProperties": false

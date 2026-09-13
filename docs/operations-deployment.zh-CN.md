@@ -544,24 +544,22 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
 
 这是管理员浏览器访问 Server 的 Control CA；比赛机浏览器访问本机 Gateway 使用 Local Origin CA。
 
-### 5.2 导入工位和账号
+### 5.2 导入完整队伍名单
 
-在 Server 的受控目录准备 UTF-8 CSV，首行严格为：
+本节对应当前源码的新版 XLSX 导入，尚未包含在上文的 v2.0.4 Release 包中。TODO(roster-delivery)：配套版本发布时同步本手册的包版本及停机升级流程；不要将新版模板上传到旧版 CSV 入口。
 
-~~~csv
-seat,account,password
-A-01,team001,REPLACE_WITH_REAL_TEAM_PASSWORD
-A-02,team002,REPLACE_WITH_REAL_TEAM_PASSWORD
-~~~
+在 Web **Preparation** 点击 **Download Excel template**，下载 `Teams` 工作表模板。人工把报名表整理为一行一队，按[字段规则](../crates/roster/README.md#excel-模板)填写九列：学校中英文名、country、account、password、seat、队伍中英文名、category。所有单元格按文本填写，保留座位前导零；不填写公式。学校与队伍的中英文名各至少填写一种，country 留空默认为 CHN。
 
-填写实际 DOMjudge 账号/密码，不是 Linux teams 或 Natsume 管理员密码。seat/account 各自唯一；密码中的逗号、引号和换行按 CSV 规则引用。文件包含密码，设置 0600，不提交 Git。
+填写 DOMjudge 队伍账号和当前密码；account、seat 各自唯一。学校编号由 Server 生成，无需预填。文件包含密码，在 Server 受控目录保存时设为 0600，不提交 Git。每次上传完整名单；热身转正式赛只修改 password，其余各行也一并上传。
 
-1. Web **Preparation** 选择文件，点击 **Create preview**。
-2. 核对 Seat changes、Mapping changes、Affected accounts、Binding impacts。
-3. 点击 **Commit import** → **Confirm commit**。
-4. 在 **Seats / Accounts** 核对数量和映射。
+1. 选择 XLSX（最大 8 MiB），点击 **Create preview**。
+2. 核对 **Team changes / School changes / School ID mapping**，检查队伍、中英文名称、类别和 INST ID。
+3. 核对账号新增／移除、**Passwords changed**、**Seat changes / Mapping changes** 和 **Binding impacts**。这里只显示密码变化的账号名。
+4. 删除已绑定的工位会阻止提交，需要先通过 **Bindings** 解绑；其他资料变化会列出受影响设备，绑定保留在原工位。
+5. 点击 **Commit import** → **Confirm commit**。整份名单原子生效；完全相同的文件不改业务数据，只有实际改密账号推进凭据 revision。队伍资料变化不切换设备前台会话。
+6. 在 **Seats / Accounts** 核对数量与映射。刷新或退出后需要 **Discard preview** 再上传；普通页面内导航仍保留审核过的文件。
 
-导入替换整份比赛配置，不是追加，会推进账号凭据 revision。被 Binding 占用影响时先通过 **Bindings** 处理，不直接改库。预览后刷新会丢失授权和已选文件，需要 discard 再上传。
+当前导入不要求 Logo 文件。图片目录接入、完整 DOMjudge ZIP 和 Client waiting 展示在后续配套阶段交付。
 
 ### 5.3 检查注册窗口（可选 API 会话）
 
@@ -856,7 +854,7 @@ API 预期 state=open，此时不需要逐台点击 **Approve**。
 
 Server 每次重启窗口恢复关闭，新请求改为人工审批。Client 完成身份初始化和连接后才开始注册；关闭窗口不代替已注册设备的 Revoke。
 
-样机显示 **Bind workstation / Enter your seat code** 时输入 CSV 工位码，如 A-01。在 **Bindings / Seats / Devices** 核对工位、设备和账号一致。工位不存在/被占时修正映射，不删除设备身份文件重试。
+样机显示 **Bind workstation / Enter your seat code** 时输入 XLSX 中的工位码，如 A-01。在 **Bindings / Seats / Devices** 核对工位、设备和账号一致。工位不存在/被占时修正映射，不删除设备身份文件重试。
 
 新设备默认保持 waiting，绑定成功后等待管理员执行 **Show contest desktop**。绑定和重启不会改写已有的前台目标；已有设备若要继续等待，先在 **Targets** 执行 **Show waiting screen**。重启先进入 waiting，重新连接且桌面依赖就绪后按 Server 保存的目标恢复前台。
 
@@ -919,7 +917,7 @@ rm "$NATSUME_API_DIR/cookies"
 rmdir "$NATSUME_API_DIR"
 ~~~
 
-归档源码版本、自建包 checksum、公共配置/CA 指纹、工位—硬件 ID—设备 ID 对照、验收结果和 Server 冷备份；账号 CSV 和私有材料按凭据保管。
+归档源码版本、自建包 checksum、公共配置/CA 指纹、工位—硬件 ID—设备 ID 对照、验收结果和 Server 冷备份；账号 XLSX 和私有材料按凭据保管。
 
 ## 8. 日常维护、备份和恢复
 
@@ -1029,7 +1027,7 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 | TOML syntax or field type | 报错的行列、引号和值类型 | 修正 TOML 后重试 |
 | runtime.domjudge_origin 校验失败 | 实际上游是否提供 HTTPS，地址是否只包含 origin | HTTP 地址不受支持；使用可用的 HTTPS 上游，不带末尾斜杠或路径 |
 | 无 Enrollment review | 窗口、Devices 列表、控制连接与注册握手 | Open 会自动批准，先查 Devices；Closed 应有待审请求，检查 Client/Server 日志 |
-| 无法绑定 | CSV 是否 commit、工位是否存在/被占 | 处理数据与 Binding，不删除设备身份 |
+| 无法绑定 | XLSX 是否 commit、工位是否存在/被占 | 处理数据与 Binding，不删除设备身份 |
 | Firefox 不信任 Gateway | about:policies、Install路径、CA/hostname/期限 | 修正策略并完全重启 Firefox |
 | Gateway 连接失败/503 | loopback解析、listener、Gateway/Binding/Runtime | 先完成注册配置，BLOCKED 不能靠关闭 TLS 验证解决 |
 | Gateway 502/上游 TLS 失败 | DNS、系统CA、上游端口/证书 | Client 用系统信任测试，额外 CA 按 7.3 节分发 |

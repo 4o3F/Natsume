@@ -1,6 +1,7 @@
 export interface PreparationPreview {
   candidate_id: string;
   preview_token: string;
+  file: File;
 }
 
 export function createPreparationStore(signal: AbortSignal) {

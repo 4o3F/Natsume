@@ -68,7 +68,7 @@ SVG 必须是有效的 SVG XML，支持 XML 声明、UTF-8 BOM 和内部元素�
 
 `parse_xlsx` 返回包含学校、队伍及受保护密码字段的只读资料；`LogoDirectory` 负责文件名匹配，`validate_logo` 负责图片读取和解码验证。公共接口不依赖 HTTP、数据库或控制协议。
 
-TODO(roster-import)：将 Server 导入切换为复用此库。当前 Server 的旧 CSV 导入入口仍保持原状；本目录的 XLSX 不能直接交给该旧入口。
+Server 已复用同一个 `parse_xlsx` 入口。可在 Web Preparation 下载空白模板并上传完整 XLSX；Server 负责稳定 INST ID 分配、变更预览和事务提交。离线预检只负责校验，不分配 ID；没有 Logo 也可提交名单。
 
 TODO(roster-export)：DOMjudge 导出统一写入实际 PNG；按内容解码栅格源图、栅格化 SVG，生成 `logos/INST-xxx.png`，不根据源扩展名推断格式。此步骤尚未实现。
 

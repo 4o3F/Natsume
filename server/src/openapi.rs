@@ -11,7 +11,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getCsvImport, createCsvImport, commitCsvImport, deleteCsvImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -30,6 +30,7 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::contest::binding::list_bindings,
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
+        crate::http::handler::import::get_template,
         crate::http::handler::import::commit_import,
         crate::http::handler::import::delete_import,
         crate::http::handler::provisioning::get_provisioning_window,
@@ -61,7 +62,10 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::import::ImportPreviewResponse,
         crate::http::handler::import::ImportPendingSummary,
         crate::http::handler::import::ImportPendingResponse,
-        crate::http::handler::import::ImportCommitRequest,
+        crate::http::handler::import::ImportOrganizationResponse,
+        crate::http::handler::import::ImportTeamResponse,
+        crate::http::handler::import::ImportOrganizationChangeResponse,
+        crate::http::handler::import::ImportTeamChangeResponse,
         crate::http::handler::provisioning::ProvisioningWindowResponse,
         crate::http::handler::provisioning::ProvisioningWindowRequest,
         crate::http::handler::enrollment::EnrollmentReviewResponse,

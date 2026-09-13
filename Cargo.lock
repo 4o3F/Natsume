@@ -3613,6 +3613,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "natsume-device-protocol",
+ "natsume-roster",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -3645,6 +3646,7 @@ dependencies = [
  "uuid",
  "x509-parser",
  "zeroize",
+ "zip",
 ]
 
 [[package]]

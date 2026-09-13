@@ -1,22 +1,22 @@
 mod baseline;
 mod candidate;
 mod commit;
-mod csv;
 mod db;
 mod diff;
+mod roster;
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 
 use crate::{db::Database, vault::VaultSession};
 
 pub(crate) use self::candidate::{CreatedImportCandidate, ImportError, PendingImportCandidate};
-pub(crate) use self::csv::CsvImportErrorCategory;
 pub(crate) use self::diff::RedactedImportPreview;
-use self::{candidate::CandidateRowFacts, csv::ImportRow};
+use self::roster::CandidateRoster;
+pub(crate) use self::roster::{OrganizationDetails, TeamDetails};
 
-/// CSV import authority with private persistence and a startup-loaded vault.
+/// Full-roster XLSX import authority with private persistence and a startup-loaded vault.
 pub(crate) struct ImportComponent {
     database: Database,
     vault: Arc<VaultSession>,
@@ -29,9 +29,9 @@ impl ImportComponent {
 
     pub(crate) async fn create_candidate(
         &self,
-        raw_csv: &[u8],
+        raw_xlsx: &[u8],
     ) -> Result<CreatedImportCandidate, ImportError> {
-        candidate::create_import_candidate(&self.database, raw_csv).await
+        candidate::create_import_candidate(&self.database, Arc::clone(&self.vault), raw_xlsx).await
     }
 
     pub(crate) async fn read_pending(&self) -> Result<Option<PendingImportCandidate>, ImportError> {
@@ -42,14 +42,14 @@ impl ImportComponent {
         &self,
         candidate_id: uuid::Uuid,
         presented_token: &[u8; 32],
-        raw_csv: &[u8],
+        raw_xlsx: &[u8],
     ) -> Result<(), ImportError> {
         commit::commit_import(
             &self.database,
-            &self.vault,
+            Arc::clone(&self.vault),
             candidate_id,
             presented_token,
-            raw_csv,
+            raw_xlsx,
         )
         .await
     }
@@ -59,39 +59,29 @@ impl ImportComponent {
     }
 }
 
-const FINGERPRINT_VERSION: i32 = 1;
+const FINGERPRINT_VERSION: i32 = 2;
 
-fn candidate_fingerprint(rows: &[CandidateRowFacts]) -> [u8; 32] {
-    let mut ordered = BTreeMap::new();
-    for row in rows {
-        ordered.insert(row.seat_code(), row.domjudge_username());
+async fn parse_roster(raw: &[u8]) -> Result<natsume_roster::Roster, ImportError> {
+    if raw.len() > natsume_roster::MAX_WORKBOOK_BYTES {
+        return Err(ImportError::InvalidWorkbook(natsume_roster::InputError {
+            row: None,
+            column: None,
+            kind: natsume_roster::InputErrorKind::WorkbookTooLarge,
+        }));
     }
-    let mut hasher = Sha256::new();
-    write_field(&mut hasher, b"natsume/import-candidate/v1");
-    for (seat_code, username) in ordered {
-        write_field(&mut hasher, seat_code.as_bytes());
-        write_field(&mut hasher, username.as_bytes());
-    }
-    hasher.finalize().into()
+    let bytes = zeroize::Zeroizing::new(raw.to_vec());
+    tokio::task::spawn_blocking(move || natsume_roster::parse_xlsx(&bytes))
+        .await
+        .map_err(|_| ImportError::CandidateInvalid)?
+        .map_err(ImportError::InvalidWorkbook)
 }
 
-fn seal_rows(
-    vault: &crate::vault::VaultSession,
-    rows: &[ImportRow],
-) -> Result<Vec<candidate::SealedCommitRow>, ImportError> {
-    rows.iter()
-        .map(|row| {
-            let (nonce, ciphertext) = vault
-                .seal(row.password().as_bytes())
-                .map_err(|_| ImportError::VaultFailure)?;
-            Ok(candidate::SealedCommitRow::new(
-                row.seat_code().to_owned(),
-                row.domjudge_username().to_owned(),
-                nonce,
-                ciphertext,
-            ))
-        })
-        .collect()
+fn candidate_fingerprint(roster: &CandidateRoster) -> Result<[u8; 32], ImportError> {
+    let bytes = serde_json::to_vec(roster).map_err(|_| ImportError::CandidateInvalid)?;
+    let mut hasher = Sha256::new();
+    write_field(&mut hasher, b"natsume/import-candidate/v2");
+    write_field(&mut hasher, &bytes);
+    Ok(hasher.finalize().into())
 }
 
 fn write_optional_field(hasher: &mut Sha256, value: Option<&[u8]>) {

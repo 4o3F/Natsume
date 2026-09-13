@@ -1,8 +1,8 @@
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path, Request, State, rejection::JsonRejection},
-    http::{StatusCode, header},
+    extract::{DefaultBodyLimit, Path, Request, State},
+    http::{HeaderMap, StatusCode, header},
     middleware as axum_middleware,
     middleware::Next,
     response::{IntoResponse, Response},
@@ -12,43 +12,67 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
-use zeroize::{Zeroize, ZeroizeOnDrop};
-
-use crate::component::import::{PendingImportCandidate, RedactedImportPreview};
 
 use super::super::{AppState, error::ApiError, middleware};
+use crate::component::import::{
+    OrganizationDetails, PendingImportCandidate, RedactedImportPreview, TeamDetails,
+};
 
 const PREVIEW_TOKEN_BYTES: usize = 32;
 const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
+const XLSX_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+const PREVIEW_TOKEN_HEADER: &str = "x-natsume-preview-token";
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     let upload =
-        post(create_import).route_layer(axum_middleware::from_fn(require_csv_content_type));
-    let upload = middleware::require_admin(state.clone(), upload);
-    let imports = upload.merge(middleware::require_admin(state.clone(), get(get_import)));
+        post(create_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
+    let commit =
+        post(commit_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
     Router::new()
-        .route("/imports", imports)
+        .route(
+            "/imports",
+            middleware::require_admin(state.clone(), upload.merge(get(get_import))),
+        )
+        .route(
+            "/imports/template",
+            middleware::require_admin(state.clone(), get(get_template)),
+        )
         .route(
             "/imports/{import_id}/actions/commit",
-            middleware::require_admin(state.clone(), post(commit_import)),
+            middleware::require_admin(state.clone(), commit),
         )
         .route(
             "/imports/{import_id}",
             middleware::require_admin(state, delete(delete_import)),
         )
+        .layer(DefaultBodyLimit::max(natsume_roster::MAX_WORKBOOK_BYTES))
 }
 
-async fn require_csv_content_type(request: Request, next: Next) -> Response {
-    let content_type_is_csv = request
+async fn require_xlsx_content_type(request: Request, next: Next) -> Response {
+    let accepted = request
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split(';').next())
-        .is_some_and(|media_type| media_type.trim().eq_ignore_ascii_case("text/csv"));
-    if !content_type_is_csv {
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case(XLSX_CONTENT_TYPE));
+    if !accepted {
         return ApiError::invalid_request("import_content_type_rejected").into_response();
     }
     next.run(request).await
+}
+
+/// Raw XLSX bytes, never a JSON array or a persisted upload.
+struct RosterWorkbook;
+impl utoipa::ToSchema for RosterWorkbook {}
+impl utoipa::PartialSchema for RosterWorkbook {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::schema::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
+                utoipa::openapi::schema::KnownFormat::Binary,
+            )))
+            .into()
+    }
 }
 
 #[derive(Deserialize, IntoParams)]
@@ -72,6 +96,47 @@ pub(crate) struct ImportMappingChangeResponse {
 pub(crate) struct ImportBindingImpactResponse {
     seat_code: String,
     device_id: String,
+    blocks_commit: bool,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportOrganizationResponse {
+    organization_id: String,
+    name_zh: String,
+    name_en: String,
+    country: String,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportTeamResponse {
+    account: String,
+    #[schema(required = true)]
+    seat: Option<String>,
+    organization_id: String,
+    name_zh: String,
+    name_en: String,
+    category: String,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportOrganizationChangeResponse {
+    #[schema(required = true)]
+    current: Option<ImportOrganizationResponse>,
+    #[schema(required = true)]
+    candidate: Option<ImportOrganizationResponse>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ImportTeamChangeResponse {
+    account: String,
+    #[schema(required = true)]
+    current: Option<ImportTeamResponse>,
+    #[schema(required = true)]
+    candidate: Option<ImportTeamResponse>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -83,6 +148,12 @@ pub(crate) struct ImportRedactedDiff {
     unchanged_count: usize,
     affected_account_count: usize,
     binding_impacts: Vec<ImportBindingImpactResponse>,
+    accounts_added: Vec<String>,
+    accounts_removed: Vec<String>,
+    passwords_changed: Vec<String>,
+    organizations: Vec<ImportOrganizationResponse>,
+    organization_changes: Vec<ImportOrganizationChangeResponse>,
+    team_changes: Vec<ImportTeamChangeResponse>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -114,65 +185,50 @@ pub(crate) struct ImportPendingResponse {
     pending: Option<ImportPendingSummary>,
 }
 
-#[derive(Deserialize, ToSchema, Zeroize, ZeroizeOnDrop)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ImportCommitRequest {
-    #[schema(
-        write_only,
-        min_length = 43,
-        max_length = 43,
-        pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
-    )]
-    preview_token: String,
-    /// The same seat/account candidate reviewed in preview, with the passwords
-    /// supplied again because preview never persists them.
-    #[schema(write_only)]
-    csv: String,
+#[utoipa::path(get, path = "/api/v2/imports/template", operation_id = "getRosterTemplate",
+    security(("sessionCookie" = [])),
+    responses((status = 200, description = "Blank Teams XLSX template", body = inline(RosterWorkbook), content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+        (status = 401, description = "Session authentication failed"), (status = 403, description = "Administrator role required")))]
+pub(crate) async fn get_template() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, XLSX_CONTENT_TYPE),
+            (
+                header::CONTENT_DISPOSITION,
+                "attachment; filename=roster-template.xlsx",
+            ),
+        ],
+        include_bytes!("../../../../crates/roster/examples/template.xlsx").as_slice(),
+    )
+        .into_response()
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/imports",
-    operation_id = "createCsvImport",
+#[utoipa::path(post, path = "/api/v2/imports", operation_id = "createRosterImport",
     security(("sessionCookie" = [])),
-    request_body(content = String, content_type = "text/csv"),
-    responses(
-        (status = 201, description = "CSV import candidate created", body = ImportPreviewResponse),
-        (status = 400, description = "Invalid CSV import or request media type"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 409, description = "An import candidate is already pending"),
-        (status = 413, description = "Request body exceeds the API ingress limit"),
-        (status = 500, description = "Internal failure")
-    )
-)]
+    request_body(content = inline(RosterWorkbook), content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    responses((status = 201, description = "Full-roster XLSX preview created", body = ImportPreviewResponse),
+        (status = 400, description = "Invalid workbook or media type"), (status = 401, description = "Session authentication failed"),
+        (status = 403, description = "Administrator role required"), (status = 409, description = "A candidate is already pending"),
+        (status = 413, description = "Workbook exceeds 8 MiB"), (status = 500, description = "Internal failure")))]
 pub(crate) async fn create_import(State(state): State<AppState>, body: Bytes) -> Response {
     match state.import().create_candidate(&body).await {
-        Ok(created) => {
-            let response = ImportPreviewResponse {
+        Ok(created) => (
+            StatusCode::CREATED,
+            Json(ImportPreviewResponse {
                 candidate_id: created.candidate_id(),
                 preview_token: encode_preview_token(created.preview_token_bytes()),
                 expires_at_unix_ms: created.expires_at_unix_ms(),
                 diff: ImportRedactedDiff::from(created.diff()),
-            };
-            (StatusCode::CREATED, Json(response)).into_response()
-        }
+            }),
+        )
+            .into_response(),
         Err(error) => ApiError::from_import(error).into_response(),
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/imports",
-    operation_id = "getCsvImport",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current pending CSV import candidate", body = ImportPendingResponse),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure")
-    )
-)]
+#[utoipa::path(get, path = "/api/v2/imports", operation_id = "getRosterImport", security(("sessionCookie" = [])),
+    responses((status = 200, description = "Pending roster preview", body = ImportPendingResponse),
+        (status = 401, description = "Session authentication failed"), (status = 403, description = "Administrator role required"), (status = 500, description = "Internal failure")))]
 pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
     match state.import().read_pending().await {
         Ok(pending) => Json(ImportPendingResponse {
@@ -183,43 +239,31 @@ pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/imports/{import_id}/actions/commit",
-    operation_id = "commitCsvImport",
-    params(ImportPath),
+#[utoipa::path(post, path = "/api/v2/imports/{import_id}/actions/commit", operation_id = "commitRosterImport", params(ImportPath,
+    ("x-natsume-preview-token" = String, Header, description = "Secret authorization returned by preview", min_length = 43, max_length = 43, pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")),
     security(("sessionCookie" = [])),
-    request_body = ImportCommitRequest,
-    responses(
-        (status = 204, description = "CSV import committed"),
-        (status = 400, description = "Invalid import ID or closed request"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Import candidate unavailable"),
-        (status = 409, description = "Import preview baseline is stale"),
-        (status = 413, description = "Request body exceeds the API ingress limit"),
-        (status = 500, description = "Internal failure")
-    )
-)]
+    request_body(content = inline(RosterWorkbook), content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    responses((status = 204, description = "Complete roster committed atomically; only changed passwords advance revisions"),
+        (status = 400, description = "Invalid workbook, token or media type"), (status = 401, description = "Session authentication failed"),
+        (status = 403, description = "Administrator role required"), (status = 404, description = "Candidate unavailable"),
+        (status = 409, description = "Preview stale or removed seat occupied"), (status = 413, description = "Workbook exceeds 8 MiB"), (status = 500, description = "Internal failure")))]
 pub(crate) async fn commit_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,
-    request: Result<Json<ImportCommitRequest>, JsonRejection>,
+    headers: HeaderMap,
+    body: Bytes,
 ) -> Response {
     let Some(import_id) = canonical_uuid_v7(&path.import_id) else {
         return ApiError::invalid_request("import_id_not_canonical_uuid_v7").into_response();
     };
-    let Ok(Json(request)) = request else {
-        return ApiError::invalid_request("import_commit_body_rejected").into_response();
-    };
-    let Some(token) = decode_preview_token(&request.preview_token) else {
+    let Some(token) = headers
+        .get(PREVIEW_TOKEN_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(decode_preview_token)
+    else {
         return ApiError::invalid_request("import_preview_token_rejected").into_response();
     };
-    match state
-        .import()
-        .commit(import_id, &token, request.csv.as_bytes())
-        .await
-    {
+    match state.import().commit(import_id, &token, &body).await {
         Ok(()) => {
             state.device_control().dirty_all_devices().await;
             StatusCode::NO_CONTENT.into_response()
@@ -228,21 +272,10 @@ pub(crate) async fn commit_import(
     }
 }
 
-#[utoipa::path(
-    delete,
-    path = "/api/v2/imports/{import_id}",
-    operation_id = "deleteCsvImport",
-    params(ImportPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "CSV import candidate discarded"),
-        (status = 400, description = "Invalid import ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Import candidate unavailable"),
-        (status = 500, description = "Internal failure")
-    )
-)]
+#[utoipa::path(delete, path = "/api/v2/imports/{import_id}", operation_id = "deleteRosterImport", params(ImportPath), security(("sessionCookie" = [])),
+    responses((status = 204, description = "Roster preview discarded"), (status = 400, description = "Invalid import ID"),
+        (status = 401, description = "Session authentication failed"), (status = 403, description = "Administrator role required"),
+        (status = 404, description = "Candidate unavailable"), (status = 500, description = "Internal failure")))]
 pub(crate) async fn delete_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,
@@ -256,36 +289,87 @@ pub(crate) async fn delete_import(
     }
 }
 
+impl From<&OrganizationDetails> for ImportOrganizationResponse {
+    fn from(value: &OrganizationDetails) -> Self {
+        Self {
+            organization_id: format!("INST-{:03}", value.organization_id),
+            name_zh: value.name_zh.clone(),
+            name_en: value.name_en.clone(),
+            country: value.country.clone(),
+        }
+    }
+}
+impl From<&TeamDetails> for ImportTeamResponse {
+    fn from(value: &TeamDetails) -> Self {
+        Self {
+            account: value.account.clone(),
+            seat: value.seat.clone(),
+            organization_id: format!("INST-{:03}", value.organization_id),
+            name_zh: value.name_zh.clone(),
+            name_en: value.name_en.clone(),
+            category: value.category.clone(),
+        }
+    }
+}
 impl From<&RedactedImportPreview> for ImportRedactedDiff {
     fn from(diff: &RedactedImportPreview) -> Self {
         Self {
-            seats_added: diff.seats_added().to_vec(),
-            seats_removed: diff.seats_removed().to_vec(),
+            seats_added: diff.seats_added.clone(),
+            seats_removed: diff.seats_removed.clone(),
             mappings_changed: diff
-                .mappings_changed()
-                .map(
-                    |(seat_code, current_domjudge_username, candidate_domjudge_username)| {
-                        ImportMappingChangeResponse {
-                            seat_code: seat_code.to_owned(),
-                            current_domjudge_username: current_domjudge_username.map(str::to_owned),
-                            candidate_domjudge_username: candidate_domjudge_username.to_owned(),
-                        }
-                    },
-                )
+                .mappings_changed
+                .iter()
+                .map(|change| ImportMappingChangeResponse {
+                    seat_code: change.seat_code.clone(),
+                    current_domjudge_username: change.current_domjudge_username.clone(),
+                    candidate_domjudge_username: change.candidate_domjudge_username.clone(),
+                })
                 .collect(),
-            unchanged_count: diff.unchanged_count(),
-            affected_account_count: diff.affected_account_count(),
+            unchanged_count: diff.unchanged_count,
+            affected_account_count: diff.affected_account_count,
             binding_impacts: diff
-                .binding_impacts()
-                .map(|(seat_code, device_id)| ImportBindingImpactResponse {
-                    seat_code: seat_code.to_owned(),
-                    device_id: device_id.to_owned(),
+                .binding_impacts
+                .iter()
+                .map(|impact| ImportBindingImpactResponse {
+                    seat_code: impact.seat_code.clone(),
+                    device_id: impact.device_id.clone(),
+                    blocks_commit: impact.blocks_commit,
+                })
+                .collect(),
+            accounts_added: diff.accounts_added.clone(),
+            accounts_removed: diff.accounts_removed.clone(),
+            passwords_changed: diff.passwords_changed.clone(),
+            organizations: diff
+                .organizations
+                .iter()
+                .map(ImportOrganizationResponse::from)
+                .collect(),
+            organization_changes: diff
+                .organization_changes
+                .iter()
+                .map(|change| ImportOrganizationChangeResponse {
+                    current: change
+                        .current
+                        .as_ref()
+                        .map(ImportOrganizationResponse::from),
+                    candidate: change
+                        .candidate
+                        .as_ref()
+                        .map(ImportOrganizationResponse::from),
+                })
+                .collect(),
+            team_changes: diff
+                .team_changes
+                .iter()
+                .map(|change| ImportTeamChangeResponse {
+                    account: change.account.clone(),
+                    current: change.current.as_ref().map(ImportTeamResponse::from),
+                    candidate: change.candidate.as_ref().map(ImportTeamResponse::from),
                 })
                 .collect(),
         }
     }
 }
-
 impl From<&PendingImportCandidate> for ImportPendingSummary {
     fn from(pending: &PendingImportCandidate) -> Self {
         Self {

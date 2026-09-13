@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { expect, test, type Page, type Route } from "@playwright/test";
 import type { components } from "../src/api/generated/schema";
 
@@ -19,10 +20,12 @@ const otherAdmin = {
   operator_id: "01912345-6789-7abc-8def-0123456789ad",
 };
 const candidateId = "01934567-89ab-7cde-8f01-23456789abcd";
-const csv = {
-  name: "contest.csv",
-  mimeType: "text/csv",
-  buffer: Buffer.from("seat,account,password\nA-01,team-new,test-password"),
+const workbook = {
+  name: "roster.xlsx",
+  mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  buffer: readFileSync(
+    new URL("../../crates/roster/examples/roster.xlsx", import.meta.url),
+  ),
 };
 
 async function mockPreparationSession(page: Page) {
@@ -72,6 +75,12 @@ async function mockPreparationSession(page: Page) {
           unchanged_count: 0,
           affected_account_count: 1,
           binding_impacts: [],
+          accounts_added: ["team-new"],
+          accounts_removed: [],
+          passwords_changed: [],
+          organizations: [],
+          organization_changes: [],
+          team_changes: [],
         },
       };
       const preview = {
@@ -85,7 +94,7 @@ async function mockPreparationSession(page: Page) {
       return json(route, 201, preview);
     }
     if (path.endsWith("/actions/commit")) {
-      state.committedTokens.push(request.postDataJSON().preview_token);
+      state.committedTokens.push(request.headers()["x-natsume-preview-token"]);
       state.pending = null;
       return route.fulfill({ status: 204 });
     }
@@ -99,7 +108,7 @@ async function mockPreparationSession(page: Page) {
 }
 
 async function createPreview(page: Page) {
-  await page.getByLabel("CSV file").setInputFiles(csv);
+  await page.getByLabel("XLSX file").setInputFiles(workbook);
   await page.getByRole("button", { name: "Create preview" }).click();
   await expect(
     page.getByRole("button", { name: "Commit import" }),
@@ -225,7 +234,7 @@ for (const transition of [
     ).toHaveCount(0);
     await expect(
       page.getByText(
-        "Preview authorization and the reviewed CSV are unavailable after a reload or session change; discard and re-upload to commit.",
+        "Preview authorization and the reviewed XLSX are unavailable after a reload or session change; discard and re-upload to commit.",
         { exact: true },
       ),
     ).toBeVisible();
@@ -270,7 +279,7 @@ test("a delayed upload cannot replace the next operator's preview", async ({
   const state = await mockPreparationSession(page);
   state.holdUpload = true;
   await page.goto("/preparation");
-  await page.getByLabel("CSV file").setInputFiles(csv);
+  await page.getByLabel("XLSX file").setInputFiles(workbook);
   await page.getByRole("button", { name: "Create preview" }).click();
   await expect.poll(() => state.heldUploads.length).toBe(1);
   await page.getByRole("button", { name: "Logout" }).click();
@@ -289,38 +298,24 @@ test("a delayed upload cannot replace the next operator's preview", async ({
   await expect.poll(() => state.committedTokens).toEqual(["2".repeat(43)]);
 });
 
-test("a file read completing after logout cannot upload under the new identity", async ({
+test("a selected workbook is cleared when the operator session changes", async ({
   page,
 }) => {
   const state = await mockPreparationSession(page);
   await page.goto("/preparation");
-  await page.evaluate(() => {
-    const read = File.prototype.text;
-    File.prototype.text = function () {
-      File.prototype.text = read;
-      return new Promise<string>((resolve) => {
-        (
-          window as Window & { finishFileRead?: () => Promise<void> }
-        ).finishFileRead = async () => {
-          resolve(await read.call(this));
-        };
-      });
-    };
-  });
-  await page.getByLabel("CSV file").setInputFiles(csv);
-  await page.getByRole("button", { name: "Create preview" }).click();
+  await page.getByLabel("XLSX file").setInputFiles(workbook);
   await expect(
-    page.getByRole("button", { name: "Uploading...", exact: true }),
-  ).toBeDisabled();
+    page.getByRole("button", { name: "Create preview" }),
+  ).toBeEnabled();
   await page.getByRole("button", { name: "Logout" }).click();
   await signIn(page);
   await page.getByRole("link", { name: "Preparation", exact: true }).click();
-  await expect(page.getByLabel("CSV file")).toHaveValue("");
+  await expect(page.getByLabel("XLSX file")).toHaveValue("");
+  await expect(
+    page.getByRole("button", { name: "Create preview" }),
+  ).toBeDisabled();
+  expect(state.uploadCount).toBe(0);
   await createPreview(page);
-  await page.evaluate(async () => {
-    await (window as Window & { finishFileRead?: () => Promise<void> })
-      .finishFileRead!();
-  });
   await page.getByRole("button", { name: "Commit import" }).click();
   await page.getByRole("button", { name: "Confirm commit" }).click();
   await expect.poll(() => state.committedTokens).toEqual(["1".repeat(43)]);

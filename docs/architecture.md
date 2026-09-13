@@ -42,7 +42,7 @@ Natsume 服务一场现场竞赛，目标规模约 500–600 台工作站。一�
 
 系统必须提供：
 
-1. 严格 CSV 导入 Seat、DOMjudge Account 与密码。
+1. 固定 XLSX 全量导入学校、队伍、Seat、DOMjudge Account 与密码。
 2. Device 注册、人工审核、启用、禁用、撤销和重新部署。
 3. 现场 Seat→Device Binding。
 4. Server Desired State 与 Client Actual State 的持续收敛。
@@ -1181,36 +1181,40 @@ Import预览token仅保留在创建它的当前前端会话内，页面刷新或
 
 ### 15.2 Import
 
-CSV只有固定 `seat,account,password` schema。流程：
+导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板和无数据库解析由 `natsume-roster` 共享库提供，Server 与离线 Logo 预检使用同一规则。旧 CSV 导入及 JSON commit body 删除。
 
 ```text
-strict parse
-  → non-secret fingerprint
-  → redacted preview
+strict XLSX parse
+  → read baseline and compare passwords within the vault boundary
+  → plan stable organization IDs and redacted full-roster diff
   → persist one non-secret pending candidate
-  → explicit commit with same CSV and opaque token
-  → revalidate fingerprint
-  → atomic Contest/Vault update
+  → explicit commit with reviewed XLSX and opaque token
+  → revalidate baseline, candidate and password-change set
+  → atomic Organization/Team/Contest/Vault update
   → delete candidate
   → dirty affected/all devices
 ```
 
 规则：
 
-- preview不持久化密码；
-- DOMjudge Account用户名固定为 `[A-Za-z0-9_.@+-]{1,64}`，由共享协议crate定义，Import、Server Binding持久化读取及Client接收/恢复绑定共同校验；不截断、不规范化；
-- 不支持的用户名在preview阶段拒绝，错误只返回行号与固定规则提示；已有非法Account仍允许查看与重新导入修复，但不能物化Binding凭据；
-- pending candidate不含原始CSV；
-- commit请求重新携带密码；
-- candidate fingerprint只覆盖排序后的Seat/Account非秘密结构，不覆盖密码；
-- baseline fingerprint覆盖当前Seat identity、mapping、Account identity/credential revision与Binding占用，取代global revision；
-- commit时任一candidate或baseline fingerprint不一致都必须重新preview；
-- Import唯一修改Seat、Account、mapping与credential revision；
-- 删除仍被Binding占用的Seat必须拒绝；
-- Import不修改Binding，不创建Binding ID；
-- 每次成功commit用新nonce替换current password ciphertext并推进Account credential revision；
-- 不创建Command；
-- commit后自动dirty，不依赖Operator再发sync。
+- 每次上传完整名单；未出现的学校、队伍、账号、座位进入移除预览。学校由队伍行归并，不要求预填 ID 或图片字段；
+- 所有单元格必须为文本，拒绝公式和 Excel 错误值。密码、账号、座位保留原文，其他字段 trim；中英文校名、队名各至少一种；国家默认为 CHN；
+- account 与 category 用作 DOMjudge 导出 ID：1–36 个 ASCII 字母、数字、下划线、点或短横线，不能以点／短横线开头、不能以点结尾。运行时 Binding 的用户名校验边界保持独立；
+- XLSX 最多 8 MiB，展开后最多 64 MiB，最多 10000 个数据行；错误只返回实际工作表行列和固定规则，不回显单元格内容；
+- 同一中文校名归并，无中文时按英文名；同校英文名与国家必须一致，允许从同校其他行补齐空英文名。首次按学校键排序生成 INST-001 起的编号；后续复用当前映射，新学校从持久化自增序号追加，删除后不复用已用编号。学校匹配名称修改表现为移除和新增；
+- `organizations` 保存序号、中英文名、匹配键和国家；`teams` 以既有 account_id 为主键，关联学校并保存中英文队名、类别。Import 是这些表和 Seat、Account、mapping、credential revision 的唯一写入者；
+- 预览中的 INST ID 是同一基线下的拟分配结果，不提前写业务表或消耗编号；
+- pending 不含原始 XLSX、密码或密码摘要，只保存非秘密 diff、token hash、候选及基线指纹，候选有效期 30 分钟；
+- 非秘密候选指纹覆盖规范化名单的学校、队伍、账号、类别、座位和计划编号；基线指纹覆盖现有元数据、学校分配序号、Seat/Account identity、mapping、Binding 占用、credential revision 与密文，取代 global revision；
+- 预览只公布发生密码变化的账号名；commit 在 vault 边界内重算变化集合，任何基线、非秘密名单或变化集合不一致都必须重新预览；
+- `POST /api/v2/imports` 和 commit 都直接发送 XLSX 二进制，Content-Type 为 OOXML spreadsheet；commit 使用 `x-natsume-preview-token` 请求头，token 不放 URL。管理员可通过 `GET /api/v2/imports/template` 下载模板；
+- Web 在当前登录会话内持有已审核的 File 和 token，页面内导航可保留；刷新、退出或会话换代后，丢弃候选再上传。文件和 token 不进入浏览器持久存储；
+- 删除仍被 Binding 占用的 Seat 必须拒绝；已占用座位的资料或账号映射变化显示具体设备供确认，Binding 仍属于原座位；
+- 只为实际变化的密码生成新 nonce、重写密文并推进对应 revision。完全相同的名单不写业务数据；资料变化不修改凭据、Binding ID、Session 前台目标或 Home 目标；
+- 学校、队伍、账号、凭据、座位、映射和候选消费在同一事务内提交，失败全部回滚。commit 后自动 dirty，不创建 Command，不依赖 Operator 再发 sync；
+- 一次性 schema 迁移保留既有业务数据并清除旧格式待提交候选，存量队伍资料通过完整 XLSX 补齐，不自动清库。
+
+TODO(roster-export)：接入源 Logo 目录观测、学校图片接口和 DOMjudge ZIP 导出；当前导入不依赖图片文件。
 
 ### 15.3 Desired-state Operator API
 

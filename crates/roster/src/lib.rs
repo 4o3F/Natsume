@@ -3,8 +3,6 @@
 //! This crate owns no database, organization IDs, server configuration or network
 //! connections. Diagnostics never contain workbook cell contents.
 
-// TODO(roster-import): consume this library in the Server XLSX import cutover.
-
 mod error;
 mod logos;
 mod workbook;
