@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -38,6 +38,212 @@ type DeviceLifecycleState = Device["state"];
 
 const DEVICES_KEY = ["devices"] as const;
 
+const statusIcons = {
+  check: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m8 12 3 3 5-6" />
+    </>
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </>
+  ),
+  sync: (
+    <path d="M20 7v5h-5M4 17v-5h5m-4-4a8 8 0 0 1 13-2l2 2M4 16l2 2a8 8 0 0 0 13-2" />
+  ),
+  drift: (
+    <>
+      <path d="m12 3 10 18H2Z" />
+      <path d="M12 9v5m0 3v.01" />
+    </>
+  ),
+  failed: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m9 9 6 6m0-6-6 6" />
+    </>
+  ),
+  pause: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9 8v8m6-8v8" />
+    </>
+  ),
+  ban: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="m6 6 12 12" />
+    </>
+  ),
+  shield: <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z" />,
+  shieldCheck: (
+    <>
+      <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z" />
+      <path d="m8 11 3 3 5-5" />
+    </>
+  ),
+  wifi: (
+    <>
+      <path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0m-11 4a6 6 0 0 1 8 0" />
+      <circle cx="12" cy="20" r="1" />
+    </>
+  ),
+  wifiOff: (
+    <>
+      <path d="m3 3 18 18M2 8a16 16 0 0 1 3-2m5-1a16 16 0 0 1 12 3M5 12a11 11 0 0 1 4-2m-1 6a6 6 0 0 1 8 0" />
+      <circle cx="12" cy="20" r="1" />
+    </>
+  ),
+  linked: (
+    <path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" />
+  ),
+  unlinked: (
+    <path d="m3 3 18 18m-13-6-1 1a4 4 0 0 1-6-6l3-3m12 2 1-1a4 4 0 0 1 6 6l-3 3M8 2v3M2 8h3m14 7h3m-6 3v3" />
+  ),
+  unknown: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 5m0 3v.01" />
+    </>
+  ),
+};
+
+const convergenceIcons = {
+  converged: { icon: "check", tone: "text-emerald-700" },
+  reconciling: { icon: "sync", tone: "text-sky-700" },
+  drifted: { icon: "drift", tone: "text-amber-700" },
+  failed: { icon: "failed", tone: "text-destructive" },
+  awaiting_actual: { icon: "clock", tone: "text-muted-foreground" },
+} as const;
+
+const connections = {
+  active: {
+    icon: "wifi",
+    label: "Online",
+    tone: "text-emerald-700",
+    row: "bg-emerald-500/5 hover:bg-emerald-500/10",
+  },
+  awaiting_fresh_state: {
+    icon: "clock",
+    label: "Connected, awaiting fresh state",
+    tone: "text-amber-700",
+    row: "bg-amber-500/10 hover:bg-amber-500/15",
+  },
+  offline: {
+    icon: "wifiOff",
+    label: "Offline",
+    tone: "text-destructive",
+    row: "bg-destructive/10 hover:bg-destructive/15",
+  },
+} as const;
+
+function StatusIcon({
+  icon,
+  label,
+  tone,
+}: {
+  icon: keyof typeof statusIcons;
+  label: string;
+  tone: string;
+}) {
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className={`inline-flex size-7 shrink-0 items-center justify-center ${tone}`}
+    >
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        className="size-4.5"
+      >
+        {statusIcons[icon]}
+      </svg>
+    </span>
+  );
+}
+
+function ConvergenceIcon({
+  name,
+  status,
+}: {
+  name: string;
+  status: ConvergenceStatus;
+}) {
+  return (
+    <StatusIcon
+      {...convergenceIcons[status]}
+      label={`${name}: ${label(status)}`}
+    />
+  );
+}
+
+function RefreshCountdown({
+  updatedAt,
+  isFetching,
+  isPaused,
+  isError,
+}: {
+  updatedAt: number;
+  isFetching: boolean;
+  isPaused: boolean;
+  isError: boolean;
+}) {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    // Polling restarts its interval after a response, so align the display ticks.
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [updatedAt]);
+  const seconds = Math.max(
+    0,
+    Math.ceil((updatedAt + LIST_POLL_MS - Math.max(now, updatedAt)) / 1_000),
+  );
+  return (
+    <div
+      role="timer"
+      aria-label="Next device refresh"
+      aria-live="off"
+      title={
+        isError
+          ? "Refresh failed; showing the last received device states."
+          : "Device states refresh automatically."
+      }
+      className="flex min-w-40 shrink-0 items-center justify-end gap-1 text-sm tabular-nums text-muted-foreground"
+    >
+      <StatusIcon
+        icon={
+          isPaused
+            ? "pause"
+            : isFetching
+              ? "sync"
+              : isError
+                ? "failed"
+                : "clock"
+        }
+        tone={isError ? "text-destructive" : "text-muted-foreground"}
+        label="Automatic refresh"
+      />
+      <span>
+        {isPaused
+          ? "Refresh paused"
+          : isFetching
+            ? "Refreshing…"
+            : `${isError ? "Retry" : "Refresh"} in ${seconds}s`}
+      </span>
+    </div>
+  );
+}
+
 export function DevicesPage() {
   const { api } = useSessionScope();
   const session = useSession().data;
@@ -71,167 +277,269 @@ export function DevicesPage() {
   );
 
   const isAdmin = session?.role === "admin";
-  const columns: ColumnDef<Device>[] = [
-    { accessorKey: "machine_hardware_id", header: "Machine hardware ID" },
-    {
-      accessorKey: "state",
-      header: "Lifecycle",
-      cell: ({ row }) => (
-        <Badge
-          variant={row.original.state === "revoked" ? "destructive" : "outline"}
-        >
-          {row.original.state}
-        </Badge>
-      ),
-    },
-    { accessorKey: "evidence_quality", header: "Evidence" },
-    {
-      id: "convergence",
-      header: "Convergence",
-      cell: ({ row }) => {
-        const convergence = row.original.convergence;
-        const statuses = [
-          ["Connection", convergence.connection_state],
-          ["Gateway", convergence.gateway.status],
-          ["Binding", convergence.binding.status],
-          ["Runtime", convergence.runtime_config.status],
-          ["Session", convergence.session_control.status],
-          ["Home", convergence.home.status],
-        ];
-        return (
-          <div className="flex flex-wrap gap-1">
-            {statuses.map(([name, status]) => (
-              <Badge
-                key={name}
-                variant={
-                  status === "failed"
-                    ? "destructive"
-                    : status === "active" || status === "converged"
-                      ? "default"
-                      : "outline"
-                }
-              >
-                {name}: {label(status)}
-              </Badge>
-            ))}
-          </div>
-        );
+  const { isPending: isUpdatingLifecycle, mutate: updateLifecycle } = lifecycle;
+  const columns = useMemo(() => {
+    const columns: ColumnDef<Device>[] = [
+      {
+        id: "seat",
+        header: "Seat",
+        accessorFn: (device) =>
+          device.convergence.binding.target?.state === "bound"
+            ? device.convergence.binding.target.context.seat_code
+            : undefined,
+        enableSorting: true,
+        sortingFn: "alphanumeric",
+        sortUndefined: "last",
+        sortDescFirst: false,
+        cell: ({ getValue }) => (
+          <span className="font-medium tabular-nums">
+            {getValue<string | undefined>() ?? "—"}
+          </span>
+        ),
       },
-    },
-    {
-      accessorKey: "created_at_unix_ms",
-      header: "Created",
-      cell: ({ row }) =>
-        new Date(row.original.created_at_unix_ms).toLocaleString(),
-    },
-    {
-      id: "details",
-      header: "Details",
-      cell: ({ row }) => (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          onClick={() => setSelectedDeviceId(row.original.device_id)}
-        >
-          View
-        </Button>
-      ),
-    },
-  ];
+      {
+        accessorKey: "machine_hardware_id",
+        header: "Device",
+        cell: ({ row }) => {
+          const device = row.original;
+          const connection = connections[device.convergence.connection_state];
+          return (
+            <div className="flex items-center gap-1.5">
+              <StatusIcon
+                {...connection}
+                tone={
+                  device.state === "disabled"
+                    ? "text-muted-foreground"
+                    : connection.tone
+                }
+                label={`Connection: ${connection.label}`}
+              />
+              <code
+                className="text-xs text-muted-foreground"
+                title={device.machine_hardware_id}
+              >
+                {device.machine_hardware_id.length > 12
+                  ? `${device.machine_hardware_id.slice(0, 8)}…`
+                  : device.machine_hardware_id}
+              </code>
+            </div>
+          );
+        },
+      },
+      {
+        accessorKey: "state",
+        header: () => <span className="block text-center">Lifecycle</span>,
+        cell: ({ row }) => (
+          <div className="flex justify-center">
+            <StatusIcon
+              icon={
+                row.original.state === "enabled"
+                  ? "check"
+                  : row.original.state === "disabled"
+                    ? "pause"
+                    : "ban"
+              }
+              tone={
+                row.original.state === "enabled"
+                  ? "text-emerald-700"
+                  : row.original.state === "disabled"
+                    ? "text-muted-foreground"
+                    : "text-destructive"
+              }
+              label={`Lifecycle: ${row.original.state}`}
+            />
+          </div>
+        ),
+      },
+      {
+        accessorKey: "evidence_quality",
+        header: () => <span className="block text-center">Evidence</span>,
+        cell: ({ row }) => (
+          <div className="flex justify-center">
+            <StatusIcon
+              icon={
+                row.original.evidence_quality === "strong"
+                  ? "shieldCheck"
+                  : "shield"
+              }
+              tone={
+                row.original.evidence_quality === "strong"
+                  ? "text-emerald-700"
+                  : "text-amber-700"
+              }
+              label={`Evidence: ${row.original.evidence_quality}`}
+            />
+          </div>
+        ),
+      },
+      {
+        id: "binding",
+        header: () => <span className="block text-center">Binding</span>,
+        cell: ({ row }) => {
+          const binding = row.original.convergence.binding;
+          const state = binding.target?.state;
+          return (
+            <div className="flex justify-center gap-1">
+              <StatusIcon
+                icon={
+                  state === "bound"
+                    ? "linked"
+                    : state === "unbound"
+                      ? "unlinked"
+                      : "unknown"
+                }
+                tone={
+                  state === "bound"
+                    ? "text-emerald-700"
+                    : "text-muted-foreground"
+                }
+                label={`Binding: ${state ?? "unknown"}`}
+              />
+              <ConvergenceIcon name="Binding" status={binding.status} />
+            </div>
+          );
+        },
+      },
+      ...(
+        [
+          ["gateway", "Gateway"],
+          ["runtime_config", "Runtime"],
+          ["session_control", "Session"],
+          ["home", "Home"],
+        ] as const
+      ).map(([key, name]): ColumnDef<Device> => ({
+        id: key,
+        header: () => <span className="block text-center">{name}</span>,
+        cell: ({ row }) => (
+          <div className="flex justify-center">
+            <ConvergenceIcon
+              name={name}
+              status={row.original.convergence[key].status}
+            />
+          </div>
+        ),
+      })),
+      {
+        id: "details",
+        header: "Details",
+        cell: ({ row }) => (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setSelectedDeviceId(row.original.device_id)}
+          >
+            View
+          </Button>
+        ),
+      },
+    ];
 
-  if (isAdmin) {
-    columns.push({
-      id: "actions",
-      header: "Actions",
-      cell: ({ row }) => {
-        const device = row.original;
-        return (
-          <div className="flex gap-2">
-            {device.state === "enabled" && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={lifecycle.isPending}
-                onClick={() =>
-                  lifecycle.mutate({
-                    deviceId: device.device_id,
-                    state: "disabled",
-                  })
-                }
-              >
-                Disable
-              </Button>
-            )}
-            {device.state === "disabled" && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={lifecycle.isPending}
-                onClick={() =>
-                  lifecycle.mutate({
-                    deviceId: device.device_id,
-                    state: "enabled",
-                  })
-                }
-              >
-                Enable
-              </Button>
-            )}
-            {device.state !== "revoked" && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    size="sm"
-                    disabled={lifecycle.isPending}
-                  >
-                    Revoke
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      Permanently revoke device?
-                    </AlertDialogTitle>
-                    <AlertDialogDescription>
-                      Revocation is terminal and immediately evicts the current
-                      connection.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      className="bg-destructive text-white hover:bg-destructive/90"
-                      onClick={() =>
-                        lifecycle.mutate({
-                          deviceId: device.device_id,
-                          state: "revoked",
-                        })
-                      }
+    if (isAdmin) {
+      columns.push({
+        id: "actions",
+        header: "Actions",
+        cell: ({ row }) => {
+          const device = row.original;
+          return (
+            <div className="flex gap-2">
+              {device.state === "enabled" && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-20"
+                  disabled={isUpdatingLifecycle}
+                  onClick={() =>
+                    updateLifecycle({
+                      deviceId: device.device_id,
+                      state: "disabled",
+                    })
+                  }
+                >
+                  Disable
+                </Button>
+              )}
+              {device.state === "disabled" && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="w-20"
+                  disabled={isUpdatingLifecycle}
+                  onClick={() =>
+                    updateLifecycle({
+                      deviceId: device.device_id,
+                      state: "enabled",
+                    })
+                  }
+                >
+                  Enable
+                </Button>
+              )}
+              {device.state !== "revoked" && (
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      size="sm"
+                      className="w-20"
+                      disabled={isUpdatingLifecycle}
                     >
                       Revoke
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-          </div>
-        );
-      },
-    });
-  }
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>
+                        Permanently revoke device?
+                      </AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Revocation is terminal and immediately evicts the
+                        current connection.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Cancel</AlertDialogCancel>
+                      <AlertDialogAction
+                        className="bg-destructive text-white hover:bg-destructive/90"
+                        onClick={() =>
+                          updateLifecycle({
+                            deviceId: device.device_id,
+                            state: "revoked",
+                          })
+                        }
+                      >
+                        Revoke
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              )}
+            </div>
+          );
+        },
+      });
+    }
+    return columns;
+  }, [isAdmin, isUpdatingLifecycle, updateLifecycle]);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Devices</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Durable lifecycle facts and current connection convergence.
-        </p>
+    <div className="min-w-0 space-y-6">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight">Devices</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Durable lifecycle facts and current connection convergence.
+          </p>
+        </div>
+        <RefreshCountdown
+          updatedAt={Math.max(devices.dataUpdatedAt, devices.errorUpdatedAt)}
+          isFetching={devices.isFetching}
+          isPaused={devices.isPaused}
+          isError={devices.isError}
+        />
       </div>
 
       {lifecycle.error && (
@@ -251,7 +559,64 @@ export function DevicesPage() {
         emptyLabel="No devices found."
       >
         <div className="space-y-6">
-          <DataTable columns={columns} data={devices.data ?? []} />
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-xs text-muted-foreground">
+              {Object.entries(connections).map(([state, connection]) => (
+                <span key={state} className="flex items-center gap-1">
+                  <span className={`rounded ${connection.row}`}>
+                    <StatusIcon {...connection} />
+                  </span>
+                  {connection.label}
+                </span>
+              ))}
+              <span className="flex items-center gap-1">
+                <span className="rounded bg-muted/60">
+                  <StatusIcon
+                    icon="pause"
+                    tone="text-muted-foreground"
+                    label="Disabled"
+                  />
+                </span>
+                Disabled
+              </span>
+            </div>
+            <DataTable
+              columns={columns}
+              data={devices.data ?? []}
+              getRowId={(device) => device.device_id}
+              rowClassName={(device) =>
+                device.state === "disabled"
+                  ? "bg-muted/60 hover:bg-muted"
+                  : connections[device.convergence.connection_state].row
+              }
+            />
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+              {(Object.keys(convergenceIcons) as ConvergenceStatus[]).map(
+                (status) => (
+                  <span key={status} className="flex items-center gap-1">
+                    <ConvergenceIcon name="Convergence" status={status} />
+                    {label(status)}
+                  </span>
+                ),
+              )}
+              <span className="flex items-center gap-1">
+                <StatusIcon
+                  icon="linked"
+                  tone="text-emerald-700"
+                  label="Bound"
+                />
+                bound
+              </span>
+              <span className="flex items-center gap-1">
+                <StatusIcon
+                  icon="unlinked"
+                  tone="text-muted-foreground"
+                  label="Unbound"
+                />
+                unbound
+              </span>
+            </div>
+          </div>
           {selectedDevice && <DeviceConvergence device={selectedDevice} />}
         </div>
       </DataState>
@@ -261,10 +626,12 @@ export function DevicesPage() {
 
 function DeviceConvergence({ device }: { device: Device }) {
   return (
-    <Card>
+    <Card className="min-w-0">
       <CardHeader>
-        <CardTitle>{device.machine_hardware_id}</CardTitle>
-        <CardDescription className="font-mono">
+        <CardTitle className="break-all font-mono text-base">
+          {device.machine_hardware_id}
+        </CardTitle>
+        <CardDescription className="break-all font-mono">
           {device.device_id}
         </CardDescription>
       </CardHeader>
@@ -365,7 +732,7 @@ function ConvergenceRow({
   actual: string;
 }) {
   return (
-    <div className="space-y-2 rounded-md border p-3 text-sm">
+    <div className="min-w-0 space-y-2 rounded-md border p-3 text-sm break-all">
       <div className="flex items-center justify-between gap-3">
         <span className="font-medium">{name}</span>
         <Badge variant={status === "failed" ? "destructive" : "outline"}>

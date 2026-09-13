@@ -112,12 +112,20 @@ test("device lifecycle and convergence use the operator API", async ({
 
   await page.goto("/devices");
   await expect(page.getByText("machine-01", { exact: true })).toBeVisible();
-  await expect(page.getByText("Connection: active")).toBeVisible();
-  await expect(page.getByText("Gateway: converged")).toBeVisible();
-  await expect(page.getByText("Binding: converged")).toBeVisible();
-  await expect(page.getByText("Runtime: converged")).toBeVisible();
-  await expect(page.getByText("Session: converged")).toBeVisible();
-  await expect(page.getByText("Home: converged")).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "Connection: Online" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "Binding: bound", exact: true }),
+  ).toBeVisible();
+  for (const name of ["Gateway", "Binding", "Runtime", "Session", "Home"]) {
+    await expect(
+      page.getByRole("columnheader", { name, exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: `${name}: converged`, exact: true }),
+    ).toBeVisible();
+  }
   await page.getByRole("button", { name: "View" }).click();
   await expect(page.getByText("Latest state:")).toBeVisible();
   await expect(
@@ -125,8 +133,361 @@ test("device lifecycle and convergence use the operator API", async ({
   ).toBeVisible();
 
   await page.getByRole("button", { name: "Disable" }).click();
-  await expect(page.getByText("disabled", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("img", { name: "Lifecycle: disabled" }),
+  ).toBeVisible();
 });
+
+test("device rows distinguish binding, convergence, and offline alerts", async ({
+  page,
+  context,
+}) => {
+  const bound = structuredClone(device);
+  bound.machine_hardware_id = "11111111-1111-5111-8111-111111111111";
+  bound.convergence.gateway.status = "failed";
+  bound.convergence.gateway.actual!.state = "upstream_unhealthy";
+  bound.convergence.runtime_config.status = "drifted";
+  bound.convergence.session_control.status = "reconciling";
+  bound.convergence.home.status = "awaiting_actual";
+  bound.convergence.home.actual = null;
+  const unbound = structuredClone(device);
+  unbound.device_id = "01923456-789a-7bcd-8ef0-123456789abd";
+  unbound.machine_hardware_id = "22222222-2222-5222-8222-222222222222";
+  unbound.convergence.binding.target = {
+    state: "unbound",
+    negotiation_id: bindingContext.binding_id,
+  };
+  unbound.convergence.binding.actual = {
+    assignment_state: "absent",
+    credential_state: "absent",
+    context: null,
+  };
+  const offline = structuredClone(device);
+  offline.device_id = "01923456-789a-7bcd-8ef0-123456789abe";
+  offline.machine_hardware_id = "33333333-3333-5333-8333-333333333333";
+  offline.convergence.connection_state = "offline";
+  offline.convergence.binding.status = "awaiting_actual";
+  offline.convergence.binding.actual = null;
+  const disabled = structuredClone(offline);
+  disabled.device_id = "01923456-789a-7bcd-8ef0-123456789abf";
+  disabled.machine_hardware_id = "44444444-4444-5444-8444-444444444444";
+  disabled.state = "disabled";
+  disabled.convergence.binding.target = null;
+  const reconnecting = structuredClone(disabled);
+  reconnecting.device_id = "01923456-789a-7bcd-8ef0-123456789ac0";
+  reconnecting.machine_hardware_id = "55555555-5555-5555-8555-555555555555";
+  reconnecting.state = "enabled";
+  reconnecting.convergence.connection_state = "awaiting_fresh_state";
+
+  await mockTargets(context, [bound, unbound, offline, disabled, reconnecting]);
+  await page.goto("/devices");
+  const table = page.getByRole("table");
+  const boundRow = table.getByRole("row").filter({ hasText: "11111111…" });
+  await expect(
+    boundRow.getByRole("cell", { name: "A-01", exact: true }),
+  ).toBeVisible();
+  await expect(
+    table.getByText(bound.machine_hardware_id, { exact: true }),
+  ).toHaveCount(0);
+  await expect(boundRow.getByTitle(bound.machine_hardware_id)).toHaveText(
+    "11111111…",
+  );
+  await expect(
+    table.getByRole("columnheader", { name: "Created" }),
+  ).toHaveCount(0);
+  await expect(
+    table.getByRole("columnheader", { name: "Convergence", exact: true }),
+  ).toHaveCount(0);
+  for (const name of [
+    "Binding: bound",
+    "Binding: converged",
+    "Gateway: failed",
+    "Runtime: drifted",
+    "Session: reconciling",
+    "Home: awaiting actual",
+  ]) {
+    await expect(
+      boundRow.getByRole("img", { name, exact: true }),
+    ).toHaveAttribute("title", name);
+  }
+  const unboundRow = table.getByRole("row").filter({ hasText: "22222222…" });
+  await expect(
+    unboundRow.getByRole("img", { name: "Binding: unbound", exact: true }),
+  ).toBeVisible();
+  await expect(
+    unboundRow.getByRole("img", { name: "Binding: converged", exact: true }),
+  ).toBeVisible();
+  await expect(unboundRow.getByRole("cell").first()).toHaveText("—");
+  const offlineRow = table.getByRole("row").filter({ hasText: "33333333…" });
+  await expect(
+    offlineRow.getByRole("img", { name: "Connection: Offline" }),
+  ).toBeVisible();
+  await expect(
+    offlineRow.getByRole("img", { name: "Binding: bound", exact: true }),
+  ).toBeVisible();
+  await expect(offlineRow.getByRole("cell").first()).toHaveText("A-01");
+  const disabledRow = table.getByRole("row").filter({ hasText: "44444444…" });
+  await expect(
+    disabledRow.getByRole("img", { name: "Binding: unknown" }),
+  ).toBeVisible();
+  await expect(
+    disabledRow.getByRole("img", { name: "Lifecycle: disabled" }),
+  ).toBeVisible();
+  await expect(disabledRow.getByRole("cell").first()).toHaveText("—");
+  await expect(
+    table.getByRole("img", {
+      name: "Connection: Connected, awaiting fresh state",
+    }),
+  ).toBeVisible();
+  const colors = await table.locator("tbody tr").evaluateAll((rows) =>
+    rows.map((row) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const paint = canvas.getContext("2d")!;
+      paint.fillStyle = "white";
+      paint.fillRect(0, 0, 1, 1);
+      paint.fillStyle = getComputedStyle(row).backgroundColor;
+      paint.fillRect(0, 0, 1, 1);
+      return Array.from(paint.getImageData(0, 0, 1, 1).data).slice(0, 3);
+    }),
+  );
+  expect(colors[0][1]).toBeGreaterThan(colors[0][0]); // Online is green.
+  expect(colors[2][0]).toBeGreaterThan(colors[2][1]); // Offline is an alert.
+  expect(Math.max(...colors[3]) - Math.min(...colors[3])).toBeLessThanOrEqual(
+    1,
+  ); // Disabled is gray.
+  expect(colors[4][0]).toBeGreaterThan(colors[4][2]); // Waiting for state is amber.
+  for (const viewport of [
+    { name: "tablet-portrait", width: 768, height: 1024 },
+    { name: "tablet-landscape", width: 1024, height: 768 },
+    { name: "desktop", width: 1440, height: 900 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.screenshot({
+      path: test.info().outputPath(`devices-${viewport.name}.png`),
+      fullPage: true,
+    });
+  }
+});
+
+test("seat sorting uses current binding and survives device polling", async ({
+  page,
+  context,
+}) => {
+  const first = structuredClone(device);
+  first.convergence.binding.target = {
+    state: "bound",
+    context: { ...bindingContext, seat_code: "A-10" },
+  };
+  const second = structuredClone(device);
+  second.device_id = "01923456-789a-7bcd-8ef0-123456789abd";
+  second.machine_hardware_id = "machine-02";
+  second.convergence.binding.target = {
+    state: "bound",
+    context: { ...bindingContext, seat_code: "A-2" },
+  };
+  const unbound = structuredClone(device);
+  unbound.device_id = "01923456-789a-7bcd-8ef0-123456789abe";
+  unbound.machine_hardware_id = "machine-03";
+  // A previous client assignment must not become the current seat after unbinding.
+  unbound.convergence.binding.target = {
+    state: "unbound",
+    negotiation_id: bindingContext.binding_id,
+  };
+  unbound.convergence.binding.status = "drifted";
+  await mockTargets(context, [first, unbound, second]);
+  await page.clock.install();
+  await page.goto("/devices");
+  const seats = page.getByRole("table").locator("tbody tr td:first-child");
+  await expect(seats).toHaveText(["A-10", "—", "A-2"]);
+  const header = page.getByRole("columnheader", { name: "Seat", exact: true });
+  await header.getByRole("button", { name: "Seat", exact: true }).click();
+  await expect(header).toHaveAttribute("aria-sort", "ascending");
+  await expect(seats).toHaveText(["A-2", "A-10", "—"]);
+  await header
+    .getByRole("button", { name: "Seat", exact: true })
+    .press("Enter");
+  await expect(header).toHaveAttribute("aria-sort", "descending");
+  await expect(seats).toHaveText(["A-10", "A-2", "—"]);
+
+  first.convergence.binding.target = {
+    state: "bound",
+    context: { ...bindingContext, seat_code: "A-1" },
+  };
+  first.convergence.connection_state = "offline";
+  await page.clock.runFor(10_000);
+  await expect(seats).toHaveText(["A-2", "A-1", "—"]);
+  await expect(header).toHaveAttribute("aria-sort", "descending");
+  const firstRow = page.getByRole("row").filter({ hasText: "machine-01" });
+  await expect(
+    firstRow.getByRole("img", { name: "Connection: Offline" }),
+  ).toBeVisible();
+  await firstRow.getByRole("button", { name: "View", exact: true }).click();
+  await expect(
+    page.getByText(`bound to A-1 (${bindingContext.domjudge_username})`, {
+      exact: false,
+    }),
+  ).toBeVisible();
+});
+
+for (const width of [768, 1024, 1440]) {
+  test(`device refresh preserves a 200-row viewport at width ${width}`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width, height: 800 });
+    await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
+    await page.clock.pauseAt(new Date("2030-01-01T00:01:00Z"));
+    const devices = Array.from({ length: 200 }, (_, index) => {
+      const current = structuredClone(device);
+      current.device_id = `01923456-789a-7bcd-8ef0-${String(index).padStart(12, "0")}`;
+      current.machine_hardware_id = `machine-${index + 1}`;
+      const context = { ...bindingContext, seat_code: `A-${index + 1}` };
+      current.convergence.binding.target = { state: "bound", context };
+      current.convergence.binding.actual!.context = context;
+      current.convergence.gateway.target!.gateway_leaf_sha256 = "a".repeat(64);
+      return current;
+    });
+    const watchedDevice = devices[149];
+    let holdNextRead = false;
+    let failReads = false;
+    let heldRead: Route | undefined;
+    let readCount = 0;
+    await page.route("**/api/v2/**", (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/v2/session" && request.method() === "GET") {
+        return fulfillJson(route, 200, operator);
+      }
+      if (path === "/api/v2/devices" && request.method() === "GET") {
+        readCount += 1;
+        if (holdNextRead) {
+          heldRead = route;
+          holdNextRead = false;
+          return;
+        }
+        return failReads
+          ? fulfillJson(route, 503, {
+              code: "unavailable",
+              title: "Temporarily unavailable",
+              status: 503,
+            })
+          : fulfillJson(route, 200, devices);
+      }
+      return fulfillJson(route, 404, {});
+    });
+
+    await page.goto("/devices");
+    const timer = page.getByRole("timer", { name: "Next device refresh" });
+    const expectTimer = async (text: string) => {
+      // Flush React Query's batched notifications while wall time is paused.
+      await expect
+        .poll(async () => {
+          await page.clock.runFor(20);
+          return (await timer.count()) ? timer.textContent() : null;
+        })
+        .toBe(text);
+    };
+    await expectTimer("Refresh in 10s");
+    await expect(timer).toBeInViewport();
+    const table = page.getByRole("table");
+    const header = table.getByRole("columnheader", {
+      name: "Seat",
+      exact: true,
+    });
+    await header.getByRole("button").click();
+    await expect(header).toHaveAttribute("aria-sort", "ascending");
+    await expect(table.locator("tbody tr")).toHaveCount(200);
+    const noPageOverflow = () =>
+      page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth,
+      );
+    expect(await noPageOverflow()).toBe(true);
+
+    const watchedRow = table
+      .getByRole("row")
+      .filter({ hasText: "machine-150" });
+    await watchedRow
+      .getByText("machine-150", { exact: true })
+      .scrollIntoViewIfNeeded();
+    const tableNode = await table.elementHandle();
+    const rowNode = await watchedRow.elementHandle();
+    const scrollContainer = page.locator('[data-slot="table-container"]');
+    await scrollContainer.evaluate((element) => {
+      element.scrollLeft = element.scrollWidth - element.clientWidth;
+    });
+    const initialTop = await page.evaluate(() => window.scrollY);
+    const initialLeft = await scrollContainer.evaluate(
+      (element) => element.scrollLeft,
+    );
+    expect(initialTop).toBeGreaterThan(0);
+    if (width === 768) expect(initialLeft).toBeGreaterThan(0);
+    const unchangedViewport = async () => {
+      await expect(table.locator("tbody tr")).toHaveCount(200);
+      expect(
+        await table.evaluate(
+          (element, original) => element === original,
+          tableNode,
+        ),
+      ).toBe(true);
+      expect(
+        await watchedRow.evaluate(
+          (element, original) => element === original,
+          rowNode,
+        ),
+      ).toBe(true);
+      expect(
+        Math.abs((await page.evaluate(() => window.scrollY)) - initialTop),
+      ).toBeLessThanOrEqual(1);
+      expect(
+        Math.abs(
+          (await scrollContainer.evaluate((element) => element.scrollLeft)) -
+            initialLeft,
+        ),
+      ).toBeLessThanOrEqual(1);
+      await expect(header).toHaveAttribute("aria-sort", "ascending");
+    };
+
+    await page.clock.runFor(7_000);
+    await expectTimer("Refresh in 3s");
+    expect(readCount).toBe(1);
+    await unchangedViewport();
+    holdNextRead = true;
+    await page.clock.runFor(3_000);
+    await expect.poll(() => heldRead !== undefined).toBe(true);
+    await expectTimer("Refreshing…");
+    await unchangedViewport();
+    await page.clock.runFor(5_000);
+    await expectTimer("Refreshing…");
+    expect(readCount).toBe(2);
+    devices.reverse();
+    watchedDevice.convergence.connection_state = "offline";
+    await fulfillJson(heldRead!, 200, devices);
+    await expectTimer("Refresh in 10s");
+    await expect(
+      watchedRow.getByRole("img", { name: "Connection: Offline" }),
+    ).toBeVisible();
+    await unchangedViewport();
+
+    failReads = true;
+    await page.clock.runFor(10_000);
+    await expectTimer("Retry in 10s");
+    await expect(timer).toHaveAttribute("title", /last received device states/);
+    await unchangedViewport();
+    failReads = false;
+    await page.clock.runFor(10_000);
+    await expectTimer("Refresh in 10s");
+    expect(readCount).toBe(4);
+    await unchangedViewport();
+
+    await watchedRow.getByRole("button", { name: "View", exact: true }).click();
+    const details = page.locator('[data-slot="card"]');
+    await details.scrollIntoViewIfNeeded();
+    expect(await noPageOverflow()).toBe(true);
+    await expect(details).toContainText("a".repeat(64));
+  });
+}
 
 test("an administrator can approve an enrollment review", async ({ page }) => {
   let reviews = [

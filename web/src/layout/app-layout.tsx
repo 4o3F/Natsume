@@ -28,10 +28,10 @@ export function AppLayout() {
   return (
     <div className="min-h-screen bg-background">
       <header className="border-b">
-        <div className="mx-auto flex h-16 max-w-7xl items-center gap-6 px-4">
-          <span className="text-lg font-semibold">Natsume</span>
+        <div className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3 lg:h-16 lg:flex-nowrap lg:py-0">
+          <span className="shrink-0 text-lg font-semibold">Natsume</span>
           <nav
-            className="flex items-center gap-1"
+            className="order-last flex w-full min-w-0 items-center gap-1 overflow-x-auto lg:order-none lg:w-auto lg:flex-1"
             aria-label="Primary navigation"
           >
             {navigation.map((item) => (
@@ -47,7 +47,7 @@ export function AppLayout() {
               </Button>
             ))}
           </nav>
-          <div className="ml-auto flex items-center gap-3">
+          <div className="ml-auto flex shrink-0 items-center gap-3">
             <Badge variant="secondary">{session.role.toUpperCase()}</Badge>
             <span
               className="font-mono text-sm text-muted-foreground"
@@ -67,7 +67,7 @@ export function AppLayout() {
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-8">
+      <main className="mx-auto min-w-0 w-full max-w-7xl px-4 py-8">
         {logout.error instanceof ApiError && (
           <Alert variant="destructive" className="mb-6">
             <AlertTitle>{logout.error.title}</AlertTitle>
