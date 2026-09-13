@@ -8,8 +8,8 @@ use crate::{
     component::device::DeviceId,
     db::{Database, DatabaseConfig, PersistenceError},
     diesel_schema::{
-        account_mappings, accounts, binding_negotiations, device_bindings, devices, seats,
-        server_vault_records,
+        account_mappings, accounts, binding_negotiations, device_bindings, devices, organizations,
+        seats, server_vault_records, teams,
     },
     vault::{self, VaultSession},
 };
@@ -508,6 +508,27 @@ impl Fixture {
                     ))
                     .execute(transaction.connection())
                     .map_err(|_| PersistenceError::OperationFailed)?;
+                diesel::insert_into(organizations::table)
+                    .values((
+                        organizations::organization_id.eq(1_i64),
+                        organizations::name_key.eq("示例大学"),
+                        organizations::name_zh.eq("示例大学"),
+                        organizations::name_en.eq("Example University"),
+                        organizations::country.eq("CHN"),
+                    ))
+                    .on_conflict_do_nothing()
+                    .execute(transaction.connection())
+                    .map_err(|_| PersistenceError::OperationFailed)?;
+                diesel::insert_into(teams::table)
+                    .values((
+                        teams::account_id.eq(&account_id_text),
+                        teams::organization_id.eq(1_i64),
+                        teams::name_zh.eq("示例队伍"),
+                        teams::name_en.eq("Example Team"),
+                        teams::category.eq("official"),
+                    ))
+                    .execute(transaction.connection())
+                    .map_err(|_| PersistenceError::OperationFailed)?;
                 diesel::insert_into(server_vault_records::table)
                     .values((
                         server_vault_records::account_id.eq(&account_id_text),
@@ -645,4 +666,47 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+#[tokio::test]
+async fn bound_profile_refresh_preserves_credentials_and_missing_profile_fails_closed() {
+    let fixture = Fixture::new().await;
+    let device = fixture.insert_device("enabled").await;
+    let (account, _) = fixture
+        .insert_mapped_seat("A-01", "profile-team", b"fixture-password")
+        .await;
+    let negotiation = fixture.negotiation_id(device).await;
+    fixture
+        .ingest(device, negotiation, 1, "A-01")
+        .await
+        .unwrap_or_else(|e| panic!("bind: {e}"));
+    let before = fixture.bound(device).await;
+    assert_eq!(before.presentation().team_name_zh, "示例队伍");
+    assert_eq!(before.presentation().organization_id, 1);
+    fixture
+        .database
+        .write(move |tx| {
+            diesel::update(teams::table.filter(teams::account_id.eq(account.to_string())))
+                .set(teams::name_zh.eq("更新队名"))
+                .execute(tx.connection())
+                .map_err(|_| PersistenceError::OperationFailed)?;
+            Ok::<(), PersistenceError>(())
+        })
+        .await
+        .unwrap_or_else(|e| panic!("rename: {e:?}"));
+    let after = fixture.bound(device).await;
+    assert_eq!(after.presentation().team_name_zh, "更新队名");
+    assert_eq!(after.context(), before.context());
+    assert_eq!(after.password().as_bytes(), before.password().as_bytes());
+    fixture
+        .database
+        .write(move |tx| {
+            diesel::delete(teams::table.filter(teams::account_id.eq(account.to_string())))
+                .execute(tx.connection())
+                .map_err(|_| PersistenceError::OperationFailed)?;
+            Ok::<(), PersistenceError>(())
+        })
+        .await
+        .unwrap_or_else(|e| panic!("remove profile: {e:?}"));
+    assert!(fixture.component.materialize(device).await.is_err());
 }

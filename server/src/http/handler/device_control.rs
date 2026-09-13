@@ -32,7 +32,15 @@ async fn upgrade(State(state): State<AppState>, upgrade: WebSocketUpgrade) -> Re
             && protocols.next().is_none()
     };
     if !valid_protocol {
-        return StatusCode::BAD_REQUEST.into_response();
+        tracing::warn!(
+            expected = CONTROL_SUBPROTOCOL,
+            "Incompatible Device control protocol"
+        );
+        return (
+            StatusCode::BAD_REQUEST,
+            "incompatible_device_control_protocol: expected natsume.control.v3",
+        )
+            .into_response();
     }
     let control = Arc::clone(state.device_control());
     let Some(permit) = control.try_reserve_handshake() else {

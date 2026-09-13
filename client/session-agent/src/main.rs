@@ -172,17 +172,30 @@ fn renew_after(lease: &SessionAgentLease) -> Duration {
 
 fn waiting_snapshot(session: &GraphicalSession) -> SessionUiSnapshot {
     SessionUiSnapshot {
+        agent_lease_id: String::new(),
         session: session.clone(),
         ui_revision: 0,
         screen: SessionScreenKind::Waiting,
+        team: None,
+        logo_path: None,
+        offline: true,
         binding_error_code: None,
         negotiation_id: None,
         submission_epoch: None,
     }
 }
 
+fn offline_snapshot(session: &GraphicalSession, previous: &SessionUiSnapshot) -> SessionUiSnapshot {
+    SessionUiSnapshot {
+        team: previous.team.clone(),
+        logo_path: previous.logo_path.clone(),
+        ..waiting_snapshot(session)
+    }
+}
+
 async fn connected(
     session: &GraphicalSession,
+    last: &mut SessionUiSnapshot,
     submissions: &mut mpsc::Receiver<BindingSubmission>,
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), ConnectionEnd> {
@@ -199,10 +212,16 @@ async fn connected(
         .await
         .map_err(|_| ConnectionEnd::Disconnected("Device1 is unavailable"))?;
     let (mut lease, initial) = proxy
-        .register_session_agent(session)
+        .register_session_agent(natsume_local_control_api::SESSION_AGENT_PROTOCOL_VERSION, session)
         .await
-        .map_err(|_| ConnectionEnd::Disconnected("Session Agent registration failed"))?;
-    if lease.session != *session || initial.session != *session {
+        .map_err(|error| {
+            tracing::warn!(%error, "Session Agent registration failed; both local peers must use protocol version 3");
+            ConnectionEnd::Disconnected("Session Agent registration failed")
+        })?;
+    if lease.session != *session
+        || initial.session != *session
+        || initial.agent_lease_id != lease.lease_id
+    {
         return Err(ConnectionEnd::Disconnected(
             "Device1 returned a different graphical session",
         ));
@@ -210,6 +229,7 @@ async fn connected(
     let mut revision = initial.ui_revision;
     let mut presentations = ui::presentation_receiver();
     let mut deadline = lease_deadline(&lease);
+    last.clone_from(&initial);
     ui::queue(initial);
 
     let mut refresh = tokio::time::interval(Duration::from_secs(1));
@@ -229,11 +249,12 @@ async fn connected(
             }
             _ = refresh.tick() => {
                 let snapshot = lease_call(deadline, proxy.get_session_ui_snapshot(&lease.lease_id, session)).await?;
-                if snapshot.session != *session {
+                if snapshot.session != *session || snapshot.agent_lease_id != lease.lease_id {
                     return Err(ConnectionEnd::Disconnected("Device1 returned a different graphical session"));
                 }
                 if snapshot.ui_revision > revision {
                     revision = snapshot.ui_revision;
+                    last.clone_from(&snapshot);
                     ui::queue(snapshot);
                 } else {
                     ui::retry_presentation();
@@ -249,7 +270,7 @@ async fn connected(
                 if changed.is_err() { return Err(ConnectionEnd::Disconnected("presentation channel closed")); }
                 let frame = presentations.borrow_and_update().clone();
                 if let Some(frame) = frame
-                    && frame.session == *session && frame.ui_revision == revision
+                    && frame.session == *session && frame.ui_revision == revision && frame.agent_lease_id == lease.lease_id
                 {
                     lease_call(deadline, proxy.confirm_session_presentation(&lease.lease_id, &frame)).await?;
                 }
@@ -271,12 +292,13 @@ async fn device_loop(
     mut submissions: mpsc::Receiver<BindingSubmission>,
     mut shutdown: watch::Receiver<bool>,
 ) {
+    let mut last = waiting_snapshot(&session);
     loop {
         let result = if matches!(
             tokio::time::timeout(Duration::from_secs(5), resolve_session(&mut session)).await,
             Ok(Ok(()))
         ) {
-            connected(&session, &mut submissions, &mut shutdown).await
+            connected(&session, &mut last, &mut submissions, &mut shutdown).await
         } else {
             Err(ConnectionEnd::Disconnected(
                 "waiting display is unavailable",
@@ -285,7 +307,8 @@ async fn device_loop(
         match result {
             Err(ConnectionEnd::Disconnected(reason)) => {
                 tracing::warn!(reason, "Session Agent disconnected from Device1");
-                ui::queue(waiting_snapshot(&session));
+                last = offline_snapshot(&session, &last);
+                ui::queue(last.clone());
             }
             Err(ConnectionEnd::Shutdown) => return,
             Ok(()) => {}
@@ -395,6 +418,38 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10);
         let result = super::lease_call(deadline, std::future::pending::<zbus::Result<()>>()).await;
         assert!(matches!(result, Err(super::ConnectionEnd::Disconnected(_))));
+    }
+
+    #[test]
+    fn daemon_disconnect_keeps_only_nonsecret_display_and_withdraws_old_lease() {
+        let session = natsume_local_control_api::GraphicalSession {
+            logind_session_id: "waiting".into(),
+            boot_id: "boot".into(),
+        };
+        let mut previous = waiting_snapshot(&session);
+        previous.agent_lease_id = "old-lease".into();
+        previous.offline = false;
+        previous.negotiation_id = Some("old-negotiation".into());
+        previous.submission_epoch = Some(2);
+        previous.logo_path = Some("/var/lib/natsume-display/test.png".into());
+        previous.team = Some(natsume_local_control_api::WaitingTeam {
+            binding_id: "binding".into(),
+            account_id: "account".into(),
+            seat_code: "A-01".into(),
+            organization_id: "INST-001".into(),
+            team_name_zh: "队伍".into(),
+            team_name_en: String::new(),
+            school_name_zh: "大学".into(),
+            school_name_en: String::new(),
+        });
+        let offline = super::offline_snapshot(&session, &previous);
+        assert!(offline.offline);
+        assert_eq!(offline.team, previous.team);
+        assert_eq!(offline.logo_path, previous.logo_path);
+        assert!(offline.negotiation_id.is_none());
+        assert!(offline.submission_epoch.is_none());
+        assert!(offline.agent_lease_id.is_empty());
+        assert_eq!(offline.ui_revision, 0);
     }
 
     #[test]

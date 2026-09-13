@@ -8,8 +8,8 @@ use crate::{
     component::device::DeviceId,
     db::{PersistenceError, Transaction},
     diesel_schema::{
-        account_mappings, accounts, binding_negotiations, device_bindings, devices, seats,
-        server_vault_records,
+        account_mappings, accounts, binding_negotiations, device_bindings, devices, organizations,
+        seats, server_vault_records, teams,
     },
 };
 
@@ -45,6 +45,7 @@ pub(in crate::component::binding) struct PersistedBoundTargetRow {
     pub(in crate::component::binding) context: PersistedBoundContextRow,
     pub(in crate::component::binding) nonce: Vec<u8>,
     pub(in crate::component::binding) ciphertext: Vec<u8>,
+    pub(in crate::component::binding) presentation: super::BindingPresentation,
 }
 
 pub(in crate::component::binding) struct PersistedBoundContextRow {
@@ -273,10 +274,49 @@ pub(in crate::component::binding) fn find_bound_target(
         .optional()
         .map_err(|_| PersistenceError::OperationFailed)?
         .ok_or(PersistenceError::InvalidPersistedData)?;
+    let (organization_id, team_name_zh, team_name_en, school_name_zh, school_name_en) =
+        teams::table
+            .inner_join(organizations::table)
+            .filter(teams::account_id.eq(context.account_id.hyphenated().to_string()))
+            .select((
+                organizations::organization_id,
+                teams::name_zh,
+                teams::name_en,
+                organizations::name_zh,
+                organizations::name_en,
+            ))
+            .first::<(i64, String, String, String, String)>(transaction.connection())
+            .optional()
+            .map_err(|_| PersistenceError::OperationFailed)?
+            .ok_or(PersistenceError::InvalidPersistedData)?;
+    if organization_id < 1
+        || (team_name_zh.is_empty() && team_name_en.is_empty())
+        || (school_name_zh.is_empty() && school_name_en.is_empty())
+        || [
+            &team_name_zh,
+            &team_name_en,
+            &school_name_zh,
+            &school_name_en,
+        ]
+        .iter()
+        .any(|name| {
+            name.len() > 1024 || name.trim() != name.as_str() || name.chars().any(char::is_control)
+        })
+    {
+        return Err(PersistenceError::InvalidPersistedData);
+    }
+    let presentation = super::BindingPresentation {
+        organization_id,
+        team_name_zh,
+        team_name_en,
+        school_name_zh,
+        school_name_en,
+    };
     Ok(Some(PersistedBoundTargetRow {
         context,
         nonce,
         ciphertext,
+        presentation,
     }))
 }
 

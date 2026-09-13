@@ -160,6 +160,13 @@ fn encode_binding_target(materialized: &MaterializedBinding) -> BindingAccessTar
     BindingAccessTarget {
         bound: materialized.target().bound().map(|bound| BoundTarget {
             context: Some(encode_binding_context(bound.context())),
+            presentation: Some(natsume_device_protocol::generated::TeamPresentation {
+                organization_id: format!("INST-{:03}", bound.presentation().organization_id),
+                team_name_zh: bound.presentation().team_name_zh.clone(),
+                team_name_en: bound.presentation().team_name_en.clone(),
+                school_name_zh: bound.presentation().school_name_zh.clone(),
+                school_name_en: bound.presentation().school_name_en.clone(),
+            }),
             password: Some(SecretBytes {
                 value: bound.password().as_bytes().to_vec(),
             }),

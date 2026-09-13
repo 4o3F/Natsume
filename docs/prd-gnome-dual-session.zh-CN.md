@@ -313,7 +313,7 @@ Helper 内 Session mutation、登录入口和 Home 维护必须共享一个有�
 3. Actual 最少补充 `foreground`（waiting/contest/greeter/other/none/unknown）及 `waiting_ready`。这些字段来自真实新鲜观测，不落入业务事实表；未知值不能解释为已收敛。
 4. Helper 本地观测另包含两边精确 `GraphicalSession`、桌面就绪及异常诊断。锁屏观测只用于识别意外显示异常，不驱动正常业务切换。无需向 Server 暴露进程树、Xauthority、DISPLAY 或总线地址。
 5. 前台目标的 convergence 必须验证目标角色的实际前台与显示就绪，不能只比较 `session_state`：waiting 目标要求 `waiting_ready`，contest 目标要求比赛桌面可交互及当前放行条件满足。Home 完成与桌面重建完成独立展示；contest 目标被“尚未绑定”阻塞时，Panel 显示等待绑定，不把预期 waiting 误报为会话故障，也不报告 contest 目标已完成。
-6. `SessionUiSnapshot` 本期只需要静态 waiting 占位与既有 BindingPrompt/BindingPending 展示；失联回到占位，不为未来复杂 Skia 页面预建阶段、页面或素材协议。详细恢复状态保留在现有 Actual/Panel 边界。
+6. `SessionUiSnapshot` 在已绑定时展示同一完整目标的队伍／学校资料和 Logo，未绑定时保留 BindingPrompt/BindingPending 或通用 waiting。失联保留非秘密缓存并标离线，不保留输入资格；资料、Logo 与缓存边界见[架构说明 §15.2](architecture.md)。详细会话恢复状态仍在现有 Actual/Panel 边界。
 7. 继续使用现有 complete snapshot、current/queued plan 去重、lease fencing、单调 epoch 与 durable completion。不得另建命令队列或业务操作历史作为正确性来源。
 
 ### 8.4 本地访问和 Binding 资格

@@ -24,6 +24,7 @@ pub(crate) struct AccountResponse {
     account_id: String,
     domjudge_username: String,
     credential_revision: i64,
+    team: Option<TeamResponse>,
 }
 
 impl From<AccountFacts> for AccountResponse {
@@ -32,11 +33,39 @@ impl From<AccountFacts> for AccountResponse {
             account_id,
             domjudge_username,
             credential_revision,
+            team,
         } = facts;
         Self {
             account_id,
             domjudge_username,
             credential_revision,
+            team: team.map(TeamResponse::from),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TeamResponse {
+    seat_id: String,
+    seat_code: String,
+    organization_id: String,
+    team_name_zh: String,
+    team_name_en: String,
+    school_name_zh: String,
+    school_name_en: String,
+}
+
+impl From<crate::component::contest::TeamDetails> for TeamResponse {
+    fn from(team: crate::component::contest::TeamDetails) -> Self {
+        Self {
+            seat_id: team.seat_id,
+            seat_code: team.seat_code,
+            organization_id: format!("INST-{:03}", team.organization_id),
+            team_name_zh: team.team_name_zh,
+            team_name_en: team.team_name_en,
+            school_name_zh: team.school_name_zh,
+            school_name_en: team.school_name_en,
         }
     }
 }

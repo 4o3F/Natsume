@@ -3539,6 +3539,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "hex",
+ "image",
  "natsume-device-protocol",
  "natsume-local-control-api",
  "prost",

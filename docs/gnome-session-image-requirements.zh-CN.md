@@ -16,7 +16,7 @@
 
 系统账号固定为 `waiting` 与 `teams`，Home 为 `/home/waiting` 与 `/home/teams`。下文 `contest` 表示比赛角色；协议目标、固定 PAM 名和 Helper CLI 的角色参数保持 contest。Client 持续安装，卸载不作为交付门槛。
 
-waiting 使用独立账号的官方 **GNOME Kiosk Script X11**，contest 使用另一账号的完整 **Ubuntu/GNOME X11**。两套会话及 Xorg 都由 GDM 管理。正常情况下双方同时存在，“显示等待界面／显示比赛桌面”只切换前台。Home reset 才先进入 waiting、结束并排空 contest、重置 Home，再通过固定入口重新登录 contest；重建期间允许 greeter 和闪屏。waiting 本期为纯黑全屏，同一 Agent 窗口承载 Binding；logo 和复杂 Skia 页面不构成本次镜像交付前置条件。
+waiting 使用独立账号的官方 **GNOME Kiosk Script X11**，contest 使用另一账号的完整 **Ubuntu/GNOME X11**。两套会话及 Xorg 都由 GDM 管理。正常情况下双方同时存在，“显示等待界面／显示比赛桌面”只切换前台。Home reset 才先进入 waiting、结束并排空 contest、重置 Home，再通过固定入口重新登录 contest；重建期间允许 greeter 和闪屏。waiting 在同一 Agent 全屏窗口承载 Binding 或已绑定队伍／学校／Logo，并在离线时保留非秘密缓存。Logo 由 Natsume Server 提供，镜像不需要预置学校图片；无图时默认图仍可形成健康首帧。Client Deb 提供字体与缓存目录，详细展示／恢复边界见[Session Agent runbook](../packaging/client/rootfs/usr/share/doc/natsume-client/session-agent-gui-startup.md)。
 
 | 所有者 | 交付内容 | 实施边界 |
 | --- | --- | --- |

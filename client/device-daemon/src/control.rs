@@ -45,6 +45,9 @@ pub(crate) enum ControlIdentityError {
 /// Fatal local errors that prevent the control loop from safely retrying.
 #[derive(Debug, Snafu)]
 pub(crate) enum ControlLoopError {
+    #[snafu(display("waiting presentation cache could not be initialized"))]
+    PresentationCache,
+
     #[snafu(display("the Device control endpoint configuration is invalid"))]
     EndpointConfiguration,
 

@@ -731,7 +731,16 @@ pub(crate) async fn fixture(state: HelperState) -> Result<Fixture, Box<dyn std::
             binding::tests::confirm_fixture_frame(&agent, &sender, waiting_session());
         }
     });
+    let images = directory.path().join("logos");
+    std::fs::create_dir(&images)?;
+    let presentation = Arc::new(presentation::Presentation::new(
+        directory.path().join("waiting.json"),
+        images,
+        Arc::clone(&binding_input),
+    ));
+    presentation.configure("fixture-scope".to_owned())?;
     let snapshots = Arc::new(SnapshotReconciler {
+        presentation,
         gateway: gateway::tests::reconciler(&directory),
         binding_input: Arc::clone(&binding_input),
         binding: binding::tests::reconciler(&directory),
@@ -1544,4 +1553,156 @@ fn cancelled_plan_is_rejected_before_an_effect() {
         check_cancellation(&cancellation),
         Err(SnapshotError::Cancelled)
     ));
+}
+
+#[test]
+fn bound_display_is_required_but_does_not_change_any_resource_target() {
+    use natsume_device_protocol::generated::{
+        BindingContext, BoundTarget, SecretBytes, TeamPresentation,
+    };
+    let mut wire = snapshot();
+    wire.intent
+        .as_mut()
+        .unwrap_or_else(|| panic!("intent"))
+        .binding = None;
+    let bound = BoundTarget {
+        context: Some(BindingContext {
+            binding_id: Uuid::now_v7().to_string(),
+            account_id: Uuid::now_v7().to_string(),
+            seat_code: "A-01".into(),
+            domjudge_username: "team-alpha".into(),
+            credential_revision: 1,
+        }),
+        password: Some(SecretBytes {
+            value: b"fixture-password".to_vec(),
+        }),
+        presentation: Some(TeamPresentation {
+            team_name_zh: "队伍".into(),
+            team_name_en: "Team".into(),
+            school_name_zh: "示例大学".into(),
+            school_name_en: String::new(),
+            organization_id: "INST-001".into(),
+        }),
+    };
+    wire.target
+        .as_mut()
+        .unwrap_or_else(|| panic!("target"))
+        .binding_access =
+        Some(natsume_device_protocol::generated::BindingAccessTarget { bound: Some(bound) });
+    let original =
+        validate_server_snapshot(wire.clone()).unwrap_or_else(|e| panic!("snapshot: {e}"));
+    let mut renamed = wire.clone();
+    let presentation = renamed
+        .target
+        .as_mut()
+        .and_then(|t| t.binding_access.as_mut())
+        .and_then(|t| t.bound.as_mut())
+        .and_then(|t| t.presentation.as_mut())
+        .unwrap_or_else(|| panic!("presentation"));
+    presentation.team_name_zh = "新队名".into();
+    presentation.organization_id = "INST-002".into();
+    let updated = validate_server_snapshot(renamed).unwrap_or_else(|e| panic!("snapshot: {e}"));
+    assert!(
+        original == updated,
+        "Display updates must not restart a resource plan"
+    );
+    wire.target
+        .as_mut()
+        .and_then(|t| t.binding_access.as_mut())
+        .and_then(|t| t.bound.as_mut())
+        .unwrap_or_else(|| panic!("bound"))
+        .presentation = None;
+    assert!(matches!(
+        validate_server_snapshot(wire),
+        Err(SnapshotError::InvalidServerSnapshot)
+    ));
+}
+
+#[tokio::test]
+async fn old_local_agent_contract_is_rejected_before_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    use natsume_local_control_api::{DEVICE1_PATH, DEVICE1_SERVICE, Device1Proxy};
+    let fixture = fixture(HelperState::default()).await?;
+    binding::DeviceService::start(
+        &fixture.service,
+        Arc::clone(&fixture.snapshots.binding_input),
+    )
+    .await?;
+    let proxy = Device1Proxy::new(&fixture.service).await?;
+    let error = proxy
+        .register_session_agent(2, &waiting_session())
+        .await
+        .err()
+        .ok_or("old version was accepted")?;
+    assert!(
+        error
+            .to_string()
+            .contains("incompatible Session Agent protocol")
+    );
+    let raw = zbus::Proxy::new(
+        &fixture.service,
+        DEVICE1_SERVICE,
+        DEVICE1_PATH,
+        DEVICE1_SERVICE,
+    )
+    .await?;
+    let old: Result<
+        (
+            natsume_local_control_api::SessionAgentLease,
+            natsume_local_control_api::SessionUiSnapshot,
+        ),
+        _,
+    > = raw.call("RegisterSessionAgent", &waiting_session()).await;
+    assert!(
+        old.is_err(),
+        "the old method signature cannot register an Agent"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn display_updates_keep_ready_caddy_and_credentials_while_waiting_for_a_new_frame()
+-> Result<(), Box<dyn std::error::Error>> {
+    use std::os::unix::fs::MetadataExt as _;
+    let (fixture, target) = ready_fixture().await?;
+    fixture.agent_task.abort();
+    let mode = fixture.directory.path().join("caddy-mode.json");
+    let assignment = fixture.directory.path().join("binding-assignment.json");
+    let inodes = (
+        std::fs::metadata(&mode)?.ino(),
+        std::fs::metadata(&assignment)?.ino(),
+    );
+    let context = &target.binding_target.bound.as_ref().ok_or("bound")?.context;
+    for name in ["第一队名", "更新队名"] {
+        fixture
+            .snapshots
+            .accept_presentation(Some(natsume_local_control_api::WaitingTeam {
+                binding_id: context.binding_id.clone(),
+                account_id: context.account_id.clone(),
+                seat_code: context.seat_code.clone(),
+                organization_id: "INST-001".into(),
+                team_name_zh: name.into(),
+                team_name_en: String::new(),
+                school_name_zh: "大学".into(),
+                school_name_en: String::new(),
+            }))?;
+        fixture.snapshots.observe(Some(&target)).await?;
+        assert!(matches!(
+            fixture.snapshots.caddy.observe().await.mode,
+            Some(caddy::CaddyModeArtifact::Ready { .. })
+        ));
+        assert_eq!(
+            (
+                std::fs::metadata(&mode)?.ino(),
+                std::fs::metadata(&assignment)?.ino()
+            ),
+            inodes
+        );
+    }
+    let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
+    assert!(state.activation_calls.is_empty());
+    assert!(state.preparation_calls.is_empty());
+    assert!(state.termination_calls.is_empty());
+    assert!(state.home_calls.is_empty());
+    Ok(())
 }

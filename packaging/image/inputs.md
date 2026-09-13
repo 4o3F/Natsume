@@ -73,7 +73,7 @@ Server root key、CA 私钥、每设备控制/网关私钥不进入交接包或�
 | --- | --- |
 | `/usr/bin/natsume-device-daemon` | `run` 常驻；独占与 Server 的通信和 Caddy 配置 |
 | `/usr/lib/natsume/natsume-privileged-helper` | root 服务；受限 GDM/logind/Home 能力，必须处于宿主 mount namespace |
-| `/usr/bin/natsume-session-agent` | `run`，waiting 纯黑全屏/Binding 窗口，由官方 Kiosk Script service 管理 |
+| `/usr/bin/natsume-session-agent` | `run`，waiting 队伍／学校／Logo／离线状态与 Binding 窗口，由官方 Kiosk Script service 管理 |
 | `/usr/lib/natsume/caddy` | 包内已校验版本，由 Daemon 管理；镜像不额外启动第二个网关 |
 | `/usr/lib/systemd/system/natsume-{device-daemon,privileged-helper,caddy}.service` | 主机服务；只离线 enable 前两者，Caddy 的启停归 Daemon |
 | `/usr/lib/systemd/system/natsume-session-prepare@.service` | 固定 root 登录入口，实例名只用 waiting/contest；不单独 enable |

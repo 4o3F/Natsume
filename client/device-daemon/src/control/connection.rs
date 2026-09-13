@@ -51,6 +51,7 @@ type LocalSnapshotTask = JoinHandle<Result<ClientStateSnapshot, SnapshotError>>;
 struct ConnectionSettings {
     endpoint: CanonicalEndpoint,
     tls: Arc<ClientConfig>,
+    trust_fingerprint: String,
 }
 
 /// Retained by the connection loop across transport, handshake and short Active failures.
@@ -103,6 +104,10 @@ impl ConnectionSettings {
         if certificates.next().is_some() {
             return Err(ControlLoopError::TrustRootConfiguration);
         }
+        let trust_fingerprint = {
+            use sha2::Digest as _;
+            hex::encode(sha2::Sha256::digest(trust_root.as_ref()))
+        };
         let mut roots = RootCertStore::empty();
         roots
             .add(trust_root)
@@ -117,7 +122,26 @@ impl ConnectionSettings {
         Ok(Self {
             endpoint,
             tls: Arc::new(tls),
+            trust_fingerprint,
         })
+    }
+
+    fn origin(&self) -> String {
+        control_url(self.endpoint)
+            .trim_end_matches(CONTROL_ROUTE)
+            .replacen("wss://", "https://", 1)
+    }
+
+    fn presentation_scope(&self, identity: &ControlIdentity) -> Option<String> {
+        use sha2::Digest as _;
+        let device = identity.manifest.device_id()?;
+        Some(hex::encode(sha2::Sha256::digest(format!(
+            "{}|{}|{}|{}",
+            self.origin(),
+            self.trust_fingerprint,
+            device,
+            hex::encode(identity.key.public_key())
+        ))))
     }
 
     async fn connect(&self) -> Option<Socket> {
@@ -161,6 +185,22 @@ pub(crate) async fn run(
         .await
         .map_err(|_| ControlLoopError::LocalDeactivation)?;
     let settings = ConnectionSettings::production()?;
+    if let Some(scope) = settings.presentation_scope(&identity) {
+        snapshots
+            .configure_presentation(scope)
+            .map_err(|_| ControlLoopError::PresentationCache)?;
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(20))
+        .use_preconfigured_tls((*settings.tls).clone())
+        .build()
+        .map_err(|_| ControlLoopError::Tls)?;
+    let _logos = tokio_util::task::AbortOnDropHandle::new(
+        snapshots.start_logo_downloads(client, settings.origin()),
+    );
     let mut backoff = ReconnectBackoff::new();
     let mut first_attempt = true;
     loop {
@@ -175,7 +215,10 @@ pub(crate) async fn run(
                 backoff.advance();
             }
             let Some(mut socket) = settings.connect().await else {
-                tracing::warn!("Device control connection failed");
+                tracing::warn!(
+                    expected_subprotocol = CONTROL_SUBPROTOCOL,
+                    "Device control connection failed"
+                );
                 return Ok(None);
             };
             match super::enrollment::handshake(
@@ -194,6 +237,12 @@ pub(crate) async fn run(
         first_attempt = false;
         match attempt {
             Ok(Some((socket, session_id))) => {
+                let scope = settings
+                    .presentation_scope(&identity)
+                    .ok_or(ControlLoopError::PresentationCache)?;
+                snapshots
+                    .configure_presentation(scope)
+                    .map_err(|_| ControlLoopError::PresentationCache)?;
                 let stable =
                     run_active(socket, session_id, Arc::clone(&snapshots), Some(local)).await;
                 snapshots
@@ -430,6 +479,7 @@ async fn run_active(
             }
         }
     }
+    snapshots.presentation_offline();
     drop(socket);
     fence_plans(&snapshots, current, queued).await;
     if let Some(task) = observation {
@@ -454,7 +504,9 @@ fn queue_latest_plan(
     observation_running: bool,
     target: ServerStateSnapshot,
 ) -> Result<(), SnapshotError> {
+    let presentation = crate::reconcile::snapshot_presentation(&target);
     let target = Arc::new(validate_server_snapshot(target)?);
+    snapshots.accept_presentation(presentation)?;
     if target_is_redundant(
         current.as_ref().map(|plan| plan.target.as_ref()),
         pending.as_ref().map(|plan| plan.target.as_ref()),

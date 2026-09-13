@@ -352,7 +352,7 @@ Level 和 Transition 都属于 Concrete Target，不形成第二套 Command 模�
 ### 8.1 Transport
 
 Operator HTTPS 与 Device WSS 可以共用一个 Server listener。Device 只连接固定
-`/api/v2/device/control` route，并使用唯一 pinned `natsume.control` WSS subprotocol。
+`/api/v2/device/control` route，并使用唯一 pinned `natsume.control.v3` WSS subprotocol。
 每个完成重组的 Protobuf frame 最多 65,536 bytes。这个上限同时适用于 Handshake
 与 Active frame，不再为单个消息类型建立重复上限。一个 wire generation 只有一个
 descriptor，不维持旧/新双栈。
@@ -364,7 +364,7 @@ SHA-256(
     "NATSUME-DEVICE-CONTROL-CLIENT-PROOF\0" ||
     0x01 ||
     UTF-8("/api/v2/device/control") || 0x00 ||
-    UTF-8("natsume.control") || 0x00 ||
+    UTF-8("natsume.control.v3") || 0x00 ||
     challenge_nonce ||
     public_key ||
     purpose ||
@@ -1222,7 +1222,17 @@ Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其�
 
 管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 先验证该 ID 属于当前名单，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
 
-TODO(roster-presentation)：协议与 Client waiting 文字、Logo 下载、离线缓存将在下一阶段实现。
+BoundTarget 必须包含非秘密 TeamPresentation：中英文队名、中英文校名和 INST ID；seat/account/binding_id 沿用同一 BindingContext。Binding 组件在读取凭据的同一事务中读取队伍／学校资料，缺少资料拒绝 materialize。旧部署须先用完整 XLSX 补齐资料再恢复控制连接。展示不进入凭据 revision、工件或 Binding Actual，也不参与 Client 资源目标比较。
+
+Daemon 独立处理展示：完整目标验证成功后立即发布文字，后台从同一 Server 的公开 Logo 路由下载图像。请求使用同一 pinned Control CA、HTTPS origin，不使用系统代理、不跟随重定向。每次最多一个 HTTP 请求或图像解码，20 秒请求超时，响应最多 20 MiB，栅格限制 4096 单边／4 Mi 像素，按内容识别 PNG/JPEG/WebP 并转成 PNG；SVG 由 Server 先转 PNG。每分钟以 ETag 重验，缺图或失败不阻塞控制循环，不新增 Logo convergence。
+
+展示记录位于 `/var/lib/natsume/state/waiting.json`（0600），仅含展示资料、归属摘要和图像摘要／ETag。归属绑定 HTTPS endpoint、Control CA、已 Enrollment 的 Device ID 与控制公钥。只读 PNG 位于 `/var/lib/natsume-display`（目录 0755，由 natsume 写入，文件 0644），waiting 可读但不可写；不授予 waiting 访问私有 state 目录。只保留当前图像，Home reset 不删除这些数据。
+
+启动从匹配归属的缓存恢复并标离线；有效控制握手后仍须完整当前快照才能取消离线。断线保留画面；解绑先原子持久化空记录，再清除文字与图片选择；换绑立即显示新资料和默认图。HTTP/解码完成时重新验证展示代次、归属、Binding 和学校，旧下载不能覆盖新展示。缓存损坏降级为默认图或通用 waiting；缓存写入失败明确报错并关闭当前控制连接，不能声称已保存新状态。缓存不授予访问、不产生 Binding 输入，也不恢复控制 lease。
+
+SessionUiSnapshot 携带非秘密 WaitingTeam、Daemon 管理的图片路径和 offline 标识。文字／图片更新推进 UI revision，由现有首帧观测确认；默认图也可正常 ready。Agent 失去 Device1 时保留展示并撤销 Binding 输入，重连必须重新注册；快照及首帧均携带注册 lease ID，旧 lease 的帧不能确认新注册。RegisterSessionAgent 显式检查本地协议版本 3，WSS 只接受 `natsume.control.v3`；不提供旧协议适配。Client Deb 依赖 Noto CJK 字体。
+
+waiting 使用纯黑背景，中央展示放大的学校 Logo 与双语校名，底栏左侧为双语队名、右侧突出座位号；离线图标与文字固定在右上角。单一语言不重复显示；长名称可换行／滚动，座位号保持可见。Web Accounts 和 Seats 展示同一导入资料的队伍、学校和 Logo，缺图与设备离线分别显示。 未绑定的座位输入页采用暖色双栏，界面统一称“座位 / seat”；自动聚焦输入，Enter、键盘按钮和鼠标共享当前 negotiation/epoch 提交入口，空值禁用。等待确认时隐藏输入；不存在、未关联和已占用座位使用可读提示，不把内部错误码作为产品文案。
 
 ### 15.3 Desired-state Operator API
 
@@ -1485,7 +1495,7 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - Runtime Config只远程下发DOMjudge origin；
 - 工作站目标基线是 Ubuntu Client 镜像、官方 GDM/GNOME + 原生 X11，固定 waiting/contest 两个独立会话；禁止嵌套桌面和图形组件 patch；
 - GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；自动登录不得反复抢占后续greeter，每次GDM启动初始化一次自动登录的官方配置见[IMG-02](gnome-session-image-requirements.zh-CN.md#img-02-autologin)，Daemon不运行时改写该配置；
-- waiting 使用官方 GNOME Kiosk 和独立 dconf profile，不启动比赛桌面的 GNOME Shell/ArcMenu；contest 保持完整 GNOME 和独立配置并关闭自动锁屏。首期等待界面默认纯黑，可随包使用一张静态 ICPC logo；
+- waiting 使用官方 GNOME Kiosk 和独立 dconf profile，不启动比赛桌面的 GNOME Shell/ArcMenu；contest 保持完整 GNOME 和独立配置并关闭自动锁屏。未绑定的等待界面可使用随包静态图；已绑定展示队伍、学校和 Logo，断线保留缓存并显示离线标识；
 - `environment.d`、PAM、Kiosk session/用户服务、dconf、Xorg 及 Home 恢复依赖随镜像交付；Home 维护不停止全局 GDM；
 - 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护按[镜像维护要求](gnome-session-image-requirements.zh-CN.md#maintenance)完成控制连接退出、状态备份和整套恢复验证；
 - Client 持续安装，卸载不作为本次交付门槛；已有包移除脚本保留，不据此拆分镜像输入的所有权；
@@ -1807,7 +1817,7 @@ just api
 
 ### WP9：Client Input与Reconciliation（已实现，待审查）
 
-§4.4、§9.4～9.6 定义双会话增量的角色激活、Home 门禁/GDM 重建、Running/foreground 观测及静态 waiting 占位。实现审查与 WP10 的最终镜像/部署签收分别进行。
+§4.4、§9.4～9.6 定义双会话增量的角色激活、Home 门禁/GDM 重建、Running/foreground 观测及 waiting 展示（队伍资料见 §15.2）。实现审查与 WP10 的最终镜像/部署签收分别进行。
 
 目标：
 

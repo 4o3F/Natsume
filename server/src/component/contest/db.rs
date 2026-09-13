@@ -27,6 +27,54 @@ pub(in crate::component::contest) fn list_seats(
 pub(in crate::component::contest) fn list_accounts(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<AccountFacts>, PersistenceError> {
+    use crate::diesel_schema::{account_mappings, organizations, teams};
+    use diesel::JoinOnDsl;
+    let profiles = teams::table
+        .inner_join(organizations::table)
+        .inner_join(account_mappings::table.on(account_mappings::account_id.eq(teams::account_id)))
+        .inner_join(seats::table.on(seats::seat_id.eq(account_mappings::seat_id)))
+        .select((
+            teams::account_id,
+            seats::seat_id,
+            seats::seat_code,
+            teams::organization_id,
+            teams::name_zh,
+            teams::name_en,
+            organizations::name_zh,
+            organizations::name_en,
+        ))
+        .load::<(String, String, String, i64, String, String, String, String)>(
+            transaction.connection(),
+        )
+        .map_err(|_| PersistenceError::OperationFailed)?;
+    let mut profiles = profiles
+        .into_iter()
+        .map(
+            |(
+                account,
+                seat_id,
+                seat_code,
+                organization_id,
+                team_name_zh,
+                team_name_en,
+                school_name_zh,
+                school_name_en,
+            )| {
+                (
+                    account,
+                    super::TeamDetails {
+                        seat_id,
+                        seat_code,
+                        organization_id,
+                        team_name_zh,
+                        team_name_en,
+                        school_name_zh,
+                        school_name_en,
+                    },
+                )
+            },
+        )
+        .collect::<std::collections::HashMap<_, _>>();
     accounts::table
         .select((
             accounts::account_id,
@@ -39,6 +87,7 @@ pub(in crate::component::contest) fn list_accounts(
             rows.into_iter()
                 .map(
                     |(account_id, domjudge_username, credential_revision)| AccountFacts {
+                        team: profiles.remove(&account_id),
                         account_id,
                         domjudge_username,
                         credential_revision,

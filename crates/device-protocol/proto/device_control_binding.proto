@@ -46,11 +46,22 @@ message BindingContext {
 // Server-resolved bound access target. Context and password come from one
 // consistent truth/vault view. Password is carried in every complete target but
 // is excluded from generic Client persistence and Client state.
+// Non-secret display data. Each name requires at least one language.
+// Required for a bound target; excluded from credentials and Binding Actual.
+message TeamPresentation {
+  string team_name_zh = 1;
+  string team_name_en = 2;
+  string school_name_zh = 3;
+  string school_name_en = 4;
+  string organization_id = 5;
+}
+
 message BoundTarget {
   BindingContext context  = 1;
   // Required exact non-empty UTF-8, control-free DOMjudge password in
   // 1..=512 bytes. Generated Debug must remain redacted through SecretBytes.
   SecretBytes   password = 2;
+  TeamPresentation presentation = 3;
 }
 
 // Concrete contestant-access target. Bound presence applies the exact context

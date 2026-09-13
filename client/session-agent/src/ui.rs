@@ -90,6 +90,7 @@ fn frame_geometry(window: &SessionWindow) -> Option<SessionPresentation> {
             .borrow()
             .as_ref()
             .map(|snapshot| SessionPresentation {
+                agent_lease_id: snapshot.agent_lease_id.clone(),
                 session: snapshot.session.clone(),
                 ui_revision: snapshot.ui_revision,
                 first_frame_presented: fullscreen && size.width > 0 && size.height > 0,
@@ -116,15 +117,21 @@ fn record_frame(window: &SessionWindow) {
     // the next UI event-loop turn, and discard a revision superseded meanwhile.
     let _queued = slint::invoke_from_event_loop(move || {
         let current_revision = CURRENT_SNAPSHOT.with(|current| {
-            current
-                .borrow()
-                .as_ref()
-                .map(|snapshot| (snapshot.session.clone(), snapshot.ui_revision))
+            current.borrow().as_ref().map(|snapshot| {
+                (
+                    snapshot.session.clone(),
+                    snapshot.ui_revision,
+                    snapshot.agent_lease_id.clone(),
+                )
+            })
         });
-        if frame
-            .as_ref()
-            .map(|frame| (frame.session.clone(), frame.ui_revision))
-            == current_revision
+        if frame.as_ref().map(|frame| {
+            (
+                frame.session.clone(),
+                frame.ui_revision,
+                frame.agent_lease_id.clone(),
+            )
+        }) == current_revision
         {
             publish_frame(frame);
         }
@@ -133,38 +140,43 @@ fn record_frame(window: &SessionWindow) {
 
 #[must_use]
 pub fn seat_input_visible(snapshot: &SessionUiSnapshot) -> bool {
-    snapshot.screen == SessionScreenKind::BindingPrompt
+    !snapshot.offline
+        && snapshot.screen == SessionScreenKind::BindingPrompt
         && snapshot.negotiation_id.is_some()
         && snapshot.submission_epoch.is_some_and(|epoch| epoch != 0)
 }
 
-#[must_use]
-pub const fn screen_kind_label(kind: SessionScreenKind) -> &'static str {
-    match kind {
-        SessionScreenKind::Waiting => "waiting",
-        SessionScreenKind::BindingPrompt => "binding_prompt",
-        SessionScreenKind::BindingPending => "binding_pending",
+fn snapshot_text(snapshot: &SessionUiSnapshot) -> (&'static str, &'static str, &'static str) {
+    match snapshot.screen {
+        SessionScreenKind::Waiting => ("", "", ""),
+        SessionScreenKind::BindingPrompt => (
+            "绑定座位",
+            "Bind your seat",
+            "输入座位号，关联对应队伍。\n绑定后将显示队伍信息。",
+        ),
+        SessionScreenKind::BindingPending => (
+            "正在绑定座位",
+            "Binding your seat",
+            "正在确认座位信息，请稍候。\n确认后将显示对应队伍信息。",
+        ),
     }
 }
 
-fn snapshot_text(snapshot: &SessionUiSnapshot) -> (String, String) {
-    let (title, message) = match snapshot.screen {
-        SessionScreenKind::Waiting => ("", ""),
-        SessionScreenKind::BindingPrompt => ("Bind workstation", "Enter your seat code"),
-        SessionScreenKind::BindingPending => ("Binding workstation", "Waiting for the server"),
-    };
-    let message = snapshot.binding_error_code.as_ref().map_or_else(
-        || message.to_owned(),
-        |error_code| format!("{message}\n{error_code}"),
-    );
-    (title.to_owned(), message)
+fn binding_error_text(code: Option<&str>) -> &'static str {
+    match code {
+        None => "",
+        Some("SEAT_NOT_FOUND") => "未找到这个座位号，请检查后重试。",
+        Some("SEAT_UNMAPPED") => "该座位尚未关联队伍，请联系现场工作人员。",
+        Some("SEAT_OCCUPIED") => "该座位已被占用。\n请核对座位号，或联系现场工作人员。",
+        Some(_) => "暂时无法绑定座位，请重试或联系现场工作人员。",
+    }
 }
 
 fn binding_submission(
     snapshot: &SessionUiSnapshot,
     seat_code: String,
 ) -> Option<BindingSubmission> {
-    if snapshot.screen != SessionScreenKind::BindingPrompt {
+    if !seat_input_visible(snapshot) || seat_code.is_empty() {
         return None;
     }
     Some(BindingSubmission {
@@ -226,18 +238,16 @@ pub fn apply_pending() -> Result<(), slint::PlatformError> {
 pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
     CURRENT_SNAPSHOT.with(|current| *current.borrow_mut() = Some(snapshot.clone()));
     PRESENTED.send_replace(None);
-    let existing = WINDOW.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .map(slint::ComponentHandle::clone_strong)
-    });
+    let existing =
+        WINDOW.with_borrow(|slot| slot.as_ref().map(slint::ComponentHandle::clone_strong));
 
     let window = if let Some(window) = existing {
         window
     } else {
         let window = SessionWindow::new()?;
-        if let Ok(logo) =
-            slint::Image::load_from_path(std::path::Path::new("/usr/share/natsume/waiting.png"))
+        let placeholder = std::path::Path::new("/usr/share/natsume/waiting.png");
+        if placeholder.is_file()
+            && let Ok(logo) = slint::Image::load_from_path(placeholder)
         {
             window.set_waiting_logo(logo);
         }
@@ -290,10 +300,38 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window
     };
 
-    let (title, message) = snapshot_text(snapshot);
+    window.set_team_visible(snapshot.team.is_some());
+    window.set_offline(snapshot.offline);
+    // Reset the logo before resolving a new binding; a previous school is never a fallback.
+    let mut logo = slint::Image::load_from_svg_data(include_bytes!("../ui/school.svg"))
+        .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
+    if let Some(team) = &snapshot.team {
+        let (school, school_secondary) = display_names(&team.school_name_zh, &team.school_name_en);
+        let (name, name_secondary) = display_names(&team.team_name_zh, &team.team_name_en);
+        window.set_school_primary(school.into());
+        window.set_school_secondary(school_secondary.into());
+        window.set_long_team(name.chars().count() > 30);
+        window.set_long_seat(team.seat_code.chars().count() > 12);
+        window.set_team_primary(name.into());
+        window.set_team_secondary(name_secondary.into());
+        window.set_assigned_seat(team.seat_code.as_str().into());
+        if let Some(path) = &snapshot.logo_path {
+            match slint::Image::load_from_path(std::path::Path::new(path)) {
+                Ok(image) => logo = image,
+                Err(error) => {
+                    tracing::warn!(%error, "School logo unavailable; displaying default icon");
+                }
+            }
+        }
+    }
+    window.set_school_logo(logo);
+    let (title, subtitle, message) = snapshot_text(snapshot);
     window.set_waiting_visible(snapshot.screen == SessionScreenKind::Waiting);
     window.window().set_fullscreen(true);
-    window.set_screen_kind_text(screen_kind_label(snapshot.screen).into());
+    window.set_binding_pending(snapshot.screen == SessionScreenKind::BindingPending);
+    window
+        .set_binding_error_text(binding_error_text(snapshot.binding_error_code.as_deref()).into());
+    window.set_subtitle_text(subtitle.into());
     window.set_title_text(title.into());
     window.set_message_text(message.into());
     window.set_seat_input_visible(seat_input_visible(snapshot));
@@ -302,20 +340,32 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
     Ok(())
 }
 
+fn display_names<'a>(primary: &'a str, secondary: &'a str) -> (&'a str, &'a str) {
+    if primary.is_empty() {
+        (secondary, "")
+    } else {
+        (primary, secondary)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use natsume_local_control_api::{GraphicalSession, SessionScreenKind, SessionUiSnapshot};
 
-    use super::{binding_submission, screen_kind_label, seat_input_visible, snapshot_text};
+    use super::{binding_error_text, binding_submission, seat_input_visible, snapshot_text};
 
     fn snapshot(screen: SessionScreenKind) -> SessionUiSnapshot {
         SessionUiSnapshot {
+            agent_lease_id: String::new(),
             session: GraphicalSession {
                 logind_session_id: "test-session".to_owned(),
                 boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
             },
             ui_revision: 1,
             screen,
+            team: None,
+            logo_path: None,
+            offline: false,
             binding_error_code: None,
             negotiation_id: None,
             submission_epoch: None,
@@ -323,33 +373,38 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_text_uses_the_selected_screen() {
-        let probe = snapshot(SessionScreenKind::BindingPending);
-        let (title, message) = snapshot_text(&probe);
-        assert_eq!(title, "Binding workstation");
-        assert_eq!(message, "Waiting for the server");
+    fn offline_prompts_are_never_actionable_and_single_language_is_not_duplicated() {
+        let mut prompt = snapshot(SessionScreenKind::BindingPrompt);
+        prompt.negotiation_id = Some("negotiation".into());
+        prompt.submission_epoch = Some(1);
+        prompt.offline = true;
+        assert!(!seat_input_visible(&prompt));
+        assert!(binding_submission(&prompt, "A-01".into()).is_none());
+        assert_eq!(super::display_names("", "Team"), ("Team", ""));
+        assert_eq!(super::display_names("队伍", "Team"), ("队伍", "Team"));
     }
 
     #[test]
-    fn snapshot_text_includes_the_current_binding_error() {
-        let mut probe = snapshot(SessionScreenKind::BindingPrompt);
-        probe.binding_error_code = Some("SEAT_OCCUPIED".to_owned());
-        let (title, message) = snapshot_text(&probe);
-        assert_eq!(title, "Bind workstation");
-        assert_eq!(message, "Enter your seat code\nSEAT_OCCUPIED");
-    }
-
-    #[test]
-    fn screen_kind_labels_cover_the_typed_contract() {
-        let cases = [
-            (SessionScreenKind::Waiting, "waiting"),
-            (SessionScreenKind::BindingPrompt, "binding_prompt"),
-            (SessionScreenKind::BindingPending, "binding_pending"),
-        ];
-
-        for (kind, expected) in cases {
-            assert_eq!(screen_kind_label(kind), expected);
+    fn binding_copy_names_the_seat_and_errors_do_not_expose_protocol_codes() {
+        let (title, subtitle, message) = snapshot_text(&snapshot(SessionScreenKind::BindingPrompt));
+        assert_eq!(title, "绑定座位");
+        assert_eq!(subtitle, "Bind your seat");
+        assert!(!message.contains("工位"));
+        let (title, subtitle, _) = snapshot_text(&snapshot(SessionScreenKind::BindingPending));
+        assert_eq!(title, "正在绑定座位");
+        assert_eq!(subtitle, "Binding your seat");
+        for code in [
+            "SEAT_NOT_FOUND",
+            "SEAT_UNMAPPED",
+            "SEAT_OCCUPIED",
+            "FUTURE_ERROR",
+        ] {
+            let text = binding_error_text(Some(code));
+            assert!(!text.is_empty());
+            assert!(!text.contains(code));
+            assert!(!text.contains("工位"));
         }
+        assert_eq!(binding_error_text(None), "");
     }
 
     #[test]
@@ -371,6 +426,7 @@ mod tests {
         prompt.negotiation_id = Some("019c1234-5678-7abc-8def-0123456789ab".to_owned());
         prompt.submission_epoch = Some(3);
 
+        assert!(binding_submission(&prompt, String::new()).is_none());
         let submission = binding_submission(&prompt, "A-01".to_owned())
             .unwrap_or_else(|| panic!("complete Binding intent must submit"));
         assert_eq!(submission.session, prompt.session);

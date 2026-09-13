@@ -13,6 +13,7 @@ umask: 0o022
 depends:
   - ca-certificates
   - dbus
+  - fonts-noto-cjk
   - libfontconfig1
   - libpam-modules
   - libfreetype6

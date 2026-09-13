@@ -23,9 +23,45 @@ mapping. Neither an environment variable nor registration proves readiness:
 the exact current lease must confirm a rendered fullscreen frame at the real
 monitor size, and Helper must independently observe the running kiosk desktop.
 
-BindingPrompt and BindingPending use the same window. Disconnection or an expired
-lease removes Binding input and restores the placeholder. Ordinary foreground
-switching keeps both native sessions and the background Agent lease alive.
+BindingPrompt and BindingPending use the same window. The seat-binding page uses
+a warm light layout: instructions on the left and the seat input on the right.
+Visible copy calls this a seat (座位), and displays readable messages for unknown,
+unmapped or occupied seat codes. Input focuses automatically; Enter, keyboard
+button activation and mouse confirmation use the same current intent and epoch.
+Empty input cannot be submitted. Pending confirmation has a dedicated status view. Disconnection or an expired
+lease removes Binding input, retains the last non-secret team/school/seat and logo,
+and displays an offline badge. A cold Agent without a Daemon starts with the
+placeholder. Ordinary foreground switching keeps both native sessions and the
+background Agent lease alive.
+
+Bound waiting uses a black background with a large centered school logo and
+bilingual school name. The bottom bar places the bilingual team name on the left
+and the assigned seat on the right; the offline icon and text stay at the top right. Missing one language uses the available name; missing
+logos use a default icon. Long text wraps and can scroll; the seat remains visible.
+The package depends on Noto CJK fonts. A missing logo never prevents first-frame
+readiness or makes an online device appear offline.
+
+The Daemon stores display-only metadata in `/var/lib/natsume/state/waiting.json`
+(mode 0600) and public PNGs in `/var/lib/natsume-display` (directory 0755,
+files 0644, owned by natsume). waiting can read the PNGs but cannot modify them or
+read the private state directory. Home reset does not affect this cache. Its
+scope includes Server endpoint, pinned Control CA, enrolled Device ID and public
+control key. A valid unbind clears the durable presentation; rebinds cannot reuse
+an old school's image. Do not copy the private state directory between machines.
+
+Startup restores matching cached data offline. Only a successful control
+handshake followed by a complete valid snapshot clears that badge. The Daemon
+fetches logos over the same pinned HTTPS connection settings, with a 20-second
+request timeout and a one-minute ETag refresh. It checks content and image bounds,
+converts raster images to PNG, and retries failures independently of resource
+reconciliation. A cache write failure is reported in the Daemon journal and
+closes control; fix the directory ownership or storage failure before restarting.
+
+Both local peers require Session Agent protocol 3 at registration; Device control
+uses `natsume.control.v3`. Upgrade Server, Daemon and Agent together, and import
+complete team profiles before reconnecting previously bound devices. Each frame
+also carries the registration lease ID, so a pre-restart frame cannot establish
+readiness after a new registration.
 
 For diagnosis, inspect the waiting user's `org.gnome.Kiosk.Script.service` and
 `org.gnome.Kiosk@x11.service`, the corresponding journal, logind User.Display,

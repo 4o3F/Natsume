@@ -15,6 +15,7 @@ ed25519-dalek.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 hex.workspace = true
+image.workspace = true
 natsume-device-protocol = { path = "../../crates/device-protocol" }
 natsume-local-control-api = { path = "../../crates/local-control-api" }
 prost.workspace = true

@@ -352,6 +352,8 @@ grep -Fxq 'd /var/lib/natsume 0750 root natsume-gateway -' "${client_tmpfiles}" 
   fail 'packaged Device state root is not protected from the Daemon user'
 grep -Fxq 'd /var/lib/natsume/state 0700 natsume natsume -' "${client_tmpfiles}" ||
   fail 'packaged Device state directory is not fixed before Daemon startup'
+grep -Fxq 'd /var/lib/natsume-display 0755 natsume natsume -' "${client_tmpfiles}" ||
+  fail 'waiting logo cache must be Daemon-writable and readable by the waiting user'
 grep -Fxq 'd /var/lib/natsume-privileged/home-reset 0700 root root -' "${client_tmpfiles}" ||
   fail 'packaged Home reset state is not rooted outside Daemon-owned storage'
 

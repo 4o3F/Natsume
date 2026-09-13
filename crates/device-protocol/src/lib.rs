@@ -8,7 +8,7 @@ pub use transcript::{
 };
 
 /// Exact WebSocket subprotocol selected by both control peers.
-pub const CONTROL_SUBPROTOCOL: &str = "natsume.control";
+pub const CONTROL_SUBPROTOCOL: &str = "natsume.control.v3";
 /// Exact HTTP route carrying Device control WebSocket upgrades.
 pub const CONTROL_ROUTE: &str = "/api/v2/device/control";
 /// Maximum encoded length of one Device Control `ErrorCode` token.
@@ -136,6 +136,7 @@ mod tests {
         let target = generated::BoundTarget {
             context: None,
             password: Some(secret),
+            presentation: None,
         };
         let containing_debug = format!("{target:?}");
         assert!(containing_debug.contains("SecretBytes([REDACTED])"));

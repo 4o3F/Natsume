@@ -111,6 +111,21 @@ pub enum SessionScreenKind {
     BindingPending,
 }
 
+/// Non-secret display data, with identity from the same complete bound target.
+/// This is never an input to local access or binding eligibility.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingTeam {
+    pub binding_id: String,
+    pub account_id: String,
+    pub seat_code: String,
+    pub organization_id: String,
+    pub team_name_zh: String,
+    pub team_name_en: String,
+    pub school_name_zh: String,
+    pub school_name_en: String,
+}
+
 /// Complete Session Agent presentation for one exact graphical session.
 ///
 /// A Binding prompt is actionable only when both `negotiation_id` and
@@ -118,9 +133,13 @@ pub enum SessionScreenKind {
 /// intent; there is no Prompt Command or prompt nonce.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionUiSnapshot {
+    pub agent_lease_id: String,
     pub session: GraphicalSession,
     pub ui_revision: u64,
     pub screen: SessionScreenKind,
+    pub team: Option<WaitingTeam>,
+    pub logo_path: Option<String>,
+    pub offline: bool,
     pub binding_error_code: Option<String>,
     pub negotiation_id: Option<String>,
     pub submission_epoch: Option<u64>,
@@ -143,6 +162,7 @@ pub struct SessionAgentLease {
 /// `waiting_ready`: fresh Helper desktop/session observations are also required.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
 pub struct SessionPresentation {
+    pub agent_lease_id: String,
     pub session: GraphicalSession,
     pub ui_revision: u64,
     pub first_frame_presented: bool,
@@ -183,6 +203,9 @@ pub struct HomeResetProgress {
 /// Owner-only singleton path below the active graphical session's runtime directory.
 pub const SESSION_AGENT_SINGLETON_RELATIVE_PATH: &str = "natsume/session-agent.lock";
 
+/// Breaking Session Agent registration contract. Both peers must match.
+pub const SESSION_AGENT_PROTOCOL_VERSION: u32 = 3;
+
 pub const DEVICE1_SERVICE: &str = "org.natsume.Device1";
 pub const DEVICE1_PATH: &str = "/org/natsume/Device1";
 pub const PRIVILEGED1_SERVICE: &str = "org.natsume.Privileged1";
@@ -198,6 +221,7 @@ pub trait Device1 {
     #[zbus(name = "RegisterSessionAgent")]
     fn register_session_agent(
         &self,
+        protocol_version: u32,
         session: &GraphicalSession,
     ) -> zbus::Result<(SessionAgentLease, SessionUiSnapshot)>;
 
@@ -321,7 +345,10 @@ mod tests {
 
     #[test]
     fn local_control_types_have_stable_dbus_signatures() {
-        assert_eq!(<SessionUiSnapshot as Type>::SIGNATURE, "((ss)tuasasat)");
+        assert_eq!(
+            <SessionUiSnapshot as Type>::SIGNATURE,
+            "(s(ss)tua(ssssssss)asbasasat)"
+        );
         assert_eq!(
             <GraphicalSessionObservation as Type>::SIGNATURE,
             "(ua(ss)bb)"
@@ -330,7 +357,7 @@ mod tests {
             <ManagedSessionsObservation as Type>::SIGNATURE,
             "((ua(ss)bb)(ua(ss)bb)u)"
         );
-        assert_eq!(<SessionPresentation as Type>::SIGNATURE, "((ss)tbuu)");
+        assert_eq!(<SessionPresentation as Type>::SIGNATURE, "(s(ss)tbuu)");
         assert_eq!(<Option<HomeResetProgress> as Type>::SIGNATURE, "a(tu)");
     }
 }

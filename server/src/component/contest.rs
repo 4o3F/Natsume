@@ -17,10 +17,21 @@ pub(crate) use export::ExportError;
 pub(crate) use logos::{LogoObservation, LogoStatus};
 pub(crate) use roster::OrganizationDetails;
 
+pub(crate) struct TeamDetails {
+    pub(crate) seat_id: String,
+    pub(crate) seat_code: String,
+    pub(crate) organization_id: i64,
+    pub(crate) team_name_zh: String,
+    pub(crate) team_name_en: String,
+    pub(crate) school_name_zh: String,
+    pub(crate) school_name_en: String,
+}
+
 pub(crate) struct AccountFacts {
     pub(crate) account_id: String,
     pub(crate) domjudge_username: String,
     pub(crate) credential_revision: i64,
+    pub(crate) team: Option<TeamDetails>,
 }
 
 pub(crate) struct SeatFacts {
@@ -120,6 +131,7 @@ mod tests {
     use super::{ContestComponent, ContestError};
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)]
     async fn current_facts_preserve_contents_and_identifier_order() {
         let root = std::env::temp_dir().join(format!("natsume-contest-test-{}", Uuid::now_v7()));
         std::fs::create_dir(&root).unwrap_or_else(|error| panic!("fixture directory: {error}"));
@@ -135,6 +147,9 @@ mod tests {
                     .batch_execute(
                         "INSERT INTO seats VALUES ('seat-b', 'A'), ('seat-a', 'Z');
                  INSERT INTO accounts VALUES ('account-b', 'alice', 3), ('account-a', 'zoe', 2);
+                 INSERT INTO organizations VALUES (1, '示例大学', '示例大学', 'Example University', 'CHN');
+                 INSERT INTO teams VALUES ('account-a', 1, '队伍', 'Team', 'participant');
+                 INSERT INTO account_mappings VALUES ('seat-a', 'account-a');
                  INSERT INTO devices VALUES
                    ('01900000-0000-7000-8000-000000000002', 'machine-b', 'strong', 'enabled', 1),
                    ('01900000-0000-7000-8000-000000000001', 'machine-a', 'strong', 'enabled', 1);
@@ -182,6 +197,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("account-a", "zoe", 2), ("account-b", "alice", 3)]
         );
+        let team = accounts[0]
+            .team
+            .as_ref()
+            .unwrap_or_else(|| panic!("missing team profile"));
+        assert_eq!(
+            (team.seat_id.as_str(), team.seat_code.as_str()),
+            ("seat-a", "Z")
+        );
+        assert_eq!(team.organization_id, 1);
+        assert_eq!(team.team_name_zh, "队伍");
+        assert_eq!(team.school_name_en, "Example University");
+        assert!(accounts[1].team.is_none());
         let bindings = contest
             .list_bindings()
             .await

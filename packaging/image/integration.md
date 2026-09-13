@@ -13,7 +13,7 @@
 
 Home reset 的职责归 Natsume：先撤销上游业务访问、取得可用 waiting 前台，再关闭 teams 登录许可，结束捕获的比赛会话并排空 UID/manager/PAM worker，正常卸载并恢复 Home，验证后重新登录比赛会话，最后依最新目标决定前台。waiting/GDM 不随普通 reset 重启。重建期间允许 greeter/闪屏；Home 失败必须保留 waiting 与诊断，不能让整个 GDM 依赖 Home 成功。
 
-waiting 本期纯黑全屏，同一 Agent 窗口承载 Binding，不需要 logo 图片、远程素材或外部 GUI runtime。Agent 的启动与重启只归官方 Kiosk Script 用户服务；模板和图形配置归 image builder，运行时不再修改它们。Client 持续安装，不新增卸载流程。
+waiting 的同一 Agent 窗口承载 Binding 与已绑定队伍／学校／Logo 展示，断网时保留非秘密缓存并标离线。学校 Logo 从 Natsume Server 拉取，镜像不预置学校图；缺图使用随包默认图。Client Deb 提供 Noto CJK 字体依赖和 `/var/lib/natsume-display`（natsume 可写、waiting 只读），私有展示记录留在 `/var/lib/natsume/state/waiting.json`。Agent 的启动与重启只归官方 Kiosk Script 用户服务；模板和图形配置归 image builder，运行时不再修改它们。Client 持续安装，不新增卸载流程。
 
 ## 2. 在 image builder 中安排修改位置
 
@@ -176,7 +176,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y /path/to/natsume-client.deb
 
 实际安装源保留上述服务与 waiting 自动登录。Live 层保留 Casper 临时管理员和可见安装器，关闭该层继承的 Client/模板启动及 waiting 自动登录：同时处理静态 GDM 配置与 ExecStartPre 运行态自动登录 drop-in，不能只改 AutomaticLoginEnable=false 后又被 ExecStartPre 重新打开。Live 专用覆盖不能写回安装源，也不能随安装过程复制到已安装系统。
 
-构建禁止启动服务，也不复用主机 /run。镜像只含空的首次身份/状态目录；machine-id 和硬件身份边界见 inputs.md。第一台工位启动后产生的身份、Enrollment、Binding、Home epoch 或 waiting 恢复预算，均不得回写模板或公共镜像。
+构建禁止启动服务，也不复用主机 /run。镜像只含空的首次身份/状态目录；machine-id 和硬件身份边界见 inputs.md。第一台工位启动后产生的身份、Enrollment、Binding、Home epoch 或 waiting 恢复预算，以及队伍展示记录、Logo 缓存均不得回写模板或公共镜像。
 
 ## 11. 维护与回退
 

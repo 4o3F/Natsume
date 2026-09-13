@@ -2169,6 +2169,16 @@
           },
           "domjudge_username": {
             "type": "string"
+          },
+          "team": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/TeamResponse"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -3259,6 +3269,42 @@
             "format": "uuid"
           },
           "role": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TeamResponse": {
+        "type": "object",
+        "required": [
+          "seat_id",
+          "seat_code",
+          "organization_id",
+          "team_name_zh",
+          "team_name_en",
+          "school_name_zh",
+          "school_name_en"
+        ],
+        "properties": {
+          "organization_id": {
+            "type": "string"
+          },
+          "school_name_en": {
+            "type": "string"
+          },
+          "school_name_zh": {
+            "type": "string"
+          },
+          "seat_code": {
+            "type": "string"
+          },
+          "seat_id": {
+            "type": "string"
+          },
+          "team_name_en": {
+            "type": "string"
+          },
+          "team_name_zh": {
             "type": "string"
           }
         },

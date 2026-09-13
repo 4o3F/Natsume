@@ -429,6 +429,7 @@ export interface components {
       /** Format: int64 */
       credential_revision: number;
       domjudge_username: string;
+      team?: null | components["schemas"]["TeamResponse"];
     };
     /** @description Latest validated Binding artifact Actual reported by the current lease. */
     BindingActualResponse: {
@@ -793,6 +794,15 @@ export interface components {
       /** Format: uuid */
       operator_id: string;
       role: string;
+    };
+    TeamResponse: {
+      organization_id: string;
+      school_name_en: string;
+      school_name_zh: string;
+      seat_code: string;
+      seat_id: string;
+      team_name_en: string;
+      team_name_zh: string;
     };
   };
   responses: never;

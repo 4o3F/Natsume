@@ -16,6 +16,7 @@ mod configuration;
 mod gateway;
 mod home;
 mod maintenance;
+mod presentation;
 mod runtime;
 mod session;
 
@@ -36,6 +37,9 @@ use session::{SessionReconciler, ValidatedSessionTarget};
 pub(crate) enum SnapshotError {
     #[snafu(display("Server state snapshot is invalid"))]
     InvalidServerSnapshot,
+
+    #[snafu(display("waiting presentation cache could not be read or persisted"))]
+    PresentationCache,
 
     #[snafu(display("Client resource artifact is unavailable"))]
     Artifact,
@@ -116,6 +120,7 @@ fn retryable_control_error(error: &ResourceControlError) -> bool {
 pub(crate) struct SnapshotReconciler {
     gateway: GatewayReconciler,
     binding_input: Arc<BindingInputProvider>,
+    presentation: Arc<presentation::Presentation>,
     binding: BindingReconciler,
     runtime: RuntimeReconciler,
     session: SessionReconciler,
@@ -149,8 +154,14 @@ impl SnapshotReconciler {
         let session = SessionReconciler::production(connection.clone(), Arc::clone(&binding_input));
         let home = HomeReconciler::production(connection.clone());
         DeviceService::start(&connection, Arc::clone(&binding_input)).await?;
+        let presentation = Arc::new(presentation::Presentation::new(
+            "/var/lib/natsume/state/waiting.json".into(),
+            "/var/lib/natsume-display".into(),
+            Arc::clone(&binding_input),
+        ));
         Ok(Self {
             gateway,
+            presentation,
             binding_input,
             binding: BindingReconciler::production(),
             runtime: RuntimeReconciler::production(),
@@ -158,6 +169,31 @@ impl SnapshotReconciler {
             home,
             caddy,
         })
+    }
+
+    pub(crate) fn configure_presentation(&self, scope: String) -> Result<(), SnapshotError> {
+        self.presentation.configure(scope)
+    }
+
+    pub(crate) fn start_logo_downloads(
+        &self,
+        client: reqwest::Client,
+        origin: String,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(Arc::clone(&self.presentation).run(client, origin))
+    }
+
+    pub(crate) fn accept_presentation(
+        &self,
+        team: Option<natsume_local_control_api::WaitingTeam>,
+    ) -> Result<(), SnapshotError> {
+        self.presentation.accept(team)
+    }
+
+    pub(crate) fn presentation_offline(&self) {
+        if let Err(error) = self.presentation.disconnect() {
+            tracing::error!(%error, "Waiting offline status could not be published");
+        }
     }
 
     /// Waits until a durable local Binding submission may change the complete Client snapshot.
@@ -282,6 +318,12 @@ impl SnapshotReconciler {
             binding: binding_input,
         })
     }
+}
+
+pub(crate) fn snapshot_presentation(
+    snapshot: &ServerStateSnapshot,
+) -> Option<natsume_local_control_api::WaitingTeam> {
+    presentation::from_snapshot(snapshot)
 }
 
 pub(crate) fn validate_server_snapshot(

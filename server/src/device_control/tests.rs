@@ -1743,3 +1743,37 @@ impl Drop for Fixture {
         }
     }
 }
+
+#[tokio::test]
+async fn old_or_mixed_control_protocols_are_rejected_before_handshake() {
+    let fixture = Fixture::new().await;
+    let (mut socket, server) = connect(&fixture).await;
+    receive_handshake(&mut socket).await;
+    for protocol in ["natsume.control", "natsume.control, natsume.control.v3"] {
+        let mut request = repeat_connection_request(&socket);
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            protocol.parse().unwrap_or_else(|e| panic!("header: {e}")),
+        );
+        let error = connect_async(request)
+            .await
+            .err()
+            .unwrap_or_else(|| panic!("old protocol was accepted"));
+        let tokio_tungstenite::tungstenite::Error::Http(response) = error else {
+            panic!("expected HTTP rejection");
+        };
+        assert_eq!(response.status(), 400);
+        assert!(response.body().as_ref().is_some_and(|body| {
+            String::from_utf8_lossy(body).contains("incompatible_device_control_protocol")
+        }));
+    }
+    assert_eq!(
+        fixture
+            .state
+            .device_control()
+            .handshakes
+            .available_permits(),
+        63
+    );
+    server.abort();
+}

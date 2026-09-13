@@ -154,6 +154,7 @@ pub(super) fn validate_target(target: BindingAccessTarget) -> Option<ValidatedBi
     let bound = match target.bound {
         None => None,
         Some(bound) => {
+            super::presentation::validate_bound(&bound)?;
             let context = ValidatedBindingContext::from_wire(bound.context?)?;
             let password = String::from_utf8(bound.password?.value).ok()?;
             if !valid_password(&password) {
@@ -185,6 +186,9 @@ struct BindingInputState {
     eligible: bool,
     current_intent: Option<ValidatedBindingIntent>,
     ui_revision: u64,
+    team: Option<natsume_local_control_api::WaitingTeam>,
+    logo_path: Option<String>,
+    offline: bool,
 }
 
 impl BindingInputState {
@@ -202,6 +206,9 @@ impl BindingInputProvider {
                 eligible: false,
                 current_intent: None,
                 ui_revision: 1,
+                team: None,
+                logo_path: None,
+                offline: true,
             }),
             changed: Notify::new(),
             registered: Mutex::new(None),
@@ -426,6 +433,28 @@ impl BindingInputProvider {
         }))
     }
 
+    pub(super) fn set_display(
+        &self,
+        team: Option<natsume_local_control_api::WaitingTeam>,
+        logo_path: Option<String>,
+        offline: bool,
+        logo_repaired: bool,
+    ) -> Result<(), SnapshotError> {
+        let mut state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
+        if logo_repaired
+            || state.team != team
+            || state.logo_path != logo_path
+            || state.offline != offline
+        {
+            state.team = team;
+            state.logo_path = logo_path;
+            state.offline = offline;
+            state.advance_ui_revision();
+            self.changed.notify_one();
+        }
+        Ok(())
+    }
+
     fn ui_snapshot(&self, session: GraphicalSession) -> Result<SessionUiSnapshot, SnapshotError> {
         let state = self.state.lock().map_err(|_| SnapshotError::Artifact)?;
         let Some(intent) = state.current_intent.as_ref().filter(|_| {
@@ -436,9 +465,13 @@ impl BindingInputProvider {
                 && state.eligible
         }) else {
             return Ok(SessionUiSnapshot {
+                agent_lease_id: String::new(),
                 session,
                 ui_revision: state.ui_revision,
                 screen: SessionScreenKind::Waiting,
+                team: state.team.clone(),
+                logo_path: state.logo_path.clone(),
+                offline: state.offline,
                 binding_error_code: None,
                 negotiation_id: None,
                 submission_epoch: None,
@@ -454,8 +487,12 @@ impl BindingInputProvider {
         let pending = persisted.is_some() && !rejected;
         let next_epoch = next_submission_epoch(intent, persisted.as_ref())?;
         Ok(SessionUiSnapshot {
+            agent_lease_id: String::new(),
             session,
             ui_revision: state.ui_revision,
+            team: state.team.clone(),
+            logo_path: state.logo_path.clone(),
+            offline: state.offline,
             screen: if pending {
                 SessionScreenKind::BindingPending
             } else {
@@ -589,7 +626,10 @@ impl Registration {
         } else {
             presentation.fullscreen_width == 0 && presentation.fullscreen_height == 0
         };
-        if presentation.ui_revision != current_revision || !dimensions_valid {
+        if presentation.agent_lease_id != self.lease.lease_id
+            || presentation.ui_revision != current_revision
+            || !dimensions_valid
+        {
             return Err(service_error("Session presentation is incomplete or stale"));
         }
         // RandR may briefly resize the monitor before resizing the window.
@@ -661,11 +701,17 @@ impl DeviceService {
     #[zbus(name = "RegisterSessionAgent")]
     async fn register_session_agent(
         &self,
+        protocol_version: u32,
         session: GraphicalSession,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<(SessionAgentLease, SessionUiSnapshot)> {
+        if protocol_version != natsume_local_control_api::SESSION_AGENT_PROTOCOL_VERSION {
+            return Err(zbus::fdo::Error::InvalidArgs(
+                "incompatible Session Agent protocol: expected version 3".into(),
+            ));
+        }
         let caller = self.authenticated(&header, &session).await?;
-        let snapshot = self
+        let mut snapshot = self
             .provider
             .ui_snapshot(session.clone())
             .map_err(|_| service_error("Session UI state is unavailable"))?;
@@ -679,6 +725,7 @@ impl DeviceService {
             .registered
             .lock()
             .map_err(|_| service_error("Session Agent state is unavailable"))?;
+        snapshot.agent_lease_id.clone_from(&lease.lease_id);
         *registered = Some(Registration {
             lease: lease.clone(),
             caller,
@@ -730,6 +777,10 @@ impl DeviceService {
         }
         self.provider
             .ui_snapshot(session)
+            .map(|mut snapshot| {
+                lease_id.clone_into(&mut snapshot.agent_lease_id);
+                snapshot
+            })
             .map_err(|_| service_error("Session UI state is unavailable"))
     }
 
@@ -740,6 +791,11 @@ impl DeviceService {
         presentation: SessionPresentation,
         #[zbus(header)] header: Header<'_>,
     ) -> zbus::fdo::Result<()> {
+        if presentation.agent_lease_id != lease_id {
+            return Err(service_error(
+                "Session frame belongs to a different Agent lease",
+            ));
+        }
         let caller = self.authenticated(&header, &presentation.session).await?;
         let mut registered = self
             .provider
@@ -938,6 +994,9 @@ pub(super) mod tests {
                 eligible: false,
                 current_intent: None,
                 ui_revision: 1,
+                team: None,
+                logo_path: None,
+                offline: true,
             }),
             changed: Notify::new(),
             registered: Mutex::new(None),
@@ -973,6 +1032,7 @@ pub(super) mod tests {
             registration
                 .confirm(
                     SessionPresentation {
+                        agent_lease_id: "fixture-lease".to_owned(),
                         session,
                         ui_revision: snapshot.ui_revision,
                         first_frame_presented: true,
@@ -1061,6 +1121,7 @@ pub(super) mod tests {
             presentation: None,
         };
         let mut frame = SessionPresentation {
+            agent_lease_id: "lease".to_owned(),
             session: session.clone(),
             ui_revision: 2,
             first_frame_presented: true,
@@ -1069,6 +1130,10 @@ pub(super) mod tests {
         };
         assert!(registration.confirm(frame.clone(), 2).is_ok());
         assert!(registration.presentation.is_some());
+        let mut old_lease_frame = frame.clone();
+        old_lease_frame.agent_lease_id = "previous-lease".into();
+        assert!(registration.confirm(old_lease_frame, 2).is_err());
+        assert!(registration.presentation.is_none());
         frame.first_frame_presented = false;
         frame.fullscreen_width = 0;
         frame.fullscreen_height = 0;

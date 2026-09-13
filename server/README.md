@@ -215,9 +215,15 @@ to 4096 pixels per side / 4 Mi pixels total. Image IO and encoding run off the a
 control loop. File changes are independent of the database read snapshot. Back up
 both the database/vault and source logo directory.
 
-TODO(roster-presentation): deliver protocol and Client waiting display/cache in the
-next stage. This export does not push changes into DOMjudge; import the ZIP's files
-there and verify team logins after password rotation.
+Bound control targets include required bilingual team/school presentation from the
+same binding transaction. Missing profiles fail closed; import the full roster
+before reconnecting migrated bound devices. Client waiting downloads logos from
+this Server with the pinned Control CA, retains display-only data offline, and
+clears it on unbind. The matching Server and Client use `natsume.control.v3`; the
+Daemon and Session Agent use local protocol 3. See the packaged
+[Session Agent runbook](../packaging/client/rootfs/usr/share/doc/natsume-client/session-agent-gui-startup.md)
+for cache ownership, display and recovery behavior. The coordinated release and
+maintenance upgrade remain in the final delivery stage.
 
 ## OpenTelemetry traces
 

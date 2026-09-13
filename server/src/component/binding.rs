@@ -180,7 +180,11 @@ impl BindingComponent {
                 Ok(MaterializedBinding {
                     intent: None,
                     target: BindingAccessTarget {
-                        bound: Some(BoundTarget { context, password }),
+                        bound: Some(BoundTarget {
+                            context,
+                            password,
+                            presentation: row.presentation,
+                        }),
                     },
                 })
             }
@@ -599,12 +603,27 @@ impl fmt::Debug for BindingPassword {
     }
 }
 
+/// Display facts read in the same transaction as the binding and vault record.
+#[derive(Debug)]
+pub(crate) struct BindingPresentation {
+    pub(crate) organization_id: i64,
+    pub(crate) team_name_zh: String,
+    pub(crate) team_name_en: String,
+    pub(crate) school_name_zh: String,
+    pub(crate) school_name_en: String,
+}
+
 pub(crate) struct BoundTarget {
     context: BindingContext,
     password: BindingPassword,
+    presentation: BindingPresentation,
 }
 
 impl BoundTarget {
+    pub(crate) const fn presentation(&self) -> &BindingPresentation {
+        &self.presentation
+    }
+
     pub(crate) const fn context(&self) -> &BindingContext {
         &self.context
     }
@@ -620,6 +639,7 @@ impl fmt::Debug for BoundTarget {
             .debug_struct("BoundTarget")
             .field("context", &self.context)
             .field("password", &self.password)
+            .field("presentation", &self.presentation)
             .finish()
     }
 }

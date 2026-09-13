@@ -103,3 +103,18 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 6. 每轮关键证据：镜像/包/模板版本，Target/epoch，boot ID、双方 session ID、Xorg/Shell/Agent PID、GDM InvocationID、Home generation/验证状态、实际前台/输入、耗时及错误。正常显示与重建留截图/视频，日志保留失败。
 
 证据不包含私钥、身份/控制凭据正文、比赛文件、cookies 或管理员密码。先在本地按必要字段核对，再输出摘要和受控日志。交接包完整只证明实施资料已齐备；实际镜像与该结果文档完成后，才可签收发行。
+
+## 新版 Waiting 展示的配套验证
+
+配套发布时使用 `natsume.control.v3` 的 Server/Client 和本地协议 3 的 Daemon/Agent。
+先导入完整 XLSX 补齐存量账号的队伍／学校资料，再恢复已绑定工位的控制连接；不混用旧契约。
+
+- 已绑定时，核对双语校名、双语队名、学校 Logo 和座位号与 Server 完整名单一致；缺少一种语言不重复显示，长名可完整阅读且座位保持可见。
+- 无图、图像无效或下载失败时显示默认图，不阻塞 waiting_ready；后补图片在后台重试后出现，设备在线状态不因缺图变化。
+- 断网和断网重启保留上次资料／图像并显示离线；完整有效新快照到达后才取消离线标识。Daemon 重启后 Agent 重新注册，旧 lease 的帧不能确认新会话。
+- 解绑后断网并重启不能恢复旧队伍；换绑立即更新文字，旧学校的迟到下载不能覆盖新展示。
+- 更换 Server endpoint、Control CA 或设备身份时不继承旧资料；缓存不参与授权、输入资格或控制 lease。
+- 以 waiting 身份验证只能读取 `/var/lib/natsume-display` 的 PNG，不能写入；`/var/lib/natsume/state/waiting.json` 为 0600。公共镜像内不得包含运行过的身份或展示缓存。
+- 使用实际镜像的中文字体、Kiosk 和显示器验证全屏首帧、分辨率变化，以及资料／Logo 更新不触发凭据重写、Caddy 重载、Home reset 或前台切换。
+
+开发阶段的 Xvfb/Slint 截图和单元测试不代替最终镜像上的上述签收。

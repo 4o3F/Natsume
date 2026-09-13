@@ -25,7 +25,7 @@ PrivateTmp=yes
 CapabilityBoundingSet=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadOnlyPaths=/etc/natsume
-ReadWritePaths=/var/lib/natsume /run/natsume
+ReadWritePaths=/var/lib/natsume /var/lib/natsume-display /run/natsume
 LimitCORE=0
 Restart=on-failure
 
