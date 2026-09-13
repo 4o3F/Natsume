@@ -279,6 +279,11 @@ impl DeviceControl {
         self.registry.dirty_all().await;
     }
 
+    /// Wakes only existing actors; receipt persistence never waits for Client execution.
+    pub(crate) async fn dirty_devices(&self, devices: &[DeviceId]) {
+        self.registry.dirty_many(devices).await;
+    }
+
     /// Replaces the current lease and then closes the precheck-to-replacement authority race.
     pub(super) async fn attach_device_lease(
         self: &Arc<Self>,

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.1.0"
   },
   "paths": {
@@ -533,99 +533,6 @@
         ]
       }
     },
-    "/api/v2/devices/{device_id}/home/actions/reset": {
-      "post": {
-        "operationId": "resetDeviceHome",
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "path",
-            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/CanonicalUuidV7"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Home reset epoch advanced",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HomeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid Device ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Session authentication failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Administrator role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Device not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Home reset epoch exhausted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ]
-      }
-    },
     "/api/v2/devices/{device_id}/session-control": {
       "get": {
         "operationId": "getDeviceSessionControl",
@@ -673,193 +580,6 @@
           },
           "404": {
             "description": "Device not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ]
-      },
-      "put": {
-        "operationId": "setDeviceSessionForeground",
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "path",
-            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/CanonicalUuidV7"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SessionForegroundRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Session foreground target committed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionControlResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid Device ID or request body",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Session authentication failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Administrator role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Device not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "413": {
-            "description": "Request body exceeds the API ingress limit"
-          },
-          "500": {
-            "description": "Internal failure",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "sessionCookie": []
-          }
-        ]
-      }
-    },
-    "/api/v2/devices/{device_id}/session-control/actions/terminate": {
-      "post": {
-        "operationId": "terminateDeviceSession",
-        "parameters": [
-          {
-            "name": "device_id",
-            "in": "path",
-            "description": "Canonical lowercase hyphenated `UUIDv7` Device ID.",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/CanonicalUuidV7"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Session terminate epoch advanced",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SessionControlResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid Device ID",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Session authentication failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Administrator role required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Device not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Terminate epoch exhausted",
             "content": {
               "application/json": {
                 "schema": {
@@ -2152,6 +1872,91 @@
           }
         ]
       }
+    },
+    "/api/v2/target-submissions": {
+      "post": {
+        "operationId": "submitTargets",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetSubmissionBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Durable per-device submission results, including a replay of an existing operation ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetSubmissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid submission, action, scope or canonical UUID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Operation ID belongs to another request or operator",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds the API ingress limit"
+          },
+          "500": {
+            "description": "Submission transaction failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -2451,6 +2256,42 @@
         },
         "additionalProperties": false
       },
+      "DeviceSubmissionResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["device_id", "status"],
+            "properties": {
+              "device_id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["submitted"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["device_id", "code", "message", "status"],
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/TargetRejectionCode"
+              },
+              "device_id": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["rejected"]
+              }
+            }
+          }
+        ]
+      },
       "DeviceUpdateRequest": {
         "type": "object",
         "description": "Complete replacement of the mutable Device lifecycle field.",
@@ -2520,6 +2361,11 @@
           }
         },
         "additionalProperties": false
+      },
+      "ForegroundTargetResponse": {
+        "type": "string",
+        "description": "Desired Session foreground role accepted and returned by the API.",
+        "enum": ["contest", "waiting"]
       },
       "GatewayActualResponse": {
         "type": "object",
@@ -3231,19 +3077,6 @@
         },
         "additionalProperties": false
       },
-      "SessionForegroundRequest": {
-        "type": "object",
-        "description": "Complete Session foreground mutation body.",
-        "required": ["foreground_target"],
-        "properties": {
-          "foreground_target": {
-            "type": "string",
-            "description": "Desired Session foreground role accepted and returned by the API.",
-            "enum": ["contest", "waiting"]
-          }
-        },
-        "additionalProperties": false
-      },
       "SessionRequest": {
         "type": "object",
         "required": ["login_name", "password"],
@@ -3270,6 +3103,119 @@
           },
           "role": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TargetActionBody": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["foreground_target", "kind"],
+            "properties": {
+              "foreground_target": {
+                "$ref": "#/components/schemas/ForegroundTargetResponse"
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["set_foreground"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["terminate_session"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["reset_home"]
+              }
+            }
+          }
+        ]
+      },
+      "TargetRejectionCode": {
+        "type": "string",
+        "enum": [
+          "device_not_found",
+          "device_not_enabled",
+          "invalid_device_state",
+          "invalid_target",
+          "epoch_exhausted"
+        ]
+      },
+      "TargetScopeBody": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["all_enabled"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["device_ids", "kind"],
+            "properties": {
+              "device_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "kind": {
+                "type": "string",
+                "enum": ["devices"]
+              }
+            }
+          }
+        ]
+      },
+      "TargetSubmissionBody": {
+        "type": "object",
+        "description": "One durable, replayable Server target submission. No Client execution is awaited.",
+        "required": ["operation_id", "scope", "action"],
+        "properties": {
+          "action": {
+            "$ref": "#/components/schemas/TargetActionBody"
+          },
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/TargetScopeBody"
+          }
+        },
+        "additionalProperties": false
+      },
+      "TargetSubmissionResponse": {
+        "type": "object",
+        "required": ["operation_id", "results"],
+        "properties": {
+          "operation_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceSubmissionResponse"
+            }
           }
         },
         "additionalProperties": false

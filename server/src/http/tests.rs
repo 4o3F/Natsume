@@ -1049,6 +1049,7 @@ async fn head_on_every_api_route_is_rejected_at_the_root() -> Result<(), TestFai
         "/api/v2/devices/01900000-0000-7000-8000-000000000000/home",
         "/api/v2/devices/01900000-0000-7000-8000-000000000000/convergence",
         "/api/v2/runtime-config",
+        "/api/v2/target-submissions",
         "/api/v2/enrollment-reviews/01900000-0000-7000-8000-000000000000/actions/approve",
         "/api/v2/enrollment-reviews/01900000-0000-7000-8000-000000000000/actions/deny",
         "/api/v2/devices/01900000-0000-7000-8000-000000000000/binding",

@@ -4,7 +4,7 @@ mod enrollment;
 mod lifecycle;
 mod types;
 
-use crate::db::Database;
+use crate::db::{Database, PersistenceError, Transaction};
 
 use self::enrollment::EnrollmentReviewRegistry;
 pub(crate) use self::enrollment::{
@@ -28,6 +28,19 @@ pub(crate) struct DeviceComponent {
 }
 
 impl DeviceComponent {
+    pub(in crate::component) fn enabled_target_devices(
+        transaction: &mut Transaction<'_>,
+    ) -> Result<Vec<DeviceId>, PersistenceError> {
+        db::enabled_ids(transaction)
+    }
+
+    pub(in crate::component) fn target_device_state(
+        transaction: &mut Transaction<'_>,
+        device: &DeviceId,
+    ) -> Result<Option<DeviceState>, PersistenceError> {
+        db::find_by_id(transaction, device).map(|record| record.map(|device| device.state()))
+    }
+
     pub(crate) fn new(database: Database) -> Self {
         Self {
             database,

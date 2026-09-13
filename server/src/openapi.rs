@@ -11,7 +11,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets.\nDeclared but not mounted in WP8 operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -48,11 +48,9 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::device::lifecycle::update_device,
         crate::http::handler::device::binding::delete_device_binding,
         crate::http::handler::device::session::get_session_control,
-        crate::http::handler::device::session::set_session_foreground,
-        crate::http::handler::device::session::terminate_session,
         crate::http::handler::device::home::get_home,
-        crate::http::handler::device::home::reset_home,
-        crate::http::handler::device::convergence::get_device_convergence
+        crate::http::handler::device::convergence::get_device_convergence,
+        crate::http::handler::target_submission::submit_targets
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -77,9 +75,10 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::device::lifecycle::DeviceResponse,
         crate::http::handler::device::lifecycle::DeviceUpdateRequest,
         crate::http::handler::device::session::SessionControlResponse,
-        crate::http::handler::device::session::SessionForegroundRequest,
         crate::http::handler::device::home::HomeResponse,
-        crate::http::handler::device::convergence::DeviceConvergenceResponse
+        crate::http::handler::device::convergence::DeviceConvergenceResponse,
+        crate::http::handler::target_submission::TargetSubmissionBody,
+        crate::http::handler::target_submission::TargetSubmissionResponse
     ))
 )]
 struct MountedDocument;

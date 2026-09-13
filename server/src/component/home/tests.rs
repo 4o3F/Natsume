@@ -198,3 +198,12 @@ impl Drop for Fixture {
         }
     }
 }
+
+impl HomeComponent {
+    pub(crate) async fn reset(&self, device: DeviceId) -> Result<u64, HomeError> {
+        self.database
+            .write(move |tx| Self::reset_in_transaction(tx, &device))
+            .await
+            .map_err(crate::db::TransactionError::into_error)
+    }
+}

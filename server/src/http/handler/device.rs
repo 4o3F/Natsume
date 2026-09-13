@@ -1,7 +1,7 @@
 use axum::{
     Router,
     response::{IntoResponse, Response},
-    routing::{delete, get, patch, post, put},
+    routing::{delete, get, patch},
 };
 use serde::Deserialize;
 use utoipa::IntoParams;
@@ -18,9 +18,9 @@ pub(crate) mod session;
 
 use binding::delete_device_binding;
 use convergence::get_device_convergence;
-use home::{get_home, reset_home};
+use home::get_home;
 use lifecycle::{get_device, list_devices, update_device};
-use session::{get_session_control, set_session_foreground, terminate_session};
+use session::get_session_control;
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
@@ -40,21 +40,11 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         )
         .route(
             "/devices/{device_id}/session-control",
-            middleware::require_operator(state.clone(), get(get_session_control)).merge(
-                middleware::require_admin(state.clone(), put(set_session_foreground)),
-            ),
-        )
-        .route(
-            "/devices/{device_id}/session-control/actions/terminate",
-            middleware::require_admin(state.clone(), post(terminate_session)),
+            middleware::require_operator(state.clone(), get(get_session_control)),
         )
         .route(
             "/devices/{device_id}/home",
             middleware::require_operator(state.clone(), get(get_home)),
-        )
-        .route(
-            "/devices/{device_id}/home/actions/reset",
-            middleware::require_admin(state.clone(), post(reset_home)),
         )
         .route(
             "/devices/{device_id}/convergence",

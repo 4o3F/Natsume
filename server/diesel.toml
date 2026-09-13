@@ -20,5 +20,6 @@ filter.only_tables = [
   "^seats$",
   "^server_vault_records$",
   "^site_identity$",
+  "^target_submission_receipts$",
   "^teams$",
 ]

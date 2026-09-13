@@ -47,41 +47,6 @@ pub(crate) async fn get_home(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/devices/{device_id}/home/actions/reset",
-    operation_id = "resetDeviceHome",
-    params(DevicePath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Home reset epoch advanced", body = HomeResponse),
-        (status = 400, description = "Invalid Device ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Device not found"),
-        (status = 409, description = "Home reset epoch exhausted"),
-        (status = 500, description = "Internal failure")
-    )
-)]
-pub(crate) async fn reset_home(
-    State(state): State<AppState>,
-    Path(path): Path<DevicePath>,
-) -> Response {
-    let Some(device_id) = parse_device_id(&path) else {
-        return invalid_device_id();
-    };
-    match state.home().reset(device_id).await {
-        Ok(reset_epoch) => {
-            state.device_control().dirty_device(device_id).await;
-            Json(HomeResponse {
-                reset_epoch: Some(reset_epoch),
-            })
-            .into_response()
-        }
-        Err(error) => home_error(error).into_response(),
-    }
-}
-
 pub(super) fn home_error(error: HomeError) -> ApiError {
     match error {
         HomeError::DeviceNotFound => ApiError::not_found("home_device_not_found"),

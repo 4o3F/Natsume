@@ -1,13 +1,6 @@
-import { useState, type Dispatch, type SetStateAction } from "react";
-import {
-  useIsMutating,
-  useMutation,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useState } from "react";
 
-import { ApiError } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
-import { useSessionScope } from "@/auth/session-context";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,66 +13,23 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 
-import {
-  submitTarget,
-  targetOperations,
-  type TargetOperation,
-  type TargetSubmission,
-} from "./target-operations";
+import { targetOperations, type TargetOperation } from "./target-operations";
 
 type Device = components["schemas"]["DeviceResponse"];
-type Batch = { operation: TargetOperation; devices: Device[]; skipped: number };
 
 export function BulkTargetActions({
   devices,
-  results,
-  setResults,
+  disabled,
+  onSubmit,
 }: {
   devices: Device[];
-  results: TargetSubmission[];
-  setResults: Dispatch<SetStateAction<TargetSubmission[]>>;
+  disabled: boolean;
+  onSubmit: (operation: TargetOperation) => void;
 }) {
-  const { api } = useSessionScope();
-  const queryClient = useQueryClient();
-  const [confirmation, setConfirmation] = useState<Batch | null>(null);
-  const singlePending = useIsMutating({ mutationKey: ["device-target"] }) > 0;
-  const bulkPending = useIsMutating({ mutationKey: ["bulk-target"] }) > 0;
-  const batch = useMutation({
-    mutationKey: ["bulk-target"],
-    mutationFn: async ({ operation, devices }: Batch) => {
-      setResults([]);
-      let next = 0;
-      // Bound request concurrency for fleets of hundreds of devices. Each
-      // device is submitted once; reset/terminate must not be retried blindly.
-      await Promise.all(
-        Array.from({ length: Math.min(6, devices.length) }, async () => {
-          while (next < devices.length) {
-            const device = devices[next++];
-            let error: string | null = null;
-            try {
-              await submitTarget(api, device.device_id, operation);
-            } catch (cause) {
-              error =
-                cause instanceof ApiError
-                  ? cause.title
-                  : "Submission not confirmed";
-            }
-            setResults((current) => [
-              ...current,
-              { deviceId: device.device_id, error },
-            ]);
-          }
-        }),
-      );
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["devices"] });
-    },
-  });
+  const [confirmation, setConfirmation] = useState<TargetOperation | null>(
+    null,
+  );
   const enabled = devices.filter((device) => device.state === "enabled");
-  const disabled = singlePending || bulkPending || enabled.length === 0;
-  const accepted = results.filter((result) => result.error === null).length;
-
   return (
     <section
       aria-label="All device actions"
@@ -104,37 +54,14 @@ export function BulkTargetActions({
                   ? "destructive"
                   : "outline"
               }
-              disabled={disabled}
-              onClick={() =>
-                setConfirmation({
-                  operation,
-                  devices: enabled,
-                  skipped: devices.length - enabled.length,
-                })
-              }
+              disabled={disabled || enabled.length === 0}
+              onClick={() => setConfirmation(operation)}
             >
               {targetOperations[operation]} (all)
             </Button>
           ),
         )}
       </div>
-      {batch.variables && (
-        <div role="status" className="space-y-1 text-sm">
-          <p>
-            {targetOperations[batch.variables.operation]}: {accepted} submitted,{" "}
-            {results.length - accepted} not confirmed,{" "}
-            {batch.variables.devices.length - results.length} remaining.
-          </p>
-          <p className="text-muted-foreground">
-            {batch.isPending
-              ? "Submitting targets and refreshing status. "
-              : "Submission finished. "}
-            Check each device's Session and Home convergence for completion.
-            {results.length > accepted &&
-              " Review devices marked Not confirmed before submitting another action."}
-          </p>
-        </div>
-      )}
       <AlertDialog
         open={confirmation !== null}
         onOpenChange={(open) => {
@@ -145,39 +72,39 @@ export function BulkTargetActions({
           <AlertDialogHeader>
             <AlertDialogTitle>
               {confirmation &&
-                `${targetOperations[confirmation.operation]} on ${confirmation.devices.length} devices?`}
+                `${targetOperations[confirmation]} on all enabled devices?`}
             </AlertDialogTitle>
             <AlertDialogDescription>
-              This applies to the {confirmation?.devices.length} enabled devices
-              selected when this dialog opened, including{" "}
+              Estimated scope: {enabled.length} devices, including{" "}
               {
-                confirmation?.devices.filter(
+                enabled.filter(
                   (device) => device.convergence.connection_state === "offline",
                 ).length
               }{" "}
-              offline devices. {confirmation?.skipped} disabled or revoked
-              devices are skipped.
-              {confirmation?.operation === "reset" &&
+              offline devices. {devices.length - enabled.length} disabled or
+              revoked devices are excluded from this estimate. All devices
+              enabled when the Server processes this submission will be
+              included. The result will show the actual device list.
+              {confirmation === "reset" &&
                 " This deletes the contest user's Home data and restores the default Home. Contest sessions will restart."}
-              {confirmation?.operation === "terminate" &&
+              {confirmation === "terminate" &&
                 " Contest sessions will end and restart. Home files are preserved."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={singlePending || bulkPending}
+              disabled={disabled}
               className={
-                confirmation?.operation === "reset" ||
-                confirmation?.operation === "terminate"
+                confirmation === "reset" || confirmation === "terminate"
                   ? "bg-destructive text-white hover:bg-destructive/90"
                   : undefined
               }
               onClick={() => {
-                if (confirmation) batch.mutate(confirmation);
+                if (confirmation) onSubmit(confirmation);
               }}
             >
-              Apply to {confirmation?.devices.length} devices
+              Apply to all enabled devices
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

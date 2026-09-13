@@ -67,28 +67,23 @@ impl HomeComponent {
             .map_err(TransactionError::into_error)
     }
 
-    /// Advances the durable Home reset epoch for the Device.
-    pub(crate) async fn reset(&self, device_id: DeviceId) -> Result<u64, HomeError> {
-        self.database
-            .write(move |transaction| {
-                require_existing_device(transaction, &device_id)?;
-                let Some((_, persisted_epoch)) = db::find_reset_epoch(transaction, &device_id)?
-                else {
-                    require_one(db::insert_target(transaction, &device_id, Some(1))?)?;
-                    return Ok(1);
-                };
-                let next_epoch = match persisted_epoch {
-                    None => 1,
-                    Some(epoch) if epoch > 0 => {
-                        epoch.checked_add(1).ok_or(HomeError::EpochExhausted)?
-                    }
-                    Some(_) => return Err(HomeError::InvalidPersistedFacts),
-                };
-                require_one(db::set_reset_epoch(transaction, &device_id, next_epoch)?)?;
-                Ok(next_epoch.cast_unsigned())
-            })
-            .await
-            .map_err(TransactionError::into_error)
+    /// Domain rejection occurs before writing; persistence errors abort the caller's transaction.
+    pub(in crate::component) fn reset_in_transaction(
+        transaction: &mut Transaction<'_>,
+        device_id: &DeviceId,
+    ) -> Result<u64, HomeError> {
+        require_existing_device(transaction, device_id)?;
+        let Some((_, persisted_epoch)) = db::find_reset_epoch(transaction, device_id)? else {
+            require_one(db::insert_target(transaction, device_id, Some(1))?)?;
+            return Ok(1);
+        };
+        let next_epoch = match persisted_epoch {
+            None => 1,
+            Some(epoch) if epoch > 0 => epoch.checked_add(1).ok_or(HomeError::EpochExhausted)?,
+            Some(_) => return Err(HomeError::InvalidPersistedFacts),
+        };
+        require_one(db::set_reset_epoch(transaction, device_id, next_epoch)?)?;
+        Ok(next_epoch.cast_unsigned())
     }
 }
 
@@ -115,7 +110,7 @@ fn require_one(updated: usize) -> Result<(), HomeError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(HomeError::InvalidPersistedFacts)
+        Err(HomeError::PersistenceFailed)
     }
 }
 

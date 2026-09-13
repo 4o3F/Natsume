@@ -21,7 +21,7 @@ fn migrations() -> Result<FileBasedMigrations, TestError> {
 fn database() -> Result<SqliteConnection, TestError> {
     let mut connection = SqliteConnection::establish(":memory:")?;
     connection.batch_execute("PRAGMA foreign_keys = ON;")?;
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 2);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 3);
     Ok(connection)
 }
 
@@ -39,17 +39,35 @@ fn migrations_round_trip() -> Result<(), TestError> {
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations'";
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        18
+        19
     );
-    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 2);
+    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 3);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
         0
     );
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 2);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 3);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        18
+        19
+    );
+    Ok(())
+}
+
+#[test]
+fn target_submission_ids_remain_reserved_after_operator_and_device_removal() -> Result<(), TestError>
+{
+    let mut connection = database()?;
+    connection.batch_execute("INSERT INTO operator_accounts VALUES ('o1','operator','admin','phc',1); INSERT INTO devices VALUES ('d1','m1','strong','enabled',1); INSERT INTO target_submission_receipts VALUES ('r1','o1','request','result'); DELETE FROM devices; DELETE FROM operator_accounts;")?;
+    assert_eq!(
+        sql::<BigInt>("SELECT count(*) FROM target_submission_receipts")
+            .get_result::<i64>(&mut connection)?,
+        1
+    );
+    rejects(
+        &mut connection,
+        "INSERT INTO target_submission_receipts VALUES ('r1','o2','other','other');",
+        DatabaseErrorKind::UniqueViolation,
     );
     Ok(())
 }
@@ -63,7 +81,7 @@ fn strict_tables_enforce_storage_types_and_nullability() -> Result<(), TestError
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND strict = 1"
         )
         .get_result::<i64>(&mut connection)?,
-        18
+        19
     );
     connection.batch_execute("INSERT INTO accounts VALUES ('a1', 'team-1', 1);")?;
     rejects(
@@ -296,7 +314,7 @@ fn roster_migration_preserves_deployment_data_and_invalidates_only_old_previews(
         "SELECT count(*) FROM device_home_targets WHERE device_id = 'd1' AND reset_epoch = 10",
         "SELECT count(*) FROM runtime_config WHERE singleton = 1 AND domjudge_origin = 'https://judge.example'",
     ];
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 1);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 2);
     for statement in checks {
         assert_eq!(
             sql::<BigInt>(statement).get_result::<i64>(&mut connection)?,

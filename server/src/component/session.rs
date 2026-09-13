@@ -64,57 +64,47 @@ impl SessionControlComponent {
             .map_err(TransactionError::into_error)
     }
 
-    /// Sets the durable foreground target while preserving the terminate epoch.
-    pub(crate) async fn set_foreground(
-        &self,
-        device_id: DeviceId,
+    /// Applies an Operator submission inside the caller's write transaction.
+    /// Every domain rejection precedes writes; write/invariant failures are fatal.
+    pub(in crate::component) fn set_foreground_in_transaction(
+        transaction: &mut Transaction<'_>,
+        device_id: &DeviceId,
         foreground_target: ForegroundTarget,
     ) -> Result<SessionControlTarget, SessionControlError> {
-        self.database
-            .write(move |transaction| {
-                let mut target = find_or_insert_target(transaction, &device_id)?;
-                if target.foreground_target == foreground_target {
-                    return Ok(target);
-                }
-                let persisted_foreground_target = match foreground_target {
-                    ForegroundTarget::Contest => "contest",
-                    ForegroundTarget::Waiting => "waiting",
-                };
-                require_one(db::update_foreground_target(
-                    transaction,
-                    &device_id,
-                    persisted_foreground_target,
-                )?)?;
-                target.foreground_target = foreground_target;
-                Ok(target)
-            })
-            .await
-            .map_err(TransactionError::into_error)
+        let mut target = find_or_insert_target(transaction, device_id)?;
+        if target.foreground_target == foreground_target {
+            return Ok(target);
+        }
+        let persisted = match foreground_target {
+            ForegroundTarget::Contest => "contest",
+            ForegroundTarget::Waiting => "waiting",
+        };
+        require_one(db::update_foreground_target(
+            transaction,
+            device_id,
+            persisted,
+        )?)?;
+        target.foreground_target = foreground_target;
+        Ok(target)
     }
 
-    /// Advances the durable terminate epoch for the Device.
-    pub(crate) async fn terminate(
-        &self,
-        device_id: DeviceId,
+    pub(in crate::component) fn terminate_in_transaction(
+        transaction: &mut Transaction<'_>,
+        device_id: &DeviceId,
     ) -> Result<SessionControlTarget, SessionControlError> {
-        self.database
-            .write(move |transaction| {
-                let mut target = find_or_insert_target(transaction, &device_id)?;
-                let next_epoch = match target.terminate_epoch {
-                    None => 1,
-                    Some(epoch) if epoch < i64::MAX.cast_unsigned() => epoch + 1,
-                    Some(_) => return Err(SessionControlError::TerminateEpochOverflow),
-                };
-                require_one(db::update_terminate_epoch(
-                    transaction,
-                    &device_id,
-                    next_epoch.cast_signed(),
-                )?)?;
-                target.terminate_epoch = Some(next_epoch);
-                Ok(target)
-            })
-            .await
-            .map_err(TransactionError::into_error)
+        let mut target = find_or_insert_target(transaction, device_id)?;
+        let next_epoch = match target.terminate_epoch {
+            None => 1,
+            Some(epoch) if epoch < i64::MAX.cast_unsigned() => epoch + 1,
+            Some(_) => return Err(SessionControlError::TerminateEpochOverflow),
+        };
+        require_one(db::update_terminate_epoch(
+            transaction,
+            device_id,
+            next_epoch.cast_signed(),
+        )?)?;
+        target.terminate_epoch = Some(next_epoch);
+        Ok(target)
     }
 }
 
@@ -168,7 +158,7 @@ fn require_one(updated: usize) -> Result<(), SessionControlError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(SessionControlError::InvalidPersistedFacts)
+        Err(SessionControlError::PersistenceFailed)
     }
 }
 

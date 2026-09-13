@@ -12,6 +12,20 @@ use super::super::types::{
 type PersistedDevice = (String, String);
 type PersistedDeviceProjection = (String, String, String, String, i64);
 
+pub(in crate::component::device) fn enabled_ids(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<DeviceId>, PersistenceError> {
+    devices::table
+        .select(devices::device_id)
+        .filter(devices::state.eq("enabled"))
+        .order(devices::device_id)
+        .load::<String>(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .iter()
+        .map(|id| DeviceId::parse(id).ok_or(PersistenceError::InvalidPersistedData))
+        .collect()
+}
+
 pub(in crate::component::device) fn list(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<DeviceProjection>, PersistenceError> {

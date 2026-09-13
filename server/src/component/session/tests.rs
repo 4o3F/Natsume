@@ -279,3 +279,25 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.root);
     }
 }
+
+impl SessionControlComponent {
+    pub(crate) async fn set_foreground(
+        &self,
+        device: DeviceId,
+        target: ForegroundTarget,
+    ) -> Result<SessionControlTarget, SessionControlError> {
+        self.database
+            .write(move |tx| Self::set_foreground_in_transaction(tx, &device, target))
+            .await
+            .map_err(crate::db::TransactionError::into_error)
+    }
+    pub(crate) async fn terminate(
+        &self,
+        device: DeviceId,
+    ) -> Result<SessionControlTarget, SessionControlError> {
+        self.database
+            .write(move |tx| Self::terminate_in_transaction(tx, &device))
+            .await
+            .map_err(crate::db::TransactionError::into_error)
+    }
+}

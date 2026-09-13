@@ -148,6 +148,15 @@ diesel::table! {
 }
 
 diesel::table! {
+    target_submission_receipts (operation_id) {
+        operation_id -> Text,
+        operator_id -> Text,
+        request_json -> Text,
+        results_json -> Text,
+    }
+}
+
+diesel::table! {
     teams (account_id) {
         account_id -> Text,
         organization_id -> BigInt,
@@ -189,5 +198,6 @@ diesel::allow_tables_to_appear_in_same_query!(
     seats,
     server_vault_records,
     site_identity,
+    target_submission_receipts,
     teams,
 );

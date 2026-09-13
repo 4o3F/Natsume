@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  useIsMutating,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { useQuery } from "@tanstack/react-query";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
 import { useSessionScope } from "@/auth/session-context";
-import { ApiError, unwrap } from "@/api/errors";
+import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
@@ -46,9 +47,9 @@ import { Input } from "@/components/ui/input";
 
 import { BulkTargetActions } from "./target-bulk-actions";
 import {
-  submitTarget,
+  targetAction,
+  targetActionLabel,
   type TargetOperation,
-  type TargetSubmission,
 } from "./target-operations";
 
 type Device = components["schemas"]["DeviceResponse"];
@@ -57,14 +58,18 @@ type Convergence = components["schemas"]["DeviceConvergenceResponse"];
 const DEVICES_KEY = ["devices"] as const;
 
 export function TargetsPage() {
-  const { api } = useSessionScope();
+  const { api, targetSubmission } = useSessionScope();
   const session = useSession().data;
   const [deviceId, setDeviceId] = useState("");
   const [search, setSearch] = useState("");
-  const [results, setResults] = useState<TargetSubmission[]>([]);
-  const singlePending = useIsMutating({ mutationKey: ["device-target"] }) > 0;
-  const bulkPending = useIsMutating({ mutationKey: ["bulk-target"] }) > 0;
-  const targetsPending = singlePending || bulkPending;
+  const submission = useSyncExternalStore(
+    targetSubmission.subscribe,
+    targetSubmission.getSnapshot,
+  );
+  const results = submission.completed?.response.results;
+  const currentRequest = submission.pending ?? submission.completed?.request;
+  const targetsPending =
+    submission.pending !== null || !submission.storageReady;
   const panel = useRef<HTMLDivElement>(null);
   const devices = useQuery({
     queryKey: DEVICES_KEY,
@@ -188,23 +193,27 @@ export function TargetsPage() {
         ),
       })),
     ];
-    if (results.length) {
+    if (results?.length) {
       const byDevice = new Map(
-        results.map((result) => [result.deviceId, result]),
+        results.map((result) => [result.device_id, result]),
       );
       columns.push({
         id: "submission",
-        header: "Last batch",
+        header: "Last submission",
         cell: ({ row }) => {
           const result = byDevice.get(row.original.device_id);
           if (!result) return "—";
           return (
             <StatusIcon
-              icon={result.error ? "failed" : "check"}
-              tone={result.error ? "text-destructive" : "text-emerald-700"}
+              icon={result.status === "rejected" ? "failed" : "check"}
+              tone={
+                result.status === "rejected"
+                  ? "text-destructive"
+                  : "text-emerald-700"
+              }
               label={
-                result.error
-                  ? `Not confirmed: ${result.error}`
+                result.status === "rejected"
+                  ? `Rejected: ${result.message}`
                   : "Target submitted; check convergence for completion"
               }
             />
@@ -274,6 +283,101 @@ export function TargetsPage() {
           </AlertDescription>
         </Alert>
       )}
+      {isAdmin &&
+        (submission.pending || submission.completed || submission.error) && (
+          <section
+            aria-label="Target submission"
+            className="space-y-3 rounded-md border p-4"
+          >
+            {currentRequest && (
+              <p className="font-medium">
+                {targetActionLabel(currentRequest.action)}
+                {" · "}
+                {currentRequest.scope.kind === "all_enabled"
+                  ? "All enabled devices"
+                  : "Selected devices"}
+              </p>
+            )}
+            {currentRequest?.scope.kind === "devices" && (
+              <p className="text-sm break-words text-muted-foreground">
+                {currentRequest.scope.device_ids
+                  .map((id) => {
+                    const device = devices.data?.find(
+                      (device) => device.device_id === id,
+                    );
+                    return device ? (seatCode(device) ?? id) : id;
+                  })
+                  .join(", ")}
+              </p>
+            )}
+            {submission.sending ? (
+              <p role="status">
+                Submitting target. Showing previous device states.
+              </p>
+            ) : submission.pending ? (
+              <Alert>
+                <AlertTitle>Submission result not confirmed</AlertTitle>
+                <AlertDescription>
+                  <p>
+                    Retry the original request to confirm its result. New target
+                    actions are paused until the result is known.
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={!submission.storageReady}
+                    onClick={() => void targetSubmission.retry()}
+                  >
+                    Retry original request
+                  </Button>
+                </AlertDescription>
+              </Alert>
+            ) : submission.error ? (
+              <Alert variant="destructive">
+                <AlertTitle>{submission.error}</AlertTitle>
+              </Alert>
+            ) : null}
+            {submission.completed && (
+              <>
+                <p role="status">
+                  {
+                    submission.completed.response.results.filter(
+                      (row) => row.status === "submitted",
+                    ).length
+                  }{" "}
+                  submitted,{" "}
+                  {
+                    submission.completed.response.results.filter(
+                      (row) => row.status === "rejected",
+                    ).length
+                  }{" "}
+                  rejected. Check device convergence for completion.
+                </p>
+                {submission.completed.response.results.some(
+                  (row) => row.status === "rejected",
+                ) && (
+                  <TargetAction
+                    label="Retry failed devices"
+                    title="Retry the rejected devices?"
+                    description="This submits a new operation for the rejected devices only. The Server checks whether they are still enabled. Successful devices will not be submitted again."
+                    disabled={targetsPending}
+                    onConfirm={() => {
+                      const completed = submission.completed;
+                      if (completed)
+                        void targetSubmission.submit(completed.request.action, {
+                          kind: "devices",
+                          device_ids: completed.response.results
+                            .filter((row) => row.status === "rejected")
+                            .map((row) => row.device_id),
+                        });
+                    }}
+                  />
+                )}
+              </>
+            )}
+          </section>
+        )}
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}
@@ -283,8 +387,12 @@ export function TargetsPage() {
         {isAdmin && (
           <BulkTargetActions
             devices={devices.data ?? []}
-            results={results}
-            setResults={setResults}
+            disabled={targetsPending}
+            onSubmit={(operation) =>
+              void targetSubmission.submit(targetAction(operation), {
+                kind: "all_enabled",
+              })
+            }
           />
         )}
         <div className="space-y-3">
@@ -360,7 +468,16 @@ export function TargetsPage() {
                 key={deviceId}
                 device={selectedDevice}
                 isAdmin={isAdmin}
-                previous={devices.isFetching || devices.isError}
+                previous={
+                  devices.isFetching || devices.isError || targetsPending
+                }
+                disabled={targetsPending || selectedDevice.state !== "enabled"}
+                onSubmit={(operation) =>
+                  void targetSubmission.submit(targetAction(operation), {
+                    kind: "devices",
+                    device_ids: [selectedDevice.device_id],
+                  })
+                }
               />
             </CardContent>
           </Card>
@@ -379,47 +496,19 @@ function DeviceTargets({
   device,
   isAdmin,
   previous,
+  disabled,
+  onSubmit,
 }: {
   device: Device;
   isAdmin: boolean;
   previous: boolean;
+  disabled: boolean;
+  onSubmit: (operation: TargetOperation) => void;
 }) {
-  const { api } = useSessionScope();
-  const queryClient = useQueryClient();
   const { session_control: session, home } = device.convergence;
-  const pending =
-    useIsMutating({ mutationKey: ["device-target", device.device_id] }) > 0;
-  const bulkPending = useIsMutating({ mutationKey: ["bulk-target"] }) > 0;
-  const disabled = pending || bulkPending;
-  const updateTarget = useMutation({
-    mutationKey: ["device-target", device.device_id],
-    mutationFn: (operation: TargetOperation) =>
-      submitTarget(api, device.device_id, operation),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
-    },
-  });
-
-  const showPrevious = previous || pending || bulkPending;
+  const showPrevious = previous;
   return (
     <div className="space-y-4">
-      {updateTarget.error && (
-        <MutationError
-          error={updateTarget.error}
-          fallback="Target update failed"
-        />
-      )}
-      {updateTarget.isPending && (
-        <p role="status" className="text-sm text-muted-foreground">
-          Submitting target and refreshing status. Showing previous result.
-        </p>
-      )}
-      {updateTarget.isSuccess && (
-        <p role="status" className="text-sm">
-          Target submitted. Check the convergence state below for device
-          completion.
-        </p>
-      )}
       <div className="space-y-2 text-sm text-muted-foreground">
         <p>Connection: {label(device.convergence.connection_state)}</p>
         <p>
@@ -497,7 +586,7 @@ function DeviceTargets({
                 variant="outline"
                 size="sm"
                 disabled={disabled}
-                onClick={() => updateTarget.mutate("waiting")}
+                onClick={() => onSubmit("waiting")}
               >
                 Show waiting screen
               </Button>
@@ -506,7 +595,7 @@ function DeviceTargets({
                 variant="outline"
                 size="sm"
                 disabled={disabled}
-                onClick={() => updateTarget.mutate("contest")}
+                onClick={() => onSubmit("contest")}
               >
                 Show contest desktop
               </Button>
@@ -515,7 +604,7 @@ function DeviceTargets({
                 title="Terminate the contest session?"
                 description="End and restart this device's contest session. Home files are preserved. Check its reported state to confirm completion."
                 disabled={disabled}
-                onConfirm={() => updateTarget.mutate("terminate")}
+                onConfirm={() => onSubmit("terminate")}
               />
             </div>
           )}
@@ -551,7 +640,7 @@ function DeviceTargets({
               title="Reset the contest Home?"
               description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
               disabled={disabled}
-              onConfirm={() => updateTarget.mutate("reset")}
+              onConfirm={() => onSubmit("reset")}
             />
           )}
         </section>
@@ -624,21 +713,5 @@ function TargetAction({
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
-  );
-}
-
-function MutationError({
-  error,
-  fallback,
-}: {
-  error: unknown;
-  fallback: string;
-}) {
-  return (
-    <Alert variant="destructive">
-      <AlertTitle>
-        {error instanceof ApiError ? error.title : fallback}
-      </AlertTitle>
-    </Alert>
   );
 }

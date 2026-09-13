@@ -66,6 +66,12 @@ fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
 fn expected_operation_table() -> OperationTable {
     let rows: &[(&str, &str, &str, &[&str])] = &[
         (
+            "post",
+            "/api/v2/target-submissions",
+            "submitTargets",
+            &["200", "400", "401", "403", "409", "413", "500"],
+        ),
+        (
             "get",
             "/api/v2/organizations",
             "listOrganizationLogos",
@@ -176,28 +182,10 @@ fn expected_operation_table() -> OperationTable {
             &["200", "400", "401", "404", "500"],
         ),
         (
-            "put",
-            "/api/v2/devices/{device_id}/session-control",
-            "setDeviceSessionForeground",
-            &["200", "400", "401", "403", "404", "413", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/devices/{device_id}/session-control/actions/terminate",
-            "terminateDeviceSession",
-            &["200", "400", "401", "403", "404", "409", "500"],
-        ),
-        (
             "get",
             "/api/v2/devices/{device_id}/home",
             "getDeviceHome",
             &["200", "400", "401", "404", "500"],
-        ),
-        (
-            "post",
-            "/api/v2/devices/{device_id}/home/actions/reset",
-            "resetDeviceHome",
-            &["200", "400", "401", "403", "404", "409", "500"],
         ),
         (
             "get",
@@ -316,7 +304,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none."
+        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets.\nDeclared but not mounted in WP8 operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }

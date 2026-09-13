@@ -58,6 +58,18 @@ impl DeviceRegistry {
         }
     }
 
+    pub(super) async fn dirty_many(&self, ids: &[DeviceId]) {
+        let handles = {
+            let devices = self.devices.lock().await;
+            ids.iter()
+                .filter_map(|id| devices.get(id).cloned())
+                .collect::<Vec<_>>()
+        };
+        for handle in handles {
+            handle.dirty();
+        }
+    }
+
     pub(super) async fn dirty_all(&self) {
         let handles = self
             .devices

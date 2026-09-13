@@ -116,22 +116,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/v2/devices/{device_id}/home/actions/reset": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    post: operations["resetDeviceHome"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/v2/devices/{device_id}/session-control": {
     parameters: {
       query?: never;
@@ -140,24 +124,8 @@ export interface paths {
       cookie?: never;
     };
     get: operations["getDeviceSessionControl"];
-    put: operations["setDeviceSessionForeground"];
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/v2/devices/{device_id}/session-control/actions/terminate": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
     put?: never;
-    post: operations["terminateDeviceSession"];
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -420,6 +388,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/target-submissions": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["submitTargets"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -532,6 +516,19 @@ export interface components {
        */
       state: "enabled" | "disabled" | "revoked";
     };
+    DeviceSubmissionResponse:
+      | {
+          device_id: string;
+          /** @enum {string} */
+          status: "submitted";
+        }
+      | {
+          code: components["schemas"]["TargetRejectionCode"];
+          device_id: string;
+          message: string;
+          /** @enum {string} */
+          status: "rejected";
+        };
     /** @description Complete replacement of the mutable Device lifecycle field. */
     DeviceUpdateRequest: {
       /**
@@ -557,6 +554,11 @@ export interface components {
       status: number;
       title: string;
     };
+    /**
+     * @description Desired Session foreground role accepted and returned by the API.
+     * @enum {string}
+     */
+    ForegroundTargetResponse: "contest" | "waiting";
     /** @description Latest validated Gateway Actual reported by the current lease. */
     GatewayActualResponse: {
       /** Format: uuid */
@@ -776,14 +778,6 @@ export interface components {
         "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
       target: null | components["schemas"]["SessionControlTargetResponse"];
     };
-    /** @description Complete Session foreground mutation body. */
-    SessionForegroundRequest: {
-      /**
-       * @description Desired Session foreground role accepted and returned by the API.
-       * @enum {string}
-       */
-      foreground_target: "contest" | "waiting";
-    };
     SessionRequest: {
       /** @description Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated. */
       login_name: string;
@@ -794,6 +788,49 @@ export interface components {
       /** Format: uuid */
       operator_id: string;
       role: string;
+    };
+    TargetActionBody:
+      | {
+          foreground_target: components["schemas"]["ForegroundTargetResponse"];
+          /** @enum {string} */
+          kind: "set_foreground";
+        }
+      | {
+          /** @enum {string} */
+          kind: "terminate_session";
+        }
+      | {
+          /** @enum {string} */
+          kind: "reset_home";
+        };
+    /** @enum {string} */
+    TargetRejectionCode:
+      | "device_not_found"
+      | "device_not_enabled"
+      | "invalid_device_state"
+      | "invalid_target"
+      | "epoch_exhausted";
+    TargetScopeBody:
+      | {
+          /** @enum {string} */
+          kind: "all_enabled";
+        }
+      | {
+          device_ids: string[];
+          /** @enum {string} */
+          kind: "devices";
+        };
+    /** @description One durable, replayable Server target submission. No Client execution is awaited. */
+    TargetSubmissionBody: {
+      action: components["schemas"]["TargetActionBody"];
+      /** Format: uuid */
+      operation_id: string;
+      scope: components["schemas"]["TargetScopeBody"];
+    };
+    TargetSubmissionResponse: {
+      /** Format: uuid */
+      operation_id: string;
+      results: components["schemas"]["DeviceSubmissionResponse"][];
     };
     TeamResponse: {
       organization_id: string;
@@ -1256,83 +1293,6 @@ export interface operations {
       };
     };
   };
-  resetDeviceHome: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
-        device_id: components["schemas"]["CanonicalUuidV7"];
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Home reset epoch advanced */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["HomeResponse"];
-        };
-      };
-      /** @description Invalid Device ID */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Session authentication failed */
-      401: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Administrator role required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Device not found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Home reset epoch exhausted */
-      409: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Internal failure */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
   getDeviceSessionControl: {
     parameters: {
       query?: never;
@@ -1374,162 +1334,6 @@ export interface operations {
       };
       /** @description Device not found */
       404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Internal failure */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  setDeviceSessionForeground: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
-        device_id: components["schemas"]["CanonicalUuidV7"];
-      };
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["SessionForegroundRequest"];
-      };
-    };
-    responses: {
-      /** @description Session foreground target committed */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["SessionControlResponse"];
-        };
-      };
-      /** @description Invalid Device ID or request body */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Session authentication failed */
-      401: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Administrator role required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Device not found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Request body exceeds the API ingress limit */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Internal failure */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  terminateDeviceSession: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path: {
-        /** @description Canonical lowercase hyphenated `UUIDv7` Device ID. */
-        device_id: components["schemas"]["CanonicalUuidV7"];
-      };
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Session terminate epoch advanced */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["SessionControlResponse"];
-        };
-      };
-      /** @description Invalid Device ID */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Session authentication failed */
-      401: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Administrator role required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Device not found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Terminate epoch exhausted */
-      409: {
         headers: {
           [name: string]: unknown;
         };
@@ -2628,6 +2432,82 @@ export interface operations {
         content?: never;
       };
       /** @description Session termination infrastructure failure */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  submitTargets: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TargetSubmissionBody"];
+      };
+    };
+    responses: {
+      /** @description Durable per-device submission results, including a replay of an existing operation ID */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TargetSubmissionResponse"];
+        };
+      };
+      /** @description Invalid submission, action, scope or canonical UUID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Session authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator role required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Operation ID belongs to another request or operator */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body exceeds the API ingress limit */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Submission transaction failed */
       500: {
         headers: {
           [name: string]: unknown;

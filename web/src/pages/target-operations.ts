@@ -1,16 +1,8 @@
-import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
-import type { SessionScope } from "@/auth/session";
 
-export type TargetOperation =
-  | components["schemas"]["SessionForegroundRequest"]["foreground_target"]
-  | "terminate"
-  | "reset";
-
-export type TargetSubmission = {
-  deviceId: string;
-  error: string | null;
-};
+export type TargetRequest = components["schemas"]["TargetSubmissionBody"];
+export type TargetResponse = components["schemas"]["TargetSubmissionResponse"];
+export type TargetOperation = "waiting" | "contest" | "terminate" | "reset";
 
 export const targetOperations = {
   waiting: "Show waiting screen",
@@ -19,33 +11,27 @@ export const targetOperations = {
   reset: "Reset home",
 } as const;
 
-export async function submitTarget(
-  api: SessionScope["api"],
-  deviceId: string,
+export function targetAction(
   operation: TargetOperation,
-) {
-  const params = { path: { device_id: deviceId } };
+): TargetRequest["action"] {
   switch (operation) {
     case "waiting":
     case "contest":
-      return unwrap<components["schemas"]["SessionControlResponse"]>(
-        await api.PUT("/api/v2/devices/{device_id}/session-control", {
-          params,
-          body: { foreground_target: operation },
-        }),
-      );
+      return { kind: "set_foreground", foreground_target: operation };
     case "terminate":
-      return unwrap<components["schemas"]["SessionControlResponse"]>(
-        await api.POST(
-          "/api/v2/devices/{device_id}/session-control/actions/terminate",
-          { params },
-        ),
-      );
+      return { kind: "terminate_session" };
     case "reset":
-      return unwrap<components["schemas"]["HomeResponse"]>(
-        await api.POST("/api/v2/devices/{device_id}/home/actions/reset", {
-          params,
-        }),
-      );
+      return { kind: "reset_home" };
+  }
+}
+
+export function targetActionLabel(action: TargetRequest["action"]) {
+  switch (action.kind) {
+    case "set_foreground":
+      return targetOperations[action.foreground_target];
+    case "terminate_session":
+      return targetOperations.terminate;
+    case "reset_home":
+      return targetOperations.reset;
   }
 }

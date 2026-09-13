@@ -3,6 +3,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { createApiClient } from "../api/client";
 import type { components } from "../api/generated/schema";
 import { createPreparationStore } from "../pages/preparation-store";
+import { createTargetSubmissionStore } from "../pages/target-submission-store";
 
 type Identity = components["schemas"]["SessionResponse"];
 export const SESSION_KEY = ["session"] as const;
@@ -13,6 +14,7 @@ export interface SessionScope {
   readonly api: ReturnType<typeof createApiClient>;
   readonly queryClient: QueryClient;
   readonly preparation: ReturnType<typeof createPreparationStore>;
+  readonly targetSubmission: ReturnType<typeof createTargetSubmissionStore>;
   observe(identity: Identity | null): void;
   login(identity: Identity): void;
   logout(): void;
@@ -65,12 +67,20 @@ export class SessionController {
     });
     if (identity !== undefined) queryClient.setQueryData(SESSION_KEY, identity);
     const preparation = createPreparationStore(abort.signal);
+    const api = createApiClient(abort.signal, () => scope.logout());
+    const targetSubmission = createTargetSubmissionStore(
+      api,
+      abort.signal,
+      identity?.role === "admin" ? identity.operator_id : null,
+      queryClient,
+    );
     const scope: SessionScope = {
       generation,
       identity,
       queryClient,
       preparation,
-      api: createApiClient(abort.signal, () => scope.logout()),
+      targetSubmission,
+      api,
       observe: (identity) => this.change(scope, identity),
       login: (identity) => this.change(scope, identity, true),
       logout: () => this.change(scope, null),

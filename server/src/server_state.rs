@@ -14,6 +14,7 @@ use crate::{
         provisioning::ProvisioningComponent,
         runtime::RuntimeConfigComponent,
         session::SessionControlComponent,
+        target_submission::TargetSubmissionComponent,
     },
     config::ServerConfig,
     db::Database,
@@ -35,6 +36,7 @@ pub(crate) struct ServerState {
     binding: Arc<BindingComponent>,
     session: Arc<SessionControlComponent>,
     home: Arc<HomeComponent>,
+    target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
 }
 
@@ -97,6 +99,7 @@ impl ServerState {
         Self {
             operator: OperatorComponent::new(database.clone()),
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
+            target_submission: TargetSubmissionComponent::new(database.clone()),
             import: ImportComponent::new(database, vault),
             provisioning,
             device,
@@ -141,6 +144,10 @@ impl ServerState {
 
     pub(crate) fn home(&self) -> &HomeComponent {
         &self.home
+    }
+
+    pub(crate) const fn target_submission(&self) -> &TargetSubmissionComponent {
+        &self.target_submission
     }
 }
 

@@ -77,6 +77,9 @@ Server committed truth、Server Intent、Client Input、Concrete Target 和 Clie
 
 系统没有 Device Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。
 
+Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操作者和已提交的逐设备结果，
+不记录 Client 执行、投递、Ack 或历史进度。它保证网络重试不再次推进 terminate/reset epoch。
+
 ### 3.3 业务纵向组件化
 
 每项业务拥有自己的规则、数据库访问、事务、Operator 操作和查询。Transport 与 Actor 只调度组件，不理解组件内部状态。
@@ -765,6 +768,7 @@ pub(crate) struct ServerState {
     binding: Arc<BindingComponent>,
     session: Arc<SessionControlComponent>,
     home: Arc<HomeComponent>,
+    target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
 }
 ```
@@ -779,16 +783,17 @@ pub(crate) struct ServerState {
 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、
 `DeviceService → DeviceControl`转发层或通用用例执行器。
 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例；
+Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重；
 不能取得Registry、actor handle、审批锁或authority fence。
 
 跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。
-当前仅提供八个有实际消费者的入口：
+当前仅提供九个有实际消费者的入口：
 
 - `read_device_status`、`read_all_device_statuses`汇总组件当前事实和lease observation；
   HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
 - `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction；
   三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
-- `dirty_device`、`dirty_all_devices`向已有Actor发出提交后通知，不创建Actor。
+- `dirty_device`、`dirty_devices`、`dirty_all_devices`向已有Actor发出提交后通知，不创建Actor。
 - `attach_device_lease`负责attach前后exact authority重检与lease替换；
   只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
 
@@ -822,6 +827,12 @@ pub(crate) struct BindingComponent {
 - 必须在同一组件事务内原子变化的表由该组件组合；
 - 数据库 row、Diesel 类型和 store error 不泄漏出组件；
 - 不创建 Repository、UnitOfWork 或 DI framework trait。
+
+TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个短写事务，在同一事务中
+通过 Device 的公开事务读方法确定资格，再调用 Session/Home 的同步事务业务入口。
+Session/Home 仍独占各自表的校验与写入规则，DB adapter 不公开；HTTP 和 TargetSubmission
+不直接写这两类目标表。每设备可继续的领域拒绝必须发生在该设备第一次写入前，
+写入/行数不符/receipt 保存/commit 失败必须回滚整个提交，不引入通用跨组件事务框架。
 
 ## 11. Server runtime 与 Actor
 
@@ -1012,6 +1023,10 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 | `runtime_config` | Runtime | singleton canonical HTTPS origin |
 | `device_session_targets` | Session | 每 Device foreground target/terminate epoch |
 | `device_home_targets` | Home | 每Device reset epoch |
+| `target_submission_receipts` | TargetSubmission | operation ID 全局唯一；操作者、规范化请求、逐设备结果 |
+
+receipt 与成功 Target 在同一事务提交；空集合和全部拒绝也保留 receipt。记录随当前比赛数据库
+保留，不随 logout、Device revoke 或删除而级联删除，不提供自动过期或批次历史页面。
 
 具体列由 Proto 和组件 typed facts推导，但以下 shape 已冻结。
 
@@ -1242,23 +1257,33 @@ Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文
 跨组件查询及authority变更使用`DeviceControl`应用入口：
 
 - 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态，
-  `PATCH /devices/{device_id}`修改Device lifecycle，
-  `PUT /devices/{device_id}/session-control`替换 foreground_target；
+  `PATCH /devices/{device_id}`修改Device lifecycle；
 - 资源移除使用`DELETE`：解绑`/devices/{device_id}/binding`，丢弃pending import
   `/imports/{import_id}`；Binding UI是否开放由当前unbound与eligibility事实推导，
   不增加operator-owned open policy；
 - 只有实际推进workflow、epoch或一次性终态决策的操作保留
-  `POST .../actions/...`：Import commit、terminate epoch、Home reset epoch与
-  Enrollment approve/deny；
+  `POST .../actions/...`：Import commit 与 Enrollment approve/deny；
 - 创建Session和Import preview使用collection `POST`。
+
+Session foreground、terminate、Home reset 的单台/批量写入口统一为
+`POST /api/v2/target-submissions`。旧单台 PUT session-control 和 POST terminate/reset
+入口删除，原读取接口保留。这是 HTTP Breaking Change。请求包含 canonical nonnil UUID
+`operation_id`、`scope`（`all_enabled` 或 `devices` ID 列表）和封闭 `action`：
+`set_foreground`（waiting/contest）、`terminate_session`、`reset_home`。每次请求只包含一种动作。
+
+进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果，
+不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled，
+离线设备包含在内。显式 ID 列表规范化去重；不存在、非 Enabled、无效目标、epoch 耗尽等
+领域拒绝逐设备返回，其他设备继续。数据库写入或最终 COMMIT 失败整批回滚。
+HTTP 200 表示完整提交结果已持久化，可以包含部分或全部拒绝；从不等待 Client converge。
 
 HTTP方法表达资源语义，不为动词机械创建伪资源，也不把实际transition伪装成普通字段
 覆盖。`/api/v2`根层在认证和路由handler前统一拒绝`HEAD`并执行请求体大小上限；
 业务handler不重复声明这些transport策略。
 
-Operator target mutation由application coordination在commit后调用
-`DeviceControl`的单Device或全部已有Actor Dirty入口。当前没有Many的真实调用方，
-不预建通用impact enum。HTTP handler不直接访问组件表。
+Operator Target 提交成功后通过 `DeviceControl::dirty_devices` 通知成功设备的已有 Actor。
+receipt 重放也只触发从当前数据库重新读取，不恢复旧 Target。Dirty 丢失由现有周期刷新和
+重连恢复；通知不在数据库事务内，也不等待终端执行。HTTP handler 不直接访问组件表。
 
 ### 15.4 Panel状态
 
@@ -1274,10 +1299,16 @@ Panel query可以显式汇总组件read model，但不能成为authority、不�
 
 Targets 页面列出全部 Device，以当前 Binding 的座位号定位，支持排序和搜索，并分别展示
 Session／Home convergence、foreground Target 和 Actual。单台操作通过该行详情进入；
-批量操作覆盖确认框打开时的全部 Enabled Device（包括离线设备），跳过 Disabled／Revoked，
-搜索不缩小批量范围。Web 以最多六个并发请求调用现有单 Device 资源 API，逐台记录提交结果，
-不自动重试 terminate／reset；提交被 Server 接受与设备已收敛分别展示。批量提交期间禁用
-单台变更，有单台请求未结束时禁用批量操作；单台请求状态按 Device 标识隔离。
+全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小
+范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
+
+Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前按 Operator 身份在 sessionStorage
+保存原 operation ID 和完整非秘密请求。刷新后先确认登录身份再恢复，旧 scope 的回调不能
+清除新 scope 的请求。存储失败不发送；网络/5xx 等结果不明时保留原请求，提供同 ID 手动重试，
+不自动重试。收到明确结果即可发起下一次操作，不等待设备收敛；期间仍可浏览和切换设备。
+“仅重试失败设备”创建新 ID，只包含上次明确拒绝的设备，并重新检查 Enabled 资格。
+提交结果与 Target/Actual/convergence 分别展示，确认后的结果仅保留在当前页面，不增加
+Server 后台任务、执行队列或独立批次进度。已有请求失败、轮询失败和陈旧状态均明确展示。
 
 `DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation，
 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的
