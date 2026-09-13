@@ -168,7 +168,11 @@ organization_logos = "/var/lib/natsume-server/organization-logos"
 ```
 
 This absolute path is required; a missing directory is allowed and means missing
-logos. Give the service user read/search access. Name each source file after the
+logos. The Server Deb creates the default directory shown above during installation
+and reinstallation, owned by `root:natsume-server` with mode `0750`, preserving
+existing images. Copy images as `root:natsume-server` with mode `0640`. A custom
+directory is deployment-owned and must grant the service user read/search access.
+Name each source file after the
 complete Chinese or English school name. There is no per-row filename or alias.
 Only direct children with PNG/JPEG/WebP/SVG extensions participate; actual content
 chooses the decoder. Symlinks are rejected. Source files stay unchanged.

@@ -109,13 +109,21 @@ assert_group natsume-server
 assert_tmpfiles_path /var/lib/natsume-server 'natsume-server:natsume-server 750'
 assert_tmpfiles_path /var/lib/natsume-server/keys 'natsume-server:natsume-server 700'
 assert_tmpfiles_path /var/lib/natsume-server/backups 'natsume-server:natsume-server 750'
+assert_tmpfiles_path /var/lib/natsume-server/organization-logos 'root:natsume-server 750'
 assert_tmpfiles_path /var/log/natsume-server 'natsume-server:natsume-server 750'
 
 systemd-analyze --recursive-errors=no verify \
   /usr/lib/systemd/system/natsume-server.service
 
+logo_fixture=/var/lib/natsume-server/organization-logos/.lifecycle-preservation
+printf '%s\n' 'deployment-owned logo content' >"${logo_fixture}"
+chown root:natsume-server "${logo_fixture}"
+chmod 0640 "${logo_fixture}"
+logo_hash=$(sha256sum "${logo_fixture}" | cut -d' ' -f1)
 DEBIAN_FRONTEND=noninteractive apt-get install --reinstall --yes "${server_deb}"
 assert_site_inputs_preserved
+assert_tmpfiles_path /var/lib/natsume-server/organization-logos 'root:natsume-server 750'
+assert_preserved_file "${logo_fixture}" "${logo_hash}" 'root:natsume-server 640'
 
 dpkg --remove natsume-server
 [[ -e /etc/natsume-server/config.toml ]] ||

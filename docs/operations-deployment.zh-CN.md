@@ -562,13 +562,18 @@ v2.1.0 使用完整 XLSX 名单导入，旧 CSV 入口已移除。从旧版升�
 
 v2.1.0 提供 Logo 目录、网页观测和完整 DOMjudge ZIP。配套 Client 在 waiting 页面显示队伍／学校／Logo，断网时保留上次资料并显示离线标识。
 
-在同一份 Server config.toml 的 `[storage]` 中设置 `organization_logos`（示例已列出）。首次配置路径需要重启 Server；以后补图或替换源文件无需重启或重新导入名单。目录可暂时不存在，导入仍可完成。
+在同一份 Server config.toml 的 `[storage]` 中设置 `organization_logos`（示例已列出）。当前源码的 Server Deb 在安装／重装时自动创建默认目录 `/var/lib/natsume-server/organization-logos`，归属 `root:natsume-server`、权限 `0750`，保留已有图片。自定义路径由部署方创建并授予服务用户读取／遍历权限。首次配置路径需要重启 Server；以后补图或替换源文件无需重启或重新导入名单。
 
-**执行位置：Server 管理员终端。**准备目录并复制已按完整学校中文名或英文名命名的源图；下面的 `./organization-logos/` 是部署方已准备好的本地目录：
+已发布的 v2.1.0 标签尚未包含自动建目录的修正，可先执行下面这条幂等命令补建；使用包含修正的新包时无需手动创建默认目录：
 
 ```bash
 sudo install -d -o root -g natsume-server -m 0750 \
   /var/lib/natsume-server/organization-logos
+```
+
+**执行位置：Server 管理员终端。**复制已按完整学校中文名或英文名命名的源图，设置为 `root:natsume-server`、`0640`；下面的 `./organization-logos/` 是部署方已准备好的本地目录：
+
+```bash
 sudo find ./organization-logos -maxdepth 1 -type f \
   -exec install -o root -g natsume-server -m 0640 -t \
   /var/lib/natsume-server/organization-logos -- {} +
