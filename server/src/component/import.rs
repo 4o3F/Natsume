@@ -100,4 +100,4 @@ fn write_field(hasher: &mut Sha256, value: &[u8]) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

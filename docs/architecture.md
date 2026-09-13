@@ -1214,7 +1214,15 @@ strict XLSX parse
 - 学校、队伍、账号、凭据、座位、映射和候选消费在同一事务内提交，失败全部回滚。commit 后自动 dirty，不创建 Command，不依赖 Operator 再发 sync；
 - 一次性 schema 迁移保留既有业务数据并清除旧格式待提交候选，存量队伍资料通过完整 XLSX 补齐，不自动清库。
 
-TODO(roster-export)：接入源 Logo 目录观测、学校图片接口和 DOMjudge ZIP 导出；当前导入不依赖图片文件。
+源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。`natsume-roster` 共享实际内容识别、限额、解码和 SVG 渲染，拒绝符号链接和外部 SVG 资源。目录与图片失败通过 tracing 记录路径和原因。
+
+Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其根模块的非秘密契约，Import 保留全部名单写权限。导出从同一数据库 read transaction 读取全量学校、队伍、映射和加密 vault records，关闭事务后才解密并打包。一个 export worker 生成最多 256 MiB 的内存 ZIP；四个 image workers 处理目录观测／图像请求，阻塞 IO 和转码不占据异步控制循环。
+
+管理员 `GET /api/v2/exports/domjudge` 返回 groups.json、organizations.json、teams.json、accounts.yaml、README.md 和当前名单中全部可用的 `logos/INST-xxx.png`。重复导出使用固定排序和持久 ID；只改密时只影响 accounts.yaml。密码只进入这份管理员下载，响应 no-store，不落 Server 临时文件或浏览器持久存储。缺图／歧义写入 README；匹配到的损坏／不可读／超限图片中止整包，并给出学校、源文件和原因。栅格转 PNG 保留尺寸和透明通道，SVG 以自然画布／96 DPI 渲染；源文件不改动。
+
+管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 先验证该 ID 属于当前名单，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
+
+TODO(roster-presentation)：协议与 Client waiting 文字、Logo 下载、离线缓存将在下一阶段实现。
 
 ### 15.3 Desired-state Operator API
 

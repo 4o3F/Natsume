@@ -28,13 +28,13 @@ fn complete_names_match_without_normalizing_punctuation_or_recursing() {
         ImageFormat::Png,
     );
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(school),
+        checked(LogoDirectory::open(directory.path())).resolve(school.name_zh(), school.name_en()),
         LogoMatch::Missing
     );
     let english = directory.path().join("Example University.WEBP");
     write_image(&english, ImageFormat::WebP);
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(school),
+        checked(LogoDirectory::open(directory.path())).resolve(school.name_zh(), school.name_en()),
         LogoMatch::Unique(english)
     );
 }
@@ -57,7 +57,7 @@ fn multiple_formats_or_languages_for_the_same_school_are_ambiguous() {
     let mut expected = vec![first, second, third];
     expected.sort();
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(school),
+        checked(LogoDirectory::open(directory.path())).resolve(school.name_zh(), school.name_en()),
         LogoMatch::Ambiguous(expected)
     );
 }
@@ -96,7 +96,10 @@ fn svg_content_with_xml_header_bom_and_webp_extension_renders_without_mutating_s
     checked(fs::rename(&path, &native));
     let roster = checked(parse_xlsx(include_bytes!("../../examples/roster.xlsx")));
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(&roster.organizations()[0]),
+        checked(LogoDirectory::open(directory.path())).resolve(
+            roster.organizations()[0].name_zh(),
+            roster.organizations()[0].name_en()
+        ),
         LogoMatch::Unique(native)
     );
 }
@@ -265,4 +268,57 @@ fn unreadable_images_report_the_os_error() {
             matches!(validate_logo(&path), Err(LogoError::Read(error)) if error.kind() == io::ErrorKind::PermissionDenied)
         );
     }
+}
+
+#[test]
+fn png_exports_preserve_decoded_pixels_dimensions_and_alpha_for_every_raster_format() {
+    let directory = checked(TempDir::new());
+    for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
+        let path = directory.path().join("source.webp");
+        let image = if format == ImageFormat::Jpeg {
+            DynamicImage::ImageRgb8(image::RgbImage::from_fn(5, 3, |x, y| {
+                image::Rgb([
+                    checked(u8::try_from(x)) * 40,
+                    checked(u8::try_from(y)) * 60,
+                    25,
+                ])
+            }))
+        } else {
+            DynamicImage::ImageRgba8(image::RgbaImage::from_fn(5, 3, |x, y| {
+                image::Rgba([
+                    checked(u8::try_from(x)) * 40,
+                    checked(u8::try_from(y)) * 60,
+                    25,
+                    checked(u8::try_from(x)) * 50,
+                ])
+            }))
+        };
+        checked(image.save_with_format(&path, format));
+        let before = checked(fs::read(&path));
+        let expected = checked(image::load_from_memory(&before)).to_rgba8();
+        let png = checked(checked(read_logo(&path)).into_png());
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(checked(image::load_from_memory(&png)).to_rgba8(), expected);
+        let http = checked(checked(read_logo(&path)).into_http());
+        assert_eq!(http.content_type, format.to_mime_type());
+        assert_eq!(http.bytes, before);
+        assert_eq!(checked(fs::read(&path)), before);
+    }
+}
+
+#[test]
+fn svg_http_and_export_share_natural_canvas_transparent_pixels_and_png_encoding() {
+    let directory = checked(TempDir::new());
+    let path = directory.path().join("svg-disguised.webp");
+    let source = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><rect width="4" height="4" fill="#ff0000" fill-opacity="0.5"/></svg>"##;
+    checked(fs::write(&path, source));
+    let png = checked(checked(read_logo(&path)).into_png());
+    let http = checked(checked(read_logo(&path)).into_http());
+    assert_eq!(http.bytes, png);
+    assert_eq!(http.content_type, "image/png");
+    let image = checked(image::load_from_memory(&png)).to_rgba8();
+    assert_eq!(image.dimensions(), (8, 4));
+    assert_eq!(image.get_pixel(1, 1).0, [255, 0, 0, 128]);
+    assert_eq!(image.get_pixel(6, 1).0, [0, 0, 0, 0]);
+    assert_eq!(checked(fs::read(&path)), source);
 }

@@ -1277,3 +1277,149 @@ fn roster_request(
         .body(Body::from(body))
         .map_err(|_| SupportFailure::HelperRequestBuildFailed)
 }
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacements()
+-> Result<(), Box<dyn std::error::Error>> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    let logos = tempfile::TempDir::new()?;
+    seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
+    let state = Arc::new(server_state::tests::for_test_with_logos(
+        fixture.database.clone(),
+        logos.path().to_path_buf(),
+    )?);
+    let application = router(state.clone(), unused_web_root());
+    let xlsx = include_bytes!("../../../crates/roster/examples/roster.xlsx");
+    let preview = state.import().create_candidate(xlsx).await?;
+    let candidate_list = format!("/api/v2/imports/{}/organizations", preview.candidate_id());
+    let candidate_logo = format!("{candidate_list}/INST-001/logo");
+    let private_routes = [
+        "/api/v2/exports/domjudge",
+        "/api/v2/organizations",
+        &candidate_list,
+        &candidate_logo,
+    ];
+    for path in private_routes {
+        assert_eq!(
+            drive(&application, request(Method::GET, path, "")?)
+                .await?
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
+    let cookie = header_text(&login.headers, &header::SET_COOKIE)?
+        .split(';')
+        .next()
+        .ok_or("cookie absent")?;
+    let public_logo = "/api/v2/organizations/INST-001/logo";
+    assert_eq!(
+        drive(&application, request(Method::GET, public_logo, "")?)
+            .await?
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    let source = logos.path().join("示例大学.webp");
+    let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><rect width="4" height="4" fill="#ff0000"/></svg>"##;
+    fs::write(&source, svg)?;
+    let candidate_image = drive(
+        &application,
+        cookie_request(Method::GET, &candidate_logo, cookie)?,
+    )
+    .await?;
+    assert_eq!(candidate_image.status, StatusCode::OK);
+    assert_eq!(candidate_image.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(candidate_image.headers[header::CONTENT_TYPE], "image/png");
+    let observation = drive(
+        &application,
+        cookie_request(Method::GET, &candidate_list, cookie)?,
+    )
+    .await?;
+    let schools: Value = serde_json::from_slice(&observation.body)?;
+    assert_eq!(schools[0]["status"], "available");
+    assert_eq!(schools[0]["files"], serde_json::json!(["示例大学.webp"]));
+    assert!(!String::from_utf8_lossy(&observation.body).contains("example-password"));
+    state
+        .import()
+        .commit(preview.candidate_id(), preview.preview_token_bytes(), xlsx)
+        .await?;
+    assert_eq!(
+        drive(
+            &application,
+            cookie_request(Method::GET, &candidate_logo, cookie)?
+        )
+        .await?
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    let image = drive(&application, request(Method::GET, public_logo, "")?).await?;
+    assert_eq!(image.status, StatusCode::OK);
+    assert_eq!(image.body, candidate_image.body);
+    assert_eq!(image.headers[header::CACHE_CONTROL], "public, no-cache");
+    let etag = header_text(&image.headers, &header::ETAG)?;
+    let mut conditional = request(Method::GET, public_logo, "")?;
+    conditional
+        .headers_mut()
+        .insert(header::IF_NONE_MATCH, format!("\"old\", W/{etag}").parse()?);
+    let unchanged = drive(&application, conditional).await?;
+    assert_eq!(unchanged.status, StatusCode::NOT_MODIFIED);
+    assert!(unchanged.body.is_empty());
+    let exported = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/exports/domjudge", cookie)?,
+    )
+    .await?;
+    assert_eq!(exported.status, StatusCode::OK);
+    assert_eq!(exported.headers[header::CACHE_CONTROL], "no-store");
+    assert_eq!(exported.headers[header::CONTENT_TYPE], "application/zip");
+    assert!(
+        exported.headers[header::CONTENT_DISPOSITION]
+            .to_str()?
+            .contains("domjudge-export.zip")
+    );
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(exported.body))?;
+    let mut png = Vec::new();
+    std::io::Read::read_to_end(&mut zip.by_name("logos/INST-001.png")?, &mut png)?;
+    assert_eq!(png, image.body);
+    fs::remove_file(&source)?;
+    let missing = drive(&application, request(Method::GET, public_logo, "")?).await?;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.headers[header::CACHE_CONTROL], "no-store");
+    image::DynamicImage::new_rgb8(3, 2).save_with_format(&source, image::ImageFormat::Png)?;
+    let new_image = drive(&application, request(Method::GET, public_logo, "")?).await?;
+    assert_eq!(new_image.status, StatusCode::OK);
+    assert_ne!(header_text(&new_image.headers, &header::ETAG)?, etag);
+    assert_eq!(new_image.body, fs::read(&source)?);
+    fs::write(&source, "corrupt")?;
+    let failed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/exports/domjudge", cookie)?,
+    )
+    .await?;
+    assert_eq!(failed.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let body = String::from_utf8(failed.body)?;
+    assert!(body.contains("INST-001 示例大学: 示例大学.webp"));
+    assert!(!body.contains("example-password"));
+    // Viewer permissions are evaluated afresh for both data and candidate images.
+    fixture
+        .database
+        .write(|tx| {
+            use diesel::connection::SimpleConnection as _;
+            tx.connection()
+                .batch_execute("UPDATE operator_accounts SET role = 'viewer'")
+                .map_err(|_| crate::db::PersistenceError::OperationFailed)
+        })
+        .await
+        .map_err(|_| "cannot change fixture role")?;
+    for path in private_routes {
+        assert_eq!(
+            drive(&application, cookie_request(Method::GET, path, cookie)?)
+                .await?
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    Ok(())
+}

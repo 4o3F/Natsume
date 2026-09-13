@@ -212,6 +212,22 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/exports/domjudge": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["exportDomjudge"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/health": {
     parameters: {
       query?: never;
@@ -286,6 +302,70 @@ export interface paths {
     get?: never;
     put?: never;
     post: operations["commitRosterImport"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/imports/{import_id}/organizations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listCandidateOrganizationLogos"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/imports/{import_id}/organizations/{organization_id}/logo": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getCandidateOrganizationLogo"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/organizations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listOrganizationLogos"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/organizations/{organization_id}/logo": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getOrganizationLogo"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -459,6 +539,8 @@ export interface components {
        */
       state: "enabled" | "disabled" | "revoked";
     };
+    /** Format: binary */
+    Download: string;
     /** @description Non-secret evidence awaiting an Administrator decision in this process. */
     EnrollmentReviewResponse: {
       agent_version: string;
@@ -604,6 +686,17 @@ export interface components {
       organization_id: string;
       seat: string | null;
     };
+    OrganizationLogoResponse: {
+      country: string;
+      detail: string | null;
+      files: string[];
+      name_en: string;
+      name_zh: string;
+      organization_id: string;
+      status: components["schemas"]["OrganizationLogoStatus"];
+    };
+    /** @enum {string} */
+    OrganizationLogoStatus: "available" | "missing" | "ambiguous" | "invalid";
     /** @description Open automatically approves new and pending enrollments; closed requires administrator approval. */
     ProvisioningWindowRequest: {
       /** @enum {string} */
@@ -1606,6 +1699,71 @@ export interface operations {
       };
     };
   };
+  exportDomjudge: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Complete committed roster, current passwords and PNG logos; never cache */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/zip": components["schemas"]["Download"];
+        };
+      };
+      /** @description Authentication required */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Import a complete roster first */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Export failed; no partial archive */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Export worker busy */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
   getHealth: {
     parameters: {
       query?: never;
@@ -1801,7 +1959,7 @@ export interface operations {
       query?: never;
       header?: never;
       path: {
-        /** @description Canonical lowercase hyphenated UUIDv7 import candidate ID. */
+        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
         import_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
@@ -1870,7 +2028,7 @@ export interface operations {
         "x-natsume-preview-token": string;
       };
       path: {
-        /** @description Canonical lowercase hyphenated UUIDv7 import candidate ID. */
+        /** @description Canonical lowercase hyphenated `UUIDv7` import candidate ID. */
         import_id: components["schemas"]["CanonicalUuidV7"];
       };
       cookie?: never;
@@ -1942,6 +2100,259 @@ export interface operations {
       };
       /** @description Internal failure */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listCandidateOrganizationLogos: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        import_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Pending school ID mapping and current source image status */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OrganizationLogoResponse"][];
+        };
+      };
+      /** @description Authentication required */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Candidate unavailable */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Cannot read schools or logo directory */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Image workers busy */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getCandidateOrganizationLogo: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        import_id: components["schemas"]["CanonicalUuidV7"];
+        organization_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Pending school's raster image; SVG is rendered to PNG */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "image/png": components["schemas"]["Download"];
+          "image/jpeg": components["schemas"]["Download"];
+          "image/webp": components["schemas"]["Download"];
+        };
+      };
+      /** @description Authentication required */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Candidate, school or unique logo unavailable */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Logo read or decoding failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Image workers busy */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listOrganizationLogos: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description All committed schools and current source image status */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["OrganizationLogoResponse"][];
+        };
+      };
+      /** @description Authentication required */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Administrator required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Cannot read schools or logo directory */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Image workers busy */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getOrganizationLogo: {
+    parameters: {
+      query?: never;
+      header?: {
+        "If-None-Match"?: string | null;
+      };
+      path: {
+        organization_id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current raster image; SVG is rendered to PNG */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "image/png": components["schemas"]["Download"];
+          "image/jpeg": components["schemas"]["Download"];
+          "image/webp": components["schemas"]["Download"];
+        };
+      };
+      /** @description Image content unchanged */
+      304: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description School or unique logo unavailable */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Logo read or decoding failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Image workers busy */
+      503: {
         headers: {
           [name: string]: unknown;
         };

@@ -157,8 +157,67 @@ existing devices, control keys, bindings, accounts, vault records and session/ho
 targets are preserved. Existing installations supply missing team and school
 metadata through the full XLSX import. Never clear the database to apply this migration.
 
-TODO(roster-export): connect the Logo directory, image HTTP service and complete
-DOMjudge ZIP export. The current import does not require Logo files.
+## School logos and DOMjudge export
+
+Configure the deployment-owned source directory in the same `config.toml`:
+
+```toml
+[storage]
+# Alongside database and root_key:
+organization_logos = "/var/lib/natsume-server/organization-logos"
+```
+
+This absolute path is required; a missing directory is allowed and means missing
+logos. Give the service user read/search access. Name each source file after the
+complete Chinese or English school name. There is no per-row filename or alias.
+Only direct children with PNG/JPEG/WebP/SVG extensions participate; actual content
+chooses the decoder. Symlinks are rejected. Source files stay unchanged.
+`natsume-check-logos` uses the same matching, decoding and SVG rendering rules.
+
+Preparation Center shows every committed or candidate school with its INST ID,
+source filenames, thumbnail and available/missing/ambiguous/invalid status. Search,
+problem filtering and manual refresh work without a restart or re-import. Candidate
+IDs apply only after commit. Administrators use these API routes:
+
+- `GET /api/v2/organizations`
+- `GET /api/v2/imports/{import_id}/organizations`
+- `GET /api/v2/imports/{import_id}/organizations/{organization_id}/logo`
+- `GET /api/v2/exports/domjudge`
+
+`GET /api/v2/organizations/{organization_id}/logo` is public, read-only, and only
+serves a school present in the committed roster. It never lists a directory or
+returns team credentials. Raster images retain their original bytes and actual
+MIME type; SVG is rendered to PNG. SHA-256 ETags support conditional requests,
+including weak `If-None-Match` validators. Successful images require revalidation;
+404/errors and candidate images use `no-store`. Later requests see file replacements.
+
+**Download DOMjudge ZIP** contains `groups.json`, `organizations.json`, `teams.json`,
+`accounts.yaml`, `README.md` and every available school logo as `logos/INST-xxx.png`.
+All data comes from one committed SQLite read transaction, including encrypted
+vault records. The transaction closes before decryption and image conversion.
+Contest owns this read/export boundary; Import remains the only roster writer.
+Only Administrators can download the ZIP, which contains current plaintext
+passwords, uses `no-store`, and is not saved on the Server or in browser storage.
+The browser hands the response to its normal download manager.
+
+The export uses the modern DOMjudge JSON/YAML contract, stable school IDs and fixed
+account IDs. Names are `中文名(English name)` when both exist. It supplies no invented
+`icpc_id`. YAML serialization preserves strings such as leading-zero passwords.
+Available PNG/JPEG/WebP/SVG files become real PNG, preserving raster dimensions and
+alpha; SVG uses its natural 96 DPI canvas. Missing/ambiguous images are documented
+in the ZIP README without blocking import/export. A matched unreadable, corrupt or
+oversized file aborts the download with a school/file diagnostic. The README also
+contains import order, CLI commands and affiliation image installation instructions.
+
+Work is bounded to four image workers and one export worker; the in-memory ZIP is
+limited to 256 MiB. Source files have an 8 MiB limit and decoded images are limited
+to 4096 pixels per side / 4 Mi pixels total. Image IO and encoding run off the async
+control loop. File changes are independent of the database read snapshot. Back up
+both the database/vault and source logo directory.
+
+TODO(roster-presentation): deliver protocol and Client waiting display/cache in the
+next stage. This export does not push changes into DOMjudge; import the ZIP's files
+there and verify team logins after password rotation.
 
 ## OpenTelemetry traces
 

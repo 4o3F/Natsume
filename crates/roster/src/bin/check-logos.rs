@@ -55,7 +55,7 @@ fn run(arguments: &Arguments) -> Result<ExitCode, String> {
     let mut ambiguous = 0;
     let mut invalid = 0;
     for organization in roster.organizations() {
-        match directory.resolve(organization) {
+        match directory.resolve(organization.name_zh(), organization.name_en()) {
             LogoMatch::Missing => {
                 missing += 1;
                 let expected: Vec<_> = [organization.name_zh(), organization.name_en()]

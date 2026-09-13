@@ -67,6 +67,36 @@ fn expected_operation_table() -> OperationTable {
     let rows: &[(&str, &str, &str, &[&str])] = &[
         (
             "get",
+            "/api/v2/organizations",
+            "listOrganizationLogos",
+            &["200", "401", "403", "500", "503"],
+        ),
+        (
+            "get",
+            "/api/v2/imports/{import_id}/organizations",
+            "listCandidateOrganizationLogos",
+            &["200", "401", "403", "404", "500", "503"],
+        ),
+        (
+            "get",
+            "/api/v2/organizations/{organization_id}/logo",
+            "getOrganizationLogo",
+            &["200", "304", "404", "500", "503"],
+        ),
+        (
+            "get",
+            "/api/v2/imports/{import_id}/organizations/{organization_id}/logo",
+            "getCandidateOrganizationLogo",
+            &["200", "401", "403", "404", "500", "503"],
+        ),
+        (
+            "get",
+            "/api/v2/exports/domjudge",
+            "exportDomjudge",
+            &["200", "401", "403", "409", "500", "503"],
+        ),
+        (
+            "get",
             "/api/v2/imports/template",
             "getRosterTemplate",
             &["200", "401", "403"],
@@ -286,7 +316,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none."
+        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -1083,9 +1113,20 @@ async fn probe_live_router(
     records: &[OperationRecord],
 ) -> Result<BTreeSet<(String, String)>, TestFailure> {
     let fixture = TestDatabase::new().await?;
-    let state = http::tests::server_state(fixture.database.clone())
+    let logos = tempfile::TempDir::new().map_err(|_| TestFailure::RouterProbeFailed)?;
+    fs::write(logos.path().join("Probe.svg"), br#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2"/></svg>"#)
         .map_err(|_| TestFailure::RouterProbeFailed)?;
-    let application = http::router(state, http::tests::unused_web_root());
+    fixture.database.write(|transaction| {
+        use diesel::connection::SimpleConnection as _;
+        transaction.connection().batch_execute("INSERT INTO organizations VALUES (1, 'Probe', '', 'Probe', 'CHN'); INSERT INTO accounts VALUES ('probe', 'probe', 1); INSERT INTO teams VALUES ('probe', 1, 'Probe', '', 'participant');")
+            .map_err(|_| crate::db::PersistenceError::OperationFailed)
+    }).await.map_err(|_| TestFailure::RouterProbeFailed)?;
+    let state = crate::server_state::tests::for_test_with_logos(
+        fixture.database.clone(),
+        logos.path().to_path_buf(),
+    )
+    .map_err(|_| TestFailure::RouterProbeFailed)?;
+    let application = http::router(std::sync::Arc::new(state), http::tests::unused_web_root());
     let mut paths = records
         .iter()
         .map(|record| record.path.clone())
@@ -1140,7 +1181,8 @@ fn probe_request(method: &str, path: &str) -> Result<Request<Body>, TestFailure>
 }
 
 fn concrete_path(path: &str) -> String {
-    path.replace("{device_id}", "01900000-0000-7000-8000-000000000000")
+    path.replace("{organization_id}", "INST-001")
+        .replace("{device_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{review_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{import_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{request_id}", "01900000-0000-7000-8000-000000000000")

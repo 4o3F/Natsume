@@ -32,6 +32,7 @@ rustls-pki-types.workspace = true
 secrecy.workspace = true
 semver.workspace = true
 serde.workspace = true
+serde-saphyr.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 snafu.workspace = true
@@ -49,8 +50,12 @@ utoipa.workspace = true
 uuid.workspace = true
 x509-parser.workspace = true
 zeroize.workspace = true
+zip.workspace = true
 
 [dev-dependencies]
+image.workspace = true
+serde-saphyr = { workspace = true, features = ["deserialize"] }
+tempfile.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
 regex.workspace = true
@@ -58,7 +63,6 @@ rustls = { workspace = true, features = ["tls12"] }
 tokio = { workspace = true, features = ["test-util"] }
 tokio-tungstenite.workspace = true
 tower.workspace = true
-zip.workspace = true
 
 [lints]
 workspace = true

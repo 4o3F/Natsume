@@ -41,7 +41,7 @@ fn row<'a>(school: &'a str, account: &'a str, seat: &'a str, password: &'a str) 
     ]
 }
 
-fn workbook(rows: &[[&str; 9]]) -> Vec<u8> {
+pub(crate) fn workbook(rows: &[[&str; 9]]) -> Vec<u8> {
     let headers = [
         "organization_zh",
         "organization_en",

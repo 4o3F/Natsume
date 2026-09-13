@@ -70,7 +70,7 @@ SVG 必须是有效的 SVG XML，支持 XML 声明、UTF-8 BOM 和内部元素�
 
 Server 已复用同一个 `parse_xlsx` 入口。可在 Web Preparation 下载空白模板并上传完整 XLSX；Server 负责稳定 INST ID 分配、变更预览和事务提交。离线预检只负责校验，不分配 ID；没有 Logo 也可提交名单。
 
-TODO(roster-export)：DOMjudge 导出统一写入实际 PNG；按内容解码栅格源图、栅格化 SVG，生成 `logos/INST-xxx.png`，不根据源扩展名推断格式。此步骤尚未实现。
+Server 已复用 `LogoDirectory::resolve(name_zh, name_en)` 和 `read_logo`：HTTP 对栅格图返回原始内容及真实 MIME，对 SVG 返回 PNG；DOMjudge ZIP 导出统一写入实际 PNG，名称为 `logos/INST-xxx.png`。转换保留栅格尺寸和透明通道，SVG 使用默认 96 DPI 的自然画布。库只负责无数据库的匹配、读取和转换，INST 分配、权限、vault 和 DOMjudge 序列化由 Server 负责。预检 binary 仍只读输入并输出 tracing 诊断，不生成文件。
 
 ```sh
 cargo test -p natsume-roster --locked

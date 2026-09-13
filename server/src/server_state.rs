@@ -65,10 +65,20 @@ impl ServerState {
         )
         .map_err(map_gateway_load_error)?;
 
-        Ok(Self::from_parts(database, vault, gateway))
+        Ok(Self::from_parts(
+            database,
+            vault,
+            gateway,
+            config.organization_logos_path().to_path_buf(),
+        ))
     }
 
-    fn from_parts(database: Database, vault: VaultSession, gateway: GatewayComponent) -> Self {
+    fn from_parts(
+        database: Database,
+        vault: VaultSession,
+        gateway: GatewayComponent,
+        logos: std::path::PathBuf,
+    ) -> Self {
         let vault = Arc::new(vault);
         let provisioning = Arc::new(ProvisioningComponent::new());
         let device = Arc::new(DeviceComponent::new(database.clone()));
@@ -86,7 +96,7 @@ impl ServerState {
         ));
         Self {
             operator: OperatorComponent::new(database.clone()),
-            contest: ContestComponent::new(database.clone()),
+            contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             import: ImportComponent::new(database, vault),
             provisioning,
             device,
@@ -163,6 +173,16 @@ pub(crate) mod tests {
     use crate::{component::gateway::GatewayComponent, db::Database, vault};
 
     pub(crate) fn for_test(database: Database) -> Result<ServerState, ServerStateError> {
+        for_test_with_logos(
+            database,
+            std::path::PathBuf::from("/nonexistent/natsume-test-logos"),
+        )
+    }
+
+    pub(crate) fn for_test_with_logos(
+        database: Database,
+        logos: std::path::PathBuf,
+    ) -> Result<ServerState, ServerStateError> {
         let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
         fs::create_dir(&root).map_err(|_| ServerStateError::Vault)?;
         fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
@@ -173,6 +193,6 @@ pub(crate) mod tests {
         fs::remove_dir_all(root).map_err(|_| ServerStateError::Vault)?;
         let gateway =
             GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
-        Ok(ServerState::from_parts(database, vault, gateway))
+        Ok(ServerState::from_parts(database, vault, gateway, logos))
     }
 }

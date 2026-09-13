@@ -1,4 +1,7 @@
+use std::{path::PathBuf, sync::Arc};
+
 use snafu::Snafu;
+use tokio::sync::Semaphore;
 
 use crate::{
     component::device::DeviceId,
@@ -6,6 +9,13 @@ use crate::{
 };
 
 mod db;
+mod export;
+mod logos;
+mod roster;
+
+pub(crate) use export::ExportError;
+pub(crate) use logos::{LogoObservation, LogoStatus};
+pub(crate) use roster::OrganizationDetails;
 
 pub(crate) struct AccountFacts {
     pub(crate) account_id: String,
@@ -27,11 +37,35 @@ pub(crate) struct BindingFacts {
 /// Contest-owned current facts exposed to transport and peer components.
 pub(crate) struct ContestComponent {
     database: Database,
+    vault: Arc<crate::vault::VaultSession>,
+    logo_directory: PathBuf,
+    image_work: Arc<Semaphore>,
+    export_work: Arc<Semaphore>,
 }
 
 impl ContestComponent {
-    pub(crate) const fn new(database: Database) -> Self {
-        Self { database }
+    pub(crate) fn new(
+        database: Database,
+        vault: Arc<crate::vault::VaultSession>,
+        logo_directory: PathBuf,
+    ) -> Self {
+        Self {
+            database,
+            vault,
+            logo_directory,
+            image_work: Arc::new(Semaphore::new(4)),
+            export_work: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    pub(crate) async fn list_organizations(
+        &self,
+    ) -> Result<Vec<OrganizationDetails>, ContestError> {
+        self.database
+            .read(db::list_organizations)
+            .await
+            .map_err(TransactionError::into_error)
+            .map_err(ContestError::from)
     }
 
     pub(crate) async fn list_seats(&self) -> Result<Vec<SeatFacts>, ContestError> {
@@ -78,6 +112,7 @@ impl From<PersistenceError> for ContestError {
 #[cfg(test)]
 mod tests {
     use diesel::connection::SimpleConnection;
+    use std::os::unix::fs::PermissionsExt as _;
     use uuid::Uuid;
 
     use crate::db::{Database, DatabaseConfig, PersistenceError};
@@ -88,6 +123,8 @@ mod tests {
     async fn current_facts_preserve_contents_and_identifier_order() {
         let root = std::env::temp_dir().join(format!("natsume-contest-test-{}", Uuid::now_v7()));
         std::fs::create_dir(&root).unwrap_or_else(|error| panic!("fixture directory: {error}"));
+        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|error| panic!("permissions: {error}"));
         let database = Database::connect_and_migrate(&DatabaseConfig::new(root.join("db"), true))
             .await
             .unwrap_or_else(|error| panic!("fixture database: {error}"));
@@ -109,7 +146,15 @@ mod tests {
             })
             .await
             .unwrap_or_else(|error| panic!("fixture rows: {error:?}"));
-        let contest = ContestComponent::new(database.clone());
+        crate::vault::ensure_master_key(&root.join("key"))
+            .unwrap_or_else(|error| panic!("vault: {error}"));
+        let vault =
+            crate::vault::load(&root.join("key")).unwrap_or_else(|error| panic!("vault: {error}"));
+        let contest = ContestComponent::new(
+            database.clone(),
+            std::sync::Arc::new(vault),
+            root.join("logos"),
+        );
 
         let seats = contest
             .list_seats()

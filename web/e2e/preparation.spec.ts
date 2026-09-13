@@ -97,6 +97,14 @@ async function mockPreparationApi(
       return fulfillJson(route, 200, operator);
     }
 
+    if (
+      pathname === "/api/v2/organizations" ||
+      pathname === `/api/v2/imports/${candidateId}/organizations`
+    ) {
+      return fulfillJson(route, 200, [
+        { ...school, status: "missing", files: [], detail: null },
+      ]);
+    }
     if (pathname === "/api/v2/imports" && request.method() === "GET") {
       return fulfillJson(route, 200, { pending });
     }
@@ -380,10 +388,129 @@ for (const width of [1024, 1440]) {
         () => document.documentElement.scrollWidth <= window.innerWidth,
       ),
     ).toBe(true);
-    await expect(page.getByText("INST-001", { exact: true })).toBeVisible();
+    await expect(
+      page.getByTestId("preview-logos").getByText("INST-001", { exact: true }),
+    ).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("roster-preview.png"),
       fullPage: true,
     });
   });
 }
+
+for (const width of [1024, 1440]) {
+  test(`school logos support 240 schools, filtering and refresh at ${width}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await mockPreparationApi(page);
+    const schools = Array.from({ length: 240 }, (_, i) => ({
+      ...school,
+      organization_id: `INST-${String(i + 1).padStart(3, "0")}`,
+      name_zh: `示例大学${i + 1}`,
+      name_en: `Example University ${i + 1}`,
+      status: i % 3 === 0 ? "missing" : "available",
+      files: i % 3 === 0 ? [] : [`示例大学${i + 1}.webp`],
+      detail: null,
+    }));
+    let changed = false;
+    await page.route("**/api/v2/organizations", (route) =>
+      fulfillJson(
+        route,
+        200,
+        schools.map((school) =>
+          changed && school.organization_id === "INST-001"
+            ? { ...school, status: "available", files: ["示例大学1.webp"] }
+            : school,
+        ),
+      ),
+    );
+    await page.route("**/api/v2/organizations/*/logo*", (route) =>
+      route.fulfill({
+        contentType: "image/png",
+        body: Buffer.from(
+          "iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAABXAvmHAAABWElEQVR4nO1abRYBMQwszxE4AhfjWFyMI3AHftUj2m4+pkmx83ubzGSS6NuV0oxYLJDBtvvrnfPc5bSB5TUH4pKuwSpGfdhKnEIrRHwITZxCKmQpebg3eU0OtgAP8ppcLAGe5KU5JwVEkJfkbgqIJM/lUBWAIn8+rs0xWlyKKwtBvkR8d7iZYpZWrGiNclGrOsINig9FlupLCGrdoC6sVFEINJXNZ6xt9aZGWn1kS0iEvLqgngF0P2vjiVuoxyDS2BI3nlZEtk+Gpo3ULWQdPlQ80xbKSS1uWAsBWaMaISgHIQIyOELQrdflKlEjiSafkvMvcY8LXhcHPDELiIbpMhcFyGVuFPyWAORb416gHH/LgZTGdsHtrYQnigJGdKHGqerASCJaXJotNIKIKQ6TMxApgpObNcQRIrg52VvIU4Qkl2iNeoiQ5vi/z6wUX/uhu4SIvxrMiMYD1Y+eNwLbNdkAAAAASUVORK5CYII=",
+          "base64",
+        ),
+      }),
+    );
+    await page.goto("/preparation");
+    await expect(page.getByText("240 schools", { exact: true })).toBeVisible();
+    const table = page.getByTestId("committed-logos");
+    await expect(table.getByRole("row")).toHaveCount(241);
+    await page.getByRole("button", { name: "Problems (80)" }).click();
+    await expect(table.getByRole("row")).toHaveCount(81);
+    await page.getByLabel("Search committed schools").fill("INST-001");
+    await expect(table.getByRole("row")).toHaveCount(2);
+    await expect(table.getByText("Missing", { exact: true })).toBeVisible();
+    changed = true;
+    await page.getByRole("button", { name: "Refresh logos" }).click();
+    await expect(
+      page.getByRole("button", { name: "Problems (79)" }),
+    ).toBeVisible();
+    await expect(table.getByText("No results.")).toBeVisible();
+    await page.getByRole("button", { name: "Problems (79)" }).click();
+    await expect(table.getByText("Available", { exact: true })).toBeVisible();
+    await page.getByLabel("Search committed schools").fill("");
+    await table.evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    const scrollTop = await table.evaluate((element) => element.scrollTop);
+    await page.getByRole("button", { name: "Refresh logos" }).click();
+    await expect
+      .poll(() => table.evaluate((element) => element.scrollTop))
+      .toBe(scrollTop);
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+    await table.evaluate((element) => {
+      element.scrollTop = 0;
+    });
+    await page.screenshot({
+      path: testInfo.outputPath("school-logos.png"),
+      fullPage: true,
+    });
+  });
+}
+
+test("DOMjudge download reports image failure and downloads the full ZIP after retry", async ({
+  page,
+}) => {
+  await mockPreparationApi(page);
+  let broken = true;
+  await page.route("**/api/v2/exports/domjudge", (route) =>
+    broken
+      ? fulfillJson(route, 500, {
+          code: "INTERNAL_ERROR",
+          status: 500,
+          title: "INST-001 示例大学: 示例大学.webp: cannot decode image",
+        })
+      : route.fulfill({
+          contentType: "application/zip",
+          headers: {
+            "Content-Disposition": 'attachment; filename="domjudge-export.zip"',
+            "Cache-Control": "no-store",
+          },
+          body: Buffer.from("PK\x03\x04synthetic-export"),
+        }),
+  );
+  await page.goto("/preparation");
+  await page.getByRole("button", { name: "Download DOMjudge ZIP" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "INST-001 示例大学: 示例大学.webp",
+  );
+  broken = false;
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download DOMjudge ZIP" }).click();
+  expect((await download).suggestedFilename()).toBe("domjudge-export.zip");
+  expect(
+    await page.evaluate(() =>
+      JSON.stringify({
+        local: { ...localStorage },
+        session: { ...sessionStorage },
+      }),
+    ),
+  ).not.toContain("synthetic-export");
+});

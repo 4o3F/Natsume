@@ -17,6 +17,7 @@ pub struct ServerConfig {
     listen_address: SocketAddr,
     log_level: LogLevel,
     database_path: PathBuf,
+    organization_logos_path: PathBuf,
     vault_master_key_path: PathBuf,
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
@@ -63,6 +64,7 @@ impl ServerConfig {
             listen_address,
             log_level: raw.log.level,
             database_path: raw.storage.database,
+            organization_logos_path: raw.storage.organization_logos,
             vault_master_key_path: raw.storage.root_key,
             tls_certificate_path: raw.tls.certificate,
             tls_private_key_path: raw.tls.private_key,
@@ -76,6 +78,10 @@ impl ServerConfig {
 
     fn validate_paths(&self, control_root: &Path) -> Result<(), ConfigError> {
         require_absolute(&self.database_path, ConfigError::RelativeDatabasePath)?;
+        require_absolute(
+            &self.organization_logos_path,
+            ConfigError::RelativeOrganizationLogosPath,
+        )?;
         require_absolute(
             &self.vault_master_key_path,
             ConfigError::RelativeVaultMasterKeyPath,
@@ -105,6 +111,10 @@ impl ServerConfig {
     #[must_use]
     pub(crate) const fn log_level(&self) -> LogLevel {
         self.log_level
+    }
+
+    pub(crate) fn organization_logos_path(&self) -> &Path {
+        &self.organization_logos_path
     }
 
     pub(crate) fn database_path(&self) -> &Path {
@@ -229,6 +239,7 @@ struct RawListenConfig {
 struct RawStorageConfig {
     database: PathBuf,
     root_key: PathBuf,
+    organization_logos: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -382,6 +393,8 @@ pub enum ConfigError {
     InvalidDomjudgeOrigin,
     #[snafu(display("storage.database must be an absolute path"))]
     RelativeDatabasePath,
+    #[snafu(display("storage.organization_logos must be an absolute path"))]
+    RelativeOrganizationLogosPath,
     #[snafu(display("storage.root_key must be an absolute path"))]
     RelativeVaultMasterKeyPath,
     #[snafu(display("tls.certificate must be an absolute path"))]
@@ -445,6 +458,7 @@ https = "127.0.0.1:8443"
 [storage]
 database = "/var/lib/natsume-server/natsume.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
+organization_logos = "/var/lib/natsume-server/organization-logos"
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
@@ -791,6 +805,27 @@ domjudge_origin = "https://judge.contest.example"
         assert!(message.contains("HTTPS"));
         assert!(!message.contains("10.12.13.166"));
         Ok(())
+    }
+
+    #[test]
+    fn organization_logos_requires_an_absolute_path_but_not_an_existing_directory()
+    -> Result<(), TestFailure> {
+        let fixture = ConfigFixture::new(VALID_CONFIG)?;
+        let config = ServerConfig::load_from(fixture.path())
+            .map_err(|_| TestFailure::ExpectedConfigurationFailure)?;
+        assert_eq!(
+            config.organization_logos_path(),
+            std::path::Path::new("/var/lib/natsume-server/organization-logos")
+        );
+        let relative = ConfigFixture::new(&VALID_CONFIG.replace(
+            "/var/lib/natsume-server/organization-logos",
+            "relative-logo-canary",
+        ))?;
+        assert_config_error(
+            relative.path(),
+            &ConfigError::RelativeOrganizationLogosPath,
+            &["relative-logo-canary"],
+        )
     }
 
     #[test]

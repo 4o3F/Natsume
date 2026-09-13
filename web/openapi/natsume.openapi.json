@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.0.4"
   },
   "paths": {
@@ -1073,6 +1073,78 @@
         ]
       }
     },
+    "/api/v2/exports/domjudge": {
+      "get": {
+        "operationId": "exportDomjudge",
+        "responses": {
+          "200": {
+            "description": "Complete committed roster, current passwords and PNG logos; never cache",
+            "content": {
+              "application/zip": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Import a complete roster first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Export failed; no partial archive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Export worker busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v2/health": {
       "get": {
         "operationId": "getHealth",
@@ -1286,7 +1358,7 @@
           {
             "name": "import_id",
             "in": "path",
-            "description": "Canonical lowercase hyphenated UUIDv7 import candidate ID.",
+            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CanonicalUuidV7"
@@ -1362,7 +1434,7 @@
           {
             "name": "import_id",
             "in": "path",
-            "description": "Canonical lowercase hyphenated UUIDv7 import candidate ID.",
+            "description": "Canonical lowercase hyphenated `UUIDv7` import candidate ID.",
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/CanonicalUuidV7"
@@ -1465,6 +1537,334 @@
             "sessionCookie": []
           }
         ]
+      }
+    },
+    "/api/v2/imports/{import_id}/organizations": {
+      "get": {
+        "operationId": "listCandidateOrganizationLogos",
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending school ID mapping and current source image status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrganizationLogoResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Candidate unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Cannot read schools or logo directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Image workers busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/imports/{import_id}/organizations/{organization_id}/logo": {
+      "get": {
+        "operationId": "getCandidateOrganizationLogo",
+        "parameters": [
+          {
+            "name": "import_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          },
+          {
+            "name": "organization_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending school's raster image; SVG is rendered to PNG",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Candidate, school or unique logo unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Logo read or decoding failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Image workers busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/organizations": {
+      "get": {
+        "operationId": "listOrganizationLogos",
+        "responses": {
+          "200": {
+            "description": "All committed schools and current source image status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OrganizationLogoResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Cannot read schools or logo directory",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Image workers busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/organizations/{organization_id}/logo": {
+      "get": {
+        "operationId": "getOrganizationLogo",
+        "parameters": [
+          {
+            "name": "organization_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": ["string", "null"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current raster image; SVG is rendered to PNG",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "$ref": "#/components/schemas/Download"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "Image content unchanged"
+          },
+          "404": {
+            "description": "School or unique logo unavailable",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Logo read or decoding failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Image workers busy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v2/provisioning-window": {
@@ -2054,6 +2454,10 @@
         },
         "additionalProperties": false
       },
+      "Download": {
+        "type": "string",
+        "format": "binary"
+      },
       "EnrollmentReviewResponse": {
         "type": "object",
         "description": "Non-secret evidence awaiting an Administrator decision in this process.",
@@ -2564,6 +2968,49 @@
           }
         },
         "additionalProperties": false
+      },
+      "OrganizationLogoResponse": {
+        "type": "object",
+        "required": [
+          "organization_id",
+          "name_zh",
+          "name_en",
+          "country",
+          "status",
+          "files",
+          "detail"
+        ],
+        "properties": {
+          "country": {
+            "type": "string"
+          },
+          "detail": {
+            "type": ["string", "null"]
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "name_en": {
+            "type": "string"
+          },
+          "name_zh": {
+            "type": "string"
+          },
+          "organization_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/OrganizationLogoStatus"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OrganizationLogoStatus": {
+        "type": "string",
+        "enum": ["available", "missing", "ambiguous", "invalid"]
       },
       "ProvisioningWindowRequest": {
         "type": "object",

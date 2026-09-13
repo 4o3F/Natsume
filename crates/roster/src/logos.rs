@@ -15,7 +15,7 @@ use std::{
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
 use resvg::{tiny_skia, usvg};
 
-use crate::Organization;
+use rustix::fs::{Mode, OFlags};
 
 const MAX_LOGO_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_LOGO_DIMENSION: u32 = 4096;
@@ -59,9 +59,9 @@ impl LogoDirectory {
 
     /// Match either complete school name, without aliases or punctuation folding.
     #[must_use]
-    pub fn resolve(&self, organization: &Organization) -> LogoMatch {
+    pub fn resolve(&self, name_zh: &str, name_en: &str) -> LogoMatch {
         let mut candidates = Vec::new();
-        for name in [organization.name_zh(), organization.name_en()] {
+        for name in [name_zh, name_en] {
             if !name.is_empty()
                 && let Some(paths) = self.files.get(std::ffi::OsStr::new(name))
             {
@@ -87,6 +87,7 @@ pub enum LogoError {
     Dimensions,
     Decode(image::ImageError),
     Svg(usvg::Error),
+    Encode(String),
     SvgResources,
     SvgFont,
 }
@@ -104,6 +105,7 @@ impl fmt::Display for LogoError {
                 f.write_str("image exceeds 4096 pixels per side or 4194304 pixels in total")
             }
             Self::Decode(error) => write!(f, "cannot decode image: {error}"),
+            Self::Encode(error) => write!(f, "cannot encode PNG: {error}"),
             Self::Svg(error) => write!(f, "cannot parse SVG: {error}"),
             Self::SvgResources => f.write_str("SVG images must be embedded, valid PNG, JPEG or WebP within the logo limits; external files and URLs are not loaded"),
             Self::SvgFont => f.write_str("SVG text has no usable font; install the required fonts or convert the text to paths"),
@@ -128,7 +130,87 @@ impl Error for LogoError {
 /// Rejects unreadable or nonregular files, unsupported image content,
 /// malformed image data, and images exceeding the documented limits.
 pub fn validate_logo(path: &Path) -> Result<(), LogoError> {
-    let metadata = fs::symlink_metadata(path).map_err(LogoError::Read)?;
+    read_logo(path).map(|_| ())
+}
+
+/// A validated logo, decoded once for HTTP delivery or PNG export.
+pub struct DecodedLogo(LogoContent);
+
+enum LogoContent {
+    Raster {
+        source: Vec<u8>,
+        format: ImageFormat,
+        image: DynamicImage,
+    },
+    Svg(tiny_skia::Pixmap),
+}
+
+/// The actual image bytes and MIME type, independent of the source extension.
+pub struct LogoImage {
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+impl DecodedLogo {
+    /// Preserve raster source bytes; rasterize SVG for safe browser delivery.
+    ///
+    /// # Errors
+    /// Returns PNG encoding failures for SVG sources.
+    pub fn into_http(self) -> Result<LogoImage, LogoError> {
+        match self.0 {
+            LogoContent::Raster { source, format, .. } => Ok(LogoImage {
+                bytes: source,
+                content_type: format.to_mime_type(),
+            }),
+            LogoContent::Svg(image) => Ok(LogoImage {
+                bytes: image
+                    .encode_png()
+                    .map_err(|error| LogoError::Encode(error.to_string()))?,
+                content_type: "image/png",
+            }),
+        }
+    }
+
+    /// Encode a PNG without resizing, cropping, or changing source files.
+    ///
+    /// # Errors
+    /// Returns PNG encoding failures.
+    pub fn into_png(self) -> Result<Vec<u8>, LogoError> {
+        match self.0 {
+            LogoContent::Raster { image, .. } => {
+                let mut output = Cursor::new(Vec::new());
+                image
+                    .write_to(&mut output, ImageFormat::Png)
+                    .map_err(|error| LogoError::Encode(error.to_string()))?;
+                Ok(output.into_inner())
+            }
+            LogoContent::Svg(image) => image
+                .encode_png()
+                .map_err(|error| LogoError::Encode(error.to_string())),
+        }
+    }
+}
+
+/// Read and decode bounded image content without following symlinks.
+///
+/// # Errors
+/// Rejects unreadable/nonregular files, malformed or unsupported content and
+/// images exceeding the same byte, dimension and resource limits as preflight.
+pub fn read_logo(path: &Path) -> Result<DecodedLogo, LogoError> {
+    let descriptor = rustix::fs::open(
+        path,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| {
+        if error == rustix::io::Errno::LOOP {
+            LogoError::NotRegularFile
+        } else {
+            LogoError::Read(error.into())
+        }
+    })?;
+    let file = File::from(descriptor);
+    let metadata = file.metadata().map_err(LogoError::Read)?;
     if !metadata.is_file() {
         return Err(LogoError::NotRegularFile);
     }
@@ -136,21 +218,24 @@ pub fn validate_logo(path: &Path) -> Result<(), LogoError> {
         return Err(LogoError::TooLarge);
     }
     let mut bytes = Vec::new();
-    File::open(path)
-        .map_err(LogoError::Read)?
-        .take(MAX_LOGO_BYTES + 1)
+    file.take(MAX_LOGO_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(LogoError::Read)?;
     if bytes.len() as u64 > MAX_LOGO_BYTES {
         return Err(LogoError::TooLarge);
     }
-    match image::guess_format(&bytes) {
-        Ok(format) => validate_raster(&bytes, format),
-        Err(_) => render_svg(&bytes).map(|_| ()),
-    }
+    let content = match image::guess_format(&bytes) {
+        Ok(format) => LogoContent::Raster {
+            image: decode_raster(&bytes, format)?,
+            source: bytes,
+            format,
+        },
+        Err(_) => LogoContent::Svg(render_svg(&bytes)?),
+    };
+    Ok(DecodedLogo(content))
 }
 
-fn validate_raster(bytes: &[u8], format: ImageFormat) -> Result<(), LogoError> {
+fn decode_raster(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, LogoError> {
     if !matches!(
         format,
         ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP
@@ -164,8 +249,7 @@ fn validate_raster(bytes: &[u8], format: ImageFormat) -> Result<(), LogoError> {
     let decoder = reader.into_decoder().map_err(LogoError::Decode)?;
     let (width, height) = decoder.dimensions();
     validate_dimensions(width, height)?;
-    DynamicImage::from_decoder(decoder).map_err(LogoError::Decode)?;
-    Ok(())
+    DynamicImage::from_decoder(decoder).map_err(LogoError::Decode)
 }
 
 fn validate_dimensions(width: u32, height: u32) -> Result<(), LogoError> {
@@ -213,8 +297,7 @@ fn render_svg(bytes: &[u8]) -> Result<tiny_skia::Pixmap, LogoError> {
             }),
             resolve_data: Box::new(|_, data, _| {
                 let kind = image::guess_format(&data).ok().and_then(|format| {
-                    if data.len() as u64 > MAX_LOGO_BYTES || validate_raster(&data, format).is_err()
-                    {
+                    if data.len() as u64 > MAX_LOGO_BYTES || decode_raster(&data, format).is_err() {
                         return None;
                     }
                     match format {

@@ -180,6 +180,7 @@ https = "127.0.0.1:8443"
 [storage]
 database = "{root}/natsume.db"
 root_key = "{root}/keys/server-root.key"
+organization_logos = "/var/lib/natsume-server/organization-logos"
 [tls]
 certificate = "{root}/keys/server-tls-leaf.der"
 private_key = "{root}/keys/server-tls-key.pk8"

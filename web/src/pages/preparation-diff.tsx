@@ -22,16 +22,6 @@ function Names({ value }: { value: { name_zh: string; name_en: string } }) {
   );
 }
 
-const organizationColumns: ColumnDef<Organization>[] = [
-  { accessorKey: "organization_id", header: "INST ID", enableSorting: true },
-  {
-    id: "name",
-    header: "School",
-    cell: ({ row }) => <Names value={row.original} />,
-  },
-  { accessorKey: "country", header: "Country" },
-];
-
 function SchoolDetails({ value }: { value: Organization | null }) {
   return value ? (
     <div className="space-y-1">
@@ -150,22 +140,6 @@ export function RosterDiff({ diff }: { diff: Diff }) {
           />
         </div>
       </section>
-      <details className="space-y-2" open>
-        <summary className="cursor-pointer font-medium">
-          School ID mapping ({diff.organizations.length})
-        </summary>
-        <p className="text-sm text-muted-foreground">
-          IDs below apply after this import is committed. Existing schools keep
-          their IDs.
-        </p>
-        <div className="max-h-96 overflow-auto">
-          <DataTable
-            columns={organizationColumns}
-            data={diff.organizations}
-            getRowId={(row) => row.organization_id}
-          />
-        </div>
-      </details>
     </>
   );
 }

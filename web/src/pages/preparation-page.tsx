@@ -31,6 +31,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PreparationLogos } from "@/pages/preparation-logos";
 import { RosterDiff } from "@/pages/preparation-diff";
 import type { PreparationPreview } from "@/pages/preparation-store";
 
@@ -194,6 +195,7 @@ export function PreparationPage() {
         queryClient.invalidateQueries({ queryKey: ["seats"] }),
         queryClient.invalidateQueries({ queryKey: ["accounts"] }),
         queryClient.invalidateQueries({ queryKey: ["bindings"] }),
+        queryClient.invalidateQueries({ queryKey: ["organization-logos"] }),
       ]);
     },
     onError: handleMutationError,
@@ -318,6 +320,7 @@ export function PreparationPage() {
           }}
         />
       )}
+      <PreparationLogos />
     </div>
   );
 }
@@ -385,6 +388,10 @@ function PendingImportCard({
         </div>
 
         <RosterDiff diff={pending.diff} />
+        <PreparationLogos
+          key={pending.candidate_id}
+          candidateId={pending.candidate_id}
+        />
 
         <section className="space-y-2" aria-labelledby="seat-changes-heading">
           <h2 id="seat-changes-heading" className="font-medium">

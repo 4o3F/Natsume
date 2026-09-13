@@ -11,7 +11,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, setDeviceSessionForeground, terminateDeviceSession, getDeviceHome, resetDeviceHome, getDeviceConvergence.\nDeclared but not mounted in WP8 operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -28,6 +28,11 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::contest::seat::list_seats,
         crate::http::handler::contest::account::list_accounts,
         crate::http::handler::contest::binding::list_bindings,
+        crate::http::handler::contest::organization::list_organizations,
+        crate::http::handler::contest::organization::list_candidate_organizations,
+        crate::http::handler::contest::organization::organization_logo,
+        crate::http::handler::contest::organization::candidate_logo,
+        crate::http::handler::contest::organization::export_domjudge,
         crate::http::handler::import::get_import,
         crate::http::handler::import::create_import,
         crate::http::handler::import::get_template,

@@ -244,6 +244,23 @@ impl ApiError {
         }
     }
 
+    pub(super) fn from_export(error: &crate::component::contest::ExportError) -> Self {
+        use crate::component::contest::ExportError;
+        let mut response = match error {
+            ExportError::Busy => Self::unavailable("roster_export_busy"),
+            ExportError::IncompleteRoster => Self::conflict("roster_export_incomplete"),
+            ExportError::LogoUnavailable => Self::not_found("organization_logo_unavailable"),
+            ExportError::Persistence => Self::internal_error("roster_export_persistence"),
+            ExportError::Vault => Self::internal_error("roster_export_vault"),
+            ExportError::LogoDirectory => Self::internal_error("organization_logo_directory"),
+            ExportError::Logo { .. } => Self::internal_error("organization_logo_invalid"),
+            ExportError::Archive => Self::internal_error("roster_export_archive"),
+            ExportError::Worker => Self::internal_error("roster_export_worker"),
+        };
+        response.title = error.to_string().into();
+        response
+    }
+
     fn new(
         status: StatusCode,
         title: &'static str,

@@ -426,6 +426,7 @@ level = "info"
 [storage]
 database = "/var/lib/natsume-server/natsume.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
+organization_logos = "/var/lib/natsume-server/organization-logos"
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
@@ -553,13 +554,41 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
 填写 DOMjudge 队伍账号和当前密码；account、seat 各自唯一。学校编号由 Server 生成，无需预填。文件包含密码，在 Server 受控目录保存时设为 0600，不提交 Git。每次上传完整名单；热身转正式赛只修改 password，其余各行也一并上传。
 
 1. 选择 XLSX（最大 8 MiB），点击 **Create preview**。
-2. 核对 **Team changes / School changes / School ID mapping**，检查队伍、中英文名称、类别和 INST ID。
+2. 核对 **Team changes / School changes / Preview school logos**，检查队伍、中英文名称、类别和 INST ID。
 3. 核对账号新增／移除、**Passwords changed**、**Seat changes / Mapping changes** 和 **Binding impacts**。这里只显示密码变化的账号名。
 4. 删除已绑定的工位会阻止提交，需要先通过 **Bindings** 解绑；其他资料变化会列出受影响设备，绑定保留在原工位。
 5. 点击 **Commit import** → **Confirm commit**。整份名单原子生效；完全相同的文件不改业务数据，只有实际改密账号推进凭据 revision。队伍资料变化不切换设备前台会话。
 6. 在 **Seats / Accounts** 核对数量与映射。刷新或退出后需要 **Discard preview** 再上传；普通页面内导航仍保留审核过的文件。
 
-当前导入不要求 Logo 文件。图片目录接入、完整 DOMjudge ZIP 和 Client waiting 展示在后续配套阶段交付。
+当前源码已提供 Logo 目录、网页观测和完整 DOMjudge ZIP。Client waiting 展示仍待下一配套阶段交付。本节与上面的新版 XLSX 一样，尚不属于 v2.0.4 Release。
+
+在同一份 Server config.toml 的 `[storage]` 中设置 `organization_logos`（示例已列出）。首次配置路径需要重启 Server；以后补图或替换源文件无需重启或重新导入名单。目录可暂时不存在，导入仍可完成。
+
+**执行位置：Server 管理员终端。**准备目录并复制已按完整学校中文名或英文名命名的源图；下面的 `./organization-logos/` 是部署方已准备好的本地目录：
+
+```bash
+sudo install -d -o root -g natsume-server -m 0750 \
+  /var/lib/natsume-server/organization-logos
+sudo find ./organization-logos -maxdepth 1 -type f \
+  -exec install -o root -g natsume-server -m 0640 -t \
+  /var/lib/natsume-server/organization-logos -- {} +
+sudo -u natsume-server -- test -r /var/lib/natsume-server/organization-logos
+sudo -u natsume-server -- test -x /var/lib/natsume-server/organization-logos
+```
+
+候选后缀为 PNG/JPG/JPEG/WebP/SVG（大小写均可）；内容实际为 PNG 或 SVG 的 `.webp` 文件也能使用。匹配必须唯一：同一学校不要同时留中文名／英文名两份或多种格式。只读取直接子文件，拒绝符号链接。单文件最多 8 MiB、每边最多 4096 像素、总计最多 4194304 像素。SVG 不读取外部资源；含文字的 SVG 需要 Server 安装对应字体，推荐将文字转路径以固定效果。可先按共享库文档运行离线预检。
+
+在 Preparation Center 核对 **Preview school logos** 或 **Committed roster & DOMjudge export** 的学校 ID、缩略图、源文件与状态。用搜索、**Problems** 筛选缺失／歧义／损坏，用 **Refresh logos** 重新读取目录；刷新保留表格滚动位置。原图按校名保存，不需要自行生成 INST 命名副本。替换单图时先写入不参与匹配的临时文件，再在同目录原子重命名覆盖，避免请求恰好读到半写入文件。
+
+提交名单后，管理员点击 **Download DOMjudge ZIP**。即使存在待审核名单，下载内容也只取当前已提交的完整名单；设备分页、是否绑定均不影响结果。ZIP 包含：
+
+- `groups.json`、`organizations.json`、`teams.json`、`accounts.yaml`；
+- `README.md`（导入顺序、命令、图片部署和学校／源文件对照）；
+- `logos/INST-xxx.png`（当前名单所有可用校徽，按实际内容转为 PNG）。
+
+DOMjudge 使用新版 JSON／YAML 入口按 groups → organizations → teams → accounts 顺序导入；将 `logos/` 内容复制到 DOMjudge 的 `webapp/public/images/affiliations/`，保留 INST 文件名并赋予 Web 服务读权限。详见包内 README。不使用 legacy TSV。缺图／歧义会在 README 列明，其余内容照常导出；匹配到的图片损坏、不可读或超限则整包失败，页面显示学校和文件原因。
+
+ZIP 包含当前明文密码，应保存在受控目录；Server 不落地保存，浏览器正常下载，不写入 localStorage/sessionStorage。密码切换后重新导出并在 DOMjudge 导入 accounts，实际测试队伍登录；Natsume 不会自动修改 DOMjudge。数据库／vault 和源图片目录需要分别备份。
 
 ### 5.3 检查注册窗口（可选 API 会话）
 

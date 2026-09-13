@@ -7,24 +7,7 @@ use crate::vault::VaultSession;
 
 use super::{ImportError, baseline::ImportBaseline};
 
-/// Non-secret school facts; the HTTP adapter formats the persistent sequence as INST-xxx.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct OrganizationDetails {
-    pub(crate) organization_id: i64,
-    pub(crate) name_zh: String,
-    pub(crate) name_en: String,
-    pub(crate) country: String,
-}
-
-impl OrganizationDetails {
-    pub(super) fn key(&self) -> &str {
-        if self.name_zh.is_empty() {
-            &self.name_en
-        } else {
-            &self.name_zh
-        }
-    }
-}
+pub(crate) use crate::component::contest::OrganizationDetails;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct TeamDetails {
