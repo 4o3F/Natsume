@@ -2,7 +2,8 @@ use natsume_device_protocol::generated::{
     BindingAccessTarget, BindingNegotiationIntent, ConcreteTargetState, ForegroundTarget,
     GatewayCredentialIntent, GatewayTarget, HomeActualState, HomeState, HomeTarget,
     RuntimeConfigActualState, RuntimeConfigState, RuntimeConfigTarget, ServerIntentState,
-    SessionControlActualState, SessionControlTarget, SessionState,
+    SessionControlActualState, SessionControlTarget, SessionForeground as WireForeground,
+    SessionState,
 };
 use uuid::Uuid;
 
@@ -372,6 +373,77 @@ async fn disconnected_recovery_finishes_only_captured_work()
     assert_eq!(state.termination_calls[0], state.termination_calls[1]);
     assert_eq!(state.termination_calls[1].logind_session_id, "c2");
     state.assert_blocked();
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnected_home_recovery_returns_from_greeter_to_waiting()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = fixture(HelperState {
+        foreground: Some(SessionForeground::Greeter),
+        session_after_home: Some(GraphicalSessionState::None),
+        progress: Some(HomeResetProgress {
+            reset_epoch: 8,
+            phase: HomeResetPhase::Prepared,
+        }),
+        ..HelperState::default()
+    })
+    .await?;
+    for _ in 0..2 {
+        let actual = fixture
+            .snapshots
+            .recover_local()
+            .await?
+            .actual
+            .ok_or("missing actual")?;
+        assert_eq!(
+            actual.home.ok_or("missing Home")?.completed_reset_epoch,
+            Some(8)
+        );
+        let session = actual.session_control.ok_or("missing Session")?;
+        assert_eq!(session.foreground, i32::from(WireForeground::Waiting));
+        assert!(session.waiting_ready);
+        assert!(!session.contest_ready);
+    }
+    let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
+    assert_eq!(state.home_calls, [8]);
+    assert_eq!(
+        state.activation_calls,
+        [(
+            natsume_local_control_api::SessionRole::Waiting,
+            waiting_session()
+        )]
+    );
+    assert!(state.preparation_calls.is_empty());
+    assert!(state.termination_calls.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn disconnected_home_recovery_preserves_other_foregrounds_and_pending_login()
+-> Result<(), Box<dyn std::error::Error>> {
+    for (session, foreground) in [
+        (GraphicalSessionState::Running, SessionForeground::Contest),
+        (GraphicalSessionState::None, SessionForeground::Other),
+        (GraphicalSessionState::Starting, SessionForeground::Greeter),
+        (GraphicalSessionState::Ambiguous, SessionForeground::Greeter),
+    ] {
+        let fixture = fixture(HelperState {
+            foreground: Some(foreground),
+            session_after_home: Some(session),
+            progress: Some(HomeResetProgress {
+                reset_epoch: 8,
+                phase: HomeResetPhase::Prepared,
+            }),
+            ..HelperState::default()
+        })
+        .await?;
+        fixture.snapshots.recover_local().await?;
+        let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
+        assert_eq!(state.foreground, Some(foreground));
+        assert!(state.activation_calls.is_empty());
+        assert!(state.preparation_calls.is_empty());
+    }
     Ok(())
 }
 

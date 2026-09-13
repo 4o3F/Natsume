@@ -1,7 +1,8 @@
 //! Coordinates Session and Home maintenance before selecting the foreground presentation.
 
 use natsume_device_protocol::generated::{
-    ClientStateSnapshot, HomeActualState, HomeState, SessionControlActualState, SessionState,
+    ClientStateSnapshot, HomeActualState, HomeState, SessionControlActualState, SessionForeground,
+    SessionState,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -35,7 +36,21 @@ impl SnapshotReconciler {
             && session.actual.session_state != i32::from(SessionState::Terminating)
             && session.actual.session_state != i32::from(SessionState::Error)
         {
-            self.session.prepare_boot(None).await?;
+            let boot_prepared = self.session.prepare_boot(None).await?;
+            if boot_prepared && home.actual.completed_reset_epoch.is_some() {
+                // GDM may select its greeter while the captured contest is
+                // drained. The boot fence is already complete on a later reset;
+                // return to waiting once Home is safe and no login is pending.
+                // Preserve existing contest and administrator sessions offline.
+                let observed = self.session.observe().await?;
+                if observed.session_state == i32::from(SessionState::None)
+                    && observed.foreground == i32::from(SessionForeground::Greeter)
+                {
+                    self.session
+                        .waiting_foreground(&CancellationToken::new())
+                        .await?;
+                }
+            }
         }
         self.observe(None).await
     }
