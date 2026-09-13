@@ -1,0 +1,29 @@
+[package]
+name = "natsume-roster"
+description = "Natsume roster input and offline school logo checks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "natsume-check-logos"
+path = "src/bin/check-logos.rs"
+
+[dependencies]
+calamine.workspace = true
+clap.workspace = true
+image.workspace = true
+resvg.workspace = true
+secrecy.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true

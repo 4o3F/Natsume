@@ -8,6 +8,7 @@ members = [
   "client/session-agent",
   "crates/device-protocol",
   "crates/local-control-api",
+  "crates/roster",
 ]
 default-members = [
   "server",
@@ -16,6 +17,7 @@ default-members = [
   "client/session-agent",
   "crates/device-protocol",
   "crates/local-control-api",
+  "crates/roster",
 ]
 
 [workspace.package]
@@ -29,6 +31,7 @@ publish = false
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "matched-path", "tokio", "ws"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+calamine = { version = "0.36.1", default-features = false }
 chacha20poly1305 = { version = "0.11", default-features = false, features = ["alloc", "zeroize"] }
 clap = { version = "4", default-features = false, features = ["derive", "std", "help", "usage", "error-context"] }
 cookie = { version = "=0.18.1", default-features = false }
@@ -39,6 +42,8 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 getrandom = { version = "0.4", default-features = false }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 hkdf = "0.13"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+resvg = { version = "0.46", default-features = false, features = ["text", "system-fonts", "raster-images"] }
 opentelemetry = { version = "0.32", default-features = false, features = ["trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["trace", "grpc-tonic"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["trace"] }
@@ -81,6 +86,7 @@ uuid = { version = "1", features = ["serde", "v5", "v7"] }
 x509-parser = { version = "0.18", default-features = false }
 zeroize = { version = "1", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["option-as-array", "p2p", "tokio"] }
+zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

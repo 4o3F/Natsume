@@ -4,6 +4,7 @@ Only stable multi-consumer contracts live here:
 
 - `device-protocol`: Protobuf wire schema, open ErrorCode-token grammar and Rust facade for Device Control;
 - `local-control-api`: typed D-Bus values/interfaces, desktop-only Session lock, no Caddy mutation;
+- `roster`: fixed XLSX roster input and local school logo checks, shared with the offline checker; Server import integration is pending;
 - `machine-identity`: pure candidate derivation and startup comparison; no Linux I/O, installation instance or alias graph.
 
 Public error codes are owned by the boundary that emits them. HTTP mappings stay
