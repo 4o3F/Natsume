@@ -376,6 +376,143 @@ test("navigation retains the exact reviewed workbook while metadata remains secr
 });
 
 for (const width of [1024, 1440]) {
+  test(`import table headers stay visible while scrolling at ${width}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await mockPreparationApi(page, { initialPending: true });
+    const roster = Array.from({ length: 80 }, (_, index) => {
+      const number = String(index + 1).padStart(3, "0");
+      return {
+        ...team,
+        account: `team-${number}`,
+        seat: `A-${number}-${"W".repeat(56)}`,
+        name_zh: `示例参赛队伍 ${number}`,
+        organization_id: `INST-${number}`,
+      };
+    });
+    const schools = roster.map((team) => ({
+      ...school,
+      organization_id: team.organization_id,
+      name_zh: `示例大学 ${team.organization_id}`,
+    }));
+    const pending = {
+      ...pendingSummary,
+      diff: {
+        ...diff,
+        accounts_added: roster.map((team) => team.account),
+        accounts_removed: [],
+        passwords_changed: [],
+        organizations: schools,
+        affected_account_count: roster.length,
+        unchanged_count: 0,
+        team_changes: roster.map((team) => ({
+          account: team.account,
+          current: null,
+          candidate: team,
+        })),
+        organization_changes: schools.map((school) => ({
+          current: null,
+          candidate: school,
+        })),
+        seats_added: roster.map((team) => team.seat),
+        seats_removed: [],
+        mappings_changed: roster.map((team) => ({
+          seat_code: team.seat,
+          current_domjudge_username: null,
+          candidate_domjudge_username: team.account,
+        })),
+        binding_impacts: roster.map((team, index) => ({
+          seat_code: team.seat,
+          device_id: `01956789-abcd-7ef0-8123-${index.toString(16).padStart(12, "0")}`,
+          blocks_commit: false,
+        })),
+      },
+    };
+    await page.route("**/api/v2/imports", (route) => {
+      expect(route.request().method()).toBe("GET");
+      return fulfillJson(route, 200, { pending });
+    });
+    await page.route(
+      `**/api/v2/imports/${candidateId}/organizations`,
+      (route) => {
+        expect(route.request().method()).toBe("GET");
+        return fulfillJson(
+          route,
+          200,
+          schools.map((school) => ({
+            ...school,
+            status: "missing",
+            files: [],
+            detail: null,
+          })),
+        );
+      },
+    );
+    await page.goto("/preparation");
+    const areas = [
+      page.getByRole("region", { name: "Team changes" }),
+      page.getByRole("region", { name: "School changes" }),
+      page.getByRole("region", { name: "Seat changes", exact: true }),
+      page.getByRole("region", { name: "Mapping changes", exact: true }),
+      page.getByRole("alert").filter({ hasText: "Binding impacts" }),
+      page.getByTestId("preview-logos"),
+    ];
+    for (const [index, area] of areas.entries()) {
+      const scroller = area.locator('[data-slot="table-container"]');
+      await expect(scroller.getByRole("row")).toHaveCount(81);
+      await scroller.evaluate((element) =>
+        element.scrollIntoView({ block: "center" }),
+      );
+      const firstHeader = scroller.getByRole("columnheader").first();
+      const before = await firstHeader.boundingBox();
+      const beforeRow = await scroller
+        .locator("tbody tr")
+        .first()
+        .boundingBox();
+      const movement = await scroller.evaluate((element) => {
+        element.scrollTop = element.clientHeight * 2;
+        element.scrollLeft = Math.min(
+          180,
+          element.scrollWidth - element.clientWidth,
+        );
+        return { top: element.scrollTop, left: element.scrollLeft };
+      });
+      expect(movement.top).toBeGreaterThan(0);
+      if (index === 0 && width === 1024)
+        expect(movement.left).toBeGreaterThan(0);
+      await expect
+        .poll(async () => {
+          const header = await firstHeader.boundingBox();
+          const container = await scroller.boundingBox();
+          return Math.abs(header!.y - container!.y);
+        })
+        .toBeLessThan(2);
+      const after = await firstHeader.boundingBox();
+      const afterRow = await scroller.locator("tbody tr").first().boundingBox();
+      expect(Math.abs(before!.x - after!.x - movement.left)).toBeLessThan(2);
+      expect(beforeRow!.y - afterRow!.y).toBeGreaterThan(0);
+      expect(
+        await scroller.evaluate((element) => {
+          const container = element.getBoundingClientRect();
+          const header = element.querySelector("thead")!;
+          const bounds = header.getBoundingClientRect();
+          return header.contains(
+            document.elementFromPoint(
+              container.x + container.width / 2,
+              bounds.y + bounds.height / 2,
+            ),
+          );
+        }),
+      ).toBe(true);
+      if (index === 0) {
+        await area.screenshot({
+          path: testInfo.outputPath("team-changes-scrolled.png"),
+        });
+      }
+    }
+  });
+
   test(`roster preview fits a ${width}-wide screen`, async ({
     page,
   }, testInfo) => {
@@ -436,7 +573,9 @@ for (const width of [1024, 1440]) {
     );
     await page.goto("/preparation");
     await expect(page.getByText("240 schools", { exact: true })).toBeVisible();
-    const table = page.getByTestId("committed-logos");
+    const table = page
+      .getByTestId("committed-logos")
+      .locator('[data-slot="table-container"]');
     await expect(table.getByRole("row")).toHaveCount(241);
     await page.getByRole("button", { name: "Problems (80)" }).click();
     await expect(table.getByRole("row")).toHaveCount(81);
@@ -456,6 +595,7 @@ for (const width of [1024, 1440]) {
       element.scrollTop = element.scrollHeight;
     });
     const scrollTop = await table.evaluate((element) => element.scrollTop);
+    expect(scrollTop).toBeGreaterThan(0);
     await page.getByRole("button", { name: "Refresh logos" }).click();
     await expect
       .poll(() => table.evaluate((element) => element.scrollTop))

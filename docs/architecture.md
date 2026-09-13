@@ -1234,6 +1234,8 @@ SessionUiSnapshot 携带非秘密 WaitingTeam、Daemon 管理的图片路径和 
 
 waiting 使用纯黑背景，中央展示放大的学校 Logo 与双语校名，底栏左侧为双语队名、右侧突出座位号；离线图标与文字固定在右上角。单一语言不重复显示；长名称可换行／滚动，座位号保持可见。Web Accounts 和 Seats 展示同一导入资料的队伍、学校和 Logo，缺图与设备离线分别显示。 未绑定的座位输入页采用暖色双栏，界面统一称“座位 / seat”；自动聚焦输入，Enter、键盘按钮和鼠标共享当前 negotiation/epoch 提交入口，空值禁用。等待确认时隐藏输入；不存在、未关联和已占用座位使用可读提示，不把内部错误码作为产品文案。
 
+Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文字说明和无障碍名称，不维护手写 SVG 路径。导入预览中的队伍、学校、座位、映射、绑定影响及 Logo 表格在同一容器内处理横纵滚动，并固定表头；避免嵌套 overflow 容器使 sticky 失效。高度和尺寸使用 Tailwind 预定义值。
+
 ### 15.3 Desired-state Operator API
 
 旧 `/commands` API和Panel Command模型删除。单组件Operator操作直接调用owning component；

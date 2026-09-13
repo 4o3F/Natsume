@@ -5,6 +5,7 @@ import {
   getSortedRowModel,
   useReactTable,
 } from "@tanstack/react-table";
+import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -21,11 +22,13 @@ export function DataTable<TData, TValue>({
   data,
   rowClassName,
   getRowId,
+  scrollable = false,
 }: {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   rowClassName?: (row: TData) => string;
   getRowId?: (row: TData) => string;
+  scrollable?: boolean;
 }) {
   // React Compiler is not enabled, so this diagnostic has no runtime consequence.
   // If it is enabled, this component must opt out with "use no memo".
@@ -41,8 +44,12 @@ export function DataTable<TData, TValue>({
 
   return (
     <div className="min-w-0 w-full overflow-hidden rounded-md border">
-      <Table>
-        <TableHeader>
+      <Table containerClassName={scrollable ? "isolate max-h-96" : undefined}>
+        <TableHeader
+          className={
+            scrollable ? "sticky top-0 z-10 bg-background shadow-sm" : undefined
+          }
+        >
           {table.getHeaderGroups().map((headerGroup) => (
             <TableRow key={headerGroup.id}>
               {headerGroup.headers.map((header) => (
@@ -70,26 +77,13 @@ export function DataTable<TData, TValue>({
                         header.column.columnDef.header,
                         header.getContext(),
                       )}
-                      <svg
-                        aria-hidden="true"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        className="size-3.5"
-                      >
-                        <path
-                          d={
-                            header.column.getIsSorted() === "asc"
-                              ? "m6 9 6-6 6 6M12 3v18"
-                              : header.column.getIsSorted() === "desc"
-                                ? "m6 15 6 6 6-6M12 3v18"
-                                : "m8 9 4-4 4 4m-8 6 4 4 4-4"
-                          }
-                        />
-                      </svg>
+                      {header.column.getIsSorted() === "asc" ? (
+                        <ArrowUp aria-hidden="true" className="size-3.5" />
+                      ) : header.column.getIsSorted() === "desc" ? (
+                        <ArrowDown aria-hidden="true" className="size-3.5" />
+                      ) : (
+                        <ArrowUpDown aria-hidden="true" className="size-3.5" />
+                      )}
                     </Button>
                   ) : (
                     flexRender(

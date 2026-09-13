@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import {
+  CircleCheck,
+  CircleHelp,
+  ImageOff,
+  RefreshCw,
+  TriangleAlert,
+} from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
@@ -20,22 +27,22 @@ type School = components["schemas"]["OrganizationLogoResponse"];
 const states = {
   available: {
     label: "Available",
-    path: "m8 12 3 3 5-6M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z",
+    icon: CircleCheck,
     color: "text-green-600",
   },
   missing: {
     label: "Missing",
-    path: "m3 3 18 18M3 7v13h17M7 3h14v14M7 17l3-3",
+    icon: ImageOff,
     color: "text-amber-600",
   },
   ambiguous: {
     label: "Ambiguous",
-    path: "M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 4h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0Z",
+    icon: CircleHelp,
     color: "text-amber-600",
   },
   invalid: {
     label: "Invalid",
-    path: "m12 3 10 18H2L12 3Zm0 6v5m0 3h.01",
+    icon: TriangleAlert,
     color: "text-destructive",
   },
 };
@@ -107,10 +114,10 @@ export function PreparationLogos({ candidateId }: { candidateId?: string }) {
         header: "Status",
         enableSorting: true,
         cell: ({ row }) => {
-          const { label, path, color } = states[row.original.status];
+          const { label, icon: Icon, color } = states[row.original.status];
           return (
             <span className={`inline-flex items-center gap-2 ${color}`}>
-              <Icon path={path} />
+              <Icon aria-hidden="true" className="size-4 shrink-0" />
               {label}
             </span>
           );
@@ -194,7 +201,7 @@ export function PreparationLogos({ candidateId }: { candidateId?: string }) {
             disabled={schools.isFetching}
             onClick={() => void schools.refetch()}
           >
-            <Icon path="M20 7v5h-5M4 17v-5h5m-5 0a8 8 0 0 1 14-5m2 5a8 8 0 0 1-14 5" />
+            <RefreshCw aria-hidden="true" className="size-4 shrink-0" />
             Refresh logos
           </Button>
           <span className="text-sm text-muted-foreground">
@@ -207,11 +214,9 @@ export function PreparationLogos({ candidateId }: { candidateId?: string }) {
             {(schools.error || download.error)?.message}
           </p>
         )}
-        <div
-          className="max-h-96 overflow-auto"
-          data-testid={candidateId ? "preview-logos" : "committed-logos"}
-        >
+        <div data-testid={candidateId ? "preview-logos" : "committed-logos"}>
           <DataTable
+            scrollable
             columns={columns}
             data={rows}
             getRowId={(row) => row.organization_id}
@@ -255,27 +260,10 @@ function LogoThumbnail({
           : "No image"
       }
     >
-      <Icon path={states.missing.path} />
+      <ImageOff aria-hidden="true" className="size-4 shrink-0" />
       <span className="sr-only">
         {failedAttempt === attempt ? "Image unavailable" : "No image"}
       </span>
     </span>
-  );
-}
-
-function Icon({ path }: { path: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className="size-4 shrink-0"
-    >
-      <path d={path} />
-    </svg>
   );
 }

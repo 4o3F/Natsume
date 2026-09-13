@@ -397,7 +397,11 @@ function PendingImportCard({
           <h2 id="seat-changes-heading" className="font-medium">
             Seat changes
           </h2>
-          <DataTable columns={seatChangeColumns} data={seatChanges} />
+          <DataTable
+            scrollable
+            columns={seatChangeColumns}
+            data={seatChanges}
+          />
         </section>
 
         <section
@@ -408,6 +412,7 @@ function PendingImportCard({
             Mapping changes
           </h2>
           <DataTable
+            scrollable
             columns={mappingColumns}
             data={pending.diff.mappings_changed}
           />
@@ -427,6 +432,7 @@ function PendingImportCard({
               </p>
               <div className="w-full text-foreground">
                 <DataTable
+                  scrollable
                   columns={bindingColumns}
                   data={pending.diff.binding_impacts}
                 />

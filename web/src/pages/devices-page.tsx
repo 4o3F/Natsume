@@ -1,6 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import {
+  Ban,
+  CircleCheck,
+  CircleHelp,
+  CirclePause,
+  CircleX,
+  Clock3,
+  Link,
+  RefreshCw,
+  Shield,
+  ShieldCheck,
+  TriangleAlert,
+  Unlink,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -39,76 +55,20 @@ type DeviceLifecycleState = Device["state"];
 const DEVICES_KEY = ["devices"] as const;
 
 const statusIcons = {
-  check: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="m8 12 3 3 5-6" />
-    </>
-  ),
-  clock: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
-    </>
-  ),
-  sync: (
-    <path d="M20 7v5h-5M4 17v-5h5m-4-4a8 8 0 0 1 13-2l2 2M4 16l2 2a8 8 0 0 0 13-2" />
-  ),
-  drift: (
-    <>
-      <path d="m12 3 10 18H2Z" />
-      <path d="M12 9v5m0 3v.01" />
-    </>
-  ),
-  failed: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="m9 9 6 6m0-6-6 6" />
-    </>
-  ),
-  pause: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M9 8v8m6-8v8" />
-    </>
-  ),
-  ban: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="m6 6 12 12" />
-    </>
-  ),
-  shield: <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z" />,
-  shieldCheck: (
-    <>
-      <path d="m12 3 8 3v6c0 5-8 9-8 9s-8-4-8-9V6Z" />
-      <path d="m8 11 3 3 5-5" />
-    </>
-  ),
-  wifi: (
-    <>
-      <path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0m-11 4a6 6 0 0 1 8 0" />
-      <circle cx="12" cy="20" r="1" />
-    </>
-  ),
-  wifiOff: (
-    <>
-      <path d="m3 3 18 18M2 8a16 16 0 0 1 3-2m5-1a16 16 0 0 1 12 3M5 12a11 11 0 0 1 4-2m-1 6a6 6 0 0 1 8 0" />
-      <circle cx="12" cy="20" r="1" />
-    </>
-  ),
-  linked: (
-    <path d="m10 13 4-4m-6 6-1 1a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m2 3 1-1a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" />
-  ),
-  unlinked: (
-    <path d="m3 3 18 18m-13-6-1 1a4 4 0 0 1-6-6l3-3m12 2 1-1a4 4 0 0 1 6 6l-3 3M8 2v3M2 8h3m14 7h3m-6 3v3" />
-  ),
-  unknown: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <path d="M9 9a3 3 0 0 1 6 0c0 2-3 2-3 5m0 3v.01" />
-    </>
-  ),
+  check: CircleCheck,
+  clock: Clock3,
+  sync: RefreshCw,
+  drift: TriangleAlert,
+  failed: CircleX,
+  pause: CirclePause,
+  ban: Ban,
+  shield: Shield,
+  shieldCheck: ShieldCheck,
+  wifi: Wifi,
+  wifiOff: WifiOff,
+  linked: Link,
+  unlinked: Unlink,
+  unknown: CircleHelp,
 };
 
 const convergenceIcons = {
@@ -149,6 +109,7 @@ function StatusIcon({
   label: string;
   tone: string;
 }) {
+  const Icon = statusIcons[icon];
   return (
     <span
       role="img"
@@ -156,18 +117,7 @@ function StatusIcon({
       title={label}
       className={`inline-flex size-7 shrink-0 items-center justify-center ${tone}`}
     >
-      <svg
-        aria-hidden="true"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        className="size-4.5"
-      >
-        {statusIcons[icon]}
-      </svg>
+      <Icon aria-hidden="true" className="size-4.5" />
     </span>
   );
 }

@@ -121,24 +121,22 @@ export function RosterDiff({ diff }: { diff: Diff }) {
         <h2 className="font-medium">
           Team changes ({diff.team_changes.length})
         </h2>
-        <div className="max-h-96 overflow-auto">
-          <DataTable
-            columns={teamChangeColumns}
-            data={diff.team_changes}
-            getRowId={(row) => row.account}
-          />
-        </div>
+        <DataTable
+          scrollable
+          columns={teamChangeColumns}
+          data={diff.team_changes}
+          getRowId={(row) => row.account}
+        />
       </section>
       <section aria-label="School changes" className="space-y-2">
         <h2 className="font-medium">
           School changes ({diff.organization_changes.length})
         </h2>
-        <div className="max-h-96 overflow-auto">
-          <DataTable
-            columns={schoolChangeColumns}
-            data={diff.organization_changes}
-          />
-        </div>
+        <DataTable
+          scrollable
+          columns={schoolChangeColumns}
+          data={diff.organization_changes}
+        />
       </section>
     </>
   );
