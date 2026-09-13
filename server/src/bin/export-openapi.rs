@@ -22,19 +22,27 @@ fn export<I>(args: I) -> Result<(), ExportError>
 where
     I: IntoIterator<Item = OsString>,
 {
-    let mut args = args.into_iter();
-    let Some(output_path) = args.next() else {
-        return Err(ExportError::InvalidArguments);
-    };
-    if args.next().is_some() {
-        return Err(ExportError::InvalidArguments);
-    }
-
+    let output_path = parse_output_path(args)?;
     let document = natsume_server::openapi::document();
     let mut encoded = serde_json::to_string_pretty(&document)
         .unwrap_or_else(|_| panic!("OpenAPI document serialization invariant failed"));
     encoded.push('\n');
-    fs::write(PathBuf::from(output_path), encoded).map_err(|_| ExportError::WriteFailed)
+    fs::write(output_path, encoded).map_err(|_| ExportError::WriteFailed)
+}
+
+fn parse_output_path<I>(args: I) -> Result<PathBuf, ExportError>
+where
+    I: IntoIterator<Item = OsString>,
+{
+    let mut args = args.into_iter();
+    let output_path = args
+        .next()
+        .unwrap_or_else(|| OsString::from("web/openapi/natsume.openapi.json"));
+    if args.next().is_some() {
+        return Err(ExportError::InvalidArguments);
+    }
+
+    Ok(PathBuf::from(output_path))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
@@ -52,7 +60,16 @@ mod tests {
     use snafu::Snafu;
     use uuid::Uuid;
 
-    use super::{EXPORT_FAILURE_ID, ExportError, export};
+    use super::{EXPORT_FAILURE_ID, ExportError, export, parse_output_path};
+
+    #[test]
+    fn missing_output_path_uses_web_openapi_document() -> Result<(), ExportError> {
+        assert_eq!(
+            parse_output_path(Vec::<OsString>::new())?,
+            PathBuf::from("web/openapi/natsume.openapi.json")
+        );
+        Ok(())
+    }
 
     #[test]
     fn consecutive_exports_are_stable_with_one_trailing_newline() -> Result<(), TestFailure> {
@@ -74,9 +91,6 @@ mod tests {
 
     #[test]
     fn argument_failures_are_closed_and_redacted() -> Result<(), TestFailure> {
-        let zero = export(Vec::<OsString>::new())
-            .err()
-            .ok_or(TestFailure::InvalidArgumentsWereAccepted)?;
         let path_canary = "openapi-output-path-canary";
         let two = export([
             OsString::from(path_canary),
@@ -84,10 +98,10 @@ mod tests {
         ])
         .err()
         .ok_or(TestFailure::InvalidArgumentsWereAccepted)?;
-        if zero != ExportError::InvalidArguments || two != zero {
+        if two != ExportError::InvalidArguments {
             return Err(TestFailure::ArgumentFailureWasNotTyped);
         }
-        for encoded in [zero.to_string(), format!("{zero:?}")] {
+        for encoded in [two.to_string(), format!("{two:?}")] {
             if encoded.contains(path_canary)
                 || encoded.contains("second-argument-canary")
                 || encoded.contains("serde")
