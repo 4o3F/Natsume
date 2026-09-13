@@ -1,5 +1,12 @@
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useIsMutating,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+
+import type { ColumnDef } from "@tanstack/react-table";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -7,6 +14,13 @@ import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataState } from "@/components/data-state";
+import { DataTable } from "@/components/data-table";
+import {
+  ConvergenceIcon,
+  RefreshCountdown,
+  StatusIcon,
+} from "@/components/device-status";
+import { connections } from "@/components/device-status-style";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -28,15 +42,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+
+import { BulkTargetActions } from "./target-bulk-actions";
+import {
+  submitTarget,
+  type TargetOperation,
+  type TargetSubmission,
+} from "./target-operations";
 
 type Device = components["schemas"]["DeviceResponse"];
-type SessionControl = components["schemas"]["SessionControlResponse"];
-type SessionForeground =
-  components["schemas"]["SessionForegroundRequest"]["foreground_target"];
-type Home = components["schemas"]["HomeResponse"];
 type Convergence = components["schemas"]["DeviceConvergenceResponse"];
-type TargetOperation = SessionForeground | "terminate" | "reset";
 
 const DEVICES_KEY = ["devices"] as const;
 
@@ -44,6 +60,12 @@ export function TargetsPage() {
   const { api } = useSessionScope();
   const session = useSession().data;
   const [deviceId, setDeviceId] = useState("");
+  const [search, setSearch] = useState("");
+  const [results, setResults] = useState<TargetSubmission[]>([]);
+  const singlePending = useIsMutating({ mutationKey: ["device-target"] }) > 0;
+  const bulkPending = useIsMutating({ mutationKey: ["bulk-target"] }) > 0;
+  const targetsPending = singlePending || bulkPending;
+  const panel = useRef<HTMLDivElement>(null);
   const devices = useQuery({
     queryKey: DEVICES_KEY,
     queryFn: async ({ signal }) =>
@@ -53,91 +75,304 @@ export function TargetsPage() {
   const selectedDevice = devices.data?.find(
     (device) => device.device_id === deviceId,
   );
-  return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Targets</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Update the current Session Control and Home targets.
-        </p>
-      </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Device targets</CardTitle>
-          <CardDescription>
-            Select one device before changing its Session Control or Home
-            target.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {devices.isError && (
-            <Alert variant="destructive">
-              <AlertTitle>Refresh failed</AlertTitle>
-              <AlertDescription>
-                <p>
-                  {devices.data
-                    ? "Showing the last successful result; it may be outdated."
-                    : "Device targets are unavailable."}
-                </p>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  disabled={devices.isFetching}
-                  onClick={() => void devices.refetch()}
-                >
-                  Retry
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
-          <DataState
-            isLoading={devices.isLoading}
-            error={devices.data ? null : devices.error}
-            isEmpty={!devices.data?.length}
-            emptyLabel="No devices found."
-          >
-            <div className="space-y-2">
-              <Label htmlFor="target-device">Device</Label>
-              <select
-                id="target-device"
-                className="h-9 w-full rounded-md border bg-transparent px-3 text-sm shadow-xs"
-                value={deviceId}
-                onChange={(event) => setDeviceId(event.target.value)}
+  const isAdmin = session?.role === "admin";
+  useEffect(() => {
+    if (deviceId) panel.current?.scrollIntoView({ block: "start" });
+  }, [deviceId]);
+  const rows = useMemo(() => {
+    const query = search.trim().toLowerCase();
+    return (devices.data ?? []).filter(
+      (device) =>
+        !query ||
+        [seatCode(device), device.device_id, device.machine_hardware_id].some(
+          (value) => value?.toLowerCase().includes(query),
+        ),
+    );
+  }, [devices.data, search]);
+  const columns = useMemo(() => {
+    const columns: ColumnDef<Device>[] = [
+      {
+        id: "seat",
+        header: "Seat",
+        accessorFn: seatCode,
+        enableSorting: true,
+        sortingFn: "alphanumeric",
+        sortUndefined: "last",
+        sortDescFirst: false,
+        cell: ({ getValue }) => (
+          <span className="font-semibold">
+            {getValue<string | undefined>() ?? "—"}
+          </span>
+        ),
+      },
+      {
+        accessorKey: "machine_hardware_id",
+        header: "Device",
+        cell: ({ row }) => {
+          const device = row.original;
+          const connection = connections[device.convergence.connection_state];
+          return (
+            <div className="flex items-center gap-1.5" title={device.device_id}>
+              <StatusIcon
+                {...connection}
+                label={`Connection: ${connection.label}`}
+                tone={
+                  device.state === "enabled"
+                    ? connection.tone
+                    : "text-muted-foreground"
+                }
+              />
+              <code
+                className="text-xs text-muted-foreground"
+                title={device.machine_hardware_id}
               >
-                <option value="">Select a device</option>
-                {devices.data?.map((device) => (
-                  <option key={device.device_id} value={device.device_id}>
-                    {device.machine_hardware_id} ({device.state})
-                  </option>
-                ))}
-              </select>
+                {device.machine_hardware_id.length > 12
+                  ? `${device.machine_hardware_id.slice(0, 8)}…`
+                  : device.machine_hardware_id}
+              </code>
             </div>
-          </DataState>
-
-          {devices.data && (
-            <div className="text-sm text-muted-foreground">
-              <p>
-                Last successful refresh:{" "}
-                {formatTimestamp(devices.dataUpdatedAt)}
-              </p>
-              {devices.isFetching && (
-                <p role="status">Refreshing. Showing previous result.</p>
-              )}
-            </div>
-          )}
-          {selectedDevice && (
-            <DeviceTargets
-              key={deviceId}
-              device={selectedDevice}
-              isAdmin={session?.role === "admin"}
-              previous={devices.isFetching || devices.isError}
+          );
+        },
+      },
+      {
+        accessorKey: "state",
+        header: "Lifecycle",
+        cell: ({ row }) => (
+          <StatusIcon
+            icon={
+              row.original.state === "enabled"
+                ? "check"
+                : row.original.state === "disabled"
+                  ? "pause"
+                  : "ban"
+            }
+            tone={
+              row.original.state === "enabled"
+                ? "text-emerald-700"
+                : "text-muted-foreground"
+            }
+            label={`Lifecycle: ${row.original.state}`}
+          />
+        ),
+      },
+      {
+        id: "foreground-target",
+        header: "Target",
+        cell: ({ row }) =>
+          row.original.convergence.session_control.target?.foreground_target ??
+          "—",
+      },
+      {
+        id: "foreground-actual",
+        header: "Actual",
+        cell: ({ row }) =>
+          row.original.convergence.session_control.actual?.foreground ?? "—",
+      },
+      ...(
+        [
+          ["session_control", "Session"],
+          ["home", "Home"],
+        ] as const
+      ).map(([key, name]): ColumnDef<Device> => ({
+        id: key,
+        header: name,
+        cell: ({ row }) => (
+          <ConvergenceIcon
+            name={
+              devices.isFetching || devices.isError || targetsPending
+                ? `${name} (last known)`
+                : name
+            }
+            status={row.original.convergence[key].status}
+          />
+        ),
+      })),
+    ];
+    if (results.length) {
+      const byDevice = new Map(
+        results.map((result) => [result.deviceId, result]),
+      );
+      columns.push({
+        id: "submission",
+        header: "Last batch",
+        cell: ({ row }) => {
+          const result = byDevice.get(row.original.device_id);
+          if (!result) return "—";
+          return (
+            <StatusIcon
+              icon={result.error ? "failed" : "check"}
+              tone={result.error ? "text-destructive" : "text-emerald-700"}
+              label={
+                result.error
+                  ? `Not confirmed: ${result.error}`
+                  : "Target submitted; check convergence for completion"
+              }
             />
+          );
+        },
+      });
+    }
+    columns.push({
+      id: "actions",
+      header: "Actions",
+      cell: ({ row }) => (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="w-20"
+          aria-pressed={deviceId === row.original.device_id}
+          onClick={() => setDeviceId(row.original.device_id)}
+        >
+          {isAdmin ? "Manage" : "View"}
+        </Button>
+      ),
+    });
+    return columns;
+  }, [
+    deviceId,
+    isAdmin,
+    results,
+    devices.isFetching,
+    devices.isError,
+    targetsPending,
+  ]);
+
+  return (
+    <div className="min-w-0 space-y-6">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Targets</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Manage Session and Home targets for all devices or one seat.
+          </p>
+        </div>
+        <RefreshCountdown
+          updatedAt={Math.max(devices.dataUpdatedAt, devices.errorUpdatedAt)}
+          isFetching={devices.isFetching}
+          isPaused={devices.isPaused}
+          isError={devices.isError}
+        />
+      </div>
+      {devices.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Refresh failed</AlertTitle>
+          <AlertDescription>
+            <p>
+              {devices.data
+                ? "Showing the last successful result; it may be outdated."
+                : "Device targets are unavailable."}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={devices.isFetching}
+              onClick={() => void devices.refetch()}
+            >
+              Retry
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
+      <DataState
+        isLoading={devices.isLoading}
+        error={devices.data ? null : devices.error}
+        isEmpty={!devices.data?.length}
+        emptyLabel="No devices found."
+      >
+        {isAdmin && (
+          <BulkTargetActions
+            devices={devices.data ?? []}
+            results={results}
+            setResults={setResults}
+          />
+        )}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-4">
+            <Input
+              type="search"
+              aria-label="Search devices"
+              placeholder="Find a seat or device"
+              className="max-w-xs"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <p className="text-sm text-muted-foreground">
+              {rows.length} of {devices.data?.length} devices
+            </p>
+          </div>
+          <DataTable
+            columns={columns}
+            data={rows}
+            getRowId={(device) => device.device_id}
+            rowClassName={(device) =>
+              device.state === "enabled"
+                ? connections[device.convergence.connection_state].row
+                : "bg-muted/60 hover:bg-muted"
+            }
+          />
+          {targetsPending && (
+            <p role="status" className="text-sm text-muted-foreground">
+              Targets are being submitted. Displaying last known device states.
+            </p>
           )}
-        </CardContent>
-      </Card>
+          <p className="text-xs text-muted-foreground">
+            Offline devices use warning rows; disabled and revoked devices are
+            gray. Submitted targets are complete only when device convergence
+            confirms them.
+          </p>
+        </div>
+      </DataState>
+      {devices.data && (
+        <div className="text-sm text-muted-foreground">
+          <p>
+            Last successful refresh: {formatTimestamp(devices.dataUpdatedAt)}
+          </p>
+          {devices.isFetching && (
+            <p role="status">Refreshing. Showing previous result.</p>
+          )}
+        </div>
+      )}
+      <div ref={panel}>
+        {selectedDevice && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center justify-between gap-4">
+                <CardTitle>
+                  {seatCode(selectedDevice) ?? "Unbound device"} ·{" "}
+                  {selectedDevice.machine_hardware_id}
+                </CardTitle>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setDeviceId("")}
+                >
+                  Close details
+                </Button>
+              </div>
+              <CardDescription className="break-all font-mono">
+                {selectedDevice.device_id}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <DeviceTargets
+                key={deviceId}
+                device={selectedDevice}
+                isAdmin={isAdmin}
+                previous={devices.isFetching || devices.isError}
+              />
+            </CardContent>
+          </Card>
+        )}
+      </div>
     </div>
   );
+}
+
+function seatCode(device: Device) {
+  const target = device.convergence.binding.target;
+  return target?.state === "bound" ? target.context.seat_code : undefined;
 }
 
 function DeviceTargets({
@@ -152,39 +387,20 @@ function DeviceTargets({
   const { api } = useSessionScope();
   const queryClient = useQueryClient();
   const { session_control: session, home } = device.convergence;
+  const pending =
+    useIsMutating({ mutationKey: ["device-target", device.device_id] }) > 0;
+  const bulkPending = useIsMutating({ mutationKey: ["bulk-target"] }) > 0;
+  const disabled = pending || bulkPending;
   const updateTarget = useMutation({
-    mutationFn: async (operation: TargetOperation) => {
-      const params = { path: { device_id: device.device_id } };
-      switch (operation) {
-        case "waiting":
-        case "contest":
-          return unwrap<SessionControl>(
-            await api.PUT("/api/v2/devices/{device_id}/session-control", {
-              params,
-              body: { foreground_target: operation },
-            }),
-          );
-        case "terminate":
-          return unwrap<SessionControl>(
-            await api.POST(
-              "/api/v2/devices/{device_id}/session-control/actions/terminate",
-              { params },
-            ),
-          );
-        case "reset":
-          return unwrap<Home>(
-            await api.POST("/api/v2/devices/{device_id}/home/actions/reset", {
-              params,
-            }),
-          );
-      }
-    },
+    mutationKey: ["device-target", device.device_id],
+    mutationFn: (operation: TargetOperation) =>
+      submitTarget(api, device.device_id, operation),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
 
-  const showPrevious = previous || updateTarget.isPending;
+  const showPrevious = previous || pending || bulkPending;
   return (
     <div className="space-y-4">
       {updateTarget.error && (
@@ -280,7 +496,7 @@ function DeviceTargets({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={updateTarget.isPending}
+                disabled={disabled}
                 onClick={() => updateTarget.mutate("waiting")}
               >
                 Show waiting screen
@@ -289,7 +505,7 @@ function DeviceTargets({
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={updateTarget.isPending}
+                disabled={disabled}
                 onClick={() => updateTarget.mutate("contest")}
               >
                 Show contest desktop
@@ -298,7 +514,7 @@ function DeviceTargets({
                 label="Terminate"
                 title="Terminate the contest session?"
                 description="End and restart this device's contest session. Home files are preserved. Check its reported state to confirm completion."
-                disabled={updateTarget.isPending}
+                disabled={disabled}
                 onConfirm={() => updateTarget.mutate("terminate")}
               />
             </div>
@@ -334,7 +550,7 @@ function DeviceTargets({
               label="Reset home"
               title="Reset the contest Home?"
               description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
-              disabled={updateTarget.isPending}
+              disabled={disabled}
               onConfirm={() => updateTarget.mutate("reset")}
             />
           )}

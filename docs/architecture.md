@@ -1272,6 +1272,13 @@ Panel展示：
 
 Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
+Targets 页面列出全部 Device，以当前 Binding 的座位号定位，支持排序和搜索，并分别展示
+Session／Home convergence、foreground Target 和 Actual。单台操作通过该行详情进入；
+批量操作覆盖确认框打开时的全部 Enabled Device（包括离线设备），跳过 Disabled／Revoked，
+搜索不缩小批量范围。Web 以最多六个并发请求调用现有单 Device 资源 API，逐台记录提交结果，
+不自动重试 terminate／reset；提交被 Server 接受与设备已收敛分别展示。批量提交期间禁用
+单台变更，有单台请求未结束时禁用批量操作；单台请求状态按 Device 标识隔离。
+
 `DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation，
 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的
 current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。

@@ -1,22 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
-import {
-  Ban,
-  CircleCheck,
-  CircleHelp,
-  CirclePause,
-  CircleX,
-  Clock3,
-  Link,
-  RefreshCw,
-  Shield,
-  ShieldCheck,
-  TriangleAlert,
-  Unlink,
-  Wifi,
-  WifiOff,
-} from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -25,6 +9,15 @@ import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataTable } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
+import {
+  StatusIcon,
+  ConvergenceIcon,
+  RefreshCountdown,
+} from "@/components/device-status";
+import {
+  connections,
+  convergenceIcons,
+} from "@/components/device-status-style";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -53,146 +46,6 @@ type ConvergenceStatus = Convergence["gateway"]["status"];
 type DeviceLifecycleState = Device["state"];
 
 const DEVICES_KEY = ["devices"] as const;
-
-const statusIcons = {
-  check: CircleCheck,
-  clock: Clock3,
-  sync: RefreshCw,
-  drift: TriangleAlert,
-  failed: CircleX,
-  pause: CirclePause,
-  ban: Ban,
-  shield: Shield,
-  shieldCheck: ShieldCheck,
-  wifi: Wifi,
-  wifiOff: WifiOff,
-  linked: Link,
-  unlinked: Unlink,
-  unknown: CircleHelp,
-};
-
-const convergenceIcons = {
-  converged: { icon: "check", tone: "text-emerald-700" },
-  reconciling: { icon: "sync", tone: "text-sky-700" },
-  drifted: { icon: "drift", tone: "text-amber-700" },
-  failed: { icon: "failed", tone: "text-destructive" },
-  awaiting_actual: { icon: "clock", tone: "text-muted-foreground" },
-} as const;
-
-const connections = {
-  active: {
-    icon: "wifi",
-    label: "Online",
-    tone: "text-emerald-700",
-    row: "bg-emerald-500/5 hover:bg-emerald-500/10",
-  },
-  awaiting_fresh_state: {
-    icon: "clock",
-    label: "Connected, awaiting fresh state",
-    tone: "text-amber-700",
-    row: "bg-amber-500/10 hover:bg-amber-500/15",
-  },
-  offline: {
-    icon: "wifiOff",
-    label: "Offline",
-    tone: "text-destructive",
-    row: "bg-destructive/10 hover:bg-destructive/15",
-  },
-} as const;
-
-function StatusIcon({
-  icon,
-  label,
-  tone,
-}: {
-  icon: keyof typeof statusIcons;
-  label: string;
-  tone: string;
-}) {
-  const Icon = statusIcons[icon];
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      title={label}
-      className={`inline-flex size-7 shrink-0 items-center justify-center ${tone}`}
-    >
-      <Icon aria-hidden="true" className="size-4.5" />
-    </span>
-  );
-}
-
-function ConvergenceIcon({
-  name,
-  status,
-}: {
-  name: string;
-  status: ConvergenceStatus;
-}) {
-  return (
-    <StatusIcon
-      {...convergenceIcons[status]}
-      label={`${name}: ${label(status)}`}
-    />
-  );
-}
-
-function RefreshCountdown({
-  updatedAt,
-  isFetching,
-  isPaused,
-  isError,
-}: {
-  updatedAt: number;
-  isFetching: boolean;
-  isPaused: boolean;
-  isError: boolean;
-}) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    // Polling restarts its interval after a response, so align the display ticks.
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [updatedAt]);
-  const seconds = Math.max(
-    0,
-    Math.ceil((updatedAt + LIST_POLL_MS - Math.max(now, updatedAt)) / 1_000),
-  );
-  return (
-    <div
-      role="timer"
-      aria-label="Next device refresh"
-      aria-live="off"
-      title={
-        isError
-          ? "Refresh failed; showing the last received device states."
-          : "Device states refresh automatically."
-      }
-      className="flex min-w-40 shrink-0 items-center justify-end gap-1 text-sm tabular-nums text-muted-foreground"
-    >
-      <StatusIcon
-        icon={
-          isPaused
-            ? "pause"
-            : isFetching
-              ? "sync"
-              : isError
-                ? "failed"
-                : "clock"
-        }
-        tone={isError ? "text-destructive" : "text-muted-foreground"}
-        label="Automatic refresh"
-      />
-      <span>
-        {isPaused
-          ? "Refresh paused"
-          : isFetching
-            ? "Refreshing…"
-            : `${isError ? "Retry" : "Refresh"} in ${seconds}s`}
-      </span>
-    </div>
-  );
-}
 
 export function DevicesPage() {
   const { api } = useSessionScope();

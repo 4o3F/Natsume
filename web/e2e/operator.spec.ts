@@ -604,8 +604,307 @@ async function mockTargets(
 
 async function openTargets(page: Page) {
   await page.goto("/targets");
-  await page.getByLabel("Device").selectOption(device.device_id);
+  await selectTarget(page, device.device_id);
 }
+
+async function selectTarget(page: Page, deviceId: string) {
+  await page
+    .getByRole("row")
+    .filter({ has: page.getByTitle(deviceId, { exact: true }) })
+    .getByRole("button", { name: "Manage", exact: true })
+    .click();
+}
+
+function targetFleet(count = 5) {
+  return Array.from({ length: count }, (_, index) => {
+    const current = structuredClone(device);
+    current.device_id = `01923456-789a-7bcd-8ef0-${index.toString(16).padStart(12, "0")}`;
+    current.machine_hardware_id = `machine-${String(index + 1).padStart(2, "0")}`;
+    current.convergence.binding.target = {
+      state: "bound",
+      context: {
+        ...bindingContext,
+        seat_code: `A-${String(index + 1).padStart(2, "0")}`,
+      },
+    };
+    return current;
+  });
+}
+
+for (const [operation, method, path] of [
+  ["Show waiting screen", "PUT", "session-control"],
+  ["Show contest desktop", "PUT", "session-control"],
+  ["Terminate", "POST", "session-control/actions/terminate"],
+  ["Reset home", "POST", "home/actions/reset"],
+]) {
+  test(`bulk ${operation} includes offline enabled devices and ignores the search filter`, async ({
+    page,
+    context,
+  }) => {
+    const fleet = targetFleet();
+    fleet[1].convergence.connection_state = "offline";
+    fleet[3].state = "disabled";
+    fleet[4].state = "revoked";
+    await mockTargets(context, fleet);
+    const writes: { path: string; method: string; body: unknown }[] = [];
+    await context.route("**/api/v2/devices/**", (route) => {
+      const request = route.request();
+      if (["PUT", "POST"].includes(request.method())) {
+        writes.push({
+          path: new URL(request.url()).pathname,
+          method: request.method(),
+          body: request.postData() ? request.postDataJSON() : null,
+        });
+      }
+      return route.fallback();
+    });
+    await page.goto("/targets");
+    await expect(page.locator("tbody tr")).toHaveCount(5);
+    await expect(page.locator("tbody tr").nth(1)).toHaveClass(
+      /bg-destructive\/10/,
+    );
+    await expect(page.locator("tbody tr").nth(3)).toHaveClass(/bg-muted\/60/);
+    await page.getByRole("searchbox", { name: "Search devices" }).fill("A-01");
+    await expect(page.locator("tbody tr")).toHaveCount(1);
+    const all = page.getByRole("button", {
+      name: `${operation} (all)`,
+      exact: true,
+    });
+    await all.click();
+    const dialog = page.getByRole("alertdialog");
+    await expect(dialog).toHaveAccessibleName(`${operation} on 3 devices?`);
+    await expect(dialog).toContainText("1 offline devices");
+    await expect(dialog).toContainText(
+      "2 disabled or revoked devices are skipped",
+    );
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    expect(writes).toEqual([]);
+    await all.click();
+    await dialog.getByRole("button", { name: "Apply to 3 devices" }).click();
+    await expect(
+      page.getByRole("status").filter({ hasText: `${operation}:` }),
+    ).toContainText("3 submitted, 0 not confirmed, 0 remaining");
+    await expect(all).toBeEnabled();
+    expect(writes.map((write) => write.path).sort()).toEqual(
+      fleet
+        .slice(0, 3)
+        .map((entry) => `/api/v2/devices/${entry.device_id}/${path}`)
+        .sort(),
+    );
+    expect(writes.map((write) => write.method)).toEqual([
+      method,
+      method,
+      method,
+    ]);
+    if (method === "PUT") {
+      expect(writes.map((write) => write.body)).toEqual(
+        Array.from({ length: 3 }, () => ({
+          foreground_target:
+            operation === "Show waiting screen" ? "waiting" : "contest",
+        })),
+      );
+    }
+    await page.getByRole("searchbox", { name: "Search devices" }).clear();
+    await expect(
+      page.getByRole("img", {
+        name: "Target submitted; check convergence for completion",
+        exact: true,
+      }),
+    ).toHaveCount(3);
+  });
+}
+
+test("bulk failures remain per device without retrying accepted resets", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(3);
+  await mockTargets(context, fleet);
+  let writes = 0;
+  await context.route("**/api/v2/devices/**", (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    writes++;
+    if (
+      new URL(route.request().url()).pathname ===
+      `/api/v2/devices/${fleet[1].device_id}/home/actions/reset`
+    ) {
+      return fulfillJson(route, 409, {
+        code: "CONFLICT",
+        status: 409,
+        title: "Reset rejected for A-02",
+      });
+    }
+    return route.fallback();
+  });
+  await page.clock.install();
+  await page.goto("/targets");
+  await page
+    .getByRole("button", { name: "Reset home (all)", exact: true })
+    .click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Apply to 3 devices" })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Reset home:" }),
+  ).toContainText("2 submitted, 1 not confirmed, 0 remaining");
+  const failed = page
+    .getByRole("row")
+    .filter({ has: page.getByRole("cell", { name: "A-02", exact: true }) });
+  await expect(
+    failed.getByRole("img", { name: "Not confirmed: Reset rejected for A-02" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("img", {
+      name: "Target submitted; check convergence for completion",
+      exact: true,
+    }),
+  ).toHaveCount(2);
+  await page.clock.runFor(10_000);
+  expect(writes).toBe(3);
+  expect(
+    fleet.map((entry) => entry.convergence.home.target_reset_epoch),
+  ).toEqual([1, null, 1]);
+});
+
+test("bulk confirmation freezes its device set and bounds parallel requests", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(20);
+  await mockTargets(context, fleet);
+  const held: Route[] = [];
+  await context.route("**/api/v2/devices/**", (route) => {
+    if (route.request().method() === "PUT") {
+      held.push(route);
+      return;
+    }
+    return route.fallback();
+  });
+  await page.clock.install();
+  await page.goto("/targets");
+  await page
+    .getByRole("button", { name: "Show waiting screen (all)", exact: true })
+    .click();
+  const added = targetFleet(21)[20];
+  fleet.push(added);
+  await page.clock.runFor(10_000);
+  await expect(page.locator("tbody tr")).toHaveCount(21);
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Apply to 20 devices" })
+    .click();
+  await expect.poll(() => held.length).toBe(6);
+  await expect(
+    page.getByRole("img", { name: "Session: converged", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Reset home (all)", exact: true }),
+  ).toBeDisabled();
+  await selectTarget(page, fleet[0].device_id);
+  await expect(
+    page.getByRole("button", { name: "Show waiting screen", exact: true }),
+  ).toBeDisabled();
+  await page.clock.runFor(100);
+  expect(held).toHaveLength(6);
+  for (let index = 0; index < 20; index++) {
+    await expect.poll(() => held.length).toBeGreaterThan(index);
+    expect(held[index].request().method()).toBe("PUT");
+    await held[index].fallback();
+  }
+  await expect(
+    page.getByRole("status").filter({ hasText: "Show waiting screen:" }),
+  ).toContainText("20 submitted, 0 not confirmed, 0 remaining");
+  await expect(
+    page.getByRole("button", { name: "Show waiting screen", exact: true }),
+  ).toBeEnabled();
+  expect(
+    held.map((route) => new URL(route.request().url()).pathname).sort(),
+  ).toEqual(
+    fleet
+      .slice(0, 20)
+      .map((entry) => `/api/v2/devices/${entry.device_id}/session-control`)
+      .sort(),
+  );
+  expect(added.convergence.session_control.target?.foreground_target).toBe(
+    "contest",
+  );
+});
+
+for (const width of [1024, 1440]) {
+  test(`targets retain a 200-device sorted viewport on refresh at ${width}`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    const fleet = targetFleet(200);
+    fleet[1].convergence.connection_state = "offline";
+    fleet[1].convergence.session_control.actual = null;
+    fleet[1].convergence.session_control.status = "awaiting_actual";
+    fleet[1].convergence.home.actual = null;
+    fleet[1].convergence.home.status = "awaiting_actual";
+    fleet[2].state = "disabled";
+    await mockTargets(context, fleet);
+    await page.setViewportSize({ width, height: 900 });
+    await page.clock.install();
+    await page.goto("/targets");
+    await expect(page.locator("tbody tr")).toHaveCount(200);
+    await page.getByRole("button", { name: "Seat", exact: true }).click();
+    await expect(
+      page.getByRole("columnheader", { name: "Seat", exact: true }),
+    ).toHaveAttribute("aria-sort", "ascending");
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath("targets.png") });
+    await page.locator("tbody tr").nth(150).scrollIntoViewIfNeeded();
+    const before = await page.evaluate(() => window.scrollY);
+    expect(before).toBeGreaterThan(0);
+    fleet[150].convergence.session_control.target!.foreground_target =
+      "waiting";
+    await page.clock.runFor(10_000);
+    await expect(
+      page
+        .locator("tbody tr")
+        .nth(150)
+        .getByRole("cell", { name: "waiting", exact: true }),
+    ).toBeVisible();
+    expect(
+      Math.abs((await page.evaluate(() => window.scrollY)) - before),
+    ).toBeLessThan(2);
+    await expect(
+      page.getByRole("columnheader", { name: "Seat", exact: true }),
+    ).toHaveAttribute("aria-sort", "ascending");
+    await expect(
+      page.getByRole("timer", { name: "Next device refresh" }),
+    ).toContainText("Refresh in");
+  });
+}
+
+test("viewers see all targets without bulk or single-device mutation controls", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(2);
+  await mockTargets(context, fleet);
+  await context.route("**/api/v2/session", (route) =>
+    fulfillJson(route, 200, { ...operator, role: "viewer" }),
+  );
+  await page.goto("/targets");
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await expect(
+    page.getByRole("region", { name: "All device actions" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "View", exact: true }).first().click();
+  await expect(
+    page.getByRole("region", { name: "Session Control" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Show waiting screen", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Reset home", exact: true }),
+  ).toHaveCount(0);
+});
 
 async function confirmTarget(page: Page, name: string) {
   await page.getByRole("button", { name, exact: true }).click();
@@ -994,7 +1293,15 @@ for (const outcome of ["success", "failure"]) {
       page.getByRole("button", { name: "Show waiting screen", exact: true }),
     ).toBeDisabled();
 
-    await page.getByLabel("Device").selectOption(secondDevice.device_id);
+    await expect(
+      page.getByRole("button", { name: "Reset home (all)", exact: true }),
+    ).toBeDisabled();
+    await selectTarget(page, secondDevice.device_id);
+    await selectTarget(page, firstDevice.device_id);
+    await expect(
+      page.getByRole("button", { name: "Show waiting screen", exact: true }),
+    ).toBeDisabled();
+    await selectTarget(page, secondDevice.device_id);
     await expect(
       page.getByRole("button", { name: "Show waiting screen", exact: true }),
     ).toBeEnabled();
@@ -1028,7 +1335,7 @@ for (const outcome of ["success", "failure"]) {
     await expect(
       page.getByText("Target submitted.", { exact: false }),
     ).toHaveCount(0);
-    await page.getByLabel("Device").selectOption(firstDevice.device_id);
+    await selectTarget(page, firstDevice.device_id);
     await expect(
       page.getByText(
         `Target foreground: ${outcome === "success" ? "waiting" : "contest"}`,
@@ -1058,7 +1365,7 @@ for (const order of ["A then B", "B then A"]) {
     await openTargets(page);
     await confirmTarget(page, "Terminate");
     await expect.poll(() => heldWrites.length).toBe(1);
-    await page.getByLabel("Device").selectOption(secondDevice.device_id);
+    await selectTarget(page, secondDevice.device_id);
     await confirmTarget(page, "Reset home");
     await expect.poll(() => heldWrites.length).toBe(2);
     expect(
@@ -1104,7 +1411,7 @@ for (const order of ["A then B", "B then A"]) {
         }),
       ).toBeVisible();
     }
-    await page.getByLabel("Device").selectOption(firstDevice.device_id);
+    await selectTarget(page, firstDevice.device_id);
     await expect(
       page.getByText("Terminate epoch: 1", { exact: true }),
     ).toBeVisible();
