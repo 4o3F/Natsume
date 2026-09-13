@@ -62,8 +62,8 @@ jobs:
           sudo env \
             NATSUME_HOSTED_LIFECYCLE_ACK=hosted-destructive-package-lifecycle \
             bash packaging/hosted-lifecycle.sh \
-            ./dist/packages/ci/natsume-server_2.0.4~ci1_amd64.deb \
-            ./dist/packages/ci/natsume-client_2.0.4~ci1_amd64.deb
+            ./dist/packages/ci/natsume-server_2.1.0~ci1_amd64.deb \
+            ./dist/packages/ci/natsume-client_2.1.0~ci1_amd64.deb
 
       - name: Upload package lifecycle artifacts
         if: failure()

@@ -57,6 +57,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v7.0.1
+
       - name: Download verified packages
         uses: actions/download-artifact@v8.0.1
         with:
@@ -83,6 +86,10 @@ jobs:
           done
           sha256sum "${packages[@]}" > SHA256SUMS
           release_flags=()
+          notes_file="${GITHUB_WORKSPACE}/docs/releases/${RELEASE_TAG}.md"
+          if [[ -f ${notes_file} ]]; then
+            release_flags+=(--notes-file "${notes_file}")
+          fi
           if [[ ${PRERELEASE} == true ]]; then
             release_flags+=(--prerelease --latest=false)
           fi
