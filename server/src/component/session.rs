@@ -127,7 +127,7 @@ fn find_or_insert_target(
     else {
         require_one(db::insert_default_target(transaction, device_id)?)?;
         return Ok(SessionControlTarget {
-            foreground_target: ForegroundTarget::Contest,
+            foreground_target: ForegroundTarget::Waiting,
             terminate_epoch: None,
         });
     };

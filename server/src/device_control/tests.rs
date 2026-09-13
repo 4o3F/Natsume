@@ -207,7 +207,7 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
     fixture
         .state
         .session()
-        .set_foreground(device_id, ForegroundTarget::Waiting)
+        .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
     fixture.state.device_control().dirty_device(device_id).await;
@@ -224,7 +224,7 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
             .target
             .and_then(|target| target.session_control)
             .map(|target| target.foreground_target),
-        Some(natsume_device_protocol::generated::ForegroundTarget::Waiting.into())
+        Some(natsume_device_protocol::generated::ForegroundTarget::Contest.into())
     );
 }
 
@@ -249,7 +249,7 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
     fixture
         .state
         .session()
-        .set_foreground(device_id, ForegroundTarget::Waiting)
+        .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
     tokio::time::pause();
@@ -267,7 +267,7 @@ async fn periodic_refresh_recovers_the_current_target_without_dirty() {
             .target
             .and_then(|target| target.session_control)
             .map(|target| target.foreground_target),
-        Some(natsume_device_protocol::generated::ForegroundTarget::Waiting.into())
+        Some(natsume_device_protocol::generated::ForegroundTarget::Contest.into())
     );
 }
 

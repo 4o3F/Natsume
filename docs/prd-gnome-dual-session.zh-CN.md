@@ -45,7 +45,7 @@ Home reset 是一个完整业务操作：切到 waiting，关闭 contest 登录�
 1. 本期只支持一个物理 seat：`seat0`，以及固定的 `waiting`、`teams` 两个账户。单显示器是验收基线，不提供多 seat 调度。
 2. `foreground_target=waiting` 收敛为“waiting 占位已就绪且位于前台”，`foreground_target=contest` 收敛为“contest 桌面已就绪且位于前台”。GNOME LockedHint 不代表该业务目标。
 3. waiting 普通等待、重置与恢复期间使用同一静态占位；详细进度和错误在 Panel/Actual 展示。本期不增加等待动画、状态文案页面或远程素材协议；既有 Binding UI 仍复用原协议。
-4. 未绑定设备停留 waiting 完成现有绑定流程；绑定成功后依据最新 `foreground_target` 决定是否进入比赛。Server 的默认目标为 contest，未绑定或依赖未就绪时仍显示 waiting，不另建业务状态。
+4. 未绑定设备停留 waiting 完成现有绑定流程；Server 为新设备初始化 waiting 目标，绑定成功不改写目标，默认继续等待管理员选择 contest。已有持久目标在绑定、重连或重启时保留；重启先展示 waiting，收到当前有效目标且依赖就绪后恢复 Server 保存的前台选择，不另建业务状态。
 5. Home reset 不隐式改写 `foreground_target`，不新增 `return_mode`。需要重建后继续等待时，管理员先成功提交 waiting 目标，再提交 reset；需要立即返回时保持 contest 目标。
 6. 开机没有当前有效 Server Target 时，默认显示 waiting。镜像的固定启动流程可完成本机 Home 恢复及比赛会话预备，预备完成后回到 waiting，不额外锁定 contest；不得凭旧 lease 或磁盘缓存自动放行比赛。这项本地启动行为不产生新的远程 Target。
 7. 显式管理员 terminate 和会话崩溃属于常态切换之外的维护/故障场景。不得为了普通前台切换使用 terminate。

@@ -1300,6 +1300,43 @@ async fn failed_blocking_aborts_before_any_home_or_terminate_effect()
 }
 
 #[tokio::test]
+async fn binding_keeps_waiting_until_the_operator_selects_contest()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = fixture(HelperState {
+        foreground: Some(SessionForeground::Waiting),
+        ..HelperState::default()
+    })
+    .await?;
+    let cancellation = CancellationToken::new();
+    for (foreground, bound, expected) in [
+        (ForegroundTarget::Waiting, false, SessionForeground::Waiting),
+        (ForegroundTarget::Waiting, true, SessionForeground::Waiting),
+        (ForegroundTarget::Contest, true, SessionForeground::Contest),
+    ] {
+        let target = session::validate_target(SessionControlTarget {
+            foreground_target: foreground.into(),
+            terminate_epoch: None,
+        })
+        .ok_or("invalid target")?;
+        let outcome = fixture
+            .snapshots
+            .session
+            .present(&target, bound, true, &cancellation)
+            .await?;
+        assert!(!outcome.retry);
+        let state = fixture.helper.lock().map_err(|_| "fixture lock")?;
+        assert_eq!(state.foreground, Some(expected));
+        assert_eq!(
+            state.activation_calls.len(),
+            usize::from(expected == SessionForeground::Contest)
+        );
+        assert!(state.termination_calls.is_empty());
+        assert!(state.home_calls.is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn foreground_and_repeated_targets_keep_ready_without_reloading_caddy()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::os::unix::fs::MetadataExt as _;

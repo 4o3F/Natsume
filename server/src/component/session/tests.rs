@@ -12,7 +12,7 @@ use crate::{
 use super::{ForegroundTarget, SessionControlComponent, SessionControlError, SessionControlTarget};
 
 #[tokio::test]
-async fn materialize_creates_the_default_target_for_an_existing_device() {
+async fn materialize_defaults_to_waiting_until_an_operator_selects_contest() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
 
@@ -26,7 +26,7 @@ async fn materialize_creates_the_default_target_for_an_existing_device() {
             .await
             .unwrap_or_else(|error| panic!("default target failed: {error}")),
         SessionControlTarget {
-            foreground_target: ForegroundTarget::Contest,
+            foreground_target: ForegroundTarget::Waiting,
             terminate_epoch: None,
         }
     );
@@ -34,7 +34,7 @@ async fn materialize_creates_the_default_target_for_an_existing_device() {
     assert_eq!(
         fixture.component.read_current(device_id).await,
         Ok(Some(SessionControlTarget {
-            foreground_target: ForegroundTarget::Contest,
+            foreground_target: ForegroundTarget::Waiting,
             terminate_epoch: None,
         }))
     );
@@ -50,33 +50,39 @@ async fn set_foreground_is_idempotent_and_preserves_the_terminate_epoch() {
         .await
         .unwrap_or_else(|error| panic!("terminate setup failed: {error}"));
 
-    let waiting = fixture
+    let contest = fixture
         .component
-        .set_foreground(device_id, ForegroundTarget::Waiting)
+        .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("foreground update failed: {error}"));
     let replay = fixture
         .component
-        .set_foreground(device_id, ForegroundTarget::Waiting)
+        .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("foreground replay failed: {error}"));
 
-    assert_eq!(waiting, replay);
-    assert_eq!(waiting.foreground_target, ForegroundTarget::Waiting);
-    assert_eq!(waiting.terminate_epoch, Some(1));
+    assert_eq!(contest, replay);
+    assert_eq!(contest.foreground_target, ForegroundTarget::Contest);
+    assert_eq!(contest.terminate_epoch, Some(1));
     assert_eq!(fixture.target_count(device_id).await, 1);
 }
 
 #[tokio::test]
-async fn terminate_target_remains_durable_across_component_rebuild() {
+async fn operator_foreground_and_terminate_target_survive_component_rebuild() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
+    fixture
+        .component
+        .set_foreground(device_id, ForegroundTarget::Contest)
+        .await
+        .unwrap_or_else(|error| panic!("foreground setup failed: {error}"));
     let terminated = fixture
         .component
         .terminate(device_id)
         .await
         .unwrap_or_else(|error| panic!("terminate failed: {error}"));
     assert_eq!(terminated.terminate_epoch, Some(1));
+    assert_eq!(terminated.foreground_target, ForegroundTarget::Contest);
 
     let rebuilt = SessionControlComponent::new(fixture.database.clone());
     assert_eq!(

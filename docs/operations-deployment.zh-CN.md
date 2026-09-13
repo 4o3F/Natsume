@@ -858,6 +858,8 @@ Server 每次重启窗口恢复关闭，新请求改为人工审批。Client 完
 
 样机显示 **Bind workstation / Enter your seat code** 时输入 CSV 工位码，如 A-01。在 **Bindings / Seats / Devices** 核对工位、设备和账号一致。工位不存在/被占时修正映射，不删除设备身份文件重试。
 
+新设备默认保持 waiting，绑定成功后等待管理员执行 **Show contest desktop**。绑定和重启不会改写已有的前台目标；已有设备若要继续等待，先在 **Targets** 执行 **Show waiting screen**。重启先进入 waiting，重新连接且桌面依赖就绪后按 Server 保存的目标恢复前台。
+
 Client 自动生成 Gateway key/CSR，由 Server 签发 leaf 并应用配置，运维不分发每台 Gateway 私钥或账号密码文件。
 
 ### 7.6 验收实际桌面和 DOMjudge

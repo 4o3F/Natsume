@@ -52,7 +52,7 @@ pub(in crate::component::session) fn insert_default_target(
     diesel::insert_into(device_session_targets::table)
         .values((
             device_session_targets::device_id.eq(device_id.as_text()),
-            device_session_targets::foreground_target.eq("contest"),
+            device_session_targets::foreground_target.eq("waiting"),
         ))
         .execute(transaction.connection())
         .map_err(|_| PersistenceError::OperationFailed)
