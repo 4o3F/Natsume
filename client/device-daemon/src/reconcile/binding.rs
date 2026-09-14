@@ -1053,6 +1053,17 @@ pub(super) mod tests {
             .unwrap_or_else(|e| panic!("Agent: {e}")) = None;
     }
 
+    pub(in crate::reconcile) fn withdraw_fixture_frame(provider: &BindingInputProvider) {
+        let mut registered = provider
+            .registered
+            .lock()
+            .unwrap_or_else(|e| panic!("Agent: {e}"));
+        registered
+            .as_mut()
+            .unwrap_or_else(|| panic!("fixture Agent"))
+            .presentation = None;
+    }
+
     pub(in crate::reconcile) fn has_fixture_plan(provider: &BindingInputProvider) -> bool {
         provider
             .state

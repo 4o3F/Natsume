@@ -49,21 +49,21 @@ Server root key、CA 私钥、每设备控制/网关私钥不进入交接包或�
 
 ## 3. 官方依赖与实际文件
 
-参考基线为 Ubuntu Noble 系列、GDM 46.2、GNOME Kiosk 46.0、原生 X11。版本是已测试的参考，不要求永久冻结官方安全更新；更换版本应检查下列路径/API 和完整验收。当前目标架构为 amd64；其他架构需要匹配 Deb 和对应验证。
+参考基线为 Ubuntu Noble 系列、GDM 46.2、GNOME Kiosk 46.0、原生 Wayland。版本是已测试的参考，不要求永久冻结官方安全更新；更换版本应检查下列路径/API 和完整验收。当前目标架构为 amd64；其他架构需要匹配 Deb 和对应验证。
 
 | 依赖 | 官方包/必须存在的能力 |
 | --- | --- |
 | GDM | `gdm3`、`libgdm1`；`gdm.service`/`display-manager.service`、`/usr/libexec/gdm-runtime-config`、官方 GDM D-Bus 登录 API 和 worker |
-| waiting | `gnome-kiosk`、`gnome-kiosk-script-session`；`/usr/share/xsessions/gnome-kiosk-script-xorg.desktop`、`org.gnome.Kiosk.Script.service`、`org.gnome.Kiosk@x11.service` |
-| teams 桌面 | 官方 Ubuntu/GNOME session、GNOME Shell；`/usr/share/xsessions/ubuntu-xorg.desktop`，由所选发行版的 Ubuntu session 与完整桌面依赖提供 |
-| 图形与输入 | 官方 Xorg、对应 kernel/DRM/输入驱动；RandR、DPMS、XInput2 及真实 `/dev/input/eventN` Device Node |
+| waiting | `gnome-kiosk`、`gnome-kiosk-script-session`；`/usr/share/wayland-sessions/gnome-kiosk-script-wayland.desktop`、`org.gnome.Kiosk.Script.service`、`org.gnome.Kiosk@wayland.service` |
+| teams 桌面 | 官方 Ubuntu/GNOME session、GNOME Shell；`/usr/share/wayland-sessions/ubuntu-wayland.desktop`，由所选发行版的 Ubuntu session 与完整桌面依赖提供 |
+| 图形与输入 | 官方 Mutter、对应 kernel/DRM/libinput 驱动；原生 Wayland 输出与输入，按需保留 Xwayland 应用兼容层 |
 | 键盘与字体 | 仅要求 US 英文键盘，不额外安装输入法引擎；保留可正常显示中文的字体，例如发行版 `fonts-noto-cjk` 提供的 Noto Sans CJK |
 | 配置/权限 | dconf 工具与编译数据库、polkit、发行版 `pam-auth-update`、`libpam-modules` 的 pam_exec/pam_succeed_if、OpenSSH（若提供远程维护） |
 | Home | 内核 OverlayFS、SquashFS、loop，官方 `squashfs-tools`、`util-linux`；systemd 253+，支持包内 OpenFile/namespace 配置 |
 | Client 运行库 | 以 Deb `Depends` 为准，当前包括 ca-certificates、dbus、libfontconfig1、libfreetype6、libstdc++6、libsystemd0、libudev1、systemd、util-linux、libpam-modules |
 | 构建检查 | Python 3.10+、sh、dpkg-deb、sha256sum；模板生成需要 mksquashfs、dpkg-query、systemd-escape |
 
-保留发行版正常内核和显卡选择；不修改 GNOME/GDM 程序、资源或 greeter，不引入 nested Xorg/Wayland、不用 QEMU 显卡试验选项代替生产策略。Xauthority 保留官方 `/run/user/<uid>/gdm/Xauthority`；角色需要读取自身合成器环境和访问自身 Xorg/用户总线，不新增跨用户读取权限。
+保留发行版正常内核和显示驱动选择；不修改 GNOME/GDM 程序、资源或 greeter，不引入 nested Xorg/Wayland。角色需访问自身 compositor 的 Wayland socket、用户总线和进程信息，不新增跨用户读取权限。Xwayland 由 GNOME 按需管理，仅用于兼容 X11 应用，不能作为物理输出或会话身份的依据。CPU 验证使用软件渲染；交付按目标驱动验证，不把 QEMU 试验参数直接写成全局生产策略。
 
 ## 4. Client 包直接提供的运行文件
 

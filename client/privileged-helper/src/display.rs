@@ -1,288 +1,183 @@
-use natsume_local_control_api::ResourceControlError;
-use x11rb::{
-    connection::{Connection as _, RequestConnection as _},
-    protocol::{dpms, randr, xinput, xproto},
-    rust_connection::RustConnection,
+use std::{
+    collections::BTreeMap,
+    fs,
+    os::unix::{
+        fs::{FileTypeExt as _, MetadataExt as _},
+        net::UnixStream,
+    },
+    path::Path,
 };
 
-use crate::session::{rejected, unavailable};
+use natsume_local_control_api::ResourceControlError;
+use wayland_client::{
+    Connection, Dispatch, QueueHandle, WEnum,
+    protocol::{wl_output, wl_registry, wl_seat},
+};
 
-fn local_display(display: &str) -> bool {
-    display.strip_prefix(':').is_some_and(|display| {
-        let (number, screen) = display.split_once('.').unwrap_or((display, "0"));
-        [number, screen].into_iter().all(|part| {
-            !part.is_empty()
-                && part.bytes().all(|b| b.is_ascii_digit())
-                && part.parse::<u16>().is_ok()
-        })
-    })
+use crate::session::unavailable;
+
+#[derive(Default)]
+struct DisplayState {
+    outputs: BTreeMap<u32, bool>,
+    seats: BTreeMap<u32, bool>,
 }
 
-fn vt_property(property: &xproto::GetPropertyReply) -> Option<bool> {
-    if property.type_ != u32::from(xproto::AtomEnum::INTEGER)
-        || property.format != 32
-        || property.value_len != 1
-        || property.bytes_after != 0
-    {
-        return None;
-    }
-    match property.value32()?.next()? {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
+impl DisplayState {
+    fn ready(&self, foreground: bool) -> bool {
+        self.outputs.values().any(|ready| *ready)
+            && (!foreground || self.seats.values().any(|ready| *ready))
     }
 }
 
-fn input_device_ready(device: &xinput::XIDeviceInfo, node: &xinput::XIGetPropertyReply) -> bool {
-    let xinput::XIGetPropertyItems::Data8(value) = &node.items else {
-        return false;
-    };
-    device.enabled
-        && matches!(
-            device.type_,
-            xinput::DeviceType::SLAVE_POINTER | xinput::DeviceType::SLAVE_KEYBOARD
-        )
-        && node.type_ == u32::from(xproto::AtomEnum::STRING)
-        && node.bytes_after == 0
-        && usize::try_from(node.num_items).ok() == Some(value.len())
-        && value
-            .strip_prefix(b"/dev/input/event")
-            .is_some_and(|number| !number.is_empty() && number.iter().all(u8::is_ascii_digit))
-}
-
-fn has_enabled_physical_input(
-    connection: &RustConnection,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    xinput::xi_query_version(connection, 2, 0)?.reply()?;
-    let atom = xproto::intern_atom(connection, true, b"Device Node")?
-        .reply()?
-        .atom;
-    if atom == u32::from(xproto::AtomEnum::NONE) {
-        return Ok(false);
-    }
-    for device in xinput::xi_query_device(connection, 0_u16)?.reply()?.infos {
-        let node = xinput::xi_get_property(
-            connection,
-            device.deviceid,
-            false,
-            atom,
-            xproto::AtomEnum::STRING.into(),
-            0,
-            256,
-        )?
-        .reply()?;
-        if input_device_ready(&device, &node) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-/// Returns Xorg's VT state after the output probe. The parent checks it against
-/// fresh logind facts; this property alone does not prove physical presentation.
-pub(crate) fn probe(display: &str) -> Result<bool, ResourceControlError> {
-    if !local_display(display) {
-        return Err(rejected("desktop probe requires a local X11 display"));
-    }
-    let result = || -> Result<Option<bool>, Box<dyn std::error::Error>> {
-        let (connection, screen) = RustConnection::connect(Some(display))?;
-        // Mutter's PowerSaveMode may remain cached at On after a direct X11
-        // power change. Query Xorg itself. Disabled DPMS has undefined level.
-        if connection
-            .extension_information(dpms::X11_EXTENSION_NAME)?
-            .is_some()
-            && dpms::capable(&connection)?.reply()?.capable
-        {
-            let power = dpms::info(&connection)?.reply()?;
-            if power.state && power.power_level != dpms::DPMSMode::ON {
-                return Ok(None);
-            }
-        }
-        let root = connection
-            .setup()
-            .roots
-            .get(screen)
-            .ok_or("missing X11 screen")?
-            .root;
-        let atom = xproto::intern_atom(&connection, true, b"XFree86_has_VT")?
-            .reply()?
-            .atom;
-        let property = xproto::get_property(
-            &connection,
-            false,
-            root,
-            atom,
-            xproto::AtomEnum::INTEGER,
-            0,
-            1,
-        )?
-        .reply()?;
-        let Some(has_vt) = vt_property(&property) else {
-            return Ok(None);
-        };
-        let resources = randr::get_screen_resources_current(&connection, root)?.reply()?;
-        for output in resources.outputs {
-            let info =
-                randr::get_output_info(&connection, output, resources.config_timestamp)?.reply()?;
-            if info.status != randr::SetConfig::SUCCESS
-                || info.connection != randr::Connection::CONNECTED
-                || info.crtc == 0
-            {
-                continue;
-            }
-            let crtc = randr::get_crtc_info(&connection, info.crtc, resources.config_timestamp)?
-                .reply()?;
-            if crtc.status == randr::SetConfig::SUCCESS
-                && crtc.mode != 0
-                && crtc.width > 0
-                && crtc.height > 0
-                && crtc.outputs.contains(&output)
-            {
-                // A failed VT handoff can retain has_VT and cached modes while
-                // every physical input device is disabled. Virtual core/XTEST
-                // devices stay enabled then and cannot establish interactivity.
-                // Background Xorgs normally release their physical input.
-                if has_vt && !has_enabled_physical_input(&connection)? {
-                    return Ok(None);
+impl Dispatch<wl_registry::WlRegistry, ()> for DisplayState {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        (): &(),
+        _connection: &Connection,
+        queue: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_registry::Event::Global {
+                name,
+                interface,
+                version,
+            } => match interface.as_str() {
+                "wl_output" => {
+                    state.outputs.insert(name, false);
+                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(2), queue, name);
                 }
-                return Ok(Some(has_vt));
+                "wl_seat" => {
+                    state.seats.insert(name, false);
+                    registry.bind::<wl_seat::WlSeat, _, _>(name, version.min(5), queue, name);
+                }
+                _ => {}
+            },
+            wl_registry::Event::GlobalRemove { name } => {
+                state.outputs.remove(&name);
+                state.seats.remove(&name);
             }
+            _ => {}
         }
-        Ok(None)
-    };
-    if let Ok(Some(has_vt)) = result() {
-        Ok(has_vt)
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, u32> for DisplayState {
+    fn event(
+        state: &mut Self,
+        _output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        name: &u32,
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Mode {
+            flags: WEnum::Value(flags),
+            width,
+            height,
+            ..
+        } = event
+            && flags.contains(wl_output::Mode::Current)
+        {
+            state.outputs.insert(*name, width > 0 && height > 0);
+        }
+    }
+}
+
+impl Dispatch<wl_seat::WlSeat, u32> for DisplayState {
+    fn event(
+        state: &mut Self,
+        _seat: &wl_seat::WlSeat,
+        event: wl_seat::Event,
+        name: &u32,
+        _connection: &Connection,
+        _queue: &QueueHandle<Self>,
+    ) {
+        if let wl_seat::Event::Capabilities { capabilities } = event {
+            let ready = matches!(capabilities, WEnum::Value(capabilities)
+                if capabilities.intersects(wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer));
+            state.seats.insert(*name, ready);
+        }
+    }
+}
+
+fn connect(directory: &Path, uid: u32, pid: i32) -> Option<UnixStream> {
+    fs::read_dir(directory)
+        .ok()?
+        .filter_map(Result::ok)
+        .find_map(|entry| {
+            let name = entry.file_name();
+            let suffix = name.to_str()?.strip_prefix("wayland-")?;
+            if suffix.is_empty()
+                || !suffix.bytes().all(|byte| byte.is_ascii_digit())
+                || !entry.file_type().ok()?.is_socket()
+                || entry.metadata().ok()?.uid() != uid
+            {
+                return None;
+            }
+            let stream = UnixStream::connect(entry.path()).ok()?;
+            let peer = rustix::net::sockopt::socket_peercred(&stream).ok()?;
+            (peer.uid.as_raw() == uid && peer.pid.as_raw_nonzero().get() == pid).then_some(stream)
+        })
+}
+
+/// Checks the live compositor's Wayland protocol under the fixed role UID.
+/// This is display/input capability, not proof of every application's pixels.
+/// Blocking protocol I/O stays in the disposable child, bounded by its parent.
+pub(crate) fn probe(uid: u32, pid: i32, foreground: bool) -> Result<(), ResourceControlError> {
+    let directory = format!("/run/user/{uid}");
+    let socket = connect(Path::new(&directory), uid, pid)
+        .ok_or_else(|| unavailable("the current Wayland compositor socket is unavailable"))?;
+    let connection = Connection::from_socket(socket)
+        .map_err(|_| unavailable("Wayland compositor connection failed"))?;
+    let mut queue = connection.new_event_queue();
+    let _registry = connection.display().get_registry(&queue.handle(), ());
+    let mut state = DisplayState::default();
+    // Globals arrive first, then their bound output modes and input capabilities.
+    // No surface or window is created by this probe.
+    for _ in 0..2 {
+        queue
+            .roundtrip(&mut state)
+            .map_err(|_| unavailable("Wayland compositor is not responding"))?;
+    }
+    if state.ready(foreground) {
+        Ok(())
     } else {
         Err(unavailable(
-            "X11 desktop output or VT observation is unavailable",
+            "Wayland output or input capability is unavailable",
         ))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{input_device_ready, local_display, vt_property};
-    use x11rb::protocol::{xinput, xproto};
+    use super::*;
+    use std::os::unix::net::UnixListener;
 
     #[test]
-    fn virtual_or_disabled_input_cannot_establish_foreground_readiness() {
-        let mut device = xinput::XIDeviceInfo {
-            deviceid: 8,
-            type_: xinput::DeviceType::SLAVE_KEYBOARD,
-            attachment: 3,
-            enabled: true,
-            name: b"AT Translated Set 2 keyboard".to_vec(),
-            classes: Vec::new(),
-        };
-        let mut node = xinput::XIGetPropertyReply {
-            sequence: 0,
-            length: 0,
-            type_: xproto::AtomEnum::STRING.into(),
-            bytes_after: 0,
-            num_items: 17,
-            items: xinput::XIGetPropertyItems::Data8(b"/dev/input/event1".to_vec()),
-        };
-        assert!(input_device_ready(&device, &node));
-        device.enabled = false;
-        assert!(!input_device_ready(&device, &node));
-        device.enabled = true;
-        device.type_ = xinput::DeviceType::FLOATING_SLAVE;
-        assert!(!input_device_ready(&device, &node));
-        device.type_ = xinput::DeviceType::SLAVE_POINTER;
-        assert!(input_device_ready(&device, &node));
-        // XTEST devices are enabled slaves but have no Device Node property.
-        node.type_ = xproto::AtomEnum::NONE.into();
-        node.num_items = 0;
-        node.items = xinput::XIGetPropertyItems::InvalidValue(0);
-        assert!(!input_device_ready(&device, &node));
+    fn paused_background_input_does_not_prevent_activation_but_foreground_needs_input() {
+        let mut state = DisplayState::default();
+        assert!(!state.ready(false));
+        state.outputs.insert(1, true);
+        assert!(state.ready(false));
+        assert!(!state.ready(true));
+        state.seats.insert(2, true);
+        assert!(state.ready(true));
+        state.outputs.remove(&1);
+        assert!(!state.ready(true));
+        assert!(!state.ready(false));
     }
 
     #[test]
-    fn physical_input_requires_a_complete_device_node_property()
-    -> Result<(), std::num::TryFromIntError> {
-        let device = xinput::XIDeviceInfo {
-            deviceid: 6,
-            type_: xinput::DeviceType::SLAVE_POINTER,
-            attachment: 2,
-            enabled: true,
-            name: Vec::new(),
-            classes: Vec::new(),
-        };
-        for value in [
-            "/dev/input/event0",
-            "/dev/input/event42",
-            "",
-            "/dev/input/event",
-            "/tmp/event0",
-        ] {
-            let mut node = xinput::XIGetPropertyReply {
-                sequence: 0,
-                length: 0,
-                type_: xproto::AtomEnum::STRING.into(),
-                bytes_after: 0,
-                num_items: u32::try_from(value.len())?,
-                items: xinput::XIGetPropertyItems::Data8(value.as_bytes().to_vec()),
-            };
-            assert_eq!(
-                input_device_ready(&device, &node),
-                value == "/dev/input/event0" || value == "/dev/input/event42"
-            );
-            node.bytes_after = 1;
-            assert!(!input_device_ready(&device, &node));
-        }
+    fn socket_name_does_not_substitute_for_compositor_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let _listener = UnixListener::bind(directory.path().join("wayland-0"))?;
+        let uid = rustix::process::getuid().as_raw();
+        let pid = i32::try_from(std::process::id())?;
+        assert!(connect(directory.path(), uid, pid).is_some());
+        assert!(connect(directory.path(), uid, 0).is_none());
         Ok(())
-    }
-
-    #[test]
-    fn vt_observation_requires_one_complete_integer_boolean() {
-        let mut reply = xproto::GetPropertyReply {
-            format: 32,
-            sequence: 0,
-            length: 1,
-            type_: xproto::AtomEnum::INTEGER.into(),
-            bytes_after: 0,
-            value_len: 1,
-            value: 0_u32.to_ne_bytes().to_vec(),
-        };
-        assert_eq!(vt_property(&reply), Some(false));
-        reply.value = 1_u32.to_ne_bytes().to_vec();
-        assert_eq!(vt_property(&reply), Some(true));
-        reply.value = 2_u32.to_ne_bytes().to_vec();
-        assert_eq!(vt_property(&reply), None);
-        reply.value.clear();
-        assert_eq!(vt_property(&reply), None);
-        reply.value = 1_u32.to_ne_bytes().to_vec();
-        reply.bytes_after = 4;
-        assert_eq!(vt_property(&reply), None);
-        reply.bytes_after = 0;
-        reply.type_ = xproto::AtomEnum::CARDINAL.into();
-        assert_eq!(vt_property(&reply), None);
-        reply.type_ = xproto::AtomEnum::INTEGER.into();
-        reply.format = 8;
-        assert_eq!(vt_property(&reply), None);
-        reply.format = 32;
-        reply.value_len = 0;
-        assert_eq!(vt_property(&reply), None);
-    }
-
-    #[test]
-    fn compositor_display_cannot_select_network_or_arbitrary_socket() {
-        for value in [":0", ":1.0", ":42.3"] {
-            assert!(local_display(value));
-        }
-        for value in [
-            "",
-            ":",
-            ":0.",
-            ":-1",
-            ":0.1.2",
-            ":65536",
-            "host:0",
-            "tcp/host:0",
-            "unix:/tmp/display",
-            "/tmp/.X11-unix/X0",
-        ] {
-            assert!(!local_display(value), "{value}");
-        }
     }
 }

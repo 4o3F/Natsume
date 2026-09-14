@@ -19,7 +19,7 @@ const SYSTEM_BUS_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Debug, Snafu)]
 enum ServiceError {
     #[snafu(display(
-        "usage: natsume-privileged-helper serve | close-admission | pam-gate | prepare-session waiting|contest | gdm-login waiting|contest | desktop-status waiting|contest"
+        "usage: natsume-privileged-helper serve | close-admission | pam-gate | prepare-session waiting|contest | gdm-login waiting|contest | greeter-status | desktop-status waiting|contest"
     ))]
     Arguments,
     #[snafu(display("fixed graphical operation failed: {source}"))]
@@ -32,10 +32,13 @@ enum ServiceError {
     MountNamespaceMismatch,
     #[snafu(display("privileged helper could not acquire its system D-Bus service"))]
     Bus,
+    #[snafu(display("fixed desktop probe output could not be written"))]
+    ProbeOutput,
 }
 
 fn initialize_logging() -> Result<(), ()> {
     tracing_subscriber::fmt()
+        .with_writer(io::stderr)
         .with_ansi(false)
         .without_time()
         .with_target(false)
@@ -97,6 +100,7 @@ async fn serve() -> Result<(), ServiceError> {
             .request_name(PRIVILEGED1_SERVICE)
             .await
             .map_err(|_| ServiceError::Bus)?;
+        let _observer = service.observe_gdm_registration();
         if let Err(error) = service.recover_local_home(&connection).await {
             tracing::error!(%error, "Home recovery incomplete; contest admission remains closed");
         }
@@ -134,6 +138,16 @@ async fn run() -> Result<(), ServiceError> {
         [command] if command == "serve" => return serve().await,
         [command] if command == "close-admission" => natsume_privileged_helper::close_admission(),
         [command] if command == "pam-gate" => natsume_privileged_helper::pam_gate(),
+        [command] if command == "greeter-status" => {
+            match natsume_privileged_helper::probe_greeter().await {
+                Ok(status) => {
+                    serde_json::to_writer(io::stdout().lock(), &status)
+                        .map_err(|_| ServiceError::ProbeOutput)?;
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
         [command, target] if command == "prepare-session" => {
             natsume_privileged_helper::run_prepare(role(target)?).await
         }
@@ -141,9 +155,16 @@ async fn run() -> Result<(), ServiceError> {
             natsume_privileged_helper::run_gdm_client(role(target)?).await
         }
         [command, target] if command == "desktop-status" => {
-            natsume_privileged_helper::probe_desktop(role(target)?)
-                .await
-                .map(|has_vt| println!("{has_vt}"))
+            match natsume_privileged_helper::probe_desktop(role(target)?).await {
+                Ok(foreground) => {
+                    io::stdout()
+                        .lock()
+                        .write_all(if foreground { b"true\n" } else { b"false\n" })
+                        .map_err(|_| ServiceError::ProbeOutput)?;
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
         }
         _ => return Err(ServiceError::Arguments),
     };

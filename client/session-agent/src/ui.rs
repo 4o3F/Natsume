@@ -76,12 +76,11 @@ fn frame_geometry(window: &SessionWindow) -> Option<SessionPresentation> {
         .window()
         .with_winit_window(|native| {
             native.fullscreen().is_some()
-                // On X11 current_monitor retains the window's last monitor
-                // snapshot when RandR changes size without changing DPI.
-                && native.available_monitors().any(|monitor| {
-                    native.inner_size() == monitor.size()
-                        && native.outer_position().ok() == Some(monitor.position())
-                })
+                // Wayland's fullscreen state comes from the compositor's
+                // configure event; global window positions are unavailable.
+                && native
+                    .current_monitor()
+                    .is_some_and(|monitor| native.inner_size() == monitor.size())
         })
         .unwrap_or(false);
     let size = window.window().size();

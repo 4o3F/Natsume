@@ -1,6 +1,6 @@
 # GNOME 双会话：镜像交付要求
 
-更新：2026-09-10。本文是仓库内的镜像要求导航与摘要。向独立 image builder 交付时，完整打包 [packaging/image](../packaging/image/README.md) 即可：其目录内包含全部输入说明、IMG-01～08 实施要求、验收标准和独立检查器，接收方无需阅读本文或其他仓库文档。**IMG-01～08 均为必需交付项，由镜像项目集成并按最终产物验收。**
+更新：2026-09-14。本文是仓库内的镜像要求导航与摘要。向独立 image builder 交付时，完整打包 [packaging/image](../packaging/image/README.md) 即可：其目录内包含全部输入说明、IMG-01～08 实施要求、验收标准和独立检查器，接收方无需阅读本文或其他仓库文档。**IMG-01～08 均为必需交付项，由镜像项目集成并按最终产物验收。**
 
 | 要查什么 | 文档 |
 | --- | --- |
@@ -16,12 +16,12 @@
 
 系统账号固定为 `waiting` 与 `teams`，Home 为 `/home/waiting` 与 `/home/teams`。下文 `contest` 表示比赛角色；协议目标、固定 PAM 名和 Helper CLI 的角色参数保持 contest。Client 持续安装，卸载不作为交付门槛。
 
-waiting 使用独立账号的官方 **GNOME Kiosk Script X11**，contest 使用另一账号的完整 **Ubuntu/GNOME X11**。两套会话及 Xorg 都由 GDM 管理。正常情况下双方同时存在，“显示等待界面／显示比赛桌面”只切换前台。Home reset 才先进入 waiting、结束并排空 contest、重置 Home，再通过固定入口重新登录 contest；重建期间允许 greeter 和闪屏。waiting 在同一 Agent 全屏窗口承载 Binding 或已绑定队伍／学校／Logo，并在离线时保留非秘密缓存。Logo 由 Natsume Server 提供，镜像不需要预置学校图片；无图时默认图仍可形成健康首帧。Client Deb 提供字体与缓存目录，详细展示／恢复边界见[Session Agent runbook](../packaging/client/rootfs/usr/share/doc/natsume-client/session-agent-gui-startup.md)。
+waiting 使用独立账号的官方 **GNOME Kiosk Script Wayland**，contest 使用另一账号的完整 **Ubuntu/GNOME Wayland**。两套原生会话都由 GDM 管理，GNOME/Mutter 各自承担 compositor 职责。正常情况下双方同时存在，“显示等待界面／显示比赛桌面”只切换前台。Home reset 才先进入 waiting、结束并排空 contest、重置 Home，再通过固定入口重新登录 contest；重建期间允许 greeter 和闪屏。waiting 在同一 Agent 全屏窗口承载 Binding 或已绑定队伍／学校／Logo，并在离线时保留非秘密缓存。Logo 由 Natsume Server 提供，镜像不需要预置学校图片；无图时默认图仍可形成健康首帧。Client Deb 提供字体与缓存目录，详细展示／恢复边界见[Session Agent runbook](../packaging/client/rootfs/usr/share/doc/natsume-client/session-agent-gui-startup.md)。
 
 | 所有者 | 交付内容 | 实施边界 |
 | --- | --- | --- |
 | Natsume Client 包 | Helper、Daemon、Agent、固定登录 prepare unit、三个固定 PAM 文件、IPC policy、sysusers/tmpfiles、Kiosk Script 的 Agent drop-in、`/usr/share/natsume/image-integration/` 镜像输入 | 通过既有 API 编排，不在运行时重写 GDM/PAM/dconf，不直接托管 Xorg/GNOME |
-| 镜像项目 | IMG-01～08：账号、官方桌面、系统配置、上游 PAM 接入、模板、旧流程退出、构建和维护流程 | 只使用官方发布的 GDM/GNOME/Xorg/systemd，不修改程序或资源，不用嵌套桌面 |
+| 镜像项目 | IMG-01～08：账号、官方桌面、系统配置、上游 PAM 接入、模板、旧流程退出、构建和维护流程 | 只使用官方发布的 GDM/GNOME/Wayland/systemd，不修改程序或资源，不用嵌套桌面 |
 | 部署方 | 兼容的 Server/Client/镜像组合、公共端点与信任锚、独立管理员、注册和绑定 | 首次启动后按 Provisioning window 状态完成 Enrollment：Open 自动批准，Closed 人工审批，再进行 Binding |
 
 Client Deb 内的镜像输入由 [packaging/image](../packaging/image/README.md)唯一维护。镜像构建读取包内 `manifest.tsv`，按 copy/merge/render/initialize-home 应用到目标 root；安装 Client 本身不自动接管上游 PAM/GDM、创建账号或生成最终模板。输入版本与 Client Deb 一致，具体应用依赖实际 UID、上游栈和最终 skel。
@@ -34,7 +34,7 @@ Client 文件来源见[附录 A](gnome-session-image-configuration.zh-CN.md#clie
 
 1. 锁定兼容的 Client Deb、公共站点配置及官方依赖，预留管理员与受管账号，检查名称/UID/GID 冲突。
 2. 安装通用 Client，确认包提供的 PAM、unit 和程序存在；将完整 config.toml 和两份公共 CA 留给 autoinstall 落地，并从包内 `/usr/share/natsume/image-integration/` 接入 GDM/PAM/登录入口配置。
-3. 安装 dconf、英文键盘、中文字体、Xorg、VT 和退出顺序配置；退出旧 OOBE、登录、锁屏和 Agent 启动链。
+3. 安装 dconf、英文键盘、中文字体、Wayland、VT 和退出顺序配置；退出旧 OOBE、登录、锁屏和 Agent 启动链。
 4. 所有桌面、语言、Browser/IDE 层写完 `/etc/skel` 后，生成该安装源的正式模板，校验摘要并安装 mount 与 Helper drop-in。
 5. 在目标 root 中离线 enable；分离 Live 安装环境与实际安装源；检查没有带入机器身份和运行态数据。
 6. 构建新镜像，从零安装后按[交付验收](#handoff)执行，提交版本、配置和证据清单。
@@ -42,10 +42,10 @@ Client 文件来源见[附录 A](gnome-session-image-configuration.zh-CN.md#clie
 | 编号 | 必须交付的结果 | 配置入口 | 当前证据边界／验收清单 |
 | --- | --- | --- | --- |
 | [IMG-01](#img-01) | 两个受管账号和独立管理员，禁止未受控入口 | 正文及附录 C | VM 账号可用；最终账号与安装器冲突检查待镜像，2.1 |
-| [IMG-02](#img-02) | 双 X11 桌面、GDM 启动自动 waiting、停止顺序和 VT 配置 | 附录 B | VM 启动、恢复和维护已验证；最终交付待镜像，2.2、AT-01、7.2 |
+| [IMG-02](#img-02) | 双 Wayland 桌面、GDM 启动自动 waiting、停止顺序和 VT 配置 | 附录 B | Wayland 迁移后须复验启动、恢复和维护，AT-01/02 |
 | [IMG-03](#img-03) | PAM 全阶段门禁、普通入口限制、缺失服务 fallback、管理员维护 | 附录 C | VM 真实入口和包生命周期已验证；新镜像须组合复验，2.3～2.5、7.3/7.4/7.7/7.8 |
 | [IMG-04](#img-04) | 生效的 dconf、英文键盘、中文字体、缩放和禁用睡眠策略 | 附录 D | VM 首帧、缩放、退出和输入就绪已有验证；英文输入与中文显示按当前交接包复验，驱动范围见正文，6.1～6.8 |
-| [IMG-05](#img-05) | 双 Xorg 禁用普通 VT/终止快捷键及自动黑屏 | 附录 E | VM 真实快捷键和受控切换通过；最终交付须复验，6.2～6.4 |
+| [IMG-05](#img-05) | 原生 Wayland 禁用普通 VT 快捷键及自动黑屏 | 附录 E | Wayland 迁移后须复验真实快捷键及受控切换 |
 | [IMG-06](#img-06) | 最终安装源的只读版本化 Home 模板及挂载依赖 | 附录 F | VM 机制与隔离原型通过；最终 Browser/IDE 内容未交付，2.6、2.7 |
 | [IMG-07](#img-07) | 旧控制链退出，Agent 只由官方 Kiosk 用户服务管理 | 正文清理清单 | Client 旧入口已移除、VM 交接通过；最终镜像待清点，1.6、2.8 |
 | [IMG-08](#img-08) | 可复现构建、离线启用、Live/安装源分离和维护交付 | 正文构建与维护要求 | VM 包流程已有证据；完整新装和发行验收未完成，2.9、7.1、8.1～8.7 |
@@ -53,7 +53,7 @@ Client 文件来源见[附录 A](gnome-session-image-configuration.zh-CN.md#clie
 <a id="img-01"></a>
 ## 3. IMG-01：账号
 
-- 固定用户名 `teams`、`waiting`，Home 为 `/home/teams`、`/home/waiting`；独立 UID、用户 manager、总线和 Xauthority。reset 不删除重建账号，也不清理 waiting Home。
+- 固定用户名 `teams`、`waiting`，Home 为 `/home/teams`、`/home/waiting`；独立 UID、用户 manager、总线和 Wayland socket。reset 不删除重建账号，也不清理 waiting Home。
 - UID/GID 由最终镜像确定，不能复用不相干的同名账号。旧 VM 用户名和数值仅为历史测试取值；按实际 teams/waiting 账号生成 UID 相关 systemd 配置和模板所有权，校验 Home、shell、附加组。
 - 安装器/autoinstall 为管理员保留第三个用户名及 UID，拒绝以两个受管账号作为初始管理员；两者不得进入 sudo 等管理组。管理员 SSH/TTY 维护路径必须可用。
 - 锁定受管账号密码，并落实 IMG-03 的 SSH 密钥/证书、TTY、指纹/智能卡、cron/at 和 polkit 限制。仅锁密码或隐藏用户列表不满足要求。
@@ -65,9 +65,9 @@ Client 文件来源见[附录 A](gnome-session-image-configuration.zh-CN.md#clie
 <a id="img-02"></a>
 ## 4. IMG-02：GDM、桌面、停止顺序与 VT
 
-安装官方 `gdm3`、`libgdm1`、`gnome-kiosk`、`gnome-kiosk-script-session`、完整 Ubuntu/GNOME X11 session、Xorg 及运行依赖。当前验证参考为 GDM 46.2、Kiosk 46.0，不要求永久锁死这两个版本；交付记录实际版本并复验兼容性。
+安装官方 `gdm3`、`libgdm1`、`gnome-kiosk`、`gnome-kiosk-script-session`、完整 Ubuntu/GNOME Wayland session、Xwayland 应用兼容层及运行依赖。当前验证参考为 GDM 46.2、Kiosk 46.0，不要求永久锁死这两个版本；交付记录实际版本并复验兼容性。
 
-`/etc/gdm3/custom.conf` 关闭 Wayland、固定自动登录 waiting、关闭 timed login。AccountsService 为 waiting 选择 `gnome-kiosk-script-xorg`，teams 选择 `ubuntu-xorg`，确认对应 `/usr/share/xsessions/*.desktop` 存在。内容见[附录 B](gnome-session-image-configuration.zh-CN.md#gdm-config)。
+`/etc/gdm3/custom.conf` 启用 Wayland 并优先使用 Wayland、固定自动登录 waiting、关闭 timed login。AccountsService 为 waiting 选择 `gnome-kiosk-script-wayland`，teams 选择 `ubuntu-wayland`，确认对应 `/usr/share/wayland-sessions/*.desktop` 存在。内容见[附录 B](gnome-session-image-configuration.zh-CN.md#gdm-config)。
 
 <a id="img-02-autologin"></a>
 ### 每次 GDM 启动只初始化一次自动登录
@@ -86,7 +86,7 @@ Client 文件来源见[附录 A](gnome-session-image-configuration.zh-CN.md#clie
 
 交付 `/etc/systemd/logind.conf.d/60-natsume-graphical-vts.conf`，设置 `NAutoVTs=0`、`ReserveVT=6`，避免自动 getty 与新图形 session 抢占 VT；保留 tty6 管理员维护。通过维护期正常重启生效，不在运行的图形会话中重启 logind。
 
-保留官方 GDM 的 `/run/user/<uid>/gdm/Xauthority`，以及角色读取自身合成器进程环境、访问自身 Xorg/总线的能力。greeter 可能使用 `dbus-run-session`；Client 在 gdm UID 下查询其 `org.gnome.SessionManager.IsSessionRunning`，不能强制假定总线为 `/run/user/<gdm uid>/bus`。不新增跨用户环境读取权限或任意显示/总线地址。
+保留角色访问自身 compositor 的 Wayland socket、用户总线和进程信息的能力。greeter 可能使用 `dbus-run-session`；Client 在 gdm UID 下查询实际总线，不能强制假定为 `/run/user/<gdm uid>/bus`。Xwayland 仅为应用兼容层，其认证文件归各会话自己管理；不新增跨用户环境读取权限或任意显示/总线地址。
 
 验收：无 Server/Target 冷启动 waiting、健康 Helper 重启复用、waiting 有界恢复后的登录/reset、GDM 维护重启及管理员 SSH/tty6。模板失败时 Helper 诊断和 waiting 继续可用；不增加 keeper、后台 `gnome-session`、全局 Home gate 或让 GDM 依赖模板成功。
 
@@ -120,27 +120,27 @@ account 策略通过镜像 `pam-auth-update` profile 进入 `common-account`，�
 <a id="img-04"></a>
 ## 6. IMG-04：dconf、键盘、字体、缩放与睡眠
 
-交付[附录 D](gnome-session-image-configuration.zh-CN.md#desktop-config)的两个 profile、公共/专用数据库与 locks、按 UID 配置的用户 manager 环境，以及缩放 drop-in。执行 `dconf update`，维护期重建会话，检查真实进程环境和有效设置。
+交付[附录 D](gnome-session-image-configuration.zh-CN.md#desktop-config)的两个 profile、公共/专用数据库与 locks、按 UID 配置的用户 manager 环境。执行 `dconf update`，维护期重建会话，检查真实进程环境和有效设置。
 
 - waiting 使用官方 Kiosk 实际选择的 `gnomekiosk` profile，保留官方 compiled 数据库；contest 使用 `natsume_teams`，保留镜像已有系统数据库层。只新建 Kiosk 不读取的 profile 无效。
 - 双方关闭自动锁屏、用户切换、空闲调暗/睡眠和锁屏快捷键；waiting 另设纯黑背景，禁用普通关闭、应用切换和运行对话框。**保留 `disable-log-out=false`**，true 会阻碍 GNOME 正常结束；普通退出快捷键单独禁用。
 - waiting/teams 默认只使用 US 英文键盘，不额外安装中文输入法。中文字体须正常显示，例如保留发行版 `fonts-noto-cjk` 提供的 Noto Sans CJK；首次启动后核对两种会话的有效输入源。
-- 不部署专用 IBus 配置；`GDK_SCALE=1` 只给 Kiosk compositor 及其子进程，不把 frame-helper 的固定倍率传给 Agent/contest。
+- 不部署专用 IBus 配置；缩放使用 Wayland 的输出配置，移除旧 Kiosk X11 frame-helper 的 GDK_SCALE 覆盖。
 - 保留 `/etc/systemd/sleep.conf.d/do-not-suspend.conf` 四项睡眠禁止值。临时放行 S3 是故障测试，不是生产配置。
 
 <a id="img-04-readiness"></a>
-前台就绪要求实际 XInput2 slave 键盘和指针已启用，并带 `/dev/input/eventN` 的 `Device Node`；后台物理输入禁用是正常状态。保留官方输入驱动、属性和自身 Xorg 查询能力，不用虚拟 XTEST 替代、不硬编码设备编号。最终仍须实际画面和键鼠操作，不能只看 ready=true。
+Helper 在角色自身 UID 下检查 SessionManager、compositor 身份和原生 Wayland 输出；前台还检查电源及 wl_seat 键盘/指针能力。后台暂停绘制和释放物理输入允许存在。协议能力不等于实际键鼠接管或所有应用完成绘制，最终必须检查真实画面、Home 图标、完整右键菜单、终端输入及 waiting 点击/键盘，不能只看 ready=true。
 
 Binding 英文输入、焦点、中文显示、缩放及恢复后的真实键鼠必须在交付镜像上验证。测试环境的显卡、内核或软件光标配置不能直接作为生产镜像要求；验证报告应明确硬件、驱动、倍率和字体的覆盖范围。
 
 验收：有效 dconf 值及 locked 状态、660 秒无输入持续输出、正常退出无旧超时、英文输入/中文字体/焦点/点击区域/首帧、显示故障后输入与恢复；睡眠策略和恢复证据分开记录。
 
 <a id="img-05"></a>
-## 7. IMG-05：Xorg
+## 7. IMG-05：Wayland 前台与快捷键
 
-交付[附录 E](gnome-session-image-configuration.zh-CN.md#xorg-config)的 `ServerFlags`：`DontVTSwitch=true`、`DontZap=true`，Blank/Standby/Suspend/Off 时间为 0。合并并移除冲突旧片段，特别是 `90-natsume-test-kiosk.conf`；不能只增加一个更早的文件。
+公共 dconf 数据库及 locks 禁用 `org.gnome.mutter.wayland.keybindings` 的 `switch-to-session-1`～`12` 和 `restore-shortcuts`，配合空闲、锁屏和睡眠策略。移除旧 Natsume Xorg ServerFlags 与 Kiosk X11 frame-scale 覆盖；这些设置不能配置原生 Wayland。
 
-验收：读取两个 Xorg 的 `xset q` 和日志，屏保 timeout 与 DPMS 三项为 0；`timeout: 0` 时 `cycle: 600` 不代表自动黑屏。实际 Ctrl+Alt+Fn、Ctrl+Alt+Backspace 不切出/终止会话，Helper/logind 受控激活仍有效。这不是完整恶意程序隔离承诺。
+在 waiting/teams 实际 profile 下核对键值与不可写性；验证 Ctrl+Alt+Fn、Ctrl+Alt+Backspace 不切出/终止会话，Helper/logind 受控激活仍有效。以实际输出和输入测试代替 xset/XInput2 检查，不宣称完整恶意程序隔离。独立管理员 SSH 和受控维护入口必须保留。
 
 <a id="img-06"></a>
 ## 8. IMG-06：正式 Home 模板
@@ -167,7 +167,7 @@ lower 的 UID/GID 与 contest 一致，保留正常 owner 写位以支持 Overla
 | 旧 Client/实验启动 | 全局 XDG `org.natsume.SessionAgent.desktop`、bootstrap/Home 服务、全局 `display-manager.service.d/50-natsume-home.conf`，包括 `/etc` 残留覆盖 |
 | 重复应用管理 | Kiosk 示例脚本编辑器、另一个 Agent 启动/重启所有者、waiting 继承的比赛自启动 |
 
-Client 已删除自身旧全局入口，镜像仍须清点历史副本。Agent 只由官方 Kiosk Script 用户服务和 Client drop-in 启动。waiting 用静态页面，去掉不必要动画和比赛自启动，保持两个用户/Xorg 独立。
+Client 已删除自身旧全局入口，镜像仍须清点历史副本。Agent 只由官方 Kiosk Script 用户服务和 Client drop-in 启动。waiting 用静态页面，去掉不必要动画和比赛自启动，保持两个用户/compositor 独立。
 
 验收：重启与升级后只有新控制链操作受管会话，无旧配置写入竞争、重复 Agent 或进程累积。当前用 QEMU 测功能和资源变化，不增加物理机前置门槛；Intel 核显型号未知，不将软件渲染数据换算为核显损耗百分比。
 
@@ -199,7 +199,7 @@ Client 持续安装，remove/purge 不作为镜像实现或交付门槛。`other
 镜像项目交付以下材料，才能启动正式发行验收：
 
 1. 镜像下载地址、SHA-256、源码 revision、安装源/构建方式；兼容 Server/Client 版本和 Deb 摘要。
-2. 官方内核、GDM、GNOME/Kiosk、Xorg、PAM、中文字体及依赖的包版本；IMG-01～08 配置清单、内容摘要、权限与归属。
+2. 官方内核、GDM、GNOME/Kiosk、Mutter、PAM、中文字体及依赖的包版本；IMG-01～08 配置清单、内容摘要、权限与归属。
 3. 受管 UID/GID、管理员保留规则；每个安装源的模板来源、版本/SHA-256、包清单、mount 与 Helper 依赖。
 4. Live/安装源分离、离线 enable、首次身份初始化、旧控制链清理的结果，以及升级/回退流程。
 5. 逐项验收和失败记录；证据关联实际镜像/包/模板版本，不含设备私钥或比赛数据。

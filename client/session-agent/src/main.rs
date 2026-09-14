@@ -17,7 +17,7 @@ use natsume_local_control_api::{
 };
 use natsume_session_agent::ui;
 use rustix::fs::{FlockOperation, flock};
-use slint::winit_030::winit::platform::x11::EventLoopBuilderExtX11 as _;
+use slint::winit_030::winit::platform::wayland::EventLoopBuilderExtWayland as _;
 use tokio::{
     sync::{mpsc, watch},
     time::Instant,
@@ -59,7 +59,7 @@ fn session_identity() -> Result<GraphicalSession, RunError> {
         .filter(|value| !value.is_empty())
         .unwrap_or_default();
     match env::var("XDG_SESSION_TYPE").as_deref() {
-        Ok("x11") => {}
+        Ok("wayland") => {}
         _ => return Err(RunError::Identity("graphical session type is unsupported")),
     }
     Ok(GraphicalSession {
@@ -345,7 +345,7 @@ fn run() -> Result<(), RunError> {
             ui::set_binding_submission_sender(submission_sender)
                 .map_err(|_| RunError::Identity("Binding submission channel is duplicated"))?;
             let mut event_loop = slint::winit_030::winit::event_loop::EventLoop::with_user_event();
-            event_loop.with_x11();
+            event_loop.with_wayland();
             slint::BackendSelector::new()
                 .backend_name("winit".into())
                 .renderer_name("skia".into())

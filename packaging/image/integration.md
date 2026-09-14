@@ -2,14 +2,16 @@
 
 按本文完成 image builder 的全部修改。配置正文在同目录的 [manifest.tsv](manifest.tsv) 及其列出的文件中；依赖、站点值和 Client 文件归属见 [inputs.md](inputs.md)，通过标准见 [acceptance.md](acceptance.md)。
 
+初始化或重建允许短暂取得前台，后台会话允许暂停绘制。普通切换仍复用两个原生会话；切到 teams 后必须恢复完整可操作桌面，以实际图标、右键菜单和键鼠验收，不以 DING 初始化或某个进程存在代替全桌面验收。
+
 ## 1. 行为与所有权
 
-| 固定业务角色 / Helper CLI 参数 | Unix 用户 | Home | X11 session | dconf profile |
+| 固定业务角色 / Helper CLI 参数 | Unix 用户 | Home | Wayland session | dconf profile |
 | --- | --- | --- | --- | --- |
-| waiting | waiting | /home/waiting | gnome-kiosk-script-xorg | gnomekiosk |
-| contest | teams | /home/teams | ubuntu-xorg | natsume_teams |
+| waiting | waiting | /home/waiting | gnome-kiosk-script-wayland | gnomekiosk |
+| contest | teams | /home/teams | ubuntu-wayland | natsume_teams |
 
-两个会话各有 Xorg、GNOME、用户总线、Xauthority 和 Home，都由官方 GDM 创建及管理。正常情况下两边同时存在，普通“显示等待界面/显示比赛桌面”只切换前台，保留双方 session/PID、比赛窗口、文件和 Home generation；不执行 GNOME Lock/Unlock。后台比赛会话合法。`gdm-contest`、`natsume-contest-admission`、`prepare-session contest`、协议 `foreground_target=contest` 是角色标识，不能改名。
+两个会话各有原生 GNOME compositor、Wayland socket、用户总线和 Home，都由官方 GDM 创建及管理。正常情况下两边同时存在，普通“显示等待界面/显示比赛桌面”只切换前台，保留双方 session/PID、比赛窗口、文件和 Home generation；不执行 GNOME Lock/Unlock。后台比赛会话合法。`gdm-contest`、`natsume-contest-admission`、`prepare-session contest`、协议 `foreground_target=contest` 是角色标识，不能改名。
 
 Home reset 的职责归 Natsume：先撤销上游业务访问、取得可用 waiting 前台，再关闭 teams 登录许可，结束捕获的比赛会话并排空 UID/manager/PAM worker，正常卸载并恢复 Home，验证后重新登录比赛会话，最后依最新目标决定前台。waiting/GDM 不随普通 reset 重启。重建期间允许 greeter/闪屏；Home 失败必须保留 waiting 与诊断，不能让整个 GDM 依赖 Home 成功。
 
@@ -45,7 +47,9 @@ waiting Home 使用最小内容，只初始化清单规定的环境文件，不�
 
 ## 4. IMG-02：GDM、桌面、停止顺序与 VT
 
-先确认 inputs.md 中官方依赖与两个 xsessions entry 存在，再合并 `fragments/gdm/custom.conf` 的 daemon 配置：禁用 Wayland，AutomaticLogin=waiting，关闭 timed login。AccountsService 的两个 `[User] XSession=...` 片段合并进各自文件，保留其他合法字段，目标 root:root/0600。
+先确认 inputs.md 中官方依赖与两个 wayland-sessions entry 存在，再合并 `fragments/gdm/custom.conf` 的 daemon 配置：启用 Wayland，PreferredDisplayServer=wayland，AutomaticLogin=waiting，关闭 timed login。AccountsService 的两个 `[User] XSession=...` 片段合并进各自文件，保留其他合法字段，目标 root:root/0600。
+
+从旧 X11 镜像交接时清理强制 `WaylandEnable=false`/`PreferredDisplayServer=xorg` 的 GDM drop-in、运行态覆盖和用户会话选择，保留无关站点配置。仅安装新 Deb 不会自动切换现有图形栈；维护期应用本目录并重启后，必须核对 waiting、teams 和 greeter 的实际 `Type=wayland`。
 
 每次 GDM 启动前，`rootfs/etc/systemd/system/gdm.service.d/20-waiting-autologin.conf` 使用官方 gdm-runtime-config 开启运行态自动登录；waiting 进入 PostLogin 时，`fragments/gdm/PostLogin.sh` 关闭它并 HUP GDM。此后重建 waiting/contest 由 Client 固定入口完成。只有静态 AutomaticLoginEnable=true 会让后续 display 重复自动登录 waiting，阻挡受控登录，不能省略这一组合。
 
@@ -55,7 +59,7 @@ waiting Home 使用最小内容，只初始化清单规定的环境文件，不�
 
 应用 logind 的 `NAutoVTs=0`、`ReserveVT=6`，防止自动 getty 抢占新图形 VT，保留 tty6 管理员维护。检查较晚 drop-in 和显式 getty 配置是否抵消它。通过维护期正常重启生效，不在活跃桌面中重启 logind。
 
-保留每个用户自身的总线与 GDM Xauthority。greeter 可以使用 dbus-run-session；不要强制把 greeter 总线改为 `/run/user/<gdm uid>/bus`。不另起后台 gnome-session、keeper 或第二个显示管理器。
+保留每个用户自身的总线及原生 Wayland socket；不要跨用户复制 socket、运行环境或 Xwayland 认证文件。greeter 可以使用 dbus-run-session，不要强制把 greeter 总线改为 `/run/user/<gdm uid>/bus`。不另起后台 gnome-session、keeper 或第二个显示管理器。
 
 ## 5. IMG-03：PAM、SSH、polkit
 
@@ -97,15 +101,15 @@ SSH 合并 `DenyUsers teams waiting`，保留站点原规则，用实际 sshd �
 
 waiting/teams 共用 US 英文键盘默认值，不新增中文输入法或输入源切换快捷键。保留现有中文字体；若缺少中文字形，安装发行版的 CJK 字体包并验证实际显示。首次启动后在对应用户的正确总线/profile 下核对有效输入源。
 
-不部署专用 IBus 配置。`GDK_SCALE=1` 只给 Kiosk compositor 及其子进程，不能把 frame-helper 的固定倍率传给 Agent/teams。
+不部署专用 IBus 配置。缩放由 Wayland compositor 的输出配置决定，移除旧 Kiosk X11 frame-helper 的 GDK_SCALE 覆盖，不给 Agent/teams 强加倍率。
 
-保留 sleep.conf 四项禁止：AllowSuspend、AllowHibernation、AllowSuspendThenHibernate、AllowHybridSleep 均为 no。临时 S3 放行只用于单独故障测试，交付前恢复。前台就绪要求真实 XInput2 slave keyboard/pointer 启用，并带 `/dev/input/eventN` Device Node；后台物理输入禁用正常，不用 XTEST 假设备或固定设备编号代替。
+保留 sleep.conf 四项禁止：AllowSuspend、AllowHibernation、AllowSuspendThenHibernate、AllowHybridSleep 均为 no。临时 S3 放行只用于单独故障测试，交付前恢复。Helper 在角色自身 UID 下检查 SessionManager、compositor 身份和原生 Wayland 输出；前台还检查电源及 wl_seat 键盘/指针能力。后台暂停绘制和释放物理输入允许存在。协议能力不等于实际键鼠接管或所有应用完成绘制，最终必须检查真实画面、Home 图标、完整右键菜单、终端输入及 waiting 点击/键盘，不能只看 ready=true。
 
-## 7. IMG-05：Xorg
+## 7. IMG-05：Wayland 前台与快捷键
 
-安装清单中的 ServerFlags，DontVTSwitch/DontZap=true，Blank/Standby/Suspend/Off 时间为 0。清点并处理冲突的旧 ServerFlags，特别是后加载的 `90-natsume-test-kiosk.conf`，不能只放更早的文件。
+公共 dconf 数据库及 locks 禁用 `org.gnome.mutter.wayland.keybindings` 的 `switch-to-session-1`～`12` 和 `restore-shortcuts`，配合空闲、锁屏和睡眠策略。移除旧 Natsume Xorg ServerFlags 与 Kiosk X11 frame-scale 覆盖；这些设置不能配置原生 Wayland。
 
-在两个实际 Xorg 上确认屏保 timeout 与 DPMS 三项时间为 0；timeout=0 时 cycle=600 不表示会自动黑屏。实际 Ctrl+Alt+Fn、Ctrl+Alt+Backspace 不切出/终止会话，Helper/logind 的受控激活仍有效。这些约束不宣称构成完整恶意程序隔离。
+在 waiting/teams 实际 profile 下核对键值与不可写性；验证 Ctrl+Alt+Fn、Ctrl+Alt+Backspace 不切出/终止会话，Helper/logind 受控激活仍有效。以实际输出和输入测试代替 xset/XInput2 检查，不宣称完整恶意程序隔离。独立管理员 SSH 和受控维护入口必须保留。
 
 ## 8. IMG-06：每个最终安装源的 Home 模板
 

@@ -115,7 +115,7 @@ async fn authenticate_inner(
         || session_uid != uid
         || seat != "seat0"
         || class != "user"
-        || kind != "x11"
+        || kind != "wayland"
         || remote
     {
         return Err(invalid());

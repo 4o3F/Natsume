@@ -1,6 +1,6 @@
 # GNOME 双会话：镜像配置附录
 
-更新：2026-09-10。现行镜像输入已进入正式 [packaging/image](../packaging/image/README.md)，并由 Client Deb 原样安装到 `/usr/share/natsume/image-integration/`。镜像构建读取该包内目录；本页负责解释归属和接入位置，配置正文以源文件为准，不再从被忽略的 `target-vm` 或文档代码块复制。
+更新：2026-09-14。现行镜像输入已进入正式 [packaging/image](../packaging/image/README.md)，并由 Client Deb 原样安装到 `/usr/share/natsume/image-integration/`。镜像构建读取该包内目录；本页负责解释归属和接入位置，配置正文以源文件为准，不再从被忽略的 `target-vm` 或文档代码块复制。
 
 比赛角色 `contest` 对应系统用户 **teams**、Home **/home/teams**、dconf profile **natsume_teams**；waiting 用户不变。`gdm-contest`、`natsume-contest-admission` 和 Helper 子命令参数 `contest` 保留为固定角色入口。旧 VM 证据中的账号和 profile 保留历史名称，不算 teams 新镜像已经验收。
 
@@ -35,7 +35,7 @@
 
 GDM 每次启动前启用 waiting 自动登录，waiting 进入 PostLogin 后关闭运行态自动登录并 HUP 重读；后续受控重建使用固定 API。只靠静态 AutomaticLoginEnable=true 未能覆盖旧 VM 的等待会话恢复场景。PostLogin 是登录流程钩子，不是桌面首帧就绪报告。
 
-合并实际被选择的 Default/display/hostname 钩子，保留既有逻辑及上游 ExecStartPre。AccountsService 为 waiting 选择 gnome-kiosk-script-xorg、teams 选择 ubuntu-xorg，确认对应 xsessions 文件存在。session scope 前缀作用于管理员会话，检查停止顺序无环；NAutoVTs=0、ReserveVT=6 保留管理员 tty6。配置通过维护期正常重启生效。
+合并实际被选择的 Default/display/hostname 钩子，保留既有逻辑及上游 ExecStartPre。AccountsService 为 waiting 选择 gnome-kiosk-script-wayland、teams 选择 ubuntu-wayland，确认对应 wayland-sessions 文件存在。session scope 前缀作用于管理员会话，检查停止顺序无环；NAutoVTs=0、ReserveVT=6 保留管理员 tty6。配置通过维护期正常重启生效。
 
 | 输入源 | 目标 | 模式 | 方法 |
 | --- | --- | --- | --- |
@@ -75,9 +75,9 @@ PAM 前缀在官方栈之前，保留完整原栈。gdm-password 的片段依次
 
 保留 Kiosk 的官方 compiled file-db，比赛 profile 保留镜像所需的已有数据库层。数据库与 locks 成套安装，在目标 root 执行 dconf update；核对真实用户 manager/桌面环境及 gsettings get/writable。waiting 必须保留 disable-log-out=false，普通退出快捷键单独禁用。
 
-waiting/teams 共用 US 英文键盘默认值，不新增中文输入法；保留能够正常显示中文的字体，并在实际用户总线/profile 下核对有效输入源。GDK_SCALE=1 只随 Kiosk compositor/子进程。
+waiting/teams 共用 US 英文键盘默认值，不新增中文输入法；保留能够正常显示中文的字体，并在实际用户总线/profile 下核对有效输入源。缩放由 Wayland compositor 的输出配置决定，不再给 Kiosk 注入 X11 frame-helper 的 GDK_SCALE 覆盖。
 
-保持四项睡眠禁止策略。验证英文输入、中文字体显示、DPI、点击区域、首帧、660 秒无输入输出、正常退出及前台物理键鼠；XInput2 条件见[IMG-04](gnome-session-image-requirements.zh-CN.md#img-04-readiness)。QEMU 试验驱动/软件光标不是镜像生产输入。
+保持四项睡眠禁止策略。验证英文输入、中文字体显示、DPI、点击区域、首帧、660 秒无输入输出、正常退出及前台物理键鼠；Wayland 能力边界见[IMG-04](gnome-session-image-requirements.zh-CN.md#img-04-readiness)。QEMU 试验驱动/软件光标不是镜像生产输入。
 
 | 输入源 | 目标 | 模式 | 方法 |
 | --- | --- | --- | --- |
@@ -88,19 +88,16 @@ waiting/teams 共用 US 英文键盘默认值，不新增中文输入法；保�
 | [rootfs/etc/dconf/profile/gnomekiosk](../packaging/image/rootfs/etc/dconf/profile/gnomekiosk) | `/etc/dconf/profile/gnomekiosk` | 0644 | copy |
 | [rootfs/etc/dconf/profile/natsume_teams](../packaging/image/rootfs/etc/dconf/profile/natsume_teams) | `/etc/dconf/profile/natsume_teams` | 0644 | copy |
 | [rootfs/etc/systemd/sleep.conf.d/do-not-suspend.conf](../packaging/image/rootfs/etc/systemd/sleep.conf.d/do-not-suspend.conf) | `/etc/systemd/sleep.conf.d/do-not-suspend.conf` | 0644 | copy |
-| [rootfs/etc/systemd/user/org.gnome.Kiosk@x11.service.d/70-natsume-frame-scale.conf](../packaging/image/rootfs/etc/systemd/user/org.gnome.Kiosk@x11.service.d/70-natsume-frame-scale.conf) | `/etc/systemd/user/org.gnome.Kiosk@x11.service.d/70-natsume-frame-scale.conf` | 0644 | copy |
 | [templates/user-manager-teams.conf](../packaging/image/templates/user-manager-teams.conf) | `/etc/systemd/system/user@@TEAMS_UID@.service.d/20-natsume-session.conf` | 0644 | render |
 | [templates/user-manager-waiting.conf](../packaging/image/templates/user-manager-waiting.conf) | `/etc/systemd/system/user@@WAITING_UID@.service.d/20-natsume-session.conf` | 0644 | render |
 | [templates/waiting-environment.conf](../packaging/image/templates/waiting-environment.conf) | `/home/waiting/.config/environment.d/99-natsume-session.conf` | 0644 | initialize-home |
 
 <a id="xorg-config"></a>
-## E. IMG-05：Xorg
+## E. IMG-05：Wayland 前台与快捷键
 
-合并 ServerFlags 并移除冲突的旧 90-natsume-test-kiosk.conf。两个 Xorg 的实际屏保 timeout 和 DPMS 三项均须为 0，普通 VT/终止快捷键被拒绝，Helper/logind 的受控激活保持可用。
+公共 dconf 数据库及 locks 禁用 `org.gnome.mutter.wayland.keybindings` 的 `switch-to-session-1`～`12` 和 `restore-shortcuts`，配合空闲、锁屏和睡眠策略。移除旧 Natsume Xorg ServerFlags 与 Kiosk X11 frame-scale 覆盖；这些设置不能配置原生 Wayland。
 
-| 输入源 | 目标 | 模式 | 方法 |
-| --- | --- | --- | --- |
-| [rootfs/etc/X11/xorg.conf.d/20-natsume-session.conf](../packaging/image/rootfs/etc/X11/xorg.conf.d/20-natsume-session.conf) | `/etc/X11/xorg.conf.d/20-natsume-session.conf` | 0644 | copy |
+在 waiting/teams 实际 profile 下核对键值与不可写性；验证 Ctrl+Alt+Fn、Ctrl+Alt+Backspace 不切出/终止会话，Helper/logind 受控激活仍有效。以实际输出和输入测试代替 xset/XInput2 检查，不宣称完整恶意程序隔离。独立管理员 SSH 和受控维护入口必须保留。
 
 <a id="home-template"></a>
 ## F. IMG-06/08：模板与启动依赖

@@ -160,6 +160,21 @@ impl SessionReconciler {
             .map_err(|_| SnapshotError::LocalControl)
     }
 
+    /// A background Wayland surface may owe a frame until it becomes visible.
+    /// Its live, authenticated Agent can still be activated to produce it.
+    async fn waiting_available(&self, observed: &ManagedSessionsObservation) -> bool {
+        observed.waiting.state == GraphicalSessionState::Running
+            && observed.waiting.desktop_ready
+            && !observed.waiting.locked_hint
+            && if let Some(session) = observed.waiting.session.as_ref() {
+                self.agent
+                    .waiting_agent_alive(&self.connection, session)
+                    .await
+            } else {
+                false
+            }
+    }
+
     /// Local recovery is independent of business Targets. The current control
     /// task tracks this bounded call; only Helper can spend the per-boot budget.
     pub(super) async fn maintain_waiting(&self) -> Result<(), SnapshotError> {
@@ -174,11 +189,14 @@ impl SessionReconciler {
             return Err(SnapshotError::LocalControl);
         };
         let ready = self.observation_actual(&observed, None).await.waiting_ready;
+        let healthy = ready
+            || (observed.foreground != SessionForeground::Waiting
+                && self.waiting_available(&observed).await);
         let due = self
             .waiting_health
             .lock()
             .map_err(|_| SnapshotError::Artifact)?
-            .observe(Instant::now(), ready);
+            .observe(Instant::now(), healthy);
         if !ready {
             self.agent.revoke_eligibility()?;
         }
@@ -393,8 +411,8 @@ impl SessionReconciler {
             .query_managed_sessions()
             .await
             .map_err(|_| SnapshotError::LocalControl)?;
-        let actual = self.observation_actual(&observed, None).await;
-        let Some(waiting) = observed.waiting.session.filter(|_| actual.waiting_ready) else {
+        let available = self.waiting_available(&observed).await;
+        let Some(waiting) = observed.waiting.session.filter(|_| available) else {
             return Ok(ReconcileOutcome::retry(None));
         };
         check_cancellation(cancellation)?;
@@ -431,8 +449,8 @@ impl SessionReconciler {
             .query_managed_sessions()
             .await
             .map_err(|_| SnapshotError::LocalControl)?;
-        let actual = self.observation_actual(&observed, None).await;
-        let Some(waiting) = observed.waiting.session.filter(|_| actual.waiting_ready) else {
+        let available = self.waiting_available(&observed).await;
+        let Some(waiting) = observed.waiting.session.filter(|_| available) else {
             return Ok(false);
         };
         if let Some(cancellation) = cancellation {
@@ -511,6 +529,7 @@ impl SessionReconciler {
             .await
             .map_err(|_| SnapshotError::LocalControl)?;
         let actual = self.observation_actual(&observed, None).await;
+        let waiting_available = self.waiting_available(&observed).await;
         let effective = if bound {
             target.foreground_target
         } else {
@@ -519,7 +538,7 @@ impl SessionReconciler {
         let (session, ready, foreground) = match effective {
             SessionRole::Waiting => (
                 observed.waiting.session,
-                actual.waiting_ready,
+                waiting_available,
                 SessionForeground::Waiting,
             ),
             SessionRole::Contest => (
@@ -745,6 +764,73 @@ pub(super) mod tests {
             agent,
             waiting_health: Mutex::new(WaitingHealth::default()),
         }
+    }
+
+    #[tokio::test]
+    async fn background_frame_deferral_does_not_rebuild_a_live_waiting_session()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::reconcile::tests::fixture(crate::reconcile::tests::HelperState {
+            foreground: Some(SessionForeground::Contest),
+            ..Default::default()
+        })
+        .await?;
+        fixture.pause_agent_frames().await;
+        let session = &fixture.snapshots.session;
+        {
+            let now = Instant::now();
+            let mut health = session.waiting_health.lock().map_err(|_| "health lock")?;
+            health.failed_since = Some(now - WAITING_FAILURE_COOLDOWN);
+            health.last_sample = Some(now - Duration::from_secs(30));
+        }
+        assert!(!session.observe().await?.waiting_ready);
+        session.maintain_waiting().await?;
+        let helper = fixture.helper.lock().map_err(|_| "helper lock")?;
+        assert!(helper.waiting_recovery_calls.is_empty());
+        assert!(helper.activation_calls.is_empty());
+        assert!(
+            session
+                .waiting_health
+                .lock()
+                .map_err(|_| "health lock")?
+                .failed_since
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn waiting_activation_precedes_frame_but_maintenance_still_waits_for_it()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::reconcile::tests::fixture(crate::reconcile::tests::HelperState {
+            foreground: Some(SessionForeground::Contest),
+            ..Default::default()
+        })
+        .await?;
+        fixture.pause_agent_frames().await;
+        let session = &fixture.snapshots.session;
+        let cancellation = CancellationToken::new();
+        let pending = session.waiting_foreground(&cancellation).await?;
+        assert!(pending.retry);
+        assert!(pending.actual.is_none());
+        {
+            let helper = fixture.helper.lock().map_err(|_| "helper lock")?;
+            assert_eq!(helper.foreground, Some(SessionForeground::Waiting));
+            assert_eq!(helper.activation_calls.len(), 1);
+        }
+        fixture.confirm_agent_frame()?;
+        let ready = session.waiting_foreground(&cancellation).await?;
+        assert!(!ready.retry);
+        assert!(ready.actual.is_some());
+        assert_eq!(
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "helper lock")?
+                .activation_calls
+                .len(),
+            1
+        );
+        Ok(())
     }
 
     #[test]

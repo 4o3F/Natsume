@@ -7,3 +7,16 @@
 /org/gnome/settings-daemon/plugins/power/sleep-inactive-ac-type
 /org/gnome/settings-daemon/plugins/power/sleep-inactive-battery-type
 /org/gnome/settings-daemon/plugins/media-keys/screensaver
+/org/gnome/mutter/wayland/keybindings/switch-to-session-1
+/org/gnome/mutter/wayland/keybindings/switch-to-session-2
+/org/gnome/mutter/wayland/keybindings/switch-to-session-3
+/org/gnome/mutter/wayland/keybindings/switch-to-session-4
+/org/gnome/mutter/wayland/keybindings/switch-to-session-5
+/org/gnome/mutter/wayland/keybindings/switch-to-session-6
+/org/gnome/mutter/wayland/keybindings/switch-to-session-7
+/org/gnome/mutter/wayland/keybindings/switch-to-session-8
+/org/gnome/mutter/wayland/keybindings/switch-to-session-9
+/org/gnome/mutter/wayland/keybindings/switch-to-session-10
+/org/gnome/mutter/wayland/keybindings/switch-to-session-11
+/org/gnome/mutter/wayland/keybindings/switch-to-session-12
+/org/gnome/mutter/wayland/keybindings/restore-shortcuts

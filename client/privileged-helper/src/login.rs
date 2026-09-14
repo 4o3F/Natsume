@@ -1,19 +1,18 @@
-use std::{path::Path, process::Stdio};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+use tokio::io::AsyncReadExt as _;
 
 use futures_util::StreamExt as _;
 use natsume_local_control_api::{
     GraphicalSessionObservation, GraphicalSessionState, ManagedSessionsObservation,
     ResourceControlError, SessionRole,
 };
-use tokio::{
-    process::Command,
-    time::{Duration, Instant, sleep, timeout},
-};
+use tokio::time::{Duration, Instant, sleep, timeout};
 use zbus::{Connection, MessageStream, message::Type, zvariant::OwnedObjectPath};
 
 use crate::{
-    admission,
-    session::{self, account_name, fresh_proxy, rejected, role_name, unavailable},
+    admission, gdm_registration,
+    session::{self, account_name, fresh_proxy, rejected, unavailable},
 };
 
 const HELPER: &str = "/usr/lib/natsume/natsume-privileged-helper";
@@ -24,6 +23,31 @@ const PEER_PATH: &str = "/org/gnome/DisplayManager/Session";
 const GREETER: &str = "org.gnome.DisplayManager.Greeter";
 const VERIFIER: &str = "org.gnome.DisplayManager.UserVerifier";
 const PREPARE_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// The private gdm UID probe's machine output. It does not claim registration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GreeterStatus {
+    pub(crate) identity: gdm_registration::Greeter,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginContext {
+    proof: gdm_registration::Proof,
+    greeter: GreeterStatus,
+}
+
+mod preparation;
+
+pub(crate) async fn preparing(connection: &Connection) -> Result<bool, ResourceControlError> {
+    for role in [SessionRole::Waiting, SessionRole::Contest] {
+        if unit_busy(&unit_state(connection, role).await?) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
 
 fn unit(role: SessionRole) -> &'static str {
     match role {
@@ -107,8 +131,19 @@ pub(crate) async fn observe(
         (SessionRole::Waiting, &mut observed.waiting),
         (SessionRole::Contest, &mut observed.contest),
     ] {
-        if current.state == GraphicalSessionState::None {
-            current.state = match unit_state(connection, role).await?.as_str() {
+        let preparation = unit_state(connection, role).await?;
+        if unit_busy(&preparation)
+            && matches!(
+                current.state,
+                GraphicalSessionState::None
+                    | GraphicalSessionState::Starting
+                    | GraphicalSessionState::Running
+            )
+        {
+            current.state = GraphicalSessionState::Starting;
+            current.desktop_ready = false;
+        } else if current.state == GraphicalSessionState::None {
+            current.state = match preparation.as_str() {
                 "activating" | "active" => GraphicalSessionState::Starting,
                 "deactivating" => GraphicalSessionState::Terminating,
                 "failed" => GraphicalSessionState::Error,
@@ -139,9 +174,13 @@ pub(crate) async fn start_owned(
     }
     let current = role_observation(session::observe(connection, root).await?, role);
     match current.state {
-        GraphicalSessionState::Running
-        | GraphicalSessionState::Starting
-        | GraphicalSessionState::Terminating => return Ok(current),
+        GraphicalSessionState::Running if current.desktop_ready => return Ok(current),
+        GraphicalSessionState::Running => {
+            if preparation::failed_session(root, role, current.session.as_ref())? {
+                return Ok(current);
+            }
+        }
+        GraphicalSessionState::Starting | GraphicalSessionState::Terminating => return Ok(current),
         GraphicalSessionState::Ambiguous | GraphicalSessionState::Error => {
             return Err(rejected("session preparation requires an unambiguous role"));
         }
@@ -163,7 +202,7 @@ pub(crate) async fn start_owned(
             };
         }
     }
-    if role == SessionRole::Contest {
+    if role == SessionRole::Contest && current.session.is_none() {
         admission::require_no_workers(root)?;
     }
     unit_job(connection, role, true).await?;
@@ -239,110 +278,7 @@ async fn mutation_when_available(
 /// # Errors
 /// Rejects conflicting roles, closed admission and failed GDM preparation.
 pub async fn run_prepare(role: SessionRole) -> Result<(), ResourceControlError> {
-    if !rustix::process::geteuid().is_root() {
-        return Err(rejected("session preparation requires root"));
-    }
-    timeout(PREPARE_TIMEOUT, prepare_inner(role))
-        .await
-        .map_err(|_| unavailable("session preparation timed out; resample before retry"))?
-}
-
-async fn prepare_inner(role: SessionRole) -> Result<(), ResourceControlError> {
-    let root = Path::new("/");
-    let _mutation = mutation_when_available(root).await?;
-    if role == SessionRole::Waiting {
-        crate::waiting::require_login_allowed(root)?;
-    }
-    let connection = Connection::system()
-        .await
-        .map_err(|_| unavailable("system bus is unavailable"))?;
-    let current = role_observation(session::observe(&connection, root).await?, role);
-    if current.state != GraphicalSessionState::None {
-        return if current.state == GraphicalSessionState::Running && current.desktop_ready {
-            Ok(())
-        } else {
-            Err(rejected(
-                "session preparation cannot replace an existing role",
-            ))
-        };
-    }
-    if role == SessionRole::Contest {
-        admission::require_open(root)?;
-        crate::home::require_template(root)?;
-        admission::require_no_workers(root)?;
-    }
-    if session::greeter(&connection, root).await?.is_none() {
-        let factory = fresh_proxy(
-            &connection,
-            GDM,
-            "/org/gnome/DisplayManager/LocalDisplayFactory",
-            "org.gnome.DisplayManager.LocalDisplayFactory",
-        )
-        .await
-        .map_err(|_| unavailable("GDM display factory is unavailable"))?;
-        let _: OwnedObjectPath = factory
-            .call("CreateTransientDisplay", &())
-            .await
-            .map_err(|_| unavailable("GDM greeter creation failed"))?;
-    }
-    let (id, path) = loop {
-        if let Some(greeter) = session::greeter(&connection, root).await? {
-            break greeter;
-        }
-        sleep(Duration::from_millis(100)).await;
-    };
-    session::activate_greeter(&connection, &id, &path).await?;
-    if role == SessionRole::Contest {
-        admission::require_open(root)?;
-        crate::home::require_template(root)?;
-    }
-    let gdm = session::account(root, "gdm")?;
-    let mut child = Command::new("/usr/bin/setpriv")
-        .args([
-            "--reuid",
-            &gdm.uid.to_string(),
-            "--regid",
-            &gdm.gid.to_string(),
-            "--clear-groups",
-            "--no-new-privs",
-            HELPER,
-            "gdm-login",
-            role_name(role),
-        ])
-        .env_clear()
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| unavailable("fixed GDM client could not start"))?;
-    loop {
-        let current = role_observation(session::observe(&connection, root).await?, role);
-        if current.state == GraphicalSessionState::Running
-            && current.desktop_ready
-            && !current.locked_hint
-        {
-            // Close the API connection only after the desktop has independent
-            // GNOME readiness. The GDM worker/session is outside this unit.
-            let _killed = child.kill().await;
-            let _reaped = child.wait().await;
-            return Ok(());
-        }
-        if matches!(
-            current.state,
-            GraphicalSessionState::Ambiguous | GraphicalSessionState::Error
-        ) {
-            return Err(rejected("GDM prepared an invalid graphical role"));
-        }
-        if let Some(status) = child
-            .try_wait()
-            .map_err(|_| unavailable("GDM client state is unavailable"))?
-            && !status.success()
-        {
-            return Err(unavailable("GDM authentication failed"));
-        }
-        sleep(Duration::from_millis(100)).await;
-    }
+    preparation::run(role).await
 }
 
 /// Same official peer API used by libgdm, under the fixed GDM Unix identity.
@@ -356,23 +292,50 @@ pub async fn run_gdm_client(role: SessionRole) -> Result<(), ResourceControlErro
     {
         return Err(rejected("GDM client requires the fixed gdm identity"));
     }
+    let parent =
+        rustix::process::getppid().ok_or_else(|| rejected("fixed GDM client has no parent"))?;
+    let parent_status = procfs::process::Process::new(parent.as_raw_nonzero().get())
+        .and_then(|p| p.status())
+        .map_err(|_| rejected("fixed GDM client parent is unavailable"))?;
+    if parent_status.ruid != 0 || parent_status.euid != 0 {
+        return Err(rejected(
+            "fixed GDM client requires a root preparation parent",
+        ));
+    }
     timeout(PREPARE_TIMEOUT, async {
+        let mut input = Vec::new();
+        tokio::io::stdin()
+            .take(8193)
+            .read_to_end(&mut input)
+            .await
+            .map_err(|_| rejected("captured GDM context cannot be read"))?;
+        if input.len() > 8192 {
+            return Err(rejected("captured GDM context is too large"));
+        }
+        let expected: LoginContext = serde_json::from_slice(&input)
+            .map_err(|_| rejected("fixed GDM client requires captured greeter context"))?;
         let bus = Connection::system()
             .await
             .map_err(|_| unavailable("system bus is unavailable"))?;
-        // logind can report the greeter active before its Xorg handles VT release.
-        // Starting a user session then can strand GDM's worker in VT_WAITACTIVE.
-        // Wait for that greeter's GNOME startup before beginning authentication.
-        while !greeter_desktop_ready(&bus).await {
-            sleep(Duration::from_millis(100)).await;
+        if expected.proof.greeter != expected.greeter.identity
+            || !gdm_registration::context_matches(Path::new("/"), &bus, &expected.proof).await?
+            || greeter_status(&bus).await.as_ref() != Some(&expected.greeter)
+        {
+            return Err(rejected(
+                "greeter_replaced: captured GDM identity is no longer current",
+            ));
         }
-        authenticate(role, &bus).await
+        authenticate(role, &bus, &expected).await
     })
     .await
     .map_err(|_| unavailable("GDM authentication timed out"))?
 }
 
-async fn authenticate(role: SessionRole, bus: &Connection) -> Result<(), ResourceControlError> {
+async fn authenticate(
+    role: SessionRole,
+    bus: &Connection,
+    expected: &LoginContext,
+) -> Result<(), ResourceControlError> {
     let manager = fresh_proxy(
         bus,
         GDM,
@@ -400,9 +363,10 @@ async fn authenticate(role: SessionRole, bus: &Connection) -> Result<(), Resourc
         SessionRole::Contest => "gdm-contest",
     };
     let desktop = match role {
-        SessionRole::Waiting => "gnome-kiosk-script-xorg",
-        SessionRole::Contest => "ubuntu-xorg",
+        SessionRole::Waiting => "gnome-kiosk-script-wayland",
+        SessionRole::Contest => "ubuntu-wayland",
     };
+    require_current_greeter(bus, expected).await?;
     peer.call_method(
         None::<&str>,
         PEER_PATH,
@@ -411,7 +375,8 @@ async fn authenticate(role: SessionRole, bus: &Connection) -> Result<(), Resourc
         &(desktop,),
     )
     .await
-    .map_err(|_| unavailable("GDM X11 selection failed"))?;
+    .map_err(|_| unavailable("GDM Wayland selection failed"))?;
+    require_current_greeter(bus, expected).await?;
     peer.call_method(
         None::<&str>,
         PEER_PATH,
@@ -439,6 +404,7 @@ async fn authenticate(role: SessionRole, bus: &Connection) -> Result<(), Resourc
             if actual_service != service || opened {
                 return Err(rejected("GDM session signal does not match the request"));
             }
+            require_current_greeter(bus, expected).await?;
             peer.call_method(
                 None::<&str>,
                 PEER_PATH,
@@ -469,11 +435,113 @@ async fn authenticate(role: SessionRole, bus: &Connection) -> Result<(), Resourc
     }
 }
 
-async fn greeter_desktop_ready(connection: &Connection) -> bool {
+async fn require_current_greeter(
+    connection: &Connection,
+    expected: &LoginContext,
+) -> Result<(), ResourceControlError> {
+    if !gdm_registration::context_matches(Path::new("/"), connection, &expected.proof).await?
+        || greeter_status(connection).await.as_ref() != Some(&expected.greeter)
+    {
+        return Err(rejected(
+            "captured GDM greeter changed before authentication",
+        ));
+    }
+    Ok(())
+}
+
+async fn greeter_candidate(
+    connection: &Connection,
+    path: &OwnedObjectPath,
+    id: &str,
+    uid: u32,
+    identity: crate::processes::Identity,
+) -> Option<GreeterStatus> {
+    let process = procfs::process::Process::new(identity.pid).ok()?;
+    if process.exe().ok().as_deref() != Some(Path::new("/usr/bin/gnome-shell")) {
+        return None;
+    }
+    let pid = u32::try_from(identity.pid).ok()?;
+    let logind = fresh_proxy(
+        connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await
+    .ok()?;
+    let owner_session: OwnedObjectPath = logind.call("GetSessionByPID", &(pid,)).await.ok()?;
+    if owner_session != *path {
+        return None;
+    }
+    // This greeter has a private session bus. Read it only from the captured
+    // gdm-owned Shell, then verify both the bus owner and the native socket.
+    let environment = process.environ().ok()?;
+    let address = environment
+        .get(std::ffi::OsStr::new("DBUS_SESSION_BUS_ADDRESS"))?
+        .to_str()?;
+    if !address.starts_with("unix:") {
+        return None;
+    }
+    let bus = zbus::connection::Builder::address(address)
+        .ok()?
+        .method_timeout(Duration::from_secs(1))
+        .build()
+        .await
+        .ok()?;
+    let dbus = zbus::fdo::DBusProxy::new(&bus).await.ok()?;
+    let shell = dbus
+        .get_name_owner("org.gnome.Shell".try_into().ok()?)
+        .await
+        .ok()?;
+    if dbus
+        .get_connection_unix_process_id(shell.clone().into())
+        .await
+        .ok()?
+        != pid
+        || dbus.get_connection_unix_user(shell.into()).await.ok()? != uid
+    {
+        return None;
+    }
+    let manager = dbus
+        .get_name_owner("org.gnome.SessionManager".try_into().ok()?)
+        .await
+        .ok()?;
+    if dbus.get_connection_unix_user(manager.into()).await.ok()? != uid {
+        return None;
+    }
+    let gnome = fresh_proxy(
+        &bus,
+        "org.gnome.SessionManager",
+        "/org/gnome/SessionManager",
+        "org.gnome.SessionManager",
+    )
+    .await
+    .ok()?;
+    if !gnome
+        .call::<_, _, bool>("IsSessionRunning", &())
+        .await
+        .ok()?
+    {
+        return None;
+    }
+    crate::display::probe(uid, identity.pid, true).ok()?;
+    (crate::processes::start_time(Path::new("/"), identity.pid).ok()? == Some(identity.start)).then(
+        || GreeterStatus {
+            identity: gdm_registration::Greeter {
+                session: id.to_owned(),
+                uid,
+                pid: identity.pid,
+                start: identity.start,
+            },
+        },
+    )
+}
+
+async fn greeter_status(connection: &Connection) -> Option<GreeterStatus> {
     let root = Path::new("/");
     let uid = rustix::process::geteuid().as_raw();
     let operation = async {
-        let (_, path) = session::greeter(connection, root).await.ok()??;
+        let (id, path) = session::greeter(connection, root).await.ok()??;
         let greeter = fresh_proxy(
             connection,
             "org.freedesktop.login1",
@@ -482,86 +550,47 @@ async fn greeter_desktop_ready(connection: &Connection) -> bool {
         )
         .await
         .ok()?;
-        if greeter.get_property::<String>("Type").await.ok()? != "x11"
+        if greeter.get_property::<String>("Type").await.ok()? != "wayland"
             || !greeter.get_property::<bool>("Active").await.ok()?
         {
             return None;
         }
-        let logind = fresh_proxy(
-            connection,
-            "org.freedesktop.login1",
-            "/org/freedesktop/login1",
-            "org.freedesktop.login1.Manager",
-        )
-        .await
-        .ok()?;
+        let mut found = None;
         for identity in crate::processes::owned_by(root, uid).ok()? {
-            let Ok(process) = procfs::process::Process::new(identity.pid) else {
-                continue;
-            };
-            if process.exe().ok().as_deref() != Some(Path::new("/usr/bin/gnome-shell")) {
-                continue;
-            }
-            let pid = u32::try_from(identity.pid).ok()?;
-            let owner_session: OwnedObjectPath =
-                logind.call("GetSessionByPID", &(pid,)).await.ok()?;
-            if owner_session != path {
-                continue;
-            }
-            // The greeter uses dbus-run-session, not the fixed user-manager bus.
-            // Read only this gdm-owned Shell's address under the same Unix UID.
-            let environment = process.environ().ok()?;
-            let address = environment
-                .get(std::ffi::OsStr::new("DBUS_SESSION_BUS_ADDRESS"))?
-                .to_str()?;
-            if !address.starts_with("unix:") {
-                return None;
-            }
-            let bus = zbus::connection::Builder::address(address)
-                .ok()?
-                .method_timeout(Duration::from_secs(1))
-                .build()
-                .await
-                .ok()?;
-            let dbus = zbus::fdo::DBusProxy::new(&bus).await.ok()?;
-            let shell = dbus
-                .get_name_owner("org.gnome.Shell".try_into().ok()?)
-                .await
-                .ok()?;
-            if dbus
-                .get_connection_unix_process_id(shell.clone().into())
-                .await
-                .ok()?
-                != pid
-                || dbus.get_connection_unix_user(shell.into()).await.ok()? != uid
+            if let Some(candidate) = greeter_candidate(connection, &path, &id, uid, identity).await
             {
-                return None;
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(candidate);
             }
-            let manager = dbus
-                .get_name_owner("org.gnome.SessionManager".try_into().ok()?)
-                .await
-                .ok()?;
-            if dbus.get_connection_unix_user(manager.into()).await.ok()? != uid {
-                return None;
-            }
-            let gnome = fresh_proxy(
-                &bus,
-                "org.gnome.SessionManager",
-                "/org/gnome/SessionManager",
-                "org.gnome.SessionManager",
-            )
-            .await
-            .ok()?;
-            let running: bool = gnome.call("IsSessionRunning", &()).await.ok()?;
-            return (running
-                && crate::processes::start_time(root, identity.pid).ok()? == Some(identity.start)
-                && greeter.get_property::<bool>("Active").await.ok()?)
-            .then_some(());
         }
-        None
+        if !greeter.get_property::<bool>("Active").await.ok()? {
+            return None;
+        }
+        found
     };
-    matches!(
-        timeout(Duration::from_secs(1), operation).await,
-        Ok(Some(()))
-    )
+    timeout(Duration::from_secs(1), operation)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// Inspect only the current greeter under its own fixed UID.
+///
+/// # Errors
+/// Rejects a different UID or an incomplete/stale greeter.
+pub async fn probe_greeter() -> Result<GreeterStatus, ResourceControlError> {
+    let account = session::account(Path::new("/"), "gdm")?;
+    if rustix::process::geteuid().as_raw() != account.uid
+        || rustix::process::getuid().as_raw() != account.uid
+    {
+        return Err(rejected("greeter probe requires the fixed gdm identity"));
+    }
+    let connection = Connection::system()
+        .await
+        .map_err(|_| unavailable("system bus is unavailable"))?;
+    greeter_status(&connection)
+        .await
+        .ok_or_else(|| unavailable("greeter desktop is not yet available"))
 }

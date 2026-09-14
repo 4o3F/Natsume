@@ -2,7 +2,9 @@
 
 本目录是交给 image builder 项目的完整改造说明和配置输入。接收方从本页开始即可实施，不需要 Natsume 源码、仓库外文档、旧 VM 文件或此前对话。本交接包使用 `teams` 比赛账号；记录日期为 2026-09-10。
 
-交付对象是基于 Ubuntu、官方 GDM/GNOME/Xorg 的比赛工位镜像。目标是由 GDM 管理两个独立 X11 会话：waiting 显示绑定入口或队伍／学校／Logo，并在离线时保留非秘密展示缓存，teams 运行完整比赛桌面；普通操作只切换前台，Home reset 才结束比赛会话并恢复正式模板。业务角色名仍为 `contest`，不能将协议、PAM 服务名或 CLI 参数一并改成 teams。
+初始化或重建允许短暂取得前台，后台会话允许暂停绘制。普通切换仍复用两个原生会话；切到 teams 后必须恢复完整可操作桌面，以实际图标、右键菜单和键鼠验收，不以 DING 初始化或某个进程存在代替全桌面验收。
+
+交付对象是基于 Ubuntu、官方 GDM/GNOME/Wayland 的比赛工位镜像。目标是由 GDM 管理两个独立 Wayland 会话：waiting 显示绑定入口或队伍／学校／Logo，并在离线时保留非秘密展示缓存，teams 运行完整比赛桌面；普通操作只切换前台，Home reset 才结束比赛会话并恢复正式模板。业务角色名仍为 `contest`，不能将协议、PAM 服务名或 CLI 参数一并改成 teams。
 
 ## 接收后按此顺序执行
 
@@ -18,7 +20,7 @@
 | [inputs.md](inputs.md) | 外部构建依赖、站点输入、兼容性、包提供的运行文件及首次身份边界 |
 | [integration.md](integration.md) | 完整行为、实施步骤、合并/渲染规则、模板构建和维护流程 |
 | [acceptance.md](acceptance.md) | 从构建到 VM 的通过标准、26 项行为用例、重复次数和证据格式 |
-| [manifest.tsv](manifest.tsv) | 30 项部署输入的源路径、系统目标、目标模式和应用方法 |
+| [manifest.tsv](manifest.tsv) | 28 项部署输入的源路径、系统目标、目标模式和应用方法 |
 | `rootfs/` | 完整命名配置；路径相对于目标 root |
 | `fragments/` | 合并进官方/站点文件的片段，不能当完整上游文件覆盖 |
 | `templates/` | 需要实际 UID、模板版本或 unit 名的输入 |

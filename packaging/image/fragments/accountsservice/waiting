@@ -1,2 +1,2 @@
 [User]
-XSession=gnome-kiosk-script-xorg
+XSession=gnome-kiosk-script-wayland

@@ -28,7 +28,7 @@ struct LocalGraphicalSession {
     path: OwnedObjectPath,
     seat: String,
     locked: bool,
-    is_x11: bool,
+    is_wayland: bool,
     state: GraphicalSessionState,
 }
 
@@ -193,7 +193,7 @@ async fn local_graphical_sessions(
             seat,
             locked,
             state,
-            is_x11: kind == "x11" && uid == expected.uid && user == account_name(role),
+            is_wayland: kind == "wayland" && uid == expected.uid && user == account_name(role),
         });
     }
     Ok(sessions)
@@ -282,10 +282,6 @@ async fn desktop_ready(
                 role_name(role),
             ])
             .env_clear()
-            .env(
-                "XAUTHORITY",
-                format!("/run/user/{}/gdm/Xauthority", expected.uid),
-            )
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::null())
@@ -296,18 +292,18 @@ async fn desktop_ready(
         let active_after = active_session(connection)
             .await
             .map_err(|_| zbus::Error::Failure("foreground unavailable".to_owned()))?;
-        // A delayed Xorg VT entry can leave its cached outputs ready while it
-        // believes it owns a background VT. Do not activate that inconsistent
-        // desktop: the next acquire signal can be mistaken for a VT release.
-        let expected_vt: &[u8] = if active_before == session.logind_session_id {
+        let (display_after, _): (String, OwnedObjectPath) = user.get_property("Display").await?;
+        // Both the role and its foreground must remain the captured observation.
+        let expected_foreground: &[u8] = if active_before == session.logind_session_id {
             b"true\n"
         } else {
             b"false\n"
         };
         Ok::<_, zbus::Error>(
             output.status.success()
-                && output.stdout == expected_vt
-                && active_before == active_after,
+                && output.stdout == expected_foreground
+                && active_before == active_after
+                && display_after == session.logind_session_id,
         )
     };
     matches!(
@@ -316,11 +312,168 @@ async fn desktop_ready(
     )
 }
 
-/// Queries the fixed role's GNOME bus and Xorg under that role's Unix identity.
-/// Returns Xorg's VT observation for the parent to compare with logind.
+async fn role_foreground(uid: u32) -> Result<bool, ResourceControlError> {
+    let connection = Connection::system().await?;
+    let manager = fresh_proxy(
+        &connection,
+        LOGIN1_SERVICE,
+        LOGIN1_MANAGER_PATH,
+        LOGIN1_MANAGER_INTERFACE,
+    )
+    .await?;
+    let path: OwnedObjectPath = manager.call("GetUser", &(uid,)).await?;
+    let user = fresh_proxy(
+        &connection,
+        LOGIN1_SERVICE,
+        path.as_str(),
+        "org.freedesktop.login1.User",
+    )
+    .await?;
+    let (id, path): (String, OwnedObjectPath) = user.get_property("Display").await?;
+    if id.is_empty() {
+        return Err(unavailable("managed graphical session is unavailable"));
+    }
+    let session = fresh_proxy(
+        &connection,
+        LOGIN1_SERVICE,
+        path.as_str(),
+        LOGIN1_SESSION_INTERFACE,
+    )
+    .await?;
+    let (owner, _): (u32, OwnedObjectPath) = session.get_property("User").await?;
+    let (seat, _): (String, OwnedObjectPath) = session.get_property("Seat").await?;
+    if owner != uid
+        || seat != MANAGED_SEAT
+        || session.get_property::<String>("Type").await? != "wayland"
+        || session.get_property::<String>("Class").await? != "user"
+        || session.get_property::<bool>("Remote").await?
+    {
+        return Err(rejected("managed Wayland session identity is invalid"));
+    }
+    Ok(session.get_property("Active").await?)
+}
+
+async fn require_session_manager(bus: &Connection, uid: u32) -> Result<(), ResourceControlError> {
+    let dbus = zbus::fdo::DBusProxy::new(bus).await?;
+    let manager_owner = dbus
+        .get_name_owner(
+            "org.gnome.SessionManager"
+                .try_into()
+                .map_err(zbus::Error::from)?,
+        )
+        .await
+        .map_err(zbus::Error::from)?;
+    if dbus
+        .get_connection_unix_user(manager_owner.into())
+        .await
+        .map_err(zbus::Error::from)?
+        != uid
+    {
+        return Err(rejected("GNOME session manager owner is invalid"));
+    }
+    let gnome = fresh_proxy(
+        bus,
+        "org.gnome.SessionManager",
+        "/org/gnome/SessionManager",
+        "org.gnome.SessionManager",
+    )
+    .await?;
+    if !gnome.call::<_, _, bool>("IsSessionRunning", &()).await? {
+        return Err(unavailable("GNOME desktop is still starting"));
+    }
+    Ok(())
+}
+
+async fn compositor_context(
+    role: SessionRole,
+    uid: u32,
+) -> Result<(crate::processes::Identity, bool), ResourceControlError> {
+    let address = format!("unix:path=/run/user/{uid}/bus");
+    let bus = zbus::connection::Builder::address(address.as_str())?
+        .method_timeout(Duration::from_secs(1))
+        .build()
+        .await?;
+    let dbus = zbus::fdo::DBusProxy::new(&bus).await?;
+    let (name, executable) = match role {
+        SessionRole::Waiting => ("org.gnome.Kiosk", "/usr/bin/gnome-kiosk"),
+        SessionRole::Contest => ("org.gnome.Shell", "/usr/bin/gnome-shell"),
+    };
+    let owner = dbus
+        .get_name_owner(name.try_into().map_err(zbus::Error::from)?)
+        .await
+        .map_err(zbus::Error::from)?;
+    if dbus
+        .get_connection_unix_user(owner.clone().into())
+        .await
+        .map_err(zbus::Error::from)?
+        != uid
+    {
+        return Err(rejected("compositor owner is not the managed user"));
+    }
+    let pid = dbus
+        .get_connection_unix_process_id(owner.clone().into())
+        .await
+        .map_err(zbus::Error::from)?;
+    let pid = i32::try_from(pid).map_err(|_| rejected("compositor PID is invalid"))?;
+    let process = procfs::process::Process::new(pid)
+        .map_err(|_| unavailable("compositor process is unavailable"))?;
+    let expected_executable = fs::canonicalize(executable)
+        .map_err(|_| unavailable("the compositor executable is unavailable"))?;
+    if process.exe().ok().as_ref() != Some(&expected_executable) {
+        return Err(rejected("compositor executable is invalid"));
+    }
+    let identity = crate::processes::Identity {
+        pid,
+        start: process
+            .stat()
+            .map_err(|_| unavailable("compositor identity is unavailable"))?
+            .starttime,
+    };
+    require_session_manager(&bus, uid).await?;
+    let display_owner = dbus
+        .get_name_owner(
+            "org.gnome.Mutter.DisplayConfig"
+                .try_into()
+                .map_err(zbus::Error::from)?,
+        )
+        .await
+        .map_err(zbus::Error::from)?;
+    if dbus
+        .get_connection_unix_process_id(display_owner.clone().into())
+        .await
+        .map_err(zbus::Error::from)?
+        != u32::try_from(pid).map_err(|_| rejected("compositor PID is invalid"))?
+        || dbus
+            .get_connection_unix_user(display_owner.into())
+            .await
+            .map_err(zbus::Error::from)?
+            != uid
+    {
+        return Err(rejected(
+            "display configuration belongs to another compositor",
+        ));
+    }
+    let foreground = role_foreground(uid).await?;
+    if foreground {
+        let display = fresh_proxy(
+            &bus,
+            "org.gnome.Mutter.DisplayConfig",
+            "/org/gnome/Mutter/DisplayConfig",
+            "org.gnome.Mutter.DisplayConfig",
+        )
+        .await?;
+        if display.get_property::<i32>("PowerSaveMode").await? != 0 {
+            return Err(unavailable("foreground Wayland display is not powered on"));
+        }
+    }
+    Ok((identity, foreground))
+}
+
+/// Queries the fixed role's GNOME and Wayland protocols under that role's UID.
+/// Returns the current foreground state for the parent's consistency check.
 ///
 /// # Errors
-/// Rejects wrong users, missing GNOME owners and an incomplete desktop startup.
+/// Rejects wrong users, missing owners, invalid outputs and unavailable input.
 pub async fn probe_desktop(role: SessionRole) -> Result<bool, ResourceControlError> {
     let expected = account(Path::new("/"), account_name(role))?;
     if rustix::process::getuid().as_raw() != expected.uid
@@ -328,58 +481,17 @@ pub async fn probe_desktop(role: SessionRole) -> Result<bool, ResourceControlErr
     {
         return Err(rejected("desktop probe requires its fixed role identity"));
     }
-    if std::env::var_os("XAUTHORITY")
-        != Some(format!("/run/user/{}/gdm/Xauthority", expected.uid).into())
-    {
-        return Err(rejected("desktop probe requires its fixed GDM authority"));
+    let (identity, foreground) = timeout(
+        Duration::from_secs(1),
+        compositor_context(role, expected.uid),
+    )
+    .await
+    .map_err(|_| unavailable("GNOME compositor observation timed out"))??;
+    crate::display::probe(expected.uid, identity.pid, foreground)?;
+    if crate::processes::start_time(Path::new("/"), identity.pid)? != Some(identity.start) {
+        return Err(unavailable("compositor changed during display observation"));
     }
-    let operation = async {
-        // Use the fixed UID runtime, never the caller's DISPLAY, environment or address.
-        let address = format!("unix:path=/run/user/{}/bus", expected.uid);
-        let bus = zbus::connection::Builder::address(address.as_str())?
-            .method_timeout(Duration::from_secs(1))
-            .build()
-            .await?;
-        let dbus = zbus::fdo::DBusProxy::new(&bus).await?;
-        let compositor = match role {
-            SessionRole::Waiting => "org.gnome.Kiosk",
-            SessionRole::Contest => "org.gnome.Shell",
-        };
-        for name in ["org.gnome.SessionManager", compositor] {
-            let owner = dbus.get_name_owner(name.try_into()?).await?;
-            if dbus.get_connection_unix_user(owner.into()).await? != expected.uid {
-                return Ok(None);
-            }
-        }
-        let gnome = fresh_proxy(
-            &bus,
-            "org.gnome.SessionManager",
-            "/org/gnome/SessionManager",
-            "org.gnome.SessionManager",
-        )
-        .await?;
-        if !gnome.call::<_, _, bool>("IsSessionRunning", &()).await? {
-            return Ok(None);
-        }
-        let owner = dbus.get_name_owner(compositor.try_into()?).await?;
-        let pid = dbus.get_connection_unix_process_id(owner.into()).await?;
-        // GDM leaves logind's Display empty on the supported image. Read only
-        // DISPLAY from the live compositor owner, under its own UID; never
-        // inherit a root caller's display or user-manager environment.
-        let display = i32::try_from(pid)
-            .ok()
-            .and_then(|pid| procfs::process::Process::new(pid).ok())
-            .and_then(|process| process.environ().ok())
-            .and_then(|environment| environment.get(std::ffi::OsStr::new("DISPLAY")).cloned())
-            .and_then(|display| display.into_string().ok());
-        Ok::<_, zbus::Error>(display)
-    };
-    let Ok(Ok(Some(display))) = timeout(Duration::from_secs(1), operation).await else {
-        return Err(unavailable("GNOME desktop is not running"));
-    };
-    // Synchronous X11 I/O stays in this disposable UID child. The parent kills
-    // it after two seconds, including a stalled connection or reply.
-    crate::display::probe(&display)
+    Ok(foreground)
 }
 
 pub(crate) async fn observe(
@@ -447,7 +559,7 @@ fn observe_sessions(
 ) -> GraphicalSessionObservation {
     let (state, session, locked_hint) = match sessions {
         [] => (GraphicalSessionState::None, None, false),
-        [session] if session.seat == MANAGED_SEAT && session.is_x11 => (
+        [session] if session.seat == MANAGED_SEAT && session.is_wayland => (
             session.state,
             matches!(
                 session.state,
@@ -584,19 +696,31 @@ pub(crate) async fn activate(
     .await
     .map_err(logind_error)?;
     wait_for_foreground(connection, &target.logind_session_id).await?;
-    let observed = observe(connection, root).await?;
-    let (actual, foreground) = match role {
-        SessionRole::Waiting => (&observed.waiting, SessionForeground::Waiting),
-        SessionRole::Contest => (&observed.contest, SessionForeground::Contest),
-    };
-    if actual.session.as_ref() != Some(target)
-        || !actual.desktop_ready
-        || actual.locked_hint
-        || observed.foreground != foreground
-    {
-        return Err(unavailable("graphical activation did not verify"));
-    }
-    Ok(())
+    // logind activation precedes Mutter's asynchronous output/input resume.
+    // Confirm the same session within the operation budget; never retarget it.
+    timeout(Duration::from_secs(2), async {
+        loop {
+            let observed = observe(connection, root).await?;
+            let (actual, foreground) = match role {
+                SessionRole::Waiting => (&observed.waiting, SessionForeground::Waiting),
+                SessionRole::Contest => (&observed.contest, SessionForeground::Contest),
+            };
+            if actual.session.as_ref() != Some(target)
+                || actual.state != GraphicalSessionState::Running
+                || actual.locked_hint
+            {
+                return Err(rejected(
+                    "graphical activation target changed during confirmation",
+                ));
+            }
+            if actual.desktop_ready && observed.foreground == foreground {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| unavailable("graphical activation did not verify"))?
 }
 
 fn exact_termination_path(
@@ -627,7 +751,8 @@ pub(crate) async fn terminate(
         return Ok(());
     };
     if sessions.iter().any(|session| {
-        session.id == target.logind_session_id && (!session.is_x11 || session.seat != MANAGED_SEAT)
+        session.id == target.logind_session_id
+            && (!session.is_wayland || session.seat != MANAGED_SEAT)
     }) {
         return Err(rejected("captured contest role no longer matches"));
     }
@@ -710,7 +835,7 @@ async fn clear_failed_waiting_scope(
     };
     if !sessions.iter().any(|s| {
         s.id == captured.logind_session_id
-            && s.is_x11
+            && s.is_wayland
             && s.seat == MANAGED_SEAT
             && s.state == GraphicalSessionState::Terminating
     }) {
@@ -931,7 +1056,7 @@ async fn require_captured_role(
     let remote: bool = session.get_property("Remote").await.map_err(logind_error)?;
     let class: String = session.get_property("Class").await.map_err(logind_error)?;
     let kind: String = session.get_property("Type").await.map_err(logind_error)?;
-    if remote || class != "user" || kind != "x11" {
+    if remote || class != "user" || kind != "wayland" {
         return Err(rejected("managed drainage found an unsupported session"));
     }
     Ok(Some(path))
@@ -960,7 +1085,7 @@ mod tests {
             path,
             seat: seat.to_owned(),
             locked: false,
-            is_x11: true,
+            is_wayland: true,
             state: GraphicalSessionState::Running,
         }
     }
@@ -1078,7 +1203,7 @@ mod tests {
     fn unsupported_graphics_and_multiple_candidates_are_not_absent_or_running() {
         let boot = "550e8400-e29b-41d4-a716-446655440000".to_owned();
         let mut unsupported = candidate("c2", "/org/freedesktop/login1/session/c2", "seat0");
-        unsupported.is_x11 = false;
+        unsupported.is_wayland = false;
         assert_eq!(
             observe_sessions(&[unsupported], boot.clone()).state,
             GraphicalSessionState::Ambiguous
@@ -1220,7 +1345,7 @@ mod tests {
             Self {
                 session_state: "closing",
                 seat: "seat0",
-                kind: "x11",
+                kind: "wayland",
                 uid: 1002,
                 scope: "session-c1.scope",
                 unit_state: "failed",
@@ -1359,7 +1484,7 @@ mod tests {
             "live-leader",
             "active-login",
             "wrong-seat",
-            "wayland",
+            "x11",
             "wrong-uid",
             "wrong-scope",
             "active-scope",
@@ -1375,7 +1500,7 @@ mod tests {
                 "replacement" => captured = Some(("c2", boot)),
                 "active-login" => case.session_state = "active",
                 "wrong-seat" => case.seat = "seat1",
-                "wayland" => case.kind = "wayland",
+                "x11" => case.kind = "x11",
                 "wrong-uid" => case.uid = 1001,
                 "wrong-scope" => case.scope = "session-c2.scope",
                 "active-scope" => case.unit_state = "active",

@@ -3,10 +3,12 @@
 mod admission;
 mod boot;
 mod display;
+mod gdm_registration;
 mod hardware_identity;
 mod home;
 mod login;
 mod processes;
+mod runtime;
 mod session;
 mod waiting;
 
@@ -22,7 +24,7 @@ pub fn close_admission() -> Result<(), natsume_local_control_api::ResourceContro
     }
     admission::close(std::path::Path::new("/"))
 }
-pub use login::{run_gdm_client, run_prepare};
+pub use login::{GreeterStatus, probe_greeter, run_gdm_client, run_prepare};
 pub use session::probe_desktop;
 
 use std::path::PathBuf;
@@ -44,6 +46,13 @@ impl PrivilegedService {
         Self {
             filesystem_root: PathBuf::from("/"),
         }
+    }
+
+    /// Starts the independent startup observer after this service owns its bus name.
+    /// Existing Home/identity capabilities remain available during observation outages.
+    #[must_use]
+    pub fn observe_gdm_registration(&self) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(gdm_registration::observe(self.filesystem_root.clone()))
     }
 }
 

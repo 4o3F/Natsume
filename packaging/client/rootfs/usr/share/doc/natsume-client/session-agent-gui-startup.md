@@ -1,8 +1,8 @@
 # Runbook: GNOME Kiosk Session Agent
 
 The image installs the distribution's official GNOME Kiosk and script-session
-packages. GDM automatically logs `waiting` into `gnome-kiosk-script-xorg`;
-`teams` (the `contest` role) uses the independent `ubuntu-xorg` session. No compositor or GDM patches
+packages. GDM automatically logs `waiting` into `gnome-kiosk-script-wayland`;
+`teams` (the `contest` role) uses the independent `ubuntu-wayland` session. No compositor or GDM patches
 are used.
 
 The Client package supplies a drop-in for `org.gnome.Kiosk.Script.service`:
@@ -32,7 +32,10 @@ Empty input cannot be submitted. Pending confirmation has a dedicated status vie
 lease removes Binding input, retains the last non-secret team/school/seat and logo,
 and displays an offline badge. A cold Agent without a Daemon starts with the
 placeholder. Ordinary foreground switching keeps both native sessions and the
-background Agent lease alive.
+background Agent lease alive. Native Wayland may defer frames while hidden.
+Activation uses the live authenticated Agent; maintenance and foreground readiness
+still wait for the current fullscreen frame after activation. A deferred background
+frame alone must not consume the waiting recovery budget.
 
 Bound waiting uses a black background with a large centered school logo and
 bilingual school name. The bottom bar places the bilingual team name on the left
@@ -64,8 +67,8 @@ also carries the registration lease ID, so a pre-restart frame cannot establish
 readiness after a new registration.
 
 For diagnosis, inspect the waiting user's `org.gnome.Kiosk.Script.service` and
-`org.gnome.Kiosk@x11.service`, the corresponding journal, logind User.Display,
-Device1 registration/confirmation errors, and the actual X11 window geometry.
+`org.gnome.Kiosk@wayland.service`, the corresponding journal, logind User.Display,
+Device1 registration/confirmation errors, and the compositor-confirmed Wayland fullscreen state and output size.
 Do not repair an identity rejection by inventing a session ID or relaxing caller
 checks. Do not start a second Agent manually alongside the Kiosk service.
 
@@ -80,7 +83,7 @@ or a normal reboot. Full package/image acceptance remains required before releas
 GNOME Kiosk 46 selects the `gnomekiosk` dconf profile itself. The image must install
 its policy in `/etc/dconf/profile/gnomekiosk`, retaining the distribution file-db;
 setting only `DCONF_PROFILE=natsume_waiting` does not configure this compositor.
-Verify effective settings and X11 screen-saver/DPMS state in the actual session,
+Verify effective GNOME idle/power settings and actual output in the actual session,
 including an idle interval longer than the old timeout. A historical frame
 confirmation is not evidence that the monitor still has active output.
 

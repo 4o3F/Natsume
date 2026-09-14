@@ -697,6 +697,24 @@ impl Drop for Fixture {
 }
 
 impl Fixture {
+    pub(crate) async fn pause_agent_frames(&self) {
+        self.agent_task.abort();
+        while !self.agent_task.is_finished() {
+            tokio::task::yield_now().await;
+        }
+        binding::tests::withdraw_fixture_frame(&self.snapshots.binding_input);
+    }
+
+    pub(crate) fn confirm_agent_frame(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let sender = self.service.unique_name().ok_or("missing fixture owner")?;
+        binding::tests::confirm_fixture_frame(
+            &self.snapshots.binding_input,
+            sender.as_str(),
+            waiting_session(),
+        );
+        Ok(())
+    }
+
     pub(crate) async fn wait_for_plan(&self) -> Result<(), Box<dyn std::error::Error>> {
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while !binding::tests::has_fixture_plan(&self.snapshots.binding_input) {

@@ -79,6 +79,7 @@ impl<T> ReconcileOutcome<T> {
     }
 
     fn control_error(actual: T, error: &ResourceControlError) -> Self {
+        tracing::warn!(%error, "Local resource operation did not complete");
         Self {
             actual,
             retry: retryable_control_error(error),

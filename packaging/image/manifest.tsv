@@ -9,7 +9,6 @@ fragments/pam/gdm-password	/etc/pam.d/gdm-password	0644	merge
 fragments/pam/other	/etc/pam.d/other	0644	merge
 fragments/pam/runuser-account	/etc/pam.d/@ROOT_TOOL_SERVICE@	0644	merge
 fragments/ssh/managed-users.conf	/etc/ssh/sshd_config.d/60-natsume-managed-users.conf	0644	merge
-rootfs/etc/X11/xorg.conf.d/20-natsume-session.conf	/etc/X11/xorg.conf.d/20-natsume-session.conf	0644	copy
 rootfs/etc/dconf/db/natsume-session.d/00-session	/etc/dconf/db/natsume-session.d/00-session	0644	copy
 rootfs/etc/dconf/db/natsume-session.d/locks/session	/etc/dconf/db/natsume-session.d/locks/session	0644	copy
 rootfs/etc/dconf/db/natsume-waiting.d/00-waiting	/etc/dconf/db/natsume-waiting.d/00-waiting	0644	copy
@@ -22,7 +21,6 @@ rootfs/etc/systemd/logind.conf.d/60-natsume-graphical-vts.conf	/etc/systemd/logi
 rootfs/etc/systemd/sleep.conf.d/do-not-suspend.conf	/etc/systemd/sleep.conf.d/do-not-suspend.conf	0644	copy
 rootfs/etc/systemd/system/gdm.service.d/20-waiting-autologin.conf	/etc/systemd/system/gdm.service.d/20-waiting-autologin.conf	0644	copy
 rootfs/etc/systemd/system/session-.scope.d/50-gdm-stop-order.conf	/etc/systemd/system/session-.scope.d/50-gdm-stop-order.conf	0644	copy
-rootfs/etc/systemd/user/org.gnome.Kiosk@x11.service.d/70-natsume-frame-scale.conf	/etc/systemd/user/org.gnome.Kiosk@x11.service.d/70-natsume-frame-scale.conf	0644	copy
 rootfs/usr/share/pam-configs/natsume-managed-sessions	/usr/share/pam-configs/natsume-managed-sessions	0644	copy
 templates/helper-home-template.conf.in	/etc/systemd/system/natsume-privileged-helper.service.d/20-home-template.conf	0644	render
 templates/home-template.mount.in	/etc/systemd/system/@TEMPLATE_MOUNT_UNIT@	0644	render

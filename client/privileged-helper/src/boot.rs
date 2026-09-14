@@ -26,6 +26,9 @@ pub(crate) async fn prepare(
             ));
         }
     }
+    if login::preparing(connection).await? {
+        return Ok(false);
+    }
     let _mutation = admission::mutation(root)?;
     admission::require_open(root)?;
     let observed = session::observe(connection, root).await?;
@@ -52,6 +55,9 @@ pub(crate) async fn prepare(
         GraphicalSessionState::Running => {}
     }
     if !observed.contest.desktop_ready || observed.contest.locked_hint {
+        if !observed.contest.locked_hint {
+            login::start_owned(connection, root, SessionRole::Contest).await?;
+        }
         return Ok(false);
     }
     session::activate(connection, root, SessionRole::Waiting, waiting).await?;

@@ -13,7 +13,7 @@
 | 内容缓存 | 相同输入使用同一内容键；修改 Deb 会失效；部署 config.toml 和 CA 只进入 autoinstall，内容变化重新生成部署输入；CONFIG_DIR 的读取/键/只读挂载一致 |
 | 账号 | waiting/teams 独立 UID/GID/Home，与管理员不冲突；不在管理组；密码锁定、无 linger 文件或可重新拉起 UID 的任务 |
 | Client 固定文件 | inputs.md 列出的程序/PAM/unit/IPC 存在，root 所有，执行位/配置模式正确；只有一个 Agent 启动所有者 |
-| 全部 30 项配置 | 按 manifest.tsv 逐项记录实际路径、替换后的占位符、owner/group/mode、内容摘要；不能只记录“模块执行成功” |
+| 全部 28 项配置 | 按 manifest.tsv 逐项记录实际路径、替换后的占位符、owner/group/mode、内容摘要；不能只记录“模块执行成功” |
 | 官方栈 | GDM/PAM 合并保留官方完整栈、全部 smartcard alternatives、root 工具 account；无程序/资源补丁及不受控覆盖 |
 | 最终模板 | 每档安装源最终 Browser/IDE/skel 进入模板；镜像根和内容是实际 teams UID/GID、正常 owner 写位；摘要/metadata/选择版本一致 |
 | 启动依赖 | Helper Wants/After 正确指向唯一模板 mount；三项离线 enable；无 Requires/global GDM Home gate、第二个 Agent 或独立 prepare enable |
@@ -31,13 +31,13 @@
 | --- | --- |
 | 首次启动 | 无当前 Server Target/断开控制网络时，第一个稳定业务界面为 waiting；模板失败也保留 waiting/Helper 诊断，teams 门禁关闭 |
 | 注册与业务闭环 | 新设备按真实首次硬件身份生成记录；分别验证 Open 自动批准新请求和在线待审请求、Closed 等待人工批准/拒绝，再在 waiting 真实输入 Binding 并访问配置的网关/测试上游 |
-| 双会话 | 每角色仅一个 seat0/X11 会话，各自 Xorg/桌面/总线/Xauthority/Home；GDM 管理双方，后台比赛会话不判歧义 |
+| 双会话 | 每角色仅一个 seat0/Wayland 会话，各自 compositor/桌面/总线/Wayland socket/Home；GDM 管理双方，后台比赛会话不判歧义 |
 | 前台与输入 | Panel/Actual、logind Active/VT、实际画面一致；真实键盘/指针可用，前台 XInput2 实体 slave 有 Device Node，不能只看 ready=true |
 | 待机与快捷键 | 连续 660 秒无输入，waiting 保持全屏黑色；Alt+F4、Super、Alt+Tab、运行/锁屏/退出入口、Ctrl+Alt+Fn/Backspace 不逃出普通受管路径 |
 | dconf/环境 | 当前有效值及 locks 符合配置；waiting/teams 的 profile 正确且输入源仅 US；disable-log-out=false；无专用 IBus 环境覆盖；scale 环境仅影响指定进程 |
 | 键盘/字体/缩放 | waiting 真实英文输入、Enter 提交、拒绝后重输、焦点和点击区域；teams 英文输入正常；中文文本显示完整、无缺字方框；至少 1280×800/120 DPI 与 1920×1080/192 DPI，再覆盖实际发行支持的模式 |
-| Xorg 空闲 | 两个 Xorg 屏保 timeout 与 DPMS 三项时间为 0；受控前台切换仍可用 |
-| 输入/显示故障 | DPMS、输出/分辨率变化、Xorg 暂停或真实输入不可用时撤销错误就绪；恢复后真实输入有效；waiting 故障只按有界预算重建自身 |
+| 显示空闲 | 两个角色的 GNOME 空闲/电源策略有效；前台持续输出，受控切换仍可用 |
+| 输入/显示故障 | 输出/分辨率变化、compositor 无响应或前台能力异常时撤销错误就绪；后台暂停绘制不判故障；恢复后真实输入有效，waiting 故障只按有界预算重建自身 |
 | PAM/入口 | 真实 auth/account/open_session 正负例；固定入口、普通密码/指纹/智能卡、SSH 密码/密钥/证书、TTY、cron/at、other 缺服务/phase、polkit/linger 全部覆盖；管理员 SSH/TTY/root 维护仍可用 |
 | 模板/reset | 打开实际 Browser/IDE、修改默认文件并写 canary；reset 后默认恢复、canary 消失，waiting 数据/设备身份/凭据保留 |
 | 维护 | GDM 正常重启、发行版 GDM/PAM 升级及 Client/配置交接后复查前台、门禁、实际画面/输入、配置持久性和无旧链回写 |
@@ -51,7 +51,7 @@
 | 编号 | 用例与通过标准 |
 | --- | --- |
 | AT-01 | 新镜像无当前 Target 启动：首个稳定业务界面 waiting，没有未经授权的业务访问 |
-| AT-02 | 自动预备双方会话：两账户各一个原生 X11，会话独立且都归 GDM |
+| AT-02 | 自动预备双方会话：两账户各一个原生 Wayland，会话独立且都归 GDM |
 | AT-03 | waiting→contest→waiting 100 轮：双方 session/PID/Home generation、比赛文件和窗口保持，真实键鼠可用，无实例累积 |
 | AT-04 | 普通切换只激活角色，不调用 GNOME Lock/Unlock；不能以 LockedHint 或后台状态代替实际前台事实 |
 | AT-05 | waiting 目标下 reset：比赛精确身份和 Home generation 改变，waiting/GDM 不变，新比赛留后台 |
@@ -96,11 +96,11 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 交付一份本次结果文档和对应文件，至少包含：
 
 1. 镜像/ISO 下载位置与 SHA-256，builder revision、实际安装源、构建方式、包来源和时间基准；Client/Server 版本、Deb 摘要、交接归档摘要。
-2. 实际系统包清单（kernel、GDM/libgdm、GNOME/Kiosk、Xorg/输入驱动、PAM、中文字体/squashfs-tools 等），30 项清单的最终路径/owner/group/mode/内容摘要，以及所有厂商合并差异。
+2. 实际系统包清单（kernel、GDM/libgdm、GNOME/Kiosk、Mutter/输入驱动、PAM、中文字体/squashfs-tools 等），28 项清单的最终路径/owner/group/mode/内容摘要，以及所有厂商合并差异。
 3. waiting/teams UID/GID/Home、管理员保留规则；各安装源 skel 来源和内容摘要、模板版本/SHA-256、包清单、mount 与 Helper 依赖。
 4. 旧入口逐项清理、Live/安装源差异、服务 enable、首次身份初始化，以及实际升级/回退维护步骤和恢复验证结果。
 5. 上述构建/桌面/AT-01～26 逐行结果；正式 100/20/10 原始计数与耗时；失败、重试、未测范围和原因。
-6. 每轮关键证据：镜像/包/模板版本，Target/epoch，boot ID、双方 session ID、Xorg/Shell/Agent PID、GDM InvocationID、Home generation/验证状态、实际前台/输入、耗时及错误。正常显示与重建留截图/视频，日志保留失败。
+6. 每轮关键证据：镜像/包/模板版本，Target/epoch，boot ID、双方 session ID、GNOME compositor/Agent PID、GDM InvocationID、Home generation/验证状态、实际前台/输入、耗时及错误。正常显示与重建留截图/视频，日志保留失败。
 
 证据不包含私钥、身份/控制凭据正文、比赛文件、cookies 或管理员密码。先在本地按必要字段核对，再输出摘要和受控日志。交接包完整只证明实施资料已齐备；实际镜像与该结果文档完成后，才可签收发行。
 
