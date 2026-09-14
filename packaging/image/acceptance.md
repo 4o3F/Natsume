@@ -39,6 +39,7 @@
 | 显示空闲 | 两个角色的 GNOME 空闲/电源策略有效；前台持续输出，受控切换仍可用 |
 | 输入/显示故障 | 输出/分辨率变化、compositor 无响应或前台能力异常时撤销错误就绪；后台暂停绘制不判故障；恢复后真实输入有效，waiting 故障只按有界预算重建自身 |
 | PAM/入口 | 真实 auth/account/open_session 正负例；固定入口、普通密码/指纹/智能卡、SSH 密码/密钥/证书、TTY、cron/at、other 缺服务/phase、polkit/linger 全部覆盖；管理员 SSH/TTY/root 维护仍可用 |
+| Gateway 域名与浏览器 | 使用自定义 `[site].gateway_hostname` 冷启动：日志完成本机设置同步，getent 仅返回 loopback；实际 Firefox 的 about:policies 无错误，主页和 Contest Site 书签均打开该 HTTPS 域名。修改配置并重启 Daemon/Firefox，旧受管 hosts 记录消失、新域名生效；重复启动无重复项，其他地址/策略/CA 保留；Home reset 后仍正确 |
 | 模板/reset | 打开实际 Browser/IDE、修改默认文件并写 canary；reset 后默认恢复、canary 消失，waiting 数据/设备身份/凭据保留 |
 | 维护 | GDM 正常重启、发行版 GDM/PAM 升级及 Client/配置交接后复查前台、门禁、实际画面/输入、配置持久性和无旧链回写 |
 

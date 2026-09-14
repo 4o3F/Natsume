@@ -1139,6 +1139,10 @@ target资源各自暴露具体的`reconcile`与`observe`方法，由`SnapshotRec
 具体实现可以在确有需要时把纯`plan`、副作用执行和`verify`分离。成功Actual只能来自
 durable artifact或真实runtime重采样，不能直接复用apply返回值。
 
+Daemon 独占 Client 部署配置的读取与解析；在身份预检成功后、控制连接和桌面预备前，将从 `/etc/natsume/config.toml` 解析出的 `[site].gateway_hostname` 通过固定 `ConfigureLocalGateway` 能力传给 Helper。Helper 只校验传入域名的合法性，再同步本机 `/etc/hosts` 的 Gateway loopback 映射及 `/etc/firefox/policies/policies.json` 的主页和比赛书签；不读取或解析 Client 配置，不接受任意路径或文件内容。镜像只提供 Firefox 基础策略和 CA 信任，部署域名由 Natsume 启动时派生，修改配置后重启 Daemon 生效，已运行的 Firefox 需重新打开。此能力不依赖 Enrollment 或 Server 在线，不触碰 teams Home。
+
+Helper 仅替换 hosts 的 Natsume 标记区块，清除其他行中当前 Gateway 名称的冲突别名，保留其余地址、别名和注释；改名时清理旧受管映射。Firefox 保留无关策略、CA 和书签，迁移 `Contest Site` 工具栏书签、主页，以及已有的旧 Gateway/镜像默认 domjudge 通知许可。输入损坏或不可信时明确拒绝，不覆盖现有文件。两个文件分别原子替换，不声称跨文件事务；先写 Firefox、后写 hosts，失败可幂等重放，重复启动不重写未变内容。
+
 ### 14.2 不创建共享 component crate
 
 Server和Client都直接使用各自的concrete method；双方职责和dependency完全不同，不共享

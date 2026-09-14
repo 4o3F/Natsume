@@ -3,6 +3,7 @@
 mod admission;
 mod boot;
 mod display;
+mod gateway;
 mod gdm_registration;
 mod hardware_identity;
 mod home;
@@ -66,6 +67,14 @@ async fn bounded_session_operation<T>(
 
 #[zbus::interface(name = "org.natsume.Privileged1")]
 impl PrivilegedService {
+    #[zbus(name = "ConfigureLocalGateway")]
+    fn configure_local_gateway(
+        &mut self,
+        gateway_hostname: &str,
+    ) -> Result<(), ResourceControlError> {
+        gateway::configure(&self.filesystem_root, gateway_hostname)
+    }
+
     #[zbus(name = "DeriveMachineIdentity")]
     fn derive_machine_identity(&self) -> Result<DerivedMachineIdentity, MachineIdentityError> {
         hardware_identity::derive_identity(&self.filesystem_root)
@@ -337,6 +346,30 @@ mod tests {
             Ok(proxy) => proxy,
             Err(error) => panic!("generated proxy must be built: {error}"),
         };
+
+        write_fixture(fixture.path(), "etc/hosts", b"127.0.0.1 localhost\n");
+        proxy
+            .configure_local_gateway("gateway.test")
+            .await
+            .unwrap_or_else(|e| panic!("Gateway sync must round trip: {e}"));
+        assert!(
+            fs::read_to_string(fixture.path().join("etc/hosts"))
+                .unwrap_or_else(|e| panic!("hosts: {e}"))
+                .contains("127.0.0.1 gateway.test")
+        );
+        assert!(matches!(
+            proxy.configure_local_gateway("bad hostname").await,
+            Err(ResourceControlError::Rejected(_))
+        ));
+
+        proxy
+            .configure_local_gateway("other.test")
+            .await
+            .unwrap_or_else(|e| panic!("Daemon-supplied Gateway change must round trip: {e}"));
+        let hosts = fs::read_to_string(fixture.path().join("etc/hosts"))
+            .unwrap_or_else(|e| panic!("hosts: {e}"));
+        assert!(hosts.contains("127.0.0.1 other.test"));
+        assert!(!hosts.contains("gateway.test"));
 
         let identity = match proxy.derive_machine_identity().await {
             Ok(identity) => identity,

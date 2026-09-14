@@ -28,7 +28,7 @@ pub enum MachineIdentityError {
     Unsupported(String),
 }
 
-/// Closed failure classification for fixed Home and Session capabilities.
+/// Closed failure classification for fixed local Gateway, Home and Session capabilities.
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.natsume.Privileged1.Error", impl_display = true)]
 pub enum ResourceControlError {
@@ -38,6 +38,35 @@ pub enum ResourceControlError {
     Unavailable(String),
     /// A safety precondition or persisted state must be repaired before applying effects.
     Rejected(String),
+}
+
+/// Whether a hostname is valid for the fixed local Gateway capability.
+/// Both the Daemon and Helper reject IP literals and noncanonical DNS input.
+#[must_use]
+pub fn is_canonical_gateway_hostname(value: &str) -> bool {
+    if value.is_empty()
+        || value.len() > 253
+        || value.ends_with('.')
+        || value.parse::<std::net::IpAddr>().is_ok()
+        || !value.bytes().any(|byte| byte.is_ascii_lowercase())
+    {
+        return false;
+    }
+    value.split('.').all(|label| {
+        !label.is_empty()
+            && label.len() <= 63
+            && label
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            && label
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphanumeric)
+            && label
+                .as_bytes()
+                .last()
+                .is_some_and(u8::is_ascii_alphanumeric)
+    })
 }
 
 /// Exact logind graphical-session identity captured within one boot.
@@ -257,6 +286,11 @@ pub trait Device1 {
     default_path = "/org/natsume/Privileged1"
 )]
 pub trait Privileged1 {
+    /// Applies the hostname parsed by the Device Daemon to fixed hosts and Firefox settings.
+    /// The Helper validates the hostname but does not read deployment config.
+    #[zbus(name = "ConfigureLocalGateway")]
+    fn configure_local_gateway(&self, gateway_hostname: &str) -> Result<(), ResourceControlError>;
+
     #[zbus(name = "DeriveMachineIdentity")]
     fn derive_machine_identity(&self) -> Result<DerivedMachineIdentity, MachineIdentityError>;
 

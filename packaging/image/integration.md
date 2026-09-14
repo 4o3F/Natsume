@@ -174,6 +174,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y /path/to/natsume-client.deb
 
 包初始化 sysusers/tmpfiles；部署文件缺失时允许安装，服务保持跳过启动。autoinstall 将部署方生成的完整 `/etc/natsume/config.toml` 和两份 CA 写入目标系统，路径、内容与权限遵循 [inputs.md](inputs.md#2-公共站点配置与身份)。配置只含 `[server]` 和 `[site]` 中的 Client 参数，不调用 debconf、端点配置命令或包脚本生成配置。文件缺失、内容非法或与配套 Server 不匹配时不能交付系统；已存在的非空可读检查只是包安装阶段的基本检查。
 
+Gateway 的 hosts/Firefox 派生设置归 Client 运行时所有，按 [inputs.md](inputs.md#2-公共站点配置与身份) 提供基础策略和证书信任即可。不要在通用镜像、autoinstall 或用户登录脚本中烘焙/重复写入赛事域名；也不要在 Home reset 后恢复旧 Firefox 主页。
+
 缓存键覆盖 Deb 实际字节/模式、交接目录和相关依赖层；部署配置和 CA 不进入构建参数、层键或发布 rootfs。自定义 CONFIG_DIR 的宿主读取、键计算、chroot 只读挂载须一致。
 
 在离线目标 root 启用 natsume-privileged-helper.service、natsume-device-daemon.service 和模板 mount（使用 builder 的 `systemctl --root=... enable` 等价封装，不带 --now）。按发行版正常机制选择 GDM 为 display manager。Caddy 由 Daemon 管理；prepare instance 不独立 enable；Agent 随官方 Kiosk session 启动。

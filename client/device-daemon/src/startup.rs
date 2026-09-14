@@ -3,6 +3,7 @@ use std::{fs, io, path::Path, path::PathBuf};
 use natsume_device_protocol::generated::EnrollmentEvidenceQuality;
 use natsume_local_control_api::{
     DerivedMachineIdentity, MachineIdentityError, MachineIdentityQuality, Privileged1Proxy,
+    ResourceControlError, is_canonical_gateway_hostname,
 };
 use serde::Deserialize;
 use snafu::Snafu;
@@ -44,6 +45,9 @@ impl StartupPaths {
 pub(crate) enum StartupError {
     #[snafu(display("device startup site configuration is missing or invalid"))]
     SiteConfiguration,
+
+    #[snafu(display("local Gateway configuration failed: {source}"))]
+    LocalGateway { source: ResourceControlError },
 
     #[snafu(display("device startup identity-bound artifact scan failed"))]
     ArtifactScan,
@@ -134,7 +138,7 @@ fn read_site_config(path: &Path) -> Result<SiteConfig, StartupError> {
         StartupError::SiteConfiguration
     })?;
     let config = config.site;
-    if !is_canonical_dns_hostname(&config.gateway_hostname) {
+    if !is_canonical_gateway_hostname(&config.gateway_hostname) {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
             "device startup gateway hostname is not canonical"
@@ -142,32 +146,6 @@ fn read_site_config(path: &Path) -> Result<SiteConfig, StartupError> {
         return Err(StartupError::SiteConfiguration);
     }
     Ok(config)
-}
-
-fn is_canonical_dns_hostname(value: &str) -> bool {
-    if value.is_empty()
-        || value.len() > 253
-        || value.ends_with('.')
-        || value.parse::<std::net::IpAddr>().is_ok()
-        || !value.bytes().any(|byte| byte.is_ascii_lowercase())
-    {
-        return false;
-    }
-    value.split('.').all(|label| {
-        !label.is_empty()
-            && label.len() <= 63
-            && label
-                .bytes()
-                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-            && label
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphanumeric)
-            && label
-                .as_bytes()
-                .last()
-                .is_some_and(u8::is_ascii_alphanumeric)
-    })
 }
 
 /// Ignores an orphaned atomic-write temporary because it was never renamed into place and never
@@ -351,6 +329,10 @@ pub(crate) async fn run_production() -> Result<(), StartupError> {
     let decision = proxy.derive_machine_identity().await;
     let identity = apply_identity_decision(&paths, &context, decision)?;
     let gateway_hostname = context.gateway_hostname;
+    proxy
+        .configure_local_gateway(&gateway_hostname)
+        .await
+        .map_err(|source| StartupError::LocalGateway { source })?;
     let control_identity = load_control_identity(&paths, identity.machine_hardware_id)?;
     let IdentityReady {
         state,
