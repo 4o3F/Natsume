@@ -2,7 +2,7 @@ repos:
   - repo: local
     hooks:
       - id: natsume-check
-        name: Natsume lint, Clippy, and tests
+        name: Natsume dependency policy, lint, Clippy, and tests
         entry: just pre-commit
         language: system
         always_run: true

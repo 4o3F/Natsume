@@ -57,6 +57,7 @@ unit:
     pnpm --filter @natsume/web test
 
 pre-commit:
+    cargo deny check
     pnpm --filter @natsume/web lint
     cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     cargo test --workspace --all-features --locked
