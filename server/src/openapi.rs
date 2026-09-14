@@ -74,6 +74,7 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::enrollment::EnrollmentReviewResponse,
         crate::http::handler::device::lifecycle::DeviceResponse,
         crate::http::handler::device::lifecycle::DeviceUpdateRequest,
+        crate::http::handler::device::lifecycle::DeviceListState,
         crate::http::handler::device::session::SessionControlResponse,
         crate::http::handler::device::home::HomeResponse,
         crate::http::handler::device::convergence::DeviceConvergenceResponse,

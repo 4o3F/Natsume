@@ -5,6 +5,7 @@ use crate::{
     diesel_schema::devices,
 };
 
+use super::super::DeviceListFilter;
 use super::super::types::{
     DeviceId, DeviceProjection, DeviceRecord, DeviceState, EvidenceQuality, MachineHardwareId,
 };
@@ -28,8 +29,9 @@ pub(in crate::component::device) fn enabled_ids(
 
 pub(in crate::component::device) fn list(
     transaction: &mut Transaction<'_>,
+    filter: DeviceListFilter,
 ) -> Result<Vec<DeviceProjection>, PersistenceError> {
-    devices::table
+    let query = devices::table
         .select((
             devices::device_id,
             devices::machine_hardware_id,
@@ -37,6 +39,13 @@ pub(in crate::component::device) fn list(
             devices::state,
             devices::created_at_unix_ms,
         ))
+        .into_boxed();
+    let query = match filter {
+        DeviceListFilter::All => query,
+        DeviceListFilter::NonRevoked => query.filter(devices::state.ne("revoked")),
+        DeviceListFilter::State(state) => query.filter(devices::state.eq(state.as_persisted())),
+    };
+    query
         .order(devices::device_id)
         .load::<PersistedDeviceProjection>(transaction.connection())
         .map_err(|_| PersistenceError::OperationFailed)?

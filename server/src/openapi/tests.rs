@@ -155,7 +155,7 @@ fn expected_operation_table() -> OperationTable {
             "get",
             "/api/v2/devices",
             "listDevices",
-            &["200", "401", "500"],
+            &["200", "400", "401", "500"],
         ),
         (
             "get",

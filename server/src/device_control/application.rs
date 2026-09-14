@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::component::device::{
-    ControlAuthority, DeviceError, DeviceId, EnrollmentApprovalError, EnrollmentReviewId,
-    LifecycleOutcome, MachineHardwareId,
+    ControlAuthority, DeviceError, DeviceId, DeviceListFilter, EnrollmentApprovalError,
+    EnrollmentReviewId, LifecycleOutcome, MachineHardwareId,
 };
 
 use super::{
@@ -68,15 +68,19 @@ impl DeviceControl {
         }))
     }
 
-    /// Reads every durable Device and calculates all convergence views with fixed-count queries.
-    pub(crate) async fn read_all_device_statuses(
+    /// Selects durable Devices before assembling their convergence views with fixed-count queries.
+    pub(crate) async fn read_device_statuses(
         &self,
+        filter: DeviceListFilter,
     ) -> Result<Vec<DeviceStatus>, DeviceConvergenceError> {
         let devices = self
             .device
-            .list_devices()
+            .list_devices(filter)
             .await
             .map_err(DeviceConvergenceError::Device)?;
+        if devices.is_empty() {
+            return Ok(Vec::new());
+        }
         let device_ids = devices
             .iter()
             .map(|device| device.device_id())

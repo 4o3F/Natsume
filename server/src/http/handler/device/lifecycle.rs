@@ -1,14 +1,17 @@
 use axum::{
     Json,
-    extract::{Path, State, rejection::JsonRejection},
+    extract::{
+        Path, Query, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::StatusCode,
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 use crate::{
-    component::device::{DeviceState, EvidenceQuality, LifecycleOutcome},
+    component::device::{DeviceListFilter, DeviceState, EvidenceQuality, LifecycleOutcome},
     device_control::DeviceStatus,
 };
 
@@ -59,6 +62,37 @@ pub(crate) struct DeviceUpdateRequest {
     state: DeviceStateResponse,
 }
 
+/// Optional lifecycle filter. Omitting state preserves the complete device list.
+#[derive(Deserialize, IntoParams)]
+#[serde(deny_unknown_fields)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct DeviceListQuery {
+    #[param(default = "all")]
+    state: Option<DeviceListState>,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DeviceListState {
+    All,
+    NonRevoked,
+    Enabled,
+    Disabled,
+    Revoked,
+}
+
+impl From<DeviceListState> for DeviceListFilter {
+    fn from(state: DeviceListState) -> Self {
+        match state {
+            DeviceListState::All => Self::All,
+            DeviceListState::NonRevoked => Self::NonRevoked,
+            DeviceListState::Enabled => Self::State(DeviceState::Enabled),
+            DeviceListState::Disabled => Self::State(DeviceState::Disabled),
+            DeviceListState::Revoked => Self::State(DeviceState::Revoked),
+        }
+    }
+}
+
 impl From<DeviceStatus> for DeviceResponse {
     fn from(status: DeviceStatus) -> Self {
         let DeviceStatus {
@@ -87,15 +121,24 @@ impl From<DeviceStatus> for DeviceResponse {
     get,
     path = "/api/v2/devices",
     operation_id = "listDevices",
+    params(DeviceListQuery),
     security(("sessionCookie" = [])),
     responses(
         (status = 200, description = "Current durable Devices and complete convergence", body = [DeviceResponse]),
+        (status = 400, description = "Invalid device lifecycle filter"),
         (status = 401, description = "Session authentication failed"),
         (status = 500, description = "Internal failure")
     )
 )]
-pub(crate) async fn list_devices(State(state): State<AppState>) -> Response {
-    match state.device_control().read_all_device_statuses().await {
+pub(crate) async fn list_devices(
+    State(state): State<AppState>,
+    query: Result<Query<DeviceListQuery>, QueryRejection>,
+) -> Response {
+    let Ok(Query(query)) = query else {
+        return ApiError::invalid_request("device_list_query_rejected").into_response();
+    };
+    let filter = query.state.unwrap_or(DeviceListState::All).into();
+    match state.device_control().read_device_statuses(filter).await {
         Ok(statuses) => Json(
             statuses
                 .into_iter()
@@ -179,3 +222,6 @@ pub(crate) async fn update_device(
         Err(error) => ApiError::from_device(error).into_response(),
     }
 }
+
+#[cfg(test)]
+mod tests;

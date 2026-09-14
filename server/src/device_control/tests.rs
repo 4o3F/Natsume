@@ -863,7 +863,7 @@ async fn batch_and_single_active_device_status_have_the_same_convergence() {
     let mut batch = fixture
         .state
         .device_control()
-        .read_all_device_statuses()
+        .read_device_statuses(crate::component::device::DeviceListFilter::All)
         .await
         .unwrap_or_else(|_| panic!("batch Device status failed"));
     assert_eq!(batch.len(), 1);
@@ -931,7 +931,7 @@ async fn open_window_automatically_enrolls_without_operator_approval() {
         fixture
             .state
             .device()
-            .list_devices()
+            .list_devices(crate::component::device::DeviceListFilter::All)
             .await
             .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
             .len(),
@@ -987,7 +987,7 @@ async fn opening_window_approves_an_existing_review_on_the_same_connection() {
         fixture
             .state
             .device()
-            .list_devices()
+            .list_devices(crate::component::device::DeviceListFilter::All)
             .await
             .unwrap_or_else(|error| panic!("Device lookup failed: {error}"))
             .is_empty()
@@ -1037,7 +1037,7 @@ async fn automatic_key_replacement_evicts_the_old_lease_before_activation_delive
     let devices = fixture
         .state
         .device()
-        .list_devices()
+        .list_devices(crate::component::device::DeviceListFilter::All)
         .await
         .unwrap_or_else(|error| panic!("Device lookup failed: {error}"));
     assert_eq!(devices.len(), 1);

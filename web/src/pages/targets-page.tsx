@@ -17,6 +17,10 @@ import { useSession } from "@/auth/use-session";
 import { DataState } from "@/components/data-state";
 import { DataTable } from "@/components/data-table";
 import {
+  DeviceStateFilter,
+  type DeviceStateFilterValue,
+} from "@/components/device-state-filter";
+import {
   ConvergenceIcon,
   RefreshCountdown,
   StatusIcon,
@@ -62,6 +66,8 @@ export function TargetsPage() {
   const session = useSession().data;
   const [deviceId, setDeviceId] = useState("");
   const [search, setSearch] = useState("");
+  const [stateFilter, setStateFilter] =
+    useState<DeviceStateFilterValue>("non_revoked");
   const submission = useSyncExternalStore(
     targetSubmission.subscribe,
     targetSubmission.getSnapshot,
@@ -72,15 +78,37 @@ export function TargetsPage() {
     submission.pending !== null || !submission.storageReady;
   const panel = useRef<HTMLDivElement>(null);
   const devices = useQuery({
-    queryKey: DEVICES_KEY,
+    queryKey: [...DEVICES_KEY, stateFilter],
     queryFn: async ({ signal }) =>
-      unwrap<Device[]>(await api.GET("/api/v2/devices", { signal })),
+      unwrap<Device[]>(
+        await api.GET("/api/v2/devices", {
+          signal,
+          params: { query: { state: stateFilter } },
+        }),
+      ),
     refetchInterval: LIST_POLL_MS,
   });
   const selectedDevice = devices.data?.find(
     (device) => device.device_id === deviceId,
   );
   const isAdmin = session?.role === "admin";
+  // All-device actions keep their global Enabled scope even when this view
+  // shows only disabled/revoked devices. Other filters already include Enabled.
+  const excludesEnabled =
+    stateFilter === "disabled" || stateFilter === "revoked";
+  const enabledDevices = useQuery({
+    queryKey: [...DEVICES_KEY, "enabled"],
+    queryFn: async ({ signal }) =>
+      unwrap<Device[]>(
+        await api.GET("/api/v2/devices", {
+          signal,
+          params: { query: { state: "enabled" } },
+        }),
+      ),
+    enabled: isAdmin && excludesEnabled,
+    refetchInterval: LIST_POLL_MS,
+  });
+  const batchDevices = excludesEnabled ? enabledDevices : devices;
   useEffect(() => {
     if (deviceId) panel.current?.scrollIntoView({ block: "start" });
   }, [deviceId]);
@@ -378,23 +406,44 @@ export function TargetsPage() {
             )}
           </section>
         )}
-      <DataState
-        isLoading={devices.isLoading}
-        error={devices.data ? null : devices.error}
-        isEmpty={!devices.data?.length}
-        emptyLabel="No devices found."
-      >
-        {isAdmin && (
+      {isAdmin && (
+        <>
           <BulkTargetActions
-            devices={devices.data ?? []}
-            disabled={targetsPending}
+            devices={batchDevices.data ?? []}
+            disabled={
+              targetsPending || !batchDevices.data || batchDevices.isError
+            }
             onSubmit={(operation) =>
               void targetSubmission.submit(targetAction(operation), {
                 kind: "all_enabled",
               })
             }
           />
-        )}
+          {excludesEnabled && enabledDevices.isError && (
+            <Alert variant="destructive">
+              <AlertTitle>Enabled device list unavailable</AlertTitle>
+              <AlertDescription>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={enabledDevices.isFetching}
+                  onClick={() => void enabledDevices.refetch()}
+                >
+                  Retry enabled devices
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+        </>
+      )}
+      <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+      <DataState
+        isLoading={devices.isLoading}
+        error={devices.data ? null : devices.error}
+        isEmpty={!devices.data?.length}
+        emptyLabel="No devices found."
+      >
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-4">
             <Input

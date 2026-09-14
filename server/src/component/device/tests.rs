@@ -57,7 +57,7 @@ async fn operator_projection_lists_and_finds_only_valid_durable_fields() {
 
     let devices = fixture
         .component
-        .list_devices()
+        .list_devices(crate::component::device::DeviceListFilter::All)
         .await
         .unwrap_or_else(|error| panic!("Device list failed: {error}"));
     assert_eq!(devices.len(), 1);
@@ -324,7 +324,10 @@ async fn invalid_persisted_lifecycle_fails_closed() {
         Err(DeviceError::InvalidPersistedFacts)
     );
     assert_eq!(
-        fixture.component.list_devices().await,
+        fixture
+            .component
+            .list_devices(crate::component::device::DeviceListFilter::All)
+            .await,
         Err(DeviceError::InvalidPersistedFacts)
     );
     assert_eq!(

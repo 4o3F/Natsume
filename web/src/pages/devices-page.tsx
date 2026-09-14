@@ -10,6 +10,10 @@ import { useSession } from "@/auth/use-session";
 import { DataTable } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import {
+  DeviceStateFilter,
+  type DeviceStateFilterValue,
+} from "@/components/device-state-filter";
+import {
   StatusIcon,
   ConvergenceIcon,
   RefreshCountdown,
@@ -52,9 +56,17 @@ export function DevicesPage() {
   const session = useSession().data;
   const queryClient = useQueryClient();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [stateFilter, setStateFilter] =
+    useState<DeviceStateFilterValue>("non_revoked");
   const devices = useQuery({
-    queryKey: DEVICES_KEY,
-    queryFn: async () => unwrap<Device[]>(await api.GET("/api/v2/devices")),
+    queryKey: [...DEVICES_KEY, stateFilter],
+    queryFn: async ({ signal }) =>
+      unwrap<Device[]>(
+        await api.GET("/api/v2/devices", {
+          signal,
+          params: { query: { state: stateFilter } },
+        }),
+      ),
     refetchInterval: LIST_POLL_MS,
   });
   const lifecycle = useMutation({
@@ -111,7 +123,7 @@ export function DevicesPage() {
               <StatusIcon
                 {...connection}
                 tone={
-                  device.state === "disabled"
+                  device.state !== "enabled"
                     ? "text-muted-foreground"
                     : connection.tone
                 }
@@ -355,6 +367,7 @@ export function DevicesPage() {
         </Alert>
       )}
 
+      <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}
@@ -388,7 +401,7 @@ export function DevicesPage() {
               data={devices.data ?? []}
               getRowId={(device) => device.device_id}
               rowClassName={(device) =>
-                device.state === "disabled"
+                device.state !== "enabled"
                   ? "bg-muted/60 hover:bg-muted"
                   : connections[device.convergence.connection_state].row
               }

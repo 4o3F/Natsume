@@ -789,7 +789,7 @@ Operator Target 提交由独立的 `state.target_submission()` 负责事务与�
 跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。
 当前仅提供九个有实际消费者的入口：
 
-- `read_device_status`、`read_all_device_statuses`汇总组件当前事实和lease observation；
+- `read_device_status`、`read_device_statuses`汇总组件当前事实和lease observation；
   HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
 - `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction；
   三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
@@ -1297,7 +1297,17 @@ Panel展示：
 
 Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
-Targets 页面列出全部 Device，以当前 Binding 的座位号定位，支持排序和搜索，并分别展示
+`GET /api/v2/devices` 支持可选查询参数 `state=enabled|disabled|revoked|non_revoked|all`。
+`non_revoked` 包含 Enabled/Disabled；省略参数等同 `all`，保留原 API 读取范围。非法参数返回
+HTTP 400。筛选在 Device SQL 查询中完成，随后只为匹配设备组装状态；不删除撤销记录，
+不改变控制密钥和生命周期语义。空集合直接返回，非空集合沿用固定次数的资源批量读取。
+Web 显式请求 `non_revoked`，两页都提供生命周期筛选，筛选值进入查询缓存键；撤销或禁用后
+通过设备查询前缀失效刷新所有筛选缓存，旧筛选响应不能覆盖当前视图。筛选器在空结果时仍可用。
+Targets 的全部 Enabled 操作独立于列表筛选：当列表只看 Disabled/Revoked 时，另取 Enabled
+列表用于预估范围；即使当前列表为空，批量操作仍覆盖 Server 当前全部 Enabled。
+
+
+Devices 和 Targets 默认列出 Enabled/Disabled Device，以当前 Binding 的座位号定位，支持排序和搜索。Targets 分别展示
 Session／Home convergence、foreground Target 和 Actual。单台操作通过该行详情进入；
 全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小
 范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
@@ -1318,10 +1328,10 @@ current-lease observation，通过`device_control/convergence`的共享纯builde
 查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。
 HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、
 校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device
-详情保留直接读取路径；Device collection为完整fleet状态执行固定批量读取：Device、Gateway、
+详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、
 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public
 context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle，
-释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。这样数据库业务
+释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务
 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建
 Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是
 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。

@@ -497,6 +497,8 @@ export interface components {
       runtime_config: components["schemas"]["RuntimeConfigConvergenceResponse"];
       session_control: components["schemas"]["SessionConvergenceResponse"];
     };
+    /** @enum {string} */
+    DeviceListState: "all" | "non_revoked" | "enabled" | "disabled" | "revoked";
     /** @description Durable Device identity and lifecycle with its current complete convergence view. */
     DeviceResponse: {
       /** @description Current durable targets and latest validated Actual for this Device. */
@@ -928,7 +930,9 @@ export interface operations {
   };
   listDevices: {
     parameters: {
-      query?: never;
+      query?: {
+        state?: components["schemas"]["DeviceListState"];
+      };
       header?: never;
       path?: never;
       cookie?: never;
@@ -942,6 +946,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["DeviceResponse"][];
+        };
+      };
+      /** @description Invalid device lifecycle filter */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
         };
       };
       /** @description Session authentication failed */

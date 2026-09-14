@@ -39,7 +39,8 @@ export function BulkTargetActions({
         <h2 className="font-medium">All enabled devices ({enabled.length})</h2>
         <p className="mt-1 text-sm text-muted-foreground">
           Includes offline devices; targets apply after reconnection. Disabled
-          and revoked devices are skipped. Search does not change this scope.
+          and revoked devices are skipped. List filters do not change this
+          scope.
         </p>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -81,9 +82,8 @@ export function BulkTargetActions({
                   (device) => device.convergence.connection_state === "offline",
                 ).length
               }{" "}
-              offline devices. {devices.length - enabled.length} disabled or
-              revoked devices are excluded from this estimate. All devices
-              enabled when the Server processes this submission will be
+              offline devices. Disabled and revoked devices are excluded. All
+              devices enabled when the Server processes this submission will be
               included. The result will show the actual device list.
               {confirmation === "reset" &&
                 " This deletes the contest user's Home data and restores the default Home. Contest sessions will restart."}

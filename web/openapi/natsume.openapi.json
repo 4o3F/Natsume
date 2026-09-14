@@ -99,6 +99,21 @@
     "/api/v2/devices": {
       "get": {
         "operationId": "listDevices",
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/DeviceListState"
+                }
+              ],
+              "default": "all"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Current durable Devices and complete convergence",
@@ -109,6 +124,16 @@
                   "items": {
                     "$ref": "#/components/schemas/DeviceResponse"
                   }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid device lifecycle filter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2215,6 +2240,10 @@
           }
         },
         "additionalProperties": false
+      },
+      "DeviceListState": {
+        "type": "string",
+        "enum": ["all", "non_revoked", "enabled", "disabled", "revoked"]
       },
       "DeviceResponse": {
         "type": "object",

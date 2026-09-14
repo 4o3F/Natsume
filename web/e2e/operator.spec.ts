@@ -98,7 +98,11 @@ test("device lifecycle and convergence use the operator API", async ({
       return fulfillJson(route, 200, operator);
     }
     if (pathname === "/api/v2/devices" && request.method() === "GET") {
-      return fulfillJson(route, 200, [{ ...device, state: deviceState }]);
+      return fulfillJson(
+        route,
+        200,
+        filterDeviceRows([{ ...device, state: deviceState }], request.url()),
+      );
     }
     if (
       pathname === `/api/v2/devices/${device.device_id}` &&
@@ -546,6 +550,20 @@ test("an administrator can approve an enrollment review", async ({ page }) => {
 type TargetBody = components["schemas"]["TargetSubmissionBody"];
 type TargetReply = components["schemas"]["TargetSubmissionResponse"];
 
+function filterDeviceRows(rows: (typeof device)[], url: string) {
+  const state = new URL(url).searchParams.get("state") ?? "all";
+  expect(["enabled", "disabled", "revoked", "non_revoked", "all"]).toContain(
+    state,
+  );
+  return rows.filter(
+    (device) =>
+      state === "all" ||
+      (state === "non_revoked"
+        ? device.state !== "revoked"
+        : device.state === state),
+  );
+}
+
 async function mockTargets(
   context: BrowserContext,
   currentDevices: typeof device | (typeof device)[],
@@ -555,6 +573,7 @@ async function mockTargets(
     ? currentDevices
     : [currentDevices];
   const writes: TargetBody[] = [];
+  const reads: string[] = [];
   const rejections = new Map<string, string>();
   const receipts = new Map<
     string,
@@ -634,13 +653,15 @@ async function mockTargets(
     const path = new URL(request.url()).pathname;
     if (path === "/api/v2/session" && request.method() === "GET")
       return fulfillJson(route, 200, { ...operator, operator_id: operatorId });
-    if (path === "/api/v2/devices" && request.method() === "GET")
-      return fulfillJson(route, 200, devices);
+    if (path === "/api/v2/devices" && request.method() === "GET") {
+      reads.push(new URL(request.url()).searchParams.get("state") ?? "all");
+      return fulfillJson(route, 200, filterDeviceRows(devices, request.url()));
+    }
     if (path === "/api/v2/target-submissions" && request.method() === "POST")
       return fulfillJson(route, 200, apply(request.postDataJSON()));
     return fulfillJson(route, 404, {});
   });
-  return { writes, apply, rejections };
+  return { writes, apply, rejections, reads };
 }
 
 async function selectTarget(page: Page, deviceId: string) {
@@ -708,7 +729,7 @@ for (const [name, action] of [
     fleet[4].state = "revoked";
     const api = await mockTargets(context, fleet);
     await page.goto("/targets");
-    await expect(page.locator("tbody tr")).toHaveCount(5);
+    await expect(page.locator("tbody tr")).toHaveCount(4);
     await expect(page.locator("tbody tr").nth(1)).toHaveClass(
       /bg-destructive\/10/,
     );
@@ -1228,7 +1249,7 @@ test("refresh failures mark cached completion as old and retry reads the submitt
     .getByText("Last successful refresh:")
     .textContent();
   let failRefresh = true;
-  await context.route("**/api/v2/devices", (route) =>
+  await context.route(/\/api\/v2\/devices(?:\?.*)?$/, (route) =>
     failRefresh
       ? fulfillJson(route, 503, {
           code: "unavailable",
@@ -1286,7 +1307,7 @@ test("a delayed pre-mutation poll cannot replace the refreshed target", async ({
   await page.clock.install();
   await openTargets(page);
   const heldReads: Route[] = [];
-  await context.route("**/api/v2/devices", (route) => {
+  await context.route(/\/api\/v2\/devices(?:\?.*)?$/, (route) => {
     heldReads.push(route);
   });
   await page.clock.runFor(10_000);
@@ -1369,4 +1390,146 @@ test("foreground targets follow another operator within one polling interval", a
   } finally {
     await otherContext.close();
   }
+});
+
+for (const path of ["/devices", "/targets"]) {
+  test(`${path} requests lifecycle filters and keeps filter controls on empty results`, async ({
+    page,
+    context,
+  }) => {
+    const fleet = targetFleet(3);
+    fleet[1].state = "disabled";
+    fleet[2].state = "revoked";
+    const api = await mockTargets(context, fleet);
+    await page.goto(path);
+    const filter = page.getByLabel("Device state", { exact: true });
+    await expect(filter).toHaveValue("non_revoked");
+    await expect(page.locator("tbody tr")).toHaveCount(2);
+    for (const [value, seats] of [
+      ["enabled", ["A-01"]],
+      ["disabled", ["A-02"]],
+      ["revoked", ["A-03"]],
+      ["all", ["A-01", "A-02", "A-03"]],
+      ["non_revoked", ["A-01", "A-02"]],
+    ] as const) {
+      await filter.selectOption(value);
+      await expect(page.locator("tbody tr td:first-child")).toHaveText([
+        ...seats,
+      ]);
+      if (value === "revoked")
+        await expect(page.locator("tbody tr")).toHaveClass(/bg-muted\/60/);
+    }
+    expect(new Set(api.reads)).toEqual(
+      new Set(["non_revoked", "enabled", "disabled", "revoked", "all"]),
+    );
+    fleet[2].state = "disabled";
+    await filter.selectOption("revoked");
+    await expect(
+      page.getByText("No devices found.", { exact: true }),
+    ).toBeVisible();
+    await expect(filter).toBeVisible();
+    await filter.selectOption("enabled");
+    await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
+  });
+
+  test(`${path} ignores a late response from a previous lifecycle filter`, async ({
+    page,
+    context,
+  }) => {
+    const fleet = targetFleet(2);
+    fleet[1].state = "revoked";
+    await mockTargets(context, fleet);
+    let held: Route | undefined;
+    await context.route(/\/api\/v2\/devices(?:\?.*)?$/, (route) => {
+      if (
+        new URL(route.request().url()).searchParams.get("state") ===
+          "enabled" &&
+        !held
+      ) {
+        held = route;
+        return;
+      }
+      return route.fallback();
+    });
+    await page.clock.install();
+    await page.goto(path);
+    await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
+    const filter = page.getByLabel("Device state", { exact: true });
+    await filter.selectOption("enabled");
+    await expect.poll(() => Boolean(held)).toBe(true);
+    await filter.selectOption("revoked");
+    await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
+    await held!.fallback();
+    await page.clock.runFor(100);
+    await expect(filter).toHaveValue("revoked");
+    await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
+  });
+}
+
+test("revoking a selected device removes it from the default view but retains the revoked view", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(1);
+  await mockTargets(context, fleet);
+  await context.route(`**/api/v2/devices/${fleet[0].device_id}`, (route) => {
+    expect(route.request().method()).toBe("PATCH");
+    expect(route.request().postDataJSON()).toEqual({ state: "revoked" });
+    fleet[0].state = "revoked";
+    return fulfillJson(route, 204);
+  });
+  await page.goto("/devices");
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await expect(
+    page.getByText(fleet[0].device_id, { exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Revoke", exact: true }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Revoke", exact: true })
+    .click();
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(fleet[0].device_id, { exact: true })).toHaveCount(
+    0,
+  );
+  await page
+    .getByLabel("Device state", { exact: true })
+    .selectOption("revoked");
+  await expect(page.locator("tbody tr")).toHaveCount(1);
+  await expect(
+    page.getByRole("img", { name: "Lifecycle: revoked", exact: true }),
+  ).toBeVisible();
+});
+
+test("Targets all-device actions retain global Enabled scope even with an empty revoked filter", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(2);
+  const api = await mockTargets(context, fleet);
+  await page.goto("/targets");
+  await page
+    .getByLabel("Device state", { exact: true })
+    .selectOption("revoked");
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "All enabled devices (2)", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Reset home (all)", exact: true }),
+  ).toBeEnabled();
+  await confirmAll(page, "Reset home");
+  await expect(
+    page.getByRole("region", { name: "Target submission", exact: true }),
+  ).toContainText("2 submitted, 0 rejected");
+  expect(api.writes).toHaveLength(1);
+  expect(api.writes[0].scope).toEqual({ kind: "all_enabled" });
+  expect(api.reads).toContain("enabled");
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
 });

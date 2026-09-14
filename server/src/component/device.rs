@@ -27,6 +27,14 @@ pub(crate) struct DeviceComponent {
     reviews: EnrollmentReviewRegistry,
 }
 
+/// Lifecycle selection for the Operator device list; it does not change authority.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DeviceListFilter {
+    All,
+    NonRevoked,
+    State(DeviceState),
+}
+
 impl DeviceComponent {
     pub(in crate::component) fn enabled_target_devices(
         transaction: &mut Transaction<'_>,
@@ -49,9 +57,12 @@ impl DeviceComponent {
     }
 
     /// Lists the durable, non-secret Device fields required by the Operator Panel.
-    pub(crate) async fn list_devices(&self) -> Result<Vec<DeviceProjection>, DeviceError> {
+    pub(crate) async fn list_devices(
+        &self,
+        filter: DeviceListFilter,
+    ) -> Result<Vec<DeviceProjection>, DeviceError> {
         self.database
-            .read(db::list)
+            .read(move |transaction| db::list(transaction, filter))
             .await
             .map_err(crate::db::TransactionError::into_error)
             .map_err(DeviceError::from)
