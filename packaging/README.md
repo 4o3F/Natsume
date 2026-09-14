@@ -92,18 +92,18 @@ profile/keyboard/font/scale configuration described in its input set.
 
 ## Version releases
 
-Push a tag such as `v2.2.0` to run [release.yml](../.github/workflows/release.yml).
+Push a tag such as `v2.2.1` to run [release.yml](../.github/workflows/release.yml).
 The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as
-`v2.2.0-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
+`v2.2.1-rc.1` (no build metadata). It reuses the full CI workflow at the tagged
 commit; all jobs must pass before GitHub Release publication. Branch/PR CI keeps
-its `2.2.0~ci1` package version.
+its `2.2.1~ci1` package version.
 
 Each release includes `natsume-client_<version>_amd64.deb`,
 `natsume-server_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated
 release notes. If `docs/releases/<tag>.md` exists at the tagged commit, its
 release and migration guidance is included before the generated notes. For
-prereleases, `v2.2.0-rc.1` becomes Debian version `2.2.0~rc.1`,
-which sorts before `2.2.0`; the GitHub Release is marked as a prerelease and is
+prereleases, `v2.2.1-rc.1` becomes Debian version `2.2.1~rc.1`,
+which sorts before `2.2.1`; the GitHub Release is marked as a prerelease and is
 not made latest. Download both packages and the checksum file into one directory
 and run `sha256sum --check SHA256SUMS` to verify them.
 
