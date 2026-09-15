@@ -10,6 +10,7 @@
 | [GNOME 双会话 PRD](prd-gnome-dual-session.zh-CN.md) | 产品范围、会话/Home 行为、AT-01～26 和测量口径 |
 | [镜像交付要求](gnome-session-image-requirements.zh-CN.md) | IMG-01～08、镜像构建顺序和最终交付条件 |
 | [镜像配置附录](gnome-session-image-configuration.zh-CN.md) | 正式输入的目标路径、权限、归属和接入位置 |
+| [Wayland KMS 桌面串流方案](wayland-kms-streaming.zh-CN.md) | 经授权的比赛工位可选无门户提示画面观测、SRT 传输与验收 |
 | [Agent 文档规则](agents/domain.md) | 领域术语、架构权威和文档阅读规则 |
 | [Agent Issue 工作流](agents/issue-tracker.md) | GitHub Issues 和技能工作流的仓库约定 |
 
