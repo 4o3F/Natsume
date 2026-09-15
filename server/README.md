@@ -196,7 +196,7 @@ including weak `If-None-Match` validators. Successful images require revalidatio
 404/errors and candidate images use `no-store`. Later requests see file replacements.
 
 **Download DOMjudge ZIP** contains `groups.json`, `organizations.json`, `teams.json`,
-`accounts.yaml`, `README.md` and every available school logo as `logos/INST-xxx.png`.
+`accounts.yaml` and every available school logo as `logos/INST-xxx.png`.
 All data comes from one committed SQLite read transaction, including encrypted
 vault records. The transaction closes before decryption and image conversion.
 Contest owns this read/export boundary; Import remains the only roster writer.
@@ -208,10 +208,9 @@ The export uses the modern DOMjudge JSON/YAML contract, stable school IDs and fi
 account IDs. Names are `中文名(English name)` when both exist. It supplies no invented
 `icpc_id`. YAML serialization preserves strings such as leading-zero passwords.
 Available PNG/JPEG/WebP/SVG files become real PNG, preserving raster dimensions and
-alpha; SVG uses its natural 96 DPI canvas. Missing/ambiguous images are documented
-in the ZIP README without blocking import/export. A matched unreadable, corrupt or
-oversized file aborts the download with a school/file diagnostic. The README also
-contains import order, CLI commands and affiliation image installation instructions.
+alpha; SVG uses its natural 96 DPI canvas. Missing or ambiguous images are omitted
+without blocking import/export. A matched unreadable, corrupt or oversized file aborts the
+download with a school/file diagnostic.
 
 Work is bounded to four image workers and one export worker; the in-memory ZIP is
 limited to 256 MiB. Source files have an 8 MiB limit and decoded images are limited

@@ -581,10 +581,9 @@ sudo -u natsume-server -- test -x /var/lib/natsume-server/organization-logos
 提交名单后，管理员点击 **Download DOMjudge ZIP**。即使存在待审核名单，下载内容也只取当前已提交的完整名单；设备分页、是否绑定均不影响结果。ZIP 包含：
 
 - `groups.json`、`organizations.json`、`teams.json`、`accounts.yaml`；
-- `README.md`（导入顺序、命令、图片部署和学校／源文件对照）；
 - `logos/INST-xxx.png`（当前名单所有可用校徽，按实际内容转为 PNG）。
 
-DOMjudge 使用新版 JSON／YAML 入口按 groups → organizations → teams → accounts 顺序导入；将 `logos/` 内容复制到 DOMjudge 的 `webapp/public/images/affiliations/`，保留 INST 文件名并赋予 Web 服务读权限。详见包内 README。不使用 legacy TSV。缺图／歧义会在 README 列明，其余内容照常导出；匹配到的图片损坏、不可读或超限则整包失败，页面显示学校和文件原因。
+DOMjudge 使用新版 JSON／YAML 入口按 groups → organizations → teams → accounts 顺序导入；将 `logos/` 内容复制到 DOMjudge 的 `webapp/public/images/affiliations/`，保留 INST 文件名并赋予 Web 服务读权限。不使用 legacy TSV。缺图／歧义不会进入导出且不阻塞；匹配到的图片损坏、不可读或超限则整包失败，页面显示学校和文件原因。
 
 ZIP 包含当前明文密码，应保存在受控目录；Server 不落地保存，浏览器正常下载，不写入 localStorage/sessionStorage。密码切换后重新导出并在 DOMjudge 导入 accounts，实际测试队伍登录；Natsume 不会自动修改 DOMjudge。数据库／vault 和源图片目录需要分别备份。
 

@@ -1,6 +1,5 @@
 use std::{
     collections::BTreeSet,
-    fmt::Write as _,
     io::{self, Cursor, Seek, SeekFrom, Write},
 };
 
@@ -201,19 +200,9 @@ fn add_logos(
     directory: &std::path::Path,
 ) -> Result<(), ExportError> {
     let index = logos::open_directory(directory)?;
-    let mut readme = include_str!("export-readme.md").to_owned();
-    readme.push_str("\n| Organization | Chinese name | English name | Source image / status |\n| --- | --- | --- | --- |\n");
     for school in &roster.organizations {
-        let status = match logos::resolve(index.as_ref(), school) {
-            LogoMatch::Missing => "Missing: add an image named after the school".to_owned(),
-            LogoMatch::Ambiguous(paths) => format!(
-                "Ambiguous: {}",
-                paths
-                    .iter()
-                    .map(|p| logos::filename(p))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
+        match logos::resolve(index.as_ref(), school) {
+            LogoMatch::Missing | LogoMatch::Ambiguous(_) => {}
             LogoMatch::Unique(path) => {
                 let png = read_logo(&path)
                     .and_then(natsume_roster::DecodedLogo::into_png)
@@ -223,30 +212,10 @@ fn add_logos(
                     &format!("logos/INST-{:03}.png", school.organization_id),
                     &png,
                 )?;
-                logos::filename(&path)
             }
-        };
-        writeln!(
-            readme,
-            "| INST-{:03} | {} | {} | {} |",
-            school.organization_id,
-            markdown_cell(&school.name_zh),
-            markdown_cell(&school.name_en),
-            markdown_cell(&status)
-        )
-        .map_err(|_| ExportError::Archive)?;
+        }
     }
-    add(zip, "README.md", readme.as_bytes())?;
     Ok(())
-}
-
-fn markdown_cell(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('|', "&#124;")
-        .replace(['\r', '\n'], " ")
 }
 
 fn add_json<T: Serialize>(

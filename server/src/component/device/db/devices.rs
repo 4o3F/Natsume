@@ -42,8 +42,14 @@ pub(in crate::component::device) fn list(
         .into_boxed();
     let query = match filter {
         DeviceListFilter::All => query,
-        DeviceListFilter::NonRevoked => query.filter(devices::state.ne("revoked")),
-        DeviceListFilter::State(state) => query.filter(devices::state.eq(state.as_persisted())),
+        DeviceListFilter::States(states) => query.filter(
+            devices::state.eq_any(
+                states
+                    .iter()
+                    .map(|state| state.as_persisted())
+                    .collect::<Vec<_>>(),
+            ),
+        ),
     };
     query
         .order(devices::device_id)

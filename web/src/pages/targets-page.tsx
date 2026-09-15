@@ -21,6 +21,10 @@ import {
   type DeviceStateFilterValue,
 } from "@/components/device-state-filter";
 import {
+  defaultDeviceStateFilter,
+  selectedDeviceStates,
+} from "@/components/device-state";
+import {
   ConvergenceIcon,
   RefreshCountdown,
   StatusIcon,
@@ -66,8 +70,10 @@ export function TargetsPage() {
   const session = useSession().data;
   const [deviceId, setDeviceId] = useState("");
   const [search, setSearch] = useState("");
-  const [stateFilter, setStateFilter] =
-    useState<DeviceStateFilterValue>("non_revoked");
+  const [stateFilter, setStateFilter] = useState<DeviceStateFilterValue>(
+    defaultDeviceStateFilter,
+  );
+  const states = selectedDeviceStates(stateFilter);
   const submission = useSyncExternalStore(
     targetSubmission.subscribe,
     targetSubmission.getSnapshot,
@@ -78,50 +84,46 @@ export function TargetsPage() {
     submission.pending !== null || !submission.storageReady;
   const panel = useRef<HTMLDivElement>(null);
   const devices = useQuery({
-    queryKey: [...DEVICES_KEY, stateFilter],
+    queryKey: [...DEVICES_KEY, states],
     queryFn: async ({ signal }) =>
       unwrap<Device[]>(
         await api.GET("/api/v2/devices", {
           signal,
-          params: { query: { state: stateFilter } },
+          params: { query: { state: states } },
         }),
       ),
     refetchInterval: LIST_POLL_MS,
+    enabled: states.length > 0,
   });
   const selectedDevice = devices.data?.find(
     (device) => device.device_id === deviceId,
   );
   const isAdmin = session?.role === "admin";
-  // All-device actions keep their global Enabled scope even when this view
-  // shows only disabled/revoked devices. Other filters already include Enabled.
-  const excludesEnabled =
-    stateFilter === "disabled" || stateFilter === "revoked";
   const enabledDevices = useQuery({
-    queryKey: [...DEVICES_KEY, "enabled"],
+    queryKey: [...DEVICES_KEY, ["enabled"]],
     queryFn: async ({ signal }) =>
       unwrap<Device[]>(
         await api.GET("/api/v2/devices", {
           signal,
-          params: { query: { state: "enabled" } },
+          params: { query: { state: ["enabled"] } },
         }),
       ),
-    enabled: isAdmin && excludesEnabled,
+    enabled: isAdmin,
     refetchInterval: LIST_POLL_MS,
   });
-  const batchDevices = excludesEnabled ? enabledDevices : devices;
   useEffect(() => {
     if (deviceId) panel.current?.scrollIntoView({ block: "start" });
   }, [deviceId]);
   const rows = useMemo(() => {
     const query = search.trim().toLowerCase();
-    return (devices.data ?? []).filter(
+    return (states.length === 0 ? [] : (devices.data ?? [])).filter(
       (device) =>
         !query ||
         [seatCode(device), device.device_id, device.machine_hardware_id].some(
           (value) => value?.toLowerCase().includes(query),
         ),
     );
-  }, [devices.data, search]);
+  }, [devices.data, search, states.length]);
   const columns = useMemo(() => {
     const columns: ColumnDef<Device>[] = [
       {
@@ -409,9 +411,9 @@ export function TargetsPage() {
       {isAdmin && (
         <>
           <BulkTargetActions
-            devices={batchDevices.data ?? []}
+            devices={enabledDevices.data ?? []}
             disabled={
-              targetsPending || !batchDevices.data || batchDevices.isError
+              targetsPending || !enabledDevices.data || enabledDevices.isError
             }
             onSubmit={(operation) =>
               void targetSubmission.submit(targetAction(operation), {
@@ -422,22 +424,6 @@ export function TargetsPage() {
               })
             }
           />
-          {excludesEnabled && enabledDevices.isError && (
-            <Alert variant="destructive">
-              <AlertTitle>Enabled device list unavailable</AlertTitle>
-              <AlertDescription>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="outline"
-                  disabled={enabledDevices.isFetching}
-                  onClick={() => void enabledDevices.refetch()}
-                >
-                  Retry enabled devices
-                </Button>
-              </AlertDescription>
-            </Alert>
-          )}
         </>
       )}
       <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />

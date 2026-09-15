@@ -62,33 +62,30 @@ pub(crate) struct DeviceUpdateRequest {
     state: DeviceStateResponse,
 }
 
-/// Optional lifecycle filter. Omitting state preserves the complete device list.
+/// `state` is a comma-separated combination of lifecycle values. Omitting it preserves the
+/// complete device list.
 #[derive(Deserialize, IntoParams)]
 #[serde(deny_unknown_fields)]
 #[into_params(parameter_in = Query)]
 pub(crate) struct DeviceListQuery {
-    #[param(default = "all")]
-    state: Option<DeviceListState>,
+    #[param(value_type = Vec<DeviceListState>, style = Form, explode = false)]
+    state: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DeviceListState {
-    All,
-    NonRevoked,
     Enabled,
     Disabled,
     Revoked,
 }
 
-impl From<DeviceListState> for DeviceListFilter {
+impl From<DeviceListState> for DeviceState {
     fn from(state: DeviceListState) -> Self {
         match state {
-            DeviceListState::All => Self::All,
-            DeviceListState::NonRevoked => Self::NonRevoked,
-            DeviceListState::Enabled => Self::State(DeviceState::Enabled),
-            DeviceListState::Disabled => Self::State(DeviceState::Disabled),
-            DeviceListState::Revoked => Self::State(DeviceState::Revoked),
+            DeviceListState::Enabled => Self::Enabled,
+            DeviceListState::Disabled => Self::Disabled,
+            DeviceListState::Revoked => Self::Revoked,
         }
     }
 }
@@ -137,7 +134,21 @@ pub(crate) async fn list_devices(
     let Ok(Query(query)) = query else {
         return ApiError::invalid_request("device_list_query_rejected").into_response();
     };
-    let filter = query.state.unwrap_or(DeviceListState::All).into();
+    let filter = query.state.map_or(DeviceListFilter::All, |states| {
+        let states = states
+            .split(',')
+            .map(|state| match state {
+                "enabled" => Some(DeviceState::Enabled),
+                "disabled" => Some(DeviceState::Disabled),
+                "revoked" => Some(DeviceState::Revoked),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>();
+        DeviceListFilter::States(states.unwrap_or_default())
+    });
+    if matches!(filter, DeviceListFilter::States(ref states) if states.is_empty()) {
+        return ApiError::invalid_request("device_list_query_rejected").into_response();
+    }
     match state.device_control().read_device_statuses(filter).await {
         Ok(statuses) => Json(
             statuses

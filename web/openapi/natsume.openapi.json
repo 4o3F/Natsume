@@ -103,15 +103,15 @@
           {
             "name": "state",
             "in": "query",
-            "required": false,
+            "required": true,
             "schema": {
-              "oneOf": [
-                {
-                  "$ref": "#/components/schemas/DeviceListState"
-                }
-              ],
-              "default": "all"
-            }
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/DeviceListState"
+              }
+            },
+            "style": "form",
+            "explode": false
           }
         ],
         "responses": {
@@ -2243,7 +2243,7 @@
       },
       "DeviceListState": {
         "type": "string",
-        "enum": ["all", "non_revoked", "enabled", "disabled", "revoked"]
+        "enum": ["enabled", "disabled", "revoked"]
       },
       "DeviceResponse": {
         "type": "object",

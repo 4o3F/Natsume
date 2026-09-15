@@ -84,7 +84,6 @@ fn complete_zip_contains_stable_data_deduplicated_pngs_and_missing_ambiguous_map
     assert_eq!(
         first.keys().map(String::as_str).collect::<Vec<_>>(),
         [
-            "README.md",
             "accounts.yaml",
             "groups.json",
             "logos/INST-001.png",
@@ -114,9 +113,6 @@ fn complete_zip_contains_stable_data_deduplicated_pngs_and_missing_ambiguous_map
     let png = checked(image::load_from_memory(&first["logos/INST-001.png"])).to_rgba8();
     assert_eq!(png.dimensions(), (8, 4));
     assert_eq!(png.get_pixel(6, 1).0, [0, 0, 0, 0]);
-    let readme = checked(std::str::from_utf8(&first["README.md"]));
-    assert!(readme.contains("INST-002 | 乙 |  | Missing"));
-    assert!(readme.contains("INST-003 | 丙 |  | Ambiguous"));
     assert_eq!(entries(checked(build(&roster, &vault, &logos))), first);
     roster.teams[0] = team(&vault, "001", 1, "next-password");
     let second = entries(checked(build(&roster, &vault, &logos)));

@@ -14,6 +14,10 @@ import {
   type DeviceStateFilterValue,
 } from "@/components/device-state-filter";
 import {
+  defaultDeviceStateFilter,
+  selectedDeviceStates,
+} from "@/components/device-state";
+import {
   StatusIcon,
   ConvergenceIcon,
   RefreshCountdown,
@@ -56,18 +60,21 @@ export function DevicesPage() {
   const session = useSession().data;
   const queryClient = useQueryClient();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const [stateFilter, setStateFilter] =
-    useState<DeviceStateFilterValue>("non_revoked");
+  const [stateFilter, setStateFilter] = useState<DeviceStateFilterValue>(
+    defaultDeviceStateFilter,
+  );
+  const states = selectedDeviceStates(stateFilter);
   const devices = useQuery({
-    queryKey: [...DEVICES_KEY, stateFilter],
+    queryKey: [...DEVICES_KEY, states],
     queryFn: async ({ signal }) =>
       unwrap<Device[]>(
         await api.GET("/api/v2/devices", {
           signal,
-          params: { query: { state: stateFilter } },
+          params: { query: { state: states } },
         }),
       ),
     refetchInterval: LIST_POLL_MS,
+    enabled: states.length > 0,
   });
   const lifecycle = useMutation({
     mutationFn: async ({
@@ -90,6 +97,7 @@ export function DevicesPage() {
   const selectedDevice = devices.data?.find(
     (device) => device.device_id === selectedDeviceId,
   );
+  const visibleDevices = states.length === 0 ? [] : (devices.data ?? []);
 
   const isAdmin = session?.role === "admin";
   const { isPending: isUpdatingLifecycle, mutate: updateLifecycle } = lifecycle;
@@ -371,7 +379,7 @@ export function DevicesPage() {
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}
-        isEmpty={!devices.data?.length}
+        isEmpty={!visibleDevices.length}
         emptyLabel="No devices found."
       >
         <div className="space-y-6">
@@ -398,7 +406,7 @@ export function DevicesPage() {
             </div>
             <DataTable
               columns={columns}
-              data={devices.data ?? []}
+              data={visibleDevices}
               getRowId={(device) => device.device_id}
               rowClassName={(device) =>
                 device.state !== "enabled"

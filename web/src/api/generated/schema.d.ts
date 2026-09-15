@@ -498,7 +498,7 @@ export interface components {
       session_control: components["schemas"]["SessionConvergenceResponse"];
     };
     /** @enum {string} */
-    DeviceListState: "all" | "non_revoked" | "enabled" | "disabled" | "revoked";
+    DeviceListState: "enabled" | "disabled" | "revoked";
     /** @description Durable Device identity and lifecycle with its current complete convergence view. */
     DeviceResponse: {
       /** @description Current durable targets and latest validated Actual for this Device. */
@@ -938,8 +938,8 @@ export interface operations {
   };
   listDevices: {
     parameters: {
-      query?: {
-        state?: components["schemas"]["DeviceListState"];
+      query: {
+        state: components["schemas"]["DeviceListState"][];
       };
       header?: never;
       path?: never;

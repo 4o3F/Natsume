@@ -28,11 +28,10 @@ pub(crate) struct DeviceComponent {
 }
 
 /// Lifecycle selection for the Operator device list; it does not change authority.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) enum DeviceListFilter {
     All,
-    NonRevoked,
-    State(DeviceState),
+    States(Vec<DeviceState>),
 }
 
 impl DeviceComponent {

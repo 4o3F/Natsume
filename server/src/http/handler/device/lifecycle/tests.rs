@@ -46,8 +46,11 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
         ("?state=enabled", vec!["enabled"]),
         ("?state=disabled", vec!["disabled"]),
         ("?state=revoked", vec!["revoked"]),
-        ("?state=non_revoked", vec!["enabled", "disabled"]),
-        ("?state=all", vec!["enabled", "disabled", "revoked"]),
+        ("?state=enabled,revoked", vec!["enabled", "revoked"]),
+        (
+            "?state=disabled,enabled,disabled",
+            vec!["enabled", "disabled"],
+        ),
         ("", vec!["enabled", "disabled", "revoked"]),
     ] {
         let response = drive(
@@ -68,7 +71,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
         "?state=unknown",
         "?state=",
         "?state=Enabled",
-        "?state=enabled&state=revoked",
+        "?state=all",
         "?filter=enabled",
     ] {
         let response = drive(

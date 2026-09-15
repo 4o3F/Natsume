@@ -1241,7 +1241,7 @@ strict XLSX parse
 
 Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其根模块的非秘密契约，Import 保留全部名单写权限。导出从同一数据库 read transaction 读取全量学校、队伍、映射和加密 vault records，关闭事务后才解密并打包。一个 export worker 生成最多 256 MiB 的内存 ZIP；四个 image workers 处理目录观测／图像请求，阻塞 IO 和转码不占据异步控制循环。
 
-管理员 `GET /api/v2/exports/domjudge` 返回 groups.json、organizations.json、teams.json、accounts.yaml、README.md 和当前名单中全部可用的 `logos/INST-xxx.png`。重复导出使用固定排序和持久 ID；只改密时只影响 accounts.yaml。密码只进入这份管理员下载，响应 no-store，不落 Server 临时文件或浏览器持久存储。缺图／歧义写入 README；匹配到的损坏／不可读／超限图片中止整包，并给出学校、源文件和原因。栅格转 PNG 保留尺寸和透明通道，SVG 以自然画布／96 DPI 渲染；源文件不改动。
+管理员 `GET /api/v2/exports/domjudge` 返回 groups.json、organizations.json、teams.json、accounts.yaml 和当前名单中全部可用的 `logos/INST-xxx.png`。重复导出使用固定排序和持久 ID；只改密时只影响 accounts.yaml。密码只进入这份管理员下载，响应 no-store，不落 Server 临时文件或浏览器持久存储。缺图／歧义不写入导出且不阻塞；匹配到的损坏／不可读／超限图片中止整包，并给出学校、源文件和原因。栅格转 PNG 保留尺寸和透明通道，SVG 以自然画布／96 DPI 渲染；源文件不改动。
 
 管理员通过 `/organizations` 或 `/imports/{import_id}/organizations` 读取学校图像状态，候选图片接口也要求管理员权限。公开的只读 `/organizations/{organization_id}/logo` 先验证该 ID 属于当前名单，随后提供实际 MIME 的栅格源图或 SVG 渲染后的 PNG。成功响应以 SHA-256 ETag 和 no-cache 重新验证，404 不缓存；后补和替换图片无需重启、重导名单或 revision/Dirty 变更。Web 显示学校 ID／源图／缩略图及状态，支持校名搜索、问题过滤和手动刷新。
 
