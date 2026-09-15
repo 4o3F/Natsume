@@ -717,7 +717,7 @@ Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owne
 
 ### 10.2 Active component contract
 
-production `DeviceActor`是当前唯一编排消费者，而五个资源的Input、Actual、Intent、
+production `DeviceActor`是当前唯一编排消费者，而六个资源的Input、Actual、Intent、
 Target和错误均不同，因此不建立`StateComponent` trait或泛型runner。Actor直接调用
 concrete component method；固定顺序和完整wire字段在调用点可见。
 
@@ -777,9 +777,9 @@ pub(crate) struct ServerState {
 }
 ```
 
-`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和五个资源组件，
+`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，
 并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。
-同时被HTTP使用的五个组件共享同一`Arc`实例；Gateway和Runtime Config目前只有协调器消费，
+同时被HTTP使用的六个组件共享同一`Arc`实例；Gateway和Runtime Config目前只有协调器消费，
 构造后直接移交给它，`ServerState`不保留无消费者的副本或accessor。
 
 生产构造入口统一为`ServerState::load(database, &config)`：加载一次`VaultSession`，
@@ -1131,7 +1131,7 @@ reconciler边界校验业务presence、ID、epoch、state组合和cross-field不
 
 ### 14.1 Client-local concrete implementation
 
-Gateway和Binding各自由所属concrete implementation生成、持久化并重放协商输入；五个
+Gateway和Binding各自由所属concrete implementation生成、持久化并重放协商输入；六个
 target资源各自暴露具体的`reconcile`与`observe`方法，由`SnapshotReconciler`按固定资源图
 直接调用。当前没有第二种实现、运行时替换或多态消费者，因此不建立统一
 `InputProvider`/`Reconciler` trait、dynamic registry或resource-erased payload。
@@ -1276,8 +1276,16 @@ Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文
 Session foreground、terminate、Home reset 的单台/批量写入口统一为
 `POST /api/v2/target-submissions`。旧单台 PUT session-control 和 POST terminate/reset
 入口删除，原读取接口保留。这是 HTTP Breaking Change。请求包含 canonical nonnil UUID
-`operation_id`、`scope`（`all_enabled` 或 `devices` ID 列表）和封闭 `action`：
-`set_foreground`（waiting/contest）、`terminate_session`、`reset_home`。每次请求只包含一种动作。
+`operation_id`、`scope`（`all_enabled`、`devices` ID 列表或仅供关机的
+`all_online_enabled`）和封闭 `action`：`set_foreground`（waiting/contest）、
+`terminate_session`、`reset_home`、`power_off`。每次请求只包含一种动作。
+
+集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用
+`all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备，
+为每台写入单调 `shutdown_epoch` 与 60 秒 Server-time deadline。离线、Disabled、Revoked 和在
+deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入
+root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。
+提交或 D-Bus 受理均不等于物理断电已确认；Panel 只显示 submission、latest Actual 和连接离线事实。
 
 进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果，
 不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled，
@@ -1687,10 +1695,10 @@ just api
   Challenge/Proof 准入与 Enrollment Ready barrier；
 - Server 已实现production Device WSS、每Device Actor/Registry、lease fencing、fresh
   barrier、完整snapshot处理和当前在线Actual查询；
-- Operator HTTP与Panel已接入Enrollment、Device lifecycle、五资源target mutation和
+- Operator HTTP与Panel已接入Enrollment、Device lifecycle、六资源target mutation和
   convergence查询，mutation在commit后按语义触发Dirty或Evict；
 - Daemon 已实现单一 pinned WSS 连接循环、Gateway/Binding concrete input、
-  五资源 concrete reconciliation，并接通 Helper、Session Agent 与 Caddy；
+  六资源 concrete reconciliation，并接通 Helper、Session Agent 与 Caddy；
 - `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建，
   组件、协议和 IPC 单元契约不得在此复制。
 
@@ -1881,7 +1889,7 @@ just api
 
 - 实现Daemon单一连接循环；
 - Gateway/Binding concrete input generation；
-- 五资源concrete reconciliation；
+- 六资源concrete reconciliation；
 - secret splitting、durable artifact和Actual采样；
 - 接通Helper/Agent/Caddy。
 

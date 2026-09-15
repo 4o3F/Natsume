@@ -9,6 +9,7 @@ filter.only_tables = [
   "^device_bindings$",
   "^device_control_keys$",
   "^device_home_targets$",
+  "^device_power_targets$",
   "^device_session_targets$",
   "^devices$",
   "^gateway_credentials$",

@@ -344,6 +344,10 @@ pub trait Privileged1 {
         session: &GraphicalSession,
     ) -> Result<(), ResourceControlError>;
 
+    /// Requests normal host power-off through logind; accepts no arbitrary command.
+    #[zbus(name = "RequestPowerOff")]
+    fn request_power_off(&self) -> Result<(), ResourceControlError>;
+
     #[zbus(name = "RecoverLocalHome")]
     fn recover_local_home(&self) -> Result<(), ResourceControlError>;
 

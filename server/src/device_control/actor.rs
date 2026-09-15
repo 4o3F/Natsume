@@ -121,6 +121,26 @@ impl DeviceRegistry {
         }
         states
     }
+
+    pub(super) async fn active_device_ids(&self) -> Vec<DeviceId> {
+        let handles = self
+            .devices
+            .lock()
+            .await
+            .iter()
+            .map(|(id, handle)| (*id, handle.clone()))
+            .collect::<Vec<_>>();
+        let mut ids = Vec::new();
+        for (device_id, handle) in handles {
+            if matches!(
+                handle.read_connection_state().await,
+                DeviceConnectionState::Active { .. }
+            ) {
+                ids.push(device_id);
+            }
+        }
+        ids
+    }
 }
 
 /// Current process-local connection state exposed to the Operator query path.

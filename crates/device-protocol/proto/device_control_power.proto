@@ -1,0 +1,23 @@
+syntax = "proto3";
+package natsume.device.control;
+
+// A one-shot, short-lived power-off request.  The deadline is Server time in
+// Unix milliseconds; absence of the epoch means no request is pending.
+message PowerControlTarget {
+  optional uint64 shutdown_epoch = 1;
+  optional int64 expires_at_unix_ms = 2;
+}
+
+enum PowerState {
+  POWER_STATE_UNSPECIFIED = 0;
+  POWER_STATE_IDLE        = 1;
+  POWER_STATE_PENDING     = 2;
+  POWER_STATE_ACCEPTED    = 3;
+  POWER_STATE_EXPIRED     = 4;
+  POWER_STATE_ERROR       = 5;
+}
+
+message PowerControlActualState {
+  PowerState state = 1;
+  optional uint64 attempted_shutdown_epoch = 2;
+}

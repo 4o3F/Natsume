@@ -51,6 +51,14 @@ diesel::table! {
 }
 
 diesel::table! {
+    device_power_targets (device_id) {
+        device_id -> Text,
+        shutdown_epoch -> Nullable<BigInt>,
+        expires_at_unix_ms -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
     device_session_targets (device_id) {
         device_id -> Text,
         foreground_target -> Text,
@@ -173,6 +181,7 @@ diesel::joinable!(device_bindings -> devices (device_id));
 diesel::joinable!(device_bindings -> seats (seat_id));
 diesel::joinable!(device_control_keys -> devices (device_id));
 diesel::joinable!(device_home_targets -> devices (device_id));
+diesel::joinable!(device_power_targets -> devices (device_id));
 diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
@@ -187,6 +196,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     device_bindings,
     device_control_keys,
     device_home_targets,
+    device_power_targets,
     device_session_targets,
     devices,
     gateway_credentials,

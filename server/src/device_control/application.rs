@@ -16,6 +16,10 @@ use super::{
 };
 
 impl DeviceControl {
+    pub(crate) async fn active_device_ids(&self) -> Vec<DeviceId> {
+        self.registry.active_device_ids().await
+    }
+
     /// Reads one durable Device and calculates its current convergence view.
     pub(crate) async fn read_device_status(
         &self,

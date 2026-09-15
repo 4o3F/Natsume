@@ -12,6 +12,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 import { targetOperations, type TargetOperation } from "./target-operations";
 
@@ -44,7 +45,7 @@ export function BulkTargetActions({
         </p>
       </div>
       <div className="flex flex-wrap gap-2">
-        {(Object.keys(targetOperations) as TargetOperation[]).map(
+        {(["waiting", "contest", "terminate", "reset"] as TargetOperation[]).map(
           (operation) => (
             <Button
               key={operation}
@@ -109,6 +110,72 @@ export function BulkTargetActions({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <PowerOffAction
+        devices={enabled}
+        disabled={disabled}
+        onSubmit={() => onSubmit("poweroff")}
+      />
     </section>
+  );
+}
+
+function PowerOffAction({
+  devices,
+  disabled,
+  onSubmit,
+}: {
+  devices: Device[];
+  disabled: boolean;
+  onSubmit: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const online = devices.filter(
+    (device) => device.convergence.connection_state === "active",
+  );
+  const phrase = `POWER OFF ${online.length}`;
+  return (
+    <div className="border-t pt-3">
+      <Button
+        type="button"
+        size="sm"
+        variant="destructive"
+        disabled={disabled || online.length === 0}
+        onClick={() => setOpen(true)}
+      >
+        Power off online devices ({online.length})
+      </Button>
+      <AlertDialog open={open} onOpenChange={setOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Power off online devices?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The Server will select online enabled devices when it processes
+              this request. The request expires after 60 seconds; offline
+              devices will not power off later. Enter <code>{phrase}</code> to
+              confirm. A submitted request cannot prove physical power-off.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <Input
+            value={confirmation}
+            onChange={(event) => setConfirmation(event.target.value)}
+            aria-label="Power-off confirmation"
+          />
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={confirmation !== phrase || disabled}
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => {
+                onSubmit();
+                setConfirmation("");
+              }}
+            >
+              Power off {online.length} devices
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
   );
 }

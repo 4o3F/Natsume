@@ -1503,6 +1503,10 @@ mod tests {
                     terminate_epoch: None,
                 }),
                 home: Some(HomeTarget { reset_epoch: None }),
+                power: Some(natsume_device_protocol::generated::PowerControlTarget {
+                    shutdown_epoch: None,
+                    expires_at_unix_ms: None,
+                }),
             }),
         })
         .unwrap_or_else(|error| panic!("test target must validate: {error}"))

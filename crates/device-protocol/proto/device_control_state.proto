@@ -4,6 +4,7 @@ package natsume.device.control;
 import "device_control_binding.proto";
 import "device_control_gateway.proto";
 import "device_control_runtime.proto";
+import "device_control_power.proto";
 import "device_control_session.proto";
 
 // Complete public projections of Server-owned intents which currently admit
@@ -23,6 +24,7 @@ message ConcreteTargetState {
   RuntimeConfigTarget  runtime_config  = 3;
   SessionControlTarget session_control = 4;
   HomeTarget           home            = 5;
+  PowerControlTarget   power           = 6;
 }
 
 // Complete Server projection. Intent and target are independently typed planes;
@@ -47,6 +49,7 @@ message ActualState {
   RuntimeConfigActualState  runtime_config  = 3;
   SessionControlActualState session_control = 4;
   HomeActualState           home            = 5;
+  PowerControlActualState   power           = 6;
 }
 
 message ClientStateSnapshot {

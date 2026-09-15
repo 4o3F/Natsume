@@ -1,7 +1,8 @@
 use std::{path::Path, sync::Arc};
 
 use natsume_device_protocol::generated::{
-    ActualState, ClientInputState, ClientStateSnapshot, ServerStateSnapshot,
+    ActualState, ClientInputState, ClientStateSnapshot, PowerControlActualState,
+    ServerStateSnapshot,
 };
 use natsume_local_control_api::ResourceControlError;
 use snafu::Snafu;
@@ -16,6 +17,7 @@ mod configuration;
 mod gateway;
 mod home;
 mod maintenance;
+mod power;
 mod presentation;
 mod runtime;
 mod session;
@@ -29,6 +31,7 @@ use caddy::Caddy;
 use configuration::AppliedConfiguration;
 use gateway::{GatewayReconciler, ValidatedGatewayTarget};
 use home::HomeReconciler;
+use power::{PowerReconciler, ValidatedPowerTarget};
 use runtime::{RuntimeReconciler, is_canonical_https_origin};
 use session::{SessionReconciler, ValidatedSessionTarget};
 
@@ -114,7 +117,7 @@ fn retryable_control_error(error: &ResourceControlError) -> bool {
     }
 }
 
-/// Static coordinator for the two negotiated inputs and five concrete Client resources.
+/// Static coordinator for the two negotiated inputs and six concrete Client resources.
 ///
 /// The caller owns the sole current plan and cancellation token. This type has no mailbox,
 /// dynamic registry, resource-erased payload, or background command queue.
@@ -126,6 +129,7 @@ pub(crate) struct SnapshotReconciler {
     runtime: RuntimeReconciler,
     session: SessionReconciler,
     home: HomeReconciler,
+    power: PowerReconciler,
     caddy: Caddy,
 }
 
@@ -138,6 +142,7 @@ pub(crate) struct ValidatedSnapshot {
     runtime_origin: String,
     session_target: ValidatedSessionTarget,
     home_epoch: Option<u64>,
+    power_target: ValidatedPowerTarget,
 }
 
 impl SnapshotReconciler {
@@ -154,6 +159,7 @@ impl SnapshotReconciler {
         let binding_input = Arc::new(BindingInputProvider::production());
         let session = SessionReconciler::production(connection.clone(), Arc::clone(&binding_input));
         let home = HomeReconciler::production(connection.clone());
+        let power = PowerReconciler::production(connection.clone());
         DeviceService::start(&connection, Arc::clone(&binding_input)).await?;
         let presentation = Arc::new(presentation::Presentation::new(
             "/var/lib/natsume/state/waiting.json".into(),
@@ -168,6 +174,7 @@ impl SnapshotReconciler {
             runtime: RuntimeReconciler::production(),
             session,
             home,
+            power,
             caddy,
         })
     }
@@ -232,8 +239,12 @@ impl SnapshotReconciler {
         let access = self
             .reconcile_access(snapshot, &configuration, maintenance, &cancellation)
             .await?;
+        let power_actual = self
+            .power
+            .reconcile(snapshot.power_target, &cancellation)
+            .await?;
         check_cancellation(&cancellation)?;
-        Ok(self.build_snapshot(snapshot, configuration, access))
+        Ok(self.build_snapshot(snapshot, configuration, access, &power_actual))
     }
 
     fn build_snapshot(
@@ -241,6 +252,7 @@ impl SnapshotReconciler {
         snapshot: &ValidatedSnapshot,
         configuration: AppliedConfiguration,
         access: AccessOutcome,
+        power_actual: &ReconcileOutcome<PowerControlActualState>,
     ) -> ReconcileOutcome<ClientStateSnapshot> {
         let AppliedConfiguration {
             input,
@@ -263,7 +275,8 @@ impl SnapshotReconciler {
             || runtime_actual.retry
             || caddy_failed
             || session_actual.retry
-            || home_actual.retry;
+            || home_actual.retry
+            || power_actual.retry;
         ReconcileOutcome {
             retry,
             actual: ClientStateSnapshot {
@@ -274,6 +287,7 @@ impl SnapshotReconciler {
                     runtime_config: Some(runtime_actual.actual),
                     session_control: Some(session_actual.actual),
                     home: Some(home_actual.actual),
+                    power: Some(power_actual.actual),
                 }),
             },
         }
@@ -306,6 +320,7 @@ impl SnapshotReconciler {
                 runtime_config: Some(self.runtime.observe()),
                 session_control: Some(session),
                 home: Some(home),
+                power: Some(self.power.observe()),
             }),
         })
     }
@@ -375,6 +390,10 @@ pub(crate) fn validate_server_snapshot(
     if home_target.reset_epoch.is_some_and(invalid_epoch) {
         return Err(SnapshotError::InvalidServerSnapshot);
     }
+    let power_target = target
+        .power
+        .and_then(power::validate_target)
+        .ok_or(SnapshotError::InvalidServerSnapshot)?;
     Ok(ValidatedSnapshot {
         binding_intent,
         gateway_target,
@@ -382,6 +401,7 @@ pub(crate) fn validate_server_snapshot(
         runtime_origin: runtime_target.domjudge_origin,
         session_target,
         home_epoch: home_target.reset_epoch,
+        power_target,
     })
 }
 

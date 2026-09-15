@@ -764,7 +764,8 @@ pub(crate) async fn fixture(state: HelperState) -> Result<Fixture, Box<dyn std::
         binding: binding::tests::reconciler(&directory),
         runtime: runtime::tests::reconciler(&directory),
         session: session::tests::reconciler(&directory, connection.clone(), binding_input),
-        home: home::tests::reconciler(&directory, connection),
+        home: home::tests::reconciler(&directory, connection.clone()),
+        power: power::reconciler(&directory, connection),
         caddy,
     });
     Ok(Fixture {
@@ -872,6 +873,10 @@ pub(crate) fn snapshot() -> ServerStateSnapshot {
                 terminate_epoch: None,
             }),
             home: Some(HomeTarget { reset_epoch: None }),
+            power: Some(natsume_device_protocol::generated::PowerControlTarget {
+                shutdown_epoch: None,
+                expires_at_unix_ms: None,
+            }),
         }),
     }
 }

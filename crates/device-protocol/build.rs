@@ -1,12 +1,13 @@
 use std::{env, io, path::PathBuf};
 
-const PROTOS: [&str; 8] = [
+const PROTOS: [&str; 9] = [
     "proto/device_control.proto",
     "proto/device_control_common.proto",
     "proto/device_control_handshake.proto",
     "proto/device_control_binding.proto",
     "proto/device_control_gateway.proto",
     "proto/device_control_runtime.proto",
+    "proto/device_control_power.proto",
     "proto/device_control_session.proto",
     "proto/device_control_state.proto",
 ];

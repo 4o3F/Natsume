@@ -415,7 +415,10 @@ export function TargetsPage() {
             }
             onSubmit={(operation) =>
               void targetSubmission.submit(targetAction(operation), {
-                kind: "all_enabled",
+                kind:
+                  operation === "poweroff"
+                    ? "all_online_enabled"
+                    : "all_enabled",
               })
             }
           />

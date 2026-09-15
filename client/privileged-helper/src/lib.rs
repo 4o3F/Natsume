@@ -199,6 +199,14 @@ impl PrivilegedService {
         .await
     }
 
+    #[zbus(name = "RequestPowerOff")]
+    async fn request_power_off(
+        &mut self,
+        #[zbus(connection)] connection: &zbus::Connection,
+    ) -> Result<(), ResourceControlError> {
+        bounded_session_operation(session::power_off(connection)).await
+    }
+
     #[zbus(name = "PrepareHomeReset")]
     async fn prepare_home_reset(
         &mut self,

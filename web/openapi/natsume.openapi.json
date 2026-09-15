@@ -3170,6 +3170,16 @@
                 "enum": ["reset_home"]
               }
             }
+          },
+          {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["power_off"]
+              }
+            }
           }
         ]
       },
@@ -3192,6 +3202,16 @@
               "kind": {
                 "type": "string",
                 "enum": ["all_enabled"]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": ["kind"],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": ["all_online_enabled"]
               }
             }
           },

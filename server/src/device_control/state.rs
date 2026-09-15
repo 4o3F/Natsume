@@ -3,8 +3,8 @@ use natsume_device_protocol::generated::{
     BindingNegotiationIntent, BoundTarget, ClientStateSnapshot, ConcreteTargetState,
     ForegroundTarget as WireForegroundTarget, GatewayCertificateGrant,
     GatewayCredentialInput as WireGatewayCredentialInput, GatewayCredentialIntent, GatewayTarget,
-    HomeTarget, RuntimeConfigTarget, SecretBytes, ServerIntentState, ServerStateSnapshot,
-    SessionControlTarget,
+    HomeTarget, PowerControlTarget, RuntimeConfigTarget, SecretBytes, ServerIntentState,
+    ServerStateSnapshot, SessionControlTarget,
 };
 
 use crate::component::{
@@ -14,6 +14,7 @@ use crate::component::{
     },
     device::DeviceId,
     gateway::{GatewayCredentialId, GatewayCredentialInput, MaterializedGateway},
+    power::PowerControlTarget as ComponentPowerControlTarget,
     session::ForegroundTarget,
 };
 
@@ -79,6 +80,7 @@ pub(super) async fn materialize(
     let runtime = control.runtime.materialize().await.ok()?;
     let session = control.session.materialize(device_id).await.ok()?;
     let home = control.home.materialize(device_id).await.ok()?;
+    let power = control.power.materialize(device_id).await.ok()?;
 
     Some(ServerStateSnapshot {
         intent: Some(ServerIntentState {
@@ -112,8 +114,16 @@ pub(super) async fn materialize(
                 terminate_epoch: session.terminate_epoch(),
             }),
             home: Some(HomeTarget { reset_epoch: home }),
+            power: Some(encode_power_target(power)),
         }),
     })
+}
+
+fn encode_power_target(target: ComponentPowerControlTarget) -> PowerControlTarget {
+    PowerControlTarget {
+        shutdown_epoch: target.shutdown_epoch(),
+        expires_at_unix_ms: target.expires_at_unix_ms(),
+    }
 }
 
 /// Converts the optional Gateway Input at the wire boundary.

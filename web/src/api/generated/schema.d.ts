@@ -804,6 +804,10 @@ export interface components {
       | {
           /** @enum {string} */
           kind: "reset_home";
+        }
+      | {
+          /** @enum {string} */
+          kind: "power_off";
         };
     /** @enum {string} */
     TargetRejectionCode:
@@ -816,6 +820,10 @@ export interface components {
       | {
           /** @enum {string} */
           kind: "all_enabled";
+        }
+      | {
+          /** @enum {string} */
+          kind: "all_online_enabled";
         }
       | {
           device_ids: string[];

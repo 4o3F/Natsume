@@ -5,6 +5,7 @@ use axum::{
     routing::post,
 };
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -44,6 +45,7 @@ pub(crate) struct TargetSubmissionBody {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum TargetScopeBody {
     AllEnabled {},
+    AllOnlineEnabled {},
     Devices {
         #[schema(min_items = 1)]
         device_ids: Vec<String>,
@@ -58,16 +60,27 @@ enum TargetActionBody {
     },
     TerminateSession {},
     ResetHome {},
+    PowerOff {},
 }
 
 impl TargetSubmissionBody {
+    #[cfg(test)]
     fn into_request(self) -> Option<TargetSubmissionRequest> {
+        self.into_request_with(Vec::new(), 1)
+    }
+
+    fn into_request_with(
+        self,
+        active_devices: Vec<DeviceId>,
+        expires_at_unix_ms: i64,
+    ) -> Option<TargetSubmissionRequest> {
         let operation_id = Uuid::parse_str(&self.operation_id).ok()?;
         if operation_id.is_nil() || operation_id.hyphenated().to_string() != self.operation_id {
             return None;
         }
         let scope = match self.scope {
             TargetScopeBody::AllEnabled {} => TargetScope::AllEnabled,
+            TargetScopeBody::AllOnlineEnabled {} => TargetScope::AllOnlineEnabled(active_devices),
             TargetScopeBody::Devices { device_ids } => {
                 if device_ids.is_empty() {
                     return None;
@@ -89,7 +102,13 @@ impl TargetSubmissionBody {
             }
             TargetActionBody::TerminateSession {} => TargetAction::TerminateSession,
             TargetActionBody::ResetHome {} => TargetAction::ResetHome,
+            TargetActionBody::PowerOff {} => TargetAction::PowerOff { expires_at_unix_ms },
         };
+        if matches!(action, TargetAction::PowerOff { .. })
+            != matches!(scope, TargetScope::AllOnlineEnabled(_))
+        {
+            return None;
+        }
         Some(TargetSubmissionRequest {
             operation_id,
             scope,
@@ -194,7 +213,18 @@ pub(crate) async fn submit_targets(
     Extension(identity): Extension<OperatorIdentity>,
     body: Result<Json<TargetSubmissionBody>, JsonRejection>,
 ) -> Response {
-    let Some(request) = body.ok().and_then(|Json(body)| body.into_request()) else {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|value| i64::try_from(value.as_millis()).ok());
+    let Some(expires_at_unix_ms) = now.and_then(|value| value.checked_add(60_000)) else {
+        return ApiError::internal_error("target_submission_clock_unavailable").into_response();
+    };
+    let active_devices = state.device_control().active_device_ids().await;
+    let Some(request) = body
+        .ok()
+        .and_then(|Json(body)| body.into_request_with(active_devices, expires_at_unix_ms))
+    else {
         return ApiError::invalid_request("target_submission_body_rejected").into_response();
     };
     match state

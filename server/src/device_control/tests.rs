@@ -1590,6 +1590,12 @@ fn valid_snapshot() -> ClientStateSnapshot {
                 state: HomeState::Steady.into(),
                 completed_reset_epoch: None,
             }),
+            power: Some(
+                natsume_device_protocol::generated::PowerControlActualState {
+                    state: natsume_device_protocol::generated::PowerState::Idle.into(),
+                    attempted_shutdown_epoch: None,
+                },
+            ),
         }),
     }
 }
@@ -1611,6 +1617,7 @@ fn assert_complete_target(envelope: ServerActiveEnvelope) {
     assert!(target.runtime_config.is_some());
     assert!(target.session_control.is_some());
     assert!(target.home.is_some());
+    assert!(target.power.is_some());
 }
 
 type TestSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;

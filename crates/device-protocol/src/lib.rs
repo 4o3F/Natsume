@@ -154,8 +154,8 @@ mod tests {
     fn foreground_targets_and_fresh_display_facts_round_trip_without_epoch_aliasing() {
         use generated::{
             ActualState, ClientInputState, ClientStateSnapshot, ForegroundTarget, HomeActualState,
-            HomeState, SessionControlActualState, SessionControlTarget, SessionForeground,
-            SessionState,
+            HomeState, PowerControlActualState, PowerState, SessionControlActualState,
+            SessionControlTarget, SessionForeground, SessionState,
         };
         use prost::Message as _;
 
@@ -195,6 +195,10 @@ mod tests {
                 home: Some(HomeActualState {
                     state: HomeState::Steady.into(),
                     completed_reset_epoch: Some(9),
+                }),
+                power: Some(PowerControlActualState {
+                    state: PowerState::Accepted.into(),
+                    attempted_shutdown_epoch: Some(2),
                 }),
             }),
         };

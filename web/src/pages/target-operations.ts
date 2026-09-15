@@ -2,13 +2,19 @@ import type { components } from "@/api/generated/schema";
 
 export type TargetRequest = components["schemas"]["TargetSubmissionBody"];
 export type TargetResponse = components["schemas"]["TargetSubmissionResponse"];
-export type TargetOperation = "waiting" | "contest" | "terminate" | "reset";
+export type TargetOperation =
+  | "waiting"
+  | "contest"
+  | "terminate"
+  | "reset"
+  | "poweroff";
 
 export const targetOperations = {
   waiting: "Show waiting screen",
   contest: "Show contest desktop",
   terminate: "Terminate",
   reset: "Reset home",
+  poweroff: "Power off online devices",
 } as const;
 
 export function targetAction(
@@ -22,6 +28,8 @@ export function targetAction(
       return { kind: "terminate_session" };
     case "reset":
       return { kind: "reset_home" };
+    case "poweroff":
+      return { kind: "power_off" };
   }
 }
 
@@ -33,5 +41,7 @@ export function targetActionLabel(action: TargetRequest["action"]) {
       return targetOperations.terminate;
     case "reset_home":
       return targetOperations.reset;
+    case "power_off":
+      return targetOperations.poweroff;
   }
 }

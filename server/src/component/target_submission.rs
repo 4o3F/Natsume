@@ -9,6 +9,7 @@ use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 use super::{
     device::{DeviceComponent, DeviceId, DeviceState},
     home::{HomeComponent, HomeError},
+    power::{PowerControlComponent, PowerError},
     session::{ForegroundTarget, SessionControlComponent, SessionControlError},
 };
 
@@ -50,7 +51,9 @@ impl TargetSubmissionComponent {
                     TargetScope::AllEnabled => {
                         DeviceComponent::enabled_target_devices(transaction)?
                     }
-                    TargetScope::Devices(devices) => devices,
+                    TargetScope::Devices(devices) | TargetScope::AllOnlineEnabled(devices) => {
+                        devices
+                    }
                 };
                 let mut results = Vec::with_capacity(devices.len());
                 for device_id in devices {
@@ -134,6 +137,21 @@ fn apply(
                 Err(HomeError::PersistenceFailed) => Err(TargetSubmissionError::PersistenceFailed),
             }
         }
+        TargetAction::PowerOff { expires_at_unix_ms } => {
+            match PowerControlComponent::request_shutdown_in_transaction(
+                transaction,
+                device_id,
+                expires_at_unix_ms,
+            ) {
+                Ok(_) => Ok(None),
+                Err(PowerError::DeviceNotFound) => Ok(Some(TargetRejection::DeviceNotFound)),
+                Err(PowerError::EpochExhausted) => Ok(Some(TargetRejection::EpochExhausted)),
+                Err(PowerError::InvalidDeadline | PowerError::InvalidPersistedFacts) => {
+                    Ok(Some(TargetRejection::InvalidTarget))
+                }
+                Err(PowerError::PersistenceFailed) => Err(TargetSubmissionError::PersistenceFailed),
+            }
+        }
     }
 }
 
@@ -167,12 +185,14 @@ impl TargetSubmissionRequest {
             TargetAction::SetForeground(ForegroundTarget::Contest) => "set_foreground:contest",
             TargetAction::TerminateSession => "terminate_session",
             TargetAction::ResetHome => "reset_home",
+            TargetAction::PowerOff { .. } => "power_off",
         };
         let devices = match &self.scope {
             TargetScope::AllEnabled => None,
             TargetScope::Devices(devices) => {
                 Some(devices.iter().map(DeviceId::as_text).collect::<Vec<_>>())
             }
+            TargetScope::AllOnlineEnabled(_) => Some(vec!["all_online_enabled".to_owned()]),
         };
         serde_json::to_string(&(action, devices))
             .map_err(|_| TargetSubmissionError::PersistenceFailed)
@@ -183,6 +203,7 @@ impl TargetSubmissionRequest {
 pub(crate) enum TargetScope {
     AllEnabled,
     Devices(Vec<DeviceId>),
+    AllOnlineEnabled(Vec<DeviceId>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -190,6 +211,7 @@ pub(crate) enum TargetAction {
     SetForeground(ForegroundTarget),
     TerminateSession,
     ResetHome,
+    PowerOff { expires_at_unix_ms: i64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -11,6 +11,7 @@ use crate::{
         home::HomeComponent,
         import::ImportComponent,
         operator::OperatorComponent,
+        power::PowerControlComponent,
         provisioning::ProvisioningComponent,
         runtime::RuntimeConfigComponent,
         session::SessionControlComponent,
@@ -87,6 +88,7 @@ impl ServerState {
         let binding = Arc::new(BindingComponent::new(database.clone(), Arc::clone(&vault)));
         let session = Arc::new(SessionControlComponent::new(database.clone()));
         let home = Arc::new(HomeComponent::new(database.clone()));
+        let power = Arc::new(PowerControlComponent::new(database.clone()));
         let device_control = Arc::new(DeviceControl::new(
             Arc::clone(&provisioning),
             Arc::clone(&device),
@@ -95,6 +97,7 @@ impl ServerState {
             RuntimeConfigComponent::new(database.clone()),
             Arc::clone(&session),
             Arc::clone(&home),
+            Arc::clone(&power),
         ));
         Self {
             operator: OperatorComponent::new(database.clone()),

@@ -7,6 +7,7 @@ pub(crate) mod gateway;
 pub(crate) mod home;
 pub(crate) mod import;
 pub(crate) mod operator;
+pub(crate) mod power;
 pub(crate) mod provisioning;
 pub(crate) mod runtime;
 pub(crate) mod session;

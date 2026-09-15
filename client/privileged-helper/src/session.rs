@@ -774,6 +774,29 @@ pub(crate) async fn terminate(
     Ok(())
 }
 
+/// Uses logind's normal shutdown path so inhibitors and service ordering remain active.
+pub(crate) async fn power_off(connection: &Connection) -> Result<(), ResourceControlError> {
+    let manager = fresh_proxy(
+        connection,
+        LOGIN1_SERVICE,
+        LOGIN1_MANAGER_PATH,
+        LOGIN1_MANAGER_INTERFACE,
+    )
+    .await
+    .map_err(logind_error)?;
+    let capability: String = manager
+        .call("CanPowerOff", &())
+        .await
+        .map_err(logind_error)?;
+    if capability != "yes" {
+        return Err(rejected("logind power-off is not available"));
+    }
+    manager
+        .call::<_, _, ()>("PowerOff", &(false))
+        .await
+        .map_err(logind_error)
+}
+
 /// Drain only the captured contest generation. Unexpected logins are a fault,
 /// including remote/TTY sessions which ordinary desktop observation ignores.
 pub(crate) async fn drain_contest(

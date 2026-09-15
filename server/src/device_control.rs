@@ -37,6 +37,7 @@ use crate::component::{
     },
     gateway::GatewayComponent,
     home::HomeComponent,
+    power::PowerControlComponent,
     provisioning::ProvisioningComponent,
     runtime::RuntimeConfigComponent,
     session::SessionControlComponent,
@@ -60,6 +61,7 @@ pub(crate) struct DeviceControl {
     runtime: RuntimeConfigComponent,
     session: Arc<SessionControlComponent>,
     home: Arc<HomeComponent>,
+    power: Arc<PowerControlComponent>,
     registry: DeviceRegistry,
     /// Prevents concurrent approvals from acting on the same stale authority read.
     enrollment_approval: Mutex<()>,
@@ -67,6 +69,7 @@ pub(crate) struct DeviceControl {
 }
 
 impl DeviceControl {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         provisioning: Arc<ProvisioningComponent>,
         device: Arc<DeviceComponent>,
@@ -75,6 +78,7 @@ impl DeviceControl {
         runtime: RuntimeConfigComponent,
         session: Arc<SessionControlComponent>,
         home: Arc<HomeComponent>,
+        power: Arc<PowerControlComponent>,
     ) -> Self {
         Self {
             provisioning,
@@ -84,6 +88,7 @@ impl DeviceControl {
             runtime,
             session,
             home,
+            power,
             registry: DeviceRegistry::new(),
             enrollment_approval: Mutex::new(()),
             handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
