@@ -778,6 +778,69 @@ for (const [name, action] of [
   });
 }
 
+test("power-off confirmation resets on cancel and submits only the online enabled scope", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet();
+  fleet[1].convergence.connection_state = "offline";
+  fleet[2].convergence.connection_state = "awaiting_fresh_state";
+  fleet[3].state = "disabled";
+  fleet[4].state = "revoked";
+  const api = await mockTargets(context, fleet);
+  await page.goto("/targets");
+  await selectDeviceStates(page, ["revoked"]);
+  await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-05"]);
+  const trigger = page.getByRole("button", {
+    name: "Power off online devices (1)",
+    exact: true,
+  });
+  await trigger.click();
+  const dialog = page.getByRole("alertdialog");
+  const input = dialog.getByRole("textbox", {
+    name: "Power-off confirmation",
+    exact: true,
+  });
+  const submit = dialog.getByRole("button", {
+    name: "Power off 1 device",
+    exact: true,
+  });
+  await expect(dialog).toContainText("60 seconds");
+  await expect(submit).toBeDisabled();
+  await input.fill("POWER OFF 2");
+  await expect(submit).toBeDisabled();
+  await input.fill("POWER OFF 1");
+  await expect(submit).toBeEnabled();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(api.writes).toHaveLength(0);
+  await trigger.click();
+  await expect(input).toHaveValue("");
+  await expect(submit).toBeDisabled();
+  await input.fill("POWER OFF 1");
+  await submit.click();
+  await expect(
+    page.getByRole("region", { name: "Target submission", exact: true }),
+  ).toContainText("1 submitted, 0 rejected");
+  expect(api.writes).toHaveLength(1);
+  expect(api.writes[0]).toMatchObject({
+    scope: { kind: "all_online_enabled" },
+    action: { kind: "power_off" },
+  });
+  await expect(
+    page.getByRole("region", { name: "Target submission", exact: true }),
+  ).toContainText("All online enabled devices");
+  api.rejections.set(fleet[0].device_id, "Target epoch is exhausted");
+  await trigger.click();
+  await input.fill("POWER OFF 1");
+  await submit.click();
+  await expect(
+    page.getByRole("region", { name: "Target submission", exact: true }),
+  ).toContainText("0 submitted, 1 rejected");
+  await expect(
+    page.getByRole("button", { name: "Retry failed devices", exact: true }),
+  ).toHaveCount(0);
+});
+
 test("the Server determines the enabled device set after the preview", async ({
   page,
   context,

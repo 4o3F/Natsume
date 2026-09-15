@@ -1,4 +1,5 @@
 import type { DeviceState, DeviceStateFilterValue } from "./device-state";
+import { CheckboxFilter, CheckboxFilterOption } from "./checkbox-filter";
 
 export type { DeviceStateFilterValue } from "./device-state";
 
@@ -12,20 +13,17 @@ export function DeviceStateFilter({
   onChange: (value: DeviceStateFilterValue) => void;
 }) {
   return (
-    <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-      <legend className="shrink-0 font-medium">Device state</legend>
+    <CheckboxFilter label="Device state">
       {states.map((state) => (
-        <label key={state} className="flex items-center gap-2 capitalize">
-          <input
-            type="checkbox"
-            checked={value[state]}
-            onChange={(event) =>
-              onChange({ ...value, [state]: event.target.checked })
-            }
-          />
-          {state}
-        </label>
+        <CheckboxFilterOption
+          key={state}
+          label={state[0].toUpperCase() + state.slice(1)}
+          checked={value[state]}
+          onCheckedChange={(checked) =>
+            onChange({ ...value, [state]: checked })
+          }
+        />
       ))}
-    </fieldset>
+    </CheckboxFilter>
   );
 }

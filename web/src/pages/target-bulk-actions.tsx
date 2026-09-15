@@ -1,4 +1,11 @@
-import { useState } from "react";
+import { useId, useState } from "react";
+import {
+  FolderSync,
+  Monitor,
+  MonitorPlay,
+  Power,
+  RotateCcw,
+} from "lucide-react";
 
 import type { components } from "@/api/generated/schema";
 import {
@@ -12,7 +19,10 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 import { targetOperations, type TargetOperation } from "./target-operations";
 
@@ -32,37 +42,55 @@ export function BulkTargetActions({
   );
   const enabled = devices.filter((device) => device.state === "enabled");
   return (
-    <section
+    <Card
+      role="region"
       aria-label="All device actions"
-      className="space-y-3 rounded-md border p-4"
+      className="gap-0 overflow-hidden py-0"
     >
-      <div>
-        <h2 className="font-medium">All enabled devices ({enabled.length})</h2>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Includes offline devices; targets apply after reconnection. Disabled
-          and revoked devices are skipped. List filters do not change this
-          scope.
-        </p>
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {(
-          ["waiting", "contest", "terminate", "reset"] as TargetOperation[]
-        ).map((operation) => (
-          <Button
-            key={operation}
-            type="button"
-            size="sm"
-            variant={
-              operation === "reset" || operation === "terminate"
-                ? "destructive"
-                : "outline"
-            }
-            disabled={disabled || enabled.length === 0}
-            onClick={() => setConfirmation(operation)}
-          >
-            {targetOperations[operation]} (all)
-          </Button>
-        ))}
+      <div className="grid lg:grid-cols-3">
+        <div className="space-y-4 p-5 lg:col-span-2">
+          <div className="space-y-1">
+            <h2 className="font-semibold">
+              All enabled devices ({enabled.length})
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Session and Home targets include offline devices and apply after
+              reconnection. List filters do not change this scope.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:flex xl:flex-wrap">
+            {(
+              [
+                ["waiting", Monitor],
+                ["contest", MonitorPlay],
+                ["terminate", RotateCcw],
+                ["reset", FolderSync],
+              ] as const
+            ).map(([operation, Icon]) => (
+              <Button
+                key={operation}
+                type="button"
+                size="sm"
+                variant="outline"
+                className={
+                  operation === "reset" || operation === "terminate"
+                    ? "text-destructive hover:bg-destructive/5 hover:text-destructive"
+                    : undefined
+                }
+                disabled={disabled || enabled.length === 0}
+                onClick={() => setConfirmation(operation)}
+              >
+                <Icon aria-hidden="true" />
+                {targetOperations[operation]} (all)
+              </Button>
+            ))}
+          </div>
+        </div>
+        <PowerOffAction
+          devices={enabled}
+          disabled={disabled}
+          onSubmit={() => onSubmit("poweroff")}
+        />
       </div>
       <AlertDialog
         open={confirmation !== null}
@@ -110,12 +138,7 @@ export function BulkTargetActions({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <PowerOffAction
-        devices={enabled}
-        disabled={disabled}
-        onSubmit={() => onSubmit("poweroff")}
-      />
-    </section>
+    </Card>
   );
 }
 
@@ -130,48 +153,103 @@ function PowerOffAction({
 }) {
   const [open, setOpen] = useState(false);
   const [confirmation, setConfirmation] = useState("");
+  const confirmationId = useId();
   const online = devices.filter(
     (device) => device.convergence.connection_state === "active",
   );
   const phrase = `POWER OFF ${online.length}`;
+  const deviceLabel = online.length === 1 ? "device" : "devices";
   return (
-    <div className="border-t pt-3">
+    <div className="flex flex-col items-start gap-3 border-t bg-muted/30 p-5 lg:border-t-0 lg:border-l">
+      <div className="space-y-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <h3 className="font-semibold">Power control</h3>
+          <Badge variant="outline">Online only</Badge>
+        </div>
+        <p className="text-sm text-muted-foreground">
+          Shut down online enabled devices. Requests expire after 60 seconds.
+        </p>
+      </div>
       <Button
         type="button"
         size="sm"
-        variant="destructive"
+        variant="outline"
+        className="text-destructive hover:bg-destructive/5 hover:text-destructive"
         disabled={disabled || online.length === 0}
         onClick={() => setOpen(true)}
       >
+        <Power aria-hidden="true" />
         Power off online devices ({online.length})
       </Button>
-      <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialog
+        open={open}
+        onOpenChange={(open) => {
+          setOpen(open);
+          if (!open) setConfirmation("");
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Power off online devices?</AlertDialogTitle>
             <AlertDialogDescription>
-              The Server will select online enabled devices when it processes
-              this request. The request expires after 60 seconds; offline
-              devices will not power off later. Enter <code>{phrase}</code> to
-              confirm. A submitted request cannot prove physical power-off.
+              Sessions will end and unsaved work may be lost. Only online
+              enabled devices are included.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <Input
-            value={confirmation}
-            onChange={(event) => setConfirmation(event.target.value)}
-            aria-label="Power-off confirmation"
-          />
+          <div className="space-y-3 rounded-md border bg-muted/30 p-4 text-sm">
+            <dl className="space-y-2">
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted-foreground">Estimated scope</dt>
+                <dd className="font-medium">
+                  {online.length} online {deviceLabel}
+                </dd>
+              </div>
+              <div className="flex items-center justify-between gap-4">
+                <dt className="text-muted-foreground">Request expires in</dt>
+                <dd className="font-medium">60 seconds</dd>
+              </div>
+            </dl>
+            <p className="border-t pt-3 text-muted-foreground">
+              The online device list is checked again at submission. Offline
+              devices will not shut down later. Check device status after
+              submitting to confirm shutdown.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor={confirmationId}>Power-off confirmation</Label>
+            <p
+              id={`${confirmationId}-hint`}
+              className="text-sm text-muted-foreground"
+            >
+              Type{" "}
+              <code className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+                {phrase}
+              </code>{" "}
+              to confirm.
+            </p>
+            <Input
+              id={confirmationId}
+              aria-describedby={`${confirmationId}-hint`}
+              value={confirmation}
+              onChange={(event) => setConfirmation(event.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </div>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              disabled={confirmation !== phrase || disabled}
+              disabled={
+                confirmation !== phrase || disabled || online.length === 0
+              }
               className="bg-destructive text-white hover:bg-destructive/90"
               onClick={() => {
                 onSubmit();
                 setConfirmation("");
               }}
             >
-              Power off {online.length} devices
+              <Power aria-hidden="true" />
+              Power off {online.length} {deviceLabel}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -121,8 +121,8 @@ test("an administrator can approve a pending request while the window is closed"
     machine_hardware_id: "a9aa9d04-3ece-5567-8260-910930ff5e03",
     candidate_public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     evidence_quality: "strong",
-    daemon_version: "2.4.1",
-    agent_version: "2.4.1",
+    daemon_version: "2.4.2",
+    agent_version: "2.4.2",
   };
   let approved = false;
   await mockEnrollment(page, (route) => {

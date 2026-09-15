@@ -375,7 +375,14 @@ export function DevicesPage() {
         </Alert>
       )}
 
-      <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+        {devices.data && (
+          <p className="text-sm text-muted-foreground">
+            {visibleDevices.length} devices
+          </p>
+        )}
+      </div>
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}

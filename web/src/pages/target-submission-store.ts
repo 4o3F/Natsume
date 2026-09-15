@@ -10,6 +10,7 @@ const requestSchema: z.ZodType<TargetRequest> = z
     operation_id: z.string().uuid(),
     scope: z.discriminatedUnion("kind", [
       z.object({ kind: z.literal("all_enabled") }).strict(),
+      z.object({ kind: z.literal("all_online_enabled") }).strict(),
       z
         .object({
           kind: z.literal("devices"),
@@ -26,9 +27,15 @@ const requestSchema: z.ZodType<TargetRequest> = z
         .strict(),
       z.object({ kind: z.literal("terminate_session") }).strict(),
       z.object({ kind: z.literal("reset_home") }).strict(),
+      z.object({ kind: z.literal("power_off") }).strict(),
     ]),
   })
-  .strict();
+  .strict()
+  .refine(
+    ({ action, scope }) =>
+      (action.kind === "power_off") === (scope.kind === "all_online_enabled"),
+    "Power-off requires the online enabled scope",
+  );
 
 export interface TargetSubmissionState {
   pending: TargetRequest | null;

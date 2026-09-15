@@ -110,6 +110,52 @@ it("restores the original request after refresh and only for its authenticated o
   expect(saved.size).toBe(0);
 });
 
+it("restores and retries a power-off request with its original online scope and operation ID", async () => {
+  const fetch = vi.fn<(http: Request) => Promise<Response>>(
+    async () => new Response("{}", { status: 503 }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const store = controller().getSnapshot().targetSubmission;
+  await store.submit({ kind: "power_off" }, { kind: "all_online_enabled" });
+  const request = store.getSnapshot().pending;
+  expect(request).toMatchObject({
+    action: { kind: "power_off" },
+    scope: { kind: "all_online_enabled" },
+  });
+  expect(saved.size).toBe(1);
+  fetch.mockImplementation(async (http: Request) => {
+    const replay: TargetRequest = await http.json();
+    expect(replay).toEqual(request);
+    return success(replay);
+  });
+  const restored = controller().getSnapshot().targetSubmission;
+  expect(restored.getSnapshot().pending).toEqual(request);
+  await restored.retry();
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(saved.size).toBe(0);
+  expect(restored.getSnapshot().completed?.request).toEqual(request);
+});
+
+it.each([
+  [{ kind: "power_off" }, { kind: "all_enabled" }],
+  [
+    { kind: "power_off" },
+    { kind: "devices", device_ids: ["01900000-0000-7000-8000-000000000001"] },
+  ],
+  [{ kind: "reset_home" }, { kind: "all_online_enabled" }],
+] satisfies [TargetRequest["action"], TargetRequest["scope"]][])(
+  "does not send an invalid power-off action/scope pairing: %j, %j",
+  async (action, scope) => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+    const store = controller().getSnapshot().targetSubmission;
+    await store.submit(action, scope);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(saved.size).toBe(0);
+    expect(store.getSnapshot().pending).toBeNull();
+  },
+);
+
 it("blocks a second submission while the first request is in flight", async () => {
   let finish!: (response: Response) => void;
   const fetch = vi.fn(

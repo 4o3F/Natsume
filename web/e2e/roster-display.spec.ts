@@ -1,5 +1,64 @@
 import { expect, test } from "@playwright/test";
 
+test("seat binding filters remain usable with no matches and support the keyboard", async ({
+  page,
+}) => {
+  await page.route("**/api/v2/**", (route) => {
+    expect(route.request().method()).toBe("GET");
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v2/session")
+      return route.fulfill({
+        json: { operator_id: "operator", role: "admin" },
+      });
+    if (path === "/api/v2/seats")
+      return route.fulfill({
+        json: [
+          { seat_id: "seat-a", seat_code: "A-01" },
+          { seat_id: "seat-b", seat_code: "B-02" },
+        ],
+      });
+    if (path === "/api/v2/bindings")
+      return route.fulfill({
+        json: [
+          { binding_id: "binding-a", seat_id: "seat-a", device_id: "device-a" },
+        ],
+      });
+    if (path === "/api/v2/accounts") return route.fulfill({ json: [] });
+    return route.fulfill({ status: 404, json: {} });
+  });
+  await page.goto("/seats");
+  await expect(
+    page.getByRole("heading", { name: "Seats", exact: true }),
+  ).toBeVisible();
+  const filter = page.getByRole("group", {
+    name: "Binding state",
+    exact: true,
+  });
+  const bound = filter.getByRole("checkbox", { name: "Bound", exact: true });
+  const unbound = filter.getByRole("checkbox", {
+    name: "Unbound",
+    exact: true,
+  });
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+  await expect(page.locator("tbody tr").first()).toHaveClass(
+    /bg-emerald-500\/5/,
+  );
+  await expect(page.locator("tbody tr").last()).toHaveClass(/bg-amber-500\/10/);
+  await bound.uncheck();
+  await expect(page.locator("tbody tr td:first-child")).toHaveText(["B-02"]);
+  await unbound.uncheck();
+  await expect(
+    page.getByText("No seats match the binding filter.", { exact: true }),
+  ).toBeVisible();
+  await expect(filter).toBeVisible();
+  await bound.focus();
+  await page.keyboard.press("Space");
+  await expect(bound).toBeChecked();
+  await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
+  await unbound.check();
+  await expect(page.locator("tbody tr")).toHaveCount(2);
+});
+
 for (const width of [1024, 1440]) {
   test(`team and school display stays attached to its seat at ${width}`, async ({
     page,

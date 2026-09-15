@@ -325,7 +325,9 @@ export function TargetsPage() {
                 {" · "}
                 {currentRequest.scope.kind === "all_enabled"
                   ? "All enabled devices"
-                  : "Selected devices"}
+                  : currentRequest.scope.kind === "all_online_enabled"
+                    ? "All online enabled devices"
+                    : "Selected devices"}
               </p>
             )}
             {currentRequest?.scope.kind === "devices" && (
@@ -382,28 +384,35 @@ export function TargetsPage() {
                       (row) => row.status === "rejected",
                     ).length
                   }{" "}
-                  rejected. Check device convergence for completion.
+                  rejected.{" "}
+                  {submission.completed.request.action.kind === "power_off"
+                    ? "Check devices to confirm shutdown."
+                    : "Check device convergence for completion."}
                 </p>
-                {submission.completed.response.results.some(
-                  (row) => row.status === "rejected",
-                ) && (
-                  <TargetAction
-                    label="Retry failed devices"
-                    title="Retry the rejected devices?"
-                    description="This submits a new operation for the rejected devices only. The Server checks whether they are still enabled. Successful devices will not be submitted again."
-                    disabled={targetsPending}
-                    onConfirm={() => {
-                      const completed = submission.completed;
-                      if (completed)
-                        void targetSubmission.submit(completed.request.action, {
-                          kind: "devices",
-                          device_ids: completed.response.results
-                            .filter((row) => row.status === "rejected")
-                            .map((row) => row.device_id),
-                        });
-                    }}
-                  />
-                )}
+                {submission.completed.request.action.kind !== "power_off" &&
+                  submission.completed.response.results.some(
+                    (row) => row.status === "rejected",
+                  ) && (
+                    <TargetAction
+                      label="Retry failed devices"
+                      title="Retry the rejected devices?"
+                      description="This submits a new operation for the rejected devices only. The Server checks whether they are still enabled. Successful devices will not be submitted again."
+                      disabled={targetsPending}
+                      onConfirm={() => {
+                        const completed = submission.completed;
+                        if (completed)
+                          void targetSubmission.submit(
+                            completed.request.action,
+                            {
+                              kind: "devices",
+                              device_ids: completed.response.results
+                                .filter((row) => row.status === "rejected")
+                                .map((row) => row.device_id),
+                            },
+                          );
+                      }}
+                    />
+                  )}
               </>
             )}
           </section>
@@ -426,7 +435,22 @@ export function TargetsPage() {
           />
         </>
       )}
-      <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+        <div className="flex w-full items-center gap-3 sm:w-auto">
+          <Input
+            type="search"
+            aria-label="Search devices"
+            placeholder="Find a seat or device"
+            className="min-w-0 sm:w-56"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <p className="shrink-0 text-sm text-muted-foreground">
+            {rows.length} of {devices.data?.length ?? 0} devices
+          </p>
+        </div>
+      </div>
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}
@@ -434,19 +458,6 @@ export function TargetsPage() {
         emptyLabel="No devices found."
       >
         <div className="space-y-3">
-          <div className="flex items-center justify-between gap-4">
-            <Input
-              type="search"
-              aria-label="Search devices"
-              placeholder="Find a seat or device"
-              className="max-w-xs"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-            <p className="text-sm text-muted-foreground">
-              {rows.length} of {devices.data?.length} devices
-            </p>
-          </div>
           <DataTable
             columns={columns}
             data={rows}

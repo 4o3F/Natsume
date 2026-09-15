@@ -8,7 +8,11 @@ import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { DataTable } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
-import { Badge } from "@/components/ui/badge";
+import {
+  CheckboxFilter,
+  CheckboxFilterOption,
+} from "@/components/checkbox-filter";
+import { StatusIcon } from "@/components/device-status";
 
 import { TeamName, TeamSchool, type Team } from "@/components/roster-team";
 
@@ -21,16 +25,27 @@ type Seat = SeatFacts & {
 };
 
 const columns: ColumnDef<Seat>[] = [
-  { accessorKey: "seat_code", header: "Seat code", enableSorting: true },
+  {
+    accessorKey: "seat_code",
+    header: "Seat code",
+    enableSorting: true,
+    cell: ({ row }) => (
+      <span className="font-medium tabular-nums">{row.original.seat_code}</span>
+    ),
+  },
   {
     accessorKey: "bound",
     header: "Binding",
-    cell: ({ row }) =>
-      row.original.bound ? (
-        <Badge variant="secondary">Bound</Badge>
-      ) : (
-        <Badge variant="outline">Unbound</Badge>
-      ),
+    cell: ({ row }) => (
+      <span className="flex items-center gap-2">
+        <StatusIcon
+          icon={row.original.bound ? "linked" : "unlinked"}
+          tone={row.original.bound ? "text-emerald-700" : "text-amber-700"}
+          label={row.original.bound ? "Binding: bound" : "Binding: unbound"}
+        />
+        {row.original.bound ? "Bound" : "Unbound"}
+      </span>
+    ),
   },
   {
     id: "team",
@@ -42,7 +57,20 @@ const columns: ColumnDef<Seat>[] = [
     header: "School / Logo",
     cell: ({ row }) => <TeamSchool team={row.original.team} />,
   },
-  { accessorKey: "seat_id", header: "Seat ID" },
+  {
+    accessorKey: "seat_id",
+    header: "Seat ID",
+    cell: ({ row }) => (
+      <code
+        className="text-xs text-muted-foreground"
+        title={row.original.seat_id}
+      >
+        {row.original.seat_id.length > 8
+          ? `${row.original.seat_id.slice(0, 8)}…`
+          : row.original.seat_id}
+      </code>
+    ),
+  },
 ];
 
 export function SeatsPage() {
@@ -89,48 +117,53 @@ export function SeatsPage() {
   );
 
   return (
-    <DataState
-      isLoading={seats.isLoading || accounts.isLoading || bindings.isLoading}
-      error={
-        (seats.data ? null : seats.error) ??
-        (accounts.data ? null : accounts.error) ??
-        (bindings.data ? null : bindings.error)
-      }
-      isEmpty={!visibleRows.length}
-      emptyLabel="No seats match the binding filter."
-    >
-      <div className="space-y-2">
+    <div className="min-w-0 space-y-4">
+      <div className="space-y-1">
+        <h1 className="text-2xl font-semibold tracking-tight">Seats</h1>
         <p className="text-sm text-muted-foreground">
-          {visibleRows.length} of {seats.data?.length ?? 0} seats
+          Review seat assignments and find seats that still need a device.
         </p>
-        <fieldset className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
-          <legend className="font-medium">Binding state</legend>
+      </div>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <CheckboxFilter label="Binding state">
           {(["bound", "unbound"] as const).map((state) => (
-            <label key={state} className="flex items-center gap-2 capitalize">
-              <input
-                type="checkbox"
-                checked={bindingFilter[state]}
-                onChange={(event) =>
-                  setBindingFilter({
-                    ...bindingFilter,
-                    [state]: event.target.checked,
-                  })
-                }
-              />
-              {state}
-            </label>
+            <CheckboxFilterOption
+              key={state}
+              label={state === "bound" ? "Bound" : "Unbound"}
+              checked={bindingFilter[state]}
+              onCheckedChange={(checked) =>
+                setBindingFilter({ ...bindingFilter, [state]: checked })
+              }
+            />
           ))}
-        </fieldset>
+        </CheckboxFilter>
+        {seats.data && bindings.data && (
+          <p className="text-sm text-muted-foreground">
+            {visibleRows.length} of {seats.data.length} seats
+          </p>
+        )}
+      </div>
+      <DataState
+        isLoading={seats.isLoading || accounts.isLoading || bindings.isLoading}
+        error={
+          (seats.data ? null : seats.error) ??
+          (accounts.data ? null : accounts.error) ??
+          (bindings.data ? null : bindings.error)
+        }
+        isEmpty={!visibleRows.length}
+        emptyLabel="No seats match the binding filter."
+      >
         <DataTable
           columns={columns}
           data={visibleRows}
+          getRowId={(seat) => seat.seat_id}
           rowClassName={(seat) =>
             seat.bound
-              ? "bg-emerald-50/50 dark:bg-emerald-950/20"
-              : "bg-amber-50/70 dark:bg-amber-950/30"
+              ? "bg-emerald-500/5 hover:bg-emerald-500/10"
+              : "bg-amber-500/10 hover:bg-amber-500/15"
           }
         />
-      </div>
-    </DataState>
+      </DataState>
+    </div>
   );
 }
