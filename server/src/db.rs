@@ -1,4 +1,8 @@
-use std::{path::PathBuf, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use diesel::{
     Connection, RunQueryDsl,
@@ -10,8 +14,10 @@ use diesel::{
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use snafu::Snafu;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+const DATABASE_CONNECTIONS: u32 = 10;
 const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
@@ -54,6 +60,7 @@ impl DatabaseConfig {
 #[derive(Clone)]
 pub(crate) struct Database {
     pool: Pool<ConnectionManager<SqliteConnection>>,
+    work: Arc<Semaphore>,
 }
 
 /// An application-owned transaction boundary with the Diesel connection kept opaque.
@@ -126,7 +133,22 @@ impl Database {
         })
         .await
         .map_err(|_| DatabaseError::ConnectionFailed)??;
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            work: Arc::new(Semaphore::new(DATABASE_CONNECTIONS as usize)),
+        })
+    }
+
+    async fn reserve_work(&self) -> Result<(OwnedSemaphorePermit, Instant), PersistenceError> {
+        let deadline = Instant::now() + self.pool.connection_timeout();
+        let permit = tokio::time::timeout_at(
+            tokio::time::Instant::from_std(deadline),
+            Arc::clone(&self.work).acquire_owned(),
+        )
+        .await
+        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(|_| PersistenceError::OperationFailed)?;
+        Ok((permit, deadline))
     }
 
     pub(crate) async fn read<T, E, F>(&self, operation: F) -> Result<T, TransactionError<E>>
@@ -135,6 +157,10 @@ impl Database {
         E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
+        let (permit, deadline) = self
+            .reserve_work()
+            .await
+            .map_err(TransactionError::Persistence)?;
         let pool = self.pool.clone();
         // A blocking thread inherits neither the scoped dispatcher nor the
         // current span. Capture both at this shared boundary so database work
@@ -142,9 +168,15 @@ impl Database {
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         let span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
+            // Cancellation of the caller must not free capacity while this work
+            // is still queued or running in the blocking executor.
+            let _permit = permit;
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
-                    let mut connection = pool.get().map_err(|_| {
+                    let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
+                        TransactionError::Persistence(PersistenceError::OperationFailed),
+                    )?;
+                    let mut connection = pool.get_timeout(remaining).map_err(|_| {
                         TransactionError::Persistence(PersistenceError::OperationFailed)
                     })?;
                     connection.transaction::<T, TransactionError<E>, _>(|connection| {
@@ -164,6 +196,10 @@ impl Database {
         E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
+        let (permit, deadline) = self
+            .reserve_work()
+            .await
+            .map_err(TransactionError::Persistence)?;
         let pool = self.pool.clone();
         // A blocking thread inherits neither the scoped dispatcher nor the
         // current span. Capture both at this shared boundary so database work
@@ -171,9 +207,13 @@ impl Database {
         let dispatcher = tracing::dispatcher::get_default(Clone::clone);
         let span = tracing::Span::current();
         tokio::task::spawn_blocking(move || {
+            let _permit = permit;
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
-                    let mut connection = pool.get().map_err(|_| {
+                    let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
+                        TransactionError::Persistence(PersistenceError::OperationFailed),
+                    )?;
+                    let mut connection = pool.get_timeout(remaining).map_err(|_| {
                         TransactionError::Persistence(PersistenceError::OperationFailed)
                     })?;
                     connection.immediate_transaction::<T, TransactionError<E>, _>(|connection| {
@@ -193,7 +233,7 @@ fn build_pool(
 ) -> Result<Pool<ConnectionManager<SqliteConnection>>, DatabaseError> {
     let manager = ConnectionManager::new(diesel_database_url(config)?);
     Pool::builder()
-        .max_size(10)
+        .max_size(DATABASE_CONNECTIONS)
         .min_idle(Some(0))
         .connection_timeout(Duration::from_secs(30))
         .idle_timeout(Some(Duration::from_mins(10)))
@@ -300,7 +340,10 @@ pub(crate) mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::{Arc, Mutex, PoisonError},
+        sync::{
+            Arc, Condvar, Mutex, PoisonError,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
         time::Duration,
     };
 
@@ -324,8 +367,8 @@ pub(crate) mod tests {
     use crate::logging::tests::SubscriberTestGuard;
 
     use super::{
-        Database, DatabaseConfig, DatabaseError, PersistenceError, TransactionError,
-        diesel_database_url, sqlite_pragma_values,
+        DATABASE_CONNECTIONS, Database, DatabaseConfig, DatabaseError, PersistenceError,
+        TransactionError, diesel_database_url, sqlite_pragma_values,
     };
 
     impl Database {
@@ -353,6 +396,298 @@ pub(crate) mod tests {
             .await
             .map_err(TransactionError::into_error)
         }
+    }
+
+    struct HeldWork(Arc<(Mutex<bool>, Condvar)>);
+
+    impl HeldWork {
+        fn new() -> Self {
+            Self(Arc::new((Mutex::new(false), Condvar::new())))
+        }
+
+        fn wait(gate: &Arc<(Mutex<bool>, Condvar)>) {
+            let released = gate.0.lock().unwrap_or_else(PoisonError::into_inner);
+            drop(
+                gate.1
+                    .wait_while(released, |released| !*released)
+                    .unwrap_or_else(PoisonError::into_inner),
+            );
+        }
+    }
+
+    impl Drop for HeldWork {
+        fn drop(&mut self) {
+            *self.0.0.lock().unwrap_or_else(PoisonError::into_inner) = true;
+            self.0.1.notify_all();
+        }
+    }
+
+    async fn fixture_database(fixture: &DatabaseFixture) -> Database {
+        Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
+            .await
+            .unwrap_or_else(|error| panic!("fixture database: {error}"))
+    }
+
+    #[test]
+    fn clones_bound_blocking_threads_before_pool_checkout() {
+        let threads = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&threads);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(64)
+            .on_thread_start(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+            })
+            .build()
+            .unwrap_or_else(|error| panic!("test runtime: {error}"));
+        runtime.block_on(async {
+            let fixture = DatabaseFixture::new();
+            let database = fixture_database(&fixture).await;
+            let held = HeldWork::new();
+            let (entered, mut started) = tokio::sync::mpsc::unbounded_channel();
+            let mut tasks = Vec::new();
+            for _ in 0..128 {
+                let database = database.clone();
+                let gate = Arc::clone(&held.0);
+                let entered = entered.clone();
+                tasks.push(tokio::spawn(async move {
+                    database
+                        .read(move |_| {
+                            let _ = entered.send(());
+                            HeldWork::wait(&gate);
+                            Ok::<(), PersistenceError>(())
+                        })
+                        .await
+                }));
+            }
+            for _ in 0..DATABASE_CONNECTIONS {
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(5), started.recv())
+                        .await
+                        .unwrap_or_else(|error| panic!("work did not start: {error}"))
+                        .is_some()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            assert_eq!(database.work.available_permits(), 0);
+            assert!(threads.load(Ordering::SeqCst) <= DATABASE_CONNECTIONS as usize);
+            drop(held);
+            for task in tasks {
+                assert_eq!(
+                    task.await
+                        .unwrap_or_else(|error| panic!("database task: {error}")),
+                    Ok(())
+                );
+            }
+            assert_eq!(
+                database.work.available_permits(),
+                DATABASE_CONNECTIONS as usize
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn cancelled_callers_do_not_release_running_work_or_execute_queued_work() {
+        let fixture = DatabaseFixture::new();
+        let mut database = fixture_database(&fixture).await;
+        database.work = Arc::new(tokio::sync::Semaphore::new(1));
+        database
+            .write(|transaction| {
+                transaction
+                    .connection()
+                    .batch_execute("CREATE TABLE work_probe (value INTEGER NOT NULL)")
+                    .map_err(|_| PersistenceError::OperationFailed)?;
+                Ok::<(), PersistenceError>(())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("create probe table: {error:?}"));
+        let held = HeldWork::new();
+        let gate = Arc::clone(&held.0);
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let writer = database.clone();
+        let task = tokio::spawn(async move {
+            writer
+                .write(move |transaction| {
+                    transaction
+                        .connection()
+                        .batch_execute("INSERT INTO work_probe VALUES (1)")
+                        .map_err(|_| PersistenceError::OperationFailed)?;
+                    let _ = entered.send(());
+                    HeldWork::wait(&gate);
+                    Ok::<(), PersistenceError>(())
+                })
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(5), started)
+            .await
+            .unwrap_or_else(|error| panic!("work timeout: {error}"))
+            .unwrap_or_else(|error| panic!("work signal: {error}"));
+        task.abort();
+        assert!(task.await.is_err());
+        assert_eq!(database.work.available_permits(), 0);
+        let executed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&executed);
+        let reader = database.clone();
+        let queued = tokio::spawn(async move {
+            reader
+                .read(move |_| {
+                    observed.store(true, Ordering::SeqCst);
+                    Ok::<(), PersistenceError>(())
+                })
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(!queued.is_finished());
+        queued.abort();
+        assert!(queued.await.is_err());
+        drop(held);
+        let count = database
+            .read(|transaction| {
+                diesel::dsl::sql::<BigInt>("SELECT COUNT(*) FROM work_probe")
+                    .get_result::<i64>(transaction.connection())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("read committed result: {error:?}"));
+        assert_eq!(count, 1);
+        assert!(!executed.load(Ordering::SeqCst));
+        assert_eq!(database.work.available_permits(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn admission_timeout_does_not_start_sql() {
+        let fixture = DatabaseFixture::new();
+        let database = fixture_database(&fixture).await;
+        let permit = Arc::clone(&database.work)
+            .acquire_many_owned(DATABASE_CONNECTIONS)
+            .await
+            .unwrap_or_else(|error| panic!("hold capacity: {error}"));
+        let executed = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&executed);
+        let waiting = database.clone();
+        let task = tokio::spawn(async move {
+            waiting
+                .read(move |_| {
+                    observed.store(true, Ordering::SeqCst);
+                    Ok::<(), PersistenceError>(())
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(31)).await;
+        assert_eq!(
+            task.await
+                .unwrap_or_else(|error| panic!("waiting task: {error}")),
+            Err(TransactionError::Persistence(
+                PersistenceError::OperationFailed
+            ))
+        );
+        assert!(!executed.load(Ordering::SeqCst));
+        drop(permit);
+    }
+
+    #[test]
+    fn blocking_queue_time_counts_toward_connection_budget() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap_or_else(|error| panic!("runtime: {error}"));
+        runtime.block_on(async {
+            let fixture = DatabaseFixture::new();
+            let mut database = fixture_database(&fixture).await;
+            let manager = diesel::r2d2::ConnectionManager::new(
+                diesel_database_url(&DatabaseConfig::new(&fixture.path, false))
+                    .unwrap_or_else(|error| panic!("database URL: {error}")),
+            );
+            database.pool = diesel::r2d2::Pool::builder()
+                .max_size(1)
+                .min_idle(Some(0))
+                .connection_timeout(Duration::from_millis(50))
+                .build(manager)
+                .unwrap_or_else(|error| panic!("short timeout pool: {error}"));
+            let held = HeldWork::new();
+            let gate = Arc::clone(&held.0);
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                let _ = entered.send(());
+                HeldWork::wait(&gate);
+            });
+            started
+                .await
+                .unwrap_or_else(|error| panic!("blocking task: {error}"));
+            let queued = database.clone();
+            let task =
+                tokio::spawn(async move { queued.read(|_| Ok::<(), PersistenceError>(())).await });
+            tokio::task::yield_now().await;
+            assert_eq!(
+                database.work.available_permits(),
+                DATABASE_CONNECTIONS as usize - 1
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(held);
+            blocker
+                .await
+                .unwrap_or_else(|error| panic!("blocking task: {error}"));
+            assert_eq!(
+                task.await
+                    .unwrap_or_else(|error| panic!("queued work: {error}")),
+                Err(TransactionError::Persistence(
+                    PersistenceError::OperationFailed
+                ))
+            );
+            assert_eq!(
+                database.work.available_permits(),
+                DATABASE_CONNECTIONS as usize
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn errors_roll_back_and_panics_release_database_capacity() {
+        let fixture = DatabaseFixture::new();
+        let database = fixture_database(&fixture).await;
+        let failed = database
+            .write(|transaction| {
+                transaction
+                    .connection()
+                    .batch_execute("CREATE TABLE rolled_back (value INTEGER)")
+                    .map_err(|_| PersistenceError::OperationFailed)?;
+                Err::<(), PersistenceError>(PersistenceError::InvalidPersistedData)
+            })
+            .await;
+        assert_eq!(
+            failed,
+            Err(TransactionError::Operation(
+                PersistenceError::InvalidPersistedData
+            ))
+        );
+        let tables = database
+            .read(|transaction| {
+                diesel::dsl::sql::<BigInt>(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name = 'rolled_back'",
+                )
+                .get_result::<i64>(transaction.connection())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("rollback probe: {error:?}"));
+        assert_eq!(tables, 0);
+        let failed = database
+            .read::<(), PersistenceError, _>(|_| panic!("intentional database worker panic"))
+            .await;
+        assert_eq!(
+            failed,
+            Err(TransactionError::Persistence(
+                PersistenceError::OperationFailed
+            ))
+        );
+        assert_eq!(
+            database.work.available_permits(),
+            DATABASE_CONNECTIONS as usize
+        );
+        assert_eq!(
+            database.read(|_| Ok::<_, PersistenceError>(42)).await,
+            Ok(42)
+        );
     }
 
     /// Opens an independent connection outside the pool so tests can observe

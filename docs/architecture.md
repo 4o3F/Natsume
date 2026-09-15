@@ -1007,6 +1007,12 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 - 时间统一为 UTC epoch milliseconds；
 - UUID 使用 canonical UUIDv7，wire Session ID 例外为 16-byte network-order。
 
+运行期数据库读写在进入 `spawn_blocking` 前先取得 Database-owned 异步许可；同一连接池的
+所有 Database clone 共用 10 个许可，与连接池容量一致。排队、blocking executor 等待和
+取连接共用 30 秒获取预算，超时沿用既有持久化错误；SQL 的 `busy_timeout=5000` 不变。
+许可随阻塞闭包存活，连接归还和事务结束后才释放；调用方取消不能提前释放正在排队或执行的
+阻塞工作许可，也不回滚已经开始的事务。等待异步许可时取消则不执行 SQL。
+
 ### 12.2 目标表与 mutation owner
 
 | 表 | Owner | 关键约束 |
