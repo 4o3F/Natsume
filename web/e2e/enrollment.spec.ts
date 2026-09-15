@@ -42,6 +42,96 @@ async function mockEnrollment(
   });
 }
 
+for (const width of [1440, 1024, 390]) {
+  test(`enrollment window clearly distinguishes automatic and manual approval at ${width}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    let state: WindowState = "closed";
+    await mockEnrollment(page, (route) => {
+      if (route.request().method() === "PUT")
+        state = route.request().postDataJSON().state;
+      return fulfillJson(route, 200, { state });
+    });
+    await page.goto("/enrollment");
+    const window = page.getByRole("region", {
+      name: "Enrollment window",
+      exact: true,
+    });
+    await expect(window.getByRole("status")).toHaveText("Closed");
+    await expect(window).toHaveClass(/border-amber-600\/30/);
+    await expect(
+      window.getByText("Administrator approval is required", { exact: true }),
+    ).toBeVisible();
+    await expect(window.getByRole("status")).toHaveCSS("font-size", "30px");
+    await page.screenshot({
+      path: testInfo.outputPath(`enrollment-closed-${width}.png`),
+      fullPage: true,
+    });
+
+    await window
+      .getByRole("button", { name: "Open window", exact: true })
+      .click();
+    await expect(window.getByRole("status")).toHaveText("Open");
+    await expect(window).toHaveClass(/border-emerald-600\/30/);
+    await expect(
+      window.getByText("Automatic approval is enabled", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      window.getByRole("button", { name: "Close window", exact: true }),
+    ).toBeEnabled();
+    await expect(window).toContainText(
+      "The window closes whenever the server restarts.",
+    );
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath(`enrollment-open-${width}.png`),
+      fullPage: true,
+    });
+  });
+}
+
+test("a failed refresh replaces the open appearance with an unknown state", async ({
+  page,
+}, testInfo) => {
+  await page.clock.install();
+  let failRead = false;
+  await mockEnrollment(page, (route) =>
+    failRead
+      ? fulfillJson(route, 503, {
+          code: "UNAVAILABLE",
+          status: 503,
+          title: "Window temporarily unavailable",
+        })
+      : fulfillJson(route, 200, { state: "open" }),
+  );
+  await page.goto("/enrollment");
+  const window = page.getByRole("region", {
+    name: "Enrollment window",
+    exact: true,
+  });
+  await expect(window.getByRole("status")).toHaveText("Open");
+  failRead = true;
+  await page.clock.fastForward(10_000);
+  await expect(window.getByRole("status")).toHaveText("Unavailable");
+  await expect(window).toHaveClass(/border-destructive\/30/);
+  await expect(
+    window.getByText("Automatic approval is enabled", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    window.getByRole("button", { name: "Close window", exact: true }),
+  ).toBeDisabled();
+  await window.screenshot({
+    path: testInfo.outputPath("enrollment-unavailable.png"),
+  });
+  failRead = false;
+  await window.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(window.getByRole("status")).toHaveText("Open");
+  await expect(window).toHaveClass(/border-emerald-600\/30/);
+});
+
 test("an administrator can open and close the window without duplicate submissions", async ({
   page,
 }) => {
@@ -121,8 +211,8 @@ test("an administrator can approve a pending request while the window is closed"
     machine_hardware_id: "a9aa9d04-3ece-5567-8260-910930ff5e03",
     candidate_public_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     evidence_quality: "strong",
-    daemon_version: "2.4.2",
-    agent_version: "2.4.2",
+    daemon_version: "2.4.3",
+    agent_version: "2.4.3",
   };
   let approved = false;
   await mockEnrollment(page, (route) => {

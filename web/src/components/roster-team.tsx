@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ImageOff } from "lucide-react";
 
 import type { components } from "@/api/generated/schema";
 
@@ -31,8 +32,13 @@ export function TeamSchool({ team }: { team?: Team | null }) {
           onError={() => setFailedSchool(team.organization_id)}
         />
       ) : (
-        <span className="w-12 shrink-0 whitespace-normal text-center text-xs text-amber-700 dark:text-amber-400">
-          Logo unavailable
+        <span
+          role="img"
+          aria-label="Logo unavailable"
+          title="Logo unavailable"
+          className="inline-flex size-12 shrink-0 items-center justify-center text-muted-foreground"
+        >
+          <ImageOff aria-hidden="true" className="size-4 shrink-0" />
         </span>
       )}
       <div className="max-w-sm whitespace-normal break-words">

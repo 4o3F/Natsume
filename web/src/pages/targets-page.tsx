@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { FolderSync, Monitor, MonitorPlay } from "lucide-react";
 
 import type { ColumnDef } from "@tanstack/react-table";
 
@@ -54,11 +55,8 @@ import {
 import { Input } from "@/components/ui/input";
 
 import { BulkTargetActions } from "./target-bulk-actions";
-import {
-  targetAction,
-  targetActionLabel,
-  type TargetOperation,
-} from "./target-operations";
+import { TargetSubmissionResult } from "./target-submission-result";
+import { targetAction, type TargetOperation } from "./target-operations";
 
 type Device = components["schemas"]["DeviceResponse"];
 type Convergence = components["schemas"]["DeviceConvergenceResponse"];
@@ -79,7 +77,6 @@ export function TargetsPage() {
     targetSubmission.getSnapshot,
   );
   const results = submission.completed?.response.results;
-  const currentRequest = submission.pending ?? submission.completed?.request;
   const targetsPending =
     submission.pending !== null || !submission.storageReady;
   const panel = useRef<HTMLDivElement>(null);
@@ -315,80 +312,18 @@ export function TargetsPage() {
       )}
       {isAdmin &&
         (submission.pending || submission.completed || submission.error) && (
-          <section
-            aria-label="Target submission"
-            className="space-y-3 rounded-md border p-4"
+          <TargetSubmissionResult
+            key={
+              submission.pending?.operation_id ??
+              submission.completed?.request.operation_id ??
+              "error"
+            }
+            submission={submission}
+            devices={[...(enabledDevices.data ?? []), ...(devices.data ?? [])]}
+            onRetry={() => void targetSubmission.retry()}
           >
-            {currentRequest && (
-              <p className="font-medium">
-                {targetActionLabel(currentRequest.action)}
-                {" · "}
-                {currentRequest.scope.kind === "all_enabled"
-                  ? "All enabled devices"
-                  : currentRequest.scope.kind === "all_online_enabled"
-                    ? "All online enabled devices"
-                    : "Selected devices"}
-              </p>
-            )}
-            {currentRequest?.scope.kind === "devices" && (
-              <p className="text-sm break-words text-muted-foreground">
-                {currentRequest.scope.device_ids
-                  .map((id) => {
-                    const device = devices.data?.find(
-                      (device) => device.device_id === id,
-                    );
-                    return device ? (seatCode(device) ?? id) : id;
-                  })
-                  .join(", ")}
-              </p>
-            )}
-            {submission.sending ? (
-              <p role="status">
-                Submitting target. Showing previous device states.
-              </p>
-            ) : submission.pending ? (
-              <Alert>
-                <AlertTitle>Submission result not confirmed</AlertTitle>
-                <AlertDescription>
-                  <p>
-                    Retry the original request to confirm its result. New target
-                    actions are paused until the result is known.
-                  </p>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!submission.storageReady}
-                    onClick={() => void targetSubmission.retry()}
-                  >
-                    Retry original request
-                  </Button>
-                </AlertDescription>
-              </Alert>
-            ) : submission.error ? (
-              <Alert variant="destructive">
-                <AlertTitle>{submission.error}</AlertTitle>
-              </Alert>
-            ) : null}
             {submission.completed && (
               <>
-                <p role="status">
-                  {
-                    submission.completed.response.results.filter(
-                      (row) => row.status === "submitted",
-                    ).length
-                  }{" "}
-                  submitted,{" "}
-                  {
-                    submission.completed.response.results.filter(
-                      (row) => row.status === "rejected",
-                    ).length
-                  }{" "}
-                  rejected.{" "}
-                  {submission.completed.request.action.kind === "power_off"
-                    ? "Check devices to confirm shutdown."
-                    : "Check device convergence for completion."}
-                </p>
                 {submission.completed.request.action.kind !== "power_off" &&
                   submission.completed.response.results.some(
                     (row) => row.status === "rejected",
@@ -415,7 +350,7 @@ export function TargetsPage() {
                   )}
               </>
             )}
-          </section>
+          </TargetSubmissionResult>
         )}
       {isAdmin && (
         <>
@@ -558,78 +493,101 @@ function DeviceTargets({
   const showPrevious = previous;
   return (
     <div className="space-y-4">
-      <div className="space-y-2 text-sm text-muted-foreground">
-        <p>Connection: {label(device.convergence.connection_state)}</p>
-        <p>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-md bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
+        <div className="flex items-center gap-2">
+          <StatusIcon
+            {...connections[device.convergence.connection_state]}
+            label={connections[device.convergence.connection_state].label}
+          />
+          <span>Connection: {label(device.convergence.connection_state)}</span>
+        </div>
+        <p className="text-xs">
           Last device report:{" "}
           {formatTimestamp(device.convergence.received_at_unix_ms)}
         </p>
         {device.convergence.connection_state === "offline" && (
-          <p>
+          <p className="w-full text-xs">
             Device offline. Waiting for a connection and a fresh state report.
           </p>
         )}
         {device.convergence.connection_state === "awaiting_fresh_state" && (
-          <p>Device connected. Waiting for a fresh state report.</p>
+          <p className="w-full text-xs">
+            Device connected. Waiting for a fresh state report.
+          </p>
         )}
       </div>
       <div className="grid gap-4 md:grid-cols-2">
         <section
           aria-labelledby="session-control-title"
-          className="space-y-3 rounded-md border p-4"
+          className="flex flex-col gap-4 rounded-md border p-4"
         >
-          <h3 id="session-control-title" className="font-medium">
-            Session Control
-          </h3>
-          <ConvergenceStatus status={session.status} previous={showPrevious} />
-          <div className="space-y-1 text-sm">
-            <p>
-              Target foreground:{" "}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3
+              id="session-control-title"
+              className="flex items-center gap-2 font-medium"
+            >
+              <Monitor
+                aria-hidden="true"
+                className="size-4 text-muted-foreground"
+              />
+              Session Control
+            </h3>
+            <ConvergenceStatus
+              status={session.status}
+              previous={showPrevious}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3 rounded-md bg-muted/30 p-3">
+            <TargetFact name="Target foreground">
               {session.target?.foreground_target ?? "not initialized"}
-            </p>
-            <p>
-              Actual foreground: {session.actual?.foreground ?? "not received"}
-            </p>
-            <p>
-              Waiting display ready:{" "}
+            </TargetFact>
+            <TargetFact name="Actual foreground">
+              {session.actual?.foreground ?? "not received"}
+            </TargetFact>
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-3">
+            <TargetFact name="Waiting display ready">
               {session.actual
                 ? String(session.actual.waiting_ready)
                 : "not received"}
-            </p>
-            <p>
-              Contest desktop ready:{" "}
+            </TargetFact>
+            <TargetFact name="Contest desktop ready">
               {session.actual
                 ? String(session.actual.contest_ready)
                 : "not received"}
-            </p>
-            {session.target?.foreground_target === "contest" &&
-              device.convergence.binding.target?.state === "unbound" && (
-                <p>Waiting for binding before showing the contest desktop.</p>
-              )}
-            <p>Terminate epoch: {session.target?.terminate_epoch ?? "none"}</p>
-            <p>
-              Actual session:{" "}
+            </TargetFact>
+            <TargetFact name="Actual session">
               {session.actual
                 ? label(session.actual.session_state)
                 : "not received"}
-            </p>
-            <p>
-              Completed terminate epoch:{" "}
-              {session.actual?.completed_terminate_epoch ?? "none"}
-            </p>
-            {session.actual?.session_state === "ambiguous" && (
-              <p className="text-destructive">
-                Cannot identify a single session.
-              </p>
-            )}
-            {session.actual?.session_state === "error" && (
-              <p className="text-destructive">
-                The device reported a session error.
-              </p>
-            )}
+            </TargetFact>
           </div>
+          <div className="grid grid-cols-2 gap-4 border-t pt-3">
+            <TargetFact name="Terminate epoch">
+              {session.target?.terminate_epoch ?? "none"}
+            </TargetFact>
+            <TargetFact name="Completed terminate epoch">
+              {session.actual?.completed_terminate_epoch ?? "none"}
+            </TargetFact>
+          </div>
+          {session.target?.foreground_target === "contest" &&
+            device.convergence.binding.target?.state === "unbound" && (
+              <p className="rounded-md bg-amber-500/10 p-3 text-sm text-amber-700">
+                Waiting for binding before showing the contest desktop.
+              </p>
+            )}
+          {session.actual?.session_state === "ambiguous" && (
+            <p className="rounded-md bg-destructive/5 p-3 text-sm text-destructive">
+              Cannot identify a single session.
+            </p>
+          )}
+          {session.actual?.session_state === "error" && (
+            <p className="rounded-md bg-destructive/5 p-3 text-sm text-destructive">
+              The device reported a session error.
+            </p>
+          )}
           {isAdmin && (
-            <div className="flex flex-wrap gap-2">
+            <div className="mt-auto flex flex-wrap gap-2 border-t pt-4">
               <Button
                 type="button"
                 variant="outline"
@@ -637,6 +595,7 @@ function DeviceTargets({
                 disabled={disabled}
                 onClick={() => onSubmit("waiting")}
               >
+                <Monitor aria-hidden="true" />
                 Show waiting screen
               </Button>
               <Button
@@ -646,6 +605,7 @@ function DeviceTargets({
                 disabled={disabled}
                 onClick={() => onSubmit("contest")}
               >
+                <MonitorPlay aria-hidden="true" />
                 Show contest desktop
               </Button>
               <TargetAction
@@ -661,40 +621,65 @@ function DeviceTargets({
 
         <section
           aria-labelledby="home-title"
-          className="space-y-3 rounded-md border p-4"
+          className="flex flex-col gap-4 rounded-md border p-4"
         >
-          <h3 id="home-title" className="font-medium">
-            Home
-          </h3>
-          <ConvergenceStatus status={home.status} previous={showPrevious} />
-          <div className="space-y-1 text-sm">
-            <p>Reset epoch: {home.target_reset_epoch ?? "none"}</p>
-            <p>
-              Actual home:{" "}
-              {home.actual ? label(home.actual.state) : "not received"}
-            </p>
-            <p>
-              Completed reset epoch:{" "}
-              {home.actual?.completed_reset_epoch ?? "none"}
-            </p>
-            {home.actual?.state === "recovery_required" && (
-              <p className="text-destructive">
-                The device requires Home recovery.
-              </p>
-            )}
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 id="home-title" className="flex items-center gap-2 font-medium">
+              <FolderSync
+                aria-hidden="true"
+                className="size-4 text-muted-foreground"
+              />
+              Home
+            </h3>
+            <ConvergenceStatus status={home.status} previous={showPrevious} />
           </div>
+          <div className="rounded-md bg-muted/30 p-3">
+            <TargetFact name="Actual home">
+              {home.actual ? label(home.actual.state) : "not received"}
+            </TargetFact>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <TargetFact name="Reset epoch">
+              {home.target_reset_epoch ?? "none"}
+            </TargetFact>
+            <TargetFact name="Completed reset epoch">
+              {home.actual?.completed_reset_epoch ?? "none"}
+            </TargetFact>
+          </div>
+          {home.actual?.state === "recovery_required" && (
+            <p className="rounded-md bg-destructive/5 p-3 text-sm text-destructive">
+              The device requires Home recovery.
+            </p>
+          )}
           {isAdmin && (
-            <TargetAction
-              label="Reset home"
-              title="Reset the contest Home?"
-              description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
-              disabled={disabled}
-              onConfirm={() => onSubmit("reset")}
-            />
+            <div className="mt-auto border-t pt-4">
+              <TargetAction
+                label="Reset home"
+                title="Reset the contest Home?"
+                description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
+                disabled={disabled}
+                onConfirm={() => onSubmit("reset")}
+              />
+            </div>
           )}
         </section>
       </div>
     </div>
+  );
+}
+
+function TargetFact({
+  name,
+  children,
+}: {
+  name: string;
+  children: string | number;
+}) {
+  return (
+    <p className="space-y-1">
+      <span className="block text-xs text-muted-foreground">{name}: </span>
+      <span className="block text-sm font-medium tabular-nums">{children}</span>
+    </p>
   );
 }
 

@@ -903,6 +903,172 @@ test("only rejected devices are retried with a new operation ID", async ({
   ).toEqual([1, 1, 1]);
 });
 
+test("submission results have a compact summary and filterable device receipts", async ({
+  page,
+  context,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  const fleet = targetFleet(8);
+  fleet[2].convergence.connection_state = "offline";
+  fleet[2].convergence.session_control.status = "awaiting_actual";
+  const api = await mockTargets(context, fleet);
+  api.rejections.set(fleet[1].device_id, "Target epoch is exhausted");
+  api.rejections.set(
+    fleet[5].device_id,
+    "Device state does not allow this target",
+  );
+  await page.goto("/targets");
+  await confirmAll(page, "Reset home");
+  const summary = page.getByRole("region", {
+    name: "Target submission",
+    exact: true,
+  });
+  await expect(summary).toContainText("6 submitted, 2 rejected");
+  await expect(
+    summary.getByText("Partially submitted", { exact: true }),
+  ).toBeVisible();
+  await expect(summary.getByRole("table")).not.toBeVisible();
+  await expect(
+    summary.getByText(
+      "Server acceptance does not confirm completion. Check device convergence.",
+    ),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("targets-summary.png"),
+    fullPage: true,
+  });
+
+  await summary.locator("summary").click();
+  await expect(summary.getByRole("table").locator("tbody tr")).toHaveCount(8);
+  const submittedStatus = summary
+    .getByRole("table")
+    .getByText("Submitted", { exact: true })
+    .first();
+  const rejectedStatus = summary
+    .getByRole("table")
+    .getByText("Rejected", { exact: true })
+    .first();
+  for (const status of [submittedStatus, rejectedStatus]) {
+    await expect(status).toHaveCSS("border-top-width", "0px");
+    await expect(status).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  }
+  const submittedBounds = await submittedStatus.boundingBox();
+  const rejectedBounds = await rejectedStatus.boundingBox();
+  expect(submittedBounds).not.toBeNull();
+  expect(rejectedBounds).not.toBeNull();
+  expect(rejectedBounds!.height).toBe(submittedBounds!.height);
+  expect(rejectedBounds!.x).toBe(submittedBounds!.x);
+  expect((await rejectedStatus.locator("svg").boundingBox())!.x).toBe(
+    (await submittedStatus.locator("svg").boundingBox())!.x,
+  );
+  await summary.screenshot({
+    path: testInfo.outputPath("targets-aligned-results.png"),
+  });
+  await summary
+    .getByRole("button", { name: "Rejected (2)", exact: true })
+    .click();
+  await expect(summary.getByRole("table").locator("tbody tr")).toHaveCount(2);
+  await expect(
+    summary.getByRole("cell", {
+      name: "Target epoch is exhausted",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("targets-rejected.png"),
+    fullPage: true,
+  });
+
+  // Receipt scope and device labels survive filtering the current device list.
+  await selectDeviceStates(page, ["disabled"]);
+  await expect(
+    summary.getByRole("cell", { name: "A-02 machine-02", exact: true }),
+  ).toBeVisible();
+  await summary
+    .getByRole("button", { name: "All results (8)", exact: true })
+    .click();
+  await expect(summary.getByRole("table").locator("tbody tr")).toHaveCount(8);
+
+  await selectDeviceStates(page, ["enabled", "disabled"]);
+  for (const width of [1024, 390]) {
+    await page.setViewportSize({ width, height: 1050 });
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
+      .toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath(`targets-results-${width}.png`),
+      fullPage: true,
+    });
+  }
+
+  api.rejections.clear();
+  await confirmTarget(page, "Retry failed devices");
+  await expect(
+    summary.getByText("Targets submitted", { exact: true }),
+  ).toBeVisible();
+  await expect(summary.getByRole("table")).not.toBeVisible();
+  await summary.locator("summary").click();
+  await expect(summary.getByRole("table").locator("tbody tr")).toHaveCount(2);
+  expect(api.writes[1].scope).toEqual({
+    kind: "devices",
+    device_ids: [fleet[1].device_id, fleet[5].device_id],
+  });
+  await page.setViewportSize({ width: 1440, height: 1050 });
+  await summary.locator("summary").click();
+  await summary.screenshot({
+    path: testInfo.outputPath("targets-submitted.png"),
+  });
+  await page
+    .getByRole("button", { name: "Manage", exact: true })
+    .first()
+    .click();
+  const deviceDetails = page.locator('[data-slot="card"]').filter({
+    has: page.getByRole("region", { name: "Session Control", exact: true }),
+  });
+  await expect(
+    deviceDetails.getByText("Target foreground: contest", { exact: true }),
+  ).toBeVisible();
+  await deviceDetails.screenshot({
+    path: testInfo.outputPath("targets-device-details.png"),
+  });
+});
+
+test("empty and fully rejected submission receipts are not shown as success", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(2);
+  const api = await mockTargets(context, fleet);
+  for (const device of fleet)
+    api.rejections.set(device.device_id, "Target epoch is exhausted");
+  await page.goto("/targets");
+  await confirmAll(page, "Reset home");
+  const summary = page.getByRole("region", {
+    name: "Target submission",
+    exact: true,
+  });
+  await expect(
+    summary.getByText("Submission rejected", { exact: true }),
+  ).toBeVisible();
+  await expect(summary).toContainText("0 submitted, 2 rejected");
+  await page
+    .getByRole("button", { name: "Reset home (all)", exact: true })
+    .click();
+  for (const device of fleet) device.state = "disabled";
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Apply to all enabled devices" })
+    .click();
+  await expect(
+    summary.getByText("No devices in scope", { exact: true }),
+  ).toBeVisible();
+  await expect(summary).toContainText("No eligible devices were included");
+  await expect(summary.locator("summary")).toHaveCount(0);
+  await expect(
+    summary.getByRole("button", { name: "Retry failed devices", exact: true }),
+  ).toHaveCount(0);
+});
+
 test("a lost response survives refresh and replays the same operation without another reset", async ({
   page,
   context,

@@ -1,5 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import {
+  DoorClosed,
+  DoorOpen,
+  Info,
+  LoaderCircle,
+  TriangleAlert,
+} from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -186,39 +193,102 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
     refetchInterval: LIST_POLL_MS,
   });
   const isOpen = window.data?.state === "open";
+  const display = window.isPending
+    ? {
+        label: "Loading...",
+        mode: "Checking enrollment policy",
+        description:
+          "Reading the current enrollment window state from the Server.",
+        Icon: LoaderCircle,
+        border: "border-border",
+        surface: "bg-muted/30",
+        accent: "bg-muted text-muted-foreground",
+        text: "text-muted-foreground",
+      }
+    : window.isError
+      ? {
+          label: "Unavailable",
+          mode: "Enrollment policy could not be confirmed",
+          description: "Refresh the window state before making changes.",
+          Icon: TriangleAlert,
+          border: "border-destructive/30",
+          surface: "bg-destructive/5",
+          accent: "bg-destructive/10 text-destructive",
+          text: "text-destructive",
+        }
+      : isOpen
+        ? {
+            label: "Open",
+            mode: "Automatic approval is enabled",
+            description:
+              "Open automatically approves new and pending enrollment requests.",
+            Icon: DoorOpen,
+            border: "border-emerald-600/30",
+            surface: "bg-emerald-500/5",
+            accent: "bg-emerald-500/15 text-emerald-700",
+            text: "text-emerald-700",
+          }
+        : {
+            label: "Closed",
+            mode: "Administrator approval is required",
+            description:
+              "Closed keeps requests here for administrator approval.",
+            Icon: DoorClosed,
+            border: "border-amber-600/30",
+            surface: "bg-amber-500/5",
+            accent: "bg-amber-500/15 text-amber-700",
+            text: "text-amber-700",
+          };
 
   return (
-    <Card role="region" aria-label="Enrollment window">
-      <CardHeader>
-        <CardTitle>Enrollment window</CardTitle>
-        <CardDescription>
-          Open automatically approves new and pending enrollment requests.
-          Closed keeps requests here for administrator approval. The window
-          closes whenever the server restarts. Closing it does not revoke
-          enrolled devices.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-3">
-          <Badge
-            role="status"
-            variant={window.isSuccess && isOpen ? "default" : "outline"}
-          >
-            {window.isPending
-              ? "Loading..."
-              : window.isError
-                ? "Unavailable"
-                : isOpen
-                  ? "Open"
-                  : "Closed"}
-          </Badge>
+    <Card
+      role="region"
+      aria-label="Enrollment window"
+      className={`gap-0 overflow-hidden py-0 ${display.border}`}
+    >
+      <CardHeader className={`gap-4 p-5 sm:p-6 ${display.surface}`}>
+        <CardTitle className="text-sm text-muted-foreground">
+          Enrollment window
+        </CardTitle>
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-4">
+            <div
+              className={`flex size-14 shrink-0 items-center justify-center rounded-xl ${display.accent}`}
+            >
+              <display.Icon
+                aria-hidden="true"
+                className={`size-7 ${window.isPending ? "animate-spin motion-reduce:animate-none" : ""}`}
+              />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <p
+                role="status"
+                className={`text-3xl font-semibold tracking-tight ${display.text}`}
+              >
+                {display.label}
+              </p>
+              <p className="text-sm font-medium">{display.mode}</p>
+              <CardDescription>{display.description}</CardDescription>
+            </div>
+          </div>
           {isAdmin && (
             <Button
               type="button"
+              className="shrink-0"
               variant={isOpen ? "outline" : "default"}
               disabled={!window.isSuccess || updateWindow.isPending}
               onClick={() => updateWindow.mutate(isOpen ? "closed" : "open")}
             >
+              {updateWindow.isPending ? (
+                <LoaderCircle
+                  aria-hidden="true"
+                  className="animate-spin motion-reduce:animate-none"
+                />
+              ) : isOpen ? (
+                <DoorClosed aria-hidden="true" />
+              ) : (
+                <DoorOpen aria-hidden="true" />
+              )}
               {updateWindow.isPending
                 ? "Updating..."
                 : isOpen
@@ -227,6 +297,13 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
             </Button>
           )}
         </div>
+      </CardHeader>
+      <CardContent className="space-y-3 border-t px-5 py-4 sm:px-6">
+        <p className="flex items-start gap-2 text-xs text-muted-foreground">
+          <Info aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+          The window closes whenever the server restarts. Closing it does not
+          revoke enrolled devices.
+        </p>
         {window.isError && (
           <Alert variant="destructive">
             <AlertTitle>

@@ -127,7 +127,9 @@ for (const width of [1024, 1440]) {
     await expect(
       page.getByRole("img", { name: "示例科技大学 logo" }),
     ).toBeVisible();
-    await expect(page.getByText("Logo unavailable")).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: "Logo unavailable", exact: true }),
+    ).toBeVisible();
     await expect(page.getByText("Offline", { exact: true })).toHaveCount(0);
     await page.goto("/seats");
     const row = page.getByRole("row").filter({ hasText: "B-02" });
@@ -136,7 +138,9 @@ for (const width of [1024, 1440]) {
     await expect(
       page.getByRole("row").filter({ hasText: "A-01" }),
     ).toContainText(teams[1].team_name_zh);
-    await expect(page.getByText("Logo unavailable")).toBeVisible();
+    await expect(
+      page.getByRole("img", { name: "Logo unavailable", exact: true }),
+    ).toBeVisible();
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,
