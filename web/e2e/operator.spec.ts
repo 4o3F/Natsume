@@ -551,17 +551,24 @@ type TargetBody = components["schemas"]["TargetSubmissionBody"];
 type TargetReply = components["schemas"]["TargetSubmissionResponse"];
 
 function filterDeviceRows(rows: (typeof device)[], url: string) {
-  const state = new URL(url).searchParams.get("state") ?? "all";
-  expect(["enabled", "disabled", "revoked", "non_revoked", "all"]).toContain(
-    state,
-  );
-  return rows.filter(
-    (device) =>
-      state === "all" ||
-      (state === "non_revoked"
-        ? device.state !== "revoked"
-        : device.state === state),
-  );
+  const stateParams = new URL(url).searchParams.getAll("state");
+  expect(stateParams).toHaveLength(1);
+  const states = stateParams[0].split(",");
+  for (const state of states)
+    expect(["enabled", "disabled", "revoked"]).toContain(state);
+  return rows.filter((device) => states.includes(device.state));
+}
+
+async function selectDeviceStates(
+  page: Page,
+  states: components["schemas"]["DeviceListState"][],
+) {
+  const filter = page.getByRole("group", { name: "Device state", exact: true });
+  for (const state of ["enabled", "disabled", "revoked"] as const) {
+    await filter
+      .getByRole("checkbox", { name: new RegExp(`^${state}$`, "i") })
+      .setChecked(states.includes(state));
+  }
 }
 
 async function mockTargets(
@@ -588,11 +595,16 @@ async function mockTargets(
       return structuredClone(old.reply);
     }
     const ids =
-      body.scope.kind === "all_enabled"
-        ? devices
-            .filter((device) => device.state === "enabled")
-            .map((device) => device.device_id)
-        : [...new Set(body.scope.device_ids)];
+      body.scope.kind === "devices"
+        ? [...new Set(body.scope.device_ids)]
+        : devices
+            .filter(
+              (device) =>
+                device.state === "enabled" &&
+                (body.scope.kind === "all_enabled" ||
+                  device.convergence.connection_state === "active"),
+            )
+            .map((device) => device.device_id);
     const results: TargetReply["results"] = ids.map((id) => {
       const current = devices.find((device) => device.device_id === id);
       if (!current)
@@ -1308,6 +1320,11 @@ test("a delayed pre-mutation poll cannot replace the refreshed target", async ({
   await openTargets(page);
   const heldReads: Route[] = [];
   await context.route(/\/api\/v2\/devices(?:\?.*)?$/, (route) => {
+    if (
+      new URL(route.request().url()).searchParams.get("state") !==
+      "enabled,disabled"
+    )
+      return route.fallback();
     heldReads.push(route);
   });
   await page.clock.runFor(10_000);
@@ -1402,33 +1419,71 @@ for (const path of ["/devices", "/targets"]) {
     fleet[2].state = "revoked";
     const api = await mockTargets(context, fleet);
     await page.goto(path);
-    const filter = page.getByLabel("Device state", { exact: true });
-    await expect(filter).toHaveValue("non_revoked");
+    const filter = page.getByRole("group", {
+      name: "Device state",
+      exact: true,
+    });
+    await expect(
+      filter.getByRole("checkbox", { name: /^enabled$/i }),
+    ).toBeChecked();
+    await expect(
+      filter.getByRole("checkbox", { name: /^disabled$/i }),
+    ).toBeChecked();
+    await expect(
+      filter.getByRole("checkbox", { name: /^revoked$/i }),
+    ).not.toBeChecked();
     await expect(page.locator("tbody tr")).toHaveCount(2);
-    for (const [value, seats] of [
-      ["enabled", ["A-01"]],
-      ["disabled", ["A-02"]],
-      ["revoked", ["A-03"]],
-      ["all", ["A-01", "A-02", "A-03"]],
-      ["non_revoked", ["A-01", "A-02"]],
+    for (const [states, seats] of [
+      [["enabled"], ["A-01"]],
+      [["disabled"], ["A-02"]],
+      [["revoked"], ["A-03"]],
+      [
+        ["enabled", "revoked"],
+        ["A-01", "A-03"],
+      ],
+      [
+        ["disabled", "revoked"],
+        ["A-02", "A-03"],
+      ],
+      [
+        ["enabled", "disabled", "revoked"],
+        ["A-01", "A-02", "A-03"],
+      ],
+      [
+        ["enabled", "disabled"],
+        ["A-01", "A-02"],
+      ],
     ] as const) {
-      await filter.selectOption(value);
+      await selectDeviceStates(page, [...states]);
       await expect(page.locator("tbody tr td:first-child")).toHaveText([
         ...seats,
       ]);
-      if (value === "revoked")
+      if (states.length === 1 && states[0] === "revoked")
         await expect(page.locator("tbody tr")).toHaveClass(/bg-muted\/60/);
     }
     expect(new Set(api.reads)).toEqual(
-      new Set(["non_revoked", "enabled", "disabled", "revoked", "all"]),
+      new Set([
+        "enabled,disabled",
+        "enabled",
+        "disabled",
+        "revoked",
+        "enabled,revoked",
+        "disabled,revoked",
+        "enabled,disabled,revoked",
+      ]),
     );
-    fleet[2].state = "disabled";
-    await filter.selectOption("revoked");
+    await selectDeviceStates(page, []);
     await expect(
       page.getByText("No devices found.", { exact: true }),
     ).toBeVisible();
     await expect(filter).toBeVisible();
-    await filter.selectOption("enabled");
+    fleet[2].state = "disabled";
+    await selectDeviceStates(page, ["revoked"]);
+    await expect(
+      page.getByText("No devices found.", { exact: true }),
+    ).toBeVisible();
+    await expect(filter).toBeVisible();
+    await selectDeviceStates(page, ["enabled"]);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
   });
 
@@ -1454,14 +1509,25 @@ for (const path of ["/devices", "/targets"]) {
     await page.clock.install();
     await page.goto(path);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
-    const filter = page.getByLabel("Device state", { exact: true });
-    await filter.selectOption("enabled");
+    const filter = page.getByRole("group", {
+      name: "Device state",
+      exact: true,
+    });
+    await selectDeviceStates(page, ["enabled"]);
     await expect.poll(() => Boolean(held)).toBe(true);
-    await filter.selectOption("revoked");
+    await selectDeviceStates(page, ["revoked"]);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
     await held!.fallback();
     await page.clock.runFor(100);
-    await expect(filter).toHaveValue("revoked");
+    await expect(
+      filter.getByRole("checkbox", { name: /^enabled$/i }),
+    ).not.toBeChecked();
+    await expect(
+      filter.getByRole("checkbox", { name: /^disabled$/i }),
+    ).not.toBeChecked();
+    await expect(
+      filter.getByRole("checkbox", { name: /^revoked$/i }),
+    ).toBeChecked();
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
   });
 }
@@ -1494,9 +1560,7 @@ test("revoking a selected device removes it from the default view but retains th
   await expect(page.getByText(fleet[0].device_id, { exact: true })).toHaveCount(
     0,
   );
-  await page
-    .getByLabel("Device state", { exact: true })
-    .selectOption("revoked");
+  await selectDeviceStates(page, ["revoked"]);
   await expect(page.locator("tbody tr")).toHaveCount(1);
   await expect(
     page.getByRole("img", { name: "Lifecycle: revoked", exact: true }),
@@ -1510,9 +1574,7 @@ test("Targets all-device actions retain global Enabled scope even with an empty 
   const fleet = targetFleet(2);
   const api = await mockTargets(context, fleet);
   await page.goto("/targets");
-  await page
-    .getByLabel("Device state", { exact: true })
-    .selectOption("revoked");
+  await selectDeviceStates(page, ["revoked"]);
   await expect(
     page.getByText("No devices found.", { exact: true }),
   ).toBeVisible();

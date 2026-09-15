@@ -6,7 +6,9 @@ export function createApiClient(
   signal: AbortSignal,
   onUnauthorized: () => void,
 ) {
-  const api = createClient<paths>();
+  const api = createClient<paths>({
+    querySerializer: { array: { style: "form", explode: false } },
+  });
   api.use({
     onRequest({ request }) {
       signal.throwIfAborted();

@@ -49,6 +49,9 @@ for (const width of [1024, 1440]) {
             .map(({ seat_id, seat_code }) => ({ seat_id, seat_code })),
         });
       }
+      if (path === "/api/v2/bindings") {
+        return route.fulfill({ json: [] });
+      }
       if (path === "/api/v2/organizations/INST-001/logo") {
         return route.fulfill({
           contentType: "image/png",
