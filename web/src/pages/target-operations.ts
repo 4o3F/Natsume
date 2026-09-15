@@ -3,11 +3,7 @@ import type { components } from "@/api/generated/schema";
 export type TargetRequest = components["schemas"]["TargetSubmissionBody"];
 export type TargetResponse = components["schemas"]["TargetSubmissionResponse"];
 export type TargetOperation =
-  | "waiting"
-  | "contest"
-  | "terminate"
-  | "reset"
-  | "poweroff";
+  "waiting" | "contest" | "terminate" | "reset" | "poweroff";
 
 export const targetOperations = {
   waiting: "Show waiting screen",

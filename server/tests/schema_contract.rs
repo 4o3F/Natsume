@@ -21,7 +21,7 @@ fn migrations() -> Result<FileBasedMigrations, TestError> {
 fn database() -> Result<SqliteConnection, TestError> {
     let mut connection = SqliteConnection::establish(":memory:")?;
     connection.batch_execute("PRAGMA foreign_keys = ON;")?;
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 3);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 4);
     Ok(connection)
 }
 
@@ -39,17 +39,17 @@ fn migrations_round_trip() -> Result<(), TestError> {
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations'";
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        19
+        20
     );
-    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 3);
+    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 4);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
         0
     );
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 3);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 4);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        19
+        20
     );
     Ok(())
 }
@@ -81,7 +81,7 @@ fn strict_tables_enforce_storage_types_and_nullability() -> Result<(), TestError
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND strict = 1"
         )
         .get_result::<i64>(&mut connection)?,
-        19
+        20
     );
     connection.batch_execute("INSERT INTO accounts VALUES ('a1', 'team-1', 1);")?;
     rejects(
@@ -117,6 +117,7 @@ fn foreign_keys_reject_orphans_and_cascade_owned_rows() -> Result<(), TestError>
         "INSERT INTO binding_negotiations VALUES ('missing', 'negotiation', NULL, NULL, NULL);",
         "INSERT INTO device_session_targets VALUES ('missing', 'contest', NULL);",
         "INSERT INTO device_home_targets VALUES ('missing', NULL);",
+        "INSERT INTO device_power_targets VALUES ('missing', NULL, NULL);",
     ] {
         rejects(
             &mut connection,
@@ -137,6 +138,7 @@ fn foreign_keys_reject_orphans_and_cascade_owned_rows() -> Result<(), TestError>
         INSERT INTO binding_negotiations VALUES ('d1', 'negotiation', NULL, NULL, NULL);
         INSERT INTO device_session_targets VALUES ('d1', 'contest', NULL);
         INSERT INTO device_home_targets VALUES ('d1', NULL);
+        INSERT INTO device_power_targets VALUES ('d1', NULL, NULL);
     ",
     )?;
     rejects(
@@ -165,6 +167,7 @@ fn foreign_keys_reject_orphans_and_cascade_owned_rows() -> Result<(), TestError>
         "binding_negotiations",
         "device_session_targets",
         "device_home_targets",
+        "device_power_targets",
     ] {
         assert_eq!(
             sql::<BigInt>(&format!("SELECT count(*) FROM {table}"))
@@ -314,7 +317,7 @@ fn roster_migration_preserves_deployment_data_and_invalidates_only_old_previews(
         "SELECT count(*) FROM device_home_targets WHERE device_id = 'd1' AND reset_epoch = 10",
         "SELECT count(*) FROM runtime_config WHERE singleton = 1 AND domjudge_origin = 'https://judge.example'",
     ];
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 2);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 3);
     for statement in checks {
         assert_eq!(
             sql::<BigInt>(statement).get_result::<i64>(&mut connection)?,

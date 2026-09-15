@@ -45,24 +45,24 @@ export function BulkTargetActions({
         </p>
       </div>
       <div className="flex flex-wrap gap-2">
-        {(["waiting", "contest", "terminate", "reset"] as TargetOperation[]).map(
-          (operation) => (
-            <Button
-              key={operation}
-              type="button"
-              size="sm"
-              variant={
-                operation === "reset" || operation === "terminate"
-                  ? "destructive"
-                  : "outline"
-              }
-              disabled={disabled || enabled.length === 0}
-              onClick={() => setConfirmation(operation)}
-            >
-              {targetOperations[operation]} (all)
-            </Button>
-          ),
-        )}
+        {(
+          ["waiting", "contest", "terminate", "reset"] as TargetOperation[]
+        ).map((operation) => (
+          <Button
+            key={operation}
+            type="button"
+            size="sm"
+            variant={
+              operation === "reset" || operation === "terminate"
+                ? "destructive"
+                : "outline"
+            }
+            disabled={disabled || enabled.length === 0}
+            onClick={() => setConfirmation(operation)}
+          >
+            {targetOperations[operation]} (all)
+          </Button>
+        ))}
       </div>
       <AlertDialog
         open={confirmation !== null}

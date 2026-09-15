@@ -1,9 +1,39 @@
 repos:
   - repo: local
     hooks:
-      - id: natsume-check
-        name: Natsume dependency policy, lint, Clippy, and tests
-        entry: just pre-commit
+      - id: dependency-policy
+        name: Natsume dependency policy
+        entry: cargo deny check
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: web-format
+        name: Natsume Web Prettier
+        entry: pnpm --filter @natsume/web format:check
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: web-lint
+        name: Natsume Web lint
+        entry: pnpm --filter @natsume/web lint
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: rust-clippy
+        name: Natsume Rust Clippy
+        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: rust-test
+        name: Natsume Rust tests
+        entry: cargo test --workspace --all-features --locked
+        language: system
+        always_run: true
+        pass_filenames: false
+      - id: web-test
+        name: Natsume Web tests
+        entry: pnpm --filter @natsume/web test
         language: system
         always_run: true
         pass_filenames: false

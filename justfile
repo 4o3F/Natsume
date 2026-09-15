@@ -56,13 +56,6 @@ unit:
     cargo test --workspace --all-features
     pnpm --filter @natsume/web test
 
-pre-commit:
-    cargo deny check
-    pnpm --filter @natsume/web lint
-    cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-    cargo test --workspace --all-features --locked
-    pnpm --filter @natsume/web test
-
 api:
     cargo run -p natsume-server --bin export-openapi -- web/openapi/natsume.openapi.json
     pnpm --filter @natsume/web openapi:lint
