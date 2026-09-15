@@ -45,11 +45,13 @@ export function ConvergenceIcon({
 }
 
 export function RefreshCountdown({
+  resource = "device",
   updatedAt,
   isFetching,
   isPaused,
   isError,
 }: {
+  resource?: string;
   updatedAt: number;
   isFetching: boolean;
   isPaused: boolean;
@@ -68,12 +70,12 @@ export function RefreshCountdown({
   return (
     <div
       role="timer"
-      aria-label="Next device refresh"
+      aria-label={`Next ${resource} refresh`}
       aria-live="off"
       title={
         isError
-          ? "Refresh failed; showing the last received device states."
-          : "Device states refresh automatically."
+          ? `Refresh failed; showing the last received ${resource} states.`
+          : `Automatically refreshes ${resource} states.`
       }
       className="flex min-w-40 shrink-0 items-center justify-end gap-1 text-sm tabular-nums text-muted-foreground"
     >

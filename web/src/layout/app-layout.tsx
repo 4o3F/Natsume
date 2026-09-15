@@ -4,7 +4,7 @@ import { ApiError } from "@/api/errors";
 import { useLogout, useSession } from "@/auth/use-session";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const navigation = [
@@ -35,16 +35,20 @@ export function AppLayout() {
             aria-label="Primary navigation"
           >
             {navigation.map((item) => (
-              <Button key={item.to} asChild variant="ghost" size="sm">
-                <NavLink
-                  to={item.to}
-                  className={({ isActive }) =>
-                    cn(isActive && "bg-accent text-accent-foreground")
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              </Button>
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  cn(
+                    buttonVariants({ variant: "ghost", size: "sm" }),
+                    isActive
+                      ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      : "text-muted-foreground",
+                  )
+                }
+              >
+                {item.label}
+              </NavLink>
             ))}
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-3">

@@ -68,6 +68,74 @@ test("successful login reaches the authenticated shell", async ({ page }) => {
   await expect(page.getByText("ADMIN", { exact: true })).toBeVisible();
 });
 
+test("navbar highlights only the current page across navigation and reloads", async ({
+  page,
+}) => {
+  await page.route("**/api/v2/**", (route) => {
+    expect(route.request().method()).toBe("GET");
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v2/session") return fulfillJson(route, 200, operator);
+    if (path === "/api/v2/imports")
+      return fulfillJson(route, 200, { pending: null });
+    if (path === "/api/v2/provisioning-window")
+      return fulfillJson(route, 200, { state: "closed" });
+    if (
+      [
+        "/api/v2/seats",
+        "/api/v2/accounts",
+        "/api/v2/bindings",
+        "/api/v2/devices",
+        "/api/v2/organizations",
+        "/api/v2/enrollment-reviews",
+      ].includes(path)
+    )
+      return fulfillJson(route, 200, []);
+    return fulfillJson(route, 404, {});
+  });
+  await page.goto("/preparation");
+  const navigation = page.getByRole("navigation", {
+    name: "Primary navigation",
+  });
+  for (const name of [
+    "Preparation",
+    "Seats",
+    "Accounts",
+    "Bindings",
+    "Devices",
+    "Enrollment",
+    "Targets",
+  ]) {
+    const link = navigation.getByRole("link", { name, exact: true });
+    await link.click();
+    await expect(link).toHaveAttribute("aria-current", "page");
+    await expect(navigation.locator('a[aria-current="page"]')).toHaveCount(1);
+    await expect(navigation.locator("a.bg-primary")).toHaveCount(1);
+    await expect(link).toHaveClass(/bg-primary/);
+    const inactive = navigation
+      .getByRole("link")
+      .filter({ hasNotText: name })
+      .first();
+    expect(
+      await link.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      ),
+    ).not.toBe(
+      await inactive.evaluate(
+        (element) => getComputedStyle(element).backgroundColor,
+      ),
+    );
+  }
+  await page.goBack();
+  await expect(
+    navigation.getByRole("link", { name: "Enrollment", exact: true }),
+  ).toHaveAttribute("aria-current", "page");
+  await page.reload();
+  await expect(navigation.locator('a[aria-current="page"]')).toHaveText(
+    "Enrollment",
+  );
+  await expect(navigation.locator("a.bg-primary")).toHaveCount(1);
+});
+
 test("failed login surfaces the coded error", async ({ page }) => {
   await page.route("**/api/v2/**", (route) => {
     const request = route.request();

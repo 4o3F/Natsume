@@ -169,6 +169,143 @@ async function uploadWorkbook(page: Page) {
   await expect(page.getByText("Pending import", { exact: true })).toBeVisible();
 }
 
+async function workbookTransfer(page: Page, names = ["roster.xlsx"]) {
+  return page.evaluateHandle(
+    ({ bytes, names, type }) => {
+      const transfer = new DataTransfer();
+      for (const name of names)
+        transfer.items.add(new File([new Uint8Array(bytes)], name, { type }));
+      return transfer;
+    },
+    { bytes: Array.from(workbook), names, type: mediaType },
+  );
+}
+
+for (const width of [1440, 390]) {
+  test(`workbook upload card supports drag and drop at ${width}`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 1000 });
+    await mockPreparationApi(page);
+    let held: Route | undefined;
+    let uploads = 0;
+    await page.route("**/api/v2/imports", (route) => {
+      if (route.request().method() === "POST") {
+        uploads += 1;
+        held = route;
+        return;
+      }
+      return route.fallback();
+    });
+    await page.goto("/preparation");
+    const zone = page.getByRole("group", { name: "XLSX upload", exact: true });
+    await expect(
+      zone.getByText("Drag & drop your XLSX file here", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "Preparation", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await page.screenshot({
+      path: testInfo.outputPath(`preparation-upload-${width}.png`),
+      fullPage: true,
+      animations: "disabled",
+    });
+    const transfer = await workbookTransfer(page);
+    await zone.dispatchEvent("dragenter", { dataTransfer: transfer });
+    await expect(
+      zone.getByText("Drop your workbook here", { exact: true }),
+    ).toBeVisible();
+    await zone.dispatchEvent("drop", { dataTransfer: transfer });
+    await expect(zone.getByText("roster.xlsx", { exact: true })).toBeVisible();
+    await expect(zone).toContainText("KiB");
+    expect(uploads).toBe(0);
+    await expect(
+      page.getByRole("button", { name: "Create preview", exact: true }),
+    ).toBeEnabled();
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath(`preparation-selected-${width}.png`),
+      fullPage: true,
+      animations: "disabled",
+    });
+    await page
+      .getByRole("button", { name: "Create preview", exact: true })
+      .click();
+    await expect.poll(() => Boolean(held)).toBe(true);
+    await expect(page.getByLabel("XLSX file")).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Uploading...", exact: true }),
+    ).toBeDisabled();
+    await zone.dispatchEvent("drop", { dataTransfer: transfer });
+    expect(uploads).toBe(1);
+    expect(held!.request().postDataBuffer()).toEqual(workbook);
+    await held!.fallback();
+    await expect(
+      page.getByText("Pending import", { exact: true }),
+    ).toBeVisible();
+    await transfer.dispose();
+  });
+}
+
+test("workbook card supports click and keyboard selection and rejects invalid files", async ({
+  page,
+}) => {
+  await mockPreparationApi(page);
+  let uploads = 0;
+  page.on("request", (request) => {
+    if (
+      new URL(request.url()).pathname === "/api/v2/imports" &&
+      request.method() === "POST"
+    )
+      uploads += 1;
+  });
+  await page.goto("/preparation");
+  const input = page.getByLabel("XLSX file");
+  const zone = page.getByRole("group", { name: "XLSX upload", exact: true });
+  for (const interaction of ["click", "keyboard"]) {
+    const chooserReady = page.waitForEvent("filechooser");
+    if (interaction === "click") await input.click();
+    else {
+      await input.focus();
+      await page.keyboard.press("Enter");
+    }
+    const chooser = await chooserReady;
+    await chooser.setFiles({
+      name: "roster.xlsx",
+      mimeType: mediaType,
+      buffer: workbook,
+    });
+    await expect(zone.getByText("roster.xlsx", { exact: true })).toBeVisible();
+  }
+  for (const names of [["roster.csv"], ["first.xlsx", "second.xlsx"]]) {
+    const transfer = await workbookTransfer(page, names);
+    await zone.dispatchEvent("drop", { dataTransfer: transfer });
+    await expect(page.getByRole("alert")).toContainText(
+      "Choose one XLSX workbook",
+    );
+    await expect(
+      page.getByRole("button", { name: "Create preview", exact: true }),
+    ).toBeDisabled();
+    await transfer.dispose();
+  }
+  await input.setInputFiles({
+    name: "too-large.xlsx",
+    mimeType: mediaType,
+    buffer: Buffer.alloc(8 * 1024 * 1024 + 1),
+  });
+  await expect(page.getByRole("alert")).toContainText("Workbook too large");
+  await expect(
+    page.getByRole("button", { name: "Create preview", exact: true }),
+  ).toBeDisabled();
+  expect(uploads).toBe(0);
+  await uploadWorkbook(page);
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Workbook too large" }),
+  ).toHaveCount(0);
+});
+
 test("preparation empty state offers XLSX upload", async ({ page }) => {
   await mockPreparationApi(page);
   await page.goto("/preparation");

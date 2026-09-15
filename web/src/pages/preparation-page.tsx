@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import { Download, Eye, LoaderCircle } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -29,8 +30,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { WorkbookDropzone } from "@/pages/preparation-upload";
 import { PreparationLogos } from "@/pages/preparation-logos";
 import { RosterDiff } from "@/pages/preparation-diff";
 import type { PreparationPreview } from "@/pages/preparation-store";
@@ -225,17 +225,32 @@ export function PreparationPage() {
   const commitTokenAvailable =
     pending !== null && localPreview?.candidate_id === pending.candidate_id;
 
-  function submitUpload(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!selectedFile) {
+  function selectWorkbook(files: File[]) {
+    if (upload.isPending || files.length === 0) return;
+    setSelectedFile(null);
+    if (files.length !== 1 || !/\.xlsx$/i.test(files[0].name)) {
+      setNotice({
+        tone: "error",
+        title: "Choose one XLSX workbook",
+        detail: "Select or drop a single .xlsx file.",
+      });
       return;
     }
-    if (selectedFile.size > MAX_WORKBOOK_BYTES) {
+    if (files[0].size > MAX_WORKBOOK_BYTES) {
       setNotice({
         tone: "error",
         title: "Workbook too large",
         detail: "Choose an XLSX file no larger than 8 MiB.",
       });
+      return;
+    }
+    setNotice(null);
+    setSelectedFile(files[0]);
+  }
+
+  function submitUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedFile || upload.isPending) {
       return;
     }
     setNotice(null);
@@ -271,32 +286,37 @@ export function PreparationPage() {
             <CardTitle>Upload complete roster</CardTitle>
             <CardDescription>
               Use the Teams sheet in the template. Include every team, school,
-              seat and account, even when only passwords change. Maximum 8 MiB.
+              seat and account, even when only passwords change.
             </CardDescription>
           </CardHeader>
           <form onSubmit={submitUpload}>
-            <CardContent className="space-y-3">
-              <Label htmlFor="contest-xlsx">XLSX file</Label>
-              <Input
-                id="contest-xlsx"
-                type="file"
-                accept=".xlsx"
+            <CardContent>
+              <WorkbookDropzone
+                file={selectedFile}
                 disabled={upload.isPending}
-                onChange={(event) =>
-                  setSelectedFile(event.target.files?.[0] ?? null)
-                }
+                onSelect={selectWorkbook}
               />
-              <Button asChild variant="outline">
+            </CardContent>
+            <CardFooter className="mt-5 flex-wrap justify-between gap-3 border-t pt-5">
+              <Button asChild variant="outline" className="w-full sm:w-auto">
                 <a href="/api/v2/imports/template" download>
+                  <Download aria-hidden="true" />
                   Download Excel template
                 </a>
               </Button>
-            </CardContent>
-            <CardFooter className="mt-6">
               <Button
                 type="submit"
+                className="w-full sm:w-auto"
                 disabled={!selectedFile || upload.isPending}
               >
+                {upload.isPending ? (
+                  <LoaderCircle
+                    aria-hidden="true"
+                    className="animate-spin motion-reduce:animate-none"
+                  />
+                ) : (
+                  <Eye aria-hidden="true" />
+                )}
                 {upload.isPending ? "Uploading..." : "Create preview"}
               </Button>
             </CardFooter>

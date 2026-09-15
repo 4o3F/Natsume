@@ -12,7 +12,7 @@ import {
   CheckboxFilter,
   CheckboxFilterOption,
 } from "@/components/checkbox-filter";
-import { StatusIcon } from "@/components/device-status";
+import { RefreshCountdown, StatusIcon } from "@/components/device-status";
 
 import { TeamName, TeamSchool, type Team } from "@/components/roster-team";
 
@@ -115,6 +115,7 @@ export function SeatsPage() {
   const visibleRows = rows.filter((seat) =>
     seat.bound ? bindingFilter.bound : bindingFilter.unbound,
   );
+  const queries = [seats, accounts, bindings];
 
   return (
     <div className="min-w-0 space-y-4">
@@ -137,11 +138,24 @@ export function SeatsPage() {
             />
           ))}
         </CheckboxFilter>
-        {seats.data && bindings.data && (
-          <p className="text-sm text-muted-foreground">
-            {visibleRows.length} of {seats.data.length} seats
-          </p>
-        )}
+        <div className="ml-auto flex items-center gap-3">
+          {seats.data && bindings.data && (
+            <p className="text-sm text-muted-foreground">
+              {visibleRows.length} of {seats.data.length} seats
+            </p>
+          )}
+          <RefreshCountdown
+            resource="seat"
+            updatedAt={Math.min(
+              ...queries.map((query) =>
+                Math.max(query.dataUpdatedAt, query.errorUpdatedAt),
+              ),
+            )}
+            isFetching={queries.some((query) => query.isFetching)}
+            isPaused={queries.some((query) => query.isPaused)}
+            isError={queries.some((query) => query.isError)}
+          />
+        </div>
       </div>
       <DataState
         isLoading={seats.isLoading || accounts.isLoading || bindings.isLoading}
