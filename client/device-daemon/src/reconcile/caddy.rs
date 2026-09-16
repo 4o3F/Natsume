@@ -375,6 +375,9 @@ impl Caddy {
         binding: &ValidatedBindingContext,
         password: &str,
     ) -> String {
+        let credentials = Zeroizing::new(format!("{}:{password}", binding.domjudge_username));
+        let mut authorization = Zeroizing::new(String::from("Basic "));
+        STANDARD.encode_string(credentials.as_bytes(), &mut authorization);
         let password = Zeroizing::new(STANDARD.encode(password.as_bytes()));
         // The shared username alphabet excludes both Caddyfile environment
         // expansion and runtime placeholders; JSON quoting alone cannot do so.
@@ -388,6 +391,13 @@ impl Caddy {
 		reverse_proxy {} {{
 			header_up X-DOMjudge-Login {}
 			header_up X-DOMjudge-Pass {}
+		}}
+	}}
+	handle /api/* {{
+		reverse_proxy {} {{
+			header_up Authorization {}
+			header_up -X-DOMjudge-Login
+			header_up -X-DOMjudge-Pass
 		}}
 	}}
 	handle {{
@@ -405,6 +415,8 @@ impl Caddy {
             caddy_quote(domjudge_origin),
             caddy_quote(&binding.domjudge_username),
             caddy_quote(&password),
+            caddy_quote(domjudge_origin),
+            caddy_quote(&authorization),
             caddy_quote(domjudge_origin),
         )
     }
@@ -644,7 +656,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn ready_configuration_injects_credentials_only_in_login_handler() {
+    fn ready_configuration_scopes_web_and_api_credentials() {
         let password = "must-not-enter-mode-artifact";
         let binding = binding();
         let rendered =
@@ -652,18 +664,31 @@ pub(super) mod tests {
 
         assert_eq!(rendered.matches("header_up X-DOMjudge-Login").count(), 1);
         assert_eq!(rendered.matches("header_up X-DOMjudge-Pass").count(), 1);
+        assert_eq!(rendered.matches("header_up Authorization").count(), 1);
         assert!(rendered.contains(&STANDARD.encode(password)));
         let login = rendered
             .split("handle @login")
             .nth(1)
             .unwrap_or_else(|| panic!("login handler must be present"));
         assert!(login.contains("X-DOMjudge-Login"));
+        let api = rendered
+            .split("handle /api/*")
+            .nth(1)
+            .and_then(|tail| tail.split("\thandle {\n").next())
+            .unwrap_or_else(|| panic!("API handler must be present"));
+        assert!(api.contains(&format!(
+            "Basic {}",
+            STANDARD.encode(format!("{}:{password}", binding.domjudge_username))
+        )));
+        assert!(api.contains("header_up -X-DOMjudge-Login"));
+        assert!(api.contains("header_up -X-DOMjudge-Pass"));
         let default = rendered
             .split("\thandle {\n")
             .nth(1)
             .unwrap_or_else(|| panic!("default handler must be present"));
         assert!(default.contains("header_up -X-DOMjudge-Login"));
         assert!(default.contains("header_up -X-DOMjudge-Pass"));
+        assert!(!default.contains("header_up Authorization"));
     }
 
     #[test]
@@ -775,6 +800,7 @@ pub(super) mod tests {
             .timeout(Duration::from_secs(2))
             .build()?;
         let mut caddy = caddy();
+        caddy.binary_path = binary.clone();
         caddy.admin_socket_path = directory.path().join("admin.sock");
         caddy.configuration_path = directory.path().join("Caddyfile");
         for username in [
@@ -808,15 +834,48 @@ pub(super) mod tests {
                 .kill_on_drop(true)
                 .spawn()?;
             let url = format!("https://{}", caddy.gateway_hostname);
-            let result = assert_forwarded_credentials(&client, &url, &username).await;
+            let result =
+                assert_forwarded_credentials(&client, &url, &username, "password-canary").await;
             assert!(
                 result.is_ok(),
                 "Caddy credential forwarding failed: {result:?}; {}",
                 fs::read_to_string(&log_path)?
             );
+            assert_rotation_and_blocking(&caddy, &material, &origin, &binding, &client, &url)
+                .await?;
             process.kill().await?;
         }
         upstream_task.abort();
+        Ok(())
+    }
+
+    async fn assert_rotation_and_blocking(
+        caddy: &Caddy,
+        material: &GatewayMaterial,
+        origin: &str,
+        binding: &ValidatedBindingContext,
+        client: &Client,
+        url: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let rotated_password = "rotated:canary-\"{literal}-$é";
+        fs::write(
+            &caddy.configuration_path,
+            caddy.render_ready(material, origin, binding, rotated_password),
+        )?;
+        caddy.run_caddy("reload").await?;
+        assert_forwarded_credentials(client, url, &binding.domjudge_username, rotated_password)
+            .await?;
+
+        fs::write(
+            &caddy.configuration_path,
+            caddy.render_blocked(Some(material)),
+        )?;
+        caddy.run_caddy("reload").await?;
+        for path in ["/login", "/api/contests", "/api/contests/1/submissions"] {
+            let response = client.post(format!("{url}{path}")).send().await?;
+            assert_eq!(response.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.text().await?, "Natsume Gateway is blocked");
+        }
         Ok(())
     }
 
@@ -824,6 +883,7 @@ pub(super) mod tests {
         client: &Client,
         url: &str,
         username: &str,
+        password: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         timeout(Duration::from_secs(10), async {
             loop {
@@ -839,16 +899,24 @@ pub(super) mod tests {
             }
         })
         .await?;
-        for (path, is_login) in [
-            ("/login", true),
-            ("/login?next=%2F", true),
-            ("/", false),
-            ("/login/other", false),
+        for (path, is_login, is_api) in [
+            ("/login", true, false),
+            ("/login?next=%2F", true, false),
+            ("/", false, false),
+            ("/login/other", false, false),
+            ("/api/contests", false, true),
+            ("/api/contests/1/languages", false, true),
+            ("/api/contests/1/problems", false, true),
+            ("/api/contests/1/submissions", false, true),
+            ("/api/v4/contests?active=true", false, true),
+            ("/api", false, false),
+            ("/api-other/contests", false, false),
         ] {
             let response = client
                 .get(format!("{url}{path}"))
                 .header("X-DOMjudge-Login", "spoofed-username")
                 .header("X-DOMjudge-Pass", "spoofed-password")
+                .header("Authorization", "Basic spoofed")
                 .send()
                 .await?
                 .error_for_status()?
@@ -860,7 +928,7 @@ pub(super) mod tests {
                 .collect();
             for (name, expected) in [
                 ("X-DOMjudge-Login", username.to_owned()),
-                ("X-DOMjudge-Pass", STANDARD.encode("password-canary")),
+                ("X-DOMjudge-Pass", STANDARD.encode(password)),
             ] {
                 let values: Vec<_> = headers
                     .iter()
@@ -873,7 +941,59 @@ pub(super) mod tests {
                     assert!(values.is_empty(), "credential forwarded to {path}");
                 }
             }
+            let authorization: Vec<_> = headers
+                .iter()
+                .filter(|(key, _)| key.eq_ignore_ascii_case("Authorization"))
+                .map(|(_, value)| *value)
+                .collect();
+            let expected = if is_api {
+                format!(
+                    "Basic {}",
+                    STANDARD.encode(format!("{username}:{password}"))
+                )
+            } else {
+                "Basic spoofed".to_owned()
+            };
+            assert_eq!(authorization, [expected.as_str()], "{path}");
         }
+        assert_submission_upload(client, url, username, password).await
+    }
+
+    async fn assert_submission_upload(
+        client: &Client,
+        url: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let body = concat!(
+            "--submit-boundary\r\nContent-Disposition: form-data; name=\"problem\"\r\n\r\nA\r\n",
+            "--submit-boundary\r\nContent-Disposition: form-data; name=\"language\"\r\n\r\ncpp\r\n",
+            "--submit-boundary\r\nContent-Disposition: form-data; name=\"code[]\"; filename=\"A.cpp\"\r\n\r\nint main() {}\n\r\n",
+            "--submit-boundary\r\nContent-Disposition: form-data; name=\"code[]\"; filename=\"helper.h\"\r\n\r\n// extra file\n\r\n",
+            "--submit-boundary--\r\n"
+        );
+        let response = client
+            .post(format!("{url}/api/contests/1/submissions"))
+            .header(
+                "Content-Type",
+                "multipart/form-data; boundary=submit-boundary",
+            )
+            .body(body)
+            .send()
+            .await?
+            .error_for_status()?
+            .text()
+            .await?;
+        assert!(response.starts_with("POST /api/contests/1/submissions HTTP/1.1\r\n"));
+        assert!(response.ends_with(body));
+        assert!(
+            response
+                .lines()
+                .any(|line| line.eq_ignore_ascii_case(&format!(
+                    "Authorization: Basic {}",
+                    STANDARD.encode(format!("{username}:{password}"))
+                )))
+        );
         Ok(())
     }
 
@@ -892,7 +1012,7 @@ pub(super) mod tests {
                 };
                 let mut request = Vec::new();
                 let mut buffer = [0; 1024];
-                while !request.ends_with(b"\r\n\r\n") {
+                loop {
                     let Ok(count) = stream.read(&mut buffer).await else {
                         return;
                     };
@@ -900,6 +1020,21 @@ pub(super) mod tests {
                         return;
                     }
                     request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("Content-Length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
                 }
                 let response = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",

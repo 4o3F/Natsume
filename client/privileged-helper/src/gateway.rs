@@ -11,6 +11,7 @@ use serde_json::{Map, Value, json};
 
 const HOSTS: &str = "etc/hosts";
 const POLICY: &str = "etc/firefox/policies/policies.json";
+const SUBMIT: &str = "etc/natsume/submit.env";
 const BEGIN: &str = "# BEGIN NATSUME GATEWAY";
 const END: &str = "# END NATSUME GATEWAY";
 const MAX_FILE_SIZE: u64 = 1024 * 1024;
@@ -24,6 +25,13 @@ pub(super) fn configure(root: &Path, hostname: &str) -> Result<(), ResourceContr
     }
     let hosts = read_file(root, HOSTS)?.ok_or_else(|| rejected(HOSTS, "file is missing"))?;
     let policy = read_file(root, POLICY)?;
+    let submit = read_file(root, SUBMIT)?;
+    let submit_content = format!("SUBMITBASEURL='https://{hostname}/'\n");
+    let submit_changed = submit.as_ref().is_none_or(|(content, meta)| {
+        content != &submit_content
+            || meta.mode() & 0o7777 != 0o644
+            || meta.gid() != rustix::process::getegid().as_raw()
+    });
     let (new_hosts, previous) = hosts_content(&hosts.0, hostname)?;
     let mut document: Value = match &policy {
         Some((text, _)) => {
@@ -36,9 +44,9 @@ pub(super) fn configure(root: &Path, hostname: &str) -> Result<(), ResourceContr
     let policy_changed = policy.is_none() || document != original;
     let hosts_changed = new_hosts != hosts.0;
 
-    // Validate both inputs before any replacement. Each file is atomic; a failed
-    // pair is repaired by replay. Policy goes first so hosts retains the previous
-    // owned hostname until its browser references have been migrated.
+    // Validate all inputs before any replacement. Each file is atomic; failures
+    // are repaired by replay. Hosts goes last to retain the previous owned hostname
+    // until its browser references and submit settings have been migrated.
     if policy_changed {
         let content = serde_json::to_string_pretty(&document)
             .map_err(|_| rejected(POLICY, "cannot serialize policy"))?
@@ -50,6 +58,9 @@ pub(super) fn configure(root: &Path, hostname: &str) -> Result<(), ResourceContr
             policy.as_ref().map(|(_, meta)| meta),
         )?;
     }
+    if submit_changed {
+        replace(root, SUBMIT, &submit_content, None)?;
+    }
     if hosts_changed {
         replace(root, HOSTS, &new_hosts, Some(&hosts.1))?;
     }
@@ -57,6 +68,7 @@ pub(super) fn configure(root: &Path, hostname: &str) -> Result<(), ResourceContr
         gateway_hostname = hostname,
         hosts_changed,
         policy_changed,
+        submit_changed,
         "local Gateway settings synchronized"
     );
     Ok(())

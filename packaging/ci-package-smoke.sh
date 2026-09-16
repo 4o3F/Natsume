@@ -115,7 +115,7 @@ CARGO_TARGET_DIR="${production_target}" cargo build \
   -p natsume-server
 pnpm --filter @natsume/web build
 
-export VERSION="${VERSION:-2.5.0~ci1}"
+export VERSION="${VERSION:-2.6.0~ci1}"
 export ARCH="${ARCH:-amd64}"
 export RUST_RELEASE_DIR="${production_release}"
 export CADDY_BIN="${caddy_binary}"

@@ -9,6 +9,11 @@ fn fixture() -> tempfile::TempDir {
         HOSTS,
         "127.0.0.1 localhost\n::1 localhost ip6-localhost\n192.0.2.4 upstream GATEWAY.TEST. other # keep comment\n192.0.2.5 unrelated\n",
     );
+    write(
+        dir.path(),
+        "etc/natsume/submit.env",
+        "SUBMITBASEURL='https://domjudge/'\n",
+    );
     write(dir.path(), POLICY, &json!({"policies": {
         "Homepage": {"URL": "https://domjudge/"},
         "Bookmarks": [
@@ -84,17 +89,24 @@ fn daemon_hostname_applies_without_config_file_and_preserves_metadata() {
         (meta.uid(), meta.gid(), meta.mode()),
         (new_meta.uid(), new_meta.gid(), new_meta.mode())
     );
+    assert_eq!(
+        text(root, "etc/natsume/submit.env"),
+        "SUBMITBASEURL='https://gateway.test/'\n"
+    );
 }
 
 #[test]
-fn repeated_startup_does_not_rewrite_either_file() {
+fn repeated_startup_does_not_rewrite_managed_files() {
     let dir = fixture();
     apply(dir.path(), "gateway.test");
-    let before: Vec<_> = [HOSTS, POLICY]
+    let before: Vec<_> = [HOSTS, POLICY, "etc/natsume/submit.env"]
         .map(|path| fs::metadata(dir.path().join(path)).unwrap_or_else(|e| panic!("metadata: {e}")))
         .into();
     apply(dir.path(), "gateway.test");
-    for (path, old) in [HOSTS, POLICY].into_iter().zip(before) {
+    for (path, old) in [HOSTS, POLICY, "etc/natsume/submit.env"]
+        .into_iter()
+        .zip(before)
+    {
         let new = fs::metadata(dir.path().join(path)).unwrap_or_else(|e| panic!("metadata: {e}"));
         assert_eq!(
             (old.ino(), old.mtime(), old.mtime_nsec()),
@@ -110,6 +122,10 @@ fn hostname_change_removes_old_owned_mapping_and_browser_references() {
     apply(dir.path(), "next.test");
     assert!(!text(dir.path(), HOSTS).contains("gateway.test"));
     assert!(!text(dir.path(), POLICY).contains("gateway.test"));
+    assert_eq!(
+        text(dir.path(), "etc/natsume/submit.env"),
+        "SUBMITBASEURL='https://next.test/'\n"
+    );
     assert_eq!(text(dir.path(), HOSTS).matches("next.test").count(), 2);
     assert_eq!(
         policy(dir.path())["policies"]["Permissions"]["Notifications"]["Allow"],
@@ -139,7 +155,7 @@ fn missing_firefox_policy_is_created_without_home_or_certificate_inputs() {
 }
 
 #[test]
-fn invalid_files_leave_both_target_files_untouched() {
+fn invalid_files_leave_target_files_untouched() {
     for (path, content) in [
         (HOSTS, "# BEGIN NATSUME GATEWAY\n127.0.0.1 old.test"),
         (HOSTS, "# END NATSUME GATEWAY\n"),
@@ -158,6 +174,10 @@ fn invalid_files_leave_both_target_files_untouched() {
             "{path}"
         );
         assert_eq!(before, [text(dir.path(), HOSTS), text(dir.path(), POLICY)]);
+        assert_eq!(
+            text(dir.path(), "etc/natsume/submit.env"),
+            "SUBMITBASEURL='https://domjudge/'\n"
+        );
     }
 }
 
@@ -169,6 +189,7 @@ fn invalid_daemon_hostname_is_rejected_before_writing_files() {
         "192.0.2.1",
         "https://gateway.test/",
         "Gateway.test",
+        "gateway'$(id).test",
         "gateway.test.",
         "gateway.test\n192.0.2.1 injected.test",
     ] {
@@ -187,7 +208,13 @@ fn invalid_daemon_hostname_is_rejected_before_writing_files() {
 
 #[test]
 fn untrusted_files_and_parent_symlinks_are_rejected_before_changes() {
-    for path in [HOSTS, POLICY, "etc/firefox"] {
+    for path in [
+        HOSTS,
+        POLICY,
+        "etc/firefox",
+        "etc/natsume/submit.env",
+        "etc/natsume",
+    ] {
         let dir = fixture();
         let before = text(dir.path(), HOSTS);
         let target = dir.path().join(path);
@@ -210,16 +237,51 @@ fn untrusted_files_and_parent_symlinks_are_rejected_before_changes() {
 }
 
 #[test]
-fn interrupted_pair_replays_without_losing_old_notification_origin() {
+fn submit_settings_are_created_and_kept_readable_without_deployment_config() {
+    let dir = fixture();
+    let path = dir.path().join("etc/natsume/submit.env");
+    fs::remove_file(&path).unwrap_or_else(|e| panic!("remove: {e}"));
+    apply(dir.path(), "gateway.test");
+    assert!(!dir.path().join("etc/natsume/config.toml").exists());
+    assert_eq!(
+        text(dir.path(), "etc/natsume/submit.env"),
+        "SUBMITBASEURL='https://gateway.test/'\n"
+    );
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+        .unwrap_or_else(|e| panic!("mode: {e}"));
+    apply(dir.path(), "gateway.test");
+    let meta = fs::metadata(&path).unwrap_or_else(|e| panic!("metadata: {e}"));
+    assert_eq!(meta.mode() & 0o7777, 0o644);
+    assert_eq!(meta.uid(), rustix::process::geteuid().as_raw());
+    assert_eq!(meta.gid(), rustix::process::getegid().as_raw());
+
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o666))
+        .unwrap_or_else(|e| panic!("mode: {e}"));
+    let before = [text(dir.path(), HOSTS), text(dir.path(), POLICY)];
+    assert!(matches!(
+        configure(dir.path(), "next.test"),
+        Err(ResourceControlError::Rejected(_))
+    ));
+    assert_eq!(before, [text(dir.path(), HOSTS), text(dir.path(), POLICY)]);
+}
+
+#[test]
+fn interrupted_updates_replay_without_losing_old_notification_origin() {
     let dir = fixture();
     apply(dir.path(), "gateway.test");
     let old_hosts = text(dir.path(), HOSTS);
+    let old_submit = text(dir.path(), "etc/natsume/submit.env");
     apply(dir.path(), "next.test");
-    // Simulate policy replacement completing before hosts replacement failed.
+    // Simulate policy replacement completing before submit and hosts replacement failed.
     write(dir.path(), HOSTS, &old_hosts);
+    write(dir.path(), "etc/natsume/submit.env", &old_submit);
     apply(dir.path(), "next.test");
     assert!(!text(dir.path(), HOSTS).contains("gateway.test"));
     assert!(!text(dir.path(), POLICY).contains("gateway.test"));
+    assert_eq!(
+        text(dir.path(), "etc/natsume/submit.env"),
+        "SUBMITBASEURL='https://next.test/'\n"
+    );
 }
 
 #[test]

@@ -40,6 +40,7 @@
 | 输入/显示故障 | 输出/分辨率变化、compositor 无响应或前台能力异常时撤销错误就绪；后台暂停绘制不判故障；恢复后真实输入有效，waiting 故障只按有界预算重建自身 |
 | PAM/入口 | 真实 auth/account/open_session 正负例；固定入口、普通密码/指纹/智能卡、SSH 密码/密钥/证书、TTY、cron/at、other 缺服务/phase、polkit/linger 全部覆盖；管理员 SSH/TTY/root 维护仍可用 |
 | Gateway 域名与浏览器 | 使用自定义 `[site].gateway_hostname` 冷启动：日志完成本机设置同步，getent 仅返回 loopback；实际 Firefox 的 about:policies 无错误，主页和 Contest Site 书签均打开该 HTTPS 域名。修改配置并重启 Daemon/Firefox，旧受管 hosts 记录消失、新域名生效；重复启动无重复项，其他地址/策略/CA 保留；Home reset 后仍正确 |
+| 命令行提交 | `teams` 无 `.netrc`、未登录 Firefox 时，从普通终端及 IDE 终端运行 `submit A.cpp`，能读取比赛/语言/题目，确认后得到提交 ID，DOMjudge 中队伍及代码正确；多文件同样成功。使用自定义 Gateway 域名、更名后已有终端、Home reset、错误 CA、代理环境、改密、解绑和关闭访问分别复测；公开 `submit.env` 为 root:root/0644，地址随 Daemon 同步且没有凭据；BLOCKED 不到达上游 |
 | 模板/reset | 打开实际 Browser/IDE、修改默认文件并写 canary；reset 后默认恢复、canary 消失，waiting 数据/设备身份/凭据保留 |
 | 维护 | GDM 正常重启、发行版 GDM/PAM 升级及 Client/配置交接后复查前台、门禁、实际画面/输入、配置持久性和无旧链回写 |
 

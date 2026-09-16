@@ -47,6 +47,8 @@ Gateway 域名由 Natsume 运行时管理：Daemon 启动时从 `config.toml` �
 
 镜像提供 Firefox 基础策略及 CA 信任，使用以上系统策略路径；配置和策略路径应为 root 所有的普通文件/真实目录，仅允许 root 用户/组写入，不能使用符号链接，建议文件 0644、目录 0755。缺失的 Firefox 策略文件/目录由 Helper 创建。不要在登录脚本或 Home 模板中回写旧主页。若换用 Snap 等 Firefox 打包形式，须验证该路径被实际加载，不能只验证 JSON 文件存在。
 
+同一次 Gateway 同步还会生成 root:root/0644 的 `/etc/natsume/submit.env`，内容为 `SUBMITBASEURL='https://<gateway_hostname>/'`。它仅包含公开地址，由 Helper 独占维护，不作为 autoinstall 输入或镜像预置文件。镜像提供固定版本的 DOMjudge `submit` 脚本及薄启动器：每次调用读取该文件，以系统 Python 和 `python3-requests` 执行上游脚本，仅为该进程设置 `REQUESTS_CA_BUNDLE=/etc/natsume/trust/local-origin-ca.crt`，并将 Gateway 域名加入代理绕过列表。不能依赖登录 shell 继承的旧地址，不能将队伍密码写入 `.netrc` 或 Home 模板；Caddy 在 READY 时为 `/api/*` 注入当前 Binding 的 Basic 认证，BLOCKED 时统一拒绝访问。
+
 Server root key、CA 私钥、每设备控制/网关私钥不进入交接包或可克隆镜像。首次启动前，`/var/lib/natsume/{identity,control,keys,state}` 与 `/var/lib/natsume-privileged/home-reset` 不得携带运行状态；允许包初始化空目录。不要把已运行工位清空后当作可信新镜像来源。已部署工位的升级必须保留这些状态，不能套用新镜像初始化清理。
 
 按发行版机制准备首次生成的 machine-id。Natsume 自身首次身份还依赖真实机器硬件证据，使用程序内固定的 UUIDv5 命名空间，部署方无需生成站点 UUID。同样的硬件证据在不同部署中得到相同 Hardware ID。QEMU 克隆须配置独立、有效的 SMBIOS/系统及主板标识，不能让多台工位共享同一硬件身份。身份就绪并连上 Server 后，Provisioning window 为 Open 时自动批准 Enrollment，Closed 时等待管理员审批，再由 waiting 的 Agent 进行 Binding；包非交互安装不等于注册或业务授权。

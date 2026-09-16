@@ -378,6 +378,11 @@ mod tests {
             .unwrap_or_else(|e| panic!("hosts: {e}"));
         assert!(hosts.contains("127.0.0.1 other.test"));
         assert!(!hosts.contains("gateway.test"));
+        assert_eq!(
+            fs::read_to_string(fixture.path().join("etc/natsume/submit.env"))
+                .unwrap_or_else(|e| panic!("submit settings: {e}")),
+            "SUBMITBASEURL='https://other.test/'\n"
+        );
 
         let identity = match proxy.derive_machine_identity().await {
             Ok(identity) => identity,
