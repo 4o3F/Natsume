@@ -25,6 +25,7 @@ done
 
 python3 packaging/check-image-inputs.py
 python3 packaging/check-maintainer-scripts.py
+python3 packaging/client/check-avatar.py
 
 session_kiosk_source='packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf'
 test -f "${session_kiosk_source}" || fail 'GNOME Kiosk Agent drop-in is missing'
@@ -42,6 +43,8 @@ tool_root="${work_root}/tools"
 extract_root="${work_root}/extract"
 output_root="${NATSUME_PACKAGE_OUTPUT:-${repository_root}/dist/packages/ci}"
 mkdir -p "${tool_root}" "${extract_root}" "${output_root}"
+export AUTHOR_AVATAR_FILE="${work_root}/author-avatar.png"
+python3 packaging/client/prepare-avatar.py "${AUTHOR_AVATAR_FILE}"
 
 caddy_version="$(tr -d '[:space:]' <packaging/client/caddy.version)"
 nfpm_version="$(tr -d '[:space:]' <packaging/nfpm.version)"
@@ -112,7 +115,7 @@ CARGO_TARGET_DIR="${production_target}" cargo build \
   -p natsume-server
 pnpm --filter @natsume/web build
 
-export VERSION="${VERSION:-2.4.4~ci1}"
+export VERSION="${VERSION:-2.5.0~ci1}"
 export ARCH="${ARCH:-amd64}"
 export RUST_RELEASE_DIR="${production_release}"
 export CADDY_BIN="${caddy_binary}"
@@ -123,7 +126,7 @@ unset SITE_CONFIG CONTROL_CA_CERT LOCAL_ORIGIN_CA_CERT
 # shellcheck disable=SC2016
 server_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR}'
 # shellcheck disable=SC2016
-client_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN}'
+client_variables='${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN} ${AUTHOR_AVATAR_FILE}'
 server_config="${work_root}/server.nfpm.yaml"
 client_config="${work_root}/client.nfpm.yaml"
 envsubst "${server_variables}" <packaging/server/nfpm.yaml >"${server_config}"
@@ -183,6 +186,7 @@ for path in \
   /usr/lib/natsume/natsume-privileged-helper \
   /usr/bin/natsume-session-agent \
   /usr/lib/natsume/caddy \
+  /usr/share/natsume/author-avatar.png \
   /usr/lib/systemd/system/natsume-device-daemon.service \
   /usr/lib/systemd/system/natsume-privileged-helper.service \
   /usr/lib/systemd/system/natsume-caddy.service \
@@ -204,6 +208,8 @@ grep -E '^-rwxr-xr-x .*\./usr/bin/natsume-device-daemon$' "${work_root}/client.c
   fail 'device daemon package mode is not 0755'
 grep -E '^-rwxr-xr-x .*\./usr/lib/natsume/caddy$' "${work_root}/client.contents" >/dev/null ||
   fail 'Caddy package mode is not 0755'
+grep -E '^-rw-r--r-- .*\./usr/share/natsume/author-avatar.png$' "${work_root}/client.contents" >/dev/null ||
+  fail 'author avatar package mode is not 0644'
 grep -E '^-rw-r--r-- .*\./usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf$' \
   "${work_root}/client.contents" >/dev/null ||
   fail 'GNOME Kiosk Agent drop-in package mode is not 0644'
@@ -253,6 +259,8 @@ fi
 
 dpkg-deb --extract "${server_deb}" "${extract_root}/server"
 dpkg-deb --extract "${client_deb}" "${extract_root}/client"
+cmp "${AUTHOR_AVATAR_FILE}" "${extract_root}/client/usr/share/natsume/author-avatar.png" ||
+  fail 'packaged author avatar differs from the downloaded image'
 
 client_caddyfile="${extract_root}/client/etc/natsume/caddy/bootstrap.caddyfile"
 client_caddy_unit="${extract_root}/client/usr/lib/systemd/system/natsume-caddy.service"

@@ -226,6 +226,14 @@ pub fn apply_pending() -> Result<(), slint::PlatformError> {
     }
 }
 
+fn load_author_avatar(window: &SessionWindow) {
+    let path = std::path::Path::new("/usr/share/natsume/author-avatar.png");
+    match slint::Image::load_from_path(path) {
+        Ok(image) => window.set_author_avatar(image),
+        Err(error) => tracing::warn!(%error, "Packaged author avatar is unavailable"),
+    }
+}
+
 /// Applies one typed Daemon snapshot to the lazily created Session Agent window.
 ///
 /// Must be called on the Slint event-loop thread: the window handle lives in a
@@ -244,6 +252,7 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window
     } else {
         let window = SessionWindow::new()?;
+        load_author_avatar(&window);
         let placeholder = std::path::Path::new("/usr/share/natsume/waiting.png");
         if placeholder.is_file()
             && let Ok(logo) = slint::Image::load_from_path(placeholder)

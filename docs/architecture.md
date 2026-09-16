@@ -1268,7 +1268,7 @@ Daemon 独立处理展示：完整目标验证成功后立即发布文字，后�
 
 SessionUiSnapshot 携带非秘密 WaitingTeam、Daemon 管理的图片路径和 offline 标识。文字／图片更新推进 UI revision，由现有首帧观测确认；默认图也可正常 ready。Agent 失去 Device1 时保留展示并撤销 Binding 输入，重连必须重新注册；快照及首帧均携带注册 lease ID，旧 lease 的帧不能确认新注册。RegisterSessionAgent 显式检查本地协议版本 3，WSS 只接受 `natsume.control.v3`；不提供旧协议适配。Client Deb 依赖 Noto CJK 字体。
 
-waiting 使用纯黑背景，中央展示放大的学校 Logo 与双语校名，底栏左侧为双语队名、右侧突出座位号；离线图标与文字固定在右上角。单一语言不重复显示；长名称可换行／滚动，座位号保持可见。Web Accounts 和 Seats 展示同一导入资料的队伍、学校和 Logo，缺图与设备离线分别显示。 未绑定的座位输入页采用暖色双栏，界面统一称“座位 / seat”；自动聚焦输入，Enter、键盘按钮和鼠标共享当前 negotiation/epoch 提交入口，空值禁用。等待确认时隐藏输入；不存在、未关联和已占用座位使用可读提示，不把内部错误码作为产品文案。
+waiting 使用纯黑背景，中央展示放大的学校 Logo 与双语校名，底栏左侧为双语队名、右侧突出座位号；离线图标与文字固定在右上角。占位和已绑定 Waiting 页左上角显示 Project Natsume，下方显示 by、头像与作者 ID 4o3F；打包阶段从公开 Gravatar 资料拉取 512×512 头像，作为 Client Deb 的只读文件交付，Agent 仅在窗口创建时本地加载，不依赖运行时联网，不占用队伍展示区域。单一语言不重复显示；长名称可换行／滚动，座位号保持可见。Web Accounts 和 Seats 展示同一导入资料的队伍、学校和 Logo，缺图与设备离线分别显示。 未绑定的座位输入页采用暖色双栏，界面统一称“座位 / seat”；自动聚焦输入，Enter、键盘按钮和鼠标共享当前 negotiation/epoch 提交入口，空值禁用。等待确认时隐藏输入；不存在、未关联和已占用座位使用可读提示，不把内部错误码作为产品文案。
 
 Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文字说明和无障碍名称，不维护手写 SVG 路径。导入预览中的队伍、学校、座位、映射、绑定影响及 Logo 表格在同一容器内处理横纵滚动，并固定表头；避免嵌套 overflow 容器使 sticky 失效。高度和尺寸使用 Tailwind 预定义值。
 

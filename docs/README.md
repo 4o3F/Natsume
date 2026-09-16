@@ -6,7 +6,7 @@
 | --- | --- |
 | [目标架构与实施计划](architecture.md) | 全系统职责、协议、数据、安全边界和工作包验收 |
 | [从零部署与运维手册](operations-deployment.zh-CN.md) | 创建 CA、Ubuntu Server 安装、源码构建 Client Deb、部署输入交接、注册验收与备份恢复 |
-| [v2.4.4 发布说明](releases/v2.4.4.md) | 数据库并发限流、Logo 校验缓存及上传、导航与座位刷新改进 |
+| [v2.5.0 发布说明](releases/v2.5.0.md) | Waiting 项目标识、作者署名与打包阶段内置高清头像 |
 | [GNOME 双会话 PRD](prd-gnome-dual-session.zh-CN.md) | 产品范围、会话/Home 行为、AT-01～26 和测量口径 |
 | [镜像交付要求](gnome-session-image-requirements.zh-CN.md) | IMG-01～08、镜像构建顺序和最终交付条件 |
 | [镜像配置附录](gnome-session-image-configuration.zh-CN.md) | 正式输入的目标路径、权限、归属和接入位置 |

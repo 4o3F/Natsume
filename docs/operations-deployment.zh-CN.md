@@ -724,10 +724,12 @@ export VERSION='2.3.2'
 export ARCH='amd64'
 export RUST_RELEASE_DIR="$CARGO_TARGET_DIR/release"
 export CADDY_BIN="$NATSUME_TOOL_DIR/caddy"
+export AUTHOR_AVATAR_FILE="$NATSUME_TOOL_DIR/author-avatar.png"
 
 python3 packaging/check-image-inputs.py
+python3 packaging/client/prepare-avatar.py "$AUTHOR_AVATAR_FILE"
 mkdir -p dist/packages
-envsubst '$ARCH $VERSION $RUST_RELEASE_DIR $CADDY_BIN' \
+envsubst '$ARCH $VERSION $RUST_RELEASE_DIR $CADDY_BIN $AUTHOR_AVATAR_FILE' \
   < packaging/client/nfpm.yaml > "$NATSUME_TOOL_DIR/client.nfpm.yaml"
 "$NATSUME_TOOL_DIR/nfpm" package --packager deb \
   --config "$NATSUME_TOOL_DIR/client.nfpm.yaml" --target dist/packages/
