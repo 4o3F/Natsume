@@ -33,30 +33,60 @@ Natsume is not a judging system or a general-purpose remote administration tool.
 
 The Web screenshots below show the actual panel with synthetic API fixtures, not a live contest. Seat setup and Waiting are native Slint UI previews with sample data. These illustrate the interface, not deployment or scale acceptance. Click any image to view it at full resolution.
 
-| Preparation                                                                                                                                                      | Enrollment                                                                                                                                            |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [<img src="docs/screenshots/preparation.png" alt="Preparation Center with XLSX drop zone and school-logo checks" width="480">](docs/screenshots/preparation.png) | [<img src="docs/screenshots/enrollment.png" alt="Closed enrollment window with pending device reviews" width="480">](docs/screenshots/enrollment.png) |
-| Import the complete roster, check school logos, and export for DOMjudge.                                                                                         | See the approval policy at a glance and review new devices.                                                                                           |
-
-| Accounts                                                                                                                                                  | Seats                                                                                                                                            |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [<img src="docs/screenshots/accounts.png" alt="Accounts with username, seat, team, and school search fields" width="480">](docs/screenshots/accounts.png) | [<img src="docs/screenshots/seats.png" alt="Seats with bound and unbound filters and color-coded rows" width="480">](docs/screenshots/seats.png) |
-| Find bilingual team and school records alongside their DOMjudge accounts.                                                                                 | Spot unbound seats and keep seat assignments visible.                                                                                            |
-
-| Devices                                                                                                                                                 | Bindings                                                                                                                                 |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| [<img src="docs/screenshots/devices.png" alt="Device lifecycle filters and resource convergence indicators" width="480">](docs/screenshots/devices.png) | [<img src="docs/screenshots/bindings.png" alt="Seat-to-device bindings with unbind actions" width="480">](docs/screenshots/bindings.png) |
-| Inspect connectivity, lifecycle state, and resource readiness.                                                                                          | Review seat-to-device assignments and release a binding when needed.                                                                     |
-
-| Targets                                                                                                                                                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [<img src="docs/screenshots/targets.png" alt="Targets with bulk controls, submission results, and device state" width="960">](docs/screenshots/targets.png) |
-| Apply fleet-wide targets and distinguish submission from device convergence.                                                                                |
-
-| Seat setup                                                                                                                                                               | Waiting screen                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| [<img src="docs/screenshots/seat-setup.png" alt="Native seat-binding screen with seat code A-108 and confirmation button" width="480">](docs/screenshots/seat-setup.png) | [<img src="docs/screenshots/waiting.png" alt="Native Waiting screen with project attribution, team, school, seat, and Offline indicator" width="480">](docs/screenshots/waiting.png) |
-| Enter the workstation seat code to associate it with the assigned team.                                                                                                  | Display the bound team, school, and seat while waiting for the contest.                                                                                                              |
+<!-- Screenshot contract: 1440 x 1080 viewport at 2x scale; PNGs are 2880 x 2160. Keep one equal-column table and never stretch or crop captures. -->
+<table width="100%">
+  <tr>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/preparation.png"><img src="docs/screenshots/preparation.png" alt="Preparation: Upload XLSX rosters and check school logos." width="288"></a><br>
+      <strong>Preparation</strong><br>
+      Upload XLSX rosters and check school logos.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/enrollment.png"><img src="docs/screenshots/enrollment.png" alt="Enrollment: Review new devices and control enrollment." width="288"></a><br>
+      <strong>Enrollment</strong><br>
+      Review new devices and control enrollment.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/accounts.png"><img src="docs/screenshots/accounts.png" alt="Accounts: Search usernames, seats, teams, and schools." width="288"></a><br>
+      <strong>Accounts</strong><br>
+      Search usernames, seats, teams, and schools.
+    </td>
+  </tr>
+  <tr>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/seats.png"><img src="docs/screenshots/seats.png" alt="Seats: Find bound and unbound seats at a glance." width="288"></a><br>
+      <strong>Seats</strong><br>
+      Find bound and unbound seats at a glance.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/bindings.png"><img src="docs/screenshots/bindings.png" alt="Bindings: Review or clear a seat binding." width="288"></a><br>
+      <strong>Bindings</strong><br>
+      Review or clear a seat binding.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/devices.png"><img src="docs/screenshots/devices.png" alt="Devices: Check connectivity and resource readiness." width="288"></a><br>
+      <strong>Devices</strong><br>
+      Check connectivity and resource readiness.
+    </td>
+  </tr>
+  <tr>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/targets.png"><img src="docs/screenshots/targets.png" alt="Targets: Submit targets and inspect per-device results." width="288"></a><br>
+      <strong>Targets</strong><br>
+      Submit targets and inspect per-device results.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/seat-setup.png"><img src="docs/screenshots/seat-setup.png" alt="Seat setup: Bind this workstation to its assigned seat." width="288"></a><br>
+      <strong>Seat setup</strong><br>
+      Bind this workstation to its assigned seat.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/waiting.png"><img src="docs/screenshots/waiting.png" alt="Waiting screen: Show the bound team, school, and seat." width="288"></a><br>
+      <strong>Waiting screen</strong><br>
+      Show the bound team, school, and seat.
+    </td>
+  </tr>
+</table>
 
 ## Architecture
 
