@@ -9,7 +9,7 @@ Workstation orchestration for on-site programming contests.
 
 Natsume connects a contest roster, physical seats, managed Ubuntu workstations, and DOMjudge through one operator panel. Prepare the roster, enroll devices, bind them to seats, and manage the waiting screen and contest desktop from a central Server.
 
-[Feature gallery](#feature-gallery) · [Architecture](#architecture) · [Documentation](#core-documentation) · [Development](#get-started-in-development)
+[Feature gallery](#feature-gallery) · [Acknowledgements](#acknowledgements) · [Architecture](#architecture) · [Documentation](#core-documentation) · [Development](#get-started-in-development)
 
 ## Project goals
 
@@ -87,6 +87,10 @@ The Web screenshots below show the actual panel with synthetic API fixtures, not
     </td>
   </tr>
 </table>
+
+## Acknowledgements
+
+Special thanks to my good friend [@Runa798](https://github.com/Runa798) for generously covering the project's LLM costs and supporting its development.
 
 ## Architecture
 
