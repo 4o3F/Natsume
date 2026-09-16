@@ -4,7 +4,8 @@ use std::{
     ffi::OsString,
     fmt,
     fs::{self, File},
-    io::{self, Cursor, Read},
+    io::{self, Cursor, Read, Seek},
+    os::unix::fs::MetadataExt as _,
     path::{Path, PathBuf},
     sync::{
         Arc, LazyLock,
@@ -20,6 +21,76 @@ use rustix::fs::{Mode, OFlags};
 const MAX_LOGO_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_LOGO_DIMENSION: u32 = 4096;
 const MAX_LOGO_PIXELS: u64 = 4 * 1024 * 1024;
+
+/// Identity and change metadata for an opened logo, not a content digest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LogoFingerprint {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: (i64, i64),
+    changed: (i64, i64),
+}
+
+/// An opened logo whose metadata and validation use the same file descriptor.
+pub struct LogoFile {
+    file: File,
+}
+
+impl LogoFile {
+    /// Open a readable regular file without following a final symlink.
+    ///
+    /// # Errors
+    /// Rejects unreadable/nonregular files and files exceeding the byte limit.
+    pub fn open(path: &Path) -> Result<Self, LogoError> {
+        let descriptor = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|error| {
+            if error == rustix::io::Errno::LOOP {
+                LogoError::NotRegularFile
+            } else {
+                LogoError::Read(error.into())
+            }
+        })?;
+        let source = Self {
+            file: File::from(descriptor),
+        };
+        source.fingerprint()?;
+        Ok(source)
+    }
+
+    /// Inspect the currently opened file, even if its path has been replaced.
+    ///
+    /// # Errors
+    /// Returns metadata errors, nonregular-file errors and byte-limit errors.
+    pub fn fingerprint(&self) -> Result<LogoFingerprint, LogoError> {
+        let metadata = self.file.metadata().map_err(LogoError::Read)?;
+        if !metadata.is_file() {
+            return Err(LogoError::NotRegularFile);
+        }
+        if metadata.len() > MAX_LOGO_BYTES {
+            return Err(LogoError::TooLarge);
+        }
+        Ok(LogoFingerprint {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+        })
+    }
+
+    /// Fully validate this opened file with the normal content and image limits.
+    ///
+    /// # Errors
+    /// Returns the same read/format/dimension/resource errors as [`validate_logo`].
+    pub fn validate(&mut self) -> Result<(), LogoError> {
+        decode_logo(&mut self.file).map(|_| ())
+    }
+}
 
 /// A directory snapshot indexed by exact filename stem. No recursive scanning.
 pub struct LogoDirectory {
@@ -197,26 +268,12 @@ impl DecodedLogo {
 /// Rejects unreadable/nonregular files, malformed or unsupported content and
 /// images exceeding the same byte, dimension and resource limits as preflight.
 pub fn read_logo(path: &Path) -> Result<DecodedLogo, LogoError> {
-    let descriptor = rustix::fs::open(
-        path,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|error| {
-        if error == rustix::io::Errno::LOOP {
-            LogoError::NotRegularFile
-        } else {
-            LogoError::Read(error.into())
-        }
-    })?;
-    let file = File::from(descriptor);
-    let metadata = file.metadata().map_err(LogoError::Read)?;
-    if !metadata.is_file() {
-        return Err(LogoError::NotRegularFile);
-    }
-    if metadata.len() > MAX_LOGO_BYTES {
-        return Err(LogoError::TooLarge);
-    }
+    let mut source = LogoFile::open(path)?;
+    decode_logo(&mut source.file)
+}
+
+fn decode_logo(file: &mut File) -> Result<DecodedLogo, LogoError> {
+    file.rewind().map_err(LogoError::Read)?;
     let mut bytes = Vec::new();
     file.take(MAX_LOGO_BYTES + 1)
         .read_to_end(&mut bytes)

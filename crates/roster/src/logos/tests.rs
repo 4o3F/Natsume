@@ -11,6 +11,22 @@ fn checked<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("test setup failed: {error:?}"))
 }
 
+#[test]
+fn opened_logo_keeps_one_descriptor_when_the_path_is_replaced() {
+    let root = checked(TempDir::new());
+    let path = root.path().join("logo.png");
+    write_image(&path, ImageFormat::Png);
+    let mut source = checked(LogoFile::open(&path));
+    let old = checked(source.fingerprint());
+    let replacement = root.path().join("replacement.png");
+    checked(fs::write(&replacement, "invalid"));
+    checked(fs::rename(replacement, &path));
+    checked(source.validate());
+    checked(source.validate());
+    assert_ne!(checked(checked(LogoFile::open(&path)).fingerprint()), old);
+    assert!(validate_logo(&path).is_err());
+}
+
 fn write_image(path: &Path, format: ImageFormat) {
     checked(DynamicImage::new_rgb8(8, 8).save_with_format(path, format));
 }

@@ -1,8 +1,8 @@
 use std::{io, path::Path};
 
-use natsume_roster::{LogoDirectory, LogoImage, LogoMatch, read_logo, validate_logo};
+use natsume_roster::{LogoDirectory, LogoImage, LogoMatch, read_logo};
 
-use super::{ContestComponent, ExportError, OrganizationDetails};
+use super::{ContestComponent, ExportError, OrganizationDetails, logo_cache::LogoValidationCache};
 
 #[derive(Clone, Copy)]
 pub(crate) enum LogoStatus {
@@ -30,12 +30,13 @@ impl ContestComponent {
             .try_acquire_owned()
             .map_err(|_| ExportError::Busy)?;
         let directory = self.logo_directory.clone();
+        let validation = self.logo_validation.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let index = open_directory(&directory)?;
             Ok(organizations
                 .into_iter()
-                .map(|organization| observe(index.as_ref(), organization))
+                .map(|organization| observe(index.as_ref(), organization, &validation))
                 .collect())
         })
         .await
@@ -69,15 +70,19 @@ impl ContestComponent {
     }
 }
 
-fn observe(index: Option<&LogoDirectory>, organization: OrganizationDetails) -> LogoObservation {
+fn observe(
+    index: Option<&LogoDirectory>,
+    organization: OrganizationDetails,
+    validation: &LogoValidationCache,
+) -> LogoObservation {
     let (status, paths, detail) = match resolve(index, &organization) {
         LogoMatch::Missing => (LogoStatus::Missing, vec![], None),
         LogoMatch::Ambiguous(paths) => (LogoStatus::Ambiguous, paths, None),
-        LogoMatch::Unique(path) => match validate_logo(&path) {
+        LogoMatch::Unique(path) => match validation.validate(&path) {
             Ok(()) => (LogoStatus::Available, vec![path], None),
             Err(error) => {
                 tracing::warn!(organization_id = organization.organization_id, path = %path.display(), %error, "School logo could not be read");
-                (LogoStatus::Invalid, vec![path], Some(error.to_string()))
+                (LogoStatus::Invalid, vec![path], Some(error))
             }
         },
     };

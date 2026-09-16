@@ -10,6 +10,7 @@ use crate::{
 
 mod db;
 mod export;
+mod logo_cache;
 mod logos;
 mod roster;
 
@@ -51,6 +52,7 @@ pub(crate) struct ContestComponent {
     vault: Arc<crate::vault::VaultSession>,
     logo_directory: PathBuf,
     image_work: Arc<Semaphore>,
+    logo_validation: Arc<logo_cache::LogoValidationCache>,
     export_work: Arc<Semaphore>,
 }
 
@@ -65,6 +67,7 @@ impl ContestComponent {
             vault,
             logo_directory,
             image_work: Arc::new(Semaphore::new(4)),
+            logo_validation: Arc::new(logo_cache::LogoValidationCache::default()),
             export_work: Arc::new(Semaphore::new(1)),
         }
     }

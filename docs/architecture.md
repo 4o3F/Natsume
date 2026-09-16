@@ -1245,6 +1245,13 @@ strict XLSX parse
 
 源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。`natsume-roster` 共享实际内容识别、限额、解码和 SVG 渲染，拒绝符号链接和外部 SVG 资源。目录与图片失败通过 tracing 记录路径和原因。
 
+Logo 列表的完整校验结果由 Contest 私有缓存，已提交名单和候选共用，最多 1024 个路径，
+按近期使用淘汰，不保留版本历史、图片字节、解码像素或名单权限。每次仍重扫目录、重新匹配名称，
+并以可读、非符号链接的同一文件句柄检查 dev/ino/size/mtime/ctime；指纹不变才复用结果。
+同路径并发未命中在既有 4 个 image workers 内串行校验并共享结果，全局缓存锁不跨 I/O。
+校验前后指纹变化、临时读取错误和超过 4 KiB 的错误文案不入缓存；Missing/Ambiguous 每次重新判断。
+图片下载、ETag 和 ZIP 导出仍完整读取/校验，不使用列表缓存代替当前数据或授权判断。
+
 Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其根模块的非秘密契约，Import 保留全部名单写权限。导出从同一数据库 read transaction 读取全量学校、队伍、映射和加密 vault records，关闭事务后才解密并打包。一个 export worker 生成最多 256 MiB 的内存 ZIP；四个 image workers 处理目录观测／图像请求，阻塞 IO 和转码不占据异步控制循环。
 
 管理员 `GET /api/v2/exports/domjudge` 返回 groups.json、organizations.json、teams.json、accounts.yaml 和当前名单中全部可用的 `logos/INST-xxx.png`。重复导出使用固定排序和持久 ID；只改密时只影响 accounts.yaml。密码只进入这份管理员下载，响应 no-store，不落 Server 临时文件或浏览器持久存储。缺图／歧义不写入导出且不阻塞；匹配到的损坏／不可读／超限图片中止整包，并给出学校、源文件和原因。栅格转 PNG 保留尺寸和透明通道，SVG 以自然画布／96 DPI 渲染；源文件不改动。

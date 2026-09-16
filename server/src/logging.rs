@@ -150,6 +150,7 @@ pub(crate) mod tests {
     }
 
     pub(crate) struct SubscriberTestGuard {
+        _unscoped_dispatch: tracing::Dispatch,
         _guard: MutexGuard<'static, ()>,
     }
 
@@ -157,10 +158,17 @@ pub(crate) mod tests {
         /// Serialises tests that install a scoped subscriber because `tracing`
         /// caches callsite interest process-globally.
         pub(crate) fn acquire() -> Self {
+            let guard = SUBSCRIBER_TEST_LOCK
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
             Self {
-                _guard: SUBSCRIBER_TEST_LOCK
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner),
+                // Keep a second dispatcher registered without installing it.
+                // tracing's single-dispatcher fast path otherwise caches only
+                // the unscoped thread's interest on a concurrent first use.
+                _unscoped_dispatch: tracing::Dispatch::new(
+                    tracing::subscriber::NoSubscriber::default(),
+                ),
+                _guard: guard,
             }
         }
     }
@@ -211,6 +219,48 @@ pub(crate) mod tests {
                 buffer: Arc::clone(&self.buffer),
             }
         }
+    }
+
+    #[test]
+    fn scoped_subscriber_observes_callsites_first_used_by_an_unscoped_thread()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "NATSUME_TRACING_CALLSITE_TEST_CHILD";
+
+        fn emit() {
+            tracing::debug!("first-unscoped-callsite-canary");
+        }
+
+        if std::env::var_os(CHILD).is_none() {
+            // A fresh process guarantees that no other test has registered a
+            // dispatcher or this callsite before the unscoped worker uses it.
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "logging::tests::scoped_subscriber_observes_callsites_first_used_by_an_unscoped_thread",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "isolated callsite test failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+
+        let _subscriber_guard = SubscriberTestGuard::acquire();
+        let captured = CapturedLogs::default();
+        let dispatcher = tracing::Dispatch::new(captured.subscriber(LogLevel::Debug));
+        std::thread::spawn(emit)
+            .join()
+            .unwrap_or_else(|_| panic!("unscoped worker panicked"));
+        tracing::dispatcher::with_default(&dispatcher, emit);
+        let output = captured.text().map_err(|()| TestFailure::CaptureFailed)?;
+        assert_eq!(output.matches("first-unscoped-callsite-canary").count(), 1);
+        Ok(())
     }
 
     #[test]

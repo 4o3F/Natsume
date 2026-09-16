@@ -1384,7 +1384,25 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let mut png = Vec::new();
     std::io::Read::read_to_end(&mut zip.by_name("logos/INST-001.png")?, &mut png)?;
     assert_eq!(png, image.body);
+    let observed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
+        "available"
+    );
     fs::remove_file(&source)?;
+    let observed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
+        "missing"
+    );
     let missing = drive(&application, request(Method::GET, public_logo, "")?).await?;
     assert_eq!(missing.status, StatusCode::NOT_FOUND);
     assert_eq!(missing.headers[header::CACHE_CONTROL], "no-store");
@@ -1393,7 +1411,51 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(new_image.status, StatusCode::OK);
     assert_ne!(header_text(&new_image.headers, &header::ETAG)?, etag);
     assert_eq!(new_image.body, fs::read(&source)?);
+    let observed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
+        "available"
+    );
+    let duplicate = logos.path().join(format!(
+        "{}.png",
+        schools[0]["name_en"]
+            .as_str()
+            .ok_or("English school name missing")?
+    ));
+    fs::copy(&source, &duplicate)?;
+    let observed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
+        "ambiguous"
+    );
+    fs::remove_file(duplicate)?;
+    let observed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
+        "available"
+    );
     fs::write(&source, "corrupt")?;
+    let observed = drive(
+        &application,
+        cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
+    )
+    .await?;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
+        "invalid"
+    );
     let failed = drive(
         &application,
         cookie_request(Method::GET, "/api/v2/exports/domjudge", cookie)?,
