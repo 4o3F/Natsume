@@ -6,7 +6,7 @@
 > 适用范围：Natsume V2 全系统
 > 实施策略：预发布 flag day；协议、数据库、Server、Client、Web 与测试同步切换
 
-本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。功能 PRD 补充产品范围与验收，部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。GNOME 双会话的产品范围见[功能 PRD](prd-gnome-dual-session.zh-CN.md)。
+本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。镜像接入、配置输入和验收说明统一维护在 [packaging/image](../packaging/image/README.md)。
 
 本文描述的是目标状态，不是完成声明。当前代码与本文冲突时，冲突属于待实施债务，不能反向限制目标架构。
 
@@ -634,11 +634,11 @@ Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm
 
 整个准备由固定 root unit 在既有 40 秒内执行并记录阶段，退出或未知结果后重读真实会话。GDM 继续拥有 worker、display 和桌面；缺失注册回执不授权终止不明 greeter，也不能凭 SessionManager Running 提前开始登录。失败保留明确阶段和错误，有条件时返回 waiting；调用者退出不代表已开始的 GDM 登录被取消。
 
-系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属、管理员会话影响和实际对照见 [IMG-02 停止顺序](gnome-session-image-requirements.zh-CN.md#img-02-stop-order)。这不改变普通前台切换或 Home 维护的所有权。
+系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属和管理员会话影响见[镜像实施要求 IMG-02](../packaging/image/integration.md)。这不改变普通前台切换或 Home 维护的所有权。
 
-镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。Natsume只调用已有会话API，不在运行时调整该配置或终止getty；配置和验证边界见 [IMG-02 图形VT隔离](gnome-session-image-requirements.zh-CN.md#img-02-vt)。
+镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。Natsume只调用已有会话API，不在运行时调整该配置或终止getty；配置和验证边界见[镜像实施要求 IMG-02](../packaging/image/integration.md)。
 
-当前测试镜像不是最终版。账号、GDM/PAM 接入、实际 Kiosk dconf profile、Wayland/空闲显示、正式 Home 模板与旧 OOBE 退出等镜像侧要求，统一记录在 [镜像交付要求](gnome-session-image-requirements.zh-CN.md)，具体文件与接入方式见[配置附录](gnome-session-image-configuration.zh-CN.md)。正式输入唯一维护在 [packaging/image](../packaging/image/README.md)，随 Client Deb 安装到 `/usr/share/natsume/image-integration/`；镜像构建按清单应用 UID、上游栈和模板相关配置，不依赖忽略的 VM 目录。IMG-01～08 是镜像必需交付项；历史 VM 证据不代替最终镜像验收。
+账号、GDM/PAM 接入、实际 Kiosk dconf profile、Wayland/空闲显示、正式 Home 模板与旧 OOBE 退出等镜像侧要求，统一记录在[镜像实施要求](../packaging/image/integration.md)，具体文件、权限与接入方式见[部署清单](../packaging/image/manifest.tsv)。正式输入唯一维护在 [packaging/image](../packaging/image/README.md)，随 Client Deb 安装到 `/usr/share/natsume/image-integration/`；镜像构建按清单应用 UID、上游栈和模板相关配置，不依赖忽略的 VM 目录。IMG-01～08 是镜像必需交付项；历史 VM 证据不代替[最终镜像验收](../packaging/image/acceptance.md)。
 
 waiting 不可用时报告切换失败，必要时显示 greeter；不得以锁住 contest 冒充“显示等待界面”成功。故障修复只恢复 waiting，普通前台切换不触发重建。
 
@@ -1573,12 +1573,12 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - Control Endpoint由安装配置确定，赛事期间不轮换；
 - Runtime Config只远程下发DOMjudge origin；
 - 工作站目标基线是 Ubuntu Client 镜像、官方 GDM/GNOME + 原生 Wayland，固定 waiting/contest 两个独立会话；禁止嵌套桌面和图形组件 patch；
-- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；自动登录不得反复抢占后续greeter，每次GDM启动初始化一次自动登录的官方配置见[IMG-02](gnome-session-image-requirements.zh-CN.md#img-02-autologin)，Daemon不运行时改写该配置；
+- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；自动登录不得反复抢占后续greeter，每次GDM启动初始化一次自动登录的官方配置见[镜像实施要求 IMG-02](../packaging/image/integration.md)，Daemon不运行时改写该配置；
 - waiting 使用官方 GNOME Kiosk 和独立 dconf profile，不启动比赛桌面的 GNOME Shell/ArcMenu；contest 保持完整 GNOME 和独立配置并关闭自动锁屏。未绑定的等待界面可使用随包静态图；已绑定展示队伍、学校和 Logo，断线保留缓存并显示离线标识；
 - `environment.d`、PAM、Kiosk session/用户服务、dconf、Wayland 及 Home 恢复依赖随镜像交付；Home 维护不停止全局 GDM；
-- 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护按[镜像维护要求](gnome-session-image-requirements.zh-CN.md#maintenance)完成控制连接退出、状态备份和整套恢复验证；
+- 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护按[镜像实施要求中的维护与回退流程](../packaging/image/integration.md)完成控制连接退出、状态备份和整套恢复验证；
 - Client 持续安装，卸载不作为本次交付门槛；已有包移除脚本保留，不据此拆分镜像输入的所有权；
-- 镜像拥有具名 PAM 入口及 `other` fallback 的受管账号限制；删除 Client 的固定服务文件后仍不能回退到普通密码登录。缺失 PAM 服务或阶段必须仍拒绝受管登录，具体范围见[镜像维护范围](gnome-session-image-requirements.zh-CN.md#maintenance-remove)；
+- 镜像拥有具名 PAM 入口及 `other` fallback 的受管账号限制；删除 Client 的固定服务文件后仍不能回退到普通密码登录。缺失 PAM 服务或阶段必须仍拒绝受管登录，具体范围见[镜像实施要求 IMG-03](../packaging/image/integration.md)；
 - Server目标是单Ubuntu Server节点；
 - 确切OS point release、kernel和package evidence由部署测试记录，不写入业务状态机；
 - 更换Client镜像必须重新验证identity、Session、Home、IME、Caddy和package lifecycle；

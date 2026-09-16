@@ -38,7 +38,7 @@ complete configuration and CA files supplied by deployment.
 The contest role uses Unix user `teams` and `/home/teams`; waiting uses `waiting`
 and `/home/waiting`. Protocol/CLI role tokens and `gdm-contest` remain `contest`.
 The Client stays installed; this handoff does not depend on an uninstall workflow.
-The [image requirements](../docs/gnome-session-image-requirements.zh-CN.md) define
+The [image integration requirements](image/integration.md) define
 all IMG-01–08 delivery obligations. Release checks and evidence requirements are
 in the [image acceptance guide](image/acceptance.md).
 

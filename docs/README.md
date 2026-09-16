@@ -1,15 +1,14 @@
 # 文档索引
 
-`docs/` 保存长期维护的架构、产品要求、部署和维护说明。架构权威仍只有 [architecture.md](architecture.md)；其他文档落实产品行为或部署要求，不另建架构规则。
+`docs/` 保存长期维护的架构、部署运维、可选方案和发布说明。架构权威仍只有 [architecture.md](architecture.md)；镜像接入、配置输入和验收说明统一维护在 [packaging/image](../packaging/image/README.md)，不再重复维护独立的功能 PRD 或镜像配置附录。
 
 | 文档 | 用途 |
 | --- | --- |
 | [目标架构与实施计划](architecture.md) | 全系统职责、协议、数据、安全边界和工作包验收 |
 | [从零部署与运维手册](operations-deployment.zh-CN.md) | 创建 CA、Ubuntu Server 安装、源码构建 Client Deb、部署输入交接、注册验收与备份恢复 |
 | [v2.5.0 发布说明](releases/v2.5.0.md) | Waiting 项目标识、作者署名与打包阶段内置高清头像 |
-| [GNOME 双会话 PRD](prd-gnome-dual-session.zh-CN.md) | 产品范围、会话/Home 行为、AT-01～26 和测量口径 |
-| [镜像交付要求](gnome-session-image-requirements.zh-CN.md) | IMG-01～08、镜像构建顺序和最终交付条件 |
-| [镜像配置附录](gnome-session-image-configuration.zh-CN.md) | 正式输入的目标路径、权限、归属和接入位置 |
+| [镜像接入与交付](../packaging/image/README.md) | 完整交接包、IMG-01～08、配置输入、构建顺序和维护要求 |
+| [镜像验收标准](../packaging/image/acceptance.md) | AT-01～26、测量口径、证据要求和最终交付条件 |
 | [Wayland KMS 桌面串流方案](wayland-kms-streaming.zh-CN.md) | 经授权的比赛工位可选无门户提示画面观测、SRT 传输与验收 |
 | [Agent 文档规则](agents/domain.md) | 领域术语、架构权威和文档阅读规则 |
 | [Agent Issue 工作流](agents/issue-tracker.md) | GitHub Issues 和技能工作流的仓库约定 |

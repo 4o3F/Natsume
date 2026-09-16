@@ -10,9 +10,7 @@ fail() {
 while IFS= read -r doc; do
   case ${doc} in
   docs/README.md | docs/architecture.md | docs/operations-deployment.zh-CN.md | \
-    docs/agents/domain.md | docs/agents/issue-tracker.md | \
-    docs/prd-gnome-dual-session.zh-CN.md | docs/wayland-kms-streaming.zh-CN.md | \
-    docs/gnome-session-image-requirements.zh-CN.md | docs/gnome-session-image-configuration.zh-CN.md) ;;
+    docs/agents/domain.md | docs/agents/issue-tracker.md | docs/wayland-kms-streaming.zh-CN.md) ;;
   docs/releases/*)
     [[ ${doc} =~ ^docs/releases/v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?\.md$ ]] ||
       fail "unexpected release document: ${doc}; use a versioned release filename"
