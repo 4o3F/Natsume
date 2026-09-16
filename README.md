@@ -90,6 +90,9 @@ Most operational and product documents are currently written in Chinese.
 
 ## Get started in development
 
+> [!WARNING]
+> The Server has undergone a human audit. Client development was AI-led, primarily using **GPT-6 Astra**, and the Client has **not undergone a complete human audit**. Its architecture and design still have shortcomings and need further human review and refinement.
+
 ### 1. Prepare the toolchain
 
 Use Linux; Ubuntu 24.04 is the deployment baseline. Install Git, rustup, Node.js **24.1.0**, pnpm **11.x**, `just`, and `prek` **0.5.0**. The repository pins Rust **1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml). On Ubuntu, the workspace's native build and test prerequisites include:
