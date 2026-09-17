@@ -1,3 +1,4 @@
+import { Fragment, type ReactNode } from "react";
 import {
   type ColumnDef,
   flexRender,
@@ -22,12 +23,14 @@ export function DataTable<TData, TValue>({
   data,
   rowClassName,
   getRowId,
+  renderExpandedRow,
   scrollable = false,
 }: {
   columns: ColumnDef<TData, TValue>[];
   data: TData[];
   rowClassName?: (row: TData) => string;
   getRowId?: (row: TData) => string;
+  renderExpandedRow?: (row: TData) => ReactNode;
   scrollable?: boolean;
 }) {
   // React Compiler is not enabled, so this diagnostic has no runtime consequence.
@@ -98,15 +101,33 @@ export function DataTable<TData, TValue>({
         </TableHeader>
         <TableBody>
           {table.getRowModel().rows?.length ? (
-            table.getRowModel().rows.map((row) => (
-              <TableRow key={row.id} className={rowClassName?.(row.original)}>
-                {row.getVisibleCells().map((cell) => (
-                  <TableCell key={cell.id}>
-                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                  </TableCell>
-                ))}
-              </TableRow>
-            ))
+            table.getRowModel().rows.map((row) => {
+              const expanded = renderExpandedRow?.(row.original);
+              return (
+                <Fragment key={row.id}>
+                  <TableRow className={rowClassName?.(row.original)}>
+                    {row.getVisibleCells().map((cell) => (
+                      <TableCell key={cell.id}>
+                        {flexRender(
+                          cell.column.columnDef.cell,
+                          cell.getContext(),
+                        )}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                  {expanded && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell
+                        colSpan={row.getVisibleCells().length}
+                        className="whitespace-normal"
+                      >
+                        {expanded}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </Fragment>
+              );
+            })
           ) : (
             <TableRow>
               <TableCell colSpan={columns.length} className="h-24 text-center">

@@ -334,6 +334,74 @@ test("seat sorting uses current binding and survives device polling", async ({
   ).toBeVisible();
 });
 
+for (const path of ["/devices", "/targets"]) {
+  test(`${path} expands details directly below the selected row`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    const fleet = targetFleet(3);
+    await mockTargets(context, fleet);
+    await page.goto(path);
+    const action = path === "/devices" ? "View" : "Manage";
+    const deviceRows = page.getByRole("row").filter({
+      has: page.getByRole("button", { name: action, exact: true }),
+    });
+    const firstRow = deviceRows.filter({ hasText: "machine-01" });
+    const secondRow = deviceRows.filter({ hasText: "machine-02" });
+    const firstButton = firstRow.getByRole("button", { name: action });
+    const secondButton = secondRow.getByRole("button", { name: action });
+    const firstDetails = firstRow.locator("xpath=following-sibling::tr[1]");
+    const secondDetails = secondRow.locator("xpath=following-sibling::tr[1]");
+
+    await firstButton.click();
+    await expect(firstDetails).toContainText(fleet[0].device_id);
+    await expect(firstButton).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("tbody > tr")).toHaveCount(4);
+    const detailCell = firstDetails.getByRole("cell");
+    await expect(detailCell).toHaveAttribute(
+      "colspan",
+      String(await firstRow.getByRole("cell").count()),
+    );
+    for (const width of [768, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(
+        await page.evaluate(() => document.documentElement.scrollWidth),
+      ).toBeLessThanOrEqual(width);
+    }
+    await page.screenshot({
+      path: testInfo.outputPath("inline-details.png"),
+      fullPage: true,
+    });
+
+    const sort = page.getByRole("button", { name: "Seat", exact: true });
+    await sort.click();
+    await sort.click();
+    await expect(deviceRows.first()).toContainText("machine-03");
+    await expect(firstDetails).toContainText(fleet[0].device_id);
+
+    await secondButton.click();
+    await expect(secondDetails).toContainText(fleet[1].device_id);
+    await expect(firstButton).toHaveAttribute("aria-expanded", "false");
+    await expect(
+      page.getByText(fleet[0].device_id, { exact: true }),
+    ).toHaveCount(0);
+    await secondButton.click();
+    await expect(secondButton).toHaveAttribute("aria-expanded", "false");
+    await expect(page.locator("tbody > tr")).toHaveCount(3);
+
+    if (path === "/targets") {
+      await firstButton.click();
+      await page
+        .getByRole("searchbox", { name: "Search devices" })
+        .fill("machine-02");
+      await expect(
+        page.getByText(fleet[0].device_id, { exact: true }),
+      ).toHaveCount(0);
+      await expect(deviceRows).toHaveCount(1);
+    }
+  });
+}
+
 for (const width of [768, 1024, 1440]) {
   test(`device refresh preserves a 200-row viewport at width ${width}`, async ({
     page,
@@ -1790,7 +1858,11 @@ test("revoking a selected device removes it from the default view but retains th
     0,
   );
   await selectDeviceStates(page, ["revoked"]);
-  await expect(page.locator("tbody tr")).toHaveCount(1);
+  await expect(
+    page.getByRole("row").filter({
+      has: page.getByRole("button", { name: "View", exact: true }),
+    }),
+  ).toHaveCount(1);
   await expect(
     page.getByRole("img", { name: "Lifecycle: revoked", exact: true }),
   ).toBeVisible();

@@ -1,10 +1,4 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { useMemo, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FolderSync, Monitor, MonitorPlay } from "lucide-react";
 
@@ -79,7 +73,6 @@ export function TargetsPage() {
   const results = submission.completed?.response.results;
   const targetsPending =
     submission.pending !== null || !submission.storageReady;
-  const panel = useRef<HTMLDivElement>(null);
   const devices = useQuery({
     queryKey: [...DEVICES_KEY, states],
     queryFn: async ({ signal }) =>
@@ -92,9 +85,6 @@ export function TargetsPage() {
     refetchInterval: LIST_POLL_MS,
     enabled: states.length > 0,
   });
-  const selectedDevice = devices.data?.find(
-    (device) => device.device_id === deviceId,
-  );
   const isAdmin = session?.role === "admin";
   const enabledDevices = useQuery({
     queryKey: [...DEVICES_KEY, ["enabled"]],
@@ -108,9 +98,6 @@ export function TargetsPage() {
     enabled: isAdmin,
     refetchInterval: LIST_POLL_MS,
   });
-  useEffect(() => {
-    if (deviceId) panel.current?.scrollIntoView({ block: "start" });
-  }, [deviceId]);
   const rows = useMemo(() => {
     const query = search.trim().toLowerCase();
     return (states.length === 0 ? [] : (devices.data ?? [])).filter(
@@ -257,8 +244,12 @@ export function TargetsPage() {
           size="sm"
           variant="outline"
           className="w-20"
-          aria-pressed={deviceId === row.original.device_id}
-          onClick={() => setDeviceId(row.original.device_id)}
+          aria-expanded={deviceId === row.original.device_id}
+          onClick={() =>
+            setDeviceId((current) =>
+              current === row.original.device_id ? "" : row.original.device_id,
+            )
+          }
         >
           {isAdmin ? "Manage" : "View"}
         </Button>
@@ -397,6 +388,48 @@ export function TargetsPage() {
             columns={columns}
             data={rows}
             getRowId={(device) => device.device_id}
+            renderExpandedRow={(device) =>
+              device.device_id === deviceId ? (
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between gap-4">
+                      <CardTitle>
+                        {seatCode(device) ?? "Unbound device"} ·{" "}
+                        {device.machine_hardware_id}
+                      </CardTitle>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setDeviceId("")}
+                      >
+                        Close details
+                      </Button>
+                    </div>
+                    <CardDescription className="break-all font-mono">
+                      {device.device_id}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <DeviceTargets
+                      key={deviceId}
+                      device={device}
+                      isAdmin={isAdmin}
+                      previous={
+                        devices.isFetching || devices.isError || targetsPending
+                      }
+                      disabled={targetsPending || device.state !== "enabled"}
+                      onSubmit={(operation) =>
+                        void targetSubmission.submit(targetAction(operation), {
+                          kind: "devices",
+                          device_ids: [device.device_id],
+                        })
+                      }
+                    />
+                  </CardContent>
+                </Card>
+              ) : null
+            }
             rowClassName={(device) =>
               device.state === "enabled"
                 ? connections[device.convergence.connection_state].row
@@ -425,48 +458,6 @@ export function TargetsPage() {
           )}
         </div>
       )}
-      <div ref={panel}>
-        {selectedDevice && (
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between gap-4">
-                <CardTitle>
-                  {seatCode(selectedDevice) ?? "Unbound device"} ·{" "}
-                  {selectedDevice.machine_hardware_id}
-                </CardTitle>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setDeviceId("")}
-                >
-                  Close details
-                </Button>
-              </div>
-              <CardDescription className="break-all font-mono">
-                {selectedDevice.device_id}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <DeviceTargets
-                key={deviceId}
-                device={selectedDevice}
-                isAdmin={isAdmin}
-                previous={
-                  devices.isFetching || devices.isError || targetsPending
-                }
-                disabled={targetsPending || selectedDevice.state !== "enabled"}
-                onSubmit={(operation) =>
-                  void targetSubmission.submit(targetAction(operation), {
-                    kind: "devices",
-                    device_ids: [selectedDevice.device_id],
-                  })
-                }
-              />
-            </CardContent>
-          </Card>
-        )}
-      </div>
     </div>
   );
 }

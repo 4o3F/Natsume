@@ -94,9 +94,6 @@ export function DevicesPage() {
       await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
-  const selectedDevice = devices.data?.find(
-    (device) => device.device_id === selectedDeviceId,
-  );
   const visibleDevices = states.length === 0 ? [] : (devices.data ?? []);
 
   const isAdmin = session?.role === "admin";
@@ -250,7 +247,14 @@ export function DevicesPage() {
             type="button"
             variant="outline"
             size="sm"
-            onClick={() => setSelectedDeviceId(row.original.device_id)}
+            aria-expanded={selectedDeviceId === row.original.device_id}
+            onClick={() =>
+              setSelectedDeviceId((current) =>
+                current === row.original.device_id
+                  ? null
+                  : row.original.device_id,
+              )
+            }
           >
             View
           </Button>
@@ -346,7 +350,7 @@ export function DevicesPage() {
       });
     }
     return columns;
-  }, [isAdmin, isUpdatingLifecycle, updateLifecycle]);
+  }, [isAdmin, isUpdatingLifecycle, updateLifecycle, selectedDeviceId]);
 
   return (
     <div className="min-w-0 space-y-6">
@@ -415,6 +419,11 @@ export function DevicesPage() {
               columns={columns}
               data={visibleDevices}
               getRowId={(device) => device.device_id}
+              renderExpandedRow={(device) =>
+                device.device_id === selectedDeviceId ? (
+                  <DeviceConvergence device={device} />
+                ) : null
+              }
               rowClassName={(device) =>
                 device.state !== "enabled"
                   ? "bg-muted/60 hover:bg-muted"
@@ -448,7 +457,6 @@ export function DevicesPage() {
               </span>
             </div>
           </div>
-          {selectedDevice && <DeviceConvergence device={selectedDevice} />}
         </div>
       </DataState>
     </div>
