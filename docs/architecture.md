@@ -383,8 +383,10 @@ Enrollment是`0x01`，Resume是`0x02`，缺失purpose非法；canonical Machine 
 Enrollment验签使用proof内exact `candidate_public_key`，Resume验签使用Server数据库
 选出的current control public key。
 
-transcript不依赖Prost或任意收到的wire bytes。Daemon/Agent版本和Enrollment evidence
-quality是经TLS传输的自报审核metadata，不属于identity proof。协议crate统一transcript、
+transcript不依赖Prost或任意收到的wire bytes。Daemon/Agent版本、可选`client_ip`和Enrollment evidence
+quality是经TLS传输的自报metadata，不属于identity proof。`client_ip`取本条控制连接的本地socket IP，
+缺失表示本次连接未上报；提供时必须是合法IP literal，Server按地址值规范化（含IPv4-mapped IPv6）。
+该可选字段与现有`natsume.control.v3`兼容。协议crate统一transcript、
 签名和strict verification，但不选择authority key，也不校验Enrollment/Resume的业务
 presence、ID、版本或状态组合。
 
@@ -403,7 +405,7 @@ production WSS route
       → Active full snapshots
 ```
 
-WSS route只移交socket和进程共享的`Arc<DeviceControl>`，不编排Device、
+WSS route只移交socket、socket观测的peer IP和进程共享的`Arc<DeviceControl>`，不编排Device、
 Provisioning、admission和Registry的中间步骤。`serve_connection`是单条连接的
 唯一application orchestration入口；admission的proof、pre-auth和ready barrier都不
 泄漏到transport或其他组件。连接期最终只向attach流程交付现有
@@ -474,11 +476,18 @@ revoke或control-key replacement的竞态，但完全封装在`device_control`�
 - Active写入最多等待5秒；写入超时或Server静默超时都结束lease，Client先切换本地数据面为BLOCKED再重连；若无法确认BLOCKED，Daemon失败退出，systemd硬终止Caddy并由其fail-closed bootstrap重启；
 - Server restart 使所有 lease 失效。
 
+Device Component持久化最近一次已认证连接的`client_ip`、`server_observed_ip`和
+`ip_observed_at_unix_ms`。两端地址和Server记录时间在同一事务内完整替换；Client本次未上报时
+清除上次自报值。DeviceActor在当前lease内串行提交，事务复查Enabled状态和current control key，
+旧连接、旧密钥及禁用后的连接不能覆盖记录。写入失败保留上次记录和时间并记录诊断日志，不改变
+控制authority。记录在断线和Server重启后保留，既有设备未采集时为未知；时间表示地址记录时刻，
+不表示最近心跳。地址属于诊断metadata，不参与identity、Target或Actual/convergence判定。
+
 Client首次连接随机等待0～5秒；连接、握手或短暂Active失败后的重试窗口依次为5、10、20、30秒，并在窗口内随机等待（full jitter），单次重试等待上限为30秒。只有进入Active至少60秒后仍收到当前session的合法Pong或有效Server状态，才重置为5秒窗口；TCP/TLS连接成功、等待审核和本地清理耗时均不触发重置。
 
 ### 8.4 Freshness barrier
 
-`SessionReady` 后第一条 Active frame 必须是完整、语义有效的 `ClientStateSnapshot`。在它全部通过边界校验前，任何组件不得写入。
+`SessionReady` 后第一条 Active frame 必须是完整、语义有效的 `ClientStateSnapshot`。在它全部通过边界校验前，任何资源组件不得写入业务Input/Target。连接地址诊断记录独立于资源收敛，以已认证连接为采集边界。
 
 Server 随后依次调用所有组件 `ingest`。只有全部组件成功后，当前 Actor 才把
 `initial_state_received` 设为 true 并生成完整 `ServerStateSnapshot`。
@@ -1343,6 +1352,14 @@ Devices 和 Targets 默认列出 Enabled/Disabled Device，以当前 Binding 的
 Session／Home convergence、foreground Target 和 Actual。单台操作通过该行详情进入；
 全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小
 范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
+
+Devices在行内详情展示双方IP和记录时间，支持复制；离线设备明确标为最近记录。
+双方地址均存在且不一致时，在现有Device单元格的标识右侧显示琥珀色警告图标；悬停或聚焦
+说明差异，点击展开该行详情，不新增IP列，也不覆盖连接状态的图标或行背景。
+Devices表格上方筛选面板包含默认折叠的Emergency区。导出独立读取完整Enabled/Disabled名单，包含
+离线设备，排除Revoked，不受页面筛选和搜索影响；使用持久化的Server观测IP，去重、固定排序，
+生成UTF-8纯文本，每行一个IP，无表头。展示唯一IP、离线、差异和缺失记录数量；缺失地址跳过，
+读取失败不生成文件，无地址时明确提示。双方IP不一致仅提示，不把两个地址同时加入批量操作名单。
 
 Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前按 Operator 身份在 sessionStorage
 保存原 operation ID 和完整非秘密请求。刷新后先确认登录身份再恢复，旧 scope 的回调不能

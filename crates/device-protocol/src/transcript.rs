@@ -97,6 +97,7 @@ mod tests {
             challenge_nonce: (0_u8..32).collect(),
         };
         let proof = ClientProof {
+            client_ip: None,
             daemon_version: "2.0.0".to_owned(),
             agent_version: "2.0.0".to_owned(),
             machine_hardware_id: "a9aa9d04-3ece-5567-8260-910930ff5e03".to_owned(),
@@ -126,6 +127,7 @@ mod tests {
         different_signature.signature = vec![0x55; 64];
         different_signature.daemon_version = "2.0.1".to_owned();
         different_signature.agent_version = "2.0.1".to_owned();
+        different_signature.client_ip = Some("192.0.2.1".to_owned());
         let Some(Purpose::Enrollment(attempt)) = different_signature.purpose.as_mut() else {
             panic!("fixture lost its Enrollment purpose");
         };

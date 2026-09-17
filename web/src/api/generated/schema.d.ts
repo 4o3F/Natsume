@@ -499,6 +499,18 @@ export interface components {
     };
     /** @enum {string} */
     DeviceListState: "enabled" | "disabled" | "revoked";
+    /** @description Address diagnostics for the most recently recorded Device control connection. */
+    DeviceNetworkResponse: {
+      /** @description Client-reported local IP, absent when the latest connection did not report it. */
+      client_ip?: string | null;
+      /**
+       * Format: int64
+       * @description Server address-recording time, not a last-heartbeat timestamp.
+       */
+      observed_at_unix_ms: number;
+      /** @description Canonical socket peer IP observed by the Server, without a port. */
+      server_observed_ip: string;
+    };
     /** @description Durable Device identity and lifecycle with its current complete convergence view. */
     DeviceResponse: {
       /** @description Current durable targets and latest validated Actual for this Device. */
@@ -512,6 +524,7 @@ export interface components {
        */
       evidence_quality: "medium" | "strong";
       machine_hardware_id: components["schemas"]["CanonicalUuidV5"];
+      network?: null | components["schemas"]["DeviceNetworkResponse"];
       /**
        * @description Closed durable Device lifecycle vocabulary exposed by the API.
        * @enum {string}

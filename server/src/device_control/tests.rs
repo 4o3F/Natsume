@@ -48,6 +48,65 @@ const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 const DOMJUDGE_ORIGIN: &str = "https://domjudge.example.test";
 
 #[tokio::test]
+async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x76; 32])).await;
+    let control = fixture.state.device_control();
+    let authority = control
+        .device
+        .find_current_authority(
+            MachineHardwareId::parse(MACHINE_HARDWARE_ID).ok_or("invalid machine")?,
+        )
+        .await?
+        .ok_or("missing authority")?;
+    let (outbound, _first_receiver) = mpsc::channel(1);
+    let (old_session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let (outbound, _current_receiver) = mpsc::channel(1);
+    let (session, _) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    handle
+        .record_network_addresses(
+            session,
+            authority,
+            "192.0.2.20".parse()?,
+            Some("192.0.2.20".parse()?),
+        )
+        .await;
+    handle
+        .record_network_addresses(old_session, authority, "192.0.2.99".parse()?, None)
+        .await;
+    handle.clear_lease_if_current(old_session).await;
+    assert!(matches!(
+        control.registry.read_connection_state(device_id).await,
+        DeviceConnectionState::AwaitingFreshState
+    ));
+    let saved = control
+        .device
+        .find_device(device_id)
+        .await?
+        .ok_or("missing Device")?
+        .network()
+        .ok_or("missing network")?;
+    assert_eq!(saved.server_observed_ip.to_string(), "192.0.2.20");
+    assert_eq!(saved.client_ip, Some(saved.server_observed_ip));
+    handle.clear_lease_if_current(session).await;
+    assert!(matches!(
+        control.registry.read_connection_state(device_id).await,
+        DeviceConnectionState::Offline
+    ));
+    assert_eq!(
+        control
+            .device
+            .find_device(device_id)
+            .await?
+            .ok_or("missing Device")?
+            .network(),
+        Some(saved)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
@@ -908,6 +967,31 @@ async fn closed_window_allows_manual_enrollment_and_a_complete_target() {
         .unwrap_or_else(|error| panic!("ServerActive decode failed: {error}"));
     assert_complete_target(active);
 
+    let device_id = fixture
+        .state
+        .device()
+        .find_current_authority(
+            MachineHardwareId::parse(MACHINE_HARDWARE_ID)
+                .unwrap_or_else(|| panic!("invalid machine")),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("authority: {error}"))
+        .unwrap_or_else(|| panic!("missing authority"))
+        .device_id();
+    let network = fixture
+        .state
+        .device()
+        .find_device(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("Device: {error}"))
+        .and_then(crate::component::device::DeviceProjection::network)
+        .unwrap_or_else(|| panic!("missing addresses"));
+    assert_eq!(network.server_observed_ip.to_string(), "127.0.0.1");
+    assert_eq!(
+        network.client_ip.map(|ip| ip.to_string()).as_deref(),
+        Some("127.0.0.2")
+    );
+
     drop(socket);
     server.abort();
 }
@@ -1356,6 +1440,7 @@ async fn full_manual_review_capacity_does_not_block_resume_or_existing_control()
         &signing_key,
         &challenge,
         ClientProof {
+            client_ip: None,
             daemon_version: "2.0.0".to_owned(),
             agent_version: "2.0.0".to_owned(),
             machine_hardware_id: MACHINE_HARDWARE_ID.to_owned(),
@@ -1442,7 +1527,11 @@ async fn connect(fixture: &Fixture) -> (TestSocket, tokio::task::JoinHandle<()>)
         std::path::Path::new("/natsume-wss-test-unused-web-root"),
     );
     let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, application).await;
+        let _ = axum::serve(
+            listener,
+            application.into_make_service_with_connect_info::<crate::tls::PeerAddress>(),
+        )
+        .await;
     });
 
     let mut request = format!("ws://{address}{CONTROL_ROUTE}")
@@ -1521,6 +1610,7 @@ async fn submit_enrollment_proof(socket: &mut TestSocket) {
         &signing_key,
         &challenge,
         ClientProof {
+            client_ip: Some("127.0.0.2".to_owned()),
             daemon_version: "2.0.0".to_owned(),
             agent_version: "2.0.0".to_owned(),
             machine_hardware_id: MACHINE_HARDWARE_ID.to_owned(),

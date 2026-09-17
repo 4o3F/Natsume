@@ -8,7 +8,7 @@ use crate::{
     db::{Database, DatabaseConfig},
     http,
     server_state::ServerState,
-    tls::TlsListener,
+    tls::{PeerAddress, TlsListener},
 };
 
 use super::CommandError;
@@ -91,10 +91,13 @@ where
         tracing::info!("graceful shutdown initiated");
     }
     .with_subscriber(dispatcher);
-    let result = axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .map_err(|_| CommandError::Http);
+    let result = axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<PeerAddress>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .map_err(|_| CommandError::Http);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }

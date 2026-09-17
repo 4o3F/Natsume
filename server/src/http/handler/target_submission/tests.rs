@@ -89,7 +89,7 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, "batch-admin", "batch-test-password").await?;
     fixture.database.write(|tx| {
-        tx.connection().batch_execute("INSERT INTO devices VALUES ('01900000-0000-7000-8000-000000000001','m1','strong','enabled',1), ('01900000-0000-7000-8000-000000000002','m2','strong','disabled',1);").map_err(|_| PersistenceError::OperationFailed)
+        tx.connection().batch_execute("INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES ('01900000-0000-7000-8000-000000000001','m1','strong','enabled',1), ('01900000-0000-7000-8000-000000000002','m2','strong','disabled',1);").map_err(|_| PersistenceError::OperationFailed)
     }).await.map_err(|e| format!("seed: {e:?}"))?;
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let path = "/api/v2/target-submissions";

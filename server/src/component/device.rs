@@ -4,6 +4,8 @@ mod enrollment;
 mod lifecycle;
 mod types;
 
+use std::net::IpAddr;
+
 use crate::db::{Database, PersistenceError, Transaction};
 
 use self::enrollment::EnrollmentReviewRegistry;
@@ -13,8 +15,8 @@ pub(crate) use self::enrollment::{
     ValidatedEnrollmentEvidence,
 };
 pub(crate) use self::types::{
-    ActivationError, ControlAuthority, ControlPublicKey, DeviceError, DeviceId, DeviceProjection,
-    DeviceState, EvidenceQuality, LifecycleOutcome, MachineHardwareId,
+    ActivationError, ControlAuthority, ControlPublicKey, DeviceError, DeviceId, DeviceNetworkInfo,
+    DeviceProjection, DeviceState, EvidenceQuality, LifecycleOutcome, MachineHardwareId,
 };
 
 /// Owns Device authority, lifecycle, and process-local Enrollment review invariants.
@@ -35,6 +37,35 @@ pub(crate) enum DeviceListFilter {
 }
 
 impl DeviceComponent {
+    /// Records one authenticated connection's complete address pair. The actor
+    /// serializes leases; this transaction also fences lifecycle/key replacement.
+    pub(crate) async fn record_network_addresses(
+        &self,
+        authority: ControlAuthority,
+        server_ip: IpAddr,
+        client_ip: Option<IpAddr>,
+    ) -> Result<(), DeviceError> {
+        self.database
+            .write(move |transaction| -> Result<(), PersistenceError> {
+                let device_id = authority.device_id();
+                let Some(device) = db::find_by_id(transaction, &device_id)? else {
+                    return Ok(());
+                };
+                if device.state() != DeviceState::Enabled
+                    || db::find_current_for_device(transaction, &device_id)?
+                        != Some(authority.control_public_key())
+                {
+                    return Ok(());
+                }
+                let now = db::current_unix_ms(transaction)?;
+                db::update_network_addresses(transaction, &device_id, server_ip, client_ip, now)?;
+                Ok(())
+            })
+            .await
+            .map_err(crate::db::TransactionError::into_error)
+            .map_err(DeviceError::from)
+    }
+
     pub(in crate::component) fn enabled_target_devices(
         transaction: &mut Transaction<'_>,
     ) -> Result<Vec<DeviceId>, PersistenceError> {

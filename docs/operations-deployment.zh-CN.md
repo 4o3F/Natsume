@@ -78,6 +78,17 @@ sudo timedatectl set-ntp true
 
 用现有防火墙和云安全组放行必要流量，先保留 SSH 入口再调整规则。Client Gateway 不应对其他机器开放。
 
+需要通过SSH批量排障时，在Web的Devices页展开筛选面板中的 **Emergency**，点击
+**Export all device IPs** 下载UTF-8文本，每行一个IP。导出包含全部Enabled/Disabled设备的
+最近Server观测地址（含离线设备），排除Revoked；搜索和列表筛选不缩小导出范围。文件已去重并
+排序，不包含用户名或SSH端口；按现场运维账号和端口交给并行SSH工具使用。
+
+Client同时上报控制连接实际使用的本地IP。双方地址不一致时，设备行的琥珀色警告图标可展开
+详情，查看和复制两个地址及记录时间；导出仍使用Server观测IP。地址在断线和Server重启后保留，
+新连接会更新整组记录。离线地址是最近记录，记录时间不是最后心跳时间；缺失地址会计数并跳过。
+Server升级自动应用第五条migration，保留既有设备和绑定；已有设备在重连后取得地址记录，
+旧Client未上报本地IP时显示Not reported。
+
 Natsume 不安装 DOMjudge。继续前需有工作的 HTTPS DOMjudge 和比赛账号，并核对配套登录约定：Gateway 只对 /login 注入 X-DOMjudge-Login 和 Base64 编码的 X-DOMjudge-Pass。实际 DOMjudge 必须支持此约定；普通页面可访问不证明自动登录可用。
 
 上游必须是 canonical HTTPS origin，例如 https://judge.contest.example 或 https://judge.contest.example:8444，不带结尾斜杠、路径、用户名密码、query 或 fragment。不能填写 /domjudge 或 /api 地址，需要在根路径提供配套页面。

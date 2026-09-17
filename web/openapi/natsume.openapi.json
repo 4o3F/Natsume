@@ -2245,6 +2245,28 @@
         "type": "string",
         "enum": ["enabled", "disabled", "revoked"]
       },
+      "DeviceNetworkResponse": {
+        "type": "object",
+        "description": "Address diagnostics for the most recently recorded Device control connection.",
+        "required": ["server_observed_ip", "observed_at_unix_ms"],
+        "properties": {
+          "client_ip": {
+            "type": ["string", "null"],
+            "description": "Client-reported local IP, absent when the latest connection did not report it."
+          },
+          "observed_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Server address-recording time, not a last-heartbeat timestamp.",
+            "minimum": 0
+          },
+          "server_observed_ip": {
+            "type": "string",
+            "description": "Canonical socket peer IP observed by the Server, without a port."
+          }
+        },
+        "additionalProperties": false
+      },
       "DeviceResponse": {
         "type": "object",
         "description": "Durable Device identity and lifecycle with its current complete convergence view.",
@@ -2276,6 +2298,17 @@
           },
           "machine_hardware_id": {
             "$ref": "#/components/schemas/CanonicalUuidV5"
+          },
+          "network": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeviceNetworkResponse",
+                "description": "Latest authenticated connection addresses, retained after disconnect/restart."
+              }
+            ]
           },
           "state": {
             "type": "string",

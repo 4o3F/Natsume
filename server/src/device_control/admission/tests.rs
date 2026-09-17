@@ -17,12 +17,47 @@ const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 const DEVICE_ID: &str = "01900000-0000-7000-8000-000000000001";
 const CHALLENGE_NONCE: [u8; 32] = [0xA5; 32];
 
+#[test]
+fn client_ip_is_optional_normalized_metadata_for_both_proof_purposes() {
+    let key = SigningKey::from_bytes(&[0x11; 32]);
+    for mut proof in [enrollment_proof(&key), resume_proof(&key)] {
+        assert_eq!(
+            proof_window()
+                .submit(proof_envelope(proof.clone()))
+                .unwrap_or_else(|error| panic!("proof: {error}"))
+                .client_ip(),
+            None
+        );
+        for (value, expected) in [
+            ("::ffff:192.0.2.1", "192.0.2.1"),
+            ("2001:db8:0:0::1", "2001:db8::1"),
+        ] {
+            proof.client_ip = Some(value.to_owned());
+            let result = proof_window()
+                .submit(proof_envelope(proof.clone()))
+                .unwrap_or_else(|error| panic!("proof: {error}"));
+            assert_eq!(
+                result.client_ip().map(|ip| ip.to_string()).as_deref(),
+                Some(expected)
+            );
+        }
+        for invalid in ["", "192.0.2.1:22", "device.example", "1.2.3.4\n5.6.7.8"] {
+            proof.client_ip = Some(invalid.to_owned());
+            assert!(matches!(
+                proof_window().submit(proof_envelope(proof.clone())),
+                Err(AdmissionError::InvalidClientIp)
+            ));
+        }
+    }
+}
+
 fn proof_window() -> ProofWindow {
     ProofWindow::from_challenge_nonce(CHALLENGE_NONCE)
 }
 
 fn unsigned_proof(purpose: client_proof::Purpose) -> ClientProof {
     ClientProof {
+        client_ip: None,
         daemon_version: "2.0.0".to_owned(),
         agent_version: "2.0.0-rc.1+packaging.7".to_owned(),
         machine_hardware_id: MACHINE_HARDWARE_ID.to_owned(),

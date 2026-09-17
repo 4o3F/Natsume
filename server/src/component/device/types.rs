@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, net::IpAddr};
 
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
@@ -227,6 +227,41 @@ pub(crate) struct DeviceProjection {
     evidence_quality: EvidenceQuality,
     state: DeviceState,
     created_at_unix_ms: u64,
+    network: Option<DeviceNetworkInfo>,
+}
+
+/// Latest connection addresses, retained independently of the live control lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DeviceNetworkInfo {
+    pub(crate) client_ip: Option<IpAddr>,
+    pub(crate) server_observed_ip: IpAddr,
+    pub(crate) observed_at_unix_ms: u64,
+}
+
+impl DeviceNetworkInfo {
+    pub(in crate::component::device) fn from_persisted(
+        client_ip: Option<&str>,
+        server_ip: Option<&str>,
+        observed_at: Option<i64>,
+    ) -> Result<Option<Self>, PersistenceError> {
+        match (client_ip, server_ip, observed_at) {
+            (None, None, None) => Ok(None),
+            (client_ip, Some(server_ip), Some(observed_at)) if observed_at > 0 => {
+                let parse_ip = |value: &str| {
+                    value
+                        .parse::<IpAddr>()
+                        .map(|ip| ip.to_canonical())
+                        .map_err(|_| PersistenceError::InvalidPersistedData)
+                };
+                Ok(Some(Self {
+                    client_ip: client_ip.map(parse_ip).transpose()?,
+                    server_observed_ip: parse_ip(server_ip)?,
+                    observed_at_unix_ms: observed_at.cast_unsigned(),
+                }))
+            }
+            _ => Err(PersistenceError::InvalidPersistedData),
+        }
+    }
 }
 
 impl DeviceProjection {
@@ -236,8 +271,10 @@ impl DeviceProjection {
         evidence_quality: &str,
         state: &str,
         created_at_unix_ms: i64,
+        network: Option<DeviceNetworkInfo>,
     ) -> Result<Self, PersistenceError> {
         Ok(Self {
+            network,
             device_id: DeviceId::parse(device_id).ok_or(PersistenceError::InvalidPersistedData)?,
             machine_hardware_id: MachineHardwareId::parse(machine_hardware_id)
                 .ok_or(PersistenceError::InvalidPersistedData)?,
@@ -270,6 +307,10 @@ impl DeviceProjection {
 
     pub(crate) const fn created_at_unix_ms(self) -> u64 {
         self.created_at_unix_ms
+    }
+
+    pub(crate) const fn network(self) -> Option<DeviceNetworkInfo> {
+        self.network
     }
 }
 

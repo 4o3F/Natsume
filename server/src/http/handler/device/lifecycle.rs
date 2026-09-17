@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use crate::{
-    component::device::{DeviceListFilter, DeviceState, EvidenceQuality, LifecycleOutcome},
+    component::device::{
+        DeviceListFilter, DeviceNetworkInfo, DeviceState, EvidenceQuality, LifecycleOutcome,
+    },
     device_control::DeviceStatus,
 };
 
@@ -33,8 +35,32 @@ pub(crate) struct DeviceResponse {
     #[schema(inline)]
     state: DeviceStateResponse,
     created_at_unix_ms: u64,
+    /// Latest authenticated connection addresses, retained after disconnect/restart.
+    network: Option<DeviceNetworkResponse>,
     /// Current durable targets and latest validated Actual for this Device.
     convergence: DeviceConvergenceResponse,
+}
+
+/// Address diagnostics for the most recently recorded Device control connection.
+#[derive(Serialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct DeviceNetworkResponse {
+    /// Client-reported local IP, absent when the latest connection did not report it.
+    client_ip: Option<String>,
+    /// Canonical socket peer IP observed by the Server, without a port.
+    server_observed_ip: String,
+    /// Server address-recording time, not a last-heartbeat timestamp.
+    observed_at_unix_ms: u64,
+}
+
+impl From<DeviceNetworkInfo> for DeviceNetworkResponse {
+    fn from(network: DeviceNetworkInfo) -> Self {
+        Self {
+            client_ip: network.client_ip.map(|ip| ip.to_string()),
+            server_observed_ip: network.server_observed_ip.to_string(),
+            observed_at_unix_ms: network.observed_at_unix_ms,
+        }
+    }
 }
 
 /// Closed Device Enrollment evidence-quality vocabulary exposed by the API.
@@ -109,6 +135,7 @@ impl From<DeviceStatus> for DeviceResponse {
                 DeviceState::Revoked => DeviceStateResponse::Revoked,
             },
             created_at_unix_ms: device.created_at_unix_ms(),
+            network: device.network().map(Into::into),
             convergence: convergence.into(),
         }
     }

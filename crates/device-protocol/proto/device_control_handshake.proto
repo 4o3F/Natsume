@@ -61,6 +61,9 @@ message ClientProof {
     EnrollmentAttempt enrollment = 5;
     ResumeSession     resume     = 6;
   }
+  // Local IP of this control connection. Optional diagnostic metadata, not
+  // identity proof; absence means not reported on this connection.
+  optional string client_ip = 7;
 }
 
 // Exact committed Enrollment authority facts shared by the Server's

@@ -153,7 +153,7 @@ mod tests {
                  INSERT INTO organizations VALUES (1, '示例大学', '示例大学', 'Example University', 'CHN');
                  INSERT INTO teams VALUES ('account-a', 1, '队伍', 'Team', 'participant');
                  INSERT INTO account_mappings VALUES ('seat-a', 'account-a');
-                 INSERT INTO devices VALUES
+                 INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES
                    ('01900000-0000-7000-8000-000000000002', 'machine-b', 'strong', 'enabled', 1),
                    ('01900000-0000-7000-8000-000000000001', 'machine-a', 'strong', 'enabled', 1);
                  INSERT INTO device_bindings VALUES

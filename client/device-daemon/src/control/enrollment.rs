@@ -44,7 +44,11 @@ pub(super) async fn handshake(
         _ => return Ok(HandshakeOutcome::Retry),
     };
 
-    let proof = identity.proof(&challenge, machine_hardware_id, evidence_quality);
+    let Ok(local_address) = socket.get_ref().get_ref().local_addr() else {
+        return Ok(HandshakeOutcome::Retry);
+    };
+    let mut proof = identity.proof(&challenge, machine_hardware_id, evidence_quality);
+    proof.client_ip = Some(local_address.ip().to_canonical().to_string());
     if !send(
         socket,
         ClientHandshakeEnvelope {
@@ -198,6 +202,76 @@ async fn send(socket: &mut Socket, envelope: ClientHandshakeEnvelope) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn handshake_reports_the_local_ip_of_its_actual_socket()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use natsume_device_protocol::generated::{ServerChallenge, client_proof};
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio_tungstenite::{
+            MaybeTlsStream, WebSocketStream,
+            tungstenite::{Message, protocol::Role},
+        };
+
+        let directory = tempfile::tempdir()?;
+        let machine = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
+        let mut identity = crate::control::load_or_create_identity(directory.path(), machine)?;
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let tcp = TcpStream::connect(listener.local_addr()?).await?;
+        let (peer, address) = listener.accept().await?;
+        let mut client =
+            WebSocketStream::from_raw_socket(MaybeTlsStream::Plain(tcp), Role::Client, None).await;
+        let mut server = WebSocketStream::from_raw_socket(peer, Role::Server, None).await;
+        let task = tokio::spawn(async move {
+            handshake(
+                &mut client,
+                &mut identity,
+                machine,
+                EnrollmentEvidenceQuality::Strong,
+            )
+            .await
+        });
+        let challenge = ServerChallenge {
+            challenge_nonce: vec![0x12; 32],
+        };
+        server
+            .send(Message::Binary(
+                ServerHandshakeEnvelope {
+                    body: Some(server_handshake_envelope::Body::ServerChallenge(
+                        challenge.clone(),
+                    )),
+                }
+                .encode_to_vec()
+                .into(),
+            ))
+            .await?;
+        let Message::Binary(bytes) = timeout(std::time::Duration::from_secs(5), server.next())
+            .await?
+            .ok_or("closed socket")??
+        else {
+            return Err("expected ClientProof".into());
+        };
+        let Some(client_handshake_envelope::Body::ClientProof(proof)) =
+            ClientHandshakeEnvelope::decode(bytes)?.body
+        else {
+            return Err("missing ClientProof".into());
+        };
+        assert_eq!(
+            proof.client_ip.as_deref(),
+            Some(address.ip().to_string().as_str())
+        );
+        let Some(client_proof::Purpose::Enrollment(enrollment)) = &proof.purpose else {
+            return Err("missing enrollment".into());
+        };
+        let public_key: [u8; 32] = enrollment.candidate_public_key.as_slice().try_into()?;
+        assert_eq!(
+            natsume_device_protocol::verify_client_proof(&public_key, &challenge, &proof),
+            Ok(())
+        );
+        server.close(None).await?;
+        assert!(matches!(task.await??, HandshakeOutcome::Retry));
+        Ok(())
+    }
 
     #[test]
     fn session_ready_requires_an_exact_uuid_v7() {

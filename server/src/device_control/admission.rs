@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 use natsume_device_protocol::{
     generated::{
         ClientHandshakeEnvelope, ClientProof, EnrollmentAuthority, EnrollmentEvidenceQuality,
@@ -67,6 +69,15 @@ pub(super) enum ProofSubmission {
     Resume(ResumeProof),
 }
 
+impl ProofSubmission {
+    pub(super) const fn client_ip(&self) -> Option<IpAddr> {
+        match self {
+            Self::Enrollment(proof) => proof.client_ip,
+            Self::Resume(proof) => proof.client_ip,
+        }
+    }
+}
+
 /// Connection-local proof that an Enrollment candidate passed semantic validation and
 /// demonstrated possession of its candidate control key.
 ///
@@ -77,6 +88,7 @@ pub(super) enum ProofSubmission {
 /// [`EnrollmentReadyBarrier`] can be created.
 pub(super) struct EnrollmentPreAuth {
     evidence: ValidatedEnrollmentEvidence,
+    client_ip: Option<IpAddr>,
 }
 
 impl EnrollmentPreAuth {
@@ -113,6 +125,7 @@ pub(super) struct ResumeProof {
     machine_hardware_id: MachineHardwareId,
     challenge: ServerChallenge,
     proof: ClientProof,
+    client_ip: Option<IpAddr>,
 }
 
 impl ResumeProof {
@@ -183,6 +196,13 @@ fn classify_proof(
     proof: ClientProof,
 ) -> Result<ProofSubmission, AdmissionError> {
     let machine_hardware_id = validate_metadata(&proof)?;
+    let client_ip = proof
+        .client_ip
+        .as_deref()
+        .map(str::parse::<IpAddr>)
+        .transpose()
+        .map_err(|_| AdmissionError::InvalidClientIp)?
+        .map(|ip| ip.to_canonical());
     match proof
         .purpose
         .clone()
@@ -202,6 +222,7 @@ fn classify_proof(
             verify_client_proof(candidate_public_key.as_bytes(), &challenge, &proof)
                 .map_err(|_| AdmissionError::ProofRejected)?;
             Ok(ProofSubmission::Enrollment(EnrollmentPreAuth {
+                client_ip,
                 evidence: ValidatedEnrollmentEvidence::new(
                     machine_hardware_id,
                     candidate_public_key,
@@ -215,6 +236,7 @@ fn classify_proof(
             machine_hardware_id,
             challenge,
             proof,
+            client_ip,
         })),
     }
 }
@@ -250,6 +272,8 @@ pub(super) enum AdmissionError {
     InvalidDaemonVersion,
     #[snafu(display("the Session Agent version is not canonical SemVer"))]
     InvalidAgentVersion,
+    #[snafu(display("the reported Client IP is invalid"))]
+    InvalidClientIp,
     #[snafu(display("the Machine Hardware ID is invalid"))]
     InvalidMachineHardwareId,
     #[snafu(display("the Client proof purpose is missing"))]

@@ -18,6 +18,106 @@ const FIRST_MACHINE: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 const SECOND_MACHINE: &str = "bbbbbbbb-bbbb-5bbb-8bbb-bbbbbbbbbbbb";
 
 #[tokio::test]
+async fn network_addresses_survive_restart_and_replace_the_complete_pair()
+-> Result<(), Box<dyn std::error::Error>> {
+    let fixture = Fixture::new().await;
+    let authority = activate(
+        &fixture,
+        machine(FIRST_MACHINE),
+        key(0x15),
+        EvidenceQuality::Strong,
+    )
+    .await?;
+    let device_id = authority.device_id();
+    assert!(
+        fixture
+            .component
+            .find_device(device_id)
+            .await?
+            .ok_or("missing Device")?
+            .network()
+            .is_none()
+    );
+    fixture
+        .component
+        .record_network_addresses(
+            authority,
+            "::ffff:192.0.2.10".parse()?,
+            Some("2001:db8:0:0::1".parse()?),
+        )
+        .await?;
+    let saved = fixture
+        .component
+        .find_device(device_id)
+        .await?
+        .ok_or("missing Device")?
+        .network()
+        .ok_or("missing network")?;
+    assert_eq!(saved.server_observed_ip.to_string(), "192.0.2.10");
+    assert_eq!(
+        saved.client_ip.map(|ip| ip.to_string()).as_deref(),
+        Some("2001:db8::1")
+    );
+    assert!(saved.observed_at_unix_ms > 0);
+
+    let reopened = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true)).await?;
+    let restarted = DeviceComponent::new(reopened);
+    assert_eq!(
+        restarted
+            .find_device(device_id)
+            .await?
+            .ok_or("missing Device")?
+            .network(),
+        Some(saved)
+    );
+    restarted
+        .record_network_addresses(authority, "192.0.2.11".parse()?, None)
+        .await?;
+    let replaced = restarted
+        .find_device(device_id)
+        .await?
+        .ok_or("missing Device")?
+        .network()
+        .ok_or("missing network")?;
+    assert_eq!(replaced.server_observed_ip.to_string(), "192.0.2.11");
+    assert_eq!(replaced.client_ip, None);
+    assert!(replaced.observed_at_unix_ms >= saved.observed_at_unix_ms);
+
+    activate(
+        &fixture,
+        machine(FIRST_MACHINE),
+        key(0x16),
+        EvidenceQuality::Strong,
+    )
+    .await?;
+    restarted
+        .record_network_addresses(authority, "192.0.2.99".parse()?, None)
+        .await?;
+    assert_eq!(
+        restarted
+            .find_device(device_id)
+            .await?
+            .ok_or("missing Device")?
+            .network(),
+        Some(replaced)
+    );
+    let current = current_authority(&fixture, machine(FIRST_MACHINE)).await;
+    restarted.disable(device_id).await?;
+    restarted
+        .record_network_addresses(current, "192.0.2.98".parse()?, None)
+        .await?;
+    assert_eq!(
+        restarted
+            .find_device(device_id)
+            .await?
+            .ok_or("missing Device")?
+            .network(),
+        Some(replaced)
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn first_activation_is_atomic_and_exact_replay_is_a_no_op() {
     let fixture = Fixture::new().await;
     let machine = machine(FIRST_MACHINE);

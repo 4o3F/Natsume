@@ -493,7 +493,7 @@ async fn install_binding(database: &Database) {
             transaction
                 .connection()
                 .batch_execute(&format!(
-                    "INSERT INTO devices VALUES \
+                    "INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES \
                      ('{device_id}', '550e8400-e29b-51d4-a716-446655440000', \
                       'strong', 'enabled', 1); \
                      INSERT INTO device_bindings VALUES \

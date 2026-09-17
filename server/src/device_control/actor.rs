@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    net::IpAddr,
     sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -14,7 +15,7 @@ use tokio::{
 };
 use uuid::Uuid;
 
-use crate::component::device::DeviceId;
+use crate::component::device::{ControlAuthority, DeviceId};
 
 use super::{DeviceControl, convergence::ObservedActualState, state};
 
@@ -236,6 +237,24 @@ impl DeviceHandle {
             .await;
     }
 
+    pub(super) async fn record_network_addresses(
+        &self,
+        session_id: Uuid,
+        authority: ControlAuthority,
+        server_ip: IpAddr,
+        client_ip: Option<IpAddr>,
+    ) {
+        let _ = self
+            .sender
+            .send(DeviceEvent::RecordNetworkAddresses {
+                session_id,
+                authority,
+                server_ip,
+                client_ip,
+            })
+            .await;
+    }
+
     fn dirty(&self) {
         self.dirty.send_replace(());
     }
@@ -272,6 +291,13 @@ impl DeviceHandle {
 /// lease replacement atomic with respect to Client snapshots. The snapshot is boxed
 /// only to keep mailbox events small; it adds no separate lifecycle.
 enum DeviceEvent {
+    /// Persists metadata only while its authenticated lease remains current.
+    RecordNetworkAddresses {
+        session_id: Uuid,
+        authority: ControlAuthority,
+        server_ip: IpAddr,
+        client_ip: Option<IpAddr>,
+    },
     /// Replaces any current lease and acknowledges when fencing is effective.
     ReplaceCurrentLease {
         control: Weak<DeviceControl>,
@@ -351,6 +377,31 @@ async fn run_actor(
             break;
         };
         match event {
+            DeviceEvent::RecordNetworkAddresses {
+                session_id,
+                authority,
+                server_ip,
+                client_ip,
+            } => {
+                let Some(control) = current
+                    .as_ref()
+                    .filter(|lease| lease.session_id == session_id)
+                    .and_then(|lease| lease.control.upgrade())
+                else {
+                    continue;
+                };
+                let fenced = authority_fence.lock().await;
+                if *fenced {
+                    continue;
+                }
+                if let Err(error) = control
+                    .device
+                    .record_network_addresses(authority, server_ip, client_ip)
+                    .await
+                {
+                    tracing::warn!(device_id = %device_id.as_text(), %error, "Device connection addresses could not be saved");
+                }
+            }
             DeviceEvent::ReplaceCurrentLease {
                 control,
                 outbound,

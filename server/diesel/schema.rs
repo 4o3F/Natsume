@@ -73,6 +73,9 @@ diesel::table! {
         evidence_quality -> Text,
         state -> Text,
         created_at_unix_ms -> BigInt,
+        client_ip -> Nullable<Text>,
+        server_observed_ip -> Nullable<Text>,
+        ip_observed_at_unix_ms -> Nullable<BigInt>,
     }
 }
 

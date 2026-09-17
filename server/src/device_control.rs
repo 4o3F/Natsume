@@ -1,6 +1,6 @@
 //! Device-specific application coordination and connection-bound protocol handling.
 
-use std::{sync::Arc, time::Duration};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use axum::extract::ws::{Message as WebSocketMessage, WebSocket};
 use natsume_device_protocol::generated::{
@@ -130,9 +130,11 @@ pub(crate) async fn serve_connection(
     mut socket: WebSocket,
     control: Arc<DeviceControl>,
     permit: OwnedSemaphorePermit,
+    peer_ip: IpAddr,
 ) {
     let mut permit = Some(permit);
-    let Some((machine_hardware_id, authority)) = admit(&mut socket, &control, &mut permit).await
+    let Some((machine_hardware_id, authority, client_ip)) =
+        admit(&mut socket, &control, &mut permit).await
     else {
         return;
     };
@@ -159,6 +161,9 @@ pub(crate) async fn serve_connection(
         return;
     }
 
+    handle
+        .record_network_addresses(session_id, authority, peer_ip, client_ip)
+        .await;
     drop(permit);
     run_active(socket, session_id, handle, &mut outgoing).await;
 }
@@ -173,7 +178,7 @@ async fn admit(
     socket: &mut WebSocket,
     control: &Arc<DeviceControl>,
     permit: &mut Option<OwnedSemaphorePermit>,
-) -> Option<(MachineHardwareId, ControlAuthority)> {
+) -> Option<(MachineHardwareId, ControlAuthority, Option<IpAddr>)> {
     let mut proof_window = ProofWindow::new().ok()?;
     let challenge = proof_window.server_challenge()?.clone();
     if !send_handshake(
@@ -187,7 +192,9 @@ async fn admit(
         return None;
     }
     let proof = receive_handshake(socket).await?;
-    match proof_window.submit(proof).ok()? {
+    let submission = proof_window.submit(proof).ok()?;
+    let client_ip = submission.client_ip();
+    let (machine_hardware_id, authority) = match submission {
         ProofSubmission::Resume(resume) => {
             let machine_hardware_id = resume.machine_hardware_id();
             let authority = control
@@ -203,7 +210,8 @@ async fn admit(
         ProofSubmission::Enrollment(enrollment) => {
             admit_enrollment(socket, control, enrollment, permit).await
         }
-    }
+    }?;
+    Some((machine_hardware_id, authority, client_ip))
 }
 
 /// Completes the connection-local Enrollment path after candidate-key proof.

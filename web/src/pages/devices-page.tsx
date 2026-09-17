@@ -7,12 +7,14 @@ import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
+import { DeviceFilterPanel } from "@/components/device-filter-panel";
+import {
+  DeviceIpWarning,
+  DeviceNetworkDetails,
+} from "@/components/device-network-info";
 import { DataTable } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
-import {
-  DeviceStateFilter,
-  type DeviceStateFilterValue,
-} from "@/components/device-state-filter";
+import { type DeviceStateFilterValue } from "@/components/device-state-filter";
 import {
   defaultDeviceStateFilter,
   selectedDeviceStates,
@@ -142,6 +144,10 @@ export function DevicesPage() {
                   ? `${device.machine_hardware_id.slice(0, 8)}…`
                   : device.machine_hardware_id}
               </code>
+              <DeviceIpWarning
+                device={device}
+                onView={() => setSelectedDeviceId(device.device_id)}
+              />
             </div>
           );
         },
@@ -379,14 +385,13 @@ export function DevicesPage() {
         </Alert>
       )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+      <DeviceFilterPanel value={stateFilter} onChange={setStateFilter}>
         {devices.data && (
           <p className="text-sm text-muted-foreground">
             {visibleDevices.length} devices
           </p>
         )}
-      </div>
+      </DeviceFilterPanel>
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}
@@ -474,7 +479,8 @@ function DeviceConvergence({ device }: { device: Device }) {
           {device.device_id}
         </CardDescription>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
+        <DeviceNetworkDetails device={device} />
         <ConvergenceDetails data={device.convergence} />
       </CardContent>
     </Card>

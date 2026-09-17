@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   expect,
   test,
@@ -74,6 +75,7 @@ const device: components["schemas"]["DeviceResponse"] = {
   evidence_quality: "strong",
   state: "enabled",
   created_at_unix_ms: 1_700_000_000_000,
+  network: null,
   convergence,
 };
 
@@ -334,12 +336,136 @@ test("seat sorting uses current binding and survives device polling", async ({
   ).toBeVisible();
 });
 
+test("/devices shows IP differences inline and exports the complete emergency address list", async ({
+  page,
+  context,
+}, testInfo) => {
+  const fleet = targetFleet(6);
+  const network = (server: string, client: string | null = server) => ({
+    server_observed_ip: server,
+    client_ip: client,
+    observed_at_unix_ms: 1_700_000_100_000,
+  });
+  fleet[0].network = network("192.0.2.10");
+  fleet[1].network = network("192.0.2.2", "198.51.100.2");
+  fleet[1].state = "disabled";
+  fleet[1].convergence.connection_state = "offline";
+  fleet[3].network = network("192.0.2.10", null);
+  fleet[4].network = network("192.0.2.99");
+  fleet[4].state = "revoked";
+  fleet[5].network = network("2001:db8::5");
+  await mockTargets(context, fleet);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/devices");
+  const emergency = page.getByRole("region", { name: "Emergency IP export" });
+  await expect(emergency).not.toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /IP/i })).toHaveCount(0);
+  const warning = page.getByRole("button", {
+    name: "IP mismatch: view details for machine-02",
+    exact: true,
+  });
+  await expect(page.getByRole("button", { name: /^IP mismatch:/ })).toHaveCount(
+    1,
+  );
+  await warning.focus();
+  await expect(page.getByRole("tooltip")).toBeVisible();
+  await warning.press("Enter");
+  const details = page.getByRole("region", { name: "Network addresses" });
+  await expect(details).toContainText("Client and Server IP differ");
+  await expect(details).toContainText(
+    "Device offline; showing last recorded addresses.",
+  );
+  await expect(details.getByText("192.0.2.2", { exact: true })).toBeVisible();
+  await expect(
+    details.getByText("198.51.100.2", { exact: true }),
+  ).toBeVisible();
+  await details
+    .getByRole("button", { name: "Copy Server IP", exact: true })
+    .click();
+  await expect(details.getByRole("status")).toHaveText("Server IP copied.");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "192.0.2.2",
+  );
+  await details
+    .getByRole("button", { name: "Copy Client IP", exact: true })
+    .click();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "198.51.100.2",
+  );
+  await page.locator("summary").filter({ hasText: "Emergency" }).click();
+  await expect(emergency).toContainText(
+    "Unique IPs: 3 · Offline: 1 · IP mismatches: 1 · Missing IPs: 1",
+  );
+  for (const width of [1440, 768]) {
+    await page.setViewportSize({ width, height: 1000 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath(`network-emergency-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await selectDeviceStates(page, ["enabled"]);
+  fleet[0].network = network("192.0.2.11");
+  fleet[3].network = network("192.0.2.11", null);
+  const downloaded = page.waitForEvent("download");
+  await emergency
+    .getByRole("button", { name: "Export all device IPs" })
+    .click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toMatch(/^natsume-device-ips-.*\.txt$/);
+  expect(readFileSync((await file.path())!, "utf8")).toBe(
+    "192.0.2.2\n192.0.2.11\n2001:db8::5\n",
+  );
+  await expect(emergency.getByRole("status")).toContainText(
+    "Exported 3 unique IPs",
+  );
+});
+
+test("/devices reports failed and empty IP exports without downloading a partial file", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(1);
+  await mockTargets(context, fleet);
+  await page.goto("/devices");
+  await page.locator("summary").filter({ hasText: "Emergency" }).click();
+  const emergency = page.getByRole("region", { name: "Emergency IP export" });
+  await expect(emergency).toContainText("Unique IPs: 0");
+  const downloads: string[] = [];
+  page.on("download", (file) => downloads.push(file.suggestedFilename()));
+  await context.route("**/api/v2/devices?**", (route) =>
+    fulfillJson(route, 500, {}),
+  );
+  await emergency
+    .getByRole("button", { name: "Export all device IPs" })
+    .click();
+  await expect(
+    emergency.getByRole("alert").filter({ hasText: "IP export failed" }),
+  ).toBeVisible();
+  expect(downloads).toHaveLength(0);
+  await context.unroute("**/api/v2/devices?**");
+  await emergency
+    .getByRole("button", { name: "Export all device IPs" })
+    .click();
+  await expect(emergency.getByRole("status")).toHaveText(
+    "No IP addresses available to export.",
+  );
+  expect(downloads).toHaveLength(0);
+});
+
 for (const path of ["/devices", "/targets"]) {
   test(`${path} expands details directly below the selected row`, async ({
     page,
     context,
   }, testInfo) => {
     const fleet = targetFleet(3);
+    fleet[0].network = {
+      client_ip: "192.0.2.1",
+      server_observed_ip: "192.0.2.2",
+      observed_at_unix_ms: 1_700_000_100_000,
+    };
     await mockTargets(context, fleet);
     await page.goto(path);
     const action = path === "/devices" ? "View" : "Manage";
@@ -348,13 +474,30 @@ for (const path of ["/devices", "/targets"]) {
     });
     const firstRow = deviceRows.filter({ hasText: "machine-01" });
     const secondRow = deviceRows.filter({ hasText: "machine-02" });
-    const firstButton = firstRow.getByRole("button", { name: action });
-    const secondButton = secondRow.getByRole("button", { name: action });
+    const firstButton = firstRow.getByRole("button", {
+      name: action,
+      exact: true,
+    });
+    const secondButton = secondRow.getByRole("button", {
+      name: action,
+      exact: true,
+    });
     const firstDetails = firstRow.locator("xpath=following-sibling::tr[1]");
     const secondDetails = secondRow.locator("xpath=following-sibling::tr[1]");
 
     await firstButton.click();
     await expect(firstDetails).toContainText(fleet[0].device_id);
+    if (path === "/targets") {
+      await expect(
+        page.getByRole("button", { name: /^IP mismatch:/ }),
+      ).toHaveCount(0);
+      await expect(
+        page.getByRole("region", { name: "Network addresses" }),
+      ).toHaveCount(0);
+      await expect(
+        page.locator("summary").filter({ hasText: "Emergency" }),
+      ).toHaveCount(0);
+    }
     await expect(firstButton).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("tbody > tr")).toHaveCount(4);
     const detailCell = firstDetails.getByRole("cell");

@@ -1,6 +1,6 @@
 use std::{
     fs,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     os::unix::fs::PermissionsExt,
     path::Path,
     pin::Pin,
@@ -9,7 +9,10 @@ use std::{
     time::Duration,
 };
 
-use axum::serve::Listener;
+use axum::{
+    extract::connect_info::Connected,
+    serve::{IncomingStream, Listener},
+};
 use rustls::sign::{CertifiedKey, SigningKey};
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use snafu::Snafu;
@@ -30,6 +33,16 @@ const MAX_HANDSHAKES: usize = 64;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 const PRIVATE_FILE_FORBIDDEN_BITS: u32 = 0o177;
 const PRIVATE_DIRECTORY_FORBIDDEN_BITS: u32 = 0o077;
+
+/// Socket-observed peer IP, available to HTTP and WebSocket handlers.
+#[derive(Clone, Copy)]
+pub(crate) struct PeerAddress(pub(crate) IpAddr);
+
+impl Connected<IncomingStream<'_, TlsListener>> for PeerAddress {
+    fn connect_info(stream: IncomingStream<'_, TlsListener>) -> Self {
+        Self(stream.remote_addr().ip().to_canonical())
+    }
+}
 
 /// A concrete TLS adapter for Axum's HTTP/1.1 server.
 pub(crate) struct TlsListener {
@@ -202,6 +215,15 @@ pub(crate) enum TlsError {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    impl
+        axum::extract::connect_info::Connected<
+            axum::serve::IncomingStream<'_, tokio::net::TcpListener>,
+        > for super::PeerAddress
+    {
+        fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+            Self(stream.remote_addr().ip().to_canonical())
+        }
+    }
     use std::{
         fs::{self, OpenOptions},
         io::Write,
@@ -665,25 +687,37 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn connection_capacity_covers_idle_tls_and_websocket_upgrade()
     -> Result<(), Box<dyn std::error::Error>> {
+        use axum::extract::{ConnectInfo, ws::WebSocketUpgrade};
         use futures_util::{SinkExt as _, StreamExt as _};
         let identity = TestIdentity::new(LOCALHOST).map_err(|_| "identity fixture")?;
         let mut listener = bind_identity(&identity).await?;
         listener.connections = Arc::new(tokio::sync::Semaphore::new(1));
         let capacity = Arc::clone(&listener.connections);
         let address = listener.local_addr()?;
-        let application = axum::Router::new().route(
-            "/echo",
-            axum::routing::get(|upgrade: axum::extract::ws::WebSocketUpgrade| async move {
-                upgrade.on_upgrade(|mut socket| async move {
-                    while let Some(Ok(message)) = socket.recv().await {
-                        if socket.send(message).await.is_err() {
-                            break;
-                        }
-                    }
-                })
-            }),
-        );
-        let server = tokio::spawn(async move { axum::serve(listener, application).await });
+        let application =
+            axum::Router::new().route(
+                "/echo",
+                axum::routing::get(
+                    |ConnectInfo(peer): ConnectInfo<super::PeerAddress>,
+                     upgrade: WebSocketUpgrade| async move {
+                        assert_eq!(peer.0, IpAddr::V4(LOCALHOST));
+                        upgrade.on_upgrade(|mut socket| async move {
+                            while let Some(Ok(message)) = socket.recv().await {
+                                if socket.send(message).await.is_err() {
+                                    break;
+                                }
+                            }
+                        })
+                    },
+                ),
+            );
+        let server = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                application.into_make_service_with_connect_info::<super::PeerAddress>(),
+            )
+            .await
+        });
         let tls = connect_client(
             address,
             identity.ca_certificate(),

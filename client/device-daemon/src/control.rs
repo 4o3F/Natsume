@@ -99,6 +99,7 @@ impl ControlIdentity {
                 machine_hardware_id: machine_hardware_id.hyphenated().to_string(),
                 signature: Vec::new(),
                 purpose: Some(purpose),
+                client_ip: None,
             },
         )
     }

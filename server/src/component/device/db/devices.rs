@@ -1,4 +1,5 @@
 use diesel::{ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl};
+use std::net::IpAddr;
 
 use crate::{
     db::{PersistenceError, Transaction},
@@ -7,11 +8,21 @@ use crate::{
 
 use super::super::DeviceListFilter;
 use super::super::types::{
-    DeviceId, DeviceProjection, DeviceRecord, DeviceState, EvidenceQuality, MachineHardwareId,
+    DeviceId, DeviceNetworkInfo, DeviceProjection, DeviceRecord, DeviceState, EvidenceQuality,
+    MachineHardwareId,
 };
 
 type PersistedDevice = (String, String);
-type PersistedDeviceProjection = (String, String, String, String, i64);
+type PersistedDeviceProjection = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+);
 
 pub(in crate::component::device) fn enabled_ids(
     transaction: &mut Transaction<'_>,
@@ -38,6 +49,9 @@ pub(in crate::component::device) fn list(
             devices::evidence_quality,
             devices::state,
             devices::created_at_unix_ms,
+            devices::client_ip,
+            devices::server_observed_ip,
+            devices::ip_observed_at_unix_ms,
         ))
         .into_boxed();
     let query = match filter {
@@ -71,6 +85,9 @@ pub(in crate::component::device) fn find_projection(
             devices::evidence_quality,
             devices::state,
             devices::created_at_unix_ms,
+            devices::client_ip,
+            devices::server_observed_ip,
+            devices::ip_observed_at_unix_ms,
         ))
         .filter(devices::device_id.eq(device_id.as_text()))
         .first::<PersistedDeviceProjection>(transaction.connection())
@@ -156,5 +173,29 @@ fn parse(row: &PersistedDevice) -> Result<DeviceRecord, PersistenceError> {
 }
 
 fn parse_projection(row: &PersistedDeviceProjection) -> Result<DeviceProjection, PersistenceError> {
-    DeviceProjection::from_persisted(&row.0, &row.1, &row.2, &row.3, row.4)
+    DeviceProjection::from_persisted(
+        &row.0,
+        &row.1,
+        &row.2,
+        &row.3,
+        row.4,
+        DeviceNetworkInfo::from_persisted(row.5.as_deref(), row.6.as_deref(), row.7)?,
+    )
+}
+
+pub(in crate::component::device) fn update_network_addresses(
+    transaction: &mut Transaction<'_>,
+    device_id: &DeviceId,
+    server_ip: IpAddr,
+    client_ip: Option<IpAddr>,
+    observed_at: i64,
+) -> Result<usize, PersistenceError> {
+    diesel::update(devices::table.filter(devices::device_id.eq(device_id.as_text())))
+        .set((
+            devices::client_ip.eq(client_ip.map(|ip| ip.to_canonical().to_string())),
+            devices::server_observed_ip.eq(server_ip.to_canonical().to_string()),
+            devices::ip_observed_at_unix_ms.eq(observed_at),
+        ))
+        .execute(transaction.connection())
+        .map_err(|_| PersistenceError::OperationFailed)
 }

@@ -27,7 +27,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
     )
     .await?;
     fixture.database.write(|tx| tx.connection().batch_execute(
-        "INSERT INTO devices VALUES
+        "INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES
         ('01900000-0000-7000-8000-000000000001','11111111-1111-5111-8111-111111111111','strong','enabled',1),
         ('01900000-0000-7000-8000-000000000002','22222222-2222-5222-8222-222222222222','strong','disabled',1),
         ('01900000-0000-7000-8000-000000000003','33333333-3333-5333-8333-333333333333','strong','revoked',1);"
