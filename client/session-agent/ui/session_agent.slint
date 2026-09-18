@@ -3,7 +3,6 @@ import { HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
 export component SessionWindow inherits Window {
     in property <bool> waiting-visible: true;
     in property <image> waiting-logo;
-    in property <image> author-avatar;
     in property <bool> team-visible: false;
     in property <image> school-logo: @image-url("school.svg");
     in property <string> school-primary;
@@ -382,50 +381,29 @@ export component SessionWindow inherits Window {
             }
         }
     }
-    if root.waiting-visible || root.team-visible: VerticalBox {
+    if root.waiting-visible || root.team-visible: Rectangle {
         x: root.width * 0.035;
         y: max(18px, root.height * 0.035);
         width: 320px;
-        height: 98px;
-        padding: 0px;
-        spacing: 14px;
-        Text {
-            text: "Project Natsume";
+        height: 36px;
+        brand := Text {
+            x: 0px;
+            y: (parent.height - self.height) / 2;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            text: "Natsume";
             color: #e5e5e5;
             font-size: 28px;
             font-weight: 600;
         }
-        HorizontalBox {
-            height: 48px;
-            padding: 0px;
-            spacing: 12px;
-            alignment: start;
-            Text {
-                text: "by";
-                color: #a3a3a3;
-                font-size: 18px;
-                vertical-alignment: center;
-            }
-            Rectangle {
-                width: 48px;
-                height: 48px;
-                border-radius: 24px;
-                background: #262626;
-                clip: true;
-                Image {
-                    width: parent.width;
-                    height: parent.height;
-                    source: root.author-avatar;
-                    image-fit: cover;
-                }
-            }
-            Text {
-                text: "4o3F";
-                color: #d4d4d4;
-                font-size: 24px;
-                font-weight: 500;
-                vertical-alignment: center;
-            }
+        Text {
+            x: brand.x + brand.width + 12px;
+            y: brand.y + brand.font-metrics.ascent - self.font-metrics.ascent;
+            width: self.preferred-width;
+            height: self.preferred-height;
+            text: "· by 4o3F";
+            color: #a3a3a3;
+            font-size: 18px;
         }
     }
     if root.offline: Rectangle {

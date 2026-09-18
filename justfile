@@ -133,8 +133,7 @@ package-client:
     grep -Exq '[0-9a-f]{64}  caddy' packaging/client/caddy.sha256
     python3 packaging/check-image-inputs.py
     mkdir -p dist/packages
-    python3 packaging/client/prepare-avatar.py dist/packages/author-avatar.png
-    AUTHOR_AVATAR_FILE="$PWD/dist/packages/author-avatar.png" envsubst '${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN} ${AUTHOR_AVATAR_FILE}' < packaging/client/nfpm.yaml | nfpm package --packager deb --config /dev/stdin --target dist/packages/
+    envsubst '${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN}' < packaging/client/nfpm.yaml | nfpm package --packager deb --config /dev/stdin --target dist/packages/
     python3 packaging/check-image-inputs.py --deb "dist/packages/natsume-client_${VERSION}_${ARCH}.deb"
 
 package: package-server package-client

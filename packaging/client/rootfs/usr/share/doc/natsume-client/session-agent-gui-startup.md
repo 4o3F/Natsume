@@ -39,11 +39,7 @@ frame alone must not consume the waiting recovery budget.
 
 Bound waiting uses a black background with a large centered school logo and
 bilingual school name. Both the placeholder and bound Waiting screen show
-Project Natsume at the top left, with a separate author row showing "by", the
-avatar, and 4o3F. Packaging downloads the
-512 × 512 Gravatar image into the Deb at `/usr/share/natsume/author-avatar.png`;
-the Agent loads it locally once at window creation, without network access.
-A missing or unreadable avatar does not block Waiting or first-frame readiness.
+"Natsume · by 4o3F" on one line at the top left, with a smaller, muted author credit.
 The bottom bar places the bilingual team name on the left
 and the assigned seat on the right; the offline icon and text stay at the top right. Missing one language uses the available name; missing
 logos use a default icon. Long text wraps and can scroll; the seat remains visible.

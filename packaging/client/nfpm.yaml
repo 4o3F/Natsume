@@ -36,9 +36,6 @@ contents:
   - src: ${CADDY_BIN}
     dst: /usr/lib/natsume/caddy
     file_info: {mode: 0o755}
-  - src: ${AUTHOR_AVATAR_FILE}
-    dst: /usr/share/natsume/author-avatar.png
-    file_info: {mode: 0o644}
   - src: packaging/client/rootfs/usr/
     dst: /usr/
     type: tree

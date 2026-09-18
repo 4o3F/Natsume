@@ -57,7 +57,7 @@ final-image or GPU acceptance.
 ## Build inputs and checks
 
 Both manifests require `VERSION`, `ARCH` and `RUST_RELEASE_DIR`.
-Client additionally requires `CADDY_BIN` and `AUTHOR_AVATAR_FILE`; Server requires the built `web/dist`.
+Client additionally requires `CADDY_BIN`; Server requires the built `web/dist`.
 Neither manifest consumes `SITE_CONFIG`, `CONTROL_CA_CERT` or `LOCAL_ORIGIN_CA_CERT`.
 The matching public site configuration and trust roots are separate deployment
 inputs for both packages; no root private key or per-device identity enters either Deb or the image.
@@ -66,14 +66,7 @@ complete configuration. They are packaged only under `/usr/share/doc/natsume-{cl
 
 `just package-client` / `just package-server` render these variables with
 `envsubst` and consume the prebuilt inputs. The Client recipe also checks the
-resulting Deb's image payload. Both Client packaging entry points run
-`client/prepare-avatar.py` to resolve the public `4o3f` Gravatar profile and fetch
-a 512 × 512 PNG. It is baked into the Deb at
-`/usr/share/natsume/author-avatar.png` (0644), not checked into Git or compiled into
-the binary. No email hash or API token is required. Download/format failures stop
-packaging rather than silently shipping an old or missing image; the downloaded
-image's SHA-256 is logged. Rebuilding later may pick up a changed profile avatar.
-Cargo builds, installation scripts and the running Agent never fetch this asset.
+resulting Deb's image payload.
 `just ci-packages` downloads and verifies pinned tools, builds production
 binaries/Web, produces both real Debs without site inputs, and checks that neither
 contains site configuration or CA certificates.
