@@ -3,6 +3,7 @@ import { HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
 export component SessionWindow inherits Window {
     in property <bool> waiting-visible: true;
     in property <image> waiting-logo;
+    in property <image> author-avatar;
     in property <bool> team-visible: false;
     in property <image> school-logo: @image-url("school.svg");
     in property <string> school-primary;
@@ -384,41 +385,60 @@ export component SessionWindow inherits Window {
     if root.waiting-visible || root.team-visible: Rectangle {
         x: root.width * 0.035;
         y: max(18px, root.height * 0.035);
-        width: 320px;
-        height: 36px;
+        width: 400px;
+        height: 92px;
         brand := Text {
             x: 0px;
-            y: (parent.height - self.height) / 2;
+            y: 0px;
             width: self.preferred-width;
             height: self.preferred-height;
-            text: "Natsume";
+            text: "Project Natsume";
             color: #e5e5e5;
-            font-size: 28px;
+            font-size: 32px;
             font-weight: 600;
         }
-        Text {
-            x: brand.x + brand.width + 12px;
-            y: brand.y + brand.font-metrics.ascent - self.font-metrics.ascent;
-            width: self.preferred-width;
-            height: self.preferred-height;
-            text: "· by 4o3F";
-            color: #a3a3a3;
-            font-size: 18px;
+        HorizontalBox {
+            x: 0px;
+            y: brand.height + 10px;
+            width: parent.width;
+            height: 36px;
+            padding: 0px;
+            spacing: 12px;
+            alignment: start;
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                border-radius: 18px;
+                background: #262626;
+                clip: true;
+                Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: root.author-avatar;
+                    image-fit: cover;
+                }
+            }
+            Text {
+                text: "4o3F";
+                color: #a3a3a3;
+                font-size: 26px;
+                vertical-alignment: center;
+            }
         }
     }
     if root.offline: Rectangle {
         x: root.width - self.width - root.width * 0.035;
         y: max(18px, root.height * 0.035);
-        width: 164px;
-        height: 24px;
+        width: 205px;
+        height: 30px;
         background: transparent;
         HorizontalBox {
             padding: 0px;
-            spacing: 8px;
+            spacing: 10px;
             alignment: end;
             Image {
-                width: 16px;
-                height: 16px;
+                width: 20px;
+                height: 20px;
                 source: @image-url("offline.svg");
                 colorize: root.waiting-visible || root.team-visible ? #fbbf24 : #b45309;
                 image-fit: contain;
@@ -426,7 +446,7 @@ export component SessionWindow inherits Window {
             Text {
                 text: "离线 / Offline";
                 color: root.waiting-visible || root.team-visible ? #fbbf24 : #b45309;
-                font-size: 14px;
+                font-size: 18px;
             }
         }
     }
