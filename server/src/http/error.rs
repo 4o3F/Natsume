@@ -183,6 +183,11 @@ impl ApiError {
                 Self::invalid_request("operator_invalid_new_password")
             }
             OperatorError::PasswordMismatch => Self::internal_error("operator_password_mismatch"),
+            OperatorError::OperatorNotFound => Self::not_found("operator_not_found"),
+            OperatorError::LoginNameConflict => Self::conflict("operator_login_name_conflict"),
+            OperatorError::LastAdmin => Self::conflict("operator_last_admin"),
+            OperatorError::LinkUnavailable => Self::invalid_request("operator_link_unavailable"),
+            OperatorError::CredentialChanged => Self::conflict("operator_credential_changed"),
         }
     }
 

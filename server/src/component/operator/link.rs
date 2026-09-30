@@ -19,7 +19,7 @@ impl LinkKind {
 
 // SecretString redacts Debug output and zeroizes the wire value on drop.
 #[derive(Debug)]
-pub(super) struct LinkToken(SecretString);
+pub(crate) struct LinkToken(SecretString);
 
 impl LinkToken {
     pub(super) fn generate(kind: LinkKind) -> Result<Self, getrandom::Error> {
@@ -44,7 +44,7 @@ impl LinkToken {
         Some(Self(value))
     }
 
-    pub(super) fn expose(&self) -> &str {
+    pub(crate) fn expose(&self) -> &str {
         self.0.expose_secret()
     }
 

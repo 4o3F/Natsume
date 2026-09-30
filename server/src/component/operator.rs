@@ -6,14 +6,8 @@ use crate::db::{Database, PersistenceError, Transaction};
 mod account;
 mod credentials;
 mod db;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "TODO(P2): connect invitation and password-reset links"
-    )
-)]
 mod link;
+mod management;
 mod password;
 mod session;
 
@@ -21,6 +15,7 @@ use self::account::AccountFacts;
 use self::session::SessionFacts;
 pub(crate) use self::{
     credentials::OperatorCredentials,
+    management::{InvitationSummary, OperatorSummary, PasswordResetInspection},
     session::{SessionCredentialHex, SignedInSession},
 };
 
@@ -79,7 +74,7 @@ impl OperatorComponent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OperatorRole {
+pub(crate) enum OperatorRole {
     Admin,
     Viewer,
 }
@@ -189,6 +184,16 @@ pub(crate) enum OperatorError {
     SaltEncodingFailed,
     #[snafu(display("the operator password could not be hashed"))]
     PasswordHashingFailed,
+    #[snafu(display("the operator does not exist"))]
+    OperatorNotFound,
+    #[snafu(display("the operator login name is already in use"))]
+    LoginNameConflict,
+    #[snafu(display("the last administrator cannot be removed"))]
+    LastAdmin,
+    #[snafu(display("the operator link is invalid or unavailable"))]
+    LinkUnavailable,
+    #[snafu(display("the operator credential revision has changed"))]
+    CredentialChanged,
 }
 
 impl From<PersistenceError> for OperatorError {

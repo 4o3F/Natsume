@@ -18,13 +18,6 @@ pub(super) fn validate_input(login_name: &str, password: &str) -> Result<(), Ope
     Ok(())
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "TODO(P2): validate the invited user's chosen login name"
-    )
-)]
 pub(super) fn validate_new_login_name(login_name: &str) -> Result<(), OperatorError> {
     validate_input(login_name, "")?;
     if login_name.trim() != login_name {

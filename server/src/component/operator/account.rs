@@ -40,30 +40,33 @@ pub(super) async fn reset_operator_password(
     let login_name = login_name.to_owned();
     let password_hash = password_hash.to_owned();
     let result = database
-        .write(move |transaction| -> Result<_, PersistenceError> {
+        .write(move |transaction| -> Result<_, OperatorError> {
             let account = crate::component::operator::db::find_account(transaction, &login_name)?
                 .ok_or(PersistenceError::InvalidPersistedData)?;
-            let next_revision = account
-                .credential_revision
-                .checked_add(1)
-                .ok_or(PersistenceError::OperationFailed)?;
-            crate::component::operator::db::update_password(
-                transaction,
-                account.identity.operator_id(),
-                &password_hash,
-                next_revision,
-            )?;
-            crate::component::operator::db::delete_sessions_by_operator(
-                transaction,
-                account.identity.operator_id(),
-            )?;
-            Ok(())
+            replace_password(transaction, &account, &password_hash)
         })
         .await
-        .map_err(TransactionError::into_error)
-        .map_err(OperatorError::from);
+        .map_err(TransactionError::into_error);
     if result.is_err() {
         tracing::warn!("operator password reset failed");
     }
     result
+}
+
+/// All password replacement paths advance the fence and revoke sessions and
+/// target recovery grants within the same transaction, including TTY recovery.
+pub(super) fn replace_password(
+    transaction: &mut Transaction<'_>,
+    account: &AccountFacts,
+    password_hash: &str,
+) -> Result<(), OperatorError> {
+    let next_revision = account
+        .credential_revision
+        .checked_add(1)
+        .ok_or(OperatorError::PersistenceFailed)?;
+    let id = account.identity.operator_id();
+    super::db::update_password(transaction, id, password_hash, next_revision)?;
+    super::db::delete_sessions_by_operator(transaction, id)?;
+    super::db::links::delete_target_resets(transaction, id)?;
+    Ok(())
 }

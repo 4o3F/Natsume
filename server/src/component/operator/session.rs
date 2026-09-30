@@ -12,7 +12,8 @@ use super::{
     password::{DUMMY_PASSWORD_PHC, OperatorPassword, verify_password_once},
 };
 
-// Four complete sign-ins bound both database submissions and Argon2 memory.
+// Four complete password operations share capacity for sign-in, registration,
+// link recovery, and own-password changes, bounding Argon2 memory.
 // Anonymous callers never queue for capacity.
 pub(super) const SIGN_IN_CONCURRENCY: usize = 4;
 pub(super) static SIGN_IN_GATE: Semaphore = Semaphore::const_new(SIGN_IN_CONCURRENCY);
