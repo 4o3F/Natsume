@@ -245,7 +245,7 @@ Server TLS leaf 必须包含部署实际 Control Endpoint 的 IP-SAN。Server �
 
 秘密包括：
 
-- Operator password 和 session cookie；
+- Operator password、session cookie、邀请注册 token 和密码重置 token；
 - Server vault master key；
 - DOMjudge password；
 - Device control private key；
@@ -1030,6 +1030,8 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 | `site_identity` | 历史 schema | 当前运行路径不读写；Client 身份派生不依赖此表 |
 | `operator_accounts` | Operator | username unique，role封闭，credential revision正数 |
 | `operator_sessions` | Operator | 只存cookie hash和绝对过期 |
+| `operator_invitations` | Operator | 单次注册授权、固定role、签发admin、token hash、创建时间与7天绝对过期；未注册时不创建账户 |
+| `operator_password_resets` | Operator | 绑定Operator ID、签发admin、token hash与1小时绝对过期；每账户至多一条current链接 |
 | `seats` | Contest/Import | seat code unique |
 | `accounts` | Contest/Import | username unique，credential revision正数 |
 | `server_vault_records` | Contest/Import + Vault | account PK/FK，一账户一current ciphertext |
@@ -1201,20 +1203,80 @@ Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原syste
 
 ### 15.1 Operator
 
-角色固定为 `admin` 和 `viewer`。Operator账户与session在Server数据库：
+角色固定为 `admin` 和 `viewer`，所有admin平等；首次创建的admin没有额外管理权限。
+Web Operator与DOMjudge Account是不同业务，用户管理使用独立的Panel入口。
+以下为已接受目标，用户管理、邀请和Web密码恢复仍待实现。
+
+#### 15.1.1 认证与密码
+
+Operator账户与session在Server数据库：
 
 - password使用Argon2id PHC；
-- `operator_accounts.credential_revision`从1开始，只由Operator组件在密码重置事务中递增；
+- `operator_accounts.credential_revision`从1开始，只由Operator组件在修改或重置密码事务中递增；
 - 登录读取PHC与revision，在事务外完成Argon2验证，再以exact expected revision条件插入session；零行表示凭据已失效，返回认证失败；
-- 密码重置原子更新PHC、递增revision并删除该账户全部session；相同密码重置也递增，溢出或任一步失败均回滚；revision fence未完成的登录，删除操作撤销已签发session，session不保存revision副本；
-- 登录JSON body最多8 KiB，读取deadline为5秒；用户名为1～128 UTF-8字节，密码最多1024 UTF-8字节，登录与TTY bootstrap/reset使用同一字段规则，不截断或规范化；超出body上限返回413，读取超时返回408，非法字段返回400；
+- 修改或重置密码原子更新PHC、递增revision、删除该账户全部session及未使用的密码重置链接；相同密码重置也递增，溢出或任一步失败均回滚；revision fence未完成的登录，删除操作撤销已签发session，session不保存revision副本；
+- 登录JSON body最多8 KiB，读取deadline为5秒；用户名为1～128 UTF-8字节，密码最多1024 UTF-8字节，不截断或规范化；超出body上限返回413，读取超时返回408，非法字段返回400。已有密码登录不套用新增的设密码策略；
 - 最多4条在途登录，读账户前立即尝试取得许可；满额返回503与`Retry-After: 1`，不设匿名等待队列。许可依次随账户读取、Argon2验证、session写入的阻塞任务及其结果存活，请求取消不能提前释放排队或执行中的容量；
 - session cookie明文只在浏览器与响应，数据库只存SHA-256；
 - 绝对过期，不滑动续期；
-- logout/password reset删除session；
+- logout删除当前session；修改或重置密码删除该账户全部session；
 - first admin由TTY-only `bootstrap` 创建；
-- password recovery由TTY-only `reset-operator-password`执行；
+- 后续新账户只由邀请注册创建，不提供管理员直接设置新用户密码的入口；
+- password recovery支持admin签发单次重置链接，并保留TTY-only `reset-operator-password`作为运维恢复入口；
 - serve不隐式创建账户或vault key。
+
+注册、本人修改密码、Web重置和TTY bootstrap/reset的新密码统一为16～1024个ASCII字符。
+允许`A-Z`、`a-z`、`0-9`及以下精确特殊字符集合；至少包含一个数字和一个特殊字符，
+不额外强制字母或大小写组合，不允许空格、其他空白、控制字符、中文或集合外字符。
+密码原样处理，不trim或规范化；密码确认必须完全一致。
+
+```text
+!@#$%^&*()-_=+[]{};:,.?/~
+```
+
+新注册用户名为1～128 UTF-8字节，拒绝首尾空白，不自动trim或规范化，区分大小写并全局唯一。
+既有用户名和密码不在升级时改写。删除后用户名可再次注册，但新账户使用新的Operator UUID，
+不会继承旧账户的session、密码重置链接或Target submission receipt身份。
+
+#### 15.1.2 用户管理与授权边界
+
+- admin可以查看用户列表、修改固定角色、删除用户、管理邀请和签发密码重置链接；viewer不能进入用户管理或调用其API。两种角色都可以修改本人的密码；
+- 不增加停用状态、可配置角色、邮箱、邮件发送、用户名修改或用户操作历史页面；
+- 最后一个已注册admin不能被删除或降为viewer，未消费的admin邀请不计入admin数量；检查和变更在同一短写事务内执行，并发变更不得使admin数量归零；
+- 存在其他admin时允许删除自己或将自己降为viewer。删除自己结束本人的登录，降级后按viewer展示和授权；
+- 每个受保护的新请求读取当前账户、session及角色。删除账户级联删除session，修改角色从后续鉴权生效；
+- 撤销以数据库commit为边界：commit后开始鉴权的新请求不能使用已撤销身份或旧权限；已通过鉴权的在途请求允许完成，不增加全局操作中止机制；
+- 删除Operator不删除Target submission receipt，也不改变DOMjudge Account、Seat、Binding或Device状态。
+
+#### 15.1.3 邀请注册
+
+admin指定固定role生成邀请，受邀人自行选择用户名和设置密码；拿到链接的人可以使用，
+不绑定邮箱或预先指定的用户名。首次bootstrap例外保留，其后新账户均通过此流程创建。
+
+- 每条邀请只允许成功注册一个账户，固定7天绝对有效期，时间和token hash持久化，Server重启不延长有效期；
+- 邀请role生成后不可修改。角色更换需要撤销旧邀请并生成新邀请；
+- 打开、检查链接、用户名冲突或表单校验失败不消耗邀请；创建账户和消费邀请必须在同一事务内提交，并发消费至多成功一次；
+- 邀请列表只包含尚未使用的邀请，包括过期项，展示固定role、创建人、创建时间和有效期；过期项可重新生成或撤销；
+- 注册成功或撤销后从列表移除，不建立邀请历史页面。邀请生成时不创建占位账户；
+- 链接明文仅生成时返回并供复制；刷新或重新登录不能重新取得原链接，遗失后重新生成；
+- 重新生成在同一事务中撤销旧token、创建新token并重新计算7天有效期，role不变；
+- 签发admin被删除或降级时，其未使用的注册邀请和密码重置链接全部失效；已注册账户保留；
+- 消费链接时在最终写事务中重检有效期、签发者当前admin身份及token仍存在，不允许降级后再升级使旧链接复活；
+- 已登录浏览器先退出再注册；成功后返回登录页并提示注册用户名，不自动建立或切换session。
+
+#### 15.1.4 密码修改与恢复
+
+- 本人修改密码必须验证当前密码，新密码执行统一策略；验证与hash在事务外执行，最终事务以当前credential revision复查，不能覆盖并发修改后的凭据；
+- admin可为已有账户签发1小时绝对有效期的单次重置链接；每个账户至多一条有效重置链接，重新生成立即撤销旧链接；
+- 重置链接绑定Operator UUID，不能修改用户名；删除账户后即失效，同名新账户不能使用旧链接；
+- 签发链接本身不改变旧密码或session。成功设好新密码才原子更新凭据、递增revision、删除全部session和重置链接；
+- Web与TTY恢复都撤销该账户的未使用重置链接，避免旧恢复授权覆盖新凭据；
+- 已登录浏览器先退出再使用重置链接，页面显示目标用户名；本人修改密码或链接重置成功后返回登录页，不自动登录；
+- 链接是秘密凭据，数据库只保存高熵随机token的hash，不保存可还原链接的明文。不进入普通日志、trace、metric、列表响应或浏览器持久化缓存；
+- 公开链接检查只返回所需的role或目标用户名，不在打开页面时消费授权；公开token失败不能借会话401处理结束另一个登录代次；
+- 新增注册、密码修改和重置的Argon2工作沿用有界阻塞执行、容量随工作存活和短数据库事务边界，不允许匿名请求建立无界hash任务队列。
+
+#### 15.1.5 Web会话边界
 
 Web以本地会话代次持有独立的API客户端、QueryClient和临时Import预览状态。登录成功（包括同账号重新登录）、退出成功、当前代次收到非登录请求的401，或会话轮询发现Operator身份/角色变化时，统一换代；正常轮询不换代。换代先使旧代次失效，再取消旧请求、清空旧缓存/预览并重新挂载页面，文件选择和操作提示随页面释放。旧请求和回调只能访问旧代次；旧401不能结束新会话，退出后完成的文件读取不能借用新会话发起上传，晚到响应不能恢复旧token或清除新预览。
 

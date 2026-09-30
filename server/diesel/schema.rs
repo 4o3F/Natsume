@@ -99,6 +99,28 @@ diesel::table! {
 }
 
 diesel::table! {
+    operator_invitations (invitation_id) {
+        invitation_id -> Text,
+        role -> Text,
+        issuer_operator_id -> Text,
+        token_hash -> Binary,
+        created_at_unix_ms -> BigInt,
+        expires_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
+    operator_password_resets (operator_id) {
+        operator_id -> Text,
+        reset_id -> Text,
+        issuer_operator_id -> Text,
+        token_hash -> Binary,
+        created_at_unix_ms -> BigInt,
+        expires_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
     operator_sessions (session_credential_hash) {
         session_credential_hash -> Binary,
         operator_id -> Text,
@@ -187,6 +209,7 @@ diesel::joinable!(device_home_targets -> devices (device_id));
 diesel::joinable!(device_power_targets -> devices (device_id));
 diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
+diesel::joinable!(operator_invitations -> operator_accounts (issuer_operator_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
 diesel::joinable!(server_vault_records -> accounts (account_id));
 diesel::joinable!(teams -> accounts (account_id));
@@ -204,6 +227,8 @@ diesel::allow_tables_to_appear_in_same_query!(
     devices,
     gateway_credentials,
     operator_accounts,
+    operator_invitations,
+    operator_password_resets,
     operator_sessions,
     organizations,
     pending_import_candidate,

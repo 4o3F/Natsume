@@ -87,7 +87,7 @@ fn submissions_require_closed_actions_scopes_and_canonical_ids() {
 async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    seed_operator(&fixture.database, "batch-admin", "batch-test-password").await?;
+    seed_operator(&fixture.database, "batch-admin", "batch-test-password1!").await?;
     fixture.database.write(|tx| {
         tx.connection().batch_execute("INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES ('01900000-0000-7000-8000-000000000001','m1','strong','enabled',1), ('01900000-0000-7000-8000-000000000002','m2','strong','disabled',1);").map_err(|_| PersistenceError::OperationFailed)
     }).await.map_err(|e| format!("seed: {e:?}"))?;
@@ -101,7 +101,7 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
     );
     let login = drive(
         &application,
-        login_request("batch-admin", "batch-test-password")?,
+        login_request("batch-admin", "batch-test-password1!")?,
     )
     .await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?

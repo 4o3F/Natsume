@@ -23,7 +23,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
     seed_operator(
         &fixture.database,
         "list-admin",
-        "device-filter-test-password",
+        "device-filter-test-password1!",
     )
     .await?;
     fixture.database.write(|tx| tx.connection().batch_execute(
@@ -35,7 +35,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
     let application = router(server_state(fixture.database.clone())?, unused_web_root());
     let login = drive(
         &application,
-        login_request("list-admin", "device-filter-test-password")?,
+        login_request("list-admin", "device-filter-test-password1!")?,
     )
     .await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?

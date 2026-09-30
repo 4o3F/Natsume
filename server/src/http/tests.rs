@@ -360,9 +360,9 @@ pub(crate) enum SupportFailure {
 }
 
 const LOGIN_NAME: &str = "http-admin";
-const PASSWORD: &str = "http-password-canary";
+const PASSWORD: &str = "http-password-canary1!";
 const LOG_LOGIN_NAME: &str = "structured-log-login-name-canary";
-const LOG_PASSWORD: &str = "structured-log-password-canary";
+const LOG_PASSWORD: &str = "structured-log-password-canary1!";
 const INDEX_HTML: &str = "<!doctype html><p>packaged-panel-marker</p>";
 const APP_JS: &str = "globalThis.natsumePanelMarker = true;\n";
 pub(crate) fn unused_web_root() -> &'static Path {

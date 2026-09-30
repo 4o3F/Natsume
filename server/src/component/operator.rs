@@ -6,6 +6,14 @@ use crate::db::{Database, PersistenceError, Transaction};
 mod account;
 mod credentials;
 mod db;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "TODO(P2): connect invitation and password-reset links"
+    )
+)]
+mod link;
 mod password;
 mod session;
 
@@ -167,6 +175,10 @@ pub(crate) enum OperatorError {
     InvalidPersistedRole,
     #[snafu(display("the operator login name must not be empty"))]
     EmptyLoginName,
+    #[snafu(display("the new operator login name must not have surrounding whitespace"))]
+    InvalidNewLoginName,
+    #[snafu(display("the new operator password does not satisfy the password policy"))]
+    InvalidNewPassword,
     #[snafu(display("the operator password confirmation does not match"))]
     PasswordMismatch,
     #[snafu(display("operator password entropy is unavailable"))]

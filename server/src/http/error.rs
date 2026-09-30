@@ -176,6 +176,12 @@ impl ApiError {
                 Self::internal_error("operator_password_hashing_failed")
             }
             OperatorError::EmptyLoginName => Self::invalid_request("operator_empty_login_name"),
+            OperatorError::InvalidNewLoginName => {
+                Self::invalid_request("operator_invalid_new_login_name")
+            }
+            OperatorError::InvalidNewPassword => {
+                Self::invalid_request("operator_invalid_new_password")
+            }
             OperatorError::PasswordMismatch => Self::internal_error("operator_password_mismatch"),
         }
     }

@@ -81,7 +81,7 @@ pub(super) mod tests {
             .unwrap_or_else(|error| panic!("bootstrap failed: {error}"));
         let database = fixture.database(false).await;
         let session = OperatorComponent::new(database.clone())
-            .sign_in("admin", "test-password".to_owned())
+            .sign_in("admin", "test-password-123!".to_owned())
             .await
             .unwrap_or_else(|error| panic!("bootstrap administrator cannot sign in: {error}"));
         assert_eq!(session.identity().role_name(), "admin");
@@ -218,8 +218,8 @@ domjudge_origin = "https://judge.example.test"
             bootstrap_with(self.config(), || {
                 OperatorCredentials::new(
                     login.to_owned(),
-                    "test-password".to_owned(),
-                    "test-password".to_owned(),
+                    "test-password-123!".to_owned(),
+                    "test-password-123!".to_owned(),
                 )
                 .map_err(|_| CommandError::Bootstrap)
             })

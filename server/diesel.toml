@@ -14,6 +14,8 @@ filter.only_tables = [
   "^devices$",
   "^gateway_credentials$",
   "^operator_accounts$",
+  "^operator_invitations$",
+  "^operator_password_resets$",
   "^operator_sessions$",
   "^organizations$",
   "^pending_import_candidate$",

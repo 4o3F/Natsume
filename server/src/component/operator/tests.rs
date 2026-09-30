@@ -79,11 +79,11 @@ fn persisted_roles_are_closed() -> Result<(), TestFailure> {
 #[test]
 fn bootstrap_input_errors_are_redacted() -> Result<(), TestFailure> {
     let login_canary = "bootstrap-login-canary";
-    let password_canary = "bootstrap-password-canary";
+    let password_canary = "bootstrap-password-canary1!";
     let Err(error) = OperatorCredentials::new(
         login_canary.to_owned(),
         password_canary.to_owned(),
-        "different-password-canary".to_owned(),
+        "different-password-canary1!".to_owned(),
     ) else {
         return Err(TestFailure::ExpectedInputFailure);
     };
@@ -97,7 +97,7 @@ fn bootstrap_input_errors_are_redacted() -> Result<(), TestFailure> {
 
 #[test]
 fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailure> {
-    let password = "correct horse battery staple";
+    let password = "CorrectHorseBatteryStaple1!";
     let credentials =
         OperatorCredentials::new("admin".to_owned(), password.to_owned(), password.to_owned())
             .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
@@ -213,8 +213,8 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     assert_dummy_password_phc_is_frozen()?;
-    let admin_password = "admin-password-canary";
-    let viewer_password = "viewer-password-canary";
+    let admin_password = "admin-password-canary1!";
+    let viewer_password = "viewer-password-canary1!";
     prepare_sign_in_accounts(&fixture.database, admin_password, viewer_password).await?;
 
     let before_sign_in = db_operator::test_now(&fixture.database)
@@ -270,6 +270,36 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
         return Err(TestFailure::PersistedCredentialEvidenceWasInvalid);
     }
     assert_failed_sign_ins_are_unified(&fixture.database).await
+}
+
+#[tokio::test]
+async fn legacy_passwords_and_login_names_remain_usable_after_policy_changes()
+-> Result<(), TestFailure> {
+    let _verification_guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = TestDatabase::new().await?;
+    for (index, password) in ["short", "old password", "中文旧密码", "old\n\t\\\"password"]
+        .into_iter()
+        .enumerate()
+    {
+        assert!(super::credentials::validate_new_password(password).is_err());
+        let login_name = format!(" legacy-admin-{index} ");
+        let phc = hash_raw_password(&OperatorPassword::new(password.to_owned()))
+            .map_err(|_| TestFailure::PasswordHashingFailed)?;
+        let operator_id = test_insert_admin_account(&fixture.database, &login_name, &phc)
+            .await
+            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        let session = sign_in(&fixture.database, &login_name, password.to_owned())
+            .await
+            .map_err(|_| TestFailure::CorrectSignInFailed)?;
+        assert_eq!(session.identity().operator_id(), operator_id);
+        assert_eq!(
+            authenticate_session(&fixture.database, session.wire_credential())
+                .await
+                .map_err(|_| TestFailure::SessionEvidenceReadFailed)?,
+            session.identity()
+        );
+    }
+    Ok(())
 }
 
 async fn prepare_sign_in_accounts(
@@ -473,7 +503,7 @@ async fn password_reset_fences_pending_sign_in_even_when_the_phc_is_unchanged()
 -> Result<(), TestFailure> {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    let password = "reset-fence-password";
+    let password = "reset-fence-password1!";
     let phc = password_phc("reset-admin", password)?;
     test_insert_admin_account(&fixture.database, "reset-admin", &phc)
         .await
@@ -562,8 +592,8 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
 -> Result<(), TestFailure> {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
-    let phc = password_phc("reset-admin", "old-password")?;
-    let new_phc = password_phc("reset-admin", "new-password")?;
+    let phc = password_phc("reset-admin", "old-password-123!")?;
+    let new_phc = password_phc("reset-admin", "new-password-123!")?;
     let bootstrap_phc = phc.clone();
     fixture
         .database
@@ -575,12 +605,20 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
     test_insert_admin_account(&fixture.database, "other-admin", &phc)
         .await
         .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
-    let old = sign_in(&fixture.database, "reset-admin", "old-password".to_owned())
-        .await
-        .map_err(|_| TestFailure::CorrectSignInFailed)?;
-    let other = sign_in(&fixture.database, "other-admin", "old-password".to_owned())
-        .await
-        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    let old = sign_in(
+        &fixture.database,
+        "reset-admin",
+        "old-password-123!".to_owned(),
+    )
+    .await
+    .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    let other = sign_in(
+        &fixture.database,
+        "other-admin",
+        "old-password-123!".to_owned(),
+    )
+    .await
+    .map_err(|_| TestFailure::CorrectSignInFailed)?;
     assert_eq!(
         db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
         Ok((phc.clone(), 1))
@@ -610,14 +648,22 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
         Ok(other.identity())
     );
     assert_eq!(
-        sign_in(&fixture.database, "reset-admin", "old-password".to_owned())
-            .await
-            .err(),
+        sign_in(
+            &fixture.database,
+            "reset-admin",
+            "old-password-123!".to_owned()
+        )
+        .await
+        .err(),
         Some(OperatorError::AuthenticationFailed)
     );
-    let fresh = sign_in(&fixture.database, "reset-admin", "new-password".to_owned())
-        .await
-        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    let fresh = sign_in(
+        &fixture.database,
+        "reset-admin",
+        "new-password-123!".to_owned(),
+    )
+    .await
+    .map_err(|_| TestFailure::CorrectSignInFailed)?;
     assert_eq!(
         authenticate_session(&fixture.database, fresh.wire_credential()).await,
         Ok(fresh.identity())
@@ -629,8 +675,8 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
 async fn failed_password_reset_preserves_the_phc_revision_and_sessions() -> Result<(), TestFailure>
 {
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
-    let phc = password_phc("reset-admin", "old-password")?;
-    let new_phc = password_phc("reset-admin", "new-password")?;
+    let phc = password_phc("reset-admin", "old-password-123!")?;
+    let new_phc = password_phc("reset-admin", "new-password-123!")?;
     for revision in [1, i64::MAX] {
         let fixture = TestDatabase::new().await?;
         test_insert_admin_account(&fixture.database, "reset-admin", &phc)
@@ -639,9 +685,13 @@ async fn failed_password_reset_preserves_the_phc_revision_and_sessions() -> Resu
         db_operator::test_set_credential_revision(&fixture.database, "reset-admin", revision)
             .await
             .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
-        let session = sign_in(&fixture.database, "reset-admin", "old-password".to_owned())
-            .await
-            .map_err(|_| TestFailure::CorrectSignInFailed)?;
+        let session = sign_in(
+            &fixture.database,
+            "reset-admin",
+            "old-password-123!".to_owned(),
+        )
+        .await
+        .map_err(|_| TestFailure::CorrectSignInFailed)?;
         if revision == 1 {
             // Fails after the PHC and revision update, proving transaction rollback.
             db_operator::test_reject_session_deletion(&fixture.database)
