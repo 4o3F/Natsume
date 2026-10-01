@@ -123,6 +123,11 @@ impl OperatorIdentity {
     }
 
     #[must_use]
+    pub(crate) const fn role(self) -> OperatorRole {
+        self.role
+    }
+
+    #[must_use]
     pub(crate) const fn role_name(self) -> &'static str {
         self.role.as_persisted()
     }

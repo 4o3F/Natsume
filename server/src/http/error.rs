@@ -34,6 +34,12 @@ enum ApiErrorCode {
     ImportCandidateUnavailable,
     ImportPreviewStale,
     ImportSeatOccupied,
+    OperatorLoginNameConflict,
+    OperatorLastAdmin,
+    OperatorCredentialChanged,
+    OperatorLinkUnavailable,
+    OperatorCurrentPasswordInvalid,
+    OperatorLogoutRequired,
 }
 
 impl ApiErrorCode {
@@ -51,6 +57,12 @@ impl ApiErrorCode {
             Self::ImportCandidateUnavailable => "IMPORT_CANDIDATE_UNAVAILABLE",
             Self::ImportPreviewStale => "IMPORT_PREVIEW_STALE",
             Self::ImportSeatOccupied => "IMPORT_SEAT_OCCUPIED",
+            Self::OperatorLoginNameConflict => "OPERATOR_LOGIN_NAME_CONFLICT",
+            Self::OperatorLastAdmin => "OPERATOR_LAST_ADMIN",
+            Self::OperatorCredentialChanged => "OPERATOR_CREDENTIAL_CHANGED",
+            Self::OperatorLinkUnavailable => "OPERATOR_LINK_UNAVAILABLE",
+            Self::OperatorCurrentPasswordInvalid => "OPERATOR_CURRENT_PASSWORD_INVALID",
+            Self::OperatorLogoutRequired => "OPERATOR_LOGOUT_REQUIRED",
         }
     }
 }
@@ -182,13 +194,54 @@ impl ApiError {
             OperatorError::InvalidNewPassword => {
                 Self::invalid_request("operator_invalid_new_password")
             }
-            OperatorError::PasswordMismatch => Self::internal_error("operator_password_mismatch"),
+            OperatorError::PasswordMismatch => Self::invalid_request("operator_password_mismatch"),
             OperatorError::OperatorNotFound => Self::not_found("operator_not_found"),
-            OperatorError::LoginNameConflict => Self::conflict("operator_login_name_conflict"),
-            OperatorError::LastAdmin => Self::conflict("operator_last_admin"),
-            OperatorError::LinkUnavailable => Self::invalid_request("operator_link_unavailable"),
-            OperatorError::CredentialChanged => Self::conflict("operator_credential_changed"),
+            OperatorError::LoginNameConflict => Self::new(
+                StatusCode::CONFLICT,
+                "Conflict",
+                ApiErrorCode::OperatorLoginNameConflict,
+                "operator_login_name_conflict",
+            ),
+            OperatorError::LastAdmin => Self::new(
+                StatusCode::CONFLICT,
+                "Conflict",
+                ApiErrorCode::OperatorLastAdmin,
+                "operator_last_admin",
+            ),
+            OperatorError::LinkUnavailable => Self::new(
+                StatusCode::GONE,
+                "Gone",
+                ApiErrorCode::OperatorLinkUnavailable,
+                "operator_link_unavailable",
+            ),
+            OperatorError::CredentialChanged => Self::new(
+                StatusCode::CONFLICT,
+                "Conflict",
+                ApiErrorCode::OperatorCredentialChanged,
+                "operator_credential_changed",
+            ),
         }
+    }
+
+    pub(super) fn from_operator_password_change(error: OperatorError) -> Self {
+        match error {
+            OperatorError::AuthenticationFailed => Self::new(
+                StatusCode::BAD_REQUEST,
+                "Bad Request",
+                ApiErrorCode::OperatorCurrentPasswordInvalid,
+                "operator_current_password_invalid",
+            ),
+            other => Self::from_operator(other),
+        }
+    }
+
+    pub(super) fn operator_logout_required() -> Self {
+        Self::new(
+            StatusCode::CONFLICT,
+            "Conflict",
+            ApiErrorCode::OperatorLogoutRequired,
+            "operator_logout_required",
+        )
     }
 
     pub(super) fn from_contest(error: ContestError) -> Self {

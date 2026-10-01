@@ -228,7 +228,7 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
         (
             OperatorError::PasswordMismatch,
             "operator_password_mismatch",
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::BAD_REQUEST,
         ),
     ]
 }
@@ -326,4 +326,50 @@ enum TestFailure {
     CauseWasNotAStaticDiscriminant,
     #[snafu(display("the non-pending Enrollment decision mapping changed"))]
     EnrollmentDecisionMappingChanged,
+}
+
+#[tokio::test]
+async fn operator_form_errors_have_distinct_codes_without_session_unauthorized() {
+    for (error, status, code) in [
+        (
+            ApiError::from_operator(OperatorError::LoginNameConflict),
+            StatusCode::CONFLICT,
+            "OPERATOR_LOGIN_NAME_CONFLICT",
+        ),
+        (
+            ApiError::from_operator(OperatorError::LastAdmin),
+            StatusCode::CONFLICT,
+            "OPERATOR_LAST_ADMIN",
+        ),
+        (
+            ApiError::from_operator(OperatorError::CredentialChanged),
+            StatusCode::CONFLICT,
+            "OPERATOR_CREDENTIAL_CHANGED",
+        ),
+        (
+            ApiError::from_operator(OperatorError::LinkUnavailable),
+            StatusCode::GONE,
+            "OPERATOR_LINK_UNAVAILABLE",
+        ),
+        (
+            ApiError::from_operator_password_change(OperatorError::AuthenticationFailed),
+            StatusCode::BAD_REQUEST,
+            "OPERATOR_CURRENT_PASSWORD_INVALID",
+        ),
+        (
+            ApiError::operator_logout_required(),
+            StatusCode::CONFLICT,
+            "OPERATOR_LOGOUT_REQUIRED",
+        ),
+    ] {
+        let response = error.into_response();
+        assert_eq!(response.status(), status);
+        let bytes = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
+            .await
+            .unwrap_or_else(|error| panic!("error body: {error}"));
+        let body: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or_else(|error| panic!("error JSON: {error}"));
+        assert_eq!(body["code"], code);
+        assert_ne!(body["status"], 401);
+    }
 }

@@ -11,7 +11,7 @@ use utoipa::{
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets.\nDeclared but not mounted in WP8 operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword.\nDeclared but not mounted in WP8 operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -50,7 +50,20 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::device::session::get_session_control,
         crate::http::handler::device::home::get_home,
         crate::http::handler::device::convergence::get_device_convergence,
-        crate::http::handler::target_submission::submit_targets
+        crate::http::handler::target_submission::submit_targets,
+        crate::http::handler::operator::list_accounts,
+        crate::http::handler::operator::update_account,
+        crate::http::handler::operator::delete_account,
+        crate::http::handler::operator::list_invitations,
+        crate::http::handler::operator::create_invitation,
+        crate::http::handler::operator::revoke_invitation,
+        crate::http::handler::operator::regenerate_invitation,
+        crate::http::handler::operator::create_password_reset,
+        crate::http::handler::operator::inspect_registration,
+        crate::http::handler::operator::register_operator,
+        crate::http::handler::operator::inspect_password_reset,
+        crate::http::handler::operator::reset_password,
+        crate::http::handler::operator::change_password
     ),
     components(schemas(
         crate::http::handler::health::HealthResponse,
@@ -79,7 +92,18 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::device::home::HomeResponse,
         crate::http::handler::device::convergence::DeviceConvergenceResponse,
         crate::http::handler::target_submission::TargetSubmissionBody,
-        crate::http::handler::target_submission::TargetSubmissionResponse
+        crate::http::handler::target_submission::TargetSubmissionResponse,
+        crate::http::handler::operator::OperatorAccountResponse,
+        crate::http::handler::operator::OperatorInvitationResponse,
+        crate::http::handler::operator::OperatorInvitationIssuedResponse,
+        crate::http::handler::operator::OperatorPasswordResetIssuedResponse,
+        crate::http::handler::operator::OperatorRoleRequest,
+        crate::http::handler::operator::OperatorTokenRequest,
+        crate::http::handler::operator::OperatorRegistrationRequest,
+        crate::http::handler::operator::OperatorPasswordResetRequest,
+        crate::http::handler::operator::OperatorPasswordChangeRequest,
+        crate::http::handler::operator::OperatorRegistrationInspectionResponse,
+        crate::http::handler::operator::OperatorPasswordResetInspectionResponse
     ))
 )]
 struct MountedDocument;
@@ -141,6 +165,26 @@ fn configure_components(components: &mut utoipa::openapi::Components) {
             Ref::from_schema_name("CanonicalUuidV7").into(),
         );
     }
+    for (schema_name, names) in [
+        ("OperatorAccountResponse", &["operator_id"][..]),
+        (
+            "OperatorInvitationResponse",
+            &["invitation_id", "issuer_operator_id"][..],
+        ),
+        (
+            "OperatorPasswordResetIssuedResponse",
+            &["operator_id", "reset_id"][..],
+        ),
+    ] {
+        if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
+            for name in names {
+                schema.properties.insert(
+                    (*name).to_owned(),
+                    Ref::from_schema_name("CanonicalUuidV7").into(),
+                );
+            }
+        }
+    }
     for schema_name in ["DeviceResponse", "EnrollmentReviewResponse"] {
         if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
             let property_name = if schema_name == "DeviceResponse" {
@@ -178,7 +222,7 @@ fn canonicalize_path_parameters(paths: &mut Paths) {
             for parameter in parameters.iter_mut().filter(|parameter| {
                 matches!(
                     parameter.name.as_str(),
-                    "device_id" | "review_id" | "import_id"
+                    "device_id" | "review_id" | "import_id" | "operator_id" | "invite_id"
                 )
             }) {
                 parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
@@ -255,7 +299,7 @@ fn enrich_operation(operation: Option<&mut Operation>) {
         };
         if matches!(
             status.as_str(),
-            "400" | "401" | "403" | "404" | "409" | "500" | "503"
+            "400" | "401" | "403" | "404" | "409" | "410" | "500" | "503"
         ) {
             response.content.insert(
                 "application/json".to_owned(),

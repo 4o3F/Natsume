@@ -23,9 +23,18 @@ use super::document;
 
 const UNMOUNTED_DESCRIPTION_PREFIX: &str = "Declared but not mounted in WP8 operation IDs: ";
 const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
-const ALLOWED_CREDENTIAL_PATHS: [&str; 2] = [
+const ALLOWED_CREDENTIAL_PATHS: &[&str] = &[
     "/components/schemas/SessionRequest/properties/password",
     "/components/schemas/ImportPreviewResponse/properties/preview_token",
+    "/components/schemas/OperatorInvitationIssuedResponse/properties/token",
+    "/components/schemas/OperatorPasswordResetIssuedResponse/properties/token",
+    "/components/schemas/OperatorTokenRequest/properties/token",
+    "/components/schemas/OperatorRegistrationRequest/properties/token",
+    "/components/schemas/OperatorRegistrationRequest/properties/password",
+    "/components/schemas/OperatorPasswordResetRequest/properties/token",
+    "/components/schemas/OperatorPasswordResetRequest/properties/password",
+    "/components/schemas/OperatorPasswordChangeRequest/properties/current_password",
+    "/components/schemas/OperatorPasswordChangeRequest/properties/password",
 ];
 type OperationTable = BTreeMap<(String, String), (String, BTreeSet<String>)>;
 const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 2] = [
@@ -40,6 +49,89 @@ const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 2] = [
         "/api/v2/provisioning-window",
         "updateProvisioningWindow",
         &["200", "400", "401", "403", "413"],
+    ),
+];
+
+const OPERATOR_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 13] = [
+    (
+        "get",
+        "/api/v2/operator/accounts",
+        "listOperatorAccounts",
+        &["200", "401", "403", "500"],
+    ),
+    (
+        "patch",
+        "/api/v2/operator/accounts/{operator_id}",
+        "updateOperatorAccount",
+        &[
+            "204", "400", "401", "403", "404", "408", "409", "413", "500",
+        ],
+    ),
+    (
+        "delete",
+        "/api/v2/operator/accounts/{operator_id}",
+        "deleteOperatorAccount",
+        &["204", "400", "401", "403", "404", "409", "500"],
+    ),
+    (
+        "get",
+        "/api/v2/operator/invitations",
+        "listOperatorInvitations",
+        &["200", "401", "403", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/invitations",
+        "createOperatorInvitation",
+        &["201", "400", "401", "403", "408", "413", "500"],
+    ),
+    (
+        "delete",
+        "/api/v2/operator/invitations/{invite_id}",
+        "revokeOperatorInvitation",
+        &["204", "400", "401", "403", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/invitations/{invite_id}/actions/regenerate",
+        "regenerateOperatorInvitation",
+        &["201", "400", "401", "403", "410", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/accounts/{operator_id}/password-resets",
+        "createOperatorPasswordReset",
+        &["201", "400", "401", "403", "404", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/register/inspect",
+        "inspectOperatorRegistration",
+        &["200", "400", "408", "409", "410", "413", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/register",
+        "registerOperator",
+        &["201", "400", "408", "409", "410", "413", "500", "503"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/password/reset/inspect",
+        "inspectOperatorPasswordReset",
+        &["200", "400", "408", "409", "410", "413", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/password/reset",
+        "resetOperatorPassword",
+        &["204", "400", "408", "409", "410", "413", "500", "503"],
+    ),
+    (
+        "post",
+        "/api/v2/operator/password/change",
+        "changeOperatorPassword",
+        &["204", "400", "401", "408", "409", "413", "500", "503"],
     ),
 ];
 
@@ -226,6 +318,7 @@ fn expected_operation_table() -> OperationTable {
     ];
     rows.iter()
         .chain(PROVISIONING_OPERATION_ROWS.iter())
+        .chain(OPERATOR_OPERATION_ROWS.iter())
         .map(|(method, path, operation_id, statuses)| {
             (
                 ((*method).to_owned(), (*path).to_owned()),
@@ -304,7 +397,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets.\nDeclared but not mounted in WP8 operation IDs: none."
+        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword.\nDeclared but not mounted in WP8 operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -924,7 +1017,7 @@ fn error_response_shape_has_no_correlation_contract() -> Result<(), TestFailure>
                 == Some("#/components/schemas/ErrorResponse");
             if matches!(
                 status.as_str(),
-                "400" | "401" | "403" | "404" | "409" | "500" | "503"
+                "400" | "401" | "403" | "404" | "409" | "410" | "500" | "503"
             ) != has_error_response
             {
                 return Err(TestFailure::ErrorResponseMappingChanged);
@@ -1173,6 +1266,8 @@ fn concrete_path(path: &str) -> String {
         .replace("{device_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{review_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{import_id}", "01900000-0000-7000-8000-000000000000")
+        .replace("{operator_id}", "01900000-0000-7000-8000-000000000000")
+        .replace("{invite_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{request_id}", "01900000-0000-7000-8000-000000000000")
 }
 
@@ -1323,4 +1418,150 @@ enum TestFailure {
     RouterProbeFailed,
     #[snafu(display("the OpenAPI test fixture failed"))]
     FixtureFailed,
+}
+
+#[test]
+fn operator_schemas_are_closed_and_secret_safe() -> Result<(), Box<dyn std::error::Error>> {
+    let value = serialized_document()?;
+    for schema in [
+        "OperatorAccountResponse",
+        "OperatorInvitationResponse",
+        "OperatorInvitationIssuedResponse",
+        "OperatorPasswordResetIssuedResponse",
+        "OperatorRoleRequest",
+        "OperatorTokenRequest",
+        "OperatorRegistrationRequest",
+        "OperatorPasswordResetRequest",
+        "OperatorPasswordChangeRequest",
+        "OperatorRegistrationInspectionResponse",
+        "OperatorPasswordResetInspectionResponse",
+    ] {
+        let schema = value
+            .pointer(&format!("/components/schemas/{schema}"))
+            .ok_or("missing schema")?;
+        assert_eq!(schema["additionalProperties"], false);
+        let properties = schema["properties"]
+            .as_object()
+            .ok_or("missing properties")?;
+        for (name, field) in properties {
+            assert!(
+                !field
+                    .as_object()
+                    .ok_or("invalid field")?
+                    .contains_key("example")
+            );
+            if name.contains("password") || name == "token" {
+                assert!(field["writeOnly"] == true || field["readOnly"] == true);
+                assert_eq!(field["type"], "string");
+            }
+        }
+    }
+    for schema in [
+        "OperatorAccountResponse",
+        "OperatorInvitationResponse",
+        "OperatorRegistrationInspectionResponse",
+        "OperatorPasswordResetInspectionResponse",
+    ] {
+        let properties = value
+            .pointer(&format!("/components/schemas/{schema}/properties"))
+            .and_then(Value::as_object)
+            .ok_or("missing properties")?;
+        assert!(
+            !properties
+                .keys()
+                .any(|key| key.contains("password") || key.contains("token"))
+        );
+    }
+    for schema in [
+        "OperatorInvitationIssuedResponse",
+        "OperatorPasswordResetIssuedResponse",
+    ] {
+        assert_eq!(
+            value.pointer(&format!(
+                "/components/schemas/{schema}/properties/token/readOnly"
+            )),
+            Some(&Value::Bool(true))
+        );
+    }
+    for schema in [
+        "OperatorRegistrationRequest",
+        "OperatorPasswordResetRequest",
+        "OperatorPasswordChangeRequest",
+    ] {
+        for field in ["password", "password_confirmation"] {
+            let password = value
+                .pointer(&format!("/components/schemas/{schema}/properties/{field}"))
+                .ok_or("missing password")?;
+            assert_eq!(password["writeOnly"], true);
+            assert_eq!(password["minLength"], 16);
+            assert_eq!(password["maxLength"], 1024);
+            assert!(
+                password["pattern"]
+                    .as_str()
+                    .is_some_and(|pattern| pattern.contains("[0-9]"))
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn operator_routes_use_cookie_security_and_canonical_identifiers()
+-> Result<(), Box<dyn std::error::Error>> {
+    let value = serialized_document()?;
+    for (method, path, _, statuses) in OPERATOR_OPERATION_ROWS {
+        let operation = operation_at(&value, path, method)?;
+        let authenticated = statuses.contains(&"401");
+        assert_eq!(operation.contains_key("security"), authenticated);
+        if authenticated {
+            assert_eq!(
+                operation["security"],
+                serde_json::json!([{"sessionCookie":[]}])
+            );
+        }
+        if method == "post" || method == "patch" {
+            assert_eq!(
+                operation.get("requestBody").is_some(),
+                matches!(
+                    path,
+                    "/api/v2/operator/invitations"
+                        | "/api/v2/operator/accounts/{operator_id}"
+                        | "/api/v2/operator/register/inspect"
+                        | "/api/v2/operator/register"
+                        | "/api/v2/operator/password/reset/inspect"
+                        | "/api/v2/operator/password/reset"
+                        | "/api/v2/operator/password/change"
+                )
+            );
+        }
+    }
+    for path in [
+        "/api/v2/operator/accounts/{operator_id}",
+        "/api/v2/operator/invitations/{invite_id}",
+    ] {
+        for operation in value["paths"][path]
+            .as_object()
+            .ok_or("missing path")?
+            .values()
+        {
+            assert_eq!(
+                operation["parameters"][0]["schema"]["$ref"],
+                "#/components/schemas/CanonicalUuidV7"
+            );
+        }
+    }
+    assert_eq!(
+        value["components"]["schemas"]["OperatorRoleRequest"]["properties"]["role"]["enum"],
+        serde_json::json!(["admin", "viewer"])
+    );
+    assert_eq!(
+        value["components"]["schemas"]["SessionResponse"]["properties"]
+            .as_object()
+            .ok_or("missing session")?
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["operator_id", "role"])
+    );
+    Ok(())
 }

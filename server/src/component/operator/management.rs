@@ -14,10 +14,6 @@ use super::{
 use crate::db::{Transaction, TransactionError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "TODO(P3): expose the account list response")
-)]
 pub(crate) struct OperatorSummary {
     pub(crate) operator_id: Uuid,
     pub(crate) username: String,
@@ -42,20 +38,12 @@ pub(crate) struct PasswordResetInspection {
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "TODO(P3): return the invitation secret once")
-)]
 pub(crate) struct IssuedInvitation {
     pub(crate) invitation: InvitationSummary,
     pub(crate) token: LinkToken,
 }
 
 #[derive(Debug)]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "TODO(P3): return the password-reset secret once")
-)]
 pub(crate) struct IssuedPasswordReset {
     pub(crate) reset: PasswordResetInspection,
     pub(crate) token: LinkToken,
@@ -64,15 +52,6 @@ pub(crate) struct IssuedPasswordReset {
 const INVITATION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS: i64 = 60 * 60 * 1000;
 
-// The HTTP adapter is the next phase. Only these external domain entrypoints
-// await consumers; all persistence and transactional helpers are private.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "TODO(P3): connect the operator management HTTP handlers"
-    )
-)]
 impl OperatorComponent {
     pub(crate) async fn list_accounts(
         &self,

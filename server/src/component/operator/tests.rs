@@ -12,7 +12,7 @@ use zeroize::Zeroizing;
 use crate::db::{Database, DatabaseConfig};
 
 use super::{
-    OperatorCredentials, OperatorError, OperatorIdentity, OperatorRole,
+    OperatorCredentials, OperatorError, OperatorRole,
     db::tests as db_operator,
     password::{
         DUMMY_PASSWORD_PHC, OperatorPassword, hash_password as hash_raw_password,
@@ -29,13 +29,6 @@ use super::{
 const GATE_RELEASE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 static PASSWORD_VERIFICATION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-impl OperatorIdentity {
-    #[must_use]
-    const fn role(self) -> OperatorRole {
-        self.role
-    }
-}
 
 pub(crate) async fn test_expire_all_sessions(database: &Database) -> Result<(), OperatorError> {
     db_operator::test_expire_all_sessions(database).await

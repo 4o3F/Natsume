@@ -1205,7 +1205,7 @@ Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原syste
 
 角色固定为 `admin` 和 `viewer`，所有admin平等；首次创建的admin没有额外管理权限。
 Web Operator与DOMjudge Account是不同业务，用户管理使用独立的Panel入口。
-以下为已接受目标。Operator领域的用户管理、邀请和密码恢复事务已实现，新增HTTP API与Panel界面仍待接入。
+以下为已接受目标。Operator领域事务与`/api/v2/operator` HTTP API已实现，Panel界面仍待接入。
 
 #### 15.1.1 认证与密码
 
@@ -1276,7 +1276,27 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 - 公开链接检查只返回所需的role或目标用户名，不在打开页面时消费授权；公开token失败不能借会话401处理结束另一个登录代次；
 - 新增注册、密码修改和重置的Argon2工作沿用有界阻塞执行、容量随工作存活和短数据库事务边界，不允许匿名请求建立无界hash任务队列。
 
-#### 15.1.5 Web会话边界
+#### 15.1.5 用户管理HTTP契约
+
+新增接口统一挂载`/api/v2/operator`，沿用现有`/api/v2/session`登录、查询与退出。
+用户列表、账户role PATCH/DELETE、邀请列表/创建/撤销/重新生成、账户的password-resets创建均需admin；
+`POST /operator/password/change`允许admin/viewer修改自己，body不能指定目标账户。
+匿名流程使用`POST /operator/register/inspect`、`POST /operator/register`、
+`POST /operator/password/reset/inspect`和`POST /operator/password/reset`，token仅在JSON body中传递。
+存在有效session时这四个入口返回409 `OPERATOR_LOGOUT_REQUIRED`，先退出再继续；无效/过期cookie不阻止匿名流程。
+
+- DTO闭合且role只有admin/viewer；账户与邀请路径要求canonical UUIDv7。SessionResponse仍只有operator_id和role。
+- 注册成功201返回新账户的operator_id、username、role，不建立session；恢复成功204不建立session。
+- 邀请创建/重新生成与重置签发201仅当次返回token；普通列表不返回token/hash。检查仅返回注册role或重置目标username。
+- 本人改密、自我删除成功204并清除浏览器session cookie；数据库会话撤销仍是后续请求的鉴权依据。
+- Operator接口响应统一`Cache-Control: no-store`；密码与token的Debug脱敏，输入字段在OpenAPI中writeOnly，签发响应token为readOnly。
+- JSON表单上限24 KiB，读取deadline 5秒。三个1024字符密码字段全部采用合法Unicode转义可达18 KiB以上，上限需覆盖此合法表示；超限413，超时408。
+- 普通字段、密码策略及确认错误400 `INVALID_REQUEST`；当前密码错误400 `OPERATOR_CURRENT_PASSWORD_INVALID`，保留当前会话。
+- 用户名冲突、最后admin保护及凭据竞态分别409 `OPERATOR_LOGIN_NAME_CONFLICT`、`OPERATOR_LAST_ADMIN`、`OPERATOR_CREDENTIAL_CHANGED`。
+- 无效、过期、替换、撤销、已消费或用途不符的token统一410 `OPERATOR_LINK_UNAVAILABLE`；token失败不使用会话401。
+- 会话鉴权失败401，权限不足403，账户不存在404；内部故障脱敏500。共用密码容量满额503 `SERVICE_UNAVAILABLE`并提供`Retry-After: 1`。
+
+#### 15.1.6 Web会话边界
 
 Web以本地会话代次持有独立的API客户端、QueryClient和临时Import预览状态。登录成功（包括同账号重新登录）、退出成功、当前代次收到非登录请求的401，或会话轮询发现Operator身份/角色变化时，统一换代；正常轮询不换代。换代先使旧代次失效，再取消旧请求、清空旧缓存/预览并重新挂载页面，文件选择和操作提示随页面释放。旧请求和回调只能访问旧代次；旧401不能结束新会话，退出后完成的文件读取不能借用新会话发起上传，晚到响应不能恢复旧token或清除新预览。
 

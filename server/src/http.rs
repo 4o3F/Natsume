@@ -56,6 +56,7 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .merge(handler::session::public_routes());
     public
         .merge(authenticated)
+        .merge(handler::operator::routes(state.clone()))
         .fallback(not_found)
         .layer(DefaultBodyLimit::disable())
         .layer(RequestBodyLimitLayer::new(API_REQUEST_BODY_LIMIT_BYTES))

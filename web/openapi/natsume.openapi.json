@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets.\nDeclared but not mounted in WP8 operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.6.0"
   },
   "paths": {
@@ -1469,6 +1469,1026 @@
         ]
       }
     },
+    "/api/v2/operator/accounts": {
+      "get": {
+        "operationId": "listOperatorAccounts",
+        "responses": {
+          "200": {
+            "description": "Current response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OperatorAccountResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/accounts/{operator_id}": {
+      "delete": {
+        "operationId": "deleteOperatorAccount",
+        "parameters": [
+          {
+            "name": "operator_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Completed"
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "updateOperatorAccount",
+        "parameters": [
+          {
+            "name": "operator_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Completed"
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/accounts/{operator_id}/password-resets": {
+      "post": {
+        "operationId": "createOperatorPasswordReset",
+        "parameters": [
+          {
+            "name": "operator_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created; secret is returned only once, without establishing a session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorPasswordResetIssuedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Operator not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/invitations": {
+      "get": {
+        "operationId": "listOperatorInvitations",
+        "responses": {
+          "200": {
+            "description": "Current response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OperatorInvitationResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createOperatorInvitation",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorRoleRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created; secret is returned only once, without establishing a session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorInvitationIssuedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/invitations/{invite_id}": {
+      "delete": {
+        "operationId": "revokeOperatorInvitation",
+        "parameters": [
+          {
+            "name": "invite_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Completed"
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/invitations/{invite_id}/actions/regenerate": {
+      "post": {
+        "operationId": "regenerateOperatorInvitation",
+        "parameters": [
+          {
+            "name": "invite_id",
+            "in": "path",
+            "description": "Canonical lowercase hyphenated `UUIDv7`.",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Created; secret is returned only once, without establishing a session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorInvitationIssuedResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Administrator role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Link is unavailable, expired, replaced, revoked or already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/password/change": {
+      "post": {
+        "operationId": "changeOperatorPassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorPasswordChangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Completed"
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Session authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Password work capacity exhausted; retry after 1 second",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying; always 1"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/operator/password/reset": {
+      "post": {
+        "operationId": "resetOperatorPassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorPasswordResetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Completed"
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Link is unavailable, expired, replaced, revoked or already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Password work capacity exhausted; retry after 1 second",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying; always 1"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/operator/password/reset/inspect": {
+      "post": {
+        "operationId": "inspectOperatorPasswordReset",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Current response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorPasswordResetInspectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Link is unavailable, expired, replaced, revoked or already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/operator/register": {
+      "post": {
+        "operationId": "registerOperator",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorRegistrationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Created; secret is returned only once, without establishing a session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorAccountResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Link is unavailable, expired, replaced, revoked or already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Password work capacity exhausted; retry after 1 second",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying; always 1"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v2/operator/register/inspect": {
+      "post": {
+        "operationId": "inspectOperatorRegistration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OperatorTokenRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Current response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorRegistrationInspectionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid closed form, identifier, password policy, confirmation or current password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "Form body was not received within 5 seconds"
+          },
+          "409": {
+            "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Link is unavailable, expired, replaced, revoked or already consumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Request body exceeds 24 KiB"
+          },
+          "500": {
+            "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v2/organizations": {
       "get": {
         "operationId": "listOrganizationLogos",
@@ -2883,6 +3903,246 @@
           },
           "seat": {
             "type": ["string", "null"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorAccountResponse": {
+        "type": "object",
+        "required": ["operator_id", "username", "role"],
+        "properties": {
+          "operator_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["admin", "viewer"]
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorInvitationIssuedResponse": {
+        "type": "object",
+        "description": "Only creation/regeneration can return the plaintext authorization.",
+        "required": ["invitation", "token"],
+        "properties": {
+          "invitation": {
+            "$ref": "#/components/schemas/OperatorInvitationResponse"
+          },
+          "token": {
+            "type": "string",
+            "readOnly": true,
+            "pattern": "^invite_[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorInvitationResponse": {
+        "type": "object",
+        "required": [
+          "invitation_id",
+          "role",
+          "issuer_operator_id",
+          "created_at_unix_ms",
+          "expires_at_unix_ms",
+          "expired"
+        ],
+        "properties": {
+          "created_at_unix_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expired": {
+            "type": "boolean"
+          },
+          "expires_at_unix_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "invitation_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "issuer_operator_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "role": {
+            "type": "string",
+            "enum": ["admin", "viewer"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorPasswordChangeRequest": {
+        "type": "object",
+        "required": ["current_password", "password", "password_confirmation"],
+        "properties": {
+          "current_password": {
+            "type": "string",
+            "format": "password",
+            "description": "Existing passwords retain their legacy format; at most 1024 UTF-8 bytes.",
+            "writeOnly": true,
+            "maxLength": 1024
+          },
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "16–1024 ASCII characters, using the same policy as registration.",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 16,
+            "pattern": "^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\\[\\]{};:,.?/~\\-])[A-Za-z0-9!@#$%^&*()_=+\\[\\]{};:,.?/~\\-]{16,1024}$"
+          },
+          "password_confirmation": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 16,
+            "pattern": "^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\\[\\]{};:,.?/~\\-])[A-Za-z0-9!@#$%^&*()_=+\\[\\]{};:,.?/~\\-]{16,1024}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorPasswordResetInspectionResponse": {
+        "type": "object",
+        "required": ["username"],
+        "properties": {
+          "username": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorPasswordResetIssuedResponse": {
+        "type": "object",
+        "required": [
+          "operator_id",
+          "reset_id",
+          "username",
+          "expires_at_unix_ms",
+          "token"
+        ],
+        "properties": {
+          "expires_at_unix_ms": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "operator_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "reset_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "token": {
+            "type": "string",
+            "readOnly": true,
+            "pattern": "^reset_[0-9a-f]{64}$"
+          },
+          "username": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorPasswordResetRequest": {
+        "type": "object",
+        "required": ["token", "password", "password_confirmation"],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "16–1024 ASCII characters, using the same policy as registration.",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 16,
+            "pattern": "^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\\[\\]{};:,.?/~\\-])[A-Za-z0-9!@#$%^&*()_=+\\[\\]{};:,.?/~\\-]{16,1024}$"
+          },
+          "password_confirmation": {
+            "type": "string",
+            "format": "password",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 16,
+            "pattern": "^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\\[\\]{};:,.?/~\\-])[A-Za-z0-9!@#$%^&*()_=+\\[\\]{};:,.?/~\\-]{16,1024}$"
+          },
+          "token": {
+            "type": "string",
+            "writeOnly": true,
+            "pattern": "^reset_[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorRegistrationInspectionResponse": {
+        "type": "object",
+        "required": ["role"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["admin", "viewer"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorRegistrationRequest": {
+        "type": "object",
+        "required": ["token", "username", "password", "password_confirmation"],
+        "properties": {
+          "password": {
+            "type": "string",
+            "format": "password",
+            "description": "16–1024 ASCII characters: letters, digits, !@#$%^&*()-_=+[]{};:,.?/~.\nRequires a digit and a special character. Whitespace is forbidden.",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 16,
+            "pattern": "^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\\[\\]{};:,.?/~\\-])[A-Za-z0-9!@#$%^&*()_=+\\[\\]{};:,.?/~\\-]{16,1024}$"
+          },
+          "password_confirmation": {
+            "type": "string",
+            "format": "password",
+            "description": "Must equal password exactly; no normalization.",
+            "writeOnly": true,
+            "maxLength": 1024,
+            "minLength": 16,
+            "pattern": "^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\\[\\]{};:,.?/~\\-])[A-Za-z0-9!@#$%^&*()_=+\\[\\]{};:,.?/~\\-]{16,1024}$"
+          },
+          "token": {
+            "type": "string",
+            "writeOnly": true,
+            "pattern": "^invite_[0-9a-f]{64}$"
+          },
+          "username": {
+            "type": "string",
+            "description": "1–128 UTF-8 bytes; case-sensitive, unique, without surrounding whitespace.",
+            "maxLength": 128,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorRoleRequest": {
+        "type": "object",
+        "description": "The sole mutable account field, also used to choose an invitation's fixed role.",
+        "required": ["role"],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": ["admin", "viewer"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "OperatorTokenRequest": {
+        "type": "object",
+        "description": "Token stays in the JSON body, never in an API path or query.",
+        "required": ["token"],
+        "properties": {
+          "token": {
+            "type": "string",
+            "writeOnly": true
           }
         },
         "additionalProperties": false
