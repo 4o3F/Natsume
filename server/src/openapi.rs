@@ -124,7 +124,7 @@ pub fn document() -> OpenApi {
         .info(
             InfoBuilder::new()
                 .title("Natsume V2 Server API")
-                .version("2.6.0")
+                .version("2.7.0")
                 .description(Some(INFO_DESCRIPTION))
                 .build(),
         )
