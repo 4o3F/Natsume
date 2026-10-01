@@ -229,6 +229,7 @@ async function fillPassword(page: Page) {
 }
 function userRow(page: Page, username: string) {
   return page
+    .getByRole("region", { name: "User accounts", exact: true })
     .getByRole("row")
     .filter({ has: page.getByText(username, { exact: true }) });
 }
