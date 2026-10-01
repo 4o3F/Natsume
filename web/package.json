@@ -11,6 +11,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "e2e": "playwright test",
+    "e2e:https": "python3 ../tools/operator-https.py",
     "api:generate": "openapi-typescript openapi/natsume.openapi.json -o src/api/generated/schema.d.ts && prettier --write openapi/natsume.openapi.json src/api/generated/schema.d.ts",
     "openapi:lint": "spectral lint openapi/natsume.openapi.json --ruleset openapi/.spectral.yaml --fail-severity warn"
   },

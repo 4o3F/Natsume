@@ -197,7 +197,7 @@ export function UsersPage() {
       </div>
       {action.error && (
         <Alert variant="destructive">
-          <AlertTitle>{action.error}</AlertTitle>
+          <AlertTitle className="line-clamp-none">{action.error}</AlertTitle>
         </Alert>
       )}
       {issued && (
@@ -237,19 +237,15 @@ export function UsersPage() {
                 return (
                   <TableRow key={account.operator_id}>
                     <TableCell className="min-w-40">
-                      <span className="inline-block max-w-xs whitespace-normal break-all align-middle">
-                        {account.username}
-                      </span>
-                      {self && (
-                        <Badge variant="secondary" className="ml-2">
-                          You
-                        </Badge>
-                      )}
-                      {lastAdmin && (
-                        <Badge variant="outline" className="ml-2">
-                          Last admin
-                        </Badge>
-                      )}
+                      <div className="flex max-w-xs flex-wrap items-center gap-2">
+                        <span className="whitespace-normal break-all">
+                          {account.username}
+                        </span>
+                        {self && <Badge variant="secondary">You</Badge>}
+                        {lastAdmin && (
+                          <Badge variant="outline">Last admin</Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <select
@@ -443,7 +439,9 @@ export function UsersPage() {
           </AlertDialogHeader>
           {action.error && (
             <Alert variant="destructive">
-              <AlertTitle>{action.error}</AlertTitle>
+              <AlertTitle className="line-clamp-none">
+                {action.error}
+              </AlertTitle>
             </Alert>
           )}
           <AlertDialogFooter>

@@ -6,6 +6,7 @@ const baseURL = `http://${host}:${port}`;
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: "operator-https.spec.ts",
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,

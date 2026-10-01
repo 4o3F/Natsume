@@ -13,14 +13,14 @@ use crate::component::operator::{OperatorError, OperatorIdentity};
 use axum::{
     Extension, Json, Router,
     extract::{FromRequest, Path, Request, State},
-    http::{HeaderValue, StatusCode, header},
+    http::StatusCode,
     middleware::{self as axum_middleware, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
 use serde::de::DeserializeOwned;
 use std::time::Duration;
-use tower_http::{limit::RequestBodyLimitLayer, set_header::SetResponseHeaderLayer};
+use tower_http::limit::RequestBodyLimitLayer;
 use uuid::Uuid;
 
 const FORM_BODY_LIMIT: usize = 24 * 1024;
@@ -70,10 +70,6 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         )
         .merge(public)
         .layer(RequestBodyLimitLayer::new(FORM_BODY_LIMIT))
-        .layer(SetResponseHeaderLayer::overriding(
-            header::CACHE_CONTROL,
-            HeaderValue::from_static("no-store"),
-        ))
 }
 
 async fn require_logged_out(

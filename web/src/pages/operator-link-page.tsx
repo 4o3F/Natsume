@@ -48,7 +48,9 @@ export function OperatorLinkPage({ kind }: { kind: OperatorLinkKind }) {
           {session.error ? (
             <>
               <Alert variant="destructive">
-                <AlertTitle>Unable to check your session.</AlertTitle>
+                <AlertTitle className="line-clamp-none">
+                  Unable to check your session.
+                </AlertTitle>
               </Alert>
               <Button onClick={() => session.refetch()}>Retry</Button>
             </>
@@ -59,7 +61,9 @@ export function OperatorLinkPage({ kind }: { kind: OperatorLinkKind }) {
               <p>Sign out to continue using this link.</p>
               {logout.error && (
                 <Alert variant="destructive">
-                  <AlertTitle>Unable to sign out. Please try again.</AlertTitle>
+                  <AlertTitle className="line-clamp-none">
+                    Unable to sign out. Please try again.
+                  </AlertTitle>
                 </Alert>
               )}
               <Button
@@ -135,7 +139,7 @@ function AnonymousLinkForm({ kind }: { kind: OperatorLinkKind }) {
   if (!token)
     return (
       <Alert variant="destructive">
-        <AlertTitle>
+        <AlertTitle className="line-clamp-none">
           This link is no longer available. Contact an administrator.
         </AlertTitle>
       </Alert>
@@ -144,7 +148,7 @@ function AnonymousLinkForm({ kind }: { kind: OperatorLinkKind }) {
     return (
       <>
         <Alert variant="destructive">
-          <AlertTitle>{inspectionError}</AlertTitle>
+          <AlertTitle className="line-clamp-none">{inspectionError}</AlertTitle>
         </Alert>
         <Button
           variant="outline"
@@ -212,7 +216,7 @@ function AnonymousLinkForm({ kind }: { kind: OperatorLinkKind }) {
       )}
       {action.error && (
         <Alert variant="destructive">
-          <AlertTitle>{action.error}</AlertTitle>
+          <AlertTitle className="line-clamp-none">{action.error}</AlertTitle>
         </Alert>
       )}
       {kind === "register" && (

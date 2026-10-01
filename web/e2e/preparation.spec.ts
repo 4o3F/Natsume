@@ -318,8 +318,10 @@ test("preparation empty state offers XLSX upload", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByLabel("XLSX file")).toBeVisible();
   await expect(
-    page.getByRole("navigation").getByRole("link").first(),
-  ).toHaveText("Preparation");
+    page
+      .getByRole("navigation")
+      .getByRole("link", { name: "Preparation", exact: true }),
+  ).toHaveAttribute("href", "/preparation");
 });
 
 test("upload success renders the complete diff and enabled actions", async ({

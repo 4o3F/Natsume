@@ -7,9 +7,10 @@ use std::{path::Path, sync::Arc};
 
 use axum::{
     Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, Request},
     http::{HeaderValue, header::CACHE_CONTROL},
-    middleware as axum_middleware,
+    middleware::{self as axum_middleware, Next},
+    response::Response,
     routing::any_service,
 };
 use tower_http::{
@@ -38,7 +39,22 @@ pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
         .nest("/api/v2", api_v2(&state))
         .fallback_service(static_service)
         .with_state(state)
+        .layer(axum_middleware::from_fn(operator_no_store))
         .layer(axum_middleware::from_fn(middleware::request_context))
+}
+
+// Apply after the outer API body limit and method rejection too, so early
+// responses for this namespace have the same cache policy as its handlers.
+async fn operator_no_store(request: Request, next: Next) -> Response {
+    let path = request.uri().path();
+    let operator = path == "/api/v2/operator" || path.starts_with("/api/v2/operator/");
+    let mut response = next.run(request).await;
+    if operator {
+        response
+            .headers_mut()
+            .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    response
 }
 
 fn api_v2(state: &AppState) -> Router<AppState> {

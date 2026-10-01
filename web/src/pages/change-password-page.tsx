@@ -71,7 +71,9 @@ export function ChangePasswordPage() {
         >
           {action.error && (
             <Alert variant="destructive">
-              <AlertTitle>{action.error}</AlertTitle>
+              <AlertTitle className="line-clamp-none">
+                {action.error}
+              </AlertTitle>
             </Alert>
           )}
           <div className="space-y-2">

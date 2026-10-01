@@ -22,6 +22,7 @@
     "src",
     "vite.config.ts",
     "vitest.config.ts",
-    "playwright.config.ts"
+    "playwright.config.ts",
+    "playwright.https.config.ts"
   ]
 }

@@ -144,6 +144,59 @@ fn assert_error(response: &Captured, status: StatusCode, code: &str) -> TestResu
 }
 
 #[tokio::test]
+async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() -> TestResult {
+    let database = TestDatabase::new().await?;
+    let app = http::router(
+        support::server_state(database.database.clone())?,
+        support::unused_web_root(),
+    );
+    for (method, path, length, status) in [
+        (
+            Method::POST,
+            "/api/v2/operator/register/inspect",
+            Some(http::API_REQUEST_BODY_LIMIT_BYTES + 1),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+        (
+            Method::HEAD,
+            "/api/v2/operator/accounts",
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            Method::GET,
+            "/api/v2/operator/register",
+            None,
+            StatusCode::METHOD_NOT_ALLOWED,
+        ),
+        (
+            Method::GET,
+            "/api/v2/operator/unmounted",
+            None,
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        let mut builder = Request::builder().method(method).uri(path);
+        if let Some(length) = length {
+            builder = builder.header(header::CONTENT_LENGTH, length);
+        }
+        let response = drive(&app, builder.body(Body::empty())?).await?;
+        assert_eq!(response.status, status);
+        assert_no_store(&response);
+    }
+    let health = drive(
+        &app,
+        Request::builder()
+            .uri("/api/v2/health")
+            .body(Body::empty())?,
+    )
+    .await?;
+    assert_eq!(health.status, StatusCode::OK);
+    assert!(!health.headers.contains_key(header::CACHE_CONTROL));
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_management_route_requires_admin_on_the_server() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
