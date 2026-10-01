@@ -39,3 +39,12 @@ export function RequireSession() {
 
   return <Outlet />;
 }
+
+export function RequireAdmin() {
+  const session = useSession().data;
+  return session?.role === "admin" ? (
+    <Outlet />
+  ) : (
+    <Navigate to="/seats" replace />
+  );
+}

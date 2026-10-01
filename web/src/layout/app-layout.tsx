@@ -34,6 +34,21 @@ export function AppLayout() {
             className="order-last flex w-full min-w-0 items-center gap-1 overflow-x-auto lg:order-none lg:w-auto lg:flex-1"
             aria-label="Primary navigation"
           >
+            {session.role === "admin" && (
+              <NavLink
+                to="/users"
+                className={({ isActive }) =>
+                  cn(
+                    buttonVariants({ variant: "ghost", size: "sm" }),
+                    isActive
+                      ? "bg-primary text-primary-foreground hover:bg-primary/90 hover:text-primary-foreground"
+                      : "text-muted-foreground",
+                  )
+                }
+              >
+                Users
+              </NavLink>
+            )}
             {navigation.map((item) => (
               <NavLink
                 key={item.to}
@@ -52,6 +67,12 @@ export function AppLayout() {
             ))}
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-3">
+            <NavLink
+              to="/change-password"
+              className={buttonVariants({ variant: "ghost", size: "sm" })}
+            >
+              Change password
+            </NavLink>
             <Badge variant="secondary">{session.role.toUpperCase()}</Badge>
             <span
               className="font-mono text-sm text-muted-foreground"

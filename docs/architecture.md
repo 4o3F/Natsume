@@ -1205,7 +1205,7 @@ Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原syste
 
 角色固定为 `admin` 和 `viewer`，所有admin平等；首次创建的admin没有额外管理权限。
 Web Operator与DOMjudge Account是不同业务，用户管理使用独立的Panel入口。
-以下为已接受目标。Operator领域事务与`/api/v2/operator` HTTP API已实现，Panel界面仍待接入。
+以下为已接受目标。Operator领域事务、`/api/v2/operator` HTTP API和Panel用户管理及密码流程已实现。
 
 #### 15.1.1 认证与密码
 
@@ -1297,6 +1297,12 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 - 会话鉴权失败401，权限不足403，账户不存在404；内部故障脱敏500。共用密码容量满额503 `SERVICE_UNAVAILABLE`并提供`Retry-After: 1`。
 
 #### 15.1.6 Web会话边界
+
+Panel的`/users`独立于DOMjudge `/accounts`，只有admin显示导航且路由要求admin；用户角色修改和删除有确认，最后admin有明确保护反馈。邀请与目标账户重置链接由当前Panel origin生成，只有签发/重新生成当次显示和复制，刷新、离开页面或会话换代后不能重新读取。
+
+`/register`与`/reset-password`先检查当前session；已登录时仅显示退出提示，保留尚未读取的URL fragment供显式退出后继续。确认匿名后读取用途固定的fragment token到页面内存，并replace导航清除fragment；检查与提交只通过JSON body发送token。注册展示固定role并允许自选username，重置只展示固定目标username，两者成功后返回Login且不自动登录。`/change-password`允许admin/viewer，兼容旧密码作为当前密码验证，成功后清除本地会话并返回Login。自我删除结束会话，自我降级立即按viewer展示。
+
+这些页面的密码、token及签发响应不进入Query查询或mutation缓存、浏览器持久化存储、导航state或普通错误日志；只有非秘密列表使用既有Query缓存和轮询。页面离开或会话换代取消自己的请求，晚到的检查、签发、提交响应不能恢复链接或导航到其他页面。前端校验与Server精确密码字符集合、长度及用户名UTF-8字节边界一致，Server仍是最终权威；用户名冲突保留表单供重试，当前密码错误不结束现有会话。
 
 Web以本地会话代次持有独立的API客户端、QueryClient和临时Import预览状态。登录成功（包括同账号重新登录）、退出成功、当前代次收到非登录请求的401，或会话轮询发现Operator身份/角色变化时，统一换代；正常轮询不换代。换代先使旧代次失效，再取消旧请求、清空旧缓存/预览并重新挂载页面，文件选择和操作提示随页面释放。旧请求和回调只能访问旧代次；旧401不能结束新会话，退出后完成的文件读取不能借用新会话发起上传，晚到响应不能恢复旧token或清除新预览。
 

@@ -1,6 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
-import { Navigate } from "react-router";
+import { Navigate, useLocation } from "react-router";
 import { z } from "zod";
 
 import { ApiError } from "@/api/errors";
@@ -25,6 +25,11 @@ const loginSchema = z.object({
 type LoginValues = z.infer<typeof loginSchema>;
 
 export function LoginPage() {
+  const location = useLocation();
+  const notice = location.state as {
+    operatorNotice?: string;
+    loginName?: string;
+  } | null;
   const session = useSession().data;
   const login = useLogin();
   const {
@@ -34,7 +39,7 @@ export function LoginPage() {
   } = useForm<LoginValues>({
     resolver: zodResolver(loginSchema),
     defaultValues: {
-      login_name: "",
+      login_name: notice?.loginName ?? "",
       password: "",
     },
   });
@@ -55,6 +60,11 @@ export function LoginPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
+          {notice?.operatorNotice && (
+            <p role="status" className="mb-4 break-words text-sm">
+              {notice.operatorNotice}
+            </p>
+          )}
           <form
             className="space-y-4"
             onSubmit={handleSubmit((values) => login.mutate(values))}

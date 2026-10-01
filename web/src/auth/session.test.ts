@@ -13,6 +13,44 @@ const baseUrl = "https://natsume.test";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("session ownership", () => {
+  it.each([400, 409, 410])(
+    "Operator form status %s preserves the session and leaves no cached secrets",
+    async (status) => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(
+          async () =>
+            new Response(
+              JSON.stringify({
+                title: "Rejected",
+                status,
+                code: "OPERATOR_LINK_UNAVAILABLE",
+              }),
+              { status },
+            ),
+        ),
+      );
+      const controller = new SessionController();
+      controller.getSnapshot().login(admin);
+      const scope = controller.getSnapshot();
+      const token = "synthetic-link-secret";
+      const result = await scope.api.POST("/api/v2/operator/register/inspect", {
+        baseUrl,
+        body: { token },
+      });
+      expect(result.response.status).toBe(status);
+      expect(controller.getSnapshot()).toBe(scope);
+      expect(scope.queryClient.getMutationCache().getAll()).toHaveLength(0);
+      expect(
+        JSON.stringify(
+          scope.queryClient
+            .getQueryCache()
+            .getAll()
+            .map((query) => query.state.data),
+        ),
+      ).not.toContain(token);
+    },
+  );
   it("keeps the current cache and preview during ordinary polling", () => {
     const controller = new SessionController();
     controller.getSnapshot().observe(admin);
