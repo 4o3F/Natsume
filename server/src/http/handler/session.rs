@@ -48,6 +48,7 @@ pub(crate) struct SessionRequest {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionResponse {
     operator_id: Uuid,
+    username: String,
     role: &'static str,
 }
 
@@ -95,7 +96,7 @@ pub(crate) async fn create_session(State(state): State<AppState>, request: Reque
     let Ok(session_cookie) = cookie::issue_session_credential(wire_credential.expose()) else {
         return ApiError::internal_error("session_cookie_issuance_failed").into_response();
     };
-    identity_response(signed_in.identity(), Some(session_cookie))
+    identity_response(&state, signed_in.identity(), Some(session_cookie)).await
 }
 
 #[utoipa::path(
@@ -109,8 +110,11 @@ pub(crate) async fn create_session(State(state): State<AppState>, request: Reque
         (status = 500, description = "Internal failure")
     )
 )]
-pub(crate) async fn read_session(Extension(identity): Extension<OperatorIdentity>) -> Response {
-    identity_response(identity, None)
+pub(crate) async fn read_session(
+    State(state): State<AppState>,
+    Extension(identity): Extension<OperatorIdentity>,
+) -> Response {
+    identity_response(&state, identity, None).await
 }
 
 #[utoipa::path(
@@ -136,9 +140,18 @@ pub(crate) async fn delete_session(State(state): State<AppState>, headers: Heade
     })
 }
 
-fn identity_response(identity: OperatorIdentity, session_cookie: Option<HeaderValue>) -> Response {
+async fn identity_response(
+    state: &AppState,
+    identity: OperatorIdentity,
+    session_cookie: Option<HeaderValue>,
+) -> Response {
+    let username = match state.operator().session_username(identity).await {
+        Ok(username) => username,
+        Err(error) => return ApiError::from_operator(error).into_response(),
+    };
     let body = SessionResponse {
         operator_id: identity.operator_id(),
+        username,
         role: identity.role_name(),
     };
     let mut response = Json(body).into_response();

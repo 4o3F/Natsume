@@ -4,6 +4,7 @@ import { expect, test, type Page, type Route } from "@playwright/test";
 const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
+  username: "operator",
 };
 const candidateId = "01934567-89ab-7cde-8f01-23456789abcd";
 const previewToken = "A".repeat(43);

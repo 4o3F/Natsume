@@ -4417,13 +4417,16 @@
       },
       "SessionResponse": {
         "type": "object",
-        "required": ["operator_id", "role"],
+        "required": ["operator_id", "username", "role"],
         "properties": {
           "operator_id": {
             "type": "string",
             "format": "uuid"
           },
           "role": {
+            "type": "string"
+          },
+          "username": {
             "type": "string"
           }
         },

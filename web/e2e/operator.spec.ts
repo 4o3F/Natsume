@@ -12,6 +12,7 @@ import type { components } from "../src/api/generated/schema";
 const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
+  username: "operator",
 };
 const bindingContext: components["schemas"]["BindingContextResponse"] = {
   binding_id: "01912345-6789-7abc-8def-0123456789ac",

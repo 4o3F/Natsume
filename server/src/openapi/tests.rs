@@ -1561,7 +1561,33 @@ fn operator_routes_use_cookie_security_and_canonical_identifiers()
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["operator_id", "role"])
+        BTreeSet::from(["operator_id", "username", "role"])
     );
+    Ok(())
+}
+
+#[test]
+fn session_response_requires_account_username_for_login_and_read()
+-> Result<(), Box<dyn std::error::Error>> {
+    let value = serialized_document()?;
+    let schema = &value["components"]["schemas"]["SessionResponse"];
+    assert_eq!(schema["additionalProperties"], false);
+    assert_eq!(schema["properties"]["username"]["type"], "string");
+    assert_eq!(
+        schema["required"]
+            .as_array()
+            .ok_or("missing required session fields")?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["operator_id", "username", "role"])
+    );
+    for method in ["post", "get"] {
+        assert_eq!(
+            value["paths"]["/api/v2/session"][method]["responses"]["200"]["content"]["application/json"]
+                ["schema"]["$ref"],
+            "#/components/schemas/SessionResponse"
+        );
+    }
     Ok(())
 }

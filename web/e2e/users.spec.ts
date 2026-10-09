@@ -7,6 +7,7 @@ type Invitation = components["schemas"]["OperatorInvitationResponse"];
 const admin: Identity = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
+  username: "first-admin",
 };
 const otherAdmin: Account = {
   operator_id: "01912345-6789-7abc-8def-0123456789ac",
@@ -336,8 +337,9 @@ test("viewer has no Users entry or management requests but can change a password
   expect(
     state.calls.some((call) => call.path.startsWith("/api/v2/operator/")),
   ).toBe(false);
+  await page.getByRole("button", { name: "Account menu for reader" }).click();
   await page
-    .getByRole("link", { name: "Change password", exact: true })
+    .getByRole("menuitem", { name: "Change password", exact: true })
     .click();
   await expect(page.getByLabel("Current password")).toBeVisible();
 });
@@ -384,6 +386,9 @@ test("self demotion immediately switches to Viewer and releases management state
   );
   await page.getByRole("button", { name: "Confirm role change" }).click();
   await expect(page).toHaveURL(/\/seats$/);
+  await page
+    .getByRole("button", { name: "Account menu for first-admin" })
+    .click();
   await expect(page.getByText("VIEWER", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Users", exact: true }),
@@ -584,7 +589,9 @@ for (const identity of [admin, viewer]) {
       "current password is incorrect",
     );
     await expect(
-      page.getByRole("button", { name: "Logout", exact: true }),
+      page.getByRole("button", {
+        name: `Account menu for ${identity.username}`,
+      }),
     ).toBeVisible();
     expect(state.identity).toEqual(identity);
     state.wrongCurrent = false;
@@ -611,7 +618,10 @@ test("an issued link delivered after logout cannot appear in another session", a
   await page.goto("/users");
   await page.getByRole("button", { name: "Create invitation" }).click();
   await expect.poll(() => state.held.length).toBe(1);
-  await page.getByRole("button", { name: "Logout", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Account menu for first-admin" })
+    .click();
+  await page.getByRole("menuitem", { name: "Logout", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.getByLabel("Login name").fill("first-admin");
   await page.getByLabel("Password", { exact: true }).fill("legacy");

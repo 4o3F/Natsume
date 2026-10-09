@@ -24,6 +24,7 @@ async function mockEnrollment(
       return fulfillJson(route, 200, {
         operator_id: "01912345-6789-7abc-8def-0123456789ab",
         role,
+        username: "operator",
       });
     }
     if (

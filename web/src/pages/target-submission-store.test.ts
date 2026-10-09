@@ -3,7 +3,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { SessionController } from "../auth/session";
 import type { TargetRequest } from "./target-operations";
 
-const admin = { operator_id: "admin-a", role: "admin" };
+const admin = { operator_id: "admin-a", role: "admin", username: "admin" };
 const action = { kind: "reset_home" } as const;
 const scope = { kind: "all_enabled" } as const;
 let saved: Map<string, string>;

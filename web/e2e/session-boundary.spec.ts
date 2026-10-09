@@ -5,10 +5,12 @@ import type { components } from "../src/api/generated/schema";
 const admin = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
+  username: "operator",
 };
 const viewer = {
   operator_id: "01912345-6789-7abc-8def-0123456789ac",
   role: "viewer",
+  username: "reader",
 };
 const unauthorized = {
   title: "No valid session",
@@ -127,7 +129,14 @@ async function signIn(page: Page) {
   await page.getByLabel("Login name").fill("operator");
   await page.getByLabel("Password").fill("password");
   await page.getByRole("button", { name: "Sign in" }).click();
-  await expect(page.getByRole("button", { name: "Logout" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: /^Account menu for / }),
+  ).toBeVisible();
+}
+
+async function signOut(page: Page) {
+  await page.getByRole("button", { name: /^Account menu for / }).click();
+  await page.getByRole("menuitem", { name: "Logout", exact: true }).click();
 }
 
 test("a new login does not display the expired operator's cached rows", async ({
@@ -215,7 +224,7 @@ for (const transition of [
         transition.expirePath === "/api/v2/session" ? 30_000 : 10_000,
       );
     } else {
-      await page.getByRole("button", { name: "Logout" }).click();
+      await signOut(page);
     }
     await expect(page).toHaveURL(/\/login$/);
     await signIn(page);
@@ -264,7 +273,9 @@ test("polling identity and role changes remount the active preparation page", as
   await createPreview(page);
   state.identity = { ...otherAdmin, role: "viewer" };
   await page.clock.runFor(30_000);
+  await page.getByRole("button", { name: "Account menu for operator" }).click();
   await expect(page.getByText("VIEWER", { exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
   await expect(
     page.getByRole("button", { name: "Commit import" }),
   ).toBeDisabled();
@@ -282,7 +293,7 @@ test("a delayed upload cannot replace the next operator's preview", async ({
   await page.getByLabel("XLSX file").setInputFiles(workbook);
   await page.getByRole("button", { name: "Create preview" }).click();
   await expect.poll(() => state.heldUploads.length).toBe(1);
-  await page.getByRole("button", { name: "Logout" }).click();
+  await signOut(page);
   await signIn(page);
   await page.getByRole("link", { name: "Preparation", exact: true }).click();
   await expect(
@@ -307,7 +318,7 @@ test("a selected workbook is cleared when the operator session changes", async (
   await expect(
     page.getByRole("button", { name: "Create preview" }),
   ).toBeEnabled();
-  await page.getByRole("button", { name: "Logout" }).click();
+  await signOut(page);
   await signIn(page);
   await page.getByRole("link", { name: "Preparation", exact: true }).click();
   await expect(page.getByLabel("XLSX file")).toHaveValue("");

@@ -1285,7 +1285,7 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 `POST /operator/password/reset/inspect`和`POST /operator/password/reset`，token仅在JSON body中传递。
 存在有效session时这四个入口返回409 `OPERATOR_LOGOUT_REQUIRED`，先退出再继续；无效/过期cookie不阻止匿名流程。
 
-- DTO闭合且role只有admin/viewer；账户与邀请路径要求canonical UUIDv7。SessionResponse仍只有operator_id和role。
+- DTO闭合且role只有admin/viewer；账户与邀请路径要求canonical UUIDv7。SessionResponse返回operator_id、账户权威username和role，登录与查询响应对admin/viewer一致。
 - 注册成功201返回新账户的operator_id、username、role，不建立session；恢复成功204不建立session。
 - 邀请创建/重新生成与重置签发201仅当次返回token；普通列表不返回token/hash。检查仅返回注册role或重置目标username。
 - 本人改密、自我删除成功204并清除浏览器session cookie；数据库会话撤销仍是后续请求的鉴权依据。

@@ -1065,6 +1065,7 @@ export interface components {
       /** Format: uuid */
       operator_id: string;
       role: string;
+      username: string;
     };
     TargetActionBody:
       | {

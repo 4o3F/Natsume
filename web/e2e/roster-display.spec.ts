@@ -8,7 +8,7 @@ test("seat binding filters remain usable with no matches and support the keyboar
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v2/session")
       return route.fulfill({
-        json: { operator_id: "operator", role: "admin" },
+        json: { operator_id: "operator", role: "admin", username: "operator" },
       });
     if (path === "/api/v2/seats")
       return route.fulfill({
@@ -88,7 +88,11 @@ for (const width of [1024, 1440]) {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/v2/session") {
         return route.fulfill({
-          json: { operator_id: "operator", role: "admin" },
+          json: {
+            operator_id: "operator",
+            role: "admin",
+            username: "operator",
+          },
         });
       }
       if (path === "/api/v2/accounts") {

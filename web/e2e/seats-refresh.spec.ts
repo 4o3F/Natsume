@@ -44,7 +44,7 @@ test("seat refresh tracks all three sources and preserves sorting and filters", 
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/v2/session")
       return route.fulfill({
-        json: { operator_id: "operator", role: "admin" },
+        json: { operator_id: "operator", role: "admin", username: "operator" },
       });
     if (
       path === "/api/v2/seats" ||

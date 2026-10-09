@@ -197,6 +197,73 @@ async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() ->
 }
 
 #[tokio::test]
+async fn session_responses_include_account_username_for_admin_and_viewer() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let f = Fixture::new().await?;
+    let viewer_name = "查看者-viewer";
+    let viewer = f.signup(viewer_name, "viewer").await?;
+    for (username, role, operator_id) in [
+        ("admin", "admin", json!(f.admin_id)),
+        (viewer_name, "viewer", viewer["operator_id"].clone()),
+    ] {
+        let expected = json!({"operator_id": operator_id, "username": username, "role": role});
+        let login = f
+            .request(
+                Method::POST,
+                "/api/v2/session",
+                None,
+                json!({"login_name": username, "password": PASSWORD}),
+            )
+            .await?;
+        assert_eq!(login.status, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&login.body)?, expected);
+        let cookie = support::header_text(&login.headers, &header::SET_COOKIE)?
+            .split(';')
+            .next()
+            .ok_or("missing cookie")?;
+        let session = drive(
+            &f.app,
+            support::cookie_request(Method::GET, "/api/v2/session", cookie)?,
+        )
+        .await?;
+        assert_eq!(session.status, StatusCode::OK);
+        assert_eq!(serde_json::from_slice::<Value>(&session.body)?, expected);
+        assert!(!session.headers.contains_key(header::SET_COOKIE));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_read_rejects_account_deleted_after_authentication() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let f = Fixture::new().await?;
+    f.signup("viewer", "viewer").await?;
+    let signed_in = f
+        .state
+        .operator()
+        .sign_in("viewer", PASSWORD.into())
+        .await?;
+    let identity = signed_in.identity();
+    let deletion = f
+        .request(
+            Method::DELETE,
+            &format!("/api/v2/operator/accounts/{}", identity.operator_id()),
+            Some(&f.admin_cookie),
+            json!({}),
+        )
+        .await?;
+    assert_eq!(deletion.status, StatusCode::NO_CONTENT);
+    let response = crate::http::handler::session::read_session(
+        axum::extract::State(f.state),
+        axum::Extension(identity),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(!response.headers().contains_key(header::SET_COOKIE));
+    Ok(())
+}
+
+#[tokio::test]
 async fn every_management_route_requires_admin_on_the_server() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;

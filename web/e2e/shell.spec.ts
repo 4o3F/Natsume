@@ -3,6 +3,7 @@ import { expect, test, type Route } from "@playwright/test";
 const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
+  username: "operator",
 };
 
 function fulfillJson(route: Route, status: number, body: unknown) {
@@ -65,8 +66,106 @@ test("successful login reaches the authenticated shell", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Devices" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Enrollment" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Targets" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Account menu for operator" }),
+  ).toBeVisible();
+  await expect(page.getByText("ADMIN", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Account menu for operator" }).click();
   await expect(page.getByText("ADMIN", { exact: true })).toBeVisible();
 });
+
+for (const role of ["admin", "viewer"]) {
+  for (const width of [1440, 390]) {
+    test(`${role} account dropdown groups actions and role at ${width}px`, async ({
+      page,
+    }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      let authenticated = true;
+      let logoutCount = 0;
+      await page.route("**/api/v2/**", (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        if (path === "/api/v2/session") {
+          if (request.method() === "DELETE") {
+            logoutCount += 1;
+            authenticated = false;
+            return route.fulfill({ status: 204 });
+          }
+          return authenticated
+            ? fulfillJson(route, 200, { ...operator, role })
+            : fulfillJson(route, 401, unauthorized);
+        }
+        if (path === "/api/v2/seats") {
+          return fulfillJson(route, 200, [
+            { seat_id: "seat-001", seat_code: "A-01" },
+            { seat_id: "seat-002", seat_code: "A-02" },
+          ]);
+        }
+        return fulfillJson(route, 200, []);
+      });
+      await page.goto("/seats");
+      await expect(page.getByText("A-01", { exact: true })).toBeVisible();
+      const trigger = page.getByRole("button", {
+        name: "Account menu for operator",
+      });
+      const menu = page.getByRole("menu");
+      await expect(trigger).toHaveText("operator");
+      await expect(trigger).toHaveAttribute("aria-expanded", "false");
+      await expect(menu).toHaveCount(0);
+      await expect(
+        page.getByText(role.toUpperCase(), { exact: true }),
+      ).toHaveCount(0);
+      if (role === "admin") {
+        await page.screenshot({
+          path: testInfo.outputPath("account-closed.png"),
+        });
+      }
+      await trigger.click();
+      await expect(trigger).toHaveAttribute("aria-expanded", "true");
+      await expect(
+        menu.getByText(role.toUpperCase(), { exact: true }),
+      ).toBeVisible();
+      await expect(
+        menu.getByRole("menuitem", { name: "Change password" }),
+      ).toBeVisible();
+      await expect(
+        menu.getByRole("menuitem", { name: "Logout" }),
+      ).toBeVisible();
+      const bounds = await menu.boundingBox();
+      expect(bounds!.x).toBeGreaterThanOrEqual(0);
+      expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
+      if (role === "admin") {
+        await page.screenshot({
+          path: testInfo.outputPath("account-open.png"),
+        });
+      }
+      await page.keyboard.press("Escape");
+      await expect(menu).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      await trigger.press("ArrowDown");
+      await expect(
+        menu.getByRole("menuitem", { name: "Change password" }),
+      ).toBeFocused();
+      await page.keyboard.press("ArrowDown");
+      await expect(
+        menu.getByRole("menuitem", { name: "Logout" }),
+      ).toBeFocused();
+      await page.keyboard.press("Escape");
+      await trigger.click();
+      await page.getByText("Natsume", { exact: true }).click();
+      await expect(menu).toHaveCount(0);
+      await trigger.click();
+      await menu.getByRole("menuitem", { name: "Change password" }).click();
+      await expect(page).toHaveURL(/\/change-password$/);
+      await expect(page.getByLabel("Current password")).toBeVisible();
+      await expect(menu).toHaveCount(0);
+      await trigger.click();
+      await menu.getByRole("menuitem", { name: "Logout" }).click();
+      await expect(page).toHaveURL(/\/login$/);
+      expect(logoutCount).toBe(1);
+    });
+  }
+}
 
 test("navbar highlights only the current page across navigation and reloads", async ({
   page,
@@ -134,6 +233,77 @@ test("navbar highlights only the current page across navigation and reloads", as
     "Enrollment",
   );
   await expect(navigation.locator("a.bg-primary")).toHaveCount(1);
+});
+
+test("long usernames stay within the mobile header and menu", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const username = "用户名".repeat(14);
+  await page.route("**/api/v2/**", (route) =>
+    fulfillJson(
+      route,
+      200,
+      new URL(route.request().url()).pathname === "/api/v2/session"
+        ? { ...operator, username }
+        : [],
+    ),
+  );
+  await page.goto("/seats");
+  const trigger = page.getByRole("button", {
+    name: `Account menu for ${username}`,
+  });
+  await expect(trigger).toHaveAttribute("title", username);
+  await trigger.click();
+  await expect(
+    page.getByRole("menu").getByText(username, { exact: true }),
+  ).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(
+    390,
+  );
+});
+
+test("pending logout cannot be submitted twice and failures remain visible", async ({
+  page,
+}) => {
+  let heldLogout: Route | undefined;
+  let logoutCount = 0;
+  await page.route("**/api/v2/**", (route) => {
+    if (route.request().method() === "DELETE") {
+      logoutCount += 1;
+      heldLogout = route;
+      return;
+    }
+    return fulfillJson(
+      route,
+      200,
+      new URL(route.request().url()).pathname === "/api/v2/session"
+        ? operator
+        : [],
+    );
+  });
+  await page.goto("/seats");
+  const trigger = page.getByRole("button", {
+    name: "Account menu for operator",
+  });
+  await trigger.click();
+  await page.getByRole("menuitem", { name: "Logout" }).click();
+  await expect.poll(() => logoutCount).toBe(1);
+  await trigger.click();
+  await expect(page.getByRole("menuitem", { name: "Logout" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
+  await fulfillJson(heldLogout!, 503, {
+    title: "Unable to log out",
+    status: 503,
+    code: "SERVICE_UNAVAILABLE",
+  });
+  await expect(page.getByRole("alert")).toContainText("Unable to log out");
+  await expect(
+    page.getByRole("menuitem", { name: "Logout" }),
+  ).not.toHaveAttribute("aria-disabled", "true");
+  expect(logoutCount).toBe(1);
 });
 
 test("failed login surfaces the coded error", async ({ page }) => {

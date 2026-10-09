@@ -60,7 +60,7 @@ async function signIn(page: Page, username: string, password: string) {
   await page.getByLabel("Password", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await expect(
-    page.getByRole("button", { name: "Logout", exact: true }),
+    page.getByRole("button", { name: `Account menu for ${username}` }),
   ).toBeVisible();
 }
 

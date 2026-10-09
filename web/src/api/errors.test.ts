@@ -7,6 +7,7 @@ describe("unwrap", () => {
     const data = {
       operator_id: "01912345-6789-7abc-8def-0123456789ab",
       role: "admin",
+      username: "operator",
     };
 
     await expect(

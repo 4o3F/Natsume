@@ -27,7 +27,11 @@ async function mockBindings(
     let body: unknown;
     if (request.method() === "GET") {
       if (path === "/api/v2/session") {
-        body = { operator_id: "01912345-6789-7abc-8def-0123456789ab", role };
+        body = {
+          operator_id: "01912345-6789-7abc-8def-0123456789ab",
+          role,
+          username: "operator",
+        };
       } else if (path === "/api/v2/bindings") {
         body = currentBindings;
       } else if (path === "/api/v2/seats") {

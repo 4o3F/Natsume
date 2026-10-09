@@ -1,10 +1,19 @@
-import { NavLink, Outlet } from "react-router";
+import { ChevronDown, KeyRound, LogOut, UserRound } from "lucide-react";
+import { Link, NavLink, Outlet } from "react-router";
 
 import { ApiError } from "@/api/errors";
 import { useLogout, useSession } from "@/auth/use-session";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
 const navigation = [
@@ -66,29 +75,52 @@ export function AppLayout() {
               </NavLink>
             ))}
           </nav>
-          <div className="ml-auto flex shrink-0 items-center gap-3">
-            <NavLink
-              to="/change-password"
-              className={buttonVariants({ variant: "ghost", size: "sm" })}
-            >
-              Change password
-            </NavLink>
-            <Badge variant="secondary">{session.role.toUpperCase()}</Badge>
-            <span
-              className="font-mono text-sm text-muted-foreground"
-              title={session.operator_id}
-            >
-              {session.operator_id.slice(0, 8)}
-            </span>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={logout.isPending}
-              onClick={() => logout.mutate()}
-            >
-              Logout
-            </Button>
+          <div className="ml-auto shrink-0">
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`Account menu for ${session.username}`}
+                  title={session.username}
+                >
+                  <UserRound aria-hidden="true" />
+                  <span className="max-w-32 truncate xl:max-w-48">
+                    {session.username}
+                  </span>
+                  <ChevronDown aria-hidden="true" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuLabel>
+                  <div className="max-w-64 break-all font-medium">
+                    {session.username}
+                  </div>
+                  <div className="mt-2 flex items-center gap-2 text-muted-foreground">
+                    <span>Role</span>
+                    <Badge variant="secondary">
+                      {session.role.toUpperCase()}
+                    </Badge>
+                  </div>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link to="/change-password">
+                    <KeyRound aria-hidden="true" />
+                    Change password
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={logout.isPending}
+                  onSelect={() => logout.mutate()}
+                >
+                  <LogOut aria-hidden="true" />
+                  Logout
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       </header>

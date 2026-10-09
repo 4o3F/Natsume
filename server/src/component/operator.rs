@@ -1,7 +1,7 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::db::{Database, PersistenceError, Transaction};
+use crate::db::{Database, PersistenceError, Transaction, TransactionError};
 
 mod account;
 mod credentials;
@@ -63,6 +63,22 @@ impl OperatorComponent {
         wire_credential: SessionCredentialHex,
     ) -> Result<OperatorIdentity, OperatorError> {
         session::authenticate_session(&self.database, wire_credential).await
+    }
+
+    pub(crate) async fn session_username(
+        &self,
+        identity: OperatorIdentity,
+    ) -> Result<String, OperatorError> {
+        self.database
+            .read(move |transaction| {
+                db::management::account_name(transaction, identity.operator_id())
+            })
+            .await
+            .map_err(TransactionError::into_error)
+            .map_err(|error| match error {
+                OperatorError::OperatorNotFound => OperatorError::SessionAuthenticationFailed,
+                error => error,
+            })
     }
 
     pub(crate) async fn terminate_session(

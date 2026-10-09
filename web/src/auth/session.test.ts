@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { SessionController } from "./session";
 
-const admin = { operator_id: "admin-1", role: "admin" };
+const admin = { operator_id: "admin-1", role: "admin", username: "admin" };
 const preview = {
   candidate_id: "candidate-1",
   preview_token: "old-token",
