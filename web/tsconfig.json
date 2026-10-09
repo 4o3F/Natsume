@@ -20,6 +20,7 @@
   },
   "include": [
     "src",
+    "openapi/lint.ts",
     "vite.config.ts",
     "vitest.config.ts",
     "playwright.config.ts",

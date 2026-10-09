@@ -13,7 +13,7 @@
     "e2e": "playwright test",
     "e2e:https": "python3 ../tools/operator-https.py",
     "api:generate": "openapi-typescript openapi/natsume.openapi.json -o src/api/generated/schema.d.ts && prettier --write openapi/natsume.openapi.json src/api/generated/schema.d.ts",
-    "openapi:lint": "spectral lint openapi/natsume.openapi.json --ruleset openapi/.spectral.yaml --fail-severity warn"
+    "openapi:lint": "node openapi/lint.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.0.0",
@@ -37,7 +37,9 @@
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.61.1",
-    "@stoplight/spectral-cli": "6.16.2",
+    "@stoplight/spectral-core": "1.23.1",
+    "@stoplight/spectral-parsers": "1.0.5",
+    "@stoplight/spectral-rulesets": "1.22.7",
     "@tailwindcss/vite": "^4.0.0",
     "@types/node": "24.13.3",
     "@types/react": "^19.0.0",
