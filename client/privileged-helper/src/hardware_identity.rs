@@ -12,7 +12,8 @@
 use std::path::Path;
 
 use natsume_local_control_api::{
-    DerivedMachineIdentity, MachineIdentityError, MachineIdentityQuality,
+    DerivedMachineIdentity, HardwareIdentitySources, HardwareSourceStatus, MachineIdentityOutcome,
+    MachineIdentityQuality, MachineIdentityReport,
 };
 use procfs::process::Process;
 use zeroize::Zeroize as _;
@@ -61,14 +62,8 @@ fn collect(filesystem_root: &Path) -> [ReadOutcome; 3] {
     [system_uuid, board_serial, disk_serial]
 }
 
-/// Runs collection and the frozen pure derivation pipeline without exposing source evidence.
-///
-/// # Errors
-///
-/// Returns the closed unavailable classification when the fixed sources cannot derive an ID.
-pub(super) fn derive_identity(
-    filesystem_root: &Path,
-) -> Result<DerivedMachineIdentity, MachineIdentityError> {
+/// Runs one collection and the frozen pure derivation pipeline without exposing source evidence.
+pub(super) fn derive_identity(filesystem_root: &Path) -> MachineIdentityReport {
     identity_from_readings(collect(filesystem_root))
 }
 
@@ -82,15 +77,21 @@ fn zeroize_readings(readings: &mut [ReadOutcome; 3]) {
     }
 }
 
-fn identity_from_readings(
-    mut readings: [ReadOutcome; 3],
-) -> Result<DerivedMachineIdentity, MachineIdentityError> {
+fn identity_from_readings(mut readings: [ReadOutcome; 3]) -> MachineIdentityReport {
     let evaluations =
         std::array::from_fn(|index| evaluate_slot(ANCHOR_ORDER[index], &readings[index]));
     let decision = decide_machine_identity(&evaluations);
     zeroize_readings(&mut readings);
 
-    match decision {
+    let [dmi_system_uuid, dmi_board_serial, first_disk_serial] = evaluations
+        .each_ref()
+        .map(|evaluation| source_status(evaluation.status));
+    let sources = HardwareIdentitySources {
+        dmi_system_uuid,
+        dmi_board_serial,
+        first_disk_serial,
+    };
+    let (outcome, identity) = match decision {
         MachineIdentityDecision::Derived {
             machine_hardware_id,
             ..
@@ -107,19 +108,34 @@ fn identity_from_readings(
             } else {
                 MachineIdentityQuality::Medium
             };
-            Ok(DerivedMachineIdentity {
-                machine_hardware_id: machine_hardware_id.to_string(),
-                quality,
-            })
+            (
+                MachineIdentityOutcome::Derived,
+                Some(DerivedMachineIdentity {
+                    machine_hardware_id: machine_hardware_id.to_string(),
+                    quality,
+                }),
+            )
         }
         MachineIdentityDecision::InsufficientSources => {
-            Err(MachineIdentityError::InsufficientSources(
-                "machine identity requires at least two hardware sources".to_owned(),
-            ))
+            (MachineIdentityOutcome::InsufficientSources, None)
         }
-        MachineIdentityDecision::Unsupported => Err(MachineIdentityError::Unsupported(
-            "machine identity is unsupported on this platform".to_owned(),
-        )),
+        MachineIdentityDecision::Unsupported => (MachineIdentityOutcome::Unsupported, None),
+    };
+    MachineIdentityReport {
+        outcome,
+        identity,
+        sources,
+    }
+}
+
+const fn source_status(status: EvidenceStatus) -> HardwareSourceStatus {
+    match status {
+        EvidenceStatus::Present => HardwareSourceStatus::Present,
+        EvidenceStatus::Unavailable => HardwareSourceStatus::Unavailable,
+        EvidenceStatus::Unsupported => HardwareSourceStatus::Unsupported,
+        EvidenceStatus::PermissionDenied => HardwareSourceStatus::PermissionDenied,
+        EvidenceStatus::Malformed => HardwareSourceStatus::Malformed,
+        EvidenceStatus::RejectedPlaceholder => HardwareSourceStatus::RejectedPlaceholder,
     }
 }
 

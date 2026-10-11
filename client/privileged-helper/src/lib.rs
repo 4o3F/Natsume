@@ -31,8 +31,8 @@ pub use session::probe_desktop;
 use std::path::PathBuf;
 
 use natsume_local_control_api::{
-    DerivedMachineIdentity, GraphicalSession, GraphicalSessionObservation, HomeResetProgress,
-    MachineIdentityError, ManagedSessionsObservation, ResourceControlError, SessionRole,
+    GraphicalSession, GraphicalSessionObservation, HomeResetProgress, MachineIdentityError,
+    MachineIdentityReport, ManagedSessionsObservation, ResourceControlError, SessionRole,
 };
 
 /// Closed root capabilities exposed to the Device Daemon.
@@ -75,9 +75,13 @@ impl PrivilegedService {
         gateway::configure(&self.filesystem_root, gateway_hostname)
     }
 
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "The typed D-Bus contract retains MachineIdentityError for transport failures"
+    )]
     #[zbus(name = "DeriveMachineIdentity")]
-    fn derive_machine_identity(&self) -> Result<DerivedMachineIdentity, MachineIdentityError> {
-        hardware_identity::derive_identity(&self.filesystem_root)
+    fn derive_machine_identity(&self) -> Result<MachineIdentityReport, MachineIdentityError> {
+        Ok(hardware_identity::derive_identity(&self.filesystem_root))
     }
 
     /// Retries local mount recovery without granting any remote foreground target.
@@ -269,7 +273,9 @@ impl PrivilegedService {
 mod tests {
     use std::{fs, os::unix::fs::PermissionsExt as _, path::Path};
 
-    use natsume_local_control_api::{PRIVILEGED1_PATH, Privileged1Proxy};
+    use natsume_local_control_api::{
+        HardwareSourceStatus, MachineIdentityOutcome, PRIVILEGED1_PATH, Privileged1Proxy,
+    };
     use tempfile::TempDir;
     use tokio::net::UnixStream;
 
@@ -384,10 +390,22 @@ mod tests {
             "SUBMITBASEURL='https://other.test/'\n"
         );
 
-        let identity = match proxy.derive_machine_identity().await {
-            Ok(identity) => identity,
-            Err(error) => panic!("machine identity must round trip: {error}"),
+        let report = match proxy.derive_machine_identity().await {
+            Ok(report) => report,
+            Err(error) => panic!("machine identity report must round trip: {error}"),
         };
+        assert_eq!(report.outcome, MachineIdentityOutcome::Derived);
+        assert_eq!(
+            report.sources.dmi_system_uuid,
+            HardwareSourceStatus::Present
+        );
+        assert_eq!(
+            report.sources.dmi_board_serial,
+            HardwareSourceStatus::Present
+        );
+        let identity = report
+            .identity
+            .unwrap_or_else(|| panic!("derived report must contain identity"));
 
         assert_eq!(
             identity.machine_hardware_id,
@@ -397,6 +415,49 @@ mod tests {
             identity.quality,
             natsume_local_control_api::MachineIdentityQuality::Strong
         );
+        write_fixture(
+            fixture.path(),
+            "sys/class/dmi/id/board_serial",
+            b"unknown\n",
+        );
+        let insufficient = proxy
+            .derive_machine_identity()
+            .await
+            .unwrap_or_else(|e| panic!("insufficient report must round trip: {e}"));
+        assert_eq!(
+            insufficient.outcome,
+            MachineIdentityOutcome::InsufficientSources
+        );
+        assert_eq!(insufficient.identity, None);
+        assert_eq!(
+            insufficient.sources.dmi_system_uuid,
+            HardwareSourceStatus::Present
+        );
+        assert_eq!(
+            insufficient.sources.dmi_board_serial,
+            HardwareSourceStatus::RejectedPlaceholder
+        );
+        fs::remove_dir_all(fixture.path().join("sys"))
+            .unwrap_or_else(|e| panic!("platform fixture must be removed: {e}"));
+        let unsupported = proxy
+            .derive_machine_identity()
+            .await
+            .unwrap_or_else(|e| panic!("unsupported report must round trip: {e}"));
+        assert_eq!(unsupported.outcome, MachineIdentityOutcome::Unsupported);
+        assert_eq!(unsupported.identity, None);
+        assert_eq!(
+            unsupported.sources.dmi_system_uuid,
+            HardwareSourceStatus::Unsupported
+        );
+        assert_eq!(
+            unsupported.sources.dmi_board_serial,
+            HardwareSourceStatus::Unsupported
+        );
+        assert_eq!(
+            unsupported.sources.first_disk_serial,
+            HardwareSourceStatus::Unsupported
+        );
+
         assert!(
             !proxy
                 .has_home_reset_state()

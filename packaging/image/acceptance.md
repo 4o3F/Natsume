@@ -120,3 +120,17 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 - 使用实际镜像的中文字体、Kiosk 和显示器验证全屏首帧、分辨率变化，以及资料／Logo 更新不触发凭据重写、Caddy 重载、Home reset 或前台切换。
 
 开发阶段的 Xvfb/Slint 截图和单元测试不代替最终镜像上的上述签收。
+
+## Client 离线诊断证据的配套验证（非 UI）
+
+本阶段不包含故障页或二维码签收；以下为同 boot 内证据留存的验收要求，不是已通过声明。
+
+- `/run/natsume-diagnostics` 由 tmpfiles 创建，natsume 独占写权限；waiting 可读报告但不能修改。报告目录不在身份绑定 artifact 扫描范围内，缺失时不因诊断而阻止 Daemon 的原安全处理。
+- 在专用验收工位注入来源不足、身份记录损坏/不一致、配置损坏、TCP 拒绝/超时、TLS 验证失败和注册拒绝；核对固定分类、最后步骤和来源状态，无原始硬件值或秘密。
+- 让 Daemon 在 Agent 启动前失败；随后用 waiting 身份读取完整 `last-failure.json`。重启 Daemon、恢复连接后，`latest.json` 属于新实例，但上一次故障仍可读取；不能把历史 status 当成当前 liveness。
+- 发布路径不可写、路径被替换或不存在时，原业务结果、retry 和 fail-closed 退出不变。无法确认 BLOCKED 时跳过诊断文件写入，仍立即退出并触发既有 Caddy 硬终止，不等待 Agent。
+- 真实重新开机不继承旧 boot 报告，镜像不得包含运行时诊断文件。
+- 配置路径条件或 Helper 依赖使 Daemon 根本未启动时，不期望 Daemon 自行生成报告；后续 Agent fallback 另行验收。
+- route table 和接口 flags/carrier 是历史辅助证据，不是联网或安全放行证明；不发送公网或 ping 探测。
+
+开发定向命令：`cargo test -p natsume-local-control-api --locked`、`cargo test -p natsume-privileged-helper hardware_identity --locked`、`cargo test -p natsume-device-daemon diagnostics --locked`、`cargo test -p natsume-device-daemon startup --locked`、`cargo test -p natsume-device-daemon control:: --locked`。本页列出验收方式，不用单元测试替代真实镜像结果。

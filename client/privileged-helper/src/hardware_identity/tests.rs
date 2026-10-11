@@ -298,8 +298,19 @@ fn fixture_collection_derives_the_fixed_natsume_machine_id() {
     let mountinfo = [mount("36 25 8:2 / / rw,relatime - ext4 /dev/sda2 rw")];
     let [system_uuid, board_serial] = collect_dmi(fixture.path());
     let disk_serial = first_disk_serial(fixture.path(), &mountinfo);
-    let identity = identity_from_readings([system_uuid, board_serial, disk_serial])
-        .unwrap_or_else(|error| panic!("fixture identity must derive: {error}"));
+    let report = identity_from_readings([system_uuid, board_serial, disk_serial]);
+    assert_eq!(report.outcome, MachineIdentityOutcome::Derived);
+    assert_eq!(
+        report.sources,
+        HardwareIdentitySources {
+            dmi_system_uuid: HardwareSourceStatus::Present,
+            dmi_board_serial: HardwareSourceStatus::Present,
+            first_disk_serial: HardwareSourceStatus::Present,
+        }
+    );
+    let identity = report
+        .identity
+        .unwrap_or_else(|| panic!("fixture identity must derive"));
 
     assert_eq!(
         identity.machine_hardware_id,
@@ -329,13 +340,15 @@ fn aggregate_quality_comes_from_the_derived_sources() {
         ReadOutcome::Value("board-42".to_owned()),
         ReadOutcome::Unavailable,
     ])
-    .unwrap_or_else(|error| panic!("two strong sources must derive: {error}"));
+    .identity
+    .unwrap_or_else(|| panic!("two strong sources must derive"));
     let medium = identity_from_readings([
         ReadOutcome::Value(SYSTEM_UUID.to_owned()),
         ReadOutcome::Unavailable,
         ReadOutcome::Value("disk-99".to_owned()),
     ])
-    .unwrap_or_else(|error| panic!("strong and medium sources must derive: {error}"));
+    .identity
+    .unwrap_or_else(|| panic!("strong and medium sources must derive"));
 
     assert_eq!(strong.quality, MachineIdentityQuality::Strong);
     assert_eq!(medium.quality, MachineIdentityQuality::Medium);
@@ -354,12 +367,166 @@ fn unavailable_decisions_are_typed() {
         ReadOutcome::Unsupported,
     ]);
 
-    assert!(matches!(
-        insufficient,
-        Err(MachineIdentityError::InsufficientSources(_))
-    ));
-    assert!(matches!(
-        unsupported,
-        Err(MachineIdentityError::Unsupported(_))
-    ));
+    assert_eq!(
+        insufficient.outcome,
+        MachineIdentityOutcome::InsufficientSources
+    );
+    assert_eq!(insufficient.identity, None);
+    assert_eq!(
+        insufficient.sources.dmi_system_uuid,
+        HardwareSourceStatus::Present
+    );
+    assert_eq!(
+        insufficient.sources.dmi_board_serial,
+        HardwareSourceStatus::Unavailable
+    );
+    assert_eq!(
+        insufficient.sources.first_disk_serial,
+        HardwareSourceStatus::Unavailable
+    );
+    assert_eq!(unsupported.outcome, MachineIdentityOutcome::Unsupported);
+    assert_eq!(unsupported.identity, None);
+    assert_eq!(
+        unsupported.sources,
+        HardwareIdentitySources {
+            dmi_system_uuid: HardwareSourceStatus::Unsupported,
+            dmi_board_serial: HardwareSourceStatus::Unsupported,
+            first_disk_serial: HardwareSourceStatus::Unsupported,
+        }
+    );
+}
+
+#[test]
+fn reports_preserve_all_source_statuses_and_outcome_coherence() {
+    fn reading(index: usize, status: HardwareSourceStatus) -> ReadOutcome {
+        match status {
+            HardwareSourceStatus::Present => {
+                ReadOutcome::Value([SYSTEM_UUID, "board-42", "disk-99"][index].to_owned())
+            }
+            HardwareSourceStatus::Unavailable => ReadOutcome::Unavailable,
+            HardwareSourceStatus::Unsupported => ReadOutcome::Unsupported,
+            HardwareSourceStatus::PermissionDenied => ReadOutcome::PermissionDenied,
+            HardwareSourceStatus::Malformed => ReadOutcome::Value("bad\u{fffd}".to_owned()),
+            HardwareSourceStatus::RejectedPlaceholder => ReadOutcome::Value("unknown".to_owned()),
+        }
+    }
+    let statuses = [
+        HardwareSourceStatus::Present,
+        HardwareSourceStatus::Unavailable,
+        HardwareSourceStatus::Unsupported,
+        HardwareSourceStatus::PermissionDenied,
+        HardwareSourceStatus::Malformed,
+        HardwareSourceStatus::RejectedPlaceholder,
+    ];
+    for first in statuses {
+        for second in statuses {
+            for third in statuses {
+                let expected = [first, second, third];
+                let report = identity_from_readings(std::array::from_fn(|index| {
+                    reading(index, expected[index])
+                }));
+                assert_eq!(
+                    report.sources,
+                    HardwareIdentitySources {
+                        dmi_system_uuid: first,
+                        dmi_board_serial: second,
+                        first_disk_serial: third,
+                    }
+                );
+                let expected_outcome = if expected.contains(&HardwareSourceStatus::Unsupported) {
+                    MachineIdentityOutcome::Unsupported
+                } else if expected
+                    .iter()
+                    .filter(|status| **status == HardwareSourceStatus::Present)
+                    .count()
+                    >= 2
+                {
+                    MachineIdentityOutcome::Derived
+                } else {
+                    MachineIdentityOutcome::InsufficientSources
+                };
+                assert_eq!(report.outcome, expected_outcome);
+                assert_eq!(
+                    report.identity.is_some(),
+                    expected_outcome == MachineIdentityOutcome::Derived
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn report_debug_and_serialization_expose_only_redacted_diagnostics() {
+    let report = identity_from_readings([
+        ReadOutcome::Value(SYSTEM_UUID.to_owned()),
+        ReadOutcome::Value("BOARD-42".to_owned()),
+        ReadOutcome::Unavailable,
+    ]);
+    let json = serde_json::to_value(&report)
+        .unwrap_or_else(|error| panic!("report must serialize: {error}"));
+    assert_eq!(
+        json,
+        serde_json::json!({
+            "outcome": "derived",
+            "identity": {
+                "machine_hardware_id": "939d8a7f-642f-583e-ad40-ba40c44b6b0e",
+                "quality": "strong"
+            },
+            "sources": {
+                "dmi_system_uuid": "present",
+                "dmi_board_serial": "present",
+                "first_disk_serial": "unavailable"
+            }
+        })
+    );
+    let debug = format!("{report:?}");
+    for evidence in [
+        SYSTEM_UUID,
+        "550e8400e29b41d4a716446655440000",
+        "BOARD-42",
+        "board42",
+    ] {
+        assert!(!debug.contains(evidence));
+        assert!(!json.to_string().contains(evidence));
+    }
+    let decoded: MachineIdentityReport = serde_json::from_value(json)
+        .unwrap_or_else(|error| panic!("report must deserialize: {error}"));
+    assert_eq!(decoded, report);
+
+    let failed = identity_from_readings([
+        ReadOutcome::PermissionDenied,
+        ReadOutcome::Value("serial-\u{fffd}".to_owned()),
+        ReadOutcome::Value("unknown".to_owned()),
+    ]);
+    assert_eq!(
+        serde_json::to_value(&failed)
+            .unwrap_or_else(|error| panic!("failed report must serialize: {error}")),
+        serde_json::json!({
+            "outcome": "insufficient_sources",
+            "identity": null,
+            "sources": {
+                "dmi_system_uuid": "permission_denied",
+                "dmi_board_serial": "malformed",
+                "first_disk_serial": "rejected_placeholder"
+            }
+        })
+    );
+}
+
+#[test]
+fn raw_readings_are_zeroized_for_every_collection_status() {
+    let mut readings = [
+        ReadOutcome::Value("raw-hardware-evidence".to_owned()),
+        ReadOutcome::Unavailable,
+        ReadOutcome::PermissionDenied,
+    ];
+    zeroize_readings(&mut readings);
+    assert_value(&readings[0], "");
+    assert!(matches!(readings[1], ReadOutcome::Unavailable));
+    assert!(matches!(readings[2], ReadOutcome::PermissionDenied));
+    zeroize_readings(&mut [
+        ReadOutcome::Unsupported,
+        ReadOutcome::Unavailable,
+        ReadOutcome::PermissionDenied,
+    ]);
 }

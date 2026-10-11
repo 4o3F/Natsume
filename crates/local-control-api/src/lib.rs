@@ -3,6 +3,13 @@
 use serde::{Deserialize, Serialize};
 use zbus::zvariant::Type;
 
+pub mod diagnostics;
+mod machine_identity;
+
+pub use machine_identity::{
+    HardwareIdentitySources, HardwareSourceStatus, MachineIdentityOutcome, MachineIdentityReport,
+};
+
 /// Aggregate quality of one Helper-derived Machine Hardware ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Type)]
 #[serde(rename_all = "snake_case")]
@@ -292,7 +299,7 @@ pub trait Privileged1 {
     fn configure_local_gateway(&self, gateway_hostname: &str) -> Result<(), ResourceControlError>;
 
     #[zbus(name = "DeriveMachineIdentity")]
-    fn derive_machine_identity(&self) -> Result<DerivedMachineIdentity, MachineIdentityError>;
+    fn derive_machine_identity(&self) -> Result<MachineIdentityReport, MachineIdentityError>;
 
     #[zbus(name = "HasHomeResetState")]
     fn has_home_reset_state(&self) -> Result<bool, ResourceControlError>;

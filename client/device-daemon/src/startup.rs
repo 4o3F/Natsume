@@ -2,8 +2,13 @@ use std::{fs, io, path::Path, path::PathBuf};
 
 use natsume_device_protocol::generated::EnrollmentEvidenceQuality;
 use natsume_local_control_api::{
-    DerivedMachineIdentity, MachineIdentityError, MachineIdentityQuality, Privileged1Proxy,
-    ResourceControlError, is_canonical_gateway_hostname,
+    DerivedMachineIdentity, HardwareSourceStatus, MachineIdentityError, MachineIdentityOutcome,
+    MachineIdentityQuality, MachineIdentityReport, Privileged1Proxy, ResourceControlError,
+    diagnostics::{
+        DiagnosticCode, DiagnosticStage, DiagnosticStatus, IdentityComparisonDiagnostic,
+        IdentityRecordDiagnostic,
+    },
+    is_canonical_gateway_hostname,
 };
 use serde::Deserialize;
 use snafu::Snafu;
@@ -11,9 +16,11 @@ use tokio::time::{Duration, timeout};
 use uuid::Uuid;
 
 use crate::{
+    CanonicalEndpoint,
     atomic_write::ATOMIC_TEMP_PREFIX,
     canonical_uuid,
-    control::{self, ControlIdentityError},
+    control::{self, ControlIdentityError, ControlLoopError},
+    diagnostics::Diagnostics,
     identity_record::{self, IdentityRecordState},
     reconcile::SnapshotReconciler,
 };
@@ -74,6 +81,11 @@ struct StartupConfig {
 }
 
 #[derive(Deserialize)]
+struct DiagnosticEndpointConfig {
+    server: CanonicalEndpoint,
+}
+
+#[derive(Deserialize)]
 struct SiteConfig {
     gateway_hostname: String,
 }
@@ -122,7 +134,10 @@ fn fail_closed(state: StartupIdentityState) -> StartupError {
     }
 }
 
-fn read_site_config(path: &Path) -> Result<SiteConfig, StartupError> {
+fn read_site_config(
+    path: &Path,
+    diagnostics: &mut Diagnostics,
+) -> Result<SiteConfig, StartupError> {
     let text = fs::read_to_string(path).map_err(|_| {
         tracing::error!(
             startup_identity_state = "site_configuration_invalid",
@@ -137,6 +152,15 @@ fn read_site_config(path: &Path) -> Result<SiteConfig, StartupError> {
         );
         StartupError::SiteConfiguration
     })?;
+    // Read only the typed, non-secret endpoint from the already-read input. Its
+    // failure must not move control-config validation ahead of the identity gate.
+    if let Ok(endpoint) = toml::from_str::<DiagnosticEndpointConfig>(&text) {
+        diagnostics.update(|report| {
+            report.connection.endpoint_ip = Some(endpoint.server.ip.to_string());
+            report.connection.endpoint_port = Some(endpoint.server.port.get());
+        });
+        diagnostics.sample_network(endpoint.server.ip);
+    }
     let config = config.site;
     if !is_canonical_gateway_hostname(&config.gateway_hostname) {
         tracing::error!(
@@ -203,8 +227,9 @@ fn identity_bound_artifacts_present(
 fn preflight(
     paths: &StartupPaths,
     privileged_home_state_present: bool,
+    diagnostics: &mut Diagnostics,
 ) -> Result<StartupContext, StartupError> {
-    let site = read_site_config(&paths.config)?;
+    let site = read_site_config(&paths.config, diagnostics)?;
     let gateway_hostname = site.gateway_hostname;
     let artifacts_present = privileged_home_state_present
         || identity_bound_artifacts_present(
@@ -213,6 +238,13 @@ fn preflight(
             &paths.state_directory,
         )?;
     let record = identity_record::read(&paths.identity_directory);
+    diagnostics.update(|report| {
+        report.identity.record = match record {
+            IdentityRecordState::Absent => IdentityRecordDiagnostic::Absent,
+            IdentityRecordState::Corrupt => IdentityRecordDiagnostic::Corrupt,
+            IdentityRecordState::Valid { .. } => IdentityRecordDiagnostic::Valid,
+        };
+    });
 
     match record {
         IdentityRecordState::Absent if artifacts_present => Err(fail_closed(
@@ -301,13 +333,163 @@ fn load_control_identity(
         .map_err(|source| StartupError::ControlIdentity { source })
 }
 
+fn identity_decision(
+    report: MachineIdentityReport,
+    diagnostics: &mut Diagnostics,
+) -> Result<DerivedMachineIdentity, MachineIdentityError> {
+    diagnostics.update(|evidence| {
+        let count = [
+            report.sources.dmi_system_uuid,
+            report.sources.dmi_board_serial,
+            report.sources.first_disk_serial,
+        ]
+        .into_iter()
+        .filter(|status| *status == HardwareSourceStatus::Present)
+        .count();
+        evidence.identity.valid_source_count = u8::try_from(count).ok();
+        evidence.identity.sources = Some(report.sources.clone());
+    });
+    match (report.outcome, report.identity) {
+        (MachineIdentityOutcome::Derived, Some(identity)) => {
+            // Only a canonical derived ID may enter non-secret evidence. Invalid
+            // Helper strings are not copied to reports or error source chains.
+            diagnostics.update(|evidence| {
+                evidence.identity.machine_hardware_id =
+                    canonical_uuid(&identity.machine_hardware_id)
+                        .filter(|id| id.get_version_num() == 5)
+                        .map(|id| id.to_string());
+                evidence.identity.quality = evidence
+                    .identity
+                    .machine_hardware_id
+                    .as_ref()
+                    .map(|_| identity.quality);
+            });
+            Ok(identity)
+        }
+        (MachineIdentityOutcome::InsufficientSources, None) => {
+            diagnostics.failure(
+                DiagnosticCode::IdentityInsufficientSources,
+                DiagnosticStatus::Starting,
+            );
+            Err(MachineIdentityError::InsufficientSources(String::new()))
+        }
+        (MachineIdentityOutcome::Unsupported, None) => {
+            diagnostics.failure(
+                DiagnosticCode::IdentityUnsupported,
+                DiagnosticStatus::Starting,
+            );
+            Err(MachineIdentityError::Unsupported(String::new()))
+        }
+        _ => {
+            diagnostics.failure(
+                DiagnosticCode::IdentityUnavailable,
+                DiagnosticStatus::Starting,
+            );
+            Err(MachineIdentityError::ZBus(zbus::Error::Failure(
+                "invalid identity report".to_owned(),
+            )))
+        }
+    }
+}
+
+fn control_identity_diagnostic_code(error: &ControlIdentityError) -> DiagnosticCode {
+    match error {
+        ControlIdentityError::ControlKey => DiagnosticCode::ControlKeyInvalid,
+        ControlIdentityError::ControlKeyEntropy => DiagnosticCode::ControlKeyEntropyUnavailable,
+        ControlIdentityError::ControlKeyEncoding => DiagnosticCode::ControlKeyEncodingFailed,
+        ControlIdentityError::ControlKeyPersistence => DiagnosticCode::ControlKeyPersistenceFailed,
+        ControlIdentityError::Manifest => DiagnosticCode::ControlManifestInvalid,
+        ControlIdentityError::ManifestSerialization => {
+            DiagnosticCode::ControlManifestSerializationFailed
+        }
+        ControlIdentityError::ManifestPersistence => {
+            DiagnosticCode::ControlManifestPersistenceFailed
+        }
+    }
+}
+
+fn startup_diagnostic_code(error: &StartupError, diagnostics: &mut Diagnostics) -> DiagnosticCode {
+    match error {
+        StartupError::SiteConfiguration => DiagnosticCode::SiteConfigurationInvalid,
+        StartupError::LocalGateway { .. } => DiagnosticCode::LocalGatewayFailed,
+        StartupError::ArtifactScan => DiagnosticCode::IdentityArtifactScanFailed,
+        StartupError::IdentityPersistence => DiagnosticCode::IdentityPersistenceFailed,
+        StartupError::ControlIdentity { source } => control_identity_diagnostic_code(source),
+        StartupError::Reconciliation => DiagnosticCode::ReconciliationFailed,
+        StartupError::FailClosed { state } => match *state {
+            "identity_record_missing_or_corrupt" => DiagnosticCode::IdentityRecordMissingOrCorrupt,
+            "reset_required" => {
+                diagnostics.update(|report| {
+                    report.identity.comparison = IdentityComparisonDiagnostic::Mismatched;
+                });
+                DiagnosticCode::IdentityMismatch
+            }
+            "indeterminate" => {
+                diagnostics.update(|report| {
+                    report.identity.comparison = IdentityComparisonDiagnostic::Indeterminate;
+                });
+                DiagnosticCode::IdentityInsufficientSources
+            }
+            _ => match diagnostics.report().stage {
+                DiagnosticStage::SystemBus => DiagnosticCode::SystemBusUnavailable,
+                DiagnosticStage::Helper => DiagnosticCode::HelperUnavailable,
+                _ => diagnostics
+                    .report()
+                    .failure
+                    .as_ref()
+                    .map_or(DiagnosticCode::IdentityUnavailable, |failure| failure.code),
+            },
+        },
+        StartupError::Control { source } => match source {
+            ControlLoopError::PresentationCache => DiagnosticCode::PresentationCacheFailed,
+            ControlLoopError::EndpointConfiguration => DiagnosticCode::EndpointConfigurationInvalid,
+            ControlLoopError::TrustRootConfiguration => DiagnosticCode::TrustRootInvalid,
+            ControlLoopError::Tls => DiagnosticCode::TlsConfigurationFailed,
+            ControlLoopError::ReconnectEntropy => DiagnosticCode::ReconnectEntropyUnavailable,
+            ControlLoopError::LocalDeactivation => DiagnosticCode::LocalDeactivationFailed,
+            ControlLoopError::AuthorityPersistence { .. } => {
+                DiagnosticCode::AuthorityPersistenceFailed
+            }
+        },
+    }
+}
+
 /// Runs identity-first production startup and the single Device control loop.
 ///
 /// # Errors
 ///
 /// Returns a redacted fail-closed startup error.
 pub(crate) async fn run_production() -> Result<(), StartupError> {
+    let mut diagnostics = Diagnostics::production();
+    let result = run_with_diagnostics(&mut diagnostics).await;
+    if let Err(error) = &result {
+        record_final_failure(error, &mut diagnostics);
+    }
+    result
+}
+
+fn record_final_failure(error: &StartupError, diagnostics: &mut Diagnostics) {
+    if matches!(
+        error,
+        StartupError::Control {
+            source: ControlLoopError::LocalDeactivation
+        }
+    ) {
+        // systemd's ExecStopPost hard-kill is now the safety barrier. Do not
+        // put diagnostic filesystem I/O between failed BLOCKED and process exit.
+        tracing::error!(
+            code = "LOCAL_DEACTIVATION_FAILED",
+            "Immediate safety exit; diagnostic file publication skipped"
+        );
+        return;
+    }
+    let code = startup_diagnostic_code(error, diagnostics);
+    diagnostics.stop(code);
+}
+
+async fn run_with_diagnostics(diagnostics: &mut Diagnostics) -> Result<(), StartupError> {
     let paths = StartupPaths::production();
+    diagnostics.set_stage(DiagnosticStage::SystemBus, DiagnosticStatus::Starting);
     let Ok(builder) = zbus::connection::Builder::system() else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
@@ -319,21 +501,49 @@ pub(crate) async fn run_production() -> Result<(), StartupError> {
     else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
+    diagnostics.complete(DiagnosticStage::SystemBus);
+    diagnostics.set_stage(DiagnosticStage::Helper, DiagnosticStatus::Starting);
     let Ok(proxy) = Privileged1Proxy::new(&connection).await else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
     let Ok(privileged_home_state_present) = proxy.has_home_reset_state().await else {
         return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
     };
-    let context = preflight(&paths, privileged_home_state_present)?;
+    diagnostics.complete(DiagnosticStage::Helper);
+    diagnostics.set_stage(
+        DiagnosticStage::IdentityPreflight,
+        DiagnosticStatus::Starting,
+    );
+    let context = preflight(&paths, privileged_home_state_present, diagnostics)?;
+    diagnostics.complete(DiagnosticStage::IdentityPreflight);
+    diagnostics.set_stage(
+        DiagnosticStage::HardwareIdentity,
+        DiagnosticStatus::Starting,
+    );
     let decision = proxy.derive_machine_identity().await;
+    let decision = match decision {
+        Ok(report) => identity_decision(report, diagnostics),
+        Err(error) => Err(error),
+    };
     let identity = apply_identity_decision(&paths, &context, decision)?;
+    diagnostics.update(|report| {
+        report.identity.comparison = match identity.state {
+            StartupIdentityState::CleanFirstStart => IdentityComparisonDiagnostic::CleanFirstStart,
+            StartupIdentityState::Matched => IdentityComparisonDiagnostic::Matched,
+            _ => IdentityComparisonDiagnostic::NotChecked,
+        };
+    });
+    diagnostics.complete(DiagnosticStage::HardwareIdentity);
     let gateway_hostname = context.gateway_hostname;
+    diagnostics.set_stage(DiagnosticStage::LocalGateway, DiagnosticStatus::Starting);
     proxy
         .configure_local_gateway(&gateway_hostname)
         .await
         .map_err(|source| StartupError::LocalGateway { source })?;
+    diagnostics.complete(DiagnosticStage::LocalGateway);
+    diagnostics.set_stage(DiagnosticStage::ControlIdentity, DiagnosticStatus::Starting);
     let control_identity = load_control_identity(&paths, identity.machine_hardware_id)?;
+    diagnostics.complete(DiagnosticStage::ControlIdentity);
     let IdentityReady {
         state,
         machine_hardware_id,
@@ -343,9 +553,11 @@ pub(crate) async fn run_production() -> Result<(), StartupError> {
         MachineIdentityQuality::Medium => EnrollmentEvidenceQuality::Medium,
         MachineIdentityQuality::Strong => EnrollmentEvidenceQuality::Strong,
     };
+    diagnostics.set_stage(DiagnosticStage::Reconciliation, DiagnosticStatus::Starting);
     let snapshots = SnapshotReconciler::production(gateway_hostname, connection)
         .await
         .map_err(|_| StartupError::Reconciliation)?;
+    diagnostics.complete(DiagnosticStage::Reconciliation);
     tracing::info!(
         startup_identity_state = state_label(state),
         "starting Device control loop"
@@ -355,6 +567,7 @@ pub(crate) async fn run_production() -> Result<(), StartupError> {
         machine_hardware_id,
         evidence_quality,
         snapshots,
+        diagnostics,
     )
     .await
     .map_err(|source| StartupError::Control { source })

@@ -1,4 +1,4 @@
-use std::{fs, future::pending, sync::Arc};
+use std::{fs, future::pending, io, sync::Arc};
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use natsume_device_protocol::{
@@ -7,6 +7,9 @@ use natsume_device_protocol::{
         ClientActiveEnvelope, ClientStateSnapshot, EnrollmentEvidenceQuality, ServerActiveEnvelope,
         ServerStateSnapshot, client_active_envelope, server_active_envelope,
     },
+};
+use natsume_local_control_api::diagnostics::{
+    DiagnosticCode, DiagnosticConnectionPurpose, DiagnosticStage, DiagnosticStatus,
 };
 use prost::Message as _;
 use rustls::{ClientConfig, RootCertStore};
@@ -19,11 +22,17 @@ use tokio::{
 };
 use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream, connect_async_tls_with_config,
-    tungstenite::{client::IntoClientRequest as _, protocol::WebSocketConfig},
+    tungstenite::{
+        Error as WebSocketError,
+        client::IntoClientRequest as _,
+        error::{ProtocolError, TlsError},
+        protocol::WebSocketConfig,
+    },
 };
 
 use crate::{
     CanonicalEndpoint,
+    diagnostics::Diagnostics,
     reconcile::{
         ReconcileOutcome, SnapshotError, SnapshotReconciler, ValidatedSnapshot,
         validate_server_snapshot,
@@ -70,9 +79,13 @@ impl ReconnectBackoff {
         Duration::from_millis(u64::from(sample % (self.window_ms + 1)))
     }
 
-    async fn wait(&self) -> Result<(), ControlLoopError> {
+    async fn wait(&self, diagnostics: &mut Diagnostics) -> Result<(), ControlLoopError> {
         let sample = getrandom::u32().map_err(|_| ControlLoopError::ReconnectEntropy)?;
-        tokio::time::sleep(self.delay(sample)).await;
+        let delay = self.delay(sample);
+        diagnostics.update(|report| {
+            report.connection.retry_delay_ms = Some(duration_millis(delay));
+        });
+        tokio::time::sleep(delay).await;
         Ok(())
     }
 
@@ -87,12 +100,16 @@ struct ProductionConfig {
 }
 
 impl ConnectionSettings {
-    fn production() -> Result<Self, ControlLoopError> {
+    fn production(diagnostics: &mut Diagnostics) -> Result<Self, ControlLoopError> {
         let encoded = fs::read_to_string(CLIENT_CONFIG_PATH)
             .map_err(|_| ControlLoopError::EndpointConfiguration)?;
         let config = toml::from_str::<ProductionConfig>(&encoded)
             .map_err(|_| ControlLoopError::EndpointConfiguration)?;
         let endpoint = config.server;
+        diagnostics.update(|report| {
+            report.connection.endpoint_ip = Some(endpoint.ip.to_string());
+            report.connection.endpoint_port = Some(endpoint.port.get());
+        });
 
         let encoded =
             fs::read(CONTROL_ROOT_PATH).map_err(|_| ControlLoopError::TrustRootConfiguration)?;
@@ -108,6 +125,9 @@ impl ConnectionSettings {
             use sha2::Digest as _;
             hex::encode(sha2::Sha256::digest(trust_root.as_ref()))
         };
+        diagnostics.update(|report| {
+            report.connection.trust_root_sha256 = Some(trust_fingerprint.clone());
+        });
         let mut roots = RootCertStore::empty();
         roots
             .add(trust_root)
@@ -144,11 +164,16 @@ impl ConnectionSettings {
         ))))
     }
 
-    async fn connect(&self) -> Option<Socket> {
-        let mut request = control_url(self.endpoint).into_client_request().ok()?;
-        request
-            .headers_mut()
-            .insert("sec-websocket-protocol", CONTROL_SUBPROTOCOL.parse().ok()?);
+    async fn connect(&self) -> Result<Socket, ConnectFailure> {
+        let mut request = control_url(self.endpoint)
+            .into_client_request()
+            .map_err(|error| classify_connect_error(&error))?;
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            CONTROL_SUBPROTOCOL
+                .parse()
+                .map_err(|_| ConnectFailure::new(DiagnosticCode::WebsocketConnectionFailed))?,
+        );
         let config = WebSocketConfig::default()
             .max_message_size(Some(MAX_MESSAGE_BYTES))
             .max_frame_size(Some(MAX_MESSAGE_BYTES));
@@ -162,29 +187,129 @@ impl ConnectionSettings {
             ),
         )
         .await
-        .ok()?
-        .ok()?;
-        (response
+        .map_err(|_| ConnectFailure::new(DiagnosticCode::ConnectTimeout))?
+        .map_err(|error| classify_connect_error(&error))?;
+        if response
             .headers()
             .get("sec-websocket-protocol")
             .and_then(|value| value.to_str().ok())
-            == Some(CONTROL_SUBPROTOCOL))
-        .then_some(socket)
+            != Some(CONTROL_SUBPROTOCOL)
+        {
+            return Err(ConnectFailure {
+                code: DiagnosticCode::WebsocketSubprotocolMismatch,
+                http_status: Some(response.status().as_u16()),
+            });
+        }
+        Ok(socket)
     }
 }
 
+/// Bounded transport evidence: never retain peer text, headers or response bodies.
+#[derive(Debug, PartialEq, Eq)]
+struct ConnectFailure {
+    code: DiagnosticCode,
+    http_status: Option<u16>,
+}
+
+impl ConnectFailure {
+    fn new(code: DiagnosticCode) -> Self {
+        Self {
+            code,
+            http_status: None,
+        }
+    }
+}
+
+fn classify_tls_error(error: &rustls::Error) -> DiagnosticCode {
+    match error {
+        rustls::Error::InvalidCertificate(_) | rustls::Error::NoCertificatesPresented => {
+            DiagnosticCode::TlsCertificateInvalid
+        }
+        _ => DiagnosticCode::TlsHandshakeFailed,
+    }
+}
+
+fn classify_connect_error(error: &WebSocketError) -> ConnectFailure {
+    let code = match error {
+        WebSocketError::Io(error) => {
+            // tokio-rustls embeds its typed error directly in io::Error.
+            // Do not traverse sources or inspect error strings.
+            if let Some(tls) = error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+            {
+                classify_tls_error(tls)
+            } else {
+                match error.kind() {
+                    io::ErrorKind::ConnectionRefused => DiagnosticCode::TcpConnectionRefused,
+                    io::ErrorKind::NetworkUnreachable | io::ErrorKind::HostUnreachable => {
+                        DiagnosticCode::TcpNetworkUnreachable
+                    }
+                    _ => DiagnosticCode::TcpConnectionFailed,
+                }
+            }
+        }
+        WebSocketError::Tls(TlsError::Rustls(error)) => classify_tls_error(error),
+        WebSocketError::Tls(_) => DiagnosticCode::TlsHandshakeFailed,
+        WebSocketError::Http(response) => {
+            return ConnectFailure {
+                code: DiagnosticCode::WebsocketUpgradeFailed,
+                http_status: Some(response.status().as_u16()),
+            };
+        }
+        WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(_)) => {
+            DiagnosticCode::WebsocketSubprotocolMismatch
+        }
+        _ => DiagnosticCode::WebsocketConnectionFailed,
+    };
+    ConnectFailure::new(code)
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn begin_attempt(diagnostics: &mut Diagnostics, identity: &ControlIdentity) {
+    diagnostics.update(|report| {
+        let connection = &mut report.connection;
+        connection.attempt = connection.attempt.saturating_add(1);
+        connection.attempt_duration_ms = None;
+        connection.retry_delay_ms = None;
+        connection.local_ip = None;
+        connection.http_status = None;
+        connection.handshake_step = None;
+        connection.peer_error_code = None;
+        connection.purpose = Some(if identity.is_enrolling() {
+            DiagnosticConnectionPurpose::Enrollment
+        } else {
+            DiagnosticConnectionPurpose::Resume
+        });
+        connection.device_id = identity.manifest.device_id().map(|id| id.to_string());
+    });
+    diagnostics.set_stage(DiagnosticStage::Connecting, DiagnosticStatus::Retrying);
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep reconnect scheduling, fail-closed cleanup and diagnostic transitions together"
+)]
 pub(crate) async fn run(
     mut identity: ControlIdentity,
     machine_hardware_id: uuid::Uuid,
     evidence_quality: EnrollmentEvidenceQuality,
     snapshots: SnapshotReconciler,
+    diagnostics: &mut Diagnostics,
 ) -> Result<(), ControlLoopError> {
     let snapshots = Arc::new(snapshots);
     snapshots
         .deactivate()
         .await
         .map_err(|_| ControlLoopError::LocalDeactivation)?;
-    let settings = ConnectionSettings::production()?;
+    diagnostics.set_stage(
+        DiagnosticStage::ControlConfiguration,
+        DiagnosticStatus::Starting,
+    );
+    let settings = ConnectionSettings::production(diagnostics)?;
     if let Some(scope) = settings.presentation_scope(&identity) {
         snapshots
             .configure_presentation(scope)
@@ -201,6 +326,7 @@ pub(crate) async fn run(
     let _logos = tokio_util::task::AbortOnDropHandle::new(
         snapshots.start_logo_downloads(client, settings.origin()),
     );
+    diagnostics.complete(DiagnosticStage::ControlConfiguration);
     let mut backoff = ReconnectBackoff::new();
     let mut first_attempt = true;
     loop {
@@ -210,22 +336,46 @@ pub(crate) async fn run(
         let recovery = Arc::clone(&snapshots);
         let local = tokio::spawn(async move { recovery.recover_local().await });
         let attempt = async {
-            backoff.wait().await?;
+            backoff.wait(diagnostics).await?;
             if !first_attempt {
                 backoff.advance();
             }
-            let Some(mut socket) = settings.connect().await else {
-                tracing::warn!(
-                    expected_subprotocol = CONTROL_SUBPROTOCOL,
-                    "Device control connection failed"
-                );
-                return Ok(None);
+            begin_attempt(diagnostics, &identity);
+            diagnostics.sample_network(settings.endpoint.ip);
+            let started = Instant::now();
+            let connected = settings.connect().await;
+            diagnostics.update(|report| {
+                report.connection.attempt_duration_ms = Some(duration_millis(started.elapsed()));
+            });
+            let mut socket = match connected {
+                Ok(socket) => socket,
+                Err(failure) => {
+                    diagnostics
+                        .update(|report| report.connection.http_status = failure.http_status);
+                    diagnostics.failure(failure.code, DiagnosticStatus::Retrying);
+                    tracing::warn!(
+                        expected_subprotocol = CONTROL_SUBPROTOCOL,
+                        "Device control connection failed"
+                    );
+                    return Ok(None);
+                }
             };
+            diagnostics.clear_failure();
+            diagnostics.complete(DiagnosticStage::Connecting);
+            diagnostics.update(|report| {
+                report.connection.local_ip = socket
+                    .get_ref()
+                    .get_ref()
+                    .local_addr()
+                    .ok()
+                    .map(|address| address.ip().to_canonical().to_string());
+            });
             match super::enrollment::handshake(
                 &mut socket,
                 &mut identity,
                 machine_hardware_id,
                 evidence_quality,
+                diagnostics,
             )
             .await?
             {
@@ -243,12 +393,19 @@ pub(crate) async fn run(
                 snapshots
                     .configure_presentation(scope)
                     .map_err(|_| ControlLoopError::PresentationCache)?;
+                diagnostics.reset_failures();
+                diagnostics.set_stage(DiagnosticStage::Active, DiagnosticStatus::Active);
                 let stable =
                     run_active(socket, session_id, Arc::clone(&snapshots), Some(local)).await;
                 snapshots
                     .deactivate()
                     .await
                     .map_err(|_| ControlLoopError::LocalDeactivation)?;
+                // Evidence I/O follows the safety barrier, never precedes it.
+                diagnostics.failure(
+                    DiagnosticCode::ActiveConnectionEnded,
+                    DiagnosticStatus::Retrying,
+                );
                 if stable {
                     backoff = ReconnectBackoff::new();
                 }
@@ -712,6 +869,327 @@ mod tests {
     use crate::reconcile::tests::{Fixture, HelperState, fixture, snapshot};
     use tokio_tungstenite::tungstenite::{Message as WsMessage, protocol::Role};
 
+    #[test]
+    fn connect_classification_retains_only_fixed_codes_and_http_status()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio_tungstenite::tungstenite::{error::SubProtocolError, http::Response};
+        let cases = [
+            (
+                WebSocketError::Io(io::Error::new(io::ErrorKind::ConnectionRefused, "SECRET")),
+                DiagnosticCode::TcpConnectionRefused,
+            ),
+            (
+                WebSocketError::Io(io::Error::from(io::ErrorKind::NetworkUnreachable)),
+                DiagnosticCode::TcpNetworkUnreachable,
+            ),
+            (
+                WebSocketError::Io(io::Error::from(io::ErrorKind::HostUnreachable)),
+                DiagnosticCode::TcpNetworkUnreachable,
+            ),
+            (
+                WebSocketError::Io(io::Error::other("SECRET")),
+                DiagnosticCode::TcpConnectionFailed,
+            ),
+            (
+                WebSocketError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+                )),
+                DiagnosticCode::TlsCertificateInvalid,
+            ),
+            (
+                WebSocketError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    rustls::Error::General("SECRET".to_owned()),
+                )),
+                DiagnosticCode::TlsHandshakeFailed,
+            ),
+            (
+                WebSocketError::Tls(TlsError::Rustls(Box::new(
+                    rustls::Error::NoCertificatesPresented,
+                ))),
+                DiagnosticCode::TlsCertificateInvalid,
+            ),
+            (
+                WebSocketError::Tls(TlsError::InvalidDnsName),
+                DiagnosticCode::TlsHandshakeFailed,
+            ),
+            (
+                WebSocketError::Protocol(ProtocolError::SecWebSocketSubProtocolError(
+                    SubProtocolError::InvalidSubProtocol,
+                )),
+                DiagnosticCode::WebsocketSubprotocolMismatch,
+            ),
+            (
+                WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake),
+                DiagnosticCode::WebsocketConnectionFailed,
+            ),
+        ];
+        let mut diagnostics = Diagnostics::disabled();
+        for (error, expected) in cases {
+            let failure = classify_connect_error(&error);
+            assert_eq!(failure, ConnectFailure::new(expected));
+            diagnostics.failure(failure.code, DiagnosticStatus::Retrying);
+            assert!(!serde_json::to_string(diagnostics.report())?.contains("SECRET"));
+        }
+        let error = WebSocketError::Http(Box::new(
+            Response::builder()
+                .status(403)
+                .header("x-secret", "SECRET_HEADER")
+                .body(Some(b"SECRET_BODY".to_vec()))?,
+        ));
+        let failure = classify_connect_error(&error);
+        assert_eq!(
+            failure,
+            ConnectFailure {
+                code: DiagnosticCode::WebsocketUpgradeFailed,
+                http_status: Some(403)
+            }
+        );
+        diagnostics.update(|report| report.connection.http_status = failure.http_status);
+        diagnostics.failure(failure.code, DiagnosticStatus::Retrying);
+        let encoded = serde_json::to_string(diagnostics.report())?;
+        assert!(encoded.contains("403"));
+        assert!(!encoded.contains("SECRET"));
+        Ok(())
+    }
+
+    async fn tls_connect_fixture(
+        trusted: bool,
+    ) -> Result<
+        (
+            ConnectionSettings,
+            tokio::net::TcpListener,
+            tokio_rustls::TlsAcceptor,
+        ),
+        Box<dyn std::error::Error>,
+    > {
+        let certificate = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()])?;
+        let server = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])?
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![certificate.cert.der().clone()],
+            rustls_pki_types::PrivatePkcs8KeyDer::from(certificate.signing_key.serialize_der())
+                .into(),
+        )?;
+        let mut roots = RootCertStore::empty();
+        if trusted {
+            roots.add(certificate.cert.der().clone())?;
+        }
+        let client =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_protocol_versions(&[&rustls::version::TLS13])?
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let settings = ConnectionSettings {
+            endpoint: CanonicalEndpoint {
+                ip: address.ip(),
+                port: address.port().try_into()?,
+            },
+            tls: Arc::new(client),
+            trust_fingerprint: "unused".to_owned(),
+        };
+        Ok((
+            settings,
+            listener,
+            tokio_rustls::TlsAcceptor::from(Arc::new(server)),
+        ))
+    }
+
+    #[tokio::test]
+    async fn real_tls_certificate_rejection_is_classified_without_relaxing_trust()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (settings, listener, acceptor) = tls_connect_fixture(false).await?;
+        let peer = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await?;
+            acceptor.accept(tcp).await
+        });
+        assert!(matches!(
+            settings.connect().await,
+            Err(ConnectFailure {
+                code: DiagnosticCode::TlsCertificateInvalid,
+                http_status: None
+            })
+        ));
+        assert!(peer.await?.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn real_websocket_http_rejection_retains_status_without_peer_content()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+        let (settings, listener, acceptor) = tls_connect_fixture(true).await?;
+        let peer = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await?;
+            let tls = acceptor.accept(tcp).await?;
+            #[expect(
+                clippy::result_large_err,
+                reason = "tungstenite callback requires this response type"
+            )]
+            let callback = |_: &Request, _: Response| {
+                Err(tokio_tungstenite::tungstenite::http::Response::builder()
+                    .status(403)
+                    .header("x-secret", "SECRET_HEADER")
+                    .body(Some("SECRET_BODY".to_owned()))
+                    .unwrap_or_else(|error| panic!("response: {error}")))
+            };
+            tokio_tungstenite::accept_hdr_async(tls, callback)
+                .await
+                .map_err(io::Error::other)
+        });
+        let Err(failure) = settings.connect().await else {
+            return Err("rejected connection succeeded".into());
+        };
+        assert_eq!(
+            failure,
+            ConnectFailure {
+                code: DiagnosticCode::WebsocketUpgradeFailed,
+                http_status: Some(403)
+            }
+        );
+        let mut diagnostics = Diagnostics::disabled();
+        diagnostics.update(|report| report.connection.http_status = failure.http_status);
+        diagnostics.failure(failure.code, DiagnosticStatus::Retrying);
+        assert!(!serde_json::to_string(diagnostics.report())?.contains("SECRET"));
+        assert!(peer.await?.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn real_websocket_missing_subprotocol_is_still_rejected()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (settings, listener, acceptor) = tls_connect_fixture(true).await?;
+        let peer = tokio::spawn(async move {
+            let (tcp, _) = listener.accept().await?;
+            let tls = acceptor.accept(tcp).await?;
+            tokio_tungstenite::accept_async(tls)
+                .await
+                .map_err(io::Error::other)
+        });
+        assert!(matches!(
+            settings.connect().await,
+            Err(ConnectFailure {
+                code: DiagnosticCode::WebsocketSubprotocolMismatch,
+                ..
+            })
+        ));
+        let _socket = peer.await??;
+        Ok(())
+    }
+
+    #[test]
+    fn new_attempt_clears_peer_metadata_but_uses_installed_identity()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use natsume_device_protocol::generated::EnrollmentAuthority;
+        use natsume_local_control_api::diagnostics::DiagnosticHandshakeStep;
+        let directory = tempfile::tempdir()?;
+        let machine = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
+        let mut identity = crate::control::load_or_create_identity(directory.path(), machine)?;
+        let mut diagnostics = Diagnostics::disabled();
+        begin_attempt(&mut diagnostics, &identity);
+        assert_eq!(
+            diagnostics.report().connection.purpose,
+            Some(DiagnosticConnectionPurpose::Enrollment)
+        );
+        assert_eq!(diagnostics.report().connection.attempt, 1);
+        let device = Uuid::now_v7();
+        identity.install_authority(&EnrollmentAuthority {
+            device_id: device.to_string(),
+        })?;
+        diagnostics.update(|report| {
+            let connection = &mut report.connection;
+            connection.local_ip = Some("127.0.0.1".to_owned());
+            connection.http_status = Some(403);
+            connection.peer_error_code = Some("DENIED".to_owned());
+            connection.handshake_step = Some(DiagnosticHandshakeStep::Denied);
+            connection.attempt_duration_ms = Some(12);
+            connection.retry_delay_ms = Some(1234);
+        });
+        begin_attempt(&mut diagnostics, &identity);
+        let connection = &diagnostics.report().connection;
+        assert_eq!(connection.attempt, 2);
+        assert_eq!(
+            connection.purpose,
+            Some(DiagnosticConnectionPurpose::Resume)
+        );
+        assert_eq!(
+            connection.device_id.as_deref(),
+            Some(device.to_string().as_str())
+        );
+        assert_eq!(connection.local_ip, None);
+        assert_eq!(connection.http_status, None);
+        assert_eq!(connection.peer_error_code, None);
+        assert_eq!(connection.handshake_step, None);
+        assert_eq!(connection.attempt_duration_ms, None);
+        assert_eq!(connection.retry_delay_ms, None);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_wait_is_not_reported_as_upcoming_after_connecting_or_active()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let machine = Uuid::from_u128(0xa9aa_9d04_3ece_5567_8260_9109_30ff_5e03);
+        let identity = crate::control::load_or_create_identity(directory.path(), machine)?;
+        let mut diagnostics = Diagnostics::disabled();
+        ReconnectBackoff::new().wait(&mut diagnostics).await?;
+        assert!(
+            diagnostics
+                .report()
+                .connection
+                .retry_delay_ms
+                .is_some_and(|delay| delay <= u64::from(INITIAL_RECONNECT_WINDOW_MS))
+        );
+        begin_attempt(&mut diagnostics, &identity);
+        assert_eq!(diagnostics.report().connection.retry_delay_ms, None);
+        diagnostics.set_stage(DiagnosticStage::Handshake, DiagnosticStatus::Retrying);
+        assert_eq!(diagnostics.report().connection.retry_delay_ms, None);
+        diagnostics.reset_failures();
+        diagnostics.set_stage(DiagnosticStage::Active, DiagnosticStatus::Active);
+        assert_eq!(diagnostics.report().connection.retry_delay_ms, None);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connect_keeps_one_deadline_for_a_silent_tls_peer()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let tls =
+            ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_protocol_versions(&[&rustls::version::TLS13])?
+                .with_root_certificates(RootCertStore::empty())
+                .with_no_client_auth();
+        let settings = ConnectionSettings {
+            endpoint: CanonicalEndpoint {
+                ip: address.ip(),
+                port: address.port().try_into()?,
+            },
+            tls: Arc::new(tls),
+            trust_fingerprint: "unused".to_owned(),
+        };
+        let connect = tokio::spawn(async move { settings.connect().await });
+        let (_peer, _) = listener.accept().await?;
+        tokio::time::pause();
+        tokio::time::advance(CONNECT_TIMEOUT).await;
+        let result = connect.await?;
+        tokio::time::resume();
+        assert!(matches!(
+            result,
+            Err(ConnectFailure {
+                code: DiagnosticCode::ConnectTimeout,
+                http_status: None
+            })
+        ));
+        Ok(())
+    }
+
     struct ActiveFixture {
         resources: Fixture,
         socket: WebSocketStream<TcpStream>,
@@ -844,7 +1322,12 @@ mod tests {
     -> Result<(), ControlLoopError> {
         let backoff = ReconnectBackoff::new();
         let started = Instant::now();
-        backoff.wait().await?;
+        let mut diagnostics = Diagnostics::disabled();
+        backoff.wait(&mut diagnostics).await?;
+        assert_eq!(
+            diagnostics.report().connection.retry_delay_ms,
+            Some(duration_millis(started.elapsed()))
+        );
         assert!(started.elapsed() <= Duration::from_secs(5));
         assert_eq!(backoff.window_ms, 5_000);
         Ok(())

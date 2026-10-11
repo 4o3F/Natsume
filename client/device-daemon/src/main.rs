@@ -2,6 +2,7 @@
 
 mod atomic_write;
 mod control;
+mod diagnostics;
 mod identity_record;
 mod reconcile;
 mod startup;

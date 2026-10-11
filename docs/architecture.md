@@ -1199,6 +1199,20 @@ Helper进程由systemd独占监督；`Type=dbus`以取得`org.natsume.Privileged
 
 Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原system bus连接重新创建指向well-known name的代理，Helper更换bus owner不改变Session/Home的持久化epoch或pending确切会话。观测失败终止active lease时，仍先确认Caddy为BLOCKED再重连；不能确认BLOCKED则失败退出并触发现有Caddy硬终止。新lease从本地重新观测，旧Actual不跨lease复用。Helper的启动成功本身不代表任何资源已经完成。
 
+### 14.4 Client 离线诊断证据
+
+Daemon 在配置、硬件身份和 credential 初始化之前建立 best-effort 诊断发布器，将固定 typed 白名单报告原子写入 `/run/natsume-diagnostics`。`latest.json` 保存最近报告，`last-failure.json` 仅在报告包含失败时更新；新的 Daemon 实例启动或恢复正常不得清除上一实例的最后故障。目录由 Client tmpfiles 创建，natsume 独占写入，非秘密报告允许本机读取；报告不跨 boot 保留。该目录独立于 identity/control/keys/state，不参与 identity-bound artifact 扫描，不授予身份、Binding、Gateway 或 Session/Home authority。
+
+报告是采集时刻的历史证据，不是当前状态 ground truth、process liveness 或数据面安全证明。boot、Daemon instance、PID、采集时刻和序号用于解释报告所属实例；旧 `active`、`retrying` 或等待时间不证明当前进程仍在运行。未来 Agent 消费必须另行取得当前可用性，明确区分最近报告与实时观测；首次部署条件阻止 Daemon 执行、Agent/Daemon 异常终止或发布失败不能宣称已交付详细诊断。此阶段只实施非 UI 证据，Agent 展示与二维码另行设计。
+
+Daemon 与 Agent 保持独立启动，不增加接收 readiness、ACK、启动排序或等待退出。报告发布成功只证明同 boot 内独立读取者可以取得完整证据，不证明 Agent 已收到；发布失败只输出固定诊断，不覆盖业务错误、不改变 retry。Active 终止先完成 Caddy BLOCKED，再发布终止证据；无法确认 BLOCKED 时跳过诊断文件写入，立即错误退出以触发现有 Caddy 硬终止，仅保留固定日志分类。两个文件分别原子替换，不声称跨文件事务。
+
+Helper 的 `DeriveMachineIdentity` 从同一次采集和冻结 policy 返回派生结果及三个来源的状态；quorum 不足和平台不支持为 typed outcome，transport 失败仍为 typed error。原始硬件值、normalized value 和逐来源稳定哈希不出 Helper，不进入日志或报告；Hardware ID recipe、2-of-3 和聚合 quality 不变。Daemon 只在原身份 gate 通过后读取 credential，诊断不得提前访问私钥或完整 manifest。
+
+诊断格式和本边界分类由 `crates/local-control-api/src/diagnostics.rs`、`machine_identity.rs` 及对应 adapter 拥有，不建立跨 HTTP/WSS 的全局错误 registry。字段只包含版本、阶段、固定错误分类、来源状态、canonical ID/IP、公开信任根指纹、已安装 Device ID、已校验 peer error token 和有界结构化事件；不复制错误 Display/Debug/source chain、headers/body、配置正文、硬件原值或秘密。报告最多 16 KiB、事件最多 12 条；此上限是证据存储上限，不是未来二维码的载荷承诺。
+
+到控制 IP 的 `/proc` route entries、接口 flags/carrier 和 next hop 只作为只读观测，不证明路由表成员身份，也不发送探测包。身份预检和每次连接尝试边界采样，网络证据带独立 boot-relative 采集时间。没有匹配观测条目不证明 policy/source-specific routing 无路由；路由或 carrier 正常也不证明 TCP/TLS/WSS 服务可用。无法采集时保留 unknown，不为诊断改变连接超时、握手或恢复行为。
+
 ## 15. Operator、Import 与业务 API
 
 ### 15.1 Operator

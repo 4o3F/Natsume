@@ -11,7 +11,7 @@ fn run_with_decision(
     paths: &StartupPaths,
     decision: Result<DerivedMachineIdentity, MachineIdentityError>,
 ) -> Result<StartupIdentityState, StartupError> {
-    let context = preflight(paths, false)?;
+    let context = preflight(paths, false, &mut Diagnostics::disabled())?;
     apply_identity_decision(paths, &context, decision).map(|ready| ready.state)
 }
 
@@ -225,7 +225,7 @@ fn privileged_home_state_without_a_record_fails_closed_before_identity_claim() {
     let paths = fixture_paths(&directory);
 
     assert_failure_state(
-        preflight(&paths, true).and_then(|context| {
+        preflight(&paths, true, &mut Diagnostics::disabled()).and_then(|context| {
             apply_identity_decision(&paths, &context, Ok(derived_identity(MACHINE_ID)))
                 .map(|ready| ready.state)
         }),
@@ -282,7 +282,7 @@ fn deployment_example_initializes_identity_with_only_gateway_site_config() {
     fs::write(&paths.config, example.replace("[site]", "[unrelated]"))
         .unwrap_or_else(|error| panic!("configuration fixture must be written: {error}"));
     assert!(matches!(
-        read_site_config(&paths.config),
+        read_site_config(&paths.config, &mut Diagnostics::disabled()),
         Err(StartupError::SiteConfiguration)
     ));
 }
@@ -314,7 +314,7 @@ fn site_configuration_requires_a_canonical_dns_gateway_hostname() {
     ] {
         write_site(&paths, hostname);
         assert!(matches!(
-            read_site_config(&paths.config),
+            read_site_config(&paths.config, &mut Diagnostics::disabled()),
             Err(StartupError::SiteConfiguration)
         ));
     }
@@ -442,4 +442,132 @@ fn absent_or_mismatched_persisted_identity_causes_zero_control_writes() {
         Err(error) => panic!("control fixture directory must be readable: {error}"),
     };
     assert_eq!(entry_count, 0);
+}
+
+fn diagnostic_sources() -> natsume_local_control_api::HardwareIdentitySources {
+    natsume_local_control_api::HardwareIdentitySources {
+        dmi_system_uuid: HardwareSourceStatus::Present,
+        dmi_board_serial: HardwareSourceStatus::RejectedPlaceholder,
+        first_disk_serial: HardwareSourceStatus::Unavailable,
+    }
+}
+
+#[test]
+fn insufficient_identity_keeps_source_evidence_without_loading_control_material() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    let mut diagnostics = Diagnostics::disabled();
+    let context = preflight(&paths, false, &mut diagnostics)
+        .unwrap_or_else(|error| panic!("preflight: {error}"));
+    diagnostics.set_stage(
+        DiagnosticStage::HardwareIdentity,
+        DiagnosticStatus::Starting,
+    );
+    let decision = identity_decision(
+        MachineIdentityReport {
+            outcome: MachineIdentityOutcome::InsufficientSources,
+            identity: None,
+            sources: diagnostic_sources(),
+        },
+        &mut diagnostics,
+    );
+    let error = apply_identity_decision(&paths, &context, decision)
+        .err()
+        .unwrap_or_else(|| panic!("must reject insufficient identity"));
+    let code = startup_diagnostic_code(&error, &mut diagnostics);
+    diagnostics.stop(code);
+    assert_eq!(
+        diagnostics
+            .report()
+            .failure
+            .as_ref()
+            .map(|failure| failure.code),
+        Some(DiagnosticCode::IdentityInsufficientSources)
+    );
+    assert_eq!(diagnostics.report().identity.valid_source_count, Some(1));
+    assert_eq!(
+        diagnostics.report().identity.record,
+        IdentityRecordDiagnostic::Absent
+    );
+    assert_eq!(
+        diagnostics.report().identity.sources,
+        Some(diagnostic_sources())
+    );
+    assert!(!paths.control_directory.join("control-key-1.pk8").exists());
+    assert!(!paths.control_directory.join("manifest.json").exists());
+}
+
+#[test]
+fn unsupported_and_incoherent_reports_fail_closed_with_redacted_evidence() {
+    let directory = tempdir();
+    let paths = fixture_paths(&directory);
+    let mut diagnostics = Diagnostics::disabled();
+    let context = preflight(&paths, false, &mut diagnostics)
+        .unwrap_or_else(|error| panic!("preflight: {error}"));
+    diagnostics.set_stage(
+        DiagnosticStage::HardwareIdentity,
+        DiagnosticStatus::Starting,
+    );
+    let decision = identity_decision(
+        MachineIdentityReport {
+            outcome: MachineIdentityOutcome::Unsupported,
+            identity: None,
+            sources: diagnostic_sources(),
+        },
+        &mut diagnostics,
+    );
+    let error = apply_identity_decision(&paths, &context, decision)
+        .err()
+        .unwrap_or_else(|| panic!("must reject unsupported identity"));
+    assert_eq!(
+        startup_diagnostic_code(&error, &mut diagnostics),
+        DiagnosticCode::IdentityUnsupported
+    );
+    let invalid = MachineIdentityReport {
+        outcome: MachineIdentityOutcome::Derived,
+        identity: None,
+        sources: diagnostic_sources(),
+    };
+    assert!(identity_decision(invalid, &mut diagnostics).is_err());
+    let invalid = MachineIdentityReport {
+        outcome: MachineIdentityOutcome::Derived,
+        identity: Some(DerivedMachineIdentity {
+            machine_hardware_id: "RAW_HARDWARE_OR_SECRET_SENTINEL".to_owned(),
+            quality: MachineIdentityQuality::Strong,
+        }),
+        sources: diagnostic_sources(),
+    };
+    let decision = identity_decision(invalid, &mut diagnostics);
+    assert!(apply_identity_decision(&paths, &context, decision).is_err());
+    let encoded = serde_json::to_string(diagnostics.report())
+        .unwrap_or_else(|error| panic!("encode: {error}"));
+    assert!(!encoded.contains("RAW_HARDWARE_OR_SECRET_SENTINEL"));
+    assert_eq!(diagnostics.report().identity.machine_hardware_id, None);
+    assert_eq!(diagnostics.report().identity.quality, None);
+}
+
+#[test]
+fn failed_safety_deactivation_does_not_publish_or_delay_the_required_exit() {
+    let mut diagnostics = Diagnostics::disabled();
+    let previous_sequence = diagnostics.report().sequence;
+    let error = StartupError::Control {
+        source: ControlLoopError::LocalDeactivation,
+    };
+    record_final_failure(&error, &mut diagnostics);
+    assert_eq!(diagnostics.report().sequence, previous_sequence);
+    assert_eq!(diagnostics.report().failure, None);
+}
+
+#[test]
+fn final_failure_mapping_is_not_based_on_error_display_or_source_text() {
+    let mut diagnostics = Diagnostics::disabled();
+    let error = StartupError::LocalGateway {
+        source: ResourceControlError::Unavailable("SECRET_SENTINEL".to_owned()),
+    };
+    let code = startup_diagnostic_code(&error, &mut diagnostics);
+    diagnostics.stop(code);
+    assert_eq!(code, DiagnosticCode::LocalGatewayFailed);
+    let encoded = serde_json::to_string(diagnostics.report())
+        .unwrap_or_else(|error| panic!("encode: {error}"));
+    assert!(!encoded.contains("SECRET_SENTINEL"));
 }
