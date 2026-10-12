@@ -191,36 +191,36 @@ export component SessionWindow inherits Window {
             height: 712 * root.u;
             Image {
                 x: 0px;
-                y: 0px;
-                width: 104 * root.u;
-                height: 104 * root.u;
+                y: (school-view.height - self.height) / 2;
+                width: 192 * root.u;
+                height: 192 * root.u;
                 source: root.school-logo;
                 image-fit: contain;
             }
             school-view := ScrollView {
-                x: 136 * root.u;
+                x: 224 * root.u;
                 y: 0px;
-                width: 976 * root.u;
-                height: 130 * root.u;
+                width: 888 * root.u;
+                height: 216 * root.u;
                 viewport-width: self.visible-width;
                 VerticalBox {
                     padding: 0px;
-                    spacing: 4 * root.u;
+                    spacing: 8 * root.u;
                     x: 0px;
                     y: 0px;
                     width: school-view.visible-width;
                     height: max(school-view.visible-height, self.preferred-height);
-                    alignment: start;
-                    Text { text: root.school-primary; color: #f5f5f3; font-size: 60 * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
-                    Text { text: root.school-secondary; color: #999; font-size: 28 * root.u; wrap: word-wrap; vertical-stretch: 0; }
+                    alignment: center;
+                    Text { text: root.school-primary; color: #f5f5f3; font-size: 84 * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+                    Text { text: root.school-secondary; color: #999; font-size: 40 * root.u; wrap: word-wrap; vertical-stretch: 0; }
                 }
             }
-            Rectangle { y: 168 * root.u; width: parent.width; height: root.u; background: #333; }
+            Rectangle { y: 248 * root.u; width: parent.width; height: root.u; background: #333; }
             team-view := ScrollView {
                 x: 0px;
-                y: 216 * root.u;
+                y: 296 * root.u;
                 width: 1112 * root.u;
-                height: 496 * root.u;
+                height: 416 * root.u;
                 viewport-width: self.visible-width;
                 VerticalBox {
                     padding: 0px;
@@ -241,12 +241,12 @@ export component SessionWindow inherits Window {
                     Text { text: root.team-secondary; color: #999; font-size: 40 * root.u; wrap: word-wrap; vertical-stretch: 0; }
                 }
             }
-            Rectangle { x: 1136 * root.u; y: 168 * root.u; width: root.u; height: 544 * root.u; background: #333; }
+            Rectangle { x: 1136 * root.u; y: 248 * root.u; width: root.u; height: 464 * root.u; background: #333; }
             seat-view := ScrollView {
                 x: 1184 * root.u;
-                y: 216 * root.u;
+                y: 296 * root.u;
                 width: 496 * root.u;
-                height: 496 * root.u;
+                height: 416 * root.u;
                 viewport-width: self.visible-width;
                 VerticalBox {
                     padding: 0px;
