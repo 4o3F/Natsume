@@ -6,6 +6,7 @@
 | --- | --- |
 | [目标架构与实施计划](architecture.md) | 全系统职责、协议、数据、安全边界和工作包验收 |
 | [从零部署与运维手册](operations-deployment.zh-CN.md) | 创建 CA、Ubuntu Server 安装、源码构建 Client Deb、部署输入交接、注册验收与备份恢复 |
+| [v2.9.0 发布说明](releases/v2.9.0.md) | Client 离线诊断、原生全屏界面与安全二维码 |
 | [v2.8.0 发布说明](releases/v2.8.0.md) | 用户名下拉菜单与会话用户名展示 |
 | [v2.7.0 发布说明](releases/v2.7.0.md) | Web 用户管理、邀请注册与密码恢复 |
 | [v2.6.0 发布说明](releases/v2.6.0.md) | DOMjudge 命令行提交认证与动态 Gateway 地址 |
