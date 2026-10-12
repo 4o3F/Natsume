@@ -27,6 +27,7 @@ pub use generated::{DiagnosticRow, DiagnosticTrackStep, SessionWindow};
 
 pub mod avatar;
 pub mod diagnostics;
+pub mod school_logo;
 
 thread_local! {
     static WINDOW: RefCell<Option<SessionWindow>> = const { RefCell::new(None) };
@@ -405,7 +406,7 @@ fn apply_team(
 ) -> Result<(), slint::PlatformError> {
     window.set_team_visible(snapshot.team.is_some());
     // Reset the logo before resolving a new binding; a previous school is never a fallback.
-    let mut logo = slint::Image::load_from_svg_data(include_bytes!("../ui/school.svg"))
+    let logo = slint::Image::load_from_svg_data(include_bytes!("../ui/school.svg"))
         .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
     if let Some(team) = &snapshot.team {
         let (school, school_secondary) = display_names(&team.school_name_zh, &team.school_name_en);
@@ -420,14 +421,19 @@ fn apply_team(
         window.set_assigned_seat(team.seat_code.as_str().into());
         if let Some(path) = &snapshot.logo_path {
             match slint::Image::load_from_path(std::path::Path::new(path)) {
-                Ok(image) => logo = image,
+                Ok(image) => {
+                    if school_logo::install(window, &image).is_ok() {
+                        return Ok(());
+                    }
+                    tracing::warn!("School logo pixels unavailable; displaying default icon");
+                }
                 Err(error) => {
                     tracing::warn!(%error, "School logo unavailable; displaying default icon");
                 }
             }
         }
     }
-    window.set_school_logo(logo);
+    school_logo::reset(window, logo);
     Ok(())
 }
 

@@ -48,6 +48,9 @@ export component SessionWindow inherits Window {
     changed author-avatar-pixels => { root.author-avatar-size-changed(root.author-avatar-pixels); }
     in property <bool> team-visible: false;
     in property <image> school-logo: @image-url("school.svg");
+    out property <int> school-logo-pixels: max(1, round(192 * root.u / 1phx));
+    callback school-logo-size-changed(int);
+    changed school-logo-pixels => { root.school-logo-size-changed(root.school-logo-pixels); }
     in property <string> school-primary;
     in property <string> school-secondary;
     in property <string> team-primary;
