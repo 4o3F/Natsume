@@ -324,6 +324,35 @@ async fn device_loop(
     }
 }
 
+async fn diagnostics_loop(boot_id: String, mut shutdown: watch::Receiver<bool>) {
+    let mut previous = None;
+    let mut refresh = tokio::time::interval(Duration::from_secs(2));
+    refresh.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = refresh.tick() => {
+                let boot_id = boot_id.clone();
+                let read = tokio::task::spawn_blocking(move || {
+                    natsume_session_agent::diagnostics::read_evidence(&boot_id)
+                });
+                let result = tokio::select! {
+                    result = read => result,
+                    _ = shutdown.changed() => return,
+                };
+                let Ok(evidence) = result else {
+                    tracing::warn!("Diagnostic evidence reader unavailable");
+                    continue;
+                };
+                if previous.as_ref() != Some(&evidence) {
+                    previous = Some(evidence.clone());
+                    ui::queue_diagnostics(evidence);
+                }
+            }
+            _ = shutdown.changed() => return,
+        }
+    }
+}
+
 fn run() -> Result<(), RunError> {
     let mut args = env::args_os().skip(1);
     match (args.next().as_deref(), args.next()) {
@@ -356,14 +385,20 @@ fn run() -> Result<(), RunError> {
             let device_task = runtime.spawn(device_loop(
                 session.clone(),
                 submission_receiver,
-                shutdown_receiver,
+                shutdown_receiver.clone(),
             ));
+            let diagnostics_task =
+                runtime.spawn(diagnostics_loop(session.boot_id.clone(), shutdown_receiver));
 
             let event_loop_result = slint::run_event_loop_until_quit();
             let _shutdown_send_result = shutdown_sender.send(true);
             drop(runtime_guard);
             let _shutdown_result = runtime.block_on(async {
-                tokio::time::timeout(Duration::from_secs(1), device_task).await
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    let _device_result = device_task.await;
+                    let _diagnostics_result = diagnostics_task.await;
+                })
+                .await
             });
             event_loop_result.map_err(RunError::Platform)
         }
@@ -412,6 +447,20 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{singleton_lock, waiting_snapshot};
+
+    #[tokio::test]
+    async fn diagnostic_polling_stops_without_waiting_for_a_device_lease() {
+        let (sender, receiver) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(super::diagnostics_loop(
+            "7138aed1-5921-4c4b-8e35-110806942def".into(),
+            receiver,
+        ));
+        sender
+            .send(true)
+            .unwrap_or_else(|error| panic!("shutdown: {error}"));
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+        assert!(matches!(result, Ok(Ok(()))));
+    }
 
     #[tokio::test]
     async fn an_unresponsive_local_call_cannot_outlive_the_lease() {

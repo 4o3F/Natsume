@@ -51,6 +51,7 @@ percent-encoding = { version = "2.3", default-features = false, features = ["all
 proc-macro2 = { version = "1.0.107", features = ["span-locations"] }
 prost = "=0.14.4"
 prost-types = "=0.14.4"
+qrcode = { version = "0.14", default-features = false }
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 roxmltree = "0.20"
 regex = "1"

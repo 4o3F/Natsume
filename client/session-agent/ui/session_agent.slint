@@ -1,9 +1,51 @@
 import { HorizontalBox, ScrollView, VerticalBox } from "std-widgets.slint";
 
+export struct DiagnosticRow {
+    label: string,
+    value: string,
+}
+
+export struct DiagnosticTrackStep {
+    label: string,
+    position: string,
+    // Supplied evidence only: 0 unknown, 1 explicitly completed, 2 reported stage.
+    state: int,
+    detail: string,
+}
+
+// Wrap readable names and retain all content in a scrollable viewport.
+component ReadingText inherits ScrollView {
+    in property <string> text;
+    in property <length> text-size;
+    in property <int> text-weight: 400;
+    in property <color> text-color: #111;
+    viewport-width: self.visible-width;
+    VerticalBox {
+        x: 0px;
+        y: 0px;
+        padding: 0px;
+        spacing: 0px;
+        width: parent.visible-width;
+        height: max(parent.visible-height, self.preferred-height);
+        alignment: start;
+        Text {
+            text: root.text;
+            font-size: root.text-size;
+            font-weight: root.text-weight;
+            color: root.text-color;
+            wrap: word-wrap;
+            vertical-stretch: 0;
+        }
+    }
+}
+
 export component SessionWindow inherits Window {
     in property <bool> waiting-visible: true;
     in property <image> waiting-logo;
     in property <image> author-avatar;
+    out property <int> author-avatar-pixels: max(1, ceil(56 * root.u / 1phx));
+    callback author-avatar-size-changed(int);
+    changed author-avatar-pixels => { root.author-avatar-size-changed(root.author-avatar-pixels); }
     in property <bool> team-visible: false;
     in property <image> school-logo: @image-url("school.svg");
     in property <string> school-primary;
@@ -22,254 +64,252 @@ export component SessionWindow inherits Window {
     in property <bool> seat-input-visible: false;
     in-out property <string> seat-code: "";
 
+    in property <bool> diagnostic-visible: false;
+    in property <string> diagnostic-title;
+    in property <float> diagnostic-title-size: 128;
+    in property <string> diagnostic-subtitle;
+    in property <string> diagnostic-hint;
+    in property <string> diagnostic-status;
+    in property <string> diagnostic-error-code;
+    in property <string> diagnostic-error-count;
+    in property <string> diagnostic-evidence-label;
+    in property <string> diagnostic-footer;
+    in property <string> diagnostic-qr-message;
+    in property <image> diagnostic-qr;
+    in property <bool> diagnostic-has-qr: false;
+    in property <[DiagnosticRow]> diagnostic-rows;
+    in property <[DiagnosticTrackStep]> diagnostic-track;
+    in property <float> team-font-size: 168;
+
     callback confirm-seat(string);
 
+    // Scale coordinates, fonts, and hit targets together without changing the native window.
+    private property <bool> dark-page: !root.diagnostic-visible && (root.team-visible || root.waiting-visible);
+    private property <float> design-height: root.dark-page ? 1080 : 1440;
+    private property <length> u: min(root.width / 1920, root.height / root.design-height);
+
     title: root.title-text;
-    preferred-width: 600px;
-    preferred-height: 360px;
+    preferred-width: 1920px;
+    preferred-height: 1440px;
     no-frame: true;
-    background: root.team-visible || root.waiting-visible ? black : #f5f5f4;
+    background: root.dark-page ? #111 : #f5f5f3;
 
-    if root.waiting-visible && !root.team-visible: Image {
-        width: root.width;
-        height: root.height;
-        source: root.waiting-logo;
-        image-fit: contain;
-    }
+    canvas := Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 1920 * root.u;
+        height: root.design-height * root.u;
+        background: root.dark-page ? #111 : #f5f5f3;
 
-    if root.team-visible: profile := Rectangle {
-        x: root.width * 0.07;
-        y: max(144px, root.height * 0.035 + 126px);
-        width: root.width * 0.86;
-        height: root.height - self.y - min(48px, root.height * 0.05);
-        background: black;
-
-        school-view := ScrollView {
-            x: 0px;
-            y: 0px;
-            width: parent.width;
-            height: footer.y - 32px;
-            viewport-width: self.visible-width;
-            VerticalBox {
-                padding: 0px;
-                x: 0px;
-                y: 0px;
-                width: school-view.visible-width;
-                height: max(school-view.visible-height, self.preferred-height);
-                alignment: center;
-                spacing: 0px;
-                HorizontalBox {
-                    padding: 0px;
-                    height: min(384px, root.width * 0.24, school-view.height * 0.68);
-                    alignment: center;
-                    Image {
-                        width: parent.height;
-                        height: parent.height;
-                        source: root.school-logo;
-                        image-fit: contain;
-                    }
-                }
-                VerticalBox {
-                    padding: 0px;
-                    padding-top: 24px;
-                    spacing: 8px;
-                    vertical-stretch: 0;
-                    Text {
-                        text: root.school-primary;
-                        color: #f5f5f5;
-                        font-size: min(30px, max(24px, root.height * 0.033));
-                        font-weight: 500;
-                        horizontal-alignment: center;
-                        vertical-stretch: 0;
-                        wrap: word-wrap;
-                    }
-                    Text {
-                        visible: root.school-secondary != "";
-                        text: root.school-secondary;
-                        color: #a3a3a3;
-                        font-size: 16px;
-                        horizontal-alignment: center;
-                        vertical-stretch: 0;
-                        wrap: word-wrap;
-                    }
+        header := HorizontalBox {
+            x: 120 * root.u;
+            y: 96 * root.u;
+            width: 1680 * root.u;
+            height: 56 * root.u;
+            padding: 0px;
+            spacing: 24 * root.u;
+            alignment: stretch;
+            Text {
+                text: "Project Natsume";
+                color: root.dark-page ? #f5f5f3 : #111;
+                font-size: 28 * root.u;
+                font-weight: 700;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+            Rectangle {
+                width: root.u;
+                horizontal-stretch: 0;
+                Rectangle {
+                    y: (parent.height - self.height) / 2;
+                    width: parent.width;
+                    height: 32 * root.u;
+                    background: root.dark-page ? #444 : #bbb;
                 }
             }
+            Rectangle {
+                width: 56 * root.u;
+                height: 56 * root.u;
+                clip: true;
+                Image { width: parent.width; height: parent.height; source: root.author-avatar; image-fit: cover; }
+                // Cover the corners explicitly: software-renderer clips are rectangular.
+                Path {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    viewbox-width: 56;
+                    viewbox-height: 56;
+                    fill: root.dark-page ? #111 : #f5f5f3;
+                    commands: "M0 0 H56 V56 H0 Z M28 0 A28 28 0 0 0 28 56 A28 28 0 0 0 28 0 Z";
+                }
+            }
+            Text {
+                text: "4o3F";
+                color: root.dark-page ? #f5f5f3 : #111;
+                font-size: 28 * root.u;
+                vertical-alignment: center;
+                horizontal-stretch: 0;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.offline: HorizontalBox {
+                width: 240 * root.u;
+                height: 56 * root.u;
+                horizontal-stretch: 0;
+                padding: 0px;
+                spacing: 12 * root.u;
+                alignment: end;
+                Rectangle {
+                    width: 10 * root.u;
+                    height: 56 * root.u;
+                    Rectangle { x: 0px; y: 23 * root.u; width: 10 * root.u; height: 10 * root.u; background: #777; }
+                }
+                Text { text: "离线 / Offline"; color: #777; font-size: 22 * root.u; vertical-alignment: center; }
+            }
+        }
+        Rectangle {
+            x: 120 * root.u;
+            y: 184 * root.u;
+            width: 1680 * root.u;
+            height: root.u;
+            background: root.dark-page ? #333 : #111;
         }
 
-        footer := Rectangle {
-            y: parent.height - self.height;
-            width: parent.width;
-            height: min(root.height * 0.38, max(root.height * 0.16,
-                max(team-title.preferred-height + (root.team-secondary == "" ? 0px : team-subtitle.preferred-height + 12px),
-                    seat-label.preferred-height + seat-number.preferred-height + 16px)
-                + footer-padding));
-            property <length> footer-padding: min(40px, root.height * 0.045);
-            property <length> seat-width: self.width * 0.3;
-            background: black;
-            Rectangle { x: 0px; y: 0px; width: parent.width; height: 1px; background: #171717; }
+        if root.dark-page && root.waiting-visible && !root.team-visible: Image {
+            x: 120 * root.u;
+            y: 248 * root.u;
+            width: 1680 * root.u;
+            height: 712 * root.u;
+            source: root.waiting-logo;
+            image-fit: contain;
+        }
 
-            team-view := ScrollView {
+        if root.dark-page && root.team-visible: Rectangle {
+            x: 120 * root.u;
+            y: 248 * root.u;
+            width: 1680 * root.u;
+            height: 712 * root.u;
+            Image {
                 x: 0px;
-                y: footer.footer-padding;
-                width: parent.width - footer.seat-width - root.width * 0.04;
-                height: parent.height - self.y;
+                y: 0px;
+                width: 104 * root.u;
+                height: 104 * root.u;
+                source: root.school-logo;
+                image-fit: contain;
+            }
+            school-view := ScrollView {
+                x: 136 * root.u;
+                y: 0px;
+                width: 976 * root.u;
+                height: 130 * root.u;
                 viewport-width: self.visible-width;
                 VerticalBox {
                     padding: 0px;
+                    spacing: 4 * root.u;
+                    x: 0px;
+                    y: 0px;
+                    width: school-view.visible-width;
+                    height: max(school-view.visible-height, self.preferred-height);
+                    alignment: start;
+                    Text { text: root.school-primary; color: #f5f5f3; font-size: 60 * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+                    Text { text: root.school-secondary; color: #999; font-size: 28 * root.u; wrap: word-wrap; vertical-stretch: 0; }
+                }
+            }
+            Rectangle { y: 168 * root.u; width: parent.width; height: root.u; background: #333; }
+            team-view := ScrollView {
+                x: 0px;
+                y: 216 * root.u;
+                width: 1112 * root.u;
+                height: 496 * root.u;
+                viewport-width: self.visible-width;
+                VerticalBox {
+                    padding: 0px;
+                    spacing: 24 * root.u;
                     x: 0px;
                     y: 0px;
                     width: team-view.visible-width;
                     height: max(team-view.visible-height, self.preferred-height);
-                    alignment: end;
-                    spacing: 12px;
-                    team-title := Text {
+                    alignment: start;
+                    Text {
                         text: root.team-primary;
-                        color: #f5f5f5;
-                        font-size: root.long-team ? min(28px, root.height * 0.034) : min(48px, max(32px, root.height * 0.052));
-                        font-weight: 600;
-                        vertical-stretch: 0;
+                        color: #f5f5f3;
+                        font-size: (root.long-team ? min(root.team-font-size, 80) : root.team-font-size) * root.u;
+                        font-weight: 700;
                         wrap: word-wrap;
-                    }
-                    team-subtitle := Text {
-                        visible: root.team-secondary != "";
-                        text: root.team-secondary;
-                        color: #a3a3a3;
-                        font-size: min(20px, max(16px, root.height * 0.022));
                         vertical-stretch: 0;
-                        wrap: word-wrap;
                     }
+                    Text { text: root.team-secondary; color: #999; font-size: 40 * root.u; wrap: word-wrap; vertical-stretch: 0; }
                 }
             }
-
-            VerticalBox {
-                padding: 0px;
-                x: parent.width - self.width;
-                y: footer.footer-padding;
-                width: footer.seat-width;
-                height: parent.height - self.y;
-                alignment: end;
-                spacing: 16px;
-                seat-label := Text {
-                    text: "座位 / SEAT";
-                    color: #a3a3a3;
-                    font-size: 12px;
-                    horizontal-alignment: right;
-                    vertical-stretch: 0;
-                }
-                seat-number := Text {
-                    text: root.assigned-seat;
-                    color: #f5f5f5;
-                    font-size: root.long-seat ? 24px : min(72px, max(48px, root.height * 0.08));
-                    font-weight: 500;
-                    horizontal-alignment: right;
-                    vertical-stretch: 0;
-                    wrap: word-wrap;
+            Rectangle { x: 1136 * root.u; y: 168 * root.u; width: root.u; height: 544 * root.u; background: #333; }
+            seat-view := ScrollView {
+                x: 1184 * root.u;
+                y: 216 * root.u;
+                width: 496 * root.u;
+                height: 496 * root.u;
+                viewport-width: self.visible-width;
+                VerticalBox {
+                    padding: 0px;
+                    spacing: 24 * root.u;
+                    x: 0px;
+                    y: 0px;
+                    width: seat-view.visible-width;
+                    height: max(seat-view.visible-height, self.preferred-height);
+                    alignment: start;
+                    Text { text: root.assigned-seat; color: #f5f5f3; font-size: (root.long-seat ? 72 : 150) * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+                    Text { text: "座位 / SEAT"; color: #999; font-size: 20 * root.u; font-weight: 700; vertical-stretch: 0; }
                 }
             }
         }
-    }
 
-    if !root.waiting-visible && !root.team-visible: binding-page := Rectangle {
-        width: root.width;
-        height: root.height;
-        background: #f5f5f4;
-        Text {
-            x: root.width * 0.03;
-            y: 36px;
-            text: "NATSUME";
-            color: #78716c;
-            font-size: 14px;
-            font-weight: 600;
-            letter-spacing: 1px;
-        }
-        body := Rectangle {
-            width: min(1152px, root.width * 0.88);
-            height: max(introduction.preferred-height, input-card.height);
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            property <length> column-gap: min(96px, root.width * 0.06);
-            property <length> column-width: (self.width - self.column-gap) / 2;
+        if !root.dark-page && !root.diagnostic-visible: binding-page := Rectangle {
+            x: 0px;
+            y: 0px;
+            width: parent.width;
+            height: parent.height;
+            Text { x: 120 * root.u; y: 305 * root.u; text: "座位设置 / SEAT SETUP"; color: #666; font-size: 20 * root.u; font-weight: 700; letter-spacing: 2.4 * root.u; }
+            Text { x: 120 * root.u; y: 365 * root.u; width: 1680 * root.u; height: 270 * root.u; text: root.title-text; color: #111; font-size: 216 * root.u; font-weight: 700; vertical-alignment: top; }
+            Text { x: 120 * root.u; y: 660 * root.u; width: 1680 * root.u; height: 120 * root.u; text: root.subtitle-text; color: #666; font-size: 64 * root.u; vertical-alignment: top; }
 
-            introduction := VerticalBox {
-                x: 0px;
-                y: (parent.height - self.height) / 2;
-                width: body.column-width;
-                height: self.preferred-height;
-                padding: 0px;
-                spacing: 0px;
-                Rectangle {
-                    height: 80px;
-                    Rectangle {
-                        x: 0px;
-                        y: 0px;
-                        width: 80px;
-                        height: 80px;
-                        border-radius: 24px;
-                        background: #e7e5e4;
-                        Image { width: 32px; height: 32px; source: @image-url("seat.svg"); }
-                    }
-                }
-                Rectangle { height: 32px; }
-                Text { text: "座位设置 / SEAT SETUP"; color: #78716c; font-size: 14px; vertical-stretch: 0; }
-                Rectangle { height: 20px; }
-                Text {
-                    text: root.title-text;
-                    color: #1c1917;
-                    font-size: min(48px, root.width * 0.034);
-                    font-weight: 500;
-                    vertical-stretch: 0;
-                    wrap: word-wrap;
-                }
-                Rectangle { height: 16px; }
-                Text { text: root.subtitle-text; color: #78716c; font-size: 20px; vertical-stretch: 0; wrap: word-wrap; }
-                Rectangle { height: 32px; }
-                Text { text: root.message-text; color: #78716c; font-size: 16px; vertical-stretch: 0; wrap: word-wrap; }
-            }
-
-            input-card := Rectangle {
-                x: parent.width - self.width;
-                y: (parent.height - self.height) / 2;
-                width: body.column-width;
-                height: root.binding-pending ? 320px : form.preferred-height + 2 * self.inset;
-                property <length> inset: min(40px, root.width * 0.032);
-                background: #fdfdfc;
-                border-color: #e7e5e4;
-                border-width: 1px;
-                border-radius: 24px;
-
+            bottom := Rectangle {
+                x: 120 * root.u;
+                y: 1320 * root.u - self.height;
+                width: 1680 * root.u;
+                height: max(348 * root.u, form.preferred-height);
+                Rectangle { y: -48 * root.u; width: parent.width; height: root.u; background: #111; }
+                ReadingText { x: 0px; y: 0px; width: 686 * root.u; height: 220 * root.u; text: root.message-text; text-size: 30 * root.u; }
+                ReadingText { x: 0px; y: parent.height - 80 * root.u; width: 686 * root.u; height: 80 * root.u; text: "座位号不确定时，请联系现场工作人员。"; text-size: 24 * root.u; text-color: #666; }
                 form := VerticalBox {
                     visible: !root.binding-pending;
-                    x: input-card.inset;
-                    y: input-card.inset;
-                    width: parent.width - 2 * input-card.inset;
+                    x: 852 * root.u;
+                    y: 0px;
+                    width: 828 * root.u;
                     height: self.preferred-height;
                     padding: 0px;
-                    spacing: 16px;
-                    Text { text: "座位号 / SEAT CODE"; color: #57534e; font-size: 14px; vertical-stretch: 0; }
+                    spacing: 20 * root.u;
+                    Text { text: "座位号 / SEAT CODE"; color: #111; font-size: 20 * root.u; font-weight: 700; vertical-stretch: 0; }
                     input-border := Rectangle {
-                        height: 80px;
-                        background: white;
-                        border-width: seat-input.has-focus || root.binding-error-text != "" ? 2px : 1px;
-                        border-color: root.binding-error-text != "" ? #fb7185 : seat-input.has-focus ? #78716c : #d6d3d1;
-                        border-radius: 16px;
+                        height: 128 * root.u;
+                        background: transparent;
+                        border-width: seat-input.has-focus || root.binding-error-text != "" ? 2 * root.u : root.u;
+                        border-color: root.binding-error-text != "" ? #be123c : #111;
                         Rectangle {
-                            x: 24px;
-                            y: 8px;
-                            width: parent.width - 48px;
-                            height: parent.height - 16px;
+                            x: 36 * root.u;
+                            y: 8 * root.u;
+                            width: parent.width - 72 * root.u;
+                            height: parent.height - 16 * root.u;
                             clip: true;
                             Text {
                                 visible: root.seat-code == "" && seat-input.preedit-text == "";
-                                x: 0px;
                                 width: parent.width;
                                 height: parent.height;
                                 text: "例如 A-108";
-                                color: #a8a29e;
-                                font-size: 28px;
+                                color: #9a9a9a;
+                                font-size: 60 * root.u;
                                 vertical-alignment: center;
                             }
                             ContextMenuArea {
-                                enabled: root.seat-input-visible;
+                                enabled: root.seat-input-visible && !root.binding-pending;
                                 Menu {
                                     MenuItem { title: "剪切 / Cut"; activated => { seat-input.cut(); } }
                                     MenuItem { title: "复制 / Copy"; activated => { seat-input.copy(); } }
@@ -282,14 +322,14 @@ export component SessionWindow inherits Window {
                                     width: max(parent.width - self.text-cursor-width, self.preferred-width);
                                     height: parent.height;
                                     text <=> root.seat-code;
-                                    color: #1c1917;
-                                    font-size: 30px;
+                                    color: #111;
+                                    font-size: 60 * root.u;
                                     font-weight: 500;
                                     single-line: true;
                                     vertical-alignment: center;
-                                    selection-background-color: #44403c;
-                                    selection-foreground-color: white;
-                                    enabled: root.seat-input-visible;
+                                    selection-background-color: #111;
+                                    selection-foreground-color: #f5f5f3;
+                                    enabled: root.seat-input-visible && !root.binding-pending;
                                     accessible-label: "座位号 / Seat code";
                                     accessible-placeholder-text: "例如 A-108";
                                     init => { if (self.enabled) { self.focus(); } }
@@ -300,43 +340,38 @@ export component SessionWindow inherits Window {
                                             self.cursor-offset = parent.width - self.text-cursor-width - position.x;
                                         }
                                     }
-                                    accepted => { if (root.seat-input-visible && root.seat-code != "") { root.confirm-seat(self.text); } }
+                                    accepted => { if (self.enabled && root.seat-code != "") { root.confirm-seat(self.text); } }
                                 }
                             }
                         }
                     }
-                    if root.binding-error-text != "": Rectangle {
-                        height: error-label.preferred-height + 24px;
-                        background: #fff1f2;
-                        border-color: #fecdd3;
-                        border-width: 1px;
-                        border-radius: 12px;
-                        error-label := Text {
-                            x: 12px;
-                            y: 12px;
-                            width: parent.width - 24px;
-                            text: root.binding-error-text;
-                            color: #be123c;
-                            font-size: 14px;
-                            wrap: word-wrap;
-                        }
+                    if root.binding-error-text != "": Text {
+                        text: root.binding-error-text;
+                        color: #be123c;
+                        font-size: 24 * root.u;
+                        wrap: word-wrap;
+                        vertical-stretch: 0;
                     }
+                    Rectangle { height: 12 * root.u; }
                     confirm-button := Rectangle {
-                        height: 64px;
-                        property <bool> enabled: root.seat-input-visible && root.seat-code != "";
-                        background: !self.enabled ? #d6d3d1 : button-touch.pressed ? #1c1917 : button-touch.has-hover ? #44403c : #292524;
-                        border-radius: 16px;
-                        border-width: button-focus.has-focus ? 2px : 0px;
-                        border-color: #a8a29e;
+                        height: 128 * root.u;
+                        property <bool> enabled: root.seat-input-visible && !root.binding-pending && root.seat-code != "";
+                        background: !self.enabled ? #ccc : button-touch.pressed ? #444 : button-touch.has-hover ? #333 : #111;
+                        border-width: button-focus.has-focus ? 3 * root.u : 0px;
+                        border-color: #777;
                         accessible-role: button;
                         accessible-enabled: self.enabled;
                         accessible-label: "确认绑定";
                         accessible-action-default => { if (self.enabled) { root.confirm-seat(root.seat-code); } }
                         Text {
-                            text: "确认绑定  →";
-                            color: confirm-button.enabled ? white : #78716c;
-                            font-size: 16px;
-                            font-weight: 500;
+                            x: 36 * root.u;
+                            width: parent.width - 72 * root.u;
+                            height: parent.height;
+                            text: "确认绑定 →";
+                            color: confirm-button.enabled ? #f5f5f3 : #777;
+                            font-size: 34 * root.u;
+                            font-weight: 700;
+                            vertical-alignment: center;
                         }
                         button-touch := TouchArea {
                             enabled: confirm-button.enabled;
@@ -351,102 +386,127 @@ export component SessionWindow inherits Window {
                             }
                         }
                     }
-                    Text {
-                        text: "座位号不确定时，请联系现场工作人员";
-                        color: #78716c;
-                        font-size: 14px;
-                        horizontal-alignment: center;
-                        wrap: word-wrap;
-                        vertical-stretch: 0;
-                    }
                 }
                 if root.binding-pending: VerticalBox {
-                    padding: 32px;
+                    x: 852 * root.u;
+                    y: 0px;
+                    width: 828 * root.u;
+                    height: parent.height;
+                    padding: 0px;
                     alignment: center;
-                    spacing: 16px;
-                    HorizontalBox {
-                        padding: 0px;
-                        alignment: center;
-                        height: 64px;
-                        Rectangle {
-                            width: 64px;
-                            height: 64px;
-                            border-radius: 32px;
-                            background: #f5f5f4;
-                            Image { width: 32px; height: 32px; source: @image-url("binding-pending.svg"); }
-                        }
-                    }
-                    Text { text: "正在等待确认，请稍候"; color: #44403c; font-size: 16px; horizontal-alignment: center; vertical-stretch: 0; }
-                    Text { text: "确认后将显示对应队伍信息"; color: #78716c; font-size: 14px; horizontal-alignment: center; wrap: word-wrap; vertical-stretch: 0; }
+                    spacing: 24 * root.u;
+                    Text { text: "正在等待确认，请稍候"; color: #111; font-size: 34 * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+                    Text { text: "确认后将显示对应队伍信息"; color: #666; font-size: 24 * root.u; wrap: word-wrap; vertical-stretch: 0; }
                 }
             }
         }
-    }
-    if root.waiting-visible || root.team-visible: Rectangle {
-        x: root.width * 0.035;
-        y: max(18px, root.height * 0.035);
-        width: 400px;
-        height: 92px;
-        brand := Text {
-            x: 0px;
-            y: 0px;
-            width: self.preferred-width;
-            height: self.preferred-height;
-            text: "Project Natsume";
-            color: #e5e5e5;
-            font-size: 32px;
-            font-weight: 600;
-        }
-        HorizontalBox {
-            x: 0px;
-            y: brand.height + 10px;
-            width: parent.width;
-            height: 36px;
-            padding: 0px;
-            spacing: 12px;
-            alignment: start;
+
+        if root.diagnostic-visible: Rectangle {
+            x: 120 * root.u;
+            y: 305 * root.u;
+            width: 1680 * root.u;
+            height: 1055 * root.u;
+            diagnostic-view := ScrollView {
+                x: 0px;
+                y: 0px;
+                width: 780 * root.u;
+                height: 828 * root.u;
+                viewport-width: self.visible-width;
+                VerticalBox {
+                    padding: 0px;
+                    spacing: 0px;
+                    x: 0px;
+                    y: 0px;
+                    width: diagnostic-view.visible-width;
+                    height: max(diagnostic-view.visible-height, self.preferred-height);
+                    alignment: start;
+                    Text { text: "诊断 / DIAGNOSTICS · " + root.diagnostic-status; color: #666; font-size: 20 * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+                    Text { visible: root.diagnostic-evidence-label != ""; text: root.diagnostic-evidence-label; color: #666; font-size: 20 * root.u; wrap: word-wrap; vertical-stretch: 0; }
+                    Rectangle { height: 40 * root.u; }
+                    Text { text: root.diagnostic-title; color: #111; font-size: root.diagnostic-title-size * root.u; font-weight: 700; wrap: word-wrap; vertical-stretch: 0; }
+                    Rectangle { height: 16 * root.u; }
+                    Text { text: root.diagnostic-subtitle; color: #666; font-size: 48 * root.u; wrap: word-wrap; vertical-stretch: 0; }
+                    Rectangle { height: 40 * root.u; }
+                    Text { text: root.diagnostic-hint; color: #111; font-size: 28 * root.u; wrap: word-wrap; vertical-stretch: 0; }
+                    if root.diagnostic-error-code != "": HorizontalBox {
+                        padding: 0px;
+                        padding-top: 24 * root.u;
+                        spacing: 12 * root.u;
+                        vertical-stretch: 0;
+                        alignment: start;
+                        Text { text: root.diagnostic-error-code; color: #111; font-size: 24 * root.u; font-weight: 700; wrap: word-wrap; horizontal-stretch: 0; }
+                        Text { text: root.diagnostic-error-count; color: #666; font-size: 24 * root.u; wrap: word-wrap; horizontal-stretch: 0; }
+                    }
+                    Rectangle { min-height: 24 * root.u; vertical-stretch: 1; }
+                    Rectangle { height: root.u; background: #111; }
+                    for row in root.diagnostic-rows: VerticalBox {
+                        padding: 0px;
+                        spacing: 0px;
+                        vertical-stretch: 0;
+                        HorizontalBox {
+                            padding-top: 16 * root.u;
+                            padding-bottom: 16 * root.u;
+                            padding-left: 0px;
+                            padding-right: 0px;
+                            spacing: 24 * root.u;
+                            Text { width: 260 * root.u; text: row.label; color: #666; font-size: 22 * root.u; font-weight: 700; wrap: word-wrap; }
+                            Text { text: row.value; color: #111; font-size: 22 * root.u; wrap: word-wrap; }
+                        }
+                        Rectangle { height: root.u; background: #ccc; }
+                    }
+                }
+            }
             Rectangle {
-                width: 36px;
-                height: 36px;
-                border-radius: 18px;
-                background: #262626;
-                clip: true;
-                Image {
+                x: 852 * root.u;
+                y: 0px;
+                width: 828 * root.u;
+                height: 828 * root.u;
+                // The supplied image already includes its four-module quiet zone; never crop it.
+                if root.diagnostic-has-qr: Image {
                     width: parent.width;
                     height: parent.height;
-                    source: root.author-avatar;
-                    image-fit: cover;
+                    source: root.diagnostic-qr;
+                    image-fit: contain;
+                    image-rendering: pixelated;
+                }
+                if !root.diagnostic-has-qr: ReadingText {
+                    y: 300 * root.u;
+                    width: parent.width;
+                    height: 228 * root.u;
+                    text: root.diagnostic-qr-message;
+                    text-size: 32 * root.u;
+                    text-color: #666;
                 }
             }
-            Text {
-                text: "4o3F";
-                color: #a3a3a3;
-                font-size: 26px;
-                vertical-alignment: center;
-            }
-        }
-    }
-    if root.offline: Rectangle {
-        x: root.width - self.width - root.width * 0.035;
-        y: max(18px, root.height * 0.035);
-        width: 205px;
-        height: 30px;
-        background: transparent;
-        HorizontalBox {
-            padding: 0px;
-            spacing: 10px;
-            alignment: end;
-            Image {
-                width: 20px;
-                height: 20px;
-                source: @image-url("offline.svg");
-                colorize: root.waiting-visible || root.team-visible ? #fbbf24 : #b45309;
-                image-fit: contain;
-            }
-            Text {
-                text: "离线 / Offline";
-                color: root.waiting-visible || root.team-visible ? #fbbf24 : #b45309;
-                font-size: 18px;
+            track-view := ScrollView {
+                y: 900 * root.u;
+                width: parent.width;
+                height: 155 * root.u;
+                viewport-width: self.visible-width;
+                VerticalBox {
+                    padding: 0px;
+                    spacing: 24 * root.u;
+                    x: 0px;
+                    y: 0px;
+                    width: track-view.visible-width;
+                    height: max(track-view.visible-height, self.preferred-height);
+                    alignment: start;
+                    HorizontalBox {
+                        padding: 0px;
+                        spacing: 0px;
+                        vertical-stretch: 0;
+                        for step in root.diagnostic-track: VerticalBox {
+                            padding: 0px;
+                            spacing: 0px;
+                            Rectangle { height: (step.state == 1 || step.state == 2 ? 4 : 1) * root.u; background: step.state == 1 || step.state == 2 ? #111 : #ccc; }
+                            Rectangle { height: 16 * root.u; }
+                            Text { text: step.position; color: #999; font-size: 16 * root.u; wrap: word-wrap; }
+                            Text { text: step.label; color: step.state == 1 || step.state == 2 ? #111 : #999; font-size: 22 * root.u; font-weight: step.state == 2 ? 700 : 400; wrap: word-wrap; }
+                            Text { text: step.detail; color: #666; font-size: 16 * root.u; wrap: word-wrap; }
+                        }
+                    }
+                    Text { text: root.diagnostic-footer; color: #999; font-size: 18 * root.u; wrap: word-wrap; vertical-stretch: 0; }
+                }
             }
         }
     }

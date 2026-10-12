@@ -134,3 +134,16 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 - route table 和接口 flags/carrier 是历史辅助证据，不是联网或安全放行证明；不发送公网或 ping 探测。
 
 开发定向命令：`cargo test -p natsume-local-control-api --locked`、`cargo test -p natsume-privileged-helper hardware_identity --locked`、`cargo test -p natsume-device-daemon diagnostics --locked`、`cargo test -p natsume-device-daemon startup --locked`、`cargo test -p natsume-device-daemon control:: --locked`。本页列出验收方式，不用单元测试替代真实镜像结果。
+
+## 客户端全屏界面与离线诊断消费的配套验证
+
+- Binding/诊断的浅色双栏、Waiting 的深色学校／队伍／座位布局及统一横向页头符合 `client/session-agent/ui/session_agent.slint`。在真实 Kiosk 的 1920×1080、1280×800、HiDPI 和显示模式变化下核对等比缩放、字体、无装饰全屏及真实首帧；长队名／校名可完整滚动读取，座位独立可见。
+- Binding 实测空值禁用、自动聚焦、长输入横滚、Enter／鼠标／键盘按钮／无障碍激活，以及拒绝后重输；pending 隐藏输入。离线、旧 negotiation/epoch 和旧 lease 不得提交；诊断刷新不抢当前输入焦点或覆盖已绑定队伍。
+- 以 waiting 身份读取合法当前 boot 报告；缺文件、symlink/FIFO/非常规文件、错误 owner/mode、超过 16 KiB、未知版本/字段和损坏内容只能产生固定读取分类，不能阻塞 UI/lease，也不能写入目录或访问私有 config/credential。
+- 真实故障与恢复分别核对最近报告、历史失败、当前本地通信观察：历史 active/retrying 不当作当前健康或重试倒计时，未知来源不当作失败，Hardware ID 不显示为 Device ID。阶段条只标明确的报告事实，不推断前置步骤全部完成。
+- 没有可用报告时，扫码得到明确标为 `agent_observation` 的有限本地观察，而不是伪造的 Daemon report。正常等待审核单独显示，不声称设备永久封禁。
+- 手机在实际屏幕扫码：二维码含四模块 quiet zone、完整安全 JSON，无在线 URL、秘密、任意异常文本或日志；超过 2300 bytes 时仅有界省略事件并标记 `events_truncated`，不能悄悄丢失主错误和身份／连接字段。覆盖最大合法元数据、不同分辨率及实际现场扫码距离。
+- 健康诊断页面仍可产生真实当前 lease/revision 的 Waiting 首帧确认；持续网络失败／待审不因诊断内容触发健康 Waiting 的自动重建或消耗恢复预算。只从实际渲染和原生几何确认，不从报告状态确认；报告内容变化和 resize 后旧渲染回调不能确认新画面。
+- 真实 Daemon 从未启动、启动后失败、Agent 晚启动、Daemon/Helper 重启及控制连接恢复均覆盖；不增加 Daemon→Agent ACK、启动排序、等待退出或报告接收 gate。已绑定离线页面仍保留队伍资料。
+
+开发定向命令：`cargo test -p natsume-session-agent --locked`、`cargo clippy -p natsume-session-agent --all-targets --locked -- -D warnings`；Waiting 回归用 `cargo test -p natsume-device-daemon waiting --locked`。本次实现开发验证通过 Agent 25 library + 5 binary tests、Waiting 14 tests、定向 Clippy、`cargo fmt --all --check` 和 `git diff --check`；`prek run --all-files` 的六个 hooks 全部通过。离屏 Slint 的 18 张二维码截图经独立软件解码及 JSON 比对通过，五种合成报告 payload 为 1199–1296 bytes，无报告观察为 204 bytes；这些普通样本不代表最大合法元数据的实际屏幕签收。头像追加验证在同一离屏窗口进行尺寸／DPI 往返切换，物理目标 56→32→84→56 pixels 与生成 bitmap 一致，未变化目标复用缓存；分隔线在 1×/2× 和不同画布下分别保持 32/24/48 物理 pixels 且居中。开发级离屏渲染用于检查排版和 JSON 往返，不代替真实 Skia/Wayland、手机扫码、IME/键鼠或镜像签收；CI 和真实镜像验收尚未执行。

@@ -9,8 +9,13 @@ publish.workspace = true
 build = "build.rs"
 
 [dependencies]
+image.workspace = true
+natsume-device-protocol = { path = "../../crates/device-protocol" }
 natsume-local-control-api = { path = "../../crates/local-control-api" }
+qrcode.workspace = true
 rustix.workspace = true
+semver.workspace = true
+serde_json.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030"] }
 tokio.workspace = true
 tracing.workspace = true

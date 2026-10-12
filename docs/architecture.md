@@ -179,6 +179,7 @@ waiting 使用发行版官方 GNOME Kiosk 的原生 Wayland 会话（当前入�
 - 普通等待时的全屏静态占位：本期默认纯黑色块，也可由镜像随包提供单张 ICPC logo，缺图时回退纯黑；
 - 既有部署 Binding 窗口；
 - Binding pending状态；
+- 未绑定、不可继续或本地 IPC 失联时的只读诊断展示与离线二维码；
 - 窗口生命周期、首帧就绪和 UI lease。
 
 等待占位复用现有 Slint/Skia 渲染能力，保持一个随窗口尺寸变化的无装饰全屏窗口。普通等待、重置和恢复期间均可显示同一占位，不要求动态文案、进度条或动画；详细状态由 Panel/Actual 展示。Binding 是既有部署流程的专用页面，不新增绑定协议。未来复杂 Skia 页面只替换 Agent 内的等待内容；本期不预建页面插件、主题协议或远程图片下发能力。
@@ -1203,7 +1204,11 @@ Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原syste
 
 Daemon 在配置、硬件身份和 credential 初始化之前建立 best-effort 诊断发布器，将固定 typed 白名单报告原子写入 `/run/natsume-diagnostics`。`latest.json` 保存最近报告，`last-failure.json` 仅在报告包含失败时更新；新的 Daemon 实例启动或恢复正常不得清除上一实例的最后故障。目录由 Client tmpfiles 创建，natsume 独占写入，非秘密报告允许本机读取；报告不跨 boot 保留。该目录独立于 identity/control/keys/state，不参与 identity-bound artifact 扫描，不授予身份、Binding、Gateway 或 Session/Home authority。
 
-报告是采集时刻的历史证据，不是当前状态 ground truth、process liveness 或数据面安全证明。boot、Daemon instance、PID、采集时刻和序号用于解释报告所属实例；旧 `active`、`retrying` 或等待时间不证明当前进程仍在运行。未来 Agent 消费必须另行取得当前可用性，明确区分最近报告与实时观测；首次部署条件阻止 Daemon 执行、Agent/Daemon 异常终止或发布失败不能宣称已交付详细诊断。此阶段只实施非 UI 证据，Agent 展示与二维码另行设计。
+报告是采集时刻的历史证据，不是当前状态 ground truth、process liveness 或数据面安全证明。boot、Daemon instance、PID、采集时刻和序号用于解释报告所属实例；旧 `active`、`retrying` 或等待时间不证明当前进程仍在运行。Agent 将当前 Device1 注册/快照观察与最近报告、历史失败分开呈现，不显示历史重试倒计时，不将 Hardware ID 代作 Device ID。首次部署条件阻止 Daemon 执行、Agent/Daemon 异常终止或发布失败不能宣称已交付详细诊断；没有可用报告时，二维码只含带 `agent_observation` 标识的固定本地观察，不伪造 Daemon 失败证据。
+
+Agent 在自身进程内独立、有界地读取两个固定报告，不读取部署配置或 credential，不写入诊断目录。读取使用 nofollow/nonblocking 目录/文件句柄，核对固定 natsume owner、目录 0755、常规文件 0644、16 KiB 上限、当前 boot、格式版本、固定字段/枚举和安全字符串；symlink、非常规文件、错误归属或权限、未知格式和损坏报告只产生固定读取分类。两个报告保持独立，选择一份完整最近报告，无可用最近报告时才选历史失败，不拼接跨文件快照。二维码从校验后的 typed 字段重新序列化，最多 2300 bytes；必要时仅省略事件并明确 `events_truncated`，仍超限则明确不可用。采用 ECC L、四模块 quiet zone 和整数模块栅格，不依赖在线 URL 或上传。
+
+当前 Binding/pending、已绑定队伍和恢复后的在线快照优先于历史诊断；后台报告刷新不重绘这些页面、不抢输入焦点。诊断只是不可输入 Waiting 的内容，不因诊断分类把健康原生全屏首帧判为失败，也不从报告推导就绪：仍由当前认证 lease、UI revision、实际显示器尺寸和实际渲染确认。内容切换撤销旧帧，并以 Agent 本地渲染代次排除同一 UI revision 的旧回调，不改变 Daemon 的恢复预算或就绪协议。
 
 Daemon 与 Agent 保持独立启动，不增加接收 readiness、ACK、启动排序或等待退出。报告发布成功只证明同 boot 内独立读取者可以取得完整证据，不证明 Agent 已收到；发布失败只输出固定诊断，不覆盖业务错误、不改变 retry。Active 终止先完成 Caddy BLOCKED，再发布终止证据；无法确认 BLOCKED 时跳过诊断文件写入，立即错误退出以触发现有 Caddy 硬终止，仅保留固定日志分类。两个文件分别原子替换，不声称跨文件事务。
 
@@ -1382,7 +1387,9 @@ Daemon 独立处理展示：完整目标验证成功后立即发布文字，后�
 
 SessionUiSnapshot 携带非秘密 WaitingTeam、Daemon 管理的图片路径和 offline 标识。文字／图片更新推进 UI revision，由现有首帧观测确认；默认图也可正常 ready。Agent 失去 Device1 时保留展示并撤销 Binding 输入，重连必须重新注册；快照及首帧均携带注册 lease ID，旧 lease 的帧不能确认新注册。RegisterSessionAgent 显式检查本地协议版本 3，WSS 只接受 `natsume.control.v3`；不提供旧协议适配。Client Deb 依赖 Noto CJK 字体。
 
-waiting 使用纯黑背景，中央展示放大的学校 Logo 与双语校名，底栏左侧为双语队名、右侧突出座位号；离线图标与文字固定在右上角。占位和已绑定 Waiting 页左上角第一行显示 Project Natsume，第二行显示圆形头像和作者 ID 4o3F；作者署名使用较小的灰色文字，不占用队伍展示区域。打包阶段从公开 Gravatar 资料拉取 512×512 头像，作为 Client Deb 的只读文件交付，Agent 仅在窗口创建时本地加载，不依赖运行时联网。单一语言不重复显示；长名称可换行／滚动，座位号保持可见。Web Accounts 和 Seats 展示同一导入资料的队伍、学校和 Logo，缺图与设备离线分别显示。 未绑定的座位输入页采用暖色双栏，界面统一称“座位 / seat”；自动聚焦输入，Enter、键盘按钮和鼠标共享当前 negotiation/epoch 提交入口，空值禁用。等待确认时隐藏输入；不存在、未关联和已占用座位使用可读提示，不把内部错误码作为产品文案。
+客户端全屏内容采用平面黑白网格：Binding 和诊断使用 1920×1440 浅色设计画布，Waiting 使用 1920×1080 深色画布，按实际窗口等比缩放并居中，不改变原生全屏尺寸确认。统一横向页头显示 Project Natsume、圆形头像和作者 ID 4o3F，离线文字与方形标记位于右上角。已绑定 Waiting 左侧展示学校 Logo、双语校名及大字号双语队名，右侧突出座位号；单一语言不重复显示，长名称可缩小字体、换行和滚动完整阅读，座位号保持独立可见。通用等待仍支持随包占位图。打包阶段从公开 Gravatar 资料拉取 512×512 头像，作为 Client Deb 的只读文件交付，Agent 仅在窗口创建时本地加载，不依赖运行时联网。保留原始头像像素，按当前设计画布缩放和窗口 DPI 对应的物理直径使用 Lanczos3 下采样；尺寸变化从原图重新生成，尺寸未变复用缓存，不累计缩小，不固定预缩为 56×56。页头竖向分隔线保持 32 个设计单位高，在 56 单位页头内垂直居中，不随布局拉伸。
+
+未绑定的座位输入页使用大标题与下方双栏说明／输入，统一称“座位 / seat”；自动聚焦输入，Enter、键盘按钮、鼠标和无障碍激活共享当前 negotiation/epoch 提交入口，空值禁用。等待确认时隐藏输入；不存在、未关联和已占用座位使用可读提示，不把内部错误码作为产品文案。诊断页左侧为固定双语问题分类和关键事实，右侧为大幅离线二维码，下方阶段条只标报告明确给出的当前阶段及最后完成阶段，不按位置推断此前阶段全部成功；超长详情可滚动，二维码及阶段栏不随之移走。Web Accounts 和 Seats 展示同一导入资料的队伍、学校和 Logo，缺图与设备离线分别显示。
 
 Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文字说明和无障碍名称，不维护手写 SVG 路径。导入预览中的队伍、学校、座位、映射、绑定影响及 Logo 表格在同一容器内处理横纵滚动，并固定表头；避免嵌套 overflow 容器使 sticky 失效。高度和尺寸使用 Tailwind 预定义值。
 

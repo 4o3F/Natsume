@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     sync::{LazyLock, Mutex, OnceLock},
 };
 
@@ -23,14 +23,23 @@ mod generated {
     slint::include_modules!();
 }
 
-pub use generated::SessionWindow;
+pub use generated::{DiagnosticRow, DiagnosticTrackStep, SessionWindow};
+
+pub mod avatar;
+pub mod diagnostics;
 
 thread_local! {
     static WINDOW: RefCell<Option<SessionWindow>> = const { RefCell::new(None) };
     static CURRENT_SNAPSHOT: RefCell<Option<SessionUiSnapshot>> = const { RefCell::new(None) };
+    static VIEW_GENERATION: Cell<u64> = const { Cell::new(0) };
+    static EVIDENCE: RefCell<crate::diagnostics::DiagnosticEvidence> = const { RefCell::new(crate::diagnostics::DiagnosticEvidence {
+        latest: Err(crate::diagnostics::ReportReadError::Missing),
+        last_failure: Err(crate::diagnostics::ReportReadError::Missing),
+    }) };
 }
 
 static PENDING_SNAPSHOT: Mutex<Option<SessionUiSnapshot>> = Mutex::new(None);
+static PENDING_EVIDENCE: Mutex<Option<crate::diagnostics::DiagnosticEvidence>> = Mutex::new(None);
 static BINDING_SUBMISSIONS: OnceLock<Sender<BindingSubmission>> = OnceLock::new();
 
 static PRESENTED: LazyLock<watch::Sender<Option<SessionPresentation>>> =
@@ -83,20 +92,28 @@ fn frame_geometry(window: &SessionWindow) -> Option<SessionPresentation> {
                     .is_some_and(|monitor| native.inner_size() == monitor.size())
         })
         .unwrap_or(false);
-    let size = window.window().size();
     CURRENT_SNAPSHOT.with(|current| {
         current
             .borrow()
             .as_ref()
-            .map(|snapshot| SessionPresentation {
-                agent_lease_id: snapshot.agent_lease_id.clone(),
-                session: snapshot.session.clone(),
-                ui_revision: snapshot.ui_revision,
-                first_frame_presented: fullscreen && size.width > 0 && size.height > 0,
-                fullscreen_width: if fullscreen { size.width } else { 0 },
-                fullscreen_height: if fullscreen { size.height } else { 0 },
-            })
+            .map(|snapshot| presentation(snapshot, window.window().size(), fullscreen))
     })
+}
+
+fn presentation(
+    snapshot: &SessionUiSnapshot,
+    size: slint::PhysicalSize,
+    fullscreen: bool,
+) -> SessionPresentation {
+    let ready = fullscreen && size.width > 0 && size.height > 0;
+    SessionPresentation {
+        agent_lease_id: snapshot.agent_lease_id.clone(),
+        session: snapshot.session.clone(),
+        ui_revision: snapshot.ui_revision,
+        first_frame_presented: ready,
+        fullscreen_width: if ready { size.width } else { 0 },
+        fullscreen_height: if ready { size.height } else { 0 },
+    }
 }
 
 fn publish_frame(frame: Option<SessionPresentation>) {
@@ -112,25 +129,14 @@ fn publish_frame(frame: Option<SessionPresentation>) {
 
 fn record_frame(window: &SessionWindow) {
     let frame = frame_geometry(window);
-    // AfterRendering precedes the backend's buffer presentation. Publish on
-    // the next UI event-loop turn, and discard a revision superseded meanwhile.
+    let weak = window.as_weak();
+    let generation = VIEW_GENERATION.with(Cell::get);
+    // AfterRendering precedes presentation. Diagnostic-only view changes keep
+    // the same Daemon revision, so fence them with a local rendering generation.
     let _queued = slint::invoke_from_event_loop(move || {
-        let current_revision = CURRENT_SNAPSHOT.with(|current| {
-            current.borrow().as_ref().map(|snapshot| {
-                (
-                    snapshot.session.clone(),
-                    snapshot.ui_revision,
-                    snapshot.agent_lease_id.clone(),
-                )
-            })
-        });
-        if frame.as_ref().map(|frame| {
-            (
-                frame.session.clone(),
-                frame.ui_revision,
-                frame.agent_lease_id.clone(),
-            )
-        }) == current_revision
+        if let Some(window) = weak.upgrade()
+            && VIEW_GENERATION.with(Cell::get) == generation
+            && frame_geometry(&window) == frame
         {
             publish_frame(frame);
         }
@@ -210,16 +216,64 @@ pub fn queue(snapshot: SessionUiSnapshot) {
     });
 }
 
+/// Queues independently read historical evidence; it never changes the live snapshot.
+pub fn queue_diagnostics(evidence: crate::diagnostics::DiagnosticEvidence) {
+    match PENDING_EVIDENCE.lock() {
+        Ok(mut pending) => *pending = Some(evidence),
+        Err(poisoned) => *poisoned.into_inner() = Some(evidence),
+    }
+    let _queued = slint::invoke_from_event_loop(|| {
+        if apply_pending().is_err() {
+            tracing::warn!("Diagnostic presentation unavailable");
+        }
+    });
+}
+
 /// Applies a queued snapshot after the Slint event loop becomes available.
 ///
 /// # Errors
 ///
 /// Returns a platform error when window creation or presentation fails.
 pub fn apply_pending() -> Result<(), slint::PlatformError> {
-    let snapshot = match PENDING_SNAPSHOT.lock() {
+    let evidence = match PENDING_EVIDENCE.lock() {
         Ok(mut pending) => pending.take(),
         Err(poisoned) => poisoned.into_inner().take(),
     };
+    let changed = evidence.is_some_and(|evidence| {
+        EVIDENCE.with(|current| {
+            let mut current = current.borrow_mut();
+            if *current == evidence {
+                false
+            } else {
+                *current = evidence;
+                true
+            }
+        })
+    });
+    let snapshot = match PENDING_SNAPSHOT.lock() {
+        Ok(mut pending) => pending.take(),
+        Err(poisoned) => poisoned.into_inner().take(),
+    }
+    .or_else(|| {
+        if !changed {
+            return None;
+        }
+        // Background reports must not redraw or steal focus from Binding/team pages.
+        CURRENT_SNAPSHOT.with(|current| {
+            current
+                .borrow()
+                .as_ref()
+                .filter(|snapshot| {
+                    EVIDENCE.with(|evidence| diagnostics::visible(snapshot, &evidence.borrow()))
+                        || WINDOW.with_borrow(|window| {
+                            window
+                                .as_ref()
+                                .is_some_and(SessionWindow::get_diagnostic_visible)
+                        })
+                })
+                .cloned()
+        })
+    });
     match snapshot {
         Some(snapshot) => apply(&snapshot),
         None => Ok(()),
@@ -229,7 +283,11 @@ pub fn apply_pending() -> Result<(), slint::PlatformError> {
 fn load_author_avatar(window: &SessionWindow) {
     let path = std::path::Path::new("/usr/share/natsume/author-avatar.png");
     match slint::Image::load_from_path(path) {
-        Ok(image) => window.set_author_avatar(image),
+        Ok(image) => {
+            if avatar::install(window, &image).is_err() {
+                tracing::warn!("Packaged author avatar pixels are unavailable");
+            }
+        }
         Err(error) => tracing::warn!(%error, "Packaged author avatar is unavailable"),
     }
 }
@@ -243,6 +301,7 @@ fn load_author_avatar(window: &SessionWindow) {
 ///
 /// Returns a platform error when window creation, visibility, or presentation fails.
 pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
+    VIEW_GENERATION.with(|generation| generation.set(generation.get().wrapping_add(1)));
     CURRENT_SNAPSHOT.with(|current| *current.borrow_mut() = Some(snapshot.clone()));
     PRESENTED.send_replace(None);
     let existing =
@@ -283,6 +342,9 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
                     );
                     return;
                 };
+                if window.get_diagnostic_visible() {
+                    return;
+                }
                 let submission = CURRENT_SNAPSHOT.with(|current| {
                     current
                         .borrow()
@@ -308,8 +370,40 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window
     };
 
-    window.set_team_visible(snapshot.team.is_some());
+    apply_team(&window, snapshot)?;
     window.set_offline(snapshot.offline);
+    let (title, subtitle, message) = snapshot_text(snapshot);
+    window.set_waiting_visible(snapshot.screen == SessionScreenKind::Waiting);
+    window.window().set_fullscreen(true);
+    window.set_binding_pending(snapshot.screen == SessionScreenKind::BindingPending);
+    window
+        .set_binding_error_text(binding_error_text(snapshot.binding_error_code.as_deref()).into());
+    window.set_subtitle_text(subtitle.into());
+    window.set_title_text(title.into());
+    window.set_message_text(message.into());
+    let diagnostic = EVIDENCE.with(|evidence| diagnostics::visible(snapshot, &evidence.borrow()));
+    window.set_diagnostic_visible(diagnostic);
+    window.set_seat_input_visible(seat_input_visible(snapshot) && !diagnostic);
+    // Revoke the old frame immediately, including view changes within one UI revision.
+    publish_frame(frame_geometry(&window).map(|mut frame| {
+        frame.first_frame_presented = false;
+        frame.fullscreen_width = 0;
+        frame.fullscreen_height = 0;
+        frame
+    }));
+    if diagnostic {
+        EVIDENCE.with(|evidence| diagnostics::apply(&window, snapshot, &evidence.borrow()));
+    }
+    window.show()?;
+    window.window().request_redraw();
+    Ok(())
+}
+
+fn apply_team(
+    window: &SessionWindow,
+    snapshot: &SessionUiSnapshot,
+) -> Result<(), slint::PlatformError> {
+    window.set_team_visible(snapshot.team.is_some());
     // Reset the logo before resolving a new binding; a previous school is never a fallback.
     let mut logo = slint::Image::load_from_svg_data(include_bytes!("../ui/school.svg"))
         .map_err(|error| slint::PlatformError::Other(error.to_string()))?;
@@ -319,6 +413,7 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         window.set_school_primary(school.into());
         window.set_school_secondary(school_secondary.into());
         window.set_long_team(name.chars().count() > 30);
+        window.set_team_font_size(team_font_size(name));
         window.set_long_seat(team.seat_code.chars().count() > 12);
         window.set_team_primary(name.into());
         window.set_team_secondary(name_secondary.into());
@@ -333,19 +428,24 @@ pub fn apply(snapshot: &SessionUiSnapshot) -> Result<(), slint::PlatformError> {
         }
     }
     window.set_school_logo(logo);
-    let (title, subtitle, message) = snapshot_text(snapshot);
-    window.set_waiting_visible(snapshot.screen == SessionScreenKind::Waiting);
-    window.window().set_fullscreen(true);
-    window.set_binding_pending(snapshot.screen == SessionScreenKind::BindingPending);
-    window
-        .set_binding_error_text(binding_error_text(snapshot.binding_error_code.as_deref()).into());
-    window.set_subtitle_text(subtitle.into());
-    window.set_title_text(title.into());
-    window.set_message_text(message.into());
-    window.set_seat_input_visible(seat_input_visible(snapshot));
-    window.show()?;
-    window.window().request_redraw();
     Ok(())
+}
+
+fn team_font_size(name: &str) -> f32 {
+    let width = name.chars().fold(0.0_f32, |width, glyph| {
+        width + if u32::from(glyph) <= 0xff { 0.55 } else { 1.0 }
+    });
+    if width <= 6.0 {
+        168.0
+    } else if width <= 8.0 {
+        136.0
+    } else if width <= 11.0 {
+        104.0
+    } else if width <= 16.0 {
+        88.0
+    } else {
+        80.0
+    }
 }
 
 fn display_names<'a>(primary: &'a str, secondary: &'a str) -> (&'a str, &'a str) {
@@ -426,6 +526,42 @@ mod tests {
         )));
         prompt.screen = SessionScreenKind::BindingPending;
         assert!(!seat_input_visible(&prompt));
+    }
+
+    #[test]
+    fn native_readiness_requires_geometry_not_diagnostic_report_status() {
+        let snapshot = snapshot(SessionScreenKind::Waiting);
+        let size = slint::PhysicalSize::new(1920, 1080);
+        let ready = super::presentation(&snapshot, size, true);
+        assert!(ready.first_frame_presented);
+        assert_eq!(
+            (ready.fullscreen_width, ready.fullscreen_height),
+            (1920, 1080)
+        );
+        let invalid = super::presentation(&snapshot, size, false);
+        assert!(!invalid.first_frame_presented);
+        assert_eq!(
+            (invalid.fullscreen_width, invalid.fullscreen_height),
+            (0, 0)
+        );
+        assert!(
+            !super::presentation(&snapshot, slint::PhysicalSize::new(0, 1080), true)
+                .first_frame_presented
+        );
+    }
+
+    #[test]
+    fn team_typography_uses_the_designs_weighted_width_thresholds() {
+        for (name, expected) in [
+            ("星河漫游", 168.0_f32),
+            ("一二三四五六七", 136.0),
+            ("一二三四五六七八九", 104.0),
+            ("一二三四五六七八九十一二", 88.0),
+            ("星河漫游者与长夜尽头的远航计划研究小组", 80.0),
+        ] {
+            assert_eq!(super::team_font_size(name).to_bits(), expected.to_bits());
+        }
+        assert!(super::team_font_size("ABCDEFG") > super::team_font_size("一二三四五六七"));
     }
 
     #[test]
