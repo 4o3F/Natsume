@@ -39,6 +39,7 @@ use std::sync::Mutex;
 pub(crate) struct HelperState {
     pub(crate) session_state: Option<GraphicalSessionState>,
     pub(crate) foreground: Option<SessionForeground>,
+    pub(crate) waiting_observation: Option<GraphicalSessionObservation>,
     pub(crate) session_after_home: Option<GraphicalSessionState>,
     pub(crate) require_blocked: Option<std::path::PathBuf>,
     pub(crate) termination_calls: Vec<GraphicalSession>,
@@ -158,15 +159,14 @@ impl FaultyHelper {
                 desktop_ready: lifecycle == GraphicalSessionState::Running,
                 locked_hint: false,
             },
-            waiting: GraphicalSessionObservation {
-                state: GraphicalSessionState::Running,
-                session: Some(GraphicalSession {
-                    logind_session_id: "w1".to_owned(),
-                    boot_id: "550e8400-e29b-41d4-a716-446655440000".to_owned(),
-                }),
-                desktop_ready: true,
-                locked_hint: false,
-            },
+            waiting: state.waiting_observation.clone().unwrap_or_else(|| {
+                GraphicalSessionObservation {
+                    state: GraphicalSessionState::Running,
+                    session: Some(waiting_session()),
+                    desktop_ready: true,
+                    locked_hint: false,
+                }
+            }),
             foreground: state.foreground.unwrap_or(SessionForeground::Contest),
         }
     }
@@ -879,6 +879,314 @@ pub(crate) fn snapshot() -> ServerStateSnapshot {
             }),
         }),
     }
+}
+
+#[tokio::test]
+async fn observation_preserves_binding_eligibility_while_the_replacement_frame_is_pending()
+-> Result<(), Box<dyn std::error::Error>> {
+    use natsume_local_control_api::SessionScreenKind;
+
+    let fixture = fixture(HelperState {
+        foreground: Some(SessionForeground::Waiting),
+        ..Default::default()
+    })
+    .await?;
+    fixture.pause_agent_frames().await;
+    let target = validate_server_snapshot(snapshot())?;
+    let cancellation = CancellationToken::new();
+    fixture.snapshots.begin_plan(&cancellation)?;
+    fixture.snapshots.binding_input.current_input(
+        &cancellation,
+        target.binding_intent.clone().ok_or("intent")?,
+    )?;
+    fixture.confirm_agent_frame()?;
+    let waiting =
+        binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+    assert_eq!(waiting.screen, SessionScreenKind::Waiting);
+    assert!(fixture.snapshots.session.observe().await?.waiting_ready);
+
+    fixture
+        .snapshots
+        .reconcile(&target, cancellation.clone())
+        .await?;
+    let binding =
+        binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+    assert_eq!(binding.screen, SessionScreenKind::BindingPrompt);
+    assert_eq!(binding.ui_revision, waiting.ui_revision + 1);
+    assert!(!fixture.snapshots.session.observe().await?.waiting_ready);
+
+    // No automatic or explicit R+1 confirmation can run during these samples.
+    for _ in 0..2 {
+        let actual = fixture
+            .snapshots
+            .observe(Some(&target))
+            .await?
+            .actual
+            .and_then(|actual| actual.session_control)
+            .ok_or("session actual")?;
+        assert!(!actual.waiting_ready);
+        let pending =
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+        assert_eq!(pending, binding);
+        // Device1 submission's exact-frame guard sees R, not current R+1.
+        let frame = binding::tests::fixture_presentation(&fixture.snapshots.binding_input)
+            .ok_or("preceding frame")?;
+        assert_eq!(frame.ui_revision, waiting.ui_revision);
+        assert_ne!(frame.ui_revision, pending.ui_revision);
+        let maintenance = fixture
+            .snapshots
+            .session
+            .waiting_foreground(&cancellation)
+            .await?;
+        assert!(maintenance.retry);
+        assert!(maintenance.actual.is_none());
+    }
+    assert!(fixture.snapshots.binding_input.observed_input()?.is_none());
+    assert!(!fixture.directory.path().join("binding-input.json").exists());
+
+    fixture.confirm_agent_frame()?;
+    let ready = fixture
+        .snapshots
+        .observe(Some(&target))
+        .await?
+        .actual
+        .and_then(|actual| actual.session_control)
+        .ok_or("session actual")?;
+    assert!(ready.waiting_ready);
+    assert_eq!(
+        binding::tests::fixture_presentation(&fixture.snapshots.binding_input)
+            .ok_or("replacement frame")?
+            .ui_revision,
+        binding.ui_revision
+    );
+    assert_eq!(
+        binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?,
+        binding
+    );
+    let maintenance = fixture
+        .snapshots
+        .session
+        .waiting_foreground(&cancellation)
+        .await?;
+    assert!(!maintenance.retry);
+    assert_eq!(maintenance.actual, Some(waiting_session()));
+    let helper = fixture.helper.lock().map_err(|_| "helper lock")?;
+    assert!(helper.waiting_recovery_calls.is_empty());
+    assert!(helper.termination_calls.is_empty());
+    assert!(helper.home_calls.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn waiting_os_or_live_agent_loss_revokes_binding_eligibility()
+-> Result<(), Box<dyn std::error::Error>> {
+    use natsume_local_control_api::SessionScreenKind;
+
+    let healthy = GraphicalSessionObservation {
+        state: GraphicalSessionState::Running,
+        session: Some(waiting_session()),
+        desktop_ready: true,
+        locked_hint: false,
+    };
+    let mut replacement = waiting_session();
+    replacement.logind_session_id = "w2".to_owned();
+    for (failure, waiting) in [
+        (
+            "not running",
+            Some(GraphicalSessionObservation {
+                state: GraphicalSessionState::Starting,
+                ..healthy.clone()
+            }),
+        ),
+        (
+            "desktop unavailable",
+            Some(GraphicalSessionObservation {
+                desktop_ready: false,
+                ..healthy.clone()
+            }),
+        ),
+        (
+            "locked",
+            Some(GraphicalSessionObservation {
+                locked_hint: true,
+                ..healthy.clone()
+            }),
+        ),
+        (
+            "missing exact session",
+            Some(GraphicalSessionObservation {
+                session: None,
+                ..healthy.clone()
+            }),
+        ),
+        (
+            "replacement session",
+            Some(GraphicalSessionObservation {
+                session: Some(replacement),
+                ..healthy.clone()
+            }),
+        ),
+        ("Agent registration lost", None),
+    ] {
+        let fixture = fixture(HelperState {
+            foreground: Some(SessionForeground::Waiting),
+            ..Default::default()
+        })
+        .await?;
+        fixture.pause_agent_frames().await;
+        fixture.confirm_agent_frame()?;
+        let target = validate_server_snapshot(snapshot())?;
+        let cancellation = CancellationToken::new();
+        fixture.snapshots.begin_plan(&cancellation)?;
+        fixture.snapshots.reconcile(&target, cancellation).await?;
+        let binding =
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+        assert_eq!(
+            binding.screen,
+            SessionScreenKind::BindingPrompt,
+            "{failure}"
+        );
+        if let Some(waiting) = waiting {
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "helper lock")?
+                .waiting_observation = Some(waiting);
+        } else {
+            binding::tests::clear_fixture_agent(&fixture.snapshots.binding_input);
+        }
+        // Check the maintenance observer itself, not a later foreground guard.
+        fixture.snapshots.session.maintain_waiting().await?;
+        let revoked =
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+        assert_eq!(revoked.screen, SessionScreenKind::Waiting, "{failure}");
+        assert_eq!(revoked.ui_revision, binding.ui_revision + 1, "{failure}");
+        assert!(
+            !fixture.snapshots.session.observe().await?.waiting_ready,
+            "{failure}"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn waiting_agent_bus_owner_loss_revokes_pending_binding_eligibility()
+-> Result<(), Box<dyn std::error::Error>> {
+    use natsume_local_control_api::SessionScreenKind;
+
+    let fixture = fixture(HelperState {
+        foreground: Some(SessionForeground::Waiting),
+        ..Default::default()
+    })
+    .await?;
+    fixture.pause_agent_frames().await;
+    let address = format!(
+        "unix:path={}",
+        fixture.directory.path().join("bus.sock").display()
+    );
+    let agent = zbus::connection::Builder::address(address.as_str())?
+        .build()
+        .await?;
+    binding::tests::clear_fixture_agent(&fixture.snapshots.binding_input);
+    binding::tests::confirm_fixture_frame(
+        &fixture.snapshots.binding_input,
+        agent.unique_name().ok_or("Agent owner")?.as_str(),
+        waiting_session(),
+    );
+    let target = validate_server_snapshot(snapshot())?;
+    let cancellation = CancellationToken::new();
+    fixture.snapshots.begin_plan(&cancellation)?;
+    fixture.snapshots.reconcile(&target, cancellation).await?;
+    let binding =
+        binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+    assert_eq!(binding.screen, SessionScreenKind::BindingPrompt);
+    assert!(fixture.snapshots.session.binding_foreground_ready().await?);
+    agent.close().await?;
+    fixture.snapshots.session.maintain_waiting().await?;
+    let revoked =
+        binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+    assert_eq!(revoked.screen, SessionScreenKind::Waiting);
+    assert_eq!(revoked.ui_revision, binding.ui_revision + 1);
+    assert!(!fixture.snapshots.session.binding_foreground_ready().await?);
+    assert!(!fixture.snapshots.session.observe().await?.waiting_ready);
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_binding_frame_does_not_mask_foreground_contest_home_or_target_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    use natsume_local_control_api::SessionScreenKind;
+
+    for failure in [
+        "foreground",
+        "contest",
+        "Home",
+        "target",
+        "termination epoch",
+        "Home epoch",
+    ] {
+        let fixture = fixture(HelperState {
+            foreground: Some(SessionForeground::Waiting),
+            ..Default::default()
+        })
+        .await?;
+        fixture.pause_agent_frames().await;
+        fixture.confirm_agent_frame()?;
+        let mut target = validate_server_snapshot(snapshot())?;
+        let cancellation = CancellationToken::new();
+        fixture.snapshots.begin_plan(&cancellation)?;
+        fixture.snapshots.reconcile(&target, cancellation).await?;
+        let binding =
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+        assert_eq!(
+            binding.screen,
+            SessionScreenKind::BindingPrompt,
+            "{failure}"
+        );
+        match failure {
+            "foreground" => {
+                fixture.helper.lock().map_err(|_| "helper lock")?.foreground =
+                    Some(SessionForeground::Contest);
+            }
+            "contest" => {
+                fixture
+                    .helper
+                    .lock()
+                    .map_err(|_| "helper lock")?
+                    .session_state = Some(GraphicalSessionState::Ambiguous);
+            }
+            "Home" => {
+                fixture.helper.lock().map_err(|_| "helper lock")?.rejected = true;
+            }
+            "termination epoch" => {
+                target.session_target = session::validate_target(SessionControlTarget {
+                    foreground_target: ForegroundTarget::Contest.into(),
+                    terminate_epoch: Some(1),
+                })
+                .ok_or("session target")?;
+            }
+            "Home epoch" => target.home_epoch = Some(1),
+            "target" => {}
+            _ => unreachable!(),
+        }
+        fixture
+            .snapshots
+            .observe((failure != "target").then_some(&target))
+            .await?;
+        let revoked =
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+        assert_eq!(revoked.screen, SessionScreenKind::Waiting, "{failure}");
+        assert_eq!(revoked.ui_revision, binding.ui_revision + 1, "{failure}");
+        assert!(
+            !fixture.snapshots.session.observe().await?.waiting_ready,
+            "{failure}"
+        );
+        assert!(
+            !fixture.snapshots.binding_input.revoke_eligibility()?,
+            "{failure}"
+        );
+    }
+    Ok(())
 }
 
 #[tokio::test]
@@ -1710,6 +2018,23 @@ async fn display_updates_keep_ready_caddy_and_credentials_while_waiting_for_a_ne
                 school_name_en: String::new(),
             }))?;
         fixture.snapshots.observe(Some(&target)).await?;
+        let display =
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session())?;
+        assert_eq!(
+            display.screen,
+            natsume_local_control_api::SessionScreenKind::Waiting
+        );
+        assert!(!display.offline);
+        let team = display.team.as_ref().ok_or("waiting team")?;
+        assert_eq!(team.team_name_zh, name);
+        assert_eq!(team.school_name_zh, "大学");
+        assert_eq!(team.seat_code, context.seat_code);
+        // Observation while the updated name's frame is pending retains all display data.
+        fixture.snapshots.observe(Some(&target)).await?;
+        assert_eq!(
+            binding::tests::fixture_snapshot(&fixture.snapshots.binding_input, waiting_session(),)?,
+            display
+        );
         assert!(matches!(
             fixture.snapshots.caddy.observe().await.mode,
             Some(caddy::CaddyModeArtifact::Ready { .. })

@@ -189,15 +189,16 @@ impl SessionReconciler {
             return Err(SnapshotError::LocalControl);
         };
         let ready = self.observation_actual(&observed, None).await.waiting_ready;
-        let healthy = ready
-            || (observed.foreground != SessionForeground::Waiting
-                && self.waiting_available(&observed).await);
+        let available = self.waiting_available(&observed).await;
+        let healthy = ready || (observed.foreground != SessionForeground::Waiting && available);
         let due = self
             .waiting_health
             .lock()
             .map_err(|_| SnapshotError::Artifact)?
             .observe(Instant::now(), healthy);
-        if !ready {
+        // Selecting Binding invalidates the preceding Waiting frame. Pending
+        // presentation affects readiness and recovery, not live-Agent eligibility.
+        if !available {
             self.agent.revoke_eligibility()?;
         }
         // An already captured operation is resumed without another cooldown,
@@ -830,6 +831,54 @@ pub(super) mod tests {
                 .len(),
             1
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_pending_foreground_frame_still_uses_the_waiting_recovery_cooldown()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = crate::reconcile::tests::fixture(crate::reconcile::tests::HelperState {
+            foreground: Some(SessionForeground::Waiting),
+            ..Default::default()
+        })
+        .await?;
+        fixture.pause_agent_frames().await;
+        fixture.confirm_agent_frame()?;
+        let target =
+            crate::reconcile::validate_server_snapshot(crate::reconcile::tests::snapshot())?;
+        let cancellation = CancellationToken::new();
+        fixture.snapshots.begin_plan(&cancellation)?;
+        fixture.snapshots.reconcile(&target, cancellation).await?;
+        let session = &fixture.snapshots.session;
+        assert!(!session.observe().await?.waiting_ready);
+        session.maintain_waiting().await?;
+        assert!(
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "helper lock")?
+                .waiting_recovery_calls
+                .is_empty()
+        );
+        {
+            let now = Instant::now();
+            let mut health = session.waiting_health.lock().map_err(|_| "health lock")?;
+            assert!(health.failed_since.is_some());
+            health.failed_since = Some(now - WAITING_FAILURE_COOLDOWN);
+            health.last_sample = Some(now - Duration::from_secs(30));
+        }
+        session.maintain_waiting().await?;
+        assert_eq!(
+            fixture
+                .helper
+                .lock()
+                .map_err(|_| "helper lock")?
+                .waiting_recovery_calls
+                .len(),
+            1
+        );
+        assert!(!session.binding_foreground_ready().await?);
+        assert!(!fixture.snapshots.binding_input.revoke_eligibility()?);
         Ok(())
     }
 

@@ -13,7 +13,7 @@ use std::{
 
 use natsume_local_control_api::{
     BindingSubmission, Device1Proxy, GraphicalSession, SESSION_AGENT_SINGLETON_RELATIVE_PATH,
-    SessionAgentLease, SessionScreenKind, SessionUiSnapshot,
+    SessionAgentLease, SessionPresentation, SessionScreenKind, SessionUiSnapshot,
 };
 use natsume_session_agent::ui;
 use rustix::fs::{FlockOperation, flock};
@@ -148,16 +148,103 @@ fn lease_deadline(lease: &SessionAgentLease) -> Instant {
         )
 }
 
+fn log_rpc_failure(operation: &'static str, error: &zbus::Error) {
+    let category = match error {
+        zbus::Error::MethodError(name, _, _) => match name.as_str() {
+            "org.freedesktop.DBus.Error.AccessDenied" | "org.freedesktop.DBus.Error.AuthFailed" => {
+                "authorization"
+            }
+            "org.freedesktop.DBus.Error.Failed" => "rejected",
+            _ => "method_error",
+        },
+        zbus::Error::InputOutput(_) => "transport",
+        _ => "protocol_or_transport",
+    };
+    tracing::warn!(operation, category, "Device1 local RPC failed");
+}
+
+fn operation_expired(operation: &'static str) -> ConnectionEnd {
+    tracing::warn!(
+        operation,
+        category = "lease_deadline",
+        "Device1 local RPC failed"
+    );
+    ConnectionEnd::Disconnected("Session Agent lease expired during a local operation")
+}
+
 async fn lease_call<T>(
     deadline: Instant,
+    operation_name: &'static str,
     operation: impl std::future::Future<Output = zbus::Result<T>>,
 ) -> Result<T, ConnectionEnd> {
     tokio::time::timeout_at(deadline, operation)
         .await
-        .map_err(|_| {
-            ConnectionEnd::Disconnected("Session Agent lease expired during a local operation")
-        })?
-        .map_err(|_| ConnectionEnd::Disconnected("Device1 operation failed"))
+        .map_err(|_| operation_expired(operation_name))?
+        .map_err(|error| {
+            log_rpc_failure(operation_name, &error);
+            ConnectionEnd::Disconnected("Device1 operation failed")
+        })
+}
+
+async fn confirm_presentation(
+    proxy: &Device1Proxy<'_>,
+    lease: &SessionAgentLease,
+    deadline: Instant,
+    frame: &SessionPresentation,
+) -> Result<Option<SessionUiSnapshot>, ConnectionEnd> {
+    const OPERATION: &str = "ConfirmSessionPresentation";
+    if Instant::now() >= deadline {
+        return Err(operation_expired(OPERATION));
+    }
+    let result = tokio::time::timeout_at(
+        deadline,
+        proxy.confirm_session_presentation(&lease.lease_id, frame),
+    )
+    .await
+    .map_err(|_| operation_expired(OPERATION))?;
+    if Instant::now() >= deadline {
+        return Err(operation_expired(OPERATION));
+    }
+    let Err(error) = result else {
+        return Ok(None);
+    };
+    log_rpc_failure(OPERATION, &error);
+    let dimensions_valid = if frame.first_frame_presented {
+        frame.fullscreen_width > 0 && frame.fullscreen_height > 0
+    } else {
+        frame.fullscreen_width == 0 && frame.fullscreen_height == 0
+    };
+    // Device1 uses Failed for several terminal fences. Only this existing
+    // rejection can be supersession, and a fresh authenticated read must prove it.
+    if !matches!(&error, zbus::Error::MethodError(name, Some(message), _)
+        if name.as_str() == "org.freedesktop.DBus.Error.Failed"
+            && message == "Session presentation is incomplete or stale")
+        || !dimensions_valid
+        || frame.session != lease.session
+        || frame.agent_lease_id != lease.lease_id
+    {
+        return Err(ConnectionEnd::Disconnected("Device1 operation failed"));
+    }
+    let snapshot = lease_call(
+        deadline,
+        "GetSessionUiSnapshot",
+        proxy.get_session_ui_snapshot(&lease.lease_id, &lease.session),
+    )
+    .await?;
+    if Instant::now() >= deadline {
+        return Err(operation_expired("GetSessionUiSnapshot"));
+    }
+    if snapshot.session != lease.session
+        || snapshot.agent_lease_id != lease.lease_id
+        || snapshot.ui_revision <= frame.ui_revision
+    {
+        return Err(ConnectionEnd::Disconnected(
+            "Device1 did not return a superseding snapshot on the same lease",
+        ));
+    }
+    // The caller applies the replacement snapshot, not the rejected frame.
+    // Its actual UI presentation must arrive before another confirmation.
+    Ok(Some(snapshot))
 }
 
 fn renew_after(lease: &SessionAgentLease) -> Duration {
@@ -212,10 +299,13 @@ async fn connected(
         .await
         .map_err(|_| ConnectionEnd::Disconnected("Device1 is unavailable"))?;
     let (mut lease, initial) = proxy
-        .register_session_agent(natsume_local_control_api::SESSION_AGENT_PROTOCOL_VERSION, session)
+        .register_session_agent(
+            natsume_local_control_api::SESSION_AGENT_PROTOCOL_VERSION,
+            session,
+        )
         .await
         .map_err(|error| {
-            tracing::warn!(%error, "Session Agent registration failed; both local peers must use protocol version 3");
+            log_rpc_failure("RegisterSessionAgent", &error);
             ConnectionEnd::Disconnected("Session Agent registration failed")
         })?;
     if lease.session != *session
@@ -240,7 +330,7 @@ async fn connected(
     loop {
         tokio::select! {
             () = &mut renewal => {
-                lease = lease_call(deadline, proxy.renew_session_agent_lease(&lease.lease_id, session)).await?;
+                lease = lease_call(deadline, "RenewSessionAgentLease", proxy.renew_session_agent_lease(&lease.lease_id, session)).await?;
                 if lease.session != *session {
                     return Err(ConnectionEnd::Disconnected("Device1 renewed a different graphical session"));
                 }
@@ -248,7 +338,7 @@ async fn connected(
                 renewal.as_mut().reset(Instant::now() + renew_after(&lease));
             }
             _ = refresh.tick() => {
-                let snapshot = lease_call(deadline, proxy.get_session_ui_snapshot(&lease.lease_id, session)).await?;
+                let snapshot = lease_call(deadline, "GetSessionUiSnapshot", proxy.get_session_ui_snapshot(&lease.lease_id, session)).await?;
                 if snapshot.session != *session || snapshot.agent_lease_id != lease.lease_id {
                     return Err(ConnectionEnd::Disconnected("Device1 returned a different graphical session"));
                 }
@@ -264,15 +354,18 @@ async fn connected(
                 let Some(submission) = submission else {
                     return Err(ConnectionEnd::Disconnected("Binding submission channel closed"));
                 };
-                lease_call(deadline, proxy.submit_binding(&lease.lease_id, &submission)).await?;
+                lease_call(deadline, "SubmitBinding", proxy.submit_binding(&lease.lease_id, &submission)).await?;
             }
             changed = presentations.changed() => {
                 if changed.is_err() { return Err(ConnectionEnd::Disconnected("presentation channel closed")); }
                 let frame = presentations.borrow_and_update().clone();
                 if let Some(frame) = frame
                     && frame.session == *session && frame.ui_revision == revision && frame.agent_lease_id == lease.lease_id
+                    && let Some(snapshot) = confirm_presentation(&proxy, &lease, deadline, &frame).await?
                 {
-                    lease_call(deadline, proxy.confirm_session_presentation(&lease.lease_id, &frame)).await?;
+                    revision = snapshot.ui_revision;
+                    last.clone_from(&snapshot);
+                    ui::queue(snapshot);
                 }
             }
             () = tokio::time::sleep_until(deadline) => {
@@ -465,7 +558,12 @@ mod tests {
     #[tokio::test]
     async fn an_unresponsive_local_call_cannot_outlive_the_lease() {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(10);
-        let result = super::lease_call(deadline, std::future::pending::<zbus::Result<()>>()).await;
+        let result = super::lease_call(
+            deadline,
+            "GetSessionUiSnapshot",
+            std::future::pending::<zbus::Result<()>>(),
+        )
+        .await;
         assert!(matches!(result, Err(super::ConnectionEnd::Disconnected(_))));
     }
 
@@ -545,3 +643,6 @@ mod tests {
             .unwrap_or_else(|error| panic!("released singleton lock failed: {error}"));
     }
 }
+
+#[cfg(test)]
+mod presentation_rpc_tests;

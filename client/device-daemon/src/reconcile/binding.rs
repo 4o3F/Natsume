@@ -1046,6 +1046,24 @@ pub(super) mod tests {
         }
     }
 
+    pub(in crate::reconcile) fn fixture_snapshot(
+        provider: &BindingInputProvider,
+        session: GraphicalSession,
+    ) -> Result<SessionUiSnapshot, SnapshotError> {
+        provider.ui_snapshot(session)
+    }
+
+    pub(in crate::reconcile) fn fixture_presentation(
+        provider: &BindingInputProvider,
+    ) -> Option<SessionPresentation> {
+        provider
+            .registered
+            .lock()
+            .unwrap_or_else(|e| panic!("Agent: {e}"))
+            .as_ref()
+            .and_then(|registration| registration.presentation.clone())
+    }
+
     pub(in crate::reconcile) fn clear_fixture_agent(provider: &BindingInputProvider) {
         *provider
             .registered

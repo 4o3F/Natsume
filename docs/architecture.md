@@ -637,6 +637,8 @@ Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor �
 
 分辨率变化期间，Agent 可对当前 revision 提交首帧标记 false、宽高均为零的撤销报告，清除展示资格但保留已鉴权的 lease。显示器与窗口尺寸稳定且新帧完成后再确认；不通过重新注册恢复尺寸，不为健康静态页面开启持续重绘。
 
+UI 选择推进 revision 后，旧帧不再证明 readiness，但替换帧尚未到达本身不撤回 Binding eligibility；观测仍因 waiting OS 条件、活着且认证的 Agent、前台、contest、Home 或当前 Target／epoch 事实失效而撤权。提交、维护和就绪仍要求精确当前 revision 的真实首帧；前台持续缺帧仍保留原有连续故障冷却与恢复预算。Agent 仅在收到现有 stale/incomplete-frame 拒绝、原帧身份／尺寸合法，且同一未过期 lease 上的新鉴权快照具有严格更新 revision 时刷新画面而不重新注册；拒绝的旧帧不被接受，新快照（含绑定后的队伍资料）仍等待实际新帧。错误身份、过期／替换 lease、未推进 revision、其他调用拒绝或失联继续 fail closed。本地 RPC 日志仅包含固定操作名与有界错误类别，不把异常 payload 放入诊断。
+
 原 `lock_state` 及 locked/unlocked 命名在本功能实施时统一迁移，不保留并行业务别名；Proto、本地 IPC、HTTP/OpenAPI、持久目标字段、Server/Client 和 Panel 生成类型同步更新。仍通过 session-control 的 PUT 替换目标，不新增切换 Command、toggle 或两套操作接口。
 
 Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm 身份单次入口，调用 GDM/libgdm 的 greeter API：创建或复用 greeter，选择镜像的 Wayland session entry，以固定 `gdm-contest`/`gdm-waiting` PAM 服务开始验证并请求启动桌面。调用者退出不影响由 GDM 管理的桌面；不接受任意账户、session entry、PAM 名或 unit，不直接启动 Xorg/GNOME，不修改 GDM/GNOME 程序或资源。
@@ -1206,7 +1208,7 @@ Daemon 在配置、硬件身份和 credential 初始化之前建立 best-effort 
 
 报告是采集时刻的历史证据，不是当前状态 ground truth、process liveness 或数据面安全证明。boot、Daemon instance、PID、采集时刻和序号用于解释报告所属实例；旧 `active`、`retrying` 或等待时间不证明当前进程仍在运行。Agent 将当前 Device1 注册/快照观察与最近报告、历史失败分开呈现，不显示历史重试倒计时，不将 Hardware ID 代作 Device ID。首次部署条件阻止 Daemon 执行、Agent/Daemon 异常终止或发布失败不能宣称已交付详细诊断；没有可用报告时，二维码只含带 `agent_observation` 标识的固定本地观察，不伪造 Daemon 失败证据。
 
-Agent 在自身进程内独立、有界地读取两个固定报告，不读取部署配置或 credential，不写入诊断目录。读取使用 nofollow/nonblocking 目录/文件句柄，核对固定 natsume owner、目录 0755、常规文件 0644、16 KiB 上限、当前 boot、格式版本、固定字段/枚举和安全字符串；symlink、非常规文件、错误归属或权限、未知格式和损坏报告只产生固定读取分类。两个报告保持独立，选择一份完整最近报告，无可用最近报告时才选历史失败，不拼接跨文件快照。二维码从校验后的 typed 字段重新序列化，最多 2300 bytes；必要时仅省略事件并明确 `events_truncated`，仍超限则明确不可用。采用 ECC L、四模块 quiet zone 和整数模块栅格，不依赖在线 URL 或上传。
+Agent 在自身进程内独立、有界地读取两个固定报告，不读取部署配置或 credential，不写入诊断目录。读取使用 nofollow/nonblocking 目录/文件句柄，核对固定 natsume owner、目录 0755、常规文件 0644、16 KiB 上限、当前 boot、格式版本、固定字段/枚举和安全字符串；symlink、非常规文件、错误归属或权限、未知格式和损坏报告只产生固定读取分类。用于 natsume UID 解析的 `/etc/passwd` 及父目录同样检查可信 root 归属，不接受组写／其他用户可写的父目录；拒绝此类路径不影响业务身份判断，也不自动修改现场权限。两个报告保持独立，选择一份完整最近报告，无可用最近报告时才选历史失败，不拼接跨文件快照。二维码从校验后的 typed 字段重新序列化，最多 2300 bytes；必要时仅省略事件并明确 `events_truncated`，仍超限则明确不可用。采用 ECC L、四模块 quiet zone 和整数模块栅格，不依赖在线 URL 或上传。
 
 当前 Binding/pending、已绑定队伍和恢复后的在线快照优先于历史诊断；后台报告刷新不重绘这些页面、不抢输入焦点。诊断只是不可输入 Waiting 的内容，不因诊断分类把健康原生全屏首帧判为失败，也不从报告推导就绪：仍由当前认证 lease、UI revision、实际显示器尺寸和实际渲染确认。内容切换撤销旧帧，并以 Agent 本地渲染代次排除同一 UI revision 的旧回调，不改变 Daemon 的恢复预算或就绪协议。
 
