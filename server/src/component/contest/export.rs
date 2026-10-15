@@ -205,7 +205,7 @@ fn add_logos(
             LogoMatch::Missing | LogoMatch::Ambiguous(_) => {}
             LogoMatch::Unique(path) => {
                 let png = read_logo(&path)
-                    .and_then(natsume_roster::DecodedLogo::into_png)
+                    .and_then(natsume_roster::DecodedLogo::into_domjudge_png)
                     .map_err(|error| logos::logo_error(school, &path, &error))?;
                 add(
                     zip,

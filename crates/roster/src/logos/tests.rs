@@ -323,6 +323,94 @@ fn png_exports_preserve_decoded_pixels_dimensions_and_alpha_for_every_raster_for
 }
 
 #[test]
+fn domjudge_exports_resize_every_raster_format_with_lanczos_and_transparent_padding() {
+    let directory = checked(TempDir::new());
+    for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
+        for (width, height) in [(128, 64), (64, 128), (8, 4), (64, 64), (1, 128)] {
+            let path = directory.path().join("source.webp");
+            let source = image::RgbImage::from_fn(width, height, |x, y| {
+                let value = if (x / 3 + y / 5) % 2 == 0 { 32 } else { 192 };
+                image::Rgb([value, 64, 128])
+            });
+            checked(source.save_with_format(&path, format));
+            let before = checked(fs::read(&path));
+            let decoded = checked(image::load_from_memory(&before));
+            let expected = decoded
+                .resize(64, 64, image::imageops::FilterType::Lanczos3)
+                .to_rgba8();
+            let png = checked(checked(read_logo(&path)).into_domjudge_png());
+            assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+            let actual = checked(image::load_from_memory(&png)).to_rgba8();
+            assert_eq!(actual.dimensions(), (64, 64));
+            let left = (64 - expected.width()) / 2;
+            let top = (64 - expected.height()) / 2;
+            for (x, y, pixel) in actual.enumerate_pixels() {
+                if x >= left
+                    && x < left + expected.width()
+                    && y >= top
+                    && y < top + expected.height()
+                {
+                    let expected = expected.get_pixel(x - left, y - top);
+                    for channel in 0..4 {
+                        assert!(pixel[channel].abs_diff(expected[channel]) <= 1);
+                    }
+                } else {
+                    assert_eq!(pixel.0, [0, 0, 0, 0]);
+                }
+            }
+            assert_eq!(checked(fs::read(&path)), before);
+            let http = checked(checked(read_logo(&path)).into_http());
+            assert_eq!(http.bytes, before);
+        }
+    }
+}
+
+#[test]
+fn domjudge_exports_preserve_alpha_edge_colors_without_invisible_rgb_bleed() {
+    let directory = checked(TempDir::new());
+    for format in [ImageFormat::Png, ImageFormat::WebP] {
+        let path = directory.path().join("source.png");
+        let source = image::RgbaImage::from_fn(128, 128, |x, _| {
+            if x < 64 {
+                image::Rgba([128, 64, 32, 128])
+            } else {
+                image::Rgba([0, 255, 255, 0])
+            }
+        });
+        checked(source.save_with_format(&path, format));
+        let png = checked(checked(read_logo(&path)).into_domjudge_png());
+        let actual = checked(image::load_from_memory(&png)).to_rgba8();
+        assert_eq!(actual.dimensions(), (64, 64));
+        assert_eq!(actual.get_pixel(8, 32).0, [128, 64, 32, 128]);
+        assert_eq!(actual.get_pixel(56, 32).0, [0, 0, 0, 0]);
+        for pixel in actual.pixels().filter(|pixel| pixel[3] > 8) {
+            for (actual, expected) in pixel.0[..3].iter().zip([128, 64, 32]) {
+                assert!(actual.abs_diff(expected) <= 1);
+            }
+        }
+    }
+}
+
+#[test]
+fn domjudge_svg_export_resizes_natural_canvas_without_changing_http_or_source() {
+    let directory = checked(TempDir::new());
+    let path = directory.path().join("source.svg");
+    let source = br##"<svg xmlns="http://www.w3.org/2000/svg" width="128" height="256"><rect width="128" height="256" fill="#804020" fill-opacity="0.5"/></svg>"##;
+    checked(fs::write(&path, source));
+    let png = checked(checked(read_logo(&path)).into_domjudge_png());
+    let actual = checked(image::load_from_memory(&png)).to_rgba8();
+    assert_eq!(actual.dimensions(), (64, 64));
+    assert_eq!(actual.get_pixel(32, 0).0, [128, 64, 32, 128]);
+    assert_eq!(actual.get_pixel(32, 63).0, [128, 64, 32, 128]);
+    assert_eq!(actual.get_pixel(15, 32).0, [0, 0, 0, 0]);
+    assert_eq!(actual.get_pixel(48, 32).0, [0, 0, 0, 0]);
+    let http = checked(checked(read_logo(&path)).into_http());
+    let original = checked(image::load_from_memory(&http.bytes));
+    assert_eq!((original.width(), original.height()), (128, 256));
+    assert_eq!(checked(fs::read(&path)), source);
+}
+
+#[test]
 fn svg_http_and_export_share_natural_canvas_transparent_pixels_and_png_encoding() {
     let directory = checked(TempDir::new());
     let path = directory.path().join("svg-disguised.webp");

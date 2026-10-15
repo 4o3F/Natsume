@@ -242,6 +242,84 @@ impl DecodedLogo {
         }
     }
 
+    /// Export a centered 64×64 PNG, preserving aspect ratio and transparency.
+    ///
+    /// Resamples with Lanczos3 and pads unused canvas space with transparency.
+    /// Source files and HTTP delivery are unchanged.
+    ///
+    /// # Errors
+    /// Returns PNG encoding failures.
+    pub fn into_domjudge_png(self) -> Result<Vec<u8>, LogoError> {
+        const EDGE: u32 = 64;
+        let source = match self.0 {
+            LogoContent::Raster { image, .. } => image.into_rgba8(),
+            LogoContent::Svg(image) => {
+                let bytes = image
+                    .pixels()
+                    .iter()
+                    .flat_map(|pixel| {
+                        let pixel = pixel.demultiply();
+                        [pixel.red(), pixel.green(), pixel.blue(), pixel.alpha()]
+                    })
+                    .collect();
+                image::RgbaImage::from_raw(image.width(), image.height(), bytes)
+                    .ok_or(LogoError::Dimensions)?
+            }
+        };
+        // Filter premultiplied alpha so invisible RGB cannot bleed into edges.
+        // Reserve headroom for Lanczos's negative lobes: image's float resize
+        // clamps to [0, 1], which must not clip alpha before unpremultiplication.
+        let premultiplied =
+            image::Rgba32FImage::from_fn(source.width(), source.height(), |x, y| {
+                let pixel = source.get_pixel(x, y);
+                let alpha = f32::from(pixel[3]) / 255.0;
+                let encode = |value: f32| 0.25 + 0.25 * value;
+                image::Rgba([
+                    encode(f32::from(pixel[0]) / 255.0 * alpha),
+                    encode(f32::from(pixel[1]) / 255.0 * alpha),
+                    encode(f32::from(pixel[2]) / 255.0 * alpha),
+                    encode(alpha),
+                ])
+            });
+        let filtered = DynamicImage::ImageRgba32F(premultiplied)
+            .resize(EDGE, EDGE, image::imageops::FilterType::Lanczos3)
+            .into_rgba32f();
+        let straight = image::Rgba32FImage::from_fn(filtered.width(), filtered.height(), |x, y| {
+            let pixel = filtered.get_pixel(x, y);
+            let decode = |value: f32| (value - 0.25) * 4.0;
+            let alpha = decode(pixel[3]);
+            let channel = |value: f32| {
+                if alpha > 0.0 {
+                    (decode(value) / alpha).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            };
+            image::Rgba([
+                channel(pixel[0]),
+                channel(pixel[1]),
+                channel(pixel[2]),
+                alpha.clamp(0.0, 1.0),
+            ])
+        });
+        let mut resized = DynamicImage::ImageRgba32F(straight).into_rgba8();
+        for pixel in resized.pixels_mut().filter(|pixel| pixel[3] == 0) {
+            *pixel = image::Rgba([0, 0, 0, 0]);
+        }
+        let mut canvas = image::RgbaImage::new(EDGE, EDGE);
+        image::imageops::replace(
+            &mut canvas,
+            &resized,
+            i64::from((EDGE - resized.width()) / 2),
+            i64::from((EDGE - resized.height()) / 2),
+        );
+        let mut output = Cursor::new(Vec::new());
+        canvas
+            .write_to(&mut output, ImageFormat::Png)
+            .map_err(|error| LogoError::Encode(error.to_string()))?;
+        Ok(output.into_inner())
+    }
+
     /// Encode a PNG without resizing, cropping, or changing source files.
     ///
     /// # Errors

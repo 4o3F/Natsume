@@ -1383,7 +1383,13 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(exported.body))?;
     let mut png = Vec::new();
     std::io::Read::read_to_end(&mut zip.by_name("logos/INST-001.png")?, &mut png)?;
-    assert_eq!(png, image.body);
+    let exported_logo = image::load_from_memory(&png)?.to_rgba8();
+    assert_eq!(exported_logo.dimensions(), (64, 64));
+    assert_eq!(exported_logo.get_pixel(8, 32).0, [255, 0, 0, 255]);
+    assert_eq!(exported_logo.get_pixel(8, 0).0, [0, 0, 0, 0]);
+    let original_logo = image::load_from_memory(&image.body)?;
+    assert_eq!((original_logo.width(), original_logo.height()), (8, 4));
+    assert_eq!(fs::read(&source)?, svg);
     let observed = drive(
         &application,
         cookie_request(Method::GET, "/api/v2/organizations", cookie)?,

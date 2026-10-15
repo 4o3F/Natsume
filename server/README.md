@@ -207,8 +207,11 @@ The browser hands the response to its normal download manager.
 The export uses the modern DOMjudge JSON/YAML contract, stable school IDs and fixed
 account IDs. Names are `中文名(English name)` when both exist. It supplies no invented
 `icpc_id`. YAML serialization preserves strings such as leading-zero passwords.
-Available PNG/JPEG/WebP/SVG files become real PNG, preserving raster dimensions and
-alpha; SVG uses its natural 96 DPI canvas. Missing or ambiguous images are omitted
+Available PNG/JPEG/WebP/SVG files become 64×64 PNGs. SVG is first rendered at its
+natural 96 DPI canvas; all logos are then resampled with Lanczos3 and premultiplied
+alpha, preserving aspect ratio and centered on a transparent canvas without
+stretching or cropping. Source files and HTTP logo delivery stay unchanged.
+Missing or ambiguous images are omitted
 without blocking import/export. A matched unreadable, corrupt or oversized file aborts the
 download with a school/file diagnostic.
 

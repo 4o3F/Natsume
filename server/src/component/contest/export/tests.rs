@@ -111,8 +111,11 @@ fn complete_zip_contains_stable_data_deduplicated_pngs_and_missing_ambiguous_map
         assert_eq!(account["type"], "team");
     }
     let png = checked(image::load_from_memory(&first["logos/INST-001.png"])).to_rgba8();
-    assert_eq!(png.dimensions(), (8, 4));
-    assert_eq!(png.get_pixel(6, 1).0, [0, 0, 0, 0]);
+    assert_eq!(png.dimensions(), (64, 64));
+    assert_eq!(png.get_pixel(8, 32).0, [255, 0, 0, 255]);
+    assert_eq!(png.get_pixel(56, 32).0, [0, 0, 0, 0]);
+    assert_eq!(png.get_pixel(8, 0).0, [0, 0, 0, 0]);
+    assert_eq!(png.get_pixel(8, 63).0, [0, 0, 0, 0]);
     assert_eq!(entries(checked(build(&roster, &vault, &logos))), first);
     roster.teams[0] = team(&vault, "001", 1, "next-password");
     let second = entries(checked(build(&roster, &vault, &logos)));
