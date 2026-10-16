@@ -3532,7 +3532,7 @@ checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
 name = "natsume-device-daemon"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "base64",
  "clap",
@@ -3570,7 +3570,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-device-protocol"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "ed25519-dalek",
  "prost",
@@ -3581,7 +3581,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-local-control-api"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "serde",
  "zbus",
@@ -3589,7 +3589,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-privileged-helper"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "futures-util",
  "natsume-local-control-api",
@@ -3611,7 +3611,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-roster"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "base64",
  "calamine",
@@ -3628,7 +3628,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-server"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "argon2",
  "axum",
@@ -3684,7 +3684,7 @@ dependencies = [
 
 [[package]]
 name = "natsume-session-agent"
-version = "2.10.1"
+version = "2.10.2"
 dependencies = [
  "image",
  "natsume-device-protocol",
