@@ -91,3 +91,6 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+# HarfRust 0.3.2's upstream 16-bit cache fix; Cargo.toml pins its full revision.
+allow-git = ["https://github.com/harfbuzz/harfrust"]
+required-git-spec = "rev"

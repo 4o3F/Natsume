@@ -90,6 +90,11 @@ zeroize = { version = "1", features = ["derive", "serde"] }
 zbus = { version = "5", default-features = false, features = ["option-as-array", "p2p", "tokio"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
 
+[patch.crates-io]
+# Fix 16-bit glyph-property cache misses without upgrading Slint/Parley.
+# Remove when the text stack accepts a release containing this upstream fix.
+harfrust = { git = "https://github.com/harfbuzz/harfrust", rev = "0149dc8b9376caabd803c12ff3cc08be32242597" }
+
 [workspace.lints.rust]
 unsafe_code = "deny"
 elided_lifetimes_in_paths = "deny"
