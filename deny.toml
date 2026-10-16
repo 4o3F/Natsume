@@ -1,6 +1,7 @@
 [advisories]
 yanked = "deny"
 ignore = [
+  { crate = "zip@8.6.0", reason = "Temporary yanked-version exception: released calamine 0.36.1 still requires zip 8.6 and has no released migration to non-yanked zip 9; remove when Calamine releases compatible support; owner: repository owner, recorded 2026-10-16, re-review at every ZIP/Calamine dependency bump; RustSec advisories remain enforced" },
   { id = "RUSTSEC-2024-0436", reason = "Slint 1.15's image closure retains unmaintained paste 1.0.15 through exr/rav1e; remove when the frozen Slint line eliminates that dependency; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
   { id = "RUSTSEC-2026-0192", reason = "Slint 1.15's font and SVG closure retains unmaintained ttf-parser 0.25.1; remove when Slint migrates the remaining consumers to skrifa; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
   { id = "RUSTSEC-2026-0206", reason = "Slint 1.15's resvg/usvg closure retains unmaintained rustybuzz 0.20.1; remove when the frozen Slint line adopts harfrust throughout; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
