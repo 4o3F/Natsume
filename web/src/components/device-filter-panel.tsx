@@ -7,23 +7,11 @@ import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { Button } from "@/components/ui/button";
-import {
-  DeviceStateFilter,
-  type DeviceStateFilterValue,
-} from "./device-state-filter";
 import { deviceIpExport } from "./device-network";
 
 type Device = components["schemas"]["DeviceResponse"];
 
-export function DeviceFilterPanel({
-  value,
-  onChange,
-  children,
-}: {
-  value: DeviceStateFilterValue;
-  onChange: (value: DeviceStateFilterValue) => void;
-  children: ReactNode;
-}) {
+export function DeviceFilterPanel({ children }: { children: ReactNode }) {
   const { api } = useSessionScope();
   const [expanded, setExpanded] = useState(false);
   async function readAllDevices(signal?: AbortSignal) {
@@ -64,10 +52,7 @@ export function DeviceFilterPanel({
       aria-label="Device filters"
       className="overflow-hidden rounded-xl border bg-card shadow-sm"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3 p-4">
-        <DeviceStateFilter value={value} onChange={onChange} />
-        {children}
-      </div>
+      <div className="space-y-4 p-4">{children}</div>
       <details
         className="group border-t"
         onToggle={(event) => setExpanded(event.currentTarget.open)}

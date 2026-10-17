@@ -337,6 +337,156 @@ test("seat sorting uses current binding and survives device polling", async ({
   ).toBeVisible();
 });
 
+test("/devices combines connection, lifecycle, and search filters and resets empty results", async ({
+  page,
+  context,
+}, testInfo) => {
+  const fleet = targetFleet(6);
+  fleet[0].machine_hardware_id = "f0e1d2c3-b4a5-5678-9012-abcdefabcdef";
+  fleet[1].convergence.connection_state = "offline";
+  fleet[2].convergence.connection_state = "awaiting_fresh_state";
+  fleet[3].state = "disabled";
+  fleet[3].convergence.connection_state = "offline";
+  fleet[4].state = "revoked";
+  fleet[4].convergence.connection_state = "offline";
+  fleet[5].convergence.binding.target = {
+    state: "unbound",
+    negotiation_id: bindingContext.binding_id,
+  };
+  const api = await mockTargets(context, fleet);
+  await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
+  await page.goto("/devices");
+  const seats = page.locator("tbody tr td:first-child");
+  const connection = page.getByRole("group", {
+    name: "Connection",
+    exact: true,
+  });
+  const search = page.getByRole("searchbox", { name: "Search devices" });
+  const reset = page.getByRole("button", { name: "Reset filters" });
+  await expect(seats).toHaveText(["A-01", "A-02", "A-03", "A-04", "—"]);
+  await expect(page.getByRole("status")).toHaveText("Showing 5 of 5 devices");
+  await expect(reset).toBeDisabled();
+  for (const checkbox of await connection.getByRole("checkbox").all()) {
+    await expect(checkbox).toBeChecked();
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({
+    path: testInfo.outputPath("devices-filters-all-desktop.png"),
+    fullPage: true,
+  });
+
+  await selectConnectionStates(page, ["offline"]);
+  await expect(seats).toHaveText(["A-02", "A-04"]);
+  await expect(page.getByRole("status")).toHaveText("Showing 2 of 5 devices");
+  await page.screenshot({
+    path: testInfo.outputPath("devices-filters-offline-desktop.png"),
+    fullPage: true,
+  });
+  for (const width of [768, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath(`devices-filters-offline-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await selectConnectionStates(page, ["active"]);
+  await expect(seats).toHaveText(["A-01", "—"]);
+  await selectConnectionStates(page, ["awaiting_fresh_state"]);
+  await expect(seats).toHaveText(["A-03"]);
+  await selectConnectionStates(page, ["active", "offline"]);
+  await expect(seats).toHaveText(["A-01", "A-02", "A-04", "—"]);
+  // Local filters do not cause extra requests or alter the lifecycle cache key.
+  expect(api.reads).toEqual(["enabled,disabled"]);
+  await selectDeviceStates(page, ["disabled"]);
+  await expect(seats).toHaveText(["A-04"]);
+  await selectDeviceStates(page, ["revoked"]);
+  await expect(seats).toHaveText(["A-05"]);
+  await reset.click();
+  await expect(seats).toHaveText(["A-01", "A-02", "A-03", "A-04", "—"]);
+  await expect(reset).toBeDisabled();
+
+  for (const [query, expected] of [
+    ["  a-02  ", "A-02"],
+    // Match hidden portions of a full hardware ID, not just its truncated label.
+    ["D2C3-B4A5", "A-01"],
+    ["MACHINE-03", "A-03"],
+    [fleet[3].device_id, "A-04"],
+    // The previous client assignment is not the current seat after unbinding.
+    ["A-06", null],
+  ] as const) {
+    await search.fill(query);
+    if (expected) await expect(seats).toHaveText([expected]);
+    else
+      await expect(
+        page.getByText("No devices found.", { exact: true }),
+      ).toBeVisible();
+  }
+  await search.fill("machine-02");
+  await selectConnectionStates(page, ["active"]);
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("devices-filters-empty-desktop.png"),
+    fullPage: true,
+  });
+  await expect(connection).toBeVisible();
+  await reset.click();
+  await expect(search).toHaveValue("");
+  await expect(seats).toHaveCount(5);
+  await selectConnectionStates(page, []);
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("status")).toHaveText("Showing 0 of 5 devices");
+  // Controls remain keyboard-operable even when no states are selected.
+  await connection
+    .getByRole("checkbox", { name: "Offline", exact: true })
+    .focus();
+  await page.keyboard.press("Space");
+  await expect(seats).toHaveText(["A-02", "A-04"]);
+});
+
+test("/devices reapplies local filters to polled state without resetting search or details", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(2);
+  fleet[1].convergence.connection_state = "offline";
+  await mockTargets(context, fleet);
+  await page.clock.install();
+  await page.goto("/devices");
+  await selectConnectionStates(page, ["offline"]);
+  const search = page.getByRole("searchbox", { name: "Search devices" });
+  await search.fill("machine-");
+  await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
+  await page.getByRole("button", { name: "View", exact: true }).click();
+  await expect(
+    page.getByText(fleet[1].device_id, { exact: true }),
+  ).toBeVisible();
+  await page.clock.runFor(10_000);
+  await expect(
+    page.getByText(fleet[1].device_id, { exact: true }),
+  ).toBeVisible();
+  fleet[0].convergence.connection_state = "offline";
+  fleet[1].convergence.connection_state = "active";
+  await page.clock.runFor(10_000);
+  await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
+  await expect(page.getByText(fleet[1].device_id, { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(search).toHaveValue("machine-");
+  await expect(
+    page
+      .getByRole("group", { name: "Connection", exact: true })
+      .getByRole("checkbox", { name: "Online", exact: true }),
+  ).not.toBeChecked();
+});
+
 test("/devices shows IP differences inline and exports the complete emergency address list", async ({
   page,
   context,
@@ -408,6 +558,13 @@ test("/devices shows IP differences inline and exports the complete emergency ad
     });
   }
   await selectDeviceStates(page, ["enabled"]);
+  await selectConnectionStates(page, ["active"]);
+  await page
+    .getByRole("searchbox", { name: "Search devices" })
+    .fill("no-match");
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
   fleet[0].network = network("192.0.2.11");
   fleet[3].network = network("192.0.2.11", null);
   const downloaded = page.waitForEvent("download");
@@ -779,6 +936,22 @@ async function selectDeviceStates(
   for (const state of ["enabled", "disabled", "revoked"] as const) {
     await filter
       .getByRole("checkbox", { name: new RegExp(`^${state}$`, "i") })
+      .setChecked(states.includes(state));
+  }
+}
+
+async function selectConnectionStates(
+  page: Page,
+  states: components["schemas"]["DeviceConvergenceResponse"]["connection_state"][],
+) {
+  const filter = page.getByRole("group", { name: "Connection", exact: true });
+  for (const [state, label] of [
+    ["active", "Online"],
+    ["awaiting_fresh_state", "Connected, awaiting fresh state"],
+    ["offline", "Offline"],
+  ] as const) {
+    await filter
+      .getByRole("checkbox", { name: label, exact: true })
       .setChecked(states.includes(state));
   }
 }

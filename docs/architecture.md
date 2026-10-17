@@ -1464,6 +1464,14 @@ Session／Home convergence、foreground Target 和 Actual。单台操作通过�
 全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小
 范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
 
+Devices 的 Connection 筛选独立于生命周期，提供 Online（`active`）、Connected, awaiting fresh state
+（`awaiting_fresh_state`）和 Offline（`offline`）多选，默认全部选中；未收到新状态的连接不算 Online。
+同组选择取并集，连接、生命周期和搜索之间取交集；搜索忽略首尾空白和大小写，匹配当前 Binding
+Target 的座位号、完整 Device ID 或硬件 ID，不使用旧 Actual 中的座位号。连接和搜索在当前生命周期
+查询结果上本地筛选，轮询后重新应用，不修改共享查询缓存或额外发起列表请求。面板显示匹配数与
+当前生命周期范围总数；空结果或全不选时仍可调整筛选。Reset filters 恢复默认生命周期、全部连接
+状态和空搜索；这些列表筛选不影响 Emergency 导出范围。
+
 Devices在行内详情展示双方IP和记录时间，支持复制；离线设备明确标为最近记录。
 双方地址均存在且不一致时，在现有Device单元格的标识右侧显示琥珀色警告图标；悬停或聚焦
 说明差异，点击展开该行详情，不新增IP列，也不覆盖连接状态的图标或行背景。

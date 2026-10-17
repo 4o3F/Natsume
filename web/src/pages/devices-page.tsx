@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ColumnDef } from "@tanstack/react-table";
+import { RotateCcw, Search } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -9,12 +10,19 @@ import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DeviceFilterPanel } from "@/components/device-filter-panel";
 import {
+  CheckboxFilter,
+  CheckboxFilterOption,
+} from "@/components/checkbox-filter";
+import {
   DeviceIpWarning,
   DeviceNetworkDetails,
 } from "@/components/device-network-info";
 import { DataTable } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
-import { type DeviceStateFilterValue } from "@/components/device-state-filter";
+import {
+  DeviceStateFilter,
+  type DeviceStateFilterValue,
+} from "@/components/device-state-filter";
 import {
   defaultDeviceStateFilter,
   selectedDeviceStates,
@@ -49,6 +57,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 
 type Device = components["schemas"]["DeviceResponse"];
 type Convergence = components["schemas"]["DeviceConvergenceResponse"];
@@ -56,12 +65,24 @@ type ConvergenceStatus = Convergence["gateway"]["status"];
 type DeviceLifecycleState = Device["state"];
 
 const DEVICES_KEY = ["devices"] as const;
+const connectionStates = Object.keys(
+  connections,
+) as Convergence["connection_state"][];
+const defaultConnectionFilter = {
+  active: true,
+  awaiting_fresh_state: true,
+  offline: true,
+};
 
 export function DevicesPage() {
   const { api } = useSessionScope();
   const session = useSession().data;
   const queryClient = useQueryClient();
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [connectionFilter, setConnectionFilter] = useState(
+    defaultConnectionFilter,
+  );
   const [stateFilter, setStateFilter] = useState<DeviceStateFilterValue>(
     defaultDeviceStateFilter,
   );
@@ -96,7 +117,25 @@ export function DevicesPage() {
       await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
-  const visibleDevices = states.length === 0 ? [] : (devices.data ?? []);
+  const listedDevices = states.length === 0 ? [] : (devices.data ?? []);
+  const query = search.trim().toLowerCase();
+  const visibleDevices = listedDevices.filter((device) => {
+    const binding = device.convergence.binding.target;
+    const seat = binding?.state === "bound" ? binding.context.seat_code : null;
+    return (
+      connectionFilter[device.convergence.connection_state] &&
+      (!query ||
+        [seat, device.device_id, device.machine_hardware_id].some((value) =>
+          value?.toLowerCase().includes(query),
+        ))
+    );
+  });
+  const hasActiveFilters =
+    search !== "" ||
+    connectionStates.some((state) => !connectionFilter[state]) ||
+    stateFilter.enabled !== defaultDeviceStateFilter.enabled ||
+    stateFilter.disabled !== defaultDeviceStateFilter.disabled ||
+    stateFilter.revoked !== defaultDeviceStateFilter.revoked;
 
   const isAdmin = session?.role === "admin";
   const { isPending: isUpdatingLifecycle, mutate: updateLifecycle } = lifecycle;
@@ -385,12 +424,61 @@ export function DevicesPage() {
         </Alert>
       )}
 
-      <DeviceFilterPanel value={stateFilter} onChange={setStateFilter}>
-        {devices.data && (
-          <p className="text-sm text-muted-foreground">
-            {visibleDevices.length} devices
-          </p>
-        )}
+      <DeviceFilterPanel>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="relative min-w-0 flex-1 basis-64 sm:max-w-sm">
+            <Search
+              aria-hidden="true"
+              className="pointer-events-none absolute top-2.5 left-3 size-4 text-muted-foreground"
+            />
+            <Input
+              type="search"
+              aria-label="Search devices"
+              placeholder="Search by seat, device ID, or hardware ID…"
+              className="pl-9"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-3 sm:ml-auto">
+            {devices.data && (
+              <p
+                role="status"
+                className="text-sm text-muted-foreground tabular-nums"
+              >
+                Showing {visibleDevices.length} of {listedDevices.length}{" "}
+                devices
+              </p>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!hasActiveFilters}
+              onClick={() => {
+                setSearch("");
+                setStateFilter(defaultDeviceStateFilter);
+                setConnectionFilter(defaultConnectionFilter);
+              }}
+            >
+              <RotateCcw aria-hidden="true" />
+              Reset filters
+            </Button>
+          </div>
+        </div>
+        <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+        <CheckboxFilter label="Connection">
+          {connectionStates.map((state) => (
+            <CheckboxFilterOption
+              key={state}
+              label={connections[state].label}
+              checked={connectionFilter[state]}
+              onCheckedChange={(checked) =>
+                setConnectionFilter({ ...connectionFilter, [state]: checked })
+              }
+            />
+          ))}
+        </CheckboxFilter>
       </DeviceFilterPanel>
       <DataState
         isLoading={devices.isLoading}
