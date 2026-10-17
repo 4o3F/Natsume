@@ -1,7 +1,14 @@
 [advisories]
 yanked = "deny"
 ignore = [
-  { crate = "zip@8.6.0", reason = "Temporary yanked-version exception: released calamine 0.36.1 still requires zip 8.6 and has no released migration to non-yanked zip 9; remove when Calamine releases compatible support; owner: repository owner, recorded 2026-10-16, re-review at every ZIP/Calamine dependency bump; RustSec advisories remain enforced" },
+  { crate = "zip@8.6.0", reason = "Temporary yanked-version exception: released calamine 0.36.1 still requires zip 8.6 and has no released migration to non-yanked zip 9; remove when Calamine releases compatible support; owner: repository owner, recorded 2026-10-16, re-review at every ZIP/Calamine dependency bump; RustSec exceptions are separately scoped by advisory ID below" },
+  # Operator-approved bridge until released Calamine supports ZIP 9. Workbook
+  # validation and Calamine read entries as streams; contest export writes an
+  # in-memory ZIP. These paths do not extract archives to the filesystem.
+  # Re-review on every ZIP/Calamine dependency bump or archive API change.
+  { id = "RUSTSEC-2026-0367", reason = "Temporary exception for zip 8.6.0: privileged permission preservation affects filesystem extraction, which Natsume and Calamine 0.36.1 do not use; owner: repository owner, approved 2026-10-17; remove when released Calamine supports patched ZIP >=9" },
+  { id = "RUSTSEC-2026-0368", reason = "Temporary exception for zip 8.6.0: attacker-controlled symlink targets affect filesystem extraction, which Natsume and Calamine 0.36.1 do not use; owner: repository owner, approved 2026-10-17; remove when released Calamine supports patched ZIP >=9" },
+  { id = "RUSTSEC-2026-0369", reason = "Temporary exception for zip 8.6.0: permission changes through symlinks affect filesystem extraction, which Natsume and Calamine 0.36.1 do not use; owner: repository owner, approved 2026-10-17; remove when released Calamine supports patched ZIP >=9" },
   { id = "RUSTSEC-2024-0436", reason = "Slint 1.15's image closure retains unmaintained paste 1.0.15 through exr/rav1e; remove when the frozen Slint line eliminates that dependency; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
   { id = "RUSTSEC-2026-0192", reason = "Slint 1.15's font and SVG closure retains unmaintained ttf-parser 0.25.1; remove when Slint migrates the remaining consumers to skrifa; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
   { id = "RUSTSEC-2026-0206", reason = "Slint 1.15's resvg/usvg closure retains unmaintained rustybuzz 0.20.1; remove when the frozen Slint line adopts harfrust throughout; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
