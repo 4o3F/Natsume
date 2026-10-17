@@ -777,19 +777,28 @@ pub(crate) mod tests {
                     tokio::task::yield_now().await;
                 }
             })
-            .await?;
-            for _ in 0..512 {
-                tokio::time::sleep(Duration::from_millis(2)).await;
-                let mut excess = TcpStream::connect(address).await?;
-                let mut byte = [0];
-                assert!(matches!(
-                    timeout(TEST_TIMEOUT, excess.read(&mut byte)).await?,
-                    Ok(0) | Err(_)
-                ));
-                assert_eq!(
-                    capacity.available_permits(),
-                    super::MAX_CONNECTIONS - super::MAX_HANDSHAKES
-                );
+            .await
+            .map_err(|_| "overload fixture did not reach handshake capacity")?;
+            // Bound client concurrency while avoiding serial socket latency
+            // consuming the stalled handshakes' five-second lifetime.
+            for _ in 0..16 {
+                let mut rejections = tokio::task::JoinSet::new();
+                for _ in 0..32 {
+                    rejections.spawn(async move {
+                        let mut excess = TcpStream::connect(address).await?;
+                        let mut byte = [0];
+                        timeout(TEST_TIMEOUT, excess.read(&mut byte))
+                            .await
+                            .map_err(std::io::Error::other)
+                    });
+                }
+                while let Some(result) = rejections.join_next().await {
+                    assert!(matches!(result??, Ok(0) | Err(_)));
+                    assert_eq!(
+                        capacity.available_permits(),
+                        super::MAX_CONNECTIONS - super::MAX_HANDSHAKES
+                    );
+                }
             }
             peak_fds = peak_fds.max(fs::read_dir("/proc/self/fd")?.count());
             // Exercise expiry, not just voluntary client disconnects.
