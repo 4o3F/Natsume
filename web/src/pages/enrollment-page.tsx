@@ -1,5 +1,4 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 import {
   DoorClosed,
   DoorOpen,
@@ -13,7 +12,7 @@ import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -79,7 +78,7 @@ export function EnrollmentPage() {
 
   const isAdmin = session?.role === "admin";
   const isMutating = approve.isPending || deny.isPending;
-  const columns: ColumnDef<EnrollmentReview>[] = [
+  const columns: DataTableColumnDef<EnrollmentReview>[] = [
     { accessorKey: "machine_hardware_id", header: "Machine hardware ID" },
     {
       accessorKey: "evidence_quality",

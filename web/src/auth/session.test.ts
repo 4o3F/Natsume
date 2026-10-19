@@ -173,12 +173,12 @@ describe("session ownership", () => {
   });
 
   it("cannot restore a token when body parsing finishes after the session ends", async () => {
-    let finish!: (data: unknown) => void;
-    const body = new Promise((resolve) => {
+    let finish!: (data: string) => void;
+    const body = new Promise<string>((resolve) => {
       finish = resolve;
     });
     const response = new Response("{}", { status: 201 });
-    const parse = vi.spyOn(response, "json").mockImplementation(() => body);
+    const parse = vi.spyOn(response, "text").mockImplementation(() => body);
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => response),
@@ -192,7 +192,7 @@ describe("session ownership", () => {
     controller.getSnapshot().login(admin);
     const current = controller.getSnapshot();
     current.preparation.set({ ...preview, preview_token: "new-token" });
-    finish(preview);
+    finish(JSON.stringify(preview));
     const result = await pending;
     expect(() =>
       old.preparation.set({ ...result.data!, file: preview.file }),

@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 import {
   CircleCheck,
   CircleHelp,
@@ -12,7 +11,7 @@ import {
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -77,7 +76,7 @@ export function PreparationLogos({ candidateId }: { candidateId?: string }) {
     },
     gcTime: 0,
   });
-  const columns = useMemo<ColumnDef<School>[]>(
+  const columns = useMemo<DataTableColumnDef<School>[]>(
     () => [
       {
         accessorKey: "organization_id",

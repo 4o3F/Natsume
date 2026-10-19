@@ -1,6 +1,5 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 import { RotateCcw, Search } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
@@ -17,7 +16,7 @@ import {
   DeviceIpWarning,
   DeviceNetworkDetails,
 } from "@/components/device-network-info";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import {
   DeviceStateFilter,
@@ -140,7 +139,7 @@ export function DevicesPage() {
   const isAdmin = session?.role === "admin";
   const { isPending: isUpdatingLifecycle, mutate: updateLifecycle } = lifecycle;
   const columns = useMemo(() => {
-    const columns: ColumnDef<Device>[] = [
+    const columns: DataTableColumnDef<Device>[] = [
       {
         id: "seat",
         header: "Seat",
@@ -149,7 +148,7 @@ export function DevicesPage() {
             ? device.convergence.binding.target.context.seat_code
             : undefined,
         enableSorting: true,
-        sortingFn: "alphanumeric",
+        sortFn: "alphanumeric",
         sortUndefined: "last",
         sortDescFirst: false,
         cell: ({ getValue }) => (
@@ -272,7 +271,7 @@ export function DevicesPage() {
           ["session_control", "Session"],
           ["home", "Home"],
         ] as const
-      ).map(([key, name]): ColumnDef<Device> => ({
+      ).map(([key, name]): DataTableColumnDef<Device> => ({
         id: key,
         header: () => <span className="block text-center">{name}</span>,
         cell: ({ row }) => (

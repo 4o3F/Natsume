@@ -2,15 +2,13 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { FolderSync, Monitor, MonitorPlay } from "lucide-react";
 
-import type { ColumnDef } from "@tanstack/react-table";
-
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataState } from "@/components/data-state";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import {
   DeviceStateFilter,
   type DeviceStateFilterValue,
@@ -109,13 +107,13 @@ export function TargetsPage() {
     );
   }, [devices.data, search, states.length]);
   const columns = useMemo(() => {
-    const columns: ColumnDef<Device>[] = [
+    const columns: DataTableColumnDef<Device>[] = [
       {
         id: "seat",
         header: "Seat",
         accessorFn: seatCode,
         enableSorting: true,
-        sortingFn: "alphanumeric",
+        sortFn: "alphanumeric",
         sortUndefined: "last",
         sortDescFirst: false,
         cell: ({ getValue }) => (
@@ -192,7 +190,7 @@ export function TargetsPage() {
           ["session_control", "Session"],
           ["home", "Home"],
         ] as const
-      ).map(([key, name]): ColumnDef<Device> => ({
+      ).map(([key, name]): DataTableColumnDef<Device> => ({
         id: key,
         header: name,
         cell: ({ row }) => (

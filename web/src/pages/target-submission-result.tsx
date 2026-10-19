@@ -211,7 +211,7 @@ export function TargetSubmissionResult({
                     Rejected ({rejectedCount})
                   </Button>
                 </div>
-                <DataTable<Result, unknown>
+                <DataTable<Result>
                   scrollable
                   data={onlyRejected ? (rejected ?? []) : results}
                   getRowId={(result) => result.device_id}

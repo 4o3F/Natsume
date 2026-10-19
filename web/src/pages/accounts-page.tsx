@@ -1,12 +1,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import { Input } from "@/components/ui/input";
 
@@ -14,7 +13,7 @@ import { TeamName, TeamSchool } from "@/components/roster-team";
 
 type Account = components["schemas"]["AccountResponse"];
 
-const columns: ColumnDef<Account>[] = [
+const columns: DataTableColumnDef<Account>[] = [
   { accessorKey: "domjudge_username", header: "DOMjudge username" },
   { accessorKey: "team.seat_code", header: "Seat", enableSorting: true },
   {

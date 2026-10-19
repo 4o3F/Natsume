@@ -1,13 +1,12 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 import { Download, Eye, LoaderCircle } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
   AlertDialog,
@@ -58,12 +57,12 @@ const MAX_WORKBOOK_BYTES = 8 * 1024 * 1024;
 
 const PENDING_IMPORT_KEY = ["imports", "pending"] as const;
 
-const seatChangeColumns: ColumnDef<SeatChange>[] = [
+const seatChangeColumns: DataTableColumnDef<SeatChange>[] = [
   { accessorKey: "seat_code", header: "Seat code" },
   { accessorKey: "change", header: "Change" },
 ];
 
-const mappingColumns: ColumnDef<ImportMappingChange>[] = [
+const mappingColumns: DataTableColumnDef<ImportMappingChange>[] = [
   { accessorKey: "seat_code", header: "Seat code" },
   {
     accessorKey: "current_domjudge_username",
@@ -76,7 +75,7 @@ const mappingColumns: ColumnDef<ImportMappingChange>[] = [
   },
 ];
 
-const bindingColumns: ColumnDef<ImportBindingImpact>[] = [
+const bindingColumns: DataTableColumnDef<ImportBindingImpact>[] = [
   { accessorKey: "seat_code", header: "Seat code" },
   { accessorKey: "device_id", header: "Device ID" },
   {

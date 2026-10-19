@@ -1,10 +1,14 @@
 import { Fragment, type ReactNode } from "react";
 import {
   type ColumnDef,
+  type RowData,
+  columnVisibilityFeature,
+  createSortedRowModel,
   flexRender,
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
+  rowSortingFeature,
+  sortFns,
+  tableFeatures,
+  useTable,
 } from "@tanstack/react-table";
 import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
 
@@ -18,7 +22,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 
-export function DataTable<TData, TValue>({
+const dataTableFeatures = tableFeatures({
+  columnVisibilityFeature,
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns,
+});
+
+export type DataTableColumnDef<TData extends RowData> = ColumnDef<
+  typeof dataTableFeatures,
+  TData
+>;
+
+export function DataTable<TData extends RowData>({
   columns,
   data,
   rowClassName,
@@ -26,23 +42,19 @@ export function DataTable<TData, TValue>({
   renderExpandedRow,
   scrollable = false,
 }: {
-  columns: ColumnDef<TData, TValue>[];
+  columns: DataTableColumnDef<TData>[];
   data: TData[];
   rowClassName?: (row: TData) => string;
   getRowId?: (row: TData) => string;
   renderExpandedRow?: (row: TData) => ReactNode;
   scrollable?: boolean;
 }) {
-  // React Compiler is not enabled, so this diagnostic has no runtime consequence.
-  // If it is enabled, this component must opt out with "use no memo".
-  // eslint-disable-next-line react-hooks/incompatible-library
-  const table = useReactTable({
+  const table = useTable({
+    features: dataTableFeatures,
     data,
     columns,
     getRowId,
     defaultColumn: { enableSorting: false },
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
   });
 
   return (

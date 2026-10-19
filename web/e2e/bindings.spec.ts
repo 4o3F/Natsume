@@ -91,9 +91,26 @@ for (const width of [1024, 1440]) {
     ).toBeLessThanOrEqual(width);
     await page.screenshot({ path: testInfo.outputPath("bindings.png") });
 
-    await page.getByRole("button", { name: "Seat", exact: true }).click();
+    const seatHeader = page.getByRole("columnheader", {
+      name: "Seat",
+      exact: true,
+    });
+    const sortSeat = seatHeader.getByRole("button", {
+      name: "Seat",
+      exact: true,
+    });
+    await expect(seatHeader).toHaveAttribute("aria-sort", "none");
+    await sortSeat.click();
+    await expect(seatHeader).toHaveAttribute("aria-sort", "ascending");
     await expect(seatCells).toHaveText(["A-01", "A-2", "A-10"]);
-    await page.getByRole("button", { name: "Seat", exact: true }).click();
+    await sortSeat.click();
+    await expect(seatHeader).toHaveAttribute("aria-sort", "descending");
+    await expect(seatCells).toHaveText(["A-10", "A-2", "A-01"]);
+    await sortSeat.click();
+    await expect(seatHeader).toHaveAttribute("aria-sort", "none");
+    await expect(seatCells).toHaveText(["A-01", "A-2", "A-10"]);
+    await sortSeat.click();
+    await sortSeat.click();
     await expect(seatCells).toHaveText(["A-10", "A-2", "A-01"]);
 
     const search = page.getByRole("searchbox", { name: "Search seats" });

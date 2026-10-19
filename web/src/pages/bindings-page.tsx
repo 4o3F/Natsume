@@ -1,13 +1,12 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import { Alert, AlertTitle } from "@/components/ui/alert";
 import {
@@ -77,12 +76,12 @@ export function BindingsPage() {
     },
   });
 
-  const columns: ColumnDef<BindingRow>[] = [
+  const columns: DataTableColumnDef<BindingRow>[] = [
     {
       accessorKey: "seat_code",
       header: "Seat",
       enableSorting: true,
-      sortingFn: "alphanumeric",
+      sortFn: "alphanumeric",
       cell: ({ row }) => (
         <span className="font-semibold" title={row.original.seat_id}>
           {row.original.seat_code ?? "Unknown seat"}

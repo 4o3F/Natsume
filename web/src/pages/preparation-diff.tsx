@@ -1,7 +1,5 @@
-import type { ColumnDef } from "@tanstack/react-table";
-
 import type { components } from "@/api/generated/schema";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
 
 type Diff = components["schemas"]["ImportRedactedDiff"];
@@ -35,7 +33,7 @@ function SchoolDetails({ value }: { value: Organization | null }) {
   );
 }
 
-const schoolChangeColumns: ColumnDef<OrganizationChange>[] = [
+const schoolChangeColumns: DataTableColumnDef<OrganizationChange>[] = [
   {
     id: "change",
     header: "Change",
@@ -72,7 +70,7 @@ function TeamDetails({ value }: { value: Team | null }) {
   );
 }
 
-const teamChangeColumns: ColumnDef<TeamChange>[] = [
+const teamChangeColumns: DataTableColumnDef<TeamChange>[] = [
   { accessorKey: "account", header: "Account", enableSorting: true },
   {
     id: "current",

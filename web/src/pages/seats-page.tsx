@@ -1,12 +1,11 @@
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import type { ColumnDef } from "@tanstack/react-table";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
-import { DataTable } from "@/components/data-table";
+import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import {
   CheckboxFilter,
@@ -24,7 +23,7 @@ type Seat = SeatFacts & {
   bound: boolean;
 };
 
-const columns: ColumnDef<Seat>[] = [
+const columns: DataTableColumnDef<Seat>[] = [
   {
     accessorKey: "seat_code",
     header: "Seat code",
