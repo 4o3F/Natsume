@@ -12,7 +12,7 @@ struct State {
     lease: SessionAgentLease,
     snapshot: SessionUiSnapshot,
     live: bool,
-    confirm_error: Option<&'static str>,
+    confirm_error: Option<zbus::fdo::Error>,
     get_error: Option<&'static str>,
     get_delay: Duration,
     gets: usize,
@@ -33,8 +33,8 @@ impl DeviceFixture {
             .unwrap_or_else(|error| panic!("fixture: {error}"));
         state.confirms += 1;
         state.accepted = None;
-        if let Some(error) = state.confirm_error {
-            return Err(zbus::fdo::Error::Failed(error.into()));
+        if let Some(error) = &state.confirm_error {
+            return Err(error.clone());
         }
         if !state.live || lease_id != state.lease.lease_id {
             return Err(zbus::fdo::Error::Failed(
@@ -136,11 +136,20 @@ fn fixture() -> (DeviceFixture, SessionAgentLease, SessionPresentation) {
 
 async fn peer(service: DeviceFixture) -> (zbus::Connection, zbus::Connection) {
     let (server, client) = UnixStream::pair().unwrap_or_else(|error| panic!("socket: {error}"));
-    let server = zbus::connection::Builder::unix_stream(server)
-        .server(zbus::Guid::generate())
-        .and_then(|builder| builder.p2p().serve_at(DEVICE1_PATH, service))
-        .unwrap_or_else(|error| panic!("server: {error}"));
-    let client = zbus::connection::Builder::unix_stream(client).p2p();
+    let server = zbus::connection::Builder::unix_stream(
+        server
+            .into_std()
+            .unwrap_or_else(|error| panic!("server socket: {error}")),
+    )
+    .server(zbus::Guid::generate())
+    .p2p()
+    .serve_at(DEVICE1_PATH, service);
+    let client = zbus::connection::Builder::unix_stream(
+        client
+            .into_std()
+            .unwrap_or_else(|error| panic!("client socket: {error}")),
+    )
+    .p2p();
     let (server, client) = tokio::join!(server.build(), client.build());
     (
         server.unwrap_or_else(|error| panic!("server connection: {error}")),
@@ -332,6 +341,8 @@ async fn rejected_confirmation_negative_controls_fail_closed() {
         "expired",
         "replaced",
         "authentication",
+        "access_denied",
+        "auth_failed",
         "current_revision",
         "regressed_revision",
         "snapshot_session",
@@ -347,8 +358,8 @@ async fn rejected_confirmation_negative_controls_fail_closed() {
     ] {
         let (service, lease, mut frame) = fixture();
         let expected_gets = match case {
-            "expired" | "replaced" | "authentication" | "invalid_frame" | "frame_lease"
-            | "frame_session" | "other_error" => 0,
+            "expired" | "replaced" | "authentication" | "access_denied" | "auth_failed"
+            | "invalid_frame" | "frame_lease" | "frame_session" | "other_error" => 0,
             _ => 1,
         };
         {
@@ -359,9 +370,25 @@ async fn rejected_confirmation_negative_controls_fail_closed() {
             match case {
                 "expired" => state.live = false,
                 "replaced" => state.lease.lease_id = "replacement".into(),
-                "authentication" => state.confirm_error = Some("Session Agent caller was rejected"),
+                "authentication" => {
+                    state.confirm_error = Some(zbus::fdo::Error::Failed(
+                        "Session Agent caller was rejected".into(),
+                    ));
+                }
+                "access_denied" => {
+                    state.confirm_error = Some(zbus::fdo::Error::AccessDenied(
+                        "Session presentation is incomplete or stale".into(),
+                    ));
+                }
+                "auth_failed" => {
+                    state.confirm_error = Some(zbus::fdo::Error::AuthFailed(
+                        "Session presentation is incomplete or stale".into(),
+                    ));
+                }
                 "current_revision" => {
-                    state.confirm_error = Some("Session presentation is incomplete or stale");
+                    state.confirm_error = Some(zbus::fdo::Error::Failed(
+                        "Session presentation is incomplete or stale".into(),
+                    ));
                     state.snapshot.ui_revision = frame.ui_revision;
                 }
                 "regressed_revision" => state.snapshot.ui_revision = frame.ui_revision - 1,
@@ -375,7 +402,11 @@ async fn rejected_confirmation_negative_controls_fail_closed() {
                 "invalid_frame" => frame.fullscreen_width = 0,
                 "frame_lease" => frame.agent_lease_id = "different".into(),
                 "frame_session" => frame.session.logind_session_id = "different".into(),
-                "other_error" => state.confirm_error = Some("Session UI state is unavailable"),
+                "other_error" => {
+                    state.confirm_error = Some(zbus::fdo::Error::Failed(
+                        "Session UI state is unavailable".into(),
+                    ));
+                }
                 _ => unreachable!(),
             }
         }

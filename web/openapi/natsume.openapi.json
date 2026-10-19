@@ -3023,10 +3023,10 @@
           "team": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/TeamResponse"
               },
               {
-                "$ref": "#/components/schemas/TeamResponse"
+                "type": "null"
               }
             ]
           }
@@ -3046,10 +3046,10 @@
           "context": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/BindingContextResponse"
               },
               {
-                "$ref": "#/components/schemas/BindingContextResponse"
+                "type": "null"
               }
             ]
           },
@@ -3104,10 +3104,10 @@
           "actual": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/BindingActualResponse"
               },
               {
-                "$ref": "#/components/schemas/BindingActualResponse"
+                "type": "null"
               }
             ]
           },
@@ -3125,10 +3125,10 @@
           "target": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/BindingTargetResponse"
               },
               {
-                "$ref": "#/components/schemas/BindingTargetResponse"
+                "type": "null"
               }
             ]
           }
@@ -3178,10 +3178,10 @@
               "evaluation": {
                 "oneOf": [
                   {
-                    "type": "null"
+                    "$ref": "#/components/schemas/BindingEvaluationResponse"
                   },
                   {
-                    "$ref": "#/components/schemas/BindingEvaluationResponse"
+                    "type": "null"
                   }
                 ]
               },
@@ -3322,11 +3322,11 @@
           "network": {
             "oneOf": [
               {
-                "type": "null"
-              },
-              {
                 "$ref": "#/components/schemas/DeviceNetworkResponse",
                 "description": "Latest authenticated connection addresses, retained after disconnect/restart."
+              },
+              {
+                "type": "null"
               }
             ]
           },
@@ -3488,10 +3488,10 @@
           "actual": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GatewayActualResponse"
               },
               {
-                "$ref": "#/components/schemas/GatewayActualResponse"
+                "type": "null"
               }
             ]
           },
@@ -3509,10 +3509,10 @@
           "target": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/GatewayTargetResponse"
               },
               {
-                "$ref": "#/components/schemas/GatewayTargetResponse"
+                "type": "null"
               }
             ]
           }
@@ -3574,10 +3574,10 @@
           "actual": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/HomeActualResponse"
               },
               {
-                "$ref": "#/components/schemas/HomeActualResponse"
+                "type": "null"
               }
             ]
           },
@@ -3656,20 +3656,20 @@
           "candidate": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ImportOrganizationResponse"
               },
               {
-                "$ref": "#/components/schemas/ImportOrganizationResponse"
+                "type": "null"
               }
             ]
           },
           "current": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ImportOrganizationResponse"
               },
               {
-                "$ref": "#/components/schemas/ImportOrganizationResponse"
+                "type": "null"
               }
             ]
           }
@@ -3702,10 +3702,10 @@
           "pending": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ImportPendingSummary"
               },
               {
-                "$ref": "#/components/schemas/ImportPendingSummary"
+                "type": "null"
               }
             ]
           }
@@ -3855,20 +3855,20 @@
           "candidate": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ImportTeamResponse"
               },
               {
-                "$ref": "#/components/schemas/ImportTeamResponse"
+                "type": "null"
               }
             ]
           },
           "current": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/ImportTeamResponse"
               },
               {
-                "$ref": "#/components/schemas/ImportTeamResponse"
+                "type": "null"
               }
             ]
           }
@@ -4238,10 +4238,10 @@
           "actual": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/RuntimeConfigActualResponse"
               },
               {
-                "$ref": "#/components/schemas/RuntimeConfigActualResponse"
+                "type": "null"
               }
             ]
           },
@@ -4332,10 +4332,10 @@
           "target": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/SessionControlTargetResponse"
               },
               {
-                "$ref": "#/components/schemas/SessionControlTargetResponse"
+                "type": "null"
               }
             ]
           }
@@ -4368,10 +4368,10 @@
           "actual": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/SessionActualResponse"
               },
               {
-                "$ref": "#/components/schemas/SessionActualResponse"
+                "type": "null"
               }
             ]
           },
@@ -4389,10 +4389,10 @@
           "target": {
             "oneOf": [
               {
-                "type": "null"
+                "$ref": "#/components/schemas/SessionControlTargetResponse"
               },
               {
-                "$ref": "#/components/schemas/SessionControlTargetResponse"
+                "type": "null"
               }
             ]
           }

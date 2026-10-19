@@ -70,8 +70,9 @@ fn replace_entry(name: &str, replacement: &[u8]) -> Vec<u8> {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..archive.len() {
         let mut entry = checked(archive.by_index(index));
-        checked(writer.start_file(entry.name(), SimpleFileOptions::default()));
-        if entry.name() == name {
+        let entry_name = checked(entry.name());
+        checked(writer.start_file(&entry_name, SimpleFileOptions::default()));
+        if entry_name == name {
             checked(writer.write_all(replacement));
         } else {
             checked(std::io::copy(&mut entry, &mut writer));

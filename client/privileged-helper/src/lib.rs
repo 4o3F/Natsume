@@ -341,14 +341,20 @@ mod tests {
             panic!("unix socketpair must be created");
         };
         let guid = zbus::Guid::generate();
-        let server_builder = match zbus::connection::Builder::unix_stream(server_stream)
-            .server(guid)
-            .and_then(|builder| builder.p2p().serve_at(PRIVILEGED1_PATH, service))
-        {
-            Ok(builder) => builder,
-            Err(error) => panic!("server builder must be configured: {error}"),
-        };
-        let client_builder = zbus::connection::Builder::unix_stream(client_stream).p2p();
+        let server_builder = zbus::connection::Builder::unix_stream(
+            server_stream
+                .into_std()
+                .unwrap_or_else(|error| panic!("server socket: {error}")),
+        )
+        .server(guid)
+        .p2p()
+        .serve_at(PRIVILEGED1_PATH, service);
+        let client_builder = zbus::connection::Builder::unix_stream(
+            client_stream
+                .into_std()
+                .unwrap_or_else(|error| panic!("client socket: {error}")),
+        )
+        .p2p();
         let (server, client) = tokio::join!(server_builder.build(), client_builder.build());
         let Ok(_server) = server else {
             panic!("peer server connection must be built: {server:?}");

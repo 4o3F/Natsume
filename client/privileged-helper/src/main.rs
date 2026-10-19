@@ -71,7 +71,7 @@ async fn serve() -> Result<(), ServiceError> {
     // OpenFile supplies this sole descriptor at fd 3 before capabilities are reduced.
     // Inspecting PID 1's procfs link directly would require CAP_SYS_PTRACE.
     verify_mount_namespace(Path::new("/proc/self/ns/mnt"), Path::new("/proc/self/fd/3"))?;
-    let builder = zbus::connection::Builder::system().map_err(|_| ServiceError::Bus)?;
+    let builder = zbus::connection::Builder::system();
     let connection = timeout(
         SYSTEM_BUS_TIMEOUT,
         builder.method_timeout(SYSTEM_BUS_TIMEOUT).build(),

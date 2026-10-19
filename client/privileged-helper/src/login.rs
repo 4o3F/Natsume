@@ -8,7 +8,7 @@ use natsume_local_control_api::{
     ResourceControlError, SessionRole,
 };
 use tokio::time::{Duration, Instant, sleep, timeout};
-use zbus::{Connection, MessageStream, message::Type, zvariant::OwnedObjectPath};
+use zbus::{Connection, MessageStream, OwnedObjectPath, message::Type};
 
 use crate::{
     admission, gdm_registration,
@@ -347,8 +347,9 @@ async fn authenticate(
     let peer = loop {
         let result: zbus::Result<String> = manager.call("OpenSession", &()).await;
         if let Ok(address) = result {
-            break zbus::connection::Builder::address(address.as_str())
-                .map_err(|_| rejected("GDM peer address is invalid"))?
+            let address = zbus::Address::try_from(address.as_str())
+                .map_err(|_| rejected("GDM peer address is invalid"))?;
+            break zbus::connection::Builder::address(address)
                 .p2p()
                 .method_timeout(Duration::from_secs(5))
                 .build()
@@ -483,7 +484,6 @@ async fn greeter_candidate(
         return None;
     }
     let bus = zbus::connection::Builder::address(address)
-        .ok()?
         .method_timeout(Duration::from_secs(1))
         .build()
         .await

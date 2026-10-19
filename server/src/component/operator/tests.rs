@@ -2,7 +2,10 @@ use std::{fs, future::Future, path::PathBuf, pin::Pin, sync::Arc, task::Context}
 
 use argon2::{
     Algorithm, Argon2, KeyId, Params, ParamsBuilder, Version,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
+    password_hash::{
+        PasswordHasher, PasswordVerifier,
+        phc::{Output, PasswordHash},
+    },
 };
 use sha2::{Digest, Sha256};
 use snafu::Snafu;
@@ -103,15 +106,13 @@ fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailur
         || parsed.params.get_decimal("m") != Some(19_456)
         || parsed.params.get_decimal("t") != Some(2)
         || parsed.params.get_decimal("p") != Some(1)
+        || parsed.params.iter().count() != 3
+        || parsed.hash.as_ref().map(Output::len) != Some(32)
     {
         return Err(TestFailure::Argon2ProfileWasNotFrozen);
     }
-    let mut salt_bytes = [0_u8; 64];
     let salt = parsed.salt.ok_or(TestFailure::GeneratedPhcHadNoSalt)?;
-    let decoded_salt = salt
-        .decode_b64(&mut salt_bytes)
-        .map_err(|_| TestFailure::GeneratedPhcSaltWasInvalid)?;
-    if decoded_salt.len() != 16 {
+    if salt.len() != 16 {
         return Err(TestFailure::Argon2SaltLengthWasNotFrozen);
     }
 
@@ -119,6 +120,23 @@ fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailur
     if verify_with_frozen_profile(b"different password", &parsed).is_ok() {
         return Err(TestFailure::IncorrectPasswordWasAccepted);
     }
+    Ok(())
+}
+
+#[test]
+fn password_hash_matches_existing_phc_with_fixed_salt() -> Result<(), TestFailure> {
+    let encoded = frozen_argon2()?
+        .hash_password_with_salt(b"natsume-dummy-password", b"natsume-dummy-sl")
+        .map_err(|_| TestFailure::PasswordHashingFailed)?
+        .to_string();
+    assert_eq!(encoded, DUMMY_PASSWORD_PHC);
+    assert_eq!(
+        verify_password_once(
+            &OperatorPassword::new("natsume-dummy-password".to_owned()),
+            DUMMY_PASSWORD_PHC,
+        ),
+        Ok(true)
+    );
     Ok(())
 }
 
@@ -789,10 +807,7 @@ fn admin_authorization_is_closed() -> Result<(), TestFailure> {
     Ok(())
 }
 
-fn verify_with_frozen_profile(
-    password: &[u8],
-    parsed: &PasswordHash<'_>,
-) -> Result<(), TestFailure> {
+fn verify_with_frozen_profile(password: &[u8], parsed: &PasswordHash) -> Result<(), TestFailure> {
     if parsed.algorithm.as_str() != "argon2id"
         || parsed.version != Some(19)
         || parsed.params.get_decimal("m") != Some(19_456)
@@ -817,14 +832,8 @@ fn assert_dummy_password_phc_is_frozen() -> Result<(), TestFailure> {
     {
         return Err(TestFailure::DummyPhcProfileWasNotFrozen);
     }
-    let mut salt_bytes = [0_u8; 64];
     let salt = parsed.salt.ok_or(TestFailure::DummyPhcWasInvalid)?;
-    if salt
-        .decode_b64(&mut salt_bytes)
-        .map_err(|_| TestFailure::DummyPhcWasInvalid)?
-        .len()
-        != 16
-    {
+    if salt.len() != 16 {
         return Err(TestFailure::DummyPhcSaltWasNotFrozen);
     }
     verify_with_frozen_profile(b"natsume-dummy-password", &parsed)
@@ -857,19 +866,15 @@ fn extra_parameter_phc(password: &str) -> Result<String, TestFailure> {
         .build()
         .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
-    let salt = SaltString::encode_b64(&[0x91_u8; 16])
-        .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)?;
     argon2
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), &[0x91_u8; 16])
         .map(|hash| hash.to_string())
         .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)
 }
 
 fn short_salt_phc(password: &str) -> Result<String, TestFailure> {
-    let salt = SaltString::encode_b64(&[0x92_u8; 8])
-        .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)?;
     frozen_argon2()?
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_with_salt(password.as_bytes(), &[0x92_u8; 8])
         .map(|hash| hash.to_string())
         .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)
 }
@@ -918,8 +923,6 @@ enum TestFailure {
     GeneratedPhcWasInvalid,
     #[snafu(display("the generated password PHC string had no salt"))]
     GeneratedPhcHadNoSalt,
-    #[snafu(display("the generated password PHC salt was invalid"))]
-    GeneratedPhcSaltWasInvalid,
     #[snafu(display("the Argon2 password profile was not frozen"))]
     Argon2ProfileWasNotFrozen,
     #[snafu(display("the Argon2 password salt length was not frozen"))]

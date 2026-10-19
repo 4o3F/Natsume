@@ -1,5 +1,5 @@
 use natsume_local_control_api::GraphicalSession;
-use zbus::{Connection, Proxy, message::Header, proxy::CacheProperties, zvariant::OwnedObjectPath};
+use zbus::{Connection, OwnedObjectPath, Proxy, message::Header, proxy::CacheProperties};
 
 const LOGIN1: &str = "org.freedesktop.login1";
 const LOGIN_PATH: &str = "/org/freedesktop/login1";
@@ -18,9 +18,9 @@ async fn proxy<'a>(
     interface: &'a str,
 ) -> zbus::Result<Proxy<'a>> {
     zbus::proxy::Builder::new(connection)
-        .destination(service)?
-        .path(path)?
-        .interface(interface)?
+        .destination(service)
+        .path(path)
+        .interface(interface)
         .cache_properties(CacheProperties::No)
         .build()
         .await
@@ -215,7 +215,7 @@ pub(super) mod tests {
             let error = zbus::Error::MethodError(
                 name.try_into()?,
                 None,
-                zbus::Message::method_call("/", "Probe")?.build(&())?,
+                zbus::Message::method_call("/", "Probe").build(&())?,
             );
             assert_eq!(no_session(&error), accepted);
         }

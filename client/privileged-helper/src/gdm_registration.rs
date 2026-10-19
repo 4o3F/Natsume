@@ -1,21 +1,26 @@
 //! GDM's acknowledgement is later than `SessionManager` Running and `sd_notify`.
 //! Keep this observer independent of the graphical mutation lock and RPC server.
 
-use std::path::{Path, PathBuf};
+use std::{
+    num::NonZeroUsize,
+    path::{Path, PathBuf},
+};
 
 use futures_util::StreamExt as _;
 use natsume_local_control_api::ResourceControlError;
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, Instant, sleep, timeout};
-use zbus::{
-    Connection, MatchRule, Message, MessageStream, message::Type, zvariant::OwnedObjectPath,
-};
+use zbus::{Connection, MatchRule, Message, MessageStream, OwnedObjectPath, message::Type};
 
 use crate::{
     processes, runtime,
     session::{self, fresh_proxy, unavailable},
 };
 
+const MONITOR_QUEUE_CAPACITY: NonZeroUsize = match NonZeroUsize::new(256) {
+    Some(capacity) => capacity,
+    None => panic!("monitor queue capacity must be nonzero"),
+};
 const RECORD: &str = "gdm-registration.json";
 const GDM: &str = "org.gnome.DisplayManager";
 const MANAGER: &str = "org.gnome.DisplayManager.Manager";
@@ -69,10 +74,7 @@ struct Pending {
 
 async fn context(root: &Path, connection: &Connection) -> Result<Context, ResourceControlError> {
     let dbus = zbus::fdo::DBusProxy::new(connection).await?;
-    let owner = match dbus
-        .get_name_owner(GDM.try_into().map_err(zbus::Error::from)?)
-        .await
-    {
+    let owner = match dbus.get_name_owner(GDM.try_into()?).await {
         Ok(owner) => Some(owner.to_string()),
         Err(zbus::fdo::Error::NameHasNoOwner(_)) => None,
         Err(error) => return Err(zbus::Error::from(error).into()),
@@ -178,7 +180,7 @@ async fn identify(
 ) -> Result<Option<Greeter>, ResourceControlError> {
     let expected = session::account(root, "gdm")?;
     let dbus = zbus::fdo::DBusProxy::new(connection).await?;
-    let name: zbus::names::BusName<'_> = sender.try_into().map_err(zbus::Error::from)?;
+    let name: zbus::names::BusName<'_> = sender.try_into()?;
     if dbus
         .get_connection_unix_user(name.clone())
         .await
@@ -247,12 +249,12 @@ fn accept_reply(pending: &Pending, message: &Message, context: &Context) -> bool
 async fn subscribe(
     root: &Path,
 ) -> Result<(Connection, MessageStream, Cache), ResourceControlError> {
-    let lookup = zbus::connection::Builder::system()?
+    let lookup = zbus::connection::Builder::system()
         .method_timeout(CALL_TIMEOUT)
         .build()
         .await?;
-    let monitor = zbus::connection::Builder::system()?
-        .max_queued(256)
+    let monitor = zbus::connection::Builder::system()
+        .max_queued(MONITOR_QUEUE_CAPACITY)
         .build()
         .await?;
     let rules: Vec<MatchRule<'_>> = [
@@ -317,7 +319,7 @@ async fn observe_once(root: &Path, outage: &mut bool) -> Result<(), ResourceCont
         if message.message_type() == Type::MethodCall {
             if header.interface().map(zbus::names::InterfaceName::as_str) != Some(MANAGER)
                 || header.member().map(zbus::names::MemberName::as_str) != Some("RegisterSession")
-                || header.path().map(zbus::zvariant::ObjectPath::as_str) != Some(MANAGER_PATH)
+                || header.path().map(zbus::ObjectPath::as_str) != Some(MANAGER_PATH)
             {
                 continue;
             }
@@ -405,9 +407,9 @@ mod tests {
     #[test]
     fn only_matching_successful_acknowledgement_completes_startup()
     -> Result<(), Box<dyn std::error::Error>> {
-        let call = Message::method_call(MANAGER_PATH, "RegisterSession")?
-            .sender(":1.30")?
-            .destination(GDM)?
+        let call = Message::method_call(MANAGER_PATH, "RegisterSession")
+            .sender(":1.30")
+            .destination(GDM)
             .build(&())?;
         let request = Pending {
             sender: ":1.30".into(),
@@ -423,20 +425,20 @@ mod tests {
             },
             requested: Instant::now(),
         };
-        let reply = Message::method_return(&call.header())?
-            .sender(":1.20")?
+        let reply = Message::method_return(&call.header())
+            .sender(":1.20")
             .build(&())?;
         assert!(accept_reply(&request, &reply, &context()));
-        let wrong = Message::method_return(&call.header())?
-            .sender(":1.21")?
+        let wrong = Message::method_return(&call.header())
+            .sender(":1.21")
             .build(&())?;
         assert!(!accept_reply(&request, &wrong, &context()));
-        let nonempty = Message::method_return(&call.header())?
-            .sender(":1.20")?
+        let nonempty = Message::method_return(&call.header())
+            .sender(":1.20")
             .build(&true)?;
         assert!(!accept_reply(&request, &nonempty, &context()));
-        let error = Message::error(&call.header(), "org.freedesktop.DBus.Error.Failed")?
-            .sender(":1.20")?
+        let error = Message::error(&call.header(), "org.freedesktop.DBus.Error.Failed")
+            .sender(":1.20")
             .build(&"failed")?;
         assert!(!accept_reply(&request, &error, &context()));
         let mut replaced = context();

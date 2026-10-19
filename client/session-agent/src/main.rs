@@ -75,7 +75,7 @@ async fn resolve_session(session: &mut GraphicalSession) -> zbus::Result<()> {
     if !session.logind_session_id.is_empty() {
         return Ok(());
     }
-    let connection = zbus::connection::Builder::system()?
+    let connection = zbus::connection::Builder::system()
         .method_timeout(Duration::from_secs(2))
         .build()
         .await?;
@@ -86,8 +86,7 @@ async fn resolve_session(session: &mut GraphicalSession) -> zbus::Result<()> {
         "org.freedesktop.login1.Manager",
     )
     .await?;
-    let path: zbus::zvariant::OwnedObjectPath =
-        manager.call("GetUserByPID", &(std::process::id(),)).await?;
+    let path: zbus::OwnedObjectPath = manager.call("GetUserByPID", &(std::process::id(),)).await?;
     let user = zbus::Proxy::new(
         &connection,
         "org.freedesktop.login1",
@@ -96,8 +95,7 @@ async fn resolve_session(session: &mut GraphicalSession) -> zbus::Result<()> {
     )
     .await?;
     let uid: u32 = user.get_property("UID").await?;
-    let (display, _): (String, zbus::zvariant::OwnedObjectPath) =
-        user.get_property("Display").await?;
+    let (display, _): (String, zbus::OwnedObjectPath) = user.get_property("Display").await?;
     if uid != rustix::process::geteuid().as_raw() || display.is_empty() {
         return Err(zbus::Error::Failure(
             "waiting display is unavailable".into(),
@@ -155,6 +153,11 @@ fn log_rpc_failure(operation: &'static str, error: &zbus::Error) {
                 "authorization"
             }
             "org.freedesktop.DBus.Error.Failed" => "rejected",
+            _ => "method_error",
+        },
+        zbus::Error::FDO(error) => match error.as_ref() {
+            zbus::fdo::Error::AccessDenied(_) | zbus::fdo::Error::AuthFailed(_) => "authorization",
+            zbus::fdo::Error::Failed(_) => "rejected",
             _ => "method_error",
         },
         zbus::Error::InputOutput(_) => "transport",
@@ -216,9 +219,19 @@ async fn confirm_presentation(
     };
     // Device1 uses Failed for several terminal fences. Only this existing
     // rejection can be supersession, and a fresh authenticated read must prove it.
-    if !matches!(&error, zbus::Error::MethodError(name, Some(message), _)
-        if name.as_str() == "org.freedesktop.DBus.Error.Failed"
-            && message == "Session presentation is incomplete or stale")
+    let failed_message = match &error {
+        zbus::Error::MethodError(name, message, _)
+            if name.as_str() == "org.freedesktop.DBus.Error.Failed" =>
+        {
+            message.as_deref()
+        }
+        zbus::Error::FDO(error) => match error.as_ref() {
+            zbus::fdo::Error::Failed(message) => Some(message.as_str()),
+            _ => None,
+        },
+        _ => None,
+    };
+    if failed_message != Some("Session presentation is incomplete or stale")
         || !dimensions_valid
         || frame.session != lease.session
         || frame.agent_lease_id != lease.lease_id
@@ -287,7 +300,7 @@ async fn connected(
     shutdown: &mut watch::Receiver<bool>,
 ) -> Result<(), ConnectionEnd> {
     let connection = tokio::time::timeout(Duration::from_secs(10), async {
-        zbus::connection::Builder::system()?
+        zbus::connection::Builder::system()
             .method_timeout(Duration::from_secs(10))
             .build()
             .await

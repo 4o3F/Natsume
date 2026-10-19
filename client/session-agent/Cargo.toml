@@ -27,7 +27,7 @@ zbus.workspace = true
 tempfile.workspace = true
 
 [build-dependencies]
-slint-build = "1.15"
+slint-build = "1.18"
 
 [lints]
 workspace = true

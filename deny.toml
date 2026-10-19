@@ -1,17 +1,13 @@
 [advisories]
 yanked = "deny"
 ignore = [
-  { crate = "zip@8.6.0", reason = "Temporary yanked-version exception: released calamine 0.36.1 still requires zip 8.6 and has no released migration to non-yanked zip 9; remove when Calamine releases compatible support; owner: repository owner, recorded 2026-10-16, re-review at every ZIP/Calamine dependency bump; RustSec exceptions are separately scoped by advisory ID below" },
-  # Operator-approved bridge until released Calamine supports ZIP 9. Workbook
-  # validation and Calamine read entries as streams; contest export writes an
-  # in-memory ZIP. These paths do not extract archives to the filesystem.
-  # Re-review on every ZIP/Calamine dependency bump or archive API change.
-  { id = "RUSTSEC-2026-0367", reason = "Temporary exception for zip 8.6.0: privileged permission preservation affects filesystem extraction, which Natsume and Calamine 0.36.1 do not use; owner: repository owner, approved 2026-10-17; remove when released Calamine supports patched ZIP >=9" },
-  { id = "RUSTSEC-2026-0368", reason = "Temporary exception for zip 8.6.0: attacker-controlled symlink targets affect filesystem extraction, which Natsume and Calamine 0.36.1 do not use; owner: repository owner, approved 2026-10-17; remove when released Calamine supports patched ZIP >=9" },
-  { id = "RUSTSEC-2026-0369", reason = "Temporary exception for zip 8.6.0: permission changes through symlinks affect filesystem extraction, which Natsume and Calamine 0.36.1 do not use; owner: repository owner, approved 2026-10-17; remove when released Calamine supports patched ZIP >=9" },
-  { id = "RUSTSEC-2024-0436", reason = "Slint 1.15's image closure retains unmaintained paste 1.0.15 through exr/rav1e; remove when the frozen Slint line eliminates that dependency; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
-  { id = "RUSTSEC-2026-0192", reason = "Slint 1.15's font and SVG closure retains unmaintained ttf-parser 0.25.1; remove when Slint migrates the remaining consumers to skrifa; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
-  { id = "RUSTSEC-2026-0206", reason = "Slint 1.15's resvg/usvg closure retains unmaintained rustybuzz 0.20.1; remove when the frozen Slint line adopts harfrust throughout; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
+  # Operator-approved standalone-crate maintenance exceptions, not vulnerability waivers.
+  # Advisory exceptions are ID-scoped; versions below are review context, not bounds.
+  # Re-review on every Slint/Zbus dependency bump; remove when Slint adopts Zbus 6.
+  { id = "RUSTSEC-2026-0370", reason = "Slint 1.18.1's Winit backend requires zbus 5.19.0, retaining unmaintained zvariant 5.15.1; its maintained replacement is Zbus 6's wire module; remove when Slint eliminates this standalone crate; owner: repository owner, approved 2026-10-19" },
+  { id = "RUSTSEC-2026-0371", reason = "Slint 1.18.1's Winit backend requires zbus 5.19.0, retaining unmaintained zbus_names 4.3.5; its maintained replacement is Zbus 6's names module; remove when Slint eliminates this standalone crate; owner: repository owner, approved 2026-10-19" },
+  { id = "RUSTSEC-2026-0372", reason = "Slint 1.18.1's Winit backend requires zbus 5.19.0, retaining unmaintained zvariant_derive 5.15.1; its maintained replacement is Zbus 6's derives; remove when Slint eliminates this standalone crate; owner: repository owner, approved 2026-10-19" },
+  { id = "RUSTSEC-2026-0192", reason = "Slint 1.18's font closure retains unmaintained ttf-parser 0.25.1; remove when Slint migrates the remaining consumers to skrifa; owner: repository owner, recorded 2026-08-14, re-reviewed at every Slint closure bump" },
 ]
 
 [graph]
@@ -20,65 +16,12 @@ targets = [
 ]
 
 [bans]
-multiple-versions = "deny"
+# Upstream GUI and server stacks may require incompatible versions.
+# Report duplicates for review without blocking otherwise valid dependency updates.
+multiple-versions = "warn"
 multiple-versions-include-dev = true
 wildcards = "deny"
 allow-wildcard-paths = true
-# Exact-version skips only. Prefer deleting entries when upstream converges.
-# Do not use skip-tree or multiple-versions = "allow".
-skip = [
-  # --- RustCrypto 0.10 retained by current production crates and control identity ---
-  { crate = "digest@0.10.7", reason = "argon2/blake2, WebSocket sha1, and production control-identity Dalek/sha2 0.10 require digest 0.10 while first-party sha2 uses digest 0.11; remove when all older consumers converge" },
-  { crate = "crypto-common@0.1.7", reason = "transitively required by the retained digest 0.10 consumers; remove when digest 0.10 leaves the graph" },
-  { crate = "block-buffer@0.10.4", reason = "transitively required by retained digest 0.10 hash implementations; remove when digest 0.10 leaves the graph" },
-  { crate = "cpufeatures@0.2.17", reason = "argon2, WebSocket sha1, and production control-identity curve25519/sha2 use cpufeatures 0.2 while current sha2 0.11 uses cpufeatures 0.3; remove when older consumers converge" },
-  { crate = "sha2@0.10.9", reason = "ed25519-dalek 2.2 in the production control-identity boundary requires sha2 0.10 while first-party hashing uses sha2 0.11; remove when Dalek adopts sha2 0.11 or control identity is removed" },
-
-  # --- hash table stack: petgraph 0.15 vs indexmap 0.17 ---
-  { crate = "hashbrown@0.15.5", reason = "petgraph 0.8.3 (via prost-build) requires hashbrown ^0.15 while indexmap 2.14 requires ^0.17; remove when petgraph accepts hashbrown 0.17" },
-
-  # --- getrandom: ring still on 0.2, rest of graph on 0.4 ---
-  { crate = "getrandom@0.2.17", reason = "ring 0.17 (rustls) still requires getrandom ^0.2 while uuid/rand/crypto-common use 0.4; remove when ring adopts getrandom 0.3+/0.4" },
-  { crate = "getrandom@0.3.4", reason = "tungstenite 0.29 requires rand 0.9 and its getrandom 0.3 stack while first-party entropy uses getrandom 0.4; remove when tungstenite's rand stack adopts getrandom 0.4" },
-  { crate = "rand_core@0.9.5", reason = "tungstenite 0.29 requires rand 0.9 while Argon2's password-hash 0.5 retains rand_core 0.6; remove when those mandatory transitive stacks converge" },
-
-  # --- syn major split during ecosystem migration to syn 3 ---
-  { crate = "syn@2.0.119", reason = "serde_derive/thiserror-impl/async-trait/serde_repr already on syn 3, but Diesel/tokio/futures/prost/zbus/ICU/zeroize derives still require syn 2; remove when those proc-macros migrate to syn 3" },
-
-  # --- Diesel migrations 2.3.2 retains the TOML 0.9 parser stack ---
-  { crate = "toml@0.9.12", reason = "migrations_internals 2.3.0, required by diesel_migrations 2.3.2, pins toml 0.9 while first-party configuration uses toml 1.1; remove when Diesel migrations adopts toml 1.x" },
-  { crate = "toml_datetime@0.7.5", reason = "only retained by toml 0.9.12 through migrations_internals 2.3.0; remove with the Diesel migrations TOML 0.9 stack" },
-  { crate = "winnow@0.7.15", reason = "only retained by toml 0.9.12 through migrations_internals 2.3.0; remove with the Diesel migrations TOML 0.9 stack" },
-
-  # --- Slint 1.15 GUI and Skia closure ---
-  # Agent's required unstable-winit-030 API enables both compiled backends in
-  # Slint 1.15; its event loop still explicitly selects X11 at runtime.
-  { crate = "bitflags@1.3.2", reason = "tiny-skia 0.11.4 retains png 0.17 and its bitflags 1.x dependency while the workspace graph uses bitflags 2; remove when Slint's resvg/tiny-skia stack adopts png 0.18+" },
-  { crate = "calloop@0.13.0", reason = "winit 0.30 and smithay-client-toolkit 0.19 require calloop 0.13 while Slint's clipboard stack uses calloop 0.14 through smithay-client-toolkit 0.20; remove when those consumers converge" },
-  { crate = "calloop-wayland-source@0.3.0", reason = "smithay-client-toolkit 0.19 requires calloop-wayland-source 0.3 while Slint's clipboard stack uses 0.4 through smithay-client-toolkit 0.20; remove when the toolkit versions converge" },
-  { crate = "downcast-rs@1.2.1", reason = "wayland-backend 0.3 in Slint's Winit closure requires downcast-rs 1 while Diesel 2.3 requires downcast-rs 2; remove when wayland-backend adopts downcast-rs 2" },
-  { crate = "foldhash@0.1.5", reason = "fontdue 0.9.4 in the Slint compiler activates hashbrown 0.15 and foldhash 0.1 while the current hashbrown stack uses foldhash 0.2; remove when fontdue moves off hashbrown 0.15" },
-  { crate = "font-types@0.10.1", reason = "Slint 1.15 fontique 0.7 uses read-fonts 0.35 and font-types 0.10 while swash uses the newer fontations stack; remove when Slint's text stack converges" },
-  { crate = "hashbrown@0.14.5", reason = "rowan 0.16 in the Slint compiler retains hashbrown 0.14 while the workspace uses newer hashbrown versions; remove when rowan upgrades" },
-  { crate = "hashbrown@0.16.1", reason = "Slint 1.15 fontique/clru retain hashbrown 0.16 while the workspace uses hashbrown 0.17; remove when the Slint text stack adopts hashbrown 0.17" },
-  { crate = "itertools@0.13.0", reason = "bindgen 0.72 in skia-bindings retains itertools 0.13 while the image stack uses itertools 0.14; remove when bindgen upgrades" },
-  { crate = "linux-raw-sys@0.4.15", reason = "winit 0.30 retains rustix 0.38 and linux-raw-sys 0.4 while the rest of the graph uses rustix 1 and linux-raw-sys 0.12; remove when winit upgrades its rustix stack" },
-  { crate = "nom@7.1.3", reason = "bindgen's cexpr dependency retains nom 7 while the Slint image closure uses nom 8; remove when cexpr upgrades" },
-  { crate = "png@0.17.16", reason = "tiny-skia 0.11.4 in Slint's SVG closure retains png 0.17 while image uses png 0.18; remove when tiny-skia upgrades" },
-  { crate = "read-fonts@0.35.0", reason = "Slint 1.15 fontique uses read-fonts 0.35 while swash uses read-fonts 0.41; remove when the Slint text stack converges" },
-  { crate = "rustc-hash@1.1.0", reason = "rowan 0.16 in the Slint compiler retains rustc-hash 1 while bindgen and current tooling use rustc-hash 2; remove when rowan upgrades" },
-  { crate = "roxmltree@0.20.0", reason = "roster SVG system-font discovery enables fontconfig-parser 0.5.8, which requires roxmltree 0.20 while shared usvg 0.46 uses 0.21; remove when fontconfig-parser adopts roxmltree 0.21+" },
-  { crate = "rustix@0.38.44", reason = "winit 0.30 retains rustix 0.38 while the workspace graph otherwise uses rustix 1; remove when winit upgrades" },
-  { crate = "shlex@1.3.0", reason = "bindgen 0.72 in skia-bindings retains shlex 1 while cc uses shlex 2; remove when bindgen upgrades" },
-  { crate = "skrifa@0.37.0", reason = "Slint 1.15 core/parley use skrifa 0.37 while swash uses skrifa 0.44; remove when the Slint text stack converges" },
-  { crate = "smithay-client-toolkit@0.19.2", reason = "winit 0.30 and sctk-adwaita 0.10 retain smithay-client-toolkit 0.19 while Slint's clipboard stack uses 0.20 through smithay-clipboard 0.7; remove when Winit and clipboard consumers converge" },
-  { crate = "smol_str@0.2.2", reason = "winit 0.30 retains smol_str 0.2 while the Slint compiler uses smol_str 0.3; remove when winit upgrades" },
-  { crate = "snafu@0.8.9", reason = "rspolib in the Slint compiler retains snafu 0.8 while first-party code uses snafu 0.9; remove when rspolib upgrades" },
-  { crate = "snafu-derive@0.8.9", reason = "only retained by snafu 0.8.9 through the Slint compiler's rspolib dependency; remove with snafu 0.8" },
-  { crate = "thiserror@1.0.69", reason = "calloop 0.13 through winit retains thiserror 1 while the current graph uses thiserror 2; remove when winit/calloop upgrade" },
-  { crate = "thiserror-impl@1.0.69", reason = "only retained by thiserror 1.0.69 through winit's calloop dependency; remove with thiserror 1" },
-  { crate = "toml_edit@0.24.1+spec-1.1.0", reason = "slint-build 1.15 uses toml_edit 0.24 while current proc-macro tooling uses toml_edit 0.25; remove when slint-build upgrades" },
-]
 
 [licenses]
 include-dev = true
@@ -98,6 +41,4 @@ allow = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# HarfRust 0.3.2's upstream 16-bit cache fix; Cargo.toml pins its full revision.
-allow-git = ["https://github.com/harfbuzz/harfrust"]
 required-git-spec = "rev"

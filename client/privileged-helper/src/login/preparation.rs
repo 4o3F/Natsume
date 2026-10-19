@@ -132,8 +132,7 @@ async fn registered_greeter(
         // GDM owns this display. Its public interface cannot identify a native
         // Wayland display by session, so a missed acknowledgement never grants
         // permission to terminate or recycle an unproven greeter.
-        let _display: zbus::zvariant::OwnedObjectPath =
-            factory.call("CreateTransientDisplay", &()).await?;
+        let _display: zbus::OwnedObjectPath = factory.call("CreateTransientDisplay", &()).await?;
     }
     loop {
         let Some((id, path)) = session::greeter(connection, Path::new("/")).await? else {

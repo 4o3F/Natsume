@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use zbus::zvariant::Type;
+use zbus::Type;
 
 use crate::DerivedMachineIdentity;
 

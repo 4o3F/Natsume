@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
-use zbus::zvariant::Type;
+use zbus::Type;
 
 pub mod diagnostics;
 mod machine_identity;

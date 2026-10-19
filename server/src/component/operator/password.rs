@@ -1,7 +1,8 @@
 use argon2::{
     Algorithm, Argon2, Params, Version,
     password_hash::{
-        Error as PasswordHashError, PasswordHash, PasswordHasher, PasswordVerifier, SaltString,
+        Error as PasswordHashError, PasswordHasher, PasswordVerifier,
+        phc::{PasswordHash, Salt},
     },
 };
 use secrecy::{ExposeSecret, SecretString};
@@ -31,7 +32,7 @@ impl OperatorPassword {
 /// # Errors
 ///
 /// Returns a redacted [`OperatorError`] if entropy, parameter construction,
-/// salt encoding, or password hashing fails.
+/// salt construction, or password hashing fails.
 pub(super) fn hash_password(password: &OperatorPassword) -> Result<String, OperatorError> {
     let params = Params::new(
         ARGON2_MEMORY_COST_KIB,
@@ -44,10 +45,9 @@ pub(super) fn hash_password(password: &OperatorPassword) -> Result<String, Opera
 
     let mut salt_bytes = [0_u8; PASSWORD_SALT_LENGTH];
     getrandom::fill(&mut salt_bytes).map_err(|_| OperatorError::EntropyUnavailable)?;
-    let salt =
-        SaltString::encode_b64(&salt_bytes).map_err(|_| OperatorError::SaltEncodingFailed)?;
+    let salt = Salt::new(&salt_bytes).map_err(|_| OperatorError::SaltEncodingFailed)?;
     argon2
-        .hash_password(password.expose().as_bytes(), &salt)
+        .hash_password_with_salt(password.expose().as_bytes(), &salt)
         .map(|hash| hash.to_string())
         .map_err(|_| OperatorError::PasswordHashingFailed)
 }
@@ -69,14 +69,14 @@ pub(in crate::component::operator) fn verify_password_once(
     let verification_succeeded =
         match verifier.verify_password(password.expose().as_bytes(), &parsed) {
             Ok(()) => true,
-            Err(PasswordHashError::Password) => false,
+            Err(PasswordHashError::PasswordInvalid) => false,
             Err(_) => return Err(OperatorError::PasswordVerificationFailed),
         };
 
     Ok(persisted_profile_valid && verification_succeeded)
 }
 
-fn parse_frozen_password_hash(value: &str) -> Option<PasswordHash<'_>> {
+fn parse_frozen_password_hash(value: &str) -> Option<PasswordHash> {
     let parsed = PasswordHash::new(value).ok()?;
     if parsed.algorithm.as_str() != "argon2id"
         || parsed.version != Some(19)
@@ -88,8 +88,7 @@ fn parse_frozen_password_hash(value: &str) -> Option<PasswordHash<'_>> {
         return None;
     }
     let salt = parsed.salt?;
-    let mut salt_bytes = [0_u8; PASSWORD_SALT_LENGTH];
-    if salt.decode_b64(&mut salt_bytes).ok()?.len() != PASSWORD_SALT_LENGTH {
+    if salt.len() != PASSWORD_SALT_LENGTH {
         return None;
     }
     Some(parsed)

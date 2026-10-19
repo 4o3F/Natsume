@@ -6,7 +6,7 @@ use natsume_local_control_api::{
 };
 use tokio::time::{Duration, timeout};
 use uuid::Uuid;
-use zbus::{Connection, Proxy, proxy::CacheProperties, zvariant::OwnedObjectPath};
+use zbus::{Connection, OwnedObjectPath, Proxy, proxy::CacheProperties};
 
 const LOGIN1_SERVICE: &str = "org.freedesktop.login1";
 const LOGIN1_MANAGER_PATH: &str = "/org/freedesktop/login1";
@@ -127,9 +127,9 @@ pub(crate) async fn fresh_proxy<'a>(
     interface: &'a str,
 ) -> zbus::Result<Proxy<'a>> {
     zbus::proxy::Builder::<Proxy<'_>>::new(connection)
-        .destination(destination)?
-        .path(path)?
-        .interface(interface)?
+        .destination(destination)
+        .path(path)
+        .interface(interface)
         .cache_properties(CacheProperties::No)
         .build()
         .await
@@ -356,11 +356,7 @@ async fn role_foreground(uid: u32) -> Result<bool, ResourceControlError> {
 async fn require_session_manager(bus: &Connection, uid: u32) -> Result<(), ResourceControlError> {
     let dbus = zbus::fdo::DBusProxy::new(bus).await?;
     let manager_owner = dbus
-        .get_name_owner(
-            "org.gnome.SessionManager"
-                .try_into()
-                .map_err(zbus::Error::from)?,
-        )
+        .get_name_owner("org.gnome.SessionManager".try_into()?)
         .await
         .map_err(zbus::Error::from)?;
     if dbus
@@ -389,7 +385,7 @@ async fn compositor_context(
     uid: u32,
 ) -> Result<(crate::processes::Identity, bool), ResourceControlError> {
     let address = format!("unix:path=/run/user/{uid}/bus");
-    let bus = zbus::connection::Builder::address(address.as_str())?
+    let bus = zbus::connection::Builder::address(address.as_str())
         .method_timeout(Duration::from_secs(1))
         .build()
         .await?;
@@ -399,7 +395,7 @@ async fn compositor_context(
         SessionRole::Contest => ("org.gnome.Shell", "/usr/bin/gnome-shell"),
     };
     let owner = dbus
-        .get_name_owner(name.try_into().map_err(zbus::Error::from)?)
+        .get_name_owner(name.try_into()?)
         .await
         .map_err(zbus::Error::from)?;
     if dbus
@@ -431,11 +427,7 @@ async fn compositor_context(
     };
     require_session_manager(&bus, uid).await?;
     let display_owner = dbus
-        .get_name_owner(
-            "org.gnome.Mutter.DisplayConfig"
-                .try_into()
-                .map_err(zbus::Error::from)?,
-        )
+        .get_name_owner("org.gnome.Mutter.DisplayConfig".try_into()?)
         .await
         .map_err(zbus::Error::from)?;
     if dbus
@@ -1091,7 +1083,7 @@ mod tests {
 
     use tempfile::TempDir;
 
-    use zbus::zvariant::OwnedObjectPath;
+    use zbus::OwnedObjectPath;
 
     use natsume_local_control_api::{GraphicalSession, GraphicalSessionState, SessionRole};
 
@@ -1336,12 +1328,12 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let (server, client) = tokio::net::UnixStream::pair()?;
-        let server = zbus::connection::Builder::unix_stream(server)
-            .server(zbus::Guid::generate())?
+        let server = zbus::connection::Builder::unix_stream(server.into_std()?)
+            .server(zbus::Guid::generate())
             .p2p()
-            .serve_at("/org/freedesktop/login1", TestLogin)?
-            .serve_at("/seat", TestSeat(reads.clone()))?;
-        let client = zbus::connection::Builder::unix_stream(client).p2p();
+            .serve_at("/org/freedesktop/login1", TestLogin)
+            .serve_at("/seat", TestSeat(reads.clone()));
+        let client = zbus::connection::Builder::unix_stream(client.into_std()?).p2p();
         let (_server, client) = tokio::try_join!(server.build(), client.build())?;
         super::wait_for_foreground(&client, "c2").await?;
         assert!(reads.load(std::sync::atomic::Ordering::SeqCst) >= 2);
@@ -1546,34 +1538,34 @@ mod tests {
             let case = Arc::new(case);
             let resets = Arc::new(AtomicUsize::new(0));
             let (server, client) = tokio::net::UnixStream::pair()?;
-            let server = zbus::connection::Builder::unix_stream(server)
-                .server(zbus::Guid::generate())?
+            let server = zbus::connection::Builder::unix_stream(server.into_std()?)
+                .server(zbus::Guid::generate())
                 .p2p()
-                .serve_at("/org/freedesktop/login1", ScopeLogin(case.clone()))?
+                .serve_at("/org/freedesktop/login1", ScopeLogin(case.clone()))
                 .serve_at(
                     "/old",
                     ScopeSession {
                         case: case.clone(),
                         old: true,
                     },
-                )?
+                )
                 .serve_at(
                     "/new",
                     ScopeSession {
                         case: case.clone(),
                         old: false,
                     },
-                )?
-                .serve_at("/org/freedesktop/systemd1", ScopeManager)?
+                )
+                .serve_at("/org/freedesktop/systemd1", ScopeManager)
                 .serve_at(
                     "/old_scope",
                     ScopeUnit {
                         case: case.clone(),
                         resets: resets.clone(),
                     },
-                )?
-                .serve_at("/old_scope", ScopeControl(case))?;
-            let client = zbus::connection::Builder::unix_stream(client).p2p();
+                )
+                .serve_at("/old_scope", ScopeControl(case));
+            let client = zbus::connection::Builder::unix_stream(client.into_std()?).p2p();
             let (_server, client) = tokio::try_join!(server.build(), client.build())?;
             let captured = captured.map(|(id, boot)| GraphicalSession {
                 logind_session_id: id.to_owned(),

@@ -33,7 +33,7 @@ fn entries(bytes: Vec<u8>) -> BTreeMap<String, Vec<u8>> {
             let mut entry = checked(zip.by_index(i));
             let mut bytes = Vec::new();
             checked(entry.read_to_end(&mut bytes));
-            (entry.name().to_owned(), bytes)
+            (checked(entry.name()).into_owned(), bytes)
         })
         .collect()
 }

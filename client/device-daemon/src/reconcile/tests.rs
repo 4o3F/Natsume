@@ -514,7 +514,7 @@ async fn helper_owner_replacement_preserves_pending_session_and_home_work()
 
     let directory = tempfile::tempdir()?;
     let (mut bus, address) = private_bus(&directory).await?;
-    let connection = zbus::connection::Builder::address(address.as_str())?
+    let connection = zbus::connection::Builder::address(address.as_str())
         .method_timeout(Duration::from_secs(2))
         .build()
         .await?;
@@ -668,9 +668,9 @@ async fn register_helper(
     address: &str,
     helper: Arc<Mutex<HelperState>>,
 ) -> Result<zbus::Connection, zbus::Error> {
-    zbus::connection::Builder::address(address)?
-        .name(natsume_local_control_api::PRIVILEGED1_SERVICE)?
-        .serve_at(PRIVILEGED1_PATH, FaultyHelper(helper))?
+    zbus::connection::Builder::address(address)
+        .name(natsume_local_control_api::PRIVILEGED1_SERVICE)
+        .serve_at(PRIVILEGED1_PATH, FaultyHelper(helper))
         .build()
         .await
 }
@@ -731,7 +731,7 @@ pub(crate) async fn fixture(state: HelperState) -> Result<Fixture, Box<dyn std::
     let helper = Arc::new(Mutex::new(state));
     let (bus, address) = private_bus(&directory).await?;
     let server = register_helper(&address, Arc::clone(&helper)).await?;
-    let connection = zbus::connection::Builder::address(address.as_str())?
+    let connection = zbus::connection::Builder::address(address.as_str())
         .method_timeout(std::time::Duration::from_secs(2))
         .build()
         .await?;
@@ -1084,7 +1084,7 @@ async fn waiting_agent_bus_owner_loss_revokes_pending_binding_eligibility()
         "unix:path={}",
         fixture.directory.path().join("bus.sock").display()
     );
-    let agent = zbus::connection::Builder::address(address.as_str())?
+    let agent = zbus::connection::Builder::address(address.as_str())
         .build()
         .await?;
     binding::tests::clear_fixture_agent(&fixture.snapshots.binding_input);

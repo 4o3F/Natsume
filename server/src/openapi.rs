@@ -219,13 +219,16 @@ fn canonicalize_path_parameters(paths: &mut Paths) {
             let Some(parameters) = operation.parameters.as_mut() else {
                 continue;
             };
-            for parameter in parameters.iter_mut().filter(|parameter| {
-                matches!(
+            for parameter in parameters {
+                let RefOr::T(parameter) = parameter else {
+                    continue;
+                };
+                if matches!(
                     parameter.name.as_str(),
                     "device_id" | "review_id" | "import_id" | "operator_id" | "invite_id"
-                )
-            }) {
-                parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
+                ) {
+                    parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
+                }
             }
         }
     }
@@ -303,7 +306,7 @@ fn enrich_operation(operation: Option<&mut Operation>) {
         ) {
             response.content.insert(
                 "application/json".to_owned(),
-                Content::new(Some(Ref::from_schema_name("ErrorResponse"))),
+                Content::new(Some(Ref::from_schema_name("ErrorResponse"))).into(),
             );
         }
     }

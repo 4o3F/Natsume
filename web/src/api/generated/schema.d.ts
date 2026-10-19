@@ -589,7 +589,7 @@ export interface components {
       /** Format: int64 */
       credential_revision: number;
       domjudge_username: string;
-      team?: null | components["schemas"]["TeamResponse"];
+      team?: components["schemas"]["TeamResponse"] | null;
     };
     /** @description Latest validated Binding artifact Actual reported by the current lease. */
     BindingActualResponse: {
@@ -598,7 +598,7 @@ export interface components {
        * @enum {string}
        */
       assignment_state: "absent" | "applied" | "failed";
-      context: null | components["schemas"]["BindingContextResponse"];
+      context: components["schemas"]["BindingContextResponse"] | null;
       /**
        * @description Binding artifact state vocabulary exposed by the convergence projection.
        * @enum {string}
@@ -618,14 +618,14 @@ export interface components {
     };
     /** @description Redacted Binding target, Actual, and convergence result. */
     BindingConvergenceResponse: {
-      actual: null | components["schemas"]["BindingActualResponse"];
+      actual: components["schemas"]["BindingActualResponse"] | null;
       /**
        * @description Typed comparison of one current target with one fresh Actual.
        * @enum {string}
        */
       status:
         "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
-      target: null | components["schemas"]["BindingTargetResponse"];
+      target: components["schemas"]["BindingTargetResponse"] | null;
     };
     /** @description Latest rejected Binding submission associated with an unbound intent. */
     BindingEvaluationResponse: {
@@ -646,7 +646,7 @@ export interface components {
     BindingTargetResponse:
       | {
           evaluation?:
-            null | components["schemas"]["BindingEvaluationResponse"];
+            components["schemas"]["BindingEvaluationResponse"] | null;
           /** Format: uuid */
           negotiation_id: string;
           /** @enum {string} */
@@ -700,7 +700,7 @@ export interface components {
        */
       evidence_quality: "medium" | "strong";
       machine_hardware_id: components["schemas"]["CanonicalUuidV5"];
-      network?: null | components["schemas"]["DeviceNetworkResponse"];
+      network?: components["schemas"]["DeviceNetworkResponse"] | null;
       /**
        * @description Closed durable Device lifecycle vocabulary exposed by the API.
        * @enum {string}
@@ -769,14 +769,14 @@ export interface components {
     };
     /** @description Redacted Gateway target, Actual, and convergence result. */
     GatewayConvergenceResponse: {
-      actual: null | components["schemas"]["GatewayActualResponse"];
+      actual: components["schemas"]["GatewayActualResponse"] | null;
       /**
        * @description Typed comparison of one current target with one fresh Actual.
        * @enum {string}
        */
       status:
         "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
-      target: null | components["schemas"]["GatewayTargetResponse"];
+      target: components["schemas"]["GatewayTargetResponse"] | null;
     };
     /** @description Public fields required to compare the current Gateway target. */
     GatewayTargetResponse: {
@@ -799,7 +799,7 @@ export interface components {
     };
     /** @description Home target, Actual, and convergence result. */
     HomeConvergenceResponse: {
-      actual: null | components["schemas"]["HomeActualResponse"];
+      actual: components["schemas"]["HomeActualResponse"] | null;
       /**
        * @description Typed comparison of one current target with one fresh Actual.
        * @enum {string}
@@ -828,8 +828,8 @@ export interface components {
       seat_code: string;
     };
     ImportOrganizationChangeResponse: {
-      candidate: null | components["schemas"]["ImportOrganizationResponse"];
-      current: null | components["schemas"]["ImportOrganizationResponse"];
+      candidate: components["schemas"]["ImportOrganizationResponse"] | null;
+      current: components["schemas"]["ImportOrganizationResponse"] | null;
     };
     ImportOrganizationResponse: {
       country: string;
@@ -838,7 +838,7 @@ export interface components {
       organization_id: string;
     };
     ImportPendingResponse: {
-      pending: null | components["schemas"]["ImportPendingSummary"];
+      pending: components["schemas"]["ImportPendingSummary"] | null;
     };
     ImportPendingSummary: {
       candidate_id: components["schemas"]["CanonicalUuidV7"];
@@ -869,8 +869,8 @@ export interface components {
     };
     ImportTeamChangeResponse: {
       account: string;
-      candidate: null | components["schemas"]["ImportTeamResponse"];
-      current: null | components["schemas"]["ImportTeamResponse"];
+      candidate: components["schemas"]["ImportTeamResponse"] | null;
+      current: components["schemas"]["ImportTeamResponse"] | null;
     };
     ImportTeamResponse: {
       account: string;
@@ -998,7 +998,7 @@ export interface components {
     };
     /** @description Runtime Config target, Actual, and convergence result. */
     RuntimeConfigConvergenceResponse: {
-      actual: null | components["schemas"]["RuntimeConfigActualResponse"];
+      actual: components["schemas"]["RuntimeConfigActualResponse"] | null;
       /**
        * @description Typed comparison of one current target with one fresh Actual.
        * @enum {string}
@@ -1032,7 +1032,7 @@ export interface components {
     };
     /** @description Current durable Session Control target, if it has been initialized. */
     SessionControlResponse: {
-      target: null | components["schemas"]["SessionControlTargetResponse"];
+      target: components["schemas"]["SessionControlTargetResponse"] | null;
     };
     /** @description Concrete initialized Session Control target. */
     SessionControlTargetResponse: {
@@ -1046,14 +1046,14 @@ export interface components {
     };
     /** @description Session Control target, Actual, and convergence result. */
     SessionConvergenceResponse: {
-      actual: null | components["schemas"]["SessionActualResponse"];
+      actual: components["schemas"]["SessionActualResponse"] | null;
       /**
        * @description Typed comparison of one current target with one fresh Actual.
        * @enum {string}
        */
       status:
         "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
-      target: null | components["schemas"]["SessionControlTargetResponse"];
+      target: components["schemas"]["SessionControlTargetResponse"] | null;
     };
     SessionRequest: {
       /** @description Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated. */

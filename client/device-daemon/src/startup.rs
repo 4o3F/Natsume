@@ -490,9 +490,7 @@ fn record_final_failure(error: &StartupError, diagnostics: &mut Diagnostics) {
 async fn run_with_diagnostics(diagnostics: &mut Diagnostics) -> Result<(), StartupError> {
     let paths = StartupPaths::production();
     diagnostics.set_stage(DiagnosticStage::SystemBus, DiagnosticStatus::Starting);
-    let Ok(builder) = zbus::connection::Builder::system() else {
-        return Err(fail_closed(StartupIdentityState::IdentityUnavailable));
-    };
+    let builder = zbus::connection::Builder::system();
     let Ok(Ok(connection)) = timeout(
         LOCAL_CONTROL_TIMEOUT,
         builder.method_timeout(LOCAL_CONTROL_TIMEOUT).build(),

@@ -79,8 +79,9 @@ pub(crate) fn workbook(rows: &[[&str; 9]]) -> Vec<u8> {
     let mut output = ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..source.len() {
         let mut entry = checked(source.by_index(index));
-        checked(output.start_file(entry.name(), SimpleFileOptions::default()));
-        if entry.name() == "xl/worksheets/sheet1.xml" {
+        let entry_name = checked(entry.name());
+        checked(output.start_file(&entry_name, SimpleFileOptions::default()));
+        if entry_name == "xl/worksheets/sheet1.xml" {
             checked(output.write_all(sheet.as_bytes()));
         } else {
             checked(std::io::copy(&mut entry, &mut output));
