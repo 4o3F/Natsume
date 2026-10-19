@@ -107,9 +107,9 @@ its `2.3.2~ci1` package version.
 
 Each release includes `natsume-client_<version>_amd64.deb`,
 `natsume-server_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated
-release notes. If `docs/releases/<tag>.md` exists at the tagged commit, its
-release and migration guidance is included before the generated notes. For
-prereleases, `v2.3.2-rc.1` becomes Debian version `2.3.2~rc.1`,
+release notes. Version-specific notes and migration guidance belong in
+[GitHub Releases](https://github.com/4o3F/Natsume/releases), not separate files in
+the repository. For prereleases, `v2.3.2-rc.1` becomes Debian version `2.3.2~rc.1`,
 which sorts before `2.3.2`; the GitHub Release is marked as a prerelease and is
 not made latest. Download both packages and the checksum file into one directory
 and run `sha256sum --check SHA256SUMS` to verify them.

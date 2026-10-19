@@ -114,7 +114,7 @@ Most operational and product documents are currently written in Chinese.
 
 | Document                                                                                                                  | Start here when you need to…                                                                   |
 | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| [Documentation index](docs/README.md)                                                                                     | Find maintained guides and release notes.                                                      |
+| [Documentation index](docs/README.md)                                                                                     | Find maintained architecture, deployment, and development guides.                                                      |
 | [Architecture](docs/architecture.md)                                                                                      | Understand ownership, protocols, trust boundaries, data models, and verification requirements. |
 | [Deployment and operations](docs/operations-deployment.zh-CN.md)                                                          | Provision TLS, bootstrap Server, install Client, and plan backup or recovery.                  |
 | [Image integration requirements](packaging/image/integration.md) and [acceptance criteria](packaging/image/acceptance.md) | Configure the workstation image and verify Session, Home, display, and input behavior.         |
