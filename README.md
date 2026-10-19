@@ -31,9 +31,9 @@ Natsume is not a judging system or a general-purpose remote administration tool.
 
 ## Feature gallery
 
-The Web screenshots below show the actual panel with synthetic API fixtures, not a live contest. Seat setup and Waiting are native Slint UI previews with sample data. These illustrate the interface, not deployment or scale acceptance. Click any image to view it at full resolution.
+The seven Web views below are captured from the current production panel with synthetic API fixtures, not a live contest. Seat setup and Waiting are current native Slint UI previews with sample data on an isolated virtual display. All images are 2880 × 2160, rendered at 2× scale without stretching or cropping. These illustrate the interface, not device operation, deployment, or scale acceptance. Click any image to view it at full resolution; see the [capture guide](docs/screenshots/README.md) to refresh them.
 
-<!-- Screenshot contract: 1440 x 1080 viewport at 2x scale; PNGs are 2880 x 2160. Keep one equal-column table and never stretch or crop captures. -->
+<!-- Screenshot contract: Web viewport 1440 x 1080 at DPR 2; native preview logical size 1440 x 1080 at scale 2. All PNGs are 2880 x 2160. Keep one equal-column table; capture actual UI without stretching or cropping. -->
 <table width="100%">
   <tr>
     <td width="33.33%" align="center" valign="top">
@@ -54,26 +54,26 @@ The Web screenshots below show the actual panel with synthetic API fixtures, not
   </tr>
   <tr>
     <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/seats.png"><img src="docs/screenshots/seats.png" alt="Seats: Find bound and unbound seats at a glance." width="288"></a><br>
+      <a href="docs/screenshots/seats.png"><img src="docs/screenshots/seats.png" alt="Seats: Review assignments and spot unbound seats." width="288"></a><br>
       <strong>Seats</strong><br>
-      Find bound and unbound seats at a glance.
+      Review assignments and spot unbound seats.
     </td>
     <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/bindings.png"><img src="docs/screenshots/bindings.png" alt="Bindings: Review or clear a seat binding." width="288"></a><br>
-      <strong>Bindings</strong><br>
-      Review or clear a seat binding.
-    </td>
-    <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/devices.png"><img src="docs/screenshots/devices.png" alt="Devices: Check connectivity and resource readiness." width="288"></a><br>
+      <a href="docs/screenshots/devices.png"><img src="docs/screenshots/devices.png" alt="Devices: Filter lifecycle, connection, and bindings; unbind devices in place." width="288"></a><br>
       <strong>Devices</strong><br>
-      Check connectivity and resource readiness.
+      Filter lifecycle, connection, and bindings; unbind devices in place.
+    </td>
+    <td width="33.33%" align="center" valign="top">
+      <a href="docs/screenshots/targets.png"><img src="docs/screenshots/targets.png" alt="Targets: Set Session and Home targets and request confirmed shutdown." width="288"></a><br>
+      <strong>Targets</strong><br>
+      Set Session and Home targets and request confirmed shutdown.
     </td>
   </tr>
   <tr>
     <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/targets.png"><img src="docs/screenshots/targets.png" alt="Targets: Submit targets and inspect per-device results." width="288"></a><br>
-      <strong>Targets</strong><br>
-      Submit targets and inspect per-device results.
+      <a href="docs/screenshots/users.png"><img src="docs/screenshots/users.png" alt="Users: Manage operators, roles, and registration invitations." width="288"></a><br>
+      <strong>Users</strong><br>
+      Manage operators, roles, and registration invitations.
     </td>
     <td width="33.33%" align="center" valign="top">
       <a href="docs/screenshots/seat-setup.png"><img src="docs/screenshots/seat-setup.png" alt="Seat setup: Bind this workstation to its assigned seat." width="288"></a><br>
@@ -81,9 +81,9 @@ The Web screenshots below show the actual panel with synthetic API fixtures, not
       Bind this workstation to its assigned seat.
     </td>
     <td width="33.33%" align="center" valign="top">
-      <a href="docs/screenshots/waiting.png"><img src="docs/screenshots/waiting.png" alt="Waiting screen: Show the bound team, school, and seat." width="288"></a><br>
+      <a href="docs/screenshots/waiting.png"><img src="docs/screenshots/waiting.png" alt="Waiting screen: Show the bound team, school, seat, and offline status." width="288"></a><br>
       <strong>Waiting screen</strong><br>
-      Show the bound team, school, and seat.
+      Show the bound team, school, seat, and offline status.
     </td>
   </tr>
 </table>
