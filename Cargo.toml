@@ -2,21 +2,21 @@
 [workspace]
 resolver = "3"
 members = [
-  "server",
-  "client/device-daemon",
-  "client/privileged-helper",
-  "client/session-agent",
-  "crates/device-protocol",
-  "crates/local-control-api",
+  "crates/natsume-server",
+  "crates/natsume-workstation-daemon",
+  "crates/natsume-workstation-helper",
+  "crates/natsume-workstation-agent",
+  "crates/natsume-workstation-protocol",
+  "crates/natsume-workstation-ipc",
   "crates/roster",
 ]
 default-members = [
-  "server",
-  "client/device-daemon",
-  "client/privileged-helper",
-  "client/session-agent",
-  "crates/device-protocol",
-  "crates/local-control-api",
+  "crates/natsume-server",
+  "crates/natsume-workstation-daemon",
+  "crates/natsume-workstation-helper",
+  "crates/natsume-workstation-agent",
+  "crates/natsume-workstation-protocol",
+  "crates/natsume-workstation-ipc",
   "crates/roster",
 ]
 

@@ -1,0 +1,806 @@
+use std::{
+    ffi::{CString, OsStr},
+    fs::{self, File, OpenOptions},
+    io::{Read as _, Write as _},
+    os::unix::fs::{MetadataExt as _, PermissionsExt as _},
+    path::{Path, PathBuf},
+};
+
+use natsume_workstation_ipc::{
+    HomeResetPhase, HomeResetProgress, ResourceControlError, SessionRole,
+};
+use procfs::process::Process;
+use rustix::{
+    fs::{Gid, Uid, chown},
+    mount::{MountFlags, UnmountFlags, mount, unmount},
+};
+
+const TEMPLATE_RELATIVE_PATH: &str = "usr/lib/natsume/home-templates/current/lower";
+const STATE_RELATIVE_PATH: &str = "var/lib/natsume-privileged/home-reset";
+const CONTEST_HOME_RELATIVE_PATH: &str = "home/teams";
+
+mod template;
+pub(super) mod window;
+
+fn unavailable(message: &'static str) -> ResourceControlError {
+    ResourceControlError::Unavailable(message.to_owned())
+}
+
+fn rejected(message: &'static str) -> ResourceControlError {
+    ResourceControlError::Rejected(message.to_owned())
+}
+
+fn require_epoch(epoch: u64) -> Result<(), ResourceControlError> {
+    if epoch == 0 || i64::try_from(epoch).is_err() {
+        return Err(ResourceControlError::Rejected(
+            "reset epoch must be in 1..=i64::MAX".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn state_directory(root: &Path) -> PathBuf {
+    root.join(STATE_RELATIVE_PATH)
+}
+
+pub(super) fn state_exists(root: &Path) -> Result<bool, ResourceControlError> {
+    let mut entries = match fs::read_dir(state_directory(root)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err(unavailable("Home reset state cannot be inspected")),
+    };
+    match entries.next() {
+        Some(Ok(_)) => Ok(true),
+        Some(Err(_)) => Err(unavailable("Home reset state cannot be inspected")),
+        None => Ok(false),
+    }
+}
+
+fn generation_directory(root: &Path, epoch: u64) -> PathBuf {
+    state_directory(root)
+        .join("generations")
+        .join(epoch.to_string())
+}
+
+fn marker_path(root: &Path) -> PathBuf {
+    state_directory(root).join("progress")
+}
+
+fn directory_metadata(path: &Path) -> Option<fs::Metadata> {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|metadata| metadata.file_type().is_dir())
+}
+
+fn ensure_directory(path: &Path) -> Result<(), ResourceControlError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Ok(_) => Err(rejected("Home reset generation path is invalid")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(path)
+            .map_err(|_| unavailable("Home reset generation cannot be prepared")),
+        Err(_) => Err(unavailable("Home reset generation cannot be prepared")),
+    }
+}
+
+fn sync_directory(path: &Path) -> Result<(), ResourceControlError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| unavailable("Home reset generation cannot be persisted"))
+}
+
+fn generation_layout_exists(root: &Path, epoch: u64) -> bool {
+    let generation = generation_directory(root, epoch);
+    directory_metadata(&generation).is_some()
+        && directory_metadata(&generation.join("upper")).is_some()
+        && directory_metadata(&generation.join("work")).is_some()
+}
+
+fn generation_is_complete(root: &Path, epoch: u64, home: &fs::Metadata) -> bool {
+    if !generation_layout_exists(root, epoch) {
+        return false;
+    }
+    directory_metadata(&generation_directory(root, epoch).join("upper")).is_some_and(|upper| {
+        upper.uid() == home.uid()
+            && upper.gid() == home.gid()
+            && upper.mode() & 0o7777 == home.mode() & 0o7777
+    })
+}
+
+fn remove_other_generations(root: &Path, current_epoch: u64) -> Result<(), ResourceControlError> {
+    let generations = state_directory(root).join("generations");
+    let current = current_epoch.to_string();
+    let entries = fs::read_dir(&generations)
+        .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
+        if entry.file_name().as_os_str() == OsStr::new(&current) {
+            continue;
+        }
+        if !entry
+            .file_type()
+            .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?
+            .is_dir()
+        {
+            return Err(rejected("Old Home reset generations cannot be removed"));
+        }
+        fs::remove_dir_all(entry.path())
+            .map_err(|_| unavailable("Old Home reset generations cannot be removed"))?;
+    }
+    sync_directory(&generations)
+}
+
+fn prepare_generation(
+    root: &Path,
+    epoch: u64,
+    home: &fs::Metadata,
+) -> Result<(), ResourceControlError> {
+    let state = state_directory(root);
+    if directory_metadata(&state).is_none() {
+        return Err(unavailable("Home reset state directory is unavailable"));
+    }
+    let generations = state.join("generations");
+    ensure_directory(&generations)?;
+    let generation = generations.join(epoch.to_string());
+    ensure_directory(&generation)?;
+    let upper = generation.join("upper");
+    let work = generation.join("work");
+    ensure_directory(&upper)?;
+    ensure_directory(&work)?;
+
+    let upper_metadata = directory_metadata(&upper)
+        .ok_or_else(|| unavailable("Home reset generation cannot be prepared"))?;
+    if upper_metadata.uid() != home.uid() || upper_metadata.gid() != home.gid() {
+        chown(
+            &upper,
+            Some(Uid::from_raw(home.uid())),
+            Some(Gid::from_raw(home.gid())),
+        )
+        .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
+    }
+    fs::set_permissions(&upper, fs::Permissions::from_mode(home.mode() & 0o7777))
+        .map_err(|_| unavailable("Home reset generation cannot be prepared"))?;
+
+    for directory in [&upper, &work, &generation, &generations, &state] {
+        sync_directory(directory)?;
+    }
+    Ok(())
+}
+
+fn phase_name(phase: HomeResetPhase) -> &'static str {
+    match phase {
+        HomeResetPhase::Draining => "draining",
+        HomeResetPhase::Prepared => "prepared",
+        HomeResetPhase::Applied => "applied",
+        HomeResetPhase::Verified => "verified",
+        HomeResetPhase::RecoveryRequired => "recovery_required",
+    }
+}
+
+fn parse_phase(value: &str) -> Option<HomeResetPhase> {
+    match value {
+        "draining" => Some(HomeResetPhase::Draining),
+        "prepared" => Some(HomeResetPhase::Prepared),
+        "applied" => Some(HomeResetPhase::Applied),
+        "verified" => Some(HomeResetPhase::Verified),
+        "recovery_required" => Some(HomeResetPhase::RecoveryRequired),
+        _ => None,
+    }
+}
+
+fn read_progress(root: &Path) -> Result<Option<HomeResetProgress>, ResourceControlError> {
+    let mut file = match File::open(marker_path(root)) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(unavailable("Home reset progress is unreadable")),
+    };
+    let mut encoded = String::new();
+    file.read_to_string(&mut encoded).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::InvalidData {
+            rejected("Home reset progress is invalid")
+        } else {
+            unavailable("Home reset progress is unreadable")
+        }
+    })?;
+    let mut lines = encoded.lines();
+    let epoch = lines
+        .next()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|epoch| *epoch != 0 && i64::try_from(*epoch).is_ok())
+        .ok_or_else(|| rejected("Home reset progress is invalid"))?;
+    let phase = lines
+        .next()
+        .and_then(parse_phase)
+        .ok_or_else(|| rejected("Home reset progress is invalid"))?;
+    if lines.next().is_some() {
+        return Err(rejected("Home reset progress is invalid"));
+    }
+    Ok(Some(HomeResetProgress {
+        reset_epoch: epoch,
+        phase,
+    }))
+}
+
+fn write_progress(
+    root: &Path,
+    epoch: u64,
+    phase: HomeResetPhase,
+) -> Result<(), ResourceControlError> {
+    write_state(
+        root,
+        "progress",
+        &format!("{}\n{}\n", epoch, phase_name(phase)),
+    )
+}
+
+fn write_state(root: &Path, name: &str, encoded: &str) -> Result<(), ResourceControlError> {
+    let directory = state_directory(root);
+    if directory_metadata(&directory).is_none() {
+        return Err(unavailable("Home reset progress cannot be persisted"));
+    }
+    let temporary = directory.join(format!("{name}.tmp"));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary)
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
+    file.write_all(encoded.as_bytes())
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
+    file.sync_all()
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
+    fs::rename(temporary, directory.join(name))
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))?;
+    File::open(directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| unavailable("Home reset progress cannot be persisted"))
+}
+
+fn require_target_progress(
+    root: &Path,
+    epoch: u64,
+) -> Result<HomeResetPhase, ResourceControlError> {
+    let progress =
+        read_progress(root)?.ok_or_else(|| rejected("Home reset has not been prepared"))?;
+    if progress.reset_epoch != epoch {
+        return Err(rejected("another Home reset epoch is in progress"));
+    }
+    Ok(progress.phase)
+}
+
+fn prepare_metadata(root: &Path, epoch: u64) -> Result<fs::Metadata, ResourceControlError> {
+    require_epoch(epoch)?;
+    template_metadata(root)
+}
+
+fn template_metadata(root: &Path) -> Result<fs::Metadata, ResourceControlError> {
+    let contest_home = root.join(CONTEST_HOME_RELATIVE_PATH);
+    let metadata = directory_metadata(&contest_home)
+        .ok_or_else(|| unavailable("contestant Home is unavailable"))?;
+    let contest =
+        crate::session::account(root, crate::session::account_name(SessionRole::Contest))?;
+    if metadata.uid() != contest.uid || metadata.gid() != contest.gid {
+        return Err(rejected("contestant Home ownership is invalid"));
+    }
+    template::verify(root, &metadata)?;
+    Ok(metadata)
+}
+
+pub(crate) fn require_template(root: &Path) -> Result<(), ResourceControlError> {
+    template_metadata(root).map(|_| ())
+}
+
+pub(super) fn prepare(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    let home_metadata = prepare_metadata(root, epoch)?;
+    if let Some(progress) = read_progress(root)? {
+        if progress.reset_epoch == epoch {
+            return match progress.phase {
+                HomeResetPhase::Prepared => prepare_generation(root, epoch, &home_metadata),
+                HomeResetPhase::Applied | HomeResetPhase::Verified
+                    if generation_is_complete(root, epoch, &home_metadata) =>
+                {
+                    Ok(())
+                }
+                HomeResetPhase::Applied | HomeResetPhase::Verified => {
+                    write_progress(root, epoch, HomeResetPhase::RecoveryRequired)?;
+                    Err(unavailable("Home reset recovery is required"))
+                }
+                HomeResetPhase::Draining | HomeResetPhase::RecoveryRequired => {
+                    Err(unavailable("Home reset recovery is required"))
+                }
+            };
+        }
+        if progress.reset_epoch > epoch || progress.phase != HomeResetPhase::Verified {
+            return Err(rejected("another Home reset epoch is in progress"));
+        }
+    }
+    prepare_generation(root, epoch, &home_metadata)?;
+    write_progress(root, epoch, HomeResetPhase::Prepared)
+}
+
+pub(super) fn query(root: &Path) -> Result<Option<HomeResetProgress>, ResourceControlError> {
+    read_progress(root)
+}
+
+fn mounted_generation(root: &Path, epoch: u64) -> Result<bool, ResourceControlError> {
+    use procfs::FromRead as _;
+
+    let mounts = procfs::process::MountInfos::from_file(root.join("proc/self/mountinfo"))
+        .map_err(|_| unavailable("mount state is unavailable"))?;
+    let mount_point = root.join(CONTEST_HOME_RELATIVE_PATH);
+    let mut at_target = mounts
+        .iter()
+        .filter(|mount| mount.mount_point == mount_point);
+    let Some(mount) = at_target.next() else {
+        return Ok(false);
+    };
+    // OverlayFS may return success but fall back to a read-only mount when it
+    // cannot create its internal work directory (for example, after ENOSPC).
+    // Keep generation ownership separate so recovery can replace that mount.
+    if at_target.next().is_some()
+        || natsume_generation(root, mount) != Some(epoch)
+        || !mount.mount_options.contains_key("rw")
+        || !mount.super_options.contains_key("rw")
+    {
+        return Ok(false);
+    }
+    let metadata = prepare_metadata(root, epoch)?;
+    Ok(generation_is_complete(root, epoch, &metadata))
+}
+
+fn natsume_generation(root: &Path, mount: &procfs::process::MountInfo) -> Option<u64> {
+    if mount.mount_point != root.join(CONTEST_HOME_RELATIVE_PATH) || mount.fs_type != "overlay" {
+        return None;
+    }
+    let lower = mount
+        .super_options
+        .get("lowerdir")
+        .and_then(Option::as_deref)?;
+    if Path::new(lower) != root.join(TEMPLATE_RELATIVE_PATH) {
+        return None;
+    }
+    let generations = state_directory(root).join("generations");
+    let upper = Path::new(
+        mount
+            .super_options
+            .get("upperdir")
+            .and_then(Option::as_deref)?,
+    );
+    let mut relative = upper.strip_prefix(&generations).ok()?.components();
+    let epoch = relative.next()?.as_os_str().to_str()?.parse::<u64>().ok()?;
+    if epoch == 0
+        || i64::try_from(epoch).is_err()
+        || relative.next()?.as_os_str() != "upper"
+        || relative.next().is_some()
+        || mount
+            .super_options
+            .get("workdir")
+            .and_then(Option::as_deref)
+            .map(Path::new)
+            != Some(generations.join(epoch.to_string()).join("work").as_path())
+    {
+        return None;
+    }
+    Some(epoch)
+}
+
+fn mount_generation(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    prepare_metadata(root, epoch)?;
+    if !generation_layout_exists(root, epoch) {
+        return Err(rejected("Home reset generation is unavailable"));
+    }
+    if root != Path::new("/") {
+        return Ok(());
+    }
+    if mounted_generation(root, epoch)? {
+        return Ok(());
+    }
+    let mount_point = root.join(CONTEST_HOME_RELATIVE_PATH);
+    let process = Process::myself().map_err(|_| unavailable("mount state is unavailable"))?;
+    let mounts = process
+        .mountinfo()
+        .map_err(|_| unavailable("mount state is unavailable"))?;
+    let mut at_target = mounts
+        .iter()
+        .filter(|mount| mount.mount_point == mount_point);
+    if let Some(existing) = at_target.next() {
+        if at_target.next().is_some() || natsume_generation(root, existing).is_none() {
+            return Err(rejected("contestant Home contains an unmanaged mount"));
+        }
+        unmount(&mount_point, UnmountFlags::empty())
+            .map_err(|_| unavailable("contestant Home cannot be unmounted"))?;
+    }
+
+    let generation = generation_directory(root, epoch);
+    let options = format!(
+        "lowerdir={},upperdir={},workdir={}",
+        root.join(TEMPLATE_RELATIVE_PATH).display(),
+        generation.join("upper").display(),
+        generation.join("work").display()
+    );
+    let options =
+        CString::new(options).map_err(|_| rejected("contestant Home mount options are invalid"))?;
+    // TODO(WP10): validate the fixed overlay layout on the signed client image.
+    mount(
+        "overlay",
+        mount_point,
+        "overlay",
+        MountFlags::empty(),
+        Some(options.as_c_str()),
+    )
+    .map_err(|_| unavailable("contestant Home cannot be mounted"))
+}
+
+pub(super) fn apply(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    require_epoch(epoch)?;
+    match require_target_progress(root, epoch)? {
+        HomeResetPhase::Draining | HomeResetPhase::Prepared | HomeResetPhase::RecoveryRequired => {
+            mount_generation(root, epoch)?;
+            write_progress(root, epoch, HomeResetPhase::Applied)
+        }
+        HomeResetPhase::Applied | HomeResetPhase::Verified => Ok(()),
+    }
+}
+
+fn record_verification(
+    root: &Path,
+    epoch: u64,
+    mounted: bool,
+) -> Result<HomeResetProgress, ResourceControlError> {
+    let phase = require_target_progress(root, epoch)?;
+    if phase == HomeResetPhase::Prepared || !mounted {
+        write_progress(root, epoch, HomeResetPhase::RecoveryRequired)?;
+        return Ok(HomeResetProgress {
+            reset_epoch: epoch,
+            phase: HomeResetPhase::RecoveryRequired,
+        });
+    }
+    if phase != HomeResetPhase::Verified {
+        remove_other_generations(root, epoch)?;
+        write_progress(root, epoch, HomeResetPhase::Verified)?;
+    }
+    Ok(HomeResetProgress {
+        reset_epoch: epoch,
+        phase: HomeResetPhase::Verified,
+    })
+}
+
+pub(super) fn verify(root: &Path, epoch: u64) -> Result<HomeResetProgress, ResourceControlError> {
+    require_epoch(epoch)?;
+    record_verification(root, epoch, mounted_generation(root, epoch)?)
+}
+
+pub(super) fn recover(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    require_epoch(epoch)?;
+    match read_progress(root)? {
+        Some(progress)
+            if progress.reset_epoch == epoch
+                && progress.phase == HomeResetPhase::Verified
+                && mounted_generation(root, epoch)? =>
+        {
+            Ok(())
+        }
+        Some(progress) if progress.reset_epoch == epoch => {
+            mount_generation(root, epoch)?;
+            write_progress(root, epoch, HomeResetPhase::Applied)
+        }
+        Some(_) => Err(rejected("another Home reset epoch is in progress")),
+        None if generation_layout_exists(root, epoch) => {
+            write_progress(root, epoch, HomeResetPhase::Prepared)?;
+            mount_generation(root, epoch)?;
+            write_progress(root, epoch, HomeResetPhase::Applied)
+        }
+        None => Err(rejected("Home reset has not been prepared")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink},
+        path::Path,
+    };
+
+    use natsume_workstation_ipc::HomeResetPhase;
+    use procfs::process::MountInfo;
+    use tempfile::TempDir;
+
+    use super::{
+        apply, generation_directory, natsume_generation, prepare, query, record_verification,
+        recover, state_directory, verify,
+    };
+
+    fn fixture() -> TempDir {
+        let fixture =
+            TempDir::new().unwrap_or_else(|error| panic!("fixture creation failed: {error}"));
+        let lower = fixture
+            .path()
+            .join("usr/lib/natsume/home-templates/current/lower");
+        fs::create_dir_all(&lower)
+            .unwrap_or_else(|error| panic!("template fixture failed: {error}"));
+        fs::set_permissions(&lower, fs::Permissions::from_mode(0o750))
+            .unwrap_or_else(|error| panic!("template metadata fixture failed: {error}"));
+        let home = fixture.path().join("home/teams");
+        fs::create_dir_all(&home)
+            .unwrap_or_else(|error| panic!("contestant Home fixture failed: {error}"));
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700))
+            .unwrap_or_else(|error| panic!("contestant Home metadata fixture failed: {error}"));
+        if rustix::process::geteuid().is_root() {
+            for path in [&home, &lower] {
+                rustix::fs::chown(
+                    path,
+                    Some(rustix::fs::Uid::from_raw(1001)),
+                    Some(rustix::fs::Gid::from_raw(1001)),
+                )
+                .unwrap_or_else(|error| panic!("contest fixture ownership failed: {error}"));
+            }
+        }
+        let metadata = fs::metadata(&home).unwrap_or_else(|error| panic!("Home metadata: {error}"));
+        fs::create_dir_all(fixture.path().join("etc"))
+            .unwrap_or_else(|error| panic!("passwd directory: {error}"));
+        fs::write(
+            fixture.path().join("etc/passwd"),
+            format!(
+                "teams:x:{}:{}::/home/teams:/bin/bash\n",
+                metadata.uid(),
+                metadata.gid()
+            ),
+        )
+        .unwrap_or_else(|error| panic!("passwd fixture: {error}"));
+        super::template::tests::fixture(fixture.path())
+            .unwrap_or_else(|error| panic!("template mount fixture: {error}"));
+        fs::create_dir_all(state_directory(fixture.path()))
+            .unwrap_or_else(|error| panic!("Home reset state fixture failed: {error}"));
+        fixture
+    }
+
+    #[test]
+    fn prepared_upper_inherits_the_contestant_home_metadata() {
+        let fixture = fixture();
+        prepare(fixture.path(), 7).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        let home = fs::metadata(fixture.path().join("home/teams"))
+            .unwrap_or_else(|error| panic!("contestant Home metadata failed: {error}"));
+        let upper = fs::metadata(generation_directory(fixture.path(), 7).join("upper"))
+            .unwrap_or_else(|error| panic!("upper metadata failed: {error}"));
+
+        assert_eq!(upper.uid(), home.uid());
+        assert_eq!(upper.gid(), home.gid());
+        assert_eq!(upper.mode() & 0o7777, home.mode() & 0o7777);
+    }
+
+    #[test]
+    fn an_invalid_template_cannot_prepare_or_resume_home_changes() {
+        let root = fixture();
+        let backing = root.path().join("sys/dev/block/7:3/loop/backing_file");
+        let valid = fs::read(&backing).unwrap_or_else(|error| panic!("read fixture: {error}"));
+        fs::write(&backing, "/unexpected.squashfs\n")
+            .unwrap_or_else(|error| panic!("write fixture: {error}"));
+        assert!(prepare(root.path(), 7).is_err());
+        assert!(!generation_directory(root.path(), 7).exists());
+        assert_eq!(query(root.path()).ok().flatten(), None);
+
+        fs::write(&backing, &valid).unwrap_or_else(|error| panic!("restore fixture: {error}"));
+        prepare(root.path(), 7).unwrap_or_else(|error| panic!("prepare: {error}"));
+        fs::remove_file(&backing).unwrap_or_else(|error| panic!("remove fixture: {error}"));
+        assert!(apply(root.path(), 7).is_err());
+        assert!(recover(root.path(), 7).is_err());
+        assert_eq!(
+            query(root.path()).ok().flatten().map(|p| p.phase),
+            Some(HomeResetPhase::Prepared)
+        );
+    }
+
+    #[test]
+    fn corrupt_progress_is_rejected_instead_of_retrying() {
+        let directory = fixture();
+        for content in [b"not a marker".as_slice(), b"\xff".as_slice()] {
+            fs::write(super::marker_path(directory.path()), content)
+                .unwrap_or_else(|error| panic!("fixture write: {error}"));
+            assert!(matches!(
+                query(directory.path()),
+                Err(natsume_workstation_ipc::ResourceControlError::Rejected(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn home_reset_is_prepare_apply_verify_and_idempotent() {
+        let fixture = fixture();
+        prepare(fixture.path(), 7).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        prepare(fixture.path(), 7)
+            .unwrap_or_else(|error| panic!("replayed prepare failed: {error}"));
+        let prepared = query(fixture.path())
+            .unwrap_or_else(|error| panic!("query failed: {error}"))
+            .unwrap_or_else(|| panic!("prepared reset must be observable"));
+        assert_eq!(prepared.reset_epoch, 7);
+        assert_eq!(prepared.phase, HomeResetPhase::Prepared);
+        apply(fixture.path(), 7).unwrap_or_else(|error| panic!("apply failed: {error}"));
+        let progress = record_verification(fixture.path(), 7, true)
+            .unwrap_or_else(|error| panic!("verification recording failed: {error}"));
+
+        assert_eq!(progress.reset_epoch, 7);
+        assert_eq!(progress.phase, HomeResetPhase::Verified);
+        apply(fixture.path(), 7).unwrap_or_else(|error| panic!("replayed apply failed: {error}"));
+        let replay = record_verification(fixture.path(), 7, true)
+            .unwrap_or_else(|error| panic!("replayed verification failed: {error}"));
+        assert_eq!(replay.phase, HomeResetPhase::Verified);
+    }
+
+    #[test]
+    fn verified_reset_removes_the_previous_generation() {
+        let fixture = fixture();
+        prepare(fixture.path(), 7).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        apply(fixture.path(), 7).unwrap_or_else(|error| panic!("apply failed: {error}"));
+        record_verification(fixture.path(), 7, true)
+            .unwrap_or_else(|error| panic!("verification failed: {error}"));
+
+        prepare(fixture.path(), 8).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        apply(fixture.path(), 8).unwrap_or_else(|error| panic!("apply failed: {error}"));
+        record_verification(fixture.path(), 8, true)
+            .unwrap_or_else(|error| panic!("verification failed: {error}"));
+
+        assert!(!generation_directory(fixture.path(), 7).exists());
+        assert!(generation_directory(fixture.path(), 8).is_dir());
+    }
+
+    #[test]
+    fn prepared_replay_rebuilds_a_missing_generation() {
+        let fixture = fixture();
+        prepare(fixture.path(), 8).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        fs::remove_dir_all(generation_directory(fixture.path(), 8))
+            .unwrap_or_else(|error| panic!("generation removal failed: {error}"));
+
+        prepare(fixture.path(), 8)
+            .unwrap_or_else(|error| panic!("prepared replay failed: {error}"));
+
+        assert!(
+            generation_directory(fixture.path(), 8)
+                .join("upper")
+                .is_dir()
+        );
+        assert!(
+            generation_directory(fixture.path(), 8)
+                .join("work")
+                .is_dir()
+        );
+    }
+
+    #[test]
+    fn applied_replay_marks_an_incomplete_generation_for_recovery() {
+        let fixture = fixture();
+        prepare(fixture.path(), 8).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        apply(fixture.path(), 8).unwrap_or_else(|error| panic!("apply failed: {error}"));
+        fs::remove_dir(generation_directory(fixture.path(), 8).join("work"))
+            .unwrap_or_else(|error| panic!("work directory removal failed: {error}"));
+
+        assert!(prepare(fixture.path(), 8).is_err());
+        let progress = query(fixture.path())
+            .unwrap_or_else(|error| panic!("query failed: {error}"))
+            .unwrap_or_else(|| panic!("recovery state must be observable"));
+        assert_eq!(progress.phase, HomeResetPhase::RecoveryRequired);
+    }
+
+    #[test]
+    fn symlinked_generation_tree_is_rejected() {
+        let fixture = fixture();
+        let outside = fixture.path().join("outside");
+        fs::create_dir(&outside).unwrap_or_else(|error| panic!("outside fixture failed: {error}"));
+        symlink(
+            &outside,
+            state_directory(fixture.path()).join("generations"),
+        )
+        .unwrap_or_else(|error| panic!("symlink fixture failed: {error}"));
+
+        assert!(prepare(fixture.path(), 8).is_err());
+        assert!(!outside.join("8").exists());
+    }
+
+    #[test]
+    fn applied_marker_is_not_mount_evidence_in_a_fixture() {
+        let fixture = fixture();
+        prepare(fixture.path(), 8).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        apply(fixture.path(), 8).unwrap_or_else(|error| panic!("apply failed: {error}"));
+
+        let progress =
+            verify(fixture.path(), 8).unwrap_or_else(|error| panic!("verify failed: {error}"));
+
+        assert_eq!(progress.phase, HomeResetPhase::RecoveryRequired);
+    }
+
+    #[test]
+    fn recovery_resumes_a_prepared_generation() {
+        let fixture = fixture();
+        prepare(fixture.path(), 9).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        recover(fixture.path(), 9).unwrap_or_else(|error| panic!("recover failed: {error}"));
+
+        let progress = record_verification(fixture.path(), 9, true)
+            .unwrap_or_else(|error| panic!("verification recording failed: {error}"));
+        assert_eq!(progress.phase, HomeResetPhase::Verified);
+    }
+
+    #[test]
+    fn lost_mount_requires_recovery_before_verification_can_complete_again() {
+        let fixture = fixture();
+        prepare(fixture.path(), 12).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+        apply(fixture.path(), 12).unwrap_or_else(|error| panic!("apply failed: {error}"));
+        let lost = record_verification(fixture.path(), 12, false)
+            .unwrap_or_else(|error| panic!("failed verification failed: {error}"));
+        assert_eq!(lost.phase, HomeResetPhase::RecoveryRequired);
+
+        recover(fixture.path(), 12).unwrap_or_else(|error| panic!("recover failed: {error}"));
+        let recovered = record_verification(fixture.path(), 12, true)
+            .unwrap_or_else(|error| panic!("reverification failed: {error}"));
+        assert_eq!(recovered.phase, HomeResetPhase::Verified);
+    }
+
+    #[test]
+    fn a_new_epoch_waits_for_the_current_epoch_to_finish() {
+        let fixture = fixture();
+        prepare(fixture.path(), 10).unwrap_or_else(|error| panic!("prepare failed: {error}"));
+
+        assert!(prepare(fixture.path(), 11).is_err());
+    }
+
+    #[test]
+    fn only_a_natsume_overlay_generation_is_replaceable() {
+        let managed = MountInfo::from_line(
+            "36 25 0:42 / /home/teams rw,relatime - overlay overlay rw,lowerdir=/usr/lib/natsume/home-templates/current/lower,upperdir=/var/lib/natsume-privileged/home-reset/generations/7/upper,workdir=/var/lib/natsume-privileged/home-reset/generations/7/work",
+        )
+        .unwrap_or_else(|error| panic!("managed mount fixture failed: {error}"));
+        assert_eq!(natsume_generation(Path::new("/"), &managed), Some(7));
+
+        let unknown =
+            MountInfo::from_line("36 25 8:2 / /home/teams rw,relatime - ext4 /dev/sda2 rw")
+                .unwrap_or_else(|error| panic!("unknown mount fixture failed: {error}"));
+        assert_eq!(natsume_generation(Path::new("/"), &unknown), None);
+
+        let foreign_overlay = MountInfo::from_line(
+            "36 25 0:43 / /home/teams rw,relatime - overlay overlay rw,lowerdir=/srv/other,upperdir=/var/lib/natsume-privileged/home-reset/generations/7/upper,workdir=/var/lib/natsume-privileged/home-reset/generations/7/work",
+        )
+        .unwrap_or_else(|error| panic!("foreign overlay fixture failed: {error}"));
+        assert_eq!(natsume_generation(Path::new("/"), &foreign_overlay), None);
+    }
+
+    #[test]
+    fn a_read_only_generation_cannot_verify_or_discard_the_previous_home()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (mount_options, super_options) in [("ro", "rw"), ("rw", "ro"), ("ro", "ro")] {
+            let root = fixture();
+            prepare(root.path(), 7)?;
+            apply(root.path(), 7)?;
+            let old = generation_directory(root.path(), 6);
+            fs::create_dir_all(&old)?;
+            fs::write(old.join("canary"), b"previous Home")?;
+            let mountinfo = root.path().join("proc/self/mountinfo");
+            let lower = fs::read_to_string(&mountinfo)?;
+            let overlay = |options, super_options| {
+                format!(
+                    "36 25 0:42 / {}/home/teams {options},relatime - overlay overlay {super_options},lowerdir={}/usr/lib/natsume/home-templates/current/lower,upperdir={}/upper,workdir={}/work\n",
+                    root.path().display(),
+                    root.path().display(),
+                    generation_directory(root.path(), 7).display(),
+                    generation_directory(root.path(), 7).display(),
+                )
+            };
+            let readonly = overlay(mount_options, super_options);
+            // A read-only mount remains ours to replace during recovery.
+            assert_eq!(
+                natsume_generation(root.path(), &MountInfo::from_line(readonly.trim_end())?),
+                Some(7)
+            );
+            fs::write(&mountinfo, format!("{lower}{readonly}"))?;
+            assert_eq!(
+                verify(root.path(), 7)?.phase,
+                HomeResetPhase::RecoveryRequired
+            );
+            assert_eq!(fs::read(old.join("canary"))?, b"previous Home");
+
+            fs::write(&mountinfo, format!("{lower}{}", overlay("rw", "rw")))?;
+            recover(root.path(), 7)?;
+            assert_eq!(verify(root.path(), 7)?.phase, HomeResetPhase::Verified);
+            assert!(!old.exists());
+        }
+        Ok(())
+    }
+}

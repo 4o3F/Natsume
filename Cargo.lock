@@ -3483,85 +3483,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "308d96db8debc727c3fd9744aac51751243420e46edf401010908da7f8d5e57c"
 
 [[package]]
-name = "natsume-device-daemon"
-version = "2.10.3"
-dependencies = [
- "base64 0.23.1",
- "clap",
- "ed25519-dalek",
- "futures-util",
- "getrandom 0.4.3",
- "hex",
- "image",
- "natsume-device-protocol",
- "natsume-local-control-api",
- "prost",
- "rcgen",
- "reqwest",
- "rustix 1.1.5",
- "rustls",
- "rustls-pki-types",
- "serde",
- "serde_json",
- "sha2",
- "snafu 0.9.2",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tokio-tungstenite 0.30.0",
- "tokio-util",
- "toml 1.1.8+spec-1.1.0",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "x509-parser",
- "zbus 6.0.0",
- "zeroize",
-]
-
-[[package]]
-name = "natsume-device-protocol"
-version = "2.10.3"
-dependencies = [
- "ed25519-dalek",
- "prost",
- "prost-build",
- "protoc-bin-vendored",
- "sha2",
-]
-
-[[package]]
-name = "natsume-local-control-api"
-version = "2.10.3"
-dependencies = [
- "serde",
- "zbus 6.0.0",
-]
-
-[[package]]
-name = "natsume-privileged-helper"
-version = "2.10.3"
-dependencies = [
- "futures-util",
- "natsume-local-control-api",
- "procfs",
- "rustix 1.1.5",
- "serde",
- "serde_json",
- "smbios-lib",
- "snafu 0.9.2",
- "tempfile",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "wayland-client",
- "zbus 6.0.0",
- "zeroize",
-]
-
-[[package]]
 name = "natsume-roster"
 version = "2.10.3"
 dependencies = [
@@ -3595,8 +3516,8 @@ dependencies = [
  "getrandom 0.4.3",
  "hex",
  "image",
- "natsume-device-protocol",
  "natsume-roster",
+ "natsume-workstation-protocol",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
@@ -3635,12 +3556,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "natsume-session-agent"
+name = "natsume-workstation-agent"
 version = "2.10.3"
 dependencies = [
  "image",
- "natsume-device-protocol",
- "natsume-local-control-api",
+ "natsume-workstation-ipc",
+ "natsume-workstation-protocol",
  "qrcode",
  "rustix 1.1.5",
  "semver",
@@ -3653,6 +3574,85 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "zbus 6.0.0",
+]
+
+[[package]]
+name = "natsume-workstation-daemon"
+version = "2.10.3"
+dependencies = [
+ "base64 0.23.1",
+ "clap",
+ "ed25519-dalek",
+ "futures-util",
+ "getrandom 0.4.3",
+ "hex",
+ "image",
+ "natsume-workstation-ipc",
+ "natsume-workstation-protocol",
+ "prost",
+ "rcgen",
+ "reqwest",
+ "rustix 1.1.5",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "snafu 0.9.2",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tokio-tungstenite 0.30.0",
+ "tokio-util",
+ "toml 1.1.8+spec-1.1.0",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "x509-parser",
+ "zbus 6.0.0",
+ "zeroize",
+]
+
+[[package]]
+name = "natsume-workstation-helper"
+version = "2.10.3"
+dependencies = [
+ "futures-util",
+ "natsume-workstation-ipc",
+ "procfs",
+ "rustix 1.1.5",
+ "serde",
+ "serde_json",
+ "smbios-lib",
+ "snafu 0.9.2",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "wayland-client",
+ "zbus 6.0.0",
+ "zeroize",
+]
+
+[[package]]
+name = "natsume-workstation-ipc"
+version = "2.10.3"
+dependencies = [
+ "serde",
+ "zbus 6.0.0",
+]
+
+[[package]]
+name = "natsume-workstation-protocol"
+version = "2.10.3"
+dependencies = [
+ "ed25519-dalek",
+ "prost",
+ "prost-build",
+ "protoc-bin-vendored",
+ "sha2",
 ]
 
 [[package]]

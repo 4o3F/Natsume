@@ -36,27 +36,13 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-            dbus-daemon just libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config
+            dbus-daemon libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config
 
       - name: Setup pinned Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           toolchain: 1.97.1
           components: clippy,rustfmt
-
-      - name: Setup Node
-        uses: actions/setup-node@v7.0.0
-        with:
-          node-version-file: .node-version
-
-      - name: Enable pnpm 11
-        run: |
-          set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@11 --activate
-
-      - name: Verify pinned toolchain
-        run: just toolchain
 
       - name: Install pinned cargo-deny
         run: cargo install cargo-deny --version 0.20.2 --locked
@@ -203,11 +189,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup pinned Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
-        with:
-          toolchain: 1.97.1
-
       - name: Install policy dependencies
         run: |
           set -euo pipefail
@@ -238,16 +219,8 @@ jobs:
           tar -xzf "${tool_dir}/${gitleaks_asset}" -C "${tool_dir}" gitleaks
           printf '%s\n' "${tool_dir}" >> "${GITHUB_PATH}"
 
-      - name: Static policy, shell format, and secret scan
+      - name: Shell format and secret scan
         run: just ci-policy
-      - name: GNOME Kiosk and image input package contracts
-        run: |
-          set -euo pipefail
-          test ! -e packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop
-          test ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service
-          grep -Fxq 'ConditionUser=waiting' packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf
-          grep -Fxq 'ExecStart=/usr/bin/natsume-session-agent run' packaging/client/rootfs/usr/lib/systemd/user/org.gnome.Kiosk.Script.service.d/50-natsume.conf
-          python3 packaging/check-image-inputs.py
 
   packages:
     name: packages

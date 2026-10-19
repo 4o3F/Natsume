@@ -1,0 +1,21 @@
+[package]
+name = "natsume-workstation-protocol"
+description = "Natsume WSS control-session Protobuf schema and Rust facade"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[dependencies]
+ed25519-dalek.workspace = true
+prost.workspace = true
+sha2.workspace = true
+
+[build-dependencies]
+prost-build = "=0.14.4"
+protoc-bin-vendored = "3"
+
+[lints]
+workspace = true

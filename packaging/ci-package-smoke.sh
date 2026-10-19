@@ -35,6 +35,8 @@ grep -Fxq 'ConditionUser=waiting' "${session_kiosk_source}" ||
   fail 'GNOME Kiosk Agent drop-in must restrict the waiting user'
 test ! -e packaging/client/rootfs/etc/xdg/autostart/org.natsume.SessionAgent.desktop ||
   fail 'Session Agent must have only the GNOME Kiosk startup owner'
+test ! -e packaging/client/rootfs/usr/lib/systemd/user/natsume-session-agent.service ||
+  fail 'Session Agent must have only the GNOME Kiosk startup owner'
 
 work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/natsume-package-smoke.XXXXXX")"
 trap 'rm -rf "${work_root}"' EXIT HUP INT TERM
@@ -100,7 +102,7 @@ fi
   --config packaging/client/rootfs/etc/natsume/caddy/bootstrap.caddyfile \
   >/dev/null
 
-CADDY_BIN="${caddy_binary}" cargo test --locked -p natsume-device-daemon \
+CADDY_BIN="${caddy_binary}" cargo test --locked -p natsume-workstation-daemon \
   reconcile::caddy::tests::packaged_caddy_preserves_literal_usernames -- --ignored --exact
 
 # Build only the binaries that enter the packages, in an isolated target directory.
@@ -109,9 +111,9 @@ production_release="${production_target}/release"
 CARGO_TARGET_DIR="${production_target}" cargo build \
   --release \
   --locked \
-  -p natsume-device-daemon \
-  -p natsume-privileged-helper \
-  -p natsume-session-agent \
+  -p natsume-workstation-daemon \
+  -p natsume-workstation-helper \
+  -p natsume-workstation-agent \
   -p natsume-server
 pnpm --filter @natsume/web build
 

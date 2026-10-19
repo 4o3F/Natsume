@@ -1,0 +1,37 @@
+[package]
+name = "natsume-workstation-agent"
+description = "Waiting-session Natsume user agent for fullscreen presentation and binding"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "natsume-session-agent"
+path = "src/main.rs"
+
+[dependencies]
+image.workspace = true
+natsume-workstation-protocol = { path = "../natsume-workstation-protocol" }
+natsume-workstation-ipc = { path = "../natsume-workstation-ipc" }
+qrcode.workspace = true
+rustix.workspace = true
+semver.workspace = true
+serde_json.workspace = true
+slint = { workspace = true, features = ["unstable-winit-030"] }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[build-dependencies]
+slint-build = "1.18"
+
+[lints]
+workspace = true

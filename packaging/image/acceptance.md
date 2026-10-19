@@ -108,8 +108,7 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 
 ## 新版 Waiting 展示的配套验证
 
-配套发布时使用 `natsume.control.v3` 的 Server/Client 和本地协议 3 的 Daemon/Agent。
-先导入完整 XLSX 补齐存量账号的队伍／学校资料，再恢复已绑定工位的控制连接；不混用旧契约。
+配套发布时使用 `natsume.control.v3` 的 Server/Client 和本地协议 3 的 Daemon/Agent。 先导入完整 XLSX 补齐存量账号的队伍／学校资料，再恢复已绑定工位的控制连接；不混用旧契约。
 
 - 已绑定时，核对双语校名、双语队名、学校 Logo 和座位号与 Server 完整名单一致；缺少一种语言不重复显示，长名可完整阅读且座位保持可见。
 - 无图、图像无效或下载失败时显示默认图，不阻塞 waiting_ready；后补图片在后台重试后出现，设备在线状态不因缺图变化。
@@ -133,11 +132,11 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 - 配置路径条件或 Helper 依赖使 Daemon 根本未启动时，不期望 Daemon 自行生成报告；后续 Agent fallback 另行验收。
 - route table 和接口 flags/carrier 是历史辅助证据，不是联网或安全放行证明；不发送公网或 ping 探测。
 
-开发定向命令：`cargo test -p natsume-local-control-api --locked`、`cargo test -p natsume-privileged-helper hardware_identity --locked`、`cargo test -p natsume-device-daemon diagnostics --locked`、`cargo test -p natsume-device-daemon startup --locked`、`cargo test -p natsume-device-daemon control:: --locked`。本页列出验收方式，不用单元测试替代真实镜像结果。
+开发定向命令：`cargo test -p natsume-workstation-ipc --locked`、`cargo test -p natsume-workstation-helper hardware_identity --locked`、`cargo test -p natsume-workstation-daemon diagnostics --locked`、`cargo test -p natsume-workstation-daemon startup --locked`、`cargo test -p natsume-workstation-daemon control:: --locked`。本页列出验收方式，不用单元测试替代真实镜像结果。
 
 ## 客户端全屏界面与离线诊断消费的配套验证
 
-- Binding/诊断的浅色双栏、Waiting 的深色学校／队伍／座位布局及统一横向页头符合 `client/session-agent/ui/session_agent.slint`。在真实 Kiosk 的 1920×1080、1280×800、HiDPI 和显示模式变化下核对等比缩放、字体、无装饰全屏及真实首帧；长队名／校名可完整滚动读取，座位独立可见。
+- Binding/诊断的浅色双栏、Waiting 的深色学校／队伍／座位布局及统一横向页头符合 `crates/natsume-workstation-agent/ui/session_agent.slint`。在真实 Kiosk 的 1920×1080、1280×800、HiDPI 和显示模式变化下核对等比缩放、字体、无装饰全屏及真实首帧；长队名／校名可完整滚动读取，座位独立可见。
 - Binding 实测空值禁用、自动聚焦、长输入横滚、Enter／鼠标／键盘按钮／无障碍激活，以及拒绝后重输；pending 隐藏输入。离线、旧 negotiation/epoch 和旧 lease 不得提交；诊断刷新不抢当前输入焦点或覆盖已绑定队伍。
 - 以 waiting 身份读取合法当前 boot 报告；缺文件、symlink/FIFO/非常规文件、错误 owner/mode、超过 16 KiB、未知版本/字段和损坏内容只能产生固定读取分类，不能阻塞 UI/lease，也不能写入目录或访问私有 config/credential。
 - 真实故障与恢复分别核对最近报告、历史失败、当前本地通信观察：历史 active/retrying 不当作当前健康或重试倒计时，未知来源不当作失败，Hardware ID 不显示为 Device ID。阶段条只标明确的报告事实，不推断前置步骤全部完成。
@@ -148,4 +147,4 @@ AT-17/18 的注入点须在记录文件 fsync、rename、父目录 fsync 完成�
 - 显式暂停自动帧确认，排序验证 Waiting R→Binding R+1→先观测后新帧：Binding snapshot/revision 保持不变，readiness 和维护仍未就绪，新帧后才恢复；真实 OS／Agent／foreground／contest／Home／Target／epoch 条件失效仍撤权。UI revision 在获取快照与确认之间更新时，仅同 lease 的严格更新鉴权快照可恢复，不清空 lease 重注册；绑定后队名、校名、座位和 Logo 全部保留并等待真实新 Waiting 帧。超时、过期／替换 lease、错误身份和未推进 revision 的拒绝保持 fail closed。
 - 现场检查诊断目录／文件之外的 `/run`、`/etc`、`/etc/passwd` 归属、类型和权限；可写父目录会使报告消费拒绝为 `untrusted`。不要以放宽读取器或诊断成功读取替代 Device1 lease／呈现验收。
 
-开发定向命令：`cargo test -p natsume-session-agent --locked`、`cargo clippy -p natsume-session-agent --all-targets --locked -- -D warnings`；Waiting 回归用 `cargo test -p natsume-device-daemon waiting --locked`。本次实现开发验证通过 Agent 25 library + 10 binary tests、Daemon reconcile 91 tests（另 1 项需 packaged Caddy 的既有测试忽略）、定向 Clippy、`cargo fmt --all --check` 和 `git diff --check`；`prek run --all-files` 的六个 hooks 全部通过。离屏 Slint 的 18 张二维码截图经独立软件解码及 JSON 比对通过，五种合成报告 payload 为 1199–1296 bytes，无报告观察为 204 bytes；这些普通样本不代表最大合法元数据的实际屏幕签收。头像追加验证在同一离屏窗口进行尺寸／DPI 往返切换，物理目标 56→32→84→56 pixels 与生成 bitmap 一致，未变化目标复用缓存；分隔线在 1×/2× 和不同画布下分别保持 32/24/48 物理 pixels 且居中。开发级离屏渲染用于检查排版和 JSON 往返，不代替真实 Skia/Wayland、手机扫码、IME/键鼠或镜像签收；CI 和真实镜像验收尚未执行。
+开发定向命令：`cargo test -p natsume-workstation-agent --locked`、`cargo clippy -p natsume-workstation-agent --all-targets --locked -- -D warnings`；Waiting 回归用 `cargo test -p natsume-workstation-daemon waiting --locked`。本次实现开发验证通过 Agent 25 library + 10 binary tests、Daemon reconcile 91 tests（另 1 项需 packaged Caddy 的既有测试忽略）、定向 Clippy、`cargo fmt --all --check` 和 `git diff --check`；`prek run --all-files` 的六个 hooks 全部通过。离屏 Slint 的 18 张二维码截图经独立软件解码及 JSON 比对通过，五种合成报告 payload 为 1199–1296 bytes，无报告观察为 204 bytes；这些普通样本不代表最大合法元数据的实际屏幕签收。头像追加验证在同一离屏窗口进行尺寸／DPI 往返切换，物理目标 56→32→84→56 pixels 与生成 bitmap 一致，未变化目标复用缓存；分隔线在 1×/2× 和不同画布下分别保持 32/24/48 物理 pixels 且居中。开发级离屏渲染用于检查排版和 JSON 往返，不代替真实 Skia/Wayland、手机扫码、IME/键鼠或镜像签收；CI 和真实镜像验收尚未执行。

@@ -78,16 +78,9 @@ sudo timedatectl set-ntp true
 
 用现有防火墙和云安全组放行必要流量，先保留 SSH 入口再调整规则。Client Gateway 不应对其他机器开放。
 
-需要通过SSH批量排障时，在Web的Devices页展开筛选面板中的 **Emergency**，点击
-**Export all device IPs** 下载UTF-8文本，每行一个IP。导出包含全部Enabled/Disabled设备的
-最近Server观测地址（含离线设备），排除Revoked；搜索和列表筛选不缩小导出范围。文件已去重并
-排序，不包含用户名或SSH端口；按现场运维账号和端口交给并行SSH工具使用。
+需要通过SSH批量排障时，在Web的Devices页展开筛选面板中的 **Emergency**，点击 **Export all device IPs** 下载UTF-8文本，每行一个IP。导出包含全部Enabled/Disabled设备的 最近Server观测地址（含离线设备），排除Revoked；搜索和列表筛选不缩小导出范围。文件已去重并 排序，不包含用户名或SSH端口；按现场运维账号和端口交给并行SSH工具使用。
 
-Client同时上报控制连接实际使用的本地IP。双方地址不一致时，设备行的琥珀色警告图标可展开
-详情，查看和复制两个地址及记录时间；导出仍使用Server观测IP。地址在断线和Server重启后保留，
-新连接会更新整组记录。离线地址是最近记录，记录时间不是最后心跳时间；缺失地址会计数并跳过。
-Server升级自动应用第五条migration，保留既有设备和绑定；已有设备在重连后取得地址记录，
-旧Client未上报本地IP时显示Not reported。
+Client同时上报控制连接实际使用的本地IP。双方地址不一致时，设备行的琥珀色警告图标可展开 详情，查看和复制两个地址及记录时间；导出仍使用Server观测IP。地址在断线和Server重启后保留， 新连接会更新整组记录。离线地址是最近记录，记录时间不是最后心跳时间；缺失地址会计数并跳过。 Server升级自动应用第五条migration，保留既有设备和绑定；已有设备在重连后取得地址记录， 旧Client未上报本地IP时显示Not reported。
 
 Natsume 不安装 DOMjudge。继续前需有工作的 HTTPS DOMjudge 和比赛账号，并核对配套登录约定：Gateway 只对 /login 注入 X-DOMjudge-Login 和 Base64 编码的 X-DOMjudge-Pass。实际 DOMjudge 必须支持此约定；普通页面可访问不证明自动登录可用。
 
@@ -715,9 +708,9 @@ tar -xzf "$NATSUME_TOOL_DIR/nfpm_2.47.0_Linux_x86_64.tar.gz" -C "$NATSUME_TOOL_D
 ~~~bash
 export CARGO_TARGET_DIR="$NATSUME_SOURCE_DIR/target/client-deb"
 cargo build --release --locked \
-  -p natsume-device-daemon \
-  -p natsume-privileged-helper \
-  -p natsume-session-agent
+  -p natsume-workstation-daemon \
+  -p natsume-workstation-helper \
+  -p natsume-workstation-agent
 
 ls -lh "$CARGO_TARGET_DIR/release/natsume-device-daemon" \
   "$CARGO_TARGET_DIR/release/natsume-privileged-helper" \
@@ -1071,29 +1064,20 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 <a id="upgrade-v2-2-0"></a>
 ### 8.6 从 v2.1.0 升级到 v2.3.2（HTTP API 与 Client 图形栈 Breaking Change）
 
-本次控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3；现有 v2.1.0 Client 可继续连接。
-Server 包内的 Web 与 Server 一起升级。自定义运维脚本必须迁移旧 Session/Home 单台写接口。Client 升级到 v2.3.2 时，还须完成第 8.7 节的 Wayland 迁移。
+本次控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3；现有 v2.1.0 Client 可继续连接。 Server 包内的 Web 与 Server 一起升级。自定义运维脚本必须迁移旧 Session/Home 单台写接口。Client 升级到 v2.3.2 时，还须完成第 8.7 节的 Wayland 迁移。
 
 1. 暂停新目标操作，按第 8.2 节保存一致的数据库、密钥与配置冷备份，保留原安装包用于回退。
-2. 安装第 3.2 节校验过的 `natsume-server_2.3.2_amd64.deb`，随后显式重启 `natsume-server.service`。
-   启动时自动应用第三条 migration，增加提交去重记录表；既有设备、绑定、账号和目标保留。**不要重新 bootstrap。**
+2. 安装第 3.2 节校验过的 `natsume-server_2.3.2_amd64.deb`，随后显式重启 `natsume-server.service`。 启动时自动应用第三条 migration，增加提交去重记录表；既有设备、绑定、账号和目标保留。**不要重新 bootstrap。**
 3. 完全刷新管理员 Web 页面。Targets 默认展示 Enabled/Disabled，可切换生命周期筛选；单台与批量操作统一提交，操作对象仅限 Enabled，包含离线设备。
-4. 外部脚本改用 `POST /api/v2/target-submissions`，请求带唯一 `operation_id`、设备范围和一种动作。
-   旧 `PUT /devices/{device_id}/session-control`、`POST /devices/{device_id}/session-control/actions/terminate`
-   与 `POST /devices/{device_id}/home/actions/reset` 写入口已删除，原读取接口保留。
-5. 单台验证 waiting/contest 切换及提交结果，再按现场需要使用全部设备操作。HTTP 成功表示 Server 已保存结果，终端完成仍看 Session/Home convergence。
-   网络结果不明时用原操作 ID 和原内容重试；Web 会保留待确认请求，刷新后可点击 **Retry original request**。
-   明确拒绝的设备使用 **Retry failed devices** 创建新操作，仅重试失败名单。
+4. 外部脚本改用 `POST /api/v2/target-submissions`，请求带唯一 `operation_id`、设备范围和一种动作。 旧 `PUT /devices/{device_id}/session-control`、`POST /devices/{device_id}/session-control/actions/terminate` 与 `POST /devices/{device_id}/home/actions/reset` 写入口已删除，原读取接口保留。
+5. 单台验证 waiting/contest 切换及提交结果，再按现场需要使用全部设备操作。HTTP 成功表示 Server 已保存结果，终端完成仍看 Session/Home convergence。 网络结果不明时用原操作 ID 和原内容重试；Web 会保留待确认请求，刷新后可点击 **Retry original request**。 明确拒绝的设备使用 **Retry failed devices** 创建新操作，仅重试失败名单。
 
-去重记录随当前比赛数据库保留，不随注销、设备禁用或撤销删除。数据库回退会回退这些记录；
-回退时使用同一维护点的包与数据库，不能向回退后的系统重放升级后生成的待确认请求。
+去重记录随当前比赛数据库保留，不随注销、设备禁用或撤销删除。数据库回退会回退这些记录； 回退时使用同一维护点的包与数据库，不能向回退后的系统重放升级后生成的待确认请求。
 
 <a id="upgrade-v2-3-0"></a>
 ### 8.7 从 v2.2.x 升级到 v2.3.2（Client 图形栈 Breaking Change）
 
-本版本没有新增数据库 migration，控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3。
-Server 升级保留设备、绑定、目标和提交去重记录；原有协议兼容的 Client 仍可连接。
-Client v2.3.2 的 Agent、Helper 和会话入口要求原生 Wayland，必须与镜像配置配套更新。
+本版本没有新增数据库 migration，控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3。 Server 升级保留设备、绑定、目标和提交去重记录；原有协议兼容的 Client 仍可连接。 Client v2.3.2 的 Agent、Helper 和会话入口要求原生 Wayland，必须与镜像配置配套更新。
 
 1. 在维护窗口结束比赛操作，保存 teams 的工作文件，保留独立管理员 SSH/TTY 入口；按第 8.2 节完成一致冷备份。
 2. 安装校验过的 `natsume-server_2.3.2_amd64.deb`，显式重启 Server，完全刷新管理员 Web。**不要重新 bootstrap 或删除数据库。**
@@ -1105,8 +1089,7 @@ Client v2.3.2 的 Agent、Helper 和会话入口要求原生 Wayland，必须与
 
 回退时使用匹配的旧 Client 与 X11 镜像配置及维护备份，不能只降级 Helper、Agent 或单个二进制。
 
-<a id="upgrade-v2-3-1"></a>
-<a id="upgrade-v2-3-2"></a>
+<a id="upgrade-v2-3-1"></a> <a id="upgrade-v2-3-2"></a>
 ### 8.8 从 v2.3.0／v2.3.1 升级到 v2.3.2
 
 本补丁将 Rustls 升级到 0.23.45，修复 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)，并包含 Gateway 本机解析与 Firefox 入口修复。不改变数据库 schema、Device Control 或本地 Agent 协议；已完成原生 Wayland 集成的 v2.3.0 镜像可以原地升级。更早的 Client 仍须先按第 8.7 节完成镜像配置迁移。
@@ -1142,9 +1125,9 @@ Client v2.3.2 的 Agent、Helper 和会话入口要求原生 Wayland，必须与
 | 重装/克隆后身份冲突 | 硬件身份、镜像内旧状态 | 干净通用镜像、每台独立身份，按审批迁移 |
 ## 10. 实施依据
 
-- [Server 命令、配置和私有材料](../server/README.md)、[Server 配置示例](../packaging/server/config.example.toml)、[Client 配置示例](../packaging/client/config.example.toml)。
-- [Server 配置解析](../server/src/config.rs)、[TLS 加载](../server/src/tls.rs)、[Gateway CA 签发](../server/src/component/gateway/issuer.rs)。
-- [Runtime Config 读取](../server/src/component/runtime.rs)、[数据库 schema](../server/migrations/00000000000001_initial/up.sql)、[注册窗口 API](../server/src/http/handler/provisioning.rs)。
+- [Server 命令、配置和私有材料](../crates/natsume-server/README.md)、[Server 配置示例](../packaging/server/config.example.toml)、[Client 配置示例](../packaging/client/config.example.toml)。
+- [Server 配置解析](../crates/natsume-server/src/config.rs)、[TLS 加载](../crates/natsume-server/src/tls.rs)、[Gateway CA 签发](../crates/natsume-server/src/component/gateway/issuer.rs)。
+- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 schema](../crates/natsume-server/migrations/00000000000001_initial/up.sql)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
 - [构建与发布](../packaging/README.md)、[Client manifest](../packaging/client/nfpm.yaml)、[桌面集成交接](../packaging/image/README.md)、[验收要求](../packaging/image/acceptance.md)。
 
 架构目标由 [architecture.md](architecture.md) 定义。

@@ -98,11 +98,11 @@ The [architecture document](docs/architecture.md) is the sole manually maintaine
 
 | Component                       | Location                                                 | Responsibility                                                                                                                                                                                    |
 | ------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Server                          | [`server/`](server/)                                     | Rust, Axum, and SQLite/Diesel; owns committed contest data, operator sessions, enrollment, bindings, credentials, and desired state. Serves HTTPS APIs, device WSS, and the production Web panel. |
+| Server                          | [`crates/natsume-server/`](crates/natsume-server/)                                     | Rust, Axum, and SQLite/Diesel; owns committed contest data, operator sessions, enrollment, bindings, credentials, and desired state. Serves HTTPS APIs, device WSS, and the production Web panel. |
 | Operator panel                  | [`web/`](web/)                                           | React, TypeScript, and shadcn/ui; reads the generated OpenAPI contract and exposes administrator and viewer workflows.                                                                            |
-| Device Daemon                   | [`client/device-daemon/`](client/device-daemon/)         | Owns workstation identity, the authenticated control connection, local state reconciliation, and Caddy configuration.                                                                             |
-| Privileged Helper               | [`client/privileged-helper/`](client/privileged-helper/) | Provides a closed set of privileged system operations over typed D-Bus; has no network role or arbitrary command interface.                                                                       |
-| Session Agent                   | [`client/session-agent/`](client/session-agent/)         | Renders Waiting and seat-binding UI with Slint/Skia inside the GNOME Kiosk Wayland session.                                                                                                       |
+| Device Daemon                   | [`crates/natsume-workstation-daemon/`](crates/natsume-workstation-daemon/)         | Owns workstation identity, the authenticated control connection, local state reconciliation, and Caddy configuration.                                                                             |
+| Privileged Helper               | [`crates/natsume-workstation-helper/`](crates/natsume-workstation-helper/) | Provides a closed set of privileged system operations over typed D-Bus; has no network role or arbitrary command interface.                                                                       |
+| Session Agent                   | [`crates/natsume-workstation-agent/`](crates/natsume-workstation-agent/)         | Renders Waiting and seat-binding UI with Slint/Skia inside the GNOME Kiosk Wayland session.                                                                                                       |
 | Shared contracts                | [`crates/`](crates/)                                     | Device Control Protobuf, typed local D-Bus interfaces, and the shared XLSX roster contract.                                                                                                       |
 | Packaging and image integration | [`packaging/`](packaging/)                               | Server/Client Debian packages, verified Caddy inputs, service integration, and the image-builder handoff.                                                                                         |
 
@@ -119,7 +119,7 @@ Most operational and product documents are currently written in Chinese.
 | [Deployment and operations](docs/operations-deployment.zh-CN.md)                                                          | Provision TLS, bootstrap Server, install Client, and plan backup or recovery.                  |
 | [Image integration requirements](packaging/image/integration.md) and [acceptance criteria](packaging/image/acceptance.md) | Configure the workstation image and verify Session, Home, display, and input behavior.         |
 | [Packaging](packaging/README.md) and [image-builder handoff](packaging/image/README.md)                                   | Build Debian artifacts or integrate Client into an Ubuntu image.                               |
-| [Server guide](server/README.md), [Web guide](web/README.md), and [roster contract](crates/roster/README.md)              | Work on a specific application surface or the XLSX format.                                     |
+| [Server guide](crates/natsume-server/README.md), [Web guide](web/README.md), and [roster contract](crates/roster/README.md)              | Work on a specific application surface or the XLSX format.                                     |
 | [Issue workflow](docs/agents/issue-tracker.md)                                                                            | Track requirements and changes in GitHub Issues.                                               |
 
 ## Get started in development
@@ -141,7 +141,6 @@ From the repository root:
 ```bash
 rustup show                         # Install/select the repository toolchain
 cargo install cargo-deny --version 0.20.2 --locked
-just toolchain                      # Check the pinned toolchain and manifests
 just install                        # Install Node dependencies from the lockfile
 prek install                        # Enable this checkout's pre-commit hook
 ```
@@ -152,7 +151,7 @@ prek install                        # Enable this checkout's pre-commit hook
 pnpm --filter @natsume/web dev --host 127.0.0.1
 ```
 
-Open the local URL printed by Vite. Its `/api` proxy expects an already configured Server at `https://127.0.0.1:8443`; the UI does not provide a built-in demo login. For a working local backend, follow the [Server guide](server/README.md) and [deployment runbook](docs/operations-deployment.zh-CN.md) to provision configuration, TLS/CA material, and an initial operator. Server modes read the fixed `/etc/natsume-server/config.toml`, not command-line configuration flags.
+Open the local URL printed by Vite. Its `/api` proxy expects an already configured Server at `https://127.0.0.1:8443`; the UI does not provide a built-in demo login. For a working local backend, follow the [Server guide](crates/natsume-server/README.md) and [deployment runbook](docs/operations-deployment.zh-CN.md) to provision configuration, TLS/CA material, and an initial operator. Server modes read the fixed `/etc/natsume-server/config.toml`, not command-line configuration flags.
 
 For UI-only work, the Playwright suite uses intercepted API fixtures and needs no running Server:
 

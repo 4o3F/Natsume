@@ -68,10 +68,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ### Pre-commit hooks
 
-This repository uses `prek` to run the `.pre-commit-config.yaml` hooks. After
-changes that affect the hook scope, run `prek run --all-files`; this is the
-only pre-commit check entry point. Do not assume the separate `pre-commit` CLI
-is installed.
+This repository uses `prek` to run the `.pre-commit-config.yaml` hooks. After changes that affect the hook scope, run `prek run --all-files`; this is the only pre-commit check entry point. Do not assume the separate `pre-commit` CLI is installed.
 
 ### Issue tracker
 

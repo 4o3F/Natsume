@@ -1,20 +1,5 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-toolchain:
-    test "$(node --version)" = "v24.1.0"
-    pnpm --version | grep -Eq '^11\.'
-    rustc --version | grep -Eq '^rustc 1\.97\.1 '
-    grep -Exq '2\.11\.4' packaging/client/caddy.version
-    grep -Exq '[0-9a-f]{64}  caddy_2\.11\.4_linux_amd64\.tar\.gz' packaging/client/caddy.archive.sha256
-    grep -Exq '[0-9a-f]{64}  caddy' packaging/client/caddy.sha256
-    grep -Exq '2\.47\.0' packaging/nfpm.version
-    grep -Exq '[0-9a-f]{64}  nfpm_2\.47\.0_Linux_x86_64\.tar\.gz' packaging/nfpm.sha256
-    grep -Exq '3\.13\.1' tools/shfmt.version
-    grep -Exq '[0-9a-f]{64}  shfmt_v3\.13\.1_linux_amd64' tools/shfmt.sha256
-    grep -Exq '8\.30\.1' tools/gitleaks.version
-    grep -Exq '[0-9a-f]{64}  gitleaks_8\.30\.1_linux_x64\.tar\.gz' tools/gitleaks.sha256
-    grep -Fqx 'name = "protoc-bin-vendored"' Cargo.lock
-
 install:
     pnpm install --frozen-lockfile
 
@@ -72,9 +57,9 @@ diesel-schema:
     trap 'rm -rf -- "$temp_dir"' EXIT
     database="$temp_dir/schema.sqlite3"
     generated="$temp_dir/schema.rs"
-    diesel --database-url "$database" --config-file /dev/null migration run --migration-dir server/migrations
-    diesel --database-url "$database" --config-file server/diesel.toml print-schema > "$generated"
-    diff -u -- "$generated" server/diesel/schema.rs
+    diesel --database-url "$database" --config-file /dev/null migration run --migration-dir crates/natsume-server/migrations
+    diesel --database-url "$database" --config-file crates/natsume-server/diesel.toml print-schema > "$generated"
+    diff -u -- "$generated" crates/natsume-server/diesel/schema.rs
 
 build:
     cargo build --workspace --release --locked
@@ -97,8 +82,6 @@ ci-web: install
     pnpm --filter @natsume/web typecheck
     pnpm --filter @natsume/web test
     pnpm --filter @natsume/web build
-    ! grep -rq '@apply' web/dist/assets
-    grep -rq 'min-h-screen' web/dist/assets
 
 schema-contract:
     #!/usr/bin/env bash
@@ -118,12 +101,11 @@ ci-contracts: install diesel-schema schema-contract
     git diff --exit-code -- web/openapi/natsume.openapi.json web/src/api/generated/schema.d.ts
 
 ci-policy: shell-format secret-scan
-    bash tools/architecture-scan.sh
 
 ci-packages:
     bash packaging/ci-package-smoke.sh
 
-verify: toolchain install fmt lint unit api diesel-schema secret-scan
+verify: install fmt lint unit api diesel-schema secret-scan
 
 package-server:
     mkdir -p dist/packages

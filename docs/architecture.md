@@ -1,11 +1,6 @@
 # Natsume V2 目标架构与实施计划
 
-> 状态：`ACCEPTED TARGET`
-> 基线日期：2026-08-28
-> Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面
-> 平台扩展修订：2026-10-19；统一包布局、持久打印队列与离线队伍拍照，见第 17、23 节
-> 适用范围：Natsume V2 及后续单赛事平台目标；目标不代表已交付
-> 实施策略：既有工位控制基线采用预发布 flag day；平台扩展按独立工作包增量实施，不自动改变已部署契约
+> 状态：`ACCEPTED TARGET` 基线日期：2026-08-28 Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面 平台扩展修订：2026-10-19；统一包布局、持久打印队列与离线队伍拍照，见第 17、23 节 适用范围：Natsume V2 及后续单赛事平台目标；目标不代表已交付 实施策略：既有工位控制基线采用预发布 flag day；平台扩展按独立工作包增量实施，不自动改变已部署契约
 
 本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。镜像接入、配置输入和验收说明统一维护在 [packaging/image](../packaging/image/README.md)。
 
@@ -18,18 +13,17 @@
 | 事实 | 权威来源 |
 |---|---|
 | 产品边界、组件职责、数据所有权、安全和实施顺序 | 本文 |
-| Device Control wire 字段、field number、presence 与 descriptor | `crates/device-protocol/proto/*.proto` |
+| Device Control wire 字段、field number、presence 与 descriptor | `crates/natsume-workstation-protocol/proto/*.proto` |
 | HTTP API 的精确公开 schema | Server OpenAPI 生成源与生成物 |
-| 本地 IPC 的精确接口 | `crates/local-control-api` 与 D-Bus introspection |
-| SQLite 物理表、列、索引与约束 | 完成 flag day 后的 `server/migrations/00000000000001_initial/up.sql` |
-| Diesel 生成类型 | `server/diesel/schema.rs`，必须由 migration 重建 |
-| Device Control `error_code` 字段与开放token语法 | `crates/device-protocol/proto/*.proto` 与 `crates/device-protocol` |
+| 本地 IPC 的精确接口 | `crates/natsume-workstation-ipc` 与 D-Bus introspection |
+| SQLite 物理表、列、索引与约束 | 完成 flag day 后的 `crates/natsume-server/migrations/00000000000001_initial/up.sql` |
+| Diesel 生成类型 | `crates/natsume-server/diesel/schema.rs`，必须由 migration 重建 |
+| Device Control `error_code` 字段与开放token语法 | `crates/natsume-workstation-protocol/proto/*.proto` 与 `crates/natsume-workstation-protocol` |
 | HTTP公开错误码与status映射 | Server OpenAPI生成源与HTTP adapter |
-| 本地IPC typed失败 | `crates/local-control-api` 与各IPC adapter |
+| 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
 | 构建、依赖和发布版本 | Cargo、pnpm、打包配置与 lockfile |
 
-表中源码路径是平台扩展整理基线的现有路径；第 17 节定义迁移后的目标路径。
-实际移动时同步更新源码、工具、CI、打包和文档引用，不先制造失效的源码链接。
+表中源码路径已同步到 M1 的现有布局；第 17 节定义包含后续工作包的完整目标路径。 当前 workspace 索引见 [crates/README.md](../crates/README.md)；M1 临时保留 `crates/roster` 及 `natsume-check-logos`，能力归位与退役属于 M2，不表示后续平台包已实现。
 
 规则：
 
@@ -42,9 +36,7 @@
 
 ## 2. 系统目标与非目标
 
-Natsume 是服务一场现场竞赛的统一运营平台，工位控制目标规模约 500–600 台工作站。
-一个 Server 实例只维护当前赛事，不建模多 Event 或跨赛事业务历史。
-工位控制、打印、队伍照片是独立领域，共享名单事实，不共享执行生命周期或控制 authority。
+Natsume 是服务一场现场竞赛的统一运营平台，工位控制目标规模约 500–600 台工作站。 一个 Server 实例只维护当前赛事，不建模多 Event 或跨赛事业务历史。 工位控制、打印、队伍照片是独立领域，共享名单事实，不共享执行生命周期或控制 authority。
 
 系统必须提供：
 
@@ -60,8 +52,7 @@ Natsume 是服务一场现场竞赛的统一运营平台，工位控制目标规
 10. DOMjudge 入口的持久异步打印队列、空闲 Windows Client 主动领取及提交时排队快照。
 11. 首次联网初始化后可离线运行的 Windows 队伍拍照、重照确认、签名交付与当前成品管理。
 
-第 7–14 节的 lease、Input、Target、Actual 和收敛规则特指工位 Device Control。
-打印尝试及照片提交的持久事实属于第 23 节，不引入通用命令投递或全局操作审计。
+第 7–14 节的 lease、Input、Target、Actual 和收敛规则特指工位 Device Control。 打印尝试及照片提交的持久事实属于第 23 节，不引入通用命令投递或全局操作审计。
 
 系统明确不提供：
 
@@ -86,11 +77,9 @@ Server committed truth、Server Intent、Client Input、Concrete Target 和 Clie
 
 ### 3.2 完整状态代替操作投递
 
-工位 Device Control 没有 Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。
-第 23 节的打印请求与有限执行尝试是独立业务队列，不是恢复旧 Device Command。
+工位 Device Control 没有 Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。 第 23 节的打印请求与有限执行尝试是独立业务队列，不是恢复旧 Device Command。
 
-Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操作者和已提交的逐设备结果，
-不记录 Client 执行、投递、Ack 或历史进度。它保证网络重试不再次推进 terminate/reset epoch。
+Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操作者和已提交的逐设备结果， 不记录 Client 执行、投递、Ack 或历史进度。它保证网络重试不再次推进 terminate/reset epoch。
 
 ### 3.3 业务纵向组件化
 
@@ -98,8 +87,7 @@ Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操
 
 ### 3.4 静态类型和静态组合
 
-所有资源在编译期可见。新增 Device Control 资源必须同时增加 Rust 类型、Proto 字段、组件实现、验证和测试。禁止字符串资源名、运行时 downcast、通用 payload 和动态注册表。
-独立打印／照片组件使用自身 typed 契约，不为复用控制框架而加入 Device Proto 或 DeviceActor。
+所有资源在编译期可见。新增 Device Control 资源必须同时增加 Rust 类型、Proto 字段、组件实现、验证和测试。禁止字符串资源名、运行时 downcast、通用 payload 和动态注册表。 独立打印／照片组件使用自身 typed 契约，不为复用控制框架而加入 Device Proto 或 DeviceActor。
 
 ### 3.5 Crash-safe、幂等、可重放
 
@@ -160,8 +148,7 @@ Server 是唯一业务 authority，拥有：
 - Binding negotiation 与 occupancy；
 - Gateway credential generation 与 Origin CA；
 - Runtime、Session 和 Home 的 Server target；
-- 当前lease的latest Actual与receive-time，仅存在于对应DeviceActor内存；Client Input
-  经整体校验和组件消费后丢弃；
+- 当前lease的latest Actual与receive-time，仅存在于对应DeviceActor内存；Client Input 经整体校验和组件消费后丢弃；
 - Operator HTTP API、Web 静态资源和 Device WSS；
 - 打印请求、就绪队列、领取归属、有限尝试与结果；
 - 拍照来源授权、当前成品、待处理候选与成果接收。
@@ -225,9 +212,7 @@ Caddy 只负责本机数据面：
 - 在 `/api/*` 注入当前 Binding 的 HTTP Basic Authorization（base64 编码的 `username:password`），覆盖请求自带的 Authorization，并清除 `X-DOMjudge-*` 登录头；API 权限仍由 DOMjudge 按队伍身份判断；
 - 其他 route 不注入 credential。
 
-Runtime Config 的 DOMjudge HTTPS origin 只由Server部署配置提供和修改，不暴露
-Operator HTTP/Web mutation。它不能改变Control Endpoint、Server trust root或Gateway
-hostname；这些都是部署期不可远程修改的bootstrap参数。
+Runtime Config 的 DOMjudge HTTPS origin 只由Server部署配置提供和修改，不暴露 Operator HTTP/Web mutation。它不能改变Control Endpoint、Server trust root或Gateway hostname；这些都是部署期不可远程修改的bootstrap参数。
 
 ## 5. 信任、身份与秘密
 
@@ -386,11 +371,7 @@ Level 和 Transition 都属于 Concrete Target，不形成第二套 Command 模�
 
 ### 8.1 Transport
 
-Operator HTTPS 与 Device WSS 可以共用一个 Server listener。Device 只连接固定
-`/api/v2/device/control` route，并使用唯一 pinned `natsume.control.v3` WSS subprotocol。
-每个完成重组的 Protobuf frame 最多 65,536 bytes。这个上限同时适用于 Handshake
-与 Active frame，不再为单个消息类型建立重复上限。一个 wire generation 只有一个
-descriptor，不维持旧/新双栈。
+Operator HTTPS 与 Device WSS 可以共用一个 Server listener。Device 只连接固定 `/api/v2/device/control` route，并使用唯一 pinned `natsume.control.v3` WSS subprotocol。 每个完成重组的 Protobuf frame 最多 65,536 bytes。这个上限同时适用于 Handshake 与 Active frame，不再为单个消息类型建立重复上限。一个 wire generation 只有一个 descriptor，不维持旧/新双栈。
 
 `ClientProof.signature` 是 Ed25519 对下列 32-byte SHA-256 digest 的签名：
 
@@ -407,19 +388,9 @@ SHA-256(
 )
 ```
 
-`challenge_nonce`和`public_key`分别固定为exact 32 bytes，`purpose`固定为单字节：
-Enrollment是`0x01`，Resume是`0x02`，缺失purpose非法；canonical Machine Hardware ID
-固定为36-byte ASCII并位于末尾。因此字段边界不使用length prefix。两种purpose使用完全
-相同的transcript，没有Enrollment专属后缀；签名端从private key推导`public_key`，
-Enrollment验签使用proof内exact `candidate_public_key`，Resume验签使用Server数据库
-选出的current control public key。
+`challenge_nonce`和`public_key`分别固定为exact 32 bytes，`purpose`固定为单字节： Enrollment是`0x01`，Resume是`0x02`，缺失purpose非法；canonical Machine Hardware ID 固定为36-byte ASCII并位于末尾。因此字段边界不使用length prefix。两种purpose使用完全 相同的transcript，没有Enrollment专属后缀；签名端从private key推导`public_key`， Enrollment验签使用proof内exact `candidate_public_key`，Resume验签使用Server数据库 选出的current control public key。
 
-transcript不依赖Prost或任意收到的wire bytes。Daemon/Agent版本、可选`client_ip`和Enrollment evidence
-quality是经TLS传输的自报metadata，不属于identity proof。`client_ip`取本条控制连接的本地socket IP，
-缺失表示本次连接未上报；提供时必须是合法IP literal，Server按地址值规范化（含IPv4-mapped IPv6）。
-该可选字段与现有`natsume.control.v3`兼容。协议crate统一transcript、
-签名和strict verification，但不选择authority key，也不校验Enrollment/Resume的业务
-presence、ID、版本或状态组合。
+transcript不依赖Prost或任意收到的wire bytes。Daemon/Agent版本、可选`client_ip`和Enrollment evidence quality是经TLS传输的自报metadata，不属于identity proof。`client_ip`取本条控制连接的本地socket IP， 缺失表示本次连接未上报；提供时必须是合法IP literal，Server按地址值规范化（含IPv4-mapped IPv6）。 该可选字段与现有`natsume.control.v3`兼容。协议crate统一transcript、 签名和strict verification，但不选择authority key，也不校验Enrollment/Resume的业务 presence、ID、版本或状态组合。
 
 成功升级后：
 
@@ -436,11 +407,7 @@ production WSS route
       → Active full snapshots
 ```
 
-WSS route只移交socket、socket观测的peer IP和进程共享的`Arc<DeviceControl>`，不编排Device、
-Provisioning、admission和Registry的中间步骤。`serve_connection`是单条连接的
-唯一application orchestration入口；admission的proof、pre-auth和ready barrier都不
-泄漏到transport或其他组件。连接期最终只向attach流程交付现有
-`ControlAuthority`，不再建立admission ticket、attachment ID或authority generation。
+WSS route只移交socket、socket观测的peer IP和进程共享的`Arc<DeviceControl>`，不编排Device、 Provisioning、admission和Registry的中间步骤。`serve_connection`是单条连接的 唯一application orchestration入口；admission的proof、pre-auth和ready barrier都不 泄漏到transport或其他组件。连接期最终只向attach流程交付现有 `ControlAuthority`，不再建立admission ticket、attachment ID或authority generation。
 
 `ServerChallenge` 的超时只约束当前连接唯一 `ClientProof` 的提交窗口，不是 Enrollment TTL。
 
@@ -465,13 +432,8 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 1. Client在发送proof前持久化candidate control key；重连可以继续使用该key，但每条连接都建立全新review。
 2. Server先检查candidate public key是否已经是该Machine Hardware ID对应Device的current control key；若是，直接重放已提交authority，不再次审核。
 3. 其他Enrollment进入连接期pending review。Provisioning window为open时自动审批新请求及当前在线的待审请求；closed时保留请求等待管理员批准或拒绝。窗口控制自动审批，不阻止创建review。
-4. Pending registry以`review_id`保存经过验证的非秘密evidence；同一entry持有一个
-   进程内一次性完成通知sender，originating connection持有receiver。registry中仍存在该`review_id`就表示
-   当前连接仍持有该review，它不是authority，也不缓存可能漂移的current Device ID。
-5. 自动审批与管理员审批都只能批准当前仍存在的review，原子移除对应
-   `review_id`；管理员审批不受窗口状态限制。同一进程内的审批串行，并在activation前按evidence中的Machine
-   Hardware ID实时读取current authority。activation完成后通过该entry的一次性通知把结果交回原连接。
-   连接断开也移除同一个ID，不建立第二个attachment标识，不轮询审批结果。
+4. Pending registry以`review_id`保存经过验证的非秘密evidence；同一entry持有一个 进程内一次性完成通知sender，originating connection持有receiver。registry中仍存在该`review_id`就表示 当前连接仍持有该review，它不是authority，也不缓存可能漂移的current Device ID。
+5. 自动审批与管理员审批都只能批准当前仍存在的review，原子移除对应 `review_id`；管理员审批不受窗口状态限制。同一进程内的审批串行，并在activation前按evidence中的Machine Hardware ID实时读取current authority。activation完成后通过该entry的一次性通知把结果交回原连接。 连接断开也移除同一个ID，不建立第二个attachment标识，不轮询审批结果。
 6. Deny只通知并终止当前连接；需要跨连接封禁时必须建立明确的Device lifecycle/denylist authority，不能复用attempt状态。
 7. 连接在activation commit前断开时直接删除pending review；Client重连后重新审核。
 8. Control-key replacement在activation commit前保留旧authority和旧lease。
@@ -480,22 +442,15 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 11. Client crash-safe安装新authority manifest后回显exact `EnrollmentAuthority`；Server验证后建立lease并发送`SessionReady`。
 12. activation commit后、Client安装前发生断联或Server重启时，Client用同一candidate key重新proof；Server按第2条重放authority。
 
-Client 本地 control manifest 直接保存 exact Ed25519 public key并与私钥文件重新派生的
-公钥比较；不再为同一自然authority建立派生 `ControlKeyId`。
+Client 本地 control manifest 直接保存 exact Ed25519 public key并与私钥文件重新派生的 公钥比较；不再为同一自然authority建立派生 `ControlKeyId`。
 
 Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不落库。Server重启清空所有pending review并把Provisioning window恢复为closed；未提交的注册请求随Client重连重新进入人工审批。
 
 ### 8.3 Resume 与 lease
 
-Resume proof 使用current control key。`serve_connection`让Device Component选出完整
-`ControlAuthority`，admission使用其exact public key验签并要求Device为
-`enabled`。Enrollment Ready和Resume最终都交付同一`ControlAuthority`表示，
-不在中间压缩为只含`device_id`的新ticket。
+Resume proof 使用current control key。`serve_connection`让Device Component选出完整 `ControlAuthority`，admission使用其exact public key验签并要求Device为 `enabled`。Enrollment Ready和Resume最终都交付同一`ControlAuthority`表示， 不在中间压缩为只含`device_id`的新ticket。
 
-在Registry attach前，`serve_connection`再让Device Component确认该exact authority仍是
-current且Device仍为`enabled`。这次复查关闭proof验证期间发生disable、
-revoke或control-key replacement的竞态，但完全封装在`device_control`内。
-复查成功后才使用authority中的`device_id`附着DeviceActor。
+在Registry attach前，`serve_connection`再让Device Component确认该exact authority仍是 current且Device仍为`enabled`。这次复查关闭proof验证期间发生disable、 revoke或control-key replacement的竞态，但完全封装在`device_control`内。 复查成功后才使用authority中的`device_id`附着DeviceActor。
 
 每个 Device 同时只有一个 current lease：
 
@@ -507,12 +462,7 @@ revoke或control-key replacement的竞态，但完全封装在`device_control`�
 - Active写入最多等待5秒；写入超时或Server静默超时都结束lease，Client先切换本地数据面为BLOCKED再重连；若无法确认BLOCKED，Daemon失败退出，systemd硬终止Caddy并由其fail-closed bootstrap重启；
 - Server restart 使所有 lease 失效。
 
-Device Component持久化最近一次已认证连接的`client_ip`、`server_observed_ip`和
-`ip_observed_at_unix_ms`。两端地址和Server记录时间在同一事务内完整替换；Client本次未上报时
-清除上次自报值。DeviceActor在当前lease内串行提交，事务复查Enabled状态和current control key，
-旧连接、旧密钥及禁用后的连接不能覆盖记录。写入失败保留上次记录和时间并记录诊断日志，不改变
-控制authority。记录在断线和Server重启后保留，既有设备未采集时为未知；时间表示地址记录时刻，
-不表示最近心跳。地址属于诊断metadata，不参与identity、Target或Actual/convergence判定。
+Device Component持久化最近一次已认证连接的`client_ip`、`server_observed_ip`和 `ip_observed_at_unix_ms`。两端地址和Server记录时间在同一事务内完整替换；Client本次未上报时 清除上次自报值。DeviceActor在当前lease内串行提交，事务复查Enabled状态和current control key， 旧连接、旧密钥及禁用后的连接不能覆盖记录。写入失败保留上次记录和时间并记录诊断日志，不改变 控制authority。记录在断线和Server重启后保留，既有设备未采集时为未知；时间表示地址记录时刻， 不表示最近心跳。地址属于诊断metadata，不参与identity、Target或Actual/convergence判定。
 
 Client首次连接随机等待0～5秒；连接、握手或短暂Active失败后的重试窗口依次为5、10、20、30秒，并在窗口内随机等待（full jitter），单次重试等待上限为30秒。只有进入Active至少60秒后仍收到当前session的合法Pong或有效Server状态，才重置为5秒窗口；TCP/TLS连接成功、等待审核和本地清理耗时均不触发重置。
 
@@ -520,8 +470,7 @@ Client首次连接随机等待0～5秒；连接、握手或短暂Active失败后
 
 `SessionReady` 后第一条 Active frame 必须是完整、语义有效的 `ClientStateSnapshot`。在它全部通过边界校验前，任何资源组件不得写入业务Input/Target。连接地址诊断记录独立于资源收敛，以已认证连接为采集边界。
 
-Server 随后依次调用所有组件 `ingest`。只有全部组件成功后，当前 Actor 才把
-`initial_state_received` 设为 true 并生成完整 `ServerStateSnapshot`。
+Server 随后依次调用所有组件 `ingest`。只有全部组件成功后，当前 Actor 才把 `initial_state_received` 设为 true 并生成完整 `ServerStateSnapshot`。
 
 组件事务彼此独立，因此进程可能在部分组件提交后崩溃。这是允许的：
 
@@ -555,10 +504,8 @@ GatewayActualState       { credential_id?, state, leaf_sha256? }
 - same ID + same CSR 是 replay；
 - same ID + different CSR 是 protocol violation；
 - same ID + CSR absent 表示当前本地 input 不可恢复，触发 replacement；
-- CSR 必须是 DER 编码的 PKCS#10，且携带 ECDSA P-256 public key；Server 必须使用
-  该 public key 验证 ECDSA-SHA256 CSR 自签名，不接受其他 key 或签名算法；
-- Server 忽略 CSR requested subject、SAN、extension 和其他 attribute，完全生成 leaf
-  profile；
+- CSR 必须是 DER 编码的 PKCS#10，且携带 ECDSA P-256 public key；Server 必须使用 该 public key 验证 ECDSA-SHA256 CSR 自签名，不接受其他 key 或签名算法；
+- Server 忽略 CSR requested subject、SAN、extension 和其他 attribute，完全生成 leaf profile；
 - 证书 grant 必须先 durable，再进入 Target；
 - current generation 的 grant由 Server 重放，不重新签名；
 - 过期、private key/CSR 丢失、Apply/Verify 完成失败或实际 leaf hash 不匹配都走同一个 replacement；
@@ -569,11 +516,9 @@ Gateway leaf profile 固定为：
 
 - subject 是 empty distinguished name；
 - SAN 只包含一个 DNS name，值为部署配置的 `gateway_hostname`；
-- `CA=false`，Key Usage 只包含 `digitalSignature`，Extended Key Usage 只包含
-  `serverAuth`；
+- `CA=false`，Key Usage 只包含 `digitalSignature`，Extended Key Usage 只包含 `serverAuth`；
 - serial 的值字节是 `credential_id` UUID 的 16 bytes；
-- `not_before` 是签发时刻减 5 分钟，`not_after` 是部署配置的绝对
-  `gateway_not_after`；
+- `not_before` 是签发时刻减 5 分钟，`not_after` 是部署配置的绝对 `gateway_not_after`；
 - Local Origin CA 直接签发 leaf；grant 只携带完整 leaf DER。
 
 Gateway Actual 的 leaf hash是 Caddy 实际加载的完整 leaf DER 的 SHA-256，不是 PEM、SPKI、chain、serial 或磁盘候选文件。
@@ -610,13 +555,9 @@ BindingAccessActualState { assignment_state, credential_state, context? }
 - same epoch + different Seat 是 protocol violation；
 - 较旧 negotiation/epoch 不改变 current authority；
 - Binding提交authority绑定当前Target plan；replacement在同一内存锁内先撤销旧plan eligibility，旧plan之后不能重新开放提交；
-- 可修正业务拒绝写入 current negotiation 的 bounded evaluation，error code 只允许
-  `SEAT_NOT_FOUND`、`SEAT_UNMAPPED`、`SEAT_OCCUPIED`；
-- 接受 Binding 时在一个组件事务内重检 Device 仍为 enabled 且 unbound、Seat、
-  Account mapping 和 Seat/Device occupancy，消费 negotiation、铸造新 `binding_id`并写
-  accepted association；
-- Bound Target 在一次数据库一致性快照中取得 context、Account revision 和 vault
-  ciphertext；数据库事务结束后才在受控内存中解密密码并进入当次完整 Target；
+- 可修正业务拒绝写入 current negotiation 的 bounded evaluation，error code 只允许 `SEAT_NOT_FOUND`、`SEAT_UNMAPPED`、`SEAT_OCCUPIED`；
+- 接受 Binding 时在一个组件事务内重检 Device 仍为 enabled 且 unbound、Seat、 Account mapping 和 Seat/Device occupancy，消费 negotiation、铸造新 `binding_id`并写 accepted association；
+- Bound Target 在一次数据库一致性快照中取得 context、Account revision 和 vault ciphertext；数据库事务结束后才在受控内存中解密密码并进入当次完整 Target；
 - Actual 只有 assignment 与 credential 都成功且 context coherent 时才携带 context；
 - Actual 的 `FAILED` 或 context mismatch 只表示 drift，不自动修改 authoritative Binding；
 - 显式 Unbind 删除 occupancy 并建立全新 negotiation；
@@ -751,20 +692,11 @@ Server 业务采用纵向组件：
 | Print | 否 | DOMjudge 受理、就绪 FIFO、领取、有限尝试与恢复 |
 | Photo | 否 | 来源授权、在线／离线成果接收、当前成品和候选 |
 
-组件化不意味着一个 trait 统治所有业务。Active资源由`DeviceActor`按固定wire结构
-显式编排；各component只接收自身transition实际消费的Input或Actual，不用统一trait
-制造`()`、空Intent或未使用参数。Device、Provisioning、Operator和Import保持独立
-concrete component。`device_control/admission.rs` 只负责连接期的
-Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owner。
-其中间类型是admission module私有实现细节；
-`device_control::serve_connection`使用Device Component的公开事实完成单向编排，
-不把protocol状态移入Device Component。
+组件化不意味着一个 trait 统治所有业务。Active资源由`DeviceActor`按固定wire结构 显式编排；各component只接收自身transition实际消费的Input或Actual，不用统一trait 制造`()`、空Intent或未使用参数。Device、Provisioning、Operator和Import保持独立 concrete component。`device_control/admission.rs` 只负责连接期的 Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owner。 其中间类型是admission module私有实现细节； `device_control::serve_connection`使用Device Component的公开事实完成单向编排， 不把protocol状态移入Device Component。
 
 ### 10.2 Active component contract
 
-production `DeviceActor`是当前唯一编排消费者，而六个资源的Input、Actual、Intent、
-Target和错误均不同，因此不建立`StateComponent` trait或泛型runner。Actor直接调用
-concrete component method；固定顺序和完整wire字段在调用点可见。
+production `DeviceActor`是当前唯一编排消费者，而六个资源的Input、Actual、Intent、 Target和错误均不同，因此不建立`StateComponent` trait或泛型runner。Actor直接调用 concrete component method；固定顺序和完整wire字段在调用点可见。
 
 资源transition必须：
 
@@ -785,9 +717,7 @@ concrete component method；固定顺序和完整wire字段在调用点可见。
 
 ### 10.3 Active 资源的静态编排
 
-WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过
-`DeviceControl`的显式组件依赖按固定wire structure调用它们，不增加
-`StateComponents` wrapper。
+WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `DeviceControl`的显式组件依赖按固定wire structure调用它们，不增加 `StateComponents` wrapper。
 
 不使用：
 
@@ -801,9 +731,7 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过
 
 ### 10.4 `ServerState`
 
-`ServerState::load/from_parts`是进程依赖的组装入口，`ServerState`是组装后的共享句柄集合，
-不执行设备应用用例。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；
-WSS连接处理和Actor只取得设备协调器，不依赖整个组合对象。
+`ServerState::load/from_parts`是进程依赖的组装入口，`ServerState`是组装后的共享句柄集合， 不执行设备应用用例。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名； WSS连接处理和Actor只取得设备协调器，不依赖整个组合对象。
 
 当前已实现的组成是：
 
@@ -822,34 +750,18 @@ pub(crate) struct ServerState {
 }
 ```
 
-`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，
-并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。
-同时被HTTP使用的六个组件共享同一`Arc`实例；Gateway和Runtime Config目前只有协调器消费，
-构造后直接移交给它，`ServerState`不保留无消费者的副本或accessor。
+`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件， 并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。 同时被HTTP使用的六个组件共享同一`Arc`实例；Gateway和Runtime Config目前只有协调器消费， 构造后直接移交给它，`ServerState`不保留无消费者的副本或accessor。
 
-生产构造入口统一为`ServerState::load(database, &config)`：加载一次`VaultSession`，
-调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。
-完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、
-`DeviceService → DeviceControl`转发层或通用用例执行器。
-HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例；
-Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重；
-不能取得Registry、actor handle、审批锁或authority fence。
+生产构造入口统一为`ServerState::load(database, &config)`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
 
-跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。
-当前仅提供九个有实际消费者的入口：
+跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。 当前仅提供九个有实际消费者的入口：
 
-- `read_device_status`、`read_device_statuses`汇总组件当前事实和lease observation；
-  HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
-- `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction；
-  三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
+- `read_device_status`、`read_device_statuses`汇总组件当前事实和lease observation； HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
+- `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction； 三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
 - `dirty_device`、`dirty_devices`、`dirty_all_devices`向已有Actor发出提交后通知，不创建Actor。
-- `attach_device_lease`负责attach前后exact authority重检与lease替换；
-  只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
+- `attach_device_lease`负责attach前后exact authority重检与lease替换； 只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
 
-单资源mutation仍直接调用owning component，成功后调用上述Dirty入口，不再增加一层
-一对一业务包装。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。
-Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade，
-不建立协调器、Registry与Actor之间的长期强引用环。
+单资源mutation仍直接调用owning component，成功后调用上述Dirty入口，不再增加一层 一对一业务包装。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
 
 ### 10.5 组件内部数据库
 
@@ -877,11 +789,7 @@ pub(crate) struct BindingComponent {
 - 数据库 row、Diesel 类型和 store error 不泄漏出组件；
 - 不创建 Repository、UnitOfWork 或 DI framework trait。
 
-TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个短写事务，在同一事务中
-通过 Device 的公开事务读方法确定资格，再调用 Session/Home 的同步事务业务入口。
-Session/Home 仍独占各自表的校验与写入规则，DB adapter 不公开；HTTP 和 TargetSubmission
-不直接写这两类目标表。每设备可继续的领域拒绝必须发生在该设备第一次写入前，
-写入/行数不符/receipt 保存/commit 失败必须回滚整个提交，不引入通用跨组件事务框架。
+TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个短写事务，在同一事务中 通过 Device 的公开事务读方法确定资格，再调用 Session/Home 的同步事务业务入口。 Session/Home 仍独占各自表的校验与写入规则，DB adapter 不公开；HTTP 和 TargetSubmission 不直接写这两类目标表。每设备可继续的领域拒绝必须发生在该设备第一次写入前， 写入/行数不符/receipt 保存/commit 失败必须回滚整个提交，不引入通用跨组件事务框架。
 
 ## 11. Server runtime 与 Actor
 
@@ -901,14 +809,9 @@ Database + ServerConfig
       → Device WSS { Arc<DeviceControl> }
 ```
 
-HTTP持有组合对象，WSS和DeviceActor使用其中构造的同一协调器。`GatewayIssuer`由Gateway Component持有。
-不存在全局 singleton，也不允许transport重新组装
-组件依赖。Database连接/迁移、TLS listener和HTTP生命周期仍由`serve`启动入口负责；
-`ServerState`不持有完整`ServerConfig`，组件也不自行重复加载共享依赖。
+HTTP持有组合对象，WSS和DeviceActor使用其中构造的同一协调器。`GatewayIssuer`由Gateway Component持有。 不存在全局 singleton，也不允许transport重新组装 组件依赖。Database连接/迁移、TLS listener和HTTP生命周期仍由`serve`启动入口负责； `ServerState`不持有完整`ServerConfig`，组件也不自行重复加载共享依赖。
 
-Production WSS handler只把socket交给`device_control::serve_connection`。该入口在模块
-内完成admission与Enrollment握手，通过`DeviceControl::attach_device_lease`完成最终复查和Registry attach；
-handler不传递或match admission中间状态。
+Production WSS handler只把socket交给`device_control::serve_connection`。该入口在模块 内完成admission与Enrollment握手，通过`DeviceControl::attach_device_lease`完成最终复查和Registry attach； handler不传递或match admission中间状态。
 
 匿名入口采用固定容量与快速拒绝：
 
@@ -929,8 +832,7 @@ HashMap<DeviceId, DeviceHandle>
 Registry：
 
 - 启动为空；
-- `DeviceControl::attach_device_lease`完成exact authority/lifecycle预检查后按`device_id`懒创建Actor，
-  替换lease后再次复查；authority mutation也只为已存在的Device取得或创建Actor；
+- `DeviceControl::attach_device_lease`完成exact authority/lifecycle预检查后按`device_id`懒创建Actor， 替换lease后再次复查；authority mutation也只为已存在的Device取得或创建Actor；
 - 锁只保护 map，不跨 `.await`、DB 或 channel send；
 - 不按 HWID 创建 MachineActor；
 - 不维护 public-key/HWID alias authority；
@@ -959,8 +861,7 @@ Actor 只拥有临时协调状态：
 - 首个有效 ClientState 到达前不生成target；
 - 有界 mailbox；
 - 独立于mailbox容量、可合并的Dirty watch；
-- attach时保存在current lease中的`Weak<DeviceControl>`，处理事件时临时upgrade，
-  不在Actor内长期持有强引用，也不在ClientState事件中反复传递状态；
+- attach时保存在current lease中的`Weak<DeviceControl>`，处理事件时临时upgrade， 不在Actor内长期持有强引用，也不在ClientState事件中反复传递状态；
 - 首个有效ClientState之后才可使用的低频完整Target刷新计时器；
 - current outbound sender；
 - current lease的latest fully-validated typed Actual与receive-time。
@@ -994,9 +895,7 @@ validate current lease
 
 初期顺序执行。SQLite 是单写者，提前并行只会增加 cancellation、错误聚合和 race。只有测量证明瓶颈后才考虑并行 materialize。
 
-跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation在commit后
-推进Actor独立的Dirty watch，重复通知可以合并；若发生在materialize期间，watch仍会触发下一份
-完整`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
+跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation在commit后 推进Actor独立的Dirty watch，重复通知可以合并；若发生在materialize期间，watch仍会触发下一份 完整`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
 
 ### 11.5 Dirty、Evict 与周期收敛
 
@@ -1004,24 +903,13 @@ validate current lease
 
 1. 先提交业务；
 2. application coordination根据当前mutation的具体语义确定影响一个Device还是全部在线Device；
-3. 调用`DeviceControl::dirty_device/dirty_all_devices`，
-   推进对应Actor的可合并`Dirty` watch。
+3. 调用`DeviceControl::dirty_device/dirty_all_devices`， 推进对应Actor的可合并`Dirty` watch。
 
 组件不能反向持有 Registry。
 
 Dirty不携带业务数据，也不占用业务mailbox；Actor在首个有效ClientState后另以固定低频周期从数据库重新生成并发送完整Target，作为独立反熵路径。各lease使用现有随机session ID将首次刷新分散到一分钟内，避免批量上线的Actor同相读取数据库。Client对与current/queued Target完全相同的周期帧直接合并；idle时仅在它刚发布了变化的Actual、正在等待Server回应时，才用相同Target重新执行收敛。当前规模允许Import/Runtime全局变化后直接dirty all connected actors。
 
-Device disable、revoke和current control-key replacement不是普通target变更。它们在
-Device Component commit后对准确`device_id`发送`Evict`，终止current lease；
-`Evict`不能合并为或降级为best-effort `Dirty`。组件仍不反向持有Registry，
-该用例顺序和runtime原语都封装在`DeviceControl`内，组合对象不参与执行。
-为保证authority commit后旧lease零写入，协调器先取得该Device的authority fence，
-与正在执行的ClientState/Dirty互斥，再调用Device Component提交authority mutation，
-在释放互斥前标记lease fenced，随后发送并等待`Evict`确认；组件提交失败时不fence。
-Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不能留下Registry entry。
-该mutation→fence→evict序列由进程持有的任务完成，不因发起它的HTTP请求取消而中断。
-审批另持有`DeviceControl`的串行门，在读取当前authority后取得其fence；
-完成旧lease eviction后才交付activation通知。自动审批复用同一用例；Provisioning组件通知窗口状态变化，Device Component仍拥有review claim和数据库事务。
+Device disable、revoke和current control-key replacement不是普通target变更。它们在 Device Component commit后对准确`device_id`发送`Evict`，终止current lease； `Evict`不能合并为或降级为best-effort `Dirty`。组件仍不反向持有Registry， 该用例顺序和runtime原语都封装在`DeviceControl`内，组合对象不参与执行。 为保证authority commit后旧lease零写入，协调器先取得该Device的authority fence， 与正在执行的ClientState/Dirty互斥，再调用Device Component提交authority mutation， 在释放互斥前标记lease fenced，随后发送并等待`Evict`确认；组件提交失败时不fence。 Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不能留下Registry entry。 该mutation→fence→evict序列由进程持有的任务完成，不因发起它的HTTP请求取消而中断。 审批另持有`DeviceControl`的串行门，在读取当前authority后取得其fence； 完成旧lease eviction后才交付activation通知。自动审批复用同一用例；Provisioning组件通知窗口状态变化，Device Component仍拥有review claim和数据库事务。
 
 ### 11.6 Channel 与背压
 
@@ -1052,11 +940,7 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 - 时间统一为 UTC epoch milliseconds；
 - UUID 使用 canonical UUIDv7，wire Session ID 例外为 16-byte network-order。
 
-运行期数据库读写在进入 `spawn_blocking` 前先取得 Database-owned 异步许可；同一连接池的
-所有 Database clone 共用 10 个许可，与连接池容量一致。排队、blocking executor 等待和
-取连接共用 30 秒获取预算，超时沿用既有持久化错误；SQL 的 `busy_timeout=5000` 不变。
-许可随阻塞闭包存活，连接归还和事务结束后才释放；调用方取消不能提前释放正在排队或执行的
-阻塞工作许可，也不回滚已经开始的事务。等待异步许可时取消则不执行 SQL。
+运行期数据库读写在进入 `spawn_blocking` 前先取得 Database-owned 异步许可；同一连接池的 所有 Database clone 共用 10 个许可，与连接池容量一致。排队、blocking executor 等待和 取连接共用 30 秒获取预算，超时沿用既有持久化错误；SQL 的 `busy_timeout=5000` 不变。 许可随阻塞闭包存活，连接归还和事务结束后才释放；调用方取消不能提前释放正在排队或执行的 阻塞工作许可，也不回滚已经开始的事务。等待异步许可时取消则不执行 SQL。
 
 ### 12.2 目标表与 mutation owner
 
@@ -1082,8 +966,7 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 | `device_home_targets` | Home | 每Device reset epoch |
 | `target_submission_receipts` | TargetSubmission | operation ID 全局唯一；操作者、规范化请求、逐设备结果 |
 
-receipt 与成功 Target 在同一事务提交；空集合和全部拒绝也保留 receipt。记录随当前比赛数据库
-保留，不随 logout、Device revoke 或删除而级联删除，不提供自动过期或批次历史页面。
+receipt 与成功 Target 在同一事务提交；空集合和全部拒绝也保留 receipt。记录随当前比赛数据库 保留，不随 logout、Device revoke 或删除而级联删除，不提供自动过期或批次历史页面。
 
 具体列由 Proto 和组件 typed facts推导，但以下 shape 已冻结。
 
@@ -1133,8 +1016,7 @@ Binding成功后旧Input由“没有current negotiation”自然fence；Unbind�
 - Gateway接受的exact CSR直接进入`gateway_credentials`；
 - Binding被拒绝的最新submission直接进入`binding_negotiations`，接受则进入`device_bindings`；
 - Runtime、Session与Home只持久化Server target；
-- 原始Input经整体校验和组件消费后丢弃；latest Actual与receive-time只保留在当前
-  DeviceActor lease内存，lease结束即丢弃。
+- 原始Input经整体校验和组件消费后丢弃；latest Actual与receive-time只保留在当前 DeviceActor lease内存，lease结束即丢弃。
 
 Server重启会丢失所有Client observation，但同时也会使所有lease失效；Client重连后的fresh barrier要求重新发送完整snapshot，因此不影响恢复、Resolve或transition completion。旧Actual不得参与新lease决策。
 
@@ -1175,23 +1057,13 @@ Operator HTTP response、WSS发送和 Dirty notification均发生在 commit 之�
 
 ## 14. Client 目标架构
 
-本节 Client 指 Linux 工位控制端，不约束第 23 节的独立打印／拍照应用。
-工位 Server Component 不与 Client Reconciler 共用。双方只共享 [`natsume-device-protocol`](../crates/device-protocol/src/lib.rs)。
-该crate只拥有Protobuf schema、生成类型、descriptor、canonical cryptographic
-transcript、薄签名/严格验签操作和确属wire grammar的helper；它不提供全envelope
-semantic validation，也不拥有authority key选择。
-`prost`负责decode与wire类型约束，Server/Client各自在所属admission、component或
-reconciler边界校验业务presence、ID、epoch、state组合和cross-field不变量。
+本节 Client 指 Linux 工位控制端，不约束第 23 节的独立打印／拍照应用。 工位 Server Component 不与 Client Reconciler 共用。双方只共享 [`natsume-workstation-protocol`](../crates/natsume-workstation-protocol/src/lib.rs)。 该crate只拥有Protobuf schema、生成类型、descriptor、canonical cryptographic transcript、薄签名/严格验签操作和确属wire grammar的helper；它不提供全envelope semantic validation，也不拥有authority key选择。 `prost`负责decode与wire类型约束，Server/Client各自在所属admission、component或 reconciler边界校验业务presence、ID、epoch、state组合和cross-field不变量。
 
 ### 14.1 Client-local concrete implementation
 
-Gateway和Binding各自由所属concrete implementation生成、持久化并重放协商输入；六个
-target资源各自暴露具体的`reconcile`与`observe`方法，由`SnapshotReconciler`按固定资源图
-直接调用。当前没有第二种实现、运行时替换或多态消费者，因此不建立统一
-`InputProvider`/`Reconciler` trait、dynamic registry或resource-erased payload。
+Gateway和Binding各自由所属concrete implementation生成、持久化并重放协商输入；六个 target资源各自暴露具体的`reconcile`与`observe`方法，由`SnapshotReconciler`按固定资源图 直接调用。当前没有第二种实现、运行时替换或多态消费者，因此不建立统一 `InputProvider`/`Reconciler` trait、dynamic registry或resource-erased payload。
 
-具体实现可以在确有需要时把纯`plan`、副作用执行和`verify`分离。成功Actual只能来自
-durable artifact或真实runtime重采样，不能直接复用apply返回值。
+具体实现可以在确有需要时把纯`plan`、副作用执行和`verify`分离。成功Actual只能来自 durable artifact或真实runtime重采样，不能直接复用apply返回值。
 
 Daemon 独占 Client 部署配置的读取与解析；在身份预检成功后、控制连接和桌面预备前，将从 `/etc/natsume/config.toml` 解析出的 `[site].gateway_hostname` 通过固定 `ConfigureLocalGateway` 能力传给 Helper。Helper 只校验传入域名的合法性，再同步本机 `/etc/hosts` 的 Gateway loopback 映射、`/etc/firefox/policies/policies.json` 的主页和比赛书签，以及 `/etc/natsume/submit.env` 的公开提交地址；不读取或解析 Client 配置，不接受任意路径或文件内容。镜像提供 Firefox 基础策略、CA 信任及读取提交配置的 `submit` 启动器，部署域名由 Natsume 启动时派生，修改配置后重启 Daemon 生效，已运行的 Firefox 需重新打开。此能力不依赖 Enrollment 或 Server 在线，不触碰 teams Home。
 
@@ -1201,8 +1073,7 @@ Helper 仅替换 hosts 的 Natsume 标记区块，清除其他行中当前 Gatew
 
 ### 14.2 不创建共享 component crate
 
-Server和Client都直接使用各自的concrete method；双方职责和dependency完全不同，不共享
-component interface。
+Server和Client都直接使用各自的concrete method；双方职责和dependency完全不同，不共享 component interface。
 
 暂不创建 `device-control-model`、`core` 或 `shared-components`。完成 Gateway 和 Binding 双端实现后，只有出现至少两个真实消费者使用的完全相同纯逻辑，才允许提取具体命名的共享 crate。共享 crate禁止依赖：
 
@@ -1249,7 +1120,7 @@ Daemon 与 Agent 保持独立启动，不增加接收 readiness、ACK、启动�
 
 Helper 的 `DeriveMachineIdentity` 从同一次采集和冻结 policy 返回派生结果及三个来源的状态；quorum 不足和平台不支持为 typed outcome，transport 失败仍为 typed error。原始硬件值、normalized value 和逐来源稳定哈希不出 Helper，不进入日志或报告；Hardware ID recipe、2-of-3 和聚合 quality 不变。Daemon 只在原身份 gate 通过后读取 credential，诊断不得提前访问私钥或完整 manifest。
 
-诊断格式和本边界分类由 `crates/local-control-api/src/diagnostics.rs`、`machine_identity.rs` 及对应 adapter 拥有，不建立跨 HTTP/WSS 的全局错误 registry。字段只包含版本、阶段、固定错误分类、来源状态、canonical ID/IP、公开信任根指纹、已安装 Device ID、已校验 peer error token 和有界结构化事件；不复制错误 Display/Debug/source chain、headers/body、配置正文、硬件原值或秘密。报告最多 16 KiB、事件最多 12 条；此上限是证据存储上限，不是未来二维码的载荷承诺。
+诊断格式和本边界分类由 `crates/natsume-workstation-ipc/src/diagnostics.rs`、`machine_identity.rs` 及对应 adapter 拥有，不建立跨 HTTP/WSS 的全局错误 registry。字段只包含版本、阶段、固定错误分类、来源状态、canonical ID/IP、公开信任根指纹、已安装 Device ID、已校验 peer error token 和有界结构化事件；不复制错误 Display/Debug/source chain、headers/body、配置正文、硬件原值或秘密。报告最多 16 KiB、事件最多 12 条；此上限是证据存储上限，不是未来二维码的载荷承诺。
 
 到控制 IP 的 `/proc` route entries、接口 flags/carrier 和 next hop 只作为只读观测，不证明路由表成员身份，也不发送探测包。身份预检和每次连接尝试边界采样，网络证据带独立 boot-relative 采集时间。没有匹配观测条目不证明 policy/source-specific routing 无路由；路由或 carrier 正常也不证明 TCP/TLS/WSS 服务可用。无法采集时保留 unknown，不为诊断改变连接超时、握手或恢复行为。
 
@@ -1257,9 +1128,7 @@ Helper 的 `DeriveMachineIdentity` 从同一次采集和冻结 policy 返回派�
 
 ### 15.1 Operator
 
-角色固定为 `admin` 和 `viewer`，所有admin平等；首次创建的admin没有额外管理权限。
-Web Operator与DOMjudge Account是不同业务，用户管理使用独立的Panel入口。
-以下为已接受目标。Operator领域事务、`/api/v2/operator` HTTP API和Panel用户管理及密码流程已实现。
+角色固定为 `admin` 和 `viewer`，所有admin平等；首次创建的admin没有额外管理权限。 Web Operator与DOMjudge Account是不同业务，用户管理使用独立的Panel入口。 以下为已接受目标。Operator领域事务、`/api/v2/operator` HTTP API和Panel用户管理及密码流程已实现。
 
 #### 15.1.1 认证与密码
 
@@ -1279,18 +1148,13 @@ Operator账户与session在Server数据库：
 - password recovery支持admin签发单次重置链接，并保留TTY-only `reset-operator-password`作为运维恢复入口；
 - serve不隐式创建账户或vault key。
 
-注册、本人修改密码、Web重置和TTY bootstrap/reset的新密码统一为16～1024个ASCII字符。
-允许`A-Z`、`a-z`、`0-9`及以下精确特殊字符集合；至少包含一个数字和一个特殊字符，
-不额外强制字母或大小写组合，不允许空格、其他空白、控制字符、中文或集合外字符。
-密码原样处理，不trim或规范化；密码确认必须完全一致。
+注册、本人修改密码、Web重置和TTY bootstrap/reset的新密码统一为16～1024个ASCII字符。 允许`A-Z`、`a-z`、`0-9`及以下精确特殊字符集合；至少包含一个数字和一个特殊字符， 不额外强制字母或大小写组合，不允许空格、其他空白、控制字符、中文或集合外字符。 密码原样处理，不trim或规范化；密码确认必须完全一致。
 
 ```text
 !@#$%^&*()-_=+[]{};:,.?/~
 ```
 
-新注册用户名为1～128 UTF-8字节，拒绝首尾空白，不自动trim或规范化，区分大小写并全局唯一。
-既有用户名和密码不在升级时改写。删除后用户名可再次注册，但新账户使用新的Operator UUID，
-不会继承旧账户的session、密码重置链接或Target submission receipt身份。
+新注册用户名为1～128 UTF-8字节，拒绝首尾空白，不自动trim或规范化，区分大小写并全局唯一。 既有用户名和密码不在升级时改写。删除后用户名可再次注册，但新账户使用新的Operator UUID， 不会继承旧账户的session、密码重置链接或Target submission receipt身份。
 
 #### 15.1.2 用户管理与授权边界
 
@@ -1304,8 +1168,7 @@ Operator账户与session在Server数据库：
 
 #### 15.1.3 邀请注册
 
-admin指定固定role生成邀请，受邀人自行选择用户名和设置密码；拿到链接的人可以使用，
-不绑定邮箱或预先指定的用户名。首次bootstrap例外保留，其后新账户均通过此流程创建。
+admin指定固定role生成邀请，受邀人自行选择用户名和设置密码；拿到链接的人可以使用， 不绑定邮箱或预先指定的用户名。首次bootstrap例外保留，其后新账户均通过此流程创建。
 
 - 每条邀请只允许成功注册一个账户，固定7天绝对有效期，时间和token hash持久化，Server重启不延长有效期；
 - 邀请role生成后不可修改。角色更换需要撤销旧邀请并生成新邀请；
@@ -1332,12 +1195,7 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 
 #### 15.1.5 用户管理HTTP契约
 
-新增接口统一挂载`/api/v2/operator`，沿用现有`/api/v2/session`登录、查询与退出。
-用户列表、账户role PATCH/DELETE、邀请列表/创建/撤销/重新生成、账户的password-resets创建均需admin；
-`POST /operator/password/change`允许admin/viewer修改自己，body不能指定目标账户。
-匿名流程使用`POST /operator/register/inspect`、`POST /operator/register`、
-`POST /operator/password/reset/inspect`和`POST /operator/password/reset`，token仅在JSON body中传递。
-存在有效session时这四个入口返回409 `OPERATOR_LOGOUT_REQUIRED`，先退出再继续；无效/过期cookie不阻止匿名流程。
+新增接口统一挂载`/api/v2/operator`，沿用现有`/api/v2/session`登录、查询与退出。 用户列表、账户role PATCH/DELETE、邀请列表/创建/撤销/重新生成、账户的password-resets创建均需admin； `POST /operator/password/change`允许admin/viewer修改自己，body不能指定目标账户。 匿名流程使用`POST /operator/register/inspect`、`POST /operator/register`、 `POST /operator/password/reset/inspect`和`POST /operator/password/reset`，token仅在JSON body中传递。 存在有效session时这四个入口返回409 `OPERATOR_LOGOUT_REQUIRED`，先退出再继续；无效/过期cookie不阻止匿名流程。
 
 - DTO闭合且role只有admin/viewer；账户与邀请路径要求canonical UUIDv7。SessionResponse返回operator_id、账户权威username和role，登录与查询响应对admin/viewer一致。
 - 注册成功201返回新账户的operator_id、username、role，不建立session；恢复成功204不建立session。
@@ -1399,12 +1257,7 @@ strict XLSX parse
 
 源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。实际内容识别、限额、解码和 SVG 渲染归 Server Contest，拒绝符号链接和外部 SVG 资源，不带入公共领域包。目录与图片失败通过 tracing 记录路径和原因。
 
-Logo 列表的完整校验结果由 Contest 私有缓存，已提交名单和候选共用，最多 1024 个路径，
-按近期使用淘汰，不保留版本历史、图片字节、解码像素或名单权限。每次仍重扫目录、重新匹配名称，
-并以可读、非符号链接的同一文件句柄检查 dev/ino/size/mtime/ctime；指纹不变才复用结果。
-同路径并发未命中在既有 4 个 image workers 内串行校验并共享结果，全局缓存锁不跨 I/O。
-校验前后指纹变化、临时读取错误和超过 4 KiB 的错误文案不入缓存；Missing/Ambiguous 每次重新判断。
-图片下载、ETag 和 ZIP 导出仍完整读取/校验，不使用列表缓存代替当前数据或授权判断。
+Logo 列表的完整校验结果由 Contest 私有缓存，已提交名单和候选共用，最多 1024 个路径， 按近期使用淘汰，不保留版本历史、图片字节、解码像素或名单权限。每次仍重扫目录、重新匹配名称， 并以可读、非符号链接的同一文件句柄检查 dev/ino/size/mtime/ctime；指纹不变才复用结果。 同路径并发未命中在既有 4 个 image workers 内串行校验并共享结果，全局缓存锁不跨 I/O。 校验前后指纹变化、临时读取错误和超过 4 KiB 的错误文案不入缓存；Missing/Ambiguous 每次重新判断。 图片下载、ETag 和 ZIP 导出仍完整读取/校验，不使用列表缓存代替当前数据或授权判断。
 
 Contest 提供已提交学校及导出读取边界；OrganizationDetails 是其根模块的非秘密契约，Import 保留全部名单写权限。导出从同一数据库 read transaction 读取全量学校、队伍、映射和加密 vault records，关闭事务后才解密并打包。一个 export worker 生成最多 256 MiB 的内存 ZIP；四个 image workers 处理目录观测／图像请求，阻塞 IO 和转码不占据异步控制循环。
 
@@ -1430,45 +1283,22 @@ Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文
 
 ### 15.3 Desired-state Operator API
 
-旧 `/commands` API和Panel Command模型删除。单组件Operator操作直接调用owning component；
-跨组件查询及authority变更使用`DeviceControl`应用入口：
+旧 `/commands` API和Panel Command模型删除。单组件Operator操作直接调用owning component； 跨组件查询及authority变更使用`DeviceControl`应用入口：
 
-- 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态，
-  `PATCH /devices/{device_id}`修改Device lifecycle；
-- 资源移除使用`DELETE`：解绑`/devices/{device_id}/binding`，丢弃pending import
-  `/imports/{import_id}`；Binding UI是否开放由当前unbound与eligibility事实推导，
-  不增加operator-owned open policy；
-- 只有实际推进workflow、epoch或一次性终态决策的操作保留
-  `POST .../actions/...`：Import commit 与 Enrollment approve/deny；
+- 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态， `PATCH /devices/{device_id}`修改Device lifecycle；
+- 资源移除使用`DELETE`：解绑`/devices/{device_id}/binding`，丢弃pending import `/imports/{import_id}`；Binding UI是否开放由当前unbound与eligibility事实推导， 不增加operator-owned open policy；
+- 只有实际推进workflow、epoch或一次性终态决策的操作保留 `POST .../actions/...`：Import commit 与 Enrollment approve/deny；
 - 创建Session和Import preview使用collection `POST`。
 
-Session foreground、terminate、Home reset 的单台/批量写入口统一为
-`POST /api/v2/target-submissions`。旧单台 PUT session-control 和 POST terminate/reset
-入口删除，原读取接口保留。这是 HTTP Breaking Change。请求包含 canonical nonnil UUID
-`operation_id`、`scope`（`all_enabled`、`devices` ID 列表或仅供关机的
-`all_online_enabled`）和封闭 `action`：`set_foreground`（waiting/contest）、
-`terminate_session`、`reset_home`、`power_off`。每次请求只包含一种动作。
+Session foreground、terminate、Home reset 的单台/批量写入口统一为 `POST /api/v2/target-submissions`。旧单台 PUT session-control 和 POST terminate/reset 入口删除，原读取接口保留。这是 HTTP Breaking Change。请求包含 canonical nonnil UUID `operation_id`、`scope`（`all_enabled`、`devices` ID 列表或仅供关机的 `all_online_enabled`）和封闭 `action`：`set_foreground`（waiting/contest）、 `terminate_session`、`reset_home`、`power_off`。每次请求只包含一种动作。
 
-集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用
-`all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备，
-为每台写入单调 `shutdown_epoch` 与 60 秒 Server-time deadline。离线、Disabled、Revoked 和在
-deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入
-root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。
-提交或 D-Bus 受理均不等于物理断电已确认；Panel 只显示 submission、latest Actual 和连接离线事实。
+集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用 `all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备， 为每台写入单调 `shutdown_epoch` 与 60 秒 Server-time deadline。离线、Disabled、Revoked 和在 deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入 root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。 提交或 D-Bus 受理均不等于物理断电已确认；Panel 只显示 submission、latest Actual 和连接离线事实。
 
-进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果，
-不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled，
-离线设备包含在内。显式 ID 列表规范化去重；不存在、非 Enabled、无效目标、epoch 耗尽等
-领域拒绝逐设备返回，其他设备继续。数据库写入或最终 COMMIT 失败整批回滚。
-HTTP 200 表示完整提交结果已持久化，可以包含部分或全部拒绝；从不等待 Client converge。
+进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果， 不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled， 离线设备包含在内。显式 ID 列表规范化去重；不存在、非 Enabled、无效目标、epoch 耗尽等 领域拒绝逐设备返回，其他设备继续。数据库写入或最终 COMMIT 失败整批回滚。 HTTP 200 表示完整提交结果已持久化，可以包含部分或全部拒绝；从不等待 Client converge。
 
-HTTP方法表达资源语义，不为动词机械创建伪资源，也不把实际transition伪装成普通字段
-覆盖。`/api/v2`根层在认证和路由handler前统一拒绝`HEAD`并执行请求体大小上限；
-业务handler不重复声明这些transport策略。
+HTTP方法表达资源语义，不为动词机械创建伪资源，也不把实际transition伪装成普通字段 覆盖。`/api/v2`根层在认证和路由handler前统一拒绝`HEAD`并执行请求体大小上限； 业务handler不重复声明这些transport策略。
 
-Operator Target 提交成功后通过 `DeviceControl::dirty_devices` 通知成功设备的已有 Actor。
-receipt 重放也只触发从当前数据库重新读取，不恢复旧 Target。Dirty 丢失由现有周期刷新和
-重连恢复；通知不在数据库事务内，也不等待终端执行。HTTP handler 不直接访问组件表。
+Operator Target 提交成功后通过 `DeviceControl::dirty_devices` 通知成功设备的已有 Actor。 receipt 重放也只触发从当前数据库重新读取，不恢复旧 Target。Dirty 丢失由现有周期刷新和 重连恢复；通知不在数据库事务内，也不等待终端执行。HTTP handler 不直接访问组件表。
 
 ### 15.4 Panel状态
 
@@ -1482,74 +1312,20 @@ Panel展示：
 
 Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
 
-`GET /api/v2/devices` 支持可选查询参数 `state=enabled|disabled|revoked|non_revoked|all`。
-`non_revoked` 包含 Enabled/Disabled；省略参数等同 `all`，保留原 API 读取范围。非法参数返回
-HTTP 400。筛选在 Device SQL 查询中完成，随后只为匹配设备组装状态；不删除撤销记录，
-不改变控制密钥和生命周期语义。空集合直接返回，非空集合沿用固定次数的资源批量读取。
-Web 显式请求 `non_revoked`，两页都提供生命周期筛选，筛选值进入查询缓存键；撤销或禁用后
-通过设备查询前缀失效刷新所有筛选缓存，旧筛选响应不能覆盖当前视图。筛选器在空结果时仍可用。
-Targets 的全部 Enabled 操作独立于列表筛选：当列表只看 Disabled/Revoked 时，另取 Enabled
-列表用于预估范围；即使当前列表为空，批量操作仍覆盖 Server 当前全部 Enabled。
+`GET /api/v2/devices` 支持可选查询参数 `state=enabled|disabled|revoked|non_revoked|all`。 `non_revoked` 包含 Enabled/Disabled；省略参数等同 `all`，保留原 API 读取范围。非法参数返回 HTTP 400。筛选在 Device SQL 查询中完成，随后只为匹配设备组装状态；不删除撤销记录， 不改变控制密钥和生命周期语义。空集合直接返回，非空集合沿用固定次数的资源批量读取。 Web 显式请求 `non_revoked`，两页都提供生命周期筛选，筛选值进入查询缓存键；撤销或禁用后 通过设备查询前缀失效刷新所有筛选缓存，旧筛选响应不能覆盖当前视图。筛选器在空结果时仍可用。 Targets 的全部 Enabled 操作独立于列表筛选：当列表只看 Disabled/Revoked 时，另取 Enabled 列表用于预估范围；即使当前列表为空，批量操作仍覆盖 Server 当前全部 Enabled。
 
 
-Devices 和 Targets 默认列出 Enabled/Disabled Device，以当前 Binding 的座位号定位，支持排序和搜索。Targets 分别展示
-Session／Home convergence、foreground Target 和 Actual。单台操作通过该行详情进入；
-全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小
-范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
+Devices 和 Targets 默认列出 Enabled/Disabled Device，以当前 Binding 的座位号定位，支持排序和搜索。Targets 分别展示 Session／Home convergence、foreground Target 和 Actual。单台操作通过该行详情进入； 全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小 范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
 
-Devices 统一承载设备状态和 Binding 管理，不再提供独立 Bindings 导航；旧 `/bindings` 页面地址
-重定向到 `/devices`。已绑定设备行向 admin 提供带座位号的解绑确认，viewer 不提供 mutation
-控件。解绑仍调用现有 `DELETE /devices/{device_id}/binding`，成功后同时失效设备和绑定查询缓存；
-离线或禁用设备的持久 Binding 仍可查看和解绑，不将解绑混同于禁用或撤销。Binding API 保留，
-Seats 页面继续用它查询座位占用。admin 的 Actions 每行固定保留 Unbind、Enable/Disable、Revoke
-三个等宽按钮；无当前绑定或绑定未知时禁用 Unbind，已撤销时禁用生命周期切换和 Revoke，不删除
-不可用按钮以保持对齐。viewer 仍不显示操作列。
+Devices 统一承载设备状态和 Binding 管理，不再提供独立 Bindings 导航；旧 `/bindings` 页面地址 重定向到 `/devices`。已绑定设备行向 admin 提供带座位号的解绑确认，viewer 不提供 mutation 控件。解绑仍调用现有 `DELETE /devices/{device_id}/binding`，成功后同时失效设备和绑定查询缓存； 离线或禁用设备的持久 Binding 仍可查看和解绑，不将解绑混同于禁用或撤销。Binding API 保留， Seats 页面继续用它查询座位占用。admin 的 Actions 每行固定保留 Unbind、Enable/Disable、Revoke 三个等宽按钮；无当前绑定或绑定未知时禁用 Unbind，已撤销时禁用生命周期切换和 Revoke，不删除 不可用按钮以保持对齐。viewer 仍不显示操作列。
 
-Devices 将搜索与筛选分开，Lifecycle、Connection 和 Binding 分别使用独立多选下拉，按钮显示
-当前选择或 All/None；多选后菜单保持打开，支持键盘操作，空结果和全不选时仍可调整条件。
-Connection 独立于生命周期，提供 Online（`active`）、Connected, awaiting fresh state
-（`awaiting_fresh_state`）和 Offline（`offline`），默认全部选中；未收到新状态的连接不算 Online。
-Binding 提供 Bound、Unbound 和 Unknown，默认全部选中，依据当前 Binding Target 区分；Target
-缺失是 Unknown，不当作 Unbound，也不采用旧 Actual 中的绑定。
-同组选择取并集，连接、绑定、生命周期和搜索之间取交集；搜索忽略首尾空白和大小写，匹配当前
-Binding Target 的座位号、完整 Device ID 或硬件 ID，不使用旧 Actual 中的座位号。连接、绑定和
-搜索在当前生命周期查询结果上本地筛选，轮询后重新应用，不修改共享查询缓存或额外发起列表
-请求。工具栏显示匹配数与当前生命周期范围总数；Reset filters 恢复默认生命周期、全部连接、
-全部绑定状态和空搜索。这些列表筛选不影响 Emergency 导出范围。
+Devices 将搜索与筛选分开，Lifecycle、Connection 和 Binding 分别使用独立多选下拉，按钮显示 当前选择或 All/None；多选后菜单保持打开，支持键盘操作，空结果和全不选时仍可调整条件。 Connection 独立于生命周期，提供 Online（`active`）、Connected, awaiting fresh state （`awaiting_fresh_state`）和 Offline（`offline`），默认全部选中；未收到新状态的连接不算 Online。 Binding 提供 Bound、Unbound 和 Unknown，默认全部选中，依据当前 Binding Target 区分；Target 缺失是 Unknown，不当作 Unbound，也不采用旧 Actual 中的绑定。 同组选择取并集，连接、绑定、生命周期和搜索之间取交集；搜索忽略首尾空白和大小写，匹配当前 Binding Target 的座位号、完整 Device ID 或硬件 ID，不使用旧 Actual 中的座位号。连接、绑定和 搜索在当前生命周期查询结果上本地筛选，轮询后重新应用，不修改共享查询缓存或额外发起列表 请求。工具栏显示匹配数与当前生命周期范围总数；Reset filters 恢复默认生命周期、全部连接、 全部绑定状态和空搜索。这些列表筛选不影响 Emergency 导出范围。
 
-Devices在行内详情展示双方IP和记录时间，支持复制；离线设备明确标为最近记录。
-双方地址均存在且不一致时，在现有Device单元格的标识右侧显示琥珀色警告图标；悬停或聚焦
-说明差异，点击展开该行详情，不新增IP列，也不覆盖连接状态的图标或行背景。
-Devices 标题右侧提供紧凑的 Emergency 工具入口，与刷新状态并列；点击后展开含 IP 统计、
-范围说明和导出操作的小面板，默认不占筛选区或表格区高度，支持键盘、Escape 和外部点击关闭。
-导出结果在面板内显示，不因选择导出操作立即关闭。导出独立读取完整 Enabled/Disabled 名单，包含
-离线设备，排除Revoked，不受页面筛选和搜索影响；使用持久化的Server观测IP，去重、固定排序，
-生成UTF-8纯文本，每行一个IP，无表头。展示唯一IP、离线、差异和缺失记录数量；缺失地址跳过，
-读取失败不生成文件，无地址时明确提示。双方IP不一致仅提示，不把两个地址同时加入批量操作名单。
+Devices在行内详情展示双方IP和记录时间，支持复制；离线设备明确标为最近记录。 双方地址均存在且不一致时，在现有Device单元格的标识右侧显示琥珀色警告图标；悬停或聚焦 说明差异，点击展开该行详情，不新增IP列，也不覆盖连接状态的图标或行背景。 Devices 标题右侧提供紧凑的 Emergency 工具入口，与刷新状态并列；点击后展开含 IP 统计、 范围说明和导出操作的小面板，默认不占筛选区或表格区高度，支持键盘、Escape 和外部点击关闭。 导出结果在面板内显示，不因选择导出操作立即关闭。导出独立读取完整 Enabled/Disabled 名单，包含 离线设备，排除Revoked，不受页面筛选和搜索影响；使用持久化的Server观测IP，去重、固定排序， 生成UTF-8纯文本，每行一个IP，无表头。展示唯一IP、离线、差异和缺失记录数量；缺失地址跳过， 读取失败不生成文件，无地址时明确提示。双方IP不一致仅提示，不把两个地址同时加入批量操作名单。
 
-Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前按 Operator 身份在 sessionStorage
-保存原 operation ID 和完整非秘密请求。刷新后先确认登录身份再恢复，旧 scope 的回调不能
-清除新 scope 的请求。存储失败不发送；网络/5xx 等结果不明时保留原请求，提供同 ID 手动重试，
-不自动重试。收到明确结果即可发起下一次操作，不等待设备收敛；期间仍可浏览和切换设备。
-“仅重试失败设备”创建新 ID，只包含上次明确拒绝的设备，并重新检查 Enabled 资格。
-提交结果与 Target/Actual/convergence 分别展示，确认后的结果仅保留在当前页面，不增加
-Server 后台任务、执行队列或独立批次进度。已有请求失败、轮询失败和陈旧状态均明确展示。
+Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前按 Operator 身份在 sessionStorage 保存原 operation ID 和完整非秘密请求。刷新后先确认登录身份再恢复，旧 scope 的回调不能 清除新 scope 的请求。存储失败不发送；网络/5xx 等结果不明时保留原请求，提供同 ID 手动重试， 不自动重试。收到明确结果即可发起下一次操作，不等待设备收敛；期间仍可浏览和切换设备。 “仅重试失败设备”创建新 ID，只包含上次明确拒绝的设备，并重新检查 Enabled 资格。 提交结果与 Target/Actual/convergence 分别展示，确认后的结果仅保留在当前页面，不增加 Server 后台任务、执行队列或独立批次进度。已有请求失败、轮询失败和陈旧状态均明确展示。
 
-`DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation，
-不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的
-current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。
-该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Utoipa；
-`convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的
-查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。
-HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、
-校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device
-详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、
-Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public
-context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle，
-释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务
-查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建
-Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是
-跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
+`DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation， 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的 current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。 该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Utoipa； `convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的 查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。 HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、 校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device 详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle， 释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建 Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
 
 ## 16. 错误与可观测性
 
@@ -1561,48 +1337,24 @@ Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库
 - 不建立跨HTTP、WSS和本地IPC的全局错误码registry或共享crate；
 - 业务拒绝是typed evaluation/decision，不是exception；
 - malformed、unauthorized、session fence violation和不可能状态才终止协议；
-- Protobuf `error_code`保持`string`，不建立全局错误enum；其wire语法固定为
-  `1..=64` ASCII bytes且匹配`[A-Z][A-Z0-9_]*`；
-- Device Control发送方只在协议adapter中声明自己实际发送的码；接收方只校验
-  token语法，未知合法peer code保持opaque，只服从伴随typed state/action；
-- HTTP adapter私有拥有当前API实际发出的closed code set及其status映射；精确
-  公开集合由OpenAPI契约测试约束，不进入业务组件；
-- 本地IPC优先以typed enum/state表达可处理结果；只有接口确需稳定诊断标识时，
-  才由`local-control-api`和对应adapter共同拥有该标识；
-- 同一内部失败可以在不同边界映射为不同的安全公开分类；恰好使用相同字符串
-  不产生共享类型、共享所有权或跨transport兼容承诺；
+- Protobuf `error_code`保持`string`，不建立全局错误enum；其wire语法固定为 `1..=64` ASCII bytes且匹配`[A-Z][A-Z0-9_]*`；
+- Device Control发送方只在协议adapter中声明自己实际发送的码；接收方只校验 token语法，未知合法peer code保持opaque，只服从伴随typed state/action；
+- HTTP adapter私有拥有当前API实际发出的closed code set及其status映射；精确 公开集合由OpenAPI契约测试约束，不进入业务组件；
+- 本地IPC优先以typed enum/state表达可处理结果；只有接口确需稳定诊断标识时， 才由`local-control-api`和对应adapter共同拥有该标识；
+- 同一内部失败可以在不同边界映射为不同的安全公开分类；恰好使用相同字符串 不产生共享类型、共享所有权或跨transport兼容承诺；
 - Display、Debug、source text不作为公开语义。
 
-是否驱动接收方行为是建模分界：会改变retry、授权、UI流程或业务transition的
-信息必须是所属业务的typed state/action/evaluation；`error_code`只用于诊断
-关联或通用展示，永不成为控制流协议。稳定公开字符串在首次发布后仍是各自边界的
-兼容承诺，但新增和审查在该边界内完成。
+是否驱动接收方行为是建模分界：会改变retry、授权、UI流程或业务transition的 信息必须是所属业务的typed state/action/evaluation；`error_code`只用于诊断 关联或通用展示，永不成为控制流协议。稳定公开字符串在首次发布后仍是各自边界的 兼容承诺，但新增和审查在该边界内完成。
 
 ### 16.2 Distributed tracing
 
-业务审计不属于V2范围。Server可观测性只使用标准 `tracing`、
-`tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现自定义
-operation log schema、应用内JSONL writer或OpenTelemetry Logs signal。trace是
-best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源
-耗尽或异常退出时可能丢失span。
+业务审计不属于V2范围。Server可观测性只使用标准 `tracing`、 `tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现自定义 operation log schema、应用内JSONL writer或OpenTelemetry Logs signal。trace是 best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源 耗尽或异常退出时可能丢失span。
 
-设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用
-stderr fmt日志，不尝试连接默认Collector。`OTEL_SDK_DISABLED=true`强制禁用导出。
-Exporter的endpoint、timeout和headers继续使用OpenTelemetry标准环境变量。endpoint配置
-无法建立exporter时启动失败；进程正常退出时显式shutdown provider以flush已排队span，
-但shutdown/export失败只输出固定诊断，不覆盖业务命令结果。
+设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用 stderr fmt日志，不尝试连接默认Collector。`OTEL_SDK_DISABLED=true`强制禁用导出。 Exporter的endpoint、timeout和headers继续使用OpenTelemetry标准环境变量。endpoint配置 无法建立exporter时启动失败；进程正常退出时显式shutdown provider以flush已排队span， 但shutdown/export失败只输出固定诊断，不覆盖业务命令结果。
 
-每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和
-success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从
-W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。
-认证成功后可向当前Span补充不含secret的actor ID，但HTTP header、错误体、OpenAPI和
-业务函数参数都不公开或传递自定义correlation/operation ID。CLI命令建立internal根Span。
+每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和 success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从 W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。 认证成功后可向当前Span补充不含secret的actor ID，但HTTP header、错误体、OpenAPI和 业务函数参数都不公开或传递自定义correlation/operation ID。CLI命令建立internal根Span。
 
-async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享数据库边界显式
-捕获subscriber和当前Span。每个Diesel连接通过官方`Instrumentation`接口为query建立
-`otel.kind=client`子Span，只记录SQLite类型和成功/失败，不读取或记录SQL文本、bind参数、
-数据库URL、错误正文或其他secret。
+async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享数据库边界显式 捕获subscriber和当前Span。每个Diesel连接通过官方`Instrumentation`接口为query建立 `otel.kind=client`子Span，只记录SQLite类型和成功/失败，不读取或记录SQL文本、bind参数、 数据库URL、错误正文或其他secret。
 
 ### 16.3 日志和metrics
 
@@ -1627,9 +1379,7 @@ async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享
 
 ### 17.1 Workspace
 
-继续使用一个 Cargo workspace 和一个 `Cargo.lock`。全部 Rust 包进入 `crates/`，
-目录名与 Cargo `package.name` 一致，使用 `natsume-` 前缀和小写连字符；
-同领域多包采用 `natsume-<领域>-<职责>`，单一入口／领域库不强加无意义后缀。
+继续使用一个 Cargo workspace 和一个 `Cargo.lock`。全部 Rust 包进入 `crates/`， 目录名与 Cargo `package.name` 一致，使用 `natsume-` 前缀和小写连字符； 同领域多包采用 `natsume-<领域>-<职责>`，单一入口／领域库不强加无意义后缀。
 
 目标布局（不是当前文件已移动的声明）：
 
@@ -1647,21 +1397,11 @@ crates/natsume-contest-domain/    # 实际多生产消费者需要时提取
 crates/natsume-photo-package/     # 成果包契约随双端实现提取，不预建空包
 ```
 
-原 `server/` 迁至 `natsume-server`；原 `device-daemon`、`privileged-helper`、
-`session-agent` 分别迁至三个 `workstation-*` 应用包；原 `device-protocol` 与
-`local-control-api` 分别迁至 `workstation-protocol` 与 `workstation-ipc`。
-`web/` 保持独立前端，打包仍按交付对象组织；Tauri 若入选，其 Rust 包也遵守本布局。
+原 `server/` 迁至 `natsume-server`；原 `device-daemon`、`privileged-helper`、 `session-agent` 分别迁至三个 `workstation-*` 应用包；原 `device-protocol` 与 `local-control-api` 分别迁至 `workstation-protocol` 与 `workstation-ipc`。 `web/` 保持独立前端，打包仍按交付对象组织；Tauri 若入选，其 Rust 包也遵守本布局。
 
-目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、
-架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称，
-必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。
-唯一明确退役的工具是 `natsume-check-logos`。原 `natsume-roster` 不改名占位：
-XLSX／密码输入归 Import，校徽文件与图像处理归 Contest，能力归位后删除原包。
+目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、 架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称， 必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。 唯一明确退役的工具是 `natsume-check-logos`。原 `natsume-roster` 不改名占位： XLSX／密码输入归 Import，校徽文件与图像处理归 Contest，能力归位后删除原包。
 
-`natsume-contest-domain` 只承载共同需要的稳定身份、非秘密基础资料和纯值约束，
-不含 DB、网络、文件系统、GUI、输入格式或业务编排，不创建第二套队伍身份。
-`natsume-photo-package` 只承载专用成果格式与签名／完整性契约，不接管名单、来源授权和审批。
-域类型共享不共享 authority，也不把所有领域状态机、DTO 或错误码塞进全局 core。
+`natsume-contest-domain` 只承载共同需要的稳定身份、非秘密基础资料和纯值约束， 不含 DB、网络、文件系统、GUI、输入格式或业务编排，不创建第二套队伍身份。 `natsume-photo-package` 只承载专用成果格式与签名／完整性契约，不接管名单、来源授权和审批。 域类型共享不共享 authority，也不把所有领域状态机、DTO 或错误码塞进全局 core。
 
 共享 crate准入条件：
 
@@ -1671,9 +1411,7 @@ XLSX／密码输入归 Import，校徽文件与图像处理归 Contest，能力�
 4. 依赖无环；
 5. 独立crate确实保护边界。
 
-禁止以整洁为由新增 `common`、`utils`、`core`、`shared-models` 或 `helpers`。
-`integration-tests`也不预建空crate；第一个无法由组件、协议、IPC或package
-probe拥有的真实跨进程/持久化/fault-injection场景出现时再创建。
+禁止以整洁为由新增 `common`、`utils`、`core`、`shared-models` 或 `helpers`。 `integration-tests`也不预建空crate；第一个无法由组件、协议、IPC或package probe拥有的真实跨进程/持久化/fault-injection场景出现时再创建。
 
 ### 17.2 Server目标目录
 
@@ -1740,16 +1478,9 @@ crates/natsume-server/src/
   pki.rs
 ```
 
-`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/schema.rs` 是由 migration 生成、通过
-`crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达
-SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning
-component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际
-变大后才拆`types.rs`或`resolve.rs`。
+`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/schema.rs` 是由 migration 生成、通过 `crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际 变大后才拆`types.rs`或`resolve.rs`。
 
-Contest的三个只读查询只占`contest.rs`与`contest/db.rs`，不按每个查询拆子模块；
-Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字段只在owning component内
-可见，领域转换继续验证；不为直接字段读写增加无校验constructor/getter。
-普通HTTP JSON响应使用Axum `Json`，不维护重复的手工序列化response wrapper。
+Contest的三个只读查询只占`contest.rs`与`contest/db.rs`，不按每个查询拆子模块； Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字段只在owning component内 可见，领域转换继续验证；不为直接字段读写增加无校验constructor/getter。 普通HTTP JSON响应使用Axum `Json`，不维护重复的手工序列化response wrapper。
 
 现有Operator/Import代码迁移时保持行为测试，不借本次重构增加新功能。
 
@@ -1774,8 +1505,7 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 
 ## 18. 部署与运行边界
 
-以下记录既有 Linux Server／工位交付边界，flag-day 全新部署与整套回滚指该基线。
-平台扩展保留现有运行契约，新增 Windows 应用另行安装、构建和签收，见第 23 节。
+以下记录既有 Linux Server／工位交付边界，flag-day 全新部署与整套回滚指该基线。 平台扩展保留现有运行契约，新增 Windows 应用另行安装、构建和签收，见第 23 节。
 
 - Server与Client使用原生Deb package；
 - 安装期不下载runtime；
@@ -1897,45 +1627,27 @@ just diesel-schema
 just api
 ```
 
-上述 workspace 命令对应既有 Linux 基线的验收能力，不要求每轮在本地运行全量套件。
-加入 Windows-only 包后按支持矩阵选择 Cargo 包集合与 CI／hook 范围；共享领域与成果格式
-在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。
-实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
+上述 workspace 命令对应既有 Linux 基线的验收能力，不要求每轮在本地运行全量套件。 加入 Windows-only 包后按支持矩阵选择 Cargo 包集合与 CI／hook 范围；共享领域与成果格式 在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。 实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
 
 ## 20. Flag-day 实施计划
 
-以下 Work Package 记录既有工位控制 flag-day 基线，不作为平台扩展清库或重写协议的授权。
-其带日期事实与历史验收保留，不改写为新功能已完成。平台目标见第 23 节。
-这些 Work Package 是依赖顺序，不是长期 Phase 体系；每个 WP 只在列出的验收满足后结束。
+以下 Work Package 记录既有工位控制 flag-day 基线，不作为平台扩展清库或重写协议的授权。 其带日期事实与历史验收保留，不改写为新功能已完成。平台目标见第 23 节。 这些 Work Package 是依赖顺序，不是长期 Phase 体系；每个 WP 只在列出的验收满足后结束。
 
 ### 当前实现基线
 
 2026-09-03 的实现基线（Server组合边界于2026-09-05修正）：
 
-- split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在
-  `natsume-device-protocol` 中形成；
-- 唯一 initial migration 和 Diesel schema 已统一到 17 张目标表，不再包含
-  Command、Observed、Token 或 Bundle 旧模型；
-- Server 已建立纵向 `component` 结构和进程级 `ServerState`；所有业务组件持有自己的
-  concrete dependency，HTTP只调用component facade或显式持有依赖的`DeviceControl`；
-  `ServerState`只负责组装，Actor/WSS不再依赖该根对象；
-- Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再
-  属于 HTTP；
-- Device Component 拥有 Device/current control key 的 durable authority、连接期
-  Enrollment review registry 和 lifecycle，并统一编排 review claim
-  与 activation transaction；`device_control/admission.rs` 拥有纯
-  Challenge/Proof 准入与 Enrollment Ready barrier；
-- Server 已实现production Device WSS、每Device Actor/Registry、lease fencing、fresh
-  barrier、完整snapshot处理和当前在线Actual查询；
-- Operator HTTP与Panel已接入Enrollment、Device lifecycle、六资源target mutation和
-  convergence查询，mutation在commit后按语义触发Dirty或Evict；
-- Daemon 已实现单一 pinned WSS 连接循环、Gateway/Binding concrete input、
-  六资源 concrete reconciliation，并接通 Helper、Session Agent 与 Caddy；
-- `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建，
-  组件、协议和 IPC 单元契约不得在此复制。
+- split Proto、四平面快照、Challenge/Proof 和 Enrollment barrier 已在 `natsume-device-protocol` 中形成；
+- 唯一 initial migration 和 Diesel schema 已统一到 17 张目标表，不再包含 Command、Observed、Token 或 Bundle 旧模型；
+- Server 已建立纵向 `component` 结构和进程级 `ServerState`；所有业务组件持有自己的 concrete dependency，HTTP只调用component facade或显式持有依赖的`DeviceControl`； `ServerState`只负责组装，Actor/WSS不再依赖该根对象；
+- Vault 在 Server 启动时加载一次并由需要它的组件持有，Provisioning gate 也不再 属于 HTTP；
+- Device Component 拥有 Device/current control key 的 durable authority、连接期 Enrollment review registry 和 lifecycle，并统一编排 review claim 与 activation transaction；`device_control/admission.rs` 拥有纯 Challenge/Proof 准入与 Enrollment Ready barrier；
+- Server 已实现production Device WSS、每Device Actor/Registry、lease fencing、fresh barrier、完整snapshot处理和当前在线Actual查询；
+- Operator HTTP与Panel已接入Enrollment、Device lifecycle、六资源target mutation和 convergence查询，mutation在commit后按语义触发Dirty或Evict；
+- Daemon 已实现单一 pinned WSS 连接循环、Gateway/Binding concrete input、 六资源 concrete reconciliation，并接通 Helper、Session Agent 与 Caddy；
+- `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建， 组件、协议和 IPC 单元契约不得在此复制。
 
-后续 WP 开始前仍需只读核对本文、Proto、migration 和相关源码；跳过已经完成的工作，
-不得恢复旧设计。
+后续 WP 开始前仍需只读核对本文、Proto、migration 和相关源码；跳过已经完成的工作， 不得恢复旧设计。
 
 ### WP0：单一架构基线（已完成）
 
@@ -1997,10 +1709,8 @@ just api
 
 验收：
 
-- Challenge/Proof、pending review、activation commit 和 Enrollment Ready barrier 的
-  crash cut 全部覆盖；
-- SessionReady/lease/socket 的 crash cut 在 production WSS 与 DeviceActor 落地的
-  WP7 验收；
+- Challenge/Proof、pending review、activation commit 和 Enrollment Ready barrier 的 crash cut 全部覆盖；
+- SessionReady/lease/socket 的 crash cut 在 production WSS 与 DeviceActor 落地的 WP7 验收；
 - 旧authority在replacement activation前可用；
 - revoked旧key永久拒绝；
 - Enrollment不包含Gateway/Binding。
@@ -2009,8 +1719,7 @@ just api
 
 目标：
 
-- 只实现Server concrete `GatewayComponent`及当前资源需要的`ingest/materialize`，
-  不预建统一trait、静态集合或dynamic registry；
+- 只实现Server concrete `GatewayComponent`及当前资源需要的`ingest/materialize`， 不预建统一trait、静态集合或dynamic registry；
 - 实现accepted CSR current fact，不持久化原始Client projection；
 - Intent Policy、CSR validation、sign/CAS、grant/replacement；
 - Client private key/CSR生成、durable artifact与Caddy收敛留在WP9。
@@ -2026,18 +1735,14 @@ just api
 
 目标：
 
-- 只实现Server concrete `BindingComponent`，不预建统一component trait、
-  `DeviceActor`或production WSS；
-- 实现每个unbound Device唯一current negotiation、submission epoch fencing、bounded
-  evaluation和accept/unbind；
-- concrete `BindingComponent::ingest` 当前只接收会参与transition的`BindingInput`；
-  production `DeviceActor`在组件调用前校验Binding Actual；
+- 只实现Server concrete `BindingComponent`，不预建统一component trait、 `DeviceActor`或production WSS；
+- 实现每个unbound Device唯一current negotiation、submission epoch fencing、bounded evaluation和accept/unbind；
+- concrete `BindingComponent::ingest` 当前只接收会参与transition的`BindingInput`； production `DeviceActor`在组件调用前校验Binding Actual；
 - 一致性读取Contest/Vault；
 - 生成Bound/Unbound target；
 - Server不建立Prompt Command或HTTP/Panel入口；
 - 不实现Client artifact、Binding UI或input generation；
-- Client侧遗留的`prompt_command_id`已在WP9删除；Binding UI由current Intent与
-  本地Session/Home eligibility自动展示。
+- Client侧遗留的`prompt_command_id`已在WP9删除；Binding UI由current Intent与 本地Session/Home eligibility自动展示。
 
 验收：
 
@@ -2052,14 +1757,10 @@ just api
 
 目标：
 
-- 只实现Server concrete Runtime Config、Session Control与Home组件，不预建
-  统一component trait、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
-- 实现三个Unit-input资源的durable target；Runtime只接受部署配置，Session/Home提供
-  concrete operator mutation method，不恢复已删除的lock/unlock/terminate/reset Command API；
-- concrete component当前不接收不会参与Server transition的Actual；
-  production `DeviceActor`在组件调用前校验fresh Actual；
-- WP9已实现Client侧exact graphical session捕获与terminate fencing，以及Home reset的
-  Prepare/Apply/Verify/Recover与durable completion。
+- 只实现Server concrete Runtime Config、Session Control与Home组件，不预建 统一component trait、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
+- 实现三个Unit-input资源的durable target；Runtime只接受部署配置，Session/Home提供 concrete operator mutation method，不恢复已删除的lock/unlock/terminate/reset Command API；
+- concrete component当前不接收不会参与Server transition的Actual； production `DeviceActor`在组件调用前校验fresh Actual；
+- WP9已实现Client侧exact graphical session捕获与terminate fencing，以及Home reset的 Prepare/Apply/Verify/Recover与durable completion。
 
 验收：
 
@@ -2075,8 +1776,7 @@ just api
 - 实现单连接`device_control::serve_connection`编排入口；
 - 使用同一`review_id`的一次性通知交付Enrollment activation结果；
 - 实现Registry、Actor、lease fencing、fresh barrier；
-- production Actor使用`DeviceControl`中的concrete components，不增加
-  `StateComponent`、`StateComponents`或dynamic registry；
+- production Actor使用`DeviceControl`中的concrete components，不增加 `StateComponent`、`StateComponents`或dynamic registry；
 - 串行组件ingest/materialize；
 - 完整snapshot编解码；
 - bounded mailbox与outbound背压；
@@ -2084,8 +1784,7 @@ just api
 
 验收：
 
-- admission中间状态不泄漏到WSS handler，attach前后exact authority与
-  lifecycle复查覆盖disable/revoke/replacement竞态；
+- admission中间状态不泄漏到WSS handler，attach前后exact authority与 lifecycle复查覆盖disable/revoke/replacement竞态；
 - 每Device一个current lease；
 - 旧frame零写入；
 - 首帧前零组件写入；
@@ -2098,19 +1797,15 @@ just api
 
 - 保持HTTP handler只调用component facade或`DeviceControl` application coordination；
 - 增加Enrollment、target mutation与convergence查询；
-- Operator/Panel query汇总durable current fact与当前在线Actor状态，不在更早WP预建
-  read DTO；
+- Operator/Panel query汇总durable current fact与当前在线Actor状态，不在更早WP预建 read DTO；
 - 更新generated API。
 
 验收：
 
-- Server、OpenAPI与Web无Device Command/Bundle/Token/Observed旧业务symbol；普通CLI
-  Command、Import preview token与协议ErrorCode token不属于该旧模型；
-- WP9已删除Client旧控制路径使用的Command journal、device token与对应
-  local-control字段；
+- Server、OpenAPI与Web无Device Command/Bundle/Token/Observed旧业务symbol；普通CLI Command、Import preview token与协议ErrorCode token不属于该旧模型；
+- WP9已删除Client旧控制路径使用的Command journal、device token与对应 local-control字段；
 - Web不复制Rust enum；
-- 所有Active resource target mutation在commit后Dirty；Device disable、revoke与
-  current control-key replacement在commit后Evict；
+- 所有Active resource target mutation在commit后Dirty；Device disable、revoke与 current control-key replacement在commit后Evict；
 - API/generated clean diff。
 
 ### WP9：Client Input与Reconciliation（已实现，待审查）
@@ -2155,8 +1850,7 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ## 21. 实施纪律
 
-交给实现模型的约束。涉及第二 WSS／Proto、旧 Command／Token／Bundle 的禁令指工位 Device Control，
-不禁止第 23 节独立业务的 typed 接口；不因此引入通用框架或削弱秘密与事务边界：
+交给实现模型的约束。涉及第二 WSS／Proto、旧 Command／Token／Bundle 的禁令指工位 Device Control， 不禁止第 23 节独立业务的 typed 接口；不因此引入通用框架或削弱秘密与事务边界：
 
 1. 每个WP开始前先读取本文、当前Proto、migration和相关源码。
 2. 只把当前机器schema视为实现现状，不把旧代码语义当目标。
@@ -2172,8 +1866,7 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ## 22. 完成判据
 
-本节只签收既有工位 Device Control 目标；第 23 节的打印／照片另有业务验收，
-不把完整快照、无投递结果不明等控制语义强加给独立队列或签名成果导入。
+本节只签收既有工位 Device Control 目标；第 23 节的打印／照片另有业务验收， 不把完整快照、无投递结果不明等控制语义强加给独立队列或签名成果导入。
 
 只有全部满足，工位控制目标架构才算落地：
 
@@ -2201,19 +1894,11 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ### 23.1 范围、组件与交付
 
-本节是后续已接受目标，不是代码、Windows 或现场验收已完成的声明。
-在同一仓库和同一个 Server 中增加 Print、Photo 纵向组件，继续使用单赛事和单 writer；
-不先引入微服务、Redis／消息中间件、通用调度／插件框架或全局业务审计。
-名单写入 authority 仍属于 Contest/Import，工位控制、打印、拍照有各自生命周期。
+本节是后续已接受目标，不是代码、Windows 或现场验收已完成的声明。 在同一仓库和同一个 Server 中增加 Print、Photo 纵向组件，继续使用单赛事和单 writer； 不先引入微服务、Redis／消息中间件、通用调度／插件框架或全局业务审计。 名单写入 authority 仍属于 Contest/Import，工位控制、打印、拍照有各自生命周期。
 
-Windows Print Client、Photo Client 分别安装和交付，不改造为 Linux Agent／Helper 的功能，
-不使用 DeviceActor、工位 Target 或 control key。DOMjudge 集成、打印 Client、拍照站具有
-独立、最小权限的身份；不持有长期管理员 session，不跳过 TLS 校验。
-注册、密钥保护、撤销及 protocol version 须随对应契约评审，不能由 GUI 默认行为决定。
+Windows Print Client、Photo Client 分别安装和交付，不改造为 Linux Agent／Helper 的功能， 不使用 DeviceActor、工位 Target 或 control key。DOMjudge 集成、打印 Client、拍照站具有 独立、最小权限的身份；不持有长期管理员 session，不跳过 TLS 校验。 注册、密钥保护、撤销及 protocol version 须随对应契约评审，不能由 GUI 默认行为决定。
 
-Server 保存打印文档、当前照片及待处理候选；它们的访问不沿用公开学校 Logo 的策略。
-备份与恢复同时覆盖数据库、相关文件和必要身份／信任材料。保留、限额、清理、
-Windows 支持矩阵与安装 runtime 需明确验证，不由“无历史功能”推导自动删除素材。
+Server 保存打印文档、当前照片及待处理候选；它们的访问不沿用公开学校 Logo 的策略。 备份与恢复同时覆盖数据库、相关文件和必要身份／信任材料。保留、限额、清理、 Windows 支持矩阵与安装 runtime 需明确验证，不由“无历史功能”推导自动删除素材。
 
 ### 23.2 DOMjudge 受理、Typst 与排队快照
 
@@ -2224,43 +1909,25 @@ Windows 支持矩阵与安装 runtime 需明确验证，不由“无历史功能
 3. 上传最终 PDF，Server 校验、确定文档页数并安全保存后才进入就绪 FIFO。
 4. wrapper stdout 返回“已入队、未完成”与受理时快照，复用现有 DOMjudge 输出展示。
 
-登记不是入队，入队不是打印完成。生成失败和未就绪请求不计入待打印页数。
-快照分开显示当前任务前方待领取任务数／最终 PDF 文档页数和当前处理中任务数，
-不承诺实时排名、物理纸张余量或 ETA。请求及阶段重试幂等，不把结果不明当作未受理。
-错误回报丢失可能留下结果未回报的准备中请求，状态与诊断必须诚实呈现。
+登记不是入队，入队不是打印完成。生成失败和未就绪请求不计入待打印页数。 快照分开显示当前任务前方待领取任务数／最终 PDF 文档页数和当前处理中任务数， 不承诺实时排名、物理纸张余量或 ETA。请求及阶段重试幂等，不把结果不明当作未受理。 错误回报丢失可能留下结果未回报的准备中请求，状态与诊断必须诚实呈现。
 
-不新建选手账号、动态状态页或强制修改 DOMjudge 网页。具体版本可能有固定的“已打印”
-模板提示，应记录兼容限制，脚本仍明确区分受理和完成。
+不新建选手账号、动态状态页或强制修改 DOMjudge 网页。具体版本可能有固定的“已打印” 模板提示，应记录兼容限制，脚本仍明确区分受理和完成。
 
 ### 23.3 主动领取、打印尝试与恢复
 
-全场一个共享打印池，FIFO 以最终 PDF 就绪顺序为准。统一 A4、黑白、单份；
-单双面等现场统一配置，不做每任务自选。并行完成顺序不保证等同领取顺序。
+全场一个共享打印池，FIFO 以最终 PDF 就绪顺序为准。统一 A4、黑白、单份； 单双面等现场统一配置，不做每任务自选。并行完成顺序不保证等同领取顺序。
 
-空闲且有容量的 Client 主动领取，Server 原子确认当前归属。忙／故障打印机不继续领取，
-不把大量待处理任务提前搬进一台机器的 spooler。多打印机与物理队列容量需准确识别，
-不能以 HTTP 活跃代替可打印能力，也不能把同一物理设备重复当多个无约束执行容量。
+空闲且有容量的 Client 主动领取，Server 原子确认当前归属。忙／故障打印机不继续领取， 不把大量待处理任务提前搬进一台机器的 spooler。多打印机与物理队列容量需准确识别， 不能以 HTTP 活跃代替可打印能力，也不能把同一物理设备重复当多个无约束执行容量。
 
-请求、PDF 内容、尝试、Client、打印机／队列与 Windows Job ID 关联明确，
-不能按文件名或裸 Job ID 猜测；旧尝试和重复报告不得推进新尝试。
-Print Component 持久化恢复所需事实，系统／网络／Client 重启后可恢复或重新开放领取。
-具体尝试计数屏障、失效判定、重试排序／退避和超时须先形成可测试规格。
+请求、PDF 内容、尝试、Client、打印机／队列与 Windows Job ID 关联明确， 不能按文件名或裸 Job ID 猜测；旧尝试和重复报告不得推进新尝试。 Print Component 持久化恢复所需事实，系统／网络／Client 重启后可恢复或重新开放领取。 具体尝试计数屏障、失效判定、重试排序／退避和超时须先形成可测试规格。
 
-每任务最多三次 Natsume 应用级打印尝试（首次加两次自动重试），之后停止自动执行并暴露错误。
-结果不明允许重领，优先自动完成、接受偶发重复出纸，不承诺 exactly-once。
-三次预算不是纸张份数保证，操作系统／驱动可能有内部重试。
-人工补打等管理动作的权限和副作用单独定规格，不默认为任意远程命令。
+每任务最多三次 Natsume 应用级打印尝试（首次加两次自动重试），之后停止自动执行并暴露错误。 结果不明允许重领，优先自动完成、接受偶发重复出纸，不承诺 exactly-once。 三次预算不是纸张份数保证，操作系统／驱动可能有内部重试。 人工补打等管理动作的权限和副作用单独定规格，不默认为任意远程命令。
 
-Windows Client 在登录用户下后台／托盘运行，不先做无人登录服务。
-打印后端允许重写，不强制 SumatraPDF；必须评估 PDF 渲染、适用 Windows 打印路径、
-准确 Job ID、忙闲与故障观测，不能假定所有设备支持 RAW PDF。
-提交成功、打印系统报告完成与物理出纸是不同事实，产品不承诺通用物理完成证明。
+Windows Client 在登录用户下后台／托盘运行，不先做无人登录服务。 打印后端允许重写，不强制 SumatraPDF；必须评估 PDF 渲染、适用 Windows 打印路径、 准确 Job ID、忙闲与故障观测，不能假定所有设备支持 RAW PDF。 提交成功、打印系统报告完成与物理出纸是不同事实，产品不承诺通用物理完成证明。
 
 ### 23.4 离线工作区与队伍优先拍摄组
 
-Photo Client 首次联网登记来源、信任和非秘密名单快照，之后可离线搜索、收图、
-重照、确认、导出并在重启后恢复。不使用含密码的原始 XLSX 或 DOMjudge 全量导出 ZIP
-作为初始化资料，不依赖在线 Operator cookie 或 Web 缓存维持本地工作区。
+Photo Client 首次联网登记来源、信任和非秘密名单快照，之后可离线搜索、收图、 重照、确认、导出并在重启后恢复。不使用含密码的原始 XLSX 或 DOMjudge 全量导出 ZIP 作为初始化资料，不依赖在线 Operator cookie 或 Web 缓存维持本地工作区。
 
 摄影师窗口与选手展示窗口分开，流程为：
 
@@ -2272,63 +1939,33 @@ Photo Client 首次联网登记来源、信任和非秘密名单快照，之后�
   → 本组已知读取、复制／移动、校验、归档完成 → 才允许下一队
 ```
 
-组内迟到的异步解码不得覆盖更新预览，确认竞态不得选择选手未见的图片；
-确认后新到图可归档，但不能自动替换成品。拍摄组锁定队伍，纠正、放弃或补拍均显式操作。
-未确认／未采用图留本地，不因重照自动删除，不上传为成品。
-已有成品在新图确认前保留；未发送旧待发布项不能继续冒充当前成品，已送达／结果不明的
-提交按 Server 当前事实处理，不能假装撤回已发生的接收。
+组内迟到的异步解码不得覆盖更新预览，确认竞态不得选择选手未见的图片； 确认后新到图可归档，但不能自动替换成品。拍摄组锁定队伍，纠正、放弃或补拍均显式操作。 未确认／未采用图留本地，不因重照自动删除，不上传为成品。 已有成品在新图确认前保留；未发送旧待发布项不能继续冒充当前成品，已送达／结果不明的 提交按 Server 当前事实处理，不能假装撤回已发生的接收。
 
 ### 23.5 热文件夹与安全接管
 
-首期只监控热文件夹，JPEG／PNG 输入，不做 RAW 显影、相机 SDK、远程快门或实时协作修图。
-通知只用于发现，须处理未写完、重复事件、同名变更、重启补扫、解码限额和失败恢复。
-客户端工作区保留稳定素材身份与归属，预览不引用会被上游覆盖的源路径。
+首期只监控热文件夹，JPEG／PNG 输入，不做 RAW 显影、相机 SDK、远程快门或实时协作修图。 通知只用于发现，须处理未写完、重复事件、同名变更、重启补扫、解码限额和失败恢复。 客户端工作区保留稳定素材身份与归属，预览不引用会被上游覆盖的源路径。
 
-复制／移动均可配置，默认模式另定规格（建议复制）。移动必须先安全接管并持久化再移除
-同一源文件，覆盖跨卷／中断／删除失败／源文件被替换，不能丢图或盲删新文件。
-无活动组的来图先待归组，不自动挂下一队；未确认图片允许显式排除／纠正归组。
-Client 必须等待所有已知归档工作，但无法证明相机／上游没有尚未到达的照片；
-安静窗口不等于可靠相机批次结束，未知跨组迟到也不能靠时间戳自动证明归属。
+复制／移动均可配置，默认模式另定规格（建议复制）。移动必须先安全接管并持久化再移除 同一源文件，覆盖跨卷／中断／删除失败／源文件被替换，不能丢图或盲删新文件。 无活动组的来图先待归组，不自动挂下一队；未确认图片允许显式排除／纠正归组。 Client 必须等待所有已知归档工作，但无法证明相机／上游没有尚未到达的照片； 安静窗口不等于可靠相机批次结束，未知跨组迟到也不能靠时间戳自动证明归属。
 
 ### 23.6 成果包、接收与外部图片交付
 
-只有确认成品交付。在线提交与离线签名包经 Web Panel 导入使用同一接收规则；
-成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，
-由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
+只有确认成品交付。在线提交与离线签名包经 Web Panel 导入使用同一接收规则； 成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希， 由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 
-先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值，
-显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理，
-其他有效项继续接收，不按队名、校名或复用账号猜测 identity。
-人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
-签名证明来源与内容，不证明现场身份核对或选手满意。
+先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。 签名证明来源与内容，不证明现场身份核对或选手满意。
 
-Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。
-签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。
-现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。
-实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等，
-不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。
+Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。 签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。 现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。 实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等， 不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。
 
 ### 23.7 GUI 及目标环境验证
 
-核心逻辑采用 Rust，GUI 首轮只比较 Slint／Tauri，GPUI 不进入首轮，.NET 不是默认选择。
-同场景验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、
-干净 Windows 安装及实际资源开销后选择一种，不以语言偏好或现有 Linux 界面代替证据。
+核心逻辑采用 Rust，GUI 首轮只比较 Slint／Tauri，GPUI 不进入首轮，.NET 不是默认选择。 同场景验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、 干净 Windows 安装及实际资源开销后选择一种，不以语言偏好或现有 Linux 界面代替证据。
 
-Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows backend、renderer、
-字体与原生运行库。Tauri 可复用纯 UI，不复用在线 Panel 登录／轮询为离线生命周期；
-须处理 WebView2 离线部署、逐窗口权限、受限本地图片访问，不把私钥交给 JS，
-也不用 Base64／JSON 事件高频传送全分辨率照片。展示窗口不得继承摄影师全部能力。
+Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows backend、renderer、 字体与原生运行库。Tauri 可复用纯 UI，不复用在线 Panel 登录／轮询为离线生命周期； 须处理 WebView2 离线部署、逐窗口权限、受限本地图片访问，不把私钥交给 JS， 也不用 Base64／JSON 事件高频传送全分辨率照片。展示窗口不得继承摄影师全部能力。
 
-打印引擎与 GUI 独立验证，使用实际设备取得 Job ID、容量、故障与恢复证据。
-Windows 编译、GUI 运行、真实打印、Linux 回归、CI 完整套件分开报告。
-本次只读调研没有提供这些 Windows／硬件通过结果。
+打印引擎与 GUI 独立验证，使用实际设备取得 Job ID、容量、故障与恢复证据。 Windows 编译、GUI 运行、真实打印、Linux 回归、CI 完整套件分开报告。 本次只读调研没有提供这些 Windows／硬件通过结果。
 
 ### 23.8 实施与验收边界
 
-先确认公开契约、限额、身份与生命周期，再将源码迁移、原 roster 归位、打印闭环和照片闭环
-分别审阅。实际共享消费者出现时才提领域／成果包，不先制造空抽象；独立事实验证可并行，
-共享源码写入须隔离工作树并遵守单 writer，重型 Windows renderer 构建受资源预算约束。
-规划认可不自动授权实现提交、远程 Issue 或发布，逐个原子提交遵守人审门槛。
+先确认公开契约、限额、身份与生命周期，再将源码迁移、原 roster 归位、打印闭环和照片闭环 分别审阅。实际共享消费者出现时才提领域／成果包，不先制造空抽象；独立事实验证可并行， 共享源码写入须隔离工作树并遵守单 writer，重型 Windows renderer 构建受资源预算约束。 规划认可不自动授权实现提交、远程 Issue 或发布，逐个原子提交遵守人审门槛。
 
 平台完成至少证明：
 
