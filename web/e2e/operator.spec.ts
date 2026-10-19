@@ -139,7 +139,7 @@ test("device lifecycle and convergence use the operator API", async ({
     page.getByText("converged", { exact: true }).first(),
   ).toBeVisible();
 
-  await page.getByRole("button", { name: "Disable" }).click();
+  await page.getByRole("button", { name: "Disable", exact: true }).click();
   await expect(
     page.getByRole("img", { name: "Lifecycle: disabled" }),
   ).toBeVisible();
@@ -337,7 +337,7 @@ test("seat sorting uses current binding and survives device polling", async ({
   ).toBeVisible();
 });
 
-test("/devices combines connection, lifecycle, and search filters and resets empty results", async ({
+test("/devices combines binding, connection, lifecycle, and search filters and resets empty results", async ({
   page,
   context,
 }, testInfo) => {
@@ -357,18 +357,16 @@ test("/devices combines connection, lifecycle, and search filters and resets emp
   await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
   await page.goto("/devices");
   const seats = page.locator("tbody tr td:first-child");
-  const connection = page.getByRole("group", {
-    name: "Connection",
-    exact: true,
-  });
+  const connection = page.getByRole("button", { name: /^Connection: / });
+  const binding = page.getByRole("button", { name: /^Binding: / });
   const search = page.getByRole("searchbox", { name: "Search devices" });
   const reset = page.getByRole("button", { name: "Reset filters" });
   await expect(seats).toHaveText(["A-01", "A-02", "A-03", "A-04", "—"]);
   await expect(page.getByRole("status")).toHaveText("Showing 5 of 5 devices");
   await expect(reset).toBeDisabled();
-  for (const checkbox of await connection.getByRole("checkbox").all()) {
-    await expect(checkbox).toBeChecked();
-  }
+  await expect(connection).toHaveAccessibleName("Connection: All");
+  await expect(binding).toHaveAccessibleName("Binding: All");
+  await expectDeviceStates(page, ["enabled", "disabled"]);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({
     path: testInfo.outputPath("devices-filters-all-desktop.png"),
@@ -399,6 +397,13 @@ test("/devices combines connection, lifecycle, and search filters and resets emp
   await expect(seats).toHaveText(["A-03"]);
   await selectConnectionStates(page, ["active", "offline"]);
   await expect(seats).toHaveText(["A-01", "A-02", "A-04", "—"]);
+  await selectBindingStates(page, ["bound"]);
+  await expect(seats).toHaveText(["A-01", "A-02", "A-04"]);
+  await selectBindingStates(page, ["unbound"]);
+  await expect(seats).toHaveText(["—"]);
+  await selectBindingStates(page, ["bound", "unbound"]);
+  await expect(seats).toHaveText(["A-01", "A-02", "A-04", "—"]);
+  await selectBindingStates(page, ["bound", "unbound", "unknown"]);
   // Local filters do not cause extra requests or alter the lifecycle cache key.
   expect(api.reads).toEqual(["enabled,disabled"]);
   await selectDeviceStates(page, ["disabled"]);
@@ -443,24 +448,153 @@ test("/devices combines connection, lifecycle, and search filters and resets emp
     page.getByText("No devices found.", { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole("status")).toHaveText("Showing 0 of 5 devices");
+  await expect(connection).toHaveAccessibleName("Connection: None");
   // Controls remain keyboard-operable even when no states are selected.
-  await connection
-    .getByRole("checkbox", { name: "Offline", exact: true })
+  await connection.press("ArrowDown");
+  const menu = page.getByRole("menu", { name: "Connection", exact: true });
+  await menu
+    .getByRole("menuitemcheckbox", { name: "Offline", exact: true })
     .focus();
   await page.keyboard.press("Space");
+  await expect(menu).toBeVisible();
   await expect(seats).toHaveText(["A-02", "A-04"]);
+  await page.keyboard.press("Escape");
+  await expect(connection).toBeFocused();
+  await expect(connection).toHaveAccessibleName("Connection: Offline");
 });
 
-test("/devices reapplies local filters to polled state without resetting search or details", async ({
+test("/devices intersects all facets and search without treating unknown or stale Actual as unbound", async ({
+  page,
+  context,
+}) => {
+  const fleet = targetFleet(7);
+  for (const row of fleet) row.convergence.connection_state = "offline";
+  for (const index of [1, 6]) {
+    fleet[index].convergence.binding.target = {
+      state: "unbound",
+      negotiation_id: bindingContext.binding_id,
+    };
+  }
+  fleet[2].convergence.binding.target = null;
+  fleet[3].state = "disabled";
+  fleet[4].convergence.connection_state = "active";
+  fleet[5].state = "revoked";
+  fleet[6].state = "disabled";
+  const api = await mockTargets(context, fleet);
+  await page.clock.install();
+  await page.goto("/devices");
+  const seats = page.locator("tbody tr td:first-child");
+  const search = page.getByRole("searchbox", { name: "Search devices" });
+  await expect(seats).toHaveText(["A-01", "—", "—", "A-04", "A-05", "—"]);
+  await selectBindingStates(page, ["unknown"]);
+  await expect(seats).toHaveText(["—"]);
+  await expect(
+    page.getByRole("row").filter({ hasText: "machine-03" }),
+  ).toBeVisible();
+  await search.fill("A-03");
+  await expect(page.getByRole("status")).toHaveText("Showing 0 of 6 devices");
+  await search.clear();
+  await selectBindingStates(page, ["unbound"]);
+  await expect(seats).toHaveText(["—", "—"]);
+  await selectBindingStates(page, ["bound", "unknown"]);
+  await expect(seats).toHaveText(["A-01", "—", "A-04", "A-05"]);
+  await selectConnectionStates(page, ["offline"]);
+  await expect(seats).toHaveText(["A-01", "—", "A-04"]);
+  expect(api.reads).toEqual(["enabled,disabled"]);
+  await selectDeviceStates(page, ["disabled"]);
+  await expect(seats).toHaveText(["A-04"]);
+  const readsAfterLifecycle = [...api.reads];
+  await selectBindingStates(page, ["bound", "unbound"]);
+  await expect(seats).toHaveText(["A-04", "—"]);
+  await search.fill(" MACHINE-07 ");
+  await expect(seats).toHaveText(["—"]);
+  await expect(page.getByRole("status")).toHaveText("Showing 1 of 2 devices");
+  await selectBindingStates(page, ["bound"]);
+  await expect(page.getByRole("status")).toHaveText("Showing 0 of 2 devices");
+  await selectBindingStates(page, []);
+  await expect(
+    page.getByRole("button", { name: /^Binding: / }),
+  ).toHaveAccessibleName("Binding: None");
+  expect(api.reads).toEqual(readsAfterLifecycle);
+  await page.getByRole("button", { name: "Reset filters" }).click();
+  await expect(search).toHaveValue("");
+  await expect(page.getByRole("status")).toHaveText("Showing 6 of 6 devices");
+  await expect(
+    page.getByRole("button", { name: /^Connection: / }),
+  ).toHaveAccessibleName("Connection: All");
+  await expect(
+    page.getByRole("button", { name: /^Binding: / }),
+  ).toHaveAccessibleName("Binding: All");
+  await expectDeviceStates(page, ["enabled", "disabled"]);
+  await expect(
+    page.getByRole("button", { name: "Reset filters" }),
+  ).toBeDisabled();
+});
+
+test("device facet menus support keyboard multi-selection and fit a mobile viewport", async ({
+  page,
+  context,
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockTargets(context, targetFleet(1));
+  await page.goto("/devices");
+  for (const [name, labels] of [
+    ["Lifecycle", ["Enabled", "Disabled", "Revoked"]],
+    ["Connection", ["Online", "Connected, awaiting fresh state", "Offline"]],
+    ["Binding", ["Bound", "Unbound", "Unknown"]],
+  ] as const) {
+    const trigger = page.getByRole("button", {
+      name: new RegExp(`^${name}: `),
+    });
+    await trigger.focus();
+    await trigger.press("ArrowDown");
+    const menu = page.getByRole("menu", { name, exact: true });
+    await expect(menu.getByRole("menuitemcheckbox")).toHaveText([...labels]);
+    const first = menu.getByRole("menuitemcheckbox", {
+      name: labels[0],
+      exact: true,
+    });
+    await expect(first).toBeFocused();
+    await expect(first).toBeChecked();
+    await page.keyboard.press("Space");
+    await expect(first).not.toBeChecked();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press("Enter");
+    await expect(first).toBeChecked();
+    await expect(menu).toBeVisible();
+    await page.keyboard.press("ArrowDown");
+    await expect(
+      menu.getByRole("menuitemcheckbox", { name: labels[1], exact: true }),
+    ).toBeFocused();
+    const bounds = await menu.boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(390);
+    await page.screenshot({
+      path: testInfo.outputPath(`filter-${name.toLowerCase()}.png`),
+    });
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+  }
+});
+
+test("/devices reapplies local filters to polled connection and binding state without resetting search or details", async ({
   page,
   context,
 }) => {
   const fleet = targetFleet(2);
+  fleet[0].convergence.connection_state = "offline";
+  fleet[0].convergence.binding.target = {
+    state: "unbound",
+    negotiation_id: bindingContext.binding_id,
+  };
   fleet[1].convergence.connection_state = "offline";
   await mockTargets(context, fleet);
   await page.clock.install();
   await page.goto("/devices");
   await selectConnectionStates(page, ["offline"]);
+  await selectBindingStates(page, ["bound"]);
   const search = page.getByRole("searchbox", { name: "Search devices" });
   await search.fill("machine-");
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
@@ -472,19 +606,30 @@ test("/devices reapplies local filters to polled state without resetting search 
   await expect(
     page.getByText(fleet[1].device_id, { exact: true }),
   ).toBeVisible();
-  fleet[0].convergence.connection_state = "offline";
-  fleet[1].convergence.connection_state = "active";
+  fleet[0].convergence.binding.target = {
+    state: "bound",
+    context: { ...bindingContext, seat_code: "A-01" },
+  };
+  fleet[1].convergence.binding.target = {
+    state: "unbound",
+    negotiation_id: bindingContext.binding_id,
+  };
   await page.clock.runFor(10_000);
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
   await expect(page.getByText(fleet[1].device_id, { exact: true })).toHaveCount(
     0,
   );
+  fleet[0].convergence.connection_state = "active";
+  await page.clock.runFor(10_000);
+  await expect(page.getByRole("status")).toHaveText("Showing 0 of 2 devices");
   await expect(search).toHaveValue("machine-");
   await expect(
-    page
-      .getByRole("group", { name: "Connection", exact: true })
-      .getByRole("checkbox", { name: "Online", exact: true }),
-  ).not.toBeChecked();
+    page.getByRole("button", { name: /^Connection: / }),
+  ).toHaveAccessibleName("Connection: Offline");
+  await expect(
+    page.getByRole("button", { name: /^Binding: / }),
+  ).toHaveAccessibleName("Binding: Bound");
+  await expectDeviceStates(page, ["enabled", "disabled"]);
 });
 
 test("/devices shows IP differences inline and exports the complete emergency address list", async ({
@@ -543,15 +688,20 @@ test("/devices shows IP differences inline and exports the complete emergency ad
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
     "198.51.100.2",
   );
-  await page.locator("summary").filter({ hasText: "Emergency" }).click();
+  await page.getByRole("button", { name: "Emergency", exact: true }).click();
   await expect(emergency).toContainText(
     "Unique IPs: 3 · Offline: 1 · IP mismatches: 1 · Missing IPs: 1",
   );
-  for (const width of [1440, 768]) {
+  for (const width of [1440, 768, 390]) {
     await page.setViewportSize({ width, height: 1000 });
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
+    const bounds = await page
+      .getByRole("menu", { name: "Emergency tools", exact: true })
+      .boundingBox();
+    expect(bounds!.x).toBeGreaterThanOrEqual(0);
+    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
     await page.screenshot({
       path: testInfo.outputPath(`network-emergency-${width}.png`),
       fullPage: true,
@@ -559,6 +709,7 @@ test("/devices shows IP differences inline and exports the complete emergency ad
   }
   await selectDeviceStates(page, ["enabled"]);
   await selectConnectionStates(page, ["active"]);
+  await selectBindingStates(page, []);
   await page
     .getByRole("searchbox", { name: "Search devices" })
     .fill("no-match");
@@ -567,9 +718,11 @@ test("/devices shows IP differences inline and exports the complete emergency ad
   ).toBeVisible();
   fleet[0].network = network("192.0.2.11");
   fleet[3].network = network("192.0.2.11", null);
+  await expect(emergency).not.toBeVisible();
+  await page.getByRole("button", { name: "Emergency", exact: true }).click();
   const downloaded = page.waitForEvent("download");
   await emergency
-    .getByRole("button", { name: "Export all device IPs" })
+    .getByRole("menuitem", { name: "Export all device IPs" })
     .click();
   const file = await downloaded;
   expect(file.suggestedFilename()).toMatch(/^natsume-device-ips-.*\.txt$/);
@@ -581,6 +734,65 @@ test("/devices shows IP differences inline and exports the complete emergency ad
   );
 });
 
+for (const width of [1440, 390]) {
+  test(`Emergency is a keyboard-accessible header tool without shifting the table at ${width}px`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await mockTargets(context, targetFleet(1));
+    await page.goto("/devices");
+    const trigger = page.getByRole("button", {
+      name: "Emergency",
+      exact: true,
+    });
+    const menu = page.getByRole("menu", {
+      name: "Emergency tools",
+      exact: true,
+    });
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await expect(menu).toHaveCount(0);
+    const triggerBounds = await trigger.boundingBox();
+    const filterBounds = await page
+      .getByRole("region", { name: "Device filters", exact: true })
+      .boundingBox();
+    expect(triggerBounds!.y + triggerBounds!.height).toBeLessThanOrEqual(
+      filterBounds!.y,
+    );
+    const tableBefore = await page.getByRole("table").boundingBox();
+    await trigger.focus();
+    await trigger.press("ArrowDown");
+    await expect(menu).toBeVisible();
+    await expect(
+      menu.getByRole("menuitem", { name: "Export all device IPs" }),
+    ).toBeFocused();
+    const menuBounds = await menu.boundingBox();
+    expect(menuBounds!.x).toBeGreaterThanOrEqual(0);
+    expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(width);
+    expect(menuBounds!.y + menuBounds!.height).toBeLessThanOrEqual(900);
+    expect((await page.getByRole("table").boundingBox())!.y).toBe(
+      tableBefore!.y,
+    );
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
+    await page.screenshot({
+      path: testInfo.outputPath("emergency-header-open.png"),
+    });
+    await page.keyboard.press("Escape");
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+    await trigger.click();
+    await expect(menu).toBeVisible();
+    await page.getByRole("heading", { name: "Devices", exact: true }).click();
+    await expect(menu).toHaveCount(0);
+    await expect(trigger).toHaveAttribute("aria-expanded", "false");
+    await page.screenshot({
+      path: testInfo.outputPath("emergency-header-closed.png"),
+    });
+  });
+}
+
 test("/devices reports failed and empty IP exports without downloading a partial file", async ({
   page,
   context,
@@ -588,7 +800,7 @@ test("/devices reports failed and empty IP exports without downloading a partial
   const fleet = targetFleet(1);
   await mockTargets(context, fleet);
   await page.goto("/devices");
-  await page.locator("summary").filter({ hasText: "Emergency" }).click();
+  await page.getByRole("button", { name: "Emergency", exact: true }).click();
   const emergency = page.getByRole("region", { name: "Emergency IP export" });
   await expect(emergency).toContainText("Unique IPs: 0");
   const downloads: string[] = [];
@@ -597,7 +809,7 @@ test("/devices reports failed and empty IP exports without downloading a partial
     fulfillJson(route, 500, {}),
   );
   await emergency
-    .getByRole("button", { name: "Export all device IPs" })
+    .getByRole("menuitem", { name: "Export all device IPs" })
     .click();
   await expect(
     emergency.getByRole("alert").filter({ hasText: "IP export failed" }),
@@ -605,7 +817,7 @@ test("/devices reports failed and empty IP exports without downloading a partial
   expect(downloads).toHaveLength(0);
   await context.unroute("**/api/v2/devices?**");
   await emergency
-    .getByRole("button", { name: "Export all device IPs" })
+    .getByRole("menuitem", { name: "Export all device IPs" })
     .click();
   await expect(emergency.getByRole("status")).toHaveText(
     "No IP addresses available to export.",
@@ -653,7 +865,7 @@ for (const path of ["/devices", "/targets"]) {
         page.getByRole("region", { name: "Network addresses" }),
       ).toHaveCount(0);
       await expect(
-        page.locator("summary").filter({ hasText: "Emergency" }),
+        page.getByRole("button", { name: "Emergency", exact: true }),
       ).toHaveCount(0);
     }
     await expect(firstButton).toHaveAttribute("aria-expanded", "true");
@@ -932,6 +1144,14 @@ async function selectDeviceStates(
   page: Page,
   states: components["schemas"]["DeviceListState"][],
 ) {
+  if (new URL(page.url()).pathname === "/devices") {
+    await selectDeviceFacet(page, "Lifecycle", [
+      ["Enabled", states.includes("enabled")],
+      ["Disabled", states.includes("disabled")],
+      ["Revoked", states.includes("revoked")],
+    ]);
+    return;
+  }
   const filter = page.getByRole("group", { name: "Device state", exact: true });
   for (const state of ["enabled", "disabled", "revoked"] as const) {
     await filter
@@ -940,20 +1160,96 @@ async function selectDeviceStates(
   }
 }
 
+async function expectDeviceStates(
+  page: Page,
+  states: components["schemas"]["DeviceListState"][],
+) {
+  const dropdown = new URL(page.url()).pathname === "/devices";
+  const filter = dropdown
+    ? page.getByRole("menu", { name: "Lifecycle", exact: true })
+    : page.getByRole("group", { name: "Device state", exact: true });
+  const trigger = page.getByRole("button", { name: /^Lifecycle: / });
+  if (dropdown) await trigger.click();
+  for (const state of ["enabled", "disabled", "revoked"] as const) {
+    await expect(
+      filter.getByRole(dropdown ? "menuitemcheckbox" : "checkbox", {
+        name: new RegExp(`^${state}$`, "i"),
+      }),
+    ).toBeChecked({ checked: states.includes(state) });
+  }
+  if (dropdown) {
+    await page.keyboard.press("Escape");
+    await expect(trigger).toBeFocused();
+    const summary =
+      states.length === 3
+        ? "All"
+        : states.length === 0
+          ? "None"
+          : states
+              .map((state) => state[0].toUpperCase() + state.slice(1))
+              .join(", ");
+    await expect(trigger).toHaveAccessibleName(`Lifecycle: ${summary}`);
+  }
+}
+
+async function selectDeviceFacet(
+  page: Page,
+  name: "Lifecycle" | "Connection" | "Binding",
+  choices: [string, boolean][],
+) {
+  const trigger = page.getByRole("button", { name: new RegExp(`^${name}: `) });
+  await trigger.click();
+  const menu = page.getByRole("menu", { name, exact: true });
+  for (const [label, selected] of choices) {
+    const item = menu.getByRole("menuitemcheckbox", {
+      name: label,
+      exact: true,
+    });
+    if ((await item.getAttribute("aria-checked")) !== String(selected)) {
+      await item.click();
+      // Multi-selection must not dismiss the dropdown after each choice.
+      await expect(menu).toBeVisible();
+    }
+    await expect(item).toBeChecked({ checked: selected });
+  }
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  const selected = choices
+    .filter(([, checked]) => checked)
+    .map(([label]) => label);
+  const summary =
+    selected.length === choices.length
+      ? "All"
+      : selected.length === 0
+        ? "None"
+        : selected.join(", ");
+  await expect(trigger).toHaveAccessibleName(`${name}: ${summary}`);
+}
+
 async function selectConnectionStates(
   page: Page,
   states: components["schemas"]["DeviceConvergenceResponse"]["connection_state"][],
 ) {
-  const filter = page.getByRole("group", { name: "Connection", exact: true });
-  for (const [state, label] of [
-    ["active", "Online"],
-    ["awaiting_fresh_state", "Connected, awaiting fresh state"],
-    ["offline", "Offline"],
-  ] as const) {
-    await filter
-      .getByRole("checkbox", { name: label, exact: true })
-      .setChecked(states.includes(state));
-  }
+  await selectDeviceFacet(page, "Connection", [
+    ["Online", states.includes("active")],
+    [
+      "Connected, awaiting fresh state",
+      states.includes("awaiting_fresh_state"),
+    ],
+    ["Offline", states.includes("offline")],
+  ]);
+}
+
+async function selectBindingStates(
+  page: Page,
+  states: ("bound" | "unbound" | "unknown")[],
+) {
+  await selectDeviceFacet(page, "Binding", [
+    ["Bound", states.includes("bound")],
+    ["Unbound", states.includes("unbound")],
+    ["Unknown", states.includes("unknown")],
+  ]);
 }
 
 async function mockTargets(
@@ -2032,20 +2328,13 @@ for (const path of ["/devices", "/targets"]) {
     fleet[1].state = "disabled";
     fleet[2].state = "revoked";
     const api = await mockTargets(context, fleet);
+    await page.clock.install();
     await page.goto(path);
-    const filter = page.getByRole("group", {
-      name: "Device state",
-      exact: true,
-    });
-    await expect(
-      filter.getByRole("checkbox", { name: /^enabled$/i }),
-    ).toBeChecked();
-    await expect(
-      filter.getByRole("checkbox", { name: /^disabled$/i }),
-    ).toBeChecked();
-    await expect(
-      filter.getByRole("checkbox", { name: /^revoked$/i }),
-    ).not.toBeChecked();
+    const filter =
+      path === "/devices"
+        ? page.getByRole("button", { name: /^Lifecycle: / })
+        : page.getByRole("group", { name: "Device state", exact: true });
+    await expectDeviceStates(page, ["enabled", "disabled"]);
     await expect(page.locator("tbody tr")).toHaveCount(2);
     for (const [states, seats] of [
       [["enabled"], ["A-01"]],
@@ -2086,10 +2375,22 @@ for (const path of ["/devices", "/targets"]) {
         "enabled,disabled,revoked",
       ]),
     );
+    const readsBeforeEmpty = api.reads.length;
     await selectDeviceStates(page, []);
     await expect(
       page.getByText("No devices found.", { exact: true }),
     ).toBeVisible();
+    const readsAfterEmpty = api.reads.length;
+    // Intermediate checkbox changes may fetch; an empty lifecycle never does.
+    expect(api.reads.slice(readsBeforeEmpty)).not.toContain("");
+    await page.clock.runFor(10_000);
+    if (path === "/devices") {
+      expect(api.reads).toHaveLength(readsAfterEmpty);
+      await expect(filter).toHaveAccessibleName("Lifecycle: None");
+    } else {
+      // Targets still polls the global Enabled scope for bulk actions.
+      expect(api.reads.slice(readsAfterEmpty)).toEqual(["enabled"]);
+    }
     await expect(filter).toBeVisible();
     fleet[2].state = "disabled";
     await selectDeviceStates(page, ["revoked"]);
@@ -2123,25 +2424,13 @@ for (const path of ["/devices", "/targets"]) {
     await page.clock.install();
     await page.goto(path);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
-    const filter = page.getByRole("group", {
-      name: "Device state",
-      exact: true,
-    });
     await selectDeviceStates(page, ["enabled"]);
     await expect.poll(() => Boolean(held)).toBe(true);
     await selectDeviceStates(page, ["revoked"]);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
     await held!.fallback();
     await page.clock.runFor(100);
-    await expect(
-      filter.getByRole("checkbox", { name: /^enabled$/i }),
-    ).not.toBeChecked();
-    await expect(
-      filter.getByRole("checkbox", { name: /^disabled$/i }),
-    ).not.toBeChecked();
-    await expect(
-      filter.getByRole("checkbox", { name: /^revoked$/i }),
-    ).toBeChecked();
+    await expectDeviceStates(page, ["revoked"]);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-02"]);
   });
 }
@@ -2183,6 +2472,18 @@ test("revoking a selected device removes it from the default view but retains th
   await expect(
     page.getByRole("img", { name: "Lifecycle: revoked", exact: true }),
   ).toBeVisible();
+  const actions = page.locator("tbody tr td:last-child");
+  await expect(actions.getByRole("button")).toHaveText([
+    "Unbind",
+    "Enable",
+    "Revoke",
+  ]);
+  await expect(
+    actions.getByRole("button", { name: "Enable", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    actions.getByRole("button", { name: "Revoke", exact: true }),
+  ).toBeDisabled();
 });
 
 test("Targets all-device actions retain global Enabled scope even with an empty revoked filter", async ({

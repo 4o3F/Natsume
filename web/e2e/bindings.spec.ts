@@ -2,28 +2,72 @@ import { expect, test, type Page } from "@playwright/test";
 
 import type { components } from "../src/api/generated/schema";
 
-const seats: components["schemas"]["SeatResponse"][] = [
-  { seat_id: "01923456-789a-7bcd-8ef0-123456789a01", seat_code: "A-01" },
-  { seat_id: "01923456-789a-7bcd-8ef0-123456789a02", seat_code: "A-2" },
-  { seat_id: "01923456-789a-7bcd-8ef0-123456789a10", seat_code: "A-10" },
-];
-const bindings: components["schemas"]["BindingResponse"][] = seats.map(
-  (seat, index) => ({
-    binding_id: `01923456-789a-7bcd-8ef0-123456789b0${index}`,
-    device_id: `01923456-789a-7bcd-8ef0-123456789c0${index}`,
-    seat_id: seat.seat_id,
-  }),
+type Device = components["schemas"]["DeviceResponse"];
+
+const devices: Device[] = ["A-01", "A-2", "A-10", null, null].map(
+  (seatCode, index) => {
+    const context: components["schemas"]["BindingContextResponse"] = {
+      binding_id: `01923456-789a-7bcd-8ef0-123456789b0${index}`,
+      account_id: "01923456-789a-7bcd-8ef0-123456789a01",
+      credential_revision: 1,
+      domjudge_username: `team${index + 1}`,
+      seat_code: seatCode ?? "OLD-SEAT",
+    };
+    return {
+      device_id: `01923456-789a-7bcd-8ef0-123456789c0${index}`,
+      machine_hardware_id: `machine-0${index + 1}`,
+      evidence_quality: "strong",
+      state: index === 2 ? "disabled" : "enabled",
+      created_at_unix_ms: 1_700_000_000_000,
+      network: null,
+      convergence: {
+        connection_state: index === 1 || index === 2 ? "offline" : "active",
+        received_at_unix_ms: 1_700_000_100_000,
+        binding: {
+          status: "awaiting_actual",
+          target: seatCode
+            ? { state: "bound", context }
+            : index === 3
+              ? { state: "unbound", negotiation_id: context.binding_id }
+              : null,
+          // Stale Actual must not supply a seat or an Unbind action.
+          actual: {
+            assignment_state: "applied",
+            credential_state: "applied",
+            context,
+          },
+        },
+        gateway: { status: "awaiting_actual", target: null, actual: null },
+        runtime_config: {
+          status: "awaiting_actual",
+          target_domjudge_origin: null,
+          actual: null,
+        },
+        session_control: {
+          status: "awaiting_actual",
+          target: null,
+          actual: null,
+        },
+        home: {
+          status: "awaiting_actual",
+          target_reset_epoch: null,
+          actual: null,
+        },
+      },
+    };
+  },
 );
 
-async function mockBindings(
+async function mockDevices(
   page: Page,
-  { role = "admin", seatsFail = false } = {},
+  { role = "admin", devicesFail = false, unbindFail = false } = {},
 ) {
-  let currentBindings = [...bindings].reverse();
-  const deleted: string[] = [];
+  const currentDevices = structuredClone(devices);
+  const api = { deleted: [] as string[], deviceReads: 0 };
   await page.route("**/api/v2/**", (route) => {
     const request = route.request();
-    const path = new URL(request.url()).pathname;
+    const url = new URL(request.url());
+    const path = url.pathname;
     let body: unknown;
     if (request.method() === "GET") {
       if (path === "/api/v2/session") {
@@ -32,29 +76,45 @@ async function mockBindings(
           role,
           username: "operator",
         };
-      } else if (path === "/api/v2/bindings") {
-        body = currentBindings;
-      } else if (path === "/api/v2/seats") {
-        if (seatsFail) {
+      } else if (path === "/api/v2/devices") {
+        api.deviceReads += 1;
+        if (devicesFail) {
           return route.fulfill({
             status: 500,
             contentType: "application/problem+json",
             body: JSON.stringify({
               code: "INTERNAL_ERROR",
-              title: "Seats unavailable",
+              title: "Devices unavailable",
               status: 500,
             }),
           });
         }
-        body = seats;
+        const states = url.searchParams.get("state")?.split(",") ?? [];
+        body = currentDevices.filter((device) => states.includes(device.state));
+      } else if (path === "/api/v2/seats" || path === "/api/v2/bindings") {
+        body = [];
       }
     } else if (request.method() === "DELETE") {
-      const binding = currentBindings.find(
-        (binding) => path === `/api/v2/devices/${binding.device_id}/binding`,
+      const device = currentDevices.find(
+        (device) => path === `/api/v2/devices/${device.device_id}/binding`,
       );
-      if (binding) {
-        deleted.push(binding.device_id);
-        currentBindings = currentBindings.filter((row) => row !== binding);
+      if (device) {
+        api.deleted.push(device.device_id);
+        if (unbindFail) {
+          return route.fulfill({
+            status: 409,
+            contentType: "application/problem+json",
+            body: JSON.stringify({
+              code: "CONFLICT",
+              title: "Unbind rejected",
+              status: 409,
+            }),
+          });
+        }
+        device.convergence.binding.target = {
+          state: "unbound",
+          negotiation_id: "01923456-789a-7bcd-8ef0-123456789b00",
+        };
         return route.fulfill({ status: 204 });
       }
     }
@@ -64,92 +124,213 @@ async function mockBindings(
       body: JSON.stringify(body ?? {}),
     });
   });
-  return deleted;
+  return api;
 }
 
-for (const width of [1024, 1440]) {
-  test(`bindings identify seats and unbind the selected device at ${width}`, async ({
+for (const width of [390, 1024, 1440]) {
+  test(`merged devices identify seats and unbind the selected device at ${width}`, async ({
     page,
   }, testInfo) => {
     await page.setViewportSize({ width, height: 900 });
-    const deleted = await mockBindings(page);
+    const api = await mockDevices(page);
+    await page.clock.install();
     await page.goto("/bindings");
+    await expect(page).toHaveURL(/\/devices$/);
+    const navigation = page.getByRole("navigation", {
+      name: "Primary navigation",
+    });
+    await expect(
+      navigation.getByRole("link", { name: "Bindings", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      navigation.getByRole("link", { name: "Seats", exact: true }),
+    ).toBeVisible();
+    await expect(
+      navigation.getByRole("link", { name: "Devices", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
     const rows = page.locator("tbody tr");
-    const seatCells = page.locator("tbody tr td:first-child");
-    await expect(seatCells).toHaveText(["A-01", "A-2", "A-10"]);
-    await expect(
-      page.getByRole("columnheader", { name: "Seat ID" }),
-    ).toHaveCount(0);
-    await expect(
-      page.getByRole("columnheader", { name: "Binding ID" }),
-    ).toHaveCount(0);
-    await expect(rows.locator("code")).toHaveText(
-      bindings.map((binding) => binding.device_id),
-    );
+    const seatCells = rows.locator("td:first-child");
+    await expect(seatCells).toHaveText(["A-01", "A-2", "A-10", "—", "—"]);
+    for (const name of ["Seat ID", "Binding ID"]) {
+      await expect(
+        page.getByRole("columnheader", { name, exact: true }),
+      ).toHaveCount(0);
+    }
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
-    await page.screenshot({ path: testInfo.outputPath("bindings.png") });
+    const actionPositions = await rows
+      .locator("td:last-child")
+      .evaluateAll((cells) =>
+        cells.map((cell) =>
+          Array.from(cell.querySelectorAll("button"), (button) => {
+            const bounds = button.getBoundingClientRect();
+            return { x: bounds.x, width: bounds.width };
+          }),
+        ),
+      );
+    expect(actionPositions[0].map(({ width }) => width)).toEqual([80, 80, 80]);
+    for (const positions of actionPositions) {
+      expect(positions).toEqual(actionPositions[0]);
+    }
+    await page.screenshot({ path: testInfo.outputPath("merged-devices.png") });
 
-    const seatHeader = page.getByRole("columnheader", {
-      name: "Seat",
-      exact: true,
-    });
-    const sortSeat = seatHeader.getByRole("button", {
-      name: "Seat",
-      exact: true,
-    });
-    await expect(seatHeader).toHaveAttribute("aria-sort", "none");
-    await sortSeat.click();
-    await expect(seatHeader).toHaveAttribute("aria-sort", "ascending");
-    await expect(seatCells).toHaveText(["A-01", "A-2", "A-10"]);
-    await sortSeat.click();
-    await expect(seatHeader).toHaveAttribute("aria-sort", "descending");
-    await expect(seatCells).toHaveText(["A-10", "A-2", "A-01"]);
-    await sortSeat.click();
-    await expect(seatHeader).toHaveAttribute("aria-sort", "none");
-    await expect(seatCells).toHaveText(["A-01", "A-2", "A-10"]);
-    await sortSeat.click();
-    await sortSeat.click();
-    await expect(seatCells).toHaveText(["A-10", "A-2", "A-01"]);
-
-    const search = page.getByRole("searchbox", { name: "Search seats" });
+    const search = page.getByRole("searchbox", { name: "Search devices" });
     await search.fill(" a-01 ");
     await expect(rows).toHaveCount(1);
-    await rows.getByRole("button", { name: "Unbind" }).click();
-    const dialog = page.getByRole("alertdialog");
-    await expect(dialog).toHaveAccessibleName("Unbind seat A-01?");
-    await dialog.getByRole("button", { name: "Cancel" }).click();
-    expect(deleted).toEqual([]);
-    await rows.getByRole("button", { name: "Unbind" }).click();
+    await rows.getByRole("button", { name: "Unbind", exact: true }).click();
+    const dialog = page.getByRole("alertdialog", { name: "Unbind seat A-01?" });
+    await expect(dialog).toBeVisible();
+    await expect(
+      dialog.getByText(devices[0].machine_hardware_id, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByText(devices[0].device_id, { exact: true }),
+    ).toBeVisible();
+    await page.screenshot({
+      path: testInfo.outputPath("unbind-confirmation.png"),
+    });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(api.deleted).toEqual([]);
+    await expect(
+      rows.getByRole("cell", { name: "A-01", exact: true }),
+    ).toBeVisible();
+    const readsBeforeUnbind = api.deviceReads;
+    await rows.getByRole("button", { name: "Unbind", exact: true }).click();
     await dialog.getByRole("button", { name: "Unbind", exact: true }).click();
-    await expect(page.getByText("No results.", { exact: true })).toBeVisible();
-    expect(deleted).toEqual([bindings[0].device_id]);
+    await expect(
+      page.getByText("No devices found.", { exact: true }),
+    ).toBeVisible();
+    expect(api.deleted).toEqual([devices[0].device_id]);
+    expect(api.deviceReads).toBeGreaterThan(readsBeforeUnbind);
     await search.clear();
-    await expect(seatCells).toHaveText(["A-10", "A-2"]);
+    // Unbinding changes the durable target; it does not delete the device.
+    await expect(rows).toHaveCount(5);
+    const unboundRow = rows.filter({ hasText: "machine-01" });
+    await expect(unboundRow.locator("td:first-child")).toHaveText("—");
+    await expect(
+      unboundRow.getByRole("img", { name: "Binding: unbound", exact: true }),
+    ).toBeVisible();
+    await expect(
+      unboundRow.getByRole("button", { name: "Unbind", exact: true }),
+    ).toBeDisabled();
   });
 }
 
-test("non-admin operators can find bound seats without unbind controls", async ({
+test("legacy bindings redirect replaces history rather than adding a navigation entry", async ({
   page,
 }) => {
-  await mockBindings(page, { role: "viewer" });
+  await mockDevices(page);
+  await page.goto("/seats");
+  await expect(
+    page.getByRole("heading", { name: "Seats", exact: true }),
+  ).toBeVisible();
   await page.goto("/bindings");
+  await expect(page).toHaveURL(/\/devices$/);
+  await page.goBack();
+  await expect(page).toHaveURL(/\/seats$/);
+});
+
+test("viewers can find bound devices without unbind controls", async ({
+  page,
+}) => {
+  await mockDevices(page, { role: "viewer" });
+  await page.goto("/devices");
   await expect(
     page.getByRole("cell", { name: "A-01", exact: true }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Unbind" })).toHaveCount(0);
-  await page.getByRole("searchbox", { name: "Search seats" }).fill("A-10");
+  await expect(
+    page.getByRole("button", { name: "Unbind", exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Search devices" }).fill("A-10");
   await expect(page.locator("tbody tr")).toHaveCount(1);
 });
 
-test("seat lookup failure is visible before offering unbind controls", async ({
+test("offline and disabled bound devices can Unbind while unknown and unbound targets keep the action disabled", async ({
   page,
 }) => {
-  await mockBindings(page, { seatsFail: true });
-  await page.goto("/bindings");
+  await mockDevices(page);
+  await page.goto("/devices");
+  for (const [hardware, seat] of [
+    ["machine-02", "A-2"],
+    ["machine-03", "A-10"],
+  ]) {
+    const row = page.getByRole("row").filter({ hasText: hardware });
+    await expect(
+      row.getByRole("img", { name: "Connection: Offline", exact: true }),
+    ).toBeVisible();
+    await row.getByRole("button", { name: "Unbind", exact: true }).focus();
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("alertdialog", {
+      name: `Unbind seat ${seat}?`,
+    });
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(
+      row.getByRole("button", { name: "Unbind", exact: true }),
+    ).toBeFocused();
+  }
   await expect(
-    page.getByText("Seats unavailable", { exact: true }),
+    page
+      .getByRole("row")
+      .filter({ hasText: "machine-03" })
+      .getByRole("img", { name: "Lifecycle: disabled" }),
   ).toBeVisible();
-  await expect(page.getByRole("button", { name: "Unbind" })).toHaveCount(0);
+  for (const [hardware, state] of [
+    ["machine-04", "unbound"],
+    ["machine-05", "unknown"],
+  ]) {
+    const row = page.getByRole("row").filter({ hasText: hardware });
+    await expect(row.locator("td:first-child")).toHaveText("—");
+    await expect(
+      row.getByRole("img", { name: `Binding: ${state}`, exact: true }),
+    ).toBeVisible();
+    await expect(
+      row.getByRole("button", { name: "Unbind", exact: true }),
+    ).toBeDisabled();
+  }
+  await page
+    .getByRole("searchbox", { name: "Search devices" })
+    .fill("OLD-SEAT");
+  await expect(
+    page.getByText("No devices found.", { exact: true }),
+  ).toBeVisible();
+});
+
+test("unbind failure is visible and leaves the device bound", async ({
+  page,
+}) => {
+  const api = await mockDevices(page, { unbindFail: true });
+  await page.goto("/devices");
+  const row = page.getByRole("row").filter({ hasText: "machine-01" });
+  await row.getByRole("button", { name: "Unbind", exact: true }).click();
+  await page
+    .getByRole("alertdialog", { name: "Unbind seat A-01?" })
+    .getByRole("button", { name: "Unbind", exact: true })
+    .click();
+  await expect(
+    page.getByRole("alert").filter({ hasText: "Unbind rejected" }),
+  ).toBeVisible();
+  expect(api.deleted).toEqual([devices[0].device_id]);
+  await expect(
+    row.getByRole("cell", { name: "A-01", exact: true }),
+  ).toBeVisible();
+  await expect(
+    row.getByRole("button", { name: "Unbind", exact: true }),
+  ).toBeEnabled();
+});
+
+test("device list failure is visible before offering unbind controls", async ({
+  page,
+}) => {
+  await mockDevices(page, { devicesFail: true });
+  await page.goto("/bindings");
+  await expect(page).toHaveURL(/\/devices$/);
+  await expect(
+    page.getByText("Devices unavailable", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Unbind", exact: true }),
+  ).toHaveCount(0);
 });

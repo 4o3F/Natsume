@@ -3,7 +3,6 @@ import { Navigate, Route, Routes } from "react-router";
 import { RequireAdmin, RequireSession } from "@/auth/require-session";
 import { AppLayout } from "@/layout/app-layout";
 import { AccountsPage } from "@/pages/accounts-page";
-import { BindingsPage } from "@/pages/bindings-page";
 import { DevicesPage } from "@/pages/devices-page";
 import { EnrollmentPage } from "@/pages/enrollment-page";
 import { LoginPage } from "@/pages/login-page";
@@ -29,7 +28,10 @@ export function App() {
           <Route path="/preparation" element={<PreparationPage />} />
           <Route path="/seats" element={<SeatsPage />} />
           <Route path="/accounts" element={<AccountsPage />} />
-          <Route path="/bindings" element={<BindingsPage />} />
+          <Route
+            path="/bindings"
+            element={<Navigate to="/devices" replace />}
+          />
           <Route path="/devices" element={<DevicesPage />} />
           <Route path="/enrollment" element={<EnrollmentPage />} />
           <Route path="/targets" element={<TargetsPage />} />

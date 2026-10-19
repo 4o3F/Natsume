@@ -62,7 +62,7 @@ test("successful login reaches the authenticated shell", async ({ page }) => {
   await expect(page.getByRole("link", { name: "Preparation" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Seats" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Accounts" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Bindings" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Bindings" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Devices" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Enrollment" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Targets" })).toBeVisible();
@@ -195,11 +195,13 @@ test("navbar highlights only the current page across navigation and reloads", as
   const navigation = page.getByRole("navigation", {
     name: "Primary navigation",
   });
+  await expect(
+    navigation.getByRole("link", { name: "Bindings", exact: true }),
+  ).toHaveCount(0);
   for (const name of [
     "Preparation",
     "Seats",
     "Accounts",
-    "Bindings",
     "Devices",
     "Enrollment",
     "Targets",

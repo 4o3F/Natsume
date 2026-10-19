@@ -1464,18 +1464,32 @@ Session／Home convergence、foreground Target 和 Actual。单台操作通过�
 全部操作的名单由 Server 写事务确定（包括离线设备），Web 确认框数量为预估，搜索不缩小
 范围。单台也是同一接口的一个显式 Device ID，且必须 Enabled。
 
-Devices 的 Connection 筛选独立于生命周期，提供 Online（`active`）、Connected, awaiting fresh state
-（`awaiting_fresh_state`）和 Offline（`offline`）多选，默认全部选中；未收到新状态的连接不算 Online。
-同组选择取并集，连接、生命周期和搜索之间取交集；搜索忽略首尾空白和大小写，匹配当前 Binding
-Target 的座位号、完整 Device ID 或硬件 ID，不使用旧 Actual 中的座位号。连接和搜索在当前生命周期
-查询结果上本地筛选，轮询后重新应用，不修改共享查询缓存或额外发起列表请求。面板显示匹配数与
-当前生命周期范围总数；空结果或全不选时仍可调整筛选。Reset filters 恢复默认生命周期、全部连接
-状态和空搜索；这些列表筛选不影响 Emergency 导出范围。
+Devices 统一承载设备状态和 Binding 管理，不再提供独立 Bindings 导航；旧 `/bindings` 页面地址
+重定向到 `/devices`。已绑定设备行向 admin 提供带座位号的解绑确认，viewer 不提供 mutation
+控件。解绑仍调用现有 `DELETE /devices/{device_id}/binding`，成功后同时失效设备和绑定查询缓存；
+离线或禁用设备的持久 Binding 仍可查看和解绑，不将解绑混同于禁用或撤销。Binding API 保留，
+Seats 页面继续用它查询座位占用。admin 的 Actions 每行固定保留 Unbind、Enable/Disable、Revoke
+三个等宽按钮；无当前绑定或绑定未知时禁用 Unbind，已撤销时禁用生命周期切换和 Revoke，不删除
+不可用按钮以保持对齐。viewer 仍不显示操作列。
+
+Devices 将搜索与筛选分开，Lifecycle、Connection 和 Binding 分别使用独立多选下拉，按钮显示
+当前选择或 All/None；多选后菜单保持打开，支持键盘操作，空结果和全不选时仍可调整条件。
+Connection 独立于生命周期，提供 Online（`active`）、Connected, awaiting fresh state
+（`awaiting_fresh_state`）和 Offline（`offline`），默认全部选中；未收到新状态的连接不算 Online。
+Binding 提供 Bound、Unbound 和 Unknown，默认全部选中，依据当前 Binding Target 区分；Target
+缺失是 Unknown，不当作 Unbound，也不采用旧 Actual 中的绑定。
+同组选择取并集，连接、绑定、生命周期和搜索之间取交集；搜索忽略首尾空白和大小写，匹配当前
+Binding Target 的座位号、完整 Device ID 或硬件 ID，不使用旧 Actual 中的座位号。连接、绑定和
+搜索在当前生命周期查询结果上本地筛选，轮询后重新应用，不修改共享查询缓存或额外发起列表
+请求。工具栏显示匹配数与当前生命周期范围总数；Reset filters 恢复默认生命周期、全部连接、
+全部绑定状态和空搜索。这些列表筛选不影响 Emergency 导出范围。
 
 Devices在行内详情展示双方IP和记录时间，支持复制；离线设备明确标为最近记录。
 双方地址均存在且不一致时，在现有Device单元格的标识右侧显示琥珀色警告图标；悬停或聚焦
 说明差异，点击展开该行详情，不新增IP列，也不覆盖连接状态的图标或行背景。
-Devices表格上方筛选面板包含默认折叠的Emergency区。导出独立读取完整Enabled/Disabled名单，包含
+Devices 标题右侧提供紧凑的 Emergency 工具入口，与刷新状态并列；点击后展开含 IP 统计、
+范围说明和导出操作的小面板，默认不占筛选区或表格区高度，支持键盘、Escape 和外部点击关闭。
+导出结果在面板内显示，不因选择导出操作立即关闭。导出独立读取完整 Enabled/Disabled 名单，包含
 离线设备，排除Revoked，不受页面筛选和搜索影响；使用持久化的Server观测IP，去重、固定排序，
 生成UTF-8纯文本，每行一个IP，无表头。展示唯一IP、离线、差异和缺失记录数量；缺失地址跳过，
 读取失败不生成文件，无地址时明确提示。双方IP不一致仅提示，不把两个地址同时加入批量操作名单。

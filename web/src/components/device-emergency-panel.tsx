@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronDown, Download, LifeBuoy } from "lucide-react";
 
@@ -7,11 +7,18 @@ import { unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { deviceIpExport } from "./device-network";
 
 type Device = components["schemas"]["DeviceResponse"];
 
-export function DeviceFilterPanel({ children }: { children: ReactNode }) {
+export function DeviceEmergencyPanel() {
   const { api } = useSessionScope();
   const [expanded, setExpanded] = useState(false);
   async function readAllDevices(signal?: AbortSignal) {
@@ -48,30 +55,29 @@ export function DeviceFilterPanel({ children }: { children: ReactNode }) {
   });
   const report = devices.data ? deviceIpExport(devices.data) : null;
   return (
-    <section
-      aria-label="Device filters"
-      className="overflow-hidden rounded-xl border bg-card shadow-sm"
-    >
-      <div className="space-y-4 p-4">{children}</div>
-      <details
-        className="group border-t"
-        onToggle={(event) => setExpanded(event.currentTarget.open)}
+    <DropdownMenu open={expanded} onOpenChange={setExpanded} modal={false}>
+      <DropdownMenuTrigger asChild>
+        <Button type="button" variant="outline" size="sm">
+          <LifeBuoy aria-hidden="true" className="text-amber-700" />
+          Emergency
+          <ChevronDown aria-hidden="true" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        collisionPadding={16}
+        aria-label="Emergency tools"
+        aria-labelledby={undefined}
+        className="max-h-[var(--radix-dropdown-menu-content-available-height)] w-80 overflow-y-auto p-4"
       >
-        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-sm font-medium hover:bg-muted/40 focus-visible:outline-2 focus-visible:outline-ring [&::-webkit-details-marker]:hidden">
-          <span className="flex items-center gap-2">
-            <LifeBuoy aria-hidden="true" className="size-4 text-amber-700" />
-            Emergency
-          </span>
-          <ChevronDown
-            aria-hidden="true"
-            className="size-4 text-muted-foreground transition-transform group-open:rotate-180"
-          />
-        </summary>
         <div
           role="region"
           aria-label="Emergency IP export"
-          className="space-y-3 border-t bg-muted/20 p-4"
+          className="space-y-3"
         >
+          <DropdownMenuLabel className="p-0 font-semibold">
+            Emergency IP export
+          </DropdownMenuLabel>
           <p className="text-sm text-muted-foreground">
             Export Server-observed IPs for all enabled and disabled devices,
             including offline devices. Search and list filters do not limit this
@@ -95,15 +101,23 @@ export function DeviceFilterPanel({ children }: { children: ReactNode }) {
               {report.missing}
             </p>
           )}
-          <Button
-            type="button"
-            variant="outline"
+          <DropdownMenuItem
+            asChild
             disabled={download.isPending}
-            onClick={() => download.mutate()}
+            onSelect={(event) => {
+              event.preventDefault();
+              download.mutate();
+            }}
           >
-            <Download aria-hidden="true" />
-            {download.isPending ? "Exporting…" : "Export all device IPs"}
-          </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={download.isPending}
+            >
+              <Download aria-hidden="true" />
+              {download.isPending ? "Exporting…" : "Export all device IPs"}
+            </Button>
+          </DropdownMenuItem>
           {download.isError && (
             <p role="alert" className="text-sm text-destructive">
               IP export failed. No file was downloaded. Try again.
@@ -117,7 +131,7 @@ export function DeviceFilterPanel({ children }: { children: ReactNode }) {
             </p>
           )}
         </div>
-      </details>
-    </section>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

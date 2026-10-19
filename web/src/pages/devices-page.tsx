@@ -7,11 +7,8 @@ import { ApiError, unwrap } from "@/api/errors";
 import type { components } from "@/api/generated/schema";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
-import { DeviceFilterPanel } from "@/components/device-filter-panel";
-import {
-  CheckboxFilter,
-  CheckboxFilterOption,
-} from "@/components/checkbox-filter";
+import { DeviceEmergencyPanel } from "@/components/device-emergency-panel";
+import { MultiSelectFilter } from "@/components/multi-select-filter";
 import {
   DeviceIpWarning,
   DeviceNetworkDetails,
@@ -19,12 +16,9 @@ import {
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import {
-  DeviceStateFilter,
-  type DeviceStateFilterValue,
-} from "@/components/device-state-filter";
-import {
   defaultDeviceStateFilter,
   selectedDeviceStates,
+  type DeviceStateFilterValue,
 } from "@/components/device-state";
 import {
   StatusIcon,
@@ -72,6 +66,21 @@ const defaultConnectionFilter = {
   awaiting_fresh_state: true,
   offline: true,
 };
+const lifecycleOptions = [
+  { value: "enabled", label: "Enabled" },
+  { value: "disabled", label: "Disabled" },
+  { value: "revoked", label: "Revoked" },
+] as const;
+const connectionOptions = connectionStates.map((value) => ({
+  value,
+  label: connections[value].label,
+}));
+const bindingOptions = [
+  { value: "bound", label: "Bound" },
+  { value: "unbound", label: "Unbound" },
+  { value: "unknown", label: "Unknown" },
+] as const;
+const defaultBindingFilter = { bound: true, unbound: true, unknown: true };
 
 export function DevicesPage() {
   const { api } = useSessionScope();
@@ -85,6 +94,7 @@ export function DevicesPage() {
   const [stateFilter, setStateFilter] = useState<DeviceStateFilterValue>(
     defaultDeviceStateFilter,
   );
+  const [bindingFilter, setBindingFilter] = useState(defaultBindingFilter);
   const states = selectedDeviceStates(stateFilter);
   const devices = useQuery({
     queryKey: [...DEVICES_KEY, states],
@@ -116,6 +126,20 @@ export function DevicesPage() {
       await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
+  const unbind = useMutation({
+    mutationFn: async (deviceId: string) =>
+      unwrap<void>(
+        await api.DELETE("/api/v2/devices/{device_id}/binding", {
+          params: { path: { device_id: deviceId } },
+        }),
+      ),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["bindings"] }),
+        queryClient.invalidateQueries({ queryKey: DEVICES_KEY }),
+      ]);
+    },
+  });
   const listedDevices = states.length === 0 ? [] : (devices.data ?? []);
   const query = search.trim().toLowerCase();
   const visibleDevices = listedDevices.filter((device) => {
@@ -123,6 +147,7 @@ export function DevicesPage() {
     const seat = binding?.state === "bound" ? binding.context.seat_code : null;
     return (
       connectionFilter[device.convergence.connection_state] &&
+      bindingFilter[binding?.state ?? "unknown"] &&
       (!query ||
         [seat, device.device_id, device.machine_hardware_id].some((value) =>
           value?.toLowerCase().includes(query),
@@ -132,12 +157,14 @@ export function DevicesPage() {
   const hasActiveFilters =
     search !== "" ||
     connectionStates.some((state) => !connectionFilter[state]) ||
+    bindingOptions.some(({ value }) => !bindingFilter[value]) ||
     stateFilter.enabled !== defaultDeviceStateFilter.enabled ||
     stateFilter.disabled !== defaultDeviceStateFilter.disabled ||
     stateFilter.revoked !== defaultDeviceStateFilter.revoked;
 
   const isAdmin = session?.role === "admin";
   const { isPending: isUpdatingLifecycle, mutate: updateLifecycle } = lifecycle;
+  const { isPending: isUnbinding, mutate: unbindDevice } = unbind;
   const columns = useMemo(() => {
     const columns: DataTableColumnDef<Device>[] = [
       {
@@ -312,105 +339,139 @@ export function DevicesPage() {
         header: "Actions",
         cell: ({ row }) => {
           const device = row.original;
+          const binding = device.convergence.binding.target;
           return (
             <div className="flex gap-2">
-              {device.state === "enabled" && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="w-20"
-                  disabled={isUpdatingLifecycle}
-                  onClick={() =>
-                    updateLifecycle({
-                      deviceId: device.device_id,
-                      state: "disabled",
-                    })
-                  }
-                >
-                  Disable
-                </Button>
-              )}
-              {device.state === "disabled" && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="w-20"
-                  disabled={isUpdatingLifecycle}
-                  onClick={() =>
-                    updateLifecycle({
-                      deviceId: device.device_id,
-                      state: "enabled",
-                    })
-                  }
-                >
-                  Enable
-                </Button>
-              )}
-              {device.state !== "revoked" && (
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      size="sm"
-                      className="w-20"
-                      disabled={isUpdatingLifecycle}
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="w-20"
+                    disabled={isUnbinding || binding?.state !== "bound"}
+                  >
+                    Unbind
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      {binding?.state === "bound"
+                        ? `Unbind seat ${binding.context.seat_code}?`
+                        : "Unbind this device?"}
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Device{" "}
+                      <code className="break-all">
+                        {device.machine_hardware_id}
+                      </code>{" "}
+                      (<code className="break-all">{device.device_id}</code>)
+                      will return to seat selection when it is enabled,
+                      connected, and ready for binding.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-white hover:bg-destructive/90"
+                      disabled={isUnbinding || binding?.state !== "bound"}
+                      onClick={() => unbindDevice(device.device_id)}
+                    >
+                      Unbind
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="w-20"
+                disabled={isUpdatingLifecycle || device.state === "revoked"}
+                onClick={() =>
+                  updateLifecycle({
+                    deviceId: device.device_id,
+                    state: device.state === "enabled" ? "disabled" : "enabled",
+                  })
+                }
+              >
+                {device.state === "enabled" ? "Disable" : "Enable"}
+              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    className="w-20"
+                    disabled={isUpdatingLifecycle || device.state === "revoked"}
+                  >
+                    Revoke
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Permanently revoke device?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      Revocation is terminal and immediately evicts the current
+                      connection.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-white hover:bg-destructive/90"
+                      disabled={
+                        isUpdatingLifecycle || device.state === "revoked"
+                      }
+                      onClick={() =>
+                        updateLifecycle({
+                          deviceId: device.device_id,
+                          state: "revoked",
+                        })
+                      }
                     >
                       Revoke
-                    </Button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>
-                        Permanently revoke device?
-                      </AlertDialogTitle>
-                      <AlertDialogDescription>
-                        Revocation is terminal and immediately evicts the
-                        current connection.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction
-                        className="bg-destructive text-white hover:bg-destructive/90"
-                        onClick={() =>
-                          updateLifecycle({
-                            deviceId: device.device_id,
-                            state: "revoked",
-                          })
-                        }
-                      >
-                        Revoke
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              )}
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           );
         },
       });
     }
     return columns;
-  }, [isAdmin, isUpdatingLifecycle, updateLifecycle, selectedDeviceId]);
+  }, [
+    isAdmin,
+    isUpdatingLifecycle,
+    updateLifecycle,
+    isUnbinding,
+    unbindDevice,
+    selectedDeviceId,
+  ]);
 
   return (
     <div className="min-w-0 space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="min-w-0 flex-1 basis-64">
           <h1 className="text-2xl font-semibold tracking-tight">Devices</h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            Durable lifecycle facts and current connection convergence.
+            Manage device lifecycle, seat bindings, and current convergence.
           </p>
         </div>
-        <RefreshCountdown
-          updatedAt={Math.max(devices.dataUpdatedAt, devices.errorUpdatedAt)}
-          isFetching={devices.isFetching}
-          isPaused={devices.isPaused}
-          isError={devices.isError}
-        />
+        <div className="ml-auto flex shrink-0 items-center gap-3">
+          <DeviceEmergencyPanel />
+          <RefreshCountdown
+            updatedAt={Math.max(devices.dataUpdatedAt, devices.errorUpdatedAt)}
+            isFetching={devices.isFetching}
+            isPaused={devices.isPaused}
+            isError={devices.isError}
+          />
+        </div>
       </div>
 
       {lifecycle.error && (
@@ -423,7 +484,17 @@ export function DevicesPage() {
         </Alert>
       )}
 
-      <DeviceFilterPanel>
+      {unbind.error && (
+        <Alert variant="destructive">
+          <AlertTitle>
+            {unbind.error instanceof ApiError
+              ? unbind.error.title
+              : "Unbind failed"}
+          </AlertTitle>
+        </Alert>
+      )}
+
+      <section aria-label="Device filters" className="space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative min-w-0 flex-1 basis-64 sm:max-w-sm">
             <Search
@@ -440,7 +511,7 @@ export function DevicesPage() {
             />
           </div>
           <div className="flex flex-wrap items-center gap-3 sm:ml-auto">
-            {devices.data && (
+            {(states.length === 0 || devices.data) && (
               <p
                 role="status"
                 className="text-sm text-muted-foreground tabular-nums"
@@ -458,6 +529,7 @@ export function DevicesPage() {
                 setSearch("");
                 setStateFilter(defaultDeviceStateFilter);
                 setConnectionFilter(defaultConnectionFilter);
+                setBindingFilter(defaultBindingFilter);
               }}
             >
               <RotateCcw aria-hidden="true" />
@@ -465,20 +537,27 @@ export function DevicesPage() {
             </Button>
           </div>
         </div>
-        <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
-        <CheckboxFilter label="Connection">
-          {connectionStates.map((state) => (
-            <CheckboxFilterOption
-              key={state}
-              label={connections[state].label}
-              checked={connectionFilter[state]}
-              onCheckedChange={(checked) =>
-                setConnectionFilter({ ...connectionFilter, [state]: checked })
-              }
-            />
-          ))}
-        </CheckboxFilter>
-      </DeviceFilterPanel>
+        <div className="flex flex-wrap items-center gap-2">
+          <MultiSelectFilter
+            label="Lifecycle"
+            options={lifecycleOptions}
+            value={stateFilter}
+            onChange={setStateFilter}
+          />
+          <MultiSelectFilter
+            label="Connection"
+            options={connectionOptions}
+            value={connectionFilter}
+            onChange={setConnectionFilter}
+          />
+          <MultiSelectFilter
+            label="Binding"
+            options={bindingOptions}
+            value={bindingFilter}
+            onChange={setBindingFilter}
+          />
+        </div>
+      </section>
       <DataState
         isLoading={devices.isLoading}
         error={devices.data ? null : devices.error}

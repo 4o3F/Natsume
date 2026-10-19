@@ -20,7 +20,6 @@ const navigation = [
   { to: "/preparation", label: "Preparation" },
   { to: "/seats", label: "Seats" },
   { to: "/accounts", label: "Accounts" },
-  { to: "/bindings", label: "Bindings" },
   { to: "/devices", label: "Devices" },
   { to: "/enrollment", label: "Enrollment" },
   { to: "/targets", label: "Targets" },
