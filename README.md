@@ -4,8 +4,8 @@
 
 Workstation orchestration for on-site programming contests.
 
-> [!WARNING]
-> Natsume is **not yet battle-tested** in real contests. Validate the complete workflow in your target environment before relying on it for a live event.
+> [!NOTE]
+> Natsume V2 was deployed at the **ICPC 2026 Xi'an Regional Contest**, which hosted **over 400 participating teams**.
 
 Natsume connects a contest roster, physical seats, managed Ubuntu workstations, and DOMjudge through one operator panel. Prepare the roster, enroll devices, bind them to seats, and manage the waiting screen and contest desktop from a central Server.
 
