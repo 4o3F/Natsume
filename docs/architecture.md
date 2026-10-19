@@ -3,8 +3,9 @@
 > 状态：`ACCEPTED TARGET`
 > 基线日期：2026-08-28
 > Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面
-> 适用范围：Natsume V2 全系统
-> 实施策略：预发布 flag day；协议、数据库、Server、Client、Web 与测试同步切换
+> 平台扩展修订：2026-10-19；统一包布局、持久打印队列与离线队伍拍照，见第 17、23 节
+> 适用范围：Natsume V2 及后续单赛事平台目标；目标不代表已交付
+> 实施策略：既有工位控制基线采用预发布 flag day；平台扩展按独立工作包增量实施，不自动改变已部署契约
 
 本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。镜像接入、配置输入和验收说明统一维护在 [packaging/image](../packaging/image/README.md)。
 
@@ -27,18 +28,23 @@
 | 本地IPC typed失败 | `crates/local-control-api` 与各IPC adapter |
 | 构建、依赖和发布版本 | Cargo、pnpm、打包配置与 lockfile |
 
+表中源码路径是平台扩展整理基线的现有路径；第 17 节定义迁移后的目标路径。
+实际移动时同步更新源码、工具、CI、打包和文档引用，不先制造失效的源码链接。
+
 规则：
 
 1. 不在第二个 Markdown 文件建立并行架构 authority；PRD 与验证材料引用本文，历史实验不覆盖当前目标语义。
 2. Proto 和 migration 是机器可执行契约，但不能自行创造与本文相反的业务语义。
 3. 生成代码不能手工编辑。
-4. 当前 migration、Rust adapter、OpenAPI 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务。
-5. 本次发布前不存在对外兼容基线；删除旧字段不保留 `reserved`，编号按当前结构压紧。
-6. flag day 中间提交可以暂时不可运行，但不得进入部署包或形成双协议、双 authority、双 schema fallback。
+4. 工位 Device Control 的 migration、Rust adapter、OpenAPI 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务；照片成果包不属于旧 credential Bundle。
+5. 既有 V2 预发布 flag day 的字段删除、编号压紧规则只适用于该基线，不构成后续平台扩展修改已部署协议或丢弃数据的授权。
+6. 历史 flag day 的中间提交不得进入部署包或形成双协议、双 authority、双 schema fallback；后续平台工作包须独立可审阅、可验证，保留现有运行契约。
 
 ## 2. 系统目标与非目标
 
-Natsume 服务一场现场竞赛，目标规模约 500–600 台工作站。一个 Server 实例只维护当前赛事，不建模多 Event 或跨赛事业务历史。
+Natsume 是服务一场现场竞赛的统一运营平台，工位控制目标规模约 500–600 台工作站。
+一个 Server 实例只维护当前赛事，不建模多 Event 或跨赛事业务历史。
+工位控制、打印、队伍照片是独立领域，共享名单事实，不共享执行生命周期或控制 authority。
 
 系统必须提供：
 
@@ -51,6 +57,11 @@ Natsume 服务一场现场竞赛，目标规模约 500–600 台工作站。一�
 7. admin/viewer Operator、Web Panel、best-effort可观测性和恢复证据。
 8. 网络中断与单进程重启后的确定性恢复。
 9. 身份、秘密、证书或本地状态不可证明安全时 fail closed。
+10. DOMjudge 入口的持久异步打印队列、空闲 Windows Client 主动领取及提交时排队快照。
+11. 首次联网初始化后可离线运行的 Windows 队伍拍照、重照确认、签名交付与当前成品管理。
+
+第 7–14 节的 lease、Input、Target、Actual 和收敛规则特指工位 Device Control。
+打印尝试及照片提交的持久事实属于第 23 节，不引入通用命令投递或全局操作审计。
 
 系统明确不提供：
 
@@ -75,7 +86,8 @@ Server committed truth、Server Intent、Client Input、Concrete Target 和 Clie
 
 ### 3.2 完整状态代替操作投递
 
-系统没有 Device Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。
+工位 Device Control 没有 Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。
+第 23 节的打印请求与有限执行尝试是独立业务队列，不是恢复旧 Device Command。
 
 Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操作者和已提交的逐设备结果，
 不记录 Client 执行、投递、Ack 或历史进度。它保证网络重试不再次推进 terminate/reset epoch。
@@ -86,7 +98,8 @@ Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操
 
 ### 3.4 静态类型和静态组合
 
-所有资源在编译期可见。新增资源必须同时增加 Rust 类型、Proto 字段、组件实现、验证和测试。禁止字符串资源名、运行时 downcast、通用 payload 和动态注册表。
+所有资源在编译期可见。新增 Device Control 资源必须同时增加 Rust 类型、Proto 字段、组件实现、验证和测试。禁止字符串资源名、运行时 downcast、通用 payload 和动态注册表。
+独立打印／照片组件使用自身 typed 契约，不为复用控制框架而加入 Device Proto 或 DeviceActor。
 
 ### 3.5 Crash-safe、幂等、可重放
 
@@ -116,7 +129,15 @@ flowchart LR
     Caddy[Caddy]
     Browser[Managed Browser]
     Judge[DOMjudge]
+    PrintBridge[natsume-print-domjudge]
+    PrintClient[Windows Print Client]
+    PhotoClient[Windows Photo Client]
 
+    Judge -->|Print script| PrintBridge
+    PrintBridge -->|Register and upload HTTPS| Server
+    PrintClient -->|Pull and report HTTPS| Server
+    PhotoClient -->|Confirmed results HTTPS| Server
+    PhotoClient -.->|Signed package import| Operator
     Operator -->|HTTPS| Server
     Daemon <-->|Pinned WSS| Server
     Daemon -->|Typed system D-Bus| Helper
@@ -141,7 +162,11 @@ Server 是唯一业务 authority，拥有：
 - Runtime、Session 和 Home 的 Server target；
 - 当前lease的latest Actual与receive-time，仅存在于对应DeviceActor内存；Client Input
   经整体校验和组件消费后丢弃；
-- Operator HTTP API、Web 静态资源和 Device WSS。
+- Operator HTTP API、Web 静态资源和 Device WSS；
+- 打印请求、就绪队列、领取归属、有限尝试与结果；
+- 拍照来源授权、当前成品、待处理候选与成果接收。
+
+第 4.2–4.4 节保留已安装进程名称；Cargo 包的领域化命名见第 17 节，不隐式重命名部署入口。
 
 Server 不直接操作工作站文件、Caddy、图形 Session 或 Home。
 
@@ -281,6 +306,11 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Home target | Home Component | reset epoch |
 | 当前lease的latest Actual与receive-time | DeviceActor memory | fresh snapshot；Input消费后丢弃，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
+| 打印请求、队列及执行尝试 | Print Component | durable；领取原子化，旧尝试报告不得推进新尝试 |
+| 打印系统任务及设备观察 | Print Client | 不等于物理出纸证明，不能覆盖 Server 的领取 authority |
+| 拍摄组、已知收图、候选及现场确认 | Photo Client local workspace | 离线持久化，确认绑定具体队伍与图片 |
+| 当前照片、待处理候选及照片接收结果 | Photo Component | 与当前名单核对，不按导入时间静默覆盖 |
+| 新业务客户端授权 | 对应 Print／Photo 边界 | 独立、最小权限，不复用工位 key 或管理员会话 |
 
 Import 不修改 Binding，不创建远端操作，不产生 Device I/O。Binding 和 Gateway 互不授予对方 authority。Client Input 和 Actual 都是不可信报告。
 
@@ -718,6 +748,8 @@ Server 业务采用纵向组件：
 | Runtime Config | 是 | DOMjudge origin target/actual |
 | Session Control | 是 | foreground/terminate target/actual |
 | Home | 是 | reset target/actual |
+| Print | 否 | DOMjudge 受理、就绪 FIFO、领取、有限尝试与恢复 |
+| Photo | 否 | 来源授权、在线／离线成果接收、当前成品和候选 |
 
 组件化不意味着一个 trait 统治所有业务。Active资源由`DeviceActor`按固定wire结构
 显式编排；各component只接收自身transition实际消费的Input或Actual，不用统一trait
@@ -1006,13 +1038,13 @@ Lifecycle入口在创建Actor前先确认Device存在，不存在的合法ID不�
 ### 12.1 基础原则
 
 - SQLite 单数据库、单 Server writer；
-- 预发布只维护一个 initial migration；
+- 既有 V2 预发布 initial migration 属于该基线；平台扩展的 schema 演进和已部署数据保留单独审阅，不自动沿用重写 initial 或清库策略；
 - SQLite只表达typed column、`NOT NULL`、PK、FK、UNIQUE和索引；
 - 禁止用数据库`CHECK`承载UUID格式、长度、枚举、状态组合、时间范围或presence等业务校验；
 - 所有持久化值必须先通过owning component的Rust validated type和事务规则；读取到非法历史值时fail closed；
 - 不用通用 resource、event-sourcing、operation、JSON payload 表；
 - 不持久化 `ServerStateSnapshot`/ConcreteTarget blob；
-- 不持久化 lease；
+- 不持久化 Device Control lease；打印自身的领取归属、恢复和 fencing 事实由 Print Component 持久化，不复用 control lease；
 - 不持久化原始Client Input/Actual projection；只有参与恢复或replay fencing的accepted input字段才进入owning component的current-fact表；
 - 不建立 global revision counter；
 - 业务 revision/epoch 只在资源确实需要 fencing 或 transition 时存在；
@@ -1143,7 +1175,8 @@ Operator HTTP response、WSS发送和 Dirty notification均发生在 commit 之�
 
 ## 14. Client 目标架构
 
-Server Component 不与 Client 共用。双方只共享 [`natsume-device-protocol`](../crates/device-protocol/src/lib.rs)。
+本节 Client 指 Linux 工位控制端，不约束第 23 节的独立打印／拍照应用。
+工位 Server Component 不与 Client Reconciler 共用。双方只共享 [`natsume-device-protocol`](../crates/device-protocol/src/lib.rs)。
 该crate只拥有Protobuf schema、生成类型、descriptor、canonical cryptographic
 transcript、薄签名/严格验签操作和确属wire grammar的helper；它不提供全envelope
 semantic validation，也不拥有authority key选择。
@@ -1331,7 +1364,7 @@ Import预览token仅保留在创建它的当前前端会话内，页面刷新或
 
 ### 15.2 Import
 
-导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板和无数据库解析由 `natsume-roster` 共享库提供，Server 与离线 Logo 预检使用同一规则。旧 CSV 导入及 JSON commit body 删除。
+导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板和无数据库解析归 Server Import。原 `natsume-roster` 在能力归位后退役，删除 `natsume-check-logos`，不再以离线预检工具作为共享库消费者。真正多消费者的纯非秘密领域值按第 17 节提取，输入格式与密码不进入公共领域包。旧 CSV 导入及 JSON commit body 删除。
 
 ```text
 strict XLSX parse
@@ -1364,7 +1397,7 @@ strict XLSX parse
 - 学校、队伍、账号、凭据、座位、映射和候选消费在同一事务内提交，失败全部回滚。commit 后自动 dirty，不创建 Command，不依赖 Operator 再发 sync；
 - 一次性 schema 迁移保留既有业务数据并清除旧格式待提交候选，存量队伍资料通过完整 XLSX 补齐，不自动清库。
 
-源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。`natsume-roster` 共享实际内容识别、限额、解码和 SVG 渲染，拒绝符号链接和外部 SVG 资源。目录与图片失败通过 tracing 记录路径和原因。
+源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。实际内容识别、限额、解码和 SVG 渲染归 Server Contest，拒绝符号链接和外部 SVG 资源，不带入公共领域包。目录与图片失败通过 tracing 记录路径和原因。
 
 Logo 列表的完整校验结果由 Contest 私有缓存，已提交名单和候选共用，最多 1024 个路径，
 按近期使用淘汰，不保留版本历史、图片字节、解码像素或名单权限。每次仍重扫目录、重新匹配名称，
@@ -1594,16 +1627,41 @@ async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享
 
 ### 17.1 Workspace
 
-继续使用一个 Cargo workspace和一个 `Cargo.lock`：
+继续使用一个 Cargo workspace 和一个 `Cargo.lock`。全部 Rust 包进入 `crates/`，
+目录名与 Cargo `package.name` 一致，使用 `natsume-` 前缀和小写连字符；
+同领域多包采用 `natsume-<领域>-<职责>`，单一入口／领域库不强加无意义后缀。
+
+目标布局（不是当前文件已移动的声明）：
 
 ```text
-server/
-client/device-daemon/
-client/privileged-helper/
-client/session-agent/
-crates/device-protocol/
-crates/local-control-api/
+crates/natsume-server/
+crates/natsume-workstation-daemon/
+crates/natsume-workstation-helper/
+crates/natsume-workstation-agent/
+crates/natsume-workstation-protocol/
+crates/natsume-workstation-ipc/
+crates/natsume-print-client/
+crates/natsume-print-domjudge/
+crates/natsume-photo-client/
+crates/natsume-contest-domain/    # 实际多生产消费者需要时提取
+crates/natsume-photo-package/     # 成果包契约随双端实现提取，不预建空包
 ```
+
+原 `server/` 迁至 `natsume-server`；原 `device-daemon`、`privileged-helper`、
+`session-agent` 分别迁至三个 `workstation-*` 应用包；原 `device-protocol` 与
+`local-control-api` 分别迁至 `workstation-protocol` 与 `workstation-ipc`。
+`web/` 保持独立前端，打包仍按交付对象组织；Tauri 若入选，其 Rust 包也遵守本布局。
+
+目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、
+架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称，
+必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。
+唯一明确退役的工具是 `natsume-check-logos`。原 `natsume-roster` 不改名占位：
+XLSX／密码输入归 Import，校徽文件与图像处理归 Contest，能力归位后删除原包。
+
+`natsume-contest-domain` 只承载共同需要的稳定身份、非秘密基础资料和纯值约束，
+不含 DB、网络、文件系统、GUI、输入格式或业务编排，不创建第二套队伍身份。
+`natsume-photo-package` 只承载专用成果格式与签名／完整性契约，不接管名单、来源授权和审批。
+域类型共享不共享 authority，也不把所有领域状态机、DTO 或错误码塞进全局 core。
 
 共享 crate准入条件：
 
@@ -1622,10 +1680,10 @@ probe拥有的真实跨进程/持久化/fault-injection场景出现时再创建�
 新模块继续使用 `parent.rs + parent/child.rs`，不使用 `mod.rs`：
 
 ```text
-server/diesel/
+crates/natsume-server/diesel/
   schema.rs
   sqlite-integer-to-bigint.patch
-server/src/
+crates/natsume-server/src/
   server_state.rs
   component.rs
   component/
@@ -1682,7 +1740,7 @@ server/src/
   pki.rs
 ```
 
-`db.rs`只提供连接和transaction；`server/diesel/schema.rs`是由migration生成、通过
+`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/schema.rs` 是由 migration 生成、通过
 `crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达
 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning
 component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际
@@ -1698,7 +1756,7 @@ Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字�
 ### 17.3 Client目标目录
 
 ```text
-client/device-daemon/src/
+crates/natsume-workstation-daemon/src/
   control.rs
   control/
     connection.rs
@@ -1715,6 +1773,9 @@ client/device-daemon/src/
 Helper和Agent保留各自capability/UI边界，不复制Server组件。
 
 ## 18. 部署与运行边界
+
+以下记录既有 Linux Server／工位交付边界，flag-day 全新部署与整套回滚指该基线。
+平台扩展保留现有运行契约，新增 Windows 应用另行安装、构建和签收，见第 23 节。
 
 - Server与Client使用原生Deb package；
 - 安装期不下载runtime；
@@ -1818,7 +1879,7 @@ Runtime/Session/Home：
 - 一个业务表只有一个mutation owner；
 - 组件不调用其他组件private DB；
 - 协议crate不依赖Server/Client framework；
-- 无Command/Bundle/Token/Observed旧symbol；
+- Device Control 无 Command/Bundle/Token/Observed 旧 symbol；
 - 无通用resource payload/table；
 - 无secret Debug/serde/log；
 - migration与Diesel schema clean diff；
@@ -1836,11 +1897,16 @@ just diesel-schema
 just api
 ```
 
-实现批次还必须运行secret scan和目标环境package/desktop/Caddy evidence。
+上述 workspace 命令对应既有 Linux 基线的验收能力，不要求每轮在本地运行全量套件。
+加入 Windows-only 包后按支持矩阵选择 Cargo 包集合与 CI／hook 范围；共享领域与成果格式
+在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。
+实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
 
 ## 20. Flag-day 实施计划
 
-以下Work Package是依赖顺序，不是长期Phase体系。每个WP只在列出的验收满足后结束。
+以下 Work Package 记录既有工位控制 flag-day 基线，不作为平台扩展清库或重写协议的授权。
+其带日期事实与历史验收保留，不改写为新功能已完成。平台目标见第 23 节。
+这些 Work Package 是依赖顺序，不是长期 Phase 体系；每个 WP 只在列出的验收满足后结束。
 
 ### 当前实现基线
 
@@ -2089,7 +2155,8 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ## 21. 实施纪律
 
-交给实现模型的约束：
+交给实现模型的约束。涉及第二 WSS／Proto、旧 Command／Token／Bundle 的禁令指工位 Device Control，
+不禁止第 23 节独立业务的 typed 接口；不因此引入通用框架或削弱秘密与事务边界：
 
 1. 每个WP开始前先读取本文、当前Proto、migration和相关源码。
 2. 只把当前机器schema视为实现现状，不把旧代码语义当目标。
@@ -2100,11 +2167,15 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 7. 不在一个WP顺手重构无关组件。
 8. 每个mutation先证明transaction提交，再接网络通知。
 9. 每个成功状态先证明durability，再发送。
-10. 每个WP提交前运行与风险相称的测试，最终运行全workspace与生成物校验。
+10. 每个 WP 提交前运行与风险相称的本地针对性测试和适用 `prek` hooks；完整 workspace 测试由 CI 执行，分别报告，不声称未运行套件已通过。
+11. 每个原子提交先展示 diff 摘要与验证结果，取得人审明确批准才创建 commit；规划批准不是未来实现 commit 的批准。
 
 ## 22. 完成判据
 
-只有全部满足，目标架构才算落地：
+本节只签收既有工位 Device Control 目标；第 23 节的打印／照片另有业务验收，
+不把完整快照、无投递结果不明等控制语义强加给独立队列或签名成果导入。
+
+只有全部满足，工位控制目标架构才算落地：
 
 - 本文是唯一人工维护架构文档；
 - 协议中没有Command、Bundle、通用payload或资源专用操作packet；
@@ -2125,3 +2196,150 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 - OpenTelemetry trace仅作best-effort可观测性，不充当业务审计或事务证据；
 - 所有已建模业务故障只造成暂时drift或明确fail closed，不产生双authority、错误Binding、旧Session副作用或不可判断投递结果；
 - 完整测试、生成物、目标环境和恢复演练通过。
+
+## 23. 单赛事运营平台扩展
+
+### 23.1 范围、组件与交付
+
+本节是后续已接受目标，不是代码、Windows 或现场验收已完成的声明。
+在同一仓库和同一个 Server 中增加 Print、Photo 纵向组件，继续使用单赛事和单 writer；
+不先引入微服务、Redis／消息中间件、通用调度／插件框架或全局业务审计。
+名单写入 authority 仍属于 Contest/Import，工位控制、打印、拍照有各自生命周期。
+
+Windows Print Client、Photo Client 分别安装和交付，不改造为 Linux Agent／Helper 的功能，
+不使用 DeviceActor、工位 Target 或 control key。DOMjudge 集成、打印 Client、拍照站具有
+独立、最小权限的身份；不持有长期管理员 session，不跳过 TLS 校验。
+注册、密钥保护、撤销及 protocol version 须随对应契约评审，不能由 GUI 默认行为决定。
+
+Server 保存打印文档、当前照片及待处理候选；它们的访问不沿用公开学校 Logo 的策略。
+备份与恢复同时覆盖数据库、相关文件和必要身份／信任材料。保留、限额、清理、
+Windows 支持矩阵与安装 runtime 需明确验证，不由“无历史功能”推导自动删除素材。
+
+### 23.2 DOMjudge 受理、Typst 与排队快照
+
+首期只接受 DOMjudge。`natsume-print-domjudge` 是 Typst 薄 wrapper：
+
+1. 先向 Server 登记请求；不可用立即拒绝，不进行离线收单或建立本地打印队列。
+2. 登记成功才排版；生成失败当时尽力报告，回报丢失不补偿，不建立持久 outbox。
+3. 上传最终 PDF，Server 校验、确定文档页数并安全保存后才进入就绪 FIFO。
+4. wrapper stdout 返回“已入队、未完成”与受理时快照，复用现有 DOMjudge 输出展示。
+
+登记不是入队，入队不是打印完成。生成失败和未就绪请求不计入待打印页数。
+快照分开显示当前任务前方待领取任务数／最终 PDF 文档页数和当前处理中任务数，
+不承诺实时排名、物理纸张余量或 ETA。请求及阶段重试幂等，不把结果不明当作未受理。
+错误回报丢失可能留下结果未回报的准备中请求，状态与诊断必须诚实呈现。
+
+不新建选手账号、动态状态页或强制修改 DOMjudge 网页。具体版本可能有固定的“已打印”
+模板提示，应记录兼容限制，脚本仍明确区分受理和完成。
+
+### 23.3 主动领取、打印尝试与恢复
+
+全场一个共享打印池，FIFO 以最终 PDF 就绪顺序为准。统一 A4、黑白、单份；
+单双面等现场统一配置，不做每任务自选。并行完成顺序不保证等同领取顺序。
+
+空闲且有容量的 Client 主动领取，Server 原子确认当前归属。忙／故障打印机不继续领取，
+不把大量待处理任务提前搬进一台机器的 spooler。多打印机与物理队列容量需准确识别，
+不能以 HTTP 活跃代替可打印能力，也不能把同一物理设备重复当多个无约束执行容量。
+
+请求、PDF 内容、尝试、Client、打印机／队列与 Windows Job ID 关联明确，
+不能按文件名或裸 Job ID 猜测；旧尝试和重复报告不得推进新尝试。
+Print Component 持久化恢复所需事实，系统／网络／Client 重启后可恢复或重新开放领取。
+具体尝试计数屏障、失效判定、重试排序／退避和超时须先形成可测试规格。
+
+每任务最多三次 Natsume 应用级打印尝试（首次加两次自动重试），之后停止自动执行并暴露错误。
+结果不明允许重领，优先自动完成、接受偶发重复出纸，不承诺 exactly-once。
+三次预算不是纸张份数保证，操作系统／驱动可能有内部重试。
+人工补打等管理动作的权限和副作用单独定规格，不默认为任意远程命令。
+
+Windows Client 在登录用户下后台／托盘运行，不先做无人登录服务。
+打印后端允许重写，不强制 SumatraPDF；必须评估 PDF 渲染、适用 Windows 打印路径、
+准确 Job ID、忙闲与故障观测，不能假定所有设备支持 RAW PDF。
+提交成功、打印系统报告完成与物理出纸是不同事实，产品不承诺通用物理完成证明。
+
+### 23.4 离线工作区与队伍优先拍摄组
+
+Photo Client 首次联网登记来源、信任和非秘密名单快照，之后可离线搜索、收图、
+重照、确认、导出并在重启后恢复。不使用含密码的原始 XLSX 或 DOMjudge 全量导出 ZIP
+作为初始化资料，不依赖在线 Operator cookie 或 Web 缓存维持本地工作区。
+
+摄影师窗口与选手展示窗口分开，流程为：
+
+```text
+先选定队伍 → 选手屏显示 Waiting 风格资料 → 口头核对，摄影师开始本队拍摄组
+  → 拍摄／收图，持续展示本组最新有效候选
+  → 不满意则继续重拍，所有照片仍属于本组
+  → 摄影师确认实际显示的具体队伍／照片／呈现版本，锁定成品
+  → 本组已知读取、复制／移动、校验、归档完成 → 才允许下一队
+```
+
+组内迟到的异步解码不得覆盖更新预览，确认竞态不得选择选手未见的图片；
+确认后新到图可归档，但不能自动替换成品。拍摄组锁定队伍，纠正、放弃或补拍均显式操作。
+未确认／未采用图留本地，不因重照自动删除，不上传为成品。
+已有成品在新图确认前保留；未发送旧待发布项不能继续冒充当前成品，已送达／结果不明的
+提交按 Server 当前事实处理，不能假装撤回已发生的接收。
+
+### 23.5 热文件夹与安全接管
+
+首期只监控热文件夹，JPEG／PNG 输入，不做 RAW 显影、相机 SDK、远程快门或实时协作修图。
+通知只用于发现，须处理未写完、重复事件、同名变更、重启补扫、解码限额和失败恢复。
+客户端工作区保留稳定素材身份与归属，预览不引用会被上游覆盖的源路径。
+
+复制／移动均可配置，默认模式另定规格（建议复制）。移动必须先安全接管并持久化再移除
+同一源文件，覆盖跨卷／中断／删除失败／源文件被替换，不能丢图或盲删新文件。
+无活动组的来图先待归组，不自动挂下一队；未确认图片允许显式排除／纠正归组。
+Client 必须等待所有已知归档工作，但无法证明相机／上游没有尚未到达的照片；
+安静窗口不等于可靠相机批次结束，未知跨组迟到也不能靠时间戳自动证明归属。
+
+### 23.6 成果包、接收与外部图片交付
+
+只有确认成品交付。在线提交与离线签名包经 Web Panel 导入使用同一接收规则；
+成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希，
+由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
+
+先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值，
+显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理，
+其他有效项继续接收，不按队名、校名或复用账号猜测 identity。
+人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
+签名证明来源与内容，不证明现场身份核对或选手满意。
+
+Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。
+签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。
+现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。
+实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等，
+不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。
+
+### 23.7 GUI 及目标环境验证
+
+核心逻辑采用 Rust，GUI 首轮只比较 Slint／Tauri，GPUI 不进入首轮，.NET 不是默认选择。
+同场景验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、
+干净 Windows 安装及实际资源开销后选择一种，不以语言偏好或现有 Linux 界面代替证据。
+
+Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows backend、renderer、
+字体与原生运行库。Tauri 可复用纯 UI，不复用在线 Panel 登录／轮询为离线生命周期；
+须处理 WebView2 离线部署、逐窗口权限、受限本地图片访问，不把私钥交给 JS，
+也不用 Base64／JSON 事件高频传送全分辨率照片。展示窗口不得继承摄影师全部能力。
+
+打印引擎与 GUI 独立验证，使用实际设备取得 Job ID、容量、故障与恢复证据。
+Windows 编译、GUI 运行、真实打印、Linux 回归、CI 完整套件分开报告。
+本次只读调研没有提供这些 Windows／硬件通过结果。
+
+### 23.8 实施与验收边界
+
+先确认公开契约、限额、身份与生命周期，再将源码迁移、原 roster 归位、打印闭环和照片闭环
+分别审阅。实际共享消费者出现时才提领域／成果包，不先制造空抽象；独立事实验证可并行，
+共享源码写入须隔离工作树并遵守单 writer，重型 Windows renderer 构建受资源预算约束。
+规划认可不自动授权实现提交、远程 Issue 或发布，逐个原子提交遵守人审门槛。
+
+平台完成至少证明：
+
+- 新包命名／路径一致，现有 binary、协议、打包与密码语义回归，生成物由源重建；
+- Server 不可用拒绝新打印，生成错误尽力回报、就绪 FIFO 和 stdout 快照语义正确；
+- 并发领取不重复授予活动尝试，忙端不贪领，旧结果 fencing、三次预算与结果不明恢复成立；
+- 明确打印系统证据的设备限制，不把提交或队列完成伪称通用物理出纸证明；
+- 拍照初始化不泄密，离线重启可恢复，队伍优先、连续重拍、准确确认及归档屏障成立；
+- 复制／移动、半写入、覆盖、异常退出和源图变更不丢素材、不误归组、不盲删；
+- 成果包抗篡改、重复幂等、名单漂移逐项处理、替换明确，真实外部系统图片匹配；
+- 无未经同意的照片历史／素材云盘，文件限额、授权、清理及备份恢复明确；
+- Slint／Tauri 选择和打印后端取得 Windows 实机证据，部署支持矩阵与运行依赖清楚。
+
+完整阶段工作包、状态清单与逐轮证据按文档规则维护，不在本文形成新的完成声明或引用本地临时材料。
