@@ -1,0 +1,6 @@
+# Example only. Administrator installs /etc/natsume-print-domjudge/config.toml.
+# Supply an HTTPS origin, not a URL with API paths, credentials, query or fragment.
+server_url = "https://natsume.example.org:8443"
+token_file = "/etc/natsume-print-domjudge/source.token"
+# Optional: exclusive deployment CA trust; otherwise use system certificate trust.
+# ca_certificate = "/etc/natsume-print-domjudge/server-ca.crt"

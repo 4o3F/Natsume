@@ -8,6 +8,7 @@ members = [
   "crates/natsume-workstation-agent",
   "crates/natsume-workstation-protocol",
   "crates/natsume-workstation-ipc",
+  "crates/natsume-print-domjudge",
 ]
 default-members = [
   "crates/natsume-server",
@@ -16,6 +17,7 @@ default-members = [
   "crates/natsume-workstation-agent",
   "crates/natsume-workstation-protocol",
   "crates/natsume-workstation-ipc",
+  "crates/natsume-print-domjudge",
 ]
 
 [workspace.package]

@@ -1919,6 +1919,39 @@ Server 保存打印文档、当前照片及待处理候选；它们的访问不�
 
 不新建选手账号、动态状态页或强制修改 DOMjudge 网页。具体版本可能有固定的“已打印” 模板提示，应记录兼容限制，脚本仍明确区分受理和完成。
 
+#### 23.2.1 I1 受理协议与独立交付
+
+I1 使用以下契约实现 Server 与 `natsume-print-domjudge`，不包含 Windows 领取、打印尝试、Panel 打印管理或物理打印验收。wrapper 首版交付 Linux amd64 的独立 Ubuntu／Debian 包，不依赖 `natsume-server` 包；两端可以分机部署，只通过 HTTPS 交换数据，不共享目录、数据库或本机文件路径。DOMjudge 集成以 9.0.x 为核对基线；固定成功提示与实际部署版本仍须验收。
+
+来源身份使用专用 Bearer token，不接受 Operator cookie 或工位密钥代替。管理员通过 `POST /api/v2/print/sources` 创建来源，通过 `GET /api/v2/print/sources` 查看非秘密来源资料，通过 `DELETE /api/v2/print/sources/{source_id}` 撤销；这些管理接口要求现有管理员权限。创建请求为 `{ "name": "domjudge-primary" }`；响应含 `source_id`、`name`、`revoked` 和仅本次返回的 `token`，列表不返回 token 或摘要。来源 ID 为 canonical UUIDv7，token 为 `nps1.<source_id>.<64 位小写十六进制随机秘密>`，随机秘密为 32 bytes。Server 只持久化 SHA-256 摘要，认证使用定时安全比较；不记录 token、Authorization header、源代码或 PDF 内容。撤销幂等，返回 204；不存在的来源返回 404。来源名称为 1～128 个 Unicode 字符，不接受控制字符。
+
+wrapper 从部署提供的受限本机文件读取 token，通过严格校验服务器证书的 HTTPS 发送；支持部署提供的 CA，不提供跳过证书校验选项。客户端拒绝重定向，避免向其他地址转发身份；Server 在消费请求体前认证来源，并在提交业务事务时重新确认未撤销。来源只可登记和查看自己的请求，不可枚举其他来源的请求、修改名单或调用工位控制。
+
+| 方法与路径 | 请求 | 成功响应与含义 |
+| --- | --- | --- |
+| `POST /api/v2/print/requests` | JSON：`protocol_version: 1`、canonical UUIDv7 `request_id`、`account`、`original_filename`、64 位小写十六进制 `source_sha256` | 200，请求事实；先成功登记，才能执行 Typst |
+| `PUT /api/v2/print/requests/{request_id}/document` | `Content-Type: application/pdf`，最终 PDF bytes | 200，持久化入队后的请求事实；相同内容重试返回首次结果 |
+| `POST /api/v2/print/requests/{request_id}/generation-failure` | JSON：`protocol_version: 1`、固定枚举 `code` | 200，已登记的生成失败事实；不附带编译器输出 |
+| `GET /api/v2/print/requests/{request_id}` | 无请求体 | 200，当前请求事实与原入队快照，仅用于结果不明核实 |
+
+JSON 使用封闭字段集。`account` 必须严格等于 DOMjudge `[username]`，Server 按现有 `accounts.account` 找到已有 `account_id` 与 team；不 trim、改大小写或按 `[teamid]`、队名、座位猜测。登记保存该 `account_id` 及非秘密展示快照：`account`、`team_name`、`seat_label`。`team_name` 优先使用非空中文名，否则英文名；未分配座位表示为 null。原文件名仅为展示数据，最多 1024 UTF-8 bytes，不接受路径分隔符、NUL 或控制字符，不参与路径构造。源文件哈希用于识别同一请求的登记冲突，不是来源证明或跨请求去重键。
+
+请求事实的 JSON 字段为 `protocol_version`、`request_id`、`account_id`、`account`、`team_name`、`seat_label`、`state`、`document`、`admission`、`generation_failure`。I1 的 `state` 为 `preparing`、`generation_failed` 或 `ready`；不伪造领取／打印状态。准备中时后三个字段均为 null；生成失败时仅 `generation_failure` 非 null；就绪时仅 `document` 与 `admission` 非 null。`generation_failure` 为上述固定 `code` 字符串；枚举为 `compile_timeout`、`compile_failed`、`document_too_large`、`wrapper_deadline`。`document` 为 `{ "sha256": "…", "bytes": 12345, "pages": 3 }`，页数由 Server 解析最终 PDF 得到，不信任 wrapper 自报。`admission` 为 `{ "ready_sequence": 1, "ahead_tasks": 0, "ahead_pages": 0, "in_progress_tasks": 0 }`；I1 没有领取端，因此处理中数真实为 0，不预建假打印执行记录。
+
+幂等键为 `(source_id, request_id)`。相同登记字段的重试返回已存在请求；同键不同字段返回 409。同一来源可以为相同源码建立不同请求 ID，有意再次打印不被内容哈希合并。不同来源的 ID 空间彼此隔离。上传只允许 `preparing → ready`；相同最终 PDF 的重试返回原结果，不重新计算顺序或快照，不同内容返回 409。生成失败只允许 `preparing → generation_failed`；相同失败枚举可重试，不同枚举、失败后上传、就绪后报失败均返回 409。名单删除或以同账号重建不能把旧登记转给新队伍；上传时重新确认原 `account_id` 与账号的对应事实，失效返回 409，已入队结果不因名单随后变化而改写。
+
+最终 PDF 上传专用限制为 8 MiB，其他接口继续使用 Axum 默认 2 MiB；不增加 Server 请求体读取超时。Server 在完整解析 PDF、确认非加密且有有效页树、页数和 A4 页面后才入队；损坏文档、加密文档、无页文档、非 A4 页面及带主动执行／外部引用的文档拒绝。不把语法与结构校验称为完整渲染、驱动兼容或物理打印证明；黑白与单份由固定模板及后续打印端执行，不以 PDF 结构检查保证设备输出。
+
+I1 将最终 PDF 作为 Print 自有 SQLite BLOB 与文档摘要、页数、全局单调就绪序号、首次受理快照在同一写事务中提交，避免分离文件和数据库造成的孤儿或半提交。入队成功只在 COMMIT 后返回；事务失败全部回滚，取消调用者不等于取消已开始的数据库写入，结果可通过同键查询核实。就绪顺序在事务中分配，不使用登记时间、客户端时间或并发校验完成前的顺序。快照只统计本任务之前已就绪但未领取的任务及其文档页数，涵盖所有来源；准备中和生成失败请求排除。备份必须取得一致的 SQLite 数据库及其 WAL 状态；不直接复制运行中的单个数据库文件。数据库随文档增长，不自动删除或添加未经确认的队伍／任务数量上限。
+
+接口错误沿用 `{ "title": "…", "status": 400, "code": "INVALID_REQUEST" }` 外壳。无效字段／PDF 返回 400，来源认证失败或撤销返回 401，管理接口角色不足返回 403，自己来源中不存在的请求返回 404，阶段／内容／身份冲突返回 409，PDF 上传超过 8 MiB 返回 413，内部持久化失败返回 500；现有数据库工作准入失败可返回 503。来源认证失败不消费请求体。整个 Print namespace 使用 `Cache-Control: no-store`；不通过错误正文泄漏解析内容、路径或其他来源的存在事实。机器可读契约由 Server DTO 生成 OpenAPI 和 TypeScript，不手改生成物。
+
+wrapper 接受 `--file`、`--account`、`--original`，可显式传 `--request-id` 用于受控重试；未传时每次独立调用生成新 UUIDv7。配置固定在 `/etc/natsume-print-domjudge/config.toml`，包含 `server_url`、`token_file` 和可选 `ca_certificate`；服务器地址必须是无凭据、路径、查询和片段的 HTTPS origin。部署拥有配置和凭据，包不生成或覆盖 token。源文件必须为常规 UTF-8 文件，最多 256 KiB；拒绝目录、特殊文件和符号链接，不回显内容。源码和展示字段均作为数据进入固定 Typst 模板，不拼接可执行 Typst、shell 或 eval；不接受用户模板、远端资源或任意编译参数。A4、黑白、单份，长行必须换行，不裁掉源码。
+
+包携带校验固定版本 Typst 0.14.2、模板、必要字体与许可，安装及运行不联网下载。编译使用单线程和仅包内字体，不搜索主机字体；隔离临时目录仅含固定模板、数据和源文件，退出清理，不建立持久本地收单／补报队列。编译最多 2 秒，wrapper 从启动到返回总计最多 5 秒，联网、生成和核实共享该总预算；这不是 Server 的请求体读取超时。超时必须终止并回收编译子进程，子进程 stderr 不直接展示给选手，也不留下无界日志。时间、输入和最终输出限制不等于独立的编译内存隔离；首版不声明具备此项保证或 PHP-FPM 并发容量保证。
+
+wrapper 只有确认 `ready` 且收到完整入队快照才返回成功并输出“已入队，尚未打印完成”、前方任务数／页数、处理中数及请求 ID。登记响应丢失时，仅在总预算剩余的范围内以同一请求 ID 和完全相同的登记内容重放一次 POST，由 Server 再次比较原文件名、账号和源码哈希；GET 不含全部登记字段，不能单凭旧就绪结果认定本次登记匹配。上传响应丢失时可用同一 ID 查询，并核对最终 PDF 哈希和长度；仍无法核实时返回非零退出码和“结果无法确认”，不声称一定未受理，不自动创建新请求。生成失败当时在剩余预算内尽力回报；回报丢失保留准备中是诚实的可观察事实。新进程未携带原请求 ID 不是原请求重试；选手再次提交可能产生新任务，不能承诺跨调用 exactly-once。
+
 ### 23.3 主动领取、打印尝试与恢复
 
 全场一个共享打印池，FIFO 以最终 PDF 就绪顺序为准。统一 A4、黑白、单份； 单双面等现场统一配置，不做每任务自选。并行完成顺序不保证等同领取顺序。

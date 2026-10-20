@@ -1,0 +1,40 @@
+name: natsume-print-domjudge
+arch: amd64
+platform: linux
+version: ${VERSION}
+version_schema: none
+section: utils
+priority: optional
+maintainer: Natsume Project
+vendor: Natsume Project
+homepage: https://github.com/4o3F/Natsume
+description: Independent DOMjudge HTTPS print admission and fixed Typst wrapper
+umask: 0o022
+depends:
+  - ca-certificates
+${SHLIBS_DEPENDS}
+contents:
+  - src: ${WRAPPER_BIN}
+    dst: /usr/bin/natsume-print-domjudge
+    file_info: {mode: 0o755}
+  - src: ${RUNTIME_ASSETS}/typst
+    dst: /usr/lib/natsume-print-domjudge/typst
+    file_info: {mode: 0o755}
+  - src: ${RUNTIME_ASSETS}/template.typ
+    dst: /usr/share/natsume-print-domjudge/template.typ
+    file_info: {mode: 0o644}
+  - src: ${RUNTIME_ASSETS}/fonts/NotoSansMonoCJKsc-Regular.otf
+    dst: /usr/share/natsume-print-domjudge/fonts/NotoSansMonoCJKsc-Regular.otf
+    file_info: {mode: 0o644}
+  - src: ${RUNTIME_ASSETS}/licenses/
+    dst: /usr/share/doc/natsume-print-domjudge/licenses/
+    type: tree
+  - src: packaging/print-domjudge/README.md
+    dst: /usr/share/doc/natsume-print-domjudge/README.md
+    file_info: {mode: 0o644}
+  - src: packaging/print-domjudge/config.example.toml
+    dst: /usr/share/doc/natsume-print-domjudge/config.example.toml
+    file_info: {mode: 0o644}
+  - src: LICENSE
+    dst: /usr/share/doc/natsume-print-domjudge/copyright
+    file_info: {mode: 0o644}

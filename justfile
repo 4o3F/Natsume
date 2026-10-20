@@ -119,4 +119,7 @@ package-client:
     AUTHOR_AVATAR_FILE="$PWD/dist/packages/author-avatar.png" envsubst '${ARCH} ${VERSION} ${RUST_RELEASE_DIR} ${CADDY_BIN} ${AUTHOR_AVATAR_FILE}' < packaging/client/nfpm.yaml | nfpm package --packager deb --config /dev/stdin --target dist/packages/
     python3 packaging/check-image-inputs.py --deb "dist/packages/natsume-client_${VERSION}_${ARCH}.deb"
 
-package: package-server package-client
+package-print-domjudge:
+    python3 packaging/print-domjudge/build.py
+
+package: package-server package-client package-print-domjudge
