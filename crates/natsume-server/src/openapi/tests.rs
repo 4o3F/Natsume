@@ -48,7 +48,7 @@ const PROVISIONING_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 2] = [
         "put",
         "/api/v2/provisioning-window",
         "updateProvisioningWindow",
-        &["200", "400", "401", "403", "413"],
+        &["200", "400", "401", "403"],
     ),
 ];
 
@@ -63,9 +63,7 @@ const OPERATOR_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 13] = [
         "patch",
         "/api/v2/operator/accounts/{operator_id}",
         "updateOperatorAccount",
-        &[
-            "204", "400", "401", "403", "404", "408", "409", "413", "500",
-        ],
+        &["204", "400", "401", "403", "404", "409", "500"],
     ),
     (
         "delete",
@@ -83,7 +81,7 @@ const OPERATOR_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 13] = [
         "post",
         "/api/v2/operator/invitations",
         "createOperatorInvitation",
-        &["201", "400", "401", "403", "408", "413", "500"],
+        &["201", "400", "401", "403", "500"],
     ),
     (
         "delete",
@@ -107,31 +105,31 @@ const OPERATOR_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 13] = [
         "post",
         "/api/v2/operator/register/inspect",
         "inspectOperatorRegistration",
-        &["200", "400", "408", "409", "410", "413", "500"],
+        &["200", "400", "409", "410", "500"],
     ),
     (
         "post",
         "/api/v2/operator/register",
         "registerOperator",
-        &["201", "400", "408", "409", "410", "413", "500", "503"],
+        &["201", "400", "409", "410", "500", "503"],
     ),
     (
         "post",
         "/api/v2/operator/password/reset/inspect",
         "inspectOperatorPasswordReset",
-        &["200", "400", "408", "409", "410", "413", "500"],
+        &["200", "400", "409", "410", "500"],
     ),
     (
         "post",
         "/api/v2/operator/password/reset",
         "resetOperatorPassword",
-        &["204", "400", "408", "409", "410", "413", "500", "503"],
+        &["204", "400", "409", "410", "500", "503"],
     ),
     (
         "post",
         "/api/v2/operator/password/change",
         "changeOperatorPassword",
-        &["204", "400", "401", "408", "409", "413", "500", "503"],
+        &["204", "400", "401", "409", "500", "503"],
     ),
 ];
 
@@ -161,7 +159,7 @@ fn expected_operation_table() -> OperationTable {
             "post",
             "/api/v2/target-submissions",
             "submitTargets",
-            &["200", "400", "401", "403", "409", "413", "500"],
+            &["200", "400", "401", "403", "409", "500"],
         ),
         (
             "get",
@@ -259,7 +257,7 @@ fn expected_operation_table() -> OperationTable {
             "patch",
             "/api/v2/devices/{device_id}",
             "updateDevice",
-            &["204", "400", "401", "403", "404", "409", "413", "500"],
+            &["204", "400", "401", "403", "404", "409", "500"],
         ),
         (
             "delete",
@@ -295,19 +293,21 @@ fn expected_operation_table() -> OperationTable {
             "post",
             "/api/v2/session",
             "createSession",
-            &["200", "400", "401", "408", "413", "500", "503"],
+            &["200", "400", "401", "500", "503"],
         ),
         (
             "post",
             "/api/v2/imports",
             "createRosterImport",
-            &["201", "400", "401", "403", "409", "413", "500"],
+            &["201", "400", "401", "403", "409", "413", "500", "503"],
         ),
         (
             "post",
             "/api/v2/imports/{import_id}/actions/commit",
             "commitRosterImport",
-            &["204", "400", "401", "403", "404", "409", "413", "500"],
+            &[
+                "204", "400", "401", "403", "404", "409", "413", "500", "503",
+            ],
         ),
         (
             "delete",
