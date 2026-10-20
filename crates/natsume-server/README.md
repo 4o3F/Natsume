@@ -55,6 +55,16 @@ Import admits one heavy operation at a time before buffering the workbook, share
 
 The current `axum::serve` entry point does not install a Hyper timer, so the default HTTP/1 request-header timeout is not active. Connection and handshake limits do not close this slow-header gap. There is also no API-wide processing deadline or independent body-read timer; slow uploads can retain Import capacity until the request ends. See [resource-protection verification](docs/resource-limits.md) for tests, opt-in measurements and acceptance limitations.
 
+## DOMjudge print admission
+
+The Print component registers source-scoped requests, validates final PDFs, and commits their bytes, page count, FIFO sequence and first admission snapshot atomically in SQLite. This is admission only: no Windows worker, printing attempt or physical completion is implemented. The [Print notes](docs/print-admission.md) describe structural PDF validation, resource limitations and consistent database backups; the [architecture contract](../../docs/architecture.md#2321-i1-受理协议与独立交付) defines fields, transitions and failure semantics.
+
+Administrators create and list dedicated sources at `/api/v2/print/sources` and revoke one at `/api/v2/print/sources/{source_id}`. Creation returns a token only once; store it in the restricted file on the DOMjudge host, never in the package, command arguments or logs. There is no Print management page yet. The independently packaged [DOMjudge wrapper](../../packaging/print-domjudge/README.md) uses that source token over strictly verified HTTPS and maps `[username]` exactly to the existing roster account. It needs no shared directory or Server package on the DOMjudge host.
+
+Only `PUT /api/v2/print/requests/{request_id}/document` has an 8 MiB body-limit override; other routes keep the default 2 MiB limit. There is no added Server body-read deadline. The wrapper separately limits UTF-8 source to 256 KiB, compilation to two seconds and total synchronous execution to five seconds. Confirmed admission means queued, not printed. Documents remain in the database without automatic retention cleanup; the 8 MiB input limit is not a decompressed-memory bound or parser isolation guarantee.
+
+`just test-print-admission` prepares verified build-only runtime assets and runs focused wrapper/Print tests, including the explicit real HTTPS/Typst integration test. The integration test uses private fixtures, the actual Server TLS listener/router and wrapper library, not host configuration or a deployed DOMjudge/PHP process. It checks same-ID replay, intentional distinct-ID submission, a simulated lost success response after commit, a hidden registration conflict against an old ready request, independent database reopen, trust rejection and revocation. Windows/printer and deployment-capacity acceptance remain separate.
+
 ## Complete roster import
 
 Preparation accepts the fixed [Teams XLSX template](src/component/import/examples/template.xlsx). The [import format guide](docs/roster.md#excel-模板) defines all nine columns, school merging, text-only cells and size limits. XLSX parsing and input types belong to the internal Import component. Every upload contains the complete roster; omitted accounts, teams, schools and seats appear as removals. The old CSV and JSON commit bodies are rejected.

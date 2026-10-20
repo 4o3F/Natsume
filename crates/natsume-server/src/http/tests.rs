@@ -1,3 +1,5 @@
+mod print;
+mod print_domjudge;
 mod request_bodies;
 mod resource_limits;
 

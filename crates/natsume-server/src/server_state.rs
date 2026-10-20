@@ -12,6 +12,7 @@ use crate::{
         import::ImportComponent,
         operator::OperatorComponent,
         power::PowerControlComponent,
+        print::PrintComponent,
         provisioning::ProvisioningComponent,
         runtime::RuntimeConfigComponent,
         session::SessionControlComponent,
@@ -30,6 +31,7 @@ use crate::{
 /// this composition object.
 pub(crate) struct ServerState {
     operator: OperatorComponent,
+    print: PrintComponent,
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: Arc<ProvisioningComponent>,
@@ -101,6 +103,7 @@ impl ServerState {
         ));
         Self {
             operator: OperatorComponent::new(database.clone()),
+            print: PrintComponent::new(database.clone()),
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone()),
             import: ImportComponent::new(database, vault),
@@ -115,6 +118,10 @@ impl ServerState {
 
     pub(crate) const fn device_control(&self) -> &Arc<DeviceControl> {
         &self.device_control
+    }
+
+    pub(crate) const fn print(&self) -> &PrintComponent {
+        &self.print
     }
 
     pub(crate) const fn operator(&self) -> &OperatorComponent {

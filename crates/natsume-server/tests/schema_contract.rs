@@ -21,7 +21,7 @@ fn migrations() -> Result<FileBasedMigrations, TestError> {
 fn database() -> Result<SqliteConnection, TestError> {
     let mut connection = SqliteConnection::establish(":memory:")?;
     connection.batch_execute("PRAGMA foreign_keys = ON;")?;
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 6);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 7);
     Ok(connection)
 }
 
@@ -39,17 +39,17 @@ fn migrations_round_trip() -> Result<(), TestError> {
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations'";
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        22
+        25
     );
-    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 6);
+    assert_eq!(connection.revert_all_migrations(migrations()?)?.len(), 7);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
         0
     );
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 6);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 7);
     assert_eq!(
         sql::<BigInt>(table_count).get_result::<i64>(&mut connection)?,
-        22
+        25
     );
     Ok(())
 }
@@ -99,7 +99,8 @@ fn target_submission_ids_remain_reserved_after_operator_and_device_removal() -> 
 }
 
 #[test]
-fn operator_links_migration_preserves_existing_deployment_data() -> Result<(), TestError> {
+fn operator_links_and_print_migrations_preserve_existing_deployment_data() -> Result<(), TestError>
+{
     let mut connection = SqliteConnection::establish(":memory:")?;
     connection.batch_execute("PRAGMA foreign_keys = ON;")?;
     for _ in 0..5 {
@@ -148,8 +149,7 @@ fn operator_links_migration_preserves_existing_deployment_data() -> Result<(), T
         "SELECT count(*) FROM pending_import_candidate WHERE singleton = 1 AND candidate_id = 'p1' AND expires_at_unix_ms = 99 AND preview_token_hash = x'08' AND fingerprint_version = 1 AND candidate_fingerprint_sha256 = x'09' AND baseline_fingerprint_sha256 = x'0a' AND redacted_preview_json = '{}'",
         "SELECT count(*) FROM target_submission_receipts WHERE operation_id = 'r1' AND operator_id = 'o1' AND request_json = 'request' AND results_json = 'result'",
     ];
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 1);
-    assert!(connection.run_pending_migrations(migrations()?)?.is_empty());
+    connection.run_next_migration(migrations()?)?;
     for statement in checks {
         assert_eq!(
             sql::<BigInt>(statement).get_result::<i64>(&mut connection)?,
@@ -163,6 +163,20 @@ fn operator_links_migration_preserves_existing_deployment_data() -> Result<(), T
             0
         );
     }
+    connection.batch_execute("INSERT INTO operator_invitations VALUES ('i1', 'viewer', 'o1', x'11', 1, 2); INSERT INTO operator_password_resets VALUES ('o2', 'reset1', 'o1', x'12', 1, 2);")?;
+    let baseline = snapshot_existing_tables(&mut connection)?;
+    connection.run_next_migration(migrations()?)?;
+    assert!(connection.run_pending_migrations(migrations()?)?.is_empty());
+    assert_eq!(snapshot_existing_tables(&mut connection)?, baseline);
+    for table in ["print_sources", "print_requests", "print_documents"] {
+        assert_eq!(
+            sql::<BigInt>(&format!("SELECT count(*) FROM {table}"))
+                .get_result::<i64>(&mut connection)?,
+            0
+        );
+    }
+    connection.revert_last_migration(migrations()?)?;
+    assert_eq!(snapshot_existing_tables(&mut connection)?, baseline);
     connection.revert_last_migration(migrations()?)?;
     for statement in checks {
         assert_eq!(
@@ -297,7 +311,7 @@ fn strict_tables_enforce_storage_types_and_nullability() -> Result<(), TestError
         AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND strict = 1"
         )
         .get_result::<i64>(&mut connection)?,
-        22
+        25
     );
     connection.batch_execute("INSERT INTO accounts VALUES ('a1', 'team-1', 1);")?;
     rejects(
@@ -535,7 +549,7 @@ fn roster_migration_preserves_deployment_data_and_invalidates_only_old_previews(
         "SELECT count(*) FROM device_home_targets WHERE device_id = 'd1' AND reset_epoch = 10",
         "SELECT count(*) FROM runtime_config WHERE singleton = 1 AND domjudge_origin = 'https://judge.example'",
     ];
-    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 5);
+    assert_eq!(connection.run_pending_migrations(migrations()?)?.len(), 6);
     for statement in checks {
         assert_eq!(
             sql::<BigInt>(statement).get_result::<i64>(&mut connection)?,
@@ -589,6 +603,99 @@ fn roster_relationships_and_organization_sequence_survive_removal() -> Result<()
     );
     assert_eq!(
         sql::<BigInt>("SELECT organization_id FROM organizations")
+            .get_result::<i64>(&mut connection)?,
+        2
+    );
+    Ok(())
+}
+
+// Snapshot every baseline table's shape and rows, not a flattened replacement schema.
+fn snapshot_existing_tables(
+    connection: &mut SqliteConnection,
+) -> Result<Vec<(String, String, Option<String>)>, TestError> {
+    use diesel::{
+        QueryableByName, sql_query,
+        sql_types::{Nullable, Text},
+    };
+    #[derive(QueryableByName)]
+    struct Table {
+        #[diesel(sql_type = Text)]
+        name: String,
+        #[diesel(sql_type = Text)]
+        sql: String,
+    }
+    #[derive(QueryableByName)]
+    struct Column {
+        #[diesel(sql_type = Text)]
+        name: String,
+    }
+    #[derive(QueryableByName)]
+    struct Rows {
+        #[diesel(sql_type = Nullable<Text>)]
+        rows: Option<String>,
+    }
+    let tables = sql_query("SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '__diesel_schema_migrations' AND name NOT LIKE 'print_%' ORDER BY name").load::<Table>(connection)?;
+    let mut snapshot = Vec::new();
+    for table in tables {
+        let columns =
+            sql_query(format!("PRAGMA table_info('{}')", table.name)).load::<Column>(connection)?;
+        let values = columns
+            .iter()
+            .map(|c| format!("quote(\"{}\")", c.name))
+            .collect::<Vec<_>>()
+            .join(" || '|' || ");
+        let rows = sql_query(format!("SELECT group_concat(row, char(10)) AS rows FROM (SELECT {values} AS row FROM \"{}\" ORDER BY rowid)", table.name)).get_result::<Rows>(connection)?;
+        snapshot.push((table.name, table.sql, rows.rows));
+    }
+    Ok(snapshot)
+}
+
+#[test]
+fn print_documents_are_atomic_owned_blobs_without_roster_cascades() -> Result<(), TestError> {
+    let mut connection = database()?;
+    connection.batch_execute("INSERT INTO print_sources VALUES ('source1', 'judge', x'01', 0); INSERT INTO accounts VALUES ('a1', 'team-1', 1); INSERT INTO print_requests VALUES ('source1', 'r1', 'a1', 'team-1', 'Team', NULL, 'main.cpp', 'hash', NULL); INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','r1',x'0102','hash',2,1,0,0); DELETE FROM accounts;")?;
+    assert_eq!(
+        sql::<BigInt>(
+            "SELECT count(*) FROM print_requests WHERE account_id = 'a1' AND seat_label IS NULL"
+        )
+        .get_result::<i64>(&mut connection)?,
+        1
+    );
+    assert_eq!(
+        sql::<BigInt>(
+            "SELECT count(*) FROM print_documents WHERE pdf = x'0102' AND ready_sequence = 1"
+        )
+        .get_result::<i64>(&mut connection)?,
+        1
+    );
+    rejects(
+        &mut connection,
+        "INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','missing',x'01','hash',1,1,0,0)",
+        DatabaseErrorKind::ForeignKeyViolation,
+    );
+    rejects(
+        &mut connection,
+        "DELETE FROM print_sources",
+        DatabaseErrorKind::ForeignKeyViolation,
+    );
+    rejects(
+        &mut connection,
+        "DELETE FROM print_requests",
+        DatabaseErrorKind::ForeignKeyViolation,
+    );
+    rejects(
+        &mut connection,
+        "INSERT INTO print_requests VALUES ('source1', 'r1', 'a2', 'other', 'Other', NULL, 'x', 'hash', NULL)",
+        DatabaseErrorKind::UniqueViolation,
+    );
+    rejects(
+        &mut connection,
+        "UPDATE print_documents SET pdf = NULL",
+        DatabaseErrorKind::NotNullViolation,
+    );
+    connection.batch_execute("DELETE FROM print_documents; INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','r1',x'03','hash',1,1,0,0)")?;
+    assert_eq!(
+        sql::<BigInt>("SELECT ready_sequence FROM print_documents")
             .get_result::<i64>(&mut connection)?,
         2
     );

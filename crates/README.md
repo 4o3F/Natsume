@@ -1,10 +1,11 @@
 # Rust workspace packages
 
-The workspace contains the six application and contract packages below. XLSX parsing and templates are internal to Server Import; school-logo file and image processing are internal to Server Contest. Printing, photo and shared contest-domain packages are not implemented. The sole architecture authority is [docs/architecture.md](../docs/architecture.md#17-crate模块与依赖).
+The workspace contains the seven application and contract packages below. XLSX parsing and templates are internal to Server Import; school-logo file and image processing are internal to Server Contest. Server Print admits documents from the standalone DOMjudge wrapper; Windows print execution, photo and shared contest-domain packages are not implemented. The sole architecture authority is [docs/architecture.md](../docs/architecture.md#17-crate模块与依赖).
 
 | Directory / Cargo package | Responsibility | Binary targets |
 | --- | --- | --- |
-| [`natsume-server`](natsume-server/) | HTTPS APIs, contest data and workstation control | `natsume-server`, `export-openapi` |
+| [`natsume-server`](natsume-server/) | HTTPS APIs, contest data, workstation control and durable print admission | `natsume-server`, `export-openapi` |
+| [`natsume-print-domjudge`](natsume-print-domjudge/) | Independent DOMjudge HTTPS admission client and fixed Typst wrapper | `natsume-print-domjudge` |
 | [`natsume-workstation-daemon`](natsume-workstation-daemon/) | Workstation identity, control connection and reconciliation | `natsume-device-daemon` |
 | [`natsume-workstation-helper`](natsume-workstation-helper/) | Closed privileged operations over typed D-Bus | `natsume-privileged-helper` |
 | [`natsume-workstation-agent`](natsume-workstation-agent/) | Waiting and seat-binding UI | `natsume-session-agent` |

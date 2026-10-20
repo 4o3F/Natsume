@@ -1,13 +1,14 @@
 # Packaging
 
-This directory owns the Server/Client Debian manifests, package-owned runtime files, image integration inputs and release checks. nFPM packages already-built Rust/Web outputs and verified Caddy. Both Debs are generic: deployment provisions the public site configuration and CA certificates after package installation. No ignored VM experiment is a release input.
+This directory owns the Server, workstation Client and independent DOMjudge-wrapper Debian manifests, package-owned runtime files, image integration inputs and release checks. nFPM packages Rust/Web outputs and verified runtime assets. All three Debs are generic: deployment provisions configuration, certificates and any source credentials after package installation. No ignored VM experiment is a release input.
 
 | Path | Responsibility |
 | --- | --- |
 | `server/` | `natsume-server` manifest, runtime rootfs and postinstall |
 | `client/` | `natsume-client` manifest, runtime rootfs, fixed PAM/Kiosk entry points, maintainer scripts and supply-chain pins |
+| [print-domjudge/](print-domjudge/README.md) | Independent `natsume-print-domjudge` wrapper, pinned Typst/template/fonts, deployment example and standalone package builder |
 | [image/](image/README.md) | Standalone image-builder handoff: all configuration inputs, dependencies, implementation requirements, acceptance criteria and checker |
-| `ci-package-smoke.sh` | Build/inspect both real Debs and their runtime/image contracts |
+| `ci-package-smoke.sh` | Build/inspect all three real Debs, runtime/image contracts and real HTTPS/Typst admission tests |
 | `check-image-inputs.py` | Verify the source input closure and actual Client Deb image payload |
 | `check-maintainer-scripts.py` | Verify non-mutating postinstall file checks in temporary roots |
 | `hosted-lifecycle.sh` | Existing acknowledgement-gated disposable-runner lifecycle harness |
@@ -32,9 +33,11 @@ The contest role uses Unix user `teams` and `/home/teams`; waiting uses `waiting
 
 ## Build inputs and checks
 
-Both manifests require `VERSION`, `ARCH` and `RUST_RELEASE_DIR`. Client additionally requires `CADDY_BIN` and `AUTHOR_AVATAR_FILE`; Server requires the built `web/dist`. Neither manifest consumes `SITE_CONFIG`, `CONTROL_CA_CERT` or `LOCAL_ORIGIN_CA_CERT`. The matching public site configuration and trust roots are separate deployment inputs for both packages; no root private key or per-device identity enters either Deb or the image. `client/config.example.toml` and `server/config.example.toml` describe each side's complete configuration. They are packaged only under `/usr/share/doc/natsume-{client,server}/`.
+The Server and Client manifests require `VERSION`, `ARCH` and `RUST_RELEASE_DIR`. Client additionally requires `CADDY_BIN` and `AUTHOR_AVATAR_FILE`; Server requires the built `web/dist`. Neither manifest consumes `SITE_CONFIG`, `CONTROL_CA_CERT` or `LOCAL_ORIGIN_CA_CERT`. The matching public site configuration and trust roots are separate deployment inputs for both packages; no root private key or per-device identity enters either Deb or the image. `client/config.example.toml` and `server/config.example.toml` describe each side's complete configuration. They are packaged only under `/usr/share/doc/natsume-{client,server}/`.
 
-`just package-client` / `just package-server` render these variables with `envsubst` and consume the prebuilt inputs. The Client recipe also checks the resulting Deb's image payload. Both Client packaging entry points run `client/prepare-avatar.py` to resolve the public `4o3f` Gravatar profile and fetch a 512 × 512 PNG. It is baked into the Deb at `/usr/share/natsume/author-avatar.png` (0644), not checked into Git or compiled into the binary. No email hash or API token is required. Download/format failures stop packaging rather than silently shipping an old or missing image; the downloaded image's SHA-256 is logged. Rebuilding later may pick up a changed profile avatar. Cargo builds, installation scripts and the running Agent never fetch this asset. `just ci-packages` downloads and verifies pinned tools, builds production binaries/Web, produces both real Debs without site inputs, and checks that neither contains site configuration or CA certificates. Its output remains `dist/packages/ci/*.deb`; image integration inputs travel inside the Client Deb and need no third package or separate VM archive.
+`just package-print-domjudge` runs the [standalone builder](print-domjudge/README.md#build-and-package). It builds only the wrapper by default; when `RUST_RELEASE_DIR` is provided it uses that prebuilt wrapper without invoking Cargo. It accepts the same explicit `VERSION` and only `ARCH=amd64`, verifies pinned Typst/font/license inputs and nFPM on the builder, and packages no deployment configuration, credentials or service. Installed wrapper hosts need no Server/Client package or runtime downloads. It can communicate with a Server on another machine without shared files. This package's actual native-library minimums follow its builder and must be checked against the target distribution.
+
+`just package-client` / `just package-server` render these variables with `envsubst` and consume the prebuilt inputs. The Client recipe also checks the resulting Deb's image payload. Both Client packaging entry points run `client/prepare-avatar.py` to resolve the public `4o3f` Gravatar profile and fetch a 512 × 512 PNG. It is baked into the Deb at `/usr/share/natsume/author-avatar.png` (0644), not checked into Git or compiled into the binary. No email hash or API token is required. Download/format failures stop packaging rather than silently shipping an old or missing image; the downloaded image's SHA-256 is logged. Rebuilding later may pick up a changed profile avatar. Cargo builds, installation scripts and the running Agent never fetch this asset. `just ci-packages` downloads and verifies pinned tools, builds production binaries/Web, produces all three real Debs without deployment inputs, and checks that they contain no installed deployment configuration or credentials. The wrapper package consumes its prebuilt production binary with the same CI/release version, and the checks explicitly exercise real Typst and HTTPS admission. Output remains `dist/packages/ci/*.deb`; image integration inputs still travel inside the Client Deb and need no separate image-integration package or VM archive.
 
 ```sh
 python3 packaging/check-image-inputs.py
@@ -49,18 +52,19 @@ The Agent has one startup owner: official `org.gnome.Kiosk.Script.service` with 
 
 Push a tag such as `v2.3.2` to run [release.yml](../.github/workflows/release.yml). The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as `v2.3.2-rc.1` (no build metadata). It reuses the full CI workflow at the tagged commit; all jobs must pass before GitHub Release publication. Branch/PR CI keeps its `2.3.2~ci1` package version.
 
-Each release includes `natsume-client_<version>_amd64.deb`, `natsume-server_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated release notes. Version-specific notes and migration guidance belong in [GitHub Releases](https://github.com/4o3F/Natsume/releases), not separate files in the repository. For prereleases, `v2.3.2-rc.1` becomes Debian version `2.3.2~rc.1`, which sorts before `2.3.2`; the GitHub Release is marked as a prerelease and is not made latest. Download both packages and the checksum file into one directory and run `sha256sum --check SHA256SUMS` to verify them.
+Each release includes `natsume-client_<version>_amd64.deb`, `natsume-server_<version>_amd64.deb`, `natsume-print-domjudge_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated release notes. Version-specific notes and migration guidance belong in [GitHub Releases](https://github.com/4o3F/Natsume/releases), not separate files in the repository. For prereleases, `v2.3.2-rc.1` becomes Debian version `2.3.2~rc.1`, which sorts before `2.3.2`; the GitHub Release is marked as a prerelease and is not made latest. Download all three packages and the checksum file into one directory and run `sha256sum --check SHA256SUMS` to verify them. To verify only selected downloaded packages, use `sha256sum --ignore-missing --check SHA256SUMS`; the independent wrapper does not require installing the other two packages.
 
 Publishing uses the workflow's `GITHUB_TOKEN` with `contents: write` only in the publish job; it needs no site secrets. The tag must already exist remotely, and an existing release is not overwritten. The weekly hosted lifecycle lane and target-image acceptance remain separate from this release CI.
 
 ## Deployment configuration
 
-Deployment supplies one complete configuration per side:
+Deployment supplies separate configuration for the paired workstation system and the independently deployed wrapper:
 
 - Client: `/etc/natsume/config.toml`, containing `[server]` (IP literal and port) and `[site]` (Gateway hostname).
 - Server: `/etc/natsume-server/config.toml`, containing `[listen]`, `[log]`, `[storage]`, `[tls]`, `[site]` (Gateway hostname, certificate expiry and contest end), `[trust]` (Control/Local Origin CA paths), and `[runtime]` (the required canonical HTTPS `domjudge_origin`).
+- DOMjudge wrapper: `/etc/natsume-print-domjudge/config.toml`, containing the remote HTTPS `server_url`, restricted `token_file`, and optional deployment `ca_certificate`; see its [configuration and credentials](print-domjudge/README.md#deployment-owned-configuration-and-credentials).
 
-Both sides also use `/etc/natsume/trust/control-ca.crt` and `/etc/natsume/trust/local-origin-ca.crt`. Configuration and public certificates are `root:root`, mode `0644`, with parent directories mode `0755`. The Gateway hostname and CA files must match the paired deployment. See the Server's [TLS/Origin issuing material and bootstrap](../crates/natsume-server/README.md).
+The workstation Client and Server also use `/etc/natsume/trust/control-ca.crt` and `/etc/natsume/trust/local-origin-ca.crt`. Configuration and public certificates are `root:root`, mode `0644`, with parent directories mode `0755`. The Gateway hostname and CA files must match the paired deployment. See the Server's [TLS/Origin issuing material and bootstrap](../crates/natsume-server/README.md).
 
 Server `bootstrap` creates or migrates the database schema, then initializes the first admin and Runtime Config in one business transaction. Service startup synchronizes the origin from the deployment configuration; edit the configuration and restart the Server to change the upstream. Package scripts do not initialize business data.
 

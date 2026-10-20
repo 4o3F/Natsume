@@ -25,6 +25,7 @@ const UNMOUNTED_DESCRIPTION_PREFIX: &str = "Declared but not mounted in WP8 oper
 const FORBIDDEN_CREDENTIAL_KEY: &str = r"(?i)^(?:(?:\w*_)?private_key(?:_\w*)?|(?:\w*_)?pass(?:word|phrase)(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?token(?:_(?:value|plaintext|material|secret))?|(?:\w*_)?secret(?:_(?:value|plaintext|material|key))?)$";
 const ALLOWED_CREDENTIAL_PATHS: &[&str] = &[
     "/components/schemas/SessionRequest/properties/password",
+    "/components/schemas/PrintSourceIssued/properties/token",
     "/components/schemas/ImportPreviewResponse/properties/preview_token",
     "/components/schemas/OperatorInvitationIssuedResponse/properties/token",
     "/components/schemas/OperatorPasswordResetIssuedResponse/properties/token",
@@ -133,6 +134,51 @@ const OPERATOR_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 13] = [
     ),
 ];
 
+const PRINT_OPERATION_ROWS: [(&str, &str, &str, &[&str]); 7] = [
+    (
+        "post",
+        "/api/v2/print/sources",
+        "createPrintSource",
+        &["200", "400", "401", "403", "500"],
+    ),
+    (
+        "get",
+        "/api/v2/print/sources",
+        "listPrintSources",
+        &["200", "401", "403", "500"],
+    ),
+    (
+        "delete",
+        "/api/v2/print/sources/{source_id}",
+        "revokePrintSource",
+        &["204", "400", "401", "403", "404", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/print/requests",
+        "registerPrintRequest",
+        &["200", "400", "401", "409", "500"],
+    ),
+    (
+        "get",
+        "/api/v2/print/requests/{request_id}",
+        "getPrintRequest",
+        &["200", "400", "401", "404", "500"],
+    ),
+    (
+        "post",
+        "/api/v2/print/requests/{request_id}/generation-failure",
+        "reportPrintGenerationFailure",
+        &["200", "400", "401", "404", "409", "500"],
+    ),
+    (
+        "put",
+        "/api/v2/print/requests/{request_id}/document",
+        "uploadPrintDocument",
+        &["200", "400", "401", "404", "409", "413", "500"],
+    ),
+];
+
 #[test]
 fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
     let value = serialized_document()?;
@@ -146,7 +192,11 @@ fn operation_tables_and_response_sets_are_exact() -> Result<(), TestFailure> {
             )
         })
         .collect::<BTreeMap<_, _>>();
-    if actual != expected_operation_table() {
+    let expected = expected_operation_table();
+    for (key, row) in &actual {
+        assert_eq!(Some(row), expected.get(key), "{key:?}");
+    }
+    if actual != expected {
         return Err(TestFailure::OperationTableChanged);
     }
     Ok(())
@@ -319,6 +369,7 @@ fn expected_operation_table() -> OperationTable {
     rows.iter()
         .chain(PROVISIONING_OPERATION_ROWS.iter())
         .chain(OPERATOR_OPERATION_ROWS.iter())
+        .chain(PRINT_OPERATION_ROWS.iter())
         .map(|(method, path, operation_id, statuses)| {
             (
                 ((*method).to_owned(), (*path).to_owned()),
@@ -397,7 +448,7 @@ fn info_description_is_exact() -> Result<(), TestFailure> {
         .and_then(Value::as_str)
         .ok_or(TestFailure::DocumentShapeInvalid)?;
     if description
-        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword.\nDeclared but not mounted in WP8 operation IDs: none."
+        != "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword, createPrintSource, listPrintSources, revokePrintSource, registerPrintRequest, getPrintRequest, reportPrintGenerationFailure, uploadPrintDocument.\nDeclared but not mounted in WP8 operation IDs: none."
     {
         return Err(TestFailure::InfoDescriptionChanged);
     }
@@ -1015,10 +1066,11 @@ fn error_response_shape_has_no_correlation_contract() -> Result<(), TestFailure>
                 .pointer("/content/application~1json/schema/$ref")
                 .and_then(Value::as_str)
                 == Some("#/components/schemas/ErrorResponse");
-            if matches!(
+            if (matches!(
                 status.as_str(),
                 "400" | "401" | "403" | "404" | "409" | "410" | "500" | "503"
-            ) != has_error_response
+            ) || (status == "413" && record.operation_id == "uploadPrintDocument"))
+                != has_error_response
             {
                 return Err(TestFailure::ErrorResponseMappingChanged);
             }
@@ -1267,6 +1319,7 @@ fn concrete_path(path: &str) -> String {
         .replace("{review_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{import_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{operator_id}", "01900000-0000-7000-8000-000000000000")
+        .replace("{source_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{invite_id}", "01900000-0000-7000-8000-000000000000")
         .replace("{request_id}", "01900000-0000-7000-8000-000000000000")
 }
@@ -1589,5 +1642,102 @@ fn session_response_requires_account_username_for_login_and_read()
             "#/components/schemas/SessionResponse"
         );
     }
+    Ok(())
+}
+
+#[test]
+fn print_contract_has_closed_required_nullable_facts_and_dedicated_bearer_security()
+-> Result<(), TestFailure> {
+    let value = serialized_document()?;
+    for (name, fields) in [
+        (
+            "PrintRegistration",
+            &[
+                "protocol_version",
+                "request_id",
+                "account",
+                "original_filename",
+                "source_sha256",
+            ][..],
+        ),
+        ("PrintGenerationFailure", &["protocol_version", "code"][..]),
+        ("PrintSourceCreate", &["name"][..]),
+        ("PrintSource", &["source_id", "name", "revoked"][..]),
+        (
+            "PrintSourceIssued",
+            &["source_id", "name", "revoked", "token"][..],
+        ),
+        (
+            "PrintRequest",
+            &[
+                "protocol_version",
+                "request_id",
+                "account_id",
+                "account",
+                "team_name",
+                "seat_label",
+                "state",
+                "document",
+                "admission",
+                "generation_failure",
+            ][..],
+        ),
+        ("PrintDocument", &["sha256", "bytes", "pages"][..]),
+        (
+            "PrintAdmission",
+            &[
+                "ready_sequence",
+                "ahead_tasks",
+                "ahead_pages",
+                "in_progress_tasks",
+            ][..],
+        ),
+    ] {
+        let schema = schema_object(&value, name)?;
+        assert_eq!(
+            property_names(schema_properties(schema)?),
+            fields.iter().copied().collect()
+        );
+        assert_eq!(
+            required_property_names(schema)?,
+            fields.iter().copied().collect()
+        );
+        assert_eq!(schema["additionalProperties"], false);
+    }
+    let fact = schema_object(&value, "PrintRequest")?;
+    for field in ["seat_label", "document", "admission", "generation_failure"] {
+        assert!(
+            value_contains_string(&schema_properties(fact)?[field], "null"),
+            "{field}"
+        );
+    }
+    for (method, path, _, _) in PRINT_OPERATION_ROWS {
+        let security = if path.starts_with("/api/v2/print/sources") {
+            "sessionCookie"
+        } else {
+            "printSourceBearer"
+        };
+        assert_eq!(
+            operation_at(&value, path, method)?["security"],
+            serde_json::json!([{security: []}])
+        );
+    }
+    let scheme = &value["components"]["securitySchemes"]["printSourceBearer"];
+    assert_eq!(scheme["type"], "http");
+    assert_eq!(scheme["scheme"], "bearer");
+    assert_eq!(scheme["bearerFormat"], "nps1");
+    assert_eq!(
+        value["components"]["schemas"]["GenerationFailure"]["enum"],
+        serde_json::json!([
+            "compile_timeout",
+            "compile_failed",
+            "document_too_large",
+            "wrapper_deadline"
+        ])
+    );
+    assert_eq!(
+        value["components"]["schemas"]["PrintState"]["enum"],
+        serde_json::json!(["preparing", "generation_failed", "ready"])
+    );
     Ok(())
 }

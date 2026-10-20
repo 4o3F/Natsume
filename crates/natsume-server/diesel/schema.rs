@@ -152,6 +152,43 @@ diesel::table! {
 }
 
 diesel::table! {
+    print_documents (ready_sequence) {
+        ready_sequence -> BigInt,
+        source_id -> Text,
+        request_id -> Text,
+        pdf -> Binary,
+        sha256 -> Text,
+        bytes -> BigInt,
+        pages -> BigInt,
+        ahead_tasks -> BigInt,
+        ahead_pages -> BigInt,
+    }
+}
+
+diesel::table! {
+    print_requests (source_id, request_id) {
+        source_id -> Text,
+        request_id -> Text,
+        account_id -> Text,
+        account -> Text,
+        team_name -> Text,
+        seat_label -> Nullable<Text>,
+        original_filename -> Text,
+        source_sha256 -> Text,
+        generation_failure -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    print_sources (source_id) {
+        source_id -> Text,
+        name -> Text,
+        token_hash -> Binary,
+        revoked -> Integer,
+    }
+}
+
+diesel::table! {
     runtime_config (singleton) {
         singleton -> Integer,
         domjudge_origin -> Text,
@@ -211,6 +248,7 @@ diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_invitations -> operator_accounts (issuer_operator_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
+diesel::joinable!(print_requests -> print_sources (source_id));
 diesel::joinable!(server_vault_records -> accounts (account_id));
 diesel::joinable!(teams -> accounts (account_id));
 diesel::joinable!(teams -> organizations (organization_id));
@@ -232,6 +270,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     operator_sessions,
     organizations,
     pending_import_candidate,
+    print_documents,
+    print_requests,
+    print_sources,
     runtime_config,
     seats,
     server_vault_records,

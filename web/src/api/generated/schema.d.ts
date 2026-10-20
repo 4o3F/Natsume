@@ -516,6 +516,102 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v2/print/requests": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["registerPrintRequest"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/print/requests/{request_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["getPrintRequest"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/print/requests/{request_id}/document": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put: operations["uploadPrintDocument"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/print/requests/{request_id}/generation-failure": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post: operations["reportPrintGenerationFailure"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/print/sources": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get: operations["listPrintSources"];
+    put?: never;
+    post: operations["createPrintSource"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v2/print/sources/{source_id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    delete: operations["revokePrintSource"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v2/provisioning-window": {
     parameters: {
       query?: never;
@@ -784,6 +880,12 @@ export interface components {
       credential_id: string;
       gateway_leaf_sha256: string | null;
     };
+    /** @enum {string} */
+    GenerationFailure:
+      | "compile_timeout"
+      | "compile_failed"
+      | "document_too_large"
+      | "wrapper_deadline";
     HealthResponse: {
       status: string;
     };
@@ -977,6 +1079,66 @@ export interface components {
     };
     /** @enum {string} */
     OrganizationLogoStatus: "available" | "missing" | "ambiguous" | "invalid";
+    PrintAdmission: {
+      /** Format: int64 */
+      ahead_pages: number;
+      /** Format: int64 */
+      ahead_tasks: number;
+      /** Format: int64 */
+      in_progress_tasks: number;
+      /** Format: int64 */
+      ready_sequence: number;
+    };
+    PrintDocument: {
+      /** Format: int64 */
+      bytes: number;
+      /** Format: int64 */
+      pages: number;
+      sha256: string;
+    };
+    PrintGenerationFailure: {
+      code: components["schemas"]["GenerationFailure"];
+      /** Format: int32 */
+      protocol_version: number;
+    };
+    PrintRegistration: {
+      account: string;
+      /** @description Display only: at most 1024 UTF-8 bytes, without separators or controls. */
+      original_filename: string;
+      /** Format: int32 */
+      protocol_version: number;
+      request_id: components["schemas"]["CanonicalUuidV7"];
+      source_sha256: string;
+    };
+    PrintRequest: {
+      account: string;
+      account_id: components["schemas"]["CanonicalUuidV7"];
+      admission: components["schemas"]["PrintAdmission"] | null;
+      document: components["schemas"]["PrintDocument"] | null;
+      generation_failure: components["schemas"]["GenerationFailure"] | null;
+      /** Format: int32 */
+      protocol_version: number;
+      request_id: components["schemas"]["CanonicalUuidV7"];
+      seat_label: string | null;
+      state: components["schemas"]["PrintState"];
+      team_name: string;
+    };
+    PrintSource: {
+      name: string;
+      revoked: boolean;
+      source_id: components["schemas"]["CanonicalUuidV7"];
+    };
+    PrintSourceCreate: {
+      name: string;
+    };
+    PrintSourceIssued: {
+      name: string;
+      revoked: boolean;
+      source_id: components["schemas"]["CanonicalUuidV7"];
+      token: string;
+    };
+    /** @enum {string} */
+    PrintState: "preparing" | "generation_failed" | "ready";
     /** @description Open automatically approves new and pending enrollments; closed requires administrator approval. */
     ProvisioningWindowRequest: {
       /** @enum {string} */
@@ -3309,6 +3471,447 @@ export interface operations {
       };
       /** @description Image workers busy */
       503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  registerPrintRequest: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PrintRegistration"];
+      };
+    };
+    responses: {
+      /** @description Registered request, not yet queued */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrintRequest"];
+        };
+      };
+      /** @description Invalid registration */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Source authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Registration conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  getPrintRequest: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        request_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Current fact and original admission */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrintRequest"];
+        };
+      };
+      /** @description Invalid ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Source authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request not found in this source */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  uploadPrintDocument: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        request_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/pdf": string;
+      };
+    };
+    responses: {
+      /** @description PDF and first FIFO snapshot committed atomically */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrintRequest"];
+        };
+      };
+      /** @description Invalid PDF */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Source authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unknown request */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Phase, document or identity conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description PDF exceeds 8 MiB */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  reportPrintGenerationFailure: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        request_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PrintGenerationFailure"];
+      };
+    };
+    responses: {
+      /** @description Durable generation failure */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrintRequest"];
+        };
+      };
+      /** @description Invalid failure */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Source authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unknown request */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Phase conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  listPrintSources: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Non-secret sources */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrintSource"][];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Admin required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  createPrintSource: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PrintSourceCreate"];
+      };
+    };
+    responses: {
+      /** @description Source credential returned only once */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PrintSourceIssued"];
+        };
+      };
+      /** @description Invalid fields */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Admin required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  revokePrintSource: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path: {
+        source_id: components["schemas"]["CanonicalUuidV7"];
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Source revoked idempotently */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Invalid ID */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Admin required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unknown source */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Persistence failed */
+      500: {
         headers: {
           [name: string]: unknown;
         };

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Natsume V2 Server API",
-    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword.\nDeclared but not mounted in WP8 operation IDs: none.",
+    "description": "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword, createPrintSource, listPrintSources, revokePrintSource, registerPrintRequest, getPrintRequest, reportPrintGenerationFailure, uploadPrintDocument.\nDeclared but not mounted in WP8 operation IDs: none.",
     "version": "2.10.3"
   },
   "paths": {
@@ -2627,6 +2627,545 @@
         }
       }
     },
+    "/api/v2/print/requests": {
+      "post": {
+        "operationId": "registerPrintRequest",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrintRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Registered request, not yet queued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid registration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Source authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Registration conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "printSourceBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v2/print/requests/{request_id}": {
+      "get": {
+        "operationId": "getPrintRequest",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current fact and original admission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Source authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Request not found in this source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "printSourceBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v2/print/requests/{request_id}/document": {
+      "put": {
+        "operationId": "uploadPrintDocument",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/pdf": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "PDF and first FIFO snapshot committed atomically",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid PDF",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Source authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Phase, document or identity conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "PDF exceeds 8 MiB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "printSourceBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v2/print/requests/{request_id}/generation-failure": {
+      "post": {
+        "operationId": "reportPrintGenerationFailure",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrintGenerationFailure"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Durable generation failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Source authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Phase conflict",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "printSourceBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v2/print/sources": {
+      "get": {
+        "operationId": "listPrintSources",
+        "responses": {
+          "200": {
+            "description": "Non-secret sources",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PrintSource"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createPrintSource",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PrintSourceCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Source credential returned only once",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrintSourceIssued"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid fields",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
+    "/api/v2/print/sources/{source_id}": {
+      "delete": {
+        "operationId": "revokePrintSource",
+        "parameters": [
+          {
+            "name": "source_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/CanonicalUuidV7"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Source revoked idempotently"
+          },
+          "400": {
+            "description": "Invalid ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Persistence failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ]
+      }
+    },
     "/api/v2/provisioning-window": {
       "get": {
         "operationId": "getProvisioningWindow",
@@ -3521,6 +4060,15 @@
         },
         "additionalProperties": false
       },
+      "GenerationFailure": {
+        "type": "string",
+        "enum": [
+          "compile_timeout",
+          "compile_failed",
+          "document_too_large",
+          "wrapper_deadline"
+        ]
+      },
       "HealthResponse": {
         "type": "object",
         "required": ["status"],
@@ -4173,6 +4721,232 @@
         "type": "string",
         "enum": ["available", "missing", "ambiguous", "invalid"]
       },
+      "PrintAdmission": {
+        "type": "object",
+        "required": [
+          "ready_sequence",
+          "ahead_tasks",
+          "ahead_pages",
+          "in_progress_tasks"
+        ],
+        "properties": {
+          "ahead_pages": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "ahead_tasks": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "in_progress_tasks": {
+            "type": "integer",
+            "format": "int64",
+            "maximum": 0,
+            "minimum": 0
+          },
+          "ready_sequence": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintDocument": {
+        "type": "object",
+        "required": ["sha256", "bytes", "pages"],
+        "properties": {
+          "bytes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "pages": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintGenerationFailure": {
+        "type": "object",
+        "required": ["protocol_version", "code"],
+        "properties": {
+          "code": {
+            "$ref": "#/components/schemas/GenerationFailure"
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "maximum": 1,
+            "minimum": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintRegistration": {
+        "type": "object",
+        "required": [
+          "protocol_version",
+          "request_id",
+          "account",
+          "original_filename",
+          "source_sha256"
+        ],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "original_filename": {
+            "type": "string",
+            "description": "Display only: at most 1024 UTF-8 bytes, without separators or controls."
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "maximum": 1,
+            "minimum": 1
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "source_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintRequest": {
+        "type": "object",
+        "required": [
+          "protocol_version",
+          "request_id",
+          "account_id",
+          "account",
+          "team_name",
+          "seat_label",
+          "state",
+          "document",
+          "admission",
+          "generation_failure"
+        ],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "account_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "admission": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PrintAdmission"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "document": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PrintDocument"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generation_failure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/GenerationFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol_version": {
+            "type": "integer",
+            "format": "int32",
+            "maximum": 1,
+            "minimum": 1
+          },
+          "request_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "seat_label": {
+            "type": ["string", "null"]
+          },
+          "state": {
+            "$ref": "#/components/schemas/PrintState"
+          },
+          "team_name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintSource": {
+        "type": "object",
+        "required": ["source_id", "name", "revoked"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "source_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintSourceCreate": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintSourceIssued": {
+        "type": "object",
+        "required": ["source_id", "name", "revoked", "token"],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "revoked": {
+            "type": "boolean"
+          },
+          "source_id": {
+            "$ref": "#/components/schemas/CanonicalUuidV7"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PrintState": {
+        "type": "string",
+        "enum": ["preparing", "generation_failed", "ready"]
+      },
       "ProvisioningWindowRequest": {
         "type": "object",
         "description": "Open automatically approves new and pending enrollments; closed requires administrator approval.",
@@ -4586,6 +5360,11 @@
       }
     },
     "securitySchemes": {
+      "printSourceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "nps1"
+      },
       "sessionCookie": {
         "type": "apiKey",
         "in": "cookie",

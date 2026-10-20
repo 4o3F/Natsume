@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           packages=()
-          for package in natsume-client natsume-server; do
+          for package in natsume-client natsume-server natsume-print-domjudge; do
             asset="${package}_${PACKAGE_VERSION}_amd64.deb"
             test "$(dpkg-deb --field "${asset}" Package)" = "${package}"
             test "$(dpkg-deb --field "${asset}" Version)" = "${PACKAGE_VERSION}"

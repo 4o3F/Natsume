@@ -25,6 +25,7 @@ enum ApiErrorCode {
     AuthenticationFailed,
     AuthorizationDenied,
     InvalidRequest,
+    PayloadTooLarge,
     ResourceConflict,
     ResourceNotFound,
     InternalError,
@@ -48,6 +49,7 @@ impl ApiErrorCode {
             Self::AuthenticationFailed => "AUTHENTICATION_FAILED",
             Self::AuthorizationDenied => "AUTHORIZATION_DENIED",
             Self::InvalidRequest => "INVALID_REQUEST",
+            Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             Self::ResourceConflict => "RESOURCE_CONFLICT",
             Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
             Self::InternalError => "INTERNAL_ERROR",
@@ -324,6 +326,26 @@ impl ApiError {
         };
         response.title = error.to_string().into();
         response
+    }
+
+    pub(super) fn from_print(error: crate::component::print::PrintError) -> Self {
+        use crate::component::print::PrintError;
+        match error {
+            PrintError::Invalid => Self::invalid_request("print_invalid"),
+            PrintError::Authentication => {
+                Self::authentication_failed("print_source_authentication")
+            }
+            PrintError::Authorization => Self::authorization_denied("print_source_management"),
+            PrintError::NotFound => Self::not_found("print_not_found"),
+            PrintError::Conflict => Self::conflict("print_conflict"),
+            PrintError::TooLarge => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+                ApiErrorCode::PayloadTooLarge,
+                "print_document_too_large",
+            ),
+            PrintError::Persistence => Self::internal_error("print_persistence"),
+        }
     }
 
     fn new(

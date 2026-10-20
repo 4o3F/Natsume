@@ -5,6 +5,7 @@ pub(crate) mod enrollment;
 pub(crate) mod health;
 pub(crate) mod import;
 pub(crate) mod operator;
+pub(crate) mod print;
 pub(crate) mod provisioning;
 pub(crate) mod session;
 pub(crate) mod target_submission;

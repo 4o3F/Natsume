@@ -19,7 +19,7 @@ download() {
     "$1" --output "$2"
 }
 
-for command in cargo cp curl cut dpkg-deb envsubst grep node pnpm python3 readelf sed sha256sum shellcheck systemctl systemd-analyze tar; do
+for command in cargo cp curl cut dpkg-deb dpkg-shlibdeps envsubst grep node pdfinfo pdftotext pnpm python3 readelf sed sha256sum shellcheck systemctl systemd-analyze tar; do
   require_command "${command}"
 done
 
@@ -114,14 +114,15 @@ CARGO_TARGET_DIR="${production_target}" cargo build \
   -p natsume-workstation-daemon \
   -p natsume-workstation-helper \
   -p natsume-workstation-agent \
-  -p natsume-server
+  -p natsume-server \
+  -p natsume-print-domjudge
 pnpm --filter @natsume/web build
 
 export VERSION="${VERSION:-2.10.3~ci1}"
 export ARCH="${ARCH:-amd64}"
 export RUST_RELEASE_DIR="${production_release}"
 export CADDY_BIN="${caddy_binary}"
-# Both packages must build without deployment-specific inputs.
+# All packages must build without deployment-specific inputs.
 unset SITE_CONFIG CONTROL_CA_CERT LOCAL_ORIGIN_CA_CERT
 
 # envsubst takes literal variable names, not their values.
@@ -146,8 +147,28 @@ fi
   --config "${client_config}" \
   --target "${output_root}/"
 
+python3 packaging/print-domjudge/build.py --output "${output_root}"
+python3 packaging/print-domjudge/test_build.py
+cargo test -p natsume-print-domjudge --locked --lib -- --ignored
+cargo test -p natsume-server --locked --lib http::tests::print_domjudge -- --ignored
+
 server_deb="${output_root}/natsume-server_${VERSION}_${ARCH}.deb"
 client_deb="${output_root}/natsume-client_${VERSION}_${ARCH}.deb"
+wrapper_deb="${output_root}/natsume-print-domjudge_${VERSION}_${ARCH}.deb"
+test -f "${wrapper_deb}" || fail "wrapper Deb was not produced at ${wrapper_deb}"
+test "$(dpkg-deb --field "${wrapper_deb}" Package)" = natsume-print-domjudge || fail 'wrapper package name mismatch'
+test "$(dpkg-deb --field "${wrapper_deb}" Version)" = "${VERSION}" || fail 'wrapper package version mismatch'
+test "$(dpkg-deb --field "${wrapper_deb}" Architecture)" = "${ARCH}" || fail 'wrapper package architecture mismatch'
+if dpkg-deb --field "${wrapper_deb}" Depends | grep -Eq '(^|[ ,])natsume-(server|client)([ ,(]|$)'; then
+  fail 'wrapper must not depend on the Server or workstation Client package'
+fi
+dpkg-deb --contents "${wrapper_deb}" >"${work_root}/wrapper.contents"
+for path in /usr/bin/natsume-print-domjudge /usr/lib/natsume-print-domjudge/typst /usr/share/natsume-print-domjudge/template.typ /usr/share/natsume-print-domjudge/fonts/NotoSansMonoCJKsc-Regular.otf; do
+  grep -Fq " .${path}" "${work_root}/wrapper.contents" || fail "wrapper package missing ${path}"
+done
+if grep -Eq ' \\./etc/| \\./var/|/systemd/' "${work_root}/wrapper.contents"; then
+  fail 'wrapper package must not contain deployment credentials, local queues or services'
+fi
 test -f "${server_deb}" || fail "server Deb was not produced at ${server_deb}"
 test -f "${client_deb}" || fail "client Deb was not produced at ${client_deb}"
 python3 packaging/check-image-inputs.py --deb "${client_deb}"
@@ -399,4 +420,4 @@ for policy in policies:
     ET.parse(policy)
 PY
 
-printf 'package-smoke: ok server=%s client=%s\n' "${server_deb}" "${client_deb}"
+printf 'package-smoke: ok server=%s client=%s wrapper=%s\n' "${server_deb}" "${client_deb}" "${wrapper_deb}"

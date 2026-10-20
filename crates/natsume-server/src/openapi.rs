@@ -7,11 +7,11 @@ use utoipa::{
         info::InfoBuilder,
         path::{Operation, Paths},
         schema::{AdditionalProperties, KnownFormat, ObjectBuilder, Schema, Type},
-        security::{ApiKey, ApiKeyValue, SecurityScheme},
+        security::{ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme},
     },
 };
 
-const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword.\nDeclared but not mounted in WP8 operation IDs: none.";
+const INFO_DESCRIPTION: &str = "Mounted WP8 operation IDs: getHealth, createSession, getSession, deleteSession, listSeats, listAccounts, listBindings, listOrganizationLogos, listCandidateOrganizationLogos, getOrganizationLogo, getCandidateOrganizationLogo, exportDomjudge, getRosterTemplate, getRosterImport, createRosterImport, commitRosterImport, deleteRosterImport, getProvisioningWindow, updateProvisioningWindow, listEnrollmentReviews, approveEnrollmentReview, denyEnrollmentReview, listDevices, getDevice, updateDevice, deleteDeviceBinding, getDeviceSessionControl, getDeviceHome, getDeviceConvergence, submitTargets, listOperatorAccounts, updateOperatorAccount, deleteOperatorAccount, listOperatorInvitations, createOperatorInvitation, revokeOperatorInvitation, regenerateOperatorInvitation, createOperatorPasswordReset, inspectOperatorRegistration, registerOperator, inspectOperatorPasswordReset, resetOperatorPassword, changeOperatorPassword, createPrintSource, listPrintSources, revokePrintSource, registerPrintRequest, getPrintRequest, reportPrintGenerationFailure, uploadPrintDocument.\nDeclared but not mounted in WP8 operation IDs: none.";
 const SESSION_COOKIE_SECURITY_SCHEME: &str = "sessionCookie";
 const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const CANONICAL_UUID_V7_PATTERN: &str =
@@ -21,6 +21,13 @@ const CANONICAL_UUID_V5_PATTERN: &str =
 #[derive(utoipa::OpenApi)]
 #[openapi(
     paths(
+        crate::http::handler::print::create_source,
+        crate::http::handler::print::list_sources,
+        crate::http::handler::print::revoke_source,
+        crate::http::handler::print::register,
+        crate::http::handler::print::get_request,
+        crate::http::handler::print::generation_failure,
+        crate::http::handler::print::upload,
         crate::http::handler::health::health,
         crate::http::handler::session::create_session,
         crate::http::handler::session::read_session,
@@ -66,6 +73,16 @@ const CANONICAL_UUID_V5_PATTERN: &str =
         crate::http::handler::operator::change_password
     ),
     components(schemas(
+        crate::http::handler::print::PrintSourceCreate,
+        crate::http::handler::print::PrintRegistration,
+        crate::http::handler::print::PrintGenerationFailure,
+        crate::http::handler::print::GenerationFailure,
+        crate::http::handler::print::PrintSource,
+        crate::http::handler::print::PrintSourceIssued,
+        crate::http::handler::print::PrintRequest,
+        crate::http::handler::print::PrintState,
+        crate::http::handler::print::PrintDocument,
+        crate::http::handler::print::PrintAdmission,
         crate::http::handler::health::HealthResponse,
         crate::http::handler::session::SessionRequest,
         crate::http::handler::session::SessionResponse,
@@ -146,6 +163,30 @@ fn configure_components(components: &mut utoipa::openapi::Components) {
         .schemas
         .insert("ErrorResponse".to_owned(), error_response_schema().into());
     components.add_security_scheme(
+        "printSourceBearer",
+        SecurityScheme::Http(
+            HttpBuilder::new()
+                .scheme(HttpAuthScheme::Bearer)
+                .bearer_format("nps1")
+                .build(),
+        ),
+    );
+    for (schema_name, fields) in [
+        ("PrintSource", &["source_id"][..]),
+        ("PrintSourceIssued", &["source_id"][..]),
+        ("PrintRegistration", &["request_id"][..]),
+        ("PrintRequest", &["request_id", "account_id"][..]),
+    ] {
+        if let Some(RefOr::T(Schema::Object(schema))) = components.schemas.get_mut(schema_name) {
+            for field in fields {
+                schema.properties.insert(
+                    (*field).to_owned(),
+                    Ref::from_schema_name("CanonicalUuidV7").into(),
+                );
+            }
+        }
+    }
+    components.add_security_scheme(
         SESSION_COOKIE_SECURITY_SCHEME,
         SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new(SESSION_COOKIE_NAME))),
     );
@@ -225,7 +266,13 @@ fn canonicalize_path_parameters(paths: &mut Paths) {
                 };
                 if matches!(
                     parameter.name.as_str(),
-                    "device_id" | "review_id" | "import_id" | "operator_id" | "invite_id"
+                    "device_id"
+                        | "review_id"
+                        | "import_id"
+                        | "operator_id"
+                        | "invite_id"
+                        | "source_id"
+                        | "request_id"
                 ) {
                     parameter.schema = Some(Ref::from_schema_name("CanonicalUuidV7").into());
                 }
@@ -303,7 +350,9 @@ fn enrich_operation(operation: Option<&mut Operation>) {
         if matches!(
             status.as_str(),
             "400" | "401" | "403" | "404" | "409" | "410" | "500" | "503"
-        ) {
+        ) || (status == "413"
+            && operation.operation_id.as_deref() == Some("uploadPrintDocument"))
+        {
             response.content.insert(
                 "application/json".to_owned(),
                 Content::new(Some(Ref::from_schema_name("ErrorResponse"))).into(),

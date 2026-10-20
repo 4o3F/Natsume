@@ -36,17 +36,20 @@ pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
         .nest("/api/v2", api_v2(&state))
         .fallback_service(static_service)
         .with_state(state)
-        .layer(axum_middleware::from_fn(operator_no_store))
+        .layer(axum_middleware::from_fn(private_namespace_no_store))
         .layer(axum_middleware::from_fn(middleware::request_context))
 }
 
 // Cover root method rejection too, so early responses for this namespace
 // have the same cache policy as its handlers.
-async fn operator_no_store(request: Request, next: Next) -> Response {
+async fn private_namespace_no_store(request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    let operator = path == "/api/v2/operator" || path.starts_with("/api/v2/operator/");
+    let private = path == "/api/v2/operator"
+        || path.starts_with("/api/v2/operator/")
+        || path == "/api/v2/print"
+        || path.starts_with("/api/v2/print/");
     let mut response = next.run(request).await;
-    if operator {
+    if private {
         response
             .headers_mut()
             .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -70,6 +73,7 @@ fn api_v2(state: &AppState) -> Router<AppState> {
     public
         .merge(authenticated)
         .merge(handler::operator::routes(state.clone()))
+        .merge(handler::print::routes(state.clone()))
         .fallback(not_found)
         .layer(axum_middleware::from_fn(middleware::reject_head))
 }

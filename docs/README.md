@@ -9,6 +9,7 @@
 | [镜像接入与交付](../packaging/image/README.md) | 完整交接包、IMG-01～08、配置输入、构建顺序和维护要求 |
 | [镜像验收标准](../packaging/image/acceptance.md) | AT-01～26、测量口径、证据要求和最终交付条件 |
 | [Wayland KMS 桌面串流方案](wayland-kms-streaming.zh-CN.md) | 经授权的比赛工位可选无门户提示画面观测、SRT 传输与验收 |
+| [DOMjudge 打印受理与独立交付](../packaging/print-domjudge/README.md) | 独立 wrapper 包、固定 Typst／字体、专用来源令牌、DOMjudge 配置及同步预算；不代表物理打印已实现 |
 | [Agent 文档规则](agents/domain.md) | 领域术语、架构权威和文档阅读规则 |
 | [Agent Issue 工作流](agents/issue-tracker.md) | GitHub Issues 和技能工作流的仓库约定 |
 
