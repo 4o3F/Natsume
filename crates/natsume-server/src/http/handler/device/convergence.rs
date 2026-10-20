@@ -10,7 +10,6 @@ use crate::{
 };
 
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use crate::device_control as model;
 
@@ -33,12 +32,11 @@ use runtime::RuntimeConfigConvergenceResponse;
 use session::SessionConvergenceResponse;
 
 /// Current durable targets and latest validated Actual for one Device.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeviceConvergenceResponse {
-    #[schema(inline)]
     connection_state: ConnectionStateResponse,
-    #[schema(required = true)]
+    #[specta(type = Option<specta_typescript::Number>)]
     received_at_unix_ms: Option<i64>,
     gateway: GatewayConvergenceResponse,
     binding: BindingConvergenceResponse,
@@ -61,7 +59,7 @@ impl From<model::DeviceConvergence> for DeviceConvergenceResponse {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 enum ConnectionStateResponse {
     Offline,
@@ -80,7 +78,7 @@ impl From<model::ConnectionState> for ConnectionStateResponse {
 }
 
 /// Typed comparison of one current target with one fresh Actual.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 enum ConvergenceStatusResponse {
     AwaitingActual,
@@ -102,20 +100,6 @@ impl From<model::ConvergenceStatus> for ConvergenceStatusResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/devices/{device_id}/convergence",
-    operation_id = "getDeviceConvergence",
-    params(DevicePath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current redacted Server targets and latest valid Client Actual", body = DeviceConvergenceResponse),
-        (status = 400, description = "Invalid Device ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 404, description = "Device not found"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn get_device_convergence(
     State(state): State<AppState>,
     Path(path): Path<DevicePath>,

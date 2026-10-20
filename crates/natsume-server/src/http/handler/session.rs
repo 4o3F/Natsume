@@ -6,7 +6,6 @@ use axum::{
     routing::{delete, get, post},
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::component::operator::OperatorIdentity;
@@ -26,17 +25,16 @@ pub(in crate::http) fn protected_routes(state: AppState) -> Router<AppState> {
     )
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionRequest {
     /// Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated.
     login_name: String,
     /// At most 1024 UTF-8 bytes; never normalized or truncated.
-    #[schema(write_only)]
     password: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SessionResponse {
     operator_id: Uuid,
@@ -44,20 +42,6 @@ pub(crate) struct SessionResponse {
     role: &'static str,
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/session",
-    operation_id = "createSession",
-    request_body = SessionRequest,
-    responses(
-        (status = 200, description = "Session established", body = SessionResponse),
-        (status = 400, description = "Invalid closed request"),
-        (status = 401, description = "Authentication failed"),
-        (status = 500, description = "Internal failure"),
-        (status = 503, description = "Sign-in capacity exhausted; retry after 1 second",
-            headers(("Retry-After" = u32, description = "Seconds before retrying; always 1")))
-    )
-)]
 pub(crate) async fn create_session(State(state): State<AppState>, request: Request) -> Response {
     let Ok(Json(request)) = Json::<SessionRequest>::from_request(request, &state).await else {
         return ApiError::invalid_request("session_request_body_rejected").into_response();
@@ -77,17 +61,6 @@ pub(crate) async fn create_session(State(state): State<AppState>, request: Reque
     identity_response(&state, signed_in.identity(), Some(session_cookie)).await
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/session",
-    operation_id = "getSession",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current session", body = SessionResponse),
-        (status = 401, description = "Session authentication failed"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn read_session(
     State(state): State<AppState>,
     Extension(identity): Extension<OperatorIdentity>,
@@ -95,16 +68,6 @@ pub(crate) async fn read_session(
     identity_response(&state, identity, None).await
 }
 
-#[utoipa::path(
-    delete,
-    path = "/api/v2/session",
-    operation_id = "deleteSession",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "Session terminated or credential-state no-op"),
-        (status = 500, description = "Session termination infrastructure failure")
-    )
-)]
 pub(crate) async fn delete_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
     let response = match cookie::session_credential(&headers) {
         Ok(wire_credential) => match state.operator().terminate_session(wire_credential).await {

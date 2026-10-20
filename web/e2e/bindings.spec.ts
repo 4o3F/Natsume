@@ -1,12 +1,15 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import type { components } from "../src/api/generated/schema";
+import type {
+  BindingContextResponse,
+  DeviceResponse_Serialize as DeviceResponse,
+} from "../src/api/generated/types";
 
-type Device = components["schemas"]["DeviceResponse"];
+type Device = DeviceResponse;
 
 const devices: Device[] = ["A-01", "A-2", "A-10", null, null].map(
   (seatCode, index) => {
-    const context: components["schemas"]["BindingContextResponse"] = {
+    const context: BindingContextResponse = {
       binding_id: `01923456-789a-7bcd-8ef0-123456789b0${index}`,
       account_id: "01923456-789a-7bcd-8ef0-123456789a01",
       credential_revision: 1,

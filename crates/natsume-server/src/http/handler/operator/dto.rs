@@ -1,6 +1,5 @@
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
-use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use crate::component::operator::{InvitationSummary, OperatorRole, OperatorSummary};
@@ -30,7 +29,7 @@ impl Serialize for SecretValue {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum OperatorRoleValue {
     Admin,
@@ -55,19 +54,17 @@ impl From<OperatorRoleValue> for OperatorRole {
 }
 
 /// The sole mutable account field, also used to choose an invitation's fixed role.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorRoleRequest {
-    #[schema(inline)]
     pub(super) role: OperatorRoleValue,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorAccountResponse {
     pub(super) operator_id: Uuid,
     pub(super) username: String,
-    #[schema(inline)]
     pub(super) role: OperatorRoleValue,
 }
 impl From<OperatorSummary> for OperatorAccountResponse {
@@ -80,14 +77,15 @@ impl From<OperatorSummary> for OperatorAccountResponse {
     }
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorInvitationResponse {
     pub(super) invitation_id: Uuid,
-    #[schema(inline)]
     pub(super) role: OperatorRoleValue,
     pub(super) issuer_operator_id: Uuid,
+    #[specta(type = specta_typescript::Number)]
     pub(super) created_at_unix_ms: i64,
+    #[specta(type = specta_typescript::Number)]
     pub(super) expires_at_unix_ms: i64,
     pub(super) expired: bool,
 }
@@ -105,97 +103,94 @@ impl OperatorInvitationResponse {
 }
 
 /// Only creation/regeneration can return the plaintext authorization.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorInvitationIssuedResponse {
     pub(super) invitation: OperatorInvitationResponse,
-    #[schema(value_type = String, read_only, pattern = "^invite_[0-9a-f]{64}$")]
+    #[specta(type = String)]
     pub(super) token: SecretValue,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorPasswordResetIssuedResponse {
     pub(super) operator_id: Uuid,
     pub(super) reset_id: Uuid,
     pub(super) username: String,
+    #[specta(type = specta_typescript::Number)]
     pub(super) expires_at_unix_ms: i64,
-    #[schema(value_type = String, read_only, pattern = "^reset_[0-9a-f]{64}$")]
+    #[specta(type = String)]
     pub(super) token: SecretValue,
 }
 
 /// Token stays in the JSON body, never in an API path or query.
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorTokenRequest {
-    #[schema(value_type = String, write_only)]
+    #[specta(type = String)]
     pub(super) token: SecretValue,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorRegistrationInspectionResponse {
-    #[schema(inline)]
     pub(super) role: OperatorRoleValue,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorPasswordResetInspectionResponse {
     pub(super) username: String,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorRegistrationRequest {
-    #[schema(value_type = String, write_only, pattern = "^invite_[0-9a-f]{64}$")]
+    #[specta(type = String)]
     pub(super) token: SecretValue,
     /// 1–128 UTF-8 bytes; case-sensitive, unique, without surrounding whitespace.
-    #[schema(min_length = 1, max_length = 128)]
     pub(super) username: String,
     /// 16–1024 ASCII characters: letters, digits, !@#$%^&*()-_=+[]{};:,.?/~.
     /// Requires a digit and a special character. Whitespace is forbidden.
-    #[schema(value_type = String, write_only, format = Password, min_length = 16, max_length = 1024, pattern = r"^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\[\]{};:,.?/~\-])[A-Za-z0-9!@#$%^&*()_=+\[\]{};:,.?/~\-]{16,1024}$")]
+    #[specta(type = String)]
     pub(super) password: SecretValue,
     /// Must equal password exactly; no normalization.
-    #[schema(value_type = String, write_only, format = Password, min_length = 16, max_length = 1024, pattern = r"^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\[\]{};:,.?/~\-])[A-Za-z0-9!@#$%^&*()_=+\[\]{};:,.?/~\-]{16,1024}$")]
+    #[specta(type = String)]
     pub(super) password_confirmation: SecretValue,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorPasswordResetRequest {
-    #[schema(value_type = String, write_only, pattern = "^reset_[0-9a-f]{64}$")]
+    #[specta(type = String)]
     pub(super) token: SecretValue,
     /// 16–1024 ASCII characters, using the same policy as registration.
-    #[schema(value_type = String, write_only, format = Password, min_length = 16, max_length = 1024, pattern = r"^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\[\]{};:,.?/~\-])[A-Za-z0-9!@#$%^&*()_=+\[\]{};:,.?/~\-]{16,1024}$")]
+    #[specta(type = String)]
     pub(super) password: SecretValue,
-    #[schema(value_type = String, write_only, format = Password, min_length = 16, max_length = 1024, pattern = r"^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\[\]{};:,.?/~\-])[A-Za-z0-9!@#$%^&*()_=+\[\]{};:,.?/~\-]{16,1024}$")]
+    #[specta(type = String)]
     pub(super) password_confirmation: SecretValue,
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OperatorPasswordChangeRequest {
     /// Existing passwords retain their legacy format; at most 1024 UTF-8 bytes.
-    #[schema(value_type = String, write_only, format = Password, max_length = 1024)]
+    #[specta(type = String)]
     pub(super) current_password: SecretValue,
     /// 16–1024 ASCII characters, using the same policy as registration.
-    #[schema(value_type = String, write_only, format = Password, min_length = 16, max_length = 1024, pattern = r"^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\[\]{};:,.?/~\-])[A-Za-z0-9!@#$%^&*()_=+\[\]{};:,.?/~\-]{16,1024}$")]
+    #[specta(type = String)]
     pub(super) password: SecretValue,
-    #[schema(value_type = String, write_only, format = Password, min_length = 16, max_length = 1024, pattern = r"^(?=.*[0-9])(?=.*[!@#$%^&*()_=+\[\]{};:,.?/~\-])[A-Za-z0-9!@#$%^&*()_=+\[\]{};:,.?/~\-]{16,1024}$")]
+    #[specta(type = String)]
     pub(super) password_confirmation: SecretValue,
 }
 
-#[derive(Deserialize, IntoParams)]
-#[into_params(parameter_in = Path)]
+#[derive(Deserialize)]
 pub(crate) struct OperatorAccountPath {
     /// Canonical lowercase hyphenated `UUIDv7`.
     pub(super) operator_id: String,
 }
 
-#[derive(Deserialize, IntoParams)]
-#[into_params(parameter_in = Path)]
+#[derive(Deserialize)]
 pub(crate) struct OperatorInvitationPath {
     /// Canonical lowercase hyphenated `UUIDv7`.
     pub(super) invite_id: String,

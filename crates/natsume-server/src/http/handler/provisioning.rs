@@ -5,7 +5,6 @@ use axum::{
     routing::{get, put},
 };
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::component::provisioning::ProvisioningWindow;
 
@@ -21,22 +20,20 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
 }
 
 /// Current process-local automatic Enrollment approval state.
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProvisioningWindowResponse {
-    #[schema(inline)]
     state: ProvisioningWindowState,
 }
 
 /// Open automatically approves new and pending enrollments; closed requires administrator approval.
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProvisioningWindowRequest {
-    #[schema(inline)]
     state: ProvisioningWindowState,
 }
 
-#[derive(Deserialize, Serialize, ToSchema)]
+#[derive(Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 enum ProvisioningWindowState {
     Closed,
@@ -55,34 +52,11 @@ impl From<ProvisioningWindow> for ProvisioningWindowResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/provisioning-window",
-    operation_id = "getProvisioningWindow",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current provisioning-window fact", body = ProvisioningWindowResponse),
-        (status = 401, description = "Session authentication failed")
-    )
-)]
 pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Response {
     let window = state.provisioning().read_window();
     Json(ProvisioningWindowResponse::from(window)).into_response()
 }
 
-#[utoipa::path(
-    put,
-    path = "/api/v2/provisioning-window",
-    operation_id = "updateProvisioningWindow",
-    security(("sessionCookie" = [])),
-    request_body = ProvisioningWindowRequest,
-    responses(
-        (status = 200, description = "Provisioning window replaced", body = ProvisioningWindowResponse),
-        (status = 400, description = "Invalid request body"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-    )
-)]
 pub(crate) async fn update_provisioning_window(
     State(state): State<AppState>,
     request: Result<Json<ProvisioningWindowRequest>, JsonRejection>,

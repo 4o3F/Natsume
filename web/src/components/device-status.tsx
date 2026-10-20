@@ -1,11 +1,10 @@
 import { useEffect, useState } from "react";
 
-import type { components } from "@/api/generated/schema";
+import type { DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { convergenceIcons, statusIcons } from "./device-status-style";
 
-type ConvergenceStatus =
-  components["schemas"]["DeviceConvergenceResponse"]["home"]["status"];
+type ConvergenceStatus = DeviceConvergenceResponse["home"]["status"];
 
 export function StatusIcon({
   icon,

@@ -20,9 +20,6 @@ shell-format:
 web-audit:
     pnpm audit --audit-level high --registry https://registry.npmjs.org
 
-openapi-lint:
-    pnpm --filter @natsume/web openapi:lint
-
 secret-scan:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -42,9 +39,8 @@ unit:
     pnpm --filter @natsume/web test
 
 api:
-    cargo run -p natsume-server --bin export-openapi -- web/openapi/natsume.openapi.json
-    pnpm --filter @natsume/web openapi:lint
-    pnpm --filter @natsume/web api:generate
+    cargo run -p natsume-server --locked --bin export-typescript
+    pnpm --filter @natsume/web api:format
 
 diesel-schema:
     #!/usr/bin/env bash
@@ -94,11 +90,8 @@ schema-contract:
         exit 1
     fi
 
-ci-contracts: install diesel-schema schema-contract
-    cargo run -p natsume-server --locked --bin export-openapi -- web/openapi/natsume.openapi.json
-    pnpm --filter @natsume/web openapi:lint
-    pnpm --filter @natsume/web api:generate
-    git diff --exit-code -- web/openapi/natsume.openapi.json web/src/api/generated/schema.d.ts
+ci-contracts: install diesel-schema schema-contract api
+    git diff --exit-code -- web/src/api/generated/types.ts
 
 ci-policy: shell-format secret-scan
 

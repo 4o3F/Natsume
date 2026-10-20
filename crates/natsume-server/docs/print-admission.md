@@ -1,6 +1,6 @@
 # Print admission implementation notes
 
-The I1 behavior and wire authority is [architecture §23.2.1](../../../docs/architecture.md#2321-i1-受理协议与独立交付); Rust Print DTOs and HTTP annotations generate the public OpenAPI contract. This component admits documents, not physical printing, and creates no printing attempts or automatic cleanup.
+The I1 behavior and wire authority is [architecture §23.2.1](../../../docs/architecture.md#2321-i1-受理协议与独立交付); Rust Print HTTP DTOs define the JSON fields and generate TypeScript bindings through Specta; actual HTTP tests cover routing, authentication and responses. This component admits documents, not physical printing, and creates no printing attempts or automatic cleanup.
 
 ## PDF validation boundary
 

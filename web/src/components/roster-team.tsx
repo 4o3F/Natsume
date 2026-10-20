@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { ImageOff } from "lucide-react";
 
-import type { components } from "@/api/generated/schema";
+import type { TeamResponse } from "@/api/generated/types";
 
-export type Team = components["schemas"]["TeamResponse"];
+export type Team = TeamResponse;
 
 export function TeamName({ team }: { team?: Team | null }) {
   return team ? (

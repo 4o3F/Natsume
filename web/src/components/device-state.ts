@@ -1,6 +1,6 @@
-import type { components } from "@/api/generated/schema";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 
-export type DeviceState = components["schemas"]["DeviceResponse"]["state"];
+export type DeviceState = DeviceResponse["state"];
 export type DeviceStateFilterValue = Record<DeviceState, boolean>;
 
 export const defaultDeviceStateFilter: DeviceStateFilterValue = {

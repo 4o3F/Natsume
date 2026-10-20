@@ -3,7 +3,11 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  AccountResponse,
+  BindingResponse,
+  SeatResponse,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
@@ -15,9 +19,9 @@ import { RefreshCountdown, StatusIcon } from "@/components/device-status";
 
 import { TeamName, TeamSchool, type Team } from "@/components/roster-team";
 
-type Account = components["schemas"]["AccountResponse"];
-type Binding = components["schemas"]["BindingResponse"];
-type SeatFacts = components["schemas"]["SeatResponse"];
+type Account = AccountResponse;
+type Binding = BindingResponse;
+type SeatFacts = SeatResponse;
 type Seat = SeatFacts & {
   team?: Team | null;
   bound: boolean;
@@ -80,18 +84,18 @@ export function SeatsPage() {
   });
   const seats = useQuery({
     queryKey: ["seats"],
-    queryFn: async () => unwrap<SeatFacts[]>(await api.GET("/api/v2/seats")),
+    queryFn: async () => unwrap<SeatFacts[]>(await api.listSeats()),
     refetchInterval: LIST_POLL_MS,
   });
 
   const accounts = useQuery({
     queryKey: ["accounts"],
-    queryFn: async () => unwrap<Account[]>(await api.GET("/api/v2/accounts")),
+    queryFn: async () => unwrap<Account[]>(await api.listAccounts()),
     refetchInterval: LIST_POLL_MS,
   });
   const bindings = useQuery({
     queryKey: ["bindings"],
-    queryFn: async () => unwrap<Binding[]>(await api.GET("/api/v2/bindings")),
+    queryFn: async () => unwrap<Binding[]>(await api.listBindings()),
     refetchInterval: LIST_POLL_MS,
   });
   const rows = useMemo(() => {

@@ -1,8 +1,8 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
-import type { components } from "../src/api/generated/schema";
+import type { ProvisioningWindowResponse } from "../src/api/generated/types";
 
-type WindowState = components["schemas"]["ProvisioningWindowResponse"]["state"];
+type WindowState = ProvisioningWindowResponse["state"];
 
 function fulfillJson(route: Route, status: number, body: unknown) {
   return route.fulfill({

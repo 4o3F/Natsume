@@ -4,7 +4,7 @@ The workspace contains the seven application and contract packages below. XLSX p
 
 | Directory / Cargo package | Responsibility | Binary targets |
 | --- | --- | --- |
-| [`natsume-server`](natsume-server/) | HTTPS APIs, contest data, workstation control and durable print admission | `natsume-server`, `export-openapi` |
+| [`natsume-server`](natsume-server/) | HTTPS APIs, contest data, workstation control and durable print admission | `natsume-server`, `export-typescript` |
 | [`natsume-print-domjudge`](natsume-print-domjudge/) | Independent DOMjudge HTTPS admission client and fixed Typst wrapper | `natsume-print-domjudge` |
 | [`natsume-workstation-daemon`](natsume-workstation-daemon/) | Workstation identity, control connection and reconciliation | `natsume-device-daemon` |
 | [`natsume-workstation-helper`](natsume-workstation-helper/) | Closed privileged operations over typed D-Bus | `natsume-privileged-helper` |

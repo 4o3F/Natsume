@@ -11,6 +11,6 @@
     "web:test": "pnpm --filter @natsume/web test",
     "web:build": "pnpm --filter @natsume/web build",
     "web:e2e": "pnpm --filter @natsume/web e2e",
-    "api:generate": "pnpm --filter @natsume/web api:generate"
+    "api:generate": "just api"
   }
 }

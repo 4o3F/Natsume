@@ -12,14 +12,13 @@ const uuid = (group, index) =>
   `019a1234-5678-7abc-8def-${group}${String(index).padStart(8, "0")}`;
 const hardware = (index) =>
   `${String(index).padStart(8, "0")}-1234-5abc-8def-0123456789ab`;
-/** @typedef {import('../src/api/generated/schema.js').components['schemas']} Schemas */
-/** @type {Schemas['SessionResponse']} */
+/** @type {import('../src/api/generated/types.js').SessionResponse} */
 const operator = {
   operator_id: uuid("0001", 1),
   role: "admin",
   username: "ops-admin",
 };
-/** @type {Schemas['OrganizationLogoResponse'][]} */
+/** @type {import('../src/api/generated/types.js').OrganizationLogoResponse[]} */
 const schools = [
   ["INST-001", "星河大学", "Star River University"],
   ["INST-002", "青松理工学院", "Pine Institute of Technology"],
@@ -39,12 +38,12 @@ const schoolLogos = [
   "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAB5ElEQVR42u3bTSgEYRgH8P9MirWWKOKAfBykKOKwBwcKBw4cKDnIR27k4CAHcrIHBwcXRW5SUg7LgRQRyVdaSb5zQdhItnXxOtFmZw3lsOb5P8d536b+v3memWnb0ZRSMKvMtmrzTWFY52NuzWyP9h3Afw3+GwhDAKsE/wmELiV8qGy6lPChMuqSwhtl1SG8dGlX/2sXiO8ALaO1SokfAQIQgAAEIAABCEAAAhCAAOIq4q9P6GrqRH1JRcj1N6Xw4vfh9tELz+UJ5rbWsOzZwpvBb5NG52oe7sfKwU74Api2nKbBYbPDYbMjOyUVtc4y7J4doWPUhWvvvcwRKMzKwWT3IKIjo/7/CBhVYNsmOOJQmleEvoZ2OGz2zz3pSSloKa/BiHvK2h3gfX7CzPoSXNMTQWuVhU45I7B6uBd0LC0xmY9BMQAluQVBx67ubqx5Ewys+JhYlOUXo6euOWhtYXfDmgATXQOme67ubjC+OCvzHrB/cYzGoV74Xv3WHwGlFHyvftw+PsBzeYr57TUs7W8avgpb8kWITwECEIAABCBA+BT/H8ARIAABCEAAAhCAAAQgAAEIIBLgJ5+WWbXOx9waO+BDQuLV5z0gEEBSFwRm1UMtSAhvOAJWRjDKxo+npX8+/w47c6+z2p1etgAAAABJRU5ErkJggg==",
   "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAACI0lEQVR42u3bPUhbURQH8P97Wk2FlsZBQ1EQi6WUdHAwDgpRC+2UdijaoV0CFUoXCylZ1MnJUMFVlzi4OEQQOgjt1KGNUyUiWkVMS6AmxSpJa9KE5HWS5pn7mg/U+nL/Zzw5L+H83rnvA3IVTdNQLLqfThUvuoCxMu9RitUo/wIwa+PlQAgBqqXxUiBUWZo36k2VpXmjHlWZmhf1qkLyUGU7+yenQPoJUBxPXmvSLwECEIAABCAAAQhAAAIQgADSRW0lB40+u4cHfXd0uZe+AD6GwsL654O9cD/s1uUmZpfx5v16xd/bdr0RCz63LhcMhTHiC3ACCEAAAhCAAGd5GxTFtPcRJ4AAMi+Bcp8EOQGCyGnauR9/oQB+HaULcpb6S8Lay4L8z6Pf5gaI/kgU5FptVmFtiyAf3U+YG+DTZqQg19/VIawdEORFx5sKYOtLDOs7e7rc7XYbxobvo6X5GmpqVDQ1XsGLoV4MOG7q6r59jyO4Fv5/d4HTCt/cO8yMP4al7u8adzntcDntxhe/nIZJ/1tksznzPwds7kYxMrmIvf14SfWHiSS800uGt2DTTQAArH6OYPCVH3cdHejpvIFbbU2wXm1Ag6UOqXQGB/Ektr/GEAyFsfxhA8lUpuLf4v8D+C5AAAIQgAAEIAABCEAAAhBASoBStpZVa6zMexROwLGEjGef14B8AJmmIL9X1egDGZoXLoFqRhD1xs3Tsm+f/wNNJMHpCme22gAAAABJRU5ErkJggg==",
 ];
-/** @type {Schemas['SeatResponse'][]} */
+/** @type {import('../src/api/generated/types.js').SeatResponse[]} */
 const seats = Array.from({ length: 5 }, (_, i) => ({
   seat_id: uuid("0002", i + 1),
   seat_code: `A-${String(i + 1).padStart(2, "0")}`,
 }));
-/** @type {Schemas['AccountResponse'][]} */
+/** @type {import('../src/api/generated/types.js').AccountResponse[]} */
 const accounts = [
   ["星河漫游", "Star Voyagers"],
   ["松间算法", "Pine Algorithms"],
@@ -67,13 +66,13 @@ const accounts = [
     },
   };
 });
-/** @type {Schemas['BindingResponse'][]} */
+/** @type {import('../src/api/generated/types.js').BindingResponse[]} */
 const bindings = seats.slice(0, 4).map((seat, i) => ({
   binding_id: uuid("0004", i + 1),
   seat_id: seat.seat_id,
   device_id: uuid("0005", i + 1),
 }));
-/** @type {Schemas['DeviceResponse'][]} */
+/** @type {import('../src/api/generated/types.js').DeviceResponse_Serialize[]} */
 const devices = Array.from({ length: 5 }, (_, i) => {
   const offline = i === 3;
   const spare = i === 4;
@@ -166,7 +165,7 @@ const devices = Array.from({ length: 5 }, (_, i) => {
     },
   };
 });
-/** @type {Schemas['EnrollmentReviewResponse'][]} */
+/** @type {import('../src/api/generated/types.js').EnrollmentReviewResponse[]} */
 const reviews = [6, 7].map((i) => ({
   review_id: uuid("0007", i),
   machine_hardware_id: hardware(i),
@@ -175,14 +174,14 @@ const reviews = [6, 7].map((i) => ({
   daemon_version: "2.10.3",
   agent_version: "2.10.3",
 }));
-/** @type {Schemas['OperatorAccountResponse'][]} */
+/** @type {import('../src/api/generated/types.js').OperatorAccountResponse[]} */
 const users = [
   { ...operator, role: "admin" },
   { operator_id: uuid("0001", 2), role: "admin", username: "floor-admin" },
   { operator_id: uuid("0001", 3), role: "viewer", username: "helpdesk" },
   { operator_id: uuid("0001", 4), role: "viewer", username: "scoreboard" },
 ];
-/** @type {Schemas['OperatorInvitationResponse'][]} */
+/** @type {import('../src/api/generated/types.js').OperatorInvitationResponse[]} */
 const invitations = [
   {
     invitation_id: uuid("0008", 1),

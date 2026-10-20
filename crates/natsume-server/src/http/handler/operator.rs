@@ -102,18 +102,6 @@ fn clear_session(response: Response) -> Response {
     })
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/operator/accounts",
-    operation_id = "listOperatorAccounts",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current response", body = [OperatorAccountResponse]),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn list_accounts(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -130,23 +118,6 @@ pub(crate) async fn list_accounts(
     }
 }
 
-#[utoipa::path(
-    patch,
-    path = "/api/v2/operator/accounts/{operator_id}",
-    operation_id = "updateOperatorAccount",
-    params(OperatorAccountPath),
-    security(("sessionCookie" = [])),
-    request_body = OperatorRoleRequest,
-    responses(
-        (status = 204, description = "Completed"),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Operator not found"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn update_account(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -170,22 +141,6 @@ pub(crate) async fn update_account(
     }
 }
 
-#[utoipa::path(
-    delete,
-    path = "/api/v2/operator/accounts/{operator_id}",
-    operation_id = "deleteOperatorAccount",
-    params(OperatorAccountPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "Completed"),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Operator not found"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn delete_account(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -204,18 +159,6 @@ pub(crate) async fn delete_account(
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/operator/invitations",
-    operation_id = "listOperatorInvitations",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current response", body = [OperatorInvitationResponse]),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn list_invitations(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -237,20 +180,6 @@ pub(crate) async fn list_invitations(
     .into_response()
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/invitations",
-    operation_id = "createOperatorInvitation",
-    security(("sessionCookie" = [])),
-    request_body = OperatorRoleRequest,
-    responses(
-        (status = 201, description = "Created; secret is returned only once, without establishing a session", body = OperatorInvitationIssuedResponse),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn create_invitation(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -282,20 +211,6 @@ pub(crate) async fn create_invitation(
     }
 }
 
-#[utoipa::path(
-    delete,
-    path = "/api/v2/operator/invitations/{invite_id}",
-    operation_id = "revokeOperatorInvitation",
-    params(OperatorInvitationPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "Completed"),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn revoke_invitation(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -311,21 +226,6 @@ pub(crate) async fn revoke_invitation(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/invitations/{invite_id}/actions/regenerate",
-    operation_id = "regenerateOperatorInvitation",
-    params(OperatorInvitationPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 201, description = "Created; secret is returned only once, without establishing a session", body = OperatorInvitationIssuedResponse),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn regenerate_invitation(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -354,21 +254,6 @@ pub(crate) async fn regenerate_invitation(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/accounts/{operator_id}/password-resets",
-    operation_id = "createOperatorPasswordReset",
-    params(OperatorAccountPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 201, description = "Created; secret is returned only once, without establishing a session", body = OperatorPasswordResetIssuedResponse),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Operator not found"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn create_password_reset(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -394,19 +279,6 @@ pub(crate) async fn create_password_reset(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/register/inspect",
-    operation_id = "inspectOperatorRegistration",
-    request_body = OperatorTokenRequest,
-    responses(
-        (status = 200, description = "Current response", body = OperatorRegistrationInspectionResponse),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn inspect_registration(
     State(state): State<AppState>,
     request: Result<Json<OperatorTokenRequest>, JsonRejection>,
@@ -427,20 +299,6 @@ pub(crate) async fn inspect_registration(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/register",
-    operation_id = "registerOperator",
-    request_body = OperatorRegistrationRequest,
-    responses(
-        (status = 201, description = "Created; secret is returned only once, without establishing a session", body = OperatorAccountResponse),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 500, description = "Internal failure"),
-        (status = 503, description = "Password work capacity exhausted; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1"))),
-    )
-)]
 pub(crate) async fn register_operator(
     State(state): State<AppState>,
     request: Result<Json<OperatorRegistrationRequest>, JsonRejection>,
@@ -471,19 +329,6 @@ pub(crate) async fn register_operator(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/password/reset/inspect",
-    operation_id = "inspectOperatorPasswordReset",
-    request_body = OperatorTokenRequest,
-    responses(
-        (status = 200, description = "Current response", body = OperatorPasswordResetInspectionResponse),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 500, description = "Internal failure"),
-    )
-)]
 pub(crate) async fn inspect_password_reset(
     State(state): State<AppState>,
     request: Result<Json<OperatorTokenRequest>, JsonRejection>,
@@ -504,20 +349,6 @@ pub(crate) async fn inspect_password_reset(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/password/reset",
-    operation_id = "resetOperatorPassword",
-    request_body = OperatorPasswordResetRequest,
-    responses(
-        (status = 204, description = "Completed"),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 500, description = "Internal failure"),
-        (status = 503, description = "Password work capacity exhausted; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1"))),
-    )
-)]
 pub(crate) async fn reset_password(
     State(state): State<AppState>,
     request: Result<Json<OperatorPasswordResetRequest>, JsonRejection>,
@@ -539,21 +370,6 @@ pub(crate) async fn reset_password(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/operator/password/change",
-    operation_id = "changeOperatorPassword",
-    security(("sessionCookie" = [])),
-    request_body = OperatorPasswordChangeRequest,
-    responses(
-        (status = 204, description = "Completed"),
-        (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 500, description = "Internal failure"),
-        (status = 503, description = "Password work capacity exhausted; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1"))),
-    )
-)]
 pub(crate) async fn change_password(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,

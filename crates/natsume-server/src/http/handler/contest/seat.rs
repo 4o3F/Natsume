@@ -5,7 +5,6 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use crate::component::{contest::SeatFacts, operator::OperatorIdentity};
 
@@ -18,7 +17,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
     )
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SeatResponse {
     seat_id: String,
@@ -32,17 +31,6 @@ impl From<SeatFacts> for SeatResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/seats",
-    operation_id = "listSeats",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current Seat set", body = [SeatResponse]),
-        (status = 401, description = "Session authentication failed"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn list_seats(
     State(state): State<AppState>,
     Extension(_identity): Extension<OperatorIdentity>,

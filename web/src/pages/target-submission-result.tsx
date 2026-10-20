@@ -10,7 +10,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 
-import type { components } from "@/api/generated/schema";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 import { DataTable } from "@/components/data-table";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +20,7 @@ import { Card } from "@/components/ui/card";
 import { targetActionLabel, type TargetResponse } from "./target-operations";
 import type { TargetSubmissionState } from "./target-submission-store";
 
-type Device = components["schemas"]["DeviceResponse"];
+type Device = DeviceResponse;
 type Result = TargetResponse["results"][number];
 
 export function TargetSubmissionResult({

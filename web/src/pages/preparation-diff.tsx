@@ -1,13 +1,18 @@
-import type { components } from "@/api/generated/schema";
+import type {
+  ImportOrganizationChangeResponse,
+  ImportOrganizationResponse,
+  ImportRedactedDiff,
+  ImportTeamChangeResponse,
+  ImportTeamResponse,
+} from "@/api/generated/types";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Badge } from "@/components/ui/badge";
 
-type Diff = components["schemas"]["ImportRedactedDiff"];
-type Organization = components["schemas"]["ImportOrganizationResponse"];
-type OrganizationChange =
-  components["schemas"]["ImportOrganizationChangeResponse"];
-type Team = components["schemas"]["ImportTeamResponse"];
-type TeamChange = components["schemas"]["ImportTeamChangeResponse"];
+type Diff = ImportRedactedDiff;
+type Organization = ImportOrganizationResponse;
+type OrganizationChange = ImportOrganizationChangeResponse;
+type Team = ImportTeamResponse;
+type TeamChange = ImportTeamChangeResponse;
 
 function Names({ value }: { value: { name_zh: string; name_en: string } }) {
   return (

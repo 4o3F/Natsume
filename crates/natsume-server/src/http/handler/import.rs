@@ -10,7 +10,6 @@ use axum::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
 use super::super::{AppState, error::ApiError, middleware};
@@ -82,37 +81,21 @@ async fn require_xlsx_content_type(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-/// Raw XLSX bytes, never a JSON array or a persisted upload.
-struct RosterWorkbook;
-impl utoipa::ToSchema for RosterWorkbook {}
-impl utoipa::PartialSchema for RosterWorkbook {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::ObjectBuilder::new()
-            .schema_type(utoipa::openapi::schema::Type::String)
-            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
-                utoipa::openapi::schema::KnownFormat::Binary,
-            )))
-            .into()
-    }
-}
-
-#[derive(Deserialize, IntoParams)]
-#[into_params(parameter_in = Path)]
+#[derive(Deserialize)]
 pub(crate) struct ImportPath {
     /// Canonical lowercase hyphenated `UUIDv7` import candidate ID.
     import_id: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportMappingChangeResponse {
     seat_code: String,
-    #[schema(required = true)]
     current_domjudge_username: Option<String>,
     candidate_domjudge_username: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportBindingImpactResponse {
     seat_code: String,
@@ -120,7 +103,7 @@ pub(crate) struct ImportBindingImpactResponse {
     blocks_commit: bool,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportOrganizationResponse {
     organization_id: String,
@@ -129,11 +112,10 @@ pub(crate) struct ImportOrganizationResponse {
     country: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportTeamResponse {
     account: String,
-    #[schema(required = true)]
     seat: Option<String>,
     organization_id: String,
     name_zh: String,
@@ -141,32 +123,30 @@ pub(crate) struct ImportTeamResponse {
     category: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportOrganizationChangeResponse {
-    #[schema(required = true)]
     current: Option<ImportOrganizationResponse>,
-    #[schema(required = true)]
     candidate: Option<ImportOrganizationResponse>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportTeamChangeResponse {
     account: String,
-    #[schema(required = true)]
     current: Option<ImportTeamResponse>,
-    #[schema(required = true)]
     candidate: Option<ImportTeamResponse>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportRedactedDiff {
     seats_added: Vec<String>,
     seats_removed: Vec<String>,
     mappings_changed: Vec<ImportMappingChangeResponse>,
+    #[specta(type = specta_typescript::Number)]
     unchanged_count: usize,
+    #[specta(type = specta_typescript::Number)]
     affected_account_count: usize,
     binding_impacts: Vec<ImportBindingImpactResponse>,
     accounts_added: Vec<String>,
@@ -177,39 +157,31 @@ pub(crate) struct ImportRedactedDiff {
     team_changes: Vec<ImportTeamChangeResponse>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportPreviewResponse {
     candidate_id: Uuid,
-    #[schema(
-        min_length = 43,
-        max_length = 43,
-        pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
-    )]
     preview_token: String,
+    #[specta(type = specta_typescript::Number)]
     expires_at_unix_ms: i64,
     diff: ImportRedactedDiff,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportPendingSummary {
     candidate_id: Uuid,
+    #[specta(type = specta_typescript::Number)]
     expires_at_unix_ms: i64,
     diff: ImportRedactedDiff,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ImportPendingResponse {
-    #[schema(required = true)]
     pending: Option<ImportPendingSummary>,
 }
 
-#[utoipa::path(get, path = "/api/v2/imports/template", operation_id = "getRosterTemplate",
-    security(("sessionCookie" = [])),
-    responses((status = 200, description = "Blank Teams XLSX template", body = inline(RosterWorkbook), content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        (status = 401, description = "Session authentication failed"), (status = 403, description = "Administrator role required")))]
 pub(crate) async fn get_template() -> Response {
     (
         [
@@ -224,15 +196,6 @@ pub(crate) async fn get_template() -> Response {
         .into_response()
 }
 
-#[utoipa::path(post, path = "/api/v2/imports", operation_id = "createRosterImport",
-    security(("sessionCookie" = [])),
-    request_body(content = inline(RosterWorkbook), content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-    responses((status = 201, description = "Full-roster XLSX preview created", body = ImportPreviewResponse),
-        (status = 400, description = "Invalid workbook or media type"), (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"), (status = 409, description = "A candidate is already pending"),
-        (status = 413, description = "Request body exceeds Axum's default 2 MiB limit"),
-        (status = 500, description = "Internal failure"),
-        (status = 503, description = "Another import is reading or processing a workbook; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1")))))]
 pub(crate) async fn create_import(upload: RosterUpload) -> Response {
     match upload.operation.create_candidate(&upload.bytes).await {
         Ok(created) => (
@@ -249,9 +212,6 @@ pub(crate) async fn create_import(upload: RosterUpload) -> Response {
     }
 }
 
-#[utoipa::path(get, path = "/api/v2/imports", operation_id = "getRosterImport", security(("sessionCookie" = [])),
-    responses((status = 200, description = "Pending roster preview", body = ImportPendingResponse),
-        (status = 401, description = "Session authentication failed"), (status = 403, description = "Administrator role required"), (status = 500, description = "Internal failure")))]
 pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
     match state.import().read_pending().await {
         Ok(pending) => Json(ImportPendingResponse {
@@ -262,17 +222,6 @@ pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
     }
 }
 
-#[utoipa::path(post, path = "/api/v2/imports/{import_id}/actions/commit", operation_id = "commitRosterImport", params(ImportPath,
-    ("x-natsume-preview-token" = String, Header, description = "Secret authorization returned by preview", min_length = 43, max_length = 43, pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$")),
-    security(("sessionCookie" = [])),
-    request_body(content = inline(RosterWorkbook), content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-    responses((status = 204, description = "Complete roster committed atomically; only changed passwords advance revisions"),
-        (status = 400, description = "Invalid workbook, token or media type"), (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"), (status = 404, description = "Candidate unavailable"),
-        (status = 409, description = "Preview stale or removed seat occupied"),
-        (status = 413, description = "Request body exceeds Axum's default 2 MiB limit"),
-        (status = 500, description = "Internal failure"),
-        (status = 503, description = "Another import is reading or processing a workbook; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1")))))]
 pub(crate) async fn commit_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,
@@ -302,10 +251,6 @@ pub(crate) async fn commit_import(
     }
 }
 
-#[utoipa::path(delete, path = "/api/v2/imports/{import_id}", operation_id = "deleteRosterImport", params(ImportPath), security(("sessionCookie" = [])),
-    responses((status = 204, description = "Roster preview discarded"), (status = 400, description = "Invalid import ID"),
-        (status = 401, description = "Session authentication failed"), (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Candidate unavailable"), (status = 500, description = "Internal failure")))]
 pub(crate) async fn delete_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,

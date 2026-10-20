@@ -34,10 +34,10 @@ describe("session ownership", () => {
       controller.getSnapshot().login(admin);
       const scope = controller.getSnapshot();
       const token = "synthetic-link-secret";
-      const result = await scope.api.POST("/api/v2/operator/register/inspect", {
-        baseUrl,
-        body: { token },
-      });
+      const result = await scope.api.inspectOperatorRegistration(
+        { token },
+        { baseUrl },
+      );
       expect(result.response.status).toBe(status);
       expect(controller.getSnapshot()).toBe(scope);
       expect(scope.queryClient.getMutationCache().getAll()).toHaveLength(0);
@@ -144,7 +144,7 @@ describe("session ownership", () => {
     const controller = new SessionController();
     controller.getSnapshot().login(admin);
     const old = controller.getSnapshot();
-    const pending = old.api.GET("/api/v2/seats", { baseUrl });
+    const pending = old.api.listSeats({ baseUrl });
     const rejected = expect(pending).rejects.toMatchObject({
       name: "AbortError",
     });
@@ -167,7 +167,7 @@ describe("session ownership", () => {
     old.logout();
     controller.getSnapshot().login(admin);
     await expect(
-      old.api.POST("/api/v2/imports", { baseUrl, body: "old XLSX" }),
+      old.api.createImport(new Blob(["old XLSX"]), { baseUrl }),
     ).rejects.toMatchObject({ name: "AbortError" });
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -186,7 +186,7 @@ describe("session ownership", () => {
     const controller = new SessionController();
     controller.getSnapshot().login(admin);
     const old = controller.getSnapshot();
-    const pending = old.api.POST("/api/v2/imports", { baseUrl, body: "" });
+    const pending = old.api.createImport(new Blob([]), { baseUrl });
     await vi.waitFor(() => expect(parse).toHaveBeenCalledOnce());
     old.logout();
     controller.getSnapshot().login(admin);

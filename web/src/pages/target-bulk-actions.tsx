@@ -7,7 +7,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 
-import type { components } from "@/api/generated/schema";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,7 +26,7 @@ import { Label } from "@/components/ui/label";
 
 import { targetOperations, type TargetOperation } from "./target-operations";
 
-type Device = components["schemas"]["DeviceResponse"];
+type Device = DeviceResponse;
 
 export function BulkTargetActions({
   devices,

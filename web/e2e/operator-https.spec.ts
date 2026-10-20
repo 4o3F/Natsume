@@ -3,11 +3,16 @@ import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { expect, test, type Page, type BrowserContext } from "@playwright/test";
 
-import type { components } from "../src/api/generated/schema";
+import type {
+  OperatorAccountResponse,
+  OperatorInvitationIssuedResponse,
+  OperatorInvitationResponse,
+  OperatorPasswordResetIssuedResponse,
+} from "../src/api/generated/types";
 
-type Account = components["schemas"]["OperatorAccountResponse"];
-type Invitation = components["schemas"]["OperatorInvitationIssuedResponse"];
-type Reset = components["schemas"]["OperatorPasswordResetIssuedResponse"];
+type Account = OperatorAccountResponse;
+type Invitation = OperatorInvitationIssuedResponse;
+type Reset = OperatorPasswordResetIssuedResponse;
 const origin = process.env.NATSUME_OPERATOR_HTTPS_ORIGIN!;
 const root = process.env.NATSUME_OPERATOR_HTTPS_ROOT!;
 const evidence = process.env.NATSUME_OPERATOR_HTTPS_EVIDENCE!;
@@ -621,9 +626,10 @@ test("production HTTPS supports the complete Operator lifecycle and rejects revo
     await test.step("expired invitations regenerate with the fixed role and revoked links contain no secrets", async () => {
       const link = await issueUI(page, "viewer");
       secrets.add(token(link));
-      const grants = await api<
-        components["schemas"]["OperatorInvitationResponse"][]
-      >(page, "/operator/invitations");
+      const grants = await api<OperatorInvitationResponse[]>(
+        page,
+        "/operator/invitations",
+      );
       expect(grants.status).toBe(200);
       expect(
         grants.data.some((value) =>
@@ -665,9 +671,10 @@ test("production HTTPS supports the complete Operator lifecycle and rejects revo
       await expect(anonymous.getByRole("alert")).toContainText(unavailable);
       const revokedLink = await issueUI(page, "viewer");
       secrets.add(token(revokedLink));
-      const unused = await api<
-        components["schemas"]["OperatorInvitationResponse"][]
-      >(page, "/operator/invitations");
+      const unused = await api<OperatorInvitationResponse[]>(
+        page,
+        "/operator/invitations",
+      );
       expect(
         (
           await api(

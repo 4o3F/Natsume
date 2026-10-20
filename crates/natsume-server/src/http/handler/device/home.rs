@@ -4,7 +4,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use crate::component::home::HomeError;
 
@@ -13,27 +12,13 @@ use super::{DevicePath, invalid_device_id, parse_device_id};
 
 /// Current durable Home target, if any reset has been requested.
 /// Process-local Device connection state at query time.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HomeResponse {
-    #[schema(required = true)]
+    #[specta(type = Option<specta_typescript::Number>)]
     reset_epoch: Option<u64>,
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/devices/{device_id}/home",
-    operation_id = "getDeviceHome",
-    params(DevicePath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current durable Home target", body = HomeResponse),
-        (status = 400, description = "Invalid Device ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 404, description = "Device not found"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn get_home(
     State(state): State<AppState>,
     Path(path): Path<DevicePath>,

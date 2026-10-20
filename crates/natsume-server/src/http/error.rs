@@ -11,7 +11,7 @@ use crate::component::{
     contest::ContestError, device::DeviceError, import::ImportError, operator::OperatorError,
 };
 
-#[derive(Serialize)]
+#[derive(Serialize, specta::Type)]
 struct ErrorResponse {
     title: Cow<'static, str>,
     status: u16,

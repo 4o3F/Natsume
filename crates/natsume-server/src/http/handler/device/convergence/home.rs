@@ -1,18 +1,15 @@
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use super::ConvergenceStatusResponse;
 use crate::device_control as model;
 
 /// Home target, Actual, and convergence result.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HomeConvergenceResponse {
-    #[schema(inline)]
     pub(super) status: ConvergenceStatusResponse,
-    #[schema(required = true)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub(super) target_reset_epoch: Option<u64>,
-    #[schema(required = true)]
     pub(super) actual: Option<HomeActualResponse>,
 }
 
@@ -27,12 +24,11 @@ impl From<model::HomeConvergence> for HomeConvergenceResponse {
 }
 
 /// Latest validated Home Actual reported by the current lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HomeActualResponse {
-    #[schema(inline)]
     pub(super) state: HomeStateResponse,
-    #[schema(required = true)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub(super) completed_reset_epoch: Option<u64>,
 }
 
@@ -46,7 +42,7 @@ impl From<model::HomeActual> for HomeActualResponse {
 }
 
 /// Home Actual state vocabulary exposed by the convergence projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum HomeStateResponse {
     Steady,

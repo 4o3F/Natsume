@@ -1,6 +1,6 @@
-import type { components } from "@/api/generated/schema";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 
-type Device = components["schemas"]["DeviceResponse"];
+type Device = DeviceResponse;
 
 export function hasIpMismatch(network: Device["network"]) {
   return Boolean(

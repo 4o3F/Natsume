@@ -8,7 +8,6 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
 
 use crate::{
     component::device::{
@@ -25,15 +24,14 @@ use super::{
 };
 
 /// Durable Device identity and lifecycle with its current complete convergence view.
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeviceResponse {
     device_id: String,
     machine_hardware_id: String,
-    #[schema(inline)]
     evidence_quality: DeviceEvidenceQualityResponse,
-    #[schema(inline)]
     state: DeviceStateResponse,
+    #[specta(type = specta_typescript::Number)]
     created_at_unix_ms: u64,
     /// Latest authenticated connection addresses, retained after disconnect/restart.
     network: Option<DeviceNetworkResponse>,
@@ -42,7 +40,7 @@ pub(crate) struct DeviceResponse {
 }
 
 /// Address diagnostics for the most recently recorded Device control connection.
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 struct DeviceNetworkResponse {
     /// Client-reported local IP, absent when the latest connection did not report it.
@@ -50,6 +48,7 @@ struct DeviceNetworkResponse {
     /// Canonical socket peer IP observed by the Server, without a port.
     server_observed_ip: String,
     /// Server address-recording time, not a last-heartbeat timestamp.
+    #[specta(type = specta_typescript::Number)]
     observed_at_unix_ms: u64,
 }
 
@@ -64,7 +63,7 @@ impl From<DeviceNetworkInfo> for DeviceNetworkResponse {
 }
 
 /// Closed Device Enrollment evidence-quality vocabulary exposed by the API.
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 enum DeviceEvidenceQualityResponse {
     Medium,
@@ -72,7 +71,7 @@ enum DeviceEvidenceQualityResponse {
 }
 
 /// Closed durable Device lifecycle vocabulary exposed by the API.
-#[derive(Deserialize, Serialize, ToSchema)]
+#[derive(Deserialize, Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 enum DeviceStateResponse {
     Enabled,
@@ -81,24 +80,21 @@ enum DeviceStateResponse {
 }
 
 /// Complete replacement of the mutable Device lifecycle field.
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeviceUpdateRequest {
-    #[schema(inline)]
     state: DeviceStateResponse,
 }
 
 /// `state` is a comma-separated combination of lifecycle values. Omitting it preserves the
 /// complete device list.
-#[derive(Deserialize, IntoParams)]
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-#[into_params(parameter_in = Query)]
 pub(crate) struct DeviceListQuery {
-    #[param(value_type = Vec<DeviceListState>, style = Form, explode = false)]
     state: Option<String>,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DeviceListState {
     Enabled,
@@ -141,19 +137,6 @@ impl From<DeviceStatus> for DeviceResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/devices",
-    operation_id = "listDevices",
-    params(DeviceListQuery),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current durable Devices and complete convergence", body = [DeviceResponse]),
-        (status = 400, description = "Invalid device lifecycle filter"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn list_devices(
     State(state): State<AppState>,
     query: Result<Query<DeviceListQuery>, QueryRejection>,
@@ -188,20 +171,6 @@ pub(crate) async fn list_devices(
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/devices/{device_id}",
-    operation_id = "getDevice",
-    params(DevicePath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current durable Device and complete convergence", body = DeviceResponse),
-        (status = 400, description = "Invalid Device ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 404, description = "Device not found"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn get_device(
     State(state): State<AppState>,
     Path(path): Path<DevicePath>,
@@ -216,23 +185,6 @@ pub(crate) async fn get_device(
     }
 }
 
-#[utoipa::path(
-    patch,
-    path = "/api/v2/devices/{device_id}",
-    operation_id = "updateDevice",
-    params(DevicePath),
-    security(("sessionCookie" = [])),
-    request_body = DeviceUpdateRequest,
-    responses(
-        (status = 204, description = "Device lifecycle updated or already at the requested state"),
-        (status = 400, description = "Invalid Device ID or request body"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Device not found"),
-        (status = 409, description = "Revoked Device cannot return to a non-terminal state"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn update_device(
     State(state): State<AppState>,
     Path(path): Path<DevicePath>,

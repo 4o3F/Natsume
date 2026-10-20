@@ -9,7 +9,10 @@ import {
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  EnrollmentReviewResponse,
+  ProvisioningWindowResponse,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
@@ -36,8 +39,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-type EnrollmentReview = components["schemas"]["EnrollmentReviewResponse"];
-type ProvisioningWindow = components["schemas"]["ProvisioningWindowResponse"];
+type EnrollmentReview = EnrollmentReviewResponse;
+type ProvisioningWindow = ProvisioningWindowResponse;
 
 const ENROLLMENT_REVIEWS_KEY = ["enrollment-reviews"] as const;
 const PROVISIONING_WINDOW_KEY = ["provisioning-window"] as const;
@@ -49,28 +52,19 @@ export function EnrollmentPage() {
   const reviews = useQuery({
     queryKey: ENROLLMENT_REVIEWS_KEY,
     queryFn: async () =>
-      unwrap<EnrollmentReview[]>(await api.GET("/api/v2/enrollment-reviews")),
+      unwrap<EnrollmentReview[]>(await api.listEnrollmentReviews()),
     refetchInterval: LIST_POLL_MS,
   });
   const approve = useMutation({
     mutationFn: async (reviewId: string) =>
-      unwrap<void>(
-        await api.POST(
-          "/api/v2/enrollment-reviews/{review_id}/actions/approve",
-          { params: { path: { review_id: reviewId } } },
-        ),
-      ),
+      unwrap<void>(await api.approveEnrollmentReview(reviewId)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ENROLLMENT_REVIEWS_KEY });
     },
   });
   const deny = useMutation({
     mutationFn: async (reviewId: string) =>
-      unwrap<void>(
-        await api.POST("/api/v2/enrollment-reviews/{review_id}/actions/deny", {
-          params: { path: { review_id: reviewId } },
-        }),
-      ),
+      unwrap<void>(await api.denyEnrollmentReview(reviewId)),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ENROLLMENT_REVIEWS_KEY });
     },
@@ -171,9 +165,7 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
   const queryClient = useQueryClient();
   const updateWindow = useMutation({
     mutationFn: async (state: ProvisioningWindow["state"]) =>
-      unwrap<ProvisioningWindow>(
-        await api.PUT("/api/v2/provisioning-window", { body: { state } }),
-      ),
+      unwrap<ProvisioningWindow>(await api.updateProvisioningWindow({ state })),
     onMutate: () =>
       queryClient.cancelQueries({ queryKey: PROVISIONING_WINDOW_KEY }),
     onSuccess: (data) => {
@@ -185,9 +177,7 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
   const window = useQuery({
     queryKey: PROVISIONING_WINDOW_KEY,
     queryFn: async ({ signal }) =>
-      unwrap<ProvisioningWindow>(
-        await api.GET("/api/v2/provisioning-window", { signal }),
-      ),
+      unwrap<ProvisioningWindow>(await api.getProvisioningWindow({ signal })),
     enabled: !updateWindow.isPending,
     refetchInterval: LIST_POLL_MS,
   });

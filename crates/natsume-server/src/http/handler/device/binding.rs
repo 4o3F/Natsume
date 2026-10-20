@@ -9,21 +9,6 @@ use crate::component::binding::BindingError;
 use super::super::super::{AppState, error::ApiError};
 use super::{DevicePath, invalid_device_id, parse_device_id};
 
-#[utoipa::path(
-    delete,
-    path = "/api/v2/devices/{device_id}/binding",
-    operation_id = "deleteDeviceBinding",
-    params(DevicePath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "Device Binding removed or already absent"),
-        (status = 400, description = "Invalid Device ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Device not found"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn delete_device_binding(
     State(state): State<AppState>,
     Path(path): Path<DevicePath>,

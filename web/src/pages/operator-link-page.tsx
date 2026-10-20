@@ -5,7 +5,10 @@ import { Link, useLocation, useNavigate } from "react-router";
 import { z } from "zod";
 
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  OperatorPasswordResetInspectionResponse,
+  OperatorRegistrationInspectionResponse,
+} from "@/api/generated/types";
 import { useSessionScope } from "@/auth/session-context";
 import { useLogout, useSession } from "@/auth/use-session";
 import { Alert, AlertTitle } from "@/components/ui/alert";
@@ -28,8 +31,8 @@ import {
 } from "@/operator/use-operator-action";
 
 type Inspection =
-  | components["schemas"]["OperatorRegistrationInspectionResponse"]
-  | components["schemas"]["OperatorPasswordResetInspectionResponse"];
+  | OperatorRegistrationInspectionResponse
+  | OperatorPasswordResetInspectionResponse;
 
 export function OperatorLinkPage({ kind }: { kind: OperatorLinkKind }) {
   const session = useSession();
@@ -117,14 +120,14 @@ function AnonymousLinkForm({ kind }: { kind: OperatorLinkKind }) {
       try {
         const result =
           kind === "register"
-            ? await api.POST("/api/v2/operator/register/inspect", {
-                body: { token },
-                signal: controller.signal,
-              })
-            : await api.POST("/api/v2/operator/password/reset/inspect", {
-                body: { token },
-                signal: controller.signal,
-              });
+            ? await api.inspectOperatorRegistration(
+                { token },
+                { signal: controller.signal },
+              )
+            : await api.inspectOperatorPasswordReset(
+                { token },
+                { signal: controller.signal },
+              );
         const data = await unwrap<Inspection>(result);
         if (!controller.signal.aborted) setInspection(data);
       } catch (error) {
@@ -168,21 +171,18 @@ function AnonymousLinkForm({ kind }: { kind: OperatorLinkKind }) {
       async (signal) => {
         if (kind === "register") {
           return unwrap(
-            await api.POST("/api/v2/operator/register", {
-              body: { token, ...values },
-              signal,
-            }),
+            await api.registerOperator({ token, ...values }, { signal }),
           );
         }
         await unwrap<void>(
-          await api.POST("/api/v2/operator/password/reset", {
-            body: {
+          await api.resetOperatorPassword(
+            {
               token,
               password: values.password,
               password_confirmation: values.password_confirmation,
             },
-            signal,
-          }),
+            { signal },
+          ),
         );
         return null;
       },

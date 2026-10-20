@@ -24,21 +24,10 @@ beforeEach(() => {
       saved.delete(key);
     }),
   };
-  vi.stubGlobal("window", { sessionStorage: storage });
-  const NativeRequest = globalThis.Request;
-  vi.stubGlobal(
-    "Request",
-    class extends NativeRequest {
-      constructor(input: RequestInfo | URL, init?: RequestInit) {
-        super(
-          typeof input === "string" && input.startsWith("/")
-            ? new URL(input, "https://natsume.test")
-            : input,
-          init,
-        );
-      }
-    },
-  );
+  vi.stubGlobal("window", {
+    sessionStorage: storage,
+    location: { origin: "https://natsume.test" },
+  });
 });
 
 afterEach(() => vi.unstubAllGlobals());

@@ -5,7 +5,6 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use crate::component::{contest::BindingFacts, operator::OperatorIdentity};
 
@@ -18,7 +17,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
     )
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 #[allow(clippy::struct_field_names)] // The API fields are canonical domain identifiers.
 pub(crate) struct BindingResponse {
@@ -42,17 +41,6 @@ impl From<BindingFacts> for BindingResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/bindings",
-    operation_id = "listBindings",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current Seat-to-Device Binding set", body = [BindingResponse]),
-        (status = 401, description = "Session authentication failed"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn list_bindings(
     State(state): State<AppState>,
     Extension(_identity): Extension<OperatorIdentity>,

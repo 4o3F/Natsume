@@ -1,11 +1,11 @@
 import { useId, useState } from "react";
 import { Copy, Network, TriangleAlert } from "lucide-react";
 
-import type { components } from "@/api/generated/schema";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 import { Button } from "@/components/ui/button";
 import { hasIpMismatch } from "./device-network";
 
-type Device = components["schemas"]["DeviceResponse"];
+type Device = DeviceResponse;
 
 export function DeviceIpWarning({
   device,

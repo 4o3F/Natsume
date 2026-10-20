@@ -7,7 +7,6 @@ use axum::{
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use utoipa::ToSchema;
 
 use super::{super::super::error::ApiError, AppState, middleware};
 use crate::component::contest::{LogoObservation, LogoStatus, OrganizationDetails};
@@ -37,7 +36,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
         )
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum OrganizationLogoStatus {
     Available,
@@ -45,7 +44,7 @@ pub(crate) enum OrganizationLogoStatus {
     Ambiguous,
     Invalid,
 }
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct OrganizationLogoResponse {
     organization_id: String,
@@ -54,7 +53,6 @@ pub(crate) struct OrganizationLogoResponse {
     country: String,
     status: OrganizationLogoStatus,
     files: Vec<String>,
-    #[schema(required = true)]
     detail: Option<String>,
 }
 impl From<LogoObservation> for OrganizationLogoResponse {
@@ -76,23 +74,6 @@ impl From<LogoObservation> for OrganizationLogoResponse {
     }
 }
 
-struct Download;
-impl utoipa::ToSchema for Download {}
-impl utoipa::PartialSchema for Download {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::ObjectBuilder::new()
-            .schema_type(utoipa::openapi::schema::Type::String)
-            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
-                utoipa::openapi::schema::KnownFormat::Binary,
-            )))
-            .into()
-    }
-}
-
-#[utoipa::path(get, path = "/api/v2/organizations", operation_id = "listOrganizationLogos", security(("sessionCookie" = [])), responses(
-    (status = 200, description = "All committed schools and current source image status", body = [OrganizationLogoResponse]),
-    (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 500, description = "Cannot read schools or logo directory"), (status = 503, description = "Image workers busy")
-))]
 pub(crate) async fn list_organizations(State(state): State<AppState>) -> Response {
     let schools = match state.contest().list_organizations().await {
         Ok(schools) => schools,
@@ -101,10 +82,6 @@ pub(crate) async fn list_organizations(State(state): State<AppState>) -> Respons
     observations(&state, schools).await
 }
 
-#[utoipa::path(get, path = "/api/v2/imports/{import_id}/organizations", operation_id = "listCandidateOrganizationLogos", security(("sessionCookie" = [])), params(("import_id" = String, Path)), responses(
-    (status = 200, description = "Pending school ID mapping and current source image status", body = [OrganizationLogoResponse]),
-    (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 404, description = "Candidate unavailable"), (status = 500, description = "Cannot read schools or logo directory"), (status = 503, description = "Image workers busy")
-))]
 pub(crate) async fn list_candidate_organizations(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -128,10 +105,6 @@ async fn observations(state: &AppState, schools: Vec<OrganizationDetails>) -> Re
     no_store(response)
 }
 
-#[utoipa::path(get, path = "/api/v2/organizations/{organization_id}/logo", operation_id = "getOrganizationLogo", params(("organization_id" = String, Path), ("If-None-Match" = Option<String>, Header)), responses(
-    (status = 200, description = "Current raster image; SVG is rendered to PNG", content((Download = "image/png"), (Download = "image/jpeg"), (Download = "image/webp"))),
-    (status = 304, description = "Image content unchanged"), (status = 404, description = "School or unique logo unavailable"), (status = 500, description = "Logo read or decoding failed"), (status = 503, description = "Image workers busy")
-))]
 pub(crate) async fn organization_logo(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -143,10 +116,6 @@ pub(crate) async fn organization_logo(
     }
 }
 
-#[utoipa::path(get, path = "/api/v2/imports/{import_id}/organizations/{organization_id}/logo", operation_id = "getCandidateOrganizationLogo", security(("sessionCookie" = [])), params(("import_id" = String, Path), ("organization_id" = String, Path)), responses(
-    (status = 200, description = "Pending school's raster image; SVG is rendered to PNG", content((Download = "image/png"), (Download = "image/jpeg"), (Download = "image/webp"))),
-    (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 404, description = "Candidate, school or unique logo unavailable"), (status = 500, description = "Logo read or decoding failed"), (status = 503, description = "Image workers busy")
-))]
 pub(crate) async fn candidate_logo(
     State(state): State<AppState>,
     Path((import_id, id)): Path<(String, String)>,
@@ -221,10 +190,6 @@ async fn logo(
     }
 }
 
-#[utoipa::path(get, path = "/api/v2/exports/domjudge", operation_id = "exportDomjudge", security(("sessionCookie" = [])), responses(
-    (status = 200, description = "Complete committed roster, current passwords and PNG logos; never cache", body = Download, content_type = "application/zip"),
-    (status = 401, description = "Authentication required"), (status = 403, description = "Administrator required"), (status = 409, description = "Import a complete roster first"), (status = 500, description = "Export failed; no partial archive"), (status = 503, description = "Export worker busy")
-))]
 pub(crate) async fn export_domjudge(State(state): State<AppState>) -> Response {
     no_store(match state.contest().export_domjudge().await {
         Ok(bytes) => (

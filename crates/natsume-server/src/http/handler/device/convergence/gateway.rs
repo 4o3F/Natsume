@@ -1,18 +1,14 @@
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use super::ConvergenceStatusResponse;
 use crate::device_control as model;
 
 /// Redacted Gateway target, Actual, and convergence result.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GatewayConvergenceResponse {
-    #[schema(inline)]
     pub(super) status: ConvergenceStatusResponse,
-    #[schema(required = true)]
     pub(super) target: Option<GatewayTargetResponse>,
-    #[schema(required = true)]
     pub(super) actual: Option<GatewayActualResponse>,
 }
 
@@ -27,20 +23,10 @@ impl From<model::GatewayConvergence> for GatewayConvergenceResponse {
 }
 
 /// Public fields required to compare the current Gateway target.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GatewayTargetResponse {
-    #[schema(
-        format = Uuid,
-        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-    )]
     pub(super) credential_id: String,
-    #[schema(
-        required = true,
-        min_length = 64,
-        max_length = 64,
-        pattern = "^[0-9a-f]{64}$"
-    )]
     pub(super) gateway_leaf_sha256: Option<String>,
 }
 
@@ -54,23 +40,11 @@ impl From<model::GatewayTarget> for GatewayTargetResponse {
 }
 
 /// Latest validated Gateway Actual reported by the current lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct GatewayActualResponse {
-    #[schema(
-        required = true,
-        format = Uuid,
-        pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
-    )]
     pub(super) credential_id: Option<String>,
-    #[schema(inline)]
     pub(super) state: GatewayStateResponse,
-    #[schema(
-        required = true,
-        min_length = 64,
-        max_length = 64,
-        pattern = "^[0-9a-f]{64}$"
-    )]
     pub(super) gateway_leaf_sha256: Option<String>,
 }
 
@@ -85,7 +59,7 @@ impl From<model::GatewayActual> for GatewayActualResponse {
 }
 
 /// Gateway Actual state vocabulary exposed by the convergence projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum GatewayStateResponse {
     Absent,

@@ -4,7 +4,10 @@ import { RotateCcw, Search } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
+  DeviceResponse_Serialize as DeviceResponse,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DeviceEmergencyPanel } from "@/components/device-emergency-panel";
@@ -52,8 +55,8 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-type Device = components["schemas"]["DeviceResponse"];
-type Convergence = components["schemas"]["DeviceConvergenceResponse"];
+type Device = DeviceResponse;
+type Convergence = DeviceConvergenceResponse;
 type ConvergenceStatus = Convergence["gateway"]["status"];
 type DeviceLifecycleState = Device["state"];
 
@@ -99,12 +102,7 @@ export function DevicesPage() {
   const devices = useQuery({
     queryKey: [...DEVICES_KEY, states],
     queryFn: async ({ signal }) =>
-      unwrap<Device[]>(
-        await api.GET("/api/v2/devices", {
-          signal,
-          params: { query: { state: states } },
-        }),
-      ),
+      unwrap<Device[]>(await api.listDevices(states, { signal })),
     refetchInterval: LIST_POLL_MS,
     enabled: states.length > 0,
   });
@@ -115,24 +113,14 @@ export function DevicesPage() {
     }: {
       deviceId: string;
       state: DeviceLifecycleState;
-    }) =>
-      unwrap<void>(
-        await api.PATCH("/api/v2/devices/{device_id}", {
-          params: { path: { device_id: deviceId } },
-          body: { state },
-        }),
-      ),
+    }) => unwrap<void>(await api.updateDevice(deviceId, { state })),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: DEVICES_KEY });
     },
   });
   const unbind = useMutation({
     mutationFn: async (deviceId: string) =>
-      unwrap<void>(
-        await api.DELETE("/api/v2/devices/{device_id}/binding", {
-          params: { path: { device_id: deviceId } },
-        }),
-      ),
+      unwrap<void>(await api.deleteDeviceBinding(deviceId)),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["bindings"] }),

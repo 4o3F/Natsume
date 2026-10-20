@@ -1,11 +1,11 @@
 import { QueryClient } from "@tanstack/react-query";
 
 import { createApiClient } from "../api/client";
-import type { components } from "../api/generated/schema";
+import type { SessionResponse } from "../api/generated/types";
 import { createPreparationStore } from "../pages/preparation-store";
 import { createTargetSubmissionStore } from "../pages/target-submission-store";
 
-type Identity = components["schemas"]["SessionResponse"];
+type Identity = SessionResponse;
 export const SESSION_KEY = ["session"] as const;
 
 export interface SessionScope {

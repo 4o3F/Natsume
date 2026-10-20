@@ -3,7 +3,10 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router";
 
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  OperatorAccountResponse,
+  OperatorInvitationResponse,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSessionScope } from "@/auth/session-context";
 import { DataState } from "@/components/data-state";
@@ -32,8 +35,8 @@ import {
 import { operatorLinkURL } from "@/operator/links";
 import { useOperatorAction } from "@/operator/use-operator-action";
 
-type Account = components["schemas"]["OperatorAccountResponse"];
-type Invitation = components["schemas"]["OperatorInvitationResponse"];
+type Account = OperatorAccountResponse;
+type Invitation = OperatorInvitationResponse;
 type Role = Account["role"];
 type IssuedLink = {
   url: string;
@@ -59,17 +62,13 @@ export function UsersPage() {
   const accounts = useQuery({
     queryKey: ["operator-accounts"],
     queryFn: async ({ signal }) =>
-      unwrap<Account[]>(
-        await scope.api.GET("/api/v2/operator/accounts", { signal }),
-      ),
+      unwrap<Account[]>(await scope.api.listOperatorAccounts({ signal })),
     refetchInterval: LIST_POLL_MS,
   });
   const invitations = useQuery({
     queryKey: ["operator-invitations"],
     queryFn: async ({ signal }) =>
-      unwrap<Invitation[]>(
-        await scope.api.GET("/api/v2/operator/invitations", { signal }),
-      ),
+      unwrap<Invitation[]>(await scope.api.listOperatorInvitations({ signal })),
     refetchInterval: LIST_POLL_MS,
   });
   const onlyAdmin =
@@ -90,17 +89,11 @@ export function UsersPage() {
       async (signal) =>
         unwrap(
           invitation
-            ? await scope.api.POST(
-                "/api/v2/operator/invitations/{invite_id}/actions/regenerate",
-                {
-                  params: { path: { invite_id: invitation.invitation_id } },
-                  signal,
-                },
+            ? await scope.api.regenerateOperatorInvitation(
+                invitation.invitation_id,
+                { signal },
               )
-            : await scope.api.POST("/api/v2/operator/invitations", {
-                body: { role },
-                signal,
-              }),
+            : await scope.api.createOperatorInvitation({ role }, { signal }),
         ),
       (data) => {
         setIssued({
@@ -119,10 +112,9 @@ export function UsersPage() {
     void action.run(
       async (signal) =>
         unwrap(
-          await scope.api.POST(
-            "/api/v2/operator/accounts/{operator_id}/password-resets",
-            { params: { path: { operator_id: account.operator_id } }, signal },
-          ),
+          await scope.api.createOperatorPasswordReset(account.operator_id, {
+            signal,
+          }),
         ),
       (data) => {
         setIssued({
@@ -143,17 +135,16 @@ export function UsersPage() {
     setIssued(null);
     void action.run(
       async (signal) => {
-        const params = { path: { operator_id: change.account.operator_id } };
         await unwrap<void>(
           change.role
-            ? await scope.api.PATCH("/api/v2/operator/accounts/{operator_id}", {
-                params,
-                body: { role: change.role },
-                signal,
-              })
-            : await scope.api.DELETE(
-                "/api/v2/operator/accounts/{operator_id}",
-                { params, signal },
+            ? await scope.api.updateOperatorAccount(
+                change.account.operator_id,
+                { role: change.role },
+                { signal },
+              )
+            : await scope.api.deleteOperatorAccount(
+                change.account.operator_id,
+                { signal },
               ),
         );
       },
@@ -388,16 +379,9 @@ export function UsersPage() {
                           setIssued(null);
                           void action.run(async (signal) => {
                             await unwrap<void>(
-                              await scope.api.DELETE(
-                                "/api/v2/operator/invitations/{invite_id}",
-                                {
-                                  params: {
-                                    path: {
-                                      invite_id: invitation.invitation_id,
-                                    },
-                                  },
-                                  signal,
-                                },
+                              await scope.api.revokeOperatorInvitation(
+                                invitation.invitation_id,
+                                { signal },
                               ),
                             );
                           }, refresh);

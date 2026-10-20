@@ -1,4 +1,6 @@
-#![forbid(unsafe_code)]
+// Specta collection allows its generated unsafe constructors locally.
+// Handwritten unsafe code remains denied throughout this crate.
+#![deny(unsafe_code)]
 //! Natsume control server startup.
 
 pub mod commands;
@@ -10,7 +12,6 @@ pub(crate) mod device_control;
 pub(crate) mod diesel_schema;
 pub(crate) mod http;
 pub(crate) mod logging;
-pub mod openapi;
 pub(crate) mod server_state;
 pub(crate) mod tls;
 pub(crate) mod vault;

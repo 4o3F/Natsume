@@ -1,9 +1,13 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
-import type { components } from "../src/api/generated/schema";
+import type {
+  OperatorAccountResponse,
+  OperatorInvitationResponse,
+  SessionResponse,
+} from "../src/api/generated/types";
 
-type Identity = components["schemas"]["SessionResponse"];
-type Account = components["schemas"]["OperatorAccountResponse"];
-type Invitation = components["schemas"]["OperatorInvitationResponse"];
+type Identity = SessionResponse;
+type Account = OperatorAccountResponse;
+type Invitation = OperatorInvitationResponse;
 const admin: Identity = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",

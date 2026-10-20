@@ -1,6 +1,4 @@
-import type { components } from "./generated/schema";
-
-type ErrorResponse = components["schemas"]["ErrorResponse"];
+import type { ErrorResponse } from "./generated/types";
 
 export class ApiError extends Error {
   code: string;

@@ -10,7 +10,7 @@ import {
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type { OrganizationLogoResponse } from "@/api/generated/types";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Button } from "@/components/ui/button";
 import {
@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
-type School = components["schemas"]["OrganizationLogoResponse"];
+type School = OrganizationLogoResponse;
 const states = {
   available: {
     label: "Available",
@@ -55,17 +55,13 @@ export function PreparationLogos({ candidateId }: { candidateId?: string }) {
     queryFn: async () =>
       unwrap<School[]>(
         candidateId
-          ? await api.GET("/api/v2/imports/{import_id}/organizations", {
-              params: { path: { import_id: candidateId } },
-            })
-          : await api.GET("/api/v2/organizations"),
+          ? await api.listCandidateOrganizations(candidateId)
+          : await api.listOrganizations(),
       ),
   });
   const download = useMutation({
     mutationFn: async () => {
-      const blob = await unwrap<Blob>(
-        await api.GET("/api/v2/exports/domjudge", { parseAs: "blob" }),
-      );
+      const blob = await unwrap<Blob>(await api.exportDomjudge());
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;

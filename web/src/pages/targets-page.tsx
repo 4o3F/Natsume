@@ -4,7 +4,10 @@ import { FolderSync, Monitor, MonitorPlay } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
+  DeviceResponse_Serialize as DeviceResponse,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
 import { DataState } from "@/components/data-state";
@@ -50,8 +53,8 @@ import { BulkTargetActions } from "./target-bulk-actions";
 import { TargetSubmissionResult } from "./target-submission-result";
 import { targetAction, type TargetOperation } from "./target-operations";
 
-type Device = components["schemas"]["DeviceResponse"];
-type Convergence = components["schemas"]["DeviceConvergenceResponse"];
+type Device = DeviceResponse;
+type Convergence = DeviceConvergenceResponse;
 
 const DEVICES_KEY = ["devices"] as const;
 
@@ -74,12 +77,7 @@ export function TargetsPage() {
   const devices = useQuery({
     queryKey: [...DEVICES_KEY, states],
     queryFn: async ({ signal }) =>
-      unwrap<Device[]>(
-        await api.GET("/api/v2/devices", {
-          signal,
-          params: { query: { state: states } },
-        }),
-      ),
+      unwrap<Device[]>(await api.listDevices(states, { signal })),
     refetchInterval: LIST_POLL_MS,
     enabled: states.length > 0,
   });
@@ -87,12 +85,7 @@ export function TargetsPage() {
   const enabledDevices = useQuery({
     queryKey: [...DEVICES_KEY, ["enabled"]],
     queryFn: async ({ signal }) =>
-      unwrap<Device[]>(
-        await api.GET("/api/v2/devices", {
-          signal,
-          params: { query: { state: ["enabled"] } },
-        }),
-      ),
+      unwrap<Device[]>(await api.listDevices(["enabled"], { signal })),
     enabled: isAdmin,
     refetchInterval: LIST_POLL_MS,
   });

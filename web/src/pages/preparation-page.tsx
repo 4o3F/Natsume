@@ -4,7 +4,13 @@ import { Download, Eye, LoaderCircle } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type {
+  ImportBindingImpactResponse,
+  ImportMappingChangeResponse,
+  ImportPendingResponse,
+  ImportPendingSummary,
+  ImportPreviewResponse,
+} from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -34,11 +40,8 @@ import { PreparationLogos } from "@/pages/preparation-logos";
 import { RosterDiff } from "@/pages/preparation-diff";
 import type { PreparationPreview } from "@/pages/preparation-store";
 
-type ImportMappingChange = components["schemas"]["ImportMappingChangeResponse"];
-type ImportPendingResponse = components["schemas"]["ImportPendingResponse"];
-type ImportPendingSummary = components["schemas"]["ImportPendingSummary"];
-type ImportPreviewResponse = components["schemas"]["ImportPreviewResponse"];
-type ImportBindingImpact = components["schemas"]["ImportBindingImpactResponse"];
+type ImportMappingChange = ImportMappingChangeResponse;
+type ImportBindingImpact = ImportBindingImpactResponse;
 
 type SeatChange = {
   seat_code: string;
@@ -51,8 +54,6 @@ interface Notice {
   detail?: string;
 }
 
-const XLSX_CONTENT_TYPE =
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const MAX_WORKBOOK_BYTES = 8 * 1024 * 1024;
 
 const PENDING_IMPORT_KEY = ["imports", "pending"] as const;
@@ -99,8 +100,7 @@ export function PreparationPage() {
 
   const pendingQuery = useQuery({
     queryKey: PENDING_IMPORT_KEY,
-    queryFn: async () =>
-      unwrap<ImportPendingResponse>(await api.GET("/api/v2/imports")),
+    queryFn: async () => unwrap<ImportPendingResponse>(await api.getImport()),
     refetchInterval: LIST_POLL_MS,
   });
 
@@ -132,12 +132,7 @@ export function PreparationPage() {
   const upload = useMutation({
     mutationFn: async (file: File) => {
       const preview = await unwrap<ImportPreviewResponse>(
-        await api.POST("/api/v2/imports", {
-          // OpenAPI models binary as a string; the serializer sends the File bytes.
-          body: "",
-          bodySerializer: () => file,
-          headers: { "Content-Type": XLSX_CONTENT_TYPE },
-        }),
+        await api.createImport(file),
       );
       preparation.set({
         candidate_id: preview.candidate_id,
@@ -169,15 +164,11 @@ export function PreparationPage() {
         throw new Error("the preview token is unavailable");
       }
       return unwrap<void>(
-        await api.POST("/api/v2/imports/{import_id}/actions/commit", {
-          params: {
-            path: { import_id: candidateId },
-            header: { "x-natsume-preview-token": preview.preview_token },
-          },
-          body: "",
-          bodySerializer: () => preview.file,
-          headers: { "Content-Type": XLSX_CONTENT_TYPE },
-        }),
+        await api.commitImport(
+          candidateId,
+          preview.preview_token,
+          preview.file,
+        ),
       );
     },
     onSuccess: async () => {
@@ -202,11 +193,7 @@ export function PreparationPage() {
 
   const discard = useMutation({
     mutationFn: async (candidateId: string) =>
-      unwrap<void>(
-        await api.DELETE("/api/v2/imports/{import_id}", {
-          params: { path: { import_id: candidateId } },
-        }),
-      ),
+      unwrap<void>(await api.deleteImport(candidateId)),
     onSuccess: async () => {
       forgetPreview();
       setSelectedFile(null);

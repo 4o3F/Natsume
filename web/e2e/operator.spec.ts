@@ -7,21 +7,28 @@ import {
   type Route,
 } from "@playwright/test";
 
-import type { components } from "../src/api/generated/schema";
+import type {
+  BindingContextResponse,
+  DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
+  DeviceListState,
+  DeviceResponse_Serialize as DeviceResponse,
+  TargetSubmissionBody,
+  TargetSubmissionResponse,
+} from "../src/api/generated/types";
 
 const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
   role: "admin",
   username: "operator",
 };
-const bindingContext: components["schemas"]["BindingContextResponse"] = {
+const bindingContext: BindingContextResponse = {
   binding_id: "01912345-6789-7abc-8def-0123456789ac",
   account_id: "01912345-6789-7abc-8def-0123456789ad",
   credential_revision: 1,
   domjudge_username: "team1",
   seat_code: "A-01",
 };
-const convergence: components["schemas"]["DeviceConvergenceResponse"] = {
+const convergence: DeviceConvergenceResponse = {
   connection_state: "active",
   received_at_unix_ms: 1_700_000_100_000,
   gateway: {
@@ -70,7 +77,7 @@ const convergence: components["schemas"]["DeviceConvergenceResponse"] = {
     actual: { state: "steady", completed_reset_epoch: null },
   },
 };
-const device: components["schemas"]["DeviceResponse"] = {
+const device: DeviceResponse = {
   device_id: "01923456-789a-7bcd-8ef0-123456789abc",
   machine_hardware_id: "machine-01",
   evidence_quality: "strong",
@@ -1128,8 +1135,8 @@ test("an administrator can approve an enrollment review", async ({ page }) => {
   ).toBeVisible();
 });
 
-type TargetBody = components["schemas"]["TargetSubmissionBody"];
-type TargetReply = components["schemas"]["TargetSubmissionResponse"];
+type TargetBody = TargetSubmissionBody;
+type TargetReply = TargetSubmissionResponse;
 
 function filterDeviceRows(rows: (typeof device)[], url: string) {
   const stateParams = new URL(url).searchParams.getAll("state");
@@ -1140,10 +1147,7 @@ function filterDeviceRows(rows: (typeof device)[], url: string) {
   return rows.filter((device) => states.includes(device.state));
 }
 
-async function selectDeviceStates(
-  page: Page,
-  states: components["schemas"]["DeviceListState"][],
-) {
+async function selectDeviceStates(page: Page, states: DeviceListState[]) {
   if (new URL(page.url()).pathname === "/devices") {
     await selectDeviceFacet(page, "Lifecycle", [
       ["Enabled", states.includes("enabled")],
@@ -1160,10 +1164,7 @@ async function selectDeviceStates(
   }
 }
 
-async function expectDeviceStates(
-  page: Page,
-  states: components["schemas"]["DeviceListState"][],
-) {
+async function expectDeviceStates(page: Page, states: DeviceListState[]) {
   const dropdown = new URL(page.url()).pathname === "/devices";
   const filter = dropdown
     ? page.getByRole("menu", { name: "Lifecycle", exact: true })
@@ -1229,7 +1230,7 @@ async function selectDeviceFacet(
 
 async function selectConnectionStates(
   page: Page,
-  states: components["schemas"]["DeviceConvergenceResponse"]["connection_state"][],
+  states: DeviceConvergenceResponse["connection_state"][],
 ) {
   await selectDeviceFacet(page, "Connection", [
     ["Online", states.includes("active")],

@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type { AccountResponse } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
@@ -11,7 +11,7 @@ import { Input } from "@/components/ui/input";
 
 import { TeamName, TeamSchool } from "@/components/roster-team";
 
-type Account = components["schemas"]["AccountResponse"];
+type Account = AccountResponse;
 
 const columns: DataTableColumnDef<Account>[] = [
   { accessorKey: "domjudge_username", header: "DOMjudge username" },
@@ -40,7 +40,7 @@ export function AccountsPage() {
   });
   const accounts = useQuery({
     queryKey: ["accounts"],
-    queryFn: async () => unwrap<Account[]>(await api.GET("/api/v2/accounts")),
+    queryFn: async () => unwrap<Account[]>(await api.listAccounts()),
     refetchInterval: LIST_POLL_MS,
   });
   const rows = useMemo(() => {

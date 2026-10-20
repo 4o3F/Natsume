@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page, type Route } from "@playwright/test";
-import type { components } from "../src/api/generated/schema";
+import type {
+  ImportPendingSummary,
+  ImportPreviewResponse,
+} from "../src/api/generated/types";
 
 const admin = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
@@ -38,12 +41,12 @@ async function mockPreparationSession(page: Page) {
     identity: admin as typeof admin | null,
     nextIdentity: otherAdmin,
     expirePath: "",
-    pending: null as components["schemas"]["ImportPendingSummary"] | null,
+    pending: null as ImportPendingSummary | null,
     uploadCount: 0,
     holdUpload: false,
     heldUploads: [] as {
       route: Route;
-      preview: components["schemas"]["ImportPreviewResponse"];
+      preview: ImportPreviewResponse;
     }[],
     committedTokens: [] as string[],
   };

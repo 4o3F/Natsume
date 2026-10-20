@@ -98,7 +98,7 @@ export function createTargetSubmissionStore(
     update({ ...state, sending: true, error: null });
     try {
       const response = await unwrap<TargetResponse>(
-        await api.POST("/api/v2/target-submissions", { body: request }),
+        await api.submitTargets(request),
       );
       signal.throwIfAborted();
       if (response.operation_id !== request.operation_id)

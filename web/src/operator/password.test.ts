@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -17,24 +16,13 @@ function accepts(password: string) {
 }
 
 describe("Operator password policy", () => {
-  it("agrees with the Server schema for every ASCII character", () => {
-    const document = JSON.parse(
-      readFileSync(
-        new URL("../../openapi/natsume.openapi.json", import.meta.url),
-        "utf8",
-      ),
-    );
-    const server = new RegExp(
-      document.components.schemas.OperatorRegistrationRequest.properties
-        .password.pattern,
-    );
+  it("enforces the allowed character set for every ASCII character", () => {
     for (let code = 0; code < 128; code++) {
       const character = String.fromCharCode(code);
       const password = `Abcdefghijklmn1@${character}`;
       const allowed =
         /[A-Za-z0-9]/.test(character) || PASSWORD_SPECIALS.includes(character);
       expect(accepts(password), `ASCII ${code}`).toBe(allowed);
-      expect(server.test(password), `Server ASCII ${code}`).toBe(allowed);
     }
   });
 

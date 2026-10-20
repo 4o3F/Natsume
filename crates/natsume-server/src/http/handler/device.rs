@@ -4,7 +4,6 @@ use axum::{
     routing::{delete, get, patch},
 };
 use serde::Deserialize;
-use utoipa::IntoParams;
 
 use crate::component::device::DeviceId;
 
@@ -52,8 +51,7 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         )
 }
 
-#[derive(Deserialize, IntoParams)]
-#[into_params(parameter_in = Path)]
+#[derive(Deserialize)]
 pub(crate) struct DevicePath {
     /// Canonical lowercase hyphenated `UUIDv7` Device ID.
     device_id: String,

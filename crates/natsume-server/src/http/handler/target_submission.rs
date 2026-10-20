@@ -6,7 +6,6 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
-use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::component::{
@@ -32,27 +31,23 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
 }
 
 /// One durable, replayable Server target submission. No Client execution is awaited.
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TargetSubmissionBody {
-    #[schema(format = "uuid")]
     operation_id: String,
     scope: TargetScopeBody,
     action: TargetActionBody,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum TargetScopeBody {
     AllEnabled {},
     AllOnlineEnabled {},
-    Devices {
-        #[schema(min_items = 1)]
-        device_ids: Vec<String>,
-    },
+    Devices { device_ids: Vec<String> },
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum TargetActionBody {
     SetForeground {
@@ -117,15 +112,14 @@ impl TargetSubmissionBody {
     }
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TargetSubmissionResponse {
-    #[schema(format = "uuid")]
     operation_id: String,
     results: Vec<DeviceSubmissionResponse>,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum DeviceSubmissionResponse {
     Submitted {
@@ -138,7 +132,7 @@ pub(crate) enum DeviceSubmissionResponse {
     },
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum TargetRejectionCode {
     DeviceNotFound,
@@ -192,21 +186,6 @@ impl From<TargetSubmissionResult> for TargetSubmissionResponse {
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/target-submissions",
-    operation_id = "submitTargets",
-    security(("sessionCookie" = [])),
-    request_body = TargetSubmissionBody,
-    responses(
-        (status = 200, description = "Durable per-device submission results, including a replay of an existing operation ID", body = TargetSubmissionResponse),
-        (status = 400, description = "Invalid submission, action, scope or canonical UUID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 409, description = "Operation ID belongs to another request or operator"),
-        (status = 500, description = "Submission transaction failed")
-    )
-)]
 pub(crate) async fn submit_targets(
     State(state): State<AppState>,
     Extension(identity): Extension<OperatorIdentity>,

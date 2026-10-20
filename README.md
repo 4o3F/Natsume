@@ -101,7 +101,7 @@ The [architecture document](docs/architecture.md) is the sole manually maintaine
 | ------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Server                          | [`crates/natsume-server/`](crates/natsume-server/)                                     | Rust, Axum, and SQLite/Diesel; owns committed contest data, operator sessions, enrollment, bindings, credentials, and desired state. Serves HTTPS APIs, device WSS, and the production Web panel. |
 | DOMjudge print wrapper          | [`crates/natsume-print-domjudge/`](crates/natsume-print-domjudge/) | Independently deployed HTTPS client with fixed Typst/template/fonts; registers and uploads documents without sharing Server files. |
-| Operator panel                  | [`web/`](web/)                                           | React, TypeScript, and shadcn/ui; reads the generated OpenAPI contract and exposes administrator and viewer workflows.                                                                            |
+| Operator panel                  | [`web/`](web/)                                           | React, TypeScript, and shadcn/ui; uses TypeScript types generated directly from Server HTTP DTOs with Specta and exposes administrator and viewer workflows.                                                                            |
 | Device Daemon                   | [`crates/natsume-workstation-daemon/`](crates/natsume-workstation-daemon/)         | Owns workstation identity, the authenticated control connection, local state reconciliation, and Caddy configuration.                                                                             |
 | Privileged Helper               | [`crates/natsume-workstation-helper/`](crates/natsume-workstation-helper/) | Provides a closed set of privileged system operations over typed D-Bus; has no network role or arbitrary command interface.                                                                       |
 | Session Agent                   | [`crates/natsume-workstation-agent/`](crates/natsume-workstation-agent/)         | Renders Waiting and seat-binding UI with Slint/Skia inside the GNOME Kiosk Wayland session.                                                                                                       |
@@ -172,7 +172,7 @@ prek run --all-files
 
 `prek` is the single pre-commit check entry point. It runs dependency policy, Web Prettier and ESLint, Rust Clippy, and Rust/Web tests without automatically editing or staging files. CI adds further contract, browser, and packaging checks.
 
-When changing the HTTP API, run `just api` and include the regenerated OpenAPI and TypeScript snapshots. Do not edit generated contracts by hand. Exact dependencies belong to lockfiles; package inputs and release procedures belong to [`packaging/`](packaging/README.md). Running the full Client requires the provisioned GNOME dual-session image, not just a development build.
+When changing the HTTP API, run `just api` and include the regenerated TypeScript bindings. Do not edit generated contracts by hand. Exact dependencies belong to lockfiles; package inputs and release procedures belong to [`packaging/`](packaging/README.md). Running the full Client requires the provisioned GNOME dual-session image, not just a development build.
 
 ## License
 

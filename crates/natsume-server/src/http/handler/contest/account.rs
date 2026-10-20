@@ -5,7 +5,6 @@ use axum::{
     routing::get,
 };
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use crate::component::{contest::AccountFacts, operator::OperatorIdentity};
 
@@ -18,11 +17,12 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
     )
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AccountResponse {
     account_id: String,
     domjudge_username: String,
+    #[specta(type = specta_typescript::Number)]
     credential_revision: i64,
     team: Option<TeamResponse>,
 }
@@ -44,7 +44,7 @@ impl From<AccountFacts> for AccountResponse {
     }
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct TeamResponse {
     seat_id: String,
@@ -70,17 +70,6 @@ impl From<crate::component::contest::TeamDetails> for TeamResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/accounts",
-    operation_id = "listAccounts",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Current Account set", body = [AccountResponse]),
-        (status = 401, description = "Session authentication failed"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn list_accounts(
     State(state): State<AppState>,
     Extension(_identity): Extension<OperatorIdentity>,

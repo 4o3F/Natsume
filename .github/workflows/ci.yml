@@ -155,18 +155,13 @@ jobs:
       - name: Frozen install
         run: pnpm install --frozen-lockfile
 
-      - name: Regenerate Rust-owned OpenAPI and TypeScript snapshots
+      - name: Regenerate Rust-owned TypeScript bindings
         run: |
           set -euo pipefail
-          cargo run -p natsume-server --locked --bin export-openapi -- \
-            web/openapi/natsume.openapi.json
-          pnpm --filter @natsume/web openapi:lint
-          pnpm --filter @natsume/web api:generate
-          if ! git diff --exit-code -- \
-            web/openapi/natsume.openapi.json \
-            web/src/api/generated/schema.d.ts; then
+          just api
+          if ! git diff --exit-code -- web/src/api/generated/types.ts; then
             printf '%s\n' \
-              'OpenAPI/TypeScript snapshots are stale; run just api and commit the result.' >&2
+              'TypeScript bindings are stale; run just api and commit the result.' >&2
             exit 1
           fi
 

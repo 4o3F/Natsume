@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
 
 use crate::component::print as domain;
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintSource {
     source_id: String,
@@ -11,7 +10,7 @@ pub(crate) struct PrintSource {
     revoked: bool,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintSourceIssued {
     source_id: String,
@@ -20,20 +19,18 @@ pub(crate) struct PrintSourceIssued {
     token: String,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintRegistration {
-    #[schema(minimum = 1, maximum = 1)]
     protocol_version: u8,
     request_id: String,
     account: String,
     /// Display only: at most 1024 UTF-8 bytes, without separators or controls.
     original_filename: String,
-    #[schema(pattern = "^[0-9a-f]{64}$")]
     source_sha256: String,
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum GenerationFailure {
     CompileTimeout,
@@ -42,15 +39,14 @@ pub(crate) enum GenerationFailure {
     WrapperDeadline,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintGenerationFailure {
-    #[schema(minimum = 1, maximum = 1)]
     protocol_version: u8,
     code: GenerationFailure,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PrintState {
     Preparing,
@@ -58,47 +54,41 @@ pub(crate) enum PrintState {
     Ready,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintDocument {
-    #[schema(pattern = "^[0-9a-f]{64}$")]
     sha256: String,
-    #[schema(minimum = 1)]
+    #[specta(type = specta_typescript::Number)]
     bytes: i64,
-    #[schema(minimum = 1)]
+    #[specta(type = specta_typescript::Number)]
     pages: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintAdmission {
-    #[schema(minimum = 1)]
+    #[specta(type = specta_typescript::Number)]
     ready_sequence: i64,
-    #[schema(minimum = 0)]
+    #[specta(type = specta_typescript::Number)]
     ahead_tasks: i64,
-    #[schema(minimum = 0)]
+    #[specta(type = specta_typescript::Number)]
     ahead_pages: i64,
-    #[schema(minimum = 0, maximum = 0)]
+    #[specta(type = specta_typescript::Number)]
     in_progress_tasks: i64,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintRequest {
-    #[schema(minimum = 1, maximum = 1)]
     protocol_version: u8,
     request_id: String,
     account_id: String,
     account: String,
     team_name: String,
-    #[schema(required = true)]
     seat_label: Option<String>,
     state: PrintState,
-    #[schema(required = true)]
     document: Option<PrintDocument>,
-    #[schema(required = true)]
     admission: Option<PrintAdmission>,
-    #[schema(required = true)]
     generation_failure: Option<GenerationFailure>,
 }
 

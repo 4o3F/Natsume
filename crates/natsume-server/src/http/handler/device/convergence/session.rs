@@ -1,19 +1,15 @@
 use serde::Serialize;
-use utoipa::ToSchema;
 
 use super::super::session::SessionControlTargetResponse;
 use super::ConvergenceStatusResponse;
 use crate::device_control as model;
 
 /// Session Control target, Actual, and convergence result.
-#[derive(PartialEq, Eq, Serialize, ToSchema)]
+#[derive(PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionConvergenceResponse {
-    #[schema(inline)]
     pub(super) status: ConvergenceStatusResponse,
-    #[schema(required = true)]
     pub(super) target: Option<SessionControlTargetResponse>,
-    #[schema(required = true)]
     pub(super) actual: Option<SessionActualResponse>,
 }
 
@@ -28,14 +24,12 @@ impl From<model::SessionConvergence> for SessionConvergenceResponse {
 }
 
 /// Latest validated Session Control Actual reported by the current lease.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(super) struct SessionActualResponse {
-    #[schema(inline)]
     pub(super) session_state: SessionStateResponse,
-    #[schema(required = true)]
+    #[specta(type = Option<specta_typescript::Number>)]
     pub(super) completed_terminate_epoch: Option<u64>,
-    #[schema(inline)]
     pub(super) foreground: SessionForegroundResponse,
     pub(super) waiting_ready: bool,
     pub(super) contest_ready: bool,
@@ -54,7 +48,7 @@ impl From<model::SessionActual> for SessionActualResponse {
 }
 
 /// Session state vocabulary exposed by the convergence projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum SessionStateResponse {
     None,
@@ -79,7 +73,7 @@ impl From<model::SessionState> for SessionStateResponse {
 }
 
 /// The physical foreground is separate from the requested managed role.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum SessionForegroundResponse {
     Unknown,

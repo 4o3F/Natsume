@@ -1,8 +1,7 @@
 mod dto;
 
 pub(crate) use dto::{
-    GenerationFailure, PrintAdmission, PrintDocument, PrintGenerationFailure, PrintRegistration,
-    PrintRequest, PrintSource, PrintSourceIssued, PrintState,
+    PrintGenerationFailure, PrintRegistration, PrintRequest, PrintSource, PrintSourceIssued,
 };
 
 use axum::{
@@ -18,7 +17,6 @@ use axum::{
     routing::{MethodRouter, delete, get, post, put},
 };
 use serde::Deserialize;
-use utoipa::ToSchema;
 
 use super::super::{AppState, error::ApiError, middleware};
 use crate::component::{
@@ -88,10 +86,9 @@ async fn authenticate_source(
     }
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintSourceCreate {
-    #[schema(min_length = 1, max_length = 128)]
     name: String,
 }
 
@@ -109,22 +106,6 @@ impl<S: Send + Sync> FromRequestParts<S> for PrintPathId {
     }
 }
 
-/// Raw PDF bytes, not a JSON array.
-struct PrintPdfBody;
-impl utoipa::ToSchema for PrintPdfBody {}
-impl utoipa::PartialSchema for PrintPdfBody {
-    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
-        utoipa::openapi::schema::ObjectBuilder::new()
-            .schema_type(utoipa::openapi::schema::Type::String)
-            .format(Some(utoipa::openapi::SchemaFormat::KnownFormat(
-                utoipa::openapi::schema::KnownFormat::Binary,
-            )))
-            .into()
-    }
-}
-
-#[utoipa::path(post, path = "/api/v2/print/sources", operation_id = "createPrintSource", security(("sessionCookie" = [])), request_body = PrintSourceCreate,
-    responses((status = 200, description = "Source credential returned only once", body = PrintSourceIssued), (status = 400, description = "Invalid fields"), (status = 401, description = "Authentication failed"), (status = 403, description = "Admin required"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn create_source(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -139,8 +120,6 @@ pub(crate) async fn create_source(
     }
 }
 
-#[utoipa::path(get, path = "/api/v2/print/sources", operation_id = "listPrintSources", security(("sessionCookie" = [])),
-    responses((status = 200, description = "Non-secret sources", body = [PrintSource]), (status = 401, description = "Authentication failed"), (status = 403, description = "Admin required"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn list_sources(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -157,8 +136,6 @@ pub(crate) async fn list_sources(
     }
 }
 
-#[utoipa::path(delete, path = "/api/v2/print/sources/{source_id}", operation_id = "revokePrintSource", security(("sessionCookie" = [])), params(("source_id" = String, Path)),
-    responses((status = 204, description = "Source revoked idempotently"), (status = 400, description = "Invalid ID"), (status = 401, description = "Authentication failed"), (status = 403, description = "Admin required"), (status = 404, description = "Unknown source"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn revoke_source(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
@@ -170,8 +147,6 @@ pub(crate) async fn revoke_source(
     }
 }
 
-#[utoipa::path(post, path = "/api/v2/print/requests", operation_id = "registerPrintRequest", security(("printSourceBearer" = [])), request_body = PrintRegistration,
-    responses((status = 200, description = "Registered request, not yet queued", body = PrintRequest), (status = 400, description = "Invalid registration"), (status = 401, description = "Source authentication failed"), (status = 409, description = "Registration conflict"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn register(
     State(state): State<AppState>,
     Extension(source): Extension<SourceIdentity>,
@@ -186,8 +161,6 @@ pub(crate) async fn register(
     }
 }
 
-#[utoipa::path(get, path = "/api/v2/print/requests/{request_id}", operation_id = "getPrintRequest", security(("printSourceBearer" = [])), params(("request_id" = String, Path)),
-    responses((status = 200, description = "Current fact and original admission", body = PrintRequest), (status = 400, description = "Invalid ID"), (status = 401, description = "Source authentication failed"), (status = 404, description = "Request not found in this source"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn get_request(
     State(state): State<AppState>,
     Extension(source): Extension<SourceIdentity>,
@@ -199,8 +172,6 @@ pub(crate) async fn get_request(
     }
 }
 
-#[utoipa::path(post, path = "/api/v2/print/requests/{request_id}/generation-failure", operation_id = "reportPrintGenerationFailure", security(("printSourceBearer" = [])), params(("request_id" = String, Path)), request_body = PrintGenerationFailure,
-    responses((status = 200, description = "Durable generation failure", body = PrintRequest), (status = 400, description = "Invalid failure"), (status = 401, description = "Source authentication failed"), (status = 404, description = "Unknown request"), (status = 409, description = "Phase conflict"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn generation_failure(
     State(state): State<AppState>,
     Extension(source): Extension<SourceIdentity>,
@@ -220,9 +191,6 @@ pub(crate) async fn generation_failure(
     }
 }
 
-#[utoipa::path(put, path = "/api/v2/print/requests/{request_id}/document", operation_id = "uploadPrintDocument", security(("printSourceBearer" = [])), params(("request_id" = String, Path)),
-    request_body(content = inline(PrintPdfBody), content_type = "application/pdf"),
-    responses((status = 200, description = "PDF and first FIFO snapshot committed atomically", body = PrintRequest), (status = 400, description = "Invalid PDF"), (status = 401, description = "Source authentication failed"), (status = 404, description = "Unknown request"), (status = 409, description = "Phase, document or identity conflict"), (status = 413, description = "PDF exceeds 8 MiB"), (status = 500, description = "Persistence failed")))]
 pub(crate) async fn upload(
     State(state): State<AppState>,
     Extension(source): Extension<SourceIdentity>,

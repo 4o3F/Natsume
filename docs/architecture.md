@@ -14,12 +14,12 @@
 |---|---|
 | 产品边界、组件职责、数据所有权、安全和实施顺序 | 本文 |
 | Device Control wire 字段、field number、presence 与 descriptor | `crates/natsume-workstation-protocol/proto/*.proto` |
-| HTTP API 的精确公开 schema | Server OpenAPI 生成源与生成物 |
+| HTTP JSON 的精确字段与表示 | Server HTTP DTO、Serde 实现与 Specta 生成的 TypeScript |
 | 本地 IPC 的精确接口 | `crates/natsume-workstation-ipc` 与 D-Bus introspection |
 | SQLite 物理表、列、索引与约束 | 完成 flag day 后的 `crates/natsume-server/migrations/00000000000001_initial/up.sql` |
 | Diesel 生成类型 | `crates/natsume-server/diesel/schema.rs`，必须由 migration 重建 |
 | Device Control `error_code` 字段与开放token语法 | `crates/natsume-workstation-protocol/proto/*.proto` 与 `crates/natsume-workstation-protocol` |
-| HTTP公开错误码与status映射 | Server OpenAPI生成源与HTTP adapter |
+| HTTP公开错误码与status映射 | Server HTTP adapter 与实际 HTTP 测试 |
 | 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
 | 构建、依赖和发布版本 | Cargo、pnpm、打包配置与 lockfile |
 
@@ -30,9 +30,11 @@
 1. 不在第二个 Markdown 文件建立并行架构 authority；PRD 与验证材料引用本文，历史实验不覆盖当前目标语义。
 2. Proto 和 migration 是机器可执行契约，但不能自行创造与本文相反的业务语义。
 3. 生成代码不能手工编辑。
-4. 工位 Device Control 的 migration、Rust adapter、OpenAPI 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务；照片成果包不属于旧 credential Bundle。
+4. 工位 Device Control 的 migration、Rust adapter、HTTP DTO 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务；照片成果包不属于旧 credential Bundle。
 5. 既有 V2 预发布 flag day 的字段删除、编号压紧规则只适用于该基线，不构成后续平台扩展修改已部署协议或丢弃数据的授权。
 6. 历史 flag day 的中间提交不得进入部署包或形成双协议、双 authority、双 schema fallback；后续平台工作包须独立可审阅、可验证，保留现有运行契约。
+
+HTTP DTO 使用 `#[derive(specta::Type)]` 自动收集并导出 TypeScript，不集中维护类型注册表，也不维护平行的 OpenAPI 文档。导出入口为 `export-typescript`，`just api` 生成并格式化 Web 类型，CI 检查重新生成的差异。HTTP 方法、路径、认证、状态码和业务校验由实际 adapter 与 HTTP 测试约束；Web 使用明确的具名 HTTP 调用函数，生成类型不承担路由生成或运行时校验。Specta 自动收集需要宏生成的 `unsafe` 初始化函数，Server 仅允许这项生成代码例外，手写 `unsafe` 仍禁止，其他 crate 的限制不变。
 
 ## 2. 系统目标与非目标
 
@@ -610,7 +612,7 @@ Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor �
 
 UI 选择推进 revision 后，旧帧不再证明 readiness，但替换帧尚未到达本身不撤回 Binding eligibility；观测仍因 waiting OS 条件、活着且认证的 Agent、前台、contest、Home 或当前 Target／epoch 事实失效而撤权。提交、维护和就绪仍要求精确当前 revision 的真实首帧；前台持续缺帧仍保留原有连续故障冷却与恢复预算。Agent 仅在收到现有 stale/incomplete-frame 拒绝、原帧身份／尺寸合法，且同一未过期 lease 上的新鉴权快照具有严格更新 revision 时刷新画面而不重新注册；拒绝的旧帧不被接受，新快照（含绑定后的队伍资料）仍等待实际新帧。错误身份、过期／替换 lease、未推进 revision、其他调用拒绝或失联继续 fail closed。本地 RPC 日志仅包含固定操作名与有界错误类别，不把异常 payload 放入诊断。
 
-原 `lock_state` 及 locked/unlocked 命名在本功能实施时统一迁移，不保留并行业务别名；Proto、本地 IPC、HTTP/OpenAPI、持久目标字段、Server/Client 和 Panel 生成类型同步更新。仍通过 session-control 的 PUT 替换目标，不新增切换 Command、toggle 或两套操作接口。
+原 `lock_state` 及 locked/unlocked 命名在本功能实施时统一迁移，不保留并行业务别名；Proto、本地 IPC、HTTP DTO、持久目标字段、Server/Client 和 Panel 生成类型同步更新。仍通过 session-control 的 PUT 替换目标，不新增切换 Command、toggle 或两套操作接口。
 
 Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm 身份单次入口，调用 GDM/libgdm 的 greeter API：创建或复用 greeter，选择镜像的 Wayland session entry，以固定 `gdm-contest`/`gdm-waiting` PAM 服务开始验证并请求启动桌面。调用者退出不影响由 GDM 管理的桌面；不接受任意账户、session entry、PAM 名或 unit，不直接启动 Xorg/GNOME，不修改 GDM/GNOME 程序或资源。
 
@@ -1201,7 +1203,7 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 - 注册成功201返回新账户的operator_id、username、role，不建立session；恢复成功204不建立session。
 - 邀请创建/重新生成与重置签发201仅当次返回token；普通列表不返回token/hash。检查仅返回注册role或重置目标username。
 - 本人改密、自我删除成功204并清除浏览器session cookie；数据库会话撤销仍是后续请求的鉴权依据。
-- Operator接口响应统一`Cache-Control: no-store`；密码与token的Debug脱敏，输入字段在OpenAPI中writeOnly，签发响应token为readOnly。
+- Operator接口响应统一`Cache-Control: no-store`；密码与token的Debug脱敏。密码只存在于请求DTO，明文签发token只在对应创建响应中返回，普通账户与邀请列表不包含秘密字段。
 - JSON表单接受合法Unicode转义；字段长度按解析后的业务规则验证，不从JSON序列化后的正文字节数推导字段上限。
 - 普通字段、密码策略及确认错误400 `INVALID_REQUEST`；当前密码错误400 `OPERATOR_CURRENT_PASSWORD_INVALID`，保留当前会话。
 - 用户名冲突、最后admin保护及凭据竞态分别409 `OPERATOR_LOGIN_NAME_CONFLICT`、`OPERATOR_LAST_ADMIN`、`OPERATOR_CREDENTIAL_CHANGED`。
@@ -1331,7 +1333,7 @@ Devices在行内详情展示双方IP和记录时间，支持复制；离线设�
 
 Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前按 Operator 身份在 sessionStorage 保存原 operation ID 和完整非秘密请求。刷新后先确认登录身份再恢复，旧 scope 的回调不能 清除新 scope 的请求。存储失败不发送；网络/5xx 等结果不明时保留原请求，提供同 ID 手动重试， 不自动重试。收到明确结果即可发起下一次操作，不等待设备收敛；期间仍可浏览和切换设备。 “仅重试失败设备”创建新 ID，只包含上次明确拒绝的设备，并重新检查 Enabled 资格。 提交结果与 Target/Actual/convergence 分别展示，确认后的结果仅保留在当前页面，不增加 Server 后台任务、执行队列或独立批次进度。已有请求失败、轮询失败和陈旧状态均明确展示。
 
-`DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation， 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的 current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。 该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Utoipa； `convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的 查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。 HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、 校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device 详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle， 释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建 Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
+`DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation， 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的 current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。 该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Specta； `convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的 查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。 HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、 校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device 详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle， 释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建 Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
 
 ## 16. 错误与可观测性
 
@@ -1345,7 +1347,7 @@ Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前�
 - malformed、unauthorized、session fence violation和不可能状态才终止协议；
 - Protobuf `error_code`保持`string`，不建立全局错误enum；其wire语法固定为 `1..=64` ASCII bytes且匹配`[A-Z][A-Z0-9_]*`；
 - Device Control发送方只在协议adapter中声明自己实际发送的码；接收方只校验 token语法，未知合法peer code保持opaque，只服从伴随typed state/action；
-- HTTP adapter私有拥有当前API实际发出的closed code set及其status映射；精确 公开集合由OpenAPI契约测试约束，不进入业务组件；
+- HTTP adapter私有拥有当前API实际发出的closed code set及其status映射；精确 公开集合由HTTP adapter与实际错误响应测试约束，不进入业务组件；
 - 本地IPC优先以typed enum/state表达可处理结果；只有接口确需稳定诊断标识时， 才由`local-control-api`和对应adapter共同拥有该标识；
 - 同一内部失败可以在不同边界映射为不同的安全公开分类；恰好使用相同字符串 不产生共享类型、共享所有权或跨transport兼容承诺；
 - Display、Debug、source text不作为公开语义。
@@ -1358,7 +1360,7 @@ Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前�
 
 设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用 stderr fmt日志，不尝试连接默认Collector。`OTEL_SDK_DISABLED=true`强制禁用导出。 Exporter的endpoint、timeout和headers继续使用OpenTelemetry标准环境变量。endpoint配置 无法建立exporter时启动失败；进程正常退出时显式shutdown provider以flush已排队span， 但shutdown/export失败只输出固定诊断，不覆盖业务命令结果。
 
-每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和 success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从 W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。 认证成功后可向当前Span补充不含secret的actor ID，但HTTP header、错误体、OpenAPI和 业务函数参数都不公开或传递自定义correlation/operation ID。CLI命令建立internal根Span。
+每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和 success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从 W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。 认证成功后可向当前Span补充不含secret的actor ID，但HTTP header、错误体、生成类型和 业务函数参数都不公开或传递自定义correlation/operation ID。CLI命令建立internal根Span。
 
 async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享数据库边界显式 捕获subscriber和当前Span。每个Diesel连接通过官方`Instrumentation`接口为query建立 `otel.kind=client`子Span，只记录SQLite类型和成功/失败，不读取或记录SQL文本、bind参数、 数据库URL、错误正文或其他secret。
 
@@ -1549,7 +1551,7 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - stale ID/epoch零authority写入；
 - secret redaction测试。
 
-可观测性基础设施另行覆盖：HTTP success/4xx/5xx根Span字段、actor late record、W3C父上下文、跨async与`spawn_blocking`传播、无SQL/bind secret以及provider graceful shutdown。HTTP契约测试必须证明response header、错误体和OpenAPI均无自定义correlation ID。
+可观测性基础设施另行覆盖：HTTP success/4xx/5xx根Span字段、actor late record、W3C父上下文、跨async与`spawn_blocking`传播、无SQL/bind secret以及provider graceful shutdown。HTTP契约测试必须证明response header、错误体和生成类型均无自定义correlation ID。
 
 不为数据库组件建立Repository mock。使用临时SQLite和真实constraint。
 
@@ -1620,7 +1622,7 @@ Runtime/Session/Home：
 - 无secret Debug/serde/log；
 - migration与Diesel schema clean diff；
 - Proto descriptor与golden clean diff；
-- OpenAPI与Web generated schema clean diff；
+- Specta生成的Web TypeScript类型clean diff；
 - workspace不存在全局error-code crate，业务组件不依赖transport公开码。
 
 ### 19.5 常用验收命令
@@ -1944,7 +1946,7 @@ JSON 使用封闭字段集。`account` 必须严格等于 DOMjudge `[username]`�
 
 I1 将最终 PDF 作为 Print 自有 SQLite BLOB 与文档摘要、页数、全局单调就绪序号、首次受理快照在同一写事务中提交，避免分离文件和数据库造成的孤儿或半提交。入队成功只在 COMMIT 后返回；事务失败全部回滚，取消调用者不等于取消已开始的数据库写入，结果可通过同键查询核实。就绪顺序在事务中分配，不使用登记时间、客户端时间或并发校验完成前的顺序。快照只统计本任务之前已就绪但未领取的任务及其文档页数，涵盖所有来源；准备中和生成失败请求排除。备份必须取得一致的 SQLite 数据库及其 WAL 状态；不直接复制运行中的单个数据库文件。数据库随文档增长，不自动删除或添加未经确认的队伍／任务数量上限。
 
-接口错误沿用 `{ "title": "…", "status": 400, "code": "INVALID_REQUEST" }` 外壳。无效字段／PDF 返回 400，来源认证失败或撤销返回 401，管理接口角色不足返回 403，自己来源中不存在的请求返回 404，阶段／内容／身份冲突返回 409，PDF 上传超过 8 MiB 返回 413，内部持久化失败返回 500；现有数据库工作准入失败可返回 503。来源认证失败不消费请求体。整个 Print namespace 使用 `Cache-Control: no-store`；不通过错误正文泄漏解析内容、路径或其他来源的存在事实。机器可读契约由 Server DTO 生成 OpenAPI 和 TypeScript，不手改生成物。
+接口错误沿用 `{ "title": "…", "status": 400, "code": "INVALID_REQUEST" }` 外壳。无效字段／PDF 返回 400，来源认证失败或撤销返回 401，管理接口角色不足返回 403，自己来源中不存在的请求返回 404，阶段／内容／身份冲突返回 409，PDF 上传超过 8 MiB 返回 413，内部持久化失败返回 500；现有数据库工作准入失败可返回 503。来源认证失败不消费请求体。整个 Print namespace 使用 `Cache-Control: no-store`；不通过错误正文泄漏解析内容、路径或其他来源的存在事实。JSON 字段由 Server HTTP DTO 与 Serde 定义，通过 Specta 直接导出 TypeScript，不手改生成物；路由与状态语义由实际 HTTP 测试验证。
 
 wrapper 接受 `--file`、`--account`、`--original`，可显式传 `--request-id` 用于受控重试；未传时每次独立调用生成新 UUIDv7。配置固定在 `/etc/natsume-print-domjudge/config.toml`，包含 `server_url`、`token_file` 和可选 `ca_certificate`；服务器地址必须是无凭据、路径、查询和片段的 HTTPS origin。部署拥有配置和凭据，包不生成或覆盖 token。源文件必须为常规 UTF-8 文件，最多 256 KiB；拒绝目录、特殊文件和符号链接，不回显内容。源码和展示字段均作为数据进入固定 Typst 模板，不拼接可执行 Typst、shell 或 eval；不接受用户模板、远端资源或任意编译参数。A4、黑白、单份，长行必须换行，不裁掉源码。
 

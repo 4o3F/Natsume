@@ -49,10 +49,7 @@ export function ChangePasswordPage() {
             action.run(
               async (signal) => {
                 await unwrap<void>(
-                  await scope.api.POST("/api/v2/operator/password/change", {
-                    body: values,
-                    signal,
-                  }),
+                  await scope.api.changeOperatorPassword(values, { signal }),
                 );
               },
               () => {

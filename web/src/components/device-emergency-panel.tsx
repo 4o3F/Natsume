@@ -4,7 +4,7 @@ import { ChevronDown, Download, LifeBuoy } from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type { components } from "@/api/generated/schema";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,17 +16,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { deviceIpExport } from "./device-network";
 
-type Device = components["schemas"]["DeviceResponse"];
+type Device = DeviceResponse;
 
 export function DeviceEmergencyPanel() {
   const { api } = useSessionScope();
   const [expanded, setExpanded] = useState(false);
   async function readAllDevices(signal?: AbortSignal) {
     return unwrap<Device[]>(
-      await api.GET("/api/v2/devices", {
-        signal,
-        params: { query: { state: ["enabled", "disabled"] } },
-      }),
+      await api.listDevices(["enabled", "disabled"], { signal }),
     );
   }
   const devices = useQuery({

@@ -7,7 +7,6 @@ use axum::{
 };
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
-use utoipa::{IntoParams, ToSchema};
 
 use crate::component::device::{
     ActivationError, EnrollmentApprovalError, EnrollmentReviewId, EvidenceQuality,
@@ -32,32 +31,25 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         )
 }
 
-#[derive(Deserialize, IntoParams)]
-#[into_params(parameter_in = Path)]
+#[derive(Deserialize)]
 pub(crate) struct EnrollmentReviewPath {
     /// Canonical lowercase hyphenated `UUIDv7` review ID.
     review_id: String,
 }
 
 /// Non-secret evidence awaiting an Administrator decision in this process.
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct EnrollmentReviewResponse {
     review_id: String,
     machine_hardware_id: String,
-    #[schema(
-        min_length = 43,
-        max_length = 43,
-        pattern = "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$"
-    )]
     candidate_public_key: String,
-    #[schema(inline)]
     evidence_quality: EvidenceQualityResponse,
     daemon_version: String,
     agent_version: String,
 }
 
-#[derive(Serialize, ToSchema)]
+#[derive(Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 enum EvidenceQualityResponse {
     Medium,
@@ -82,16 +74,6 @@ impl From<&PendingEnrollmentReview> for EnrollmentReviewResponse {
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v2/enrollment-reviews",
-    operation_id = "listEnrollmentReviews",
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 200, description = "Enrollment reviews pending in this Server process", body = [EnrollmentReviewResponse]),
-        (status = 401, description = "Session authentication failed")
-    )
-)]
 pub(crate) async fn list_enrollment_reviews(State(state): State<AppState>) -> Response {
     let reviews = state.device().pending_enrollment_reviews().await;
     let mut response = reviews
@@ -102,22 +84,6 @@ pub(crate) async fn list_enrollment_reviews(State(state): State<AppState>) -> Re
     Json(response).into_response()
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/enrollment-reviews/{review_id}/actions/approve",
-    operation_id = "approveEnrollmentReview",
-    params(EnrollmentReviewPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "Enrollment authority committed and connection notification attempted"),
-        (status = 400, description = "Invalid review ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Enrollment review unavailable"),
-        (status = 409, description = "Candidate authority rejected"),
-        (status = 500, description = "Internal failure")
-    )
-)]
 pub(crate) async fn approve_enrollment_review(
     State(state): State<AppState>,
     Path(path): Path<EnrollmentReviewPath>,
@@ -132,20 +98,6 @@ pub(crate) async fn approve_enrollment_review(
     }
 }
 
-#[utoipa::path(
-    post,
-    path = "/api/v2/enrollment-reviews/{review_id}/actions/deny",
-    operation_id = "denyEnrollmentReview",
-    params(EnrollmentReviewPath),
-    security(("sessionCookie" = [])),
-    responses(
-        (status = 204, description = "Enrollment review terminally denied and connection notification attempted"),
-        (status = 400, description = "Invalid review ID"),
-        (status = 401, description = "Session authentication failed"),
-        (status = 403, description = "Administrator role required"),
-        (status = 404, description = "Enrollment review unavailable")
-    )
-)]
 pub(crate) async fn deny_enrollment_review(
     State(state): State<AppState>,
     Path(path): Path<EnrollmentReviewPath>,

@@ -1,7 +1,10 @@
-import type { components } from "@/api/generated/schema";
+import type {
+  TargetSubmissionBody,
+  TargetSubmissionResponse,
+} from "@/api/generated/types";
 
-export type TargetRequest = components["schemas"]["TargetSubmissionBody"];
-export type TargetResponse = components["schemas"]["TargetSubmissionResponse"];
+export type TargetRequest = TargetSubmissionBody;
+export type TargetResponse = TargetSubmissionResponse;
 export type TargetOperation =
   "waiting" | "contest" | "terminate" | "reset" | "poweroff";
 
