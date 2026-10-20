@@ -3,7 +3,10 @@ use snafu::Snafu;
 use tracing::instrument::WithSubscriber as _;
 
 use crate::{
-    component::{device::DeviceError, import::ImportError},
+    component::{
+        device::DeviceError,
+        import::{ImportError, InputError, InputErrorKind},
+    },
     config::LogLevel,
     logging::tests::{CapturedLogs, SubscriberTestGuard},
 };
@@ -15,13 +18,12 @@ const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
 
 #[tokio::test]
 async fn invalid_username_response_identifies_the_excel_cell_and_supported_contract() {
-    let response =
-        ApiError::from_import(ImportError::InvalidWorkbook(natsume_roster::InputError {
-            row: Some(3),
-            column: Some(4),
-            kind: natsume_roster::InputErrorKind::InvalidIdentifier,
-        }))
-        .into_response();
+    let response = ApiError::from_import(ImportError::InvalidWorkbook(InputError {
+        row: Some(3),
+        column: Some(4),
+        kind: InputErrorKind::InvalidIdentifier,
+    }))
+    .into_response();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
         .await
@@ -264,10 +266,10 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
 fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
     [
         (
-            ImportError::InvalidWorkbook(natsume_roster::InputError {
+            ImportError::InvalidWorkbook(InputError {
                 row: None,
                 column: None,
-                kind: natsume_roster::InputErrorKind::EmptyRoster,
+                kind: InputErrorKind::EmptyRoster,
             }),
             "import_workbook_invalid",
             StatusCode::BAD_REQUEST,

@@ -5,7 +5,6 @@ use image::{DynamicImage, ImageFormat};
 use tempfile::TempDir;
 
 use super::*;
-use crate::parse_xlsx;
 
 fn checked<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("test setup failed: {error:?}"))
@@ -27,14 +26,17 @@ fn opened_logo_keeps_one_descriptor_when_the_path_is_replaced() {
     assert!(validate_logo(&path).is_err());
 }
 
+fn validate_logo(path: &Path) -> Result<(), LogoError> {
+    read_logo(path).map(|_| ())
+}
+
 fn write_image(path: &Path, format: ImageFormat) {
     checked(DynamicImage::new_rgb8(8, 8).save_with_format(path, format));
 }
 
 #[test]
 fn complete_names_match_without_normalizing_punctuation_or_recursing() {
-    let roster = checked(parse_xlsx(include_bytes!("../../examples/roster.xlsx")));
-    let school = &roster.organizations()[0];
+    let (name_zh, name_en) = ("示例大学", "Example University");
     let directory = checked(TempDir::new());
     let unrelated = directory.path().join("示例大学（校区）.png");
     write_image(&unrelated, ImageFormat::Png);
@@ -44,21 +46,20 @@ fn complete_names_match_without_normalizing_punctuation_or_recursing() {
         ImageFormat::Png,
     );
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(school.name_zh(), school.name_en()),
+        checked(LogoDirectory::open(directory.path())).resolve(name_zh, name_en),
         LogoMatch::Missing
     );
     let english = directory.path().join("Example University.WEBP");
     write_image(&english, ImageFormat::WebP);
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(school.name_zh(), school.name_en()),
+        checked(LogoDirectory::open(directory.path())).resolve(name_zh, name_en),
         LogoMatch::Unique(english)
     );
 }
 
 #[test]
 fn multiple_formats_or_languages_for_the_same_school_are_ambiguous() {
-    let roster = checked(parse_xlsx(include_bytes!("../../examples/roster.xlsx")));
-    let school = &roster.organizations()[0];
+    let (name_zh, name_en) = ("示例大学", "Example University");
     let directory = checked(TempDir::new());
     let first = directory.path().join("示例大学.jpg");
     let second = directory.path().join("示例大学.png");
@@ -73,7 +74,7 @@ fn multiple_formats_or_languages_for_the_same_school_are_ambiguous() {
     let mut expected = vec![first, second, third];
     expected.sort();
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(school.name_zh(), school.name_en()),
+        checked(LogoDirectory::open(directory.path())).resolve(name_zh, name_en),
         LogoMatch::Ambiguous(expected)
     );
 }
@@ -110,12 +111,8 @@ fn svg_content_with_xml_header_bom_and_webp_extension_renders_without_mutating_s
 
     let native = directory.path().join("示例大学.SVG");
     checked(fs::rename(&path, &native));
-    let roster = checked(parse_xlsx(include_bytes!("../../examples/roster.xlsx")));
     assert_eq!(
-        checked(LogoDirectory::open(directory.path())).resolve(
-            roster.organizations()[0].name_zh(),
-            roster.organizations()[0].name_en()
-        ),
+        checked(LogoDirectory::open(directory.path())).resolve("示例大学", "Example University"),
         LogoMatch::Unique(native)
     );
 }
@@ -287,7 +284,7 @@ fn unreadable_images_report_the_os_error() {
 }
 
 #[test]
-fn png_exports_preserve_decoded_pixels_dimensions_and_alpha_for_every_raster_format() {
+fn http_logos_preserve_decoded_pixels_dimensions_and_alpha_for_every_raster_format() {
     let directory = checked(TempDir::new());
     for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
         let path = directory.path().join("source.webp");
@@ -312,10 +309,11 @@ fn png_exports_preserve_decoded_pixels_dimensions_and_alpha_for_every_raster_for
         checked(image.save_with_format(&path, format));
         let before = checked(fs::read(&path));
         let expected = checked(image::load_from_memory(&before)).to_rgba8();
-        let png = checked(checked(read_logo(&path)).into_png());
-        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
-        assert_eq!(checked(image::load_from_memory(&png)).to_rgba8(), expected);
         let http = checked(checked(read_logo(&path)).into_http());
+        assert_eq!(
+            checked(image::load_from_memory(&http.bytes)).to_rgba8(),
+            expected
+        );
         assert_eq!(http.content_type, format.to_mime_type());
         assert_eq!(http.bytes, before);
         assert_eq!(checked(fs::read(&path)), before);
@@ -411,16 +409,15 @@ fn domjudge_svg_export_resizes_natural_canvas_without_changing_http_or_source() 
 }
 
 #[test]
-fn svg_http_and_export_share_natural_canvas_transparent_pixels_and_png_encoding() {
+fn svg_http_preserves_natural_canvas_transparent_pixels_and_source() {
     let directory = checked(TempDir::new());
     let path = directory.path().join("svg-disguised.webp");
     let source = br##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="4"><rect width="4" height="4" fill="#ff0000" fill-opacity="0.5"/></svg>"##;
     checked(fs::write(&path, source));
-    let png = checked(checked(read_logo(&path)).into_png());
     let http = checked(checked(read_logo(&path)).into_http());
-    assert_eq!(http.bytes, png);
+    assert!(http.bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
     assert_eq!(http.content_type, "image/png");
-    let image = checked(image::load_from_memory(&png)).to_rgba8();
+    let image = checked(image::load_from_memory(&http.bytes)).to_rgba8();
     assert_eq!(image.dimensions(), (8, 4));
     assert_eq!(image.get_pixel(1, 1).0, [255, 0, 0, 128]);
     assert_eq!(image.get_pixel(6, 1).0, [0, 0, 0, 0]);

@@ -23,7 +23,7 @@
 | 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
 | 构建、依赖和发布版本 | Cargo、pnpm、打包配置与 lockfile |
 
-表中源码路径已同步到 M1 的现有布局；第 17 节定义包含后续工作包的完整目标路径。 当前 workspace 索引见 [crates/README.md](../crates/README.md)；M1 临时保留 `crates/roster` 及 `natsume-check-logos`，能力归位与退役属于 M2，不表示后续平台包已实现。
+表中源码路径指向现有布局；第 17 节定义包含后续工作包的完整目标路径。当前 workspace 索引见 [crates/README.md](../crates/README.md)。XLSX 解析、输入类型和模板归 Server Import 内部，学校 Logo 文件与图像处理归 Server Contest 内部；打印、拍照及共享赛事领域包仍须按各自工作包实施。
 
 规则：
 
@@ -1138,7 +1138,7 @@ Operator账户与session在Server数据库：
 - `operator_accounts.credential_revision`从1开始，只由Operator组件在修改或重置密码事务中递增；
 - 登录读取PHC与revision，在事务外完成Argon2验证，再以exact expected revision条件插入session；零行表示凭据已失效，返回认证失败；
 - 修改或重置密码原子更新PHC、递增revision、删除该账户全部session及未使用的密码重置链接；相同密码重置也递增，溢出或任一步失败均回滚；revision fence未完成的登录，删除操作撤销已签发session，session不保存revision副本；
-- 登录JSON body最多8 KiB，读取deadline为5秒；用户名为1～128 UTF-8字节，密码最多1024 UTF-8字节，不截断或规范化；超出body上限返回413，读取超时返回408，非法字段返回400。已有密码登录不套用新增的设密码策略；
+- 登录用户名为1～128 UTF-8字节，密码最多1024 UTF-8字节，不截断或规范化；非法字段返回400。已有密码登录不套用新增的设密码策略；
 - 登录、注册、链接重置和本人改密共用最多4条在途密码操作的容量，读取账户或授权前立即尝试取得许可；满额返回503与`Retry-After: 1`，不设匿名等待队列。许可依次随数据库读取、Argon2验证/hash、最终写入的阻塞任务及其结果存活，请求取消不能提前释放排队或执行中的容量；
 - session cookie明文只在浏览器与响应，数据库只存SHA-256；
 - 绝对过期，不滑动续期；
@@ -1202,7 +1202,7 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 - 邀请创建/重新生成与重置签发201仅当次返回token；普通列表不返回token/hash。检查仅返回注册role或重置目标username。
 - 本人改密、自我删除成功204并清除浏览器session cookie；数据库会话撤销仍是后续请求的鉴权依据。
 - Operator接口响应统一`Cache-Control: no-store`；密码与token的Debug脱敏，输入字段在OpenAPI中writeOnly，签发响应token为readOnly。
-- JSON表单上限24 KiB，读取deadline 5秒。三个1024字符密码字段全部采用合法Unicode转义可达18 KiB以上，上限需覆盖此合法表示；超限413，超时408。
+- JSON表单接受合法Unicode转义；字段长度按解析后的业务规则验证，不从JSON序列化后的正文字节数推导字段上限。
 - 普通字段、密码策略及确认错误400 `INVALID_REQUEST`；当前密码错误400 `OPERATOR_CURRENT_PASSWORD_INVALID`，保留当前会话。
 - 用户名冲突、最后admin保护及凭据竞态分别409 `OPERATOR_LOGIN_NAME_CONFLICT`、`OPERATOR_LAST_ADMIN`、`OPERATOR_CREDENTIAL_CHANGED`。
 - 无效、过期、替换、撤销、已消费或用途不符的token统一410 `OPERATOR_LINK_UNAVAILABLE`；token失败不使用会话401。
@@ -1222,7 +1222,7 @@ Import预览token仅保留在创建它的当前前端会话内，页面刷新或
 
 ### 15.2 Import
 
-导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板和无数据库解析归 Server Import。原 `natsume-roster` 在能力归位后退役，删除 `natsume-check-logos`，不再以离线预检工具作为共享库消费者。真正多消费者的纯非秘密领域值按第 17 节提取，输入格式与密码不进入公共领域包。旧 CSV 导入及 JSON commit body 删除。
+导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板、无数据库解析、输入类型和工作表行列错误归 Server Import 内部。学校 Logo 文件与图像处理归 Server Contest 内部，检查通过 Web Preparation 提供。真正多消费者的纯非秘密领域值按第 17 节提取，输入格式与密码不进入公共领域包。旧 CSV 导入及 JSON commit body 删除。
 
 ```text
 strict XLSX parse
@@ -1241,7 +1241,7 @@ strict XLSX parse
 - 每次上传完整名单；未出现的学校、队伍、账号、座位进入移除预览。学校由队伍行归并，不要求预填 ID 或图片字段；
 - 所有单元格必须为文本，拒绝公式和 Excel 错误值。密码、账号、座位保留原文，其他字段 trim；中英文校名、队名各至少一种；国家默认为 CHN；
 - account 与 category 用作 DOMjudge 导出 ID：1–36 个 ASCII 字母、数字、下划线、点或短横线，不能以点／短横线开头、不能以点结尾。运行时 Binding 的用户名校验边界保持独立；
-- XLSX 最多 8 MiB，展开后最多 64 MiB，最多 10000 个数据行；错误只返回实际工作表行列和固定规则，不回显单元格内容；
+- XLSX 最多 8 MiB，展开后最多 64 MiB，最多 10000 个数据行；解析保留的单元格文本累计最多 64 MiB，共享字符串的每次引用分别计入，在复制前检查，避免小文件通过重复引用放大内存；错误只返回实际工作表行列和固定规则，不回显单元格内容；
 - 同一中文校名归并，无中文时按英文名；同校英文名与国家必须一致，允许从同校其他行补齐空英文名。首次按学校键排序生成 INST-001 起的编号；后续复用当前映射，新学校从持久化自增序号追加，删除后不复用已用编号。学校匹配名称修改表现为移除和新增；
 - `organizations` 保存序号、中英文名、匹配键和国家；`teams` 以既有 account_id 为主键，关联学校并保存中英文队名、类别。Import 是这些表和 Seat、Account、mapping、credential revision 的唯一写入者；
 - 预览中的 INST ID 是同一基线下的拟分配结果，不提前写业务表或消耗编号；
@@ -1254,6 +1254,8 @@ strict XLSX parse
 - 只为实际变化的密码生成新 nonce、重写密文并推进对应 revision。完全相同的名单不写业务数据；资料变化不修改凭据、Binding ID、Session 前台目标或 Home 目标；
 - 学校、队伍、账号、凭据、座位、映射和候选消费在同一事务内提交，失败全部回滚。commit 后自动 dirty，不创建 Command，不依赖 Operator 再发 sync；
 - 一次性 schema 迁移保留既有业务数据并清除旧格式待提交候选，存量队伍资料通过完整 XLSX 补齐，不自动清库。
+
+Import 自己拥有一个重型操作名额，预览创建和提交共用；在认证、媒体类型检查之后、读取完整请求体之前立即申请，忙碌返回 503 `SERVICE_UNAVAILABLE` 和 `Retry-After: 1`，不排队保存名单或密码。查询候选、模板下载和丢弃候选不占用该名额。许可从读取请求体持续到解析及事务结束；调用方取消不能提前释放仍在排队或运行的阻塞工作，数据库成功与失败结果都携带许可直到 COMMIT／ROLLBACK 完成。
 
 源图位于部署方配置的 `[storage].organization_logos`，按学校完整中／英文名匹配直接子文件，无 Excel 文件名字段、别名表或自动外部下载。学校资料为名单数据，图片为独立部署文件；缺图不影响导入。实际内容识别、限额、解码和 SVG 渲染归 Server Contest，拒绝符号链接和外部 SVG 资源，不带入公共领域包。目录与图片失败通过 tracing 记录路径和原因。
 
@@ -1296,7 +1298,11 @@ Session foreground、terminate、Home reset 的单台/批量写入口统一为 `
 
 进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果， 不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled， 离线设备包含在内。显式 ID 列表规范化去重；不存在、非 Enabled、无效目标、epoch 耗尽等 领域拒绝逐设备返回，其他设备继续。数据库写入或最终 COMMIT 失败整批回滚。 HTTP 200 表示完整提交结果已持久化，可以包含部分或全部拒绝；从不等待 Client converge。
 
-HTTP方法表达资源语义，不为动词机械创建伪资源，也不把实际transition伪装成普通字段 覆盖。`/api/v2`根层在认证和路由handler前统一拒绝`HEAD`并执行请求体大小上限； 业务handler不重复声明这些transport策略。
+HTTP 方法表达资源语义，不为动词机械创建伪资源，也不把实际状态转换伪装成普通字段覆盖。`/api/v2` 根层在认证和路由处理前统一拒绝 `HEAD`。Panel API 不设置路由正文大小覆盖，JSON 和 Bytes 提取器使用 Axum 默认的 2 MiB 上限。JSON 提取失败沿用 400 错误映射，包括正文超限、格式错误和不支持的媒体类型；名单上传的 Bytes 提取超限返回 413。解析组件继续执行自己的格式、解压和解码限制；Import 内部的 XLSX 原始文件上限为 8 MiB，但不覆盖 HTTP 提取器的 2 MiB 上限。
+
+当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用 Import 名额，直到请求终止。提取器的正文上限只约束单次请求的原始字节数，不代表解析后的对象大小或并发请求总内存受到同等约束。连接总量和 Import 并发名额不等于进程内存限额，也不能替代请求期限；最低部署带宽和生产资源容量仍需实测验收。
+
+当前 HTTP 服务入口使用 `axum::serve`，没有为 Hyper 安装计时器，其默认的 HTTP/1 请求头读取超时不会生效。TLS 握手期限和连接总量不能替代请求头保护；慢请求头仍可能占用连接容量。该缺口需独立调整服务入口并验证 TLS、WebSocket upgrade 与优雅关闭，不能将当前实现视为已完成慢连接防护。
 
 Operator Target 提交成功后通过 `DeviceControl::dirty_devices` 通知成功设备的已有 Actor。 receipt 重放也只触发从当前数据库重新读取，不恢复旧 Target。Dirty 丢失由现有周期刷新和 重连恢复；通知不在数据库事务内，也不等待终端执行。HTTP handler 不直接访问组件表。
 
@@ -1399,7 +1405,7 @@ crates/natsume-photo-package/     # 成果包契约随双端实现提取，不�
 
 原 `server/` 迁至 `natsume-server`；原 `device-daemon`、`privileged-helper`、 `session-agent` 分别迁至三个 `workstation-*` 应用包；原 `device-protocol` 与 `local-control-api` 分别迁至 `workstation-protocol` 与 `workstation-ipc`。 `web/` 保持独立前端，打包仍按交付对象组织；Tauri 若入选，其 Rust 包也遵守本布局。
 
-目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、 架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称， 必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。 唯一明确退役的工具是 `natsume-check-logos`。原 `natsume-roster` 不改名占位： XLSX／密码输入归 Import，校徽文件与图像处理归 Contest，能力归位后删除原包。
+目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、 架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称， 必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。 XLSX／密码输入归 Server Import 内部，校徽文件与图像处理归 Server Contest 内部，不建立独立 roster 公共库或离线校徽预检工具。
 
 `natsume-contest-domain` 只承载共同需要的稳定身份、非秘密基础资料和纯值约束， 不含 DB、网络、文件系统、GUI、输入格式或业务编排，不创建第二套队伍身份。 `natsume-photo-package` 只承载专用成果格式与签名／完整性契约，不接管名单、来源授权和审批。 域类型共享不共享 authority，也不把所有领域状态机、DTO 或错误码塞进全局 core。
 

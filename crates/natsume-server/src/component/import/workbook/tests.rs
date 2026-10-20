@@ -1,3 +1,5 @@
+mod resource_usage;
+
 use std::{
     fmt::Write as _,
     io::{Cursor, Read, Write},
@@ -7,7 +9,7 @@ use zip::{ZipArchive, ZipWriter, write::SimpleFileOptions};
 
 use super::*;
 
-const EXAMPLE: &[u8] = include_bytes!("../../examples/roster.xlsx");
+const EXAMPLE: &[u8] = include_bytes!("../examples/roster.xlsx");
 
 fn checked<T, E: std::fmt::Debug>(result: Result<T, E>) -> T {
     result.unwrap_or_else(|error| panic!("test setup failed: {error:?}"))
@@ -94,9 +96,8 @@ fn real_excel_example_preserves_text_and_merges_schools() {
     assert_eq!(university.key(), "示例大学");
     assert_eq!(university.name_en(), "Example University");
     assert_eq!(university.country(), "CHN");
-    assert_eq!(university.rows(), [2, 3]);
+    assert_eq!(university.rows, [2, 3]);
     assert_eq!(roster.teams()[0].organization_key(), university.key());
-    assert_eq!(roster.teams()[0].row(), 2);
     assert_eq!(roster.teams()[0].account(), "team-001");
     assert_eq!(roster.teams()[0].password(), "example-password-001");
     assert_eq!(roster.teams()[0].seat(), "A-01");
@@ -129,7 +130,7 @@ fn blank_english_names_can_be_filled_by_later_rows() {
     let data = workbook_with_rows(&[&row_xml(2, &first), &row_xml(4, &valid_row("two", "2"))]);
     let roster = checked(parse_xlsx(&data));
     assert_eq!(roster.organizations()[0].name_en(), "Example University");
-    assert_eq!(roster.organizations()[0].rows(), [2, 4]);
+    assert_eq!(roster.organizations()[0].rows, [2, 4]);
 }
 
 #[test]
@@ -163,7 +164,7 @@ fn missing_and_duplicate_headers_are_rejected_without_echoing_cells() {
 
 #[test]
 fn empty_template_requires_a_team() {
-    let template = include_bytes!("../../examples/template.xlsx");
+    let template = include_bytes!("../examples/template.xlsx");
     assert_eq!(rejected(template).kind, Kind::EmptyRoster);
 }
 
@@ -321,5 +322,6 @@ fn ten_thousand_rows_fit_and_preserve_original_row_locations() {
     let roster = checked(parse_xlsx(&workbook_with_rows(&[&body])));
     assert_eq!(roster.teams().len(), 10_000);
     assert_eq!(roster.organizations().len(), 1);
-    assert_eq!(roster.teams()[9_999].row(), 10_001);
+    assert_eq!(roster.teams()[9_999].account(), "team-10001");
+    assert_eq!(roster.organizations()[0].rows.last(), Some(&10_001));
 }

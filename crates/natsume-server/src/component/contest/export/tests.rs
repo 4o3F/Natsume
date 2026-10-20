@@ -168,13 +168,13 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
             .map(|row| row.each_ref().map(String::as_str))
             .collect::<Vec<_>>(),
     );
-    let preview = checked(import.create_candidate(&xlsx).await);
+    let preview = checked(checked(import.try_begin()).create_candidate(&xlsx).await);
     assert!(matches!(
         contest.export_domjudge().await,
         Err(ExportError::IncompleteRoster)
     ));
     checked(
-        import
+        checked(import.try_begin())
             .commit(preview.candidate_id(), preview.preview_token_bytes(), &xlsx)
             .await,
     );
@@ -195,10 +195,14 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
             .map(|row| row.each_ref().map(String::as_str))
             .collect::<Vec<_>>(),
     );
-    let preview = checked(import.create_candidate(&next_xlsx).await);
+    let preview = checked(
+        checked(import.try_begin())
+            .create_candidate(&next_xlsx)
+            .await,
+    );
     assert_eq!(entries(checked(contest.export_domjudge().await)), first);
     checked(
-        import
+        checked(import.try_begin())
             .commit(
                 preview.candidate_id(),
                 preview.preview_token_bytes(),

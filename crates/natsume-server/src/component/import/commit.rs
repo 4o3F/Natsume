@@ -5,7 +5,7 @@ use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use crate::{
-    db::{Database, Transaction, TransactionError},
+    db::{Database, Transaction},
     vault::VaultSession,
 };
 
@@ -25,52 +25,51 @@ pub(super) async fn commit_import(
     candidate_id: Uuid,
     presented_token: &[u8; 32],
     raw_xlsx: &[u8],
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<(), ImportError> {
-    let parsed = parse_roster(raw_xlsx).await?;
+    let (parsed, permit) = parse_roster(raw_xlsx, permit).await?;
     let token_hash: [u8; 32] = Sha256::digest(presented_token).into();
-    let outcome = database
-        .write(move |transaction| {
-            let Some(candidate) = db::pending_import_candidate::find(transaction)? else {
-                return Ok(CommitOutcome::Unavailable);
-            };
-            if candidate.candidate_id() != candidate_id {
-                return Ok(CommitOutcome::Unavailable);
-            }
-            if candidate.expiry() == CandidateExpiry::Expired {
-                expire_candidate(transaction, &candidate)?;
-                return Ok(CommitOutcome::Unavailable);
-            }
-            if !bool::from(token_hash.ct_eq(candidate.preview_token_hash())) {
-                return Ok(CommitOutcome::Unavailable);
-            }
-            let baseline = db::query::read_baseline(transaction)?;
-            if candidate.fingerprint_version() != FINGERPRINT_VERSION
-                || candidate.baseline_fingerprint_sha256() != &baseline.fingerprint()
-            {
-                return Ok(CommitOutcome::Stale);
-            }
-            let roster = CandidateRoster::prepare(&baseline, &parsed)?;
-            if candidate.candidate_fingerprint_sha256() != &candidate_fingerprint(&roster)? {
-                return Ok(CommitOutcome::Stale);
-            }
-            let changed = changed_passwords(&baseline, &parsed, &vault)?;
-            let diff = compute_diff(&baseline, &roster, changed);
-            if candidate.diff() != &diff {
-                return Ok(CommitOutcome::Stale);
-            }
-            if diff.blocks_commit() {
-                return Ok(CommitOutcome::SeatOccupied);
-            }
-            if diff.has_changes() {
-                apply_plan(transaction, &vault, &parsed, &baseline, &roster, &diff)?;
-            }
-            if db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
-                return Err(ImportError::PersistenceFailure);
-            }
-            Ok(CommitOutcome::Committed)
-        })
-        .await
-        .map_err(TransactionError::into_error)?;
+    let outcome = super::write_import(database, permit, move |transaction| {
+        let Some(candidate) = db::pending_import_candidate::find(transaction)? else {
+            return Ok(CommitOutcome::Unavailable);
+        };
+        if candidate.candidate_id() != candidate_id {
+            return Ok(CommitOutcome::Unavailable);
+        }
+        if candidate.expiry() == CandidateExpiry::Expired {
+            expire_candidate(transaction, &candidate)?;
+            return Ok(CommitOutcome::Unavailable);
+        }
+        if !bool::from(token_hash.ct_eq(candidate.preview_token_hash())) {
+            return Ok(CommitOutcome::Unavailable);
+        }
+        let baseline = db::query::read_baseline(transaction)?;
+        if candidate.fingerprint_version() != FINGERPRINT_VERSION
+            || candidate.baseline_fingerprint_sha256() != &baseline.fingerprint()
+        {
+            return Ok(CommitOutcome::Stale);
+        }
+        let roster = CandidateRoster::prepare(&baseline, &parsed)?;
+        if candidate.candidate_fingerprint_sha256() != &candidate_fingerprint(&roster)? {
+            return Ok(CommitOutcome::Stale);
+        }
+        let changed = changed_passwords(&baseline, &parsed, &vault)?;
+        let diff = compute_diff(&baseline, &roster, changed);
+        if candidate.diff() != &diff {
+            return Ok(CommitOutcome::Stale);
+        }
+        if diff.blocks_commit() {
+            return Ok(CommitOutcome::SeatOccupied);
+        }
+        if diff.has_changes() {
+            apply_plan(transaction, &vault, &parsed, &baseline, &roster, &diff)?;
+        }
+        if db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
+            return Err(ImportError::PersistenceFailure);
+        }
+        Ok(CommitOutcome::Committed)
+    })
+    .await?;
     match outcome {
         CommitOutcome::Committed => Ok(()),
         CommitOutcome::Unavailable => Err(ImportError::CandidateUnavailable),
@@ -89,7 +88,7 @@ fn require_one(count: usize) -> Result<(), ImportError> {
 fn apply_plan(
     transaction: &mut Transaction<'_>,
     vault: &VaultSession,
-    parsed: &natsume_roster::Roster,
+    parsed: &super::workbook::Roster,
     baseline: &ImportBaseline,
     roster: &CandidateRoster,
     diff: &RedactedImportPreview,
@@ -181,7 +180,7 @@ fn save_account(
     vault: &VaultSession,
     baseline: &ImportBaseline,
     diff: &RedactedImportPreview,
-    team: &natsume_roster::Team,
+    team: &super::workbook::Team,
 ) -> Result<String, ImportError> {
     if let Some(current) = baseline.accounts.get(team.account()) {
         if diff

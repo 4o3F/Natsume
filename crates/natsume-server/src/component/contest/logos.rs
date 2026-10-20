@@ -1,8 +1,10 @@
 use std::{io, path::Path};
 
-use natsume_roster::{LogoDirectory, LogoImage, LogoMatch, read_logo};
-
-use super::{ContestComponent, ExportError, OrganizationDetails, logo_cache::LogoValidationCache};
+use super::{
+    ContestComponent, ExportError, OrganizationDetails,
+    logo_cache::LogoValidationCache,
+    logo_io::{DecodedLogo, LogoDirectory, LogoError, LogoImage, LogoMatch, read_logo},
+};
 
 #[derive(Clone, Copy)]
 pub(crate) enum LogoStatus {
@@ -61,7 +63,7 @@ impl ContestComponent {
             match resolve(index.as_ref(), &organization) {
                 LogoMatch::Missing | LogoMatch::Ambiguous(_) => Err(ExportError::LogoUnavailable),
                 LogoMatch::Unique(path) => read_logo(&path)
-                    .and_then(natsume_roster::DecodedLogo::into_http)
+                    .and_then(DecodedLogo::into_http)
                     .map_err(|error| logo_error(&organization, &path, &error)),
             }
         })
@@ -121,7 +123,7 @@ pub(super) fn filename(path: &Path) -> String {
 pub(super) fn logo_error(
     school: &OrganizationDetails,
     path: &Path,
-    error: &natsume_roster::LogoError,
+    error: &LogoError,
 ) -> ExportError {
     tracing::error!(organization_id = school.organization_id, path = %path.display(), %error, "School logo processing failed");
     ExportError::Logo {

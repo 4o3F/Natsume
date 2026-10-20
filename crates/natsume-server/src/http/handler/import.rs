@@ -1,7 +1,7 @@
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Request, State},
+    extract::{FromRequest, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
     middleware as axum_middleware,
     middleware::Next,
@@ -15,8 +15,29 @@ use uuid::Uuid;
 
 use super::super::{AppState, error::ApiError, middleware};
 use crate::component::import::{
-    OrganizationDetails, PendingImportCandidate, RedactedImportPreview, TeamDetails,
+    ImportOperation, OrganizationDetails, PendingImportCandidate, RedactedImportPreview,
+    TeamDetails,
 };
+
+pub(crate) struct RosterUpload {
+    operation: ImportOperation,
+    bytes: Bytes,
+}
+
+impl FromRequest<AppState> for RosterUpload {
+    type Rejection = Response;
+
+    async fn from_request(request: Request, state: &AppState) -> Result<Self, Self::Rejection> {
+        let operation = state
+            .import()
+            .try_begin()
+            .map_err(|error| ApiError::from_import(error).into_response())?;
+        let bytes = Bytes::from_request(request, state)
+            .await
+            .map_err(IntoResponse::into_response)?;
+        Ok(Self { operation, bytes })
+    }
+}
 
 const PREVIEW_TOKEN_BYTES: usize = 32;
 const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
@@ -24,28 +45,28 @@ const XLSX_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.s
 const PREVIEW_TOKEN_HEADER: &str = "x-natsume-preview-token";
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    let upload =
-        post(create_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
-    let commit =
-        post(commit_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
+    let upload = middleware::require_admin(
+        state.clone(),
+        post(create_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type)),
+    );
+    let commit = middleware::require_admin(
+        state.clone(),
+        post(commit_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type)),
+    );
     Router::new()
         .route(
             "/imports",
-            middleware::require_admin(state.clone(), upload.merge(get(get_import))),
+            upload.merge(middleware::require_admin(state.clone(), get(get_import))),
         )
         .route(
             "/imports/template",
             middleware::require_admin(state.clone(), get(get_template)),
         )
-        .route(
-            "/imports/{import_id}/actions/commit",
-            middleware::require_admin(state.clone(), commit),
-        )
+        .route("/imports/{import_id}/actions/commit", commit)
         .route(
             "/imports/{import_id}",
             middleware::require_admin(state, delete(delete_import)),
         )
-        .layer(DefaultBodyLimit::max(natsume_roster::MAX_WORKBOOK_BYTES))
 }
 
 async fn require_xlsx_content_type(request: Request, next: Next) -> Response {
@@ -198,7 +219,7 @@ pub(crate) async fn get_template() -> Response {
                 "attachment; filename=roster-template.xlsx",
             ),
         ],
-        include_bytes!("../../../../roster/examples/template.xlsx").as_slice(),
+        crate::component::import::XLSX_TEMPLATE,
     )
         .into_response()
 }
@@ -209,9 +230,11 @@ pub(crate) async fn get_template() -> Response {
     responses((status = 201, description = "Full-roster XLSX preview created", body = ImportPreviewResponse),
         (status = 400, description = "Invalid workbook or media type"), (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"), (status = 409, description = "A candidate is already pending"),
-        (status = 413, description = "Workbook exceeds 8 MiB"), (status = 500, description = "Internal failure")))]
-pub(crate) async fn create_import(State(state): State<AppState>, body: Bytes) -> Response {
-    match state.import().create_candidate(&body).await {
+        (status = 413, description = "Request body exceeds Axum's default 2 MiB limit"),
+        (status = 500, description = "Internal failure"),
+        (status = 503, description = "Another import is reading or processing a workbook; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1")))))]
+pub(crate) async fn create_import(upload: RosterUpload) -> Response {
+    match upload.operation.create_candidate(&upload.bytes).await {
         Ok(created) => (
             StatusCode::CREATED,
             Json(ImportPreviewResponse {
@@ -246,12 +269,15 @@ pub(crate) async fn get_import(State(state): State<AppState>) -> Response {
     responses((status = 204, description = "Complete roster committed atomically; only changed passwords advance revisions"),
         (status = 400, description = "Invalid workbook, token or media type"), (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"), (status = 404, description = "Candidate unavailable"),
-        (status = 409, description = "Preview stale or removed seat occupied"), (status = 413, description = "Workbook exceeds 8 MiB"), (status = 500, description = "Internal failure")))]
+        (status = 409, description = "Preview stale or removed seat occupied"),
+        (status = 413, description = "Request body exceeds Axum's default 2 MiB limit"),
+        (status = 500, description = "Internal failure"),
+        (status = 503, description = "Another import is reading or processing a workbook; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1")))))]
 pub(crate) async fn commit_import(
     State(state): State<AppState>,
     Path(path): Path<ImportPath>,
     headers: HeaderMap,
-    body: Bytes,
+    upload: RosterUpload,
 ) -> Response {
     let Some(import_id) = canonical_uuid_v7(&path.import_id) else {
         return ApiError::invalid_request("import_id_not_canonical_uuid_v7").into_response();
@@ -263,7 +289,11 @@ pub(crate) async fn commit_import(
     else {
         return ApiError::invalid_request("import_preview_token_rejected").into_response();
     };
-    match state.import().commit(import_id, &token, &body).await {
+    match upload
+        .operation
+        .commit(import_id, &token, &upload.bytes)
+        .await
+    {
         Ok(()) => {
             state.device_control().dirty_all_devices().await;
             StatusCode::NO_CONTENT.into_response()

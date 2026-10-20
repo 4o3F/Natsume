@@ -7,14 +7,13 @@ use std::{path::Path, sync::Arc};
 
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, Request},
+    extract::Request,
     http::{HeaderValue, header::CACHE_CONTROL},
     middleware::{self as axum_middleware, Next},
     response::Response,
     routing::any_service,
 };
 use tower_http::{
-    limit::RequestBodyLimitLayer,
     services::{ServeDir, ServeFile},
     set_header::SetResponseHeaderLayer,
 };
@@ -24,8 +23,6 @@ use crate::server_state::ServerState;
 use self::error::ApiError;
 
 pub(crate) type AppState = Arc<ServerState>;
-
-const API_REQUEST_BODY_LIMIT_BYTES: usize = natsume_roster::MAX_WORKBOOK_BYTES + 4 * 1024;
 
 /// Builds the mounted Server HTTP surface over process-wide business state.
 pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
@@ -43,8 +40,8 @@ pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
         .layer(axum_middleware::from_fn(middleware::request_context))
 }
 
-// Apply after the outer API body limit and method rejection too, so early
-// responses for this namespace have the same cache policy as its handlers.
+// Cover root method rejection too, so early responses for this namespace
+// have the same cache policy as its handlers.
 async fn operator_no_store(request: Request, next: Next) -> Response {
     let path = request.uri().path();
     let operator = path == "/api/v2/operator" || path.starts_with("/api/v2/operator/");
@@ -74,8 +71,6 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .merge(authenticated)
         .merge(handler::operator::routes(state.clone()))
         .fallback(not_found)
-        .layer(DefaultBodyLimit::disable())
-        .layer(RequestBodyLimitLayer::new(API_REQUEST_BODY_LIMIT_BYTES))
         .layer(axum_middleware::from_fn(middleware::reject_head))
 }
 

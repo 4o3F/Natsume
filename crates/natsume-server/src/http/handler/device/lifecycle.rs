@@ -230,7 +230,6 @@ pub(crate) async fn get_device(
         (status = 403, description = "Administrator role required"),
         (status = 404, description = "Device not found"),
         (status = 409, description = "Revoked Device cannot return to a non-terminal state"),
-        (status = 413, description = "Request body exceeds the API ingress limit"),
         (status = 500, description = "Internal failure")
     )
 )]

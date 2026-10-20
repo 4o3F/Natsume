@@ -7,10 +7,14 @@ use calamine::{DataRef, Reader, Xlsx};
 use secrecy::{ExposeSecret, SecretString};
 use zip::ZipArchive;
 
-use crate::{InputError, InputErrorKind as Kind};
+mod error;
 
-pub const MAX_WORKBOOK_BYTES: usize = 8 * 1024 * 1024;
+use InputErrorKind as Kind;
+pub(crate) use error::{InputError, InputErrorKind};
+
+pub(crate) const MAX_WORKBOOK_BYTES: usize = 8 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CELL_TEXT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DATA_ROWS: u32 = 10_000;
 const HEADERS: [&str; 9] = [
     "organization_zh",
@@ -27,26 +31,26 @@ type SheetRow = [Option<String>; HEADERS.len()];
 
 /// A validated full roster. School order is lexicographic by its matching key.
 #[derive(Debug)]
-pub struct Roster {
+pub(super) struct Roster {
     teams: Vec<Team>,
     organizations: Vec<Organization>,
 }
 
 impl Roster {
     #[must_use]
-    pub fn teams(&self) -> &[Team] {
+    pub(super) fn teams(&self) -> &[Team] {
         &self.teams
     }
 
     #[must_use]
-    pub fn organizations(&self) -> &[Organization] {
+    pub(super) fn organizations(&self) -> &[Organization] {
         &self.organizations
     }
 }
 
 /// School metadata derived from team rows; it has no assigned INST ID.
 #[derive(Debug)]
-pub struct Organization {
+pub(super) struct Organization {
     name_zh: String,
     name_en: String,
     country: String,
@@ -55,23 +59,19 @@ pub struct Organization {
 
 impl Organization {
     #[must_use]
-    pub fn name_zh(&self) -> &str {
+    pub(super) fn name_zh(&self) -> &str {
         &self.name_zh
     }
     #[must_use]
-    pub fn name_en(&self) -> &str {
+    pub(super) fn name_en(&self) -> &str {
         &self.name_en
     }
     #[must_use]
-    pub fn country(&self) -> &str {
+    pub(super) fn country(&self) -> &str {
         &self.country
     }
     #[must_use]
-    pub fn rows(&self) -> &[u32] {
-        &self.rows
-    }
-    #[must_use]
-    pub fn key(&self) -> &str {
+    pub(super) fn key(&self) -> &str {
         if self.name_zh.is_empty() {
             &self.name_en
         } else {
@@ -82,8 +82,7 @@ impl Organization {
 
 /// One team and its current credentials. Debug output redacts the password.
 #[derive(Debug)]
-pub struct Team {
-    row: u32,
+pub(super) struct Team {
     organization_key: String,
     account: String,
     password: SecretString,
@@ -95,35 +94,31 @@ pub struct Team {
 
 impl Team {
     #[must_use]
-    pub const fn row(&self) -> u32 {
-        self.row
-    }
-    #[must_use]
-    pub fn organization_key(&self) -> &str {
+    pub(super) fn organization_key(&self) -> &str {
         &self.organization_key
     }
     #[must_use]
-    pub fn account(&self) -> &str {
+    pub(super) fn account(&self) -> &str {
         &self.account
     }
     #[must_use]
-    pub fn password(&self) -> &str {
+    pub(super) fn password(&self) -> &str {
         self.password.expose_secret()
     }
     #[must_use]
-    pub fn seat(&self) -> &str {
+    pub(super) fn seat(&self) -> &str {
         &self.seat
     }
     #[must_use]
-    pub fn name_zh(&self) -> &str {
+    pub(super) fn name_zh(&self) -> &str {
         &self.name_zh
     }
     #[must_use]
-    pub fn name_en(&self) -> &str {
+    pub(super) fn name_en(&self) -> &str {
         &self.name_en
     }
     #[must_use]
-    pub fn category(&self) -> &str {
+    pub(super) fn category(&self) -> &str {
         &self.category
     }
 }
@@ -132,7 +127,7 @@ impl Team {
 ///
 /// # Errors
 /// Returns a content-free error identifying the failing rule and cell when known.
-pub fn parse_xlsx(bytes: &[u8]) -> Result<Roster, InputError> {
+pub(super) fn parse_xlsx(bytes: &[u8]) -> Result<Roster, InputError> {
     check_archive(bytes)?;
     let mut workbook =
         Xlsx::new(Cursor::new(bytes)).map_err(|_| InputError::file(Kind::Workbook))?;
@@ -143,6 +138,9 @@ pub fn parse_xlsx(bytes: &[u8]) -> Result<Roster, InputError> {
         .worksheet_cells_reader("Teams")
         .map_err(|_| InputError::file(Kind::Worksheet))?;
     let mut rows: BTreeMap<u32, SheetRow> = BTreeMap::new();
+    // Bound retained text independently of ZIP expansion. Repeated shared-string
+    // references count separately, before their text is copied into the rows.
+    let mut remaining_cell_bytes = MAX_CELL_TEXT_BYTES;
     while let Some(cell) = reader
         .next_cell_with_formula_metadata()
         .map_err(|_| InputError::file(Kind::Worksheet))?
@@ -164,15 +162,22 @@ pub fn parse_xlsx(bytes: &[u8]) -> Result<Roster, InputError> {
         if cell.formula.is_some() {
             return Err(error(Kind::Formula));
         }
-        let value = match cell.value {
-            DataRef::String(value) => value,
-            DataRef::SharedString(value) => value.to_owned(),
+        let text = match &cell.value {
+            DataRef::String(value) => value.as_str(),
+            DataRef::SharedString(value) => value,
             DataRef::Error(_) => return Err(error(Kind::CellError)),
             _ => return Err(error(Kind::TextRequired)),
         };
-        if value.len() > 4096 {
+        if text.len() > 4096 {
             return Err(error(Kind::FieldTooLong(4096)));
         }
+        remaining_cell_bytes = remaining_cell_bytes
+            .checked_sub(u64::try_from(text.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| error(Kind::CellDataTooLarge))?;
+        let value = match cell.value {
+            DataRef::String(value) => value,
+            _ => text.to_owned(),
+        };
         let target = &mut rows.entry(row).or_default()[slot];
         if target.replace(value).is_some() {
             return Err(error(Kind::RepeatedCell));
@@ -214,7 +219,7 @@ fn parse_rows(mut rows: BTreeMap<u32, SheetRow>) -> Result<Roster, InputError> {
     let mut organizations: BTreeMap<String, Organization> = BTreeMap::new();
     let mut accounts = BTreeMap::new();
     let mut seats = BTreeMap::new();
-    for (row, cells) in rows {
+    for (row, mut cells) in rows {
         if cells
             .iter()
             .all(|value| value.as_deref().unwrap_or_default().is_empty())
@@ -222,7 +227,7 @@ fn parse_rows(mut rows: BTreeMap<u32, SheetRow>) -> Result<Roster, InputError> {
             continue;
         }
         let mut fields: [String; HEADERS.len()] =
-            std::array::from_fn(|i| cells[columns[i]].clone().unwrap_or_default());
+            std::array::from_fn(|i| cells[columns[i]].take().unwrap_or_default());
         validate_fields(row, &columns, &mut fields)?;
         let [
             name_zh,
@@ -254,7 +259,6 @@ fn parse_rows(mut rows: BTreeMap<u32, SheetRow>) -> Result<Roster, InputError> {
             organizations.insert(key.clone(), organization);
         }
         teams.push(Team {
-            row,
             organization_key: key,
             account,
             password: password.into(),

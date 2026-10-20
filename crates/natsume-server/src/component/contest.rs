@@ -11,6 +11,7 @@ use crate::{
 mod db;
 mod export;
 mod logo_cache;
+mod logo_io;
 mod logos;
 mod roster;
 

@@ -1388,13 +1388,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Request body exceeds the API ingress limit */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Internal failure */
       500: {
         headers: {
@@ -2009,7 +2002,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Workbook exceeds 8 MiB */
+      /** @description Request body exceeds Axum's default 2 MiB limit */
       413: {
         headers: {
           [name: string]: unknown;
@@ -2019,6 +2012,17 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Another import is reading or processing a workbook; retry after 1 second */
+      503: {
+        headers: {
+          /** @description Seconds before retrying; always 1 */
+          "Retry-After"?: number;
           [name: string]: unknown;
         };
         content: {
@@ -2202,7 +2206,7 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Workbook exceeds 8 MiB */
+      /** @description Request body exceeds Axum's default 2 MiB limit */
       413: {
         headers: {
           [name: string]: unknown;
@@ -2212,6 +2216,17 @@ export interface operations {
       /** @description Internal failure */
       500: {
         headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Another import is reading or processing a workbook; retry after 1 second */
+      503: {
+        headers: {
+          /** @description Seconds before retrying; always 1 */
+          "Retry-After"?: number;
           [name: string]: unknown;
         };
         content: {
@@ -2538,13 +2553,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Login name conflict, last administrator, changed credentials or logout required; see code */
       409: {
         headers: {
@@ -2553,13 +2561,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Internal failure */
       500: {
@@ -2736,20 +2737,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Internal failure */
       500: {
         headers: {
@@ -2924,13 +2911,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Login name conflict, last administrator, changed credentials or logout required; see code */
       409: {
         headers: {
@@ -2939,13 +2919,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Internal failure */
       500: {
@@ -2998,13 +2971,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Login name conflict, last administrator, changed credentials or logout required; see code */
       409: {
         headers: {
@@ -3022,13 +2988,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Internal failure */
       500: {
@@ -3083,13 +3042,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Login name conflict, last administrator, changed credentials or logout required; see code */
       409: {
         headers: {
@@ -3107,13 +3059,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Internal failure */
       500: {
@@ -3157,13 +3102,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Login name conflict, last administrator, changed credentials or logout required; see code */
       409: {
         headers: {
@@ -3181,13 +3119,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Internal failure */
       500: {
@@ -3242,13 +3173,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Form body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Login name conflict, last administrator, changed credentials or logout required; see code */
       409: {
         headers: {
@@ -3266,13 +3190,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds 24 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Internal failure */
       500: {
@@ -3479,13 +3396,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Request body exceeds the API ingress limit */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
     };
   };
   listSeats: {
@@ -3604,20 +3514,6 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Login body was not received within 5 seconds */
-      408: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Login request body exceeds 8 KiB */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
       /** @description Internal failure */
       500: {
         headers: {
@@ -3724,13 +3620,6 @@ export interface operations {
         content: {
           "application/json": components["schemas"]["ErrorResponse"];
         };
-      };
-      /** @description Request body exceeds the API ingress limit */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content?: never;
       };
       /** @description Submission transaction failed */
       500: {

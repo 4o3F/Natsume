@@ -2,18 +2,19 @@ use std::{error::Error, fmt};
 
 /// A workbook problem with an optional one-based worksheet cell location.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InputError {
-    pub row: Option<u32>,
-    pub column: Option<u32>,
-    pub kind: InputErrorKind,
+pub(crate) struct InputError {
+    pub(crate) row: Option<u32>,
+    pub(crate) column: Option<u32>,
+    pub(crate) kind: InputErrorKind,
 }
 
-/// Content-free errors shared by the offline tool and import boundary.
+/// Workbook failures that identify a rule without exposing cell contents.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum InputErrorKind {
+pub(crate) enum InputErrorKind {
     WorkbookTooLarge,
     Archive,
     ExpandedWorkbookTooLarge,
+    CellDataTooLarge,
     Workbook,
     MissingWorksheet,
     Worksheet,
@@ -70,6 +71,7 @@ impl fmt::Display for InputErrorKind {
             Self::WorkbookTooLarge => f.write_str("XLSX exceeds the 8 MiB limit"),
             Self::Archive => f.write_str("cannot read the XLSX ZIP archive"),
             Self::ExpandedWorkbookTooLarge => f.write_str("expanded XLSX exceeds the 64 MiB limit"),
+            Self::CellDataTooLarge => f.write_str("resolved cell text exceeds the 64 MiB limit"),
             Self::Workbook => f.write_str("cannot parse XLSX workbook metadata"),
             Self::MissingWorksheet => f.write_str("workbook must contain a worksheet named Teams"),
             Self::Worksheet => f.write_str("cannot parse worksheet cells"),

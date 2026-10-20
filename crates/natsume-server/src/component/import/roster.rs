@@ -1,11 +1,10 @@
 use std::collections::BTreeMap;
 
-use natsume_roster::Roster;
 use serde::{Deserialize, Serialize};
 
 use crate::vault::VaultSession;
 
-use super::{ImportError, baseline::ImportBaseline};
+use super::{ImportError, baseline::ImportBaseline, workbook::Roster};
 
 pub(crate) use crate::component::contest::OrganizationDetails;
 

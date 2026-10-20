@@ -1,3 +1,6 @@
+mod request_bodies;
+mod resource_limits;
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -48,8 +51,7 @@ use crate::{
 };
 
 use super::{
-    API_REQUEST_BODY_LIMIT_BYTES, AppState, error::ApiError, handler::health,
-    middleware::request_context, not_found, router,
+    AppState, error::ApiError, handler::health, middleware::request_context, not_found, router,
 };
 
 pub(crate) fn health_router() -> Router {
@@ -376,7 +378,7 @@ pub(crate) fn server_state(database: Database) -> Result<AppState, SupportFailur
 }
 
 #[tokio::test]
-async fn login_rejects_oversized_slow_and_excess_requests_before_database_work()
+async fn login_rejects_invalid_fields_and_excess_requests_before_database_work()
 -> Result<(), TestFailure> {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
@@ -397,32 +399,6 @@ async fn login_rejects_oversized_slow_and_excess_requests_before_database_work()
             StatusCode::BAD_REQUEST
         );
     }
-    // Check both a declared length and a body delivered without Content-Length.
-    for declared in [false, true] {
-        let mut request = login_request("admin", &"p".repeat(8192))?;
-        if declared {
-            request.headers_mut().insert(
-                header::CONTENT_LENGTH,
-                "9000"
-                    .parse()
-                    .map_err(|_| SupportFailure::HelperRequestBuildFailed)?,
-            );
-        }
-        assert_eq!(
-            drive(&application, request).await?.status,
-            StatusCode::PAYLOAD_TOO_LARGE
-        );
-    }
-    let mut slow = login_request("admin", "password")?;
-    *slow.body_mut() = Body::from_stream(futures_util::stream::pending::<
-        Result<axum::body::Bytes, std::io::Error>,
-    >());
-    tokio::time::pause();
-    assert_eq!(
-        drive(&application, slow).await?.status,
-        StatusCode::REQUEST_TIMEOUT
-    );
-    tokio::time::resume();
     drop(connections);
     drop(permits);
     assert_eq!(
@@ -534,23 +510,6 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
         }
     }
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn api_root_owns_the_request_body_limit() -> Result<(), TestFailure> {
-    let fixture = TestDatabase::new().await?;
-    let application = router(server_state(fixture.database.clone())?, unused_web_root());
-    let request = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v2/session")
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CONTENT_LENGTH, API_REQUEST_BODY_LIMIT_BYTES + 1)
-        .body(Body::empty())
-        .map_err(|_| TestFailure::RequestBuildFailed)?;
-    if drive(&application, request).await?.status != StatusCode::PAYLOAD_TOO_LARGE {
-        return Err(TestFailure::MountedRouteWasNotReachable);
-    }
     Ok(())
 }
 
@@ -1159,7 +1118,7 @@ async fn roster_http_accepts_binary_xlsx_and_keeps_credentials_out_of_previews_a
         assert_eq!(template.status, StatusCode::OK);
         assert_eq!(
             template.body,
-            include_bytes!("../../../roster/examples/template.xlsx")
+            include_bytes!("../component/import/examples/template.xlsx")
         );
         assert_eq!(template.headers[header::CONTENT_TYPE], XLSX_MEDIA_TYPE);
         for content_type in ["text/csv", "application/json"] {
@@ -1176,7 +1135,7 @@ async fn roster_http_accepts_binary_xlsx_and_keeps_credentials_out_of_previews_a
             .await?;
             assert_eq!(response.status, StatusCode::BAD_REQUEST);
         }
-        let bytes = include_bytes!("../../../roster/examples/roster.xlsx").to_vec();
+        let bytes = include_bytes!("../component/import/examples/roster.xlsx").to_vec();
         let response = drive(
             &application,
             roster_request(
@@ -1292,8 +1251,8 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
         logos.path().to_path_buf(),
     )?);
     let application = router(state.clone(), unused_web_root());
-    let xlsx = include_bytes!("../../../roster/examples/roster.xlsx");
-    let preview = state.import().create_candidate(xlsx).await?;
+    let xlsx = include_bytes!("../component/import/examples/roster.xlsx");
+    let preview = state.import().try_begin()?.create_candidate(xlsx).await?;
     let candidate_list = format!("/api/v2/imports/{}/organizations", preview.candidate_id());
     let candidate_logo = format!("{candidate_list}/INST-001/logo");
     let private_routes = [
@@ -1344,6 +1303,7 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert!(!String::from_utf8_lossy(&observation.body).contains("example-password"));
     state
         .import()
+        .try_begin()?
         .commit(preview.candidate_id(), preview.preview_token_bytes(), xlsx)
         .await?;
     assert_eq!(

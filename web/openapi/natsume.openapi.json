@@ -315,9 +315,6 @@
               }
             }
           },
-          "413": {
-            "description": "Request body exceeds the API ingress limit"
-          },
           "500": {
             "description": "Internal failure",
             "content": {
@@ -1033,10 +1030,30 @@
             }
           },
           "413": {
-            "description": "Workbook exceeds 8 MiB"
+            "description": "Request body exceeds Axum's default 2 MiB limit"
           },
           "500": {
             "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Another import is reading or processing a workbook; retry after 1 second",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying; always 1"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1264,10 +1281,30 @@
             }
           },
           "413": {
-            "description": "Workbook exceeds 8 MiB"
+            "description": "Request body exceeds Axum's default 2 MiB limit"
           },
           "500": {
             "description": "Internal failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Another import is reading or processing a workbook; retry after 1 second",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int32",
+                  "minimum": 0
+                },
+                "description": "Seconds before retrying; always 1"
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1676,9 +1713,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
           "409": {
             "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
             "content": {
@@ -1688,9 +1722,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
           },
           "500": {
             "description": "Internal failure",
@@ -1900,12 +1931,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
-          },
           "500": {
             "description": "Internal failure",
             "content": {
@@ -2110,9 +2135,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
           "409": {
             "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
             "content": {
@@ -2122,9 +2144,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
           },
           "500": {
             "description": "Internal failure",
@@ -2191,9 +2210,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
           "409": {
             "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
             "content": {
@@ -2213,9 +2229,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
           },
           "500": {
             "description": "Internal failure",
@@ -2284,9 +2297,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
           "409": {
             "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
             "content": {
@@ -2306,9 +2316,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
           },
           "500": {
             "description": "Internal failure",
@@ -2357,9 +2364,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
           "409": {
             "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
             "content": {
@@ -2379,9 +2383,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
           },
           "500": {
             "description": "Internal failure",
@@ -2450,9 +2451,6 @@
               }
             }
           },
-          "408": {
-            "description": "Form body was not received within 5 seconds"
-          },
           "409": {
             "description": "Login name conflict, last administrator, changed credentials or logout required; see code",
             "content": {
@@ -2472,9 +2470,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds 24 KiB"
           },
           "500": {
             "description": "Internal failure",
@@ -2715,9 +2710,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds the API ingress limit"
           }
         },
         "security": [
@@ -2856,12 +2848,6 @@
               }
             }
           },
-          "408": {
-            "description": "Login body was not received within 5 seconds"
-          },
-          "413": {
-            "description": "Login request body exceeds 8 KiB"
-          },
           "500": {
             "description": "Internal failure",
             "content": {
@@ -2981,9 +2967,6 @@
                 }
               }
             }
-          },
-          "413": {
-            "description": "Request body exceeds the API ingress limit"
           },
           "500": {
             "description": "Submission transaction failed",

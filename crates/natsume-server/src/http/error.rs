@@ -262,6 +262,7 @@ impl ApiError {
 
     pub(super) fn from_import(error: ImportError) -> Self {
         match error {
+            ImportError::Busy => Self::unavailable("import_busy"),
             ImportError::InvalidWorkbook(diagnostic) => {
                 let mut error = Self::new(
                     StatusCode::BAD_REQUEST,

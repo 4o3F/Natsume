@@ -174,15 +174,18 @@ pub(super) async fn create_import_candidate(
     database: &Database,
     vault: Arc<crate::vault::VaultSession>,
     raw_xlsx: &[u8],
+    permit: tokio::sync::OwnedSemaphorePermit,
 ) -> Result<CreatedImportCandidate, ImportError> {
-    let parsed = parse_roster(raw_xlsx).await?;
+    let (parsed, permit) = parse_roster(raw_xlsx, permit).await?;
 
     let preview_token = PreviewToken::generate()?;
     let preview_token_hash = preview_token.sha256();
     let candidate_id = Uuid::now_v7();
 
-    database
-        .write(move |transaction| -> Result<_, ImportError> {
+    super::write_import(
+        database,
+        permit,
+        move |transaction| -> Result<_, ImportError> {
             if let Some(existing) = super::db::pending_import_candidate::find(transaction)? {
                 if existing.expiry() == CandidateExpiry::Valid {
                     return Err(ImportError::CandidatePending);
@@ -220,9 +223,9 @@ pub(super) async fn create_import_candidate(
                 expires_at_unix_ms,
                 diff: candidate.diff,
             })
-        })
-        .await
-        .map_err(TransactionError::into_error)
+        },
+    )
+    .await
 }
 
 pub(super) async fn read_pending_import_candidate(
@@ -289,7 +292,8 @@ enum DiscardOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ImportError {
-    InvalidWorkbook(natsume_roster::InputError),
+    Busy,
+    InvalidWorkbook(super::InputError),
     CandidateInvalid,
     CandidatePending,
     CandidateUnavailable,
@@ -313,6 +317,7 @@ impl From<PersistenceError> for ImportError {
 impl Display for ImportError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::Busy => "import work capacity is exhausted",
             Self::InvalidWorkbook(_) | Self::CandidateInvalid => "the import candidate is invalid",
             Self::CandidatePending => "an import candidate is already pending",
             Self::CandidateUnavailable => "the import candidate is unavailable",

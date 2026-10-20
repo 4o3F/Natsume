@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use natsume_roster::{LogoError, LogoFile, LogoFingerprint};
+use super::logo_io::{LogoError, LogoFile, LogoFingerprint};
 
 const MAX_ENTRIES: usize = 1024;
 const MAX_CACHED_ERROR_BYTES: usize = 4096;

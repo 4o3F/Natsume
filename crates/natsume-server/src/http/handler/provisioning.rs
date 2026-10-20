@@ -81,7 +81,6 @@ pub(crate) async fn get_provisioning_window(State(state): State<AppState>) -> Re
         (status = 400, description = "Invalid request body"),
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
-        (status = 413, description = "Request body exceeds the API ingress limit")
     )
 )]
 pub(crate) async fn update_provisioning_window(

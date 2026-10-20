@@ -24,7 +24,7 @@ const MAX_LOGO_PIXELS: u64 = 4 * 1024 * 1024;
 
 /// Identity and change metadata for an opened logo, not a content digest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct LogoFingerprint {
+pub(super) struct LogoFingerprint {
     device: u64,
     inode: u64,
     length: u64,
@@ -33,7 +33,7 @@ pub struct LogoFingerprint {
 }
 
 /// An opened logo whose metadata and validation use the same file descriptor.
-pub struct LogoFile {
+pub(super) struct LogoFile {
     file: File,
 }
 
@@ -42,7 +42,7 @@ impl LogoFile {
     ///
     /// # Errors
     /// Rejects unreadable/nonregular files and files exceeding the byte limit.
-    pub fn open(path: &Path) -> Result<Self, LogoError> {
+    pub(super) fn open(path: &Path) -> Result<Self, LogoError> {
         let descriptor = rustix::fs::open(
             path,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
@@ -66,7 +66,7 @@ impl LogoFile {
     ///
     /// # Errors
     /// Returns metadata errors, nonregular-file errors and byte-limit errors.
-    pub fn fingerprint(&self) -> Result<LogoFingerprint, LogoError> {
+    pub(super) fn fingerprint(&self) -> Result<LogoFingerprint, LogoError> {
         let metadata = self.file.metadata().map_err(LogoError::Read)?;
         if !metadata.is_file() {
             return Err(LogoError::NotRegularFile);
@@ -86,20 +86,20 @@ impl LogoFile {
     /// Fully validate this opened file with the normal content and image limits.
     ///
     /// # Errors
-    /// Returns the same read/format/dimension/resource errors as [`validate_logo`].
-    pub fn validate(&mut self) -> Result<(), LogoError> {
+    /// Returns the same read/format/dimension/resource errors as [`read_logo`].
+    pub(super) fn validate(&mut self) -> Result<(), LogoError> {
         decode_logo(&mut self.file).map(|_| ())
     }
 }
 
 /// A directory snapshot indexed by exact filename stem. No recursive scanning.
-pub struct LogoDirectory {
+pub(super) struct LogoDirectory {
     files: BTreeMap<OsString, Vec<PathBuf>>,
 }
 
 /// A school must resolve to exactly one supported image filename.
 #[derive(Debug, PartialEq, Eq)]
-pub enum LogoMatch {
+pub(super) enum LogoMatch {
     Missing,
     Unique(PathBuf),
     Ambiguous(Vec<PathBuf>),
@@ -110,8 +110,8 @@ impl LogoDirectory {
     ///
     /// # Errors
     /// Returns directory listing errors; individual image failures are reported
-    /// separately by [`validate_logo`].
-    pub fn open(directory: &Path) -> io::Result<Self> {
+    /// separately by [`read_logo`].
+    pub(super) fn open(directory: &Path) -> io::Result<Self> {
         let mut files: BTreeMap<OsString, Vec<PathBuf>> = BTreeMap::new();
         for entry in fs::read_dir(directory)? {
             let path = entry?.path();
@@ -130,7 +130,7 @@ impl LogoDirectory {
 
     /// Match either complete school name, without aliases or punctuation folding.
     #[must_use]
-    pub fn resolve(&self, name_zh: &str, name_en: &str) -> LogoMatch {
+    pub(super) fn resolve(&self, name_zh: &str, name_en: &str) -> LogoMatch {
         let mut candidates = Vec::new();
         for name in [name_zh, name_en] {
             if !name.is_empty()
@@ -150,7 +150,7 @@ impl LogoDirectory {
 }
 
 #[derive(Debug)]
-pub enum LogoError {
+pub(super) enum LogoError {
     Read(io::Error),
     NotRegularFile,
     TooLarge,
@@ -195,17 +195,8 @@ impl Error for LogoError {
     }
 }
 
-/// Validate actual image content and decoding limits without modifying the file.
-///
-/// # Errors
-/// Rejects unreadable or nonregular files, unsupported image content,
-/// malformed image data, and images exceeding the documented limits.
-pub fn validate_logo(path: &Path) -> Result<(), LogoError> {
-    read_logo(path).map(|_| ())
-}
-
 /// A validated logo, decoded once for HTTP delivery or PNG export.
-pub struct DecodedLogo(LogoContent);
+pub(super) struct DecodedLogo(LogoContent);
 
 enum LogoContent {
     Raster {
@@ -217,9 +208,9 @@ enum LogoContent {
 }
 
 /// The actual image bytes and MIME type, independent of the source extension.
-pub struct LogoImage {
-    pub bytes: Vec<u8>,
-    pub content_type: &'static str,
+pub(crate) struct LogoImage {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) content_type: &'static str,
 }
 
 impl DecodedLogo {
@@ -227,7 +218,7 @@ impl DecodedLogo {
     ///
     /// # Errors
     /// Returns PNG encoding failures for SVG sources.
-    pub fn into_http(self) -> Result<LogoImage, LogoError> {
+    pub(super) fn into_http(self) -> Result<LogoImage, LogoError> {
         match self.0 {
             LogoContent::Raster { source, format, .. } => Ok(LogoImage {
                 bytes: source,
@@ -249,7 +240,7 @@ impl DecodedLogo {
     ///
     /// # Errors
     /// Returns PNG encoding failures.
-    pub fn into_domjudge_png(self) -> Result<Vec<u8>, LogoError> {
+    pub(super) fn into_domjudge_png(self) -> Result<Vec<u8>, LogoError> {
         const EDGE: u32 = 64;
         let source = match self.0 {
             LogoContent::Raster { image, .. } => image.into_rgba8(),
@@ -319,25 +310,6 @@ impl DecodedLogo {
             .map_err(|error| LogoError::Encode(error.to_string()))?;
         Ok(output.into_inner())
     }
-
-    /// Encode a PNG without resizing, cropping, or changing source files.
-    ///
-    /// # Errors
-    /// Returns PNG encoding failures.
-    pub fn into_png(self) -> Result<Vec<u8>, LogoError> {
-        match self.0 {
-            LogoContent::Raster { image, .. } => {
-                let mut output = Cursor::new(Vec::new());
-                image
-                    .write_to(&mut output, ImageFormat::Png)
-                    .map_err(|error| LogoError::Encode(error.to_string()))?;
-                Ok(output.into_inner())
-            }
-            LogoContent::Svg(image) => image
-                .encode_png()
-                .map_err(|error| LogoError::Encode(error.to_string())),
-        }
-    }
 }
 
 /// Read and decode bounded image content without following symlinks.
@@ -345,7 +317,7 @@ impl DecodedLogo {
 /// # Errors
 /// Rejects unreadable/nonregular files, malformed or unsupported content and
 /// images exceeding the same byte, dimension and resource limits as preflight.
-pub fn read_logo(path: &Path) -> Result<DecodedLogo, LogoError> {
+pub(super) fn read_logo(path: &Path) -> Result<DecodedLogo, LogoError> {
     let mut source = LogoFile::open(path)?;
     decode_logo(&mut source.file)
 }

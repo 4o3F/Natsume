@@ -1,4 +1,4 @@
-use super::{FORM_BODY_LIMIT, dto::*};
+use super::dto::*;
 use crate::{
     component::operator::tests::{PasswordVerificationTestGuard, occupy_sign_in_capacity},
     http::{
@@ -150,37 +150,33 @@ async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() ->
         support::server_state(database.database.clone())?,
         support::unused_web_root(),
     );
-    for (method, path, length, status) in [
+    for (method, path, status) in [
         (
             Method::POST,
             "/api/v2/operator/register/inspect",
-            Some(http::API_REQUEST_BODY_LIMIT_BYTES + 1),
-            StatusCode::PAYLOAD_TOO_LARGE,
+            StatusCode::BAD_REQUEST,
         ),
         (
             Method::HEAD,
             "/api/v2/operator/accounts",
-            None,
             StatusCode::NOT_FOUND,
         ),
         (
             Method::GET,
             "/api/v2/operator/register",
-            None,
             StatusCode::METHOD_NOT_ALLOWED,
         ),
         (
             Method::GET,
             "/api/v2/operator/unmounted",
-            None,
             StatusCode::NOT_FOUND,
         ),
     ] {
-        let mut builder = Request::builder().method(method).uri(path);
-        if let Some(length) = length {
-            builder = builder.header(header::CONTENT_LENGTH, length);
-        }
-        let response = drive(&app, builder.body(Body::empty())?).await?;
+        let request = Request::builder()
+            .method(method)
+            .uri(path)
+            .body(Body::empty())?;
+        let response = drive(&app, request).await?;
         assert_eq!(response.status, status);
         assert_no_store(&response);
     }
@@ -922,8 +918,7 @@ async fn ids_roles_and_secret_json_fields_use_closed_contracts() -> TestResult {
 }
 
 #[tokio::test]
-async fn maximum_escaped_password_forms_fit_and_oversized_or_slow_bodies_are_rejected() -> TestResult
-{
+async fn maximum_escaped_password_forms_fit() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let maximum = "a".repeat(1022) + "1!";
@@ -937,7 +932,7 @@ async fn maximum_escaped_password_forms_fit_and_oversized_or_slow_bodies_are_rej
     let body = format!(
         r#"{{"current_password":"{escaped}","password":"{escaped}","password_confirmation":"{escaped}"}}"#
     );
-    assert!(body.len() > 16 * 1024 && body.len() < FORM_BODY_LIMIT);
+    assert!(body.len() > 16 * 1024);
     let response = send(
         &f.app,
         Method::POST,
@@ -965,60 +960,6 @@ async fn maximum_escaped_password_forms_fit_and_oversized_or_slow_bodies_are_rej
         .status,
         StatusCode::CREATED
     );
-    for (path, cookie) in [
-        ("/api/v2/operator/register", None),
-        ("/api/v2/operator/password/reset", None),
-        (
-            "/api/v2/operator/password/change",
-            Some(f.admin_cookie.as_str()),
-        ),
-        ("/api/v2/operator/register/inspect", None),
-    ] {
-        for declared in [true, false] {
-            let mut builder = Request::builder()
-                .method(Method::POST)
-                .uri(path)
-                .header(header::CONTENT_TYPE, "application/json");
-            if let Some(cookie) = cookie {
-                builder = builder.header(header::COOKIE, cookie);
-            }
-            if declared {
-                builder = builder.header(header::CONTENT_LENGTH, (FORM_BODY_LIMIT + 1).to_string());
-            }
-            let response = drive(
-                &f.app,
-                builder.body(Body::from(" ".repeat(FORM_BODY_LIMIT + 1)))?,
-            )
-            .await?;
-            assert_eq!(response.status, StatusCode::PAYLOAD_TOO_LARGE);
-            assert_no_store(&response);
-        }
-        let mut builder = Request::builder()
-            .method(Method::POST)
-            .uri(path)
-            .header(header::CONTENT_TYPE, "application/json");
-        if let Some(cookie) = cookie {
-            builder = builder.header(header::COOKIE, cookie);
-        }
-        let (entered, started) = tokio::sync::oneshot::channel();
-        let mut entered = Some(entered);
-        let stream = futures_util::stream::poll_fn(move |_| {
-            if let Some(entered) = entered.take() {
-                let _ = entered.send(());
-            }
-            std::task::Poll::Pending::<Option<Result<axum::body::Bytes, std::io::Error>>>
-        });
-        let request = builder.body(Body::from_stream(stream))?;
-        let app = f.app.clone();
-        let pending = tokio::spawn(async move { drive(&app, request).await });
-        // Pause only after the body is first polled, beyond authentication.
-        tokio::time::timeout(std::time::Duration::from_secs(5), started).await??;
-        tokio::time::pause();
-        let response = pending.await??;
-        tokio::time::resume();
-        assert_eq!(response.status, StatusCode::REQUEST_TIMEOUT);
-        assert_no_store(&response);
-    }
     Ok(())
 }
 

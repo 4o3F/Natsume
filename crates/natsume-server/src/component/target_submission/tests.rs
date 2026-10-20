@@ -337,6 +337,58 @@ async fn foreground_and_terminate_share_the_submission_boundary() {
 }
 
 #[tokio::test]
+#[ignore = "exploratory timing of actual 600-device writes; not a production capacity assertion"]
+async fn measure_six_hundred_device_submission_cost() {
+    let fixture = Fixture::new(600).await;
+    for kind in ["devices", "all_enabled", "all_online_enabled"] {
+        let mut elapsed = Vec::new();
+        for _ in 0..10 {
+            let expires = i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_else(|error| panic!("clock: {error}"))
+                    .as_millis(),
+            )
+            .unwrap_or_default()
+                + 60_000;
+            let mut request = Fixture::request(TargetAction::ResetHome);
+            request.scope = match kind {
+                "devices" => TargetScope::Devices(fixture.ids.clone()),
+                "all_enabled" => TargetScope::AllEnabled,
+                _ => {
+                    request.action = TargetAction::PowerOff {
+                        expires_at_unix_ms: expires,
+                    };
+                    TargetScope::AllOnlineEnabled(fixture.ids.clone())
+                }
+            };
+            let started = std::time::Instant::now();
+            let result = fixture
+                .component
+                .submit(fixture.owner, request.clone())
+                .await
+                .unwrap_or_else(|error| panic!("submission: {error}"));
+            elapsed.push(started.elapsed());
+            assert_eq!(result.results.len(), 600);
+            assert!(result.results.iter().all(|row| row.rejection.is_none()));
+            let replay = fixture
+                .component
+                .submit(fixture.owner, request)
+                .await
+                .unwrap_or_else(|error| panic!("replay: {error}"));
+            assert_eq!(replay, result);
+        }
+        elapsed.sort_unstable();
+        eprintln!(
+            "{kind}: 600 actual device writes, 10 samples, p50={:?}, p95={:?}",
+            elapsed[4], elapsed[9]
+        );
+    }
+    assert_eq!(fixture.home_epochs().await, vec![Some(20); 600]);
+    assert_eq!(fixture.receipts().await, 30);
+}
+
+#[tokio::test]
 async fn six_hundred_devices_commit_without_any_client_connection() {
     let fixture = Fixture::new(600).await;
     let result = fixture

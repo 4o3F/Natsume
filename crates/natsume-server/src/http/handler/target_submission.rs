@@ -204,7 +204,6 @@ impl From<TargetSubmissionResult> for TargetSubmissionResponse {
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
         (status = 409, description = "Operation ID belongs to another request or operator"),
-        (status = 413, description = "Request body exceeds the API ingress limit"),
         (status = 500, description = "Submission transaction failed")
     )
 )]
@@ -213,6 +212,9 @@ pub(crate) async fn submit_targets(
     Extension(identity): Extension<OperatorIdentity>,
     body: Result<Json<TargetSubmissionBody>, JsonRejection>,
 ) -> Response {
+    let Ok(Json(body)) = body else {
+        return ApiError::invalid_request("target_submission_body_rejected").into_response();
+    };
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -221,10 +223,7 @@ pub(crate) async fn submit_targets(
         return ApiError::internal_error("target_submission_clock_unavailable").into_response();
     };
     let active_devices = state.device_control().active_device_ids().await;
-    let Some(request) = body
-        .ok()
-        .and_then(|Json(body)| body.into_request_with(active_devices, expires_at_unix_ms))
-    else {
+    let Some(request) = body.into_request_with(active_devices, expires_at_unix_ms) else {
         return ApiError::invalid_request("target_submission_body_rejected").into_response();
     };
     match state

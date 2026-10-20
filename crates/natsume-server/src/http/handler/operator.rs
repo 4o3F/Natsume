@@ -12,19 +12,13 @@ use super::super::{AppState, cookie, error::ApiError, middleware};
 use crate::component::operator::{OperatorError, OperatorIdentity};
 use axum::{
     Extension, Json, Router,
-    extract::{FromRequest, Path, Request, State},
+    extract::{FromRequest, Path, Request, State, rejection::JsonRejection},
     http::StatusCode,
     middleware::{self as axum_middleware, Next},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
-use serde::de::DeserializeOwned;
-use std::time::Duration;
-use tower_http::limit::RequestBodyLimitLayer;
 use uuid::Uuid;
-
-const FORM_BODY_LIMIT: usize = 24 * 1024;
-const FORM_BODY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     let public = Router::new()
@@ -69,7 +63,6 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
             middleware::require_operator(state, post(change_password)),
         )
         .merge(public)
-        .layer(RequestBodyLimitLayer::new(FORM_BODY_LIMIT))
 }
 
 async fn require_logged_out(
@@ -85,17 +78,6 @@ async fn require_logged_out(
         }
     }
     next.run(request).await
-}
-
-async fn read_json<T: DeserializeOwned>(request: Request, state: &AppState) -> Result<T, Response> {
-    match tokio::time::timeout(FORM_BODY_TIMEOUT, Json::<T>::from_request(request, state)).await {
-        Ok(Ok(Json(value))) => Ok(value),
-        Ok(Err(error)) if error.status() == StatusCode::PAYLOAD_TOO_LARGE => {
-            Err(StatusCode::PAYLOAD_TOO_LARGE.into_response())
-        }
-        Ok(Err(_)) => Err(ApiError::invalid_request("operator_form_rejected").into_response()),
-        Err(_) => Err(StatusCode::REQUEST_TIMEOUT.into_response()),
-    }
 }
 
 fn parse_id(value: &str) -> Result<Uuid, ApiError> {
@@ -161,9 +143,7 @@ pub(crate) async fn list_accounts(
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
         (status = 404, description = "Operator not found"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
         (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
     )
 )]
@@ -177,9 +157,8 @@ pub(crate) async fn update_account(
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
-    let request: OperatorRoleRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+    let Ok(Json(request)) = Json::<OperatorRoleRequest>::from_request(request, &state).await else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()
@@ -269,19 +248,16 @@ pub(crate) async fn list_invitations(
         (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
         (status = 401, description = "Session authentication failed"),
         (status = 403, description = "Administrator role required"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
     )
 )]
 pub(crate) async fn create_invitation(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
-    request: Request,
+    request: Result<Json<OperatorRoleRequest>, JsonRejection>,
 ) -> Response {
-    let request: OperatorRoleRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()
@@ -426,20 +402,17 @@ pub(crate) async fn create_password_reset(
     responses(
         (status = 200, description = "Current response", body = OperatorRegistrationInspectionResponse),
         (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
         (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
         (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
     )
 )]
 pub(crate) async fn inspect_registration(
     State(state): State<AppState>,
-    request: Request,
+    request: Result<Json<OperatorTokenRequest>, JsonRejection>,
 ) -> Response {
-    let request: OperatorTokenRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()
@@ -462,18 +435,18 @@ pub(crate) async fn inspect_registration(
     responses(
         (status = 201, description = "Created; secret is returned only once, without establishing a session", body = OperatorAccountResponse),
         (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
         (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
         (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
         (status = 503, description = "Password work capacity exhausted; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1"))),
     )
 )]
-pub(crate) async fn register_operator(State(state): State<AppState>, request: Request) -> Response {
-    let request: OperatorRegistrationRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+pub(crate) async fn register_operator(
+    State(state): State<AppState>,
+    request: Result<Json<OperatorRegistrationRequest>, JsonRejection>,
+) -> Response {
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()
@@ -506,20 +479,17 @@ pub(crate) async fn register_operator(State(state): State<AppState>, request: Re
     responses(
         (status = 200, description = "Current response", body = OperatorPasswordResetInspectionResponse),
         (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
         (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
         (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
     )
 )]
 pub(crate) async fn inspect_password_reset(
     State(state): State<AppState>,
-    request: Request,
+    request: Result<Json<OperatorTokenRequest>, JsonRejection>,
 ) -> Response {
-    let request: OperatorTokenRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()
@@ -542,18 +512,18 @@ pub(crate) async fn inspect_password_reset(
     responses(
         (status = 204, description = "Completed"),
         (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
         (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
         (status = 410, description = "Link is unavailable, expired, replaced, revoked or already consumed"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
         (status = 503, description = "Password work capacity exhausted; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1"))),
     )
 )]
-pub(crate) async fn reset_password(State(state): State<AppState>, request: Request) -> Response {
-    let request: OperatorPasswordResetRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+pub(crate) async fn reset_password(
+    State(state): State<AppState>,
+    request: Result<Json<OperatorPasswordResetRequest>, JsonRejection>,
+) -> Response {
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()
@@ -579,9 +549,7 @@ pub(crate) async fn reset_password(State(state): State<AppState>, request: Reque
         (status = 204, description = "Completed"),
         (status = 400, description = "Invalid closed form, identifier, password policy, confirmation or current password"),
         (status = 401, description = "Session authentication failed"),
-        (status = 408, description = "Form body was not received within 5 seconds"),
         (status = 409, description = "Login name conflict, last administrator, changed credentials or logout required; see code"),
-        (status = 413, description = "Request body exceeds 24 KiB"),
         (status = 500, description = "Internal failure"),
         (status = 503, description = "Password work capacity exhausted; retry after 1 second", headers(("Retry-After" = u32, description = "Seconds before retrying; always 1"))),
     )
@@ -589,11 +557,10 @@ pub(crate) async fn reset_password(State(state): State<AppState>, request: Reque
 pub(crate) async fn change_password(
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
-    request: Request,
+    request: Result<Json<OperatorPasswordChangeRequest>, JsonRejection>,
 ) -> Response {
-    let request: OperatorPasswordChangeRequest = match read_json(request, &state).await {
-        Ok(request) => request,
-        Err(response) => return response,
+    let Ok(Json(request)) = request else {
+        return ApiError::invalid_request("operator_form_rejected").into_response();
     };
     match state
         .operator()

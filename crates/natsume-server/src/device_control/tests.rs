@@ -1,3 +1,5 @@
+mod resource_usage;
+
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
 
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection};

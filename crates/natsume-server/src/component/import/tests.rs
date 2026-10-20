@@ -1,8 +1,6 @@
-use super::{
-    ImportError,
-    candidate::{CreatedImportCandidate, create_import_candidate},
-    commit::commit_import,
-};
+mod admission;
+
+use super::{ImportComponent, ImportError, candidate::CreatedImportCandidate};
 use crate::{
     db::{Database, DatabaseConfig},
     vault,
@@ -74,7 +72,7 @@ pub(crate) fn workbook(rows: &[[&str; 9]]) -> Vec<u8> {
     }
     sheet.push_str("</sheetData></worksheet>");
     let mut source = checked(ZipArchive::new(Cursor::new(include_bytes!(
-        "../../../../roster/examples/template.xlsx"
+        "examples/template.xlsx"
     ))));
     let mut output = ZipWriter::new(Cursor::new(Vec::new()));
     for index in 0..source.len() {
@@ -92,21 +90,21 @@ pub(crate) fn workbook(rows: &[[&str; 9]]) -> Vec<u8> {
 
 impl Fixture {
     async fn preview(&self, bytes: &[u8]) -> CreatedImportCandidate {
-        checked(create_import_candidate(&self.database, Arc::clone(&self.vault), bytes).await)
+        checked(
+            checked(self.import.try_begin())
+                .create_candidate(bytes)
+                .await,
+        )
     }
     async fn commit(
         &self,
         preview: &CreatedImportCandidate,
         bytes: &[u8],
     ) -> Result<(), ImportError> {
-        commit_import(
-            &self.database,
-            Arc::clone(&self.vault),
-            preview.candidate_id(),
-            preview.preview_token_bytes(),
-            bytes,
-        )
-        .await
+        self.import
+            .try_begin()?
+            .commit(preview.candidate_id(), preview.preview_token_bytes(), bytes)
+            .await
     }
     async fn import(&self, bytes: &[u8]) {
         checked(self.commit(&self.preview(bytes).await, bytes).await);
@@ -138,15 +136,16 @@ async fn invalid_workbook_is_rejected_before_persisting_a_preview_or_secret() {
         row("大学", "team-1", "A-01", "first"),
         row("大学", "{invalid}", "A-02", "secret-canary"),
     ]);
-    let error = create_import_candidate(&fixture.database, Arc::clone(&fixture.vault), &bytes)
+    let error = checked(fixture.import.try_begin())
+        .create_candidate(&bytes)
         .await
         .err();
     assert_eq!(
         error,
-        Some(ImportError::InvalidWorkbook(natsume_roster::InputError {
+        Some(ImportError::InvalidWorkbook(super::InputError {
             row: Some(3),
             column: Some(4),
-            kind: natsume_roster::InputErrorKind::InvalidIdentifier
+            kind: super::InputErrorKind::InvalidIdentifier
         }))
     );
     assert!(
@@ -542,6 +541,7 @@ struct TextValue {
 }
 
 struct Fixture {
+    import: ImportComponent,
     database: Database,
     root: PathBuf,
     vault: Arc<vault::VaultSession>,
@@ -562,10 +562,12 @@ impl Fixture {
             Database::connect_and_migrate(&DatabaseConfig::new(root.join("server.sqlite3"), true))
                 .await
                 .unwrap_or_else(|_| panic!("fixture database could not be created"));
+        let vault = Arc::new(vault);
         Self {
+            import: ImportComponent::new(database.clone(), Arc::clone(&vault)),
             database,
             root,
-            vault: Arc::new(vault),
+            vault,
         }
     }
 }

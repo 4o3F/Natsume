@@ -26,7 +26,10 @@ const workbook = {
   name: "roster.xlsx",
   mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   buffer: readFileSync(
-    new URL("../../crates/roster/examples/roster.xlsx", import.meta.url),
+    new URL(
+      "../../crates/natsume-server/src/component/import/examples/roster.xlsx",
+      import.meta.url,
+    ),
   ),
 };
 

@@ -3,13 +3,17 @@ use std::{
     io::{self, Cursor, Seek, SeekFrom, Write},
 };
 
-use natsume_roster::{LogoMatch, read_logo};
 use serde::Serialize;
 use snafu::Snafu;
 use zeroize::{Zeroize, Zeroizing};
 use zip::{ZipWriter, write::SimpleFileOptions};
 
-use super::{ContestComponent, db, logos, roster::ExportRoster};
+use super::{
+    ContestComponent, db,
+    logo_io::{DecodedLogo, LogoMatch, read_logo},
+    logos,
+    roster::ExportRoster,
+};
 use crate::{db::PersistenceError, vault::VaultSession};
 
 const MAX_EXPORT_BYTES: u64 = 256 * 1024 * 1024;
@@ -205,7 +209,7 @@ fn add_logos(
             LogoMatch::Missing | LogoMatch::Ambiguous(_) => {}
             LogoMatch::Unique(path) => {
                 let png = read_logo(&path)
-                    .and_then(natsume_roster::DecodedLogo::into_domjudge_png)
+                    .and_then(DecodedLogo::into_domjudge_png)
                     .map_err(|error| logos::logo_error(school, &path, &error))?;
                 add(
                     zip,

@@ -10,7 +10,10 @@ const candidateId = "01934567-89ab-7cde-8f01-23456789abcd";
 const previewToken = "A".repeat(43);
 
 const workbook = readFileSync(
-  new URL("../../crates/roster/examples/roster.xlsx", import.meta.url),
+  new URL(
+    "../../crates/natsume-server/src/component/import/examples/roster.xlsx",
+    import.meta.url,
+  ),
 );
 const mediaType =
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";

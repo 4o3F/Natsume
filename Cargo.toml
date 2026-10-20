@@ -8,7 +8,6 @@ members = [
   "crates/natsume-workstation-agent",
   "crates/natsume-workstation-protocol",
   "crates/natsume-workstation-ipc",
-  "crates/roster",
 ]
 default-members = [
   "crates/natsume-server",
@@ -17,7 +16,6 @@ default-members = [
   "crates/natsume-workstation-agent",
   "crates/natsume-workstation-protocol",
   "crates/natsume-workstation-ipc",
-  "crates/roster",
 ]
 
 [workspace.package]
@@ -78,7 +76,7 @@ tokio-rustls = { version = "0.26", default-features = false }
 toml = { version = "1.1", default-features = false, features = ["parse", "serde", "std"] }
 tempfile = "3"
 tower = { version = "0.5", default-features = false, features = ["util"] }
-tower-http = { version = "0.7", default-features = false, features = ["fs", "limit", "set-header"] }
+tower-http = { version = "0.7", default-features = false, features = ["fs", "set-header"] }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }

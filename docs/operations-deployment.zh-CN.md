@@ -553,7 +553,7 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
 
 v2.3.2 使用完整 XLSX 名单导入，旧 CSV 入口已移除。从 v2.0.x 升级先完成第 8.5 节；从 v2.1.0 升级按第 8.6 节执行；从 v2.2.x 升级按第 8.7 节执行。
 
-在 Web **Preparation** 点击 **Download Excel template**，下载 `Teams` 工作表模板。人工把报名表整理为一行一队，按[字段规则](../crates/roster/README.md#excel-模板)填写九列：学校中英文名、country、account、password、seat、队伍中英文名、category。所有单元格按文本填写，保留座位前导零；不填写公式。学校与队伍的中英文名各至少填写一种，country 留空默认为 CHN。
+在 Web **Preparation** 点击 **Download Excel template**，下载 `Teams` 工作表模板。人工把报名表整理为一行一队，按[字段规则](../crates/natsume-server/docs/roster.md#excel-模板)填写九列：学校中英文名、country、account、password、seat、队伍中英文名、category。所有单元格按文本填写，保留座位前导零；不填写公式。学校与队伍的中英文名各至少填写一种，country 留空默认为 CHN。
 
 填写 DOMjudge 队伍账号和当前密码；account、seat 各自唯一。学校编号由 Server 生成，无需预填。文件包含密码，在 Server 受控目录保存时设为 0600，不提交 Git。每次上传完整名单；热身转正式赛只修改 password，其余各行也一并上传。
 
