@@ -8,7 +8,8 @@ members = [
   "crates/natsume-workstation-agent",
   "crates/natsume-workstation-protocol",
   "crates/natsume-workstation-ipc",
-  "crates/natsume-print-domjudge"
+  "crates/natsume-print-domjudge",
+  "crates/natsume-print-client"
 ]
 default-members = [
   "crates/natsume-server",
@@ -17,7 +18,8 @@ default-members = [
   "crates/natsume-workstation-agent",
   "crates/natsume-workstation-protocol",
   "crates/natsume-workstation-ipc",
-  "crates/natsume-print-domjudge"
+  "crates/natsume-print-domjudge",
+  "crates/natsume-print-client"
 ]
 
 [workspace.package]
@@ -172,6 +174,7 @@ specta = { version = "=2.0.0-rc.25", features = ["derive", "collect", "uuid"] }
 specta-serde = "=0.0.12"
 specta-typescript = "=0.0.12"
 uuid = { version = "1", features = ["serde", "v5", "v7"] }
+windows = "0.62.2"
 x509-parser = { version = "0.18", default-features = false }
 zeroize = { version = "1", features = ["derive", "serde"] }
 zbus = { version = "6", default-features = false, features = [

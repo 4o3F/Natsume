@@ -92,6 +92,33 @@ jobs:
       - name: Dependency policy and advisories
         run: cargo deny check
 
+  windows-print:
+    name: Windows print engine
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+
+      - name: Setup pinned Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+        with:
+          components: clippy,rustfmt
+
+      - name: Setup pinned Deno
+        uses: denoland/setup-deno@v2.0.5
+        with:
+          deno-version-file: .deno-version
+
+      - name: Prepare Rust dependencies without Linux workstation assets
+        run: deno task prepare rust
+
+      - name: Compile and lint the Windows engine
+        run: cargo clippy --frozen -p natsume-print-client --all-targets -- -D warnings
+
+      - name: Test shared logic and the Windows PDF renderer
+        run: cargo test --frozen -p natsume-print-client
+
   web:
     name: web
     runs-on: ubuntu-24.04

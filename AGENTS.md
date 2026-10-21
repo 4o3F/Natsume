@@ -75,6 +75,12 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - When raw SQL is necessary, bind runtime values rather than interpolating or concatenating them, and format longer statements across readable lines. Ordinary test fixture inserts and updates should also use Diesel; migration statements, database fault injection, and `EXPLAIN QUERY PLAN` checks are distinct uses, not templates for application queries.
 - Use the shared `Database::read` / `Database::write` and `Transaction` boundary. Keep business database operations in their owning components; do not add connection management or transaction orchestration to HTTP handlers.
 
+## Native Windows printing
+
+- Handwritten Rust `unsafe` is permitted only inside `crates/natsume-print-client/src/backend/` for the reviewed Windows printing boundary. Keep the workspace-wide denial elsewhere, including Server, networking, task state, and UI code.
+- Each native call must document pointer validity, buffer bounds, ownership, and thread requirements as applicable. Keep printer handles, device contexts, and WinRT initialization on their owning thread; release them deterministically and abort unfinished print documents on failure.
+- Obtain the Windows Job ID directly from the print submission API and verify its exact attempt label when observing it. Do not infer success from a disappearing job, match by filename, treat RAW PDF as universally supported, or claim physical output from spooler status.
+
 ## Error handling
 
 - Rust error handling must use `snafu`. Define typed errors with `#[derive(Snafu)]` and use Snafu context selectors and helpers to construct, wrap, and propagate failures, including in executables, libraries, and tests.

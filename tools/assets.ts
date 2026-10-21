@@ -273,7 +273,7 @@ async function prepare(): Promise<void> {
   }
   const selected = new Set(selection(Deno.args));
   selected.add("scripts");
-  const needsSkia = selected.has("rust") ||
+  const needsSkia = selected.has("rust") && Deno.build.os !== "windows" ||
     selected.has("client") && Deno.env.get("RUST_RELEASE_DIR") === undefined;
   const packages = [...selected].filter(isPackageTarget);
   if (
