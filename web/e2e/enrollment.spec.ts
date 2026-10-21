@@ -1,16 +1,9 @@
 import { expect, test, type Page, type Route } from "@playwright/test";
 
 import type { ProvisioningWindowResponse } from "../src/api/generated/types";
+import { fulfillJson, operator } from "./fixtures/devices";
 
 type WindowState = ProvisioningWindowResponse["state"];
-
-function fulfillJson(route: Route, status: number, body: unknown) {
-  return route.fulfill({
-    status,
-    contentType: "application/json",
-    body: JSON.stringify(body),
-  });
-}
 
 async function mockEnrollment(
   page: Page,
@@ -318,4 +311,58 @@ test("a rejected update keeps the server state and can be retried", async ({
   await window.getByRole("button", { name: "Open window" }).click();
   await expect(window.getByRole("status")).toHaveText("Open");
   await expect(window.getByRole("alert")).toHaveCount(0);
+});
+
+test("an administrator can approve an enrollment review", async ({ page }) => {
+  let reviews = [
+    {
+      review_id: "01934567-89ab-7cde-8f01-23456789abcd",
+      machine_hardware_id: "machine-02",
+      candidate_public_key: "candidate-public-key",
+      evidence_quality: "medium",
+      daemon_version: "2.0.0",
+      agent_version: "2.0.0",
+    },
+  ];
+
+  await page.route("**/api/v2/**", (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+
+    if (pathname === "/api/v2/session" && request.method() === "GET") {
+      return fulfillJson(route, 200, operator);
+    }
+    if (
+      pathname === "/api/v2/provisioning-window" &&
+      request.method() === "GET"
+    ) {
+      return fulfillJson(route, 200, { state: "open" });
+    }
+    if (
+      pathname === "/api/v2/enrollment-reviews" &&
+      request.method() === "GET"
+    ) {
+      return fulfillJson(route, 200, reviews);
+    }
+    if (
+      pathname ===
+        "/api/v2/enrollment-reviews/01934567-89ab-7cde-8f01-23456789abcd/actions/approve" &&
+      request.method() === "POST"
+    ) {
+      reviews = [];
+      return fulfillJson(route, 204);
+    }
+    return fulfillJson(route, 404, {});
+  });
+
+  await page.goto("/enrollment");
+  await expect(page.getByText("machine-02", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Approve" }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Approve" })
+    .click();
+  await expect(
+    page.getByText("No enrollment reviews are pending."),
+  ).toBeVisible();
 });
