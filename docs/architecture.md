@@ -1951,7 +1951,7 @@ I1 将最终 PDF 作为 Print 自有 SQLite BLOB 与文档摘要、页数、全�
 
 接口错误沿用 `{ "title": "…", "status": 400, "code": "INVALID_REQUEST" }` 外壳。无效字段／PDF 返回 400，来源认证失败或撤销返回 401，管理接口角色不足返回 403，自己来源中不存在的请求返回 404，阶段／内容／身份冲突返回 409，PDF 上传超过 8 MiB 返回 413，内部持久化失败返回 500；现有数据库工作准入失败可返回 503。来源认证失败不消费请求体。整个 Print namespace 使用 `Cache-Control: no-store`；不通过错误正文泄漏解析内容、路径或其他来源的存在事实。JSON 字段由 Server HTTP DTO 与 Serde 定义，通过 Specta 直接导出 TypeScript，不手改生成物；路由与状态语义由实际 HTTP 测试验证。
 
-wrapper 接受 `--file`、`--account`、`--original`，可显式传 `--request-id` 用于受控重试；未传时每次独立调用生成新 UUIDv7。配置固定在 `/etc/natsume-print-domjudge/config.toml`，包含 `server_url`、`token_file` 和可选 `ca_certificate`；服务器地址必须是无凭据、路径、查询和片段的 HTTPS origin。部署拥有配置和凭据，包不生成或覆盖 token。源文件必须为常规 UTF-8 文件，最多 256 KiB；拒绝目录、特殊文件和符号链接，不回显内容。源码和展示字段均作为数据进入固定 Typst 模板，不拼接可执行 Typst、shell 或 eval；不接受用户模板、远端资源或任意编译参数。A4、黑白、单份，长行必须换行，不裁掉源码。
+wrapper 接受 `--file`、`--account`、`--original`，可显式传 `--request-id` 用于受控重试；未传时每次独立调用生成新 UUIDv7。配置路径由 `--config <PATH>` 指定，未传时默认为 `/etc/natsume-print-domjudge/config.toml`；显式路径加载失败时直接报错，不回退到默认配置。配置包含 `server_url`、`token_file` 和可选 `ca_certificate`；服务器地址必须是无凭据、路径、查询和片段的 HTTPS origin。部署拥有配置和凭据，包不生成或覆盖 token。源文件必须为常规 UTF-8 文件，最多 256 KiB；拒绝目录、特殊文件和符号链接，不回显内容。源码和展示字段均作为数据进入固定 Typst 模板，不拼接可执行 Typst、shell 或 eval；不接受用户模板、远端资源或任意编译参数。A4、黑白、单份，长行必须换行，不裁掉源码。
 
 包携带校验固定版本 Typst 0.14.2、模板、必要字体与许可，安装及运行不联网下载。编译使用单线程和仅包内字体，不搜索主机字体；隔离临时目录仅含固定模板、数据和源文件，退出清理，不建立持久本地收单／补报队列。编译最多 2 秒，wrapper 从启动到返回总计最多 5 秒，联网、生成和核实共享该总预算；这不是 Server 的请求体读取超时。超时必须终止并回收编译子进程，子进程 stderr 不直接展示给选手，也不留下无界日志。时间、输入和最终输出限制不等于独立的编译内存隔离；首版不声明具备此项保证或 PHP-FPM 并发容量保证。
 

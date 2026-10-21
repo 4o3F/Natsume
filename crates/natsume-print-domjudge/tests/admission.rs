@@ -238,6 +238,35 @@ impl Fixture {
 const COMPILE: &str = "Path('document.pdf').write_bytes(b'%PDF-1.7\\nmock document\\n')";
 
 #[tokio::test]
+async fn executable_reports_ready_result_through_tracing_stdout() -> TestResult {
+    let peer = server(vec![Reply::Json(fact("ready"))], None, "127.0.0.1").await?;
+    let fixture = Fixture::new(&peer, COMPILE)?;
+    let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_natsume-print-domjudge"))
+        .arg("--config")
+        .arg(fixture.root.path().join("config.toml"))
+        .arg("--file")
+        .arg(&fixture.input.file)
+        .arg("--account")
+        .arg(&fixture.input.account)
+        .arg("--original")
+        .arg(&fixture.input.original)
+        .arg("--request-id")
+        .arg(ID)
+        .output()
+        .await?;
+
+    let stdout = String::from_utf8(output.stdout)?;
+    assert!(output.status.success(), "{stdout}");
+    assert!(stdout.contains("INFO"), "{stdout}");
+    assert!(stdout.contains("已入队，尚未打印完成"), "{stdout}");
+    assert!(stdout.contains(ID), "{stdout}");
+    assert!(output.stderr.is_empty());
+    assert!(!stdout.contains('\u{1b}'));
+    assert!(!fixture.marker.exists());
+    Ok(())
+}
+
+#[tokio::test]
 async fn registration_precedes_generation_and_pdf_upload_uses_exact_identity() -> TestResult {
     let peer = server(
         vec![Reply::Json(fact("preparing")), Reply::Json(fact("ready"))],

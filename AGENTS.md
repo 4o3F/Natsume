@@ -20,6 +20,7 @@ Before implementing:
 
 - No features beyond what was asked.
 - No abstractions for single-use code.
+- Do not add test-only fields to production structs, including fields guarded by `#[cfg(test)]`. Keep test state in fixtures and pass dependencies explicitly; do not make unused fields unconditional to bypass this rule.
 - No "flexibility" or "configurability" that wasn't requested.
 - No error handling for impossible scenarios.
 - If you write 200 lines and it could be 50, rewrite it.
@@ -63,6 +64,19 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+## Error handling
+
+- Rust error handling must use `snafu`. Define typed errors with `#[derive(Snafu)]` and use Snafu context selectors and helpers to construct, wrap, and propagate failures, including in executables, libraries, and tests.
+- Do not introduce alternative error frameworks such as `anyhow` or `thiserror`, use strings or `Box<dyn Error>` as application error types, or handwrite `Display` and `std::error::Error` implementations in place of Snafu derives.
+- Convert dependency errors at the relevant application boundary, preserve useful source errors and context, and report failures through tracing. User-visible messages and logs must not expose credentials or sensitive source details.
+
+## Logging and output
+
+- Rust application output must use `tracing`, including normal results, startup failures, runtime errors, and test diagnostics. Do not use `println!`, `eprintln!`, `print!`, `eprint!`, `dbg!`, or handwritten stdout/stderr writes to bypass tracing.
+- Initialize the tracing subscriber at the executable entry point before parsing CLI arguments or loading configuration. Libraries emit events through tracing and do not initialize global subscribers.
+- Preserve required output channels when configuring the subscriber. In particular, DOMjudge reads the print wrapper's stdout; route its result and error events there. Do not log credentials, source contents, or PDF contents, and escape untrusted display values.
+- Cargo build directives and generated files are protocol or artifact output, not logs. Keep their required formats; do not replace them with tracing events or use this distinction to bypass application logging.
 
 ## Agent skills
 

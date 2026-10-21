@@ -55,7 +55,7 @@ Deployment supplies separate configuration for the paired workstation system and
 
 - Client: `/etc/natsume/config.toml`, containing `[server]` (IP literal and port) and `[site]` (Gateway hostname).
 - Server: `/etc/natsume-server/config.toml`, containing `[listen]`, `[log]`, `[storage]`, `[tls]`, `[site]` (Gateway hostname, certificate expiry and contest end), `[trust]` (Control/Local Origin CA paths), and `[runtime]` (the required canonical HTTPS `domjudge_origin`).
-- DOMjudge wrapper: `/etc/natsume-print-domjudge/config.toml`, containing the remote HTTPS `server_url`, restricted `token_file`, and optional deployment `ca_certificate`; see its [configuration and credentials](print-domjudge/README.md#deployment-owned-configuration-and-credentials).
+- DOMjudge wrapper: `--config <PATH>`, defaulting to `/etc/natsume-print-domjudge/config.toml`, containing the remote HTTPS `server_url`, restricted `token_file`, and optional deployment `ca_certificate`; see its [configuration and credentials](print-domjudge/README.md#deployment-owned-configuration-and-credentials).
 
 The workstation Client and Server also use `/etc/natsume/trust/control-ca.crt` and `/etc/natsume/trust/local-origin-ca.crt`. Configuration and public certificates are `root:root`, mode `0644`, with parent directories mode `0755`. The Gateway hostname and CA files must match the paired deployment. See the Server's [TLS/Origin issuing material and bootstrap](../crates/natsume-server/README.md).
 

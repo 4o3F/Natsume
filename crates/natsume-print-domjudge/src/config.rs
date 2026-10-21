@@ -14,8 +14,6 @@ use url::Url;
 
 use crate::{Error, Result};
 
-pub const CONFIG_PATH: &str = "/etc/natsume-print-domjudge/config.toml";
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
@@ -25,7 +23,7 @@ pub struct Config {
 }
 
 impl Config {
-    /// The executable always supplies `CONFIG_PATH`; tests may use a private fixture.
+    /// Loads deployment configuration from the supplied path.
     ///
     /// # Errors
     /// Rejects unsafe deployment files, invalid TOML, unknown fields and non-HTTPS origins.
