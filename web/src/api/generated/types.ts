@@ -447,6 +447,19 @@ export type PrintGenerationFailure = {
   code: GenerationFailure;
 };
 
+export type PrintQueueEntry = {
+  source_id: string;
+  source_name: string;
+  request_id: string;
+  account: string;
+  team_name: string;
+  seat_label: string | null;
+  original_filename: string;
+  ready_sequence: number;
+  pages: number;
+  bytes: number;
+};
+
 export type PrintRegistration = {
   protocol_version: number;
   request_id: string;

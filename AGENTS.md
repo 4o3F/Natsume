@@ -65,6 +65,16 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
 
+## Database access
+
+- Before adding or changing database access, read comparable implementations in existing components, such as `crates/natsume-server/src/component/contest/db.rs`, `crates/natsume-server/src/component/device/db/devices.rs`, and `crates/natsume-server/src/component/import/db/accounts.rs`. Follow the established approach instead of introducing a different database style for a new feature.
+- Use the generated `crate::diesel_schema` tables and Diesel's typed query builder for ordinary reads, joins, filters, ordering, aggregates, inserts, updates, deletes, and upserts. Select the required columns explicitly. Do not replace these operations with handwritten SQL strings or duplicate table and column definitions in strings.
+- For simple query results, prefer tuples or local tuple aliases, then construct named application values in the owning component's private database module. Introduce a separate row struct only when it materially improves mapping or persisted-data validation; do not add `QueryableByName` structs merely to support avoidable raw SQL.
+- Keep database-specific row types, SQL type annotations, and persistence error handling inside the owning component's private `db.rs` or `db/` modules. Do not move database details into domain types or HTTP response types just to remove a conversion. Avoid redundant structures and field copying, but do not remove meaningful validation or representation boundaries.
+- Raw SQL is an exception, not an alternative default. Before introducing it, explain the concrete SQLite capability or query requirement that cannot reasonably be expressed with Diesel; use a small typed SQL expression within the query builder when that is sufficient. Existing uses for database time, SQLite system tables, or atomic statements do not justify handwritten SQL for unrelated ordinary queries.
+- When raw SQL is necessary, bind runtime values rather than interpolating or concatenating them, and format longer statements across readable lines. Ordinary test fixture inserts and updates should also use Diesel; migration statements, database fault injection, and `EXPLAIN QUERY PLAN` checks are distinct uses, not templates for application queries.
+- Use the shared `Database::read` / `Database::write` and `Transaction` boundary. Keep business database operations in their owning components; do not add connection management or transaction orchestration to HTTP handlers.
+
 ## Error handling
 
 - Rust error handling must use `snafu`. Define typed errors with `#[derive(Snafu)]` and use Snafu context selectors and helpers to construct, wrap, and propagate failures, including in executables, libraries, and tests.

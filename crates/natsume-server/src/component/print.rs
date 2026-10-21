@@ -43,6 +43,24 @@ pub(crate) struct PrintSourceIssued {
     pub token: String,
 }
 
+// Non-secret queue projection shared by component reads and HTTP output.
+#[derive(serde::Serialize, specta::Type)]
+pub(crate) struct PrintQueueEntry {
+    pub source_id: String,
+    pub source_name: String,
+    pub request_id: String,
+    pub account: String,
+    pub team_name: String,
+    pub seat_label: Option<String>,
+    pub original_filename: String,
+    #[specta(type = specta_typescript::Number)]
+    pub ready_sequence: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub pages: i64,
+    #[specta(type = specta_typescript::Number)]
+    pub bytes: i64,
+}
+
 #[derive(Clone)]
 pub(crate) struct PrintRegistration {
     pub protocol_version: u8,
@@ -158,12 +176,6 @@ impl From<PersistenceError> for PrintError {
         Self::Persistence
     }
 }
-impl From<diesel::result::Error> for PrintError {
-    fn from(_: diesel::result::Error) -> Self {
-        Self::Persistence
-    }
-}
-
 pub(crate) fn canonical_id(value: &str) -> Result<(), PrintError> {
     let id = Uuid::parse_str(value).map_err(|_| PrintError::Invalid)?;
     if id.get_version_num() != 7
@@ -194,19 +206,26 @@ impl PrintComponent {
             documents,
         };
         let mut sequence = 0;
-        while let Some(document) = component
+        while let Some((next_sequence, hash, bytes)) = component
             .database
-            .read(move |tx| db::next_document(tx.connection(), sequence))
+            .read(move |transaction| db::next_document(transaction, sequence))
             .await
             .map_err(TransactionError::into_error)?
         {
-            sequence = document.sequence;
+            sequence = next_sequence;
             let store = component.documents.clone();
-            tokio::task::spawn_blocking(move || store.verify(&document.hash, document.bytes))
+            tokio::task::spawn_blocking(move || store.verify(&hash, bytes))
                 .await
                 .map_err(|_| PrintError::Persistence)??;
         }
         Ok(component)
+    }
+
+    pub(crate) async fn list_queue(&self) -> Result<Vec<PrintQueueEntry>, PrintError> {
+        self.database
+            .read(db::list_queue)
+            .await
+            .map_err(TransactionError::into_error)
     }
 
     pub(crate) async fn create_source(

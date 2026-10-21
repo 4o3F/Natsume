@@ -4,6 +4,7 @@ import { createApiClient } from "./client";
 import { ApiError, unwrap } from "./errors";
 import type {
   DeviceUpdateRequest,
+  PrintQueueEntry,
   TargetSubmissionBody,
 } from "./generated/types";
 
@@ -30,6 +31,24 @@ it("serializes device states as one CSV query parameter and preserves an omitted
     "enabled,disabled",
   ]);
   expect(new URL(second.url).search).toBe("");
+});
+
+it("reads the operator print queue through the typed GET endpoint", async () => {
+  let sent!: Request;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      sent = request;
+      return new Response("[]");
+    }),
+  );
+  const result = await client().listPrintQueue({ baseUrl });
+  expect(sent.method).toBe("GET");
+  expect(new URL(sent.url).pathname).toBe("/api/v2/print/queue");
+  expect(sent.headers.has("authorization")).toBe(false);
+  expect(sent.body).toBeNull();
+  expect(result.data).toEqual([]);
+  expectTypeOf(result.data).toEqualTypeOf<PrintQueueEntry[] | undefined>();
 });
 
 it("invalidates an unauthorized session without treating rejected login as expiry", async () => {

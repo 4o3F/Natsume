@@ -7,6 +7,7 @@ import { DevicesPage } from "@/pages/devices-page";
 import { EnrollmentPage } from "@/pages/enrollment-page";
 import { LoginPage } from "@/pages/login-page";
 import { PreparationPage } from "@/pages/preparation-page";
+import { PrintQueuePage } from "@/pages/print-queue-page";
 import { SeatsPage } from "@/pages/seats-page";
 import { TargetsPage } from "@/pages/targets-page";
 import { UsersPage } from "@/pages/users-page";
@@ -35,6 +36,7 @@ export function App() {
           <Route path="/devices" element={<DevicesPage />} />
           <Route path="/enrollment" element={<EnrollmentPage />} />
           <Route path="/targets" element={<TargetsPage />} />
+          <Route path="/print" element={<PrintQueuePage />} />
           <Route element={<RequireAdmin />}>
             <Route path="/users" element={<UsersPage />} />
           </Route>

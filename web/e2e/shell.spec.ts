@@ -186,6 +186,7 @@ test("navbar highlights only the current page across navigation and reloads", as
         "/api/v2/devices",
         "/api/v2/organizations",
         "/api/v2/enrollment-reviews",
+        "/api/v2/print/queue",
       ].includes(path)
     )
       return fulfillJson(route, 200, []);
@@ -205,6 +206,7 @@ test("navbar highlights only the current page across navigation and reloads", as
     "Devices",
     "Enrollment",
     "Targets",
+    "Print queue",
   ]) {
     const link = navigation.getByRole("link", { name, exact: true });
     await link.click();
@@ -228,11 +230,11 @@ test("navbar highlights only the current page across navigation and reloads", as
   }
   await page.goBack();
   await expect(
-    navigation.getByRole("link", { name: "Enrollment", exact: true }),
+    navigation.getByRole("link", { name: "Targets", exact: true }),
   ).toHaveAttribute("aria-current", "page");
   await page.reload();
   await expect(navigation.locator('a[aria-current="page"]')).toHaveText(
-    "Enrollment",
+    "Targets",
   );
   await expect(navigation.locator("a.bg-primary")).toHaveCount(1);
 });

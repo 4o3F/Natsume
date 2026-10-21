@@ -19,6 +19,7 @@ import type {
   OperatorRoleRequest,
   OperatorTokenRequest,
   OrganizationLogoResponse,
+  PrintQueueEntry,
   ProvisioningWindowRequest,
   ProvisioningWindowResponse,
   SeatResponse,
@@ -117,6 +118,8 @@ export function createApiClient(
       json<SessionResponse>("POST", "/api/v2/session", body, options),
     deleteSession: (options?: RequestOptions) =>
       request<void>("DELETE", "/api/v2/session", options),
+    listPrintQueue: (options?: RequestOptions) =>
+      request<PrintQueueEntry[]>("GET", "/api/v2/print/queue", options),
     listSeats: (options?: RequestOptions) =>
       request<SeatResponse[]>("GET", "/api/v2/seats", options),
     listAccounts: (options?: RequestOptions) =>

@@ -47,6 +47,10 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
         );
     source
         .route(
+            "/print/queue",
+            middleware::require_operator(state.clone(), get(list_queue)),
+        )
+        .route(
             "/print/sources",
             middleware::require_admin(state.clone(), post(create_source).get(list_sources)),
         )
@@ -103,6 +107,13 @@ impl<S: Send + Sync> FromRequestParts<S> for PrintPathId {
             .map_err(|_| ApiError::invalid_request("print_path").into_response())?;
         canonical_id(&id).map_err(|error| ApiError::from_print(error).into_response())?;
         Ok(Self(id))
+    }
+}
+
+pub(crate) async fn list_queue(State(state): State<AppState>) -> Response {
+    match state.print().list_queue().await {
+        Ok(queue) => Json(queue).into_response(),
+        Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 

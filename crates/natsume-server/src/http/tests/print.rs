@@ -1,10 +1,12 @@
+mod queue;
+
 use std::{task::Poll, time::Duration};
 
 use axum::{
     body::{Body, Bytes},
     http::{Method, Request, StatusCode, header},
 };
-use diesel::connection::SimpleConnection as _;
+use diesel::{ExpressionMethods, RunQueryDsl};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use tower::ServiceExt as _;
@@ -16,10 +18,11 @@ use super::{
 };
 use crate::{
     component::print::{
-        DOCUMENT_LIMIT,
+        DOCUMENT_LIMIT, PrintError,
         tests::{pdf, pdf_with_size},
     },
-    db::PersistenceError,
+    db::{PersistenceError, TransactionError},
+    diesel_schema::{accounts, operator_accounts, organizations, teams},
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -36,7 +39,38 @@ impl Fixture {
     async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let database = TestDatabase::new().await?;
         seed_operator(&database.database, LOGIN_NAME, PASSWORD).await?;
-        database.database.write(|tx| tx.connection().batch_execute("INSERT INTO accounts VALUES ('account-1','team-1',1); INSERT INTO organizations VALUES (1,'school','','School','CHN'); INSERT INTO teams VALUES ('account-1',1,'队伍','Team','participant');").map_err(|_| PersistenceError::OperationFailed)).await.map_err(|e| format!("roster: {e:?}"))?;
+        database
+            .database
+            .write(|transaction| {
+                diesel::insert_into(accounts::table)
+                    .values((
+                        accounts::account_id.eq("account-1"),
+                        accounts::domjudge_username.eq("team-1"),
+                        accounts::credential_revision.eq(1),
+                    ))
+                    .execute(transaction.connection())?;
+                diesel::insert_into(organizations::table)
+                    .values((
+                        organizations::organization_id.eq(1),
+                        organizations::name_key.eq("school"),
+                        organizations::name_zh.eq(""),
+                        organizations::name_en.eq("School"),
+                        organizations::country.eq("CHN"),
+                    ))
+                    .execute(transaction.connection())?;
+                diesel::insert_into(teams::table)
+                    .values((
+                        teams::account_id.eq("account-1"),
+                        teams::organization_id.eq(1),
+                        teams::name_zh.eq("队伍"),
+                        teams::name_en.eq("Team"),
+                        teams::category.eq("participant"),
+                    ))
+                    .execute(transaction.connection())?;
+                Ok::<_, PrintError>(())
+            })
+            .await
+            .map_err(|error| format!("roster: {error:?}"))?;
         let router = router(server_state(&database)?, unused_web_root());
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
@@ -63,6 +97,20 @@ impl Fixture {
             token: value["token"].as_str().ok_or("token")?.to_owned(),
             source_id: value["source_id"].as_str().ok_or("source_id")?.to_owned(),
         })
+    }
+
+    async fn make_viewer(&self) -> Result<(), PersistenceError> {
+        self.database
+            .database
+            .write(|transaction| {
+                diesel::update(operator_accounts::table)
+                    .set(operator_accounts::role.eq("viewer"))
+                    .execute(transaction.connection())
+                    .map(|_| ())
+                    .map_err(|_| PersistenceError::OperationFailed)
+            })
+            .await
+            .map_err(TransactionError::into_error)
     }
 
     async fn send(
@@ -208,15 +256,7 @@ async fn print_sources_use_admin_authorization_dedicated_tokens_and_no_store() -
         )
         .await?;
     assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
-    f.database
-        .database
-        .write(|tx| {
-            tx.connection()
-                .batch_execute("UPDATE operator_accounts SET role = 'viewer'")
-                .map_err(|_| PersistenceError::OperationFailed)
-        })
-        .await
-        .map_err(|e| format!("role: {e:?}"))?;
+    f.make_viewer().await?;
     for (method, path) in [
         (Method::GET, "/api/v2/print/sources".into()),
         (Method::POST, "/api/v2/print/sources".into()),

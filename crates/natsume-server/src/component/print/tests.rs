@@ -2,13 +2,16 @@ mod persistence;
 
 use std::sync::{Arc, Condvar, Mutex};
 
-use diesel::connection::SimpleConnection as _;
+use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection as _};
 use lopdf::{Document, Object, Stream, dictionary};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 use super::*;
-use crate::db::{Database, DatabaseConfig, PersistenceError};
+use crate::{
+    db::{Database, DatabaseConfig, PersistenceError},
+    diesel_schema::{account_mappings, accounts, organizations, print_documents, seats, teams},
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -28,9 +31,46 @@ impl Fixture {
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&path, true))
             .await
             .unwrap_or_else(|e| panic!("database: {e}"));
-        database.write(|tx| {
-            tx.connection().batch_execute("INSERT INTO accounts VALUES ('account-1', 'team-1', 1); INSERT INTO organizations VALUES (1, 'school', '', 'School', 'CHN'); INSERT INTO teams VALUES ('account-1', 1, '队伍', 'Team', 'participant'); INSERT INTO seats VALUES ('seat-1', 'A-01'); INSERT INTO account_mappings VALUES ('seat-1', 'account-1');").map_err(|_| PersistenceError::OperationFailed)
-        }).await.unwrap_or_else(|e| panic!("roster: {e:?}"));
+        database
+            .write(|transaction| {
+                diesel::insert_into(accounts::table)
+                    .values((
+                        accounts::account_id.eq("account-1"),
+                        accounts::domjudge_username.eq("team-1"),
+                        accounts::credential_revision.eq(1),
+                    ))
+                    .execute(transaction.connection())?;
+                diesel::insert_into(organizations::table)
+                    .values((
+                        organizations::organization_id.eq(1),
+                        organizations::name_key.eq("school"),
+                        organizations::name_zh.eq(""),
+                        organizations::name_en.eq("School"),
+                        organizations::country.eq("CHN"),
+                    ))
+                    .execute(transaction.connection())?;
+                diesel::insert_into(teams::table)
+                    .values((
+                        teams::account_id.eq("account-1"),
+                        teams::organization_id.eq(1),
+                        teams::name_zh.eq("队伍"),
+                        teams::name_en.eq("Team"),
+                        teams::category.eq("participant"),
+                    ))
+                    .execute(transaction.connection())?;
+                diesel::insert_into(seats::table)
+                    .values((seats::seat_id.eq("seat-1"), seats::seat_code.eq("A-01")))
+                    .execute(transaction.connection())?;
+                diesel::insert_into(account_mappings::table)
+                    .values((
+                        account_mappings::seat_id.eq("seat-1"),
+                        account_mappings::account_id.eq("account-1"),
+                    ))
+                    .execute(transaction.connection())?;
+                Ok::<_, PrintError>(())
+            })
+            .await
+            .unwrap_or_else(|error| panic!("roster: {error:?}"));
         let (source, token) = add_source(&database).await;
         let print =
             PrintComponent::for_test(database.clone(), path.with_extension("print-documents"))
@@ -232,10 +272,12 @@ async fn registration_snapshots_team_display_and_optional_seat() {
             .is_ok()
     );
     f.database
-        .write(|tx| {
-            tx.connection()
-                .batch_execute("UPDATE teams SET name_zh = ''; DELETE FROM account_mappings;")
-                .map_err(|_| PersistenceError::OperationFailed)
+        .write(|transaction| {
+            diesel::update(teams::table)
+                .set(teams::name_zh.eq(""))
+                .execute(transaction.connection())?;
+            diesel::delete(account_mappings::table).execute(transaction.connection())?;
+            Ok::<_, PrintError>(())
         })
         .await
         .unwrap_or_else(|e| panic!("roster update: {e:?}"));
@@ -419,6 +461,37 @@ async fn fifo_uses_committed_documents_across_sources_excluding_other_states() {
 }
 
 #[tokio::test]
+async fn admission_snapshot_preserves_page_totals_above_i32() -> Result<(), PrintError> {
+    let f = Fixture::new().await;
+    let first = f.register().await.request_id;
+    f.print
+        .upload(f.source.clone(), first.clone(), pdf(1))
+        .await?;
+    let total_pages = i64::from(i32::MAX) + 1;
+    // Exercise the aggregate's integer width without constructing an enormous PDF.
+    f.database
+        .write(move |transaction| {
+            diesel::update(print_documents::table.filter(print_documents::request_id.eq(first)))
+                .set(print_documents::pages.eq(total_pages))
+                .execute(transaction.connection())?;
+            Ok::<_, PrintError>(())
+        })
+        .await
+        .map_err(TransactionError::into_error)?;
+    let next = f.register().await.request_id;
+    assert_eq!(
+        f.print.upload(f.source, next, pdf(1)).await?.admission,
+        Some(PrintAdmission {
+            ready_sequence: 2,
+            ahead_tasks: 1,
+            ahead_pages: total_pages,
+            in_progress_tasks: 0
+        }),
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn deleted_recreated_account_cannot_retarget_preparing_but_ready_survives() {
     let f = Fixture::new().await;
     let preparing = f.register().await.request_id;
@@ -428,7 +501,29 @@ async fn deleted_recreated_account_cannot_retarget_preparing_but_ready_survives(
         .upload(f.source.clone(), ready.clone(), pdf(1))
         .await
         .unwrap_or_else(|e| panic!("admit: {e:?}"));
-    f.database.write(|tx| { tx.connection().batch_execute("DELETE FROM accounts; INSERT INTO accounts VALUES ('new-account', 'team-1', 1); INSERT INTO teams VALUES ('new-account', 1, '新队伍', 'New Team', 'participant');").map_err(|_| PersistenceError::OperationFailed) }).await.unwrap_or_else(|e| panic!("replace account: {e:?}"));
+    f.database
+        .write(|transaction| {
+            diesel::delete(accounts::table).execute(transaction.connection())?;
+            diesel::insert_into(accounts::table)
+                .values((
+                    accounts::account_id.eq("new-account"),
+                    accounts::domjudge_username.eq("team-1"),
+                    accounts::credential_revision.eq(1),
+                ))
+                .execute(transaction.connection())?;
+            diesel::insert_into(teams::table)
+                .values((
+                    teams::account_id.eq("new-account"),
+                    teams::organization_id.eq(1),
+                    teams::name_zh.eq("新队伍"),
+                    teams::name_en.eq("New Team"),
+                    teams::category.eq("participant"),
+                ))
+                .execute(transaction.connection())?;
+            Ok::<_, PrintError>(())
+        })
+        .await
+        .unwrap_or_else(|error| panic!("replace account: {error:?}"));
     assert_eq!(
         f.print.upload(f.source.clone(), preparing, pdf(1)).await,
         Err(PrintError::Conflict)
@@ -496,7 +591,18 @@ async fn revoked_source_is_rechecked_in_each_operation_even_with_stale_identity(
 async fn admission_keeps_durable_file_but_rolls_back_metadata_and_sequence_on_database_failure() {
     let f = Fixture::new().await;
     let id = f.register().await.request_id;
-    f.database.write(|tx| tx.connection().batch_execute("CREATE TRIGGER fail_admission AFTER INSERT ON print_documents BEGIN SELECT RAISE(ABORT, 'injected'); END;").map_err(|_| PersistenceError::OperationFailed)).await.unwrap_or_else(|e| panic!("trigger: {e:?}"));
+    f.database
+        .write(|transaction| {
+            transaction
+                .connection()
+                .batch_execute(
+                    "CREATE TRIGGER fail_admission AFTER INSERT ON print_documents \
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+                )
+                .map_err(|_| PersistenceError::OperationFailed)
+        })
+        .await
+        .unwrap_or_else(|error| panic!("trigger: {error:?}"));
     assert_eq!(
         f.print.upload(f.source.clone(), id.clone(), pdf(1)).await,
         Err(PrintError::Persistence)
@@ -573,20 +679,18 @@ async fn cancelled_admission_caller_does_not_cancel_started_atomic_commit() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
     gate.1.notify_all();
-    let mut observed = None;
-    for _ in 0..100 {
-        let result = f
-            .print
-            .get(f.source.clone(), id.clone())
-            .await
-            .unwrap_or_else(|e| panic!("get: {e:?}"));
-        if result.state == PrintState::Ready {
-            observed = Some(result);
-            break;
-        }
-        tokio::task::yield_now().await;
-    }
-    assert_eq!(observed.and_then(|r| r.document).map(|d| d.pages), Some(2));
+    // BEGIN IMMEDIATE waits for the released transaction to commit or roll back.
+    f.database
+        .write(|_| Ok::<_, PrintError>(()))
+        .await
+        .unwrap_or_else(|error| panic!("wait for admission transaction: {error:?}"));
+    let result = f
+        .print
+        .get(f.source.clone(), id)
+        .await
+        .unwrap_or_else(|error| panic!("get: {error:?}"));
+    assert_eq!(result.state, PrintState::Ready);
+    assert_eq!(result.document.map(|document| document.pages), Some(2));
 }
 
 #[tokio::test]

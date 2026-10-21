@@ -23,6 +23,7 @@ const navigation = [
   { to: "/devices", label: "Devices" },
   { to: "/enrollment", label: "Enrollment" },
   { to: "/targets", label: "Targets" },
+  { to: "/print", label: "Print queue" },
 ];
 
 export function AppLayout() {

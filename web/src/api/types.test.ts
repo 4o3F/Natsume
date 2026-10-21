@@ -10,6 +10,7 @@ import type {
   ImportPendingSummary,
   OperatorRegistrationRequest,
   PrintDocument,
+  PrintQueueEntry,
   PrintRequest,
 } from "./generated/types";
 
@@ -35,6 +36,19 @@ it("keeps required nullable response fields distinct from omitted fields", () =>
   expectTypeOf<Unbound["evaluation"]>().toEqualTypeOf<
     BindingEvaluationResponse | null | undefined
   >();
+});
+
+it("exports queue counters as JSON numbers and keeps the optional seat value required", () => {
+  expectTypeOf<
+    Pick<PrintQueueEntry, "ready_sequence" | "pages" | "bytes">
+  >().toEqualTypeOf<{
+    ready_sequence: number;
+    pages: number;
+    bytes: number;
+  }>();
+  expectTypeOf<Pick<PrintQueueEntry, "seat_label">>().toEqualTypeOf<{
+    seat_label: string | null;
+  }>();
 });
 
 it("exports secret wrappers as JSON strings without their internal storage", () => {

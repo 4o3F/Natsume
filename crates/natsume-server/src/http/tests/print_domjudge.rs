@@ -16,7 +16,7 @@ use axum::{
     response::{IntoResponse as _, Response},
     serve::Listener as _,
 };
-use diesel::{RunQueryDsl as _, sql_query, sql_types::Text};
+use diesel::{ExpressionMethods, RunQueryDsl};
 use natsume_print_domjudge::{Input, Runtime, config::Config, wire::State};
 use serde_json::{Value, json};
 use tokio::{task::JoinHandle, time::Instant};
@@ -27,7 +27,10 @@ use super::{
     LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive, header_text,
     login_request, router, seed_operator, server_state, unused_web_root,
 };
-use crate::tls::{TlsListener, tests::TestIdentity};
+use crate::{
+    diesel_schema::{accounts, organizations, teams},
+    tls::{TlsListener, tests::TestIdentity},
+};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
@@ -111,15 +114,32 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     let account_id = Uuid::now_v7().to_string();
     database
         .database
-        .write(move |tx| {
-            sql_query("INSERT INTO accounts VALUES (?, 'team-1', 1)")
-                .bind::<Text, _>(&account_id)
-                .execute(tx.connection())?;
-            sql_query("INSERT INTO organizations VALUES (1,'学校','','School','CHN')")
-                .execute(tx.connection())?;
-            sql_query("INSERT INTO teams VALUES (?,1,'中文队伍','Team','participant')")
-                .bind::<Text, _>(&account_id)
-                .execute(tx.connection())?;
+        .write(move |transaction| {
+            diesel::insert_into(accounts::table)
+                .values((
+                    accounts::account_id.eq(&account_id),
+                    accounts::domjudge_username.eq("team-1"),
+                    accounts::credential_revision.eq(1),
+                ))
+                .execute(transaction.connection())?;
+            diesel::insert_into(organizations::table)
+                .values((
+                    organizations::organization_id.eq(1),
+                    organizations::name_key.eq("学校"),
+                    organizations::name_zh.eq(""),
+                    organizations::name_en.eq("School"),
+                    organizations::country.eq("CHN"),
+                ))
+                .execute(transaction.connection())?;
+            diesel::insert_into(teams::table)
+                .values((
+                    teams::account_id.eq(&account_id),
+                    teams::organization_id.eq(1),
+                    teams::name_zh.eq("中文队伍"),
+                    teams::name_en.eq("Team"),
+                    teams::category.eq("participant"),
+                ))
+                .execute(transaction.connection())?;
             Ok::<_, diesel::result::Error>(())
         })
         .await

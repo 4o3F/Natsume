@@ -5,7 +5,7 @@ use std::{
 };
 
 use diesel::{
-    Connection as _, QueryableByName, RunQueryDsl as _, SqliteConnection,
+    Connection as _, QueryDsl, QueryableByName, RunQueryDsl as _, SqliteConnection,
     connection::SimpleConnection as _,
     sql_query,
     sql_types::{BigInt, Text},
@@ -20,6 +20,7 @@ use crate::{
         storage::{DocumentStore, StorageError},
     },
     db::{Database, DatabaseConfig, DatabaseError},
+    diesel_schema::print_documents,
 };
 
 #[derive(Debug, Snafu)]
@@ -70,6 +71,7 @@ async fn admission_stores_private_immutable_file_and_metadata_only() -> CheckRes
     assert_eq!(replay, first);
     assert_eq!(fs::metadata(&path)?.ino(), metadata.ino());
     let mut connection = SqliteConnection::establish(f.path.to_str().ok_or(CheckError::Path)?)?;
+    // Inspect SQLite's physical table independently of the generated Diesel schema.
     assert_eq!(
         sql_query(
             "SELECT count(*) AS n FROM pragma_table_info('print_documents') WHERE name = 'pdf'"
@@ -88,7 +90,10 @@ async fn failed_metadata_commit_leaves_reusable_file_without_admitting_request()
     let bytes = pdf(1);
     let hash = hex::encode(Sha256::digest(&bytes));
     let mut connection = SqliteConnection::establish(f.path.to_str().ok_or(CheckError::Path)?)?;
-    connection.batch_execute("CREATE TRIGGER fail_file_admission AFTER INSERT ON print_documents BEGIN SELECT RAISE(ABORT, 'injected'); END;")?;
+    connection.batch_execute(
+        "CREATE TRIGGER fail_file_admission AFTER INSERT ON print_documents \
+         BEGIN SELECT RAISE(ABORT, 'injected'); END;",
+    )?;
     assert_eq!(
         f.print
             .upload(f.source.clone(), id.clone(), bytes.clone())
@@ -227,9 +232,9 @@ async fn durable_file_write_does_not_hold_or_require_sqlite_write_lock() -> Chec
     .map_err(|_| CheckError::Timeout)?;
     assert!(!task.is_finished());
     assert_eq!(
-        sql_query("SELECT count(*) AS n FROM print_documents")
-            .get_result::<Count>(&mut connection)?
-            .n,
+        print_documents::table
+            .count()
+            .get_result::<i64>(&mut connection)?,
         0
     );
     connection.batch_execute("COMMIT;")?;
