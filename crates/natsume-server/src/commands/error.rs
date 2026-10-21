@@ -13,6 +13,8 @@ pub enum CommandError {
     Database,
     #[snafu(display("vault startup failed"))]
     Vault,
+    #[snafu(display("print document storage startup failed"))]
+    PrintStorage,
     #[snafu(display("web assets startup failed"))]
     WebAssets,
     #[snafu(display("TLS startup failed"))]
@@ -38,6 +40,7 @@ impl From<ServerStateError> for CommandError {
         match error {
             ServerStateError::Configuration => Self::Configuration,
             ServerStateError::Vault => Self::Vault,
+            ServerStateError::PrintStorage => Self::PrintStorage,
             ServerStateError::OriginCa => Self::OriginCa,
             ServerStateError::OriginCaTrustRootMismatch => Self::OriginCaTrustRootMismatch,
         }

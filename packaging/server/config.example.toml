@@ -10,6 +10,7 @@ level = "info"
 database = "/var/lib/natsume-server/natsume.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
 organization_logos = "/var/lib/natsume-server/organization-logos"
+print_documents = "/var/lib/natsume-server/print-documents"
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"

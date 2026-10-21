@@ -32,7 +32,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
         ('01900000-0000-7000-8000-000000000002','22222222-2222-5222-8222-222222222222','strong','disabled',1),
         ('01900000-0000-7000-8000-000000000003','33333333-3333-5333-8333-333333333333','strong','revoked',1);"
     ).map_err(|_| PersistenceError::OperationFailed)).await.map_err(|error| format!("seed: {error:?}"))?;
-    let application = router(server_state(fixture.database.clone())?, unused_web_root());
+    let application = router(server_state(&fixture)?, unused_web_root());
     let login = drive(
         &application,
         login_request("list-admin", "device-filter-test-password1!")?,

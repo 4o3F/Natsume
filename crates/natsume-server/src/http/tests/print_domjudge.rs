@@ -16,10 +16,7 @@ use axum::{
     response::{IntoResponse as _, Response},
     serve::Listener as _,
 };
-use diesel::{
-    QueryableByName, RunQueryDsl as _, sql_query,
-    sql_types::{Binary, Text},
-};
+use diesel::{RunQueryDsl as _, sql_query, sql_types::Text};
 use natsume_print_domjudge::{Input, Runtime, config::Config, wire::State};
 use serde_json::{Value, json};
 use tokio::{task::JoinHandle, time::Instant};
@@ -30,18 +27,9 @@ use super::{
     LOGIN_NAME, PASSWORD, PasswordVerificationTestGuard, TestDatabase, drive, header_text,
     login_request, router, seed_operator, server_state, unused_web_root,
 };
-use crate::{
-    db::PersistenceError,
-    tls::{TlsListener, tests::TestIdentity},
-};
+use crate::tls::{TlsListener, tests::TestIdentity};
 
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-#[derive(QueryableByName)]
-struct StoredDocument {
-    #[diesel(sql_type = Binary)]
-    pdf: Vec<u8>,
-}
 
 struct RunningServer(JoinHandle<std::io::Result<()>>);
 
@@ -136,7 +124,7 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         })
         .await
         .map_err(|e| format!("seed: {e:?}"))?;
-    let application = router(server_state(database.database.clone())?, unused_web_root());
+    let application = router(server_state(&database)?, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
@@ -200,18 +188,11 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     );
     assert_eq!(first.team_name, "中文队伍");
     let first_document = first.document.as_ref().ok_or("document")?;
-    let stored_id = input.request_id.clone();
-    let pdf = database
-        .database
-        .read(move |tx| {
-            sql_query("SELECT pdf FROM print_documents WHERE request_id = ?")
-                .bind::<Text, _>(stored_id)
-                .get_result::<StoredDocument>(tx.connection())
-                .map_err(|_| PersistenceError::OperationFailed)
-        })
-        .await
-        .map_err(|e| format!("document: {e:?}"))?
-        .pdf;
+    let pdf = std::fs::read(
+        database
+            .documents_path()
+            .join(format!("{}.pdf", first_document.sha256)),
+    )?;
     assert_eq!(pdf.len() as u64, first_document.bytes);
     let pdf_path = private.path().join("admitted.pdf");
     std::fs::write(&pdf_path, &pdf)?;
@@ -279,7 +260,11 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         false,
     ))
     .await?;
-    let restarted_application = router(server_state(reopened)?, unused_web_root());
+    let restarted_state = Arc::new(crate::server_state::tests::for_test(
+        reopened,
+        database.documents_path(),
+    )?);
+    let restarted_application = router(restarted_state, unused_web_root());
     let (_restarted_server, origin) = listen(restarted_application, &identity).await?;
     config.server_url = origin;
     let after_reopen = run(&config, &unavailable_runtime, &input).await?;

@@ -37,7 +37,7 @@ impl Fixture {
         let database = TestDatabase::new().await?;
         seed_operator(&database.database, LOGIN_NAME, PASSWORD).await?;
         database.database.write(|tx| tx.connection().batch_execute("INSERT INTO accounts VALUES ('account-1','team-1',1); INSERT INTO organizations VALUES (1,'school','','School','CHN'); INSERT INTO teams VALUES ('account-1',1,'队伍','Team','participant');").map_err(|_| PersistenceError::OperationFailed)).await.map_err(|e| format!("roster: {e:?}"))?;
-        let router = router(server_state(database.database.clone())?, unused_web_root());
+        let router = router(server_state(&database)?, unused_web_root());
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')

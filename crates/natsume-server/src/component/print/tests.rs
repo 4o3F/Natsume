@@ -1,3 +1,5 @@
+mod persistence;
+
 use std::sync::{Arc, Condvar, Mutex};
 
 use diesel::connection::SimpleConnection as _;
@@ -30,15 +32,22 @@ impl Fixture {
             tx.connection().batch_execute("INSERT INTO accounts VALUES ('account-1', 'team-1', 1); INSERT INTO organizations VALUES (1, 'school', '', 'School', 'CHN'); INSERT INTO teams VALUES ('account-1', 1, '队伍', 'Team', 'participant'); INSERT INTO seats VALUES ('seat-1', 'A-01'); INSERT INTO account_mappings VALUES ('seat-1', 'account-1');").map_err(|_| PersistenceError::OperationFailed)
         }).await.unwrap_or_else(|e| panic!("roster: {e:?}"));
         let (source, token) = add_source(&database).await;
+        let print =
+            PrintComponent::for_test(database.clone(), path.with_extension("print-documents"))
+                .unwrap_or_else(|error| panic!("print storage: {error}"));
         Self {
             _directory: directory,
             path,
-            print: PrintComponent::new(database.clone()),
+            print,
             database,
             source,
             token,
         }
     }
+    fn documents_path(&self) -> std::path::PathBuf {
+        self.path.with_extension("print-documents")
+    }
+
     async fn register(&self) -> PrintRequest {
         self.print
             .register(self.source.clone(), registration())
@@ -391,7 +400,9 @@ async fn fifo_uses_committed_documents_across_sources_excluding_other_states() {
     let reopened = Database::connect_and_migrate(&DatabaseConfig::new(&f.path, false))
         .await
         .unwrap_or_else(|e| panic!("restart: {e:?}"));
-    let print = PrintComponent::new(reopened);
+    let print = PrintComponent::load(reopened, f.documents_path())
+        .await
+        .unwrap_or_else(|error| panic!("print storage reopen: {error}"));
     assert_eq!(
         print.get(f.source.clone(), first_registered.clone()).await,
         Ok(second)
@@ -482,7 +493,7 @@ async fn revoked_source_is_rechecked_in_each_operation_even_with_stale_identity(
 }
 
 #[tokio::test]
-async fn admission_rolls_back_blob_and_sequence_on_database_failure() {
+async fn admission_keeps_durable_file_but_rolls_back_metadata_and_sequence_on_database_failure() {
     let f = Fixture::new().await;
     let id = f.register().await.request_id;
     f.database.write(|tx| tx.connection().batch_execute("CREATE TRIGGER fail_admission AFTER INSERT ON print_documents BEGIN SELECT RAISE(ABORT, 'injected'); END;").map_err(|_| PersistenceError::OperationFailed)).await.unwrap_or_else(|e| panic!("trigger: {e:?}"));
@@ -527,19 +538,18 @@ async fn cancelled_admission_caller_does_not_cancel_started_atomic_commit() {
     let database = f.database.clone();
     let source = f.source.clone();
     let request_id = id.clone();
+    let bytes = pdf(2);
+    let hash = hex::encode(Sha256::digest(&bytes));
+    f.print
+        .documents
+        .put(&hash, &bytes)
+        .unwrap_or_else(|error| panic!("persist document: {error}"));
+    let length = i64::try_from(bytes.len()).unwrap_or_default();
     let task = tokio::spawn(async move {
         database
             .write(move |tx| {
                 db::authenticate(tx, &source)?;
-                let bytes = pdf(2);
-                let result = db::admit(
-                    tx,
-                    &source.source_id,
-                    &request_id,
-                    &bytes,
-                    2,
-                    &hex::encode(Sha256::digest(&bytes)),
-                )?;
+                let result = db::admit(tx, &source.source_id, &request_id, length, 2, &hash)?;
                 let _ = entered.send(());
                 let guard = worker_gate
                     .0
@@ -585,7 +595,8 @@ async fn concurrent_admissions_allocate_unique_fifo_snapshots() {
     let mut tasks = Vec::new();
     for _ in 0..8 {
         let id = f.register().await.request_id;
-        let print = PrintComponent::new(f.database.clone());
+        let print = PrintComponent::for_test(f.database.clone(), f.documents_path())
+            .unwrap_or_else(|error| panic!("print storage: {error}"));
         let source = f.source.clone();
         tasks.push(tokio::spawn(async move {
             print.upload(source, id, pdf(2)).await

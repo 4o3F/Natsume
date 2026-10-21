@@ -39,7 +39,9 @@ async fn load_state(config: &ServerConfig) -> Result<ServerState, CommandError> 
         .await
         .map_err(|_| CommandError::Database)?;
     tracing::info!("database ready");
-    let state = ServerState::load(database.clone(), config).map_err(CommandError::from)?;
+    let state = ServerState::load(database.clone(), config)
+        .await
+        .map_err(CommandError::from)?;
     configure_runtime(&database, config.domjudge_origin()).await?;
     Ok(state)
 }

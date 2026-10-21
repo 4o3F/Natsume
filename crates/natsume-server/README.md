@@ -57,7 +57,7 @@ The current `axum::serve` entry point does not install a Hyper timer, so the def
 
 ## DOMjudge print admission
 
-The Print component registers source-scoped requests, validates final PDFs, and commits their bytes, page count, FIFO sequence and first admission snapshot atomically in SQLite. This is admission only: no Windows worker, printing attempt or physical completion is implemented. The [Print notes](docs/print-admission.md) describe structural PDF validation, resource limitations and consistent database backups; the [architecture contract](../../docs/architecture.md#2321-i1-受理协议与独立交付) defines fields, transitions and failure semantics.
+The Print component registers source-scoped requests and validates final PDFs. It syncs immutable `<sha256>.pdf` files into `[storage].print_documents` before committing their metadata, FIFO sequence and first admission snapshot in SQLite. No PDF bytes are written in the admission transaction. The `00000000000007_print` migration creates metadata-only document records, and startup verifies every referenced file before serving. This is admission only: no Windows worker, printing attempt or physical completion is implemented. The [Print notes](docs/print-admission.md) describe structural PDF validation, failure recovery and coordinated database/document backups; the [architecture contract](../../docs/architecture.md#2321-i1-受理协议与独立交付) defines fields, transitions and failure semantics.
 
 Administrators create and list dedicated sources at `/api/v2/print/sources` and revoke one at `/api/v2/print/sources/{source_id}`. Creation returns a token only once; store it in the restricted file on the DOMjudge host, never in the package, command arguments or logs. There is no Print management page yet. The independently packaged [DOMjudge wrapper](../../packaging/print-domjudge/README.md) uses that source token over strictly verified HTTPS and maps `[username]` exactly to the existing roster account. It needs no shared directory or Server package on the DOMjudge host.
 
@@ -85,6 +85,7 @@ Configure the deployment-owned source directory in the same `config.toml`:
 [storage]
 # Alongside database and root_key:
 organization_logos = "/var/lib/natsume-server/organization-logos"
+print_documents = "/var/lib/natsume-server/print-documents"
 ```
 
 This absolute path is required; a missing directory is allowed and means missing logos. The Server Deb creates the default directory shown above during installation and reinstallation, owned by `root:natsume-server` with mode `0750`, preserving existing images. Copy images as `root:natsume-server` with mode `0640`. A custom directory is deployment-owned and must grant the service user read/search access. Name each source file after the complete Chinese or English school name. There is no per-row filename or alias. Only direct children with PNG/JPEG/WebP/SVG extensions participate; actual content chooses the decoder. Symlinks are rejected. Source files stay unchanged. Matching, decoding and SVG rendering belong to the internal Contest component; Preparation Center exposes the school-logo checks.

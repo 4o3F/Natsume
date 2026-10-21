@@ -1,5 +1,5 @@
 use diesel::{
-    OptionalExtension as _, QueryableByName, RunQueryDsl as _, sql_query,
+    OptionalExtension as _, QueryableByName, RunQueryDsl as _, SqliteConnection, sql_query,
     sql_types::{BigInt, Binary, Nullable, Text},
 };
 
@@ -240,11 +240,31 @@ pub(super) fn fail(
     request(tx, source, id)
 }
 
+#[derive(QueryableByName)]
+pub(super) struct StoredDocument {
+    #[diesel(sql_type = BigInt)]
+    pub sequence: i64,
+    #[diesel(sql_type = Text)]
+    pub hash: String,
+    #[diesel(sql_type = BigInt)]
+    pub bytes: i64,
+}
+
+pub(super) fn next_document(
+    connection: &mut SqliteConnection,
+    after: i64,
+) -> Result<Option<StoredDocument>, PrintError> {
+    Ok(sql_query("SELECT ready_sequence AS sequence, sha256 AS hash, bytes FROM print_documents WHERE ready_sequence > ? ORDER BY ready_sequence LIMIT 1")
+        .bind::<BigInt, _>(after)
+        .get_result(connection)
+        .optional()?)
+}
+
 pub(super) fn admit(
     tx: &mut Transaction<'_>,
     source: &str,
     id: &str,
-    pdf: &[u8],
+    bytes: i64,
     pages: i64,
     hash: &str,
 ) -> Result<PrintRequest, PrintError> {
@@ -255,18 +275,8 @@ pub(super) fn admit(
     }
     let current = request(tx, source, id)?;
     if let Some(doc) = &current.document {
-        // Compare exact bytes as well as the digest: only identical content is a replay.
-        #[derive(QueryableByName)]
-        struct StoredPdf {
-            #[diesel(sql_type = Binary)]
-            pdf: Vec<u8>,
-        }
-        let stored =
-            sql_query("SELECT pdf FROM print_documents WHERE source_id = ? AND request_id = ?")
-                .bind::<Text, _>(source)
-                .bind::<Text, _>(id)
-                .get_result::<StoredPdf>(tx.connection())?;
-        return if doc.sha256 == hash && stored.pdf == pdf {
+        // Exact file comparison has already completed outside the write transaction.
+        return if doc.sha256 == hash && doc.bytes == bytes {
             Ok(current)
         } else {
             Err(PrintError::Conflict)
@@ -285,8 +295,8 @@ pub(super) fn admit(
         return Err(PrintError::Conflict);
     }
     // All I1 documents are unclaimed. Aggregate and insertion share BEGIN IMMEDIATE.
-    sql_query("INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) SELECT ?, ?, ?, ?, ?, ?, count(*), coalesce(sum(pages), 0) FROM print_documents")
-        .bind::<Text, _>(source).bind::<Text, _>(id).bind::<Binary, _>(pdf).bind::<Text, _>(hash)
-        .bind::<BigInt, _>(i64::try_from(pdf.len()).map_err(|_| PrintError::TooLarge)?).bind::<BigInt, _>(pages).execute(tx.connection())?;
+    sql_query("INSERT INTO print_documents (source_id, request_id, sha256, bytes, pages, ahead_tasks, ahead_pages) SELECT ?, ?, ?, ?, ?, count(*), coalesce(sum(pages), 0) FROM print_documents")
+        .bind::<Text, _>(source).bind::<Text, _>(id).bind::<Text, _>(hash)
+        .bind::<BigInt, _>(bytes).bind::<BigInt, _>(pages).execute(tx.connection())?;
     request(tx, source, id)
 }

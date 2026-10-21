@@ -114,8 +114,11 @@ async fn coordinator_survives_its_composition_and_leases_do_not_keep_it_alive() 
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
     // The fixture keeps database files alive, independently of this composition.
     let composition = Arc::new(
-        server_state::tests::for_test(fixture.database.clone())
-            .unwrap_or_else(|error| panic!("independent composition failed: {error}")),
+        server_state::tests::for_test(
+            fixture.database.clone(),
+            fixture.path.with_extension("print-documents"),
+        )
+        .unwrap_or_else(|error| panic!("independent composition failed: {error}")),
     );
     let composition_lifetime = Arc::downgrade(&composition);
     let control = Arc::clone(composition.device_control());
@@ -1764,7 +1767,7 @@ impl Fixture {
             .await
             .unwrap_or_else(|error| panic!("Runtime Config fixture failed: {error:?}"));
         let state = Arc::new(
-            server_state::tests::for_test(database.clone())
+            server_state::tests::for_test(database.clone(), path.with_extension("print-documents"))
                 .unwrap_or_else(|error| panic!("ServerState fixture failed: {error}")),
         );
         Self {
@@ -1834,6 +1837,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
+        let _documents_result = fs::remove_dir_all(self.path.with_extension("print-documents"));
         for path in [
             self.path.clone(),
             PathBuf::from(format!("{}-wal", self.path.display())),

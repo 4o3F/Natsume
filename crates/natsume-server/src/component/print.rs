@@ -1,20 +1,26 @@
 //! Durable `DOMjudge` admission, separate from Device Control and physical printing.
 mod db;
 mod pdf;
+mod storage;
 #[cfg(test)]
 pub(crate) mod tests;
 
+use std::path::PathBuf;
+
 use sha2::{Digest as _, Sha256};
+use snafu::Snafu;
 use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 
 use super::operator::OperatorIdentity;
 use crate::db::{Database, PersistenceError, TransactionError};
+use storage::{DocumentStore, StorageError};
 
 pub(crate) const DOCUMENT_LIMIT: usize = 8 * 1024 * 1024;
 
 pub(crate) struct PrintComponent {
     database: Database,
+    documents: DocumentStore,
 }
 
 /// Only produced after verifying a dedicated source credential, never an Operator cookie.
@@ -117,15 +123,34 @@ pub(crate) struct PrintRequest {
     pub generation_failure: Option<GenerationFailure>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Snafu)]
 pub(crate) enum PrintError {
+    #[snafu(display("invalid print request"))]
     Invalid,
+    #[snafu(display("print source authentication failed"))]
     Authentication,
+    #[snafu(display("print source management requires administrator permission"))]
     Authorization,
+    #[snafu(display("print request or source was not found"))]
     NotFound,
+    #[snafu(display("print request conflicts with persisted state"))]
     Conflict,
+    #[snafu(display("print document exceeds the size limit"))]
     TooLarge,
+    #[snafu(display("print persistence failed"))]
     Persistence,
+}
+
+impl From<StorageError> for PrintError {
+    fn from(error: StorageError) -> Self {
+        match error {
+            StorageError::Io { source } => {
+                tracing::error!(kind = ?source.kind(), "print document filesystem operation failed");
+            }
+            other => tracing::error!(error = %other, "print document storage failed"),
+        }
+        Self::Persistence
+    }
 }
 
 impl From<PersistenceError> for PrintError {
@@ -151,8 +176,37 @@ pub(crate) fn canonical_id(value: &str) -> Result<(), PrintError> {
 }
 
 impl PrintComponent {
-    pub(crate) const fn new(database: Database) -> Self {
-        Self { database }
+    #[cfg(test)]
+    pub(crate) fn for_test(database: Database, root: PathBuf) -> Result<Self, PrintError> {
+        let documents = DocumentStore::open(root)?;
+        Ok(Self {
+            database,
+            documents,
+        })
+    }
+
+    pub(crate) async fn load(database: Database, root: PathBuf) -> Result<Self, PrintError> {
+        let documents = tokio::task::spawn_blocking(move || DocumentStore::open(root))
+            .await
+            .map_err(|_| PrintError::Persistence)??;
+        let component = Self {
+            database,
+            documents,
+        };
+        let mut sequence = 0;
+        while let Some(document) = component
+            .database
+            .read(move |tx| db::next_document(tx.connection(), sequence))
+            .await
+            .map_err(TransactionError::into_error)?
+        {
+            sequence = document.sequence;
+            let store = component.documents.clone();
+            tokio::task::spawn_blocking(move || store.verify(&document.hash, document.bytes))
+                .await
+                .map_err(|_| PrintError::Persistence)??;
+        }
+        Ok(component)
     }
 
     pub(crate) async fn create_source(
@@ -252,13 +306,15 @@ impl PrintComponent {
         {
             return Err(PrintError::Invalid);
         }
-        self.database
+        let result = self
+            .database
             .write(move |tx| {
                 db::authenticate(tx, &source)?;
                 db::register(tx, &source.source_id, &request)
             })
             .await
-            .map_err(TransactionError::into_error)
+            .map_err(TransactionError::into_error)?;
+        self.verify_ready(result).await
     }
 
     pub(crate) async fn get(
@@ -267,13 +323,27 @@ impl PrintComponent {
         request_id: String,
     ) -> Result<PrintRequest, PrintError> {
         canonical_id(&request_id)?;
-        self.database
+        let result = self
+            .database
             .read(move |tx| {
                 db::authenticate(tx, &source)?;
                 db::request(tx, &source.source_id, &request_id)
             })
             .await
-            .map_err(TransactionError::into_error)
+            .map_err(TransactionError::into_error)?;
+        self.verify_ready(result).await
+    }
+
+    async fn verify_ready(&self, request: PrintRequest) -> Result<PrintRequest, PrintError> {
+        if let Some(document) = &request.document {
+            let store = self.documents.clone();
+            let hash = document.sha256.clone();
+            let bytes = document.bytes;
+            tokio::task::spawn_blocking(move || store.verify(&hash, bytes))
+                .await
+                .map_err(|_| PrintError::Persistence)??;
+        }
+        Ok(request)
     }
 
     pub(crate) async fn generation_failure(
@@ -305,18 +375,33 @@ impl PrintComponent {
         if bytes.len() > DOCUMENT_LIMIT {
             return Err(PrintError::TooLarge);
         }
-        // Parse off the async executor, before taking the SQLite write lock.
-        let (bytes, pages, hash) = tokio::task::spawn_blocking(move || {
+        // Reject invalid ownership or state before writing an unreferenced file.
+        let current = self.get(source.clone(), request_id.clone()).await?;
+        if current.state == PrintState::GenerationFailed {
+            return Err(PrintError::Conflict);
+        }
+        // Parsing and durable file writes happen before taking the SQLite write lock.
+        let store = self.documents.clone();
+        let length = i64::try_from(bytes.len()).map_err(|_| PrintError::TooLarge)?;
+        let (pages, hash) = tokio::task::spawn_blocking(move || {
             let pages = pdf::validate(&bytes)?;
             let hash = hex::encode(Sha256::digest(&bytes));
-            Ok::<_, PrintError>((bytes, pages, hash))
+            if current
+                .document
+                .as_ref()
+                .is_some_and(|doc| doc.sha256 != hash || doc.bytes != length)
+            {
+                return Err(PrintError::Conflict);
+            }
+            store.put(&hash, &bytes)?;
+            Ok::<_, PrintError>((pages, hash))
         })
         .await
         .map_err(|_| PrintError::Persistence)??;
         self.database
             .write(move |tx| {
                 db::authenticate(tx, &source)?;
-                db::admit(tx, &source.source_id, &request_id, &bytes, pages, &hash)
+                db::admit(tx, &source.source_id, &request_id, length, pages, &hash)
             })
             .await
             .map_err(TransactionError::into_error)

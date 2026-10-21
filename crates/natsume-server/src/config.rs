@@ -18,6 +18,7 @@ pub struct ServerConfig {
     log_level: LogLevel,
     database_path: PathBuf,
     organization_logos_path: PathBuf,
+    print_documents_path: PathBuf,
     vault_master_key_path: PathBuf,
     tls_certificate_path: PathBuf,
     tls_private_key_path: PathBuf,
@@ -65,6 +66,7 @@ impl ServerConfig {
             log_level: raw.log.level,
             database_path: raw.storage.database,
             organization_logos_path: raw.storage.organization_logos,
+            print_documents_path: raw.storage.print_documents,
             vault_master_key_path: raw.storage.root_key,
             tls_certificate_path: raw.tls.certificate,
             tls_private_key_path: raw.tls.private_key,
@@ -81,6 +83,10 @@ impl ServerConfig {
         require_absolute(
             &self.organization_logos_path,
             ConfigError::RelativeOrganizationLogosPath,
+        )?;
+        require_absolute(
+            &self.print_documents_path,
+            ConfigError::RelativePrintDocumentsPath,
         )?;
         require_absolute(
             &self.vault_master_key_path,
@@ -115,6 +121,10 @@ impl ServerConfig {
 
     pub(crate) fn organization_logos_path(&self) -> &Path {
         &self.organization_logos_path
+    }
+
+    pub(crate) fn print_documents_path(&self) -> &Path {
+        &self.print_documents_path
     }
 
     pub(crate) fn database_path(&self) -> &Path {
@@ -240,6 +250,7 @@ struct RawStorageConfig {
     database: PathBuf,
     root_key: PathBuf,
     organization_logos: PathBuf,
+    print_documents: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -395,6 +406,8 @@ pub enum ConfigError {
     RelativeDatabasePath,
     #[snafu(display("storage.organization_logos must be an absolute path"))]
     RelativeOrganizationLogosPath,
+    #[snafu(display("storage.print_documents must be an absolute path"))]
+    RelativePrintDocumentsPath,
     #[snafu(display("storage.root_key must be an absolute path"))]
     RelativeVaultMasterKeyPath,
     #[snafu(display("tls.certificate must be an absolute path"))]
@@ -459,6 +472,7 @@ https = "127.0.0.1:8443"
 database = "/var/lib/natsume-server/natsume.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
 organization_logos = "/var/lib/natsume-server/organization-logos"
+print_documents = "/var/lib/natsume-server/print-documents"
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
@@ -825,6 +839,37 @@ domjudge_origin = "https://judge.contest.example"
             relative.path(),
             &ConfigError::RelativeOrganizationLogosPath,
             &["relative-logo-canary"],
+        )
+    }
+
+    #[test]
+    fn print_documents_requires_an_explicit_absolute_path() -> Result<(), TestFailure> {
+        let fixture = ConfigFixture::new(VALID_CONFIG)?;
+        let config = ServerConfig::load_from(fixture.path())
+            .map_err(|_| TestFailure::ExpectedConfigurationFailure)?;
+        assert_eq!(
+            config.print_documents_path(),
+            std::path::Path::new("/var/lib/natsume-server/print-documents")
+        );
+        let relative = ConfigFixture::new(&VALID_CONFIG.replace(
+            "/var/lib/natsume-server/print-documents",
+            "relative-print-canary",
+        ))?;
+        assert_config_error(
+            relative.path(),
+            &ConfigError::RelativePrintDocumentsPath,
+            &["relative-print-canary"],
+        )?;
+        let missing = ConfigFixture::new(&VALID_CONFIG.replace(
+            "print_documents = \"/var/lib/natsume-server/print-documents\"",
+            "",
+        ))?;
+        assert_config_error(
+            missing.path(),
+            &ConfigError::MissingField {
+                field: "print_documents".to_owned(),
+            },
+            &[],
         )
     }
 

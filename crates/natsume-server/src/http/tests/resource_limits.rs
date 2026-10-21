@@ -43,7 +43,7 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_cancel
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, LOGIN_NAME, PASSWORD).await?;
-    let state = server_state(fixture.database.clone())?;
+    let state = server_state(&fixture)?;
     let application = router(state.clone(), unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?

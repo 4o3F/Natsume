@@ -651,9 +651,10 @@ fn snapshot_existing_tables(
 }
 
 #[test]
-fn print_documents_are_atomic_owned_blobs_without_roster_cascades() -> Result<(), TestError> {
+fn print_document_metadata_preserves_ownership_without_blob_or_roster_cascades()
+-> Result<(), TestError> {
     let mut connection = database()?;
-    connection.batch_execute("INSERT INTO print_sources VALUES ('source1', 'judge', x'01', 0); INSERT INTO accounts VALUES ('a1', 'team-1', 1); INSERT INTO print_requests VALUES ('source1', 'r1', 'a1', 'team-1', 'Team', NULL, 'main.cpp', 'hash', NULL); INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','r1',x'0102','hash',2,1,0,0); DELETE FROM accounts;")?;
+    connection.batch_execute("INSERT INTO print_sources VALUES ('source1', 'judge', x'01', 0); INSERT INTO accounts VALUES ('a1', 'team-1', 1); INSERT INTO print_requests VALUES ('source1', 'r1', 'a1', 'team-1', 'Team', NULL, 'main.cpp', 'hash', NULL); INSERT INTO print_documents (source_id, request_id, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','r1','hash',2,1,0,0); DELETE FROM accounts;")?;
     assert_eq!(
         sql::<BigInt>(
             "SELECT count(*) FROM print_requests WHERE account_id = 'a1' AND seat_label IS NULL"
@@ -663,14 +664,14 @@ fn print_documents_are_atomic_owned_blobs_without_roster_cascades() -> Result<()
     );
     assert_eq!(
         sql::<BigInt>(
-            "SELECT count(*) FROM print_documents WHERE pdf = x'0102' AND ready_sequence = 1"
+            "SELECT count(*) FROM print_documents WHERE sha256 = 'hash' AND bytes = 2 AND ready_sequence = 1"
         )
         .get_result::<i64>(&mut connection)?,
         1
     );
     rejects(
         &mut connection,
-        "INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','missing',x'01','hash',1,1,0,0)",
+        "INSERT INTO print_documents (source_id, request_id, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','missing','hash',1,1,0,0)",
         DatabaseErrorKind::ForeignKeyViolation,
     );
     rejects(
@@ -690,10 +691,17 @@ fn print_documents_are_atomic_owned_blobs_without_roster_cascades() -> Result<()
     );
     rejects(
         &mut connection,
-        "UPDATE print_documents SET pdf = NULL",
+        "UPDATE print_documents SET sha256 = NULL",
         DatabaseErrorKind::NotNullViolation,
     );
-    connection.batch_execute("DELETE FROM print_documents; INSERT INTO print_documents (source_id, request_id, pdf, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','r1',x'03','hash',1,1,0,0)")?;
+    assert_eq!(
+        sql::<BigInt>(
+            "SELECT count(*) FROM pragma_table_info('print_documents') WHERE name = 'pdf'"
+        )
+        .get_result::<i64>(&mut connection)?,
+        0
+    );
+    connection.batch_execute("DELETE FROM print_documents; INSERT INTO print_documents (source_id, request_id, sha256, bytes, pages, ahead_tasks, ahead_pages) VALUES ('source1','r1','hash',1,1,0,0)")?;
     assert_eq!(
         sql::<BigInt>("SELECT ready_sequence FROM print_documents")
             .get_result::<i64>(&mut connection)?,

@@ -156,7 +156,6 @@ diesel::table! {
         ready_sequence -> BigInt,
         source_id -> Text,
         request_id -> Text,
-        pdf -> Binary,
         sha256 -> Text,
         bytes -> BigInt,
         pages -> BigInt,

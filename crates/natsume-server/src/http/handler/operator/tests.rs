@@ -29,7 +29,7 @@ impl Fixture {
     async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let database = TestDatabase::new().await?;
         let admin_id = seed_operator(&database.database, "admin", PASSWORD).await?;
-        let state = support::server_state(database.database.clone())?;
+        let state = support::server_state(&database)?;
         let app = http::router(state.clone(), support::unused_web_root());
         let admin_cookie = login(&app, "admin", PASSWORD).await?;
         Ok(Self {
@@ -147,7 +147,7 @@ fn assert_error(response: &Captured, status: StatusCode, code: &str) -> TestResu
 async fn namespace_cache_policy_covers_outer_rejections_and_unmounted_paths() -> TestResult {
     let database = TestDatabase::new().await?;
     let app = http::router(
-        support::server_state(database.database.clone())?,
+        support::server_state(&database)?,
         support::unused_web_root(),
     );
     for (method, path, status) in [

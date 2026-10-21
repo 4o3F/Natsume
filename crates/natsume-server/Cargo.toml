@@ -45,6 +45,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 sha2.workspace = true
 snafu.workspace = true
 subtle.workspace = true
+tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
@@ -66,7 +67,6 @@ zip.workspace = true
 natsume-print-domjudge = { path = "../natsume-print-domjudge" }
 tokio-util.workspace = true
 serde-saphyr = { workspace = true, features = ["deserialize"] }
-tempfile.workspace = true
 ed25519-dalek.workspace = true
 futures-util.workspace = true
 regex.workspace = true

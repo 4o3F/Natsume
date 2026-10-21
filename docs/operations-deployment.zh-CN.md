@@ -434,6 +434,7 @@ level = "info"
 database = "/var/lib/natsume-server/natsume.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
 organization_logos = "/var/lib/natsume-server/organization-logos"
+print_documents = "/var/lib/natsume-server/print-documents"
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"
@@ -570,6 +571,8 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
 当前版本提供 Logo 目录、网页观测和完整 DOMjudge ZIP。配套 Client 在 waiting 页面显示队伍／学校／Logo，断网时保留上次资料并显示离线标识。
 
 在同一份 Server config.toml 的 `[storage]` 中设置 `organization_logos`（示例已列出）。Server Deb 在安装／重装时自动创建默认目录 `/var/lib/natsume-server/organization-logos`，归属 `root:natsume-server`、权限 `0750`，保留已有图片。自定义路径由部署方创建并授予服务用户读取／遍历权限。首次配置路径需要重启 Server；以后补图或替换源文件无需重启或重新导入名单。
+
+`[storage].print_documents` 是必填绝对路径。Server Deb 创建默认目录 `/var/lib/natsume-server/print-documents`，归属 `natsume-server:natsume-server`、权限 `0700`，PDF 文件权限为 `0600`。自定义路径需要保护父目录、授予服务用户读写与遍历权限，并按需调整 systemd 的 `ReadWritePaths`；Server 仅在父目录已存在时创建末级目录，拒绝末级符号链接、不安全 owner 或组／其他用户可写目录。该目录与数据库共同构成持久状态，不可在 Server 运行期间移动、替换或清理。
 
 **执行位置：Server 管理员终端。**复制已按完整学校中文名或英文名命名的源图，设置为 `root:natsume-server`、`0640`；下面的 `./organization-logos/` 是部署方已准备好的本地目录：
 
@@ -937,7 +940,7 @@ Web 检查各设备实际状态和报告时间。不要公开原始数据库、c
 
 ### 8.2 Server 冷备份
 
-维护窗口停止唯一 Server 进程，确认没有手动运行的 serve 后，获取 SQLite 一致副本，再与同一时间点的 key/config 一起备份。目标目录不得放在被归档的状态目录内：
+维护窗口停止唯一 Server 进程，确认没有手动运行的 serve 后，获取 SQLite 一致副本，再与同一时间点的 PDF 目录及 key/config 一起备份。整个备份期间保持停服。目标目录不得放在被归档的状态目录内；下例使用默认 PDF 目录，自定义配置必须将 `NATSUME_PRINT_DOCUMENTS_DIR` 改为 `[storage].print_documents` 的实际值：
 
 ~~~bash
 sudo systemctl stop natsume-server.service
@@ -949,6 +952,7 @@ systemctl is-active natsume-server.service
 ~~~bash
 NATSUME_BACKUP_DIR="/var/backups/natsume/$(date -u +%Y%m%dT%H%M%SZ)"
 NATSUME_PKI_DIR="$HOME/natsume-pki-2026"
+NATSUME_PRINT_DOCUMENTS_DIR="/var/lib/natsume-server/print-documents"
 sudo install -d -o root -g natsume-server -m 0710 /var/backups/natsume
 sudo install -d -o natsume-server -g natsume-server -m 0700 "$NATSUME_BACKUP_DIR"
 sudo -u natsume-server sqlite3 /var/lib/natsume-server/natsume.db \
@@ -958,6 +962,9 @@ sudo chmod 0600 "$NATSUME_BACKUP_DIR/natsume.db"
 sudo install -o root -g root -m 0600 /dev/null "$NATSUME_BACKUP_DIR/config-and-keys.tar"
 sudo tar --numeric-owner --acls --xattrs -cpf "$NATSUME_BACKUP_DIR/config-and-keys.tar" -C / \
   etc/natsume-server etc/natsume/trust var/lib/natsume-server/keys
+sudo install -o root -g root -m 0600 /dev/null "$NATSUME_BACKUP_DIR/print-documents.tar"
+sudo tar --numeric-owner --acls --xattrs -cpf "$NATSUME_BACKUP_DIR/print-documents.tar" \
+  -C "$NATSUME_PRINT_DOCUMENTS_DIR" .
 sudo install -o root -g root -m 0600 /dev/null "$NATSUME_BACKUP_DIR/pki.tar"
 sudo tar -cpf "$NATSUME_BACKUP_DIR/pki.tar" -C "$NATSUME_PKI_DIR" .
 sudo sqlite3 "$NATSUME_BACKUP_DIR/natsume.db" 'PRAGMA integrity_check;'
@@ -965,7 +972,7 @@ sudo tar -tf "$NATSUME_BACKUP_DIR/config-and-keys.tar"
 sudo systemctl start natsume-server.service
 ~~~
 
-完整性应为 ok。源数据库由服务用户打开，避免产生 root 所有的运行状态文件；备份完成后目录和文件归 root 管理。归档包含 DB 一致副本、vault root、Origin CA、TLS 和完整公共配置，缺一不可。使用 SQLite .backup 避免仅复制主库漏掉 WAL，依据 [SQLite Online Backup](https://www.sqlite.org/backup.html)。
+完整性应为 ok。源数据库由服务用户打开，避免产生 root 所有的运行状态文件；备份完成后目录和文件归 root 管理。归档包含 DB 一致副本、PDF 目录、vault root、Origin CA、TLS 和完整公共配置，缺一不可。PDF 已不保存在 SQLite 内，只备份数据库无法恢复打印文档。使用 SQLite .backup 避免仅复制主库漏掉 WAL，依据 [SQLite Online Backup](https://www.sqlite.org/backup.html)。
 
 本流程的 CA 在 Server 本机生成，因此 pki.tar 另行保存管理员 PKI 目录中的加密私钥原件、证书和签发记录，供后续续签使用。备份期间暂停 PKI 签发操作；私钥口令仍由密码管理器保管。
 
@@ -977,9 +984,9 @@ sudo systemctl start natsume-server.service
 
 1. 安装相同版本 Deb，停服并保存故障现场快照。
 2. 将 config-and-keys.tar 解包到受限 staging 目录，核对路径和材料。
-3. 用备份 DB 和完整旧 key/config 替换目标，不能混合新旧数据库、WAL、SHM；保留故障副本后移走旧 DB 配套文件。
-4. 换主机时按目标服务 UID/GID 重设状态文件 owner，keys 0700、秘密文件 0600、公共配置和 CA root:root 0644。
-5. 检查数据库完整性和证书匹配，启动并按 4.5、7.6 节验收已注册设备重连。**不要运行 bootstrap。**
+3. 用同一备份集的 DB、print-documents.tar 和完整旧 key/config 替换目标；PDF 归档恢复到配置的 `storage.print_documents` 目录，不能与其他时间点的文件混用。不能混合新旧数据库、WAL、SHM；保留故障副本后移走旧 DB 配套文件。
+4. 换主机时按目标服务 UID/GID 重设状态文件 owner，keys 和 PDF 目录 0700、秘密文件和 PDF 0600、公共配置和 CA root:root 0644。
+5. 检查数据库完整性和证书匹配。Server 启动会逐份核对已入队 PDF 的长度和摘要，缺失或损坏时拒绝启动；核对通过后，按 4.5、7.6 节验收已注册设备重连。**不要运行 bootstrap。**
 
 pki.tar 恢复到 Server 管理员的 PKI 目录，保持目录 0700、私钥文件 0600 和管理员归属，供后续签发使用；它不解包到 natsume-server 服务私有目录。
 

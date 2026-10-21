@@ -49,7 +49,7 @@ impl ServerState {
     ///
     /// Any configuration, Vault, site, or Origin CA failure aborts startup before a
     /// partially constructed state becomes visible to transports.
-    pub(crate) fn load(
+    pub(crate) async fn load(
         database: Database,
         config: &ServerConfig,
     ) -> Result<Self, ServerStateError> {
@@ -70,8 +70,15 @@ impl ServerState {
         )
         .map_err(map_gateway_load_error)?;
 
+        let print = PrintComponent::load(
+            database.clone(),
+            config.print_documents_path().to_path_buf(),
+        )
+        .await
+        .map_err(|_| ServerStateError::PrintStorage)?;
         Ok(Self::from_parts(
             database,
+            print,
             vault,
             gateway,
             config.organization_logos_path().to_path_buf(),
@@ -80,6 +87,7 @@ impl ServerState {
 
     fn from_parts(
         database: Database,
+        print: PrintComponent,
         vault: VaultSession,
         gateway: GatewayComponent,
         logos: std::path::PathBuf,
@@ -103,7 +111,7 @@ impl ServerState {
         ));
         Self {
             operator: OperatorComponent::new(database.clone()),
-            print: PrintComponent::new(database.clone()),
+            print,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone()),
             import: ImportComponent::new(database, vault),
@@ -174,6 +182,8 @@ pub(crate) enum ServerStateError {
     Configuration,
     #[snafu(display("vault startup failed"))]
     Vault,
+    #[snafu(display("print document storage initialization failed"))]
+    PrintStorage,
     #[snafu(display("Origin CA startup failed"))]
     OriginCa,
     #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
@@ -189,15 +199,20 @@ pub(crate) mod tests {
     use super::{ServerState, ServerStateError, map_gateway_load_error};
     use crate::{component::gateway::GatewayComponent, db::Database, vault};
 
-    pub(crate) fn for_test(database: Database) -> Result<ServerState, ServerStateError> {
+    pub(crate) fn for_test(
+        database: Database,
+        documents: std::path::PathBuf,
+    ) -> Result<ServerState, ServerStateError> {
         for_test_with_logos(
             database,
+            documents,
             std::path::PathBuf::from("/nonexistent/natsume-test-logos"),
         )
     }
 
     pub(crate) fn for_test_with_logos(
         database: Database,
+        documents: std::path::PathBuf,
         logos: std::path::PathBuf,
     ) -> Result<ServerState, ServerStateError> {
         let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
@@ -210,6 +225,10 @@ pub(crate) mod tests {
         fs::remove_dir_all(root).map_err(|_| ServerStateError::Vault)?;
         let gateway =
             GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
-        Ok(ServerState::from_parts(database, vault, gateway, logos))
+        let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
+            .map_err(|_| ServerStateError::PrintStorage)?;
+        Ok(ServerState::from_parts(
+            database, print, vault, gateway, logos,
+        ))
     }
 }

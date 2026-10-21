@@ -24,7 +24,6 @@ CREATE TABLE print_documents (
     ready_sequence INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
     source_id TEXT NOT NULL,
     request_id TEXT NOT NULL,
-    pdf BLOB NOT NULL,
     sha256 TEXT NOT NULL,
     bytes INTEGER NOT NULL,
     pages INTEGER NOT NULL,
