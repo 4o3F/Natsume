@@ -2,7 +2,7 @@
 
 > 状态：`ACCEPTED TARGET` 基线日期：2026-08-28 Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面 平台扩展修订：2026-10-19；统一包布局、持久打印队列与离线队伍拍照，见第 17、23 节 适用范围：Natsume V2 及后续单赛事平台目标；目标不代表已交付 实施策略：既有工位控制基线采用预发布 flag day；平台扩展按独立工作包增量实施，不自动改变已部署契约
 
-本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。镜像接入、配置输入和验收说明统一维护在 [packaging/image](../packaging/image/README.md)。
+本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。Client 必需的运行环境见 [Client 运行环境要求](client-environment.zh-CN.md)；镜像实现、发行版适配和目标机器验收由镜像项目负责。
 
 本文描述的是目标状态，不是完成声明。当前代码与本文冲突时，冲突属于待实施债务，不能反向限制目标架构。
 
@@ -16,12 +16,12 @@
 | Device Control wire 字段、field number、presence 与 descriptor | `crates/natsume-workstation-protocol/proto/*.proto` |
 | HTTP JSON 的精确字段与表示 | Server HTTP DTO、Serde 实现与 Specta 生成的 TypeScript |
 | 本地 IPC 的精确接口 | `crates/natsume-workstation-ipc` 与 D-Bus introspection |
-| SQLite 物理表、列、索引与约束 | 完成 flag day 后的 `crates/natsume-server/migrations/00000000000001_initial/up.sql` |
+| SQLite 物理表、列、索引与约束 | `crates/natsume-server/migrations/` 中按顺序应用的完整 migration 序列 |
 | Diesel 生成类型 | `crates/natsume-server/diesel/schema.rs`，必须由 migration 重建 |
 | Device Control `error_code` 字段与开放token语法 | `crates/natsume-workstation-protocol/proto/*.proto` 与 `crates/natsume-workstation-protocol` |
 | HTTP公开错误码与status映射 | Server HTTP adapter 与实际 HTTP 测试 |
 | 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
-| 构建、依赖和发布版本 | Cargo、pnpm、打包配置与 lockfile |
+| 构建、依赖和发布版本 | Cargo、pnpm、Deno 配置、工具版本清单、打包配置与 lockfile |
 
 表中源码路径指向现有布局；第 17 节定义包含后续工作包的完整目标路径。当前 workspace 索引见 [crates/README.md](../crates/README.md)。XLSX 解析、输入类型和模板归 Server Import 内部，学校 Logo 文件与图像处理归 Server Contest 内部；打印、拍照及共享赛事领域包仍须按各自工作包实施。
 
@@ -34,7 +34,7 @@
 5. 既有 V2 预发布 flag day 的字段删除、编号压紧规则只适用于该基线，不构成后续平台扩展修改已部署协议或丢弃数据的授权。
 6. 历史 flag day 的中间提交不得进入部署包或形成双协议、双 authority、双 schema fallback；后续平台工作包须独立可审阅、可验证，保留现有运行契约。
 
-HTTP DTO 使用 `#[derive(specta::Type)]` 自动收集并导出 TypeScript，不集中维护类型注册表，也不维护平行的 OpenAPI 文档。导出入口为 `export-typescript`，`just api` 生成并格式化 Web 类型，CI 检查重新生成的差异。HTTP 方法、路径、认证、状态码和业务校验由实际 adapter 与 HTTP 测试约束；Web 使用明确的具名 HTTP 调用函数，生成类型不承担路由生成或运行时校验。Specta 自动收集需要宏生成的 `unsafe` 初始化函数，Server 仅允许这项生成代码例外，手写 `unsafe` 仍禁止，其他 crate 的限制不变。
+HTTP DTO 使用 `#[derive(specta::Type)]` 自动收集并导出 TypeScript，不集中维护类型注册表，也不维护平行的 OpenAPI 文档。导出入口为 `export-typescript`，`deno task api` 生成并格式化 Web 类型，CI 检查重新生成的差异。HTTP 方法、路径、认证、状态码和业务校验由实际 adapter 与 HTTP 测试约束；Web 使用明确的具名 HTTP 调用函数，生成类型不承担路由生成或运行时校验。Specta 自动收集需要宏生成的 `unsafe` 初始化函数，Server 仅允许这项生成代码例外，手写 `unsafe` 仍禁止，其他 crate 的限制不变。
 
 ## 2. 系统目标与非目标
 
@@ -620,11 +620,11 @@ Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm
 
 整个准备由固定 root unit 在既有 40 秒内执行并记录阶段，退出或未知结果后重读真实会话。GDM 继续拥有 worker、display 和桌面；缺失注册回执不授权终止不明 greeter，也不能凭 SessionManager Running 提前开始登录。失败保留明确阶段和错误，有条件时返回 waiting；调用者退出不代表已开始的 GDM 登录被取消。
 
-系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属和管理员会话影响见[镜像实施要求 IMG-02](../packaging/image/integration.md)。这不改变普通前台切换或 Home 维护的所有权。
+系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属见[运行环境要求](client-environment.zh-CN.md#系统与桌面)，具体适配由镜像项目负责。这不改变普通前台切换或 Home 维护的所有权。
 
-镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。Natsume只调用已有会话API，不在运行时调整该配置或终止getty；配置和验证边界见[镜像实施要求 IMG-02](../packaging/image/integration.md)。
+镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。Natsume只调用已有会话API，不在运行时调整该配置或终止getty；系统配置和验证由镜像项目按[运行环境要求](client-environment.zh-CN.md#系统与桌面)落实。
 
-账号、GDM/PAM 接入、实际 Kiosk dconf profile、Wayland/空闲显示、正式 Home 模板与旧 OOBE 退出等镜像侧要求，统一记录在[镜像实施要求](../packaging/image/integration.md)，具体文件、权限与接入方式见[部署清单](../packaging/image/manifest.tsv)。正式输入唯一维护在 [packaging/image](../packaging/image/README.md)，随 Client Deb 安装到 `/usr/share/natsume/image-integration/`；镜像构建按清单应用 UID、上游栈和模板相关配置，不依赖忽略的 VM 目录。IMG-01～08 是镜像必需交付项；历史 VM 证据不代替[最终镜像验收](../packaging/image/acceptance.md)。
+Client 对账号、GDM/PAM、Kiosk、Wayland、Home 模板和登录隔离的必要条件，统一记录在 `docs/` 的[运行环境要求](client-environment.zh-CN.md)，不随 Client Deb 安装。本仓库不提供镜像配置片段、模板或适配检查器；具体配置合并、镜像构建和目标机器验收由镜像项目负责。历史 VM 证据不能代替实际部署验证。
 
 waiting 不可用时报告切换失败，必要时显示 greeter；不得以锁住 contest 冒充“显示等待界面”成功。故障修复只恢复 waiting，普通前台切换不触发重建。
 
@@ -672,7 +672,7 @@ Daemon 在现有 `SnapshotReconciler` 中从当前 Target 与新鲜 Actual 推�
 
 GNOME 应用可运行在 `user@UID.service` 下的 scope，Agent 的 `GetSessionByPID` 不一定直接返回图形会话。Daemon 从总线取得调用者 PID/UID；直接查询成功时必须匹配精确 waiting，返回其他会话则拒绝。只有明确无所属会话时，才检查 `GetUserByPID` 为 waiting、系统 systemd `GetUnitByPID` 为该用户 manager，且 logind 的唯一用户会话与 `User.Display` 均指向声称的 waiting/seat0/Wayland。未知结果不降级，不信任自报环境变量。前后台不改变 lease 身份；waiting replacement 前必须排空旧用户 manager 和 UID 进程，旧 lease 随精确会话失效。
 
-本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。真实镜像验收见[镜像验收标准](../packaging/image/acceptance.md)。
+本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。镜像项目须在实际目标机器上验证这些行为，参见[运行环境要求](client-environment.zh-CN.md)。
 
 ## 10. Server 组件架构
 
@@ -1525,12 +1525,12 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - Control Endpoint由安装配置确定，赛事期间不轮换；
 - Runtime Config只远程下发DOMjudge origin；
 - 工作站目标基线是 Ubuntu Client 镜像、官方 GDM/GNOME + 原生 Wayland，固定 waiting/contest 两个独立会话；禁止嵌套桌面和图形组件 patch；
-- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；自动登录不得反复抢占后续greeter，每次GDM启动初始化一次自动登录的官方配置见[镜像实施要求 IMG-02](../packaging/image/integration.md)，Daemon不运行时改写该配置；
+- GDM 自动登录 waiting；contest 由固定 API 入口预备和重建，不以 timed login 驱动业务；自动登录不得反复抢占后续greeter，镜像项目负责每次 GDM 启动时的初始化配置，Daemon 不在运行时改写该配置；
 - waiting 使用官方 GNOME Kiosk 和独立 dconf profile，不启动比赛桌面的 GNOME Shell/ArcMenu；contest 保持完整 GNOME 和独立配置并关闭自动锁屏。未绑定的等待界面可使用随包静态图；已绑定展示队伍、学校和 Logo，断线保留缓存并显示离线标识；
 - `environment.d`、PAM、Kiosk session/用户服务、dconf、Wayland 及 Home 恢复依赖随镜像交付；Home 维护不停止全局 GDM；
-- 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护按[镜像实施要求中的维护与回退流程](../packaging/image/integration.md)完成控制连接退出、状态备份和整套恢复验证；
+- 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护须按[运行环境要求](client-environment.zh-CN.md#维护要求)完成控制连接退出、状态备份和整套恢复验证；
 - Client 持续安装，卸载不作为本次交付门槛；已有包移除脚本保留，不据此拆分镜像输入的所有权；
-- 镜像拥有具名 PAM 入口及 `other` fallback 的受管账号限制；删除 Client 的固定服务文件后仍不能回退到普通密码登录。缺失 PAM 服务或阶段必须仍拒绝受管登录，具体范围见[镜像实施要求 IMG-03](../packaging/image/integration.md)；
+- 镜像拥有具名 PAM 入口及 `other` fallback 的受管账号限制；删除 Client 的固定服务文件后仍不能回退到普通密码登录。缺失 PAM 服务或阶段必须仍拒绝受管登录；发行版接入由镜像项目负责，边界见[运行环境要求](client-environment.zh-CN.md#账号与登录边界)；
 - Server目标是单Ubuntu Server节点；
 - 确切OS point release、kernel和package evidence由部署测试记录，不写入业务状态机；
 - 更换Client镜像必须重新验证identity、Session、Home、IME、Caddy和package lifecycle；
@@ -1611,7 +1611,7 @@ Runtime/Session/Home：
 
 ### 19.4 架构约束测试
 
-集成policy scan必须证明：
+架构约束的验证目标：
 
 - HTTP/WSS不直接执行业务SQL；
 - 一个业务表只有一个mutation owner；
@@ -1627,12 +1627,15 @@ Runtime/Session/Home：
 
 ### 19.5 常用验收命令
 
+构建编排使用 TypeScript／Deno。先运行 `deno task prepare` 下载依赖、工具与资产，再运行 check、build 或 package；也可选择 rust／web／server／client／print-domjudge 子集。后续任务使用已准备输入，不隐式联网补齐；CI 的编译和打包步骤使用同一入口。包安装／登录脚本仍使用 POSIX sh，目标应用不新增 Deno 运行依赖。Node/pnpm 的配置、锁文件与 `node_modules` 只属于 `web/`，仓库根目录不再作为 Node 包或 pnpm 工作区。
+
 ```bash
+deno task prepare rust web
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace --all-features
-just diesel-schema
-just api
+deno task schema:check
+deno task api --check
 ```
 
 上述 workspace 命令对应既有 Linux 基线的验收能力，不要求每轮在本地运行全量套件。 加入 Windows-only 包后按支持矩阵选择 Cargo 包集合与 CI／hook 范围；共享领域与成果格式 在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。 实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
@@ -1683,7 +1686,7 @@ just api
 验收：
 
 - fresh database migration成功；
-- `just diesel-schema` clean；
+- `deno task schema:check` clean；
 - 旧表/列symbol为零；
 - 每HWID一个non-revoked Device、每Device一个current key/credential/negotiation约束可由并发测试证明。
 
@@ -1839,7 +1842,7 @@ just api
 
 ### WP10：全链路故障与部署签收
 
-TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重复、冷登录测量和 AT-01～26 签收，并核对发行版本一致。通过标准见[镜像验收标准](../packaging/image/acceptance.md)；阶段 VM 证据不代替 WP10 部署签收。
+TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重复、冷登录测量和 AT-01～26 签收，并核对发行版本一致。通过标准见[镜像验收标准](https://github.com/4o3F/Natsume/blob/20d331596ee599e3d886c4b9554b74bf6f7833df/packaging/image/acceptance.md)；阶段 VM 证据不代替 WP10 部署签收。
 
 目标：
 

@@ -1,6 +1,10 @@
 # Web Panel
 
-`@natsume/web` is the only Node workspace package. It owns React, shadcn/ui, browser tests, and named HTTP calls in `src/api/client.ts`. Server HTTP DTOs derive `specta::Type`; Specta automatically collects them without a separate type registry. Run `just api` to export and format `src/api/generated/types.ts`, which is committed and checked for regeneration differences in CI. Web builds consume this file and never invoke Cargo.
+`@natsume/web` is a self-contained Node project under `web/`; the repository root uses Deno for orchestration. It owns React, shadcn/ui, browser tests, and named HTTP calls in `src/api/client.ts`. Server HTTP DTOs derive `specta::Type`; Specta automatically collects them without a separate type registry. Run `deno task prepare rust web` once, then `deno task api` to export and format `src/api/generated/types.ts`, which is committed and checked for regeneration differences in CI. Web builds consume this file and never invoke Cargo. For Web-only work, run `deno task prepare web`, followed by `deno task check web` or `deno task build web`; pnpm remains the Web package manager and Deno does not install another set of Web dependencies.
+
+`package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` and `.node-version` all live in `web/`, and dependencies are installed only in `web/node_modules`. The pnpm configuration retains dependency overrides and install-script permissions; there is no root Node package or multi-package Web workspace. From the repository root, use `pnpm --dir web <command>`; inside this directory, use `pnpm <command>`.
+
+`pnpm typecheck` checks application code, browser tests and their fixtures through the same TypeScript configuration. When Playwright starts its own preview server, `pnpm e2e` builds the production Web output before launching Vite preview; the Web CI job uses this path without a separate production build.
 
 The generated bindings describe JSON types, not HTTP routes or runtime validation. The client explicitly owns methods, paths, CSV queries, JSON requests, raw XLSX uploads and ZIP downloads, while retaining session cancellation and unauthorized-session handling. Responses use serialization-facing types where Serde conditionally omits a field. Existing JSON integers remain TypeScript `number`; this does not add lossless 64-bit transport.
 

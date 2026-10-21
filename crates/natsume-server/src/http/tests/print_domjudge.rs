@@ -104,7 +104,7 @@ async fn hide_committed_response(
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-#[ignore = "requires python3 packaging/print-domjudge/assets.py and pdftotext"]
+#[ignore = "requires deno task prepare print-domjudge and pdftotext"]
 async fn real_typst_https_admission_replay_lost_response_restart_and_revocation() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let runtime_root =

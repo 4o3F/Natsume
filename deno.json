@@ -1,0 +1,23 @@
+{
+  "nodeModulesDir": "manual",
+  "fmt": {
+    "include": ["deno.json", "packaging/manifest.json", "tools/*.ts"]
+  },
+  "lint": {
+    "include": ["tools/*.ts"]
+  },
+  "tasks": {
+    "prepare": "deno run --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run tools/assets.ts",
+    "check": "deno run --cached-only --frozen --no-prompt --allow-read --allow-env --allow-run --deny-net tools/build.ts check",
+    "build": "deno run --cached-only --frozen --no-prompt --allow-read --allow-env --allow-run --deny-net tools/build.ts build",
+    "api": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run --deny-net tools/build.ts api",
+    "schema:check": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run --deny-net tools/build.ts schema",
+    "package": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write --allow-env --allow-run --deny-net tools/package.ts"
+  },
+  "imports": {
+    "@std/cli/parse-args": "jsr:@std/cli@1.0.32/parse-args",
+    "@std/path": "jsr:@std/path@1.1.6",
+    "@std/toml": "jsr:@std/toml@1.0.11",
+    "@std/yaml": "jsr:@std/yaml@1.3.0"
+  }
+}

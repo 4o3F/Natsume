@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "prepare verified assets with python3 packaging/print-domjudge/assets.py; requires Poppler tools"]
+    #[ignore = "prepare assets with deno task prepare print-domjudge; requires Poppler tools"]
     async fn real_typst_wraps_long_lines_preserves_multilingual_data_and_is_deterministic()
     -> TestResult {
         let assets =

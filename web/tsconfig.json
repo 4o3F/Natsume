@@ -20,9 +20,9 @@
   },
   "include": [
     "src",
+    "e2e",
     "vite.config.ts",
     "vitest.config.ts",
-    "playwright.config.ts",
-    "playwright.https.config.ts"
+    "playwright.config.ts"
   ]
 }

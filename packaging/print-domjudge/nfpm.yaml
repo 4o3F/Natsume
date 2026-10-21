@@ -12,7 +12,6 @@ description: Independent DOMjudge HTTPS print admission and fixed Typst wrapper
 umask: 0o022
 depends:
   - ca-certificates
-${SHLIBS_DEPENDS}
 contents:
   - src: ${WRAPPER_BIN}
     dst: /usr/bin/natsume-print-domjudge

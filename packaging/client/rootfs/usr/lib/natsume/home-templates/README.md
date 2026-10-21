@@ -22,6 +22,4 @@ The mount unit must precede Helper's Home processing without making a failed tem
 
 Update the selected source only during offline, drained Home maintenance, after normal unmount of the old Home. Do not replace lower under a running contest, erase maintenance windows, or invent completion epochs to install a template.
 
-TODO(R5): complete the final image's template delivery, upgrade and full acceptance tests. The disposable VM template script proves mechanisms, not final image provenance or complete Browser/IDE defaults.
-
-Image integration sources ship in `/usr/share/natsume/image-integration/`. The image builder applies its manifest after final skel construction; no local VM script is a required template build input. The `contest` role token stays unchanged when its Unix account is named `teams`.
+The image project owns template creation, provenance and target-machine validation. Required Client environment conditions are documented in the repository's [Client environment guide](https://github.com/4o3F/Natsume/blob/v2/docs/client-environment.zh-CN.md); this package does not provide image adaptation scripts or templates. The `contest` role token stays unchanged when its Unix account is named `teams`.

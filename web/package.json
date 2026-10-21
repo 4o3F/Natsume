@@ -3,6 +3,10 @@
   "description": "React and shadcn/ui operations panel for Natsume V2",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": "24.1.0",
+    "pnpm": ">=11 <12"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
@@ -10,9 +14,7 @@
     "lint": "eslint . --max-warnings 0",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "e2e": "playwright test",
-    "e2e:https": "python3 ../tools/operator-https.py",
-    "api:format": "prettier --write src/api/generated/types.ts"
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.2",

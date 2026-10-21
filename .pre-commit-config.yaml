@@ -1,6 +1,12 @@
 repos:
   - repo: local
     hooks:
+      - id: build-scripts
+        name: Natsume build scripts
+        entry: deno task check scripts
+        language: system
+        always_run: true
+        pass_filenames: false
       - id: dependency-policy
         name: Natsume dependency policy
         entry: cargo deny check
@@ -9,19 +15,19 @@ repos:
         pass_filenames: false
       - id: web-format
         name: Natsume Web Prettier
-        entry: pnpm --filter @natsume/web format:check
+        entry: pnpm --dir web format:check
         language: system
         always_run: true
         pass_filenames: false
       - id: web-lint
         name: Natsume Web lint
-        entry: pnpm --filter @natsume/web lint
+        entry: pnpm --dir web lint
         language: system
         always_run: true
         pass_filenames: false
       - id: rust-clippy
         name: Natsume Rust Clippy
-        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+        entry: deno task check rust
         language: system
         always_run: true
         pass_filenames: false
@@ -33,7 +39,7 @@ repos:
         pass_filenames: false
       - id: web-test
         name: Natsume Web tests
-        entry: pnpm --filter @natsume/web test
+        entry: pnpm --dir web test
         language: system
         always_run: true
         pass_filenames: false

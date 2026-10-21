@@ -4,27 +4,38 @@ This is the independent Linux amd64 Ubuntu/Debian delivery of `natsume-print-dom
 
 ## Build and package
 
-Use a Linux amd64 builder with the repository Rust toolchain, Cargo lockfile, Python 3.11 or later, trusted HTTPS roots, Debian `dpkg-dev` (`dpkg-shlibdeps`) and `xz` support in Python. `assets.json` pins the Typst 0.14.2 musl release archive, extracted executable, Noto Sans Mono CJK SC Sans2.004 font and font license by SHA-256. The font includes Latin and Chinese glyphs. The Typst Apache-2.0 license/third-party notices and font SIL OFL 1.1 license are included, alongside the wrapper's AGPL license. Binary/font downloads are build artifacts, never Git inputs. Checksums identify the reviewed upstream bytes; they do not claim independent upstream signature verification.
+Use a Linux amd64 builder with Deno from the repository `.deno-version`, the repository Rust toolchain and Cargo lockfile, trusted HTTPS roots, curl, tar/xz and Debian `dpkg-dev` (`dpkg-shlibdeps`). Node, Web and Python are not required for this independent build path. [`../manifest.json`](../manifest.json) pins the Typst 0.14.2 musl archive, executable, Noto Sans Mono CJK SC Sans2.004 font and font license by SHA-256. The font includes Latin and Chinese glyphs. Prepare extracts Typst's Apache-2.0 license/third-party notices from its verified archive and downloads the pinned SIL OFL 1.1 font license. These are not duplicated in Git; they are included in the Deb with the wrapper's AGPL license to preserve redistribution notices. Downloads are build artifacts; checksums identify reviewed bytes, not independent upstream signature verification.
 
 ```sh
-python3 packaging/print-domjudge/assets.py
-cargo test -p natsume-print-domjudge --locked
-cargo test -p natsume-print-domjudge --locked --lib -- --ignored
-cargo clippy -p natsume-print-domjudge --locked --all-targets -- -D warnings
-python3 packaging/print-domjudge/test_build.py
-python3 packaging/print-domjudge/build.py
+deno task prepare print-domjudge
+deno task build print-domjudge
+deno task package print-domjudge
 # Inspect the actual filename emitted by nFPM:
 dpkg-deb --info dist/packages/natsume-print-domjudge_*.deb
 dpkg-deb --contents dist/packages/natsume-print-domjudge_*.deb
 ```
 
-The ignored real-Typst test additionally requires Poppler `pdftotext` and `pdfinfo`. It checks byte-identical generation in separate temporary roots, all characters of an unbroken 10,000-character source line, its final marker, Chinese source/team/seat data, non-executable injection strings and A4 content bounds. Normal tests use mock HTTPS with private generated trust roots and controlled compiler processes; no host `/etc` modifications or real Server are needed. Python is a build/test dependency only, not an installed runtime dependency.
+Preparation downloads dependencies, fixed nFPM, Typst, fonts and licenses. Fixed downloads are cached under `target/build/downloads` and rechecked on prepare; corrupt cache entries require explicit removal. The prepared runtime remains under `target/print-domjudge/runtime`. Prepare must succeed before build or package; neither later step downloads or installs anything. Build compiles only the wrapper, never Server or Web. Package consumes the resulting binary without compiling it.
 
-`build.py` verifies assets before compilation, builds only `natsume-print-domjudge` in release mode by default and verifies the repository-pinned nFPM archive before packaging. An explicit package `VERSION` overrides the Cargo workspace version without normalization, so release/prerelease/CI metadata and artifact filenames stay consistent. `ARCH` defaults to `amd64`; any other value is rejected. When `RUST_RELEASE_DIR` is provided, the script consumes exactly its `natsume-print-domjudge` binary and does not invoke Cargo or look in a different release directory. Relative release directories are resolved from the repository root. Package library requirements are inspected for both the wrapper and the bundled Typst executable; the pinned Typst is currently static musl, so Debian's inspector may warn that it has no dynamic symbols. Downloads occur only on the builder and are cached under `target/print-domjudge/downloads`; corrupt cached files fail closed and require explicit removal. For an offline builder, pre-populate that cache with the manifest-named files plus the archive named in `packaging/nfpm.sha256`. Running the preparation step still verifies every hash. The package contains the wrapper under `/usr/bin`, Typst under `/usr/lib/natsume-print-domjudge`, and the fixed template/font under `/usr/share/natsume-print-domjudge`. There are no maintainer scripts, services, credentials or installed site configuration. Installation and runtime do not fetch assets. The package uses `dpkg-shlibdeps` to declare the actual native glibc/libgcc minimum versions from the builder; build on the oldest supported deployment distribution and validate the resulting package there rather than assuming universal glibc compatibility.
+For an existing binary, set `RUST_RELEASE_DIR` before prepare and package, then omit build. This preparation mode does not invoke Cargo; packaging uses exactly the selected binary, with relative directories resolved from the repository root and empty values rejected. `VERSION` or `--version` overrides the Cargo workspace version without normalization. `ARCH` defaults to `amd64` and other values are rejected. `--output` selects the destination; output is `natsume-print-domjudge_${VERSION}_amd64.deb`, retaining CI/prerelease suffixes.
 
-After an isolated production build, package CI can invoke `VERSION="$VERSION" ARCH=amd64 RUST_RELEASE_DIR="$RUST_RELEASE_DIR" python3 packaging/print-domjudge/build.py --output dist/packages`. This consumes the prebuilt wrapper while still verifying the fixed Typst/font/license inputs and pinned nFPM. The output is `natsume-print-domjudge_${VERSION}_amd64.deb`, including the explicit version's `~ci` or prerelease suffix.
+Packaging runs `dpkg-shlibdeps` on both wrapper and bundled Typst to generate native library requirements. Typst is currently static musl and may cause an informational no-dynamic-symbols warning. Build on the oldest supported deployment distribution and validate there; generated ABI requirements do not establish universal Debian compatibility. There are no maintainer scripts, services, credentials, installed site configuration or runtime downloads.
 
-Package-content inspection is not installation/upgrade/removal acceptance, DOMjudge/PHP integration acceptance, printer validation or production concurrency evidence. Those checks must run on the actual target distributions and DOMjudge version. `just package-print-domjudge` builds this package independently. `just test-print-admission` prepares verified assets and runs the focused wrapper/Print checks. Package CI is configured to inspect this Deb and explicitly run the real-Typst and cross-component HTTPS tests; configuration alone is not a claim that remote CI passed. The cross-component test runs with `cargo test -p natsume-server --locked --lib http::tests::print_domjudge -- --ignored` after asset preparation and requires Poppler. It uses the actual TLS listener, Server router, wrapper and Typst to verify admission, idempotency, lost-response recovery, independent database reopen, trust rejection and source revocation; it does not execute deployed DOMjudge/PHP or a printer.
+Package CI uses the same prepare/build/package flow, without a separate package-validation suite. The real-Typst and Print HTTPS tests remain opt-in after preparation.
+
+## Opt-in tests
+
+Run these commands from the repository root. Poppler `pdftotext`/`pdfinfo` and Python are required for the real rendering tests and existing test-only compiler fixtures; they are not requirements of the build scripts or installed application.
+
+```sh
+deno task prepare print-domjudge
+cargo test --frozen -p natsume-print-domjudge
+cargo test --frozen -p natsume-print-domjudge --lib -- --ignored
+cargo test --frozen -p natsume-server --lib print
+cargo test --frozen -p natsume-server --lib http::tests::print_domjudge -- --ignored
+```
+
+The tests exercise multilingual/long-line rendering, deterministic output, actual TLS admission, replay, response loss, database reopen, trust rejection and revocation. They do not execute deployed DOMjudge/PHP, Windows or a physical printer. Installation, upgrades, DOMjudge integration and production concurrency still require their own target-environment acceptance.
 
 ## Deployment-owned configuration and credentials
 

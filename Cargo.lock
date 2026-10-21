@@ -3689,6 +3689,7 @@ dependencies = [
  "rustix 1.1.5",
  "semver",
  "serde_json",
+ "skia-bindings",
  "slint",
  "slint-build",
  "tempfile",

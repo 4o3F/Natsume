@@ -119,8 +119,8 @@ Most operational and product documents are currently written in Chinese.
 | [Documentation index](docs/README.md)                                                                                     | Find maintained architecture, deployment, and development guides.                                                      |
 | [Architecture](docs/architecture.md)                                                                                      | Understand ownership, protocols, trust boundaries, data models, and verification requirements. |
 | [Deployment and operations](docs/operations-deployment.zh-CN.md)                                                          | Provision TLS, bootstrap Server, install Client, and plan backup or recovery.                  |
-| [Image integration requirements](packaging/image/integration.md) and [acceptance criteria](packaging/image/acceptance.md) | Configure the workstation image and verify Session, Home, display, and input behavior.         |
-| [Packaging](packaging/README.md) and [image-builder handoff](packaging/image/README.md)                                   | Build Debian artifacts or integrate Client into an Ubuntu image.                               |
+| [Client environment requirements](docs/client-environment.zh-CN.md) | Understand the required OS, accounts, desktop sessions and Home behavior; image adaptation belongs to the image project. |
+| [Packaging](packaging/README.md) | Prepare dependencies and assets, build applications and generate Debian packages. |
 | [Server guide](crates/natsume-server/README.md), [Web guide](web/README.md), and [roster import guide](crates/natsume-server/docs/roster.md)              | Work on a specific application surface or the XLSX format.                                     |
 | [Issue workflow](docs/agents/issue-tracker.md)                                                                            | Track requirements and changes in GitHub Issues.                                               |
 
@@ -131,7 +131,7 @@ Most operational and product documents are currently written in Chinese.
 
 ### 1. Prepare the toolchain
 
-Use Linux; Ubuntu 24.04 is the deployment baseline. Install Git, rustup, Node.js **24.1.0**, pnpm **11.x**, `just`, and `prek` **0.5.0**. The repository pins Rust **1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml). On Ubuntu, the workspace's native build and test prerequisites include:
+Use Linux; Ubuntu 24.04 is the deployment baseline. Install Git, rustup, Node.js **24.1.0**, pnpm **11.x**, Deno **2.7.6**, and `prek` **0.5.0**. The repository pins Rust **1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml), Deno in [`.deno-version`](.deno-version), and Web's Node version in [`web/.node-version`](web/.node-version). On Ubuntu, the workspace's native build and test prerequisites include:
 
 ```bash
 sudo apt-get install --yes build-essential pkg-config dbus-daemon \
@@ -143,14 +143,14 @@ From the repository root:
 ```bash
 rustup show                         # Install/select the repository toolchain
 cargo install cargo-deny --version 0.20.2 --locked
-just install                        # Install Node dependencies from the lockfile
+deno task prepare rust web          # Download script, Cargo and pnpm dependencies
 prek install                        # Enable this checkout's pre-commit hook
 ```
 
 ### 2. Run the Web panel
 
 ```bash
-pnpm --filter @natsume/web dev --host 127.0.0.1
+pnpm --dir web dev --host 127.0.0.1
 ```
 
 Open the local URL printed by Vite. Its `/api` proxy expects an already configured Server at `https://127.0.0.1:8443`; the UI does not provide a built-in demo login. For a working local backend, follow the [Server guide](crates/natsume-server/README.md) and [deployment runbook](docs/operations-deployment.zh-CN.md) to provision configuration, TLS/CA material, and an initial operator. Server modes read the fixed `/etc/natsume-server/config.toml`, not command-line configuration flags.
@@ -158,21 +158,23 @@ Open the local URL printed by Vite. Its `/api` proxy expects an already configur
 For UI-only work, the Playwright suite uses intercepted API fixtures and needs no running Server:
 
 ```bash
-pnpm --filter @natsume/web exec playwright install --with-deps chromium
-pnpm --filter @natsume/web e2e
+pnpm --dir web exec playwright install --with-deps chromium
+pnpm --dir web e2e
 ```
 
 ### 3. Build, check, and update contracts
 
 ```bash
-cargo build --workspace --locked
-pnpm --filter @natsume/web build
+deno task check                     # Script, Rust and Web compile checks
+deno task build                     # Rust release and Web production builds
 prek run --all-files
 ```
 
-`prek` is the single pre-commit check entry point. It runs dependency policy, Web Prettier and ESLint, Rust Clippy, and Rust/Web tests without automatically editing or staging files. CI adds further contract, browser, and packaging checks.
+`prepare` is the download phase; run it again after dependency or tool inputs change. `check`, `build`, `api` and `package` consume prepared inputs, use cached Deno modules and offline Cargo, and never install dependencies themselves. Select `rust`, `web`, `server`, `client` or `print-domjudge` to prepare or build only the required parts; see [Packaging](packaging/README.md) for tools, assets and Deb generation.
 
-When changing the HTTP API, run `just api` and include the regenerated TypeScript bindings. Do not edit generated contracts by hand. Exact dependencies belong to lockfiles; package inputs and release procedures belong to [`packaging/`](packaging/README.md). Running the full Client requires the provisioned GNOME dual-session image, not just a development build.
+`prek` is the single pre-commit check entry point. It runs build-script checks, dependency policy, Web Prettier and ESLint, Rust Clippy, and Rust/Web tests without automatically editing or staging files. CI also retains contract and browser checks; the packages job prepares, builds and packages the three Debs without running a separate package-validation suite.
+
+When changing the HTTP API, run `deno task api` after preparation and include the regenerated TypeScript bindings. Do not edit generated contracts by hand. Exact dependencies belong to lockfiles; package inputs and release procedures belong to [`packaging/`](packaging/README.md). Running the full Client requires the provisioned GNOME dual-session image, not just a development build.
 
 ## License
 

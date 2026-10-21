@@ -754,9 +754,10 @@ pub(super) mod tests {
 
         let directory = tempfile::TempDir::new()?;
         let binary = PathBuf::from(std::env::var("CADDY_BIN")?);
-        let expected_sha = include_str!("../../../../packaging/client/caddy.sha256")
-            .split_whitespace()
-            .next()
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../packaging/manifest.json"))?;
+        let expected_sha = manifest["caddy"]["binary_sha256"]
+            .as_str()
             .ok_or("missing packaged Caddy hash")?;
         assert_eq!(
             hex::encode(Sha256::digest(fs::read(&binary)?)),

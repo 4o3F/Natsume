@@ -4,7 +4,9 @@
 
 ## 0. 适用范围与执行顺序
 
-核对基线：**Natsume v2.3.2、Ubuntu 24.04 LTS amd64**。Client 运行验收以完成配套 GNOME/GDM、原生 Wayland 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。v2.3.2 的 Client 使用原生 Wayland；升级已有 X11 镜像时，须在维护期同时应用随包镜像交接配置，步骤见第 8.7 节。
+本文描述当前源码对应的部署流程，系统环境为 Ubuntu 24.04 LTS amd64。版本号 `2.10.3` 仅作命令示例，不表示该 Release 已发布，也不表示当前源码已完成目标机器验收。正式部署须选定一个已发布版本，Server 包和 Client 源码必须来自同一标签；该标签还须包含本文使用的 Deno 构建入口，否则应使用该版本自带的指南。未发布源码的联调须从同一 Git SHA 构建两端，不能将旧 Server Release 与当前分支 Client 拼接部署。
+
+Client 运行验收以完成配套 GNOME/GDM、原生 Wayland 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。镜像项目负责桌面适配和目标机器验收，Deb 不再附带镜像适配材料。文末的 v2.3.2 历史迁移参考不属于当前安装步骤。
 
 PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client Deb 构建都在同一台 Ubuntu 24.04 Server 上执行。使用同一个具有 sudo 权限的管理员账号，以下 $HOME 均指该账号的 Home；需要服务用户执行的命令会显式使用 sudo -u natsume-server。各节环境变量在同一终端中沿用，换终端后按对应步骤重新设置。
 
@@ -47,7 +49,7 @@ Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁
 | DOMjudge 上游 origin | https://judge.contest.example | 真实 DOMjudge，不能指向 Client loopback |
 | contest end | 2026-12-06T10:00:00Z | 按实际赛事填写 UTC 比赛结束时间 |
 | Gateway not after | 2026-12-08T10:00:00Z | 至少覆盖 contest end 后 **86400 秒**，部署时尚未过期 |
-| 版本 | 2.3.2 | 两端 Deb 与镜像集成要求配套 |
+| 版本 | 选定的已发布版本，命令示例为 2.10.3 | 两端使用同一标签，Client 与镜像集成要求配套 |
 
 本文以 domjudge 为 Gateway 名称示例，**不是实际上游地址，也不意味着预置了某个 CA**。可以改用 gateway.contest.example 等名字；保持两端 config.toml 的 Gateway hostname 一致，Client 启动时会自动同步本机 hosts、Firefox 主页和比赛书签，无需在镜像中预填赛事域名。
 
@@ -343,20 +345,21 @@ chmod 0700 "$NATSUME_DEPLOY_DIR" "$NATSUME_DEPLOY_DIR/server"
 
 ### 3.2 下载并验证 Server 包
 
-在 Server 本机下载 [v2.3.2 Release](https://github.com/4o3F/Natsume/releases/tag/v2.3.2) 中的 Server 包（需先完成该版本发布）：
+在 Server 本机从 [GitHub Releases](https://github.com/4o3F/Natsume/releases) 选定已发布版本。以下变量在后续构建步骤中保持一致；若示例版本尚未发布，停止并选择实际发布版本，不要改用 `v2` 分支代替对应源码标签：
 
 ~~~bash
+export NATSUME_VERSION='2.10.3'
 cd "$NATSUME_DEPLOY_DIR/packages"
-NATSUME_RELEASE_URL='https://github.com/4o3F/Natsume/releases/download/v2.3.2'
+NATSUME_RELEASE_URL="https://github.com/4o3F/Natsume/releases/download/v${NATSUME_VERSION}"
 
-curl --fail --location --remote-name "$NATSUME_RELEASE_URL/natsume-server_2.3.2_amd64.deb"
+curl --fail --location --remote-name "$NATSUME_RELEASE_URL/natsume-server_${NATSUME_VERSION}_amd64.deb"
 curl --fail --location --remote-name "$NATSUME_RELEASE_URL/SHA256SUMS"
-test -s natsume-server_2.3.2_amd64.deb
+test -s "natsume-server_${NATSUME_VERSION}_amd64.deb"
 sha256sum --check --ignore-missing SHA256SUMS
-dpkg-deb --field natsume-server_2.3.2_amd64.deb Package Version Architecture
+dpkg-deb --field "natsume-server_${NATSUME_VERSION}_amd64.deb" Package Version Architecture
 ~~~
 
-Server 校验须为 OK，版本/架构为 2.3.2/amd64。Release 的 SHA256SUMS 同时列出两种包，此处用 --ignore-missing 跳过未下载的官方 Client 包，Client 在第 6 节从源码构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
+Server 校验须为 OK，版本与 `NATSUME_VERSION` 一致，架构为 amd64。当前 Release 的 SHA256SUMS 列出 Server、Client 和独立打印 wrapper 三种包，此处用 --ignore-missing 跳过未下载的其他包；Client 在第 6 节从相同标签构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
 
 ## 4. 在服务器安装 Server
 
@@ -392,7 +395,7 @@ Server Deb 直接使用第 3.2 节已下载并校验的本地文件。下一节�
 dpkg --print-architecture
 sudo apt-get update
 sudo apt-get install --yes ca-certificates openssl curl sqlite3 python3
-sudo apt-get install --yes "$NATSUME_DEPLOY_DIR/packages/natsume-server_2.3.2_amd64.deb"
+sudo apt-get install --yes "$NATSUME_DEPLOY_DIR/packages/natsume-server_${NATSUME_VERSION}_amd64.deb"
 dpkg-query -W natsume-server
 getent passwd natsume-server
 ~~~
@@ -551,7 +554,7 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
 
 ### 5.2 导入完整队伍名单
 
-v2.3.2 使用完整 XLSX 名单导入，旧 CSV 入口已移除。从 v2.0.x 升级先完成第 8.5 节；从 v2.1.0 升级按第 8.6 节执行；从 v2.2.x 升级按第 8.7 节执行。
+当前版本使用完整 XLSX 名单导入，旧 CSV 入口已移除。升级已有系统前，先阅读所选 Release 的迁移说明并完成第 8.2 节的一致备份；文末的旧版本迁移参考不能代替当前版本的升级要求。
 
 在 Web **Preparation** 点击 **Download Excel template**，下载 `Teams` 工作表模板。人工把报名表整理为一行一队，按[字段规则](../crates/natsume-server/docs/roster.md#excel-模板)填写九列：学校中英文名、country、account、password、seat、队伍中英文名、category。所有单元格按文本填写，保留座位前导零；不填写公式。学校与队伍的中英文名各至少填写一种，country 留空默认为 CHN。
 
@@ -564,7 +567,7 @@ v2.3.2 使用完整 XLSX 名单导入，旧 CSV 入口已移除。从 v2.0.x 升
 5. 点击 **Commit import** → **Confirm commit**。整份名单原子生效；完全相同的文件不改业务数据，只有实际改密账号推进凭据 revision。队伍资料变化不切换设备前台会话。
 6. 在 **Seats / Accounts** 核对数量与映射。刷新或退出后需要 **Discard preview** 再上传；普通页面内导航仍保留审核过的文件。
 
-v2.3.2 提供 Logo 目录、网页观测和完整 DOMjudge ZIP。配套 Client 在 waiting 页面显示队伍／学校／Logo，断网时保留上次资料并显示离线标识。
+当前版本提供 Logo 目录、网页观测和完整 DOMjudge ZIP。配套 Client 在 waiting 页面显示队伍／学校／Logo，断网时保留上次资料并显示离线标识。
 
 在同一份 Server config.toml 的 `[storage]` 中设置 `organization_logos`（示例已列出）。Server Deb 在安装／重装时自动创建默认目录 `/var/lib/natsume-server/organization-logos`，归属 `root:natsume-server`、权限 `0750`，保留已有图片。自定义路径由部署方创建并授予服务用户读取／遍历权限。首次配置路径需要重启 Server；以后补图或替换源文件无需重启或重新导入名单。
 
@@ -638,17 +641,16 @@ curl --fail-with-body --silent --show-error --http1.1 \
 
 ### 6.1 安装编译依赖和固定 Rust 工具链
 
-**执行位置：同一台 Ubuntu 24.04 amd64 Server，使用管理员账号。**在本机安装编译依赖，只构建 Client 的三个 Rust 程序和 Deb，无需 Node/pnpm/Web 编译环境。源码放在管理员 Home 的独立目录，不放入 PKI 或部署材料目录：
+**执行位置：同一台 Ubuntu 24.04 amd64 Server，使用管理员账号。**在本机安装 Rust 和仓库 `.deno-version` 指定的 Deno，只构建 Client 的三个 Rust 程序和 Deb，无需 Node/pnpm/Web 编译环境。源码放在管理员 Home 的独立目录，不放入 PKI 或部署材料目录：
 
 ~~~bash
 sudo apt-get update
 sudo apt-get install --yes build-essential pkg-config curl git ca-certificates \
-  gettext-base libfontconfig1-dev libgl1-mesa-dev libudev-dev \
-  python3 binutils xz-utils
+  libfontconfig1-dev libgl1-mesa-dev libudev-dev tar xz-utils
 mkdir -p "$HOME/src"
 cd "$HOME/src"
-git clone --branch v2.3.2 --depth 1 https://github.com/4o3F/Natsume.git Natsume-v2.3.2
-cd Natsume-v2.3.2
+git clone --branch "v${NATSUME_VERSION}" --depth 1 https://github.com/4o3F/Natsume.git Natsume
+cd Natsume
 git rev-parse HEAD
 ~~~
 
@@ -665,52 +667,25 @@ cargo --version
 
 如果已经安装 rustup，改为运行 rustup toolchain install 1.97.1 --profile minimal；进入仓库后 rust-toolchain.toml 会选择对应版本。不要通过修改 lockfile 适应其他工具链。
 
-后续所有构建命令在仓库根目录的同一终端运行。提前检查磁盘与内存，Rust/Slint release 编译需要容纳源码、依赖和中间产物；内存不足时可给 cargo build 增加 -j 2 限制并发。
+按 [Deno 安装说明](https://docs.deno.com/runtime/getting_started/installation/)安装 `.deno-version` 声明的 2.7.6。后续命令在仓库根目录同一终端运行，保留本次 Git SHA。Rust/Slint release 编译需要足够磁盘和内存；需要限制并发时可设置 `CARGO_BUILD_JOBS=2`。
 
-### 6.2 下载并校验 Caddy 和 nFPM
+### 6.2 准备构建依赖、工具与资产
 
-v2.3.2 固定 Caddy 2.11.4、nFPM 2.47.0。版本和摘要由 packaging/client/caddy.version、caddy.archive.sha256、caddy.sha256 及 packaging/nfpm.version、nfpm.sha256 管理。
+prepare 负责下载锁定的 Deno 模块、Cargo 依赖、Skia 预编译库、Caddy、nFPM 和公开作者头像。Caddy／nFPM 使用仓库现有固定版本和 SHA；固定缓存损坏或头像下载失败会中止，不静默替换为其他版本。
 
 ~~~bash
-NATSUME_SOURCE_DIR="$PWD"
-NATSUME_TOOL_DIR="$(mktemp -d)"
-
-curl --fail --location \
-  https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz \
-  --output "$NATSUME_TOOL_DIR/caddy_2.11.4_linux_amd64.tar.gz"
-curl --fail --location \
-  https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz \
-  --output "$NATSUME_TOOL_DIR/nfpm_2.47.0_Linux_x86_64.tar.gz"
-
-(
-  cd "$NATSUME_TOOL_DIR"
-  sha256sum --check "$NATSUME_SOURCE_DIR/packaging/client/caddy.archive.sha256"
-  sha256sum --check "$NATSUME_SOURCE_DIR/packaging/nfpm.sha256"
-)
-
-tar -xzf "$NATSUME_TOOL_DIR/caddy_2.11.4_linux_amd64.tar.gz" -C "$NATSUME_TOOL_DIR" caddy
-tar -xzf "$NATSUME_TOOL_DIR/nfpm_2.47.0_Linux_x86_64.tar.gz" -C "$NATSUME_TOOL_DIR" nfpm
-
-(
-  cd "$NATSUME_TOOL_DIR"
-  sha256sum --check "$NATSUME_SOURCE_DIR/packaging/client/caddy.sha256"
-)
-"$NATSUME_TOOL_DIR/caddy" version
-"$NATSUME_TOOL_DIR/nfpm" --version
+deno task prepare client
 ~~~
 
-所有摘要检查须为 OK，版本分别匹配。任何一步失败都先解决，不继续打包。这里同时校验 Caddy 压缩包和解出的二进制，使用仓库锁定的官方模块组合。
+工具和下载缓存在 `target/build/`。只有 prepare 下载输入；后续 build／package 使用缓存，不隐式安装依赖。依赖或工具清单改变后重新 prepare。Client 专用准备不运行 pnpm，也不下载打印资产。
 
 ### 6.3 编译 Client 三个程序
 
 使用独立 target 目录，避免误取旧构建产物：
 
 ~~~bash
-export CARGO_TARGET_DIR="$NATSUME_SOURCE_DIR/target/client-deb"
-cargo build --release --locked \
-  -p natsume-workstation-daemon \
-  -p natsume-workstation-helper \
-  -p natsume-workstation-agent
+export CARGO_TARGET_DIR="$PWD/target/client-deb"
+deno task build client
 
 ls -lh "$CARGO_TARGET_DIR/release/natsume-device-daemon" \
   "$CARGO_TARGET_DIR/release/natsume-privileged-helper" \
@@ -721,41 +696,29 @@ ls -lh "$CARGO_TARGET_DIR/release/natsume-device-daemon" \
 
 ### 6.4 使用现有 manifest 打包
 
-下面与仓库 package-client recipe 使用同一 manifest，直接调用工具，不要求额外安装 just：
+下面使用仓库 TypeScript 打包入口与原有 nFPM manifest，不要求全局安装 nFPM。源码构建使用可区分的本地包版本：
 
 ~~~bash
-export VERSION='2.3.2'
-export ARCH='amd64'
+export NATSUME_CLIENT_VERSION="${NATSUME_VERSION}~local1"
+export VERSION="$NATSUME_CLIENT_VERSION"
 export RUST_RELEASE_DIR="$CARGO_TARGET_DIR/release"
-export CADDY_BIN="$NATSUME_TOOL_DIR/caddy"
-export AUTHOR_AVATAR_FILE="$NATSUME_TOOL_DIR/author-avatar.png"
+deno task package client
 
-python3 packaging/check-image-inputs.py
-python3 packaging/client/prepare-avatar.py "$AUTHOR_AVATAR_FILE"
-mkdir -p dist/packages
-envsubst '$ARCH $VERSION $RUST_RELEASE_DIR $CADDY_BIN $AUTHOR_AVATAR_FILE' \
-  < packaging/client/nfpm.yaml > "$NATSUME_TOOL_DIR/client.nfpm.yaml"
-"$NATSUME_TOOL_DIR/nfpm" package --packager deb \
-  --config "$NATSUME_TOOL_DIR/client.nfpm.yaml" --target dist/packages/
-
-dpkg-deb --field dist/packages/natsume-client_2.3.2_amd64.deb Package Version Architecture
-python3 packaging/check-image-inputs.py --deb dist/packages/natsume-client_2.3.2_amd64.deb
 (
   cd dist/packages
-  sha256sum natsume-client_2.3.2_amd64.deb > natsume-client_2.3.2_amd64.deb.sha256
-  sha256sum --check natsume-client_2.3.2_amd64.deb.sha256
+  sha256sum "natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb" > "natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb.sha256"
 )
 ~~~
 
-交付产物为 **dist/packages/natsume-client_2.3.2_amd64.deb** 及本次生成的 checksum。check-image-inputs 检查 Deb 内附带的桌面集成交接材料，并不构建 ISO，也不在 Server 上创建 Client 账号或启动 Client 服务。
+交付产物为 `dist/packages/natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb` 及本次生成的 checksum；示例版本为 `2.10.3~local1`。记录并交接 `NATSUME_CLIENT_VERSION`，第 7.2 节使用同一值。package 不下载、不编译、不执行独立包校验，不构建 ISO，也不在宿主创建 Client 账号或启动服务。镜像项目负责按[运行环境要求](client-environment.zh-CN.md)完成适配。
 
-不传入 SITE_CONFIG、CONTROL_CA_CERT 或 LOCAL_ORIGIN_CA_CERT；通用 Deb 不包含测试/正式 CA 和部署配置。它包含程序、Caddy、包所属运行文件、配置示例及完整交接目录。
+不传入 SITE_CONFIG、CONTROL_CA_CERT 或 LOCAL_ORIGIN_CA_CERT；通用 Deb 不包含测试/正式 CA 和部署配置。它包含程序、Caddy、包所属运行文件及配置示例；运行环境要求在 `docs/` 中维护，不随包安装。
 
 自建包摘要不一定与官方 Release 相同，应配套使用**本次生成的 checksum**。如果改过源码，选择有区别的 Debian 版本，同步命令中的文件名，记录 Git SHA、改动、工具版本和日志，不冒充官方同名产物。
 
 ## 7. Client 部署输入与首次联调
 
-本节用于交接构建产物，以及在**已完成配套桌面集成的样机**上联调。普通 Ubuntu 只安装 Deb，不会自动完成 waiting/teams、PAM/GDM、Kiosk、Home 模板及其 mount 配置；完整前提见包内 /usr/share/natsume/image-integration/ 和[镜像实施要求](../packaging/image/integration.md)。本文不展开 ISO 制作。
+本节用于交接构建产物，以及在**已完成配套桌面集成的样机**上联调。普通 Ubuntu 只安装 Deb，不会自动完成 waiting/teams、PAM/GDM、Kiosk、Home 模板及其 mount 配置；必要条件见[运行环境要求](client-environment.zh-CN.md)。镜像实现、发行版适配及目标机器验收归镜像项目，本文不展开 ISO 制作。
 
 ### 7.1 准备包外输入并交接
 
@@ -793,9 +756,11 @@ EOF
 
 ~~~bash
 cd "$HOME/natsume-client-install"
-sha256sum --check natsume-client_2.3.2_amd64.deb.sha256
+# 从交接清单填写第 6.4 节实际构建的版本。
+NATSUME_CLIENT_VERSION='2.10.3~local1'
+sha256sum --check "natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb.sha256"
 sudo apt-get update
-sudo apt-get install --yes "$PWD/natsume-client_2.3.2_amd64.deb"
+sudo apt-get install --yes "$PWD/natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb"
 
 sudo install -d -o root -g root -m 0755 /etc/natsume /etc/natsume/trust
 sudo install -o root -g root -m 0644 config.toml /etc/natsume/config.toml
@@ -865,7 +830,7 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
 
 以上 getent 的 domjudge 替换为实际 `[site].gateway_hostname`，在日志出现 `local Gateway settings synchronized` 后检查。Firefox 重新打开后，在 `about:policies` 的 Active 中确认 Homepage.URL 和 Contest Site 书签使用同一个域名，Errors 为空。
 
-预期版本 2.3.2、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
+预期包版本与交接清单一致、模板只读 SquashFS、Gateway 仅解析到 loopback，Server 和上游 TLS/HTTP 正常。第二个 curl 使用系统信任，核对 Caddy 的上游信任来源。Caddy 由 Daemon 依赖管理，Agent 由官方 Kiosk 用户服务管理，不单独增加另一个启动入口。
 
 ### 7.5 注册审批与绑定
 
@@ -1042,64 +1007,9 @@ sudo systemctl start natsume-server.service
 
 包不生成、覆盖、改权限或删除部署方 config/CA，更新文件由部署方负责。配置在进程启动时重新加载，不依赖安装脚本自动修正。
 
-Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升级/回退按[镜像维护要求](../packaging/image/integration.md#11-维护与回退)，不能只降级 Deb 然后沿用不兼容状态。不要克隆运行过机器的身份、Control/Gateway key、Enrollment 或 Home reset 状态到其他机器。
+Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板。升级/回退须遵守[运行环境的维护要求](client-environment.zh-CN.md#维护要求)，不能只降级 Deb 然后沿用不兼容状态。不要克隆运行过机器的身份、Control/Gateway key、Enrollment 或 Home reset 状态到其他机器。
 
 旧版使用站点 UUID 的 Client 不能通过删除配置项完成原地升级：本版的硬件 ID 派生规则和 identity.json 格式均已改变。维护时先完成 Home 恢复、退出受管会话并备份所需数据，再在 Server 解除旧 Binding、Revoke 旧设备，从干净镜像重新部署，按 7.5 节重新审批和绑定。不要只删除 identity.json 或混用旧身份、Control/Gateway 凭据。Daemon 与 Helper 必须配套更新；未运行过的 Client 可直接使用本文的新配置。
-
-<a id="upgrade-from-v2-0"></a>
-### 8.5 从 v2.0.4 配套升级到 v2.3.2（Breaking Change）
-
-从 v2.0.4 升级涉及控制协议的不兼容变化。Server、Device Daemon、Helper、Session Agent 与 Web 必须配套；控制连接使用 `natsume.control.v3`，本地 Agent 注册使用协议 3。旧 Client 不能继续连接新 Server。新版绑定目标必须包含队伍／学校资料，因此须先补全名单，再让设备重连。
-
-1. 在维护窗口完成已开始的 Home reset／会话维护，保存比赛数据，暂停新操作。按[镜像维护流程](../packaging/image/integration.md#11-维护与回退)退出受管会话并停止 Client 控制连接；确认 Server 已显示设备离线。
-2. 按第 8.2 节保存一致的数据库、密钥与配置冷备份，另行保存 Logo 目录、完整名单和匹配旧包。备份步骤结束后再次停止 Server，保持停止状态进行软件包升级。
-3. 安装第 3.2 节校验过的 `natsume-server_2.3.2_amd64.deb`。在已有 `/etc/natsume-server/config.toml` 的 `[storage]` 中补上必填绝对路径 `organization_logos`，参考第 4.3 节。保留原数据库和全部密钥，**不要重新 bootstrap，也不要删除数据库或设备身份**。
-4. 显式启动 Server；`serve` 在启动时执行数据库迁移，保留已有 Device、Enrollment、Account、Vault、Binding 和 Session 目标。迁移会移除旧格式的未提交导入候选，须重新上传完整 XLSX。
-5. 保持 Client 停止，通过新版 Panel 按第 5.2 节上传完整名单并提交。账号与座位须与现有数据一致；不准备改密时填写原密码。核对学校、队伍资料和已有绑定，准备 Logo。没有 Logo 允许使用默认图；缺少队伍资料的已绑定账号不能生成有效控制目标。
-6. 安装配套 `natsume-client_2.3.2_amd64.deb`，按镜像交接流程检查并应用随包配置差异，包括第 8.7 节的 Wayland 会话、GDM 和 dconf 配置。包会提供 Noto CJK 字体依赖和展示目录；保留原 Client 身份、Control/Gateway 凭据及 Home 维护状态。确认 `/var/lib/natsume-display` 为 natsume 所有、0755，waiting 只能读取图片。
-7. 先恢复一台测试设备，再逐批恢复。核对设备 Online、原绑定／座位、waiting 队伍资料、Logo 和五项资源状态；缺图不等于离线。检查切换、断线缓存、解绑后不恢复旧队伍，并完成[配套验收](../packaging/image/acceptance.md#新版-waiting-展示的配套验证)。
-
-需要回退时，恢复同一维护点的旧版本 Server/Client、数据库与密钥／配置备份；不能把新数据库与旧二进制混用。更早的站点 UUID Client 仍按第 8.4 节处理，不套用本节的身份保留流程。最终镜像与容量验收独立记录，发布标签本身不表示这些验收已经完成。
-
-<a id="upgrade-v2-2-0"></a>
-### 8.6 从 v2.1.0 升级到 v2.3.2（HTTP API 与 Client 图形栈 Breaking Change）
-
-本次控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3；现有 v2.1.0 Client 可继续连接。 Server 包内的 Web 与 Server 一起升级。自定义运维脚本必须迁移旧 Session/Home 单台写接口。Client 升级到 v2.3.2 时，还须完成第 8.7 节的 Wayland 迁移。
-
-1. 暂停新目标操作，按第 8.2 节保存一致的数据库、密钥与配置冷备份，保留原安装包用于回退。
-2. 安装第 3.2 节校验过的 `natsume-server_2.3.2_amd64.deb`，随后显式重启 `natsume-server.service`。 启动时自动应用第三条 migration，增加提交去重记录表；既有设备、绑定、账号和目标保留。**不要重新 bootstrap。**
-3. 完全刷新管理员 Web 页面。Targets 默认展示 Enabled/Disabled，可切换生命周期筛选；单台与批量操作统一提交，操作对象仅限 Enabled，包含离线设备。
-4. 外部脚本改用 `POST /api/v2/target-submissions`，请求带唯一 `operation_id`、设备范围和一种动作。 旧 `PUT /devices/{device_id}/session-control`、`POST /devices/{device_id}/session-control/actions/terminate` 与 `POST /devices/{device_id}/home/actions/reset` 写入口已删除，原读取接口保留。
-5. 单台验证 waiting/contest 切换及提交结果，再按现场需要使用全部设备操作。HTTP 成功表示 Server 已保存结果，终端完成仍看 Session/Home convergence。 网络结果不明时用原操作 ID 和原内容重试；Web 会保留待确认请求，刷新后可点击 **Retry original request**。 明确拒绝的设备使用 **Retry failed devices** 创建新操作，仅重试失败名单。
-
-去重记录随当前比赛数据库保留，不随注销、设备禁用或撤销删除。数据库回退会回退这些记录； 回退时使用同一维护点的包与数据库，不能向回退后的系统重放升级后生成的待确认请求。
-
-<a id="upgrade-v2-3-0"></a>
-### 8.7 从 v2.2.x 升级到 v2.3.2（Client 图形栈 Breaking Change）
-
-本版本没有新增数据库 migration，控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3。 Server 升级保留设备、绑定、目标和提交去重记录；原有协议兼容的 Client 仍可连接。 Client v2.3.2 的 Agent、Helper 和会话入口要求原生 Wayland，必须与镜像配置配套更新。
-
-1. 在维护窗口结束比赛操作，保存 teams 的工作文件，保留独立管理员 SSH/TTY 入口；按第 8.2 节完成一致冷备份。
-2. 安装校验过的 `natsume-server_2.3.2_amd64.deb`，显式重启 Server，完全刷新管理员 Web。**不要重新 bootstrap 或删除数据库。**
-3. 按[镜像维护流程](../packaging/image/integration.md#11-维护与回退)退出受管会话并停止 Client 控制连接，安装 `natsume-client_2.3.2_amd64.deb`。保留设备身份、Control/Gateway 密钥、Binding、Home 维护状态和展示缓存。
-4. 应用新包 `/usr/share/natsume/image-integration/` 的完整交接输入：启用 GDM Wayland，设置 `PreferredDisplayServer=wayland`，waiting 选择 `gnome-kiosk-script-wayland`，teams 选择 `ubuntu-wayland`，确认官方会话入口存在。
-5. 清理旧的强制 `WaylandEnable=false` / `PreferredDisplayServer=xorg` GDM drop-in、旧 Natsume Xorg ServerFlags 和 Kiosk X11 frame-scale 覆盖。合并新版 dconf 数据库及 locks，在目标系统执行 `dconf update`。保留完整官方 PAM 栈与 Home 门禁；包安装本身不会自动完成这些配置迁移。
-6. 正常重启 Client，使 Helper、Daemon、Agent 及图形会话全部加载新版本；仅磁盘上的二进制被更新不能证明运行进程已更新。确认 waiting/teams 均为 seat0 的原生 `Type=wayland` 会话，绑定和设备身份保持不变。
-7. 核对实际 waiting 全屏、队伍资料、键盘输入、teams Home 图标和完整右键菜单，再验证普通切换、Home reset、断线重连及冷启动恢复当前目标。初始化和重建允许短暂 greeter/闪屏；不保证全过程零闪屏。
-
-回退时使用匹配的旧 Client 与 X11 镜像配置及维护备份，不能只降级 Helper、Agent 或单个二进制。
-
-<a id="upgrade-v2-3-1"></a> <a id="upgrade-v2-3-2"></a>
-### 8.8 从 v2.3.0／v2.3.1 升级到 v2.3.2
-
-本补丁将 Rustls 升级到 0.23.45，修复 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)，并包含 Gateway 本机解析与 Firefox 入口修复。不改变数据库 schema、Device Control 或本地 Agent 协议；已完成原生 Wayland 集成的 v2.3.0 镜像可以原地升级。更早的 Client 仍须先按第 8.7 节完成镜像配置迁移。
-
-1. 在维护期保存正在使用的比赛文件。安装校验过的完整 `natsume-client_2.3.2_amd64.deb`，保留设备身份、凭据、绑定、Home 状态以及现有完整 `config.toml` 和 CA。
-2. 执行 `sudo systemctl restart natsume-privileged-helper.service natsume-device-daemon.service`，使两个进程加载配套版本。Daemon 从配置解析 Gateway 域名并传给 Helper，Helper 不读取 Client 配置；首次同步不需要 Server 在线或重新 Enrollment。
-3. 完全退出再打开 Firefox。按第 7.4 节检查实际域名仅解析到 loopback，Firefox 的主页及比赛书签均使用配置域名，其他地址、书签和 CA 策略保留。无需重新制作镜像或手工编辑 hosts。
-4. 安装 `natsume-server_2.3.2_amd64.deb` 并显式重启 `natsume-server.service`，使 Server HTTPS/WSS 同样加载修复后的 TLS 依赖；不重新 bootstrap 或清除数据库。
-
-后续修改 Gateway hostname 时，保持两端配置一致，重启 Daemon 并重新打开 Firefox 即可；不要求重复重启 Helper。
 
 ## 9. 故障定位表
 
@@ -1127,7 +1037,66 @@ Client 升级不会自动应用新 /usr/share/natsume/image-integration/。升�
 
 - [Server 命令、配置和私有材料](../crates/natsume-server/README.md)、[Server 配置示例](../packaging/server/config.example.toml)、[Client 配置示例](../packaging/client/config.example.toml)。
 - [Server 配置解析](../crates/natsume-server/src/config.rs)、[TLS 加载](../crates/natsume-server/src/tls.rs)、[Gateway CA 签发](../crates/natsume-server/src/component/gateway/issuer.rs)。
-- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 schema](../crates/natsume-server/migrations/00000000000001_initial/up.sql)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
-- [构建与发布](../packaging/README.md)、[Client manifest](../packaging/client/nfpm.yaml)、[桌面集成交接](../packaging/image/README.md)、[验收要求](../packaging/image/acceptance.md)。
+- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 migration 序列](../crates/natsume-server/migrations/)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
+- [构建与发布](../packaging/README.md)、[Client manifest](../packaging/client/nfpm.yaml)、[Client 运行环境要求](client-environment.zh-CN.md)。
 
 架构目标由 [architecture.md](architecture.md) 定义。
+
+## 历史迁移参考（仅适用于 v2.3.2）
+
+以下记录的终点均为 v2.3.2，不属于当前部署步骤，也不能证明旧数据库、配置或镜像与当前版本兼容。历史安装包应从 [v2.3.2 Release](https://github.com/4o3F/Natsume/releases/tag/v2.3.2) 单独下载并核对该版本的 SHA256SUMS，不使用第 3.2 节选定的当前版本包。旧镜像的 Wayland、GDM、dconf 和 Home 迁移由镜像项目完成，不再依赖随包镜像适配材料。
+
+<a id="upgrade-from-v2-0"></a>
+### 从 v2.0.4 配套升级到 v2.3.2（Breaking Change）
+
+从 v2.0.4 升级涉及控制协议的不兼容变化。Server、Device Daemon、Helper、Session Agent 与 Web 必须配套；控制连接使用 `natsume.control.v3`，本地 Agent 注册使用协议 3。旧 Client 不能继续连接新 Server。新版绑定目标必须包含队伍／学校资料，因此须先补全名单，再让设备重连。
+
+1. 在维护窗口完成已开始的 Home reset／会话维护，保存比赛数据，暂停新操作。按[运行环境的维护要求](client-environment.zh-CN.md#维护要求)退出受管会话并停止 Client 控制连接；确认 Server 已显示设备离线。
+2. 按第 8.2 节保存一致的数据库、密钥与配置冷备份，另行保存 Logo 目录、完整名单和匹配旧包。备份步骤结束后再次停止 Server，保持停止状态进行软件包升级。
+3. 安装从该历史 Release 校验过的 `natsume-server_2.3.2_amd64.deb`。在已有 `/etc/natsume-server/config.toml` 的 `[storage]` 中补上必填绝对路径 `organization_logos`，参考第 4.3 节。保留原数据库和全部密钥，**不要重新 bootstrap，也不要删除数据库或设备身份**。
+4. 显式启动 Server；`serve` 在启动时执行数据库迁移，保留已有 Device、Enrollment、Account、Vault、Binding 和 Session 目标。迁移会移除旧格式的未提交导入候选，须重新上传完整 XLSX。
+5. 保持 Client 停止，通过新版 Panel 按第 5.2 节上传完整名单并提交。账号与座位须与现有数据一致；不准备改密时填写原密码。核对学校、队伍资料和已有绑定，准备 Logo。没有 Logo 允许使用默认图；缺少队伍资料的已绑定账号不能生成有效控制目标。
+6. 安装配套 `natsume-client_2.3.2_amd64.deb`，由镜像项目检查并应用匹配的配置差异，包括下文 Wayland 迁移所需的会话、GDM 和 dconf 配置。包会提供 Noto CJK 字体依赖和展示目录；保留原 Client 身份、Control/Gateway 凭据及 Home 维护状态。确认 `/var/lib/natsume-display` 为 natsume 所有、0755，waiting 只能读取图片。
+7. 先恢复一台测试设备，再逐批恢复。核对设备 Online、原绑定／座位、waiting 队伍资料、Logo 和五项资源状态；缺图不等于离线。检查切换、断线缓存、解绑后不恢复旧队伍，并按[运行环境要求](client-environment.zh-CN.md)在实际目标机器完成验证。
+
+需要回退时，恢复同一维护点的旧版本 Server/Client、数据库与密钥／配置备份；不能把新数据库与旧二进制混用。更早的站点 UUID Client 仍按第 8.4 节处理，不套用本节的身份保留流程。最终镜像与容量验收独立记录，发布标签本身不表示这些验收已经完成。
+
+<a id="upgrade-v2-2-0"></a>
+### 从 v2.1.0 升级到 v2.3.2（HTTP API 与 Client 图形栈 Breaking Change）
+
+本次控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3；现有 v2.1.0 Client 可继续连接。 Server 包内的 Web 与 Server 一起升级。自定义运维脚本必须迁移旧 Session/Home 单台写接口。Client 升级到 v2.3.2 时，还须完成下文的 Wayland 迁移。
+
+1. 暂停新目标操作，按第 8.2 节保存一致的数据库、密钥与配置冷备份，保留原安装包用于回退。
+2. 安装从该历史 Release 校验过的 `natsume-server_2.3.2_amd64.deb`，随后显式重启 `natsume-server.service`。 启动时自动应用第三条 migration，增加提交去重记录表；既有设备、绑定、账号和目标保留。**不要重新 bootstrap。**
+3. 完全刷新管理员 Web 页面。Targets 默认展示 Enabled/Disabled，可切换生命周期筛选；单台与批量操作统一提交，操作对象仅限 Enabled，包含离线设备。
+4. 外部脚本改用 `POST /api/v2/target-submissions`，请求带唯一 `operation_id`、设备范围和一种动作。 旧 `PUT /devices/{device_id}/session-control`、`POST /devices/{device_id}/session-control/actions/terminate` 与 `POST /devices/{device_id}/home/actions/reset` 写入口已删除，原读取接口保留。
+5. 单台验证 waiting/contest 切换及提交结果，再按现场需要使用全部设备操作。HTTP 成功表示 Server 已保存结果，终端完成仍看 Session/Home convergence。 网络结果不明时用原操作 ID 和原内容重试；Web 会保留待确认请求，刷新后可点击 **Retry original request**。 明确拒绝的设备使用 **Retry failed devices** 创建新操作，仅重试失败名单。
+
+去重记录随当前比赛数据库保留，不随注销、设备禁用或撤销删除。数据库回退会回退这些记录； 回退时使用同一维护点的包与数据库，不能向回退后的系统重放升级后生成的待确认请求。
+
+<a id="upgrade-v2-3-0"></a>
+### 从 v2.2.x 升级到 v2.3.2（Client 图形栈 Breaking Change）
+
+本版本没有新增数据库 migration，控制连接仍使用 `natsume.control.v3`，本地 Agent 协议仍为 3。 Server 升级保留设备、绑定、目标和提交去重记录；原有协议兼容的 Client 仍可连接。 Client v2.3.2 的 Agent、Helper 和会话入口要求原生 Wayland，必须与镜像配置配套更新。
+
+1. 在维护窗口结束比赛操作，保存 teams 的工作文件，保留独立管理员 SSH/TTY 入口；按第 8.2 节完成一致冷备份。
+2. 安装校验过的 `natsume-server_2.3.2_amd64.deb`，显式重启 Server，完全刷新管理员 Web。**不要重新 bootstrap 或删除数据库。**
+3. 按[运行环境的维护要求](client-environment.zh-CN.md#维护要求)退出受管会话并停止 Client 控制连接，安装 `natsume-client_2.3.2_amd64.deb`。保留设备身份、Control/Gateway 密钥、Binding、Home 维护状态和展示缓存。
+4. 由镜像项目完成与新 Client 匹配的桌面适配，满足[运行环境要求](client-environment.zh-CN.md)：启用原生 Wayland，waiting 使用 `gnome-kiosk-script-wayland`，teams 使用 `ubuntu-wayland`，确认官方会话入口存在。
+5. 清理旧的强制 `WaylandEnable=false` / `PreferredDisplayServer=xorg` GDM drop-in、旧 Natsume Xorg ServerFlags 和 Kiosk X11 frame-scale 覆盖。合并新版 dconf 数据库及 locks，在目标系统执行 `dconf update`。保留完整官方 PAM 栈与 Home 门禁；包安装本身不会自动完成这些配置迁移。
+6. 正常重启 Client，使 Helper、Daemon、Agent 及图形会话全部加载新版本；仅磁盘上的二进制被更新不能证明运行进程已更新。确认 waiting/teams 均为 seat0 的原生 `Type=wayland` 会话，绑定和设备身份保持不变。
+7. 核对实际 waiting 全屏、队伍资料、键盘输入、teams Home 图标和完整右键菜单，再验证普通切换、Home reset、断线重连及冷启动恢复当前目标。初始化和重建允许短暂 greeter/闪屏；不保证全过程零闪屏。
+
+回退时使用匹配的旧 Client 与 X11 镜像配置及维护备份，不能只降级 Helper、Agent 或单个二进制。
+
+<a id="upgrade-v2-3-1"></a> <a id="upgrade-v2-3-2"></a>
+### 从 v2.3.0／v2.3.1 升级到 v2.3.2
+
+本补丁将 Rustls 升级到 0.23.45，修复 [RUSTSEC-2026-0285](https://github.com/rustls/rustls/security/advisories/GHSA-2mjx-qc3c-rqvc)，并包含 Gateway 本机解析与 Firefox 入口修复。不改变数据库 schema、Device Control 或本地 Agent 协议；已完成原生 Wayland 集成的 v2.3.0 镜像可以原地升级。更早的 Client 仍须先按上述 Wayland 迁移要求完成镜像配置迁移。
+
+1. 在维护期保存正在使用的比赛文件。安装校验过的完整 `natsume-client_2.3.2_amd64.deb`，保留设备身份、凭据、绑定、Home 状态以及现有完整 `config.toml` 和 CA。
+2. 执行 `sudo systemctl restart natsume-privileged-helper.service natsume-device-daemon.service`，使两个进程加载配套版本。Daemon 从配置解析 Gateway 域名并传给 Helper，Helper 不读取 Client 配置；首次同步不需要 Server 在线或重新 Enrollment。
+3. 完全退出再打开 Firefox。按第 7.4 节检查实际域名仅解析到 loopback，Firefox 的主页及比赛书签均使用配置域名，其他地址、书签和 CA 策略保留。无需重新制作镜像或手工编辑 hosts。
+4. 安装 `natsume-server_2.3.2_amd64.deb` 并显式重启 `natsume-server.service`，使 Server HTTPS/WSS 同样加载修复后的 TLS 依赖；不重新 bootstrap 或清除数据库。
+
+后续修改 Gateway hostname 时，保持两端配置一致，重启 Daemon 并重新打开 Firefox 即可；不要求重复重启 Helper。

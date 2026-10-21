@@ -3,6 +3,7 @@ name: natsume-client
 arch: ${ARCH}
 platform: linux
 version: ${VERSION}
+version_schema: none
 section: admin
 priority: optional
 maintainer: Natsume Project
@@ -39,11 +40,14 @@ contents:
   - src: ${AUTHOR_AVATAR_FILE}
     dst: /usr/share/natsume/author-avatar.png
     file_info: {mode: 0o644}
+  - src: ${CLIENT_LICENSES}/Caddy-LICENSE
+    dst: /usr/share/doc/natsume-client/licenses/Caddy-LICENSE
+    file_info: {mode: 0o644}
+  - src: ${CLIENT_LICENSES}/Skia-LICENSE
+    dst: /usr/share/doc/natsume-client/licenses/Skia-LICENSE
+    file_info: {mode: 0o644}
   - src: packaging/client/rootfs/usr/
     dst: /usr/
-    type: tree
-  - src: packaging/image/
-    dst: /usr/share/natsume/image-integration/
     type: tree
   - src: packaging/client/rootfs/etc/pam.d/
     dst: /etc/pam.d/

@@ -20,6 +20,7 @@ qrcode.workspace = true
 rustix.workspace = true
 semver.workspace = true
 serde_json.workspace = true
+skia-bindings.workspace = true
 slint = { workspace = true, features = ["unstable-winit-030"] }
 tokio.workspace = true
 tracing.workspace = true

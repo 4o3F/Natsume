@@ -1,60 +1,53 @@
 # Packaging
 
-This directory owns the Server, workstation Client and independent DOMjudge-wrapper Debian manifests, package-owned runtime files, image integration inputs and release checks. nFPM packages Rust/Web outputs and verified runtime assets. All three Debs are generic: deployment provisions configuration, certificates and any source credentials after package installation. No ignored VM experiment is a release input.
+This directory owns the Server, workstation Client and independent DOMjudge-wrapper Debian manifests, package-owned runtime files and prepared assets. nFPM packages Rust/Web outputs and verified runtime assets. All three Debs are generic: deployment provisions configuration, certificates and any source credentials after package installation. No ignored VM experiment is a release input.
 
 | Path | Responsibility |
 | --- | --- |
 | `server/` | `natsume-server` manifest, runtime rootfs and postinstall |
-| `client/` | `natsume-client` manifest, runtime rootfs, fixed PAM/Kiosk entry points, maintainer scripts and supply-chain pins |
+| `client/` | `natsume-client` manifest, runtime rootfs, fixed PAM/Kiosk entry points and maintainer scripts |
 | [print-domjudge/](print-domjudge/README.md) | Independent `natsume-print-domjudge` wrapper, pinned Typst/template/fonts, deployment example and standalone package builder |
-| [image/](image/README.md) | Standalone image-builder handoff: all configuration inputs, dependencies, implementation requirements, acceptance criteria and checker |
-| `ci-package-smoke.sh` | Build/inspect all three real Debs, runtime/image contracts and real HTTPS/Typst admission tests |
-| `check-image-inputs.py` | Verify the source input closure and actual Client Deb image payload |
-| `check-maintainer-scripts.py` | Verify non-mutating postinstall file checks in temporary roots |
-| `hosted-lifecycle.sh` | Existing acknowledgement-gated disposable-runner lifecycle harness |
-| `target-vm/` | Ignored local experiments and evidence; never required by build or installation |
+| [manifest.json](manifest.json) | Fixed download URLs, versions and SHA-256 values for all build tools and runtime assets |
+| [`../tools/assets.ts`](../tools/assets.ts) | `deno task prepare`: dependencies, fixed tools/runtime assets and package-time avatar |
+| [`../tools/build.ts`](../tools/build.ts) | Offline compile checks, generated HTTP types and production builds |
+| [`../tools/package.ts`](../tools/package.ts) | Render the three nFPM manifests and generate Debs from prepared assets and prebuilt binaries |
 
-## Client and image handoff
+## Client environment
 
-The Client package installs Helper/Daemon/Agent and its fixed runtime integration. It also installs `image/` at `/usr/share/natsume/image-integration/`. The image builder reads that installed directory and applies its [manifest](image/manifest.tsv) after provisioning the official desktop and fixed accounts. Upstream stack merges, actual UID substitutions, final skel/template generation and offline enablement remain image build steps; Deb configuration alone does not make a boot-ready image. The Client Deb contains no deployment configuration or CA certificates. Autoinstall installs the deployer's complete `config.toml` and matching public CA files under `/etc/natsume/` before first startup. Package scripts never rewrite or delete them.
-
-The entire `image/` directory can also be archived and handed to an image-builder project independently. Its README, input contract, implementation guide and acceptance document contain all required design context; its `check.py` runs without this repository or Git. The handoff distinguishes the matching Client Deb build dependency from the complete configuration and CA files supplied by deployment.
-
-The contest role uses Unix user `teams` and `/home/teams`; waiting uses `waiting` and `/home/waiting`. Protocol/CLI role tokens and `gdm-contest` remain `contest`. The Client stays installed; this handoff does not depend on an uninstall workflow. The [image integration requirements](image/integration.md) define all IMG-01–08 delivery obligations. Release checks and evidence requirements are in the [image acceptance guide](image/acceptance.md).
-
-## Supply-chain pins
-
-| Tool | Release artifact | Verification |
-| --- | --- | --- |
-| Caddy `2.11.4` | `caddy_2.11.4_linux_amd64.tar.gz` from the [official release](https://github.com/caddyserver/caddy/releases/tag/v2.11.4) | `client/caddy.archive.sha256` and extracted `client/caddy.sha256` |
-| nFPM `2.47.0` | `nfpm_2.47.0_Linux_x86_64.tar.gz` from the [official release](https://github.com/goreleaser/nfpm/releases/tag/v2.47.0) | `nfpm.sha256` |
-
-`client/caddy.modules` lists required official standard modules. Builds consume verified Caddy through `CADDY_BIN`; maintainer scripts/runtime do not download it. The `linux_amd64` pins identify the packaging tool/input baseline, not completed final-image or GPU acceptance.
+Client installs Helper/Daemon/Agent and its package-owned runtime integration. Its [environment requirements](../docs/client-environment.zh-CN.md) are maintained in `docs/`, not included in the Deb. Accounts, desktop configuration, distribution adaptation, Home templates, installer behavior and target-machine acceptance belong to the image project; this repository does not ship image fragments, templates or an image checker. Installing the Deb alone does not produce a configured workstation.
 
 ## Build inputs and checks
 
-The Server and Client manifests require `VERSION`, `ARCH` and `RUST_RELEASE_DIR`. Client additionally requires `CADDY_BIN` and `AUTHOR_AVATAR_FILE`; Server requires the built `web/dist`. Neither manifest consumes `SITE_CONFIG`, `CONTROL_CA_CERT` or `LOCAL_ORIGIN_CA_CERT`. The matching public site configuration and trust roots are separate deployment inputs for both packages; no root private key or per-device identity enters either Deb or the image. `client/config.example.toml` and `server/config.example.toml` describe each side's complete configuration. They are packaged only under `/usr/share/doc/natsume-{client,server}/`.
-
-`just package-print-domjudge` runs the [standalone builder](print-domjudge/README.md#build-and-package). It builds only the wrapper by default; when `RUST_RELEASE_DIR` is provided it uses that prebuilt wrapper without invoking Cargo. It accepts the same explicit `VERSION` and only `ARCH=amd64`, verifies pinned Typst/font/license inputs and nFPM on the builder, and packages no deployment configuration, credentials or service. Installed wrapper hosts need no Server/Client package or runtime downloads. It can communicate with a Server on another machine without shared files. This package's actual native-library minimums follow its builder and must be checked against the target distribution.
-
-`just package-client` / `just package-server` render these variables with `envsubst` and consume the prebuilt inputs. The Client recipe also checks the resulting Deb's image payload. Both Client packaging entry points run `client/prepare-avatar.py` to resolve the public `4o3f` Gravatar profile and fetch a 512 × 512 PNG. It is baked into the Deb at `/usr/share/natsume/author-avatar.png` (0644), not checked into Git or compiled into the binary. No email hash or API token is required. Download/format failures stop packaging rather than silently shipping an old or missing image; the downloaded image's SHA-256 is logged. Rebuilding later may pick up a changed profile avatar. Cargo builds, installation scripts and the running Agent never fetch this asset. `just ci-packages` downloads and verifies pinned tools, builds production binaries/Web, produces all three real Debs without deployment inputs, and checks that they contain no installed deployment configuration or credentials. The wrapper package consumes its prebuilt production binary with the same CI/release version, and the checks explicitly exercise real Typst and HTTPS admission. Output remains `dist/packages/ci/*.deb`; image integration inputs still travel inside the Client Deb and need no separate image-integration package or VM archive.
+Use Linux amd64 with Deno from `.deno-version`, the repository Rust toolchain, Node/pnpm for Web, and native build dependencies. Preparation also needs curl, tar and xz; wrapper packaging needs Debian `dpkg-dev` for `dpkg-shlibdeps`. No Python or globally installed nFPM is needed for this build path.
 
 ```sh
-python3 packaging/check-image-inputs.py
-python3 packaging/check-image-inputs.py --deb /absolute/path/natsume-client.deb
+deno task prepare                         # Download dependencies, tools and runtime assets
+deno task check                           # Script, Rust and Web compile checks
+deno task build server client print-domjudge
+deno task package                         # Write all three Debs to dist/packages/
 ```
 
-The first command verifies that all image files are listed, correctly mapped and not ignored. The second also compares every input's bytes and metadata with the actual Deb and rejects missing/extra inputs or accidental direct installation of image-owned configuration. Package CI runs both checks. It does not execute image configuration, create users, mount Home or start a desktop on the host.
+`prepare` is the only download phase. It caches the locked Deno modules, fetches locked Cargo dependencies, performs a frozen pnpm install inside `web/` and prepares fixed nFPM/Caddy/Typst/font/license inputs plus the Client avatar. All fixed URLs, versions and checksums are maintained in `manifest.json`; corrupt fixed-asset caches fail rather than being silently replaced. Prepared tools and downloads live under `target/build/`; the printing runtime remains under `target/print-domjudge/runtime` for the existing opt-in Rust tests. Preparation records dependency/tool input hashes for each target; rerun it when that target's inputs change. Fixed-asset changes invalidate only their consumers, so a printing font change does not invalidate Web or script preparation. Client/workspace preparation also downloads the Linux amd64 Skia binary archive pinned in `manifest.json`, checks its Cargo lockfile version and SHA-256, and later compilation reads it through a local file URL. The Agent enables Skia's `no-compile` feature so missing or incompatible binaries cannot trigger a source-build download fallback. Server/wrapper-only preparation does not need this native asset. Rust, Node, Deno and native OS packages are builder prerequisites, not installed by project scripts.
 
-The Agent has one startup owner: official `org.gnome.Kiosk.Script.service` with Client's `50-natsume.conf` drop-in, restricted to waiting and executing `/usr/bin/natsume-session-agent run`. Reject the retired global XDG entry, a second Agent user service or external GUI helpers. The image adds only the profile/keyboard/font/scale configuration described in its input set.
+The subsequent tasks use cached-only Deno modules and offline Cargo. These are toolchain settings, not operating-system network isolation for subprocesses. They do not call prepare, install dependencies or download assets. `package` consumes already built binaries and `web/dist`, parses the existing nFPM manifests, fills explicit inputs and invokes the prepared nFPM. Build only what is required with `deno task prepare client`, `deno task build client`, then `deno task package client`; the [wrapper](print-domjudge/README.md#build-and-package) has the same independent three-step flow without Server or Web. Web-only preparation does not need Cargo; Client/wrapper-only preparation does not need Node.
+
+`VERSION` overrides the Cargo workspace version; `--version` takes precedence over it. All three manifests preserve the supplied Debian version without SemVer normalization, including revisions such as `2.10.3-1`. `--ci` appends `~ci1` only when no explicit version is supplied. `ARCH` is restricted to `amd64`. `RUST_RELEASE_DIR` selects an exact prebuilt directory, with relative paths rooted at the repository; an empty value is rejected. Without it, packaging uses `CARGO_TARGET_DIR/release` or `target/release`. `--output` or `NATSUME_PACKAGE_OUTPUT` selects the output directory. Supplying prebuilt binaries does not trigger compilation; `prepare print-domjudge` with `RUST_RELEASE_DIR` also skips Cargo fetching. The manifests' Caddy/avatar/runtime paths are filled from the prepared assets, not deployment files.
+
+The Client avatar is resolved from the public `4o3f` Gravatar profile during prepare and downloaded as a 512 × 512 PNG. It is baked into the Deb at `/usr/share/natsume/author-avatar.png` (0644), not committed or compiled into Rust. Download/format failures stop preparation without replacing the previous image; its SHA-256 is logged. A later prepare may fetch a changed avatar. Builds, installation scripts and the running Agent never fetch it.
+
+CI follows prepare → production build → package, outputs `dist/packages/ci/*.deb` and retains the artifact name `phase0-deb-content-smoke` for the release consumer. The artifact name is not a package-validation claim. This path does not run the former package-content/image/maintainer checks or real Typst/HTTPS admission tests; the [native Print test commands](print-domjudge/README.md#opt-in-tests) remain opt-in after preparing the printing assets. The Rust job also checks regenerated TypeScript bindings (`deno task api --check`) and the Diesel schema (`deno task schema:check`, requiring Diesel CLI 2.3.12 and rustfmt). API checks generate and format temporary output before comparing with the working file; they do not overwrite it or depend on Git staging. Database schema tests run once with the existing Rust test suite. `check scripts` owns Deno type/format/lint checks; `check rust` runs Clippy without a separate Cargo check. CI also runs the native Deno regression tests in `tools/build_test.ts`. Unit/browser/dependency checks and Release publication remain separate steps.
+
+Third-party license texts are prepared with the assets, not duplicated in Git. Client preparation extracts Caddy's LICENSE and Skia's LICENSE_SKIA from their checksum-verified archives and installs them under `/usr/share/doc/natsume-client/licenses/`. Prebuilt Client preparation also needs the pinned Skia archive for this notice, without invoking Cargo or Node. Typst's LICENSE/NOTICE come from its verified archive, and the font's OFL is a checksum-pinned download; they remain in the wrapper Deb. The printing font is copied to a stable runtime filename independently of its download-cache name. Downloads occur only during prepare. The wrapper separately includes the repository's own `LICENSE`. These packaged texts do not constitute a complete license audit of every transitive dependency.
+
+The packages contain no deployment configuration, CA or credentials. Configuration examples remain under `/usr/share/doc/natsume-{client,server}/`. Building these Debs does not apply image configuration, create desktop users, mount Home or start services.
 
 ## Version releases
 
-Push a tag such as `v2.3.2` to run [release.yml](../.github/workflows/release.yml). The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as `v2.3.2-rc.1` (no build metadata). It reuses the full CI workflow at the tagged commit; all jobs must pass before GitHub Release publication. Branch/PR CI keeps its `2.3.2~ci1` package version.
+Push a tag such as `v2.3.2` to run [release.yml](../.github/workflows/release.yml). The workflow accepts `vMAJOR.MINOR.PATCH` and SemVer prerelease suffixes such as `v2.3.2-rc.1` (no build metadata). It reuses the full CI workflow at the tagged commit; all jobs must pass before GitHub Release publication. Branch/PR CI derives `<workspace version>~ci1` from `Cargo.toml` unless the reusable workflow receives an explicit package version.
 
 Each release includes `natsume-client_<version>_amd64.deb`, `natsume-server_<version>_amd64.deb`, `natsume-print-domjudge_<version>_amd64.deb` and `SHA256SUMS`, with automatically generated release notes. Version-specific notes and migration guidance belong in [GitHub Releases](https://github.com/4o3F/Natsume/releases), not separate files in the repository. For prereleases, `v2.3.2-rc.1` becomes Debian version `2.3.2~rc.1`, which sorts before `2.3.2`; the GitHub Release is marked as a prerelease and is not made latest. Download all three packages and the checksum file into one directory and run `sha256sum --check SHA256SUMS` to verify them. To verify only selected downloaded packages, use `sha256sum --ignore-missing --check SHA256SUMS`; the independent wrapper does not require installing the other two packages.
 
-Publishing uses the workflow's `GITHUB_TOKEN` with `contents: write` only in the publish job; it needs no site secrets. The tag must already exist remotely, and an existing release is not overwritten. The weekly hosted lifecycle lane and target-image acceptance remain separate from this release CI.
+Publishing uses the workflow's `GITHUB_TOKEN` with `contents: write` only in the publish job; it needs no site secrets. The tag must already exist remotely, and an existing release is not overwritten. Target-machine acceptance belongs to the image project, separate from this release CI.
 
 ## Deployment configuration
 
@@ -74,6 +67,4 @@ Generic packages can be preinstalled without deployment inputs. Autoinstall late
 
 The former separate `site.toml` format is no longer read. Move Client identity and Gateway hostname into `[site]` of its configuration. Move Server Gateway issuance fields into `[site]`, and CA paths into `[trust]`. Unused schema/fingerprint metadata and Server-only issuance fields are not Client configuration inputs. This configuration format change requires updating deployment generation before upgrading the paired packages; it does not migrate old configuration files.
 
-Image construction enables services against the target root without starting them. Identity is initialized only on the actual machine's first boot. Upgrade of Client plus applied image configuration is a planned maintenance operation; updating `/usr/share/natsume/image-integration` does not silently rewrite vendor PAM/GDM or a live Home. See the image input README for the exact account/template handoff and [maintenance requirements](image/integration.md#11-维护与回退) for whole-system version/state handling. This release uses the current database, Home-window format and waiting/teams accounts; it provides no pre-refactor migration.
-
-Hosted destructive lifecycle checks remain isolated from image inputs and are not a requirement to uninstall a deployed workstation Client.
+Identity is initialized only on the actual machine's first boot. Upgrades and recovery must preserve compatible program versions, deployment configuration and existing identity/Home state; see the [environment requirements](../docs/client-environment.zh-CN.md#维护要求). This release provides no pre-refactor migration.

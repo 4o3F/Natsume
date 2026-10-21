@@ -1,0 +1,38 @@
+{
+  "nfpm": {
+    "version": "2.47.0",
+    "url": "https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_Linux_x86_64.tar.gz",
+    "filename": "nfpm_2.47.0_Linux_x86_64.tar.gz",
+    "sha256": "0660ca602b2d2d2ae4781a06c692b3eeb9d437ffea05b831d76e41f4a3188783"
+  },
+  "caddy": {
+    "version": "2.11.4",
+    "url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz",
+    "filename": "caddy_2.11.4_linux_amd64.tar.gz",
+    "sha256": "527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9",
+    "binary_sha256": "b7105518e3ed1c0761f232e44fc09345535533c9cb0abf0e12809416c7ac64d9"
+  },
+  "skia": {
+    "version": "0.153.3",
+    "url": "https://github.com/rust-skia/skia-binaries/releases/download/0.153.3/skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz",
+    "filename": "skia-binaries-b7f043e0b1e2a850e702-x86_64-unknown-linux-gnu-ganesh-gl-jpegd-jpege-pdf-vulkan.tar.gz",
+    "sha256": "9ebe4c448cc9f789bad241cbd11739cdf759e27db5719c23a7635e096d5807b3"
+  },
+  "typst": {
+    "version": "0.14.2",
+    "url": "https://github.com/typst/typst/releases/download/v0.14.2/typst-x86_64-unknown-linux-musl.tar.xz",
+    "filename": "typst-0.14.2-x86_64-linux-musl.tar.xz",
+    "sha256": "a6044cbad2a954deb921167e257e120ac0a16b20339ec01121194ff9d394996d",
+    "binary_sha256": "3ac6b84150c50a694d44134dc201624fbdc44f705b9992124a13474ddf8c6413"
+  },
+  "font": {
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/Mono/NotoSansMonoCJKsc-Regular.otf",
+    "filename": "NotoSansMonoCJKsc-Regular.otf",
+    "sha256": "ec04cc376b34887cedbdf84074e2e226ed2761eeabdcb9173fc1dd7bfd153ef7"
+  },
+  "font_license": {
+    "url": "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/LICENSE",
+    "filename": "Noto-OFL.txt",
+    "sha256": "6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2"
+  }
+}
