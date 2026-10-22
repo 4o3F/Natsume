@@ -22,6 +22,7 @@ filter.only_tables = [
   "^print_sources$",
   "^print_requests$",
   "^print_documents$",
+  "^print_printers$",
   "^runtime_config$",
   "^seats$",
   "^server_vault_records$",

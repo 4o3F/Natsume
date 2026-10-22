@@ -436,6 +436,18 @@ export type PrintAdmission = {
   in_progress_tasks: number;
 };
 
+export type PrintClientIssued = {
+  protocol_version: number;
+  printer_id: string;
+  client_id: string;
+  token: string;
+};
+
+export type PrintClientPair = {
+  protocol_version: number;
+  code: string;
+};
+
 export type PrintDocument = {
   sha256: string;
   bytes: number;
@@ -445,6 +457,24 @@ export type PrintDocument = {
 export type PrintGenerationFailure = {
   protocol_version: number;
   code: GenerationFailure;
+};
+
+export type PrintPairingCode = {
+  printer_id: string;
+  code: string;
+  expires_at_unix_ms: number;
+};
+
+export type PrintPrinter = {
+  printer_id: string;
+  name: string;
+  client_id: string | null;
+  client_confirmed: boolean;
+  pairing_expires_at_unix_ms: number | null;
+};
+
+export type PrintPrinterCreate = {
+  name: string;
 };
 
 export type PrintQueueEntry = {

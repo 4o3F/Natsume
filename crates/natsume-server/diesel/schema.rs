@@ -165,6 +165,18 @@ diesel::table! {
 }
 
 diesel::table! {
+    print_printers (printer_id) {
+        printer_id -> Text,
+        name -> Text,
+        pairing_code_hash -> Nullable<Binary>,
+        pairing_expires_at_unix_ms -> Nullable<BigInt>,
+        client_id -> Nullable<Text>,
+        client_token_hash -> Nullable<Binary>,
+        client_confirmed -> Integer,
+    }
+}
+
+diesel::table! {
     print_requests (source_id, request_id) {
         source_id -> Text,
         request_id -> Text,
@@ -270,6 +282,7 @@ diesel::allow_tables_to_appear_in_same_query!(
     organizations,
     pending_import_candidate,
     print_documents,
+    print_printers,
     print_requests,
     print_sources,
     runtime_config,

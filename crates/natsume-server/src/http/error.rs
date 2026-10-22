@@ -26,6 +26,7 @@ enum ApiErrorCode {
     AuthorizationDenied,
     InvalidRequest,
     PayloadTooLarge,
+    RateLimited,
     ResourceConflict,
     ResourceNotFound,
     InternalError,
@@ -50,6 +51,7 @@ impl ApiErrorCode {
             Self::AuthorizationDenied => "AUTHORIZATION_DENIED",
             Self::InvalidRequest => "INVALID_REQUEST",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            Self::RateLimited => "RATE_LIMITED",
             Self::ResourceConflict => "RESOURCE_CONFLICT",
             Self::ResourceNotFound => "RESOURCE_NOT_FOUND",
             Self::InternalError => "INTERNAL_ERROR",
@@ -332,10 +334,8 @@ impl ApiError {
         use crate::component::print::PrintError;
         match error {
             PrintError::Invalid => Self::invalid_request("print_invalid"),
-            PrintError::Authentication => {
-                Self::authentication_failed("print_source_authentication")
-            }
-            PrintError::Authorization => Self::authorization_denied("print_source_management"),
+            PrintError::Authentication => Self::authentication_failed("print_authentication"),
+            PrintError::Authorization => Self::authorization_denied("print_management"),
             PrintError::NotFound => Self::not_found("print_not_found"),
             PrintError::Conflict => Self::conflict("print_conflict"),
             PrintError::TooLarge => Self::new(
@@ -345,6 +345,12 @@ impl ApiError {
                 "print_document_too_large",
             ),
             PrintError::Persistence => Self::internal_error("print_persistence"),
+            PrintError::RateLimited => Self::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too Many Requests",
+                ApiErrorCode::RateLimited,
+                "print_pairing_rate_limit",
+            ),
         }
     }
 
@@ -388,6 +394,11 @@ impl IntoResponse for ApiError {
             response
                 .headers_mut()
                 .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));
+        }
+        if self.status == StatusCode::TOO_MANY_REQUESTS {
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, HeaderValue::from_static("60"));
         }
         response
     }

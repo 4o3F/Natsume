@@ -1,3 +1,4 @@
+mod pairing;
 mod persistence;
 
 use std::sync::{Arc, Condvar, Mutex};

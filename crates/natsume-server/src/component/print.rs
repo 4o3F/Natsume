@@ -1,7 +1,10 @@
-//! Durable `DOMjudge` admission, separate from Device Control and physical printing.
+//! Durable print admission and printer identities, separate from Device Control.
 mod db;
+mod pairing;
 mod pdf;
 mod storage;
+
+pub(crate) use pairing::PrintPrinter;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -21,6 +24,7 @@ pub(crate) const DOCUMENT_LIMIT: usize = 8 * 1024 * 1024;
 pub(crate) struct PrintComponent {
     database: Database,
     documents: DocumentStore,
+    pairing_limits: std::sync::Mutex<pairing::PairingLimits>,
 }
 
 /// Only produced after verifying a dedicated source credential, never an Operator cookie.
@@ -145,9 +149,9 @@ pub(crate) struct PrintRequest {
 pub(crate) enum PrintError {
     #[snafu(display("invalid print request"))]
     Invalid,
-    #[snafu(display("print source authentication failed"))]
+    #[snafu(display("print authentication failed"))]
     Authentication,
-    #[snafu(display("print source management requires administrator permission"))]
+    #[snafu(display("print management requires administrator permission"))]
     Authorization,
     #[snafu(display("print request or source was not found"))]
     NotFound,
@@ -157,6 +161,8 @@ pub(crate) enum PrintError {
     TooLarge,
     #[snafu(display("print persistence failed"))]
     Persistence,
+    #[snafu(display("print pairing rate limit exceeded"))]
+    RateLimited,
 }
 
 impl From<StorageError> for PrintError {
@@ -194,6 +200,7 @@ impl PrintComponent {
         Ok(Self {
             database,
             documents,
+            pairing_limits: std::sync::Mutex::default(),
         })
     }
 
@@ -204,6 +211,7 @@ impl PrintComponent {
         let component = Self {
             database,
             documents,
+            pairing_limits: std::sync::Mutex::default(),
         };
         let mut sequence = 0;
         while let Some((next_sequence, hash, bytes)) = component

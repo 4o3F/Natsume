@@ -10,6 +10,8 @@ import type {
   ImportPendingSummary,
   OperatorRegistrationRequest,
   PrintDocument,
+  PrintPairingCode,
+  PrintPrinter,
   PrintQueueEntry,
   PrintRequest,
 } from "./generated/types";
@@ -51,6 +53,18 @@ it("exports queue counters as JSON numbers and keeps the optional seat value req
   }>();
 });
 
+it("exports pairing expiry as JSON numbers with required nullable printer fields", () => {
+  expectTypeOf<
+    PrintPairingCode["expires_at_unix_ms"]
+  >().toEqualTypeOf<number>();
+  expectTypeOf<
+    Pick<PrintPrinter, "client_id" | "pairing_expires_at_unix_ms">
+  >().toEqualTypeOf<{
+    client_id: string | null;
+    pairing_expires_at_unix_ms: number | null;
+  }>();
+});
+
 it("exports secret wrappers as JSON strings without their internal storage", () => {
   expectTypeOf<
     OperatorRegistrationRequest["password"]
@@ -77,6 +91,7 @@ it("does not leak credential fields outside explicitly authorized HTTP DTOs", ()
   const allowed = new Set([
     "SessionRequest.password",
     "PrintSourceIssued.token",
+    "PrintClientIssued.token",
     "ImportPreviewResponse.preview_token",
     "OperatorInvitationIssuedResponse.token",
     "OperatorPasswordResetIssuedResponse.token",

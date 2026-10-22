@@ -1,3 +1,4 @@
+mod pairing;
 mod queue;
 
 use std::{task::Poll, time::Duration};

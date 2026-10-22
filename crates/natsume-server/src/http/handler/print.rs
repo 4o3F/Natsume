@@ -1,4 +1,5 @@
 mod dto;
+mod printers;
 
 pub(crate) use dto::{
     PrintGenerationFailure, PrintRegistration, PrintRequest, PrintSource, PrintSourceIssued,
@@ -46,6 +47,7 @@ pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
             ),
         );
     source
+        .merge(printers::routes(state.clone()))
         .route(
             "/print/queue",
             middleware::require_operator(state.clone(), get(list_queue)),
