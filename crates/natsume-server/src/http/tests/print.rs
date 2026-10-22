@@ -584,3 +584,57 @@ async fn print_logs_never_include_credentials_document_bytes_or_registration_dat
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn authorized_print_management_finishes_after_caller_demotion() -> TestResult {
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    for path in ["/api/v2/print/sources", "/api/v2/print/printers"] {
+        let f = Fixture::new().await?;
+        let (entered, polled) = oneshot::channel();
+        let (release, mut released) = oneshot::channel();
+        let mut entered = Some(entered);
+        let mut bytes = Some(Bytes::from_static(br#"{"name":"in-flight"}"#));
+        let body = Body::from_stream(futures_util::stream::poll_fn(move |cx| {
+            if let Some(entered) = entered.take() {
+                let _ = entered.send(());
+            }
+            if bytes.is_none() {
+                return Poll::Ready(None);
+            }
+            match std::pin::Pin::new(&mut released).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(_) => Poll::Ready(bytes.take().map(Ok::<_, std::io::Error>)),
+            }
+        }));
+        let pending = tokio::spawn(
+            f.router.clone().oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(path)
+                    .header(header::COOKIE, &f.cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)?,
+            ),
+        );
+        tokio::time::timeout(Duration::from_secs(5), polled).await??;
+        f.make_viewer().await?;
+        let denied = drive(
+            &f.router,
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(header::COOKIE, &f.cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(unread_body())?,
+        )
+        .await?;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN);
+        release.send(()).map_err(|()| "body release")?;
+        let response = pending.await??;
+        assert_eq!(response.status(), StatusCode::OK);
+        let value: Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await?)?;
+        assert_eq!(value["name"], "in-flight");
+    }
+    Ok(())
+}

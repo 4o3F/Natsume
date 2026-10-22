@@ -1,5 +1,5 @@
 use axum::{
-    Extension, Json, Router,
+    Json, Router,
     extract::{ConnectInfo, Request, State, rejection::JsonRejection},
     http::{StatusCode, header},
     middleware::{self as axum_middleware, Next},
@@ -8,7 +8,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use super::{ApiError, AppState, OperatorIdentity, PrintError, PrintPathId, middleware};
+use super::{ApiError, AppState, PrintError, PrintPathId, middleware};
 use crate::tls::PeerAddress;
 
 #[derive(Deserialize, specta::Type)]
@@ -60,45 +60,33 @@ async fn pairing_limit(State(state): State<AppState>, request: Request, next: Ne
 
 async fn create(
     State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
     body: Result<Json<PrintPrinterCreate>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("print_printer_json").into_response();
     };
-    match state.print().create_printer(actor, body.name).await {
+    match state.print().create_printer(body.name).await {
         Ok(printer) => Json(printer).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
-async fn list(
-    State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
-) -> Response {
-    match state.print().list_printers(actor).await {
+async fn list(State(state): State<AppState>) -> Response {
+    match state.print().list_printers().await {
         Ok(printers) => Json(printers).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
-async fn issue_code(
-    State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
-    PrintPathId(id): PrintPathId,
-) -> Response {
-    match state.print().issue_pairing_code(actor, id).await {
+async fn issue_code(State(state): State<AppState>, PrintPathId(id): PrintPathId) -> Response {
+    match state.print().issue_pairing_code(id).await {
         Ok(code) => Json(code).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
-async fn clear_binding(
-    State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
-    PrintPathId(id): PrintPathId,
-) -> Response {
-    match state.print().clear_printer_binding(actor, id).await {
+async fn clear_binding(State(state): State<AppState>, PrintPathId(id): PrintPathId) -> Response {
+    match state.print().clear_printer_binding(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }

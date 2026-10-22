@@ -53,11 +53,7 @@ const INVITATION_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 const RESET_TTL_MS: i64 = 60 * 60 * 1000;
 
 impl OperatorComponent {
-    pub(crate) async fn list_accounts(
-        &self,
-        actor: OperatorIdentity,
-    ) -> Result<Vec<OperatorSummary>, OperatorError> {
-        actor.require_admin()?;
+    pub(crate) async fn list_accounts(&self) -> Result<Vec<OperatorSummary>, OperatorError> {
         self.database
             .read(store::list_accounts)
             .await
@@ -67,11 +63,9 @@ impl OperatorComponent {
 
     pub(crate) async fn change_role(
         &self,
-        actor: OperatorIdentity,
         target: Uuid,
         role: OperatorRole,
     ) -> Result<(), OperatorError> {
-        actor.require_admin()?;
         self.database
             .write(move |tx| {
                 store::find_account_by_id(tx, target)?.ok_or(OperatorError::OperatorNotFound)?;
@@ -86,12 +80,7 @@ impl OperatorComponent {
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn delete_account(
-        &self,
-        actor: OperatorIdentity,
-        target: Uuid,
-    ) -> Result<(), OperatorError> {
-        actor.require_admin()?;
+    pub(crate) async fn delete_account(&self, target: Uuid) -> Result<(), OperatorError> {
         self.database
             .write(move |tx| {
                 store::protect_last_admin(tx, target)?;
@@ -104,11 +93,7 @@ impl OperatorComponent {
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn list_invitations(
-        &self,
-        actor: OperatorIdentity,
-    ) -> Result<Vec<InvitationSummary>, OperatorError> {
-        actor.require_admin()?;
+    pub(crate) async fn list_invitations(&self) -> Result<Vec<InvitationSummary>, OperatorError> {
         self.database
             .read(links::list_invitations)
             .await
@@ -118,29 +103,23 @@ impl OperatorComponent {
 
     pub(crate) async fn issue_invitation(
         &self,
-        actor: OperatorIdentity,
+        issuer_operator_id: Uuid,
         role: OperatorRole,
     ) -> Result<IssuedInvitation, OperatorError> {
-        actor.require_admin()?;
         let token = mint(LinkKind::Invitation)?;
         let hash = Zeroizing::new(token.sha256());
         let invitation = self
             .database
             .write(move |tx| {
-                current_admin(tx, actor.operator_id())?;
-                create_invitation(tx, actor.operator_id(), role, &hash)
+                eligible_link_issuer(tx, issuer_operator_id)?;
+                create_invitation(tx, issuer_operator_id, role, &hash)
             })
             .await
             .map_err(TransactionError::into_error)?;
         Ok(IssuedInvitation { invitation, token })
     }
 
-    pub(crate) async fn revoke_invitation(
-        &self,
-        actor: OperatorIdentity,
-        id: Uuid,
-    ) -> Result<(), OperatorError> {
-        actor.require_admin()?;
+    pub(crate) async fn revoke_invitation(&self, id: Uuid) -> Result<(), OperatorError> {
         self.database
             .write(move |tx| {
                 // Repeated revocation is an idempotent no-op.
@@ -152,21 +131,20 @@ impl OperatorComponent {
 
     pub(crate) async fn regenerate_invitation(
         &self,
-        actor: OperatorIdentity,
+        issuer_operator_id: Uuid,
         id: Uuid,
     ) -> Result<IssuedInvitation, OperatorError> {
-        actor.require_admin()?;
         let token = mint(LinkKind::Invitation)?;
         let hash = Zeroizing::new(token.sha256());
         let invitation = self
             .database
             .write(move |tx| {
-                current_admin(tx, actor.operator_id())?;
+                eligible_link_issuer(tx, issuer_operator_id)?;
                 let previous = links::invitation_by_id(tx, id)?;
                 links::delete_invitation(tx, id)?;
                 // A fresh authorization is signed by the administrator performing
                 // the regeneration, with the original immutable role.
-                create_invitation(tx, actor.operator_id(), previous.role, &hash)
+                create_invitation(tx, issuer_operator_id, previous.role, &hash)
             })
             .await
             .map_err(TransactionError::into_error)?;
@@ -218,16 +196,15 @@ impl OperatorComponent {
 
     pub(crate) async fn issue_password_reset(
         &self,
-        actor: OperatorIdentity,
+        issuer_operator_id: Uuid,
         target: Uuid,
     ) -> Result<IssuedPasswordReset, OperatorError> {
-        actor.require_admin()?;
         let token = mint(LinkKind::PasswordReset)?;
         let hash = Zeroizing::new(token.sha256());
         let reset = self
             .database
             .write(move |tx| {
-                current_admin(tx, actor.operator_id())?;
+                eligible_link_issuer(tx, issuer_operator_id)?;
                 let created = links::now(tx)?;
                 let reset = PasswordResetInspection {
                     operator_id: target,
@@ -237,7 +214,7 @@ impl OperatorComponent {
                         .checked_add(RESET_TTL_MS)
                         .ok_or(OperatorError::PersistenceFailed)?,
                 };
-                links::insert_reset(tx, &reset, actor.operator_id(), &hash, created)?;
+                links::insert_reset(tx, &reset, issuer_operator_id, &hash, created)?;
                 Ok::<_, OperatorError>(reset)
             })
             .await
@@ -288,7 +265,7 @@ impl OperatorComponent {
 
     pub(crate) async fn change_password(
         &self,
-        actor: OperatorIdentity,
+        operator_id: Uuid,
         current_password: String,
         new_password: String,
         confirmation: String,
@@ -301,7 +278,7 @@ impl OperatorComponent {
         let (account, permit) = self
             .database
             .read(move |tx| {
-                let account = store::find_account_by_id(tx, actor.operator_id())?
+                let account = store::find_account_by_id(tx, operator_id)?
                     .ok_or(OperatorError::SessionAuthenticationFailed)?;
                 Ok::<_, OperatorError>((account, permit))
             })
@@ -318,7 +295,7 @@ impl OperatorComponent {
         .map_err(|_| OperatorError::PasswordTaskFailed)??;
         self.database
             .write(move |tx| {
-                change_password_hashed(tx, actor.operator_id(), revision, &password_hash)?;
+                change_password_hashed(tx, operator_id, revision, &password_hash)?;
                 Ok(permit)
             })
             .await
@@ -363,11 +340,15 @@ async fn hash_new_password(
         .map_err(|_| OperatorError::PasswordTaskFailed)?
 }
 
-fn current_admin(tx: &mut Transaction<'_>, id: Uuid) -> Result<(), OperatorError> {
-    store::find_account_by_id(tx, id)?
-        .ok_or(OperatorError::AuthorizationDenied)?
-        .identity
-        .require_admin()
+// Links must not be issued by an ineligible persisted issuer, even by an
+// already-authorized in-flight request: later promotion must not revive them.
+// This is link validity, not authorization of the current HTTP caller.
+fn eligible_link_issuer(tx: &mut Transaction<'_>, id: Uuid) -> Result<(), OperatorError> {
+    let issuer = store::find_account_by_id(tx, id)?.ok_or(OperatorError::LinkUnavailable)?;
+    if issuer.identity.role() != OperatorRole::Admin {
+        return Err(OperatorError::LinkUnavailable);
+    }
+    Ok(())
 }
 
 fn create_invitation(
@@ -398,10 +379,7 @@ fn valid_invitation(
     if invitation.expires_at_unix_ms <= links::now(tx)? {
         return Err(OperatorError::LinkUnavailable);
     }
-    current_admin(tx, invitation.issuer_operator_id).map_err(|error| match error {
-        OperatorError::AuthorizationDenied => OperatorError::LinkUnavailable,
-        other => other,
-    })?;
+    eligible_link_issuer(tx, invitation.issuer_operator_id)?;
     Ok(invitation)
 }
 
@@ -413,10 +391,7 @@ fn valid_reset(
     if reset.expires_at_unix_ms <= links::now(tx)? {
         return Err(OperatorError::LinkUnavailable);
     }
-    current_admin(tx, issuer).map_err(|error| match error {
-        OperatorError::AuthorizationDenied => OperatorError::LinkUnavailable,
-        other => other,
-    })?;
+    eligible_link_issuer(tx, issuer)?;
     Ok(reset)
 }
 

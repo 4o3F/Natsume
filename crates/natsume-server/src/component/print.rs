@@ -15,7 +15,6 @@ use snafu::Snafu;
 use subtle::ConstantTimeEq as _;
 use uuid::Uuid;
 
-use super::operator::OperatorIdentity;
 use crate::db::{Database, PersistenceError, TransactionError};
 use storage::{DocumentStore, StorageError};
 
@@ -151,8 +150,6 @@ pub(crate) enum PrintError {
     Invalid,
     #[snafu(display("print authentication failed"))]
     Authentication,
-    #[snafu(display("print management requires administrator permission"))]
-    Authorization,
     #[snafu(display("print request or source was not found"))]
     NotFound,
     #[snafu(display("print request conflicts with persisted state"))]
@@ -238,12 +235,8 @@ impl PrintComponent {
 
     pub(crate) async fn create_source(
         &self,
-        actor: OperatorIdentity,
         name: String,
     ) -> Result<PrintSourceIssued, PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
         if !(1..=128).contains(&name.chars().count()) || name.chars().any(char::is_control) {
             return Err(PrintError::Invalid);
         }
@@ -266,27 +259,14 @@ impl PrintComponent {
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn list_sources(
-        &self,
-        actor: OperatorIdentity,
-    ) -> Result<Vec<PrintSource>, PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
+    pub(crate) async fn list_sources(&self) -> Result<Vec<PrintSource>, PrintError> {
         self.database
             .read(db::list_sources)
             .await
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn revoke_source(
-        &self,
-        actor: OperatorIdentity,
-        source_id: String,
-    ) -> Result<(), PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
+    pub(crate) async fn revoke_source(&self, source_id: String) -> Result<(), PrintError> {
         canonical_id(&source_id)?;
         self.database
             .write(move |tx| db::revoke_source(tx, &source_id))

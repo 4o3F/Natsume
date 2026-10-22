@@ -20,10 +20,7 @@ use axum::{
 use serde::Deserialize;
 
 use super::super::{AppState, error::ApiError, middleware};
-use crate::component::{
-    operator::OperatorIdentity,
-    print::{DOCUMENT_LIMIT, PrintError, SourceIdentity, canonical_id},
-};
+use crate::component::print::{DOCUMENT_LIMIT, PrintError, SourceIdentity, canonical_id};
 
 pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
     let source = Router::new()
@@ -121,23 +118,19 @@ pub(crate) async fn list_queue(State(state): State<AppState>) -> Response {
 
 pub(crate) async fn create_source(
     State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
     body: Result<Json<PrintSourceCreate>, JsonRejection>,
 ) -> Response {
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("print_json").into_response();
     };
-    match state.print().create_source(actor, body.name).await {
+    match state.print().create_source(body.name).await {
         Ok(source) => Json(PrintSourceIssued::from(source)).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
 
-pub(crate) async fn list_sources(
-    State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
-) -> Response {
-    match state.print().list_sources(actor).await {
+pub(crate) async fn list_sources(State(state): State<AppState>) -> Response {
+    match state.print().list_sources().await {
         Ok(sources) => Json(
             sources
                 .into_iter()
@@ -151,10 +144,9 @@ pub(crate) async fn list_sources(
 
 pub(crate) async fn revoke_source(
     State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
     PrintPathId(id): PrintPathId,
 ) -> Response {
-    match state.print().revoke_source(actor, id).await {
+    match state.print().revoke_source(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => ApiError::from_print(e).into_response(),
     }

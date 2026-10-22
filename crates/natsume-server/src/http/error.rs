@@ -335,7 +335,6 @@ impl ApiError {
         match error {
             PrintError::Invalid => Self::invalid_request("print_invalid"),
             PrintError::Authentication => Self::authentication_failed("print_authentication"),
-            PrintError::Authorization => Self::authorization_denied("print_management"),
             PrintError::NotFound => Self::not_found("print_not_found"),
             PrintError::Conflict => Self::conflict("print_conflict"),
             PrintError::TooLarge => Self::new(

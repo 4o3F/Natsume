@@ -97,7 +97,7 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
     let before = fixtures::test_now(&f.component.database).await?;
     let issued = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     let after = fixtures::test_now(&f.component.database).await?;
     assert!((before..=after).contains(&issued.invitation.created_at_unix_ms));
@@ -106,7 +106,7 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
         INVITATION_TTL_MS
     );
     assert!(!format!("{issued:?}").contains(issued.token.expose()));
-    assert_eq!(f.component.list_accounts(f.admin).await?.len(), 1);
+    assert_eq!(f.component.list_accounts().await?.len(), 1);
     assert_eq!(
         f.component
             .inspect_invitation(issued.token.expose().to_owned())
@@ -133,13 +133,13 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
         Err(OperatorError::LoginNameConflict)
     );
     assert_eq!(
-        f.component.list_invitations(f.admin).await?,
+        f.component.list_invitations().await?,
         vec![issued.invitation.clone()]
     );
     let viewer = register(&f.component, &issued.token, "Admin").await?;
     assert_eq!(viewer.role, OperatorRole::Viewer);
-    assert_eq!(f.component.list_accounts(f.admin).await?.len(), 2);
-    assert!(f.component.list_invitations(f.admin).await?.is_empty());
+    assert_eq!(f.component.list_accounts().await?.len(), 2);
+    assert!(f.component.list_invitations().await?.is_empty());
     assert_eq!(
         register(&f.component, &issued.token, "another").await,
         Err(OperatorError::LinkUnavailable)
@@ -150,100 +150,39 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
 }
 
 #[tokio::test]
-async fn viewers_cannot_manage_accounts_or_links() -> TestResult {
-    let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new().await?;
-    let viewer = f.account("viewer", OperatorRole::Viewer).await?;
-    let issued = f
-        .component
-        .issue_invitation(f.admin, OperatorRole::Admin)
-        .await?;
-    assert_eq!(
-        f.component.list_accounts(viewer).await.err(),
-        Some(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component.list_invitations(viewer).await.err(),
-        Some(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component
-            .change_role(viewer, viewer.operator_id(), OperatorRole::Admin)
-            .await,
-        Err(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component
-            .delete_account(viewer, f.admin.operator_id())
-            .await,
-        Err(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component
-            .issue_invitation(viewer, OperatorRole::Viewer)
-            .await
-            .err(),
-        Some(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component
-            .regenerate_invitation(viewer, issued.invitation.invitation_id)
-            .await
-            .err(),
-        Some(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component
-            .revoke_invitation(viewer, issued.invitation.invitation_id)
-            .await,
-        Err(OperatorError::AuthorizationDenied)
-    );
-    assert_eq!(
-        f.component
-            .issue_password_reset(viewer, viewer.operator_id())
-            .await
-            .err(),
-        Some(OperatorError::AuthorizationDenied)
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn last_admin_is_protected_including_concurrent_self_removals() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     f.component
-        .issue_invitation(f.admin, OperatorRole::Admin)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Admin)
         .await?;
     assert_eq!(
-        f.component
-            .delete_account(f.admin, f.admin.operator_id())
-            .await,
+        f.component.delete_account(f.admin.operator_id()).await,
         Err(OperatorError::LastAdmin)
     );
     assert_eq!(
         f.component
-            .change_role(f.admin, f.admin.operator_id(), OperatorRole::Viewer)
+            .change_role(f.admin.operator_id(), OperatorRole::Viewer)
             .await,
         Err(OperatorError::LastAdmin)
     );
     // An idempotent admin assignment is allowed even for the sole admin.
     f.component
-        .change_role(f.admin, f.admin.operator_id(), OperatorRole::Admin)
+        .change_role(f.admin.operator_id(), OperatorRole::Admin)
         .await?;
     for delete in [false, true] {
         let f = Fixture::new().await?;
         let second = f.account("second", OperatorRole::Admin).await?;
         let barrier = Arc::new(Barrier::new(2));
-        let attempt = |actor, barrier: Arc<Barrier>| {
+        let attempt = |actor: OperatorIdentity, barrier: Arc<Barrier>| {
             let component = &f.component;
             async move {
                 barrier.wait().await;
                 if delete {
-                    component.delete_account(actor, actor.operator_id()).await
+                    component.delete_account(actor.operator_id()).await
                 } else {
                     component
-                        .change_role(actor, actor.operator_id(), OperatorRole::Viewer)
+                        .change_role(actor.operator_id(), OperatorRole::Viewer)
                         .await
                 }
             }
@@ -255,7 +194,7 @@ async fn last_admin_is_protected_including_concurrent_self_removals() -> TestRes
         ));
         let admins = f
             .component
-            .list_accounts(f.admin)
+            .list_accounts()
             .await?
             .into_iter()
             .filter(|row| row.role == OperatorRole::Admin)
@@ -276,19 +215,17 @@ async fn account_demotion_and_deletion_affect_subsequent_authentication() -> Tes
         .authenticate_session(session.wire_credential())
         .await?;
     f.component
-        .change_role(second, second.operator_id(), OperatorRole::Viewer)
+        .change_role(second.operator_id(), OperatorRole::Viewer)
         .await?;
-    assert_eq!(already_authenticated.require_admin(), Ok(()));
+    assert_eq!(already_authenticated.role(), OperatorRole::Admin);
     assert_eq!(
         f.component
             .authenticate_session(session.wire_credential())
             .await?
-            .require_admin(),
-        Err(OperatorError::AuthorizationDenied)
+            .role(),
+        OperatorRole::Viewer
     );
-    f.component
-        .delete_account(f.admin, second.operator_id())
-        .await?;
+    f.component.delete_account(second.operator_id()).await?;
     assert_eq!(
         f.component
             .authenticate_session(session.wire_credential())
@@ -297,7 +234,7 @@ async fn account_demotion_and_deletion_affect_subsequent_authentication() -> Tes
     );
     assert_eq!(
         f.component
-            .change_role(f.admin, second.operator_id(), OperatorRole::Admin)
+            .change_role(second.operator_id(), OperatorRole::Admin)
             .await,
         Err(OperatorError::OperatorNotFound)
     );
@@ -310,11 +247,11 @@ async fn expired_invitations_remain_visible_and_regeneration_revokes_old_tokens(
     let f = Fixture::new().await?;
     let issued = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     f.sql("UPDATE operator_invitations SET expires_at_unix_ms = 0")
         .await?;
-    assert_eq!(f.component.list_invitations(f.admin).await?.len(), 1);
+    assert_eq!(f.component.list_invitations().await?.len(), 1);
     assert_eq!(
         f.component
             .inspect_invitation(issued.token.expose().to_owned())
@@ -324,7 +261,7 @@ async fn expired_invitations_remain_visible_and_regeneration_revokes_old_tokens(
     );
     let new = f
         .component
-        .regenerate_invitation(f.admin, issued.invitation.invitation_id)
+        .regenerate_invitation(f.admin.operator_id(), issued.invitation.invitation_id)
         .await?;
     assert_eq!(new.invitation.role, issued.invitation.role);
     assert_ne!(
@@ -340,10 +277,10 @@ async fn expired_invitations_remain_visible_and_regeneration_revokes_old_tokens(
         Err(OperatorError::LinkUnavailable)
     );
     f.component
-        .revoke_invitation(f.admin, new.invitation.invitation_id)
+        .revoke_invitation(new.invitation.invitation_id)
         .await?;
     f.component
-        .revoke_invitation(f.admin, new.invitation.invitation_id)
+        .revoke_invitation(new.invitation.invitation_id)
         .await?;
     assert_eq!(
         register(&f.component, &new.token, "new").await,
@@ -361,27 +298,25 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
         let target = f.account("target", OperatorRole::Viewer).await?;
         let registered_invite = f
             .component
-            .issue_invitation(issuer, OperatorRole::Viewer)
+            .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
             .await?;
         let registered = register(&f.component, &registered_invite.token, "registered").await?;
         let invite = f
             .component
-            .issue_invitation(issuer, OperatorRole::Admin)
+            .issue_invitation(issuer.operator_id(), OperatorRole::Admin)
             .await?;
         let reset_link = f
             .component
-            .issue_password_reset(issuer, target.operator_id())
+            .issue_password_reset(issuer.operator_id(), target.operator_id())
             .await?;
         if delete {
-            f.component
-                .delete_account(issuer, issuer.operator_id())
-                .await?;
+            f.component.delete_account(issuer.operator_id()).await?;
         } else {
             f.component
-                .change_role(issuer, issuer.operator_id(), OperatorRole::Viewer)
+                .change_role(issuer.operator_id(), OperatorRole::Viewer)
                 .await?;
             f.component
-                .change_role(f.admin, issuer.operator_id(), OperatorRole::Admin)
+                .change_role(issuer.operator_id(), OperatorRole::Admin)
                 .await?;
         }
         assert_eq!(
@@ -400,7 +335,7 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
         );
         assert!(
             f.component
-                .list_accounts(f.admin)
+                .list_accounts()
                 .await?
                 .iter()
                 .any(|account| account.operator_id == registered.operator_id())
@@ -408,13 +343,13 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
         if delete {
             assert_eq!(
                 f.component
-                    .issue_invitation(issuer, OperatorRole::Viewer)
+                    .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
                     .await
                     .err(),
-                Some(OperatorError::AuthorizationDenied)
+                Some(OperatorError::LinkUnavailable)
             );
         }
-        assert!(f.component.list_invitations(f.admin).await?.is_empty());
+        assert!(f.component.list_invitations().await?.is_empty());
     }
     Ok(())
 }
@@ -427,11 +362,11 @@ async fn concurrent_registration_consumes_once_and_keeps_the_conflicting_invitat
         let f = Fixture::new().await?;
         let one = f
             .component
-            .issue_invitation(f.admin, OperatorRole::Viewer)
+            .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
             .await?;
         let two = f
             .component
-            .issue_invitation(f.admin, OperatorRole::Viewer)
+            .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
             .await?;
         let barrier = Arc::new(Barrier::new(2));
         let attempt = |token: String, name: String, barrier: Arc<Barrier>| {
@@ -469,7 +404,7 @@ async fn concurrent_registration_consumes_once_and_keeps_the_conflicting_invitat
                 OperatorError::LoginNameConflict
             })
         );
-        let remaining = f.component.list_invitations(f.admin).await?;
+        let remaining = f.component.list_invitations().await?;
         assert_eq!(remaining.len(), 1);
         let remaining_token = if remaining[0].invitation_id == one.invitation.invitation_id {
             &one.token
@@ -491,7 +426,7 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
     let before_issue = fixtures::test_now(&f.component.database).await?;
     let one = f
         .component
-        .issue_password_reset(f.admin, target.operator_id())
+        .issue_password_reset(f.admin.operator_id(), target.operator_id())
         .await?;
     let now = fixtures::test_now(&f.component.database).await?;
     assert!((before_issue..=now).contains(&(one.reset.expires_at_unix_ms - RESET_TTL_MS)));
@@ -515,7 +450,7 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
     );
     let two = f
         .component
-        .issue_password_reset(f.admin, target.operator_id())
+        .issue_password_reset(f.admin.operator_id(), target.operator_id())
         .await?;
     assert_eq!(
         reset(&f.component, &one.token).await,
@@ -536,14 +471,12 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
     );
     let old = f
         .component
-        .issue_password_reset(f.admin, target.operator_id())
+        .issue_password_reset(f.admin.operator_id(), target.operator_id())
         .await?;
-    f.component
-        .delete_account(f.admin, target.operator_id())
-        .await?;
+    f.component.delete_account(target.operator_id()).await?;
     let invite = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     let new_target = register(&f.component, &invite.token, "target").await?;
     assert_ne!(new_target.operator_id(), target.operator_id());
@@ -568,7 +501,7 @@ async fn concurrent_reset_consumes_once_and_revokes_all_sessions() -> TestResult
     let b = f.component.sign_in("admin", PASSWORD.to_owned()).await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin, f.admin.operator_id())
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     let barrier = Arc::new(Barrier::new(2));
     let attempt = |barrier: Arc<Barrier>| {
@@ -622,12 +555,15 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
         fixtures::test_insert_account(&f.component.database, "legacy", OperatorRole::Viewer, &phc)
             .await?;
     let session = f.component.sign_in("legacy", legacy.to_owned()).await?;
-    let issued = f.component.issue_password_reset(f.admin, id).await?;
+    let issued = f
+        .component
+        .issue_password_reset(f.admin.operator_id(), id)
+        .await?;
     let actor = session.identity();
     assert_eq!(
         f.component
             .change_password(
-                actor,
+                actor.operator_id(),
                 "wrong".to_owned(),
                 NEW_PASSWORD.to_owned(),
                 NEW_PASSWORD.to_owned()
@@ -644,7 +580,7 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
         .await?;
     f.component
         .change_password(
-            actor,
+            actor.operator_id(),
             legacy.to_owned(),
             NEW_PASSWORD.to_owned(),
             NEW_PASSWORD.to_owned(),
@@ -664,7 +600,10 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
         .sign_in("legacy", NEW_PASSWORD.to_owned())
         .await?;
     // Replacing a password with itself still advances the credential fence.
-    let issued = f.component.issue_password_reset(f.admin, id).await?;
+    let issued = f
+        .component
+        .issue_password_reset(f.admin.operator_id(), id)
+        .await?;
     reset(&f.component, &issued.token).await?;
     assert_eq!(
         fixtures::test_account_credentials(&f.component.database, "legacy")
@@ -682,7 +621,7 @@ async fn tty_reset_uses_the_same_grant_and_session_revocation_transaction() -> T
     let session = f.component.sign_in("admin", PASSWORD.to_owned()).await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin, f.admin.operator_id())
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     let phc = hash_password(&OperatorPassword::new(NEW_PASSWORD.to_owned()))?;
     f.component.reset_password("admin", &phc).await?;
@@ -712,17 +651,17 @@ async fn registration_and_regeneration_roll_back_if_invitation_deletion_fails() 
     let f = Fixture::new().await?;
     let invite = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     f.sql("CREATE TRIGGER reject_invitation_delete BEFORE DELETE ON operator_invitations BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
     assert_eq!(
         register(&f.component, &invite.token, "new").await,
         Err(OperatorError::PersistenceFailed)
     );
-    assert_eq!(f.component.list_accounts(f.admin).await?.len(), 1);
+    assert_eq!(f.component.list_accounts().await?.len(), 1);
     assert_eq!(
         f.component
-            .regenerate_invitation(f.admin, invite.invitation.invitation_id)
+            .regenerate_invitation(f.admin.operator_id(), invite.invitation.invitation_id)
             .await
             .err(),
         Some(OperatorError::PersistenceFailed)
@@ -743,11 +682,11 @@ async fn failed_reset_and_demotion_preserve_credentials_sessions_and_grants() ->
     let session = f.component.sign_in("second", PASSWORD.to_owned()).await?;
     let invite = f
         .component
-        .issue_invitation(second, OperatorRole::Viewer)
+        .issue_invitation(second.operator_id(), OperatorRole::Viewer)
         .await?;
     let issued = f
         .component
-        .issue_password_reset(second, second.operator_id())
+        .issue_password_reset(second.operator_id(), second.operator_id())
         .await?;
     let before = fixtures::test_account_credentials(&f.component.database, "second").await?;
     f.sql("CREATE TRIGGER reject_reset_delete BEFORE DELETE ON operator_password_resets BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
@@ -767,14 +706,12 @@ async fn failed_reset_and_demotion_preserve_credentials_sessions_and_grants() ->
     );
     assert_eq!(
         f.component
-            .change_role(second, second.operator_id(), OperatorRole::Viewer)
+            .change_role(second.operator_id(), OperatorRole::Viewer)
             .await,
         Err(OperatorError::PersistenceFailed)
     );
     assert_eq!(
-        f.component
-            .delete_account(second, second.operator_id())
-            .await,
+        f.component.delete_account(second.operator_id()).await,
         Err(OperatorError::PersistenceFailed)
     );
     f.component
@@ -827,20 +764,20 @@ async fn final_registration_rechecks_expiry_issuer_and_replacement_after_hash_sn
         let issuer = f.account("issuer", OperatorRole::Admin).await?;
         let invite = f
             .component
-            .issue_invitation(issuer, OperatorRole::Viewer)
+            .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
             .await?;
         let mut pending = Box::pin(register(&f.component, &invite.token, "new"));
         pause_after_read(&f.component.database, pending.as_mut()).await?;
         match event {
             "expiry" => f.sql("UPDATE operator_invitations SET expires_at_unix_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)").await?,
-            "demotion" => f.component.change_role(f.admin, issuer.operator_id(), OperatorRole::Viewer).await?,
-            "replacement" => { f.component.regenerate_invitation(f.admin, invite.invitation.invitation_id).await?; },
-            _ => f.component.delete_account(f.admin, issuer.operator_id()).await?,
+            "demotion" => f.component.change_role(issuer.operator_id(), OperatorRole::Viewer).await?,
+            "replacement" => { f.component.regenerate_invitation(f.admin.operator_id(), invite.invitation.invitation_id).await?; },
+            _ => f.component.delete_account(issuer.operator_id()).await?,
         }
         assert_eq!(pending.await, Err(OperatorError::LinkUnavailable));
         assert!(
             !f.component
-                .list_accounts(f.admin)
+                .list_accounts()
                 .await?
                 .iter()
                 .any(|account| account.username == "new")
@@ -864,17 +801,17 @@ async fn final_reset_rechecks_expiry_issuer_and_replacement_after_hash_snapshot(
         let target = f.account("target", OperatorRole::Viewer).await?;
         let recovery = f
             .component
-            .issue_password_reset(issuer, target.operator_id())
+            .issue_password_reset(issuer.operator_id(), target.operator_id())
             .await?;
         let before = fixtures::test_account_credentials(&f.component.database, "target").await?;
         let mut pending = Box::pin(reset(&f.component, &recovery.token));
         pause_after_read(&f.component.database, pending.as_mut()).await?;
         match event {
             "expiry" => f.sql("UPDATE operator_password_resets SET expires_at_unix_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)").await?,
-            "demotion" => f.component.change_role(f.admin, issuer.operator_id(), OperatorRole::Viewer).await?,
-            "replacement" => { f.component.issue_password_reset(f.admin, target.operator_id()).await?; },
-            "target_deletion" => f.component.delete_account(f.admin, target.operator_id()).await?,
-            _ => f.component.delete_account(f.admin, issuer.operator_id()).await?,
+            "demotion" => f.component.change_role(issuer.operator_id(), OperatorRole::Viewer).await?,
+            "replacement" => { f.component.issue_password_reset(f.admin.operator_id(), target.operator_id()).await?; },
+            "target_deletion" => f.component.delete_account(target.operator_id()).await?,
+            _ => f.component.delete_account(issuer.operator_id()).await?,
         }
         assert_eq!(pending.await, Err(OperatorError::LinkUnavailable));
         if event != "target_deletion" {
@@ -892,7 +829,7 @@ async fn stale_own_password_change_cannot_overwrite_a_newer_reset() -> TestResul
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let mut pending = Box::pin(f.component.change_password(
-        f.admin,
+        f.admin.operator_id(),
         PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
@@ -900,7 +837,7 @@ async fn stale_own_password_change_cannot_overwrite_a_newer_reset() -> TestResul
     pause_after_read(&f.component.database, pending.as_mut()).await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin, f.admin.operator_id())
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     // Reset to the same old password: checking PHC/password alone would fail to
     // detect this race, whereas the monotonic revision must reject it.
@@ -933,14 +870,14 @@ async fn in_flight_old_sign_ins_are_fenced_by_every_password_replacement_and_del
             "link" => {
                 let link = f
                     .component
-                    .issue_password_reset(f.admin, target.operator_id())
+                    .issue_password_reset(f.admin.operator_id(), target.operator_id())
                     .await?;
                 reset(&f.component, &link.token).await?;
             }
             "own" => {
                 f.component
                     .change_password(
-                        target,
+                        target.operator_id(),
                         PASSWORD.to_owned(),
                         NEW_PASSWORD.to_owned(),
                         NEW_PASSWORD.to_owned(),
@@ -952,9 +889,7 @@ async fn in_flight_old_sign_ins_are_fenced_by_every_password_replacement_and_del
                 f.component.reset_password("target", &phc).await?;
             }
             _ => {
-                f.component
-                    .delete_account(f.admin, target.operator_id())
-                    .await?;
+                f.component.delete_account(target.operator_id()).await?;
             }
         }
         assert_eq!(
@@ -976,11 +911,11 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
     let f = Fixture::new().await?;
     let invite = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     let link = f
         .component
-        .issue_password_reset(f.admin, f.admin.operator_id())
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     let held = SIGN_IN_GATE.acquire_many(4).await?;
     assert_eq!(
@@ -994,7 +929,7 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
     assert_eq!(
         f.component
             .change_password(
-                f.admin,
+                f.admin.operator_id(),
                 PASSWORD.to_owned(),
                 NEW_PASSWORD.to_owned(),
                 NEW_PASSWORD.to_owned()
@@ -1007,7 +942,7 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
     let mut registration = Box::pin(register(&f.component, &invite.token, "new"));
     let mut recovery = Box::pin(reset(&f.component, &link.token));
     let mut change = Box::pin(f.component.change_password(
-        f.admin,
+        f.admin.operator_id(),
         PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
@@ -1032,11 +967,11 @@ async fn persisted_links_survive_reconnect_without_renewing_ttl_and_store_only_h
     let f = Fixture::new().await?;
     let invite = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     let link = f
         .component
-        .issue_password_reset(f.admin, f.admin.operator_id())
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     let hash = f
         .component
@@ -1088,23 +1023,23 @@ async fn replacement_insert_failures_restore_the_previous_authorizations() -> Te
     let f = Fixture::new().await?;
     let invite = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     let recovery = f
         .component
-        .issue_password_reset(f.admin, f.admin.operator_id())
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     f.sql("CREATE TRIGGER reject_invitation_insert BEFORE INSERT ON operator_invitations BEGIN SELECT RAISE(ABORT, 'test'); END; CREATE TRIGGER reject_reset_insert BEFORE INSERT ON operator_password_resets BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
     assert_eq!(
         f.component
-            .regenerate_invitation(f.admin, invite.invitation.invitation_id)
+            .regenerate_invitation(f.admin.operator_id(), invite.invitation.invitation_id)
             .await
             .err(),
         Some(OperatorError::PersistenceFailed)
     );
     assert_eq!(
         f.component
-            .issue_password_reset(f.admin, f.admin.operator_id())
+            .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
             .await
             .err(),
         Some(OperatorError::PersistenceFailed)
@@ -1121,7 +1056,7 @@ async fn replacement_insert_failures_restore_the_previous_authorizations() -> Te
             .await?,
         recovery.reset
     );
-    assert_eq!(f.component.list_invitations(f.admin).await?.len(), 1);
+    assert_eq!(f.component.list_invitations().await?.len(), 1);
     Ok(())
 }
 
@@ -1137,12 +1072,10 @@ async fn deleted_identity_leaves_receipts_bound_to_the_original_uuid() -> TestRe
             .bind::<diesel::sql_types::Text, _>(stored_id).execute(tx.connection())
             .map(|_| ()).map_err(|_| PersistenceError::OperationFailed)
     }).await.map_err(TransactionError::into_error)?;
-    f.component
-        .delete_account(f.admin, target.operator_id())
-        .await?;
+    f.component.delete_account(target.operator_id()).await?;
     let invite = f
         .component
-        .issue_invitation(f.admin, OperatorRole::Viewer)
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     let replacement = register(&f.component, &invite.token, "target").await?;
     assert_ne!(replacement.operator_id(), target.operator_id());
@@ -1231,62 +1164,148 @@ async fn grant_issuance_racing_issuer_demotion_cannot_leave_usable_links() -> Te
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let issuer = f.account("issuer", OperatorRole::Admin).await?;
+    let original = f
+        .component
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
+        .await?;
     let barrier = Arc::new(Barrier::new(3));
     let issue_invite = async {
         barrier.wait().await;
         f.component
-            .issue_invitation(issuer, OperatorRole::Viewer)
+            .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
             .await
     };
     let issue_reset = async {
         barrier.wait().await;
         f.component
-            .issue_password_reset(issuer, f.admin.operator_id())
+            .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
             .await
     };
     let demote = async {
         barrier.wait().await;
         f.component
-            .change_role(f.admin, issuer.operator_id(), OperatorRole::Viewer)
+            .change_role(issuer.operator_id(), OperatorRole::Viewer)
             .await
     };
     let (invite, recovery, demotion) = tokio::join!(issue_invite, issue_reset, demote);
     demotion?;
-    match invite {
-        Ok(invite) => assert_eq!(
+    if let Err(error) = &invite {
+        assert_eq!(*error, OperatorError::LinkUnavailable);
+    }
+    if let Err(error) = &recovery {
+        assert_eq!(*error, OperatorError::LinkUnavailable);
+    }
+    assert_eq!(
+        f.component.list_invitations().await?,
+        vec![original.invitation.clone()]
+    );
+    assert_eq!(
+        f.component
+            .regenerate_invitation(issuer.operator_id(), original.invitation.invitation_id)
+            .await
+            .err(),
+        Some(OperatorError::LinkUnavailable)
+    );
+    // A persisted issuer who lost eligibility cannot sign grants that might revive.
+    assert_eq!(
+        f.component
+            .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
+            .await
+            .err(),
+        Some(OperatorError::LinkUnavailable)
+    );
+    assert_eq!(
+        f.component
+            .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
+            .await
+            .err(),
+        Some(OperatorError::LinkUnavailable)
+    );
+    f.component
+        .change_role(issuer.operator_id(), OperatorRole::Admin)
+        .await?;
+    assert_eq!(
+        f.component.list_invitations().await?,
+        vec![original.invitation.clone()]
+    );
+    f.component
+        .inspect_invitation(original.token.expose().to_owned())
+        .await?;
+    if let Ok(invite) = invite {
+        assert_eq!(
             f.component
                 .inspect_invitation(invite.token.expose().to_owned())
                 .await
                 .err(),
             Some(OperatorError::LinkUnavailable)
-        ),
-        Err(error) => assert_eq!(error, OperatorError::AuthorizationDenied),
+        );
     }
-    match recovery {
-        Ok(recovery) => assert_eq!(
+    if let Ok(recovery) = recovery {
+        assert_eq!(
             f.component
                 .inspect_password_reset(recovery.token.expose().to_owned())
                 .await
                 .err(),
             Some(OperatorError::LinkUnavailable)
-        ),
-        Err(error) => assert_eq!(error, OperatorError::AuthorizationDenied),
+        );
     }
-    assert!(f.component.list_invitations(f.admin).await?.is_empty());
-    // Reusing the pre-demotion authenticated identity cannot sign new grants.
+    Ok(())
+}
+
+#[tokio::test]
+async fn link_validation_rejects_ineligible_persisted_issuers_even_if_links_remain() -> TestResult {
+    use crate::diesel_schema::operator_accounts;
+    use diesel::{ExpressionMethods as _, QueryDsl as _};
+
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let f = Fixture::new().await?;
+    let issuer = f.account("issuer", OperatorRole::Admin).await?;
+    let invitation = f
+        .component
+        .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
+        .await?;
+    let recovery = f
+        .component
+        .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
+        .await?;
+    // Leave the links present to exercise validation itself, independently of
+    // change_role's atomic link revocation and deletion's cascading foreign keys.
+    f.component
+        .database
+        .write(move |tx| {
+            diesel::update(
+                operator_accounts::table
+                    .filter(operator_accounts::operator_id.eq(issuer.operator_id().to_string())),
+            )
+            .set(operator_accounts::role.eq("viewer"))
+            .execute(tx.connection())
+            .map(|_| ())
+            .map_err(|_| PersistenceError::OperationFailed)
+        })
+        .await
+        .map_err(TransactionError::into_error)?;
+    assert_eq!(f.component.list_invitations().await?.len(), 1);
     assert_eq!(
         f.component
-            .issue_invitation(issuer, OperatorRole::Viewer)
+            .inspect_invitation(invitation.token.expose().to_owned())
             .await
             .err(),
-        Some(OperatorError::AuthorizationDenied)
+        Some(OperatorError::LinkUnavailable)
     );
     assert_eq!(
         f.component
-            .issue_password_reset(issuer, f.admin.operator_id())
+            .inspect_password_reset(recovery.token.expose().to_owned())
             .await
             .err(),
-        Some(OperatorError::AuthorizationDenied)
+        Some(OperatorError::LinkUnavailable)
+    );
+    assert_eq!(
+        register(&f.component, &invitation.token, "new").await.err(),
+        Some(OperatorError::LinkUnavailable)
+    );
+    assert_eq!(
+        reset(&f.component, &recovery.token).await.err(),
+        Some(OperatorError::LinkUnavailable)
     );
     Ok(())
 }

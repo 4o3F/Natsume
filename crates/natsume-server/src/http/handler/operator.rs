@@ -102,11 +102,8 @@ fn clear_session(response: Response) -> Response {
     })
 }
 
-pub(crate) async fn list_accounts(
-    State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
-) -> Response {
-    match state.operator().list_accounts(actor).await {
+pub(crate) async fn list_accounts(State(state): State<AppState>) -> Response {
+    match state.operator().list_accounts().await {
         Ok(accounts) => Json(
             accounts
                 .into_iter()
@@ -120,7 +117,6 @@ pub(crate) async fn list_accounts(
 
 pub(crate) async fn update_account(
     State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorAccountPath>,
     request: Request,
 ) -> Response {
@@ -133,7 +129,7 @@ pub(crate) async fn update_account(
     };
     match state
         .operator()
-        .change_role(actor, target, request.role.into())
+        .change_role(target, request.role.into())
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
@@ -150,7 +146,7 @@ pub(crate) async fn delete_account(
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
-    match state.operator().delete_account(actor, target).await {
+    match state.operator().delete_account(target).await {
         Ok(()) if target == actor.operator_id() => {
             clear_session(StatusCode::NO_CONTENT.into_response())
         }
@@ -159,11 +155,8 @@ pub(crate) async fn delete_account(
     }
 }
 
-pub(crate) async fn list_invitations(
-    State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
-) -> Response {
-    let invitations = match state.operator().list_invitations(actor).await {
+pub(crate) async fn list_invitations(State(state): State<AppState>) -> Response {
+    let invitations = match state.operator().list_invitations().await {
         Ok(invitations) => invitations,
         Err(error) => return ApiError::from_operator(error).into_response(),
     };
@@ -190,7 +183,7 @@ pub(crate) async fn create_invitation(
     };
     match state
         .operator()
-        .issue_invitation(actor, request.role.into())
+        .issue_invitation(actor.operator_id(), request.role.into())
         .await
     {
         Ok(issued) => {
@@ -213,14 +206,13 @@ pub(crate) async fn create_invitation(
 
 pub(crate) async fn revoke_invitation(
     State(state): State<AppState>,
-    Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorInvitationPath>,
 ) -> Response {
     let id = match parse_id(&path.invite_id) {
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    match state.operator().revoke_invitation(actor, id).await {
+    match state.operator().revoke_invitation(id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_operator(error).into_response(),
     }
@@ -235,7 +227,11 @@ pub(crate) async fn regenerate_invitation(
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    match state.operator().regenerate_invitation(actor, id).await {
+    match state
+        .operator()
+        .regenerate_invitation(actor.operator_id(), id)
+        .await
+    {
         Ok(issued) => {
             let now = match now_ms() {
                 Ok(now) => now,
@@ -263,7 +259,11 @@ pub(crate) async fn create_password_reset(
         Ok(target) => target,
         Err(error) => return error.into_response(),
     };
-    match state.operator().issue_password_reset(actor, target).await {
+    match state
+        .operator()
+        .issue_password_reset(actor.operator_id(), target)
+        .await
+    {
         Ok(issued) => (
             StatusCode::CREATED,
             Json(OperatorPasswordResetIssuedResponse {
@@ -381,7 +381,7 @@ pub(crate) async fn change_password(
     match state
         .operator()
         .change_password(
-            actor,
+            actor.operator_id(),
             request.current_password.into_string(),
             request.password.into_string(),
             request.password_confirmation.into_string(),

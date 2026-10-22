@@ -12,7 +12,7 @@ use super::{
     AuthenticationSnafu, InvalidSnafu, PrintComponent, PrintError, RateLimitedSnafu, canonical_id,
     db, lowercase_hash,
 };
-use crate::{component::operator::OperatorIdentity, db::TransactionError};
+use crate::db::TransactionError;
 
 const CODE_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const WINDOW: Duration = Duration::from_mins(1);
@@ -83,14 +83,7 @@ impl PrintComponent {
             .check(source, Instant::now())
     }
 
-    pub(crate) async fn create_printer(
-        &self,
-        actor: OperatorIdentity,
-        name: String,
-    ) -> Result<PrintPrinter, PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
+    pub(crate) async fn create_printer(&self, name: String) -> Result<PrintPrinter, PrintError> {
         ensure!(
             (1..=128).contains(&name.chars().count()) && !name.chars().any(char::is_control),
             InvalidSnafu
@@ -105,13 +98,7 @@ impl PrintComponent {
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn list_printers(
-        &self,
-        actor: OperatorIdentity,
-    ) -> Result<Vec<PrintPrinter>, PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
+    pub(crate) async fn list_printers(&self) -> Result<Vec<PrintPrinter>, PrintError> {
         self.database
             .read(db::printers::list)
             .await
@@ -120,12 +107,8 @@ impl PrintComponent {
 
     pub(crate) async fn issue_pairing_code(
         &self,
-        actor: OperatorIdentity,
         id: String,
     ) -> Result<PrintPairingCode, PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
         canonical_id(&id)?;
         let mut random = [0; 8];
         getrandom::fill(&mut random).map_err(|_| PrintError::Persistence)?;
@@ -149,14 +132,7 @@ impl PrintComponent {
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn clear_printer_binding(
-        &self,
-        actor: OperatorIdentity,
-        id: String,
-    ) -> Result<(), PrintError> {
-        actor
-            .require_admin()
-            .map_err(|_| PrintError::Authorization)?;
+    pub(crate) async fn clear_printer_binding(&self, id: String) -> Result<(), PrintError> {
         canonical_id(&id)?;
         self.database
             .write(move |tx| db::printers::clear_binding(tx, &id))

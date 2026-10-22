@@ -259,87 +259,115 @@ async fn session_read_rejects_account_deleted_after_authentication() -> TestResu
     Ok(())
 }
 
+fn unread_management_body() -> Body {
+    Body::from_stream(futures_util::stream::poll_fn(
+        |_| -> std::task::Poll<Option<Result<axum::body::Bytes, std::io::Error>>> {
+            panic!("rejected administrator request body was polled")
+        },
+    ))
+}
+
 #[tokio::test]
-async fn every_management_route_requires_admin_on_the_server() -> TestResult {
+async fn every_admin_route_rejects_before_body_reads_and_observes_demotion() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
-    f.signup("viewer", "viewer").await?;
-    let viewer_cookie = login(&f.app, "viewer", PASSWORD).await?;
-    let id = f.admin_id;
-    for (method, path, body) in [
-        (
-            Method::GET,
-            "/api/v2/operator/accounts".to_owned(),
-            json!({}),
-        ),
-        (
+    let second = f.signup("second", "admin").await?;
+    let cookie = login(&f.app, "second", PASSWORD).await?;
+    let second_id = second["operator_id"].as_str().ok_or("missing id")?;
+    let demotion = f
+        .request(
             Method::PATCH,
-            format!("/api/v2/operator/accounts/{id}"),
+            &format!("/api/v2/operator/accounts/{second_id}"),
+            Some(&f.admin_cookie),
             json!({"role":"viewer"}),
-        ),
-        (
-            Method::DELETE,
-            format!("/api/v2/operator/accounts/{id}"),
-            json!({}),
-        ),
-        (
-            Method::GET,
-            "/api/v2/operator/invitations".to_owned(),
-            json!({}),
-        ),
-        (
-            Method::POST,
-            "/api/v2/operator/invitations".to_owned(),
-            json!({"role":"admin"}),
-        ),
-        (
-            Method::DELETE,
-            format!("/api/v2/operator/invitations/{id}"),
-            json!({}),
-        ),
+        )
+        .await?;
+    assert_eq!(demotion.status, StatusCode::NO_CONTENT);
+    let id = f.admin_id;
+    for (method, path) in [
+        (Method::GET, "/api/v2/operator/accounts".to_owned()),
+        (Method::PATCH, format!("/api/v2/operator/accounts/{id}")),
+        (Method::DELETE, format!("/api/v2/operator/accounts/{id}")),
+        (Method::GET, "/api/v2/operator/invitations".to_owned()),
+        (Method::POST, "/api/v2/operator/invitations".to_owned()),
+        (Method::DELETE, format!("/api/v2/operator/invitations/{id}")),
         (
             Method::POST,
             format!("/api/v2/operator/invitations/{id}/actions/regenerate"),
-            json!({}),
         ),
         (
             Method::POST,
             format!("/api/v2/operator/accounts/{id}/password-resets"),
-            json!({}),
         ),
+        (Method::GET, "/api/v2/print/sources".to_owned()),
+        (Method::POST, "/api/v2/print/sources".to_owned()),
+        (Method::DELETE, format!("/api/v2/print/sources/{id}")),
+        (Method::GET, "/api/v2/print/printers".to_owned()),
+        (Method::POST, "/api/v2/print/printers".to_owned()),
+        (
+            Method::POST,
+            format!("/api/v2/print/printers/{id}/pairing-code"),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/v2/print/printers/{id}/binding"),
+        ),
+        (Method::PATCH, format!("/api/v2/devices/{id}")),
+        (Method::DELETE, format!("/api/v2/devices/{id}/binding")),
+        (Method::PUT, "/api/v2/provisioning-window".to_owned()),
+        (Method::POST, "/api/v2/target-submissions".to_owned()),
+        (
+            Method::POST,
+            format!("/api/v2/enrollment-reviews/{id}/actions/approve"),
+        ),
+        (
+            Method::POST,
+            format!("/api/v2/enrollment-reviews/{id}/actions/deny"),
+        ),
+        (Method::POST, "/api/v2/imports".to_owned()),
+        (Method::GET, "/api/v2/imports".to_owned()),
+        (Method::GET, "/api/v2/imports/template".to_owned()),
+        (Method::DELETE, format!("/api/v2/imports/{id}")),
+        (Method::POST, format!("/api/v2/imports/{id}/actions/commit")),
+        (Method::GET, "/api/v2/organizations".to_owned()),
+        (Method::GET, format!("/api/v2/imports/{id}/organizations")),
+        (
+            Method::GET,
+            format!("/api/v2/imports/{id}/organizations/1/logo"),
+        ),
+        (Method::GET, "/api/v2/exports/domjudge".to_owned()),
     ] {
-        for cookie in [None, Some(viewer_cookie.as_str())] {
-            let response = f
-                .request(method.clone(), &path, cookie, body.clone())
-                .await?;
-            assert_error(
-                &response,
-                if cookie.is_none() {
-                    StatusCode::UNAUTHORIZED
-                } else {
-                    StatusCode::FORBIDDEN
-                },
-                if cookie.is_none() {
+        for credential in [None, Some(cookie.as_str())] {
+            let mut request = Request::builder()
+                .method(method.clone())
+                .uri(&path)
+                .header(header::CONTENT_TYPE, "application/json");
+            if let Some(cookie) = credential {
+                request = request.header(header::COOKIE, cookie);
+            }
+            let response = drive(&f.app, request.body(unread_management_body())?).await?;
+            let status = if credential.is_none() {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::FORBIDDEN
+            };
+            assert_eq!(response.status, status, "{method} {path}");
+            let body: Value = serde_json::from_slice(&response.body)?;
+            assert_eq!(body.as_object().ok_or("invalid error")?.len(), 3);
+            assert_eq!(body["status"], status.as_u16());
+            assert_eq!(
+                body["code"],
+                if credential.is_none() {
                     "AUTHENTICATION_FAILED"
                 } else {
                     "AUTHORIZATION_DENIED"
-                },
-            )?;
+                }
+            );
+            if path.starts_with("/api/v2/operator/") || path.starts_with("/api/v2/print/") {
+                assert_no_store(&response);
+            }
         }
     }
-    let anonymous_change = f
-        .request(
-            Method::POST,
-            "/api/v2/operator/password/change",
-            None,
-            change_form(),
-        )
-        .await?;
-    assert_error(
-        &anonymous_change,
-        StatusCode::UNAUTHORIZED,
-        "AUTHENTICATION_FAILED",
-    )?;
     Ok(())
 }
 
@@ -611,6 +639,19 @@ async fn own_password_error_keeps_the_session_and_success_clears_every_session()
     let _guard = PasswordVerificationTestGuard::acquire().await;
     for role in ["admin", "viewer"] {
         let f = Fixture::new().await?;
+        let anonymous_change = f
+            .request(
+                Method::POST,
+                "/api/v2/operator/password/change",
+                None,
+                change_form(),
+            )
+            .await?;
+        assert_error(
+            &anonymous_change,
+            StatusCode::UNAUTHORIZED,
+            "AUTHENTICATION_FAILED",
+        )?;
         let account = f.signup("target", role).await?;
         let one = login(&f.app, "target", PASSWORD).await?;
         let two = login(&f.app, "target", PASSWORD).await?;
@@ -1127,5 +1168,155 @@ async fn secret_forms_and_issued_links_do_not_escape_into_trace_logs() -> TestRe
         assert!(!text.contains(secret));
     }
     assert!(text.contains("operator_current_password_invalid"));
+    Ok(())
+}
+
+fn held_management_body(
+    bytes: &'static [u8],
+) -> (
+    Body,
+    tokio::sync::oneshot::Receiver<()>,
+    tokio::sync::oneshot::Sender<()>,
+) {
+    use std::{future::Future as _, pin::Pin, task::Poll};
+    use tokio::sync::oneshot;
+    let (entered, polled) = oneshot::channel();
+    let (release, mut released) = oneshot::channel();
+    let mut entered = Some(entered);
+    let mut bytes = Some(axum::body::Bytes::from_static(bytes));
+    let body = Body::from_stream(futures_util::stream::poll_fn(move |cx| {
+        if let Some(entered) = entered.take() {
+            let _ = entered.send(());
+        }
+        if bytes.is_none() {
+            return Poll::Ready(None);
+        }
+        match Pin::new(&mut released).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(_) => Poll::Ready(bytes.take().map(Ok::<_, std::io::Error>)),
+        }
+    }));
+    (body, polled, release)
+}
+
+#[tokio::test]
+async fn authorized_account_change_finishes_after_caller_demotion_or_deletion() -> TestResult {
+    use std::time::Duration;
+    use tower::ServiceExt as _;
+
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    for delete in [false, true] {
+        let f = Fixture::new().await?;
+        let second = f.signup("second", "admin").await?;
+        let cookie = login(&f.app, "second", PASSWORD).await?;
+        let target = f.signup("target", "viewer").await?;
+        let second_id = second["operator_id"].as_str().ok_or("missing id")?;
+        let path = format!(
+            "/api/v2/operator/accounts/{}",
+            target["operator_id"].as_str().ok_or("missing id")?
+        );
+        let (body, polled, release) = held_management_body(br#"{"role":"admin"}"#);
+        let pending = tokio::spawn(
+            f.app.clone().oneshot(
+                Request::builder()
+                    .method(Method::PATCH)
+                    .uri(&path)
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)?,
+            ),
+        );
+        // Body polling proves both real authorization middleware layers completed.
+        tokio::time::timeout(Duration::from_secs(5), polled).await??;
+        let changed = f
+            .request(
+                if delete {
+                    Method::DELETE
+                } else {
+                    Method::PATCH
+                },
+                &format!("/api/v2/operator/accounts/{second_id}"),
+                Some(&f.admin_cookie),
+                json!({"role":"viewer"}),
+            )
+            .await?;
+        assert_eq!(changed.status, StatusCode::NO_CONTENT);
+        let denied = drive(
+            &f.app,
+            Request::builder()
+                .method(Method::PATCH)
+                .uri(&path)
+                .header(header::COOKIE, &cookie)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(unread_management_body())?,
+        )
+        .await?;
+        assert_eq!(
+            denied.status,
+            if delete {
+                StatusCode::UNAUTHORIZED
+            } else {
+                StatusCode::FORBIDDEN
+            }
+        );
+        release.send(()).map_err(|()| "body release")?;
+        assert_eq!(pending.await??.status(), StatusCode::NO_CONTENT);
+        let accounts = f.state.operator().list_accounts().await?;
+        assert_eq!(
+            accounts
+                .iter()
+                .find(|account| account.username == "target")
+                .ok_or("missing target")?
+                .role,
+            crate::component::operator::OperatorRole::Admin
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn authorized_invitation_issuance_rechecks_persisted_issuer_not_caller_role() -> TestResult {
+    use std::time::Duration;
+    use tower::ServiceExt as _;
+
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    for delete in [false, true] {
+        let f = Fixture::new().await?;
+        let second = f.signup("second", "admin").await?;
+        let cookie = login(&f.app, "second", PASSWORD).await?;
+        let second_id = second["operator_id"].as_str().ok_or("missing id")?;
+        let (body, polled, release) = held_management_body(br#"{"role":"viewer"}"#);
+        let pending = tokio::spawn(
+            f.app.clone().oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/api/v2/operator/invitations")
+                    .header(header::COOKIE, &cookie)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(body)?,
+            ),
+        );
+        tokio::time::timeout(Duration::from_secs(5), polled).await??;
+        let changed = f
+            .request(
+                if delete {
+                    Method::DELETE
+                } else {
+                    Method::PATCH
+                },
+                &format!("/api/v2/operator/accounts/{second_id}"),
+                Some(&f.admin_cookie),
+                json!({"role":"viewer"}),
+            )
+            .await?;
+        assert_eq!(changed.status, StatusCode::NO_CONTENT);
+        release.send(()).map_err(|()| "body release")?;
+        let response = pending.await??;
+        assert_eq!(response.status(), StatusCode::GONE);
+        let body: Value =
+            serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await?)?;
+        assert_eq!(body["code"], "OPERATOR_LINK_UNAVAILABLE");
+        assert!(f.state.operator().list_invitations().await?.is_empty());
+    }
     Ok(())
 }
