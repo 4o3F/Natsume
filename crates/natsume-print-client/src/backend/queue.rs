@@ -6,12 +6,13 @@ use windows::{
             ERROR_NOT_FOUND, GetLastError,
         },
         Graphics::Printing::{
-            ClosePrinter, EnumPrintersW, GetJobW, GetPrinterW, JOB_INFO_1W,
+            ClosePrinter, EnumJobsW, EnumPrintersW, GetJobW, GetPrinterW, JOB_INFO_1W,
             JOB_STATUS_BLOCKED_DEVQ, JOB_STATUS_COMPLETE, JOB_STATUS_DELETED, JOB_STATUS_DELETING,
             JOB_STATUS_ERROR, JOB_STATUS_OFFLINE, JOB_STATUS_PAPEROUT, JOB_STATUS_PAUSED,
-            JOB_STATUS_PRINTED, JOB_STATUS_PRINTING, JOB_STATUS_USER_INTERVENTION, OpenPrinterW,
-            PRINTER_ATTRIBUTE_WORK_OFFLINE, PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL,
-            PRINTER_HANDLE, PRINTER_INFO_2W, PRINTER_INFO_4W,
+            JOB_STATUS_PRINTED, JOB_STATUS_PRINTING, JOB_STATUS_RETAINED,
+            JOB_STATUS_USER_INTERVENTION, OpenPrinterW, PRINTER_ATTRIBUTE_WORK_OFFLINE,
+            PRINTER_ENUM_CONNECTIONS, PRINTER_ENUM_LOCAL, PRINTER_HANDLE, PRINTER_INFO_2W,
+            PRINTER_INFO_4W,
         },
     },
     core::PCWSTR,
@@ -62,8 +63,61 @@ impl Printer {
             driver: buffer.string(info.pDriverName)?,
             status: info.Status,
             jobs: info.cJobs,
+            unfinished_jobs: self.unfinished_jobs()?,
             work_offline: info.Attributes & PRINTER_ATTRIBUTE_WORK_OFFLINE != 0,
         })
+    }
+
+    fn unfinished_jobs(&self) -> Result<u32> {
+        let (mut needed, mut count) = (0, 0);
+        // SAFETY: the owned handle stays on this thread; both counts are writable, with no buffer.
+        let result = unsafe {
+            EnumJobsW(
+                self.0,
+                0,
+                u32::MAX,
+                1,
+                None,
+                &raw mut needed,
+                &raw mut count,
+            )
+        };
+        if result.is_ok() && needed == 0 && count == 0 {
+            return Ok(0);
+        }
+        if let Err(source) = result
+            && source.code() != windows::core::HRESULT::from_win32(ERROR_INSUFFICIENT_BUFFER.0)
+        {
+            return Err(crate::PrintError::Native {
+                operation: "query printer jobs size",
+                source,
+            });
+        }
+        let mut buffer = NativeBuffer::new(needed)?;
+        // SAFETY: the handle remains owned here; the aligned buffer and count outputs are valid.
+        unsafe {
+            EnumJobsW(
+                self.0,
+                0,
+                u32::MAX,
+                1,
+                Some(buffer.bytes()),
+                &raw mut needed,
+                &raw mut count,
+            )
+        }
+        .context(NativeSnafu {
+            operation: "query printer jobs",
+        })?;
+        let mut unfinished = 0;
+        for index in 0..count as usize {
+            // SAFETY: the successful level-1 call initialized count entries; read checks bounds.
+            let job = unsafe { buffer.read::<JOB_INFO_1W>(index) }?;
+            if job_blocks_capacity(job.Status) {
+                unfinished += 1;
+            }
+        }
+        Ok(unfinished)
     }
 }
 
@@ -200,6 +254,11 @@ pub fn observe_job(queue: &str, job_id: u32, document_label: &str) -> Result<Job
     Ok(classify_status(job.Status))
 }
 
+fn job_blocks_capacity(status: u32) -> bool {
+    let completed_flags = JOB_STATUS_PRINTED | JOB_STATUS_COMPLETE | JOB_STATUS_RETAINED;
+    status & JOB_STATUS_PRINTED == 0 || status & !completed_flags != 0
+}
+
 fn classify_status(status: u32) -> JobObservation {
     if status & (JOB_STATUS_DELETED | JOB_STATUS_DELETING) != 0 {
         JobObservation::Deleted
@@ -227,6 +286,46 @@ fn classify_status(status: u32) -> JobObservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_unambiguous_printed_jobs_release_capacity() {
+        use windows::Win32::Graphics::Printing::{
+            JOB_STATUS_RENDERING_LOCALLY, JOB_STATUS_SPOOLING,
+        };
+
+        for flags in [
+            JOB_STATUS_PRINTED,
+            JOB_STATUS_PRINTED | JOB_STATUS_RETAINED,
+            JOB_STATUS_PRINTED | JOB_STATUS_RETAINED | JOB_STATUS_COMPLETE,
+        ] {
+            assert!(!job_blocks_capacity(flags));
+        }
+        for flags in [
+            0,
+            JOB_STATUS_COMPLETE,
+            JOB_STATUS_RETAINED,
+            JOB_STATUS_COMPLETE | JOB_STATUS_RETAINED,
+        ] {
+            assert!(job_blocks_capacity(flags));
+        }
+        for conflict in [
+            JOB_STATUS_PRINTING,
+            JOB_STATUS_SPOOLING,
+            JOB_STATUS_RENDERING_LOCALLY,
+            JOB_STATUS_DELETED,
+            JOB_STATUS_DELETING,
+            JOB_STATUS_ERROR,
+            JOB_STATUS_OFFLINE,
+            JOB_STATUS_PAPEROUT,
+            JOB_STATUS_PAUSED,
+            JOB_STATUS_BLOCKED_DEVQ,
+            JOB_STATUS_USER_INTERVENTION,
+            0x8000_0000,
+        ] {
+            assert!(job_blocks_capacity(conflict));
+            assert!(job_blocks_capacity(JOB_STATUS_PRINTED | conflict));
+        }
+    }
 
     #[test]
     fn status_does_not_confuse_delivery_deletion_or_errors_with_printing() {

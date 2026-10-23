@@ -55,6 +55,8 @@ pub struct QueueSnapshot {
     pub driver: String,
     pub status: u32,
     pub jobs: u32,
+    /// Jobs not unambiguously reported PRINTED, including conflicting or unknown states.
+    pub unfinished_jobs: u32,
     pub work_offline: bool,
 }
 
@@ -62,7 +64,7 @@ impl QueueSnapshot {
     /// This is a conservative queue observation, not proof of physical readiness.
     #[must_use]
     pub const fn can_submit(&self) -> bool {
-        self.status == 0 && self.jobs == 0 && !self.work_offline
+        self.status == 0 && self.unfinished_jobs == 0 && !self.work_offline
     }
 }
 
@@ -87,23 +89,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn queue_capacity_requires_zero_jobs_and_no_reported_fault() {
+    fn queue_capacity_requires_no_unfinished_jobs_and_no_reported_fault() {
         let mut queue = QueueSnapshot {
             name: "queue".to_owned(),
             port: "port".to_owned(),
             driver: "driver".to_owned(),
             status: 0,
             jobs: 0,
+            unfinished_jobs: 0,
             work_offline: false,
         };
         assert!(queue.can_submit());
         queue.jobs = 1;
+        queue.unfinished_jobs = 1;
         assert!(!queue.can_submit());
         queue.jobs = 0;
+        queue.unfinished_jobs = 0;
         queue.status = 1;
         assert!(!queue.can_submit());
         queue.status = 0;
         queue.work_offline = true;
+        assert!(!queue.can_submit());
+    }
+
+    #[test]
+    fn retained_printed_jobs_do_not_consume_active_capacity() {
+        let mut queue = QueueSnapshot {
+            name: "queue".to_owned(),
+            port: "port".to_owned(),
+            driver: "driver".to_owned(),
+            status: 0,
+            jobs: 3,
+            unfinished_jobs: 0,
+            work_offline: false,
+        };
+        assert!(queue.can_submit());
+        queue.unfinished_jobs = 1;
         assert!(!queue.can_submit());
     }
 }
