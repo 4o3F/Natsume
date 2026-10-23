@@ -7,8 +7,20 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+clap.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+rpassword.workspace = true
+secrecy.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 snafu.workspace = true
+tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
@@ -16,6 +28,7 @@ windows = { workspace = true, features = [
   "Data_Pdf",
   "Foundation",
   "Graphics_Imaging",
+  "Security_Credentials",
   "Storage_Streams",
   "UI",
   "Win32_Foundation",
@@ -27,7 +40,11 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+rcgen = { workspace = true, features = ["pem"] }
+rustls.workspace = true
 tempfile.workspace = true
+tokio-rustls.workspace = true
+tokio-util.workspace = true
 
 [lints]
 workspace = true

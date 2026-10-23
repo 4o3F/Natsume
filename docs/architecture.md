@@ -1997,7 +1997,7 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 配对须完整确认；客户端未确认整个流程成功就清除未完成凭据、停止领取并要求新码，不自动恢复中断配对。网络中断可能在 Server 留下未完成或客户端未确认的绑定，管理员须明确清除残留后重新签发，不能承诺双方瞬时回滚。已有绑定不能被新配对静默替换；原客户端仍有未结束尝试时不能更换，即使原电脑损坏也先完成既定失联处理。更换不重置次数、不跳过等待、不产生额外执行许可。管理员负责核对 Windows 队列与物理打印机的映射，不声称能按队列名或端口名识别所有硬件别名。
 
-首个 Windows 后端候选使用系统自带的 `Windows.Data.Pdf` 按页渲染到 300 DPI 的灰度位图，再经 GDI 提交；不安装或运行时下载 PDF 渲染器。驱动设置请求并复查 A4、黑白、单份、固定缩放；单双面保留现场队列配置。整页按比例缩放到可打印区域，不裁切源码。`StartDocW` 的返回值提供准确 Job ID，页面提交前先调用同步身份记录边界；查询同时核对队列、Job ID 与 `Natsume/<attempt_id>` 文档标签，数字 ID 被复用、任务消失或删除都不是完成证据。`JOB_STATUS_COMPLETE` 仅表示已交给设备，`JOB_STATUS_PRINTED` 仅表示 spooler 报告打印；驱动对设置和完成标记的解释仍需现场验证。当前实现为客户端内部使用的打印后端库，不提供独立诊断命令或诊断记录格式；正式客户端采用正常应用启动入口，选择服务器和打印机、显示状态并执行领取流程。尝试记录与恢复随领取协议实现，不以诊断日志代替业务状态。该候选须经 Windows 程序运行、驱动和真实打印验证后才能成为完整打印端交付。
+首个 Windows 后端候选使用系统自带的 `Windows.Data.Pdf` 按页渲染到 300 DPI 的灰度位图，再经 GDI 提交；不安装或运行时下载 PDF 渲染器。驱动设置请求并复查 A4、黑白、单份、固定缩放；单双面保留现场队列配置。整页按比例缩放到可打印区域，不裁切源码。`StartDocW` 的返回值提供准确 Job ID，页面提交前先调用同步身份记录边界；查询同时核对队列、Job ID 与 `Natsume/<attempt_id>` 文档标签，数字 ID 被复用、任务消失或删除都不是完成证据。`JOB_STATUS_COMPLETE` 仅表示已交给设备，`JOB_STATUS_PRINTED` 仅表示 spooler 报告打印；驱动对设置和完成标记的解释仍需现场验证。打印后端是客户端内部库，不提供独立诊断命令或诊断记录格式；客户端采用正常应用启动入口，选择服务器和打印机、显示状态并执行领取流程。本地执行记录与控制台入口见第 23.3.3 节，不以诊断日志代替业务状态。该候选须经 Windows 程序运行、驱动和真实打印验证后才能成为完整打印端交付。
 
 #### 23.3.1 打印机登记与客户端配对协议
 
@@ -2042,9 +2042,51 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 `print_jobs` 保存业务任务状态、已用次数、可重新领取时间、排序序号和最后结果，`print_attempts` 保存每次授权执行的归属、期限、联系与观察事实及结束结果，`print_claims` 保存包括空池结果在内的领取回执。首次受理快照和 `print_documents.ready_sequence` 保持不变。初次排队与重试统一按可领取时间、同时间内的持久排序序号排序；失败或未知在 Server 判定结束时确定 30 秒后的可领取时间。新任务在这 30 秒内排到其前方，在该期限之后入队则排到其后方，即使期间没有轮询或进程重启也不改变顺序。三次预算耗尽后不再自动分配。
 
-Print 组件拥有每秒到期检查的业务循环，Server 组合层显式启动该任务，由 `BackgroundTasks` 管理其取消、等待和异常释放，`serve` 命令不直接调用 Print 循环。循环收到正常关闭信号后停止发起新检查，已经开始的事务完成后再退出。相关业务事务也检查到期，检查失败通过 tracing 记录并在后续检查重试；任务异常退出在关闭等待时以保留源错误的 Snafu 错误报告，日志不包含 panic 内容。任务状态、次数、回执、结束结果及重试等待在同一 `Database::write` 事务内改变；数据库唯一约束同时防止同一任务、客户端或打印机存在多个活动尝试。启动完成文档核对后，仅为已登记 Job ID 且尚未结束的尝试设置从恢复时刻起的 60 秒观察宽限，不伪造新的联系或观察时间；未登记尝试保持原期限，终态和重试等待不重置。解除打印机绑定的事务先判定到期，再拒绝仍有活动尝试的打印机，不能以网络离线代替尝试结束。
+Print 组件拥有按尝试期限触发的到期检查循环，Server 组合层显式启动该任务，由 `BackgroundTasks` 管理其取消、等待和异常释放，`serve` 命令不直接调用 Print 循环。循环收到正常关闭信号后停止发起新检查，已经开始的事务完成后再退出。相关业务事务也检查到期，检查失败通过 tracing 记录并在后续检查重试；任务异常退出在关闭等待时以保留源错误的 Snafu 错误报告，日志不包含 panic 内容。任务状态、次数、回执、结束结果及重试等待在同一 `Database::write` 事务内改变；数据库唯一约束同时防止同一任务、客户端或打印机存在多个活动尝试。启动完成文档核对后，仅为已登记 Job ID 且尚未结束的尝试设置从恢复时刻起的 60 秒观察宽限，不伪造新的联系或观察时间；未登记尝试保持原期限，终态和重试等待不重置。解除打印机绑定的事务先判定到期，再拒绝仍有活动尝试的打印机，不能以网络离线代替尝试结束。
 
-执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。既有 `/print/queue` 和 Web 页面继续展示原有入队元数据，不伪装成已交付的打印进度界面。当前实现范围为 Server 协议；Windows 应用、本地可靠记录、界面、驱动和真实出纸验收仍须分别交付。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试，这些结果不包含这两个测试，也不构成 Windows 程序运行、驱动兼容或物理打印证据。
+执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。既有 `/print/queue` 和 Web 页面继续展示原有入队元数据，不伪装成已交付的打印进度界面。本节范围为 Server 协议；Windows 客户端执行记录和当前验证范围见第 23.3.3 节，图形界面、驱动和真实出纸仍须分别验收。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试，这些结果不包含这两个测试，也不构成 Windows 程序运行、驱动兼容或物理打印证据。
+
+#### 23.3.3 Windows 客户端执行与本地恢复
+
+`natsume-print-client` 在已登录 Windows 用户下运行正常应用入口，通过配置固定 HTTPS origin、Windows 队列和本地状态目录；当前提供控制台操作，不包含完整图形界面、托盘或安装包。配置与启动方法见[客户端说明](../crates/natsume-print-client/README.md)。客户端不持有 Operator session，不使用 DOMjudge 来源凭据，不提供诊断命令或任意远程执行入口。
+
+配对令牌保存到当前用户的 Windows `PasswordVault`，本地只保存来源 origin、队列、非秘密绑定身份、暂停状态和当前执行阶段。未完整确认的绑定在下次启动时清除未完成凭据，要求管理员清理 Server 残留并签发新码；不自动恢复中断配对。TLS 校验不允许跳过，不使用系统代理或重定向；JSON 使用 URL `/api/v2` 下的封闭字段集，不引入独立协议版本字段。
+
+本地状态使用有单实例锁的仅追加记录，每条包含递增序号、完整状态和 SHA-256 校验，写入后同步文件。校验发现半条尾部、缺失、损坏或身份不一致时停止领取，不截断、不回退到旧空闲记录，也不以重新配对消除原尝试。校验不是防恶意修改的认证，目录须由当前用户及管理员控制。记录暂不自动压缩或清理，长期运行需监控空间；Windows 文件系统、存储设备及断电可靠性仍须实机验证。
+
+执行阶段为 `idle → claiming → preparing → starting → observing → reporting → idle`。固定领取请求 ID 先于请求保存；`starting` 先于原生提交保存，准确 Job ID 先于登记和第一页保存。登记回复丢失只重试同一个 Job ID；未取得当前有效归属和准确 Job 身份的确认时，原生后端中止未结束文档，不再建立另一个 Windows 作业。队列被其他程序抢占但尚未建立作业时，仍在原尝试和原期限内等待，不另领或延长期限。
+
+```mermaid
+sequenceDiagram
+    participant C as 客户端流程
+    participant L as 本地执行记录
+    participant S as Server Print
+    participant W as 原生打印后端
+    C->>L: 保存领取请求 ID 并同步
+    C->>S: 以该 ID 领取并下载 PDF
+    C->>L: 保存 starting 并同步
+    C->>W: 提交一次原生执行
+    W-->>C: StartDoc 返回准确 Job ID
+    C->>L: 保存原尝试与 Job ID 并同步
+    C->>S: 登记原队列、Job ID 和标签
+    S-->>C: 确认原尝试仍有效且 Job 身份一致
+    C-->>W: 允许提交第一页
+    loop 仍能精确观察原作业
+        C->>W: 按原队列、Job ID 和标签查询
+        W-->>C: 原作业状态
+        C->>S: 报告有效观察
+    end
+    C->>L: 保存最终待报告结果并同步
+    C->>S: 补报同一原尝试结果
+    S-->>C: 返回原尝试终态
+    C->>L: 清除当前工作
+```
+
+原生提交在独立工作线程中执行，拥有该线程上的打印机句柄、设备上下文和 WinRT 初始化；客户端流程仍可联系 Server 并精确观察原作业。只有提交线程结束后才把 `PRINTED` 保存为待报告完成；`COMPLETE`、作业消失、删除和标签不匹配不证明成功。重启遇到完整 Job 身份时只恢复观察和补报，不重新提交；遇到没有 Job ID 的中断 `starting` 时停止领取，要求核实处理。Server 返回原终态后才清除当前本地工作，迟到结果不推进后续尝试。
+
+首次完成配对后默认暂停，新领取必须明确恢复；暂停跨重启保留，不中止当前工作。正常退出停止新提交，等待已经运行的提交线程返回并保留后续观察或补报状态。原生驱动可能阻塞，不能保证立即关闭；失联、退出或中止均不证明没有出纸。
+
+当前 Linux 的 `cargo test --frozen -p natsume-print-client` 通过 36 项测试，`cargo clippy --frozen -p natsume-print-client --all-targets -- -D warnings` 与 `prek run --all-files` 全部通过；网络测试使用本地 HTTPS 服务，打印和凭据操作使用替身，覆盖配对中断与凭据清理失败。Linux 到 `x86_64-pc-windows-msvc` 的交叉检查在 TLS 的 `ring`／`aws-lc-sys` 原生构建阶段被缺失的 Windows C 工具链及 SDK 阻断，尚未完成本轮 Windows 应用代码的编译检查。上述结果不构成 Windows 运行、凭据存储、断电恢复、驱动或物理打印证据；既有 Windows CI 继续编译客户端并运行共享逻辑和系统 PDF 渲染测试，凭据与硬件验收仍须单独执行。
 
 ### 23.4 离线工作区与队伍优先拍摄组
 

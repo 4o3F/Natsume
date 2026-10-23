@@ -50,6 +50,15 @@ impl Document {
         Ok(Self { bytes, label })
     }
 
+    #[cfg(any(windows, test))]
+    pub(crate) fn from_bytes(bytes: Vec<u8>, attempt_id: &str) -> Result<Self> {
+        let label = document_label(attempt_id)?;
+        if bytes.len() as u64 > DOCUMENT_LIMIT || !bytes.starts_with(b"%PDF-") {
+            return InvalidSnafu { field: "PDF bytes" }.fail();
+        }
+        Ok(Self { bytes, label })
+    }
+
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes

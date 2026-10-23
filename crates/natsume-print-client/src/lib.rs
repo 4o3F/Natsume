@@ -1,5 +1,8 @@
-//! Native Windows printing backend. Server task claiming is not implemented here yet.
+//! Windows printing, durable client execution and exact spooler observation.
 #![deny(unsafe_op_in_unsafe_fn)]
+
+#[cfg(any(windows, test))]
+pub mod client;
 
 mod document;
 mod layout;
