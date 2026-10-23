@@ -108,32 +108,12 @@ impl Pdf {
                 .join()?;
             output.Seek(0)?;
             let decoder = BitmapDecoder::CreateAsync(&output)?.join()?;
-            let transform = BitmapTransform::new()?;
-            let provider = decoder
-                .GetPixelDataTransformedAsync(
-                    BitmapPixelFormat::Bgra8,
-                    BitmapAlphaMode::Ignore,
-                    &transform,
-                    ExifOrientationMode::IgnoreExifOrientation,
-                    ColorManagementMode::DoNotColorManage,
-                )?
-                .join()?;
-            Ok((
-                decoder.PixelWidth()?,
-                decoder.PixelHeight()?,
-                provider.DetachPixelData()?.to_vec(),
-                width,
-                height,
-            ))
+            Ok((width, height, decode_pixels(&decoder, width, height)?))
         };
-        let (width, height, mut pixels, expected_width, expected_height) =
-            render().context(NativeSnafu {
-                operation: "render PDF page",
-            })?;
-        if width != expected_width
-            || height != expected_height
-            || pixels.len() != width as usize * height as usize * 4
-        {
+        let (width, height, mut pixels) = render().context(NativeSnafu {
+            operation: "render PDF page",
+        })?;
+        if pixels.len() != width as usize * height as usize * 4 {
             return InvalidSnafu {
                 field: "PDF raster",
             }
@@ -164,6 +144,27 @@ impl Pdf {
             pixels,
         })
     }
+}
+
+fn decode_pixels(
+    decoder: &BitmapDecoder,
+    width: u32,
+    height: u32,
+) -> windows::core::Result<Vec<u8>> {
+    // The PDF renderer uses logical units; request the final physical pixel size explicitly.
+    let transform = BitmapTransform::new()?;
+    transform.SetScaledWidth(width)?;
+    transform.SetScaledHeight(height)?;
+    let provider = decoder
+        .GetPixelDataTransformedAsync(
+            BitmapPixelFormat::Bgra8,
+            BitmapAlphaMode::Ignore,
+            &transform,
+            ExifOrientationMode::IgnoreExifOrientation,
+            ColorManagementMode::DoNotColorManage,
+        )?
+        .join()?;
+    Ok(provider.DetachPixelData()?.to_vec())
 }
 
 fn a4(width: f32, height: f32) -> bool {
@@ -201,6 +202,62 @@ mod tests {
                     .all(|pixel| pixel[0] == pixel[1] && pixel[1] == pixel[2] && pixel[3] == 255)
             );
             assert!(raster.pixels.chunks_exact(4).any(|pixel| pixel[0] < 200));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dpi_scaled_bitmaps_are_normalized_to_target_pixel_dimensions() -> Result<()> {
+        use windows::Graphics::Imaging::BitmapEncoder;
+
+        let _apartment = super::super::Apartment::initialize()?;
+        for (width, height) in [(16_u32, 24_u32), (24, 16)] {
+            for scale in [100_u32, 150, 200] {
+                let source_width = width * scale / 100;
+                let source_height = height * scale / 100;
+                let mut source = vec![255; source_width as usize * source_height as usize * 4];
+                for y in 0..source_height {
+                    for x in 0..source_width / 2 {
+                        let offset = (y as usize * source_width as usize + x as usize) * 4;
+                        source[offset..offset + 3].fill(0);
+                    }
+                }
+                let normalize = || -> windows::core::Result<_> {
+                    let stream = InMemoryRandomAccessStream::new()?;
+                    let encoder =
+                        BitmapEncoder::CreateAsync(BitmapEncoder::PngEncoderId()?, &stream)?
+                            .join()?;
+                    let dpi = 96.0 * f64::from(scale) / 100.0;
+                    encoder.SetPixelData(
+                        BitmapPixelFormat::Bgra8,
+                        BitmapAlphaMode::Ignore,
+                        source_width,
+                        source_height,
+                        dpi,
+                        dpi,
+                        &source,
+                    )?;
+                    encoder.FlushAsync()?.join()?;
+                    stream.Seek(0)?;
+                    let decoder = BitmapDecoder::CreateAsync(&stream)?.join()?;
+                    assert_eq!(decoder.PixelWidth()?, source_width);
+                    assert_eq!(decoder.PixelHeight()?, source_height);
+                    decode_pixels(&decoder, width, height)
+                };
+                let pixels = normalize().context(NativeSnafu {
+                    operation: "normalize DPI-scaled bitmap fixture",
+                })?;
+                assert_eq!(
+                    pixels.len(),
+                    width as usize * height as usize * 4,
+                    "wrong pixel count at {scale}% for {width}x{height}"
+                );
+                assert_eq!(&pixels[..3], &[0, 0, 0]);
+                assert_eq!(
+                    &pixels[pixels.len() - 4..pixels.len() - 1],
+                    &[255, 255, 255]
+                );
+            }
         }
         Ok(())
     }
