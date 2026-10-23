@@ -157,4 +157,4 @@ async function packages(): Promise<void> {
   console.log(`Packages: ${output} (version ${version})`);
 }
 
-if (import.meta.main) await main(packages);
+if (import.meta.main) await main(packages, "package");

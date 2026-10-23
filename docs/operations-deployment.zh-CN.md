@@ -670,7 +670,7 @@ cargo --version
 
 如果已经安装 rustup，改为运行 rustup toolchain install 1.97.1 --profile minimal；进入仓库后 rust-toolchain.toml 会选择对应版本。不要通过修改 lockfile 适应其他工具链。
 
-按 [Deno 安装说明](https://docs.deno.com/runtime/getting_started/installation/)安装 `.deno-version` 声明的 2.7.6。后续命令在仓库根目录同一终端运行，保留本次 Git SHA。Rust/Slint release 编译需要足够磁盘和内存；需要限制并发时可设置 `CARGO_BUILD_JOBS=2`。
+按 [Deno 安装说明](https://docs.deno.com/runtime/getting_started/installation/)安装稳定版 Deno 2.9.8 或更新的 2.x 版本。`.deno-version` 固定 CI 验证版本并定义本地最低版本，同一主版本的更新稳定版无需降级；新主版本须另行验证。后续命令在仓库根目录同一终端运行，保留本次 Git SHA。Rust/Slint release 编译需要足够磁盘和内存；需要限制并发时可设置 `CARGO_BUILD_JOBS=2`。
 
 ### 6.2 准备构建依赖、工具与资产
 

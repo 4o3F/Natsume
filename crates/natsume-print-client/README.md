@@ -45,15 +45,19 @@ natsume-print-client.exe --config C:\Natsume\print-client.toml
 
 ## 构建与测试
 
-使用仓库 `rust-toolchain.toml` 和 `.deno-version` 指定的版本。在安装了对应 MSVC 构建工具的 Windows x64 环境，从仓库根目录运行：
+使用仓库 `rust-toolchain.toml` 指定的 Rust，以及不低于 `.deno-version` 的同一主版本稳定版 Deno；当前 Deno 基线为 2.9.8，同一主版本的更新稳定版不要求降级。在安装了对应 MSVC 构建工具和 Windows SDK 的 Windows x64 原生 PowerShell 中，从仓库根目录运行，不使用 WSL 的 Linux 工具链：
 
 ```powershell
 deno task prepare rust
+if ($LASTEXITCODE -ne 0) { throw 'Dependency preparation failed; do not continue.' }
+
 cargo clippy --frozen -p natsume-print-client --all-targets -- -D warnings
+if ($LASTEXITCODE -ne 0) { throw 'Clippy failed; do not continue.' }
+
 cargo test --frozen -p natsume-print-client
 ```
 
-准备阶段允许下载 Rust 依赖；后面的命令使用 `--frozen`，不会隐式安装输入。Windows 的 Rust 准备不下载 Linux 工位的 Skia 库。持续集成中的 Windows 作业只选择该包进行编译检查和测试，不构建依赖 D-Bus／Wayland 的 Linux 包，也不发布独立工具。
+Windows PowerShell 不会因外部程序返回非零退出码而自动停止，因此示例显式检查前一步是否成功。准备失败时先处理脚本报告的问题，不继续运行离线命令。版本错误会显示当前版本、最低版本和 Deno 执行文件路径；Rust 下载失败会保留 Cargo 原始输出，并提示检查镜像、离线设置和网络，不修改锁文件或改用预发布依赖来绕过错误。准备阶段允许下载 Rust 依赖；后面的命令使用 `--frozen`，不会隐式安装输入。Windows 的 Rust 准备不下载 Linux 工位的 Skia 库。持续集成中的 Windows 作业只选择该包进行编译检查和测试，不构建依赖 D-Bus／Wayland 的 Linux 包，也不发布独立工具。
 
 Linux 可运行 `cargo test --frozen -p natsume-print-client` 验证不可变输入、尝试身份、整页布局和保守容量判断。准备好 Windows 标准库后，可运行 `cargo clippy --frozen -p natsume-print-client --target x86_64-pc-windows-msvc --all-targets -- -D warnings` 检查 Windows 代码和测试；这不会链接或运行 Windows 程序。
 

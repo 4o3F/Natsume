@@ -1637,7 +1637,7 @@ Runtime/Session/Home：
 
 ### 19.5 常用验收命令
 
-构建编排使用 TypeScript／Deno。先运行 `deno task prepare` 下载依赖、工具与资产，再运行 check、build 或 package；也可选择 rust／web／server／client／print-domjudge 子集。后续任务使用已准备输入，不隐式联网补齐；CI 的编译和打包步骤使用同一入口。包安装／登录脚本仍使用 POSIX sh，目标应用不新增 Deno 运行依赖。Node/pnpm 的配置、锁文件与 `node_modules` 只属于 `web/`，仓库根目录不再作为 Node 包或 pnpm 工作区。
+构建编排使用 TypeScript／Deno。`.deno-version` 固定 CI 的验证版本并定义本地最低版本；本地允许同一主版本的更新稳定版，不要求降级，新主版本须另行验证。各脚本入口检查运行版本；失败提示包含当前版本、要求和实际执行文件路径，不自动安装或降级工具链。先运行 `deno task prepare` 下载依赖、工具与资产，再运行 check、build 或 package；也可选择 rust／web／server／client／print-domjudge 子集。后续任务使用已准备输入，不隐式联网补齐；CI 的编译和打包步骤使用同一入口。准备阶段输出当前步骤，失败时保留子命令输出并报告完整命令、工作目录及退出码，返回非零状态并明确提示准备尚未完成、不可继续离线检查；未成功准备的目标不建立就绪标记。Rust 依赖解析失败提示核对工作区、镜像和网络，不自动修改锁文件或依赖版本。包安装／登录脚本仍使用 POSIX sh，目标应用不新增 Deno 运行依赖。Node/pnpm 的配置、锁文件与 `node_modules` 只属于 `web/`，仓库根目录不再作为 Node 包或 pnpm 工作区。
 
 ```bash
 deno task prepare rust web

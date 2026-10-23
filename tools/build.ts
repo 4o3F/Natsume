@@ -176,4 +176,4 @@ async function build(): Promise<void> {
   }
 }
 
-if (import.meta.main) await main(build);
+if (import.meta.main) await main(build, Deno.args[0] ?? "build");

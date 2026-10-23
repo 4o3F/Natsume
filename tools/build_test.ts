@@ -1,6 +1,13 @@
 import { resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
-import { exists, root, sha256, targets, work } from "./process.ts";
+import {
+  exists,
+  root,
+  sha256,
+  targets,
+  validateDenoVersion,
+  work,
+} from "./process.ts";
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -34,6 +41,7 @@ async function fixture() {
       "tools/process.ts",
       "tools/assets.ts",
       "tools/build.ts",
+      "tools/build_test.ts",
       "tools/package.ts",
       "packaging/server/nfpm.yaml",
       "packaging/client/nfpm.yaml",
@@ -101,6 +109,160 @@ async function fixture() {
   assert(prepared.success, new TextDecoder().decode(prepared.stderr));
   return { directory, command };
 }
+
+Deno.test("Deno baseline accepts the tested version and newer stable versions in the same major", () => {
+  for (const version of ["2.9.8", "2.9.9", "2.10.0", "2.10.1"]) {
+    validateDenoVersion("2.9.8", version);
+  }
+});
+
+Deno.test("Deno baseline rejects older, prerelease and unvalidated major versions", () => {
+  for (const version of ["2.7.6", "2.9.7", "2.9.8-rc.1", "3.0.0"]) {
+    let failure;
+    try {
+      validateDenoVersion("2.9.8", version);
+    } catch (error) {
+      failure = error;
+    }
+    assert(failure instanceof Error, `${version} was accepted`);
+    const message = (failure as Error).message;
+    assert(message.includes(version) && message.includes("2.9.8"), message);
+    assert(message.includes(Deno.execPath()), message);
+    if (version === "3.0.0") {
+      assert(message.includes("has not been validated"), message);
+    }
+  }
+});
+
+Deno.test("an invalid Deno baseline identifies the repository file", () => {
+  let failure;
+  try {
+    validateDenoVersion("latest", "2.9.8");
+  } catch (error) {
+    failure = error;
+  }
+  assert(
+    failure instanceof Error &&
+      failure.message.includes("Invalid .deno-version"),
+    "Invalid baseline did not identify the file",
+  );
+});
+
+Deno.test("version mismatch reports the runtime, executable and stopped preparation", async () => {
+  const { directory, command } = await fixture();
+  try {
+    const [major, minor, patch] = Deno.version.deno.split(".").map(Number);
+    const required = `${major}.${minor}.${patch + 1}`;
+    await Deno.writeTextFile(
+      resolve(directory, ".deno-version"),
+      `${required}\n`,
+    );
+    const result = await command("tools/assets.ts", "rust");
+    const stderr = new TextDecoder().decode(result.stderr);
+    assert(result.code === 1, "Version mismatch must fail preparation");
+    for (
+      const expected of [
+        "[prepare] FAILED",
+        Deno.version.deno,
+        required,
+        Deno.execPath(),
+        "No task commands were executed",
+        "Do not continue with offline checks",
+      ]
+    ) {
+      assert(
+        stderr.includes(expected),
+        `Missing diagnostic ${expected}: ${stderr}`,
+      );
+    }
+    assert(
+      !new TextDecoder().decode(result.stdout).includes("cargo fetch"),
+      "Cargo ran after the version check failed",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("preparation errors preserve the failed command and invalidate readiness", async () => {
+  const { directory, command } = await fixture();
+  try {
+    const cargo = resolve(directory, "bin/cargo");
+    await Deno.writeTextFile(
+      cargo,
+      "#!/bin/sh\nprintf '%s\\n' 'fixture: rsproxy-sparse cannot resolve the locked package' >&2\nexit 23\n",
+    );
+    await Deno.chmod(cargo, 0o755);
+    const result = await command("tools/assets.ts", "rust");
+    const stderr = new TextDecoder().decode(result.stderr);
+    assert(result.code === 1, "Cargo failure must fail preparation");
+    for (
+      const expected of [
+        "[prepare] FAILED",
+        "Rust dependency preparation failed",
+        "cargo fetch --locked",
+        "exit 23",
+        directory,
+        "rsproxy-sparse",
+        "Cargo.lock",
+        "Do not continue with offline checks",
+      ]
+    ) {
+      assert(
+        stderr.includes(expected),
+        `Missing diagnostic ${expected}: ${stderr}`,
+      );
+    }
+    for (const target of ["scripts", "rust"]) {
+      assert(
+        !await exists(resolve(directory, `target/build/prepared-${target}`)),
+        `Failed prepare left ${target} ready`,
+      );
+    }
+    assert(
+      await exists(resolve(directory, "target/build/prepared-web")),
+      "Unrelated Web preparation was removed",
+    );
+    assert(
+      !new TextDecoder().decode(result.stdout).includes("Prepared:"),
+      "Failed preparation reported success",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("missing commands report the tool, working directory and PATH guidance", async () => {
+  const { directory, command } = await fixture();
+  try {
+    await Deno.writeTextFile(
+      resolve(directory, "missing-tool.ts"),
+      `
+      import { main, run } from "./tools/process.ts";
+      await main(async () => { await run("natsume-missing-tool-fixture", []); }, "probe");
+    `,
+    );
+    const result = await command("missing-tool.ts");
+    const stderr = new TextDecoder().decode(result.stderr);
+    assert(result.code === 1, "Missing command must fail the task");
+    for (
+      const expected of [
+        "[probe] FAILED",
+        "Command not found",
+        "natsume-missing-tool-fixture",
+        directory,
+        "PATH",
+      ]
+    ) {
+      assert(
+        stderr.includes(expected),
+        `Missing diagnostic ${expected}: ${stderr}`,
+      );
+    }
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
 
 Deno.test("preparation fingerprints invalidate only consumers of changed inputs", async () => {
   const { directory, command } = await fixture();

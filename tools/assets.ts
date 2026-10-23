@@ -266,11 +266,6 @@ async function avatar(): Promise<void> {
 }
 
 async function prepare(): Promise<void> {
-  const version = (await Deno.readTextFile(resolve(root, ".deno-version")))
-    .trim();
-  if (Deno.version.deno !== version) {
-    throw new Error(`Use Deno ${version} from .deno-version`);
-  }
   const selected = new Set(selection(Deno.args));
   selected.add("scripts");
   const needsSkia = selected.has("rust") && Deno.build.os !== "windows" ||
@@ -295,6 +290,10 @@ async function prepare(): Promise<void> {
   for (const target of selected) {
     if (await exists(readyPath(target))) await Deno.remove(readyPath(target));
   }
+  console.log(
+    `[prepare] Deno ${Deno.version.deno}; executable: ${Deno.execPath()}`,
+  );
+  console.log("[prepare] Preparing locked Deno dependencies...");
   await run(Deno.execPath(), [
     "cache",
     "--frozen",
@@ -303,9 +302,20 @@ async function prepare(): Promise<void> {
     "tools/package.ts",
     "tools/build_test.ts",
   ]);
-  if (selected.has("rust")) await run("cargo", ["fetch", "--locked"]);
+  if (selected.has("rust")) {
+    console.log("[prepare] Fetching locked Rust workspace dependencies...");
+    try {
+      await run("cargo", ["fetch", "--locked"]);
+    } catch (cause) {
+      throw new Error(
+        "Rust dependency preparation failed. Cargo resolves dependencies for the workspace, including packages other than the build target. Check the Cargo output above, registry/mirror configuration, offline settings and network access. Keep Cargo.lock and the locked dependency versions unchanged.",
+        { cause },
+      );
+    }
+  }
   if (needsSkia) await download(await skiaAsset(), resolve(work, "downloads"));
   if (selected.has("web")) {
+    console.log("[prepare] Installing locked Web dependencies...");
     await run("pnpm", ["install", "--frozen-lockfile"], {
       cwd: resolve(root, "web"),
     });
@@ -321,4 +331,4 @@ async function prepare(): Promise<void> {
   console.log(`Prepared: ${[...selected].join(", ")}`);
 }
 
-if (import.meta.main) await main(prepare);
+if (import.meta.main) await main(prepare, "prepare");

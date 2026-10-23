@@ -18,7 +18,7 @@ Client installs Helper/Daemon/Agent and its package-owned runtime integration. I
 
 ## Build inputs and checks
 
-Use Linux amd64 with Deno from `.deno-version`, the repository Rust toolchain, Node/pnpm for Web, and native build dependencies. Preparation also needs curl, tar and xz; wrapper packaging needs Debian `dpkg-dev` for `dpkg-shlibdeps`. No Python or globally installed nFPM is needed for this build path.
+Use Linux amd64 with stable Deno at or above `.deno-version` within the same major, the repository Rust toolchain, Node/pnpm for Web, and native build dependencies. CI uses the exact Deno baseline; local newer stable releases in that major do not require downgrading. Preparation also needs curl, tar and xz; wrapper packaging needs Debian `dpkg-dev` for `dpkg-shlibdeps`. No Python or globally installed nFPM is needed for this build path.
 
 ```sh
 deno task prepare                         # Download dependencies, tools and runtime assets

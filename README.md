@@ -131,7 +131,7 @@ Most operational and product documents are currently written in Chinese.
 
 ### 1. Prepare the toolchain
 
-Use Linux; Ubuntu 24.04 is the deployment baseline. Install Git, rustup, Node.js **24.1.0**, pnpm **11.x**, Deno **2.7.6**, and `prek` **0.5.0**. The repository pins Rust **1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml), Deno in [`.deno-version`](.deno-version), and Web's Node version in [`web/.node-version`](web/.node-version). On Ubuntu, the workspace's native build and test prerequisites include:
+Use Linux; Ubuntu 24.04 is the deployment baseline. Install Git, rustup, Node.js **24.1.0**, pnpm **11.x**, stable Deno **2.9.8 or newer within 2.x**, and `prek` **0.5.0**. The repository pins Rust **1.97.1** in [`rust-toolchain.toml`](rust-toolchain.toml) and Web's Node version in [`web/.node-version`](web/.node-version). [`.deno-version`](.deno-version) fixes the tested Deno version for CI and the minimum local version; newer stable releases in the same major are accepted without downgrading. A new major version requires separate validation. On Ubuntu, the workspace's native build and test prerequisites include:
 
 ```bash
 sudo apt-get install --yes build-essential pkg-config dbus-daemon \
@@ -170,7 +170,7 @@ deno task build                     # Rust release and Web production builds
 prek run --all-files
 ```
 
-`prepare` is the download phase; run it again after dependency or tool inputs change. `check`, `build`, `api` and `package` consume prepared inputs, use cached Deno modules and offline Cargo, and never install dependencies themselves. Select `rust`, `web`, `server`, `client` or `print-domjudge` to prepare or build only the required parts; see [Packaging](packaging/README.md) for tools, assets and Deb generation.
+`prepare` is the download phase; run it again after dependency or tool inputs change. A failed task returns a nonzero exit status. Preparation errors identify the failed stage, preserve the command output and report the command, working directory and exit code; a version mismatch also reports the running Deno version and executable path. Do not continue with offline checks or builds after preparation fails. Resolve the reported tool, registry/mirror or network problem and rerun the same prepare command; do not change locked dependency versions merely to bypass a download failure. `check`, `build`, `api` and `package` consume prepared inputs, use cached Deno modules and offline Cargo, and never install dependencies themselves. Select `rust`, `web`, `server`, `client` or `print-domjudge` to prepare or build only the required parts; see [Packaging](packaging/README.md) for tools, assets and Deb generation.
 
 `prek` is the single pre-commit check entry point. It runs build-script checks, dependency policy, Web Prettier and ESLint, Rust Clippy, and Rust/Web tests without automatically editing or staging files. CI also retains contract and browser checks; the packages job prepares, builds and packages the three Debs without running a separate package-validation suite.
 
