@@ -24,7 +24,7 @@ pub enum ClientError {
     Attention { reason: &'static str },
     #[snafu(display("execution permission was not confirmed before the first page"))]
     Permission,
-    #[snafu(display("native print operation failed"))]
+    #[snafu(display("native print operation failed: {source}"))]
     Print { source: crate::PrintError },
     #[snafu(display("print worker stopped unexpectedly"))]
     Worker { source: tokio::task::JoinError },
@@ -34,3 +34,6 @@ pub enum ClientError {
 }
 
 pub(super) type Result<T> = std::result::Result<T, ClientError>;
+
+#[cfg(test)]
+mod tests;

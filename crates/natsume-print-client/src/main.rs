@@ -22,7 +22,7 @@ enum StartupError {
     Arguments { source: clap::Error },
     #[snafu(display("could not start the print client runtime"))]
     Runtime { source: std::io::Error },
-    #[snafu(display("print client stopped"))]
+    #[snafu(display("print client stopped: {source}"))]
     Client {
         source: natsume_print_client::client::ClientError,
     },
@@ -38,6 +38,29 @@ fn execute() -> Result<(), StartupError> {
     runtime
         .block_on(natsume_print_client::client::run(&arguments.config))
         .context(ClientSnafu)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use snafu::IntoError as _;
+
+    use super::*;
+
+    #[test]
+    fn entry_point_keeps_the_client_print_failure_context() {
+        let source = natsume_print_client::client::ClientError::Print {
+            source: natsume_print_client::PrintError::DriverCall {
+                operation: "create printer context",
+                code: 0,
+            },
+        };
+        let error = ClientSnafu.into_error(source);
+
+        assert_eq!(
+            error.to_string(),
+            "print client stopped: native print operation failed: printer driver operation failed: create printer context (code 0)"
+        );
+    }
 }
 
 fn main() -> ExitCode {

@@ -36,7 +36,10 @@ pub enum PrintError {
     #[snafu(display("printer driver operation failed: {operation} (code {code})"))]
     DriverCall { operation: &'static str, code: i32 },
     #[cfg(windows)]
-    #[snafu(display("Windows print operation failed: {operation}"))]
+    #[snafu(display(
+        "Windows print operation failed: {operation} (HRESULT {code:#010X})",
+        code = source.code().0 as u32
+    ))]
     Native {
         operation: &'static str,
         source: windows::core::Error,
