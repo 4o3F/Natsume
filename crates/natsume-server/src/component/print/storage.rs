@@ -59,13 +59,17 @@ impl DocumentStore {
     }
 
     pub(crate) fn verify(&self, hash: &str, bytes: i64) -> Result<(), StorageError> {
+        self.read_verified(hash, bytes).map(|_| ())
+    }
+
+    pub(crate) fn read_verified(&self, hash: &str, bytes: i64) -> Result<Vec<u8>, StorageError> {
         let (_, content) = self.read(hash)?;
         if i64::try_from(content.len()).ok() != Some(bytes)
             || hex::encode(Sha256::digest(&content)) != hash
         {
             return InvalidDocumentSnafu.fail();
         }
-        Ok(())
+        Ok(content)
     }
 
     fn read(&self, hash: &str) -> Result<(File, Vec<u8>), StorageError> {

@@ -3,6 +3,7 @@ use std::{future::Future, path::Path, sync::Arc};
 use tracing::instrument::WithSubscriber as _;
 
 use crate::{
+    background::start_background_tasks,
     component::{operator::OperatorComponent, runtime::RuntimeConfigComponent},
     config::ServerConfig,
     db::{Database, DatabaseConfig},
@@ -85,6 +86,9 @@ where
     .map_err(|_| CommandError::Tls)?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
+    let background = start_background_tasks(&state)
+        .await
+        .map_err(|_| CommandError::Background)?;
     let router = http::router(state, Path::new(WEB_ASSETS_PATH));
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -100,6 +104,11 @@ where
     .with_graceful_shutdown(shutdown)
     .await
     .map_err(|_| CommandError::Http);
+    let stopped = background
+        .shutdown()
+        .await
+        .map_err(|_| CommandError::Background);
+    let result = result.and(stopped);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }

@@ -3,16 +3,24 @@ import ts from "typescript";
 import { expect, expectTypeOf, it } from "vitest";
 
 import type {
+  AttemptReport,
   BindingEvaluationResponse,
   BindingTargetResponse_Serialize,
   DeviceResponse_Serialize,
   ImportPendingResponse,
   ImportPendingSummary,
   OperatorRegistrationRequest,
+  PrintAttempt,
+  PrintClaim,
+  PrintClientIssued,
+  PrintClientPair,
   PrintDocument,
+  PrintExecution,
+  PrintGenerationFailure,
   PrintPairingCode,
   PrintPrinter,
   PrintQueueEntry,
+  PrintRegistration,
   PrintRequest,
 } from "./generated/types";
 
@@ -63,6 +71,53 @@ it("exports pairing expiry as JSON numbers with required nullable printer fields
     client_id: string | null;
     pairing_expires_at_unix_ms: number | null;
   }>();
+});
+
+it("keeps Print versions in URL paths rather than JSON fields", () => {
+  expectTypeOf<
+    Extract<
+      "protocol_version",
+      | keyof PrintRegistration
+      | keyof PrintGenerationFailure
+      | keyof PrintRequest
+      | keyof PrintClientPair
+      | keyof PrintClientIssued
+      | keyof PrintClaim
+      | keyof PrintAttempt
+    >
+  >().toEqualTypeOf<never>();
+});
+
+it("exports execution identities, deadlines, and nullable results without bigint", () => {
+  expectTypeOf<
+    Pick<
+      PrintAttempt,
+      "ready_sequence" | "lease_expires_at_unix_ms" | "last_contact_at_unix_ms"
+    >
+  >().toEqualTypeOf<{
+    ready_sequence: number;
+    lease_expires_at_unix_ms: number;
+    last_contact_at_unix_ms: number;
+  }>();
+  expectTypeOf<
+    Pick<
+      PrintAttempt,
+      "job_id" | "last_observed_at_unix_ms" | "finished_at_unix_ms"
+    >
+  >().toEqualTypeOf<{
+    job_id: number | null;
+    last_observed_at_unix_ms: number | null;
+    finished_at_unix_ms: number | null;
+  }>();
+  expectTypeOf<PrintExecution["retry_at_unix_ms"]>().toEqualTypeOf<
+    number | null
+  >();
+  expectTypeOf<Extract<AttemptReport, { kind: "contact" }>>().toEqualTypeOf<{
+    kind: "contact";
+  }>();
+  expectTypeOf<
+    Extract<AttemptReport, { kind: "printed" }>["job"]["job_id"]
+  >().toEqualTypeOf<number>();
 });
 
 it("exports secret wrappers as JSON strings without their internal storage", () => {

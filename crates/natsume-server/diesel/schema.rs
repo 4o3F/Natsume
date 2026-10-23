@@ -152,6 +152,34 @@ diesel::table! {
 }
 
 diesel::table! {
+    print_attempts (attempt_id) {
+        attempt_id -> Text,
+        ready_sequence -> BigInt,
+        printer_id -> Text,
+        client_id -> Text,
+        attempt_number -> Integer,
+        queue_name -> Text,
+        claimed_at_unix_ms -> BigInt,
+        prepare_expires_at_unix_ms -> BigInt,
+        lease_expires_at_unix_ms -> BigInt,
+        last_contact_at_unix_ms -> BigInt,
+        last_observed_at_unix_ms -> Nullable<BigInt>,
+        job_id -> Nullable<BigInt>,
+        finished_at_unix_ms -> Nullable<BigInt>,
+        outcome -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
+    print_claims (client_id, request_id) {
+        client_id -> Text,
+        request_id -> Text,
+        queue_name -> Text,
+        attempt_id -> Nullable<Text>,
+    }
+}
+
+diesel::table! {
     print_documents (ready_sequence) {
         ready_sequence -> BigInt,
         source_id -> Text,
@@ -161,6 +189,18 @@ diesel::table! {
         pages -> BigInt,
         ahead_tasks -> BigInt,
         ahead_pages -> BigInt,
+        in_progress_tasks -> BigInt,
+    }
+}
+
+diesel::table! {
+    print_jobs (ready_sequence) {
+        ready_sequence -> BigInt,
+        state -> Text,
+        attempts_used -> Integer,
+        available_at_unix_ms -> BigInt,
+        queue_order -> BigInt,
+        last_outcome -> Nullable<Text>,
     }
 }
 
@@ -259,6 +299,10 @@ diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_invitations -> operator_accounts (issuer_operator_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
+diesel::joinable!(print_attempts -> print_jobs (ready_sequence));
+diesel::joinable!(print_attempts -> print_printers (printer_id));
+diesel::joinable!(print_claims -> print_attempts (attempt_id));
+diesel::joinable!(print_jobs -> print_documents (ready_sequence));
 diesel::joinable!(print_requests -> print_sources (source_id));
 diesel::joinable!(server_vault_records -> accounts (account_id));
 diesel::joinable!(teams -> accounts (account_id));
@@ -281,7 +325,10 @@ diesel::allow_tables_to_appear_in_same_query!(
     operator_sessions,
     organizations,
     pending_import_candidate,
+    print_attempts,
+    print_claims,
     print_documents,
+    print_jobs,
     print_printers,
     print_requests,
     print_sources,

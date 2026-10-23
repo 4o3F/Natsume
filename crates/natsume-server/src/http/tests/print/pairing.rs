@@ -106,29 +106,20 @@ async fn pairing_is_one_time_then_confirmed_and_replacement_requires_explicit_cl
     let old = code(&f, &id).await;
     let new = code(&f, &id).await;
     assert_eq!(
-        pair(&f, json!({"protocol_version":1,"code":old}), 1)
-            .await
-            .status,
+        pair(&f, json!({"code":old}), 1).await.status,
         StatusCode::UNAUTHORIZED
     );
-    let paired = pair(
-        &f,
-        json!({"protocol_version":1,"code":new.to_ascii_lowercase()}),
-        1,
-    )
-    .await;
+    let paired = pair(&f, json!({"code":new.to_ascii_lowercase()}), 1).await;
     assert_eq!(paired.status, StatusCode::OK);
     let issued = value(&paired);
-    assert_eq!(issued["protocol_version"], 1);
+    assert!(issued.get("protocol_version").is_none());
     assert_eq!(issued["printer_id"], id);
     let token = issued["token"]
         .as_str()
         .unwrap_or_else(|| panic!("client token"));
     assert!(token.starts_with("npc1."));
     assert_eq!(
-        pair(&f, json!({"protocol_version":1,"code":new}), 1)
-            .await
-            .status,
+        pair(&f, json!({"code":new}), 1).await.status,
         StatusCode::UNAUTHORIZED
     );
     let pending = admin(&f, Method::GET, "/api/v2/print/printers", json!(null)).await;
@@ -161,7 +152,7 @@ async fn pairing_is_one_time_then_confirmed_and_replacement_requires_explicit_cl
     assert_eq!(reset.status, StatusCode::NO_CONTENT);
     assert_eq!(confirm(&f, token).await.status, StatusCode::UNAUTHORIZED);
     let next = code(&f, &id).await;
-    let paired = pair(&f, json!({"protocol_version":1,"code":next}), 1).await;
+    let paired = pair(&f, json!({"code":next}), 1).await;
     assert_eq!(paired.status, StatusCode::OK);
     assert_ne!(value(&paired)["client_id"], issued["client_id"]);
 }
@@ -237,9 +228,7 @@ async fn pairing_limits_trust_socket_ip_and_reject_before_body_reads() {
     assert_eq!(limited.headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(value(&limited)["code"], "RATE_LIMITED");
     assert_eq!(
-        pair(&f, json!({"protocol_version":1,"code":"ABCD2345"}), 2)
-            .await
-            .status,
+        pair(&f, json!({"code":"ABCD2345"}), 2).await.status,
         StatusCode::UNAUTHORIZED
     );
     let missing_peer = must(
@@ -261,7 +250,7 @@ async fn client_credentials_are_isolated_from_sources_and_operator_sessions() {
     let f = must(Fixture::new().await);
     let id = create(&f).await;
     let code = code(&f, &id).await;
-    let paired = pair(&f, json!({"protocol_version":1,"code":code}), 1).await;
+    let paired = pair(&f, json!({"code":code}), 1).await;
     let issued = value(&paired);
     let token = issued["token"]
         .as_str()
@@ -344,7 +333,7 @@ async fn pairing_codes_and_client_tokens_do_not_escape_into_trace_logs() {
     let (code, token) = async {
         let id = create(&f).await;
         let code = code(&f, &id).await;
-        let paired = pair(&f, json!({"protocol_version":1,"code":code}), 1).await;
+        let paired = pair(&f, json!({"code":code}), 1).await;
         assert_eq!(paired.status, StatusCode::OK);
         let token = value(&paired)["token"]
             .as_str()
@@ -352,9 +341,7 @@ async fn pairing_codes_and_client_tokens_do_not_escape_into_trace_logs() {
             .to_owned();
         assert_eq!(confirm(&f, &token).await.status, StatusCode::OK);
         assert_eq!(
-            pair(&f, json!({"protocol_version":1,"code":code}), 1)
-                .await
-                .status,
+            pair(&f, json!({"code":code}), 1).await.status,
             StatusCode::UNAUTHORIZED
         );
         (code, token)
@@ -402,9 +389,9 @@ async fn printer_and_pairing_inputs_are_closed_and_generic() {
         StatusCode::BAD_REQUEST
     );
     for (index, body) in [
-        json!({"protocol_version":2,"code":"ABCD2345"}),
-        json!({"protocol_version":1,"code":"ABCD2345","printer_id":"extra"}),
-        json!({"protocol_version":1}),
+        json!({"protocol_version":1,"code":"ABCD2345"}),
+        json!({"code":"ABCD2345","printer_id":"extra"}),
+        json!({}),
     ]
     .into_iter()
     .enumerate()
@@ -416,14 +403,14 @@ async fn printer_and_pairing_inputs_are_closed_and_generic() {
             StatusCode::BAD_REQUEST
         );
     }
-    let unknown = pair(&f, json!({"protocol_version":1,"code":"ABCD2345"}), 20).await;
+    let unknown = pair(&f, json!({"code":"ABCD2345"}), 20).await;
     for (index, code) in ["", "éé-2345", "ABCD-2345-extra", "00000000"]
         .into_iter()
         .enumerate()
     {
         let invalid = pair(
             &f,
-            json!({"protocol_version":1,"code":code}),
+            json!({"code":code}),
             u8::try_from(index + 21).unwrap_or_default(),
         )
         .await;

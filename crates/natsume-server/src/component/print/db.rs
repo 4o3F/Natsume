@@ -1,3 +1,4 @@
+pub(super) mod execution;
 pub(super) mod printers;
 
 use diesel::{
@@ -213,48 +214,56 @@ pub(super) fn request(
             print_documents::pages,
             print_documents::ahead_tasks,
             print_documents::ahead_pages,
+            print_documents::in_progress_tasks,
         ))
         .filter(print_documents::source_id.eq(source))
         .filter(print_documents::request_id.eq(id))
-        .first::<(i64, String, i64, i64, i64, i64)>(transaction.connection())
+        .first::<(i64, String, i64, i64, i64, i64, i64)>(transaction.connection())
         .optional()?;
     let failure = row
         .generation_failure
         .as_deref()
         .map(GenerationFailure::parse)
         .transpose()?;
-    let (state, document, admission) =
-        if let Some((ready_sequence, sha256, bytes, pages, ahead_tasks, ahead_pages)) = document {
+    let (state, document, admission) = if let Some((
+        ready_sequence,
+        sha256,
+        bytes,
+        pages,
+        ahead_tasks,
+        ahead_pages,
+        in_progress_tasks,
+    )) = document
+    {
+        if failure.is_some() {
+            return Err(PrintError::Persistence);
+        }
+        (
+            PrintState::Ready,
+            Some(PrintDocument {
+                sha256,
+                bytes,
+                pages,
+            }),
+            Some(PrintAdmission {
+                ready_sequence,
+                ahead_tasks,
+                ahead_pages,
+                in_progress_tasks,
+            }),
+        )
+    } else {
+        (
             if failure.is_some() {
-                return Err(PrintError::Persistence);
-            }
-            (
-                PrintState::Ready,
-                Some(PrintDocument {
-                    sha256,
-                    bytes,
-                    pages,
-                }),
-                Some(PrintAdmission {
-                    ready_sequence,
-                    ahead_tasks,
-                    ahead_pages,
-                    in_progress_tasks: 0,
-                }),
-            )
-        } else {
-            (
-                if failure.is_some() {
-                    PrintState::GenerationFailed
-                } else {
-                    PrintState::Preparing
-                },
-                None,
-                None,
-            )
-        };
+                PrintState::GenerationFailed
+            } else {
+                PrintState::Preparing
+            },
+            None,
+            None,
+        )
+    };
     Ok(PrintRequest {
-        protocol_version: 1,
         request_id: row.request_id,
         account_id: row.account_id,
         account: row.account,
@@ -383,10 +392,19 @@ pub(super) fn admit(
     if !identity_exists {
         return Err(PrintError::Conflict);
     }
-    // All I1 documents are unclaimed. Aggregate and insertion share BEGIN IMMEDIATE.
+    let now = printers::now(transaction)?;
+    execution::expire(transaction, now)?;
+    // Snapshot only tasks eligible ahead of this admission, not past or active attempts.
     let (ahead_tasks, ahead_pages) = print_documents::table
+        .inner_join(crate::diesel_schema::print_jobs::table)
+        .filter(crate::diesel_schema::print_jobs::state.eq_any(["queued", "waiting"]))
+        .filter(crate::diesel_schema::print_jobs::available_at_unix_ms.le(now))
         .select((count_star(), integer_sum(print_documents::pages)))
         .get_result::<(i64, Option<i64>)>(transaction.connection())?;
+    let in_progress_tasks = crate::diesel_schema::print_jobs::table
+        .filter(crate::diesel_schema::print_jobs::state.eq("active"))
+        .count()
+        .get_result::<i64>(transaction.connection())?;
     diesel::insert_into(print_documents::table)
         .values((
             print_documents::source_id.eq(source),
@@ -396,7 +414,14 @@ pub(super) fn admit(
             print_documents::pages.eq(pages),
             print_documents::ahead_tasks.eq(ahead_tasks),
             print_documents::ahead_pages.eq(ahead_pages.unwrap_or(0)),
+            print_documents::in_progress_tasks.eq(in_progress_tasks),
         ))
         .execute(transaction.connection())?;
+    let sequence = print_documents::table
+        .filter(print_documents::source_id.eq(source))
+        .filter(print_documents::request_id.eq(id))
+        .select(print_documents::ready_sequence)
+        .first::<i64>(transaction.connection())?;
+    execution::enqueue(transaction, sequence, now)?;
     request(transaction, source, id)
 }

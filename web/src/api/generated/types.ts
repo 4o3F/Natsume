@@ -8,6 +8,18 @@ export type AccountResponse = {
   team: TeamResponse | null;
 };
 
+export type AttemptOutcome = "printed" | "failed" | "unknown";
+
+export type AttemptReport =
+  | { kind: "contact" }
+  | { kind: "observed"; job: JobIdentity }
+  | { kind: "printed"; job: JobIdentity }
+  | { kind: "failed" }
+  | { kind: "unknown" };
+
+export type AttemptState =
+  "preparing" | "observing" | "printed" | "failed" | "unknown";
+
 /**  Latest validated Binding artifact Actual reported by the current lease. */
 export type BindingActualResponse = {
   assignment_state: BindingArtifactStateResponse;
@@ -202,6 +214,9 @@ export type ErrorResponse = {
 
 export type EvidenceQualityResponse = "medium" | "strong";
 
+export type ExecutionState =
+  "queued" | "active" | "waiting" | "completed" | "exhausted";
+
 /**  Desired Session foreground role accepted and returned by the API. */
 export type ForegroundTargetResponse = "contest" | "waiting";
 
@@ -339,6 +354,12 @@ export type ImportTeamResponse = {
   category: string;
 };
 
+export type JobIdentity = {
+  queue_name: string;
+  job_id: number;
+  label: string;
+};
+
 export type OperatorAccountResponse = {
   operator_id: string;
   username: string;
@@ -436,15 +457,39 @@ export type PrintAdmission = {
   in_progress_tasks: number;
 };
 
+export type PrintAttempt = {
+  attempt_id: string;
+  ready_sequence: number;
+  printer_id: string;
+  client_id: string;
+  attempt_number: number;
+  queue_name: string;
+  label: string;
+  state: AttemptState;
+  claimed_at_unix_ms: number;
+  prepare_expires_at_unix_ms: number;
+  lease_expires_at_unix_ms: number;
+  last_contact_at_unix_ms: number;
+  last_observed_at_unix_ms: number | null;
+  job_id: number | null;
+  finished_at_unix_ms: number | null;
+  document_sha256: string;
+  document_bytes: number;
+  document_pages: number;
+};
+
+export type PrintClaim = {
+  request_id: string;
+  queue_name: string;
+};
+
 export type PrintClientIssued = {
-  protocol_version: number;
   printer_id: string;
   client_id: string;
   token: string;
 };
 
 export type PrintClientPair = {
-  protocol_version: number;
   code: string;
 };
 
@@ -454,8 +499,15 @@ export type PrintDocument = {
   pages: number;
 };
 
+export type PrintExecution = {
+  ready_sequence: number;
+  state: ExecutionState;
+  attempts_used: number;
+  retry_at_unix_ms: number | null;
+  last_outcome: AttemptOutcome | null;
+};
+
 export type PrintGenerationFailure = {
-  protocol_version: number;
   code: GenerationFailure;
 };
 
@@ -491,7 +543,6 @@ export type PrintQueueEntry = {
 };
 
 export type PrintRegistration = {
-  protocol_version: number;
   request_id: string;
   account: string;
   /**  Display only: at most 1024 UTF-8 bytes, without separators or controls. */
@@ -500,7 +551,6 @@ export type PrintRegistration = {
 };
 
 export type PrintRequest = {
-  protocol_version: number;
   request_id: string;
   account_id: string;
   account: string;

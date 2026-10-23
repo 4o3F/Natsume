@@ -274,7 +274,8 @@ async fn transaction_rollback_does_not_consume_a_code_or_leave_a_binding() {
 }
 
 #[tokio::test]
-async fn pairing_migration_round_trip_preserves_existing_admission_and_pdf() {
+async fn print_migration_rollback_preserves_roster_and_document_files() {
+    use crate::diesel_schema::accounts;
     use diesel::Connection as _;
     use diesel_migrations::{FileBasedMigrations, MigrationHarness as _};
 
@@ -292,24 +293,25 @@ async fn pairing_migration_round_trip_preserves_existing_admission_and_pdf() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
         ))
     };
+    // All Print tables belong to one migration. Its rollback removes their data,
+    // not roster facts or files owned by the document directory.
     must(connection.revert_last_migration(migrations()));
     assert_eq!(
-        must(
-            f.print
-                .get(f.source.clone(), request.request_id.clone())
-                .await
-        ),
-        ready
+        must(accounts::table.count().get_result::<i64>(&mut connection)),
+        1
     );
+    let document = ready
+        .document
+        .as_ref()
+        .unwrap_or_else(|| panic!("document"));
+    must(f.print.documents.verify(&document.sha256, document.bytes));
     assert_eq!(
         must(connection.run_pending_migrations(migrations())).len(),
         1
     );
     assert!(must(f.database.read(db::printers::list).await).is_empty());
-    assert_eq!(
-        must(f.print.get(f.source.clone(), request.request_id).await),
-        ready
-    );
+    assert!(must(f.print.list_sources().await).is_empty());
+    assert!(must(f.print.list_executions().await).is_empty());
 }
 
 #[test]

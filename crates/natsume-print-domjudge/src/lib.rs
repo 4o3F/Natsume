@@ -204,7 +204,6 @@ pub async fn run(
         cancellation,
     };
     let registration = Registration {
-        protocol_version: 1,
         request_id: &input.request_id,
         account: &input.account,
         original_filename: &input.original,
@@ -229,11 +228,8 @@ pub async fn run(
         Ok(bytes) => bytes,
         Err(error @ Error::Generation(code)) => {
             // No outbox, compiler output, or retry after this invocation.
-            let body = serde_json::to_vec(&GenerationFailure {
-                protocol_version: 1,
-                code,
-            })
-            .map_err(|_| Error::InvalidInput)?;
+            let body =
+                serde_json::to_vec(&GenerationFailure { code }).map_err(|_| Error::InvalidInput)?;
             let _ = session
                 .exchange(
                     Method::POST,

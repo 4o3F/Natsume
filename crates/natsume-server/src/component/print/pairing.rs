@@ -37,7 +37,6 @@ pub(crate) struct PrintPairingCode {
 
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PrintClientIssued {
-    pub protocol_version: u8,
     pub printer_id: String,
     pub client_id: String,
     pub token: String,
@@ -153,7 +152,6 @@ impl PrintComponent {
                 let now = db::printers::now(tx)?;
                 let printer_id = db::printers::pair(tx, &code_hash, &client_id, &token_hash, now)?;
                 Ok(PrintClientIssued {
-                    protocol_version: 1,
                     printer_id,
                     client_id,
                     token,

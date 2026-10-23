@@ -1,9 +1,13 @@
 //! Durable print admission and printer identities, separate from Device Control.
 mod db;
+pub(crate) mod execution;
+mod expiry;
 mod pairing;
 mod pdf;
 mod storage;
 
+pub(crate) use execution::ClientIdentity;
+pub(crate) use expiry::ExpiryError;
 pub(crate) use pairing::PrintPrinter;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -24,6 +28,7 @@ pub(crate) struct PrintComponent {
     database: Database,
     documents: DocumentStore,
     pairing_limits: std::sync::Mutex<pairing::PairingLimits>,
+    expiry: std::sync::Arc<expiry::Inbox>,
 }
 
 /// Only produced after verifying a dedicated source credential, never an Operator cookie.
@@ -66,7 +71,6 @@ pub(crate) struct PrintQueueEntry {
 
 #[derive(Clone)]
 pub(crate) struct PrintRegistration {
-    pub protocol_version: u8,
     pub request_id: String,
     pub account: String,
     /// Display only: at most 1024 UTF-8 bytes, without separators or controls.
@@ -104,7 +108,6 @@ impl GenerationFailure {
 }
 
 pub(crate) struct PrintGenerationFailure {
-    pub protocol_version: u8,
     pub code: GenerationFailure,
 }
 
@@ -132,7 +135,6 @@ pub(crate) struct PrintAdmission {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PrintRequest {
-    pub protocol_version: u8,
     pub request_id: String,
     pub account_id: String,
     pub account: String,
@@ -198,6 +200,7 @@ impl PrintComponent {
             database,
             documents,
             pairing_limits: std::sync::Mutex::default(),
+            expiry: std::sync::Arc::default(),
         })
     }
 
@@ -209,6 +212,7 @@ impl PrintComponent {
             database,
             documents,
             pairing_limits: std::sync::Mutex::default(),
+            expiry: std::sync::Arc::default(),
         };
         let mut sequence = 0;
         while let Some((next_sequence, hash, bytes)) = component
@@ -223,6 +227,14 @@ impl PrintComponent {
                 .await
                 .map_err(|_| PrintError::Persistence)??;
         }
+        component
+            .database
+            .write(|tx| {
+                let now = db::printers::now(tx)?;
+                db::execution::recover(tx, now)
+            })
+            .await
+            .map_err(TransactionError::into_error)?;
         Ok(component)
     }
 
@@ -303,8 +315,7 @@ impl PrintComponent {
         request: PrintRegistration,
     ) -> Result<PrintRequest, PrintError> {
         canonical_id(&request.request_id)?;
-        if request.protocol_version != 1
-            || !lowercase_hash(&request.source_sha256)
+        if !lowercase_hash(&request.source_sha256)
             || request.original_filename.len() > 1024
             || request
                 .original_filename
@@ -360,9 +371,6 @@ impl PrintComponent {
         failure: PrintGenerationFailure,
     ) -> Result<PrintRequest, PrintError> {
         canonical_id(&request_id)?;
-        if failure.protocol_version != 1 {
-            return Err(PrintError::Invalid);
-        }
         self.database
             .write(move |tx| {
                 db::authenticate(tx, &source)?;

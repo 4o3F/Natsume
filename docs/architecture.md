@@ -733,13 +733,14 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `
 
 ### 10.4 `ServerState`
 
-`ServerState::load/from_parts`是进程依赖的组装入口，`ServerState`是组装后的共享句柄集合， 不执行设备应用用例。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名； WSS连接处理和Actor只取得设备协调器，不依赖整个组合对象。
+`ServerState::load/from_parts`是进程依赖的组装入口，`ServerState`是组装后的共享组件句柄集合，不执行设备应用用例、不驱动 HTTP 服务，也不持有后台任务句柄。`background` 与 `server_state` 是平级模块，分别负责后台任务的生命周期和共享组件的构造。组合层通过 `background::start_background_tasks(&state)` 显式启动当前需要的后台工作，并返回由 `serve::run_until` 单独持有的 `BackgroundTasks` 所有者；目前只有 Print 到期检查任务。该对象持有取消信号和统一任务集合，只负责后台任务的取消、等待及异常回收；具体任务的启动、初始化条件和业务错误映射仍在组合层显式编写，不接受外部服务 future，不提供动态注册接口。HTTP 的 `AppState` 是 `Arc<ServerState>` 类型别名；WSS 连接处理和 Actor 只取得设备协调器，不依赖整个组合对象。
 
 当前已实现的组成是：
 
 ```rust
 pub(crate) struct ServerState {
     operator: OperatorComponent,
+    print: PrintComponent,
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: Arc<ProvisioningComponent>,
@@ -807,11 +808,16 @@ Database + ServerConfig
       → concrete business components
       → Arc<DeviceControl> { concrete dependencies, DeviceRegistry }
   → Arc<ServerState>
+  → TLS listener
+  → background::start_background_tasks { Print attempt expiry }
+      → BackgroundTasks { cancellation + JoinSet }
   → HTTP
       → Device WSS { Arc<DeviceControl> }
 ```
 
-HTTP持有组合对象，WSS和DeviceActor使用其中构造的同一协调器。`GatewayIssuer`由Gateway Component持有。 不存在全局 singleton，也不允许transport重新组装 组件依赖。Database连接/迁移、TLS listener和HTTP生命周期仍由`serve`启动入口负责； `ServerState`不持有完整`ServerConfig`，组件也不自行重复加载共享依赖。
+HTTP持有组合对象，WSS和DeviceActor使用其中构造的同一协调器。`GatewayIssuer`由Gateway Component持有。 不存在全局 singleton，也不允许transport重新组装 组件依赖。`serve` 只负责启动和关闭：连接／迁移数据库、加载共享状态、成功绑定 TLS listener，然后调用组合层的后台工作启动入口，直接等待 `axum::serve(...).with_graceful_shutdown(...)`。HTTP 结束后，不论成功还是返回错误，均调用 `BackgroundTasks::shutdown`：先发出取消信号，再等待后台任务退出并检查结果；如果 HTTP 和后台关闭同时失败，保留 HTTP 原错误，后台错误另有结构化日志。HTTP 优雅关闭期间后台检查仍运行。命令不直接调用 Print 维护方法，也不为组件增加各自的定时器或 `select!` 分支。后续实际需要的后台工作在组合层增加明确的启动调用、必要的初始化等待和具名业务错误映射，任务交给同一个集合持有，不增加专用句柄字段或重复关闭流程，也不引入通用任务注册表、任务 trait 或后台任务管理框架。`ServerState` 不持有完整 `ServerConfig`，组件也不自行重复加载共享依赖。
+
+`BackgroundTasks` 使用现有 `tokio-util` 的 `DropGuard` 和 Tokio 的 `JoinSet<Result<(), BackgroundError>>` 管理取消及异常释放。正常关闭先统一取消，再持续等待直到任务集合排空；业务错误、panic 或任务取消均记录日志，不因单个任务失败而提前结束等待，最终返回首先收到的错误并保留其源错误。panic 日志只记录状态，不记录 panic 内容。服务运行或关闭过程被取消时，所有者释放会取消并请求中止所有剩余异步任务，不把任务遗留为独立循环。释放不能异步等待，也不能强行终止已经提交给共享数据库执行器的阻塞事务，这些事务仍按原有边界完成或回滚。Print 后台任务只持有数据库依赖，不保留整个 `ServerState`；任务继承启动处的 tracing 订阅器和当前 span。
 
 Production WSS handler只把socket交给`device_control::serve_connection`。该入口在模块 内完成admission与Enrollment握手，通过`DeviceControl::attach_device_lease`完成最终复查和Registry attach； handler不传递或match admission中间状态。
 
@@ -1911,7 +1917,7 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 本节是后续已接受目标，不是代码、Windows 或现场验收已完成的声明。 在同一仓库和同一个 Server 中增加 Print、Photo 纵向组件，继续使用单赛事和单 writer； 不先引入微服务、Redis／消息中间件、通用调度／插件框架或全局业务审计。 名单写入 authority 仍属于 Contest/Import，工位控制、打印、拍照有各自生命周期。
 
-Windows Print Client、Photo Client 分别安装和交付，不改造为 Linux Agent／Helper 的功能， 不使用 DeviceActor、工位 Target 或 control key。DOMjudge 集成、打印 Client、拍照站具有 独立、最小权限的身份；不持有长期管理员 session，不跳过 TLS 校验。 注册、密钥保护、撤销及 protocol version 须随对应契约评审，不能由 GUI 默认行为决定。
+Windows Print Client、Photo Client 分别安装和交付，不改造为 Linux Agent／Helper 的功能， 不使用 DeviceActor、工位 Target 或 control key。DOMjudge 集成、打印 Client、拍照站具有 独立、最小权限的身份；不持有长期管理员 session，不跳过 TLS 校验。 注册、密钥保护、撤销及接口版本须随对应契约评审，不能由 GUI 默认行为决定。
 
 Server 保存打印文档、当前照片及待处理候选；它们的访问不沿用公开学校 Logo 的策略。 备份与恢复同时覆盖数据库、相关文件和必要身份／信任材料。保留、限额、清理、 Windows 支持矩阵与安装 runtime 需明确验证，不由“无历史功能”推导自动删除素材。
 
@@ -1932,20 +1938,20 @@ Server 保存打印文档、当前照片及待处理候选；它们的访问不�
 
 I1 使用以下契约实现 Server 与 `natsume-print-domjudge`，不包含 Windows 领取、打印尝试、Panel 打印管理或物理打印验收。wrapper 首版交付 Linux amd64 的独立 Ubuntu／Debian 包，不依赖 `natsume-server` 包；两端可以分机部署，只通过 HTTPS 交换数据，不共享目录、数据库或本机文件路径。DOMjudge 集成以 9.0.x 为核对基线；固定成功提示与实际部署版本仍须验收。
 
-来源身份使用专用 Bearer token，不接受 Operator cookie 或工位密钥代替。管理员通过 `POST /api/v2/print/sources` 创建来源，通过 `GET /api/v2/print/sources` 查看非秘密来源资料，通过 `DELETE /api/v2/print/sources/{source_id}` 撤销；这些管理接口要求现有管理员权限。创建请求为 `{ "name": "domjudge-primary" }`；响应含 `source_id`、`name`、`revoked` 和仅本次返回的 `token`，列表不返回 token 或摘要。来源 ID 为 canonical UUIDv7，token 为 `nps1.<source_id>.<64 位小写十六进制随机秘密>`，随机秘密为 32 bytes。Server 只持久化 SHA-256 摘要，认证使用定时安全比较；不记录 token、Authorization header、源代码或 PDF 内容。撤销幂等，返回 204；不存在的来源返回 404。来源名称为 1～128 个 Unicode 字符，不接受控制字符。
+Print HTTP 接口的版本由 URL 路径 `/api/v2` 表达，JSON 不携带 `protocol_version`，不以应用发布版本号判断协议兼容性，也不维护独立的 Print 版本常量或共享版本包。来源身份使用专用 Bearer token，不接受 Operator cookie 或工位密钥代替。管理员通过 `POST /api/v2/print/sources` 创建来源，通过 `GET /api/v2/print/sources` 查看非秘密来源资料，通过 `DELETE /api/v2/print/sources/{source_id}` 撤销；这些管理接口要求现有管理员权限。创建请求为 `{ "name": "domjudge-primary" }`；响应含 `source_id`、`name`、`revoked` 和仅本次返回的 `token`，列表不返回 token 或摘要。来源 ID 为 canonical UUIDv7，token 为 `nps1.<source_id>.<64 位小写十六进制随机秘密>`，随机秘密为 32 bytes。Server 只持久化 SHA-256 摘要，认证使用定时安全比较；不记录 token、Authorization header、源代码或 PDF 内容。撤销幂等，返回 204；不存在的来源返回 404。来源名称为 1～128 个 Unicode 字符，不接受控制字符。
 
 wrapper 从部署提供的受限本机文件读取 token，通过严格校验服务器证书的 HTTPS 发送；支持部署提供的 CA，不提供跳过证书校验选项。客户端拒绝重定向，避免向其他地址转发身份；Server 在消费请求体前认证来源，并在提交业务事务时重新确认未撤销。来源只可登记和查看自己的请求，不可枚举其他来源的请求、修改名单或调用工位控制。
 
 | 方法与路径 | 请求 | 成功响应与含义 |
 | --- | --- | --- |
-| `POST /api/v2/print/requests` | JSON：`protocol_version: 1`、canonical UUIDv7 `request_id`、`account`、`original_filename`、64 位小写十六进制 `source_sha256` | 200，请求事实；先成功登记，才能执行 Typst |
+| `POST /api/v2/print/requests` | JSON：canonical UUIDv7 `request_id`、`account`、`original_filename`、64 位小写十六进制 `source_sha256` | 200，请求事实；先成功登记，才能执行 Typst |
 | `PUT /api/v2/print/requests/{request_id}/document` | `Content-Type: application/pdf`，最终 PDF bytes | 200，持久化入队后的请求事实；相同内容重试返回首次结果 |
-| `POST /api/v2/print/requests/{request_id}/generation-failure` | JSON：`protocol_version: 1`、固定枚举 `code` | 200，已登记的生成失败事实；不附带编译器输出 |
+| `POST /api/v2/print/requests/{request_id}/generation-failure` | JSON：固定枚举 `code` | 200，已登记的生成失败事实；不附带编译器输出 |
 | `GET /api/v2/print/requests/{request_id}` | 无请求体 | 200，当前请求事实与原入队快照，仅用于结果不明核实 |
 
 JSON 使用封闭字段集。`account` 必须严格等于 DOMjudge `[username]`，Server 按现有 `accounts.account` 找到已有 `account_id` 与 team；不 trim、改大小写或按 `[teamid]`、队名、座位猜测。登记保存该 `account_id` 及非秘密展示快照：`account`、`team_name`、`seat_label`。`team_name` 优先使用非空中文名，否则英文名；未分配座位表示为 null。原文件名仅为展示数据，最多 1024 UTF-8 bytes，不接受路径分隔符、NUL 或控制字符，不参与路径构造。源文件哈希用于识别同一请求的登记冲突，不是来源证明或跨请求去重键。
 
-请求事实的 JSON 字段为 `protocol_version`、`request_id`、`account_id`、`account`、`team_name`、`seat_label`、`state`、`document`、`admission`、`generation_failure`。I1 的 `state` 为 `preparing`、`generation_failed` 或 `ready`；不伪造领取／打印状态。准备中时后三个字段均为 null；生成失败时仅 `generation_failure` 非 null；就绪时仅 `document` 与 `admission` 非 null。`generation_failure` 为上述固定 `code` 字符串；枚举为 `compile_timeout`、`compile_failed`、`document_too_large`、`wrapper_deadline`。`document` 为 `{ "sha256": "…", "bytes": 12345, "pages": 3 }`，页数由 Server 解析最终 PDF 得到，不信任 wrapper 自报。`admission` 为 `{ "ready_sequence": 1, "ahead_tasks": 0, "ahead_pages": 0, "in_progress_tasks": 0 }`；I1 没有领取端，因此处理中数真实为 0，不预建假打印执行记录。
+请求事实的 JSON 字段为 `request_id`、`account_id`、`account`、`team_name`、`seat_label`、`state`、`document`、`admission`、`generation_failure`。I1 的 `state` 为 `preparing`、`generation_failed` 或 `ready`；不伪造领取／打印状态。准备中时后三个字段均为 null；生成失败时仅 `generation_failure` 非 null；就绪时仅 `document` 与 `admission` 非 null。`generation_failure` 为上述固定 `code` 字符串；枚举为 `compile_timeout`、`compile_failed`、`document_too_large`、`wrapper_deadline`。`document` 为 `{ "sha256": "…", "bytes": 12345, "pages": 3 }`，页数由 Server 解析最终 PDF 得到，不信任 wrapper 自报。`admission` 为 `{ "ready_sequence": 1, "ahead_tasks": 0, "ahead_pages": 0, "in_progress_tasks": 0 }`，在首次入队事务中持久化；前方任务数与页数只统计当前可领取的等待任务，处理中数统计全场活动尝试。准备中、生成失败、尚未结束重试等待、已完成和次数耗尽的任务不计入前方等待数。重放返回原快照，不随后续领取、完成或名单变化重新计算。
 
 幂等键为 `(source_id, request_id)`。相同登记字段的重试返回已存在请求；同键不同字段返回 409。同一来源可以为相同源码建立不同请求 ID，有意再次打印不被内容哈希合并。不同来源的 ID 空间彼此隔离。上传只允许 `preparing → ready`；相同最终 PDF 的重试返回原结果，不重新计算顺序或快照，不同内容返回 409。生成失败只允许 `preparing → generation_failed`；相同失败枚举可重试，不同枚举、失败后上传、就绪后报失败均返回 409。名单删除或以同账号重建不能把旧登记转给新队伍；上传时重新确认原 `account_id` 与账号的对应事实，失效返回 409，已入队结果不因名单随后变化而改写。
 
@@ -1953,7 +1959,7 @@ JSON 使用封闭字段集。`account` 必须严格等于 DOMjudge `[username]`�
 
 I1 将最终 PDF 保存为 Print 自有文件，目录由 `[storage].print_documents` 的绝对路径指定，文件名为 Server 计算的 `<sha256>.pdf`，不使用客户端文件名。先在同一目录写入权限为 `0600` 的临时文件并同步文件内容，再以不可覆盖方式发布正式文件、同步目录，最后在短 SQLite 写事务中提交文档摘要、字节数、页数、全局单调就绪序号和首次受理快照；数据库不存 PDF BLOB。重复上传在写事务外比较已有文件内容，正式文件不可原地修改或覆盖。只有文件可靠保存且数据库 COMMIT 后才返回入队成功；文件写入失败不得建立就绪记录，数据库提交失败可能留下无引用文件，不自动删除，也不自动补成入队任务。取消调用者不等于取消已开始的文件操作或数据库提交，结果通过同键查询核实。
 
-`00000000000007_print` 直接建立不含 PDF BLOB 的文档元数据表。启动时逐份核对所有已入队文件的长度和摘要，缺失或损坏时拒绝提供服务；重复登记和查询就绪结果时也核对文件，不将不可用文档报告为就绪。此核对随文档总量增加启动读取成本。
+所有 Print 表、索引与约束统一由 `00000000000007_print` 建立，包括来源、请求、PDF 元数据、打印机配对、任务执行、尝试和领取回执，不拆成独立的配对或执行 migration。该 Print 基线尚未部署，不为先前开发期间的 Print schema 提供升级或启动修补逻辑；migration 回滚会移除全部 Print 数据表，不会删除 PDF 目录文件。文档元数据表不含 PDF BLOB。启动时逐份核对所有已入队文件的长度和摘要，缺失或损坏时拒绝提供服务；重复登记和查询就绪结果时也核对文件，不将不可用文档报告为就绪。此核对随文档总量增加启动读取成本。
 
 就绪顺序在数据库事务中分配，不使用登记时间、客户端时间或并发校验完成前的顺序。快照只统计本任务之前已就绪但未领取的任务及其文档页数，涵盖所有来源；准备中和生成失败请求排除。备份在停止唯一 Server 进程后，同时取得包含已提交 WAL 状态的一致 SQLite 副本、PDF 目录及其他必需配置与密钥；不能只复制运行中的主库，也不能只恢复数据库而遗漏 PDF。文档保留期限、无引用文件清理和容量验收由部署维护另行确定，不自动删除或添加未经确认的队伍／任务数量上限。
 
@@ -2003,14 +2009,42 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 | `GET /api/v2/print/printers` | 管理员 session | 200，打印机非秘密资料数组 |
 | `POST /api/v2/print/printers/{printer_id}/pairing-code` | 管理员 session，无请求体 | 200，`printer_id`、仅本次返回的 `code`、`expires_at_unix_ms` |
 | `DELETE /api/v2/print/printers/{printer_id}/binding` | 管理员 session，无请求体 | 204，明确清除绑定及未用配对码，使旧凭据失效；已有活动尝试时拒绝 |
-| `POST /api/v2/print/client/pair` | 无管理员身份，`{ "protocol_version": 1, "code": "ABCD-2345" }` | 200，`protocol_version`、`printer_id`、`client_id`、仅本次返回的 `token`；此时待确认 |
+| `POST /api/v2/print/client/pair` | 无管理员身份，`{ "code": "ABCD-2345" }` | 200，`printer_id`、`client_id`、仅本次返回的 `token`；此时待确认 |
 | `POST /api/v2/print/client/confirmation` | 独立客户端 Bearer token，无请求体 | 200，绑定已确认的打印机非秘密资料 |
 
 打印机非秘密资料为 `printer_id`、`name`、可空的 `client_id`、`client_confirmed` 和可空的 `pairing_expires_at_unix_ms`；名称为 1～128 个 Unicode 字符，不接受控制字符。已有待确认或已确认绑定时，签发新码返回 409，必须先明确解除绑定。确认可幂等处理，但不能取回令牌或重新签发凭据；客户端未确认整体成功仍须遵循中断配对作废规则，不能凭该接口自动恢复旧配对。数据库事务原子消费配对码并建立待确认绑定，并发使用同一码最多成功一次，失败事务不消费码。
 
-结构化请求使用封闭字段集；非法版本或 JSON 返回 400，无效、未知、已用或过期码统一返回 401，避免透露打印机存在事实。配对速率限制在读取请求体前执行，仅使用 TLS listener 提供的实际来源 IP，统一 IPv4 与其 IPv6 映射表示；不信任 `X-Forwarded-For` 等任意转发头，缺少实际来源时拒绝处理。超限返回 429、`RATE_LIMITED` 和 `Retry-After: 60`。单进程限流状态在内存中维护且有界，进程重启会清空，不作为持久身份事实。所有响应继续使用 Print namespace 的 `Cache-Control: no-store`；查看员、来源令牌和客户端令牌不能调用管理员接口，Operator session 或来源令牌不能代替客户端确认凭据。
+结构化请求使用封闭字段集；非法字段或 JSON 返回 400，无效、未知、已用或过期码统一返回 401，避免透露打印机存在事实。配对速率限制在读取请求体前执行，仅使用 TLS listener 提供的实际来源 IP，统一 IPv4 与其 IPv6 映射表示；不信任 `X-Forwarded-For` 等任意转发头，缺少实际来源时拒绝处理。超限返回 429、`RATE_LIMITED` 和 `Retry-After: 60`。单进程限流状态在内存中维护且有界，进程重启会清空，不作为持久身份事实。所有响应继续使用 Print namespace 的 `Cache-Control: no-store`；查看员、来源令牌和客户端令牌不能调用管理员接口，Operator session 或来源令牌不能代替客户端确认凭据。
 
 配对协议是执行闭环的身份基础，不单独代表领取、尝试恢复、Windows 应用或现场打印已经实现。客户端令牌不得用于访问 Operator 队列或 DOMjudge 来源接口，正式领取接口还须检查绑定已经确认。
+
+#### 23.3.2 Server 执行协议与持久化
+
+执行接口只接受已确认配对的独立客户端 Bearer token，不接受 Operator session、DOMjudge 来源令牌或待确认凭据。HTTP 中间件在读取请求体前完成认证；每次业务事务再次核对当前绑定、凭据摘要和 confirmed 状态。客户端只可查询、下载和推进自己持有的尝试；其他客户端的尝试与不存在的尝试统一返回 404。撤销后的旧凭据返回 401，不能继续读取过去的尝试。所有响应保留 `Cache-Control: no-store`，不提供任意路径下载。
+
+| 方法与路径 | 请求 | 成功结果 |
+| --- | --- | --- |
+| `POST /api/v2/print/client/claims` | `{ "request_id": "canonical UUIDv7", "queue_name": "Windows 队列名" }` | 200，分配的尝试，或空池时的 JSON null |
+| `GET /api/v2/print/client/attempts/current` | 无请求体 | 200，当前活动尝试或 JSON null；不续期 |
+| `GET /api/v2/print/client/attempts/{attempt_id}` | 无请求体 | 200，自己的原尝试及其当前状态，包括已结束结果；不续期 |
+| `GET /api/v2/print/client/attempts/{attempt_id}/document` | 无请求体 | 200，当前活动尝试对应的 PDF；读取文件后再次核对绑定、归属和期限，不续期 |
+| `PUT /api/v2/print/client/attempts/{attempt_id}/job` | `{ "queue_name": "原队列名", "job_id": 42, "label": "Natsume/<attempt_id>" }` | 200，登记后的尝试；重复同一登记不续期、不另建 Windows 任务 |
+| `POST /api/v2/print/client/attempts/{attempt_id}/reports` | 下述固定报告枚举 | 200，持久化后的原尝试状态 |
+| `GET /api/v2/print/executions` | Operator session，admin 或 viewer | 200，非秘密执行状态数组，通过 `ready_sequence` 对应现有队列元数据 |
+
+领取请求 ID 的幂等范围是当前客户端 ID。已接受的空池结果同样保存回执，重发该 ID 仍返回 null；下一次轮询使用新 ID。分配成功的 ID 永远对应原尝试，重放不会领取后来排队的任务，也不会因原尝试结束而重新计次。相同 ID 改变队列名返回 409；客户端持有活动尝试时使用新 ID 也返回 409。队列名为 1～256 个 Unicode 字符，不接受控制字符，仅作为本客户端选择和观察 Windows 队列的精确名称，不声称能识别物理设备别名。客户端必须先确认队列空闲且可用，再发起领取。
+
+尝试响应包含 `attempt_id`、`ready_sequence`、`printer_id`、`client_id`、`attempt_number`、`queue_name`、`label`、`state`、领取时间、准备绝对期限、有效联系／观察期限、最后联系时间、可空的最后有效观察时间、可空的 `job_id` 与结束时间，以及文档摘要、字节数和页数。ID 为 canonical UUIDv7，标签固定为 `Natsume/<attempt_id>`，Job ID 为 1～4294967295 的 JSON 整数。整数与时间在 TypeScript 中生成 JSON number，可空字段仍为必需字段，不混同字段省略。尝试状态为 `preparing`、`observing`、`printed`、`failed`、`unknown`；`printed` 仅表示客户端明确报告打印系统的 `PRINTED`，不是物理出纸证明。
+
+报告使用封闭字段集：`{ "kind": "contact" }`、`{ "kind": "observed", "job": { "queue_name": "…", "job_id": 42, "label": "…" } }`、同样携带 `job` 的 `printed`，以及不携带 `job` 的 `failed`、`unknown`。只有 Job ID、原队列名和精确尝试标签全部相同，观察才有效。`observed` 包括仍能精确核对原任务的缺纸、暂停等情况；`COMPLETE` 不能报告为 `printed`。消失、删除、标签不匹配或无法证明结果时报告 `unknown`，不能借此取消业务任务。业务失败报告只使用固定枚举，不携带驱动输出、文件路径、源码或 PDF 内容。
+
+登记前的 `contact` 更新最后联系时间并延长 60 秒失联期限，但不延长领取后两分钟的准备期限。登记 Job ID 后，`contact` 只记录联系事实，不延长归属；有效 `observed` 才更新最后观察时间和 60 秒期限。首次 Job ID 登记开启观察期限，重放登记不是新的观察；冲突 Job ID、队列或标签返回 409。到期判定使用 Server 数据库时间，等于截止时间即到期；迟到的联系、登记或结果都不能复活已结束尝试。重复或迟到报告返回原尝试的持久状态，不改变当前新尝试，客户端必须检查响应状态而不是只检查 HTTP 200。
+
+`print_jobs` 保存业务任务状态、已用次数、可重新领取时间、排序序号和最后结果，`print_attempts` 保存每次授权执行的归属、期限、联系与观察事实及结束结果，`print_claims` 保存包括空池结果在内的领取回执。首次受理快照和 `print_documents.ready_sequence` 保持不变。初次排队与重试统一按可领取时间、同时间内的持久排序序号排序；失败或未知在 Server 判定结束时确定 30 秒后的可领取时间。新任务在这 30 秒内排到其前方，在该期限之后入队则排到其后方，即使期间没有轮询或进程重启也不改变顺序。三次预算耗尽后不再自动分配。
+
+Print 组件拥有每秒到期检查的业务循环，Server 组合层显式启动该任务，由 `BackgroundTasks` 管理其取消、等待和异常释放，`serve` 命令不直接调用 Print 循环。循环收到正常关闭信号后停止发起新检查，已经开始的事务完成后再退出。相关业务事务也检查到期，检查失败通过 tracing 记录并在后续检查重试；任务异常退出在关闭等待时以保留源错误的 Snafu 错误报告，日志不包含 panic 内容。任务状态、次数、回执、结束结果及重试等待在同一 `Database::write` 事务内改变；数据库唯一约束同时防止同一任务、客户端或打印机存在多个活动尝试。启动完成文档核对后，仅为已登记 Job ID 且尚未结束的尝试设置从恢复时刻起的 60 秒观察宽限，不伪造新的联系或观察时间；未登记尝试保持原期限，终态和重试等待不重置。解除打印机绑定的事务先判定到期，再拒绝仍有活动尝试的打印机，不能以网络离线代替尝试结束。
+
+执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。既有 `/print/queue` 和 Web 页面继续展示原有入队元数据，不伪装成已交付的打印进度界面。当前实现范围为 Server 协议；Windows 应用、本地可靠记录、界面、驱动和真实出纸验收仍须分别交付。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试，这些结果不包含这两个测试，也不构成 Windows 程序运行、驱动兼容或物理打印证据。
 
 ### 23.4 离线工作区与队伍优先拍摄组
 

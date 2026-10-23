@@ -5,7 +5,6 @@ use crate::{Error, Result};
 
 #[derive(Serialize)]
 pub(crate) struct Registration<'a> {
-    pub protocol_version: u8,
     pub request_id: &'a str,
     pub account: &'a str,
     pub original_filename: &'a str,
@@ -23,14 +22,12 @@ pub enum FailureCode {
 
 #[derive(Serialize)]
 pub(crate) struct GenerationFailure {
-    pub protocol_version: u8,
     pub code: FailureCode,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Fact {
-    pub protocol_version: u8,
     pub request_id: String,
     pub account_id: String,
     pub account: String,
@@ -98,14 +95,12 @@ impl Fact {
                     })
                     && self.admission.as_ref().is_some_and(|a| {
                         a.ready_sequence > 0
-                            && a.in_progress_tasks == 0
                             && a.ahead_tasks < a.ready_sequence
                             && a.ahead_pages >= a.ahead_tasks
                     })
             }
         };
-        if self.protocol_version != 1
-            || self.request_id != request_id
+        if self.request_id != request_id
             || !uuid_v7(&self.request_id)
             || !uuid_v7(&self.account_id)
             || self.account != account

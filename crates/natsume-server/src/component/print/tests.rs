@@ -1,3 +1,4 @@
+mod execution;
 mod pairing;
 mod persistence;
 
@@ -115,7 +116,6 @@ async fn add_source(database: &Database) -> (SourceIdentity, String) {
 
 fn registration() -> PrintRegistration {
     PrintRegistration {
-        protocol_version: 1,
         request_id: Uuid::now_v7().to_string(),
         account: "team-1".into(),
         original_filename: "main.cpp".into(),
@@ -224,7 +224,6 @@ async fn registration_is_exact_idempotent_and_source_scoped() {
                 other.clone(),
                 input.request_id.clone(),
                 PrintGenerationFailure {
-                    protocol_version: 1,
                     code: GenerationFailure::CompileFailed
                 }
             )
@@ -307,10 +306,7 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
             .generation_failure(
                 f.source.clone(),
                 failed.clone(),
-                PrintGenerationFailure {
-                    protocol_version: 1,
-                    code,
-                },
+                PrintGenerationFailure { code },
             )
             .await
             .unwrap_or_else(|e| panic!("failure: {e:?}"));
@@ -324,7 +320,6 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
                 f.source.clone(),
                 failed.clone(),
                 PrintGenerationFailure {
-                    protocol_version: 1,
                     code: GenerationFailure::CompileTimeout
                 }
             )
@@ -363,7 +358,6 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
                 f.source.clone(),
                 ready,
                 PrintGenerationFailure {
-                    protocol_version: 1,
                     code: GenerationFailure::WrapperDeadline
                 }
             )
@@ -384,7 +378,6 @@ async fn fifo_uses_committed_documents_across_sources_excluding_other_states() {
                 f.source.clone(),
                 failed,
                 PrintGenerationFailure {
-                    protocol_version: 1,
                     code: GenerationFailure::DocumentTooLarge
                 }
             )
@@ -579,7 +572,6 @@ async fn revoked_source_is_rechecked_in_each_operation_even_with_stale_identity(
                 f.source,
                 id,
                 PrintGenerationFailure {
-                    protocol_version: 1,
                     code: GenerationFailure::CompileFailed
                 }
             )

@@ -2,7 +2,7 @@ use snafu::Snafu;
 
 use crate::server_state::ServerStateError;
 
-/// Redacted failure while starting the server.
+/// Redacted failure while starting or running the server.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
 pub enum CommandError {
     #[snafu(display("server configuration failed"))]
@@ -25,6 +25,8 @@ pub enum CommandError {
     OriginCaTrustRootMismatch,
     #[snafu(display("HTTP serving failed"))]
     Http,
+    #[snafu(display("server background task shutdown failed"))]
+    Background,
     #[snafu(display("shutdown signal setup failed"))]
     Signal,
     #[snafu(display("server bootstrap failed"))]

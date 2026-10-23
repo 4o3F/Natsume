@@ -3,6 +3,7 @@
 #![deny(unsafe_code)]
 //! Natsume control server startup.
 
+pub(crate) mod background;
 pub mod commands;
 pub(crate) mod component;
 pub mod config;

@@ -156,7 +156,7 @@ mod tests {
 
     fn preparing() -> std::result::Result<Fact, serde_json::Error> {
         serde_json::from_value(serde_json::json!({
-            "protocol_version": 1, "request_id": "01900000-0000-7000-8000-000000000001",
+            "request_id": "01900000-0000-7000-8000-000000000001",
             "account_id": "01900000-0000-7000-8000-000000000002", "account": "account",
             "team_name": "中文队伍 #panic(\"data\")", "seat_label": "座位一",
             "state": "preparing", "document": null, "admission": null, "generation_failure": null,

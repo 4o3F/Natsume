@@ -22,7 +22,6 @@ pub(crate) struct PrintSourceIssued {
 #[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintRegistration {
-    protocol_version: u8,
     request_id: String,
     account: String,
     /// Display only: at most 1024 UTF-8 bytes, without separators or controls.
@@ -42,7 +41,6 @@ pub(crate) enum GenerationFailure {
 #[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintGenerationFailure {
-    protocol_version: u8,
     code: GenerationFailure,
 }
 
@@ -80,7 +78,6 @@ pub(crate) struct PrintAdmission {
 #[derive(Serialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintRequest {
-    protocol_version: u8,
     request_id: String,
     account_id: String,
     account: String,
@@ -116,7 +113,6 @@ impl From<domain::PrintSourceIssued> for PrintSourceIssued {
 impl From<PrintRegistration> for domain::PrintRegistration {
     fn from(value: PrintRegistration) -> Self {
         Self {
-            protocol_version: value.protocol_version,
             request_id: value.request_id,
             account: value.account,
             original_filename: value.original_filename,
@@ -150,7 +146,6 @@ impl From<domain::GenerationFailure> for GenerationFailure {
 impl From<PrintGenerationFailure> for domain::PrintGenerationFailure {
     fn from(value: PrintGenerationFailure) -> Self {
         Self {
-            protocol_version: value.protocol_version,
             code: value.code.into(),
         }
     }
@@ -190,7 +185,6 @@ impl From<domain::PrintAdmission> for PrintAdmission {
 impl From<domain::PrintRequest> for PrintRequest {
     fn from(value: domain::PrintRequest) -> Self {
         Self {
-            protocol_version: value.protocol_version,
             request_id: value.request_id,
             account_id: value.account_id,
             account: value.account,

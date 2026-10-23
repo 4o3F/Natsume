@@ -49,6 +49,7 @@ tempfile.workspace = true
 time.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
+tokio-util = { workspace = true, features = ["time"] }
 toml.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
@@ -65,7 +66,6 @@ zip.workspace = true
 
 [dev-dependencies]
 natsume-print-domjudge = { path = "../natsume-print-domjudge" }
-tokio-util.workspace = true
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 ed25519-dalek.workspace = true
 futures-util.workspace = true

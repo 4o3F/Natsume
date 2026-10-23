@@ -1,3 +1,4 @@
+mod execution;
 mod pairing;
 mod queue;
 
@@ -137,17 +138,19 @@ impl Fixture {
 
     async fn register(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let id = Uuid::now_v7().to_string();
-        let mut unexpected = registration(&id);
-        unexpected["pages"] = json!(1);
-        let rejected = self
-            .send(
-                Method::POST,
-                "/api/v2/print/requests",
-                "application/json",
-                Body::from(unexpected.to_string()),
-            )
-            .await?;
-        assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+        for (key, value) in [("pages", json!(1)), ("protocol_version", json!(1))] {
+            let mut unexpected = registration(&id);
+            unexpected[key] = value;
+            let rejected = self
+                .send(
+                    Method::POST,
+                    "/api/v2/print/requests",
+                    "application/json",
+                    Body::from(unexpected.to_string()),
+                )
+                .await?;
+            assert_eq!(rejected.status, StatusCode::BAD_REQUEST);
+        }
         let response = self
             .send(
                 Method::POST,
@@ -159,6 +162,7 @@ impl Fixture {
         assert_eq!(response.status, StatusCode::OK);
         let fact: Value = serde_json::from_slice(&response.body)?;
         assert_eq!(fact["state"], "preparing");
+        assert!(fact.get("protocol_version").is_none());
         for field in ["seat_label", "document", "admission", "generation_failure"] {
             assert_eq!(fact.get(field), Some(&Value::Null));
         }
@@ -167,7 +171,7 @@ impl Fixture {
 }
 
 fn registration(id: &str) -> Value {
-    json!({"protocol_version":1,"request_id":id,"account":"team-1","original_filename":"main.cpp","source_sha256":"12".repeat(32)})
+    json!({"request_id":id,"account":"team-1","original_filename":"main.cpp","source_sha256":"12".repeat(32)})
 }
 
 fn unread_body() -> Body {
@@ -475,9 +479,9 @@ async fn print_http_registration_failure_and_recovery_follow_exact_dtos() -> Tes
         StatusCode::CONFLICT
     );
     for invalid in [
-        json!({"protocol_version":1,"code":"compile_failed","output":"secret"}),
-        json!({"protocol_version":2,"code":"compile_failed"}),
-        json!({"protocol_version":1,"code":"new_error"}),
+        json!({"code":"compile_failed","output":"secret"}),
+        json!({"protocol_version":1,"code":"compile_failed"}),
+        json!({"code":"new_error"}),
     ] {
         assert_eq!(
             f.send(
@@ -496,7 +500,7 @@ async fn print_http_registration_failure_and_recovery_follow_exact_dtos() -> Tes
             Method::POST,
             &format!("/api/v2/print/requests/{id}/generation-failure"),
             "application/json",
-            Body::from(json!({"protocol_version":1,"code":"compile_timeout"}).to_string()),
+            Body::from(json!({"code":"compile_timeout"}).to_string()),
         )
         .await?;
     let failure: Value = serde_json::from_slice(&failure.body)?;

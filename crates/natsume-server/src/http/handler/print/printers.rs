@@ -20,7 +20,6 @@ pub(crate) struct PrintPrinterCreate {
 #[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrintClientPair {
-    protocol_version: u8,
     code: String,
 }
 
@@ -99,9 +98,6 @@ async fn pair(
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("print_pairing_json").into_response();
     };
-    if body.protocol_version != 1 {
-        return ApiError::invalid_request("print_pairing_version").into_response();
-    }
     match state.print().pair_client(&body.code).await {
         Ok(client) => Json(client).into_response(),
         Err(error) => ApiError::from_print(error).into_response(),

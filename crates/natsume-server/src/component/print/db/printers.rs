@@ -145,6 +145,12 @@ pub(in crate::component::print) fn clear_binding(
     tx: &mut Transaction<'_>,
     id: &str,
 ) -> Result<(), PrintError> {
+    let now = now(tx)?;
+    super::execution::expire(tx, now)?;
+    ensure!(
+        !super::execution::has_active_printer(tx, id)?,
+        ConflictSnafu
+    );
     let changed = diesel::update(printers::table.filter(printers::printer_id.eq(id)))
         .set((
             printers::pairing_code_hash.eq(None::<&[u8]>),

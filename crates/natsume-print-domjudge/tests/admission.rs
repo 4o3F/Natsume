@@ -26,7 +26,7 @@ const PDF: &[u8] = b"%PDF-1.7\nmock document\n";
 
 fn fact(state: &str) -> Value {
     json!({
-        "protocol_version": 1, "request_id": ID, "account_id": ACCOUNT_ID,
+        "request_id": ID, "account_id": ACCOUNT_ID,
         "account": "Team Exact", "team_name": "测试队伍", "seat_label": null,
         "state": state,
         "document": if state == "ready" { json!({"sha256": hex::encode(Sha256::digest(PDF)), "bytes": PDF.len(), "pages": 2}) } else { Value::Null },
@@ -300,6 +300,7 @@ async fn registration_precedes_generation_and_pdf_upload_uses_exact_identity() -
     let seen = actual.seen.lock().map_err(|_| "poisoned")?;
     assert_eq!(seen.len(), 2);
     let registration: Value = serde_json::from_slice(&seen[0].body)?;
+    assert!(registration.get("protocol_version").is_none());
     assert_eq!(registration["account"], "Team Exact");
     assert_eq!(registration["original_filename"], "原始.cpp");
     assert_eq!(
@@ -427,16 +428,26 @@ async fn generation_failure_is_reported_without_compiler_output() -> TestResult 
     assert_eq!(seen.len(), 2);
     assert_eq!(
         serde_json::from_slice::<Value>(&seen[1].body)?,
-        json!({"protocol_version":1,"code":"compile_failed"})
+        json!({"code":"compile_failed"})
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn already_ready_retry_never_runs_compiler() -> TestResult {
-    let peer = server(vec![Reply::Json(fact("ready"))], None, "127.0.0.1").await?;
+async fn already_ready_retry_preserves_active_counts_without_running_compiler() -> TestResult {
+    let mut ready = fact("ready");
+    ready["admission"]["in_progress_tasks"] = json!(2);
+    let peer = server(vec![Reply::Json(ready)], None, "127.0.0.1").await?;
     let fixture = Fixture::new(&peer, "raise Exception('must not run')")?;
-    assert_eq!(fixture.run().await?.state, State::Ready);
+    let result = fixture.run().await?;
+    assert_eq!(result.state, State::Ready);
+    assert_eq!(
+        result
+            .admission
+            .ok_or("missing admission")?
+            .in_progress_tasks,
+        2
+    );
     assert!(!fixture.marker.exists());
     Ok(())
 }
@@ -517,7 +528,15 @@ async fn malformed_or_incomplete_ready_never_reports_success() -> TestResult {
         .remove("seat_label");
     let mut wrong_hash = fact("ready");
     wrong_hash["document"]["sha256"] = json!("A".repeat(64));
-    for invalid in [wrong_id, no_admission, missing_null, wrong_hash] {
+    let mut extra_version = fact("ready");
+    extra_version["protocol_version"] = json!(1);
+    for invalid in [
+        wrong_id,
+        no_admission,
+        missing_null,
+        wrong_hash,
+        extra_version,
+    ] {
         let peer = server(
             vec![Reply::Json(invalid), Reply::Status(404, String::new())],
             None,
