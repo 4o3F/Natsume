@@ -38,7 +38,7 @@ pub enum PrintError {
     #[cfg(windows)]
     #[snafu(display(
         "Windows print operation failed: {operation} (HRESULT {code:#010X})",
-        code = source.code().0 as u32
+        code = source.code().0.cast_unsigned()
     ))]
     Native {
         operation: &'static str,

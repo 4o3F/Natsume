@@ -71,8 +71,10 @@ fn filesystem_failure_keeps_context_without_exposing_source_details() {
 #[test]
 fn windows_failure_keeps_the_operation_and_hresult_without_exposing_source_details() {
     let sensitive = "private document contents and credentials";
-    let source =
-        windows::core::Error::new(windows::core::HRESULT(0x8007_0057_u32 as i32), sensitive);
+    let source = windows::core::Error::new(
+        windows::core::HRESULT(0x8007_0057_u32.cast_signed()),
+        sensitive,
+    );
     let error = PrintSnafu.into_error(
         crate::NativeSnafu {
             operation: "open PDF document",
@@ -91,6 +93,6 @@ fn windows_failure_keeps_the_operation_and_hresult_without_exposing_source_detai
     else {
         panic!("Windows fixture did not preserve the typed source");
     };
-    assert_eq!(source.code().0 as u32, 0x8007_0057);
+    assert_eq!(source.code().0.cast_unsigned(), 0x8007_0057);
     assert_eq!(source.message(), sensitive);
 }
