@@ -17,13 +17,17 @@ serde_json.workspace = true
 sha2.workspace = true
 snafu.workspace = true
 tokio.workspace = true
-toml.workspace = true
+toml = { workspace = true, features = ["display"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 url.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+arboard = { version = "3.6", default-features = false }
+rfd = { version = "0.17.2", default-features = false }
+slint = { workspace = true, features = ["backend-winit", "renderer-software"] }
+tray-icon = { version = "0.25.1", default-features = false }
 windows = { workspace = true, features = [
   "Data_Pdf",
   "Foundation",
@@ -40,6 +44,7 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+slint = { workspace = true, features = ["backend-winit-wayland", "renderer-software"] }
 rcgen = { workspace = true, features = ["pem"] }
 rustls.workspace = true
 tempfile.workspace = true

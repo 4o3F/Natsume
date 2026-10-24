@@ -1,0 +1,121 @@
+import { LineEdit } from "std-widgets.slint";
+import { ActionButton, Caption, Rule, ClippedScrollView } from "widgets.slint";
+
+component CodeBox inherits Rectangle {
+    in-out property <string> character;
+    in property <int> index;
+    in property <int> focus-index;
+    in property <bool> busy;
+    callback edit(int, string);
+    callback move(int, int);
+    callback backspace(int);
+    callback submit();
+    preferred-width: root.index == 4 ? 60px : 44px;
+    min-width: root.index == 4 ? 40px : 24px;
+    height: 48px;
+    if root.index == 4: Text { width: 16px; text: "–"; vertical-alignment: center; horizontal-alignment: center; }
+    input := LineEdit {
+        x: root.index == 4 ? 16px : 0px;
+        width: parent.width - self.x;
+        height: parent.height;
+        text <=> root.character;
+        input-type: password;
+        enabled: !root.busy;
+        accessible-label: "配对码第 " + (root.index + 1) + " 位";
+        edited(text) => { root.edit(root.index, text); }
+        accepted => { root.submit(); }
+        key-pressed(event) => {
+            if event.text == Key.Backspace && self.text == "" { root.backspace(root.index); return accept; }
+            if event.text == Key.LeftArrow { root.move(root.index, -1); return accept; }
+            if event.text == Key.RightArrow { root.move(root.index, 1); return accept; }
+            return reject;
+        }
+    }
+    changed focus-index => { if root.focus-index == root.index { input.focus(); } }
+    init => { if root.focus-index == root.index { input.focus(); } }
+}
+
+export component PairingView inherits Rectangle {
+    in property <string> server-url;
+    in property <string> queue-name;
+    in-out property <[string]> code-parts;
+    in property <int> focus-index;
+    in property <bool> busy;
+    in property <bool> valid;
+    in property <string> message;
+    callback edit(int, string);
+    callback move(int, int);
+    callback backspace(int);
+    callback pair();
+    callback request-exit();
+    VerticalLayout {
+        spacing: 0;
+        ClippedScrollView {
+            clip: true;
+            HorizontalLayout {
+                spacing: 0px;
+                VerticalLayout {
+                    width: min(root.width, 496px);
+                    padding: 24px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 6px;
+                        Caption { text: "步骤 2 / 2"; }
+                        Text { text: "输入配对码"; font-size: 28px; font-weight: 700; }
+                        Text { text: "向管理员索取一次性配对码。配对成功后凭据由 Windows PasswordVault 保存，无需再次登录。"; font-size: 13px; color: #525252; wrap: word-wrap; }
+                    }
+                    VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 6px;
+                        Caption { text: "Server"; }
+                        Text { text: root.server-url; font-size: 13px; wrap: char-wrap; }
+                        Caption { text: "Windows 打印队列"; }
+                        Text { text: root.queue-name; font-size: 13px; wrap: char-wrap; }
+                    }
+                    Rule {}
+                    VerticalLayout {
+                        vertical-stretch: 0;
+                        spacing: 8px;
+                        Text { text: "一次性配对码（8 位）"; font-size: 12px; }
+                        HorizontalLayout {
+                            max-width: 424px;
+                            spacing: 6px;
+                            for digit[i] in root.code-parts: CodeBox {
+                                character <=> digit;
+                                index: i;
+                                focus-index: root.focus-index;
+                                busy: root.busy;
+                                edit(index, value) => { root.edit(index, value); }
+                                move(index, delta) => { root.move(index, delta); }
+                                backspace(index) => { root.backspace(index); }
+                                submit => { if root.valid && !root.busy { root.pair(); } }
+                            }
+                        }
+                        Caption { text: "输入后自动跳格，可粘贴完整配对码；不含 0、1、I、O，输入默认隐藏。"; wrap: word-wrap; }
+                    }
+                    if root.message != "": Text { text: root.message; font-size: 13px; color: #d4141c; wrap: word-wrap; }
+                    HorizontalLayout {
+                        vertical-stretch: 0;
+                        alignment: start;
+                        spacing: 12px;
+                        ActionButton { text: root.busy ? "正在配对…" : "配对"; primary: true; enabled: root.valid && !root.busy; activated => { root.pair(); } }
+                        Caption { text: "配对成功后领取默认暂停"; wrap: word-wrap; }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        Rectangle {
+            height: 56px;
+            z: 1;
+            background: white;
+            border-width: 1px; border-color: #e5e5e5;
+            HorizontalLayout {
+                padding-left: 24px; padding-right: 24px; padding-top: 10px; padding-bottom: 10px; alignment: end;
+                ActionButton { text: "正常退出"; danger: true; activated => { root.request-exit(); } }
+            }
+        }
+    }
+}

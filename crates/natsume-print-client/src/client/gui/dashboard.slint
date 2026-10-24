@@ -1,0 +1,151 @@
+import { ActionButton, Caption, Rule, Notice, ClippedScrollView } from "widgets.slint";
+
+export component Dashboard inherits Rectangle {
+    in property <string> server-url;
+    in property <string> queue-name;
+    in property <bool> paused;
+    in property <bool> paired;
+    in property <bool> exiting;
+    in property <bool> can-control;
+    in property <string> claim-title;
+    in property <string> claim-description;
+    in property <bool> task-present;
+    in property <string> sequence;
+    in property <string> attempt;
+    in property <string> job-id;
+    in property <int> stage-index: -1;
+    in property <string> phase-note;
+    in property <string> notice-title;
+    in property <string> notice-detail;
+    in property <string> notice-next;
+    in property <int> notice-tone;
+    in property <bool> attention;
+    callback settings();
+    callback pause();
+    callback resume();
+    callback request-exit();
+    callback open-queue();
+    callback copy-details();
+    VerticalLayout {
+        spacing: 0;
+        Rectangle {
+            height: root.width < 640px ? 126px : 88px;
+            z: 1;
+            background: white;
+            Rectangle {
+                x: 24px; y: 16px; width: parent.width - 126px; height: parent.height - 32px;
+                property <bool> stacked: root.width < 640px;
+                Rectangle {
+                    x: 0px; y: 0px;
+                    width: parent.stacked ? parent.width : (parent.width - 24px) / 2;
+                    height: 42px;
+                    Caption { x: 0px; y: 0px; text: "Server"; }
+                    Text { x: 0px; y: 18px; width: parent.width; text: root.server-url; overflow: elide; font-size: 13px; }
+                }
+                Rectangle {
+                    x: parent.stacked ? 0px : (parent.width + 24px) / 2;
+                    y: parent.stacked ? 48px : 0px;
+                    width: parent.stacked ? parent.width : (parent.width - 24px) / 2;
+                    height: 42px;
+                    Caption { x: 0px; y: 0px; text: "Windows 打印队列"; }
+                    Text { x: 0px; y: 18px; width: parent.width; text: root.queue-name; overflow: elide; font-size: 13px; }
+                }
+            }
+            ActionButton { x: parent.width - 88px; y: 20px; width: 64px; text: "设置"; enabled: !root.exiting; activated => { root.settings(); } }
+            Rule { y: parent.height - 1px; background: #111; }
+        }
+        ClippedScrollView {
+            clip: true;
+            VerticalLayout {
+                padding-left: 24px; padding-right: 24px; padding-top: 20px; padding-bottom: 20px;
+                spacing: 20px;
+                if root.notice-title != "": Notice { title: root.notice-title; detail: root.notice-detail; next-step: root.notice-next; tone: root.notice-tone; }
+                if root.attention: HorizontalLayout {
+                    spacing: 8px;
+                    ActionButton { text: "打开 Windows 打印队列"; enabled: root.queue-name != ""; activated => { root.open-queue(); } }
+                    ActionButton { text: "复制诊断信息"; activated => { root.copy-details(); } }
+                }
+                HorizontalLayout {
+                    spacing: 24px;
+                    VerticalLayout {
+                        spacing: 8px;
+                        horizontal-stretch: 1;
+                        Caption { text: "新任务领取"; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout {
+                                width: 16px;
+                                Rectangle { vertical-stretch: 1; }
+                                Rectangle { height: 16px; border-width: 2px; border-color: #111; background: root.paused || !root.can-control || root.exiting ? white : #111; }
+                                Rectangle { vertical-stretch: 1; }
+                            }
+                            Text { text: root.claim-title; font-size: 32px; font-weight: 700; }
+                        }
+                        Text { text: root.claim-description; font-size: 12px; color: #525252; wrap: word-wrap; }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 0;
+                        Rectangle { vertical-stretch: 1; }
+                        ActionButton { text: root.paused ? "恢复领取" : "暂停领取"; primary: root.paused; enabled: root.can-control && !root.exiting; activated => { if root.paused { root.resume(); } else { root.pause(); } } }
+                    }
+                }
+                Rule {}
+                VerticalLayout {
+                    spacing: 12px;
+                    Caption { text: "当前任务"; }
+                    if !root.task-present: VerticalLayout {
+                        spacing: 14px;
+                        Rule { background: #111; }
+                        Text { text: root.phase-note; font-size: 14px; color: #525252; wrap: word-wrap; }
+                    }
+                    if root.task-present: VerticalLayout {
+                        spacing: 16px;
+                        Caption { text: "A4 · 黑白 · 1 份 · 单双面沿用队列设置"; wrap: word-wrap; }
+                        Rule { background: #111; }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            for label[i] in ["任务序号", "尝试", "Windows Job ID"]: VerticalLayout {
+                                spacing: 6px;
+                                Caption { text: label; }
+                                Text { text: i == 0 ? "#" + root.sequence : (i == 1 ? root.attempt + " / 3" : root.job-id); font-size: i == 2 && root.job-id == "未记录" ? 18px : 22px; font-weight: i == 2 && root.job-id == "未记录" ? 400 : 700; overflow: elide; }
+                            }
+                        }
+                        Rectangle {
+                            height: self.width < 620px ? 172px : 86px;
+                            for title[i] in ["准备文档", "提交打印", "观察作业", "报告结果"]: Rectangle {
+                                x: parent.width < 620px ? (i == 1 || i == 3 ? parent.width / 2 : 0px) : i * parent.width / 4;
+                                y: parent.width < 620px && i >= 2 ? 86px : 0px;
+                                width: parent.width < 620px ? parent.width / 2 : parent.width / 4;
+                                height: 86px;
+                                background: root.stage-index == i && root.notice-title == "" ? #111 : white;
+                                border-width: 1px;
+                                border-color: root.stage-index == i && root.notice-title != "" ? #d4141c : #e5e5e5;
+                                VerticalLayout {
+                                    padding: 12px;
+                                    spacing: 5px;
+                                    Caption { text: "0" + (i + 1) + (i < root.stage-index ? " · 已进入" : (i == root.stage-index ? (root.attention ? " · 待核实" : " · 进行中") : "")); color: #737373; }
+                                    Text { text: title; font-size: 14px; font-weight: 700; color: root.stage-index == i && root.notice-title == "" ? white : #111; }
+                                    Text { text: i == 0 ? "下载并校验 PDF" : (i == 1 ? "提交至本机打印队列" : (i == 2 ? "跟踪原 Windows Job ID" : "向 Server 报告结果")); font-size: 11px; color: root.stage-index == i && root.notice-title == "" ? #d4d4d4 : #737373; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                        Text { text: root.phase-note; font-size: 12px; color: #525252; wrap: word-wrap; }
+                        Caption { text: "重试由 Server 管理：最多 3 次尝试，失败或结果未知后等待 30 秒再进入可领取状态。"; wrap: word-wrap; }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+        Rectangle {
+            height: 56px;
+            z: 1;
+            background: white;
+            Rule { y: 0px; }
+            HorizontalLayout {
+                padding-left: 24px; padding-right: 24px; padding-top: 10px; padding-bottom: 10px; spacing: 12px;
+                Caption { text: root.paired ? "绑定已确认 · 凭据由 Windows PasswordVault 管理" : "绑定尚未确认"; overflow: elide; horizontal-stretch: 1; }
+                ActionButton { text: root.exiting ? "正在退出…" : "正常退出"; danger: true; enabled: !root.exiting; activated => { root.request-exit(); } }
+            }
+        }
+    }
+}

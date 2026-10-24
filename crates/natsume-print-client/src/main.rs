@@ -12,7 +12,7 @@ use std::path::PathBuf;
 #[command(about = "Natsume Windows print client")]
 struct Arguments {
     #[arg(long)]
-    config: PathBuf,
+    config: Option<PathBuf>,
 }
 
 #[cfg(windows)]
@@ -20,8 +20,6 @@ struct Arguments {
 enum StartupError {
     #[snafu(display("invalid client command line"))]
     Arguments { source: clap::Error },
-    #[snafu(display("could not start the print client runtime"))]
-    Runtime { source: std::io::Error },
     #[snafu(display("print client stopped: {source}"))]
     Client {
         source: natsume_print_client::client::ClientError,
@@ -31,13 +29,7 @@ enum StartupError {
 #[cfg(windows)]
 fn execute() -> Result<(), StartupError> {
     let arguments = Arguments::try_parse().context(ArgumentsSnafu)?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .context(RuntimeSnafu)?;
-    runtime
-        .block_on(natsume_print_client::client::run(&arguments.config))
-        .context(ClientSnafu)
+    natsume_print_client::client::run_gui(arguments.config).context(ClientSnafu)
 }
 
 #[cfg(all(test, windows))]

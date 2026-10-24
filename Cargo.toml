@@ -129,9 +129,7 @@ sha2 = { version = "0.11", default-features = false }
 skia-bindings = { version = "0.153", features = ["no-compile"] }
 slint = { version = "1.18", default-features = false, features = [
   "compat-1-2",
-  "std",
-  "backend-winit-wayland",
-  "renderer-skia"
+  "std"
 ] }
 snafu = "0.9"
 subtle = { version = "2.6", default-features = false }

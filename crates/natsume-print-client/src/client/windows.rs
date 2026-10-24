@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{Document, JobObservation};
 
-struct NativePrinter;
+pub(super) struct NativePrinter;
 impl Printer for NativePrinter {
     fn ready(&self, queue: &str) -> crate::Result<bool> {
         Ok(crate::backend::inspect_queue(queue)?.can_submit())
@@ -32,7 +32,7 @@ impl Printer for NativePrinter {
     }
 }
 
-struct VaultCredentials;
+pub(super) struct VaultCredentials;
 
 fn resource(origin: &str) -> ::windows::core::HSTRING {
     format!("Natsume.Print/{origin}").into()

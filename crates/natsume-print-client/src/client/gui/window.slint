@@ -1,0 +1,228 @@
+import { Palette } from "std-widgets.slint";
+import { ActionButton, Caption, Rule, SettingRow, ClippedScrollView } from "widgets.slint";
+import { SetupView, ConfigErrorView } from "setup.slint";
+import { PairingView } from "pairing.slint";
+import { Dashboard } from "dashboard.slint";
+
+export enum Screen { setup, configuration-error, pairing, dashboard }
+
+component Modal inherits Rectangle {
+    in property <string> title;
+    in property <bool> wide;
+    callback dismiss();
+    background: #ffffffcc;
+    TouchArea { clicked => { root.dismiss(); } }
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: 16px;
+        width: min(root.wide ? 660px : 480px, parent.width - 32px);
+        height: min(body.preferred-height + 56px, parent.height - 32px);
+        background: white;
+        border-width: 1px;
+        border-color: #111;
+        TouchArea {}
+        VerticalLayout {
+            spacing: 0;
+            Rectangle {
+                height: 52px;
+                HorizontalLayout {
+                    padding-left: 20px; padding-right: 12px; padding-top: 8px; padding-bottom: 8px;
+                    Text { vertical-alignment: center; text: root.title; font-size: 15px; font-weight: 700; horizontal-stretch: 1; }
+                    ActionButton { text: "×"; width: 30px; activated => { root.dismiss(); } }
+                }
+                Rule { y: parent.height - 1px; background: #111; }
+            }
+            ClippedScrollView {
+                clip: true;
+                body := VerticalLayout { padding: 20px; spacing: 16px; @children }
+            }
+        }
+    }
+}
+
+export component PrintWindow inherits Window {
+    init => { Palette.color-scheme = ColorScheme.light; }
+    title: "Natsume 打印客户端";
+    icon: @image-url("mark.svg");
+    background: white;
+    preferred-width: 860px;
+    preferred-height: 600px;
+    min-width: 420px;
+    min-height: 420px;
+    default-font-size: 13px;
+    default-font-family: "Microsoft YaHei UI";
+    in-out property <string> config-path;
+    in-out property <string> server-url;
+    in-out property <string> queue-name;
+    in-out property <string> state-directory;
+    in-out property <string> ca-path;
+    in-out property <bool> new-deployment;
+    in property <[string]> queues;
+    in property <bool> running;
+    in property <bool> closing;
+    in property <bool> paired;
+    in property <bool> paused: true;
+    in property <bool> pairing-busy;
+    in property <bool> can-control;
+    in-out property <Screen> screen: setup;
+    in-out property <bool> settings-open;
+    in-out property <bool> exit-confirm;
+    in-out property <[string]> code-parts: ["", "", "", "", "", "", "", ""];
+    in property <int> code-focus-index: 0;
+    out property <string> pairing-code: root.code-parts[0] + root.code-parts[1] + root.code-parts[2] + root.code-parts[3] + root.code-parts[4] + root.code-parts[5] + root.code-parts[6] + root.code-parts[7];
+    in property <bool> form-error;
+    in property <string> message;
+    in property <string> claim-title: "已暂停";
+    in property <string> claim-description;
+    in property <bool> task-present;
+    in property <string> task-sequence;
+    in property <string> task-attempt;
+    in property <string> job-id: "未记录";
+    in property <int> stage-index: -1;
+    in property <string> phase-note;
+    in property <string> notice-title;
+    in property <string> notice-detail;
+    in property <string> notice-next;
+    in property <int> notice-tone;
+    in property <bool> attention;
+    in property <string> diagnostic;
+    in property <string> toast-message;
+    callback start-client();
+    callback create-config();
+    callback pair(string);
+    callback pause-client();
+    callback resume-client();
+    callback stop-client();
+    callback request-exit();
+    callback refresh-queues();
+    callback browse-config(bool);
+    callback browse-state();
+    callback browse-ca();
+    callback open-config-directory();
+    callback open-queue();
+    callback copy-details();
+    callback code-edited(int, string);
+    callback code-move(int, int);
+    callback code-backspace(int);
+    pure callback pairing-valid(string) -> bool;
+    forward-focus: keyboard;
+    keyboard := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape && (root.settings-open || root.exit-confirm) {
+                root.settings-open = false; root.exit-confirm = false; return accept;
+            }
+            return reject;
+        }
+        page := FocusScope {
+            enabled: !root.settings-open && !root.exit-confirm;
+            if root.screen == Screen.setup: SetupView {
+                config-path <=> root.config-path;
+                server-url <=> root.server-url;
+                queue-name <=> root.queue-name;
+                state-directory <=> root.state-directory;
+                ca-path <=> root.ca-path;
+                new-deployment <=> root.new-deployment;
+                queues: root.queues;
+                busy: root.running;
+                message: root.message;
+                form-error: root.form-error;
+                load => { root.start-client(); }
+                create => { root.create-config(); }
+                browse-config(save) => { root.browse-config(save); }
+                browse-state => { root.browse-state(); }
+                browse-ca => { root.browse-ca(); }
+                refresh-queues => { root.refresh-queues(); }
+                request-exit => { root.request-exit(); }
+            }
+            if root.screen == Screen.configuration-error: ConfigErrorView {
+                config-path: root.config-path;
+                message: root.message;
+                retry => { root.start-client(); }
+                choose => { root.screen = Screen.setup; root.new-deployment = false; root.browse-config(false); }
+                create => { root.screen = Screen.setup; root.new-deployment = true; }
+                request-exit => { root.request-exit(); }
+            }
+            if root.screen == Screen.pairing: PairingView {
+                server-url: root.server-url;
+                queue-name: root.queue-name;
+                code-parts <=> root.code-parts;
+                focus-index: root.code-focus-index;
+                busy: root.pairing-busy || root.closing;
+                valid: root.pairing-valid(root.pairing-code);
+                message: root.message;
+                edit(index, value) => { root.code-edited(index, value); }
+                move(index, delta) => { root.code-move(index, delta); }
+                backspace(index) => { root.code-backspace(index); }
+                pair => { root.pair(root.pairing-code); }
+                request-exit => { root.request-exit(); }
+            }
+            if root.screen == Screen.dashboard: Dashboard {
+                server-url: root.server-url;
+                queue-name: root.queue-name;
+                paused: root.paused;
+                paired: root.paired;
+                exiting: root.closing;
+                can-control: root.can-control;
+                claim-title: root.claim-title;
+                claim-description: root.closing ? "退出过程中不领取新任务，正在等待已启动的原生调用返回。" : root.claim-description;
+                task-present: root.task-present;
+                sequence: root.task-sequence;
+                attempt: root.task-attempt;
+                job-id: root.job-id;
+                stage-index: root.stage-index;
+                phase-note: root.phase-note;
+                notice-title: root.closing ? "正在正常退出" : root.notice-title;
+                notice-detail: root.closing ? "正在停止新领取及后续提交，并等待已启动的原生调用返回。未结束的工作保留，下次启动继续核实、观察及补报，不会盲目重印。" : root.notice-detail;
+                notice-next: root.closing ? "无需操作，请勿强制结束进程。" : root.notice-next;
+                notice-tone: root.closing ? 0 : root.notice-tone;
+                attention: root.attention;
+                settings => { root.settings-open = true; }
+                pause => { root.pause-client(); }
+                resume => { root.resume-client(); }
+                request-exit => { root.request-exit(); }
+                open-queue => { root.open-queue(); }
+                copy-details => { root.copy-details(); }
+            }
+        }
+        if root.settings-open: Modal {
+            title: "设置";
+            wide: true;
+            dismiss => { root.settings-open = false; }
+            VerticalLayout {
+                spacing: 0;
+                Rule {}
+                SettingRow { label: "配置文件"; value: root.config-path; }
+                SettingRow { label: "Server HTTPS 地址"; value: root.server-url; }
+                SettingRow { label: "Windows 打印队列"; value: root.queue-name; }
+                SettingRow { label: "本地状态目录"; value: root.state-directory; }
+                SettingRow { label: "自定义 CA 证书"; value: root.ca-path == "" ? "未设置，使用 Windows 系统证书" : root.ca-path; }
+                SettingRow { label: "配对凭据"; value: root.paired ? "绑定已确认，由 Windows PasswordVault 管理" : "绑定尚未确认"; }
+            }
+            Text { text: "配置为只读展示。修改需正常退出客户端后编辑原配置，再启动。更换状态目录不会恢复原有任务，未结束工作只能在原状态目录中继续。"; font-size: 12px; color: #525252; wrap: word-wrap; }
+            HorizontalLayout {
+                spacing: 8px;
+                ActionButton { text: "打开配置所在目录"; activated => { root.open-config-directory(); } }
+                Rectangle { horizontal-stretch: 1; }
+                done := ActionButton { text: "完成"; primary: true; activated => { root.settings-open = false; } init => { self.focus(); } }
+            }
+            if root.message != "": Caption { text: root.message; wrap: word-wrap; }
+        }
+        if root.toast-message != "": Rectangle {
+            x: 24px; y: parent.height - self.height - 70px;
+            width: min(parent.width - 48px, 600px);
+            height: toast.preferred-height + 20px;
+            background: #111;
+            toast := Text { x: 12px; y: 10px; width: parent.width - 24px; text: root.toast-message; color: white; font-size: 13px; wrap: word-wrap; }
+        }
+        if root.exit-confirm: Modal {
+            title: "正常退出客户端？";
+            dismiss => { root.exit-confirm = false; }
+            Text { text: "• 停止领取新任务及后续提交。\n• 等待已启动的 Windows 原生调用返回。\n• 保留未结束工作，下次启动继续核实、观察及补报，不盲目重新提交打印。"; font-size: 13px; wrap: word-wrap; }
+            HorizontalLayout {
+                alignment: end; spacing: 8px;
+                cancel := ActionButton { text: "取消"; activated => { root.exit-confirm = false; } init => { self.focus(); } }
+                ActionButton { text: "正常退出"; primary: true; activated => { root.exit-confirm = false; root.stop-client(); } }
+            }
+        }
+    }
+}

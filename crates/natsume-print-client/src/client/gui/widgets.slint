@@ -1,0 +1,97 @@
+import { ScrollView } from "std-widgets.slint";
+
+export component ClippedScrollView inherits Rectangle {
+    clip: true;
+    min-width: 50px;
+    min-height: 50px;
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    ScrollView { @children }
+}
+
+export component ActionButton inherits FocusScope {
+    in property <string> text;
+    in property <bool> primary;
+    in property <bool> danger;
+    callback activated();
+    height: 36px;
+    horizontal-stretch: 0;
+    vertical-stretch: 0;
+    min-width: 76px;
+    preferred-width: label.preferred-width + 32px;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+    Rectangle {
+        opacity: root.enabled ? 1 : 0.3;
+        background: root.primary ? (touch.has-hover ? #262626 : #111) : (touch.has-hover ? #f5f5f5 : white);
+        border-width: 1px;
+        border-color: root.danger ? #d4141c : #111;
+        label := Text {
+            text: root.text;
+            color: root.primary ? white : (root.danger ? #d4141c : #111);
+            font-size: 13px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if root.has-focus: Rectangle {
+            x: 3px; y: 3px; width: parent.width - 6px; height: parent.height - 6px;
+            background: transparent;
+            border-width: 1px;
+            border-color: root.primary ? white : #111;
+        }
+        touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: pointer;
+            clicked => { root.focus(); root.activated(); }
+        }
+    }
+    key-pressed(event) => {
+        if root.enabled && (event.text == "\n" || event.text == " ") { root.activated(); return accept; }
+        return reject;
+    }
+}
+
+export component Caption inherits Text {
+    font-size: 11px;
+    color: #737373;
+}
+
+export component Rule inherits Rectangle {
+    height: 1px;
+    background: #e5e5e5;
+}
+
+export component Notice inherits Rectangle {
+    in property <string> title;
+    in property <string> detail;
+    in property <string> next-step;
+    in property <int> tone;
+    background: #fafafa;
+    min-height: content.preferred-height + 28px;
+    Rectangle { x: 0px; y: 0px; width: 6px; height: parent.height; background: root.tone == 2 ? #d4141c : (root.tone == 1 ? #e8a400 : #111); }
+    content := VerticalLayout {
+        x: 22px; y: 14px; width: parent.width - 38px;
+        spacing: 7px;
+        Text { text: root.title; font-size: 15px; font-weight: 700; color: root.tone == 2 ? #d4141c : #111; wrap: word-wrap; }
+        if root.detail != "": Text { text: root.detail; font-size: 13px; color: #404040; wrap: word-wrap; }
+        if root.next-step != "": Text { text: "下一步：" + root.next-step; font-size: 13px; color: #404040; wrap: word-wrap; }
+    }
+}
+
+export component SettingRow inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    property <bool> stacked: self.width < 510px;
+    height: (root.stacked ? caption.preferred-height + 6px + content.preferred-height : max(caption.preferred-height, content.preferred-height)) + 22px;
+    caption := Caption { x: 0; y: 11px; width: root.stacked ? parent.width : 140px; text: root.label; }
+    content := Text {
+        x: root.stacked ? 0 : 152px;
+        y: root.stacked ? caption.y + caption.height + 6px : 11px;
+        width: parent.width - self.x;
+        text: root.value;
+        font-size: 13px;
+        wrap: char-wrap;
+    }
+    Rule { y: parent.height - 1px; }
+}

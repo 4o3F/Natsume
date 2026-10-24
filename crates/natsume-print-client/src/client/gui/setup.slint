@@ -1,0 +1,137 @@
+import { LineEdit, ComboBox } from "std-widgets.slint";
+import { ActionButton, Caption, ClippedScrollView } from "widgets.slint";
+
+export component SetupView inherits Rectangle {
+    in-out property <string> config-path;
+    in-out property <string> server-url;
+    in-out property <string> queue-name;
+    in-out property <string> state-directory;
+    in-out property <string> ca-path;
+    in-out property <bool> new-deployment;
+    in property <[string]> queues;
+    in property <bool> busy;
+    in property <string> message;
+    in property <bool> form-error;
+    callback load();
+    callback create();
+    callback browse-config(bool);
+    callback browse-state();
+    callback browse-ca();
+    callback refresh-queues();
+    callback request-exit();
+    VerticalLayout {
+        spacing: 0;
+        ClippedScrollView {
+            clip: true;
+            HorizontalLayout {
+                spacing: 0px;
+                VerticalLayout {
+                    width: min(root.width, 624px);
+                    padding: 24px;
+                    spacing: 16px;
+                    VerticalLayout {
+                        spacing: 6px;
+                        Caption { text: "步骤 1 / 2"; }
+                        Text { text: "配置客户端"; font-size: 28px; font-weight: 700; }
+                        Text { text: "请加载已有配置，或仅为一次全新部署创建配置。"; font-size: 13px; color: #525252; wrap: word-wrap; }
+                    }
+                    HorizontalLayout {
+                        spacing: 0;
+                        ActionButton { text: "加载已有配置"; primary: !root.new-deployment; enabled: !root.busy; activated => { root.new-deployment = false; } }
+                        ActionButton { text: "创建新部署配置"; primary: root.new-deployment; enabled: !root.busy; activated => { root.new-deployment = true; } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    VerticalLayout {
+                        spacing: 6px;
+                        Text { text: root.new-deployment ? "新配置文件（不覆盖已有文件）" : "配置文件路径"; font-size: 12px; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            LineEdit { text <=> root.config-path; enabled: !root.busy; height: 36px; horizontal-stretch: 1; }
+                            ActionButton { text: "浏览…"; enabled: !root.busy; activated => { root.browse-config(root.new-deployment); } }
+                        }
+                        Caption { text: "加载后按原记录继续运行，暂停状态不会重置。同一配置不要同时启动多个客户端。"; wrap: word-wrap; }
+                    }
+                    if root.new-deployment: VerticalLayout {
+                        spacing: 16px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Server HTTPS 地址"; font-size: 12px; }
+                            LineEdit { text <=> root.server-url; placeholder-text: "https://"; enabled: !root.busy; height: 36px; }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Windows 打印队列"; font-size: 12px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                ComboBox { model: root.queues; current-value <=> root.queue-name; enabled: !root.busy; horizontal-stretch: 1; }
+                                ActionButton { text: "刷新"; enabled: !root.busy; activated => { root.refresh-queues(); } }
+                            }
+                            Caption { text: "仅列出本机已安装的队列，单双面沿用队列设置。"; wrap: word-wrap; }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "本地状态目录"; font-size: 12px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                LineEdit { text <=> root.state-directory; enabled: !root.busy; height: 36px; horizontal-stretch: 1; }
+                                ActionButton { text: "浏览…"; enabled: !root.busy; activated => { root.browse-state(); } }
+                            }
+                            Caption { text: "新建状态目录仅用于新部署，不能用来恢复旧任务。"; wrap: word-wrap; }
+                        }
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "自定义 CA 证书（可选，PEM 格式）"; font-size: 12px; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                LineEdit { text <=> root.ca-path; placeholder-text: "未设置时使用 Windows 系统证书"; enabled: !root.busy; height: 36px; horizontal-stretch: 1; }
+                                ActionButton { text: "浏览…"; enabled: !root.busy; activated => { root.browse-ca(); } }
+                            }
+                        }
+                        Text { text: "配置写入新文件，不覆盖已有配置。创建后仍需明确加载，不会自动开始领取。"; font-size: 12px; color: #525252; wrap: word-wrap; }
+                    }
+                    if root.message != "": Text { text: root.message; color: root.form-error ? #d4141c : #525252; font-size: 13px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        ActionButton { text: root.busy ? "正在加载…" : (root.new-deployment ? "创建配置" : "加载配置"); primary: true; enabled: !root.busy; activated => { if root.new-deployment { root.create(); } else { root.load(); } } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+        Rectangle {
+            height: 56px;
+            z: 1;
+            background: white;
+            border-width: 1px; border-color: #e5e5e5;
+            HorizontalLayout {
+                padding-left: 24px; padding-right: 24px; padding-top: 10px; padding-bottom: 10px; alignment: end;
+                ActionButton { text: "正常退出"; danger: true; activated => { root.request-exit(); } }
+            }
+        }
+    }
+}
+
+export component ConfigErrorView inherits Rectangle {
+    in property <string> config-path;
+    in property <string> message;
+    callback retry();
+    callback choose();
+    callback create();
+    callback request-exit();
+    ClippedScrollView {
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+            Text { text: "无法读取配置文件"; color: #d4141c; font-size: 24px; font-weight: 700; wrap: word-wrap; }
+            Text { text: root.config-path; font-size: 13px; wrap: char-wrap; }
+            Text { text: root.message; font-size: 13px; color: #d4141c; wrap: word-wrap; }
+            Text { text: "下一步：确认文件路径、磁盘是否可用及当前 Windows 用户的读取权限。只有全新部署才应创建新配置；新配置和新状态目录不会恢复原有任务。"; font-size: 13px; wrap: word-wrap; }
+            ActionButton { text: "重试读取"; primary: true; activated => { root.retry(); } }
+            ActionButton { text: "选择其他配置文件…"; activated => { root.choose(); } }
+            ActionButton { text: "创建新部署配置"; activated => { root.create(); } }
+            Rectangle { vertical-stretch: 1; }
+            ActionButton { text: "正常退出"; danger: true; activated => { root.request-exit(); } }
+        }
+    }
+}
