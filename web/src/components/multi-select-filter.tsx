@@ -1,15 +1,18 @@
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown, ListFilter } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
 
+/** Chip-styled multi-select. Narrowed selections are highlighted. */
 export function MultiSelectFilter<T extends string>({
   label,
   options,
@@ -22,12 +25,12 @@ export function MultiSelectFilter<T extends string>({
   onChange: (value: Record<T, boolean>) => void;
 }) {
   const selected = options.filter((option) => value[option.value]);
-  const summary =
-    selected.length === options.length
-      ? "All"
-      : selected.length === 0
-        ? "None"
-        : selected.map((option) => option.label).join(", ");
+  const all = selected.length === options.length;
+  const summary = all
+    ? "All"
+    : selected.length === 0
+      ? "None"
+      : selected.map((option) => option.label).join(", ");
 
   return (
     <DropdownMenu modal={false}>
@@ -35,12 +38,26 @@ export function MultiSelectFilter<T extends string>({
         <Button
           type="button"
           variant="outline"
-          className="min-w-0 max-w-full justify-between"
+          size="sm"
+          className={cn(
+            "max-w-full min-w-0 justify-between",
+            !all &&
+              "border-primary bg-primary text-primary-foreground hover:bg-primary-hover dark:border-primary dark:text-primary-foreground",
+          )}
           aria-label={`${label}: ${summary}`}
           title={`${label}: ${summary}`}
         >
-          <span className="shrink-0">{label}:</span>
-          <span className="max-w-48 truncate font-normal">{summary}</span>
+          <ListFilter aria-hidden="true" />
+          <span className="shrink-0">{label}</span>
+          {!all && (
+            <>
+              <span
+                aria-hidden="true"
+                className="h-3.5 w-px bg-current opacity-40"
+              />
+              <span className="max-w-40 truncate font-normal">{summary}</span>
+            </>
+          )}
           <ChevronDown aria-hidden="true" />
         </Button>
       </DropdownMenuTrigger>
@@ -48,9 +65,9 @@ export function MultiSelectFilter<T extends string>({
         align="start"
         aria-label={label}
         aria-labelledby={undefined}
+        className="w-60"
       >
         <DropdownMenuLabel>{label}</DropdownMenuLabel>
-        <DropdownMenuSeparator />
         {options.map((option) => (
           <DropdownMenuCheckboxItem
             key={option.value}
@@ -63,6 +80,23 @@ export function MultiSelectFilter<T extends string>({
             {option.label}
           </DropdownMenuCheckboxItem>
         ))}
+        {!all && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() =>
+                onChange(
+                  Object.fromEntries(
+                    options.map((option) => [option.value, true]),
+                  ) as Record<T, boolean>,
+                )
+              }
+            >
+              <Check aria-hidden="true" />
+              Select all
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );

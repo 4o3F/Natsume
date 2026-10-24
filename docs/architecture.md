@@ -1345,6 +1345,10 @@ Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前�
 
 `DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation， 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的 current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。 该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Specta； `convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的 查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。 HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、 校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device 详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle， 释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建 Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
 
+### 15.5 Panel视觉规范
+
+Web 视觉规范集中维护于根目录 [DESIGN.md](../DESIGN.md)，作为界面设计与样式审阅依据。该规范约束呈现，不改变本文定义的系统职责、API、权限、会话隔离和业务状态语义，也不代表现有实现已经逐项符合规范。
+
 ## 16. 错误与可观测性
 
 ### 16.1 错误

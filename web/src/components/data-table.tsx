@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type MouseEvent, type ReactNode } from "react";
 import {
   type ColumnDef,
   type RowData,
@@ -10,9 +10,9 @@ import {
   tableFeatures,
   useTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, ArrowUpDown } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Table,
   TableBody,
@@ -21,6 +21,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { cn } from "@/lib/utils";
 
 const dataTableFeatures = tableFeatures({
   columnVisibilityFeature,
@@ -34,6 +35,16 @@ export type DataTableColumnDef<TData extends RowData> = ColumnDef<
   TData
 >;
 
+export interface DataTableSelection {
+  selected: ReadonlySet<string>;
+  onChange: (selected: Set<string>) => void;
+  /** Rows that cannot be selected (for example revoked devices). */
+  isSelectable?: (id: string) => boolean;
+}
+
+const interactiveSelector =
+  "button, a, input, label, [role=checkbox], [role=menuitem], [role=dialog], [data-row-click-ignore]";
+
 export function DataTable<TData extends RowData>({
   columns,
   data,
@@ -41,6 +52,11 @@ export function DataTable<TData extends RowData>({
   getRowId,
   renderExpandedRow,
   scrollable = false,
+  selection,
+  onRowClick,
+  activeRowId,
+  emptyLabel = "No results.",
+  label,
 }: {
   columns: DataTableColumnDef<TData>[];
   data: TData[];
@@ -48,6 +64,11 @@ export function DataTable<TData extends RowData>({
   getRowId?: (row: TData) => string;
   renderExpandedRow?: (row: TData) => ReactNode;
   scrollable?: boolean;
+  selection?: DataTableSelection;
+  onRowClick?: (row: TData) => void;
+  activeRowId?: string | null;
+  emptyLabel?: string;
+  label?: string;
 }) {
   const table = useTable({
     features: dataTableFeatures,
@@ -56,17 +77,64 @@ export function DataTable<TData extends RowData>({
     getRowId,
     defaultColumn: { enableSorting: false },
   });
+  const rows = table.getRowModel().rows;
+  const selectableIds = selection
+    ? rows
+        .map((row) => row.id)
+        .filter((id) => selection.isSelectable?.(id) ?? true)
+    : [];
+  const selectedVisible = selectableIds.filter((id) =>
+    selection?.selected.has(id),
+  ).length;
+  const headerState =
+    selectedVisible === 0
+      ? false
+      : selectedVisible === selectableIds.length
+        ? true
+        : "indeterminate";
+
+  function toggle(id: string, checked: boolean) {
+    if (!selection) return;
+    const next = new Set(selection.selected);
+    if (checked) next.add(id);
+    else next.delete(id);
+    selection.onChange(next);
+  }
+
+  function handleRowClick(event: MouseEvent<HTMLTableRowElement>, row: TData) {
+    if (!onRowClick) return;
+    const target = event.target as HTMLElement;
+    if (target.closest(interactiveSelector)) return;
+    if (window.getSelection()?.toString()) return;
+    onRowClick(row);
+  }
 
   return (
-    <div className="min-w-0 w-full overflow-hidden rounded-md border">
-      <Table containerClassName={scrollable ? "isolate max-h-96" : undefined}>
-        <TableHeader
-          className={
-            scrollable ? "sticky top-0 z-10 bg-background shadow-sm" : undefined
-          }
-        >
+    <div className="w-full min-w-0 overflow-hidden border bg-card">
+      <Table
+        aria-label={label}
+        containerClassName={scrollable ? "isolate max-h-96" : undefined}
+      >
+        <TableHeader className={scrollable ? "sticky top-0 z-10" : undefined}>
           {table.getHeaderGroups().map((headerGroup) => (
-            <TableRow key={headerGroup.id}>
+            <TableRow key={headerGroup.id} className="hover:bg-transparent">
+              {selection && (
+                <TableHead>
+                  <Checkbox
+                    aria-label="Select all visible rows"
+                    checked={headerState}
+                    disabled={selectableIds.length === 0}
+                    onCheckedChange={(checked) => {
+                      const next = new Set(selection.selected);
+                      for (const id of selectableIds) {
+                        if (checked === true) next.add(id);
+                        else next.delete(id);
+                      }
+                      selection.onChange(next);
+                    }}
+                  />
+                </TableHead>
+              )}
               {headerGroup.headers.map((header) => (
                 <TableHead
                   key={header.id}
@@ -81,11 +149,9 @@ export function DataTable<TData extends RowData>({
                   }
                 >
                   {header.isPlaceholder ? null : header.column.getCanSort() ? (
-                    <Button
+                    <button
                       type="button"
-                      variant="ghost"
-                      size="sm"
-                      className="-ml-2"
+                      className="-ml-1.5 inline-flex cursor-pointer items-center gap-1 px-1.5 py-1 transition-colors outline-none hover:text-foreground focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring"
                       onClick={header.column.getToggleSortingHandler()}
                     >
                       {flexRender(
@@ -93,13 +159,16 @@ export function DataTable<TData extends RowData>({
                         header.getContext(),
                       )}
                       {header.column.getIsSorted() === "asc" ? (
-                        <ArrowUp aria-hidden="true" className="size-3.5" />
+                        <ArrowUp aria-hidden="true" className="size-3" />
                       ) : header.column.getIsSorted() === "desc" ? (
-                        <ArrowDown aria-hidden="true" className="size-3.5" />
+                        <ArrowDown aria-hidden="true" className="size-3" />
                       ) : (
-                        <ArrowUpDown aria-hidden="true" className="size-3.5" />
+                        <ChevronsUpDown
+                          aria-hidden="true"
+                          className="size-3 opacity-60"
+                        />
                       )}
-                    </Button>
+                    </button>
                   ) : (
                     flexRender(
                       header.column.columnDef.header,
@@ -112,12 +181,51 @@ export function DataTable<TData extends RowData>({
           ))}
         </TableHeader>
         <TableBody>
-          {table.getRowModel().rows?.length ? (
-            table.getRowModel().rows.map((row) => {
+          {rows.length ? (
+            rows.map((row) => {
               const expanded = renderExpandedRow?.(row.original);
+              const isSelected = selection?.selected.has(row.id) ?? false;
+              const selectable = selection?.isSelectable?.(row.id) ?? true;
               return (
                 <Fragment key={row.id}>
-                  <TableRow className={rowClassName?.(row.original)}>
+                  <TableRow
+                    data-state={
+                      isSelected || activeRowId === row.id
+                        ? "selected"
+                        : undefined
+                    }
+                    className={cn(
+                      rowClassName?.(row.original),
+                      onRowClick &&
+                        "cursor-pointer outline-none focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
+                      activeRowId === row.id &&
+                        "shadow-[inset_4px_0_0_var(--primary)]",
+                    )}
+                    tabIndex={onRowClick ? 0 : undefined}
+                    onKeyDown={(event) => {
+                      if (
+                        onRowClick &&
+                        event.target === event.currentTarget &&
+                        (event.key === "Enter" || event.key === " ")
+                      ) {
+                        event.preventDefault();
+                        onRowClick(row.original);
+                      }
+                    }}
+                    onClick={(event) => handleRowClick(event, row.original)}
+                  >
+                    {selection && (
+                      <TableCell>
+                        <Checkbox
+                          aria-label={`Select row ${row.id}`}
+                          checked={isSelected}
+                          disabled={!selectable}
+                          onCheckedChange={(checked) =>
+                            toggle(row.id, checked === true)
+                          }
+                        />
+                      </TableCell>
+                    )}
                     {row.getVisibleCells().map((cell) => (
                       <TableCell key={cell.id}>
                         {flexRender(
@@ -130,8 +238,10 @@ export function DataTable<TData extends RowData>({
                   {expanded && (
                     <TableRow className="hover:bg-transparent">
                       <TableCell
-                        colSpan={row.getVisibleCells().length}
-                        className="whitespace-normal"
+                        colSpan={
+                          row.getVisibleCells().length + (selection ? 1 : 0)
+                        }
+                        className="bg-muted/30 whitespace-normal"
                       >
                         {expanded}
                       </TableCell>
@@ -141,9 +251,12 @@ export function DataTable<TData extends RowData>({
               );
             })
           ) : (
-            <TableRow>
-              <TableCell colSpan={columns.length} className="h-24 text-center">
-                No results.
+            <TableRow className="hover:bg-transparent">
+              <TableCell
+                colSpan={columns.length + (selection ? 1 : 0)}
+                className="h-28 text-center text-muted-foreground"
+              >
+                {emptyLabel}
               </TableCell>
             </TableRow>
           )}

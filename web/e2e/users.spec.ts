@@ -247,7 +247,7 @@ test("admin creates, copies, regenerates and revokes invitations; plaintext disa
   const state = await mockUsers(page);
   await page.goto("/users");
   await expect(
-    page.getByRole("link", { name: "Users", exact: true }),
+    page.getByRole("link", { name: "Operators", exact: true }),
   ).toBeVisible();
   await expect(page.getByText("Expired", { exact: true })).toBeVisible();
   await page.getByLabel("Invitation role").selectOption("admin");
@@ -336,7 +336,7 @@ test("viewer has no Users entry or management requests but can change a password
   await page.goto("/users");
   await expect(page).toHaveURL(/\/seats$/);
   await expect(
-    page.getByRole("link", { name: "Users", exact: true }),
+    page.getByRole("link", { name: "Operators", exact: true }),
   ).toHaveCount(0);
   expect(
     state.calls.some((call) => call.path.startsWith("/api/v2/operator/")),
@@ -393,9 +393,11 @@ test("self demotion immediately switches to Viewer and releases management state
   await page
     .getByRole("button", { name: "Account menu for first-admin" })
     .click();
-  await expect(page.getByText("VIEWER", { exact: true })).toBeVisible();
   await expect(
-    page.getByRole("link", { name: "Users", exact: true }),
+    page.getByRole("menu").getByText("viewer", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Operators", exact: true }),
   ).toHaveCount(0);
   expect(state.identity?.role).toBe("viewer");
   await page.goto("/users");
@@ -625,12 +627,12 @@ test("an issued link delivered after logout cannot appear in another session", a
   await page
     .getByRole("button", { name: "Account menu for first-admin" })
     .click();
-  await page.getByRole("menuitem", { name: "Logout", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Log out", exact: true }).click();
   await expect(page).toHaveURL(/\/login$/);
   await page.getByLabel("Login name").fill("first-admin");
   await page.getByLabel("Password", { exact: true }).fill("legacy");
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
-  await page.getByRole("link", { name: "Users", exact: true }).click();
+  await page.getByRole("link", { name: "Operators", exact: true }).click();
   await json(state.held[0], 201, {
     invitation: state.invitations[0],
     token: inviteToken,

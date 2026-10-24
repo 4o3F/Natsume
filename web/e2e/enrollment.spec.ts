@@ -53,11 +53,13 @@ for (const width of [1440, 1024, 390]) {
       exact: true,
     });
     await expect(window.getByRole("status")).toHaveText("Closed");
-    await expect(window).toHaveClass(/border-amber-600\/30/);
+    await expect(window.locator(":scope > span")).toHaveClass(/bg-warning/);
     await expect(
-      window.getByText("Administrator approval is required", { exact: true }),
+      window.getByText("Requests wait here for an administrator.", {
+        exact: true,
+      }),
     ).toBeVisible();
-    await expect(window.getByRole("status")).toHaveCSS("font-size", "30px");
+    await expect(window.getByRole("status")).toHaveCSS("font-size", "32px");
     await page.screenshot({
       path: testInfo.outputPath(`enrollment-closed-${width}.png`),
       fullPage: true,
@@ -67,9 +69,11 @@ for (const width of [1440, 1024, 390]) {
       .getByRole("button", { name: "Open window", exact: true })
       .click();
     await expect(window.getByRole("status")).toHaveText("Open");
-    await expect(window).toHaveClass(/border-emerald-600\/30/);
+    await expect(window.locator(":scope > span")).toHaveClass(/bg-success/);
     await expect(
-      window.getByText("Automatic approval is enabled", { exact: true }),
+      window.getByText("New and pending requests are approved automatically.", {
+        exact: true,
+      }),
     ).toBeVisible();
     await expect(
       window.getByRole("button", { name: "Close window", exact: true }),
@@ -110,9 +114,11 @@ test("a failed refresh replaces the open appearance with an unknown state", asyn
   failRead = true;
   await page.clock.fastForward(10_000);
   await expect(window.getByRole("status")).toHaveText("Unavailable");
-  await expect(window).toHaveClass(/border-destructive\/30/);
+  await expect(window.locator(":scope > span")).toHaveClass(/bg-destructive/);
   await expect(
-    window.getByText("Automatic approval is enabled", { exact: true }),
+    window.getByText("New and pending requests are approved automatically.", {
+      exact: true,
+    }),
   ).toHaveCount(0);
   await expect(
     window.getByRole("button", { name: "Close window", exact: true }),
@@ -123,7 +129,7 @@ test("a failed refresh replaces the open appearance with an unknown state", asyn
   failRead = false;
   await window.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(window.getByRole("status")).toHaveText("Open");
-  await expect(window).toHaveClass(/border-emerald-600\/30/);
+  await expect(window.locator(":scope > span")).toHaveClass(/bg-success/);
 });
 
 test("an administrator can open and close the window without duplicate submissions", async ({
@@ -150,7 +156,7 @@ test("an administrator can open and close the window without duplicate submissio
 
   await page.goto("/enrollment");
   const window = page.getByRole("region", { name: "Enrollment window" });
-  await expect(window.getByRole("status")).toHaveText("Loading...");
+  await expect(window.getByRole("status")).toHaveText("Checking…");
   await expect(
     window.getByRole("button", { name: "Open window" }),
   ).toBeDisabled();
@@ -158,7 +164,7 @@ test("an administrator can open and close the window without duplicate submissio
   await expect(window.getByRole("status")).toHaveText("Closed");
   await window.getByRole("button", { name: "Open window" }).click();
   await expect(
-    window.getByRole("button", { name: "Updating..." }),
+    window.getByRole("button", { name: "Updating…" }),
   ).toBeDisabled();
   await expect(window.getByRole("status")).toHaveText("Closed");
   await expect.poll(() => updates).toEqual([{ state: "open" }]);
@@ -229,7 +235,7 @@ test("an administrator can approve a pending request while the window is closed"
   const window = page.getByRole("region", { name: "Enrollment window" });
   await expect(window.getByRole("status")).toHaveText("Closed");
   await expect(window).toContainText(
-    "Closed keeps requests here for administrator approval.",
+    "Requests wait here for an administrator.",
   );
   await page.getByRole("button", { name: "Approve", exact: true }).click();
   await page
@@ -237,7 +243,7 @@ test("an administrator can approve a pending request while the window is closed"
     .getByRole("button", { name: "Approve", exact: true })
     .click();
   await expect(
-    page.getByText("No enrollment reviews are pending."),
+    page.getByText("No devices waiting", { exact: true }),
   ).toBeVisible();
   expect(approved).toBe(true);
   await expect(window.getByRole("status")).toHaveText("Closed");
@@ -363,6 +369,6 @@ test("an administrator can approve an enrollment review", async ({ page }) => {
     .getByRole("button", { name: "Approve" })
     .click();
   await expect(
-    page.getByText("No enrollment reviews are pending."),
+    page.getByText("No devices waiting", { exact: true }),
   ).toBeVisible();
 });

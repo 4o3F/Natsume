@@ -75,6 +75,10 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - When raw SQL is necessary, bind runtime values rather than interpolating or concatenating them, and format longer statements across readable lines. Ordinary test fixture inserts and updates should also use Diesel; migration statements, database fault injection, and `EXPLAIN QUERY PLAN` checks are distinct uses, not templates for application queries.
 - Use the shared `Database::read` / `Database::write` and `Transaction` boundary. Keep business database operations in their owning components; do not add connection management or transaction orchestration to HTTP handlers.
 
+## Web visual design
+
+Read [DESIGN.md](DESIGN.md) before changing Web layouts, components, or styles. It is the Web visual standard; `docs/architecture.md` remains the authority for API contracts, permissions, session boundaries, and business-state semantics.
+
 ## Native Windows printing
 
 - Handwritten Rust `unsafe` is permitted only inside `crates/natsume-print-client/src/backend/` for the reviewed Windows printing boundary. Keep the workspace-wide denial elsewhere, including Server, networking, task state, and UI code.

@@ -30,32 +30,35 @@ test("seat binding filters remain usable with no matches and support the keyboar
   await expect(
     page.getByRole("heading", { name: "Seats", exact: true }),
   ).toBeVisible();
+  await page.getByRole("radio", { name: "List view", exact: true }).click();
   const filter = page.getByRole("group", {
-    name: "Binding state",
+    name: "Binding",
     exact: true,
   });
-  const bound = filter.getByRole("checkbox", { name: "Bound", exact: true });
+  const bound = filter.getByRole("checkbox", { name: /^Bound\b/ });
   const unbound = filter.getByRole("checkbox", {
-    name: "Unbound",
-    exact: true,
+    name: /^Unbound\b/,
   });
   await expect(page.locator("tbody tr")).toHaveCount(2);
-  await expect(page.locator("tbody tr").first()).toHaveClass(
-    /bg-emerald-500\/5/,
-  );
-  await expect(page.locator("tbody tr").last()).toHaveClass(/bg-amber-500\/10/);
-  await bound.uncheck();
-  await expect(page.locator("tbody tr td:first-child")).toHaveText(["B-02"]);
-  await unbound.uncheck();
   await expect(
-    page.getByText("No seats match the binding filter.", { exact: true }),
+    page
+      .locator("tbody tr")
+      .first()
+      .getByRole("img", { name: "Binding: bound", exact: true }),
   ).toBeVisible();
+  await expect(page.locator("tbody tr").last()).toHaveClass(
+    /bg-warning-subtle/,
+  );
+  await bound.locator("..").click();
+  await expect(page.locator("tbody tr td:first-child")).toHaveText(["B-02"]);
+  await unbound.locator("..").click();
+  await expect(page.getByText("No seats match", { exact: true })).toBeVisible();
   await expect(filter).toBeVisible();
   await bound.focus();
   await page.keyboard.press("Space");
   await expect(bound).toBeChecked();
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-01"]);
-  await unbound.check();
+  await unbound.locator("..").click();
   await expect(page.locator("tbody tr")).toHaveCount(2);
 });
 
@@ -132,10 +135,11 @@ for (const width of [1024, 1440]) {
       page.getByRole("img", { name: "示例科技大学 logo" }),
     ).toBeVisible();
     await expect(
-      page.getByRole("img", { name: "Logo unavailable", exact: true }),
+      page.getByRole("img", { name: /\(logo unavailable\)$/ }),
     ).toBeVisible();
     await expect(page.getByText("Offline", { exact: true })).toHaveCount(0);
     await page.goto("/seats");
+    await page.getByRole("radio", { name: "List view", exact: true }).click();
     const row = page.getByRole("row").filter({ hasText: "B-02" });
     await expect(row).toContainText("星河漫游");
     await expect(row).toContainText("INST-001");
@@ -143,7 +147,7 @@ for (const width of [1024, 1440]) {
       page.getByRole("row").filter({ hasText: "A-01" }),
     ).toContainText(teams[1].team_name_zh);
     await expect(
-      page.getByRole("img", { name: "Logo unavailable", exact: true }),
+      page.getByRole("img", { name: /\(logo unavailable\)$/ }),
     ).toBeVisible();
     expect(
       await page.evaluate(

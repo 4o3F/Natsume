@@ -142,7 +142,7 @@ async function signIn(page: Page) {
 
 async function signOut(page: Page) {
   await page.getByRole("button", { name: /^Account menu for / }).click();
-  await page.getByRole("menuitem", { name: "Logout", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Log out", exact: true }).click();
 }
 
 test("a new login does not display the expired operator's cached rows", async ({
@@ -280,7 +280,9 @@ test("polling identity and role changes remount the active preparation page", as
   state.identity = { ...otherAdmin, role: "viewer" };
   await page.clock.runFor(30_000);
   await page.getByRole("button", { name: "Account menu for operator" }).click();
-  await expect(page.getByText("VIEWER", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("menu").getByText("viewer", { exact: true }),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(
     page.getByRole("button", { name: "Commit import" }),

@@ -1,15 +1,21 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useMemo, useState, useSyncExternalStore } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { FolderSync, Monitor, MonitorPlay } from "lucide-react";
+import {
+  ArrowRight,
+  FolderSync,
+  Monitor,
+  MonitorPlay,
+  RotateCcw,
+  Search,
+} from "lucide-react";
 
 import { useSessionScope } from "@/auth/session-context";
 import { unwrap } from "@/api/errors";
-import type {
-  DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
-  DeviceResponse_Serialize as DeviceResponse,
-} from "@/api/generated/types";
+import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
+import { BulkActionBar } from "@/components/bulk-action-bar";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DataState } from "@/components/data-state";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import {
@@ -21,48 +27,51 @@ import {
   selectedDeviceStates,
 } from "@/components/device-state";
 import {
-  ConvergenceIcon,
+  ConvergenceBadge,
   RefreshCountdown,
+  StatusDot,
   StatusIcon,
 } from "@/components/device-status";
-import { connections } from "@/components/device-status-style";
+import { connections, tones } from "@/components/device-status-style";
+import { PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { InputGroup } from "@/components/ui/input";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+  Sheet,
+  SheetBody,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
 
 import { BulkTargetActions } from "./target-bulk-actions";
 import { TargetSubmissionResult } from "./target-submission-result";
-import { targetAction, type TargetOperation } from "./target-operations";
+import {
+  targetAction,
+  targetOperations,
+  type TargetOperation,
+} from "./target-operations";
 
 type Device = DeviceResponse;
-type Convergence = DeviceConvergenceResponse;
 
 const DEVICES_KEY = ["devices"] as const;
+const lifecycleBadges = {
+  enabled: { variant: "success", label: "Enabled" },
+  disabled: { variant: "muted", label: "Disabled" },
+  revoked: { variant: "destructive", label: "Revoked" },
+} as const;
 
 export function TargetsPage() {
   const { api, targetSubmission } = useSessionScope();
   const session = useSession().data;
   const [deviceId, setDeviceId] = useState("");
   const [search, setSearch] = useState("");
+  const [checked, setChecked] = useState<Set<string>>(() => new Set());
+  const [confirm, setConfirm] = useState<"terminate" | "reset" | null>(null);
   const [stateFilter, setStateFilter] = useState<DeviceStateFilterValue>(
     defaultDeviceStateFilter,
   );
@@ -99,6 +108,28 @@ export function TargetsPage() {
         ),
     );
   }, [devices.data, search, states.length]);
+  const selectedDevice =
+    devices.data?.find((device) => device.device_id === deviceId) ?? null;
+  if (
+    deviceId &&
+    (states.length === 0 || (devices.data && selectedDevice === null))
+  ) {
+    setDeviceId("");
+  }
+  const checkedIds = (devices.data ?? [])
+    .filter(
+      (device) => checked.has(device.device_id) && device.state === "enabled",
+    )
+    .map((device) => device.device_id);
+
+  function submitSelected(operation: TargetOperation) {
+    void targetSubmission.submit(targetAction(operation), {
+      kind: "devices",
+      device_ids: checkedIds,
+    });
+    setChecked(new Set());
+  }
+
   const columns = useMemo(() => {
     const columns: DataTableColumnDef<Device>[] = [
       {
@@ -109,11 +140,14 @@ export function TargetsPage() {
         sortFn: "alphanumeric",
         sortUndefined: "last",
         sortDescFirst: false,
-        cell: ({ getValue }) => (
-          <span className="font-semibold">
-            {getValue<string | undefined>() ?? "—"}
-          </span>
-        ),
+        cell: ({ getValue }) => {
+          const seat = getValue<string | undefined>();
+          return seat ? (
+            <span className="font-mono text-sm font-semibold">{seat}</span>
+          ) : (
+            <span className="text-muted-foreground">—</span>
+          );
+        },
       },
       {
         accessorKey: "machine_hardware_id",
@@ -121,82 +155,73 @@ export function TargetsPage() {
         cell: ({ row }) => {
           const device = row.original;
           const connection = connections[device.convergence.connection_state];
+          const muted = device.state !== "enabled";
           return (
-            <div className="flex items-center gap-1.5" title={device.device_id}>
-              <StatusIcon
-                {...connection}
+            <div className="flex items-center gap-2.5" title={device.device_id}>
+              <StatusDot
+                tone={muted ? "muted" : connection.key}
                 label={`Connection: ${connection.label}`}
-                tone={
-                  device.state === "enabled"
-                    ? connection.tone
-                    : "text-muted-foreground"
-                }
               />
               <code
-                className="text-xs text-muted-foreground"
+                className="font-mono text-xs"
                 title={device.machine_hardware_id}
               >
-                {device.machine_hardware_id.length > 12
-                  ? `${device.machine_hardware_id.slice(0, 8)}…`
+                {device.machine_hardware_id.length > 14
+                  ? `${device.machine_hardware_id.slice(0, 12)}…`
                   : device.machine_hardware_id}
               </code>
+              {muted && (
+                <Badge variant={lifecycleBadges[device.state].variant}>
+                  {lifecycleBadges[device.state].label}
+                </Badge>
+              )}
             </div>
           );
         },
       },
       {
-        accessorKey: "state",
-        header: "Lifecycle",
+        id: "foreground",
+        header: "Foreground",
+        cell: ({ row }) => {
+          const control = row.original.convergence.session_control;
+          const target = control.target?.foreground_target;
+          const actual = control.actual?.foreground;
+          const matches = target !== undefined && target === actual;
+          return (
+            <span className="flex items-center gap-1.5 text-sm">
+              <ForegroundLabel value={target} />
+              <ArrowRight
+                aria-label="actual"
+                className="size-3.5 text-muted-foreground/60"
+              />
+              <ForegroundLabel
+                value={actual}
+                className={
+                  target !== undefined && actual !== undefined && !matches
+                    ? tones.warning.text
+                    : undefined
+                }
+              />
+            </span>
+          );
+        },
+      },
+      {
+        id: "session",
+        header: "Session",
         cell: ({ row }) => (
-          <StatusIcon
-            icon={
-              row.original.state === "enabled"
-                ? "check"
-                : row.original.state === "disabled"
-                  ? "pause"
-                  : "ban"
-            }
-            tone={
-              row.original.state === "enabled"
-                ? "text-emerald-700"
-                : "text-muted-foreground"
-            }
-            label={`Lifecycle: ${row.original.state}`}
+          <ConvergenceBadge
+            status={row.original.convergence.session_control.status}
           />
         ),
       },
       {
-        id: "foreground-target",
-        header: "Target",
-        cell: ({ row }) =>
-          row.original.convergence.session_control.target?.foreground_target ??
-          "—",
-      },
-      {
-        id: "foreground-actual",
-        header: "Actual",
-        cell: ({ row }) =>
-          row.original.convergence.session_control.actual?.foreground ?? "—",
-      },
-      ...(
-        [
-          ["session_control", "Session"],
-          ["home", "Home"],
-        ] as const
-      ).map(([key, name]): DataTableColumnDef<Device> => ({
-        id: key,
-        header: name,
+        id: "home",
+        header: "Home",
         cell: ({ row }) => (
-          <ConvergenceIcon
-            name={
-              devices.isFetching || devices.isError || targetsPending
-                ? `${name} (last known)`
-                : name
-            }
-            status={row.original.convergence[key].status}
-          />
+          <ConvergenceBadge status={row.original.convergence.home.status} />
         ),
-      })),
+      },
     ];
     if (results?.length) {
       const byDevice = new Map(
@@ -207,14 +232,14 @@ export function TargetsPage() {
         header: "Last submission",
         cell: ({ row }) => {
           const result = byDevice.get(row.original.device_id);
-          if (!result) return "—";
+          if (!result) return <span className="text-muted-foreground">—</span>;
           return (
             <StatusIcon
               icon={result.status === "rejected" ? "failed" : "check"}
               tone={
                 result.status === "rejected"
-                  ? "text-destructive"
-                  : "text-emerald-700"
+                  ? tones.danger.text
+                  : tones.success.text
               }
               label={
                 result.status === "rejected"
@@ -226,52 +251,26 @@ export function TargetsPage() {
         },
       });
     }
-    columns.push({
-      id: "actions",
-      header: "Actions",
-      cell: ({ row }) => (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="w-20"
-          aria-expanded={deviceId === row.original.device_id}
-          onClick={() =>
-            setDeviceId((current) =>
-              current === row.original.device_id ? "" : row.original.device_id,
-            )
-          }
-        >
-          {isAdmin ? "Manage" : "View"}
-        </Button>
-      ),
-    });
     return columns;
-  }, [
-    deviceId,
-    isAdmin,
-    results,
-    devices.isFetching,
-    devices.isError,
-    targetsPending,
-  ]);
+  }, [results]);
 
-  return (
-    <div className="min-w-0 space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Targets</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Manage Session and Home targets for all devices or one seat.
-          </p>
-        </div>
-        <RefreshCountdown
-          updatedAt={Math.max(devices.dataUpdatedAt, devices.errorUpdatedAt)}
-          isFetching={devices.isFetching}
-          isPaused={devices.isPaused}
-          isError={devices.isError}
-        />
-      </div>
+  const feedback = (
+    <div className="space-y-3">
+      <p className="text-xs text-muted-foreground">
+        <span>
+          Last successful refresh:{" "}
+          {formatTimestamp(devices.dataUpdatedAt || null)}
+        </span>
+        <span role="status" className="sr-only">
+          {devices.isFetching && devices.data
+            ? "Refreshing. Showing previous result."
+            : ""}
+        </span>
+      </p>
+      <p className="text-xs text-muted-foreground">
+        States reflect the last received device report. A submitted target is
+        complete only when the device reports convergence.
+      </p>
       {devices.isError && (
         <Alert variant="destructive">
           <AlertTitle>Refresh failed</AlertTitle>
@@ -304,152 +303,278 @@ export function TargetsPage() {
             devices={[...(enabledDevices.data ?? []), ...(devices.data ?? [])]}
             onRetry={() => void targetSubmission.retry()}
           >
-            {submission.completed && (
-              <>
-                {submission.completed.request.action.kind !== "power_off" &&
-                  submission.completed.response.results.some(
-                    (row) => row.status === "rejected",
-                  ) && (
-                    <TargetAction
-                      label="Retry failed devices"
-                      title="Retry the rejected devices?"
-                      description="This submits a new operation for the rejected devices only. The Server checks whether they are still enabled. Successful devices will not be submitted again."
-                      disabled={targetsPending}
-                      onConfirm={() => {
-                        const completed = submission.completed;
-                        if (completed)
-                          void targetSubmission.submit(
-                            completed.request.action,
-                            {
-                              kind: "devices",
-                              device_ids: completed.response.results
-                                .filter((row) => row.status === "rejected")
-                                .map((row) => row.device_id),
-                            },
-                          );
-                      }}
-                    />
-                  )}
-              </>
-            )}
+            {submission.completed &&
+              submission.completed.request.action.kind !== "power_off" &&
+              submission.completed.response.results.some(
+                (row) => row.status === "rejected",
+              ) && (
+                <RetryRejected
+                  disabled={targetsPending}
+                  onConfirm={() => {
+                    const completed = submission.completed;
+                    if (completed)
+                      void targetSubmission.submit(completed.request.action, {
+                        kind: "devices",
+                        device_ids: completed.response.results
+                          .filter((row) => row.status === "rejected")
+                          .map((row) => row.device_id),
+                      });
+                  }}
+                />
+              )}
           </TargetSubmissionResult>
         )}
-      {isAdmin && (
-        <>
-          <BulkTargetActions
-            devices={enabledDevices.data ?? []}
-            disabled={
-              targetsPending || !enabledDevices.data || enabledDevices.isError
-            }
-            onSubmit={(operation) =>
-              void targetSubmission.submit(targetAction(operation), {
-                kind:
-                  operation === "poweroff"
-                    ? "all_online_enabled"
-                    : "all_enabled",
-              })
-            }
+    </div>
+  );
+
+  return (
+    <div className="min-w-0 space-y-6">
+      <PageHeader
+        title="Targets"
+        description="Set the desired foreground, session, and Home state for the fleet or individual seats. Devices converge on their own."
+        actions={
+          <RefreshCountdown
+            updatedAt={Math.max(devices.dataUpdatedAt, devices.errorUpdatedAt)}
+            isFetching={devices.isFetching}
+            isPaused={devices.isPaused}
+            isError={devices.isError}
+            onRefresh={() => void devices.refetch()}
           />
-        </>
+        }
+      />
+      {feedback}
+      {isAdmin && (
+        <BulkTargetActions
+          devices={enabledDevices.data ?? []}
+          disabled={
+            targetsPending || !enabledDevices.data || enabledDevices.isError
+          }
+          onSubmit={(operation) =>
+            void targetSubmission.submit(targetAction(operation), {
+              kind:
+                operation === "poweroff" ? "all_online_enabled" : "all_enabled",
+            })
+          }
+        />
       )}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
-        <div className="flex w-full items-center gap-3 sm:w-auto">
-          <Input
+
+      <section aria-label="Device targets" className="space-y-3">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          <InputGroup
             type="search"
             aria-label="Search devices"
             placeholder="Find a seat or device"
-            className="min-w-0 sm:w-56"
+            icon={<Search aria-hidden="true" />}
+            className="w-full sm:w-64"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-          <p className="shrink-0 text-sm text-muted-foreground">
-            {rows.length} of {devices.data?.length ?? 0} devices
+          <DeviceStateFilter value={stateFilter} onChange={setStateFilter} />
+          <p
+            role="status"
+            className="ml-auto text-xs text-muted-foreground tabular-nums"
+          >
+            {targetsPending
+              ? "Submitting targets · showing last known states"
+              : `${rows.length} of ${devices.data?.length ?? 0} devices`}
           </p>
         </div>
-      </div>
-      <DataState
-        isLoading={devices.isLoading}
-        error={devices.data ? null : devices.error}
-        isEmpty={!devices.data?.length}
-        emptyLabel="No devices found."
-      >
-        <div className="space-y-3">
+        <DataState
+          isLoading={devices.isLoading}
+          error={devices.data ? null : devices.error}
+          isEmpty={!devices.data?.length}
+          emptyLabel="No devices found"
+          emptyDescription="Adjust the device state filter to include more devices."
+        >
           <DataTable
+            label="Device targets"
             columns={columns}
             data={rows}
             getRowId={(device) => device.device_id}
-            renderExpandedRow={(device) =>
-              device.device_id === deviceId ? (
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-center justify-between gap-4">
-                      <CardTitle>
-                        {seatCode(device) ?? "Unbound device"} ·{" "}
-                        {device.machine_hardware_id}
-                      </CardTitle>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeviceId("")}
-                      >
-                        Close details
-                      </Button>
-                    </div>
-                    <CardDescription className="break-all font-mono">
-                      {device.device_id}
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <DeviceTargets
-                      key={deviceId}
-                      device={device}
-                      isAdmin={isAdmin}
-                      previous={
-                        devices.isFetching || devices.isError || targetsPending
-                      }
-                      disabled={targetsPending || device.state !== "enabled"}
-                      onSubmit={(operation) =>
-                        void targetSubmission.submit(targetAction(operation), {
-                          kind: "devices",
-                          device_ids: [device.device_id],
-                        })
-                      }
-                    />
-                  </CardContent>
-                </Card>
-              ) : null
+            onRowClick={(device) => setDeviceId(device.device_id)}
+            activeRowId={deviceId || null}
+            selection={
+              isAdmin
+                ? {
+                    selected: checked,
+                    onChange: setChecked,
+                    isSelectable: (id) =>
+                      devices.data?.find((device) => device.device_id === id)
+                        ?.state === "enabled",
+                  }
+                : undefined
             }
             rowClassName={(device) =>
               device.state === "enabled"
                 ? connections[device.convergence.connection_state].row
-                : "bg-muted/60 hover:bg-muted"
+                : "text-muted-foreground"
             }
           />
-          {targetsPending && (
-            <p role="status" className="text-sm text-muted-foreground">
-              Targets are being submitted. Displaying last known device states.
-            </p>
-          )}
-          <p className="text-xs text-muted-foreground">
-            Offline devices use warning rows; disabled and revoked devices are
-            gray. Submitted targets are complete only when device convergence
-            confirms them.
+          <p className="px-1 text-xs text-muted-foreground">
+            Select rows to target specific seats.
           </p>
-        </div>
-      </DataState>
-      {devices.data && (
-        <div className="text-sm text-muted-foreground">
-          <p>
-            Last successful refresh: {formatTimestamp(devices.dataUpdatedAt)}
-          </p>
-          {devices.isFetching && (
-            <p role="status">Refreshing. Showing previous result.</p>
+        </DataState>
+      </section>
+
+      <Sheet
+        open={selectedDevice !== null}
+        onOpenChange={(open) => !open && setDeviceId("")}
+      >
+        <SheetContent>
+          {selectedDevice && (
+            <>
+              <SheetHeader>
+                <div className="flex items-center gap-2">
+                  <SheetTitle className="font-mono">
+                    {seatCode(selectedDevice) ?? "Unbound device"}
+                  </SheetTitle>
+                  <Badge
+                    variant={lifecycleBadges[selectedDevice.state].variant}
+                    dot
+                  >
+                    {lifecycleBadges[selectedDevice.state].label}
+                  </Badge>
+                </div>
+                <SheetDescription className="font-mono text-xs break-all">
+                  {selectedDevice.machine_hardware_id} ·{" "}
+                  {selectedDevice.device_id}
+                </SheetDescription>
+              </SheetHeader>
+              <SheetBody>
+                {feedback}
+                <DeviceTargets
+                  key={selectedDevice.device_id}
+                  device={selectedDevice}
+                  isAdmin={isAdmin}
+                  disabled={
+                    targetsPending || selectedDevice.state !== "enabled"
+                  }
+                  onSubmit={(operation) =>
+                    void targetSubmission.submit(targetAction(operation), {
+                      kind: "devices",
+                      device_ids: [selectedDevice.device_id],
+                    })
+                  }
+                />
+              </SheetBody>
+            </>
           )}
-        </div>
+        </SheetContent>
+      </Sheet>
+
+      {isAdmin && (
+        <>
+          <BulkActionBar
+            count={checkedIds.length}
+            onClear={() => setChecked(new Set())}
+          >
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={targetsPending}
+              onClick={() => submitSelected("waiting")}
+            >
+              <Monitor aria-hidden="true" />
+              Waiting
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={targetsPending}
+              onClick={() => submitSelected("contest")}
+            >
+              <MonitorPlay aria-hidden="true" />
+              Contest
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={targetsPending}
+              onClick={() => setConfirm("terminate")}
+            >
+              <RotateCcw aria-hidden="true" />
+              Terminate
+            </Button>
+            <Button
+              type="button"
+              variant="destructive-soft"
+              size="sm"
+              disabled={targetsPending}
+              onClick={() => setConfirm("reset")}
+            >
+              <FolderSync aria-hidden="true" />
+              Reset home
+            </Button>
+          </BulkActionBar>
+          <ConfirmDialog
+            open={confirm !== null}
+            onOpenChange={(open) => !open && setConfirm(null)}
+            title={
+              confirm &&
+              `${targetOperations[confirm]} on ${checkedIds.length} selected devices?`
+            }
+            description={
+              confirm === "reset"
+                ? "This deletes the contest user's Home data on the selected devices and restores the default Home. Contest sessions will restart."
+                : "Contest sessions on the selected devices will end and restart. Home files are preserved."
+            }
+            confirmLabel={confirm ? targetOperations[confirm] : "Confirm"}
+            disabled={targetsPending}
+            onConfirm={() => confirm && submitSelected(confirm)}
+          />
+        </>
       )}
     </div>
+  );
+}
+
+function ForegroundLabel({
+  value,
+  className,
+}: {
+  value: string | undefined;
+  className?: string;
+}) {
+  if (value === undefined)
+    return <span className="text-muted-foreground">—</span>;
+  return <span className={cn("capitalize", className)}>{value}</span>;
+}
+
+function RetryRejected({
+  disabled,
+  onConfirm,
+}: {
+  disabled: boolean;
+  onConfirm: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={disabled}
+        onClick={() => setOpen(true)}
+      >
+        <RotateCcw aria-hidden="true" />
+        Retry failed devices
+      </Button>
+      <ConfirmDialog
+        open={open}
+        onOpenChange={setOpen}
+        tone="info"
+        icon={<RotateCcw aria-hidden="true" />}
+        title="Retry the rejected devices?"
+        description="This submits a new operation for the rejected devices only. The Server checks whether they are still enabled. Successful devices will not be submitted again."
+        confirmLabel="Retry failed devices"
+        disabled={disabled}
+        onConfirm={onConfirm}
+      />
+    </>
   );
 }
 
@@ -461,221 +586,228 @@ function seatCode(device: Device) {
 function DeviceTargets({
   device,
   isAdmin,
-  previous,
   disabled,
   onSubmit,
 }: {
   device: Device;
   isAdmin: boolean;
-  previous: boolean;
   disabled: boolean;
   onSubmit: (operation: TargetOperation) => void;
 }) {
+  const [confirm, setConfirm] = useState<"terminate" | "reset" | null>(null);
   const { session_control: session, home } = device.convergence;
-  const showPrevious = previous;
+  const connection = connections[device.convergence.connection_state];
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-md bg-muted/30 px-4 py-3 text-sm text-muted-foreground">
-        <div className="flex items-center gap-2">
-          <StatusIcon
-            {...connections[device.convergence.connection_state]}
-            label={connections[device.convergence.connection_state].label}
-          />
-          <span>Connection: {label(device.convergence.connection_state)}</span>
-        </div>
-        <p className="text-xs">
-          Last device report:{" "}
-          {formatTimestamp(device.convergence.received_at_unix_ms)}
-        </p>
+    <div className="space-y-5">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-lg border bg-muted/40 px-4 py-3 text-sm">
+        <span className="flex items-center gap-2 font-medium">
+          <StatusDot tone={connection.key} />
+          {connection.label}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          Last report {formatTimestamp(device.convergence.received_at_unix_ms)}
+        </span>
         {device.convergence.connection_state === "offline" && (
-          <p className="w-full text-xs">
-            Device offline. Waiting for a connection and a fresh state report.
+          <p className="w-full text-xs text-muted-foreground">
+            Waiting for a connection and a fresh state report.
           </p>
         )}
         {device.convergence.connection_state === "awaiting_fresh_state" && (
-          <p className="w-full text-xs">
-            Device connected. Waiting for a fresh state report.
+          <p className="w-full text-xs text-muted-foreground">
+            Connected. Waiting for a fresh state report.
           </p>
         )}
       </div>
-      <div className="grid gap-4 md:grid-cols-2">
-        <section
-          aria-labelledby="session-control-title"
-          className="flex flex-col gap-4 rounded-md border p-4"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3
-              id="session-control-title"
-              className="flex items-center gap-2 font-medium"
-            >
-              <Monitor
-                aria-hidden="true"
-                className="size-4 text-muted-foreground"
-              />
-              Session Control
-            </h3>
-            <ConvergenceStatus
-              status={session.status}
-              previous={showPrevious}
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-3 rounded-md bg-muted/30 p-3">
-            <TargetFact name="Target foreground">
-              {session.target?.foreground_target ?? "not initialized"}
-            </TargetFact>
-            <TargetFact name="Actual foreground">
-              {session.actual?.foreground ?? "not received"}
-            </TargetFact>
-          </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-            <TargetFact name="Waiting display ready">
-              {session.actual
-                ? String(session.actual.waiting_ready)
-                : "not received"}
-            </TargetFact>
-            <TargetFact name="Contest desktop ready">
-              {session.actual
-                ? String(session.actual.contest_ready)
-                : "not received"}
-            </TargetFact>
-            <TargetFact name="Actual session">
-              {session.actual
-                ? label(session.actual.session_state)
-                : "not received"}
-            </TargetFact>
-          </div>
-          <div className="grid grid-cols-2 gap-4 border-t pt-3">
-            <TargetFact name="Terminate epoch">
-              {session.target?.terminate_epoch ?? "none"}
-            </TargetFact>
-            <TargetFact name="Completed terminate epoch">
-              {session.actual?.completed_terminate_epoch ?? "none"}
-            </TargetFact>
-          </div>
-          {session.target?.foreground_target === "contest" &&
-            device.convergence.binding.target?.state === "unbound" && (
-              <p className="rounded-md bg-amber-500/10 p-3 text-sm text-amber-700">
-                Waiting for binding before showing the contest desktop.
-              </p>
-            )}
-          {session.actual?.session_state === "ambiguous" && (
-            <p className="rounded-md bg-destructive/5 p-3 text-sm text-destructive">
-              Cannot identify a single session.
-            </p>
-          )}
-          {session.actual?.session_state === "error" && (
-            <p className="rounded-md bg-destructive/5 p-3 text-sm text-destructive">
-              The device reported a session error.
-            </p>
-          )}
-          {isAdmin && (
-            <div className="mt-auto flex flex-wrap gap-2 border-t pt-4">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={disabled}
-                onClick={() => onSubmit("waiting")}
-              >
-                <Monitor aria-hidden="true" />
-                Show waiting screen
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={disabled}
-                onClick={() => onSubmit("contest")}
-              >
-                <MonitorPlay aria-hidden="true" />
-                Show contest desktop
-              </Button>
-              <TargetAction
-                label="Terminate"
-                title="Terminate the contest session?"
-                description="End and restart this device's contest session. Home files are preserved. Check its reported state to confirm completion."
-                disabled={disabled}
-                onConfirm={() => onSubmit("terminate")}
-              />
-            </div>
-          )}
-        </section>
 
-        <section
-          aria-labelledby="home-title"
-          className="flex flex-col gap-4 rounded-md border p-4"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h3 id="home-title" className="flex items-center gap-2 font-medium">
-              <FolderSync
-                aria-hidden="true"
-                className="size-4 text-muted-foreground"
-              />
-              Home
-            </h3>
-            <ConvergenceStatus status={home.status} previous={showPrevious} />
-          </div>
-          <div className="rounded-md bg-muted/30 p-3">
-            <TargetFact name="Actual home">
-              {home.actual ? label(home.actual.state) : "not received"}
-            </TargetFact>
-          </div>
-          <div className="grid grid-cols-2 gap-4">
-            <TargetFact name="Reset epoch">
-              {home.target_reset_epoch ?? "none"}
-            </TargetFact>
-            <TargetFact name="Completed reset epoch">
-              {home.actual?.completed_reset_epoch ?? "none"}
-            </TargetFact>
-          </div>
-          {home.actual?.state === "recovery_required" && (
-            <p className="rounded-md bg-destructive/5 p-3 text-sm text-destructive">
-              The device requires Home recovery.
-            </p>
+      <TargetPanel
+        icon={<Monitor aria-hidden="true" />}
+        title="Session control"
+        badge={<ConvergenceBadge status={session.status} />}
+      >
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border">
+          <TargetFact name="Target foreground" emphasis>
+            {session.target?.foreground_target ?? "not initialized"}
+          </TargetFact>
+          <TargetFact name="Actual foreground" emphasis>
+            {session.actual?.foreground ?? "not received"}
+          </TargetFact>
+          <TargetFact name="Waiting display ready">
+            {session.actual
+              ? String(session.actual.waiting_ready)
+              : "not received"}
+          </TargetFact>
+          <TargetFact name="Contest desktop ready">
+            {session.actual
+              ? String(session.actual.contest_ready)
+              : "not received"}
+          </TargetFact>
+          <TargetFact name="Actual session">
+            {session.actual
+              ? label(session.actual.session_state)
+              : "not received"}
+          </TargetFact>
+          <TargetFact name="Terminate epoch (target / completed)">
+            {`${session.target?.terminate_epoch ?? "none"} / ${session.actual?.completed_terminate_epoch ?? "none"}`}
+          </TargetFact>
+        </div>
+        {session.target?.foreground_target === "contest" &&
+          device.convergence.binding.target?.state === "unbound" && (
+            <Alert variant="warning">
+              <AlertTitle>
+                Waiting for binding before showing the contest desktop.
+              </AlertTitle>
+            </Alert>
           )}
-          {isAdmin && (
-            <div className="mt-auto border-t pt-4">
-              <TargetAction
-                label="Reset home"
-                title="Reset the contest Home?"
-                description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
-                disabled={disabled}
-                onConfirm={() => onSubmit("reset")}
-              />
-            </div>
-          )}
-        </section>
-      </div>
+        {session.actual?.session_state === "ambiguous" && (
+          <Alert variant="destructive">
+            <AlertTitle>Cannot identify a single session.</AlertTitle>
+          </Alert>
+        )}
+        {session.actual?.session_state === "error" && (
+          <Alert variant="destructive">
+            <AlertTitle>The device reported a session error.</AlertTitle>
+          </Alert>
+        )}
+        {isAdmin && (
+          <div className="flex flex-wrap gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => onSubmit("waiting")}
+            >
+              <Monitor aria-hidden="true" />
+              Show waiting screen
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => onSubmit("contest")}
+            >
+              <MonitorPlay aria-hidden="true" />
+              Show contest desktop
+            </Button>
+            <Button
+              type="button"
+              variant="destructive-outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => setConfirm("terminate")}
+            >
+              <RotateCcw aria-hidden="true" />
+              Terminate
+            </Button>
+          </div>
+        )}
+      </TargetPanel>
+
+      <TargetPanel
+        icon={<FolderSync aria-hidden="true" />}
+        title="Home"
+        badge={<ConvergenceBadge status={home.status} />}
+      >
+        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-border">
+          <TargetFact name="Actual home" emphasis>
+            {home.actual ? label(home.actual.state) : "not received"}
+          </TargetFact>
+          <TargetFact name="Reset epoch (target / completed)">
+            {`${home.target_reset_epoch ?? "none"} / ${home.actual?.completed_reset_epoch ?? "none"}`}
+          </TargetFact>
+        </div>
+        {home.actual?.state === "recovery_required" && (
+          <Alert variant="destructive">
+            <AlertTitle>The device requires Home recovery.</AlertTitle>
+          </Alert>
+        )}
+        {isAdmin && (
+          <div>
+            <Button
+              type="button"
+              variant="destructive-outline"
+              size="sm"
+              disabled={disabled}
+              onClick={() => setConfirm("reset")}
+            >
+              <FolderSync aria-hidden="true" />
+              Reset home
+            </Button>
+          </div>
+        )}
+      </TargetPanel>
+
+      <ConfirmDialog
+        open={confirm === "terminate"}
+        onOpenChange={(open) => !open && setConfirm(null)}
+        icon={<RotateCcw aria-hidden="true" />}
+        title="Terminate the contest session?"
+        description="End and restart this device's contest session. Home files are preserved. Check its reported state to confirm completion."
+        confirmLabel="Terminate"
+        disabled={disabled}
+        onConfirm={() => onSubmit("terminate")}
+      />
+      <ConfirmDialog
+        open={confirm === "reset"}
+        onOpenChange={(open) => !open && setConfirm(null)}
+        icon={<FolderSync aria-hidden="true" />}
+        title="Reset the contest Home?"
+        description="Delete the contest user's Home data and restore the default Home. The contest session will restart. Check its reported state to confirm completion."
+        confirmLabel="Reset home"
+        disabled={disabled}
+        onConfirm={() => onSubmit("reset")}
+      />
     </div>
+  );
+}
+
+function TargetPanel({
+  icon,
+  title,
+  badge,
+  children,
+}: {
+  icon: ReactNode;
+  title: string;
+  badge: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} className="space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="flex items-center gap-2 text-sm font-semibold [&_svg]:size-4 [&_svg]:text-muted-foreground">
+          {icon}
+          {title}
+        </p>
+        {badge}
+      </div>
+      {children}
+    </section>
   );
 }
 
 function TargetFact({
   name,
   children,
+  emphasis = false,
 }: {
   name: string;
   children: string | number;
+  emphasis?: boolean;
 }) {
   return (
-    <p className="space-y-1">
-      <span className="block text-xs text-muted-foreground">{name}: </span>
-      <span className="block text-sm font-medium tabular-nums">{children}</span>
-    </p>
-  );
-}
-
-function ConvergenceStatus({
-  status,
-  previous,
-}: {
-  status: Convergence["home"]["status"];
-  previous: boolean;
-}) {
-  return (
-    <Badge variant={status === "failed" ? "destructive" : "outline"}>
-      {previous ? "Last known convergence" : "Convergence"}: {label(status)}
-    </Badge>
+    <div className="bg-card px-3 py-2.5">
+      <p className="text-xs text-muted-foreground">{name}</p>
+      <p
+        className={cn(
+          "mt-0.5 font-mono tabular-nums",
+          emphasis ? "text-sm font-semibold" : "text-xs",
+        )}
+      >
+        {children}
+      </p>
+    </div>
   );
 }
 
@@ -685,49 +817,4 @@ function label(value: string) {
 
 function formatTimestamp(value: number | null) {
   return value === null ? "not received" : new Date(value).toLocaleString();
-}
-
-function TargetAction({
-  label,
-  title,
-  description,
-  disabled,
-  onConfirm,
-}: {
-  label: string;
-  title: string;
-  description: string;
-  disabled: boolean;
-  onConfirm: () => void;
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button
-          type="button"
-          variant="destructive"
-          size="sm"
-          disabled={disabled}
-        >
-          {label}
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className="bg-destructive text-white hover:bg-destructive/90"
-            disabled={disabled}
-            onClick={onConfirm}
-          >
-            {label}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
-  );
 }

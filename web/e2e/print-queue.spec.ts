@@ -1,5 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { PrintQueueEntry } from "../src/api/generated/types";
+import {
+  closeDetails,
+  closeNavigation,
+  openNavigation,
+  refreshButton,
+  refreshLabel,
+} from "./fixtures/ui";
 
 const entries: PrintQueueEntry[] = [
   {
@@ -32,7 +39,6 @@ const unavailable = {
   status: 503,
   code: "UNAVAILABLE",
 };
-
 async function mockQueue(
   page: Page,
   reply: () => { status?: number; json: unknown },
@@ -59,8 +65,17 @@ async function mockQueue(
     return route.fulfill({ status: 404, json: {} });
   });
 }
+async function expectSummary(page: Page, documents: number, pages: number) {
+  await expect(
+    page.getByRole("region", { name: "Queue summary", exact: true }),
+  ).toContainText(
+    new RegExp(
+      `${documents}\\s*admitted document${documents === 1 ? "" : "s"}\\s*·\\s*${pages}\\s*page${pages === 1 ? "" : "s"}`,
+    ),
+  );
+}
 
-for (const role of ["admin", "viewer"]) {
+for (const role of ["admin", "viewer"])
   for (const width of [1440, 390]) {
     test(`${role} can read the admitted list in admission order at ${width}px`, async ({
       page,
@@ -71,37 +86,73 @@ for (const role of ["admin", "viewer"]) {
       await expect(
         page.getByRole("heading", { name: "Print queue", exact: true }),
       ).toBeVisible();
+      const navigation = await openNavigation(page);
       await expect(
-        page.getByRole("link", { name: "Print queue", exact: true }),
+        navigation.getByRole("link", { name: "Print queue", exact: true }),
       ).toHaveAttribute("aria-current", "page");
-      await expect(
-        page.getByText("2 admitted tasks · 5 pages", { exact: true }),
-      ).toBeVisible();
-      const table = page.getByRole("table");
+      if (role === "viewer")
+        for (const name of ["Printers", "Print sources"])
+          await expect(
+            navigation.getByRole("link", { name, exact: true }),
+          ).toHaveCount(0);
+      await closeNavigation(page);
+      await expectSummary(page, 2, 5);
+      const table = page.getByRole("table", {
+        name: "Admitted documents",
+        exact: true,
+      });
       await expect(table.locator("tbody tr")).toHaveCount(2);
       await expect(table.locator("tbody tr td:first-child")).toHaveText([
         "2",
         "5",
       ]);
-      await expect(
-        table.getByText("shared-request", { exact: true }),
-      ).toHaveCount(2);
       for (const entry of entries) {
         const row = table.getByRole("row").filter({ hasText: entry.account });
-        await expect(row).toContainText(entry.team_name);
-        await expect(row).toContainText(entry.source_name);
-        await expect(row).toContainText(entry.source_id);
-        await expect(row).toContainText(entry.original_filename);
-        await expect(row).toContainText(entry.seat_label ?? "Unassigned");
+        for (const text of [
+          entry.team_name,
+          entry.source_name,
+          entry.original_filename,
+          entry.seat_label ?? "—",
+        ])
+          await expect(row).toContainText(text);
+        expect((await row.boundingBox())!.height).toBeLessThan(500);
+        await row.click();
+        const details = page.getByRole("dialog");
+        for (const text of [
+          entry.team_name,
+          entry.account,
+          entry.source_id,
+          entry.source_name,
+          entry.request_id,
+          entry.original_filename,
+        ])
+          await expect(details).toContainText(text);
+        await expect(details).toContainText(entry.seat_label ?? "unassigned");
+        await expect(details).toContainText(
+          `${entry.bytes.toLocaleString()} bytes`,
+        );
+        await expect(details.locator("script")).toHaveCount(0);
+        await expect(
+          details.getByRole("button", { name: /cancel|reprint|reset|upload/i }),
+        ).toHaveCount(0);
+        await closeDetails(page);
       }
-      expect(
-        (await table.locator("tbody tr").last().boundingBox())!.height,
-      ).toBeLessThan(500);
       await expect(table.locator("script")).toHaveCount(0);
-      await expect(table.getByRole("button")).toHaveCount(0);
+      await page
+        .getByRole("button", { name: "Reading this queue", exact: true })
+        .click();
       await expect(
-        page.getByText("Queued does not mean printed.", { exact: false }),
+        page.getByText("Ready to claim does not mean printed.", {
+          exact: true,
+        }),
       ).toBeVisible();
+      await expect(
+        page.getByText(/admission number.*not the live retry order/),
+      ).toBeVisible();
+      await expect(
+        page.getByText(/does not prove the paper reached the team/),
+      ).toBeVisible();
+      await page.keyboard.press("Escape");
       expect(
         await page.evaluate(() => document.documentElement.scrollWidth),
       ).toBeLessThanOrEqual(width);
@@ -111,7 +162,6 @@ for (const role of ["admin", "viewer"]) {
       });
     });
   }
-}
 
 test("filtering preserves admission order and global totals, including no matches and an empty queue", async ({
   page,
@@ -119,7 +169,10 @@ test("filtering preserves admission order and global totals, including no matche
   let data = entries;
   await mockQueue(page, () => ({ json: data }));
   await page.goto("/print");
-  const filter = page.getByRole("textbox", { name: "Filter print queue" });
+  const filter = page.getByRole("searchbox", {
+    name: "Filter print queue",
+    exact: true,
+  });
   await expect(page.locator("tbody tr")).toHaveCount(2);
   for (const value of [
     "TEAM-2",
@@ -131,12 +184,8 @@ test("filtering preserves admission order and global totals, including no matche
     await filter.fill(value);
     await expect(page.locator("tbody tr")).toHaveCount(1);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["5"]);
-    await expect(
-      page.getByText("2 admitted tasks · 5 pages", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("1 of 2 admitted tasks match", { exact: true }),
-    ).toBeVisible();
+    await expectSummary(page, 2, 5);
+    await expect(page.getByRole("status")).toHaveText("1 of 2 match");
   }
   await filter.fill("A-01");
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["2"]);
@@ -144,24 +193,18 @@ test("filtering preserves admission order and global totals, including no matche
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["2", "5"]);
   await filter.fill("no match");
   await expect(
-    page.getByText("No admitted documents match the filter.", { exact: true }),
+    page.getByText("Nothing matches", { exact: true }),
   ).toBeVisible();
   await expect(filter).toBeVisible();
-  await page
-    .getByRole("button", { name: "Refresh queue", exact: true })
-    .click();
+  await refreshButton(page, "print queue").click();
   await expect(filter).toHaveValue("no match");
   await filter.clear();
   await expect(page.locator("tbody tr")).toHaveCount(2);
   data = [];
-  await page
-    .getByRole("button", { name: "Refresh queue", exact: true })
-    .click();
+  await refreshButton(page, "print queue").click();
+  await expectSummary(page, 0, 0);
   await expect(
-    page.getByText("0 admitted tasks · 0 pages", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("No admitted documents.", { exact: true }),
+    page.getByText("The queue is empty", { exact: true }),
   ).toBeVisible();
   await expect(filter).toBeVisible();
 });
@@ -171,21 +214,27 @@ test("polling preserves last received rows and filters on failure, then recovers
 }) => {
   await page.clock.install({ time: new Date("2030-01-01T00:00:00Z") });
   await page.clock.pauseAt(new Date("2030-01-01T00:01:00Z"));
-  let failed = false;
-  let data = entries;
-  let reads = 0;
+  let failed = false,
+    data = entries,
+    reads = 0;
   await mockQueue(page, () => {
-    reads += 1;
+    reads++;
     return failed ? { status: 503, json: unavailable } : { json: data };
   });
   await page.goto("/print");
-  const timer = page.getByRole("timer", { name: "Next print queue refresh" });
+  const timer = page.getByRole("timer", {
+    name: "Next print queue refresh",
+    exact: true,
+  });
   const flush = async () => {
     await page.clock.runFor(20);
-    return timer.textContent();
+    return refreshLabel(timer).textContent();
   };
   await expect.poll(flush).toMatch(/^Refresh in 10s$/);
-  const filter = page.getByRole("textbox", { name: "Filter print queue" });
+  const filter = page.getByRole("searchbox", {
+    name: "Filter print queue",
+    exact: true,
+  });
   await filter.fill("team-2");
   await expect
     .poll(async () => {
@@ -201,9 +250,7 @@ test("polling preserves last received rows and filters on failure, then recovers
   await expect(page.getByRole("alert")).toContainText(
     "Showing the last received queue",
   );
-  await expect(
-    page.getByText("2 admitted tasks · 5 pages", { exact: true }),
-  ).toBeVisible();
+  await expectSummary(page, 2, 5);
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["5"]);
   await expect(filter).toHaveValue("team-2");
   expect(
@@ -216,9 +263,7 @@ test("polling preserves last received rows and filters on failure, then recovers
   await page.clock.runFor(10_000);
   await expect.poll(flush).toMatch(/^Refresh in \d+s$/);
   await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(
-    page.getByText("1 admitted task · 4 pages", { exact: true }),
-  ).toBeVisible();
+  await expectSummary(page, 1, 4);
   await expect(filter).toHaveValue("team-2");
   expect(reads).toBe(3);
 });
@@ -235,18 +280,17 @@ test("initial failure can be retried without reporting an empty queue as success
     page.getByText(unavailable.title, { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("No admitted documents.", { exact: true }),
+    page.getByText("The queue is empty", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("0 admitted tasks · 0 pages", { exact: true }),
+    page.getByRole("region", { name: "Queue summary", exact: true }),
   ).toHaveCount(0);
   failed = false;
-  await page
-    .getByRole("button", { name: "Refresh queue", exact: true })
-    .click();
+  await refreshButton(page, "print queue").click();
   await expect(
-    page.getByText("No admitted documents.", { exact: true }),
+    page.getByText("The queue is empty", { exact: true }),
   ).toBeVisible();
+  await expectSummary(page, 0, 0);
 });
 
 test("session expiry removes the queue and returns to login", async ({
@@ -267,9 +311,7 @@ test("session expiry removes the queue and returns to login", async ({
   await page.route("**/api/v2/session", (route) =>
     route.fulfill({ status: 401, json: unauthorized }),
   );
-  await page
-    .getByRole("button", { name: "Refresh queue", exact: true })
-    .click();
+  await refreshButton(page, "print queue").click();
   await expect(page).toHaveURL(/\/login$/);
   await expect(
     page.getByRole("textbox", { name: "Login name", exact: true }),

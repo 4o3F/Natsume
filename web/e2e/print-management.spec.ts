@@ -90,28 +90,42 @@ test("printer registration, one-time code, and active-binding conflict", async (
   const calls = await management(page);
   await page.goto("/print/printers");
   await expect(
-    page.getByRole("heading", { name: "Printers and pairing" }),
+    page.getByRole("heading", { name: "Printers", exact: true }),
   ).toBeVisible();
-  const bound = page.getByRole("row").filter({ hasText: "Adobe PDF" });
-  await expect(bound).toContainText("Binding confirmed");
+  const bound = page.getByRole("article", { name: "Adobe PDF", exact: true });
+  await expect(bound).toContainText("Paired");
   await expect(
     bound.getByRole("button", { name: "Issue pairing code" }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
   await bound.getByRole("button", { name: "Clear binding" }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
     "Task history and attempt counts are not reset",
   );
-  await page.getByRole("button", { name: "Confirm clear binding" }).click();
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Clear binding", exact: true })
+    .click();
   await expect(
     page.getByRole("alert").filter({ hasText: "Print state changed" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Keep binding" }).click();
-  await page.getByLabel("Printer name", { exact: true }).fill("Second printer");
-  await page.getByRole("button", { name: "Register printer" }).click();
-  const added = page.getByRole("row").filter({ hasText: "Second printer" });
+  await page
+    .getByRole("button", { name: "Register printer", exact: true })
+    .click();
+  const registration = page.getByRole("dialog");
+  await registration
+    .getByLabel("Printer name", { exact: true })
+    .fill("Second printer");
+  await registration
+    .getByRole("button", { name: "Register printer", exact: true })
+    .click();
+  const added = page.getByRole("article", {
+    name: "Second printer",
+    exact: true,
+  });
   await added.getByRole("button", { name: "Issue pairing code" }).click();
   await expect(page.getByText("ABCD-2345", { exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Dismiss secret" }).click();
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await expect(page.getByText("ABCD-2345", { exact: true })).toHaveCount(0);
   expect(
     calls.filter((call) => call === "POST /api/v2/print/printers"),
@@ -123,8 +137,14 @@ test("source secrets are ephemeral and revocation requires confirmation", async 
 }) => {
   const calls = await management(page);
   await page.goto("/print/sources");
-  await page.getByLabel("Source name", { exact: true }).fill("New judge");
-  await page.getByRole("button", { name: "Create source" }).click();
+  await page
+    .getByRole("button", { name: "Create source", exact: true })
+    .click();
+  const creation = page.getByRole("dialog");
+  await creation.getByLabel("Source name", { exact: true }).fill("New judge");
+  await creation
+    .getByRole("button", { name: "Create source", exact: true })
+    .click();
   await expect(
     page.getByText("test-only-source-secret", { exact: true }),
   ).toBeVisible();
@@ -139,29 +159,33 @@ test("source secrets are ephemeral and revocation requires confirmation", async 
       configurable: true,
     }),
   );
-  await page.getByRole("button", { name: "Copy secret" }).click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "Copy unavailable" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Dismiss secret" }).click();
+  await page.getByRole("button", { name: "Copy token", exact: true }).click();
+  const notification = page
+    .locator("[data-sonner-toast]")
+    .filter({ hasText: "Copy failed" });
+  await expect(notification).toContainText(
+    "Select the value and copy it manually.",
+  );
+  await page.getByRole("button", { name: "Dismiss", exact: true }).click();
   await page.reload();
   await expect(page.getByText("New judge", { exact: true })).toBeVisible();
   await expect(
     page.getByText("test-only-source-secret", { exact: true }),
   ).toHaveCount(0);
-  await page
-    .getByRole("row")
-    .filter({ hasText: "DOMjudge" })
-    .getByRole("button", { name: "Revoke source" })
-    .click();
+  const source = page
+    .getByRole("region", { name: /^(Active|Revoked) sources$/ })
+    .getByRole("listitem")
+    .filter({ has: page.getByText("DOMjudge", { exact: true }) });
+  await source.getByRole("button", { name: "Revoke", exact: true }).click();
   await expect(page.getByRole("alertdialog")).toContainText(
-    "does not cancel printing",
+    "printing isn’t cancelled",
   );
   expect(calls.filter((call) => call.startsWith("DELETE"))).toHaveLength(0);
-  await page.getByRole("button", { name: "Confirm revoke source" }).click();
-  await expect(
-    page.getByRole("row").filter({ hasText: "DOMjudge" }),
-  ).toContainText("Revoked");
+  await page
+    .getByRole("alertdialog")
+    .getByRole("button", { name: "Revoke source", exact: true })
+    .click();
+  await expect(source).toContainText("Revoked");
 });
 
 for (const path of ["printers", "sources"])
@@ -228,20 +252,23 @@ test("execution states never turn missing data into queued and retain stale resu
   });
   await page.goto("/print");
   await expect(
-    page.getByText("0 ready to claim", { exact: false }),
+    page
+      .getByRole("button", { name: /^Ready/ })
+      .getByText("0", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByRole("row").filter({ hasText: "team1" }),
-  ).toContainText("Spooler reported printed");
+  ).toContainText("Printed");
   await expect(
     page.getByRole("row").filter({ hasText: "team3" }),
-  ).toContainText("State unavailable");
-  await page
-    .getByLabel("Execution state", { exact: true })
-    .selectOption("waiting");
+  ).toContainText("Unavailable");
+  await page.getByRole("button", { name: /^Retry waiting/ }).click();
   await expect(page.locator("tbody tr")).toHaveCount(1);
   unavailable = true;
-  await page.getByRole("button", { name: "Refresh queue" }).click();
+  await page
+    .getByRole("timer", { name: "Next print queue refresh", exact: true })
+    .getByRole("button")
+    .click();
   await expect(page.getByRole("alert")).toContainText(
     "Execution refresh failed",
   );

@@ -246,9 +246,7 @@ export function PreparationPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Preparation Center
-        </h1>
+        <h1 className="text-headline font-light">Preparation Center</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Stage and review a complete contest configuration before committing
           it.

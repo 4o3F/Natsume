@@ -1,8 +1,15 @@
-import { useId, useState } from "react";
-import { Copy, Network, TriangleAlert } from "lucide-react";
+import { useState } from "react";
+import { Check, Copy, Network, TriangleAlert } from "lucide-react";
+
+import { usePageToast } from "@/components/use-page-toast";
 
 import type { DeviceResponse_Serialize as DeviceResponse } from "@/api/generated/types";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { hasIpMismatch } from "./device-network";
 
 type Device = DeviceResponse;
@@ -14,128 +21,117 @@ export function DeviceIpWarning({
   device: Device;
   onView: () => void;
 }) {
-  const tooltipId = useId();
   if (!hasIpMismatch(device.network)) return null;
   return (
-    <span className="group relative inline-flex">
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon"
-        className="size-7 text-amber-700 hover:bg-amber-100 hover:text-amber-800"
-        aria-label={`IP mismatch: view details for ${device.machine_hardware_id}`}
-        aria-describedby={tooltipId}
-        onClick={onView}
-      >
-        <TriangleAlert aria-hidden="true" className="size-4" />
-      </Button>
-      <span
-        id={tooltipId}
-        role="tooltip"
-        className="pointer-events-none absolute top-full right-0 z-20 mt-1 hidden w-48 rounded-md border bg-popover px-3 py-2 text-xs whitespace-normal text-popover-foreground shadow-md group-hover:block group-focus-within:block"
-      >
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          className="text-warning-strong hover:bg-warning-subtle hover:text-warning-strong"
+          aria-label={`IP mismatch: view details for ${device.machine_hardware_id}`}
+          onClick={onView}
+        >
+          <TriangleAlert aria-hidden="true" />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>
         Client and Server IP differ. View details.
-      </span>
-    </span>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
 export function DeviceNetworkDetails({ device }: { device: Device }) {
-  const [message, setMessage] = useState("");
-  const [copyFailed, setCopyFailed] = useState(false);
+  const toast = usePageToast();
+  const [copied, setCopied] = useState<string | null>(null);
   const { network } = device;
   async function copy(label: string, address: string) {
     try {
       await navigator.clipboard.writeText(address);
-      setCopyFailed(false);
-      setMessage(`${label} copied.`);
+      setCopied(label);
+      toast.success(`${label} copied`, { description: address });
+      window.setTimeout(() => setCopied(null), 1500);
     } catch {
-      setCopyFailed(true);
-      setMessage(
-        "Could not copy the address. Select and copy the IP manually.",
-      );
+      toast.error("Could not copy the address", {
+        description: "Select and copy the IP manually.",
+      });
     }
   }
   return (
-    <section
-      aria-label="Network addresses"
-      className="space-y-3 rounded-md border p-4"
-    >
+    <section aria-label="Network addresses" className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 className="flex items-center gap-2 font-medium">
+        <p className="flex items-center gap-2 text-sm font-semibold">
           <Network
             aria-hidden="true"
             className="size-4 text-muted-foreground"
           />
           Network addresses
-        </h3>
+        </p>
         {hasIpMismatch(network) && (
-          <span className="flex items-center gap-1.5 text-sm text-amber-700">
-            <TriangleAlert aria-hidden="true" className="size-4" />
+          <span className="flex items-center gap-1.5 text-xs font-medium text-warning-strong">
+            <TriangleAlert aria-hidden="true" className="size-3.5" />
             Client and Server IP differ
           </span>
         )}
       </div>
       {network ? (
         <>
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-2 sm:grid-cols-2">
             {(
               [
-                ["Server IP", network.server_observed_ip],
-                ["Client IP", network.client_ip],
+                ["Server IP", "Server-observed", network.server_observed_ip],
+                ["Client IP", "Client-reported", network.client_ip],
               ] as const
-            ).map(([label, address]) => (
+            ).map(([label, caption, address]) => (
               <div
                 key={label}
-                className="min-w-0 rounded-md bg-muted/30 px-3 py-2"
+                className="flex min-w-0 items-center justify-between gap-2 rounded-lg border bg-card px-3 py-2"
               >
-                <p className="text-xs text-muted-foreground">
-                  {label === "Server IP"
-                    ? "Server-observed IP"
-                    : "Client-reported IP"}
-                </p>
-                <div className="mt-1 flex items-center justify-between gap-2">
-                  <code className="min-w-0 text-sm break-all">
+                <div className="min-w-0">
+                  <p className="text-xs text-muted-foreground">{caption}</p>
+                  <code
+                    className={
+                      address
+                        ? "font-mono text-sm break-all"
+                        : "text-sm text-muted-foreground"
+                    }
+                  >
                     {address ?? "Not reported"}
                   </code>
-                  {address && (
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      aria-label={`Copy ${label}`}
-                      onClick={() => void copy(label, address)}
-                    >
-                      <Copy aria-hidden="true" className="size-3.5" />
-                    </Button>
-                  )}
                 </div>
+                {address && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Copy ${label}`}
+                    onClick={() => void copy(label, address)}
+                  >
+                    {copied === label ? (
+                      <Check
+                        aria-hidden="true"
+                        className="text-success-strong"
+                      />
+                    ) : (
+                      <Copy aria-hidden="true" />
+                    )}
+                  </Button>
+                )}
               </div>
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            Recorded: {new Date(network.observed_at_unix_ms).toLocaleString()}
+            Recorded {new Date(network.observed_at_unix_ms).toLocaleString()}
             {device.convergence.connection_state === "offline"
               ? " · Device offline; showing last recorded addresses."
               : " · Addresses from the last recorded connection."}
           </p>
         </>
       ) : (
-        <p className="text-sm text-muted-foreground">
+        <p className="rounded-lg border border-dashed px-3 py-4 text-center text-sm text-muted-foreground">
           No IP addresses recorded yet.
-        </p>
-      )}
-      {message && (
-        <p
-          role={copyFailed ? "alert" : "status"}
-          className={
-            copyFailed
-              ? "text-sm text-destructive"
-              : "text-sm text-muted-foreground"
-          }
-        >
-          {message}
         </p>
       )}
     </section>

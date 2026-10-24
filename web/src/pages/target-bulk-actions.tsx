@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 import {
   FolderSync,
   Monitor,
@@ -41,49 +41,77 @@ export function BulkTargetActions({
     null,
   );
   const enabled = devices.filter((device) => device.state === "enabled");
+  const offline = enabled.filter(
+    (device) => device.convergence.connection_state === "offline",
+  ).length;
   return (
     <Card
       role="region"
       aria-label="All device actions"
       className="gap-0 overflow-hidden py-0"
     >
-      <div className="grid lg:grid-cols-3">
-        <div className="space-y-4 p-5 lg:col-span-2">
-          <div className="space-y-1">
-            <h2 className="font-semibold">
-              All enabled devices ({enabled.length})
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              Session and Home targets include offline devices and apply after
-              reconnection. List filters do not change this scope.
-            </p>
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_20rem]">
+        <div className="space-y-4 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="space-y-1">
+              <p className="font-semibold">Fleet actions</p>
+              <p className="max-w-xl text-sm text-muted-foreground">
+                Apply to every enabled device, including offline ones once they
+                reconnect. List filters and selection do not change this scope.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Badge variant="secondary">{enabled.length} enabled</Badge>
+              {offline > 0 && (
+                <Badge variant="warning">{offline} offline</Badge>
+              )}
+            </div>
           </div>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:flex xl:flex-wrap">
-            {(
-              [
-                ["waiting", Monitor],
-                ["contest", MonitorPlay],
-                ["terminate", RotateCcw],
-                ["reset", FolderSync],
-              ] as const
-            ).map(([operation, Icon]) => (
-              <Button
-                key={operation}
-                type="button"
-                size="sm"
-                variant="outline"
-                className={
-                  operation === "reset" || operation === "terminate"
-                    ? "text-destructive hover:bg-destructive/5 hover:text-destructive"
-                    : undefined
-                }
-                disabled={disabled || enabled.length === 0}
-                onClick={() => setConfirmation(operation)}
-              >
-                <Icon aria-hidden="true" />
-                {targetOperations[operation]} (all)
-              </Button>
-            ))}
+          <div className="grid gap-3 sm:grid-cols-2">
+            <ActionGroup label="Foreground">
+              {(
+                [
+                  ["waiting", Monitor],
+                  ["contest", MonitorPlay],
+                ] as const
+              ).map(([operation, Icon]) => (
+                <Button
+                  key={operation}
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="flex-1"
+                  disabled={disabled || enabled.length === 0}
+                  onClick={() => setConfirmation(operation)}
+                >
+                  <Icon aria-hidden="true" />
+                  {operation === "waiting"
+                    ? "Waiting screen"
+                    : "Contest desktop"}
+                </Button>
+              ))}
+            </ActionGroup>
+            <ActionGroup label="Restart">
+              {(
+                [
+                  ["terminate", RotateCcw],
+                  ["reset", FolderSync],
+                ] as const
+              ).map(([operation, Icon]) => (
+                <Button
+                  key={operation}
+                  type="button"
+                  size="sm"
+                  variant="destructive-outline"
+                  className="flex-1"
+                  disabled={disabled || enabled.length === 0}
+                  onClick={() => setConfirmation(operation)}
+                >
+                  <Icon aria-hidden="true" />
+                  {targetOperations[operation]}
+                </Button>
+              ))}
+            </ActionGroup>
           </div>
         </div>
         <PowerOffAction
@@ -124,10 +152,10 @@ export function BulkTargetActions({
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={disabled}
-              className={
+              variant={
                 confirmation === "reset" || confirmation === "terminate"
-                  ? "bg-destructive text-white hover:bg-destructive/90"
-                  : undefined
+                  ? "destructive"
+                  : "default"
               }
               onClick={() => {
                 if (confirmation) onSubmit(confirmation);
@@ -160,10 +188,13 @@ function PowerOffAction({
   const phrase = `POWER OFF ${online.length}`;
   const deviceLabel = online.length === 1 ? "device" : "devices";
   return (
-    <div className="flex flex-col items-start gap-3 border-t bg-muted/30 p-5 lg:border-t-0 lg:border-l">
+    <div className="flex flex-col items-start gap-3 border-t bg-muted/40 p-5 lg:border-t-0 lg:border-l">
       <div className="space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="font-semibold">Power control</h3>
+          <p className="flex items-center gap-2 font-semibold">
+            <Power aria-hidden="true" className="size-4 text-destructive" />
+            Power control
+          </p>
           <Badge variant="outline">Online only</Badge>
         </div>
         <p className="text-sm text-muted-foreground">
@@ -173,8 +204,8 @@ function PowerOffAction({
       <Button
         type="button"
         size="sm"
-        variant="outline"
-        className="text-destructive hover:bg-destructive/5 hover:text-destructive"
+        variant="destructive"
+        className="mt-auto w-full"
         disabled={disabled || online.length === 0}
         onClick={() => setOpen(true)}
       >
@@ -196,7 +227,7 @@ function PowerOffAction({
               enabled devices are included.
             </AlertDialogDescription>
           </AlertDialogHeader>
-          <div className="space-y-3 rounded-md border bg-muted/30 p-4 text-sm">
+          <div className="space-y-3 rounded-lg border bg-muted/40 p-4 text-sm">
             <dl className="space-y-2">
               <div className="flex items-center justify-between gap-4">
                 <dt className="text-muted-foreground">Estimated scope</dt>
@@ -222,7 +253,7 @@ function PowerOffAction({
               className="text-sm text-muted-foreground"
             >
               Type{" "}
-              <code className="rounded bg-muted px-1.5 py-0.5 font-medium text-foreground">
+              <code className="bg-muted px-1.5 py-0.5 font-medium text-foreground">
                 {phrase}
               </code>{" "}
               to confirm.
@@ -242,7 +273,7 @@ function PowerOffAction({
               disabled={
                 confirmation !== phrase || disabled || online.length === 0
               }
-              className="bg-destructive text-white hover:bg-destructive/90"
+              variant="destructive"
               onClick={() => {
                 onSubmit();
                 setConfirmation("");
@@ -254,6 +285,21 @@ function PowerOffAction({
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+function ActionGroup({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <div role="group" aria-label={label} className="space-y-1.5">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <div className="flex flex-wrap gap-2">{children}</div>
     </div>
   );
 }

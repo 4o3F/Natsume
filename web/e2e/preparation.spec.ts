@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { expect, test, type Page, type Route } from "@playwright/test";
+import { closeNavigation, openNavigation } from "./fixtures/ui";
 
 const operator = {
   operator_id: "01912345-6789-7abc-8def-0123456789ab",
@@ -202,13 +203,15 @@ for (const width of [1440, 390]) {
       return route.fallback();
     });
     await page.goto("/preparation");
+    const navigation = await openNavigation(page);
+    await expect(
+      navigation.getByRole("link", { name: "Preparation", exact: true }),
+    ).toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
     const zone = page.getByRole("group", { name: "XLSX upload", exact: true });
     await expect(
       zone.getByText("Drag & drop your XLSX file here", { exact: true }),
     ).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: "Preparation", exact: true }),
-    ).toHaveAttribute("aria-current", "page");
     await page.screenshot({
       path: testInfo.outputPath(`preparation-upload-${width}.png`),
       fullPage: true,

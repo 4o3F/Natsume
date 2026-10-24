@@ -55,7 +55,7 @@ export function DeviceEmergencyPanel() {
     <DropdownMenu open={expanded} onOpenChange={setExpanded} modal={false}>
       <DropdownMenuTrigger asChild>
         <Button type="button" variant="outline" size="sm">
-          <LifeBuoy aria-hidden="true" className="text-amber-700" />
+          <LifeBuoy aria-hidden="true" className="text-warning-strong" />
           Emergency
           <ChevronDown aria-hidden="true" />
         </Button>
@@ -72,7 +72,7 @@ export function DeviceEmergencyPanel() {
           aria-label="Emergency IP export"
           className="space-y-3"
         >
-          <DropdownMenuLabel className="p-0 font-semibold">
+          <DropdownMenuLabel className="p-0 text-sm font-semibold text-foreground">
             Emergency IP export
           </DropdownMenuLabel>
           <p className="text-sm text-muted-foreground">
@@ -92,11 +92,26 @@ export function DeviceEmergencyPanel() {
             </p>
           )}
           {report && (
-            <p className="text-sm tabular-nums">
-              Unique IPs: {report.addresses.length} · Offline: {report.offline}{" "}
-              · IP mismatches: {report.mismatched} · Missing IPs:{" "}
-              {report.missing}
-            </p>
+            <dl className="grid grid-cols-4 gap-2 text-center">
+              {(
+                [
+                  ["Unique IPs", report.addresses.length],
+                  ["Offline", report.offline],
+                  ["Mismatch", report.mismatched],
+                  ["Missing", report.missing],
+                ] as const
+              ).map(([label, value]) => (
+                <div
+                  key={label}
+                  className="flex flex-col-reverse rounded-md bg-muted px-1 py-1.5"
+                >
+                  <dt className="text-xs text-muted-foreground">{label}</dt>
+                  <dd className="text-base font-semibold tabular-nums">
+                    {value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
           )}
           <DropdownMenuItem
             asChild
@@ -108,7 +123,7 @@ export function DeviceEmergencyPanel() {
           >
             <Button
               type="button"
-              variant="outline"
+              className="w-full"
               disabled={download.isPending}
             >
               <Download aria-hidden="true" />

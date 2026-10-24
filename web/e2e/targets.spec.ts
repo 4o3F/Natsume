@@ -1,4 +1,4 @@
-import { expect, test, type Route } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 import {
   operator,
@@ -12,18 +12,90 @@ import {
   confirmAll,
   targetFleet,
 } from "./fixtures/devices";
+import { closeDetails, deviceRow, targetFact } from "./fixtures/ui";
 
-for (const [name, action] of [
+const fleetActions = (page: Page) =>
+  page.getByRole("region", { name: "All device actions", exact: true });
+const receipt = (page: Page) =>
+  page.getByRole("region", { name: "Target submission", exact: true });
+const panel = (page: Page, name: "Session control" | "Home") =>
+  page.getByRole("dialog").getByRole("region", { name, exact: true });
+const epoch = (page: Page, name: "Terminate" | "Reset") =>
+  targetFact(page, `${name} epoch (target / completed)`);
+const reportNotice =
+  "States reflect the last received device report. A submitted target is complete only when the device reports convergence.";
+
+const refreshTimestamp = (page: Page) =>
+  page
+    .getByRole("paragraph")
+    .filter({ hasText: /^Last successful refresh:/ })
+    .locator("span")
+    .first();
+const reportExplanation = (page: Page) =>
+  page.getByRole("paragraph").filter({ hasText: reportNotice });
+
+async function targetStateGeometry(page: Page) {
+  const dimensions = await page
+    .locator('table[aria-label="Device targets"]')
+    .evaluate((table) => {
+      const result: Record<string, number> = {};
+      const headers = Array.from(
+        table.querySelectorAll<HTMLTableCellElement>("thead th"),
+      );
+      for (const [index, header] of headers.entries()) {
+        const bounds = header.getBoundingClientRect();
+        result[`column${index}Left`] = bounds.left;
+        result[`column${index}Width`] = bounds.width;
+      }
+      for (const name of ["Session", "Home"]) {
+        const header = headers.find(
+          (cell) => cell.textContent?.trim() === name,
+        );
+        const cell = table
+          .querySelector<HTMLTableRowElement>("tbody tr")
+          ?.cells.item(header?.cellIndex ?? -1);
+        const badge = cell?.querySelector('[data-slot="badge"]');
+        if (!badge) throw new Error(`Missing ${name} state badge`);
+        const bounds = badge.getBoundingClientRect();
+        result[`${name}BadgeLeft`] = bounds.left;
+        result[`${name}BadgeWidth`] = bounds.width;
+      }
+      return result;
+    });
+  if (await page.getByRole("dialog").isVisible()) {
+    for (const name of ["Session control", "Home"] as const) {
+      const badge = panel(page, name).locator('[data-slot="badge"]');
+      const bounds = (await badge.boundingBox())!;
+      dimensions[`${name}DetailBadgeLeft`] = bounds.x;
+      dimensions[`${name}DetailBadgeWidth`] = bounds.width;
+    }
+  }
+  return dimensions;
+}
+
+async function expectTargetStateGeometry(
+  page: Page,
+  before: Record<string, number>,
+) {
+  const current = await targetStateGeometry(page);
+  for (const key of Object.keys(before)) {
+    expect(Math.abs(current[key]! - before[key]!), key).toBeLessThanOrEqual(1);
+  }
+}
+
+for (const [name, label, action] of [
   [
     "Show waiting screen",
+    "Waiting screen",
     { kind: "set_foreground", foreground_target: "waiting" },
   ],
   [
     "Show contest desktop",
+    "Contest desktop",
     { kind: "set_foreground", foreground_target: "contest" },
   ],
-  ["Terminate", { kind: "terminate_session" }],
-  ["Reset home", { kind: "reset_home" }],
+  ["Terminate", "Terminate", { kind: "terminate_session" }],
+  ["Reset home", "Reset home", { kind: "reset_home" }],
 ] as const) {
   test(`bulk ${name} sends one server batch independent of the search filter`, async ({
     page,
@@ -37,32 +109,37 @@ for (const [name, action] of [
     await page.goto("/targets");
     await expect(page.locator("tbody tr")).toHaveCount(4);
     await expect(page.locator("tbody tr").nth(1)).toHaveClass(
-      /bg-destructive\/10/,
+      /bg-destructive-subtle/,
     );
-    await expect(page.locator("tbody tr").nth(3)).toHaveClass(/bg-muted\/60/);
-    await page.getByRole("searchbox", { name: "Search devices" }).fill("A-01");
-    await expect(page.locator("tbody tr")).toHaveCount(1);
+    await expect(page.locator("tbody tr").nth(3)).toHaveClass(
+      /text-muted-foreground/,
+    );
     await page
-      .getByRole("button", { name: `${name} (all)`, exact: true })
+      .getByRole("searchbox", { name: "Search devices", exact: true })
+      .fill("A-01");
+    await expect(page.locator("tbody tr")).toHaveCount(1);
+    await fleetActions(page)
+      .getByRole("button", { name: label, exact: true })
       .click();
     const dialog = page.getByRole("alertdialog");
     await expect(dialog).toHaveAccessibleName(
       `${name} on all enabled devices?`,
     );
     await expect(dialog).toContainText("Estimated scope: 3 devices");
-    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toContainText("1 offline devices");
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     expect(api.writes).toHaveLength(0);
     await confirmAll(page, name);
-    await expect(
-      page.getByRole("region", { name: "Target submission", exact: true }),
-    ).toContainText("3 submitted, 0 rejected");
+    await expect(receipt(page)).toContainText("3 submitted, 0 rejected");
     expect(api.writes).toHaveLength(1);
     expect(api.writes[0]).toMatchObject({
       scope: { kind: "all_enabled" },
       action,
     });
     expect(api.writes[0].operation_id).toMatch(/^[0-9a-f-]{36}$/);
-    await page.getByRole("searchbox", { name: "Search devices" }).clear();
+    await page
+      .getByRole("searchbox", { name: "Search devices", exact: true })
+      .clear();
     await expect(
       page.getByRole("img", {
         name: "Target submitted; check convergence for completion",
@@ -84,8 +161,10 @@ test("power-off confirmation resets on cancel and submits only the online enable
   const api = await mockTargets(context, fleet);
   await page.goto("/targets");
   await selectDeviceStates(page, ["revoked"]);
-  await expect(page.locator("tbody tr td:first-child")).toHaveText(["A-05"]);
-  const trigger = page.getByRole("button", {
+  await expect(
+    page.getByRole("cell", { name: "A-05", exact: true }),
+  ).toBeVisible();
+  const trigger = fleetActions(page).getByRole("button", {
     name: "Power off online devices (1)",
     exact: true,
   });
@@ -112,24 +191,18 @@ test("power-off confirmation resets on cancel and submits only the online enable
   await expect(submit).toBeDisabled();
   await input.fill("POWER OFF 1");
   await submit.click();
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("1 submitted, 0 rejected");
+  await expect(receipt(page)).toContainText("1 submitted, 0 rejected");
+  await expect(receipt(page)).toContainText("All online enabled devices");
   expect(api.writes).toHaveLength(1);
   expect(api.writes[0]).toMatchObject({
     scope: { kind: "all_online_enabled" },
     action: { kind: "power_off" },
   });
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("All online enabled devices");
   api.rejections.set(fleet[0].device_id, "Target epoch is exhausted");
   await trigger.click();
   await input.fill("POWER OFF 1");
   await submit.click();
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("0 submitted, 1 rejected");
+  await expect(receipt(page)).toContainText("0 submitted, 1 rejected");
   await expect(
     page.getByRole("button", { name: "Retry failed devices", exact: true }),
   ).toHaveCount(0);
@@ -143,8 +216,8 @@ test("the Server determines the enabled device set after the preview", async ({
   fleet[2].state = "disabled";
   const api = await mockTargets(context, fleet);
   await page.goto("/targets");
-  await page
-    .getByRole("button", { name: "Reset home (all)", exact: true })
+  await fleetActions(page)
+    .getByRole("button", { name: "Reset home", exact: true })
     .click();
   await expect(page.getByRole("alertdialog")).toContainText(
     "Estimated scope: 2 devices",
@@ -152,11 +225,9 @@ test("the Server determines the enabled device set after the preview", async ({
   fleet[2].state = "enabled";
   await page
     .getByRole("alertdialog")
-    .getByRole("button", { name: "Apply to all enabled devices" })
+    .getByRole("button", { name: "Apply to all enabled devices", exact: true })
     .click();
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("3 submitted, 0 rejected");
+  await expect(receipt(page)).toContainText("3 submitted, 0 rejected");
   expect(api.writes).toHaveLength(1);
   expect(
     fleet.map((device) => device.convergence.home.target_reset_epoch),
@@ -172,20 +243,16 @@ test("only rejected devices are retried with a new operation ID", async ({
   api.rejections.set(fleet[1].device_id, "Target epoch is exhausted");
   await page.goto("/targets");
   await confirmAll(page, "Reset home");
-  const summary = page.getByRole("region", {
-    name: "Target submission",
-    exact: true,
-  });
-  await expect(summary).toContainText("2 submitted, 1 rejected");
+  await expect(receipt(page)).toContainText("2 submitted, 1 rejected");
   await expect(
-    page
-      .getByRole("row")
-      .filter({ has: page.getByRole("cell", { name: "A-02", exact: true }) })
-      .getByRole("img", { name: "Rejected: Target epoch is exhausted" }),
+    deviceRow(page, "machine-02").getByRole("img", {
+      name: "Rejected: Target epoch is exhausted",
+      exact: true,
+    }),
   ).toBeVisible();
   api.rejections.clear();
   await confirmTarget(page, "Retry failed devices");
-  await expect(summary).toContainText("1 submitted, 0 rejected");
+  await expect(receipt(page)).toContainText("1 submitted, 0 rejected");
   expect(api.writes).toHaveLength(2);
   expect(api.writes[1].operation_id).not.toBe(api.writes[0].operation_id);
   expect(api.writes[1]).toMatchObject({
@@ -213,47 +280,50 @@ test("submission results have a compact summary and filterable device receipts",
   );
   await page.goto("/targets");
   await confirmAll(page, "Reset home");
-  const summary = page.getByRole("region", {
-    name: "Target submission",
-    exact: true,
-  });
+  const summary = receipt(page);
   await expect(summary).toContainText("6 submitted, 2 rejected");
   await expect(
     summary.getByText("Partially submitted", { exact: true }),
   ).toBeVisible();
+  for (const [label, count] of [
+    ["Devices in scope", 8],
+    ["Submitted", 6],
+    ["Rejected", 2],
+  ] as const)
+    await expect(
+      summary.getByText(label, { exact: true }).locator("..").locator("dd"),
+    ).toHaveText(String(count));
   await expect(summary.getByRole("table")).not.toBeVisible();
   await expect(
     summary.getByText(
       "Server acceptance does not confirm completion. Check device convergence.",
+      { exact: true },
     ),
   ).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("targets-summary.png"),
     fullPage: true,
   });
-
   await summary.locator("summary").click();
   await expect(summary.getByRole("table").locator("tbody tr")).toHaveCount(8);
-  const submittedStatus = summary
+  const submitted = summary
     .getByRole("table")
     .getByText("Submitted", { exact: true })
     .first();
-  const rejectedStatus = summary
+  const rejected = summary
     .getByRole("table")
     .getByText("Rejected", { exact: true })
     .first();
-  for (const status of [submittedStatus, rejectedStatus]) {
+  for (const status of [submitted, rejected]) {
     await expect(status).toHaveCSS("border-top-width", "0px");
     await expect(status).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
   }
-  const submittedBounds = await submittedStatus.boundingBox();
-  const rejectedBounds = await rejectedStatus.boundingBox();
-  expect(submittedBounds).not.toBeNull();
-  expect(rejectedBounds).not.toBeNull();
-  expect(rejectedBounds!.height).toBe(submittedBounds!.height);
-  expect(rejectedBounds!.x).toBe(submittedBounds!.x);
-  expect((await rejectedStatus.locator("svg").boundingBox())!.x).toBe(
-    (await submittedStatus.locator("svg").boundingBox())!.x,
+  const submittedBounds = (await submitted.boundingBox())!,
+    rejectedBounds = (await rejected.boundingBox())!;
+  expect(rejectedBounds.height).toBe(submittedBounds.height);
+  expect(rejectedBounds.x).toBe(submittedBounds.x);
+  expect((await rejected.locator("svg").boundingBox())!.x).toBe(
+    (await submitted.locator("svg").boundingBox())!.x,
   );
   await summary.screenshot({
     path: testInfo.outputPath("targets-aligned-results.png"),
@@ -268,12 +338,6 @@ test("submission results have a compact summary and filterable device receipts",
       exact: true,
     }),
   ).toBeVisible();
-  await page.screenshot({
-    path: testInfo.outputPath("targets-rejected.png"),
-    fullPage: true,
-  });
-
-  // Receipt scope and device labels survive filtering the current device list.
   await selectDeviceStates(page, ["disabled"]);
   await expect(
     summary.getByRole("cell", { name: "A-02 machine-02", exact: true }),
@@ -282,19 +346,17 @@ test("submission results have a compact summary and filterable device receipts",
     .getByRole("button", { name: "All results (8)", exact: true })
     .click();
   await expect(summary.getByRole("table").locator("tbody tr")).toHaveCount(8);
-
   await selectDeviceStates(page, ["enabled", "disabled"]);
   for (const width of [1024, 390]) {
     await page.setViewportSize({ width, height: 1050 });
-    await expect
-      .poll(() => page.evaluate(() => document.documentElement.scrollWidth))
-      .toBeLessThanOrEqual(width);
+    expect(
+      await page.evaluate(() => document.documentElement.scrollWidth),
+    ).toBeLessThanOrEqual(width);
     await page.screenshot({
       path: testInfo.outputPath(`targets-results-${width}.png`),
       fullPage: true,
     });
   }
-
   api.rejections.clear();
   await confirmTarget(page, "Retry failed devices");
   await expect(
@@ -312,19 +374,11 @@ test("submission results have a compact summary and filterable device receipts",
   await summary.screenshot({
     path: testInfo.outputPath("targets-submitted.png"),
   });
+  await selectTarget(page, fleet[0].device_id);
+  await expect(targetFact(page, "Target foreground")).toHaveText("contest");
   await page
-    .getByRole("button", { name: "Manage", exact: true })
-    .first()
-    .click();
-  const deviceDetails = page.locator('[data-slot="card"]').filter({
-    has: page.getByRole("region", { name: "Session Control", exact: true }),
-  });
-  await expect(
-    deviceDetails.getByText("Target foreground: contest", { exact: true }),
-  ).toBeVisible();
-  await deviceDetails.screenshot({
-    path: testInfo.outputPath("targets-device-details.png"),
-  });
+    .getByRole("dialog")
+    .screenshot({ path: testInfo.outputPath("targets-device-details.png") });
 });
 
 test("empty and fully rejected submission receipts are not shown as success", async ({
@@ -337,21 +391,18 @@ test("empty and fully rejected submission receipts are not shown as success", as
     api.rejections.set(device.device_id, "Target epoch is exhausted");
   await page.goto("/targets");
   await confirmAll(page, "Reset home");
-  const summary = page.getByRole("region", {
-    name: "Target submission",
-    exact: true,
-  });
+  const summary = receipt(page);
   await expect(
     summary.getByText("Submission rejected", { exact: true }),
   ).toBeVisible();
   await expect(summary).toContainText("0 submitted, 2 rejected");
-  await page
-    .getByRole("button", { name: "Reset home (all)", exact: true })
+  await fleetActions(page)
+    .getByRole("button", { name: "Reset home", exact: true })
     .click();
   for (const device of fleet) device.state = "disabled";
   await page
     .getByRole("alertdialog")
-    .getByRole("button", { name: "Apply to all enabled devices" })
+    .getByRole("button", { name: "Apply to all enabled devices", exact: true })
     .click();
   await expect(
     summary.getByText("No devices in scope", { exact: true }),
@@ -383,7 +434,7 @@ test("a lost response survives refresh and replays the same operation without an
     "Submission result not confirmed",
   );
   await expect(
-    page.getByRole("button", { name: "Terminate (all)", exact: true }),
+    fleetActions(page).getByRole("button", { name: "Terminate", exact: true }),
   ).toBeDisabled();
   await page.clock.runFor(10_000);
   expect(api.writes).toHaveLength(1);
@@ -393,22 +444,28 @@ test("a lost response survives refresh and replays the same operation without an
   );
   await selectTarget(page, fleet[1].device_id);
   await expect(
-    page.getByRole("button", { name: "Reset home", exact: true }),
+    panel(page, "Home").getByRole("button", {
+      name: "Reset home",
+      exact: true,
+    }),
   ).toBeDisabled();
-  await page.getByRole("button", { name: "Retry original request" }).click();
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("2 submitted, 0 rejected");
+  await page
+    .getByRole("button", { name: "Retry original request", exact: true })
+    .click();
+  await expect(receipt(page)).toContainText("2 submitted, 0 rejected");
   expect(api.writes).toHaveLength(2);
   expect(api.writes[1]).toEqual(api.writes[0]);
   expect(
     fleet.map((device) => device.convergence.home.target_reset_epoch),
   ).toEqual([1, 1]);
   await expect(
-    page.getByRole("button", { name: "Reset home", exact: true }),
+    panel(page, "Home").getByRole("button", {
+      name: "Reset home",
+      exact: true,
+    }),
   ).toBeEnabled();
   await confirmTarget(page, "Reset home");
-  await expect(page.getByText("Reset epoch: 2", { exact: true })).toBeVisible();
+  await expect(epoch(page, "Reset")).toHaveText("2 / none");
   expect(api.writes[2].operation_id).not.toBe(api.writes[0].operation_id);
 });
 
@@ -429,34 +486,28 @@ test("one pending submission blocks other device writes but not browsing", async
     .click();
   await expect.poll(() => Boolean(held)).toBe(true);
   await selectTarget(page, fleet[1].device_id);
-  await expect(
-    page.getByText("Target foreground: contest", { exact: true }),
-  ).toBeVisible();
+  await expect(targetFact(page, "Target foreground")).toHaveText("contest");
   await expect(
     page.getByRole("button", { name: "Show waiting screen", exact: true }),
   ).toBeDisabled();
+  await closeDetails(page);
   await expect(
-    page.getByRole("button", { name: "Reset home (all)", exact: true }),
+    fleetActions(page).getByRole("button", { name: "Reset home", exact: true }),
   ).toBeDisabled();
+  await selectTarget(page, fleet[1].device_id);
   await held!.fallback();
   await expect(
     page.getByRole("button", { name: "Show waiting screen", exact: true }),
   ).toBeEnabled();
-  await expect(
-    page.getByText("Target foreground: contest", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("A-01");
+  await expect(targetFact(page, "Target foreground")).toHaveText("contest");
+  await expect(receipt(page)).toContainText("A-01");
   expect(api.writes).toHaveLength(1);
   expect(api.writes[0].scope).toEqual({
     kind: "devices",
     device_ids: [fleet[0].device_id],
   });
   await selectTarget(page, fleet[0].device_id);
-  await expect(
-    page.getByText("Target foreground: waiting", { exact: true }),
-  ).toBeVisible();
+  await expect(targetFact(page, "Target foreground")).toHaveText("waiting");
 });
 
 for (const width of [1024, 1440]) {
@@ -475,31 +526,263 @@ for (const width of [1024, 1440]) {
     await page.setViewportSize({ width, height: 900 });
     await page.clock.install();
     await page.goto("/targets");
-    await expect(page.locator("tbody tr")).toHaveCount(200);
+    const table = page.getByRole("table", {
+      name: "Device targets",
+      exact: true,
+    });
+    await expect(table.locator("tbody tr")).toHaveCount(200);
     await page.getByRole("button", { name: "Seat", exact: true }).click();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
     await page.screenshot({ path: testInfo.outputPath("targets.png") });
-    await page.locator("tbody tr").nth(150).scrollIntoViewIfNeeded();
+    const row = deviceRow(page, fleet[150].machine_hardware_id);
+    await row.scrollIntoViewIfNeeded();
     const before = await page.evaluate(() => window.scrollY);
     expect(before).toBeGreaterThan(0);
     fleet[150].convergence.session_control.target!.foreground_target =
       "waiting";
     await page.clock.runFor(10_000);
-    await expect(
-      page
-        .locator("tbody tr")
-        .nth(150)
-        .getByRole("cell", { name: "waiting", exact: true }),
-    ).toBeVisible();
+    const foreground = row.getByRole("cell").nth(3);
+    await expect(foreground).toContainText("waiting");
+    await expect(foreground).toContainText("contest");
     expect(
       Math.abs((await page.evaluate(() => window.scrollY)) - before),
     ).toBeLessThan(2);
     await expect(
-      page.getByRole("columnheader", { name: "Seat", exact: true }),
+      table.getByRole("columnheader", { name: "Seat", exact: true }),
     ).toHaveAttribute("aria-sort", "ascending");
   });
+}
+
+for (const width of [390, 1440]) {
+  for (const surface of ["list", "details"] as const) {
+    test(`targets ${surface} stays still during a held refresh at ${width}px`, async ({
+      page,
+      context,
+    }) => {
+      const fleet = targetFleet(60);
+      await mockTargets(context, fleet);
+      await page.setViewportSize({ width, height: 720 });
+      await page.clock.install({ time: new Date("2030-01-01T01:01:00Z") });
+      await page.goto("/targets");
+      const table = page.locator('table[aria-label="Device targets"]');
+      await expect(table.locator("tbody tr")).toHaveCount(60);
+      if (surface === "details") {
+        await selectTarget(page, fleet[0].device_id);
+        await page.getByRole("dialog").evaluate(async (element) => {
+          await Promise.all(
+            element.getAnimations().map((animation) => animation.finished),
+          );
+        });
+      }
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      const timestamp = refreshTimestamp(page);
+      await expect(reportExplanation(page)).toBeVisible();
+      const drawerBody = page
+        .getByRole("dialog")
+        .locator('[data-slot="sheet-body"]');
+      const tableNode = await table.elementHandle();
+      const geometry = async (): Promise<Record<string, number>> => {
+        const dimensions = await targetStateGeometry(page);
+        const tableTop = await table.evaluate(
+          (element) => element.getBoundingClientRect().top + window.scrollY,
+        );
+        const headerHeight = await page
+          .locator("main header")
+          .first()
+          .evaluate((element) => element.getBoundingClientRect().height);
+        const pageScroll = await page.evaluate(() => window.scrollY);
+        if (surface === "list")
+          return { ...dimensions, tableTop, headerHeight, pageScroll };
+        return {
+          ...dimensions,
+          tableTop,
+          headerHeight,
+          pageScroll,
+          drawerScroll: await drawerBody.evaluate(
+            (element) => element.scrollTop,
+          ),
+          panelTop: await panel(page, "Session control").evaluate(
+            (element) => element.getBoundingClientRect().top,
+          ),
+        };
+      };
+      let held: Route | undefined;
+      await context.route(/\/api\/v2\/devices(?:\?.*)?$/, (route) => {
+        if (
+          new URL(route.request().url()).searchParams.get("state") ===
+          "enabled,disabled"
+        ) {
+          held = route;
+          return;
+        }
+        return route.fallback();
+      });
+      for (const scrolled of [false, true]) {
+        if (scrolled) {
+          if (surface === "list") {
+            await table.locator("tbody tr").nth(40).scrollIntoViewIfNeeded();
+            expect(await page.evaluate(() => window.scrollY)).toBeGreaterThan(
+              0,
+            );
+          } else {
+            await page.setViewportSize({ width, height: 520 });
+            await drawerBody.evaluate((element) => {
+              element.scrollTop = 120;
+            });
+            expect(
+              await drawerBody.evaluate((element) => element.scrollTop),
+            ).toBeGreaterThan(0);
+          }
+        }
+        const before = await geometry();
+        const receivedAt = await timestamp.textContent();
+        const expectStable = async () => {
+          const current = await geometry();
+          for (const key of Object.keys(before)) {
+            expect(
+              Math.abs(current[key]! - before[key]!),
+              `${surface} ${key} at ${width}px`,
+            ).toBeLessThanOrEqual(1);
+          }
+          expect(
+            await table.evaluate(
+              (element, original) => element === original,
+              tableNode,
+            ),
+          ).toBe(true);
+        };
+        held = undefined;
+        await page.clock.runFor(10_000);
+        await expect.poll(() => Boolean(held)).toBe(true);
+        const refreshing = page
+          .getByRole("status")
+          .filter({ hasText: "Refreshing. Showing previous result." });
+        await expect(refreshing).toHaveText(
+          "Refreshing. Showing previous result.",
+        );
+        await expectStable();
+        await expect(timestamp).toHaveText(receivedAt!);
+        await expect(refreshing).toHaveCSS("position", "absolute");
+        const statusBounds = (await refreshing.boundingBox())!;
+        expect(statusBounds.width).toBeLessThanOrEqual(1);
+        expect(statusBounds.height).toBeLessThanOrEqual(1);
+        await page.clock.runFor(3_000);
+        await expectStable();
+        await fulfillJson(held!, 200, fleet);
+        await expect(timestamp).not.toHaveText(receivedAt!);
+        await expect(timestamp.locator("..").getByRole("status")).toBeEmpty();
+        await expectStable();
+      }
+      const stableStates = await targetStateGeometry(page);
+      held = undefined;
+      await page.clock.runFor(10_000);
+      await expect.poll(() => Boolean(held)).toBe(true);
+      await fulfillJson(held!, 503, {
+        title: "Unavailable",
+        status: 503,
+        code: "SERVICE_UNAVAILABLE",
+      });
+      await expect(page.getByRole("alert")).toContainText(
+        "Showing the last successful result; it may be outdated.",
+      );
+      await expectTargetStateGeometry(page, stableStates);
+      let heldSubmission: Route | undefined;
+      await context.route("**/api/v2/target-submissions", (route) => {
+        heldSubmission = route;
+      });
+      if (surface === "details") await confirmTarget(page, "Reset home");
+      else await confirmAll(page, "Reset home");
+      await expect.poll(() => Boolean(heldSubmission)).toBe(true);
+      await expect(receipt(page)).toContainText(
+        "Submitting target. Showing previous device states.",
+      );
+      await expectTargetStateGeometry(page, stableStates);
+      await heldSubmission!.abort("failed");
+      await expect(
+        page
+          .getByRole("alert")
+          .filter({ hasText: "Submission result not confirmed" }),
+      ).toBeVisible();
+      await expectTargetStateGeometry(page, stableStates);
+    });
+  }
+}
+
+for (const width of [390, 1440]) {
+  for (const submitted of [false, true]) {
+    test(`targets keeps background feedback when opening details at ${width}px with receipt ${submitted}`, async ({
+      page,
+      context,
+    }) => {
+      const fleet = targetFleet(3);
+      await mockTargets(context, fleet);
+      await page.setViewportSize({ width, height: 720 });
+      await page.clock.install();
+      await page.goto("/targets");
+      await expect(
+        page.locator('table[aria-label="Device targets"] tbody tr'),
+      ).toHaveCount(3);
+      if (submitted) {
+        await confirmAll(page, "Reset home");
+        await expect(receipt(page)).toContainText("3 submitted, 0 rejected");
+        await receipt(page).locator("summary").click();
+        await expect(receipt(page).getByRole("table")).toBeVisible();
+      }
+      await page.evaluate(() => document.fonts.ready.then(() => undefined));
+      const main = page.locator("main");
+      const timestamp = main.getByText(/^Last successful refresh:/);
+      const timestampNode = await timestamp.elementHandle();
+      const feedback = timestamp.locator("../..");
+      const geometry = async () => {
+        const bounds = (await feedback.boundingBox())!;
+        return {
+          feedbackTop: bounds.y + (await page.evaluate(() => window.scrollY)),
+          feedbackHeight: bounds.height,
+          tableTop: await main
+            .locator('table[aria-label="Device targets"]')
+            .evaluate(
+              (element) => element.getBoundingClientRect().top + window.scrollY,
+            ),
+        };
+      };
+      const before = await geometry();
+      const expectStable = async () => {
+        await expect(timestamp).toBeVisible();
+        await expect(
+          main.getByText(reportNotice, { exact: true }),
+        ).toBeVisible();
+        expect(
+          await timestamp.evaluate(
+            (element, original) => element === original,
+            timestampNode,
+          ),
+        ).toBe(true);
+        const current = await geometry();
+        for (const key of Object.keys(before) as (keyof typeof before)[]) {
+          expect(Math.abs(current[key] - before[key]), key).toBeLessThanOrEqual(
+            1,
+          );
+        }
+      };
+      await selectTarget(page, fleet[0].device_id);
+      await page.getByRole("dialog").evaluate(async (element) => {
+        await Promise.all(
+          element.getAnimations().map((animation) => animation.finished),
+        );
+      });
+      await expectStable();
+      await expect(refreshTimestamp(page)).toHaveCount(1);
+      await expect(reportExplanation(page)).toHaveCount(1);
+      if (submitted) await expect(receipt(page)).toHaveCount(1);
+      await closeDetails(page);
+      await expectStable();
+      await expect(refreshTimestamp(page)).toHaveCount(1);
+      if (submitted)
+        await expect(receipt(page).getByRole("table")).toBeVisible();
+    });
+  }
 }
 
 test("disabled devices and viewers cannot submit targets", async ({
@@ -522,10 +805,9 @@ test("disabled devices and viewers cannot submit targets", async ({
   );
   await page.reload();
   await expect(page.locator("tbody tr")).toHaveCount(2);
-  await expect(
-    page.getByRole("region", { name: "All device actions" }),
-  ).toHaveCount(0);
-  await page.getByRole("button", { name: "View", exact: true }).first().click();
+  await expect(fleetActions(page)).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /^Select/ })).toHaveCount(0);
+  await selectTarget(page, fleet[0].device_id);
   await expect(
     page.getByRole("button", { name: "Reset home", exact: true }),
   ).toHaveCount(0);
@@ -544,16 +826,12 @@ test("target controls send the unified generated API request", async ({
     ["Show contest desktop", "contest"],
   ]) {
     await page.getByRole("button", { name, exact: true }).click();
-    await expect(
-      page.getByText(`Target foreground: ${foreground}`, { exact: true }),
-    ).toBeVisible();
+    await expect(targetFact(page, "Target foreground")).toHaveText(foreground);
   }
   await confirmTarget(page, "Terminate");
-  await expect(
-    page.getByText("Terminate epoch: 1", { exact: true }),
-  ).toBeVisible();
+  await expect(epoch(page, "Terminate")).toHaveText("1 / none");
   await confirmTarget(page, "Reset home");
-  await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
   expect(api.writes.map((request) => request.action)).toEqual([
     { kind: "set_foreground", foreground_target: "waiting" },
     { kind: "set_foreground", foreground_target: "contest" },
@@ -577,8 +855,8 @@ test("ready desktops still wait for binding before contest presentation", async 
   page,
   context,
 }) => {
-  const currentDevice = structuredClone(device);
-  currentDevice.convergence.binding = {
+  const current = structuredClone(device);
+  current.convergence.binding = {
     status: "converged",
     target: {
       state: "unbound",
@@ -591,67 +869,56 @@ test("ready desktops still wait for binding before contest presentation", async 
       context: null,
     },
   };
-  currentDevice.convergence.session_control.status = "reconciling";
-  currentDevice.convergence.session_control.actual!.foreground = "waiting";
-  await mockTargets(context, currentDevice);
+  current.convergence.session_control.status = "reconciling";
+  current.convergence.session_control.actual!.foreground = "waiting";
+  await mockTargets(context, current);
   await openTargets(page);
-
-  const sessionRegion = page.getByRole("region", { name: "Session Control" });
-  for (const text of [
-    "Target foreground: contest",
-    "Actual foreground: waiting",
-    "Actual session: running",
-    "Waiting display ready: true",
-    "Contest desktop ready: true",
-    "Waiting for binding before showing the contest desktop.",
-    "Convergence: reconciling",
-  ]) {
-    await expect(sessionRegion.getByText(text, { exact: true })).toBeVisible();
-  }
+  for (const [label, value] of [
+    ["Target foreground", "contest"],
+    ["Actual foreground", "waiting"],
+    ["Actual session", "running"],
+    ["Waiting display ready", "true"],
+    ["Contest desktop ready", "true"],
+  ])
+    await expect(targetFact(page, label)).toHaveText(value);
+  const session = panel(page, "Session control");
   await expect(
-    sessionRegion.getByText("Convergence: converged", { exact: true }),
-  ).toHaveCount(0);
+    session.getByText(
+      "Waiting for binding before showing the contest desktop.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(session.getByText("reconciling", { exact: true })).toBeVisible();
+  await expect(session.getByText("converged", { exact: true })).toHaveCount(0);
 });
 
 test("target submission stays distinct from reported progress, failure and completion", async ({
   page,
   context,
 }) => {
-  const currentDevice = structuredClone(device);
-  await mockTargets(context, currentDevice);
+  const current = structuredClone(device);
+  await mockTargets(context, current);
   await page.clock.install();
   await openTargets(page);
   await confirmTarget(page, "Terminate");
-  await expect(
-    page.getByText("Terminate epoch: 1", { exact: true }),
-  ).toBeVisible();
+  await expect(epoch(page, "Terminate")).toHaveText("1 / none");
   await confirmTarget(page, "Reset home");
-  await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
-
-  const sessionRegion = page.getByRole("region", { name: "Session Control" });
-  const homeRegion = page.getByRole("region", { name: "Home", exact: true });
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
+  const sessionPanel = panel(page, "Session control"),
+    homePanel = panel(page, "Home");
   await expect(
     page.getByRole("status").filter({ hasText: "submitted," }),
   ).toHaveText(
     "1 submitted, 0 rejected. Check device convergence for completion.",
   );
   await expect(
-    sessionRegion.getByText("Convergence: reconciling", { exact: true }),
+    sessionPanel.getByText("reconciling", { exact: true }),
   ).toBeVisible();
+  await expect(homePanel.getByText("drifted", { exact: true })).toBeVisible();
   await expect(
-    sessionRegion.getByText("Completed terminate epoch: none"),
-  ).toBeVisible();
-  await expect(
-    homeRegion.getByText("Convergence: drifted", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    homeRegion.getByText("Completed reset epoch: none"),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Convergence: converged", { exact: true }),
+    page.getByRole("dialog").getByText("converged", { exact: true }),
   ).toHaveCount(0);
-
-  const { session_control: session, home } = currentDevice.convergence;
+  const { session_control: session, home } = current.convergence;
   session.actual = {
     foreground: "waiting",
     waiting_ready: true,
@@ -662,35 +929,29 @@ test("target submission stays distinct from reported progress, failure and compl
   home.actual = { state: "resetting", completed_reset_epoch: null };
   home.status = "reconciling";
   await page.clock.runFor(10_000);
+  await expect(targetFact(page, "Actual session")).toHaveText("terminating");
+  await expect(targetFact(page, "Actual home")).toHaveText("resetting");
   await expect(
-    sessionRegion.getByText("Actual session: terminating"),
+    homePanel.getByText("reconciling", { exact: true }),
   ).toBeVisible();
-  await expect(homeRegion.getByText("Actual home: resetting")).toBeVisible();
-  await expect(
-    homeRegion.getByText("Convergence: reconciling", { exact: true }),
-  ).toBeVisible();
-
   session.actual.session_state = "error";
   session.status = "failed";
   home.actual.state = "recovery_required";
   home.status = "failed";
   await page.clock.runFor(10_000);
+  await expect(sessionPanel.getByText("failed", { exact: true })).toBeVisible();
   await expect(
-    sessionRegion.getByText("Convergence: failed", { exact: true }),
+    sessionPanel.getByText("The device reported a session error.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(homePanel.getByText("failed", { exact: true })).toBeVisible();
+  await expect(
+    homePanel.getByText("The device requires Home recovery.", { exact: true }),
   ).toBeVisible();
   await expect(
-    sessionRegion.getByText("The device reported a session error."),
-  ).toBeVisible();
-  await expect(
-    homeRegion.getByText("Convergence: failed", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    homeRegion.getByText("The device requires Home recovery."),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Convergence: converged", { exact: true }),
+    page.getByRole("dialog").getByText("converged", { exact: true }),
   ).toHaveCount(0);
-
   session.actual = {
     session_state: "running",
     completed_terminate_epoch: 1,
@@ -701,21 +962,19 @@ test("target submission stays distinct from reported progress, failure and compl
   session.status = "converged";
   home.actual = { state: "steady", completed_reset_epoch: 1 };
   home.status = "converged";
-  currentDevice.convergence.received_at_unix_ms = 1_700_000_200_000;
+  current.convergence.received_at_unix_ms = 1_700_000_200_000;
   await page.clock.runFor(10_000);
+  await expect(epoch(page, "Terminate")).toHaveText("1 / 1");
+  await expect(epoch(page, "Reset")).toHaveText("1 / 1");
   await expect(
-    sessionRegion.getByText("Completed terminate epoch: 1"),
-  ).toBeVisible();
-  await expect(homeRegion.getByText("Completed reset epoch: 1")).toBeVisible();
-  await expect(
-    page.getByText("Convergence: converged", { exact: true }),
+    page.getByRole("dialog").getByText("converged", { exact: true }),
   ).toHaveCount(2);
   const reportTime = await page.evaluate(
     (timestamp) => new Date(timestamp).toLocaleString(),
-    currentDevice.convergence.received_at_unix_ms,
+    current.convergence.received_at_unix_ms,
   );
   await expect(
-    page.getByText(`Last device report: ${reportTime}`, { exact: true }),
+    page.getByText(`Last report ${reportTime}`, { exact: true }),
   ).toBeVisible();
 });
 
@@ -723,8 +982,8 @@ test("offline and reconnecting devices wait for fresh Actual after submission", 
   page,
   context,
 }) => {
-  const currentDevice = structuredClone(device);
-  const state = currentDevice.convergence;
+  const current = structuredClone(device),
+    state = current.convergence;
   state.connection_state = "offline";
   state.received_at_unix_ms = null;
   state.session_control = {
@@ -734,41 +993,42 @@ test("offline and reconnecting devices wait for fresh Actual after submission", 
   };
   state.home.actual = null;
   state.home.status = "awaiting_actual";
-  await mockTargets(context, currentDevice);
+  await mockTargets(context, current);
   await page.clock.install();
   await openTargets(page);
-  await expect(
-    page.getByText("Target foreground: not initialized"),
-  ).toBeVisible();
+  await expect(targetFact(page, "Target foreground")).toHaveText(
+    "not initialized",
+  );
   await confirmTarget(page, "Reset home");
-  await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
   await expect(
     page.getByRole("status").filter({ hasText: "submitted," }),
   ).toBeVisible();
   await expect(
-    page.getByText(
-      "Device offline. Waiting for a connection and a fresh state report.",
-    ),
+    page.getByText("Waiting for a connection and a fresh state report.", {
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(
-    page.getByText("Last device report: not received"),
+    page.getByText("Last report not received", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Convergence: awaiting actual", { exact: true }),
+    page.getByRole("dialog").getByText("awaiting actual", { exact: true }),
   ).toHaveCount(2);
   await expect(
-    page.getByText("Convergence: converged", { exact: true }),
+    page.getByRole("dialog").getByText("converged", { exact: true }),
   ).toHaveCount(0);
-
   state.connection_state = "awaiting_fresh_state";
   await page.clock.runFor(10_000);
   await expect(
-    page.getByText("Device connected. Waiting for a fresh state report."),
+    page.getByText("Connected. Waiting for a fresh state report.", {
+      exact: true,
+    }),
   ).toBeVisible();
-  await expect(page.getByText("Actual home: not received")).toBeVisible();
-  await expect(page.getByText("Completed reset epoch: none")).toBeVisible();
+  await expect(targetFact(page, "Actual home")).toHaveText("not received");
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
   await expect(
-    page.getByText("Convergence: awaiting actual", { exact: true }),
+    page.getByRole("dialog").getByText("awaiting actual", { exact: true }),
   ).toHaveCount(2);
 });
 
@@ -776,13 +1036,11 @@ test("refresh failures mark cached completion as old and retry reads the submitt
   page,
   context,
 }) => {
-  const currentDevice = structuredClone(device);
-  await mockTargets(context, currentDevice);
+  const current = structuredClone(device);
+  await mockTargets(context, current);
   await page.clock.install();
   await openTargets(page);
-  const lastRefresh = await page
-    .getByText("Last successful refresh:")
-    .textContent();
+  const lastRefresh = await refreshTimestamp(page).textContent();
   let failRefresh = true;
   await context.route(/\/api\/v2\/devices(?:\?.*)?$/, (route) =>
     failRefresh
@@ -793,52 +1051,44 @@ test("refresh failures mark cached completion as old and retry reads the submitt
         })
       : route.fallback(),
   );
-
   await page.clock.runFor(10_000);
   await expect(page.getByRole("alert")).toContainText("Refresh failed");
   await expect(page.getByRole("alert")).toContainText(
     "Showing the last successful result; it may be outdated.",
   );
-  await expect(page.getByText("Last successful refresh:")).toHaveText(
-    lastRefresh!,
-  );
+  await expect(refreshTimestamp(page)).toHaveText(lastRefresh!);
+  await expect(reportExplanation(page)).toBeVisible();
   await expect(
-    page.getByText("Last known convergence: converged", { exact: true }),
+    page.getByRole("dialog").getByText("converged", { exact: true }),
   ).toHaveCount(2);
-
   await confirmTarget(page, "Reset home");
   await expect(
     page.getByRole("status").filter({ hasText: "submitted," }),
   ).toBeVisible();
+  await expect(epoch(page, "Reset")).toHaveText("none / none");
   await expect(
-    page.getByText("Reset epoch: none", { exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("Convergence: converged", { exact: true }),
-  ).toHaveCount(0);
-  await expect(page.getByRole("alert")).toContainText("Refresh failed");
-
-  failRefresh = false;
-  await page.getByRole("button", { name: "Retry" }).click();
-  await expect(page.getByRole("alert")).toHaveCount(0);
-  await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
-  await expect(page.getByText("Completed reset epoch: none")).toBeVisible();
-  await expect(
-    page
-      .getByRole("region", { name: "Home", exact: true })
-      .getByText("Convergence: drifted", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText("Last successful refresh:")).not.toHaveText(
-    lastRefresh!,
+    page.getByRole("dialog").getByText("converged", { exact: true }),
+  ).toHaveCount(2);
+  await expect(receipt(page)).toContainText(
+    "Server acceptance does not confirm completion. Check device convergence.",
   );
+  await expect(page.getByRole("alert")).toContainText("Refresh failed");
+  failRefresh = false;
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
+  await expect(
+    panel(page, "Home").getByText("drifted", { exact: true }),
+  ).toBeVisible();
+  await expect(refreshTimestamp(page)).not.toHaveText(lastRefresh!);
 });
 
 test("a delayed pre-mutation poll cannot replace the refreshed target", async ({
   page,
   context,
 }) => {
-  const currentDevice = structuredClone(device);
-  await mockTargets(context, currentDevice);
+  const current = structuredClone(device);
+  await mockTargets(context, current);
   await page.clock.install();
   await openTargets(page);
   const heldReads: Route[] = [];
@@ -853,32 +1103,26 @@ test("a delayed pre-mutation poll cannot replace the refreshed target", async ({
   await page.clock.runFor(10_000);
   await expect.poll(() => heldReads.length).toBe(1);
   await expect(
-    page.getByText("Refreshing. Showing previous result."),
-  ).toBeVisible();
+    page
+      .getByRole("status")
+      .filter({ hasText: "Refreshing. Showing previous result." }),
+  ).toHaveText("Refreshing. Showing previous result.");
   await confirmTarget(page, "Reset home");
   await expect.poll(() => heldReads.length).toBe(2);
+  for (const name of ["Reset home", "Terminate", "Show waiting screen"])
+    await expect(page.getByRole("button", { name, exact: true })).toBeEnabled();
+  await expect(reportExplanation(page)).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Reset home", exact: true }),
-  ).toBeEnabled();
-  await expect(
-    page.getByRole("button", { name: "Terminate", exact: true }),
-  ).toBeEnabled();
-  await expect(
-    page.getByRole("button", { name: "Show waiting screen", exact: true }),
-  ).toBeEnabled();
-  await expect(
-    page.getByText("Last known convergence: converged", { exact: true }),
+    page.getByRole("dialog").getByText("converged", { exact: true }),
   ).toHaveCount(2);
-
-  await fulfillJson(heldReads[1], 200, [currentDevice]);
-  await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
+  await fulfillJson(heldReads[1], 200, [current]);
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
   await expect(
     page.getByRole("button", { name: "Reset home", exact: true }),
   ).toBeEnabled();
   await fulfillJson(heldReads[0], 200, [device]);
   await page.clock.runFor(100);
-  await expect(page.getByText("Reset epoch: 1", { exact: true })).toBeVisible();
-  await expect(page.getByText("Completed reset epoch: none")).toBeVisible();
+  await expect(epoch(page, "Reset")).toHaveText("1 / none");
 });
 
 test("foreground targets follow another operator within one polling interval", async ({
@@ -886,47 +1130,33 @@ test("foreground targets follow another operator within one polling interval", a
   context,
   browser,
 }) => {
-  const currentDevice = structuredClone(device);
-  await mockTargets(context, currentDevice);
+  const current = structuredClone(device);
+  await mockTargets(context, current);
   await page.clock.install();
   await openTargets(page);
   const otherContext = await browser.newContext();
   try {
     await mockTargets(
       otherContext,
-      currentDevice,
+      current,
       "01912345-6789-7abc-8def-0123456789ac",
     );
-    const otherPage = await otherContext.newPage();
-    await otherPage.clock.install();
-    await openTargets(otherPage);
-    await confirmTarget(otherPage, "Terminate");
-    await expect(
-      otherPage.getByText("Terminate epoch: 1", { exact: true }),
-    ).toBeVisible();
-    await confirmTarget(otherPage, "Reset home");
-    await expect(
-      otherPage.getByText("Reset epoch: 1", { exact: true }),
-    ).toBeVisible();
-
+    const other = await otherContext.newPage();
+    await other.clock.install();
+    await openTargets(other);
+    await confirmTarget(other, "Terminate");
+    await expect(epoch(other, "Terminate")).toHaveText("1 / none");
+    await confirmTarget(other, "Reset home");
+    await expect(epoch(other, "Reset")).toHaveText("1 / none");
     await page.bringToFront();
     await page.clock.runFor(10_000);
-    await expect(
-      page.getByText("Terminate epoch: 1", { exact: true }),
-    ).toBeVisible();
-    await expect(
-      page.getByText("Reset epoch: 1", { exact: true }),
-    ).toBeVisible();
-
+    await expect(epoch(page, "Terminate")).toHaveText("1 / none");
+    await expect(epoch(page, "Reset")).toHaveText("1 / none");
     await confirmTarget(page, "Terminate");
-    await expect(
-      page.getByText("Terminate epoch: 2", { exact: true }),
-    ).toBeVisible();
-    await otherPage.bringToFront();
-    await otherPage.clock.runFor(10_000);
-    await expect(
-      otherPage.getByText("Terminate epoch: 2", { exact: true }),
-    ).toBeVisible();
+    await expect(epoch(page, "Terminate")).toHaveText("2 / none");
+    await other.bringToFront();
+    await other.clock.runFor(10_000);
+    await expect(epoch(other, "Terminate")).toHaveText("2 / none");
   } finally {
     await otherContext.close();
   }
@@ -941,22 +1171,18 @@ test("Targets all-device actions retain global Enabled scope even with an empty 
   await page.goto("/targets");
   await selectDeviceStates(page, ["revoked"]);
   await expect(
-    page.getByText("No devices found.", { exact: true }),
+    page.getByText("No devices found", { exact: true }),
   ).toBeVisible();
+  await expect(fleetActions(page)).toContainText("2 enabled");
   await expect(
-    page.getByRole("heading", { name: "All enabled devices (2)", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Reset home (all)", exact: true }),
+    fleetActions(page).getByRole("button", { name: "Reset home", exact: true }),
   ).toBeEnabled();
   await confirmAll(page, "Reset home");
-  await expect(
-    page.getByRole("region", { name: "Target submission", exact: true }),
-  ).toContainText("2 submitted, 0 rejected");
+  await expect(receipt(page)).toContainText("2 submitted, 0 rejected");
   expect(api.writes).toHaveLength(1);
   expect(api.writes[0].scope).toEqual({ kind: "all_enabled" });
   expect(api.reads).toContain("enabled");
   await expect(
-    page.getByText("No devices found.", { exact: true }),
+    page.getByText("No devices found", { exact: true }),
   ).toBeVisible();
 });

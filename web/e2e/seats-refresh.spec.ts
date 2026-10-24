@@ -1,4 +1,5 @@
 import { expect, test, type Route } from "@playwright/test";
+import { refreshLabel } from "./fixtures/ui";
 
 test("seat refresh tracks all three sources and preserves sorting and filters", async ({
   page,
@@ -71,13 +72,14 @@ test("seat refresh tracks all three sources and preserves sorting and filters", 
     return route.fulfill({ status: 404, json: {} });
   });
   await page.goto("/seats");
+  await page.getByRole("radio", { name: "List view", exact: true }).click();
   const timer = page.getByRole("timer", { name: "Next seat refresh" });
   const expectTimer = async (text: RegExp) => {
     await expect
       .poll(async () => {
         // Flush batched query notifications while the browser clock is paused.
         await page.clock.runFor(20);
-        return (await timer.count()) ? timer.textContent() : "";
+        return (await timer.count()) ? refreshLabel(timer).textContent() : "";
       })
       .toMatch(text);
   };
@@ -93,22 +95,21 @@ test("seat refresh tracks all three sources and preserves sorting and filters", 
     ),
   ).toBeLessThanOrEqual(2);
   const header = table.getByRole("columnheader", {
-    name: "Seat code",
+    name: "Seat",
     exact: true,
   });
   await header.getByRole("button").click();
   await expect(header).toHaveAttribute("aria-sort", "ascending");
   const tableNode = await table.elementHandle();
   const filter = page.getByRole("group", {
-    name: "Binding state",
+    name: "Binding",
     exact: true,
   });
-  const bound = filter.getByRole("checkbox", { name: "Bound", exact: true });
+  const bound = filter.getByRole("checkbox", { name: /^Bound\b/ });
   const unbound = filter.getByRole("checkbox", {
-    name: "Unbound",
-    exact: true,
+    name: /^Unbound\b/,
   });
-  await bound.uncheck();
+  await bound.locator("..").click();
   await expect(table.locator("tbody tr td:first-child")).toHaveText(["B-02"]);
   await page.screenshot({
     path: testInfo.outputPath("seats-refresh.png"),
@@ -164,14 +165,12 @@ test("seat refresh tracks all three sources and preserves sorting and filters", 
 
   await context.setOffline(true);
   await page.clock.runFor(10_000);
-  await expectTimer(/^Refresh paused$/);
+  await expectTimer(/^Paused$/);
   await context.setOffline(false);
   await expectTimer(/^Refresh in \d+s$/);
 
-  await unbound.uncheck();
-  await expect(
-    page.getByText("No seats match the binding filter.", { exact: true }),
-  ).toBeVisible();
+  await unbound.locator("..").click();
+  await expect(page.getByText("No seats match", { exact: true })).toBeVisible();
   await page.clock.runFor(10_000);
   await expectTimer(/^Refresh in \d+s$/);
   await expect(bound).not.toBeChecked();

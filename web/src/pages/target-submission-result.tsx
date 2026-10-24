@@ -53,13 +53,13 @@ export function TargetSubmissionResult({
             ? CircleCheck
             : Info;
   const tone = submission.sending
-    ? "bg-sky-500/10 text-sky-700"
+    ? "bg-info-subtle text-info"
     : submission.pending || (rejectedCount > 0 && submittedCount > 0)
-      ? "bg-amber-500/10 text-amber-700"
+      ? "bg-warning-subtle text-warning-strong"
       : submission.error || rejectedCount > 0
-        ? "bg-destructive/10 text-destructive"
+        ? "bg-destructive-subtle text-destructive"
         : submittedCount > 0
-          ? "bg-emerald-500/10 text-emerald-700"
+          ? "bg-success-subtle text-success-strong"
           : "bg-muted text-muted-foreground";
   const status = submission.sending
     ? "Submitting"
@@ -90,11 +90,11 @@ export function TargetSubmissionResult({
         </div>
         <div className="min-w-0 flex-1 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-semibold">
+            <p className="font-semibold">
               {request
                 ? targetActionLabel(request.action)
                 : "Target submission"}
-            </h2>
+            </p>
             <Badge variant="outline" className={`border-transparent ${tone}`}>
               {status}
             </Badge>
@@ -120,7 +120,7 @@ export function TargetSubmissionResult({
 
       {results && (
         <>
-          <dl className="mx-5 mb-4 grid grid-cols-3 divide-x rounded-md border bg-muted/20">
+          <dl className="mx-5 mb-4 grid grid-cols-3 divide-x rounded-lg border bg-muted/40">
             {[
               {
                 label: "Devices in scope",
@@ -132,7 +132,7 @@ export function TargetSubmissionResult({
                 label: "Submitted",
                 count: submittedCount,
                 Icon: CircleCheck,
-                tone: "text-emerald-700",
+                tone: "text-success-strong",
               },
               {
                 label: "Rejected",
@@ -246,7 +246,7 @@ export function TargetSubmissionResult({
                           className={`inline-flex items-center gap-1.5 text-sm font-medium [&>svg]:size-3.5 [&>svg]:shrink-0 ${
                             result.status === "rejected"
                               ? "text-destructive"
-                              : "text-emerald-700"
+                              : "text-success-strong"
                           }`}
                         >
                           {result.status === "rejected" ? (

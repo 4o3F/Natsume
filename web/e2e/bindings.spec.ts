@@ -1,4 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
+import {
+  closeDetails,
+  closeNavigation,
+  deviceRow,
+  openDeviceDetails,
+  openDeviceMenu,
+  openNavigation,
+  seatCells,
+} from "./fixtures/ui";
 
 import type {
   BindingContextResponse,
@@ -139,9 +148,7 @@ for (const width of [390, 1024, 1440]) {
     await page.clock.install();
     await page.goto("/bindings");
     await expect(page).toHaveURL(/\/devices$/);
-    const navigation = page.getByRole("navigation", {
-      name: "Primary navigation",
-    });
+    const navigation = await openNavigation(page);
     await expect(
       navigation.getByRole("link", { name: "Bindings", exact: true }),
     ).toHaveCount(0);
@@ -151,9 +158,15 @@ for (const width of [390, 1024, 1440]) {
     await expect(
       navigation.getByRole("link", { name: "Devices", exact: true }),
     ).toHaveAttribute("aria-current", "page");
+    await closeNavigation(page);
     const rows = page.locator("tbody tr");
-    const seatCells = rows.locator("td:first-child");
-    await expect(seatCells).toHaveText(["A-01", "A-2", "A-10", "—", "—"]);
+    await expect(await seatCells(page)).toHaveText([
+      "A-01",
+      "A-2",
+      "A-10",
+      "—",
+      "—",
+    ]);
     for (const name of ["Seat ID", "Binding ID"]) {
       await expect(
         page.getByRole("columnheader", { name, exact: true }),
@@ -172,7 +185,8 @@ for (const width of [390, 1024, 1440]) {
           }),
         ),
       );
-    expect(actionPositions[0].map(({ width }) => width)).toEqual([80, 80, 80]);
+    expect(actionPositions[0]).toHaveLength(1);
+    expect(actionPositions[0][0].width).toBeGreaterThanOrEqual(32);
     for (const positions of actionPositions) {
       expect(positions).toEqual(actionPositions[0]);
     }
@@ -181,7 +195,11 @@ for (const width of [390, 1024, 1440]) {
     const search = page.getByRole("searchbox", { name: "Search devices" });
     await search.fill(" a-01 ");
     await expect(rows).toHaveCount(1);
-    await rows.getByRole("button", { name: "Unbind", exact: true }).click();
+    await (
+      await openDeviceMenu(page, "machine-01")
+    )
+      .getByRole("menuitem", { name: "Unbind seat", exact: true })
+      .click();
     const dialog = page.getByRole("alertdialog", { name: "Unbind seat A-01?" });
     await expect(dialog).toBeVisible();
     await expect(
@@ -200,23 +218,30 @@ for (const width of [390, 1024, 1440]) {
       rows.getByRole("cell", { name: "A-01", exact: true }),
     ).toBeVisible();
     const readsBeforeUnbind = api.deviceReads;
-    await rows.getByRole("button", { name: "Unbind", exact: true }).click();
+    await (
+      await openDeviceMenu(page, "machine-01")
+    )
+      .getByRole("menuitem", { name: "Unbind seat", exact: true })
+      .click();
     await dialog.getByRole("button", { name: "Unbind", exact: true }).click();
     await expect(
-      page.getByText("No devices found.", { exact: true }),
+      page.getByText("No devices match", { exact: true }),
     ).toBeVisible();
     expect(api.deleted).toEqual([devices[0].device_id]);
     expect(api.deviceReads).toBeGreaterThan(readsBeforeUnbind);
     await search.clear();
     // Unbinding changes the durable target; it does not delete the device.
     await expect(rows).toHaveCount(5);
-    const unboundRow = rows.filter({ hasText: "machine-01" });
-    await expect(unboundRow.locator("td:first-child")).toHaveText("—");
+    const unboundRow = deviceRow(page, "machine-01");
+    await expect(unboundRow.getByRole("cell").nth(1)).toHaveText("—");
     await expect(
-      unboundRow.getByRole("img", { name: "Binding: unbound", exact: true }),
+      unboundRow.getByRole("img", { name: /^Binding: unbound,/ }),
     ).toBeVisible();
     await expect(
-      unboundRow.getByRole("button", { name: "Unbind", exact: true }),
+      (await openDeviceMenu(page, "machine-01")).getByRole("menuitem", {
+        name: "Unbind seat",
+        exact: true,
+      }),
     ).toBeDisabled();
   });
 }
@@ -243,9 +268,14 @@ test("viewers can find bound devices without unbind controls", async ({
   await expect(
     page.getByRole("cell", { name: "A-01", exact: true }),
   ).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Actions for / })).toHaveCount(
+    0,
+  );
+  const details = await openDeviceDetails(page, "machine-01");
   await expect(
-    page.getByRole("button", { name: "Unbind", exact: true }),
+    details.getByRole("button", { name: /^(Unbind|Disable|Revoke)$/ }),
   ).toHaveCount(0);
+  await closeDetails(page);
   await page.getByRole("searchbox", { name: "Search devices" }).fill("A-10");
   await expect(page.locator("tbody tr")).toHaveCount(1);
 });
@@ -263,7 +293,10 @@ test("offline and disabled bound devices can Unbind while unknown and unbound ta
     await expect(
       row.getByRole("img", { name: "Connection: Offline", exact: true }),
     ).toBeVisible();
-    await row.getByRole("button", { name: "Unbind", exact: true }).focus();
+    const menu = await openDeviceMenu(page, hardware);
+    await menu
+      .getByRole("menuitem", { name: "Unbind seat", exact: true })
+      .focus();
     await page.keyboard.press("Enter");
     const dialog = page.getByRole("alertdialog", {
       name: `Unbind seat ${seat}?`,
@@ -271,33 +304,38 @@ test("offline and disabled bound devices can Unbind while unknown and unbound ta
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await expect(
-      row.getByRole("button", { name: "Unbind", exact: true }),
+      row.getByRole("button", { name: /^Actions for / }),
     ).toBeFocused();
   }
   await expect(
     page
       .getByRole("row")
       .filter({ hasText: "machine-03" })
-      .getByRole("img", { name: "Lifecycle: disabled" }),
+      .getByRole("cell", { name: "Disabled", exact: true }),
   ).toBeVisible();
   for (const [hardware, state] of [
     ["machine-04", "unbound"],
     ["machine-05", "unknown"],
   ]) {
     const row = page.getByRole("row").filter({ hasText: hardware });
-    await expect(row.locator("td:first-child")).toHaveText("—");
+    await expect(row.getByRole("cell").nth(1)).toHaveText("—");
     await expect(
-      row.getByRole("img", { name: `Binding: ${state}`, exact: true }),
+      row.getByRole("img", { name: new RegExp(`^Binding: ${state},`) }),
     ).toBeVisible();
     await expect(
-      row.getByRole("button", { name: "Unbind", exact: true }),
+      (await openDeviceMenu(page, hardware)).getByRole("menuitem", {
+        name: "Unbind seat",
+        exact: true,
+      }),
     ).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0);
   }
   await page
     .getByRole("searchbox", { name: "Search devices" })
     .fill("OLD-SEAT");
   await expect(
-    page.getByText("No devices found.", { exact: true }),
+    page.getByText("No devices match", { exact: true }),
   ).toBeVisible();
 });
 
@@ -306,21 +344,28 @@ test("unbind failure is visible and leaves the device bound", async ({
 }) => {
   const api = await mockDevices(page, { unbindFail: true });
   await page.goto("/devices");
-  const row = page.getByRole("row").filter({ hasText: "machine-01" });
-  await row.getByRole("button", { name: "Unbind", exact: true }).click();
+  const row = deviceRow(page, "machine-01");
+  await (
+    await openDeviceMenu(page, "machine-01")
+  )
+    .getByRole("menuitem", { name: "Unbind seat", exact: true })
+    .click();
   await page
     .getByRole("alertdialog", { name: "Unbind seat A-01?" })
     .getByRole("button", { name: "Unbind", exact: true })
     .click();
   await expect(
-    page.getByRole("alert").filter({ hasText: "Unbind rejected" }),
+    page.locator("[data-sonner-toast]").filter({ hasText: "Unbind rejected" }),
   ).toBeVisible();
   expect(api.deleted).toEqual([devices[0].device_id]);
   await expect(
     row.getByRole("cell", { name: "A-01", exact: true }),
   ).toBeVisible();
   await expect(
-    row.getByRole("button", { name: "Unbind", exact: true }),
+    (await openDeviceMenu(page, "machine-01")).getByRole("menuitem", {
+      name: "Unbind seat",
+      exact: true,
+    }),
   ).toBeEnabled();
 });
 

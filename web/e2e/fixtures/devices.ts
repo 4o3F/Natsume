@@ -5,6 +5,8 @@ import {
   type Route,
 } from "@playwright/test";
 
+import { closeDetails } from "./ui";
+
 import type {
   BindingContextResponse,
   DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
@@ -119,9 +121,12 @@ export async function selectDeviceStates(
   }
   const filter = page.getByRole("group", { name: "Device state", exact: true });
   for (const state of ["enabled", "disabled", "revoked"] as const) {
-    await filter
-      .getByRole("checkbox", { name: new RegExp(`^${state}$`, "i") })
-      .setChecked(states.includes(state));
+    const checkbox = filter.getByRole("checkbox", {
+      name: new RegExp(`^${state}$`, "i"),
+    });
+    if ((await checkbox.isChecked()) !== states.includes(state)) {
+      await checkbox.locator("..").click();
+    }
   }
 }
 
@@ -323,11 +328,13 @@ export async function mockTargets(
 }
 
 export async function selectTarget(page: Page, deviceId: string) {
+  await closeDetails(page);
   await page
+    .getByRole("table", { name: "Device targets", exact: true })
     .getByRole("row")
     .filter({ has: page.getByTitle(deviceId, { exact: true }) })
-    .getByRole("button", { name: "Manage", exact: true })
     .click();
+  await expect(page.getByRole("dialog")).toContainText(deviceId);
 }
 export async function openTargets(page: Page) {
   await page.goto("/targets");
@@ -341,8 +348,16 @@ export async function confirmTarget(page: Page, name: string) {
     .click();
 }
 export async function confirmAll(page: Page, name: string) {
+  await closeDetails(page);
+  const label =
+    name === "Show waiting screen"
+      ? "Waiting screen"
+      : name === "Show contest desktop"
+        ? "Contest desktop"
+        : name;
   await page
-    .getByRole("button", { name: `${name} (all)`, exact: true })
+    .getByRole("region", { name: "All device actions", exact: true })
+    .getByRole("button", { name: label, exact: true })
     .click();
   await page
     .getByRole("alertdialog")

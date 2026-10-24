@@ -75,7 +75,20 @@ test("management lists keep long names and IDs inside a narrow viewport", async 
   });
   for (const path of ["printers", "sources"]) {
     await page.goto(`/print/${path}`);
-    await expect(page.locator("tbody tr")).toHaveCount(1);
+    if (path === "printers") {
+      const card = page.getByRole("article");
+      await expect(card).toHaveCount(1);
+      await expect(card).toContainText("01a167d2-ee05-7360-b976-c4f6a10be330");
+      await expect(card).toContainText("01a167d2-ee05-7360-b976-c4f6a10be331");
+    } else {
+      const source = page
+        .getByRole("region", { name: "Active sources", exact: true })
+        .getByRole("listitem");
+      await expect(source).toHaveCount(1);
+      await expect(source).toContainText(
+        "01a167d2-ee05-7360-b976-c4f6a10be332",
+      );
+    }
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(390);

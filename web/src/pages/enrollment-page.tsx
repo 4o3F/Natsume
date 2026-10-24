@@ -1,11 +1,19 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Check,
   DoorClosed,
   DoorOpen,
   Info,
+  KeyRound,
   LoaderCircle,
+  ShieldCheck,
+  ShieldQuestion,
   TriangleAlert,
+  X,
 } from "lucide-react";
+
+import { usePageToast } from "@/components/use-page-toast";
 
 import { useSessionScope } from "@/auth/session-context";
 import { ApiError, unwrap } from "@/api/errors";
@@ -15,84 +23,117 @@ import type {
 } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
+import { PageHeader } from "@/components/page-header";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from "@/lib/utils";
 
 type EnrollmentReview = EnrollmentReviewResponse;
 type ProvisioningWindow = ProvisioningWindowResponse;
+type Decision = { kind: "approve" | "deny"; review: EnrollmentReview };
 
 const ENROLLMENT_REVIEWS_KEY = ["enrollment-reviews"] as const;
 const PROVISIONING_WINDOW_KEY = ["provisioning-window"] as const;
 
+function shortId(value: string, size = 12) {
+  return value.length > size ? `${value.slice(0, size)}…` : value;
+}
+
 export function EnrollmentPage() {
+  const toast = usePageToast();
   const { api } = useSessionScope();
   const session = useSession().data;
   const queryClient = useQueryClient();
+  const [decision, setDecision] = useState<Decision | null>(null);
   const reviews = useQuery({
     queryKey: ENROLLMENT_REVIEWS_KEY,
     queryFn: async () =>
       unwrap<EnrollmentReview[]>(await api.listEnrollmentReviews()),
     refetchInterval: LIST_POLL_MS,
   });
-  const approve = useMutation({
-    mutationFn: async (reviewId: string) =>
-      unwrap<void>(await api.approveEnrollmentReview(reviewId)),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ENROLLMENT_REVIEWS_KEY });
+  const decide = useMutation({
+    mutationFn: async ({ kind, review }: Decision) =>
+      unwrap<void>(
+        kind === "approve"
+          ? await api.approveEnrollmentReview(review.review_id)
+          : await api.denyEnrollmentReview(review.review_id),
+      ),
+    onSuccess: (_, { kind, review }) => {
+      toast.success(
+        kind === "approve" ? "Device approved" : "Enrollment denied",
+        { description: shortId(review.machine_hardware_id, 16) },
+      );
     },
-  });
-  const deny = useMutation({
-    mutationFn: async (reviewId: string) =>
-      unwrap<void>(await api.denyEnrollmentReview(reviewId)),
-    onSuccess: async () => {
+    onSettled: async () => {
+      setDecision(null);
       await queryClient.invalidateQueries({ queryKey: ENROLLMENT_REVIEWS_KEY });
     },
   });
 
   const isAdmin = session?.role === "admin";
-  const isMutating = approve.isPending || deny.isPending;
   const columns: DataTableColumnDef<EnrollmentReview>[] = [
-    { accessorKey: "machine_hardware_id", header: "Machine hardware ID" },
+    {
+      accessorKey: "machine_hardware_id",
+      header: "Machine hardware ID",
+      cell: ({ row }) => (
+        <code
+          className="font-mono text-xs"
+          title={row.original.machine_hardware_id}
+        >
+          {shortId(row.original.machine_hardware_id, 16)}
+        </code>
+      ),
+    },
     {
       accessorKey: "evidence_quality",
       header: "Evidence",
-      cell: ({ row }) => (
-        <Badge variant="outline">{row.original.evidence_quality}</Badge>
-      ),
+      cell: ({ row }) => <EvidenceBadge review={row.original} />,
     },
-    { accessorKey: "daemon_version", header: "Daemon" },
-    { accessorKey: "agent_version", header: "Agent" },
+    {
+      id: "versions",
+      header: "Daemon / Agent",
+      cell: ({ row }) => {
+        const { daemon_version, agent_version } = row.original;
+        return (
+          <span className="flex items-center gap-1.5 font-mono text-xs">
+            {daemon_version}
+            <span className="text-muted-foreground">/</span>
+            {agent_version}
+            {daemon_version !== agent_version && (
+              <Badge variant="warning">Mismatch</Badge>
+            )}
+          </span>
+        );
+      },
+    },
     {
       accessorKey: "candidate_public_key",
       header: "Candidate key",
       cell: ({ row }) => (
-        <span
-          className="font-mono text-xs"
-          title={row.original.candidate_public_key}
-        >
-          {row.original.candidate_public_key.slice(0, 16)}…
-        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="inline-flex items-center gap-1.5 rounded-md bg-muted px-1.5 py-0.5 font-mono text-xs">
+              <KeyRound
+                aria-hidden="true"
+                className="size-3 text-muted-foreground"
+              />
+              {row.original.candidate_public_key.slice(0, 20)}…
+            </span>
+          </TooltipTrigger>
+          <TooltipContent className="max-w-96 font-mono break-all">
+            {row.original.candidate_public_key}
+          </TooltipContent>
+        </Tooltip>
       ),
     },
   ];
@@ -100,63 +141,135 @@ export function EnrollmentPage() {
   if (isAdmin) {
     columns.push({
       id: "actions",
-      header: "Actions",
+      header: () => <span className="sr-only">Actions</span>,
       cell: ({ row }) => (
-        <div className="flex gap-2">
-          <ReviewAction
-            label="Approve"
-            title="Approve this device?"
-            description={`This commits the candidate control key for ${row.original.machine_hardware_id}.`}
-            disabled={isMutating}
-            onConfirm={() => approve.mutate(row.original.review_id)}
-          />
-          <ReviewAction
-            label="Deny"
-            title="Deny this review?"
-            description="The waiting enrollment connection will be rejected."
-            disabled={isMutating}
-            destructive
-            onConfirm={() => deny.mutate(row.original.review_id)}
-          />
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={decide.isPending}
+            onClick={() => setDecision({ kind: "deny", review: row.original })}
+          >
+            <X aria-hidden="true" />
+            Deny
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            disabled={decide.isPending}
+            onClick={() =>
+              setDecision({ kind: "approve", review: row.original })
+            }
+          >
+            <Check aria-hidden="true" />
+            Approve
+          </Button>
         </div>
       ),
     });
   }
 
-  const mutationError = approve.error ?? deny.error;
+  const pendingCount = reviews.data?.length ?? 0;
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Enrollment Reviews
-        </h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Pending reviews belong to currently connected enrollment attempts.
-        </p>
-      </div>
+    <div className="min-w-0 space-y-6">
+      <PageHeader
+        title="Enrollment"
+        description="Approve devices that are waiting to join. Reviews belong to enrollment attempts that are connected right now."
+      />
 
       <EnrollmentWindow isAdmin={isAdmin} />
 
-      {mutationError && (
+      {decide.isError && (
         <Alert variant="destructive">
+          <TriangleAlert aria-hidden="true" />
           <AlertTitle>
-            {mutationError instanceof ApiError
-              ? mutationError.title
+            {decide.error instanceof ApiError
+              ? decide.error.title
               : "Enrollment action failed"}
           </AlertTitle>
         </Alert>
       )}
 
-      <DataState
-        isLoading={reviews.isLoading}
-        error={reviews.data ? null : reviews.error}
-        isEmpty={!reviews.data?.length}
-        emptyLabel="No enrollment reviews are pending."
-      >
-        <DataTable columns={columns} data={reviews.data ?? []} />
-      </DataState>
+      <section aria-label="Pending reviews" className="space-y-3">
+        <div className="flex items-center gap-2">
+          <p className="text-sm font-semibold">Pending reviews</p>
+          {reviews.data && (
+            <Badge variant={pendingCount ? "warning" : "muted"}>
+              {pendingCount}
+            </Badge>
+          )}
+          {!isAdmin && (
+            <p className="ml-auto text-xs text-muted-foreground">
+              Only administrators can approve or deny.
+            </p>
+          )}
+        </div>
+        <DataState
+          isLoading={reviews.isLoading}
+          error={reviews.data ? null : reviews.error}
+          isEmpty={!pendingCount}
+          emptyLabel="No devices waiting"
+          emptyDescription="New enrollment attempts appear here while their device stays connected."
+        >
+          <DataTable
+            label="Pending enrollment reviews"
+            columns={columns}
+            data={reviews.data ?? []}
+            getRowId={(review) => review.review_id}
+          />
+        </DataState>
+      </section>
+
+      <ConfirmDialog
+        open={decision !== null}
+        onOpenChange={(open) => {
+          if (!open && !decide.isPending) setDecision(null);
+        }}
+        tone={decision?.kind === "approve" ? "info" : "destructive"}
+        icon={
+          decision?.kind === "approve" ? (
+            <ShieldCheck aria-hidden="true" />
+          ) : undefined
+        }
+        title={
+          decision?.kind === "approve"
+            ? "Approve this device?"
+            : "Deny this enrollment?"
+        }
+        description={
+          decision?.kind === "approve" ? (
+            <>
+              This commits the candidate control key for{" "}
+              <code className="font-mono text-xs break-all">
+                {decision.review.machine_hardware_id}
+              </code>
+              .
+            </>
+          ) : (
+            "The waiting enrollment connection will be rejected."
+          )
+        }
+        confirmLabel={decision?.kind === "approve" ? "Approve" : "Deny"}
+        disabled={decide.isPending}
+        onConfirm={() => decision && decide.mutate(decision)}
+      />
     </div>
+  );
+}
+
+function EvidenceBadge({ review }: { review: EnrollmentReview }) {
+  return review.evidence_quality === "strong" ? (
+    <Badge variant="success">
+      <ShieldCheck aria-hidden="true" />
+      Strong
+    </Badge>
+  ) : (
+    <Badge variant="warning">
+      <ShieldQuestion aria-hidden="true" />
+      Medium
+    </Badge>
   );
 }
 
@@ -184,110 +297,102 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
   const isOpen = window.data?.state === "open";
   const display = window.isPending
     ? {
-        label: "Loading...",
-        mode: "Checking enrollment policy",
-        description:
-          "Reading the current enrollment window state from the Server.",
+        label: "Checking…",
+        mode: "Reading the enrollment policy from the server",
         Icon: LoaderCircle,
-        border: "border-border",
-        surface: "bg-muted/30",
         accent: "bg-muted text-muted-foreground",
-        text: "text-muted-foreground",
+        rail: "bg-border",
       }
     : window.isError
       ? {
           label: "Unavailable",
-          mode: "Enrollment policy could not be confirmed",
-          description: "Refresh the window state before making changes.",
+          mode: "Enrollment policy could not be confirmed. Refresh before making changes.",
           Icon: TriangleAlert,
-          border: "border-destructive/30",
-          surface: "bg-destructive/5",
-          accent: "bg-destructive/10 text-destructive",
-          text: "text-destructive",
+          accent: "bg-destructive-subtle text-destructive",
+          rail: "bg-destructive",
         }
       : isOpen
         ? {
             label: "Open",
-            mode: "Automatic approval is enabled",
-            description:
-              "Open automatically approves new and pending enrollment requests.",
+            mode: "New and pending requests are approved automatically.",
             Icon: DoorOpen,
-            border: "border-emerald-600/30",
-            surface: "bg-emerald-500/5",
-            accent: "bg-emerald-500/15 text-emerald-700",
-            text: "text-emerald-700",
+            accent: "bg-success-subtle text-success-strong",
+            rail: "bg-success",
           }
         : {
             label: "Closed",
-            mode: "Administrator approval is required",
-            description:
-              "Closed keeps requests here for administrator approval.",
+            mode: "Requests wait here for an administrator.",
             Icon: DoorClosed,
-            border: "border-amber-600/30",
-            surface: "bg-amber-500/5",
-            accent: "bg-amber-500/15 text-amber-700",
-            text: "text-amber-700",
+            accent: "bg-warning-subtle text-warning-strong",
+            rail: "bg-warning",
           };
 
   return (
     <Card
       role="region"
       aria-label="Enrollment window"
-      className={`gap-0 overflow-hidden py-0 ${display.border}`}
+      className="relative gap-0 overflow-hidden py-0"
     >
-      <CardHeader className={`gap-4 p-5 sm:p-6 ${display.surface}`}>
-        <CardTitle className="text-sm text-muted-foreground">
-          Enrollment window
-        </CardTitle>
-        <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-4">
-            <div
-              className={`flex size-14 shrink-0 items-center justify-center rounded-xl ${display.accent}`}
-            >
-              <display.Icon
+      <span
+        aria-hidden="true"
+        className={cn("absolute inset-y-0 left-0 w-1", display.rail)}
+      />
+      <div className="flex flex-col gap-5 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-6">
+        <div className="flex items-center gap-4">
+          <span
+            className={cn(
+              "relative flex size-12 shrink-0 items-center justify-center rounded-xl",
+              display.accent,
+            )}
+          >
+            {isOpen && (
+              <span
                 aria-hidden="true"
-                className={`size-7 ${window.isPending ? "animate-spin motion-reduce:animate-none" : ""}`}
+                className="absolute inset-0 rounded-xl bg-success/20 motion-safe:animate-pulse-ring"
               />
-            </div>
-            <div className="min-w-0 space-y-1">
-              <p
-                role="status"
-                className={`text-3xl font-semibold tracking-tight ${display.text}`}
-              >
-                {display.label}
-              </p>
-              <p className="text-sm font-medium">{display.mode}</p>
-              <CardDescription>{display.description}</CardDescription>
-            </div>
+            )}
+            <display.Icon
+              aria-hidden="true"
+              className={cn(
+                "size-6",
+                window.isPending && "animate-spin motion-reduce:animate-none",
+              )}
+            />
+          </span>
+          <div className="min-w-0">
+            <p className="text-xs font-medium text-muted-foreground">
+              Enrollment window
+            </p>
+            <p role="status" className="text-headline font-light">
+              {display.label}
+            </p>
+            <p className="text-sm text-muted-foreground">{display.mode}</p>
           </div>
-          {isAdmin && (
-            <Button
-              type="button"
-              className="shrink-0"
-              variant={isOpen ? "outline" : "default"}
-              disabled={!window.isSuccess || updateWindow.isPending}
-              onClick={() => updateWindow.mutate(isOpen ? "closed" : "open")}
-            >
-              {updateWindow.isPending ? (
-                <LoaderCircle
-                  aria-hidden="true"
-                  className="animate-spin motion-reduce:animate-none"
-                />
-              ) : isOpen ? (
+        </div>
+        {isAdmin && (
+          <Button
+            type="button"
+            className="shrink-0"
+            variant={isOpen ? "outline" : "default"}
+            disabled={!window.isSuccess}
+            loading={updateWindow.isPending}
+            onClick={() => updateWindow.mutate(isOpen ? "closed" : "open")}
+          >
+            {!updateWindow.isPending &&
+              (isOpen ? (
                 <DoorClosed aria-hidden="true" />
               ) : (
                 <DoorOpen aria-hidden="true" />
-              )}
-              {updateWindow.isPending
-                ? "Updating..."
-                : isOpen
-                  ? "Close window"
-                  : "Open window"}
-            </Button>
-          )}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3 border-t px-5 py-4 sm:px-6">
+              ))}
+            {updateWindow.isPending
+              ? "Updating…"
+              : isOpen
+                ? "Close window"
+                : "Open window"}
+          </Button>
+        )}
+      </div>
+      <div className="space-y-3 border-t bg-muted/40 px-5 py-3 sm:px-6">
         <p className="flex items-start gap-2 text-xs text-muted-foreground">
           <Info aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
           The window closes whenever the server restarts. Closing it does not
@@ -295,6 +400,7 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
         </p>
         {window.isError && (
           <Alert variant="destructive">
+            <TriangleAlert aria-hidden="true" />
             <AlertTitle>
               Unable to load enrollment window: {window.error.message}
             </AlertTitle>
@@ -303,7 +409,7 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
                 type="button"
                 variant="outline"
                 size="sm"
-                disabled={window.isFetching}
+                loading={window.isFetching}
                 onClick={() => void window.refetch()}
               >
                 Retry
@@ -313,62 +419,13 @@ function EnrollmentWindow({ isAdmin }: { isAdmin: boolean }) {
         )}
         {updateWindow.isError && (
           <Alert variant="destructive">
+            <TriangleAlert aria-hidden="true" />
             <AlertTitle>
               Unable to update enrollment window: {updateWindow.error.message}
             </AlertTitle>
           </Alert>
         )}
-      </CardContent>
+      </div>
     </Card>
-  );
-}
-
-function ReviewAction({
-  label,
-  title,
-  description,
-  disabled,
-  destructive = false,
-  onConfirm,
-}: {
-  label: string;
-  title: string;
-  description: string;
-  disabled: boolean;
-  destructive?: boolean;
-  onConfirm: () => void;
-}) {
-  return (
-    <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button
-          type="button"
-          variant={destructive ? "outline" : "default"}
-          size="sm"
-          disabled={disabled}
-        >
-          {label}
-        </Button>
-      </AlertDialogTrigger>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{description}</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction
-            className={
-              destructive
-                ? "bg-destructive text-white hover:bg-destructive/90"
-                : undefined
-            }
-            onClick={onConfirm}
-          >
-            {label}
-          </AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   );
 }
