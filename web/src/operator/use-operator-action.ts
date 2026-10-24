@@ -32,7 +32,9 @@ export function operatorErrorMessage(error: unknown) {
 
 // Operator secrets and responses never enter the Query mutation cache.
 // The page owns cancellation, including navigation within one session generation.
-export function useOperatorAction() {
+export function useOperatorAction(
+  errorMessage: (error: unknown) => string = operatorErrorMessage,
+) {
   const controller = useRef<AbortController | null>(null);
   const busy = useRef(false);
   const [pending, setPending] = useState(false);
@@ -56,7 +58,7 @@ export function useOperatorAction() {
       const result = await operation(signal);
       if (!signal.aborted) onSuccess(result);
     } catch (error) {
-      if (!signal.aborted) setError(operatorErrorMessage(error));
+      if (!signal.aborted) setError(errorMessage(error));
     } finally {
       if (!signal.aborted) {
         busy.current = false;

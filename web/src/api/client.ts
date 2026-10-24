@@ -20,6 +20,13 @@ import type {
   OperatorTokenRequest,
   OrganizationLogoResponse,
   PrintQueueEntry,
+  PrintExecution,
+  PrintPrinter,
+  PrintPrinterCreate,
+  PrintPairingCode,
+  PrintSource,
+  PrintSourceCreate,
+  PrintSourceIssued,
   ProvisioningWindowRequest,
   ProvisioningWindowResponse,
   SeatResponse,
@@ -120,6 +127,35 @@ export function createApiClient(
       request<void>("DELETE", "/api/v2/session", options),
     listPrintQueue: (options?: RequestOptions) =>
       request<PrintQueueEntry[]>("GET", "/api/v2/print/queue", options),
+    listPrintExecutions: (options?: RequestOptions) =>
+      request<PrintExecution[]>("GET", "/api/v2/print/executions", options),
+    listPrintPrinters: (options?: RequestOptions) =>
+      request<PrintPrinter[]>("GET", "/api/v2/print/printers", options),
+    createPrintPrinter: (body: PrintPrinterCreate, options?: RequestOptions) =>
+      json<PrintPrinter>("POST", "/api/v2/print/printers", body, options),
+    issuePrintPairingCode: (id: string, options?: RequestOptions) =>
+      json<PrintPairingCode>(
+        "POST",
+        `/api/v2/print/printers/${encodeURIComponent(id)}/pairing-code`,
+        undefined,
+        options,
+      ),
+    clearPrintPrinterBinding: (id: string, options?: RequestOptions) =>
+      request<void>(
+        "DELETE",
+        `/api/v2/print/printers/${encodeURIComponent(id)}/binding`,
+        options,
+      ),
+    listPrintSources: (options?: RequestOptions) =>
+      request<PrintSource[]>("GET", "/api/v2/print/sources", options),
+    createPrintSource: (body: PrintSourceCreate, options?: RequestOptions) =>
+      json<PrintSourceIssued>("POST", "/api/v2/print/sources", body, options),
+    revokePrintSource: (id: string, options?: RequestOptions) =>
+      request<void>(
+        "DELETE",
+        `/api/v2/print/sources/${encodeURIComponent(id)}`,
+        options,
+      ),
     listSeats: (options?: RequestOptions) =>
       request<SeatResponse[]>("GET", "/api/v2/seats", options),
     listAccounts: (options?: RequestOptions) =>

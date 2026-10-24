@@ -8,6 +8,8 @@ import { EnrollmentPage } from "@/pages/enrollment-page";
 import { LoginPage } from "@/pages/login-page";
 import { PreparationPage } from "@/pages/preparation-page";
 import { PrintQueuePage } from "@/pages/print-queue-page";
+import { PrintPrintersPage } from "@/pages/print-printers-page";
+import { PrintSourcesPage } from "@/pages/print-sources-page";
 import { SeatsPage } from "@/pages/seats-page";
 import { TargetsPage } from "@/pages/targets-page";
 import { UsersPage } from "@/pages/users-page";
@@ -39,6 +41,8 @@ export function App() {
           <Route path="/print" element={<PrintQueuePage />} />
           <Route element={<RequireAdmin />}>
             <Route path="/users" element={<UsersPage />} />
+            <Route path="/print/printers" element={<PrintPrintersPage />} />
+            <Route path="/print/sources" element={<PrintSourcesPage />} />
           </Route>
           <Route path="/change-password" element={<ChangePasswordPage />} />
         </Route>

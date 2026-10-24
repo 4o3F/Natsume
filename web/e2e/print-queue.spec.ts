@@ -45,6 +45,16 @@ async function mockQueue(
       return route.fulfill({
         json: { operator_id: "operator", username: "operator", role },
       });
+    if (path === "/api/v2/print/executions")
+      return route.fulfill({
+        json: entries.map((entry) => ({
+          ready_sequence: entry.ready_sequence,
+          state: "queued",
+          attempts_used: 0,
+          retry_at_unix_ms: null,
+          last_outcome: null,
+        })),
+      });
     if (path === "/api/v2/print/queue") return route.fulfill(reply());
     return route.fulfill({ status: 404, json: {} });
   });
@@ -52,7 +62,7 @@ async function mockQueue(
 
 for (const role of ["admin", "viewer"]) {
   for (const width of [1440, 390]) {
-    test(`${role} can read the global FIFO queue at ${width}px`, async ({
+    test(`${role} can read the admitted list in admission order at ${width}px`, async ({
       page,
     }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
@@ -65,7 +75,7 @@ for (const role of ["admin", "viewer"]) {
         page.getByRole("link", { name: "Print queue", exact: true }),
       ).toHaveAttribute("aria-current", "page");
       await expect(
-        page.getByText("2 queued tasks · 5 pages", { exact: true }),
+        page.getByText("2 admitted tasks · 5 pages", { exact: true }),
       ).toBeVisible();
       const table = page.getByRole("table");
       await expect(table.locator("tbody tr")).toHaveCount(2);
@@ -103,7 +113,7 @@ for (const role of ["admin", "viewer"]) {
   }
 }
 
-test("filtering preserves FIFO and global totals, including no matches and an empty queue", async ({
+test("filtering preserves admission order and global totals, including no matches and an empty queue", async ({
   page,
 }) => {
   let data = entries;
@@ -122,10 +132,10 @@ test("filtering preserves FIFO and global totals, including no matches and an em
     await expect(page.locator("tbody tr")).toHaveCount(1);
     await expect(page.locator("tbody tr td:first-child")).toHaveText(["5"]);
     await expect(
-      page.getByText("2 queued tasks · 5 pages", { exact: true }),
+      page.getByText("2 admitted tasks · 5 pages", { exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByText("1 of 2 queued tasks match", { exact: true }),
+      page.getByText("1 of 2 admitted tasks match", { exact: true }),
     ).toBeVisible();
   }
   await filter.fill("A-01");
@@ -134,7 +144,7 @@ test("filtering preserves FIFO and global totals, including no matches and an em
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["2", "5"]);
   await filter.fill("no match");
   await expect(
-    page.getByText("No queued documents match the filter.", { exact: true }),
+    page.getByText("No admitted documents match the filter.", { exact: true }),
   ).toBeVisible();
   await expect(filter).toBeVisible();
   await page
@@ -148,10 +158,10 @@ test("filtering preserves FIFO and global totals, including no matches and an em
     .getByRole("button", { name: "Refresh queue", exact: true })
     .click();
   await expect(
-    page.getByText("0 queued tasks · 0 pages", { exact: true }),
+    page.getByText("0 admitted tasks · 0 pages", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("No queued documents.", { exact: true }),
+    page.getByText("No admitted documents.", { exact: true }),
   ).toBeVisible();
   await expect(filter).toBeVisible();
 });
@@ -192,7 +202,7 @@ test("polling preserves last received rows and filters on failure, then recovers
     "Showing the last received queue",
   );
   await expect(
-    page.getByText("2 queued tasks · 5 pages", { exact: true }),
+    page.getByText("2 admitted tasks · 5 pages", { exact: true }),
   ).toBeVisible();
   await expect(page.locator("tbody tr td:first-child")).toHaveText(["5"]);
   await expect(filter).toHaveValue("team-2");
@@ -207,7 +217,7 @@ test("polling preserves last received rows and filters on failure, then recovers
   await expect.poll(flush).toMatch(/^Refresh in \d+s$/);
   await expect(page.getByRole("alert")).toHaveCount(0);
   await expect(
-    page.getByText("1 queued task · 4 pages", { exact: true }),
+    page.getByText("1 admitted task · 4 pages", { exact: true }),
   ).toBeVisible();
   await expect(filter).toHaveValue("team-2");
   expect(reads).toBe(3);
@@ -225,17 +235,17 @@ test("initial failure can be retried without reporting an empty queue as success
     page.getByText(unavailable.title, { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("No queued documents.", { exact: true }),
+    page.getByText("No admitted documents.", { exact: true }),
   ).toHaveCount(0);
   await expect(
-    page.getByText("0 queued tasks · 0 pages", { exact: true }),
+    page.getByText("0 admitted tasks · 0 pages", { exact: true }),
   ).toHaveCount(0);
   failed = false;
   await page
     .getByRole("button", { name: "Refresh queue", exact: true })
     .click();
   await expect(
-    page.getByText("No queued documents.", { exact: true }),
+    page.getByText("No admitted documents.", { exact: true }),
   ).toBeVisible();
 });
 

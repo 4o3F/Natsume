@@ -1963,7 +1963,9 @@ I1 将最终 PDF 保存为 Print 自有文件，目录由 `[storage].print_docum
 
 就绪顺序在数据库事务中分配，不使用登记时间、客户端时间或并发校验完成前的顺序。快照只统计本任务之前已就绪但未领取的任务及其文档页数，涵盖所有来源；准备中和生成失败请求排除。备份在停止唯一 Server 进程后，同时取得包含已提交 WAL 状态的一致 SQLite 副本、PDF 目录及其他必需配置与密钥；不能只复制运行中的主库，也不能只恢复数据库而遗漏 PDF。文档保留期限、无引用文件清理和容量验收由部署维护另行确定，不自动删除或添加未经确认的队伍／任务数量上限。
 
-Web `/print` 提供全场只读队列，管理员与查看员均通过 Operator session 调用 `GET /api/v2/print/queue`；来源 Bearer token 不能调用此接口。返回按 `ready_sequence` 升序排列的已入队任务数组，由同一个 `PrintQueueEntry` 定义数据库查询投影与 HTTP 输出，包括来源 ID／名称、请求 ID、登记时的账号／队名／座位快照、原文件名、全局就绪序号、文档页数与字节数。查询只读取一次数据库元数据快照，不打开或校验 PDF，不作为文件即时可用性的证明；不依赖当前名单，也不因来源撤销而隐藏其已入队任务。页面每 10 秒刷新，汇总全场任务数与页数，筛选不改变汇总口径；刷新失败保留上次收到的数据并明确标记可能过期。队列不包含准备中或生成失败的请求，不把首次入队快照当成实时队列，不显示未实现的领取、打印进度或实际出纸状态。本页面不实现打印机／Windows 队列注册、来源 token 管理或物理打印。
+Web `/print` 提供全场只读执行列表，管理员与查看员均通过 Operator session 调用 `GET /api/v2/print/queue` 和 `GET /api/v2/print/executions`；来源 Bearer token 不能调用这些接口。元数据按 `ready_sequence` 升序返回，由同一个 `PrintQueueEntry` 定义数据库投影与 HTTP 输出，包括来源 ID／名称、请求 ID、登记时的账号／队名／座位快照、原文件名、首次入队序号、文档页数与字节数；界面以该序号关联任务执行状态、已用尝试次数、最近结果与重试可领取时间。首次入队顺序不代表当前重试顺序，也不提供预计出纸时间。两个查询并非同一数据库快照；执行数据缺失时显示未知，不推断为排队。查询不读取 PDF，不依赖当前名单，也不因来源撤销而隐藏其已入队任务。页面每 10 秒刷新，汇总全场已入队任务、页数及各执行状态，筛选不改变汇总口径；刷新失败保留上次数据并标记可能过期。列表不包含准备中或生成失败的请求，完成状态仅表示 spooler 报告打印，不证明实际出纸。
+
+管理员专用 `/print/printers` 和 `/print/sources` 复用已有打印机注册、配对码签发、绑定解除、来源创建与撤销接口；查看员不能访问管理页面。配对码和来源 token 只保存在签发页面的临时状态，不写入浏览器持久存储或 Query mutation cache，离开页面或关闭展示后不恢复。配对码按已知到期时间隐藏，Server 校验仍为准；复制值进入系统剪贴板，页面不自动清空剪贴板。绑定解除和来源撤销需要明确确认，HTTP 409 不被当成成功或自动重试；管理页面不提供强制解绑、重置尝试、取消任务、恢复旧 token、任意 PDF 上传或 Windows 队列远程设置。绑定确认只表示凭据绑定事实，不代表客户端在线或打印设备就绪。
 
 接口错误沿用 `{ "title": "…", "status": 400, "code": "INVALID_REQUEST" }` 外壳。无效字段／PDF 返回 400，来源认证失败或撤销返回 401，管理接口角色不足返回 403，自己来源中不存在的请求返回 404，阶段／内容／身份冲突返回 409，PDF 上传超过 8 MiB 返回 413，内部持久化失败返回 500；现有数据库工作准入失败可返回 503。来源认证失败不消费请求体。整个 Print namespace 使用 `Cache-Control: no-store`；不通过错误正文泄漏解析内容、路径或其他来源的存在事实。JSON 字段由 Server HTTP DTO 与 Serde 定义，通过 Specta 直接导出 TypeScript，不手改生成物；路由与状态语义由实际 HTTP 测试验证。
 
@@ -2044,7 +2046,7 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 Print 组件拥有按尝试期限触发的到期检查循环，Server 组合层显式启动该任务，由 `BackgroundTasks` 管理其取消、等待和异常释放，`serve` 命令不直接调用 Print 循环。循环收到正常关闭信号后停止发起新检查，已经开始的事务完成后再退出。相关业务事务也检查到期，检查失败通过 tracing 记录并在后续检查重试；任务异常退出在关闭等待时以保留源错误的 Snafu 错误报告，日志不包含 panic 内容。任务状态、次数、回执、结束结果及重试等待在同一 `Database::write` 事务内改变；数据库唯一约束同时防止同一任务、客户端或打印机存在多个活动尝试。启动完成文档核对后，仅为已登记 Job ID 且尚未结束的尝试设置从恢复时刻起的 60 秒观察宽限，不伪造新的联系或观察时间；未登记尝试保持原期限，终态和重试等待不重置。解除打印机绑定的事务先判定到期，再拒绝仍有活动尝试的打印机，不能以网络离线代替尝试结束。
 
-执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。既有 `/print/queue` 和 Web 页面继续展示原有入队元数据，不伪装成已交付的打印进度界面。本节范围为 Server 协议；Windows 客户端执行记录和当前验证范围见第 23.3.3 节，图形界面、驱动和真实出纸仍须分别验收。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试，这些结果不包含这两个测试，也不构成 Windows 程序运行、驱动兼容或物理打印证据。
+执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。`/print/queue` 保持原有入队元数据契约，Web 将其与执行状态关联，不将系统报告解释为物理交付。本节范围为 Server 协议；Windows 客户端执行记录和当前验证范围见第 23.3.3 节，图形界面、驱动和真实出纸仍须分别验收。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试，这些结果不包含这两个测试，也不构成 Windows 程序运行、驱动兼容或物理打印证据。
 
 #### 23.3.3 Windows 客户端执行与本地恢复
 

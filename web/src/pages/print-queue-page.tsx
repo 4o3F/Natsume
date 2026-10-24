@@ -2,18 +2,53 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { unwrap } from "@/api/errors";
-import type { PrintQueueEntry } from "@/api/generated/types";
+import {
+  executionCounts,
+  executionLabels,
+  executionRows,
+  type PrintRow,
+} from "@/pages/print-execution";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSessionScope } from "@/auth/session-context";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
+import { PrintNavigation } from "@/components/print-navigation";
 import { RefreshCountdown } from "@/components/device-status";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-const columns: DataTableColumnDef<PrintQueueEntry>[] = [
-  { accessorKey: "ready_sequence", header: "Queue sequence" },
+const columns: DataTableColumnDef<PrintRow>[] = [
+  { accessorKey: "ready_sequence", header: "Admission sequence" },
+  {
+    id: "execution",
+    header: "Execution",
+    cell: ({ row }) =>
+      row.original.execution
+        ? executionLabels[row.original.execution.state]
+        : "State unavailable",
+  },
+  {
+    id: "attempts",
+    header: "Attempts used",
+    cell: ({ row }) => row.original.execution?.attempts_used ?? "Unknown",
+  },
+  {
+    id: "outcome",
+    header: "Last outcome",
+    cell: ({ row }) =>
+      row.original.execution
+        ? (row.original.execution.last_outcome ?? "None reported")
+        : "Unknown",
+  },
+  {
+    id: "retry",
+    header: "Retry eligible at",
+    cell: ({ row }) =>
+      row.original.execution?.retry_at_unix_ms == null
+        ? "—"
+        : new Date(row.original.execution.retry_at_unix_ms).toLocaleString(),
+  },
   {
     accessorKey: "team_name",
     header: "Team",
@@ -70,43 +105,60 @@ const columns: DataTableColumnDef<PrintQueueEntry>[] = [
 export function PrintQueuePage() {
   const { api } = useSessionScope();
   const [filter, setFilter] = useState("");
+  const [stateFilter, setStateFilter] = useState("all");
+  const executions = useQuery({
+    queryKey: ["print-executions"],
+    queryFn: async ({ signal }) =>
+      unwrap(await api.listPrintExecutions({ signal })),
+    refetchInterval: LIST_POLL_MS,
+  });
   const queue = useQuery({
     queryKey: ["print-queue"],
     queryFn: async ({ signal }) => unwrap(await api.listPrintQueue({ signal })),
     refetchInterval: LIST_POLL_MS,
   });
+  const allRows = useMemo(
+    () => executionRows(queue.data ?? [], executions.data ?? []),
+    [queue.data, executions.data],
+  );
+  const counts = executionCounts(allRows);
   const rows = useMemo(() => {
     const search = filter.trim().toLocaleLowerCase();
-    return (queue.data ?? []).filter(
+    return allRows.filter(
       (entry) =>
-        !search ||
-        [
-          entry.team_name,
-          entry.account,
-          entry.seat_label,
-          entry.source_name,
-          entry.source_id,
-          entry.original_filename,
-          entry.request_id,
-        ].some((value) => value?.toLocaleLowerCase().includes(search)),
+        (stateFilter === "all" ||
+          (entry.execution?.state ?? "unknown") === stateFilter) &&
+        (!search ||
+          [
+            entry.team_name,
+            entry.account,
+            entry.seat_label,
+            entry.source_name,
+            entry.source_id,
+            entry.original_filename,
+            entry.request_id,
+          ].some((value) => value?.toLocaleLowerCase().includes(search))),
     );
-  }, [queue.data, filter]);
+  }, [allRows, filter, stateFilter]);
   const pages =
     queue.data?.reduce((total, entry) => total + entry.pages, 0) ?? 0;
 
   return (
     <div className="min-w-0 space-y-4">
+      <PrintNavigation />
       <div className="space-y-1">
         <h1 className="text-2xl font-semibold tracking-tight">Print queue</h1>
         <p className="text-sm text-muted-foreground">
-          Admitted documents in FIFO order. Queued does not mean printed.
-          Preparing requests and generation failures are not in this queue.
+          Admitted documents with current execution states. Queued does not mean
+          printed. Admission sequence is not the live retry order. Spooler
+          completion does not prove physical delivery. Preparing requests and
+          generation failures are not in this queue.
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3">
         {queue.data && (
           <p className="text-sm tabular-nums" aria-live="polite">
-            {queue.data.length.toLocaleString()} queued{" "}
+            {queue.data.length.toLocaleString()} admitted{" "}
             {queue.data.length === 1 ? "task" : "tasks"} ·{" "}
             {pages.toLocaleString()} {pages === 1 ? "page" : "pages"}
           </p>
@@ -122,13 +174,48 @@ export function PrintQueuePage() {
           <Button
             type="button"
             variant="outline"
-            disabled={queue.isFetching}
-            onClick={() => void queue.refetch()}
+            disabled={queue.isFetching || executions.isFetching}
+            onClick={() => {
+              void queue.refetch();
+              void executions.refetch();
+            }}
           >
             Refresh queue
           </Button>
         </div>
       </div>
+      <p className="text-sm text-muted-foreground" aria-live="polite">
+        {counts.queued} ready to claim · {counts.active} executing ·{" "}
+        {counts.waiting} retry waiting · {counts.completed} reported printed ·{" "}
+        {counts.exhausted} exhausted · {counts.unknown} state unavailable
+      </p>
+      <label className="flex items-center gap-3 text-sm">
+        Execution state
+        <select
+          aria-label="Execution state"
+          value={stateFilter}
+          onChange={(event) => setStateFilter(event.target.value)}
+          className="h-9 rounded-md border bg-background px-3"
+        >
+          <option value="all">All states</option>
+          {Object.entries(executionLabels).map(([state, label]) => (
+            <option key={state} value={state}>
+              {label}
+            </option>
+          ))}
+          <option value="unknown">State unavailable</option>
+        </select>
+      </label>
+      {executions.isError && (
+        <Alert variant="destructive">
+          <AlertTitle>Execution refresh failed</AlertTitle>
+          <AlertDescription>
+            {executions.data
+              ? "Showing last received execution states; they may be out of date."
+              : "Execution states are unavailable. Missing states are not treated as queued."}
+          </AlertDescription>
+        </Alert>
+      )}
       <Input
         aria-label="Filter print queue"
         placeholder="Search team, account, seat, source, file or request ID"
@@ -143,9 +230,9 @@ export function PrintQueuePage() {
           </AlertDescription>
         </Alert>
       )}
-      {queue.data && filter.trim() && (
+      {queue.data && (filter.trim() || stateFilter !== "all") && (
         <p className="text-sm text-muted-foreground">
-          {rows.length} of {queue.data.length} queued tasks match
+          {rows.length} of {queue.data.length} admitted tasks match
         </p>
       )}
       <DataState
@@ -154,8 +241,8 @@ export function PrintQueuePage() {
         isEmpty={!rows.length}
         emptyLabel={
           queue.data?.length
-            ? "No queued documents match the filter."
-            : "No queued documents."
+            ? "No admitted documents match the filter."
+            : "No admitted documents."
         }
       >
         <DataTable
