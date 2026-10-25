@@ -170,7 +170,7 @@ mod tests {
         std::fs::write(
             &compiler,
             format!(
-                "#!/usr/bin/python3\nimport os, time\nfrom pathlib import Path\nPath({marker:?}).write_text(str(os.getpid()) + '\\n' + str(Path.cwd()))\nwhile True:\n os.write(1, b'x'*65536)\n os.write(2, b'x'*65536)\n time.sleep(.001)\n"
+                "#!/usr/bin/python3\nimport os, time\nfrom pathlib import Path\nmarker = Path({marker:?})\npending = marker.with_suffix('.pending')\npending.write_text(str(os.getpid()) + '\\n' + str(Path.cwd()))\npending.replace(marker)\nwhile True:\n os.write(1, b'x'*65536)\n os.write(2, b'x'*65536)\n time.sleep(.001)\n"
             ),
         )?;
         std::fs::set_permissions(&compiler, std::fs::Permissions::from_mode(0o700))?;
