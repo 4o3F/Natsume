@@ -2,7 +2,7 @@
 
 本文为**获得赛事主办方书面授权的受管比赛工位**提供一个可选的桌面观测方案。目标是把当前物理输出的画面低延迟发送到指定的运维接收端，同时不改变 GNOME Wayland 会话、不注入桌面门户授权流程，也不录制音频或输入。
 
-它不是 Natsume 的默认功能、不是 Agent/Helper 的职责，也不随 Client Deb 或镜像自动启用。是否启用、接收端地址、保留策略和可观看人员必须由部署方单独批准并记录。
+本方案独立于 Natsume Agent/Helper，由部署方单独批准并记录启用范围、接收端地址、保留策略和观看人员；Client Deb 或镜像均不自动启用。
 
 ## 1. 结论与边界
 
@@ -18,22 +18,19 @@
 
 `kmsgrab` 读取的是 KMS CRTC/plane 的 scanout framebuffer，而不是连接到某个用户的 Wayland socket；因此它适合抓取当前实际显示的 GNOME 输出。FFmpeg 官方文档说明该输入需要 DRM master 或 `CAP_SYS_ADMIN`，且默认设备为 `/dev/dri/card0`；抓帧频率是定时采样，超过实际刷新率不会产生更多新画面。[FFmpeg kmsgrab 文档](https://ffmpeg.org/ffmpeg-devices.html#kmsgrab)
 
-这条路径不会触发 PipeWire/xdg-desktop-portal 的屏幕共享请求，因而在本次 Ubuntu 24.04.5 GNOME Wayland QEMU 验证中未出现 GNOME 的“正在共享屏幕”提示。本次已实际验证：`kmsgrab` 可抓到 1280×800 KMS 画面，`hwdownload,format=bgr0` 加 `libx264` 可输出 MP4。**尚未在该 ISO 上完成端到端 SRT 接收验收**；第 7 节将其列为上线门槛。
+这条路径不会触发 PipeWire/xdg-desktop-portal 的屏幕共享请求，因而在本次 Ubuntu 24.04.5 GNOME Wayland QEMU 验证中未出现 GNOME 的“正在共享屏幕”提示。本次已实际验证：`kmsgrab` 可抓到 1280×800 KMS 画面，`hwdownload,format=bgr0` 加 `libx264` 可输出 MP4。**尚未在该 ISO 上完成端到端 SRT 接收验收**。
 
 ### 1.2 明确不做的事
 
-- 不用 `x11grab`、Xwayland 或 `wf-recorder`；前者不适用于原生 Wayland，后者依赖 wlroots 协议而 GNOME/Mutter 不提供。
-- 不调用 portal、GNOME Remote Desktop、VNC 或 RDP；这些方案可能要求用户授权或显示共享状态。
 - 不抓音频、摄像头、剪贴板、按键、鼠标事件或任意用户文件。
 - 不改变 GDM、GNOME、Mutter、Natsume Agent/Helper 或 Home reset 流程；服务只读取 KMS 设备并向固定接收端单向发送媒体。
 - 不允许由比赛用户传入输出 URL、编码器选项、DRM 设备路径或 systemd unit 名。
 
 ### 1.3 已知限制
 
-- KMS 抓到的是当前 scanout，不是单独的 Wayland 窗口；切换前台会话或显示器时，接收端看到的是切换后的实际画面。
+- 切换前台会话或显示器时，接收端看到的是切换后的实际画面。
 - 一张卡的多显示器、多 CRTC 或非线性/modifier framebuffer 必须在目标硬件实测。FFmpeg 的 `hwdownload` 仅适用于可映射的线性 framebuffer；否则可能花屏或失败。[FFmpeg 示例](https://ffmpeg.org/ffmpeg-devices.html#kmsgrab)
 - 本文的基线是软件 `libx264`。硬件 VAAPI/NVENC 编码可在基线验收通过后单独评估，不应阻塞首个交付。
-- KMS 权限、GPU 驱动和 FFmpeg 编译选项随镜像和硬件而变；不能以本次 QEMU 结果替代目标工位验收。
 
 ## 2. 设计参数
 
@@ -67,7 +64,7 @@ ffmpeg -hide_banner -protocols | grep -F srt
 loginctl list-sessions
 ```
 
-前三项分别证明 DRM 设备、输入设备和 SRT 协议存在；最后一项用于在验收记录中关联当前受管图形会话。任一项失败即不启用服务，不能回退到 portal、VNC、RDP 或 X11 抓屏。
+前三项分别证明 DRM 设备、输入设备和 SRT 协议存在；最后一项用于在验收记录中关联当前受管图形会话。任一项失败即不启用服务。
 
 ## 4. 固定接收端契约
 
@@ -82,13 +79,13 @@ loginctl list-sessions
 | 可用性 | listener 必须在工位服务启动前就绪；断链后由工位 systemd 有界重启 |
 | 存储 | 默认只做实时观看；若接收端保存视频，保留期和删除流程由赛事运维另行定义 |
 
-接收端 listener 的示例 URL（仅说明格式，不可直接复用占位值）：
+接收端 listener 的示例 URL：
 
 ```text
 srt://0.0.0.0:9000?mode=listener&latency=200000&transtype=live&pbkeylen=32&passphrase=REPLACE_WITH_APPROVED_SECRET
 ```
 
-工位不得在 shell 历史、仓库、镜像层、用户 Home 或 journal 中保存 `passphrase`。FFmpeg 的 SRT URL 最终会作为其进程参数出现，因此**不能把这点伪装为密钥永不在进程参数中出现**；第 5 节只把配置文件限定为 root 可读，且上线验收必须证明比赛账户不能读取该 root 进程的 `/proc/<pid>/cmdline`。具备 root 权限的维护人员仍可读取它，这是该 FFmpeg/SRT 直连实现的固有限制；若目标机的既有 `/proc` 策略无法满足该条件，则不得启用本方案。
+工位不得在 shell 历史、仓库、镜像层、用户 Home 或 journal 中保存 `passphrase`。FFmpeg 的 SRT URL **会出现在进程参数中**，root 维护人员可读取。配置文件须仅 root 可读，上线前还须验证比赛账户无法读取该 root 进程的 `/proc/<pid>/cmdline`；目标机既有 `/proc` 策略无法满足时，禁止启用本方案。
 
 ## 5. 工位安装与 systemd 配置
 
@@ -173,7 +170,7 @@ sudo journalctl -u natsume-kms-stream.service --since '10 minutes ago'
 
 ## 7. 上线验收
 
-以下项目均须在**实际目标硬件、实际 Wayland GNOME 会话和实际接收端**完成；QEMU 和本地 MP4 仅是前置可行性证据。
+以下项目均须在**实际目标硬件、实际 Wayland GNOME 会话和实际接收端**完成。
 
 | 编号 | 操作 | 通过条件 |
 | --- | --- | --- |
@@ -186,7 +183,7 @@ sudo journalctl -u natsume-kms-stream.service --since '10 minutes ago'
 | ST-07 | `systemctl stop natsume-kms-stream.service` | 接收画面停止，比赛桌面及 Natsume 全部保持正常 |
 | ST-08 | 审计部署文件与日志 | URL 密钥未出现在仓库、镜像、用户 Home、shell history 或 journal；比赛用户不能读取 root 服务的进程参数 |
 
-建议记录：镜像版本、内核、GPU/DRM 驱动、FFmpeg 版本和构建配置、输出分辨率、平均 CPU、平均/峰值码率、端到端延迟、接收端版本，以及每项验收的时间与结果。不要把本机临时目录、PID 或测试视频作为正式交付证据。
+建议记录镜像版本、内核、GPU/DRM 驱动、FFmpeg 版本和构建配置、输出分辨率、平均 CPU、平均/峰值码率、端到端延迟、接收端版本及逐项验收时间与结果。
 
 ## 8. 性能调优顺序
 
@@ -210,8 +207,8 @@ sudo rm -f /etc/systemd/system/natsume-kms-stream.service
 sudo systemctl daemon-reload
 ```
 
-此回退只移除可选串流服务和其私有部署输入；不修改 ISO、Natsume Client、GDM、GNOME、用户 Home 或接收端历史数据。接收端保存内容的清理按其单独的保留策略执行。
+接收端保存内容的清理按其单独的保留策略执行。
 
 ## 10. 实施决策
 
-本方案的首期交付仅包含：FFmpeg 软件编码、固定 SRT 接收端、root-only 配置、单个 systemd 服务和第 7 节验收。多路转码、浏览器观看页、录像检索、硬件编码、动态控制 API、用户级开关及对 Natsume 协议的接入均不在本期范围内。
+本方案的首期交付仅包含：FFmpeg 软件编码、固定 SRT 接收端、root-only 配置、单个 systemd 服务和第 7 节验收。

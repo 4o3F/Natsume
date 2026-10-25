@@ -1,10 +1,10 @@
 # Natsume V2 目标架构与实施计划
 
-> 状态：`ACCEPTED TARGET` 基线日期：2026-08-28 Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面 平台扩展修订：2026-10-19；统一包布局、持久打印队列与离线队伍拍照，见第 17、23 节 适用范围：Natsume V2 及后续单赛事平台目标；目标不代表已交付 实施策略：既有工位控制基线采用预发布 flag day；平台扩展按独立工作包增量实施，不自动改变已部署契约
+> 状态：`ACCEPTED TARGET` 基线日期：2026-08-28 Session/Home 修订：2026-09-07；GNOME 原生双会话，以 foreground_target 选择等待界面或比赛桌面 平台扩展修订：2026-10-19；统一包布局、持久打印队列与离线队伍拍照，见第 17、23 节 适用范围：Natsume V2 及后续单赛事平台目标 实施策略：既有工位控制基线采用预发布 flag day；平台扩展按独立工作包增量实施，不自动改变已部署契约
 
 本文是仓库中唯一的人工维护架构权威。它同时定义目标系统、模块所有权、安全边界、Device Control 状态模型、目标数据库和实施顺序。部署文档落实配置和维护要求；文档入口见[文档索引](README.md)。Client 必需的运行环境见 [Client 运行环境要求](client-environment.zh-CN.md)；镜像实现、发行版适配和目标机器验收由镜像项目负责。
 
-本文描述的是目标状态，不是完成声明。当前代码与本文冲突时，冲突属于待实施债务，不能反向限制目标架构。
+本文定义目标状态，交付情况以实现和验收证据为准；代码与目标的差异属于待实施债务。
 
 ## 1. 权威来源与阅读规则
 
@@ -23,14 +23,14 @@
 | 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
 | 构建、依赖和发布版本 | Cargo、pnpm、Deno 配置、工具版本清单、打包配置与 lockfile |
 
-表中源码路径指向现有布局；第 17 节定义包含后续工作包的完整目标路径。当前 workspace 索引见 [crates/README.md](../crates/README.md)。XLSX 解析、输入类型和模板归 Server Import 内部，学校 Logo 文件与图像处理归 Server Contest 内部；打印、拍照及共享赛事领域包仍须按各自工作包实施。
+当前 workspace 索引见 [crates/README.md](../crates/README.md)。XLSX 解析、输入类型和模板归 Server Import 内部，学校 Logo 文件与图像处理归 Server Contest 内部。
 
 规则：
 
 1. 不在第二个 Markdown 文件建立并行架构 authority；PRD 与验证材料引用本文，历史实验不覆盖当前目标语义。
 2. Proto 和 migration 是机器可执行契约，但不能自行创造与本文相反的业务语义。
 3. 生成代码不能手工编辑。
-4. 工位 Device Control 的 migration、Rust adapter、HTTP DTO 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务；照片成果包不属于旧 credential Bundle。
+4. 工位 Device Control 的 migration、Rust adapter、HTTP DTO 或 Web 代码若仍表达 Command、Token、Bundle 或 Observed 旧模型，均视为同步债务。
 5. 既有 V2 预发布 flag day 的字段删除、编号压紧规则只适用于该基线，不构成后续平台扩展修改已部署协议或丢弃数据的授权。
 6. 历史 flag day 的中间提交不得进入部署包或形成双协议、双 authority、双 schema fallback；后续平台工作包须独立可审阅、可验证，保留现有运行契约。
 
@@ -54,7 +54,7 @@ Natsume 是服务一场现场竞赛的统一运营平台，工位控制目标规
 10. DOMjudge 入口的持久异步打印队列、空闲 Windows Client 主动领取及提交时排队快照。
 11. 首次联网初始化后可离线运行的 Windows 队伍拍照、重照确认、签名交付与当前成品管理。
 
-第 7–14 节的 lease、Input、Target、Actual 和收敛规则特指工位 Device Control。 打印尝试及照片提交的持久事实属于第 23 节，不引入通用命令投递或全局操作审计。
+第 7–14 节定义工位 Device Control，第 23 节定义打印与拍照。
 
 系统明确不提供：
 
@@ -79,7 +79,7 @@ Server committed truth、Server Intent、Client Input、Concrete Target 和 Clie
 
 ### 3.2 完整状态代替操作投递
 
-工位 Device Control 没有 Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。 第 23 节的打印请求与有限执行尝试是独立业务队列，不是恢复旧 Device Command。
+工位 Device Control 没有 Command delivery plane。远控效果由完整 Desired State 持续收敛，不保存 queued、in-flight、Ack、outcome unknown 或投递历史。
 
 Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操作者和已提交的逐设备结果， 不记录 Client 执行、投递、Ack 或历史进度。它保证网络重试不再次推进 terminate/reset epoch。
 
@@ -96,8 +96,6 @@ Operator HTTP Target 提交保留去重 receipt：只记录规范化请求、操
 每个成功 wire barrier 必须晚于它证明的 durable fact。重复的完整状态不得重复分配 identity、Binding、证书或副作用。
 
 ### 3.6 KISS 与 YAGNI
-
-只实现当前系统确实需要的抽象：
 
 - trait 统一同类生命周期，不统一语义不同的业务；
 - static dispatch 优先于 trait object；
@@ -155,8 +153,6 @@ Server 是唯一业务 authority，拥有：
 - 打印请求、就绪队列、领取归属、有限尝试与结果；
 - 拍照来源授权、当前成品、待处理候选与成果接收。
 
-第 4.2–4.4 节保留已安装进程名称；Cargo 包的领域化命名见第 17 节，不隐式重命名部署入口。
-
 Server 不直接操作工作站文件、Caddy、图形 Session 或 Home。
 
 ### 4.2 `natsume-device-daemon`
@@ -196,7 +192,7 @@ waiting 使用发行版官方 GNOME Kiosk 的原生 Wayland 会话（当前入�
 - 未绑定、不可继续或本地 IPC 失联时的只读诊断展示与离线二维码；
 - 窗口生命周期、首帧就绪和 UI lease。
 
-等待占位复用现有 Slint/Skia 渲染能力，保持一个随窗口尺寸变化的无装饰全屏窗口。普通等待、重置和恢复期间均可显示同一占位，不要求动态文案、进度条或动画；详细状态由 Panel/Actual 展示。Binding 是既有部署流程的专用页面，不新增绑定协议。未来复杂 Skia 页面只替换 Agent 内的等待内容；本期不预建页面插件、主题协议或远程图片下发能力。
+等待占位复用现有 Slint/Skia 渲染能力，保持一个随窗口尺寸变化的无装饰全屏窗口。普通等待、重置和恢复期间均可显示同一占位，不要求动态文案、进度条或动画；详细状态由 Panel/Actual 展示。
 
 Agent 不连接 Server，不管理 Caddy，不读取 credential；不自行启动或控制用户服务。“显示等待界面 / 显示比赛桌面”由 Daemon 通过 Helper 激活 waiting/contest 实现，不调用桌面 Lock/Unlock，也不向 Agent 发送会话切换命令。失联撤销 Binding 输入并保留占位，不能隐藏窗口暴露可操作桌面。
 
@@ -275,7 +271,7 @@ Server TLS leaf 必须包含部署实际 Control Endpoint 的 IP-SAN。Server �
 - 错误 source chain；
 - 命令行参数、环境变量或包管理脚本。
 
-Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`accounts` 是 vault row 的父表。Client credential 依赖 root-owned 严格权限文件、原子写入与目录权限；当前 threat model 明确不抵抗本地 root。
+Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`accounts` 是 vault row 的父表。Client credential 依赖 root-owned 严格权限文件、原子写入与目录权限。
 
 ## 6. 领域 authority 与数据所有权
 
@@ -294,7 +290,7 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | 当前lease的latest Actual与receive-time | DeviceActor memory | fresh snapshot；Input消费后丢弃，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
 | 打印请求、队列及执行尝试 | Print Component | durable；领取原子化，旧尝试报告不得推进新尝试 |
-| 打印系统任务及设备观察 | Print Client | 不等于物理出纸证明，不能覆盖 Server 的领取 authority |
+| 打印系统任务及设备观察 | Print Client | 队列、Job ID 与精确尝试标签 |
 | 拍摄组、已知收图、候选及现场确认 | Photo Client local workspace | 离线持久化，确认绑定具体队伍与图片 |
 | 当前照片、待处理候选及照片接收结果 | Photo Component | 与当前名单核对，不按导入时间静默覆盖 |
 | 新业务客户端授权 | 对应 Print／Photo 边界 | 独立、最小权限，不复用工位 key 或管理员会话 |
@@ -367,13 +363,13 @@ Transition 通过单调 epoch 表达需要至少执行一次的目标：
 - terminate Session；
 - reset Home。
 
-Level 和 Transition 都属于 Concrete Target，不形成第二套 Command 模型。
+Level 和 Transition 都属于 Concrete Target。
 
 ## 8. WSS、Enrollment 与 Session lease
 
 ### 8.1 Transport
 
-Operator HTTPS 与 Device WSS 可以共用一个 Server listener。Device 只连接固定 `/api/v2/device/control` route，并使用唯一 pinned `natsume.control.v3` WSS subprotocol。 每个完成重组的 Protobuf frame 最多 65,536 bytes。这个上限同时适用于 Handshake 与 Active frame，不再为单个消息类型建立重复上限。一个 wire generation 只有一个 descriptor，不维持旧/新双栈。
+Operator HTTPS 与 Device WSS 可以共用一个 Server listener。Device 只连接固定 `/api/v2/device/control` route，并使用唯一 pinned `natsume.control.v3` WSS subprotocol。 每个完成重组的 Protobuf frame 最多 65,536 bytes。这个上限同时适用于 Handshake 与 Active frame。一个 wire generation 只有一个 descriptor，不维持旧/新双栈。
 
 `ClientProof.signature` 是 Ed25519 对下列 32-byte SHA-256 digest 的签名：
 
@@ -411,7 +407,7 @@ production WSS route
 
 WSS route只移交socket、socket观测的peer IP和进程共享的`Arc<DeviceControl>`，不编排Device、 Provisioning、admission和Registry的中间步骤。`serve_connection`是单条连接的 唯一application orchestration入口；admission的proof、pre-auth和ready barrier都不 泄漏到transport或其他组件。连接期最终只向attach流程交付现有 `ControlAuthority`，不再建立admission ticket、attachment ID或authority generation。
 
-`ServerChallenge` 的超时只约束当前连接唯一 `ClientProof` 的提交窗口，不是 Enrollment TTL。
+`ServerChallenge` 超时约束当前连接唯一 `ClientProof` 的提交窗口；Enrollment 的存续规则见下节。
 
 ### 8.2 Enrollment
 
@@ -444,15 +440,15 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 11. Client crash-safe安装新authority manifest后回显exact `EnrollmentAuthority`；Server验证后建立lease并发送`SessionReady`。
 12. activation commit后、Client安装前发生断联或Server重启时，Client用同一candidate key重新proof；Server按第2条重放authority。
 
-Client 本地 control manifest 直接保存 exact Ed25519 public key并与私钥文件重新派生的 公钥比较；不再为同一自然authority建立派生 `ControlKeyId`。
+Client 本地 control manifest 以 exact Ed25519 public key 标识 authority，并与私钥文件重新派生的公钥比较，不另建 `ControlKeyId`。
 
 Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不落库。Server重启清空所有pending review并把Provisioning window恢复为closed；未提交的注册请求随Client重连重新进入人工审批。
 
 ### 8.3 Resume 与 lease
 
-Resume proof 使用current control key。`serve_connection`让Device Component选出完整 `ControlAuthority`，admission使用其exact public key验签并要求Device为 `enabled`。Enrollment Ready和Resume最终都交付同一`ControlAuthority`表示， 不在中间压缩为只含`device_id`的新ticket。
+Resume proof 使用current control key。`serve_connection`让Device Component选出完整 `ControlAuthority`，admission使用其exact public key验签并要求Device为 `enabled`。Enrollment Ready和Resume最终都交付同一`ControlAuthority`表示。
 
-在Registry attach前，`serve_connection`再让Device Component确认该exact authority仍是 current且Device仍为`enabled`。这次复查关闭proof验证期间发生disable、 revoke或control-key replacement的竞态，但完全封装在`device_control`内。 复查成功后才使用authority中的`device_id`附着DeviceActor。
+在Registry attach前，`serve_connection`再让Device Component确认该exact authority仍是 current且Device仍为`enabled`。这次复查在`device_control`内关闭proof验证期间发生disable、revoke或control-key replacement的竞态。 复查成功后才使用authority中的`device_id`附着DeviceActor。
 
 每个 Device 同时只有一个 current lease：
 
@@ -589,9 +585,9 @@ SessionControlTarget
 - `foreground_target` 是持续的前台选择 Level；waiting 表示“显示等待界面”，contest 表示“显示比赛桌面”。它选择固定会话角色，不表示 GNOME screensaver 的锁定状态；
 - 新设备的默认目标为 waiting；绑定成功不改写该目标，由管理员选择 contest 后才显示比赛桌面。已有持久目标不因绑定、重连或重启重新初始化；
 - 普通切换只调用受限 logind 激活能力，不调用 `LockSession`/`UnlockSession`，不结束任一会话，不改变 Home generation；两边比赛/等待进程继续运行；
-- 固定 Unix 用户 waiting 和 teams 分别对应 waiting/contest 角色，Home 为 `/home/waiting` 和 `/home/teams`；角色 token 与用户名分开。两个用户各自拥有 GNOME compositor、用户总线和 Home，均由官方 GDM 创建和管理；每个角色最多一个合法会话，waiting 与 contest 各一个不构成 Ambiguous，后台 contest 也不是歧义；
-- 分开观测 contest 生命周期、两边精确 boot/session、桌面就绪、seat0 实际前台及 `waiting_ready`/`contest_ready`。健康 contest 生命周期统一为 `Running`，不再用 `Active`/`Locked` 表示 GNOME 锁屏或业务前台；`Running` 本身不证明显示就绪；
-- waiting 目标收敛需占位首帧已就绪且在前台；contest 目标收敛需当前 Home/Binding/epoch 条件满足、比赛桌面已就绪且在前台。GDM 创建桌面或 API 返回成功不等于已完成呈现；
+- 固定 Unix 用户 waiting 和 teams 分别对应 waiting/contest 角色，Home 为 `/home/waiting` 和 `/home/teams`；角色 token 与用户名分开。两个用户各自拥有 GNOME compositor、用户总线和 Home，均由官方 GDM 创建和管理；每个角色最多一个合法会话，waiting 与 contest 各一个不构成 Ambiguous；
+- 分开观测 contest 生命周期、两边精确 boot/session、桌面就绪、seat0 实际前台及 `waiting_ready`/`contest_ready`。健康 contest 生命周期统一为 `Running`；
+- waiting 目标收敛需占位首帧已就绪且在前台；contest 目标收敛需当前 Home/Binding/epoch 条件满足、比赛桌面已就绪且在前台；
 - 镜像对两个受管会话禁用自动锁屏及普通锁屏入口。意外出现的桌面锁屏属于显示异常，不能作为 waiting 目标已收敛的证据，也不通过“显示比赛桌面”自动绕过；
 - 开机无有效 Target 或设备未绑定时显示 waiting；Home 健康后可通过固定 GDM API 预备 contest，再返回 waiting，不恢复旧 lease 的比赛放行。已经比赛中断网时保持现有会话，不因断网自动切换或重置；
 - 重启后重新连接 Server，收到当前有效 Target 且 Binding、Home、会话就绪条件满足时，恢复 Server 保存的前台目标；不以重启前的物理前台覆盖远程目标；
@@ -602,9 +598,9 @@ SessionControlTarget
 
 `foreground_target` 只允许 waiting/contest；Actual 的 `foreground` 另可报告 greeter、other、none、unknown，不能把这些观测值作为远程目标。生命周期为 None/Starting/Running/Terminating/Ambiguous/Error。Wire 中缺失的前台默认为 unknown，缺失的 readiness 默认为 false；`contest_ready=true` 与非 Running 生命周期矛盾时拒绝整个报告。两项 readiness 都是当前控制 lease 的新鲜观测，不落入业务表。
 
-Helper 的 `QueryManagedSessions` 分别返回 waiting/contest 的精确会话、生命周期、`desktop_ready`、`locked_hint` 和实际前台。Daemon 结合这些系统事实与 Agent 的当前展示确认生成 readiness：比赛需唯一 Running、精确身份、桌面已就绪且未锁屏；waiting 还需当前 Agent lease 对当前 UI revision 的首帧及实际全屏尺寸确认。`ConfirmSessionPresentation` 的参数携带 lease ID、boot/session、revision、首帧标记和宽高；总线调用者连接由 Device1 验证，不能由参数自报。确认本身不证明会话已激活。
+Helper 的 `QueryManagedSessions` 分别返回 waiting/contest 的精确会话、生命周期、`desktop_ready`、`locked_hint` 和实际前台。Daemon 结合这些系统事实与 Agent 的当前展示确认生成 readiness：比赛需唯一 Running、精确身份、桌面已就绪且未锁屏；waiting 还需当前 Agent lease 对当前 UI revision 的首帧及实际全屏尺寸确认。`ConfirmSessionPresentation` 的参数携带 lease ID、boot/session、revision、首帧标记和宽高；总线调用者连接由 Device1 验证，不能由参数自报。
 
-Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor 的总线所有者与 PID/start time，并连接同一 compositor 的自有 Wayland socket。协议 roundtrip 必须返回有效输出；前台还检查 Mutter 电源状态和键盘/指针能力。Helper 比较探针前后的 logind 前台及 User.Display，矛盾或超时不报告就绪。wl_seat 能力不能证明物理键鼠实际已接管，输出信息也不能证明所有应用已画完；发行验收仍须核对真实画面与输入，不把 DING 或任一扩展作为全桌面初始化门槛。
+Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor 的总线所有者与 PID/start time，并连接同一 compositor 的自有 Wayland socket。协议 roundtrip 必须返回有效输出；前台还检查 Mutter 电源状态和键盘/指针能力。Helper 比较探针前后的 logind 前台及 User.Display，矛盾或超时不报告就绪。
 
 初始化及重建允许短暂取得前台；后台 compositor 可暂停绘制。普通切换激活已有精确会话，在既有有界时限内等待 Mutter 恢复输出与输入并重新核对前台事实，不重启或追逐替代会话。waiting 的激活资格使用健康 compositor 与活着的已鉴权 Agent，不依赖后台尚未产生的新帧；激活后仍须确认当前 UI revision 的全屏帧才允许 Home 维护或报告前台就绪。后台单纯缺帧不消耗 waiting 自动重建预算。
 
@@ -612,19 +608,17 @@ Wayland 探针在角色自身 UID 下核对 GNOME SessionManager、compositor �
 
 UI 选择推进 revision 后，旧帧不再证明 readiness，但替换帧尚未到达本身不撤回 Binding eligibility；观测仍因 waiting OS 条件、活着且认证的 Agent、前台、contest、Home 或当前 Target／epoch 事实失效而撤权。提交、维护和就绪仍要求精确当前 revision 的真实首帧；前台持续缺帧仍保留原有连续故障冷却与恢复预算。Agent 仅在收到现有 stale/incomplete-frame 拒绝、原帧身份／尺寸合法，且同一未过期 lease 上的新鉴权快照具有严格更新 revision 时刷新画面而不重新注册；拒绝的旧帧不被接受，新快照（含绑定后的队伍资料）仍等待实际新帧。错误身份、过期／替换 lease、未推进 revision、其他调用拒绝或失联继续 fail closed。本地 RPC 日志仅包含固定操作名与有界错误类别，不把异常 payload 放入诊断。
 
-原 `lock_state` 及 locked/unlocked 命名在本功能实施时统一迁移，不保留并行业务别名；Proto、本地 IPC、HTTP DTO、持久目标字段、Server/Client 和 Panel 生成类型同步更新。仍通过 session-control 的 PUT 替换目标，不新增切换 Command、toggle 或两套操作接口。
-
 Helper 仅接受固定角色和捕获的精确身份。登录通过固定的 gdm 身份单次入口，调用 GDM/libgdm 的 greeter API：创建或复用 greeter，选择镜像的 Wayland session entry，以固定 `gdm-contest`/`gdm-waiting` PAM 服务开始验证并请求启动桌面。调用者退出不影响由 GDM 管理的桌面；不接受任意账户、session entry、PAM 名或 unit，不直接启动 Xorg/GNOME，不修改 GDM/GNOME 程序或资源。
 
 开始认证前，固定 gdm 入口必须等待同一 seat0 Wayland greeter 的 GNOME 启动及 GDM 实际接收注册。Helper 的独立 system-bus observer 关联 RegisterSession 调用与成功回执，缓存仅对当前 boot、bus、GDM owner 和 greeter PID/start 有效；它不持有图形变更锁。固定 gdm UID 子进程核对 greeter 私有总线、SessionManager、原生 Wayland 输出/input 及精确前台，认证与启动前重复核对捕获身份。
 
 整个准备由固定 root unit 在既有 40 秒内执行并记录阶段，退出或未知结果后重读真实会话。GDM 继续拥有 worker、display 和桌面；缺失注册回执不授权终止不明 greeter，也不能凭 SessionManager Running 提前开始登录。失败保留明确阶段和错误，有条件时返回 waiting；调用者退出不代表已开始的 GDM 登录被取消。
 
-系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属见[运行环境要求](client-environment.zh-CN.md#系统与桌面)，具体适配由镜像项目负责。这不改变普通前台切换或 Home 维护的所有权。
+系统关闭顺序由镜像配置：logind 的 `session-*.scope` 通过 `Before=display-manager.service` 在停止时排到 GDM 之后，由 GDM 先结束自己的桌面与 worker，避免并行关闭中的 VT 等待。配置归属见[运行环境要求](client-environment.zh-CN.md#系统与桌面)，具体适配由镜像项目负责。
 
-镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。Natsume只调用已有会话API，不在运行时调整该配置或终止getty；系统配置和验证由镜像项目按[运行环境要求](client-environment.zh-CN.md#系统与桌面)落实。
+镜像还应通过 logind 的 `NAutoVTs=0` 禁止在普通空闲 VT 上自动启动 getty，并用 `ReserveVT=6` 保留独立管理员控制台，防止图形会话重建时与 agetty 争用终端。
 
-Client 对账号、GDM/PAM、Kiosk、Wayland、Home 模板和登录隔离的必要条件，统一记录在 `docs/` 的[运行环境要求](client-environment.zh-CN.md)，不随 Client Deb 安装。本仓库不提供镜像配置片段、模板或适配检查器；具体配置合并、镜像构建和目标机器验收由镜像项目负责。历史 VM 证据不能代替实际部署验证。
+Client 的账号、GDM/PAM、Kiosk、Wayland、Home 模板和登录隔离条件见[运行环境要求](client-environment.zh-CN.md)。
 
 waiting 不可用时报告切换失败，必要时显示 greeter；不得以锁住 contest 冒充“显示等待界面”成功。故障修复只恢复 waiting，普通前台切换不触发重建。
 
@@ -666,13 +660,13 @@ Daemon 在现有 `SnapshotReconciler` 中从当前 Target 与新鲜 Actual 推�
 | Home为Resetting、RecoveryRequired，或reset epoch未完成 | 禁止 | BLOCKED |
 | Session为None、Starting、Terminating、Ambiguous、Error、未知，或terminate epoch未完成 | 禁止 | BLOCKED |
 
-切到 waiting 本身允许保留上游访问，不撤销既有 Binding，不因前台切换必然重载 Caddy。关闭访问保留 Server 的 Binding 关系、身份及凭据，控制通信、状态上报和资源恢复仍可继续；观测错误沿用现有 lease 撤销、BLOCKED 确认和重连路径。这里约束本机 Caddy 后续的代理请求，不构成主机防火墙或对已在途请求的回滚。Home 维护窗口的图形登录互锁仍由 Helper 独立持有。
+切到 waiting 本身允许保留上游访问，不撤销既有 Binding，不因前台切换必然重载 Caddy。关闭访问保留 Server 的 Binding 关系、身份及凭据，控制通信、状态上报和资源恢复仍可继续；观测错误沿用现有 lease 撤销、BLOCKED 确认和重连路径。Home 维护窗口的图形登录互锁仍由 Helper 独立持有。
 
 新 reset/terminate 目标执行前，Daemon 先确认 Caddy 已加载 BLOCKED；reset 先激活 waiting，再执行旧 contest 清理、Home 恢复和 GDM 登录，最后按最新目标呈现。存在未完成 reset 时，旧 Session 收敛顺序不能提前返回 contest；维护后重新观测会话、Home 和前台，不能沿用旧事实。仅当前有效 Target 计划能恢复 READY 和 Binding 资格。周期观测只撤销访问，不授予访问；撤销资格不改变已排队的新 Target 的 plan 归属。发现异常或观测失败后先阻断，再上报或返回错误；无法确认 BLOCKED 则沿用 Daemon 失败退出、systemd 硬终止 Caddy 的处理。
 
 GNOME 应用可运行在 `user@UID.service` 下的 scope，Agent 的 `GetSessionByPID` 不一定直接返回图形会话。Daemon 从总线取得调用者 PID/UID；直接查询成功时必须匹配精确 waiting，返回其他会话则拒绝。只有明确无所属会话时，才检查 `GetUserByPID` 为 waiting、系统 systemd `GetUnitByPID` 为该用户 manager，且 logind 的唯一用户会话与 `User.Display` 均指向声称的 waiting/seat0/Wayland。未知结果不降级，不信任自报环境变量。前后台不改变 lease 身份；waiting replacement 前必须排空旧用户 manager 和 UID 进程，旧 lease 随精确会话失效。
 
-本地异常通过现有30秒观测周期发现，等待Server回应不暂停观测。观测与资源副作用仍由单一调度器串行执行，完成时限包含当前操作已有的deadline；此机制不声称在OS状态变化的瞬间同步阻断。镜像项目须在实际目标机器上验证这些行为，参见[运行环境要求](client-environment.zh-CN.md)。
+本地异常通过现有30秒观测周期发现，等待Server回应时继续观测。观测与资源副作用由单一调度器串行执行，阻断时延包含观测周期和当前操作已有的deadline。
 
 ## 10. Server 组件架构
 
@@ -694,7 +688,7 @@ Server 业务采用纵向组件：
 | Print | 否 | DOMjudge 受理、就绪 FIFO、领取、有限尝试与恢复 |
 | Photo | 否 | 来源授权、在线／离线成果接收、当前成品和候选 |
 
-组件化不意味着一个 trait 统治所有业务。Active资源由`DeviceActor`按固定wire结构 显式编排；各component只接收自身transition实际消费的Input或Actual，不用统一trait 制造`()`、空Intent或未使用参数。Device、Provisioning、Operator和Import保持独立 concrete component。`device_control/admission.rs` 只负责连接期的 Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owner。 其中间类型是admission module私有实现细节； `device_control::serve_connection`使用Device Component的公开事实完成单向编排， 不把protocol状态移入Device Component。
+Active资源由`DeviceActor`按固定wire结构显式编排；各component只接收自身transition实际消费的Input或Actual，不用统一trait 制造`()`、空Intent或未使用参数。Device、Provisioning、Operator和Import保持独立 concrete component。`device_control/admission.rs` 只负责连接期的 Challenge/Proof 分类与 Enrollment Ready barrier，不是业务 authority owner。 其中间类型是admission module私有实现细节； `device_control::serve_connection`使用Device Component的公开事实完成单向编排， 不把protocol状态移入Device Component。
 
 ### 10.2 Active component contract
 
@@ -729,7 +723,7 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `
 - 宏生成的异构执行器；
 - feature-controlled server/client 双面组件。
 
-顶层显式调用每个组件。少量重复是静态 wire structure 的直接表达。
+顶层显式调用每个组件。
 
 ### 10.4 `ServerState`
 
@@ -1065,7 +1059,7 @@ Operator HTTP response、WSS发送和 Dirty notification均发生在 commit 之�
 
 ## 14. Client 目标架构
 
-本节 Client 指 Linux 工位控制端，不约束第 23 节的独立打印／拍照应用。 工位 Server Component 不与 Client Reconciler 共用。双方只共享 [`natsume-workstation-protocol`](../crates/natsume-workstation-protocol/src/lib.rs)。 该crate只拥有Protobuf schema、生成类型、descriptor、canonical cryptographic transcript、薄签名/严格验签操作和确属wire grammar的helper；它不提供全envelope semantic validation，也不拥有authority key选择。 `prost`负责decode与wire类型约束，Server/Client各自在所属admission、component或 reconciler边界校验业务presence、ID、epoch、state组合和cross-field不变量。
+本节定义 Linux 工位控制端；独立打印／拍照应用见第 23 节。工位 Server Component 与 Client Reconciler 分别实现。双方只共享 [`natsume-workstation-protocol`](../crates/natsume-workstation-protocol/src/lib.rs)。 该crate只拥有Protobuf schema、生成类型、descriptor、canonical cryptographic transcript、薄签名/严格验签操作和确属wire grammar的helper；它不提供全envelope semantic validation，也不拥有authority key选择。 `prost`负责decode与wire类型约束，Server/Client各自在所属admission、component或 reconciler边界校验业务presence、ID、epoch、state组合和cross-field不变量。
 
 ### 14.1 Client-local concrete implementation
 
@@ -1075,7 +1069,7 @@ Gateway和Binding各自由所属concrete implementation生成、持久化并重�
 
 Daemon 独占 Client 部署配置的读取与解析；在身份预检成功后、控制连接和桌面预备前，将从 `/etc/natsume/config.toml` 解析出的 `[site].gateway_hostname` 通过固定 `ConfigureLocalGateway` 能力传给 Helper。Helper 只校验传入域名的合法性，再同步本机 `/etc/hosts` 的 Gateway loopback 映射、`/etc/firefox/policies/policies.json` 的主页和比赛书签，以及 `/etc/natsume/submit.env` 的公开提交地址；不读取或解析 Client 配置，不接受任意路径或文件内容。镜像提供 Firefox 基础策略、CA 信任及读取提交配置的 `submit` 启动器，部署域名由 Natsume 启动时派生，修改配置后重启 Daemon 生效，已运行的 Firefox 需重新打开。此能力不依赖 Enrollment 或 Server 在线，不触碰 teams Home。
 
-Helper 仅替换 hosts 的 Natsume 标记区块，清除其他行中当前 Gateway 名称的冲突别名，保留其余地址、别名和注释；改名时清理旧受管映射。Firefox 保留无关策略、CA 和书签，迁移 `Contest Site` 工具栏书签、主页，以及已有的旧 Gateway/镜像默认 domjudge 通知许可。`submit.env` 由 Helper 独占生成，内容仅为 `SUBMITBASEURL='https://<gateway_hostname>/'`，权限为 root:root/0644；不包含账号、密码或 Cookie，不是第二份部署输入。输入损坏或不可信时明确拒绝，不覆盖现有文件。三个文件分别原子替换，不声称跨文件事务；先写 Firefox 和提交配置、最后写 hosts，失败可幂等重放，重复启动不重写内容和权限均未变的文件。
+Helper 仅替换 hosts 的 Natsume 标记区块，清除其他行中当前 Gateway 名称的冲突别名，保留其余地址、别名和注释；改名时清理旧受管映射。Firefox 保留无关策略、CA 和书签，迁移 `Contest Site` 工具栏书签、主页，以及已有的旧 Gateway/镜像默认 domjudge 通知许可。`submit.env` 由 Helper 独占生成，内容仅为 `SUBMITBASEURL='https://<gateway_hostname>/'`，权限为 root:root/0644；不包含账号、密码或 Cookie，不是第二份部署输入。输入损坏或不可信时明确拒绝，不覆盖现有文件。三个文件分别原子替换：先写 Firefox 和提交配置、最后写 hosts，失败可幂等重放，重复启动不重写内容和权限均未变的文件。
 
 镜像的 `submit` 启动器每次读取上述公开配置，以系统 Python 执行固定版本的 DOMjudge 脚本，保留上游命令行参数和交互确认；仅为该进程设置 Local Origin CA 的 `REQUESTS_CA_BUNDLE` 和包含 Gateway 域名的代理绕过配置。CLI 不持有 Binding 密码，不依赖 Firefox 登录或 teams Home 中的 `.netrc`；API 请求沿用 Caddy 的 READY/BLOCKED 与凭据更新流程。
 
@@ -1112,31 +1106,31 @@ Daemon 可以有一个有界 effect executor，但它处理 latest target计划�
 
 Helper进程由systemd独占监督；`Type=dbus`以取得`org.natsume.Privileged1`作为启动就绪条件，不安装D-Bus activation service。`Restart=on-failure`、`RestartSec=2s`和`StartLimitIntervalSec=60s`/`StartLimitBurst=5`使异常退出后延迟重启，并限制60秒内最多5次启动（包括首次和手动启动）。触发限制后不再自动尝试；修复故障后显式`reset-failed`并启动服务。`systemctl stop`是维护停机，不触发自动重启。
 
-Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原system bus连接重新创建指向well-known name的代理，Helper更换bus owner不改变Session/Home的持久化epoch或pending确切会话。观测失败终止active lease时，仍先确认Caddy为BLOCKED再重连；不能确认BLOCKED则失败退出并触发现有Caddy硬终止。新lease从本地重新观测，旧Actual不跨lease复用。Helper的启动成功本身不代表任何资源已经完成。
+Daemon保留对Helper的`Requires`/`After`启动依赖；运行期通过原system bus连接重新创建指向well-known name的代理，Helper更换bus owner不改变Session/Home的持久化epoch或pending确切会话。观测失败终止active lease时，仍先确认Caddy为BLOCKED再重连；不能确认BLOCKED则失败退出并触发现有Caddy硬终止。新lease从本地重新观测，旧Actual不跨lease复用。
 
 ### 14.4 Client 离线诊断证据
 
 Daemon 在配置、硬件身份和 credential 初始化之前建立 best-effort 诊断发布器，将固定 typed 白名单报告原子写入 `/run/natsume-diagnostics`。`latest.json` 保存最近报告，`last-failure.json` 仅在报告包含失败时更新；新的 Daemon 实例启动或恢复正常不得清除上一实例的最后故障。目录由 Client tmpfiles 创建，natsume 独占写入，非秘密报告允许本机读取；报告不跨 boot 保留。该目录独立于 identity/control/keys/state，不参与 identity-bound artifact 扫描，不授予身份、Binding、Gateway 或 Session/Home authority。
 
-报告是采集时刻的历史证据，不是当前状态 ground truth、process liveness 或数据面安全证明。boot、Daemon instance、PID、采集时刻和序号用于解释报告所属实例；旧 `active`、`retrying` 或等待时间不证明当前进程仍在运行。Agent 将当前 Device1 注册/快照观察与最近报告、历史失败分开呈现，不显示历史重试倒计时，不将 Hardware ID 代作 Device ID。首次部署条件阻止 Daemon 执行、Agent/Daemon 异常终止或发布失败不能宣称已交付详细诊断；没有可用报告时，二维码只含带 `agent_observation` 标识的固定本地观察，不伪造 Daemon 失败证据。
+报告记录采集时刻的历史状态，boot、Daemon instance、PID、采集时刻和序号标明所属实例。Agent 将当前 Device1 注册/快照观察与最近报告、历史失败分开呈现，不显示历史重试倒计时，不将 Hardware ID 代作 Device ID。没有可用报告时，二维码只含带 `agent_observation` 标识的固定本地观察。
 
 Agent 在自身进程内独立、有界地读取两个固定报告，不读取部署配置或 credential，不写入诊断目录。读取使用 nofollow/nonblocking 目录/文件句柄，核对固定 natsume owner、目录 0755、常规文件 0644、16 KiB 上限、当前 boot、格式版本、固定字段/枚举和安全字符串；symlink、非常规文件、错误归属或权限、未知格式和损坏报告只产生固定读取分类。用于 natsume UID 解析的 `/etc/passwd` 及父目录同样检查可信 root 归属，不接受组写／其他用户可写的父目录；拒绝此类路径不影响业务身份判断，也不自动修改现场权限。两个报告保持独立，选择一份完整最近报告，无可用最近报告时才选历史失败，不拼接跨文件快照。二维码从校验后的 typed 字段重新序列化，最多 2300 bytes；必要时仅省略事件并明确 `events_truncated`，仍超限则明确不可用。采用 ECC L、四模块 quiet zone 和整数模块栅格，不依赖在线 URL 或上传。
 
 当前 Binding/pending、已绑定队伍和恢复后的在线快照优先于历史诊断；后台报告刷新不重绘这些页面、不抢输入焦点。诊断只是不可输入 Waiting 的内容，不因诊断分类把健康原生全屏首帧判为失败，也不从报告推导就绪：仍由当前认证 lease、UI revision、实际显示器尺寸和实际渲染确认。内容切换撤销旧帧，并以 Agent 本地渲染代次排除同一 UI revision 的旧回调，不改变 Daemon 的恢复预算或就绪协议。
 
-Daemon 与 Agent 保持独立启动，不增加接收 readiness、ACK、启动排序或等待退出。报告发布成功只证明同 boot 内独立读取者可以取得完整证据，不证明 Agent 已收到；发布失败只输出固定诊断，不覆盖业务错误、不改变 retry。Active 终止先完成 Caddy BLOCKED，再发布终止证据；无法确认 BLOCKED 时跳过诊断文件写入，立即错误退出以触发现有 Caddy 硬终止，仅保留固定日志分类。两个文件分别原子替换，不声称跨文件事务。
+Daemon 与 Agent 保持独立启动，不增加接收 readiness、ACK、启动排序或等待退出。发布失败只输出固定诊断，不覆盖业务错误、不改变 retry。Active 终止先完成 Caddy BLOCKED，再发布终止证据；无法确认 BLOCKED 时跳过诊断文件写入，立即错误退出以触发现有 Caddy 硬终止，仅保留固定日志分类。两个文件分别原子替换。
 
 Helper 的 `DeriveMachineIdentity` 从同一次采集和冻结 policy 返回派生结果及三个来源的状态；quorum 不足和平台不支持为 typed outcome，transport 失败仍为 typed error。原始硬件值、normalized value 和逐来源稳定哈希不出 Helper，不进入日志或报告；Hardware ID recipe、2-of-3 和聚合 quality 不变。Daemon 只在原身份 gate 通过后读取 credential，诊断不得提前访问私钥或完整 manifest。
 
-诊断格式和本边界分类由 `crates/natsume-workstation-ipc/src/diagnostics.rs`、`machine_identity.rs` 及对应 adapter 拥有，不建立跨 HTTP/WSS 的全局错误 registry。字段只包含版本、阶段、固定错误分类、来源状态、canonical ID/IP、公开信任根指纹、已安装 Device ID、已校验 peer error token 和有界结构化事件；不复制错误 Display/Debug/source chain、headers/body、配置正文、硬件原值或秘密。报告最多 16 KiB、事件最多 12 条；此上限是证据存储上限，不是未来二维码的载荷承诺。
+诊断格式和本边界分类由 `crates/natsume-workstation-ipc/src/diagnostics.rs`、`machine_identity.rs` 及对应 adapter 拥有，不建立跨 HTTP/WSS 的全局错误 registry。字段只包含版本、阶段、固定错误分类、来源状态、canonical ID/IP、公开信任根指纹、已安装 Device ID、已校验 peer error token 和有界结构化事件；不复制错误 Display/Debug/source chain、headers/body、配置正文、硬件原值或秘密。报告存储上限为 16 KiB、12 条事件；二维码另受上述 2300 bytes 限制。
 
-到控制 IP 的 `/proc` route entries、接口 flags/carrier 和 next hop 只作为只读观测，不证明路由表成员身份，也不发送探测包。身份预检和每次连接尝试边界采样，网络证据带独立 boot-relative 采集时间。没有匹配观测条目不证明 policy/source-specific routing 无路由；路由或 carrier 正常也不证明 TCP/TLS/WSS 服务可用。无法采集时保留 unknown，不为诊断改变连接超时、握手或恢复行为。
+到控制 IP 的 `/proc` route entries、接口 flags/carrier 和 next hop 只作为只读观测，不发送探测包。身份预检和每次连接尝试边界采样，网络证据带独立 boot-relative 采集时间。无法采集时保留 unknown，不为诊断改变连接超时、握手或恢复行为。
 
 ## 15. Operator、Import 与业务 API
 
 ### 15.1 Operator
 
-角色固定为 `admin` 和 `viewer`，所有admin平等；首次创建的admin没有额外管理权限。 Web Operator与DOMjudge Account是不同业务，用户管理使用独立的Panel入口。 以下为已接受目标。Operator领域事务、`/api/v2/operator` HTTP API和Panel用户管理及密码流程已实现。
+角色固定为 `admin` 和 `viewer`，所有admin权限相同。Web Operator与DOMjudge Account分别管理，使用独立的Panel入口。Operator领域事务、`/api/v2/operator` HTTP API和Panel用户管理及密码流程已实现。
 
 #### 15.1.1 认证与密码
 
@@ -1234,7 +1228,7 @@ Import预览token仅保留在创建它的当前前端会话内，页面刷新或
 
 ### 15.2 Import
 
-导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板、无数据库解析、输入类型和工作表行列错误归 Server Import 内部。学校 Logo 文件与图像处理归 Server Contest 内部，检查通过 Web Preparation 提供。真正多消费者的纯非秘密领域值按第 17 节提取，输入格式与密码不进入公共领域包。旧 CSV 导入及 JSON commit body 删除。
+导入使用固定 XLSX `Teams` 工作表，表头为 `organization_zh, organization_en, country, account, password, seat, team_name_zh, team_name_en, category`，按表头识别而非列位置。模板、无数据库解析、输入类型和工作表行列错误归 Server Import 内部。学校 Logo 文件与图像处理归 Server Contest 内部，检查通过 Web Preparation 提供。真正多消费者的纯非秘密领域值按第 17 节提取，输入格式与密码不进入公共领域包。
 
 ```text
 strict XLSX parse
@@ -1297,7 +1291,7 @@ Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文
 
 ### 15.3 Desired-state Operator API
 
-旧 `/commands` API和Panel Command模型删除。单组件Operator操作直接调用owning component； 跨组件查询及authority变更使用`DeviceControl`应用入口：
+单组件Operator操作直接调用owning component； 跨组件查询及authority变更使用`DeviceControl`应用入口：
 
 - 状态赋值使用资源方法：`PUT /provisioning-window`替换窗口状态， `PATCH /devices/{device_id}`修改Device lifecycle；
 - 资源移除使用`DELETE`：解绑`/devices/{device_id}/binding`，丢弃pending import `/imports/{import_id}`；Binding UI是否开放由当前unbound与eligibility事实推导， 不增加operator-owned open policy；
@@ -1306,15 +1300,15 @@ Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文
 
 Session foreground、terminate、Home reset 的单台/批量写入口统一为 `POST /api/v2/target-submissions`。旧单台 PUT session-control 和 POST terminate/reset 入口删除，原读取接口保留。这是 HTTP Breaking Change。请求包含 canonical nonnil UUID `operation_id`、`scope`（`all_enabled`、`devices` ID 列表或仅供关机的 `all_online_enabled`）和封闭 `action`：`set_foreground`（waiting/contest）、 `terminate_session`、`reset_home`、`power_off`。每次请求只包含一种动作。
 
-集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用 `all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备， 为每台写入单调 `shutdown_epoch` 与 60 秒 Server-time deadline。离线、Disabled、Revoked 和在 deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入 root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。 提交或 D-Bus 受理均不等于物理断电已确认；Panel 只显示 submission、latest Actual 和连接离线事实。
+集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用 `all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备， 为每台写入单调 `shutdown_epoch` 与 60 秒 Server-time deadline。离线、Disabled、Revoked 和在 deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入 root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。 Panel 只显示 submission、latest Actual 和连接离线事实。
 
 进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果， 不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled， 离线设备包含在内。显式 ID 列表规范化去重；不存在、非 Enabled、无效目标、epoch 耗尽等 领域拒绝逐设备返回，其他设备继续。数据库写入或最终 COMMIT 失败整批回滚。 HTTP 200 表示完整提交结果已持久化，可以包含部分或全部拒绝；从不等待 Client converge。
 
 HTTP 方法表达资源语义，不为动词机械创建伪资源，也不把实际状态转换伪装成普通字段覆盖。`/api/v2` 根层在认证和路由处理前统一拒绝 `HEAD`。Panel API 不设置路由正文大小覆盖，JSON 和 Bytes 提取器使用 Axum 默认的 2 MiB 上限。JSON 提取失败沿用 400 错误映射，包括正文超限、格式错误和不支持的媒体类型；名单上传的 Bytes 提取超限返回 413。解析组件继续执行自己的格式、解压和解码限制；Import 内部的 XLSX 原始文件上限为 8 MiB，但不覆盖 HTTP 提取器的 2 MiB 上限。
 
-当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用 Import 名额，直到请求终止。提取器的正文上限只约束单次请求的原始字节数，不代表解析后的对象大小或并发请求总内存受到同等约束。连接总量和 Import 并发名额不等于进程内存限额，也不能替代请求期限；最低部署带宽和生产资源容量仍需实测验收。
+当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用 Import 名额，直到请求终止。
 
-当前 HTTP 服务入口使用 `axum::serve`，没有为 Hyper 安装计时器，其默认的 HTTP/1 请求头读取超时不会生效。TLS 握手期限和连接总量不能替代请求头保护；慢请求头仍可能占用连接容量。该缺口需独立调整服务入口并验证 TLS、WebSocket upgrade 与优雅关闭，不能将当前实现视为已完成慢连接防护。
+当前 `axum::serve` 入口未安装 Hyper 计时器，默认 HTTP/1 请求头读取超时不生效，慢请求头仍可占用连接容量。补齐请求头保护需独立调整服务入口，并验证 TLS、WebSocket upgrade 与优雅关闭。
 
 Operator Target 提交成功后通过 `DeviceControl::dirty_devices` 通知成功设备的已有 Actor。 receipt 重放也只触发从当前数据库重新读取，不恢复旧 Target。Dirty 丢失由现有周期刷新和 重连恢复；通知不在数据库事务内，也不等待终端执行。HTTP handler 不直接访问组件表。
 
@@ -1328,7 +1322,7 @@ Panel展示：
 - typed convergence/drift；
 - Enrollment/Binding evaluation；
 
-Panel query可以显式汇总组件read model，但不能成为authority、不能把缺失fresh state显示为成功。系统不提供业务审计页，也不把trace或普通日志作为业务状态来源。
+Panel query可以显式汇总组件read model，缺失fresh state时显示未知。
 
 `GET /api/v2/devices` 支持可选查询参数 `state=enabled|disabled|revoked|non_revoked|all`。 `non_revoked` 包含 Enabled/Disabled；省略参数等同 `all`，保留原 API 读取范围。非法参数返回 HTTP 400。筛选在 Device SQL 查询中完成，随后只为匹配设备组装状态；不删除撤销记录， 不改变控制密钥和生命周期语义。空集合直接返回，非空集合沿用固定次数的资源批量读取。 Web 显式请求 `non_revoked`，两页都提供生命周期筛选，筛选值进入查询缓存键；撤销或禁用后 通过设备查询前缀失效刷新所有筛选缓存，旧筛选响应不能覆盖当前视图。筛选器在空结果时仍可用。 Targets 的全部 Enabled 操作独立于列表筛选：当列表只看 Disabled/Revoked 时，另取 Enabled 列表用于预估范围；即使当前列表为空，批量操作仍覆盖 Server 当前全部 Enabled。
 
@@ -1347,7 +1341,7 @@ Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前�
 
 ### 15.5 Panel视觉规范
 
-Web 视觉规范集中维护于根目录 [DESIGN.md](../DESIGN.md)，作为界面设计与样式审阅依据。该规范约束呈现，不改变本文定义的系统职责、API、权限、会话隔离和业务状态语义，也不代表现有实现已经逐项符合规范。
+Web 视觉规范集中维护于根目录 [DESIGN.md](../DESIGN.md)，作为界面设计与样式审阅依据。
 
 ## 16. 错误与可观测性
 
@@ -1370,7 +1364,7 @@ Web 视觉规范集中维护于根目录 [DESIGN.md](../DESIGN.md)，作为界�
 
 ### 16.2 Distributed tracing
 
-业务审计不属于V2范围。Server可观测性只使用标准 `tracing`、 `tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现自定义 operation log schema、应用内JSONL writer或OpenTelemetry Logs signal。trace是 best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源 耗尽或异常退出时可能丢失span。
+Server可观测性只使用标准 `tracing`、 `tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现自定义 operation log schema、应用内JSONL writer或OpenTelemetry Logs signal。trace是 best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源 耗尽或异常退出时可能丢失span。
 
 设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用 stderr fmt日志，不尝试连接默认Collector。`OTEL_SDK_DISABLED=true`强制禁用导出。 Exporter的endpoint、timeout和headers继续使用OpenTelemetry标准环境变量。endpoint配置 无法建立exporter时启动失败；进程正常退出时显式shutdown provider以flush已排队span， 但shutdown/export失败只输出固定诊断，不覆盖业务命令结果。
 
@@ -1403,7 +1397,7 @@ async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享
 
 继续使用一个 Cargo workspace 和一个 `Cargo.lock`。全部 Rust 包进入 `crates/`， 目录名与 Cargo `package.name` 一致，使用 `natsume-` 前缀和小写连字符； 同领域多包采用 `natsume-<领域>-<职责>`，单一入口／领域库不强加无意义后缀。
 
-目标布局（不是当前文件已移动的声明）：
+目标包布局：
 
 ```text
 crates/natsume-server/
@@ -1419,7 +1413,7 @@ crates/natsume-contest-domain/    # 实际多生产消费者需要时提取
 crates/natsume-photo-package/     # 成果包契约随双端实现提取，不预建空包
 ```
 
-原 `server/` 迁至 `natsume-server`；原 `device-daemon`、`privileged-helper`、 `session-agent` 分别迁至三个 `workstation-*` 应用包；原 `device-protocol` 与 `local-control-api` 分别迁至 `workstation-protocol` 与 `workstation-ipc`。 `web/` 保持独立前端，打包仍按交付对象组织；Tauri 若入选，其 Rust 包也遵守本布局。
+`web/` 保持独立前端，打包按交付对象组织；Tauri 若入选，其 Rust 包也遵守本布局。
 
 目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、 架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称， 必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。 XLSX／密码输入归 Server Import 内部，校徽文件与图像处理归 Server Contest 内部，不建立独立 roster 公共库或离线校徽预检工具。
 
@@ -1504,8 +1498,6 @@ crates/natsume-server/src/
 
 Contest的三个只读查询只占`contest.rs`与`contest/db.rs`，不按每个查询拆子模块； Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字段只在owning component内 可见，领域转换继续验证；不为直接字段读写增加无校验constructor/getter。 普通HTTP JSON响应使用Axum `Json`，不维护重复的手工序列化response wrapper。
 
-现有Operator/Import代码迁移时保持行为测试，不借本次重构增加新功能。
-
 ### 17.3 Client目标目录
 
 ```text
@@ -1527,8 +1519,6 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 
 ## 18. 部署与运行边界
 
-以下记录既有 Linux Server／工位交付边界，flag-day 全新部署与整套回滚指该基线。 平台扩展保留现有运行契约，新增 Windows 应用另行安装、构建和签收，见第 23 节。
-
 - Server与Client使用原生Deb package；
 - 安装期不下载runtime；
 - postinstall不生成CA、Server leaf、vault key或Operator；
@@ -1543,7 +1533,6 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - waiting 使用官方 GNOME Kiosk 和独立 dconf profile，不启动比赛桌面的 GNOME Shell/ArcMenu；contest 保持完整 GNOME 和独立配置并关闭自动锁屏。未绑定的等待界面可使用随包静态图；已绑定展示队伍、学校和 Logo，断线保留缓存并显示离线标识；
 - `environment.d`、PAM、Kiosk session/用户服务、dconf、Wayland 及 Home 恢复依赖随镜像交付；Home 维护不停止全局 GDM；
 - 本期按当前 schema、Home 窗口格式和 waiting/teams 账号全新部署，不提供重构前版本的迁移或兼容路径。当前系统维护须按[运行环境要求](client-environment.zh-CN.md#维护要求)完成控制连接退出、状态备份和整套恢复验证；
-- Client 持续安装，卸载不作为本次交付门槛；已有包移除脚本保留，不据此拆分镜像输入的所有权；
 - 镜像拥有具名 PAM 入口及 `other` fallback 的受管账号限制；删除 Client 的固定服务文件后仍不能回退到普通密码登录。缺失 PAM 服务或阶段必须仍拒绝受管登录；发行版接入由镜像项目负责，边界见[运行环境要求](client-environment.zh-CN.md#账号与登录边界)；
 - Server目标是单Ubuntu Server节点；
 - 确切OS point release、kernel和package evidence由部署测试记录，不写入业务状态机；
@@ -1652,15 +1641,15 @@ deno task schema:check
 deno task api --check
 ```
 
-包目标表分别声明交付平台、Rust 检查平台、crate、binary 和打包格式。Linux 默认保留脚本、Rust、Web 和 Linux 包；Windows 默认只选择 Windows 包，不准备 Linux 工位资产或 Web。Linux Rust 检查保留已声明支持 Linux 的共享逻辑测试，排除仅支持 Windows 的应用；Windows 按声明选择原生应用 crate，CI 与 hook 复用相同入口。CI 在工作流 YAML 中直接声明 GitHub Actions 原生 `strategy.matrix.include` 模块矩阵，由 GitHub 展开和调度，不通过脚本生成矩阵，Server、工位 Client、DOMjudge 接入包分别在 Ubuntu 运行，Print Client 在 Windows 运行；先并行执行公共检查和 Web 检查，两者全部成功后才启动模块矩阵；前置失败或取消时不开始模块构建及打包，矩阵项失败则取消其他尚未完成的模块任务。每项依次独立检查、测试、release 构建及原生打包。Server 项拥有类型生成与数据库结构检查，Client 项包含协议和 IPC 库测试，公共检查保留打印客户端的 Linux 共享逻辑回归与全局格式、依赖策略检查。后续 Windows 应用增加目标定义与一条原生矩阵配置，不创建占位包或复制任务步骤。矩阵与包目标的覆盖范围及运行平台由回归测试核对。ZIP 只包含声明的程序、公开说明、项目许可、版本元数据和校验和，打包后解压并逐文件核对；不带配置、凭据或业务记录，不安装驱动、证书或运行库。标签发布沿用全部 CI 门禁，核对预期 Debian 和 Windows 产物后生成统一校验和；Debian 预发布版本转换与 Windows SemVer 标签分开处理。便携包不代替安装器、代码签名或干净系统运行库验收。
+包目标表分别声明交付平台、Rust 检查平台、crate、binary 和打包格式。Linux 默认保留脚本、Rust、Web 和 Linux 包；Windows 默认只选择 Windows 包，不准备 Linux 工位资产或 Web。Linux Rust 检查保留已声明支持 Linux 的共享逻辑测试，排除仅支持 Windows 的应用；Windows 按声明选择原生应用 crate，CI 与 hook 复用相同入口。CI 在工作流 YAML 中直接声明 GitHub Actions 原生 `strategy.matrix.include` 模块矩阵，由 GitHub 展开和调度，不通过脚本生成矩阵，Server、工位 Client、DOMjudge 接入包分别在 Ubuntu 运行，Print Client 在 Windows 运行；先并行执行公共检查和 Web 检查，两者全部成功后才启动模块矩阵；前置失败或取消时不开始模块构建及打包，矩阵项失败则取消其他尚未完成的模块任务。每项依次独立检查、测试、release 构建及原生打包。Server 项拥有类型生成与数据库结构检查，Client 项包含协议和 IPC 库测试，公共检查保留打印客户端的 Linux 共享逻辑回归与全局格式、依赖策略检查。后续 Windows 应用增加目标定义与一条原生矩阵配置，不创建占位包或复制任务步骤。矩阵与包目标的覆盖范围及运行平台由回归测试核对。ZIP 只包含声明的程序、公开说明、项目许可、版本元数据和校验和，打包后解压并逐文件核对；不带配置、凭据或业务记录，不安装驱动、证书或运行库。标签发布沿用全部 CI 门禁，核对预期 Debian 和 Windows 产物后生成统一校验和；Debian 预发布版本转换与 Windows SemVer 标签分开处理。
 
 CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明模块、运行平台、任务依赖和版本条件步骤，并调用现有准备、检查、测试、构建与打包入口；仅系统依赖安装和发布校验等过程逻辑放在职责明确的 Deno 脚本中，不增加通用 CI 命令路由或脚本调度层。Web 静态检查与单元、浏览器测试由独立 Web 项负责，Server 项只拥有 Web 生产构建，不重复运行 Web 检查。CI 只保留 Rust 工具链 Action 管理的编译缓存，按系统、模块、运行环境、工具链与原生输入区分，编译目录使用 `target/cargo`，不混入准备标记。Deno、pnpm 和固定资产不设置跨任务持久化缓存，每个任务正常执行准备和输入校验，后续检查、构建及打包仍只消费已准备输入。不缓存配置、凭据、业务记录、生成后的运行目录或最终交付包；Rust 缓存命中、缺失或逐出均不得改变验证、构建和发布门禁。
 
-上述命令按平台支持矩阵选择验收范围，不要求每轮在本地运行全量套件。共享领域与成果格式 在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。 实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
+上述命令按平台支持矩阵选择验收范围。实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用检查。
 
 ## 20. Flag-day 实施计划
 
-以下 Work Package 记录既有工位控制 flag-day 基线，不作为平台扩展清库或重写协议的授权。 其带日期事实与历史验收保留，不改写为新功能已完成。平台目标见第 23 节。 这些 Work Package 是依赖顺序，不是长期 Phase 体系；每个 WP 只在列出的验收满足后结束。
+以下 Work Package 按依赖顺序记录既有工位控制 flag-day 基线及历史验收，每个 WP 在列出的验收满足后结束。第 23 节的平台扩展单独实施，清库或协议改写须另行授权。
 
 ### 当前实现基线
 
@@ -1674,9 +1663,6 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 - Server 已实现production Device WSS、每Device Actor/Registry、lease fencing、fresh barrier、完整snapshot处理和当前在线Actual查询；
 - Operator HTTP与Panel已接入Enrollment、Device lifecycle、六资源target mutation和 convergence查询，mutation在commit后按语义触发Dirty或Evict；
 - Daemon 已实现单一 pinned WSS 连接循环、Gateway/Binding concrete input、 六资源 concrete reconciliation，并接通 Helper、Session Agent 与 Caddy；
-- `integration-tests` 不预建；第一个真实跨进程、持久化或故障注入场景到达时再创建， 组件、协议和 IPC 单元契约不得在此复制。
-
-后续 WP 开始前仍需只读核对本文、Proto、migration 和相关源码；跳过已经完成的工作， 不得恢复旧设计。
 
 ### WP0：单一架构基线（已完成）
 
@@ -1688,7 +1674,6 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 验收：
 
-- 仓库只有本文一份`docs/*.md`；
 - 本文不引用已删除的旧文档。
 
 ### WP1：目标migration（已完成）
@@ -1734,7 +1719,6 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 - 实现内存pending review、人工审核、review fencing和activation replay；
 - 实现control-key Resume；
 - 实现enable/disable/revoke/replacement；
-- 不提前实现DeviceActor、Active Registry或production WSS。
 
 验收：
 
@@ -1748,7 +1732,7 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 目标：
 
-- 只实现Server concrete `GatewayComponent`及当前资源需要的`ingest/materialize`， 不预建统一trait、静态集合或dynamic registry；
+- 实现Server concrete `GatewayComponent`及当前资源需要的`ingest/materialize`；
 - 实现accepted CSR current fact，不持久化原始Client projection；
 - Intent Policy、CSR validation、sign/CAS、grant/replacement；
 - Client private key/CSR生成、durable artifact与Caddy收敛留在WP9。
@@ -1764,14 +1748,13 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 目标：
 
-- 只实现Server concrete `BindingComponent`，不预建统一component trait、 `DeviceActor`或production WSS；
+- 实现Server concrete `BindingComponent`；
 - 实现每个unbound Device唯一current negotiation、submission epoch fencing、bounded evaluation和accept/unbind；
 - concrete `BindingComponent::ingest` 当前只接收会参与transition的`BindingInput`； production `DeviceActor`在组件调用前校验Binding Actual；
 - 一致性读取Contest/Vault；
 - 生成Bound/Unbound target；
 - Server不建立Prompt Command或HTTP/Panel入口；
-- 不实现Client artifact、Binding UI或input generation；
-- Client侧遗留的`prompt_command_id`已在WP9删除；Binding UI由current Intent与 本地Session/Home eligibility自动展示。
+- Binding UI由current Intent与本地Session/Home eligibility自动展示。
 
 验收：
 
@@ -1786,7 +1769,7 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 目标：
 
-- 只实现Server concrete Runtime Config、Session Control与Home组件，不预建 统一component trait、`DeviceActor`、HTTP、Dirty或`AffectedDevices`接口；
+- 实现Server concrete Runtime Config、Session Control与Home组件；
 - 实现三个Unit-input资源的durable target；Runtime只接受部署配置，Session/Home提供 concrete operator mutation method，不恢复已删除的lock/unlock/terminate/reset Command API；
 - concrete component当前不接收不会参与Server transition的Actual； production `DeviceActor`在组件调用前校验fresh Actual；
 - WP9已实现Client侧exact graphical session捕获与terminate fencing，以及Home reset的 Prepare/Apply/Verify/Recover与durable completion。
@@ -1831,7 +1814,7 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 验收：
 
-- Server、OpenAPI与Web无Device Command/Bundle/Token/Observed旧业务symbol；普通CLI Command、Import preview token与协议ErrorCode token不属于该旧模型；
+- Server、OpenAPI与Web无Device Command/Bundle/Token/Observed旧业务symbol；
 - WP9已删除Client旧控制路径使用的Command journal、device token与对应 local-control字段；
 - Web不复制Rust enum；
 - 所有Active resource target mutation在commit后Dirty；Device disable、revoke与 current control-key replacement在commit后Evict；
@@ -1839,7 +1822,7 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 ### WP9：Client Input与Reconciliation（已实现，待审查）
 
-§4.4、§9.4～9.6 定义双会话增量的角色激活、Home 门禁/GDM 重建、Running/foreground 观测及 waiting 展示（队伍资料见 §15.2）。实现审查与 WP10 的最终镜像/部署签收分别进行。
+§4.4、§9.4～9.6 定义双会话增量的角色激活、Home 门禁/GDM 重建、Running/foreground 观测及 waiting 展示（队伍资料见 §15.2）。
 
 目标：
 
@@ -1860,7 +1843,7 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 
 ### WP10：全链路故障与部署签收
 
-TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重复、冷登录测量和 AT-01～26 签收，并核对发行版本一致。通过标准见[镜像验收标准](https://github.com/4o3F/Natsume/blob/20d331596ee599e3d886c4b9554b74bf6f7833df/packaging/image/acceptance.md)；阶段 VM 证据不代替 WP10 部署签收。
+TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重复、冷登录测量和 AT-01～26 签收，并核对发行版本一致。通过标准见[镜像验收标准](https://github.com/4o3F/Natsume/blob/20d331596ee599e3d886c4b9554b74bf6f7833df/packaging/image/acceptance.md)。
 
 目标：
 
@@ -1879,7 +1862,7 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ## 21. 实施纪律
 
-交给实现模型的约束。涉及第二 WSS／Proto、旧 Command／Token／Bundle 的禁令指工位 Device Control， 不禁止第 23 节独立业务的 typed 接口；不因此引入通用框架或削弱秘密与事务边界：
+交给实现模型的约束：
 
 1. 每个WP开始前先读取本文、当前Proto、migration和相关源码。
 2. 只把当前机器schema视为实现现状，不把旧代码语义当目标。
@@ -1895,7 +1878,7 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ## 22. 完成判据
 
-本节只签收既有工位 Device Control 目标；第 23 节的打印／照片另有业务验收， 不把完整快照、无投递结果不明等控制语义强加给独立队列或签名成果导入。
+本节签收工位 Device Control 目标；第 23 节的打印队列与签名照片成果按各自业务规则验收。
 
 只有全部满足，工位控制目标架构才算落地：
 
@@ -1923,11 +1906,11 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 
 ### 23.1 范围、组件与交付
 
-本节是后续已接受目标，不是代码、Windows 或现场验收已完成的声明。 在同一仓库和同一个 Server 中增加 Print、Photo 纵向组件，继续使用单赛事和单 writer； 不先引入微服务、Redis／消息中间件、通用调度／插件框架或全局业务审计。 名单写入 authority 仍属于 Contest/Import，工位控制、打印、拍照有各自生命周期。
+在同一仓库和同一个 Server 中增加 Print、Photo 纵向组件，继续使用单赛事和单 writer； 不先引入微服务、Redis／消息中间件、通用调度／插件框架或全局业务审计。 名单写入 authority 仍属于 Contest/Import，工位控制、打印、拍照有各自生命周期。
 
 Windows Print Client、Photo Client 分别安装和交付，不改造为 Linux Agent／Helper 的功能， 不使用 DeviceActor、工位 Target 或 control key。DOMjudge 集成、打印 Client、拍照站具有 独立、最小权限的身份；不持有长期管理员 session，不跳过 TLS 校验。 注册、密钥保护、撤销及接口版本须随对应契约评审，不能由 GUI 默认行为决定。
 
-Server 保存打印文档、当前照片及待处理候选；它们的访问不沿用公开学校 Logo 的策略。 备份与恢复同时覆盖数据库、相关文件和必要身份／信任材料。保留、限额、清理、 Windows 支持矩阵与安装 runtime 需明确验证，不由“无历史功能”推导自动删除素材。
+Server 保存打印文档、当前照片及待处理候选；它们的访问不沿用公开学校 Logo 的策略。 备份与恢复同时覆盖数据库、相关文件和必要身份／信任材料。
 
 ### 23.2 DOMjudge 受理、Typst 与排队快照
 
@@ -1938,13 +1921,13 @@ Server 保存打印文档、当前照片及待处理候选；它们的访问不�
 3. 上传最终 PDF，Server 校验、确定文档页数并安全保存后才进入就绪 FIFO。
 4. wrapper stdout 返回“已入队、未完成”与受理时快照，复用现有 DOMjudge 输出展示。
 
-登记不是入队，入队不是打印完成。生成失败和未就绪请求不计入待打印页数。 快照分开显示当前任务前方待领取任务数／最终 PDF 文档页数和当前处理中任务数， 不承诺实时排名、物理纸张余量或 ETA。请求及阶段重试幂等，不把结果不明当作未受理。 错误回报丢失可能留下结果未回报的准备中请求，状态与诊断必须诚实呈现。
+生成失败和未就绪请求不计入待打印页数。 快照分开显示当前任务前方待领取任务数／最终 PDF 文档页数和当前处理中任务数。请求及阶段重试幂等，不把结果不明当作未受理。 错误回报丢失可能留下结果未回报的准备中请求。
 
-不新建选手账号、动态状态页或强制修改 DOMjudge 网页。具体版本可能有固定的“已打印” 模板提示，应记录兼容限制，脚本仍明确区分受理和完成。
+具体版本可能有固定的“已打印” 模板提示，应记录兼容限制，脚本仍明确区分受理和完成。
 
 #### 23.2.1 I1 受理协议与独立交付
 
-I1 使用以下契约实现 Server 与 `natsume-print-domjudge`，不包含 Windows 领取、打印尝试、Panel 打印管理或物理打印验收。wrapper 首版交付 Linux amd64 的独立 Ubuntu／Debian 包，不依赖 `natsume-server` 包；两端可以分机部署，只通过 HTTPS 交换数据，不共享目录、数据库或本机文件路径。DOMjudge 集成以 9.0.x 为核对基线；固定成功提示与实际部署版本仍须验收。
+wrapper 首版交付 Linux amd64 的独立 Ubuntu／Debian 包，不依赖 `natsume-server` 包；两端可以分机部署，只通过 HTTPS 交换数据，不共享目录、数据库或本机文件路径。DOMjudge 集成以 9.0.x 为核对基线。
 
 Print HTTP 接口的版本由 URL 路径 `/api/v2` 表达，JSON 不携带 `protocol_version`，不以应用发布版本号判断协议兼容性，也不维护独立的 Print 版本常量或共享版本包。来源身份使用专用 Bearer token，不接受 Operator cookie 或工位密钥代替。管理员通过 `POST /api/v2/print/sources` 创建来源，通过 `GET /api/v2/print/sources` 查看非秘密来源资料，通过 `DELETE /api/v2/print/sources/{source_id}` 撤销；这些管理接口要求现有管理员权限。创建请求为 `{ "name": "domjudge-primary" }`；响应含 `source_id`、`name`、`revoked` 和仅本次返回的 `token`，列表不返回 token 或摘要。来源 ID 为 canonical UUIDv7，token 为 `nps1.<source_id>.<64 位小写十六进制随机秘密>`，随机秘密为 32 bytes。Server 只持久化 SHA-256 摘要，认证使用定时安全比较；不记录 token、Authorization header、源代码或 PDF 内容。撤销幂等，返回 204；不存在的来源返回 404。来源名称为 1～128 个 Unicode 字符，不接受控制字符。
 
@@ -1959,27 +1942,27 @@ wrapper 从部署提供的受限本机文件读取 token，通过严格校验服
 
 JSON 使用封闭字段集。`account` 必须严格等于 DOMjudge `[username]`，Server 按现有 `accounts.account` 找到已有 `account_id` 与 team；不 trim、改大小写或按 `[teamid]`、队名、座位猜测。登记保存该 `account_id` 及非秘密展示快照：`account`、`team_name`、`seat_label`。`team_name` 优先使用非空中文名，否则英文名；未分配座位表示为 null。原文件名仅为展示数据，最多 1024 UTF-8 bytes，不接受路径分隔符、NUL 或控制字符，不参与路径构造。源文件哈希用于识别同一请求的登记冲突，不是来源证明或跨请求去重键。
 
-请求事实的 JSON 字段为 `request_id`、`account_id`、`account`、`team_name`、`seat_label`、`state`、`document`、`admission`、`generation_failure`。I1 的 `state` 为 `preparing`、`generation_failed` 或 `ready`；不伪造领取／打印状态。准备中时后三个字段均为 null；生成失败时仅 `generation_failure` 非 null；就绪时仅 `document` 与 `admission` 非 null。`generation_failure` 为上述固定 `code` 字符串；枚举为 `compile_timeout`、`compile_failed`、`document_too_large`、`wrapper_deadline`。`document` 为 `{ "sha256": "…", "bytes": 12345, "pages": 3 }`，页数由 Server 解析最终 PDF 得到，不信任 wrapper 自报。`admission` 为 `{ "ready_sequence": 1, "ahead_tasks": 0, "ahead_pages": 0, "in_progress_tasks": 0 }`，在首次入队事务中持久化；前方任务数与页数只统计当前可领取的等待任务，处理中数统计全场活动尝试。准备中、生成失败、尚未结束重试等待、已完成和次数耗尽的任务不计入前方等待数。重放返回原快照，不随后续领取、完成或名单变化重新计算。
+请求事实的 JSON 字段为 `request_id`、`account_id`、`account`、`team_name`、`seat_label`、`state`、`document`、`admission`、`generation_failure`。I1 的 `state` 为 `preparing`、`generation_failed` 或 `ready`。准备中时后三个字段均为 null；生成失败时仅 `generation_failure` 非 null；就绪时仅 `document` 与 `admission` 非 null。`generation_failure` 为上述固定 `code` 字符串；枚举为 `compile_timeout`、`compile_failed`、`document_too_large`、`wrapper_deadline`。`document` 为 `{ "sha256": "…", "bytes": 12345, "pages": 3 }`，页数由 Server 解析最终 PDF 得到，不信任 wrapper 自报。`admission` 为 `{ "ready_sequence": 1, "ahead_tasks": 0, "ahead_pages": 0, "in_progress_tasks": 0 }`，在首次入队事务中持久化；前方任务数与页数只统计当前可领取的等待任务，处理中数统计全场活动尝试。准备中、生成失败、尚未结束重试等待、已完成和次数耗尽的任务不计入前方等待数。重放返回原快照，不随后续领取、完成或名单变化重新计算。
 
 幂等键为 `(source_id, request_id)`。相同登记字段的重试返回已存在请求；同键不同字段返回 409。同一来源可以为相同源码建立不同请求 ID，有意再次打印不被内容哈希合并。不同来源的 ID 空间彼此隔离。上传只允许 `preparing → ready`；相同最终 PDF 的重试返回原结果，不重新计算顺序或快照，不同内容返回 409。生成失败只允许 `preparing → generation_failed`；相同失败枚举可重试，不同枚举、失败后上传、就绪后报失败均返回 409。名单删除或以同账号重建不能把旧登记转给新队伍；上传时重新确认原 `account_id` 与账号的对应事实，失效返回 409，已入队结果不因名单随后变化而改写。
 
-最终 PDF 上传专用限制为 8 MiB，其他接口继续使用 Axum 默认 2 MiB；不增加 Server 请求体读取超时。Server 在完整解析 PDF、确认非加密且有有效页树、页数和 A4 页面后才入队；损坏文档、加密文档、无页文档、非 A4 页面及带主动执行／外部引用的文档拒绝。不把语法与结构校验称为完整渲染、驱动兼容或物理打印证明；黑白与单份由固定模板及后续打印端执行，不以 PDF 结构检查保证设备输出。
+最终 PDF 上传专用限制为 8 MiB，其他接口继续使用 Axum 默认 2 MiB；不增加 Server 请求体读取超时。Server 在完整解析 PDF、确认非加密且有有效页树、页数和 A4 页面后才入队；损坏文档、加密文档、无页文档、非 A4 页面及带主动执行／外部引用的文档拒绝。黑白与单份由固定模板及后续打印端执行。
 
 I1 将最终 PDF 保存为 Print 自有文件，目录由 `[storage].print_documents` 的绝对路径指定，文件名为 Server 计算的 `<sha256>.pdf`，不使用客户端文件名。先在同一目录写入权限为 `0600` 的临时文件并同步文件内容，再以不可覆盖方式发布正式文件、同步目录，最后在短 SQLite 写事务中提交文档摘要、字节数、页数、全局单调就绪序号和首次受理快照；数据库不存 PDF BLOB。重复上传在写事务外比较已有文件内容，正式文件不可原地修改或覆盖。只有文件可靠保存且数据库 COMMIT 后才返回入队成功；文件写入失败不得建立就绪记录，数据库提交失败可能留下无引用文件，不自动删除，也不自动补成入队任务。取消调用者不等于取消已开始的文件操作或数据库提交，结果通过同键查询核实。
 
-所有 Print 表、索引与约束统一由 `00000000000007_print` 建立，包括来源、请求、PDF 元数据、打印机配对、任务执行、尝试和领取回执，不拆成独立的配对或执行 migration。该 Print 基线尚未部署，不为先前开发期间的 Print schema 提供升级或启动修补逻辑；migration 回滚会移除全部 Print 数据表，不会删除 PDF 目录文件。文档元数据表不含 PDF BLOB。启动时逐份核对所有已入队文件的长度和摘要，缺失或损坏时拒绝提供服务；重复登记和查询就绪结果时也核对文件，不将不可用文档报告为就绪。此核对随文档总量增加启动读取成本。
+所有 Print 表、索引与约束统一由 `00000000000007_print` 建立，包括来源、请求、PDF 元数据、打印机配对、任务执行、尝试和领取回执，不拆成独立的配对或执行 migration。该 Print 基线尚未部署，不为先前开发期间的 Print schema 提供升级或启动修补逻辑；migration 回滚会移除全部 Print 数据表，不会删除 PDF 目录文件。启动时逐份核对所有已入队文件的长度和摘要，缺失或损坏时拒绝提供服务；重复登记和查询就绪结果时也核对文件，不将不可用文档报告为就绪。此核对随文档总量增加启动读取成本。
 
 就绪顺序在数据库事务中分配，不使用登记时间、客户端时间或并发校验完成前的顺序。快照只统计本任务之前已就绪但未领取的任务及其文档页数，涵盖所有来源；准备中和生成失败请求排除。备份在停止唯一 Server 进程后，同时取得包含已提交 WAL 状态的一致 SQLite 副本、PDF 目录及其他必需配置与密钥；不能只复制运行中的主库，也不能只恢复数据库而遗漏 PDF。文档保留期限、无引用文件清理和容量验收由部署维护另行确定，不自动删除或添加未经确认的队伍／任务数量上限。
 
-Web `/print` 提供全场只读执行列表，管理员与查看员均通过 Operator session 调用 `GET /api/v2/print/queue` 和 `GET /api/v2/print/executions`；来源 Bearer token 不能调用这些接口。元数据按 `ready_sequence` 升序返回，由同一个 `PrintQueueEntry` 定义数据库投影与 HTTP 输出，包括来源 ID／名称、请求 ID、登记时的账号／队名／座位快照、原文件名、首次入队序号、文档页数与字节数；界面以该序号关联任务执行状态、已用尝试次数、最近结果与重试可领取时间。首次入队顺序不代表当前重试顺序，也不提供预计出纸时间。两个查询并非同一数据库快照；执行数据缺失时显示未知，不推断为排队。查询不读取 PDF，不依赖当前名单，也不因来源撤销而隐藏其已入队任务。页面每 10 秒刷新，汇总全场已入队任务、页数及各执行状态，筛选不改变汇总口径；刷新失败保留上次数据并标记可能过期。列表不包含准备中或生成失败的请求，完成状态仅表示 spooler 报告打印，不证明实际出纸。
+Web `/print` 提供全场只读执行列表，管理员与查看员均通过 Operator session 调用 `GET /api/v2/print/queue` 和 `GET /api/v2/print/executions`；来源 Bearer token 不能调用这些接口。元数据按 `ready_sequence` 升序返回，由同一个 `PrintQueueEntry` 定义数据库投影与 HTTP 输出，包括来源 ID／名称、请求 ID、登记时的账号／队名／座位快照、原文件名、首次入队序号、文档页数与字节数；界面以该序号关联任务执行状态、已用尝试次数、最近结果与重试可领取时间。两个查询并非同一数据库快照；执行数据缺失时显示未知，不推断为排队。查询不读取 PDF，不依赖当前名单，也不因来源撤销而隐藏其已入队任务。页面每 10 秒刷新，汇总全场已入队任务、页数及各执行状态，筛选不改变汇总口径；刷新失败保留上次数据并标记可能过期。列表不包含准备中或生成失败的请求。
 
-管理员专用 `/print/printers` 和 `/print/sources` 复用已有打印机注册、配对码签发、绑定解除、来源创建与撤销接口；查看员不能访问管理页面。配对码和来源 token 只保存在签发页面的临时状态，不写入浏览器持久存储或 Query mutation cache，离开页面或关闭展示后不恢复。配对码按已知到期时间隐藏，Server 校验仍为准；复制值进入系统剪贴板，页面不自动清空剪贴板。绑定解除和来源撤销需要明确确认，HTTP 409 不被当成成功或自动重试；管理页面不提供强制解绑、重置尝试、取消任务、恢复旧 token、任意 PDF 上传或 Windows 队列远程设置。绑定确认只表示凭据绑定事实，不代表客户端在线或打印设备就绪。
+管理员专用 `/print/printers` 和 `/print/sources` 复用已有打印机注册、配对码签发、绑定解除、来源创建与撤销接口；查看员不能访问管理页面。配对码和来源 token 只保存在签发页面的临时状态，不写入浏览器持久存储或 Query mutation cache，离开页面或关闭展示后不恢复。配对码按已知到期时间隐藏，Server 校验仍为准；复制值进入系统剪贴板，页面不自动清空剪贴板。绑定解除和来源撤销需要明确确认，HTTP 409 不被当成成功或自动重试；管理页面不提供强制解绑、重置尝试、取消任务、恢复旧 token、任意 PDF 上传或 Windows 队列远程设置。
 
 接口错误沿用 `{ "title": "…", "status": 400, "code": "INVALID_REQUEST" }` 外壳。无效字段／PDF 返回 400，来源认证失败或撤销返回 401，管理接口角色不足返回 403，自己来源中不存在的请求返回 404，阶段／内容／身份冲突返回 409，PDF 上传超过 8 MiB 返回 413，内部持久化失败返回 500；现有数据库工作准入失败可返回 503。来源认证失败不消费请求体。整个 Print namespace 使用 `Cache-Control: no-store`；不通过错误正文泄漏解析内容、路径或其他来源的存在事实。JSON 字段由 Server HTTP DTO 与 Serde 定义，通过 Specta 直接导出 TypeScript，不手改生成物；路由与状态语义由实际 HTTP 测试验证。
 
 wrapper 接受 `--file`、`--account`、`--original`，可显式传 `--request-id` 用于受控重试；未传时每次独立调用生成新 UUIDv7。配置路径由 `--config <PATH>` 指定，未传时默认为 `/etc/natsume-print-domjudge/config.toml`；显式路径加载失败时直接报错，不回退到默认配置。配置包含 `server_url`、`token_file` 和可选 `ca_certificate`；服务器地址必须是无凭据、路径、查询和片段的 HTTPS origin。部署拥有配置和凭据，包不生成或覆盖 token。源文件必须为常规 UTF-8 文件，最多 256 KiB；拒绝目录、特殊文件和符号链接，不回显内容。源码和展示字段均作为数据进入固定 Typst 模板，不拼接可执行 Typst、shell 或 eval；不接受用户模板、远端资源或任意编译参数。A4、黑白、单份，长行必须换行，不裁掉源码。
 
-包携带校验固定版本 Typst 0.14.2、模板、必要字体与许可，安装及运行不联网下载。编译使用单线程和仅包内字体，不搜索主机字体；隔离临时目录仅含固定模板、数据和源文件，退出清理，不建立持久本地收单／补报队列。编译最多 2 秒，wrapper 从启动到返回总计最多 5 秒，联网、生成和核实共享该总预算；这不是 Server 的请求体读取超时。超时必须终止并回收编译子进程，子进程 stderr 不直接展示给选手，也不留下无界日志。时间、输入和最终输出限制不等于独立的编译内存隔离；首版不声明具备此项保证或 PHP-FPM 并发容量保证。
+包携带校验固定版本 Typst 0.14.2、模板、必要字体与许可，安装及运行不联网下载。编译使用单线程和仅包内字体，不搜索主机字体；隔离临时目录仅含固定模板、数据和源文件，退出清理，不建立持久本地收单／补报队列。编译最多 2 秒，wrapper 从启动到返回总计最多 5 秒，联网、生成和核实共享该总预算；Server 请求体读取仍无超时。超时必须终止并回收编译子进程，子进程 stderr 不直接展示给选手，也不留下无界日志。编译内存隔离和 PHP-FPM 并发容量尚未提供保证。
 
 wrapper 只有确认 `ready` 且收到完整入队快照才返回成功并输出“已入队，尚未打印完成”、前方任务数／页数、处理中数及请求 ID。登记响应丢失时，仅在总预算剩余的范围内以同一请求 ID 和完全相同的登记内容重放一次 POST，由 Server 再次比较原文件名、账号和源码哈希；GET 不含全部登记字段，不能单凭旧就绪结果认定本次登记匹配。上传响应丢失时可用同一 ID 查询，并核对最终 PDF 哈希和长度；仍无法核实时返回非零退出码和“结果无法确认”，不声称一定未受理，不自动创建新请求。生成失败当时在剩余预算内尽力回报；回报丢失保留准备中是诚实的可观察事实。新进程未携带原请求 ID 不是原请求重试；选手再次提交可能产生新任务，不能承诺跨调用 exactly-once。
 
@@ -1987,13 +1970,13 @@ wrapper 只有确认 `ready` 且收到完整入队快照才返回成功并输出
 
 全场一个共享打印池，FIFO 以最终 PDF 就绪顺序为准。统一 A4、黑白、单份； 单双面等现场统一配置，不做每任务自选。并行完成顺序不保证等同领取顺序。
 
-空闲且有容量的 Client 主动领取，Server 原子确认当前归属。忙／故障打印机不继续领取， 不把大量待处理任务提前搬进一台机器的 spooler。Windows 端在领取和提交前检查队列未报告故障、未设置离线，并枚举全部作业判断活动容量；明确为 `PRINTED` 且没有处理中、故障、删除或未知状态的已完成保留作业不占活动容量，仅为 `COMPLETE` 或仅有保留标记不足以释放容量。作业查询失败或无法完整读取时不领取或提交，不通过删除保留作业释放容量；这仍是瞬时观察，不是物理就绪证明或对其他进程的容量预留。多打印机与物理队列容量需准确识别， 不能以 HTTP 活跃代替可打印能力，也不能把同一物理设备重复当多个无约束执行容量。
+空闲且有容量的 Client 主动领取，Server 原子确认当前归属。忙／故障打印机不继续领取， 不把大量待处理任务提前搬进一台机器的 spooler。Windows 端在领取和提交前检查队列未报告故障、未设置离线，并枚举全部作业判断活动容量；明确为 `PRINTED` 且没有处理中、故障、删除或未知状态的已完成保留作业不占活动容量，仅为 `COMPLETE` 或仅有保留标记不足以释放容量。作业查询失败或无法完整读取时不领取或提交，不通过删除保留作业释放容量。多打印机与物理队列容量需准确识别， 不能以 HTTP 活跃代替可打印能力，也不能把同一物理设备重复当多个无约束执行容量。
 
 请求、PDF 内容、尝试、Client、打印机／队列与 Windows Job ID 关联明确， 不能按文件名或裸 Job ID 猜测；旧尝试和重复报告不得推进新尝试。 Print Component 持久化恢复所需事实，系统／网络／Client 重启后可恢复或重新开放领取。 领取成功即授予本次执行许可并消耗一次尝试，下载、渲染和驱动准备失败也计入，不增加独立执行授权阶段。同一客户端的固定领取请求 ID 重试返回原分配，不重复计数；活动任务结束前不能用新请求 ID 取得第二个任务，空池轮询不消耗次数。失败或结果未知从 Server 判定结束起等待 30 秒，之后加入当时队尾，不保留原优先位置。
 
-每任务最多三次 Natsume 应用级打印尝试（首次加两次自动重试），之后停止自动执行并暴露错误。 结果不明允许重领，优先自动完成、接受偶发重复出纸，不承诺 exactly-once。 三次预算不是纸张份数保证，操作系统／驱动可能有内部重试。 人工补打等管理动作的权限和副作用单独定规格，不默认为任意远程命令。
+每任务最多三次 Natsume 应用级打印尝试（首次加两次自动重试），之后停止自动执行并暴露错误。 结果不明允许重领，优先自动完成、接受偶发重复出纸，不承诺 exactly-once。
 
-Windows Client 首版面向 Windows 10／11 x64，每个客户端绑定一个 Windows 打印队列，最多一个活动任务；多台客户端共同消费全场 FIFO。同一物理打印机不得通过多个队列或客户端重复注册容量，具体识别与注册屏障随领取协议验证。应用在登录用户下后台／托盘运行，不先做无人登录服务。打印后端允许重写，不强制 SumatraPDF；必须评估 PDF 渲染、适用 Windows 打印路径、准确 Job ID、忙闲与故障观测，不能假定所有设备支持 RAW PDF。提交成功、打印系统报告完成与物理出纸是不同事实，产品不承诺通用物理完成证明。
+Windows Client 首版面向 Windows 10／11 x64，每个客户端绑定一个 Windows 打印队列，最多一个活动任务；多台客户端共同消费全场 FIFO。同一物理打印机不得通过多个队列或客户端重复注册容量，具体识别与注册屏障随领取协议验证。应用在登录用户下后台／托盘运行，不先做无人登录服务。打印后端允许重写，不强制 SumatraPDF；必须评估 PDF 渲染、适用 Windows 打印路径、准确 Job ID、忙闲与故障观测，不能假定所有设备支持 RAW PDF。提交成功、打印系统报告完成与物理出纸是不同事实。
 
 客户端每 10 秒联系 Server；登记 Windows Job ID 前，连续 60 秒没有有效联系或领取后两分钟仍未完成登记，以先到期限结束本次。两分钟覆盖下载、渲染、驱动准备、取得 Job ID 和 Server 确认，普通联系不能延长。首次提交页面前，客户端须可靠保存精确 Job ID，并收到 Server 对当前尝试及 Job ID 的确认；回复丢失只核对原登记，不创建另一个 Windows 任务，无法确认则尽力中止未完成文档。领取后 Windows 队列被其他程序占用，只在原两分钟内等待，不操作其他任务、不退还次数。
 
@@ -2005,9 +1988,9 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 管理员预先登记物理打印机，为该记录签发一次性配对码；客户端取得独立最小权限凭据，不持有长期管理员 session。配对码为八位排除易混淆字符的字母数字，分两组各四位显示，输入不区分大小写，十分钟有效；每台打印机只有一个有效未用码，重新签发使旧码失效，成功使用使码失效，输错不销毁正确码。同一网络来源每分钟最多五次配对尝试，全局每分钟最多六十次，超限等待六十秒；使用真实连接来源而非任意转发头，拒绝信息不透露配对码或打印机是否存在。
 
-配对须完整确认；客户端未确认整个流程成功就清除未完成凭据、停止领取并要求新码，不自动恢复中断配对。网络中断可能在 Server 留下未完成或客户端未确认的绑定，管理员须明确清除残留后重新签发，不能承诺双方瞬时回滚。已有绑定不能被新配对静默替换；原客户端仍有未结束尝试时不能更换，即使原电脑损坏也先完成既定失联处理。更换不重置次数、不跳过等待、不产生额外执行许可。管理员负责核对 Windows 队列与物理打印机的映射，不声称能按队列名或端口名识别所有硬件别名。
+配对须完整确认；客户端未确认整个流程成功就清除未完成凭据、停止领取并要求新码，不自动恢复中断配对。网络中断可能在 Server 留下未完成或客户端未确认的绑定，管理员须明确清除残留后重新签发。已有绑定不能被新配对静默替换；原客户端仍有未结束尝试时不能更换，即使原电脑损坏也先完成既定失联处理。更换不重置次数、不跳过等待、不产生额外执行许可。管理员负责核对 Windows 队列与物理打印机的映射。
 
-首个 Windows 后端候选使用系统自带的 `Windows.Data.Pdf` 按页渲染到 300 DPI 的灰度位图，再经 GDI 提交；不安装或运行时下载 PDF 渲染器。驱动设置请求并复查 A4、黑白、单份、固定缩放；单双面保留现场队列配置。整页按比例缩放到可打印区域，不裁切源码。`StartDocW` 的返回值提供准确 Job ID，页面提交前先调用同步身份记录边界；查询同时核对队列、Job ID 与 `Natsume/<attempt_id>` 文档标签，数字 ID 被复用、任务消失或删除都不是完成证据。`JOB_STATUS_COMPLETE` 仅表示已交给设备，`JOB_STATUS_PRINTED` 仅表示 spooler 报告打印；驱动对设置和完成标记的解释仍需现场验证。打印后端是客户端内部库，不提供独立诊断命令或诊断记录格式；客户端采用正常应用启动入口，选择服务器和打印机、显示状态并执行领取流程。本地执行记录与应用入口见第 23.3.3 节，不以诊断日志代替业务状态。该候选须经 Windows 程序运行、驱动和真实打印验证后才能成为完整打印端交付。
+首个 Windows 后端候选使用系统自带的 `Windows.Data.Pdf` 按页渲染到 300 DPI 的灰度位图，再经 GDI 提交；不安装或运行时下载 PDF 渲染器。驱动设置请求并复查 A4、黑白、单份、固定缩放；单双面保留现场队列配置。整页按比例缩放到可打印区域，不裁切源码。`StartDocW` 的返回值提供准确 Job ID，页面提交前先调用同步身份记录边界；查询同时核对队列、Job ID 与 `Natsume/<attempt_id>` 文档标签。`JOB_STATUS_COMPLETE` 仅表示已交给设备，`JOB_STATUS_PRINTED` 仅表示 spooler 报告打印；驱动对设置和完成标记的解释仍需现场验证。打印后端是客户端内部库，不提供独立诊断命令或诊断记录格式；客户端采用正常应用启动入口，选择服务器和打印机、显示状态并执行领取流程。
 
 #### 23.3.1 打印机登记与客户端配对协议
 
@@ -2026,7 +2009,7 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 结构化请求使用封闭字段集；非法字段或 JSON 返回 400，无效、未知、已用或过期码统一返回 401，避免透露打印机存在事实。配对速率限制在读取请求体前执行，仅使用 TLS listener 提供的实际来源 IP，统一 IPv4 与其 IPv6 映射表示；不信任 `X-Forwarded-For` 等任意转发头，缺少实际来源时拒绝处理。超限返回 429、`RATE_LIMITED` 和 `Retry-After: 60`。单进程限流状态在内存中维护且有界，进程重启会清空，不作为持久身份事实。所有响应继续使用 Print namespace 的 `Cache-Control: no-store`；查看员、来源令牌和客户端令牌不能调用管理员接口，Operator session 或来源令牌不能代替客户端确认凭据。
 
-配对协议是执行闭环的身份基础，不单独代表领取、尝试恢复、Windows 应用或现场打印已经实现。客户端令牌不得用于访问 Operator 队列或 DOMjudge 来源接口，正式领取接口还须检查绑定已经确认。
+客户端令牌仅用于客户端接口，领取前须检查绑定已经确认。
 
 #### 23.3.2 Server 执行协议与持久化
 
@@ -2042,9 +2025,9 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 | `POST /api/v2/print/client/attempts/{attempt_id}/reports` | 下述固定报告枚举 | 200，持久化后的原尝试状态 |
 | `GET /api/v2/print/executions` | Operator session，admin 或 viewer | 200，非秘密执行状态数组，通过 `ready_sequence` 对应现有队列元数据 |
 
-领取请求 ID 的幂等范围是当前客户端 ID。已接受的空池结果同样保存回执，重发该 ID 仍返回 null；下一次轮询使用新 ID。分配成功的 ID 永远对应原尝试，重放不会领取后来排队的任务，也不会因原尝试结束而重新计次。相同 ID 改变队列名返回 409；客户端持有活动尝试时使用新 ID 也返回 409。队列名为 1～256 个 Unicode 字符，不接受控制字符，仅作为本客户端选择和观察 Windows 队列的精确名称，不声称能识别物理设备别名。客户端必须先确认队列空闲且可用，再发起领取。
+领取请求 ID 的幂等范围是当前客户端 ID。已接受的空池结果同样保存回执，重发该 ID 仍返回 null；下一次轮询使用新 ID。分配成功的 ID 永远对应原尝试，重放不会领取后来排队的任务，也不会因原尝试结束而重新计次。相同 ID 改变队列名返回 409；客户端持有活动尝试时使用新 ID 也返回 409。队列名为 1～256 个 Unicode 字符，不接受控制字符，仅作为本客户端选择和观察 Windows 队列的精确名称。客户端必须先确认队列空闲且可用，再发起领取。
 
-尝试响应包含 `attempt_id`、`ready_sequence`、`printer_id`、`client_id`、`attempt_number`、`queue_name`、`label`、`state`、领取时间、准备绝对期限、有效联系／观察期限、最后联系时间、可空的最后有效观察时间、可空的 `job_id` 与结束时间，以及文档摘要、字节数和页数。ID 为 canonical UUIDv7，标签固定为 `Natsume/<attempt_id>`，Job ID 为 1～4294967295 的 JSON 整数。整数与时间在 TypeScript 中生成 JSON number，可空字段仍为必需字段，不混同字段省略。尝试状态为 `preparing`、`observing`、`printed`、`failed`、`unknown`；`printed` 仅表示客户端明确报告打印系统的 `PRINTED`，不是物理出纸证明。
+尝试响应包含 `attempt_id`、`ready_sequence`、`printer_id`、`client_id`、`attempt_number`、`queue_name`、`label`、`state`、领取时间、准备绝对期限、有效联系／观察期限、最后联系时间、可空的最后有效观察时间、可空的 `job_id` 与结束时间，以及文档摘要、字节数和页数。ID 为 canonical UUIDv7，标签固定为 `Natsume/<attempt_id>`，Job ID 为 1～4294967295 的 JSON 整数。整数与时间在 TypeScript 中生成 JSON number，可空字段仍为必需字段，不混同字段省略。尝试状态为 `preparing`、`observing`、`printed`、`failed`、`unknown`；`printed` 仅表示客户端明确报告打印系统的 `PRINTED`。
 
 报告使用封闭字段集：`{ "kind": "contact" }`、`{ "kind": "observed", "job": { "queue_name": "…", "job_id": 42, "label": "…" } }`、同样携带 `job` 的 `printed`，以及不携带 `job` 的 `failed`、`unknown`。只有 Job ID、原队列名和精确尝试标签全部相同，观察才有效。`observed` 包括仍能精确核对原任务的缺纸、暂停等情况；`COMPLETE` 不能报告为 `printed`。消失、删除、标签不匹配或无法证明结果时报告 `unknown`，不能借此取消业务任务。业务失败报告只使用固定枚举，不携带驱动输出、文件路径、源码或 PDF 内容。
 
@@ -2054,17 +2037,17 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 Print 组件拥有按尝试期限触发的到期检查循环，Server 组合层显式启动该任务，由 `BackgroundTasks` 管理其取消、等待和异常释放，`serve` 命令不直接调用 Print 循环。循环收到正常关闭信号后停止发起新检查，已经开始的事务完成后再退出。相关业务事务也检查到期，检查失败通过 tracing 记录并在后续检查重试；任务异常退出在关闭等待时以保留源错误的 Snafu 错误报告，日志不包含 panic 内容。任务状态、次数、回执、结束结果及重试等待在同一 `Database::write` 事务内改变；数据库唯一约束同时防止同一任务、客户端或打印机存在多个活动尝试。启动完成文档核对后，仅为已登记 Job ID 且尚未结束的尝试设置从恢复时刻起的 60 秒观察宽限，不伪造新的联系或观察时间；未登记尝试保持原期限，终态和重试等待不重置。解除打印机绑定的事务先判定到期，再拒绝仍有活动尝试的打印机，不能以网络离线代替尝试结束。
 
-执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。`/print/queue` 保持原有入队元数据契约，Web 将其与执行状态关联，不将系统报告解释为物理交付。本节范围为 Server 协议；Windows 客户端执行记录和当前验证范围见第 23.3.3 节，图形界面、驱动和真实出纸仍须分别验收。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试，这些结果不包含这两个测试，也不构成 Windows 程序运行、驱动兼容或物理打印证据。
+执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。`/print/queue` 保持原有入队元数据契约，Web 将其与执行状态关联。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试。
 
 #### 23.3.3 Windows 客户端执行与本地恢复
 
-`natsume-print-client` 在已登录 Windows 用户下运行正常应用入口，通过配置固定 HTTPS origin、Windows 队列和本地状态目录。图形入口采用 Slint 的 Windows winit 后端和软件渲染，按配置、配对和日常工作台组织，提供阶段及原 Job 身份展示、暂停／恢复与确认后正常退出，并通过安全封装提供托盘；支持 CI 构建便携 ZIP，不提供安装器。工作台分开展示领取开关与当前工作，设置弹层只读显示活动配置。界面固定采用浅色调色板，正文、标准输入控件和确认弹层不跟随系统深色主题改变。原型界面已由用户确认在 Windows 编译和启动，浅色配色修复后的文字显示也已确认正常；文件选择、系统快捷操作、配置加载及界面内执行尚无独立完整验收记录。Linux 工位 Agent 继续明确使用其 Wayland／Skia 配置，不将该后端配置强加给 Windows。配置与启动方法见[客户端说明](../crates/natsume-print-client/README.md)。客户端不持有 Operator session，不使用 DOMjudge 来源凭据，不提供诊断命令或任意远程执行入口。
+`natsume-print-client` 在已登录 Windows 用户下运行正常应用入口，通过配置固定 HTTPS origin、Windows 队列和本地状态目录。图形入口采用 Slint 的 Windows winit 后端和软件渲染，按配置、配对和日常工作台组织，提供阶段及原 Job 身份展示、暂停／恢复与确认后正常退出，并通过安全封装提供托盘；支持 CI 构建便携 ZIP，不提供安装器。工作台分开展示领取开关与当前工作，设置弹层只读显示活动配置。界面固定采用浅色调色板，正文、标准输入控件和确认弹层不跟随系统深色主题改变。配置与启动方法见[客户端说明](../crates/natsume-print-client/README.md)。客户端不持有 Operator session，不使用 DOMjudge 来源凭据，不提供诊断命令或任意远程执行入口。
 
 图形线程通过有界命令通道控制单个应用流程，通过只含非秘密展示信息的最新快照读取状态；现有 Engine 继续独占执行、持久化与恢复决策，窗口不直接操作任务记录或打印句柄。新配置以排他创建方式写入，不覆盖已有文件；未指定 `--config` 时只打开设置窗口，不启动领取或建立本地执行记录。界面阶段与配对状态由实际应用状态投影，任务摘要包含已知序号、尝试号、Job ID 和原作业标签，不包含配对码、令牌或文档。Windows 桌面操作仅在用户点击后选择文件、打开配置目录或原队列、复制诊断摘要，不提供任务清理、重置或手动重印。正常关闭窗口在托盘可用时只隐藏，事件循环显式保持运行；托盘不可用时打开正常退出确认。退出请求在命令通道满时持续尝试投递，停止新提交并等待已启动原生调用，界面线程不强行中止打印。当前保留控制台承载 tracing，正式发布的日志保存、控制台隐藏、安装及登录启动策略另行确定。
 
 配对令牌保存到当前用户的 Windows `PasswordVault`，本地只保存来源 origin、队列、非秘密绑定身份、暂停状态和当前执行阶段。未完整确认的绑定在下次启动时清除未完成凭据，要求管理员清理 Server 残留并签发新码；不自动恢复中断配对。TLS 校验不允许跳过，不使用系统代理或重定向；JSON 使用 URL `/api/v2` 下的封闭字段集，不引入独立协议版本字段。
 
-本地状态使用有单实例锁的仅追加记录，每条包含递增序号、完整状态和 SHA-256 校验，写入后同步文件。校验发现半条尾部、缺失、损坏或身份不一致时停止领取，不截断、不回退到旧空闲记录，也不以重新配对消除原尝试。校验不是防恶意修改的认证，目录须由当前用户及管理员控制。记录暂不自动压缩或清理，长期运行需监控空间；恢复逻辑以损坏、中断和回复丢失等单元测试验收，不将这些结果解释为存储设备的断电耐久保证。
+本地状态使用有单实例锁的仅追加记录，每条包含递增序号、完整状态和 SHA-256 校验，写入后同步文件。校验发现半条尾部、缺失、损坏或身份不一致时停止领取，不截断、不回退到旧空闲记录，也不以重新配对消除原尝试。校验不是防恶意修改的认证，目录须由当前用户及管理员控制。记录暂不自动压缩或清理，长期运行需监控空间。
 
 执行阶段为 `idle → claiming → preparing → starting → observing → reporting → idle`。固定领取请求 ID 先于请求保存；`starting` 先于原生提交保存，准确 Job ID 先于登记和第一页保存。登记回复丢失只重试同一个 Job ID；未取得当前有效归属和准确 Job 身份的确认时，原生后端中止未结束文档，不再建立另一个 Windows 作业。队列被其他程序抢占但尚未建立作业时，仍在原尝试和原期限内等待，不另领或延长期限。
 
@@ -2096,9 +2079,9 @@ sequenceDiagram
 
 原生提交在独立工作线程中执行，拥有该线程上的打印机句柄、设备上下文和 WinRT 初始化；客户端流程仍可联系 Server 并精确观察原作业。只有提交线程结束后才把 `PRINTED` 保存为待报告完成；`COMPLETE`、作业消失、删除和标签不匹配不证明成功。重启遇到完整 Job 身份时只恢复观察和补报，不重新提交；遇到没有 Job ID 的中断 `starting` 时停止领取，要求核实处理。Server 返回原终态后才清除当前本地工作，迟到结果不推进后续尝试。
 
-首次完成配对后默认暂停，新领取必须明确恢复；暂停跨重启保留，不中止当前工作。正常退出停止新提交，等待已经运行的提交线程返回并保留后续观察或补报状态。原生驱动可能阻塞，不能保证立即关闭；失联、退出或中止均不证明没有出纸。
+首次完成配对后默认暂停，新领取必须明确恢复；暂停跨重启保留，不中止当前工作。正常退出停止新提交，等待已经运行的提交线程返回并保留后续观察或补报状态。原生驱动可能阻塞，不能保证立即关闭。
 
-本轮 Linux 的 `cargo test --frozen -p natsume-print-client --lib` 通过 51 项测试，`cargo clippy --frozen -p natsume-print-client --all-targets -- -D warnings` 与 `prek run --all-files` 通过；网络测试使用本地 HTTPS 服务，打印和凭据操作使用替身，界面测试使用无桌面显示的软件窗口替身，覆盖各页面渲染、窄窗口、配对输入、暂停与工作并存、结果文案、诊断脱敏、退出确认，以及系统深色主题和主题切换下非焦点输入、标题与退出提示的可读性。此前执行核心已通过 Windows 原生测试及 Clippy，并完成 Adobe PDF 单任务和保留完成作业时连续双任务的软件联调；这些结果不覆盖本轮界面改动。用户已确认先前版本图形程序正常运行；当前 WSL 未能取得 Windows 原生进程执行结果，用户已确认原型界面编译、启动及配色修复后的文字显示正常；这些反馈不包含每条原生自动化命令的完整结果记录，配置加载和界面内打印执行尚无独立端到端验收记录。恢复行为以单元测试验收，不另行要求实际断网、停止 Server、重启 Windows 或中途终止客户端；自动化结果不能表述为现场故障演练、存储设备断电耐久、驱动兼容或物理打印证据。实体打印机验收不阻塞剩余软件功能开发。
+执行核心已通过 Windows 原生测试和 Clippy，并完成 Adobe PDF 单任务和连续双任务软件联调。Linux 单元测试使用本地 HTTPS 服务、打印与凭据替身及无桌面显示的软件窗口替身，覆盖执行恢复和界面交互。Windows 原型已确认编译、启动及浅色文字显示正常；文件选择、系统快捷操作、配置加载及界面内打印执行待验证。网络与中断恢复按单元测试验收；实体打印机的驱动、纸张、缩放、故障观测及出纸待验收。
 
 ### 23.4 离线工作区与队伍优先拍摄组
 
@@ -2126,17 +2109,17 @@ Photo Client 首次联网登记来源、信任和非秘密名单快照，之后�
 
 只有确认成品交付。在线提交与离线签名包经 Web Panel 导入使用同一接收规则； 成果包携带格式／来源／初始化上下文、稳定队伍身份、外部 Team ID、成果身份及图片哈希， 由登记拍照站签名，不能仅以可重写的哈希清单充当来源证明。
 
-先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。 签名证明来源与内容，不证明现场身份核对或选手满意。
+先整包验证签名、完整性和文件安全，再逐项接收。重复成果幂等；同队不同图保留当前值， 显式确认替换，不按导入时间／客户端时钟自动覆盖。名单移除、重建或不匹配的项保留待处理， 其他有效项继续接收，不按队名、校名或复用账号猜测 identity。 人工重新关联与替换须针对仍有效的当前事实，避免过时确认覆盖更新决定。
 
 Server 管理当前成品和待处理候选，不做原片云盘、全量历史、历史回滚或协作编辑。 签名成果包与按 `TeamID.jpg/png` 的外部图片交付不同：Client 导出自身成果，Server 汇总当前成品。 现有导出以 `account` 为外部 Team ID，内部队伍身份沿用 `account_id`，不是座位号或新 UUID。 实际 DOMjudge／Pyrite 的 ID、扩展名与路径仍需核对；检测 Windows 保留名、大小写冲突等， 不能静默改名、覆盖或漏图后声称成功。成品方向、尺寸、格式与元数据策略在确认前确定。
 
 ### 23.7 GUI 及目标环境验证
 
-核心逻辑采用 Rust，GUI 首轮只比较 Slint／Tauri，GPUI 不进入首轮，.NET 不是默认选择。 同场景验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、 干净 Windows 安装及实际资源开销后选择一种，不以语言偏好或现有 Linux 界面代替证据。
+核心逻辑采用 Rust，GUI 首轮只比较 Slint／Tauri，GPUI 不进入首轮，.NET 不是默认选择。 同场景验证中文 IME／长名称、双窗口／混合 DPI／拔插、最新图／确认竞态、离线重启、 干净 Windows 安装及实际资源开销后选择一种。
 
 Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows backend、renderer、 字体与原生运行库。Tauri 可复用纯 UI，不复用在线 Panel 登录／轮询为离线生命周期； 须处理 WebView2 离线部署、逐窗口权限、受限本地图片访问，不把私钥交给 JS， 也不用 Base64／JSON 事件高频传送全分辨率照片。展示窗口不得继承摄影师全部能力。
 
-打印引擎与 GUI 独立验证，使用实际设备取得 Job ID、容量、故障与恢复证据。 Windows 编译、GUI 运行、真实打印、Linux 回归、CI 完整套件分开报告。 本次只读调研没有提供这些 Windows／硬件通过结果。
+打印引擎与 GUI 独立验证，使用实际设备取得 Job ID、容量、故障与恢复证据。
 
 ### 23.8 实施与验收边界
 
@@ -2153,5 +2136,3 @@ Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows back
 - 成果包抗篡改、重复幂等、名单漂移逐项处理、替换明确，真实外部系统图片匹配；
 - 无未经同意的照片历史／素材云盘，文件限额、授权、清理及备份恢复明确；
 - Slint／Tauri 选择和打印后端取得 Windows 实机证据，部署支持矩阵与运行依赖清楚。
-
-完整阶段工作包、状态清单与逐轮证据按文档规则维护，不在本文形成新的完成声明或引用本地临时材料。

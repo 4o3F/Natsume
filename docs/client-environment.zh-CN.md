@@ -1,6 +1,6 @@
 # Client 运行环境要求
 
-本页只规定 Natsume Client 正常运行所需的系统条件。镜像构建、发行版适配、安装器、配置合并和目标机器验收由镜像项目负责，本仓库不提供镜像模板、适配脚本或检查器。安装 Client Deb 不等于完成桌面环境配置。
+本页规定 Natsume Client 的运行条件。镜像项目负责镜像构建、发行版适配、安装器、配置合并和目标机器验收；本仓库提供 Client Deb，不提供镜像模板、适配脚本或检查器。
 
 ## 系统与桌面
 
@@ -36,7 +36,7 @@ GDM 首次启动进入 waiting，后续 waiting/contest 的准备与重建由 Cl
 
 部署方在首次业务启动前提供 `/etc/natsume/config.toml`、`/etc/natsume/trust/control-ca.crt` 和 `/etc/natsume/trust/local-origin-ca.crt`。文件为 root:root/0644，父目录为 root:root/0755；配置中的 Server IP、端口、Gateway 域名与证书必须匹配配套 Server。完整格式见随包 `config.example.toml` 和[部署运维手册](operations-deployment.zh-CN.md)。
 
-Client 包不生成或改写这些部署输入，不创建 waiting/teams，不合并发行版桌面配置。未提供部署输入时可预装包，但不能据此认定工位可用。只启用 Helper 和 Daemon 的主机服务；Caddy 归 Daemon 管理，会话准备实例不单独启用，Agent 随 Kiosk 会话启动。
+Client 包不生成或改写这些部署输入，不创建 waiting/teams，不合并发行版桌面配置。包可提前预装，业务启动前须补齐部署输入。只启用 Helper 和 Daemon 的主机服务；Caddy 归 Daemon 管理，会话准备实例不单独启用，Agent 随 Kiosk 会话启动。
 
 Gateway 的 hosts 映射、Firefox 主页和 `/etc/natsume/submit.env` 归 Helper 维护；镜像不得重复写入赛事域名。Firefox 必须实际读取 `/etc/firefox/policies/policies.json` 并信任部署 CA。若提供 DOMjudge `submit`，启动器每次调用读取 `submit.env`，仅为该进程设置 Local Origin CA，不在 Home 模板中保存队伍密码。
 
@@ -44,4 +44,4 @@ Gateway 的 hosts 映射、Firefox 主页和 `/etc/natsume/submit.env` 归 Helpe
 
 Client、Server、协议、桌面配置与 Home 模板必须使用经过目标环境验证的兼容组合。维护前保留管理员入口、完成进行中的 Home 恢复、退出受管会话并停止控制连接；替换模板前排空相应用户与挂载。备份和恢复必须覆盖匹配的程序、配置、身份、凭据及业务状态，不能单独降级 Helper 或混用旧状态。
 
-首次部署、升级和回退均须由镜像项目在实际目标环境验证登录隔离、双会话切换、Home 恢复及真实显示和键鼠可用性。构建成功、包安装成功或协议 `ready=true` 都不能替代这项验证。
+首次部署、升级和回退均须由镜像项目在实际目标环境验证登录隔离、双会话切换、Home 恢复及真实显示和键鼠可用性。

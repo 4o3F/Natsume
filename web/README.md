@@ -14,19 +14,19 @@ Web 界面的视觉规范统一见根目录 [DESIGN.md](../DESIGN.md)。修改�
 
 ## Browser verification
 
-Run `deno task prepare web`, then `pnpm --dir web e2e` from the repository root. Playwright builds the production Web output and tests it in Chromium with mocked `/api/v2` responses. These tests verify browser interactions, permission-dependent controls, session isolation, one-time credential display, polling failures and recovery; they do not demonstrate a real Server deployment or Windows printing.
+Run `deno task prepare web`, then `pnpm --dir web e2e` from the repository root. Playwright builds the production Web output and tests it in Chromium with mocked `/api/v2` responses. These fixture-based tests verify browser interactions, permission-dependent controls, session isolation, one-time credential display, polling failures and recovery.
 
 Shared interaction helpers live in `e2e/fixtures/ui.ts`. Open the mobile navigation or detail sheet before interacting with its controls, and locate the seat column by its header rather than assuming it is the first column. Use the virtual clock for polling and delayed responses. Keep assertions about unknown or stale states, explicit confirmations, original-operation retries and session cleanup when adapting tests to layout changes.
 
 ## API boundaries
 
-The generated bindings describe JSON types, not HTTP routes or runtime validation. The client explicitly owns methods, paths, CSV queries, JSON requests, raw XLSX uploads and ZIP downloads, while retaining session cancellation and unauthorized-session handling. Responses use serialization-facing types where Serde conditionally omits a field. Existing JSON integers remain TypeScript `number`; this does not add lossless 64-bit transport.
+The client owns HTTP methods, paths, CSV queries, JSON requests, raw XLSX uploads and ZIP downloads, with session cancellation and unauthorized-session handling. Responses use serialization-facing types where Serde conditionally omits a field. Existing JSON integers remain TypeScript `number`.
 
-**2026-08-15 修订**：面板随 Server Deb 交付，并由 `natsume-server serve` 同源托管；开发迭代仍使用经 Vite proxy 转发的 `pnpm dev`。
+面板随 Server Deb 交付，由 `natsume-server serve` 同源托管；开发时使用经 Vite proxy 转发的 `pnpm dev`。
 
-The target Panel surface follows `docs/architecture.md`: contest preparation, provisioning, Enrollment review, Device lifecycle, Gateway and Binding facts, Runtime/Session/Home targets, and readiness views. It never renders or retrieves contest passwords, Gateway private keys, or CSRs. It does not rely on SSE, ChangeEvent streams, an audit page, or an HTTP Command resource.
+The Panel never renders or retrieves contest passwords, Gateway private keys, or CSRs.
 
-The Panel calls only implemented Server HTTP routes. New surfaces are added together with their Server adapter, named client calls, tests and regenerated types; the Panel does not keep placeholder routes for unimplemented resources.
+The Panel calls only implemented Server HTTP routes. New surfaces are added together with their Server adapter, named client calls, tests and regenerated types.
 
 Enrollment shows the enrollment window state and lets administrators open or close it through `/api/v2/provisioning-window`; viewers can only read the state. The window closes whenever the Server restarts, and the Panel polls for changes.
 

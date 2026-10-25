@@ -13,12 +13,9 @@ Natsume connects a contest roster, physical seats, managed Ubuntu workstations, 
 
 ## Project goals
 
-1. **Make contest-day operations manageable.** Support a single on-site contest, with a design target of approximately 500–600 workstations per Server.
-2. **Keep roster and workstation assignments consistent.** Connect schools, teams, DOMjudge accounts, seats, and devices without hand-configuring each contestant desktop.
-3. **Converge on the intended state.** Reconcile Server targets with device reports, including after reconnects and process restarts. A submitted target is not proof that a workstation has applied it.
-4. **Keep privileged operations narrow.** Separate operator access, device identity, credential handling, desktop presentation, and root capabilities. Fail closed when identity or trust cannot be established.
+One Server manages a single on-site contest, with a design target of approximately 500–600 workstations.
 
-Natsume is not a judging system or a general-purpose remote administration tool. DOMjudge remains the judging platform. Multi-contest hosting, Server HA, arbitrary remote shells, and file management are outside the project scope.
+DOMjudge provides judging; Natsume handles contest operations. Multi-contest hosting, Server HA, arbitrary remote shells, and file management are outside the project scope.
 
 ## Core features
 
@@ -28,11 +25,11 @@ Natsume is not a judging system or a general-purpose remote administration tool.
 - **Session, Home, and power control:** show the waiting screen or contest desktop, terminate contest sessions, reset contestant Home data, and request confirmed shutdown of online enabled devices. Bulk submissions expose per-device acceptance or rejection; shutdown requests expire after 60 seconds.
 - **Live readiness:** automatically refreshed views of connection state and Gateway, Binding, Runtime, Session, and Home convergence, with refresh indicators on the Devices, Seats, and Targets pages.
 - **Contestant experience:** a native GNOME Wayland waiting screen with team, school, seat, and offline information; a separate full GNOME contest desktop; and a local HTTPS gateway for DOMjudge automatic login.
-- **Printing:** an independently packaged DOMjudge HTTPS/Typst wrapper, durable Server queue and native Windows client with pairing, persisted execution, recovery and desktop controls. Windows portable ZIPs use the shared CI and Release flow; printing-system completion is not proof of physical delivery.
+- **Printing:** an independently packaged DOMjudge HTTPS/Typst wrapper, durable Server queue and native Windows client with pairing, persisted execution, recovery and desktop controls. Windows portable ZIPs use the shared CI and Release flow.
 
 ## Feature gallery
 
-The seven Web views below are captured from the current production panel with synthetic API fixtures, not a live contest. Seat setup and Waiting are current native Slint UI previews with sample data on an isolated virtual display. All images are 2880 × 2160, rendered at 2× scale without stretching or cropping. These illustrate the interface, not device operation, deployment, or scale acceptance. Click any image to view it at full resolution; see the [capture guide](docs/screenshots/README.md) to refresh them.
+The seven Web views below show the current production panel with synthetic API fixtures. Seat setup and Waiting are native Slint UI previews with sample data on an isolated virtual display. All images are 2880 × 2160, rendered at 2× scale without stretching or cropping. Click any image to view it at full resolution; see the [capture guide](docs/screenshots/README.md) to refresh them.
 
 <!-- Screenshot contract: Web viewport 1440 x 1080 at DPR 2; native preview logical size 1440 x 1080 at scale 2. All PNGs are 2880 x 2160. Keep one equal-column table; capture actual UI without stretching or cropping. -->
 <table width="100%">
@@ -95,7 +92,7 @@ Special thanks to my good friend [@Runa798](https://github.com/Runa798) for gene
 
 ## Architecture
 
-The [architecture document](docs/architecture.md) is the sole manually maintained architecture authority. This is an orientation guide; the architecture describes the target state, and completion must be checked against code and acceptance evidence.
+The [architecture document](docs/architecture.md) is the sole manually maintained architecture authority and describes the target state.
 
 | Component                       | Location                                                 | Responsibility                                                                                                                                                                                    |
 | ------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -153,7 +150,7 @@ prek install                        # Enable this checkout's pre-commit hook
 pnpm --dir web dev --host 127.0.0.1
 ```
 
-Open the local URL printed by Vite. Its `/api` proxy expects an already configured Server at `https://127.0.0.1:8443`; the UI does not provide a built-in demo login. For a working local backend, follow the [Server guide](crates/natsume-server/README.md) and [deployment runbook](docs/operations-deployment.zh-CN.md) to provision configuration, TLS/CA material, and an initial operator. Server modes read the fixed `/etc/natsume-server/config.toml`, not command-line configuration flags.
+Open the local URL printed by Vite. Its `/api` proxy requires a configured Server at `https://127.0.0.1:8443` and a real operator login. For a working local backend, follow the [Server guide](crates/natsume-server/README.md) and [deployment runbook](docs/operations-deployment.zh-CN.md) to provision configuration, TLS/CA material, and an initial operator. Server modes read the fixed `/etc/natsume-server/config.toml`, not command-line configuration flags.
 
 For UI-only work, the Playwright suite uses intercepted API fixtures and needs no running Server:
 
@@ -170,7 +167,7 @@ deno task build                     # Rust release and Web production builds
 prek run --all-files
 ```
 
-`prepare` is the download phase; run it again after dependency or tool inputs change. A failed task returns a nonzero exit status. Preparation errors identify the failed stage, preserve the command output and report the command, working directory and exit code; a version mismatch also reports the running Deno version and executable path. Do not continue with offline checks or builds after preparation fails. Resolve the reported tool, registry/mirror or network problem and rerun the same prepare command; do not change locked dependency versions merely to bypass a download failure. `check`, `test`, `build`, `api` and `package` consume prepared inputs, use cached Deno modules and offline Cargo, and never install dependencies themselves. Select `rust`, `shared`, `web`, `server`, `client` or `print-domjudge` for the Linux targets; `shared` checks cross-platform crates without preparing delivery assets. Build `print-client` natively on Windows using the same prepare/check/test/build/package entries; see [Packaging](packaging/README.md#windows-portable-packages) for platform selection, tools, Debs and portable ZIPs. Windows package builds do not need Node/pnpm or Linux workstation assets.
+`prepare` is the download phase; run it again after dependency or tool inputs change. Preparation failures return a nonzero exit status, identify the failed stage, preserve command output and report the command, working directory and exit code; a version mismatch also reports the running Deno version and executable path. Do not continue with offline checks or builds after preparation fails. Resolve the reported tool, registry/mirror or network problem and rerun the same prepare command; do not change locked dependency versions merely to bypass a download failure. `check`, `test`, `build`, `api` and `package` consume prepared inputs, use cached Deno modules and offline Cargo, and never install dependencies themselves. Select `rust`, `shared`, `web`, `server`, `client` or `print-domjudge` for the Linux targets; `shared` checks cross-platform crates without preparing delivery assets. Build `print-client` natively on Windows using the same prepare/check/test/build/package entries; see [Packaging](packaging/README.md#windows-portable-packages) for platform selection, tools, Debs and portable ZIPs. Windows package builds do not need Node/pnpm or Linux workstation assets.
 
 `prek` is the single pre-commit check entry point. It runs build-script checks, dependency policy, Web Prettier and ESLint, Rust Clippy, and Rust/Web tests without automatically editing or staging files. CI directly declares one native GitHub Actions module matrix in YAML: Server, workstation Client and DOMjudge wrapper run independently on Ubuntu, while Print Client runs on Windows. Each module runs native checks/tests, release builds and packaging. Shared checks and Web/browser checks run first; the module matrix starts only after both pass. A failed matrix job cancels the remaining unfinished module jobs. One preparation action manages module-aware Rust compilation caching; Deno, pnpm and fixed downloads are prepared afresh in each CI job without persisted CI caches. Preparation still runs on every Rust cache hit. Workflow YAML declares scheduling and conditional steps directly, calls existing build tasks, and delegates only prerequisite installation and release procedures to focused Deno scripts. Tag releases collect the matrix's Debs and ZIPs and generate combined checksums.
 

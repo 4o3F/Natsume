@@ -4,13 +4,13 @@
 
 ## 0. 适用范围与执行顺序
 
-本文描述当前源码对应的部署流程，系统环境为 Ubuntu 24.04 LTS amd64。版本号 `2.10.3` 仅作命令示例，不表示该 Release 已发布，也不表示当前源码已完成目标机器验收。正式部署须选定一个已发布版本，Server 包和 Client 源码必须来自同一标签；该标签还须包含本文使用的 Deno 构建入口，否则应使用该版本自带的指南。未发布源码的联调须从同一 Git SHA 构建两端，不能将旧 Server Release 与当前分支 Client 拼接部署。
+本文描述当前源码对应的部署流程，系统环境为 Ubuntu 24.04 LTS amd64。命令中的 `2.10.3` 为示例版本。正式部署须选定一个已发布版本，Server 包和 Client 源码必须来自同一标签；该标签还须包含本文使用的 Deno 构建入口，否则应使用该版本自带的指南。未发布源码的联调须从同一 Git SHA 构建两端，不能将旧 Server Release 与当前分支 Client 拼接部署。
 
-Client 运行验收以完成配套 GNOME/GDM、原生 Wayland 和 Home 集成的样机为前提；其集成要求单独链接，不在本文制作镜像。镜像项目负责桌面适配和目标机器验收，Deb 不再附带镜像适配材料。文末的 v2.3.2 历史迁移参考不属于当前安装步骤。
+Client 运行验收需要完成配套 GNOME/GDM、原生 Wayland 和 Home 集成的样机；镜像项目负责桌面适配和目标机器验收，要求见第 7 节。
 
 PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client Deb 构建都在同一台 Ubuntu 24.04 Server 上执行。使用同一个具有 sudo 权限的管理员账号，以下 $HOME 均指该账号的 Home；需要服务用户执行的命令会显式使用 sudo -u natsume-server。各节环境变量在同一终端中沿用，换终端后按对应步骤重新设置。
 
-只有第 7 节明确标注的 Client 安装/运行检查在比赛机执行，Web/Firefox 界面操作在实际使用的浏览器中完成。不要把整篇文档当成一个脚本执行。
+第 7 节标注的 Client 安装/运行检查在比赛机执行，Web/Firefox 操作在实际使用的浏览器中完成；请按步骤和执行位置逐项操作。
 
 | 执行位置 | 职责 |
 | --- | --- |
@@ -31,15 +31,13 @@ PKI 生成、部署文件准备、Server 安装、管理 API 调用和 Client De
 
 Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁移全部业务表，并在同一事务中初始化首个管理员和 Runtime Config，无需手工写数据库。
 
-本手册提供操作流程，不代表目标服务器、Client 桌面、显卡、DOMjudge 和整个现场链路已经验收。
-
 阅读入口：[部署参数](#1-准备部署参数和外部服务) · [创建 CA](#2-创建-ca-和-server-tls-证书) · [安装 Server](#4-在服务器安装-server) · [构建 Client Deb](#6-从源码构建-client-deb) · [部署交接与联调](#7-client-部署输入与首次联调) · [备份维护](#8-日常维护备份和恢复)。
 
 ## 1. 准备部署参数和外部服务
 
 ### 1.1 填写部署清单
 
-以下均为演示值，部署前按实际现场修改。192.0.2.10 是文档示例地址，不能直接使用。
+部署前将下表演示值（包括示例地址 192.0.2.10）替换为现场参数。
 
 | 参数 | 演示值 | 约束与用途 |
 | --- | --- | --- |
@@ -51,9 +49,9 @@ Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁
 | Gateway not after | 2026-12-08T10:00:00Z | 至少覆盖 contest end 后 **86400 秒**，部署时尚未过期 |
 | 版本 | 选定的已发布版本，命令示例为 2.10.3 | 两端使用同一标签，Client 与镜像集成要求配套 |
 
-本文以 domjudge 为 Gateway 名称示例，**不是实际上游地址，也不意味着预置了某个 CA**。可以改用 gateway.contest.example 等名字；保持两端 config.toml 的 Gateway hostname 一致，Client 启动时会自动同步本机 hosts、Firefox 主页和比赛书签，无需在镜像中预填赛事域名。
+本文以 domjudge 为本机 Gateway 名称，可改用 gateway.contest.example 等名字；保持两端 config.toml 的 Gateway hostname 一致，Client 启动时会自动同步本机 hosts、Firefox 主页和比赛书签。
 
-Client 使用程序内固定的命名空间从硬件证据派生设备 ID，无需生成或配置站点 UUID。两端必须匹配 Gateway hostname 和两份 CA；比赛结束时间和 Gateway 期限只属于 Server。
+Client 使用程序内固定的命名空间从硬件证据派生设备 ID。两端必须匹配 Gateway hostname 和两份 CA；比赛结束时间和 Gateway 期限只属于 Server。
 
 ### 1.2 网络、时间与 DOMjudge
 
@@ -84,11 +82,11 @@ sudo timedatectl set-ntp true
 
 Client同时上报控制连接实际使用的本地IP。双方地址不一致时，设备行的琥珀色警告图标可展开 详情，查看和复制两个地址及记录时间；导出仍使用Server观测IP。地址在断线和Server重启后保留， 新连接会更新整组记录。离线地址是最近记录，记录时间不是最后心跳时间；缺失地址会计数并跳过。 Server升级自动应用第五条migration，保留既有设备和绑定；已有设备在重连后取得地址记录， 旧Client未上报本地IP时显示Not reported。
 
-Natsume 不安装 DOMjudge。继续前需有工作的 HTTPS DOMjudge 和比赛账号，并核对配套登录约定：Gateway 只对 /login 注入 X-DOMjudge-Login 和 Base64 编码的 X-DOMjudge-Pass。实际 DOMjudge 必须支持此约定；普通页面可访问不证明自动登录可用。
+继续前需自行部署可用的 HTTPS DOMjudge 和比赛账号，并验证自动登录：Gateway 只对 /login 注入 X-DOMjudge-Login 和 Base64 编码的 X-DOMjudge-Pass，DOMjudge 必须支持此约定。
 
 上游必须是 canonical HTTPS origin，例如 https://judge.contest.example 或 https://judge.contest.example:8444，不带结尾斜杠、路径、用户名密码、query 或 fragment。不能填写 /domjudge 或 /api 地址，需要在根路径提供配套页面。
 
-Caddy 用**系统信任**校验上游 TLS。若 DOMjudge 使用额外私有 CA，按 7.3 节给 Client 安装该公共 CA；Natsume 的两份 CA 不会自动使任意上游证书受信任。
+Caddy 用**系统信任**校验上游 TLS。若 DOMjudge 使用额外私有 CA，按 7.3 节给 Client 安装该公共 CA。
 
 ## 2. 创建 CA 和 Server TLS 证书
 
@@ -99,7 +97,7 @@ Caddy 用**系统信任**校验上游 TLS。若 DOMjudge 使用额外私有 CA�
 | Control CA | Server、Client、访问 Panel 的管理员浏览器 | Server 管理员的 PKI 目录保存加密私钥，直接签发 Server TLS leaf |
 | Local Origin CA | Server、Client 系统和 Firefox | 加密原件保存在同一 PKI 目录；在线副本放服务私有目录，动态签发 Gateway leaf |
 | Server TLS leaf/key | leaf 通过 TLS 握手提供 | Server 私有目录，用于 HTTPS/WSS |
-| server-root.key | 不分发 | bootstrap 在 Server 生成，保护数据库中的业务秘密，**不是 CA key** |
+| server-root.key | 不分发 | bootstrap 在 Server 生成，保护数据库中的业务秘密 |
 
 本流程使用 ECDSA P-256 和 SHA-256，两个自签根直接签发 leaf。不要增加中间 CA：当前 Server TLS 配置读取单个 leaf DER，Gateway grant 也只携带单个 leaf。
 
@@ -162,9 +160,9 @@ openssl pkcs8 -topk8 -nocrypt -outform DER \
   -in private/local-origin-ca-key.pem -out server/origin-ca-key.pk8
 ~~~
 
-origin-ca-key.pk8 是**未加密 PKCS#8 DER**，这是 Server 的读取格式；只能作为在线签发密钥部署到 Server 受限目录。后缀不会转换内容。参数见 [OpenSSL pkcs8](https://docs.openssl.org/3.0/man1/openssl-pkcs8/)。
+origin-ca-key.pk8 使用 Server 要求的**未加密 PKCS#8 DER** 编码，只能作为在线签发密钥部署到 Server 受限目录。参数见 [OpenSSL pkcs8](https://docs.openssl.org/3.0/man1/openssl-pkcs8/)。
 
-Local Origin CA 有效期必须覆盖 Gateway not after，不能只把 TOML 期限改到根证书有效期之外。程序不替运维自动续期 CA。
+Local Origin CA 有效期必须覆盖 Gateway not after。
 
 ### 2.5 签发含 Server IP SAN 的 TLS leaf
 
@@ -272,7 +270,7 @@ openssl verify -CAfile public/local-origin-ca.crt -purpose sslserver \
 openssl x509 -in domjudge/domjudge-tls-leaf.pem -noout -dates -ext subjectAltName
 ~~~
 
-签发时输入既有 CA 私钥口令。有效期不得超过该 CA；若使用域名访问，SAN 改为 DNS:实际上游域名，并用 openssl verify -verify_hostname 核验。不要把 Client loopback 的 Gateway hostname 当成上游地址。
+签发时输入既有 CA 私钥口令。有效期不得超过该 CA；若使用域名访问，SAN 改为 DNS:实际上游域名，并用 openssl verify -verify_hostname 核验。
 
 将 domjudge-tls-leaf.pem 和 domjudge-tls-key.pem 部署到 DOMjudge 的 HTTPS 入口；叶子私钥未加密，须以受限权限保存。只交付这对叶子材料，不交付 CA 私钥。
 
@@ -292,7 +290,7 @@ sudo stat -c '%U:%G %a %n' /etc/nginx/tls \
   /etc/nginx/tls/domjudge-tls-key.pem
 ~~~
 
-预期全部归属 root:root，目录 700、证书 644、私钥 600。Nginx 使用 PEM 编码的证书和私钥，本节生成的两个 .pem 文件可以直接使用，文件名不必改成 .crt 或 .key；见 [Nginx SSL 配置说明](https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate)。
+预期全部归属 root:root，目录 700、证书 644、私钥 600。Nginx 使用 PEM 编码的证书和私钥，可直接使用本节生成的 .pem 文件；见 [Nginx SSL 配置说明](https://nginx.org/en/docs/http/ngx_http_ssl_module.html#ssl_certificate)。
 
 用 sudoedit 编辑已启用的 DOMjudge 站点配置，在现有 server 块中增加或调整以下 TLS 指令，保留原有的页面、PHP 和反向代理配置：
 
@@ -302,7 +300,7 @@ ssl_certificate     /etc/nginx/tls/domjudge-tls-leaf.pem;
 ssl_certificate_key /etc/nginx/tls/domjudge-tls-key.pem;
 ~~~
 
-证书和私钥由 root master 进程加载，因此配置检查也须使用 sudo。普通用户直接执行 nginx -t 可能因无法读取受限目录或私钥而报 Permission denied；这不表示证书格式错误。检查成功后再重载已运行的服务：
+证书和私钥由 root master 进程加载，配置检查须使用 sudo 才能读取受限目录和私钥。检查成功后再重载已运行的服务：
 
 ~~~bash
 sudo nginx -t && sudo systemctl reload nginx
@@ -315,7 +313,7 @@ curl --fail --show-error --cacert /etc/natsume/trust/local-origin-ca.crt \
   https://192.0.2.20/
 ~~~
 
-随后将 Server config.toml 的 [runtime].domjudge_origin 设置为实际 HTTPS origin。第 7.3 节仍需把 Local Origin CA 加入 **Client 系统信任库**，并在信任库变更后重启 natsume-device-daemon.service，使 Caddy 重新加载信任。仅导入 Firefox 不能替代 Caddy 的上游 TLS 信任。完成后再用不带 --cacert 的 curl 验证系统信任。
+随后将 Server config.toml 的 [runtime].domjudge_origin 设置为实际 HTTPS origin。第 7.3 节仍需把 Local Origin CA 加入 **Client 系统信任库**，并在信任库变更后重启 natsume-device-daemon.service，使 Caddy 重新加载信任。完成后再用不带 --cacert 的 curl 验证系统信任。
 
 ## 3. 整理本机部署目录并下载 Release
 
@@ -345,7 +343,7 @@ chmod 0700 "$NATSUME_DEPLOY_DIR" "$NATSUME_DEPLOY_DIR/server"
 
 ### 3.2 下载并验证 Server 包
 
-在 Server 本机从 [GitHub Releases](https://github.com/4o3F/Natsume/releases) 选定已发布版本。以下变量在后续构建步骤中保持一致；若示例版本尚未发布，停止并选择实际发布版本，不要改用 `v2` 分支代替对应源码标签：
+在 Server 本机从 [GitHub Releases](https://github.com/4o3F/Natsume/releases) 选定已发布版本。以下变量在后续构建步骤中保持一致：
 
 ~~~bash
 export NATSUME_VERSION='2.10.3'
@@ -359,7 +357,7 @@ sha256sum --check --ignore-missing SHA256SUMS
 dpkg-deb --field "natsume-server_${NATSUME_VERSION}_amd64.deb" Package Version Architecture
 ~~~
 
-Server 校验须为 OK，版本与 `NATSUME_VERSION` 一致，架构为 amd64。当前 Release 的 SHA256SUMS 列出 Server、Client 和独立打印 wrapper 三种包，此处用 --ignore-missing 跳过未下载的其他包；Client 在第 6 节从相同标签构建。归档 Deb 和 checksum；同渠道 checksum 用于核对下载字节，不能代替对发布来源的信任。
+Server 校验须为 OK，版本与 `NATSUME_VERSION` 一致，架构为 amd64。当前 Release 的 SHA256SUMS 列出 Server、Client 和独立打印 wrapper 三种包，此处用 --ignore-missing 跳过未下载的其他包；Client 在第 6 节从相同标签构建。归档 Deb 和 checksum。
 
 ## 4. 在服务器安装 Server
 
@@ -485,7 +483,7 @@ sudo -u natsume-server test -r /etc/natsume-server/config.toml
 sudo -u natsume-server test -r /var/lib/natsume-server/keys/origin-ca-key.pk8
 ~~~
 
-keys 目录应为 natsume-server:natsume-server 700，文件 600。启动时进程还会验证完整配置、编码、证书/私钥匹配和 Origin CA 一致性，以上不是全部验证。
+keys 目录应为 natsume-server:natsume-server 700，文件 600。进程启动时进一步验证完整配置、编码、证书/私钥匹配和 Origin CA 一致性。
 
 ### 4.4 初始化数据库
 
@@ -542,7 +540,7 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
   -tls1_3 -alpn http/1.1 </dev/null
 ~~~
 
-应 HTTP 成功、证书验证成功、ALPN 为 http/1.1。Client 的远程可达性在第 7 节样机验收时验证。不要用 curl -k。health 只说明进程存活，不代替业务验收。
+应 HTTP 成功、证书验证成功、ALPN 为 http/1.1；禁止使用 curl -k。
 
 
 ## 5. 管理入口与比赛数据
@@ -551,11 +549,9 @@ openssl s_client -connect "$NATSUME_SERVER_IP:8443" \
 
 在用于访问 Panel 的管理员 Firefox 中：设置 → 隐私与安全 → 证书 → 查看证书 → 证书颁发机构 → 导入本机生成、经过指纹核对的 control-ca.crt，允许识别网站。访问 https://实际ServerIP:8443/，应无证书警告，使用 bootstrap 管理员登录。
 
-这是管理员浏览器访问 Server 的 Control CA；比赛机浏览器访问本机 Gateway 使用 Local Origin CA。
-
 ### 5.2 导入完整队伍名单
 
-当前版本使用完整 XLSX 名单导入，旧 CSV 入口已移除。升级已有系统前，先阅读所选 Release 的迁移说明并完成第 8.2 节的一致备份；文末的旧版本迁移参考不能代替当前版本的升级要求。
+当前版本使用完整 XLSX 名单导入。升级已有系统前，先阅读所选 Release 的迁移说明并完成第 8.2 节的一致备份。
 
 在 Web **Preparation** 点击 **Download Excel template**，下载 `Teams` 工作表模板。人工把报名表整理为一行一队，按[字段规则](../crates/natsume-server/docs/roster.md#excel-模板)填写九列：学校中英文名、country、account、password、seat、队伍中英文名、category。所有单元格按文本填写，保留座位前导零；不填写公式。学校与队伍的中英文名各至少填写一种，country 留空默认为 CHN。
 
@@ -588,7 +584,7 @@ sudo -u natsume-server -- test -x /var/lib/natsume-server/organization-logos
 
 在 Preparation Center 核对 **Preview school logos** 或 **Committed roster & DOMjudge export** 的学校 ID、缩略图、源文件与状态。用搜索、**Problems** 筛选缺失／歧义／损坏，用 **Refresh logos** 重新读取目录；刷新保留表格滚动位置。原图按校名保存，不需要自行生成 INST 命名副本。替换单图时先写入不参与匹配的临时文件，再在同目录原子重命名覆盖，避免请求恰好读到半写入文件。
 
-提交名单后，管理员点击 **Download DOMjudge ZIP**。即使存在待审核名单，下载内容也只取当前已提交的完整名单；设备分页、是否绑定均不影响结果。ZIP 包含：
+提交名单后，管理员点击 **Download DOMjudge ZIP**，导出当前已提交的完整名单，独立于待审预览、设备分页和绑定状态。ZIP 包含：
 
 - `groups.json`、`organizations.json`、`teams.json`、`accounts.yaml`；
 - `logos/INST-xxx.png`（当前名单所有可用校徽，按实际内容转为 PNG）。
@@ -695,7 +691,7 @@ ls -lh "$CARGO_TARGET_DIR/release/natsume-device-daemon" \
   "$CARGO_TARGET_DIR/release/natsume-session-agent"
 ~~~
 
-这是生产构建，不增加 --all-features 或测试特性。编译不需要任何 CA、站点配置、Server 私钥或设备身份。
+使用默认生产特性构建，不增加 --all-features 或测试特性；构建输入仅包含源码和已准备的依赖。
 
 ### 6.4 使用现有 manifest 打包
 
@@ -713,15 +709,15 @@ deno task package client
 )
 ~~~
 
-交付产物为 `dist/packages/natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb` 及本次生成的 checksum；示例版本为 `2.10.3~local1`。记录并交接 `NATSUME_CLIENT_VERSION`，第 7.2 节使用同一值。package 不下载、不编译、不执行独立包校验，不构建 ISO，也不在宿主创建 Client 账号或启动服务。镜像项目负责按[运行环境要求](client-environment.zh-CN.md)完成适配。
+交付产物为 `dist/packages/natsume-client_${NATSUME_CLIENT_VERSION}_amd64.deb` 及本次生成的 checksum；示例版本为 `2.10.3~local1`。记录并交接 `NATSUME_CLIENT_VERSION`，第 7.2 节使用同一值。package 使用已构建的程序和准备好的资产。
 
-不传入 SITE_CONFIG、CONTROL_CA_CERT 或 LOCAL_ORIGIN_CA_CERT；通用 Deb 不包含测试/正式 CA 和部署配置。它包含程序、Caddy、包所属运行文件及配置示例；运行环境要求在 `docs/` 中维护，不随包安装。
+通用 Deb 包含程序、Caddy、包所属运行文件及配置示例；部署配置和 CA 由第 7 节单独准备。
 
 自建包摘要不一定与官方 Release 相同，应配套使用**本次生成的 checksum**。如果改过源码，选择有区别的 Debian 版本，同步命令中的文件名，记录 Git SHA、改动、工具版本和日志，不冒充官方同名产物。
 
 ## 7. Client 部署输入与首次联调
 
-本节用于交接构建产物，以及在**已完成配套桌面集成的样机**上联调。普通 Ubuntu 只安装 Deb，不会自动完成 waiting/teams、PAM/GDM、Kiosk、Home 模板及其 mount 配置；必要条件见[运行环境要求](client-environment.zh-CN.md)。镜像实现、发行版适配及目标机器验收归镜像项目，本文不展开 ISO 制作。
+本节交接构建产物，并在**已完成配套桌面集成的样机**上联调。
 
 ### 7.1 准备包外输入并交接
 
@@ -749,7 +745,7 @@ EOF
 | public/local-origin-ca.crt | /etc/natsume/trust/local-origin-ca.crt |
 | 可选 DOMjudge 上游公共 CA | 系统信任，供 Caddy 校验私有上游 |
 
-不交付 Server 私钥、CA 私钥、设备身份或 token。Client 无单独 site.toml，Server 的日期和私有材料路径不进入 Client 配置。
+不交付 Server 私钥、CA 私钥、设备身份或 token。
 
 若部署方先预装 Deb，可稍后再提供配置与两个 CA；首次启动前必须补齐。包脚本只做存在性/非空/可读等基础检查，不生成或改写这些文件。
 
@@ -771,7 +767,7 @@ sudo install -o root -g root -m 0644 control-ca.crt /etc/natsume/trust/control-c
 sudo install -o root -g root -m 0644 local-origin-ca.crt /etc/natsume/trust/local-origin-ca.crt
 ~~~
 
-检查配置和证书指纹与 Server 部署一致。Client 启动时由 Device Daemon 从配置解析 `[site].gateway_hostname` 并传给 Privileged Helper，后者校验域名后自动维护 `/etc/hosts` 中的 `BEGIN NATSUME GATEWAY` / `END NATSUME GATEWAY` 区块，将该名称映射到 127.0.0.1 和 ::1，并同步 Firefox 的主页、`Contest Site` 工具栏书签及已有的相关通知许可。无需手工添加 hosts，也无需把域名写入镜像；真实上游 judge.contest.example 不能指向 loopback。
+检查配置和证书指纹与 Server 部署一致。Client 启动时由 Device Daemon 从配置解析 `[site].gateway_hostname` 并传给 Privileged Helper，后者校验域名后自动维护 `/etc/hosts` 中的 `BEGIN NATSUME GATEWAY` / `END NATSUME GATEWAY` 区块，将该名称映射到 127.0.0.1 和 ::1，并同步 Firefox 的主页、`Contest Site` 工具栏书签及已有的相关通知许可。
 
 升级到包含本机 Gateway 配置能力的 Client 后，先执行 `sudo systemctl restart natsume-privileged-helper.service natsume-device-daemon.service`，确保两个运行进程都加载配套二进制。
 
@@ -851,19 +847,17 @@ curl --fail-with-body --silent --show-error --http1.1 \
 
 API 预期 state=open，此时不需要逐台点击 **Approve**。
 
-需要逐台人工审核时，让窗口保持 **Closed**。Web **Enrollment** 仍会出现 pending review；逐台核对物理工位、硬件 ID、证据质量、Daemon/Agent 版本和候选公钥，再点 **Approve**；未知设备使用 **Deny** 并排查。不要按列表顺序盲目审批。
+需要逐台人工审核时，让窗口保持 **Closed**。Web **Enrollment** 仍会出现 pending review；逐台核对物理工位、硬件 ID、证据质量、Daemon/Agent 版本和候选公钥，再点 **Approve**；未知设备使用 **Deny** 并排查。
 
-Server 每次重启窗口恢复关闭，新请求改为人工审批。Client 完成身份初始化和连接后才开始注册；关闭窗口不代替已注册设备的 Revoke。
+Server 每次重启窗口恢复关闭，新请求改为人工审批。Client 完成身份初始化和连接后才开始注册。
 
 样机显示 **Bind workstation / Enter your seat code** 时输入 XLSX 中的工位码，如 A-01。在 **Bindings / Seats / Devices** 核对工位、设备和账号一致。工位不存在/被占时修正映射，不删除设备身份文件重试。
 
 新设备默认保持 waiting，绑定成功后等待管理员执行 **Show contest desktop**。绑定和重启不会改写已有的前台目标；已有设备若要继续等待，先在 **Targets** 执行 **Show waiting screen**。重启先进入 waiting，重新连接且桌面依赖就绪后按 Server 保存的目标恢复前台。
 
-Client 自动生成 Gateway key/CSR，由 Server 签发 leaf 并应用配置，运维不分发每台 Gateway 私钥或账号密码文件。
-
 ### 7.6 验收实际桌面和 DOMjudge
 
-**Targets** 选样机 → **Show contest desktop**。请求成功不等于已完成，检查当前报告：
+**Targets** 选样机 → **Show contest desktop**，通过当前报告确认收敛：
 
 | 项目 | 验收要求 |
 | --- | --- |
@@ -883,7 +877,7 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
   --resolve domjudge:443:127.0.0.1 https://domjudge/
 ~~~
 
-仅监听 127.0.0.1:443 和 [::1]:443，TLS 和业务响应正常。未完成注册/配置时可能无 listener 或 503，不能作为最终通过。
+仅监听 127.0.0.1:443 和 [::1]:443，TLS 和业务响应正常。
 
 在 **teams 比赛桌面的 Firefox** 访问 https://domjudge/，必要时进入 /login：
 
@@ -892,9 +886,9 @@ curl --show-error --silent --output /dev/null --write-out '%{http_code}\n' \
 3. 页面、静态资源、提交题目和所需实时更新正常。
 4. 无跳转绕开 Gateway、跨工位串号等问题。
 
-真实 DOMjudge 的登录头、重定向、Cookie、Host 和资源行为需这里验收；HTTPS 成功只覆盖一部分。不要把管理员浏览器 profile 制作成比赛模板。
+同时验收真实 DOMjudge 的登录头、重定向、Cookie、Host 和资源行为。不要把管理员浏览器 profile 制作成比赛模板。
 
-测试 **Show waiting screen** → **Show contest desktop**，确认前台切换及比赛进程/Home 保留。在比赛终端运行 echo "$XDG_SESSION_TYPE" 应为 x11，不能用 SSH shell 的值判定图形会话。
+测试 **Show waiting screen** → **Show contest desktop**，确认前台切换及比赛进程/Home 保留。在比赛终端运行 `echo "$XDG_SESSION_TYPE"` 应为 `wayland`。
 
 **Terminate** 终止并重建比赛会话，**Reset home** 重置比赛 Home。只在授权样机/维护窗口测试，先保存数据，不用在赛工位做破坏性验证。
 
@@ -936,7 +930,7 @@ sudo openssl x509 -inform DER \
   -in /var/lib/natsume-server/keys/server-tls-leaf.der -noout -dates
 ~~~
 
-Web 检查各设备实际状态和报告时间。不要公开原始数据库、cookie、私钥或运行中的 Caddy 配置，READY 配置包含访问凭据。普通 tracing/OTLP 是诊断信息，不是持久业务审计。
+Web 检查各设备实际状态和报告时间。不要公开原始数据库、cookie、私钥或运行中的 Caddy 配置，READY 配置包含访问凭据。普通 tracing/OTLP 用于诊断；系统不提供持久业务审计。
 
 ### 8.2 Server 冷备份
 
@@ -972,7 +966,7 @@ sudo tar -tf "$NATSUME_BACKUP_DIR/config-and-keys.tar"
 sudo systemctl start natsume-server.service
 ~~~
 
-完整性应为 ok。源数据库由服务用户打开，避免产生 root 所有的运行状态文件；备份完成后目录和文件归 root 管理。归档包含 DB 一致副本、PDF 目录、vault root、Origin CA、TLS 和完整公共配置，缺一不可。PDF 已不保存在 SQLite 内，只备份数据库无法恢复打印文档。使用 SQLite .backup 避免仅复制主库漏掉 WAL，依据 [SQLite Online Backup](https://www.sqlite.org/backup.html)。
+完整性应为 ok。源数据库由服务用户打开，避免产生 root 所有的运行状态文件；备份完成后目录和文件归 root 管理。归档包含 DB 一致副本、PDF 目录、vault root、Origin CA、TLS 和完整公共配置，缺一不可。使用 SQLite .backup 避免仅复制主库漏掉 WAL，依据 [SQLite Online Backup](https://www.sqlite.org/backup.html)。
 
 本流程的 CA 在 Server 本机生成，因此 pki.tar 另行保存管理员 PKI 目录中的加密私钥原件、证书和签发记录，供后续续签使用。备份期间暂停 PKI 签发操作；私钥口令仍由密码管理器保管。
 
@@ -1051,7 +1045,7 @@ Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板�
 
 ## 历史迁移参考（仅适用于 v2.3.2）
 
-以下记录的终点均为 v2.3.2，不属于当前部署步骤，也不能证明旧数据库、配置或镜像与当前版本兼容。历史安装包应从 [v2.3.2 Release](https://github.com/4o3F/Natsume/releases/tag/v2.3.2) 单独下载并核对该版本的 SHA256SUMS，不使用第 3.2 节选定的当前版本包。旧镜像的 Wayland、GDM、dconf 和 Home 迁移由镜像项目完成，不再依赖随包镜像适配材料。
+以下记录仅用于迁移到 v2.3.2；升级到当前版本须另行核对数据库、配置和镜像兼容性。历史安装包应从 [v2.3.2 Release](https://github.com/4o3F/Natsume/releases/tag/v2.3.2) 单独下载并核对该版本的 SHA256SUMS，不使用第 3.2 节选定的当前版本包。旧镜像的 Wayland、GDM、dconf 和 Home 迁移由镜像项目完成，不再依赖随包镜像适配材料。
 
 <a id="upgrade-from-v2-0"></a>
 ### 从 v2.0.4 配套升级到 v2.3.2（Breaking Change）
@@ -1064,9 +1058,9 @@ Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板�
 4. 显式启动 Server；`serve` 在启动时执行数据库迁移，保留已有 Device、Enrollment、Account、Vault、Binding 和 Session 目标。迁移会移除旧格式的未提交导入候选，须重新上传完整 XLSX。
 5. 保持 Client 停止，通过新版 Panel 按第 5.2 节上传完整名单并提交。账号与座位须与现有数据一致；不准备改密时填写原密码。核对学校、队伍资料和已有绑定，准备 Logo。没有 Logo 允许使用默认图；缺少队伍资料的已绑定账号不能生成有效控制目标。
 6. 安装配套 `natsume-client_2.3.2_amd64.deb`，由镜像项目检查并应用匹配的配置差异，包括下文 Wayland 迁移所需的会话、GDM 和 dconf 配置。包会提供 Noto CJK 字体依赖和展示目录；保留原 Client 身份、Control/Gateway 凭据及 Home 维护状态。确认 `/var/lib/natsume-display` 为 natsume 所有、0755，waiting 只能读取图片。
-7. 先恢复一台测试设备，再逐批恢复。核对设备 Online、原绑定／座位、waiting 队伍资料、Logo 和五项资源状态；缺图不等于离线。检查切换、断线缓存、解绑后不恢复旧队伍，并按[运行环境要求](client-environment.zh-CN.md)在实际目标机器完成验证。
+7. 先恢复一台测试设备，再逐批恢复。核对设备 Online、原绑定／座位、waiting 队伍资料、Logo 和五项资源状态。检查切换、断线缓存、解绑后不恢复旧队伍，并按[运行环境要求](client-environment.zh-CN.md)在实际目标机器完成验证。
 
-需要回退时，恢复同一维护点的旧版本 Server/Client、数据库与密钥／配置备份；不能把新数据库与旧二进制混用。更早的站点 UUID Client 仍按第 8.4 节处理，不套用本节的身份保留流程。最终镜像与容量验收独立记录，发布标签本身不表示这些验收已经完成。
+需要回退时，恢复同一维护点的旧版本 Server/Client、数据库与密钥／配置备份；不能把新数据库与旧二进制混用。更早的站点 UUID Client 仍按第 8.4 节处理，不套用本节的身份保留流程。
 
 <a id="upgrade-v2-2-0"></a>
 ### 从 v2.1.0 升级到 v2.3.2（HTTP API 与 Client 图形栈 Breaking Change）
@@ -1090,9 +1084,9 @@ Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板�
 2. 安装校验过的 `natsume-server_2.3.2_amd64.deb`，显式重启 Server，完全刷新管理员 Web。**不要重新 bootstrap 或删除数据库。**
 3. 按[运行环境的维护要求](client-environment.zh-CN.md#维护要求)退出受管会话并停止 Client 控制连接，安装 `natsume-client_2.3.2_amd64.deb`。保留设备身份、Control/Gateway 密钥、Binding、Home 维护状态和展示缓存。
 4. 由镜像项目完成与新 Client 匹配的桌面适配，满足[运行环境要求](client-environment.zh-CN.md)：启用原生 Wayland，waiting 使用 `gnome-kiosk-script-wayland`，teams 使用 `ubuntu-wayland`，确认官方会话入口存在。
-5. 清理旧的强制 `WaylandEnable=false` / `PreferredDisplayServer=xorg` GDM drop-in、旧 Natsume Xorg ServerFlags 和 Kiosk X11 frame-scale 覆盖。合并新版 dconf 数据库及 locks，在目标系统执行 `dconf update`。保留完整官方 PAM 栈与 Home 门禁；包安装本身不会自动完成这些配置迁移。
-6. 正常重启 Client，使 Helper、Daemon、Agent 及图形会话全部加载新版本；仅磁盘上的二进制被更新不能证明运行进程已更新。确认 waiting/teams 均为 seat0 的原生 `Type=wayland` 会话，绑定和设备身份保持不变。
-7. 核对实际 waiting 全屏、队伍资料、键盘输入、teams Home 图标和完整右键菜单，再验证普通切换、Home reset、断线重连及冷启动恢复当前目标。初始化和重建允许短暂 greeter/闪屏；不保证全过程零闪屏。
+5. 清理旧的强制 `WaylandEnable=false` / `PreferredDisplayServer=xorg` GDM drop-in、旧 Natsume Xorg ServerFlags 和 Kiosk X11 frame-scale 覆盖。合并新版 dconf 数据库及 locks，在目标系统执行 `dconf update`。保留完整官方 PAM 栈与 Home 门禁。
+6. 正常重启 Client，确认 Helper、Daemon、Agent 及图形会话全部加载新版本，waiting/teams 均为 seat0 的原生 `Type=wayland` 会话，绑定和设备身份保持不变。
+7. 核对实际 waiting 全屏、队伍资料、键盘输入、teams Home 图标和完整右键菜单，再验证普通切换、Home reset、断线重连及冷启动恢复当前目标。初始化和重建允许短暂 greeter/闪屏。
 
 回退时使用匹配的旧 Client 与 X11 镜像配置及维护备份，不能只降级 Helper、Agent 或单个二进制。
 

@@ -4,7 +4,7 @@ At startup, the Device Daemon parses `[site].gateway_hostname` from `/etc/natsum
 
 - `/etc/hosts`: a managed `BEGIN NATSUME GATEWAY` / `END NATSUME GATEWAY` block maps the hostname to `127.0.0.1` and `::1`; conflicting aliases for that hostname are removed while unrelated entries are preserved.
 - `/etc/firefox/policies/policies.json`: the locked startup homepage and the `Contest Site` toolbar bookmark use `https://<gateway_hostname>/`. Existing notification allowances for the previous managed Gateway or legacy `domjudge` are updated; other policies, bookmarks and CA trust settings are preserved.
-- `/etc/natsume/submit.env`: the public shell assignment `SUBMITBASEURL='https://<gateway_hostname>/'`, generated as root:root 0644. The image's `submit` launcher reads it on each invocation. It contains no credentials and is not an additional deployment input.
+- `/etc/natsume/submit.env`: the public shell assignment `SUBMITBASEURL='https://<gateway_hostname>/'`, generated as root:root 0644. The image's `submit` launcher reads it on each invocation.
 
 Restart the Device Daemon after editing the Client config, then fully quit and reopen Firefox. The files must be regular root-owned files, with root-owned real parent directories, writable only by root or the root group. Missing managed folders/files are created as root:root 0755/0644. Invalid inputs fail startup with the affected path; neither deployment config nor CA files are rewritten.
 
