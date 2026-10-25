@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use std::{
     error::Error as StdError,
     os::unix::fs::PermissionsExt,

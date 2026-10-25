@@ -12,6 +12,10 @@ name = "natsume-privileged-helper"
 path = "src/main.rs"
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true
 snafu.workspace = true
 natsume-workstation-ipc = { path = "../natsume-workstation-ipc" }
@@ -20,8 +24,6 @@ rustix = { workspace = true, features = ["net"] }
 serde.workspace = true
 serde_json.workspace = true
 smbios-lib = "0.9"
-tracing.workspace = true
-tracing-subscriber.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
 uuid.workspace = true

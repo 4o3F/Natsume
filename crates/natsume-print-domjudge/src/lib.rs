@@ -1,4 +1,5 @@
 //! Independent `DOMjudge` admission client. No Server or workstation dependency.
+#![cfg(target_os = "linux")]
 mod compiler;
 pub mod config;
 pub mod wire;

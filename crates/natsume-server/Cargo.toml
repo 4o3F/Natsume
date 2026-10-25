@@ -12,6 +12,10 @@ name = "natsume-server"
 path = "src/main.rs"
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 argon2.workspace = true
 axum.workspace = true
 base64.workspace = true
@@ -52,9 +56,7 @@ tokio-rustls.workspace = true
 tokio-util = { workspace = true, features = ["time"] }
 toml.workspace = true
 tower-http.workspace = true
-tracing.workspace = true
 tracing-opentelemetry.workspace = true
-tracing-subscriber.workspace = true
 url.workspace = true
 specta.workspace = true
 specta-serde.workspace = true
@@ -64,7 +66,7 @@ x509-parser.workspace = true
 zeroize.workspace = true
 zip.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 natsume-print-domjudge = { path = "../natsume-print-domjudge" }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 ed25519-dalek.workspace = true

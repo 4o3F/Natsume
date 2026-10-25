@@ -43,8 +43,10 @@ windows = { workspace = true, features = [
   "Win32_System_WinRT",
 ] }
 
-[dev-dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 slint = { workspace = true, features = ["backend-winit-wayland", "renderer-software"] }
+
+[dev-dependencies]
 rcgen = { workspace = true, features = ["pem"] }
 rustls.workspace = true
 tempfile.workspace = true

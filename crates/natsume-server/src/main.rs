@@ -1,64 +1,80 @@
-use std::process::ExitCode;
-
-use clap::Parser;
-use natsume_server::{
-    commands::{self, Command},
-    config::{CONFIG_PATH, ServerConfig},
-};
-
-#[derive(Parser)]
-struct Cli {
-    #[command(subcommand)]
-    command: Command,
+#[cfg(target_os = "linux")]
+fn main() -> std::process::ExitCode {
+    application::run_application()
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let config = match ServerConfig::load() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("error: {CONFIG_PATH}: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    match commands::run(config, cli.command).await {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("error: {error}");
-            ExitCode::FAILURE
-        }
-    }
+#[cfg(not(target_os = "linux"))]
+fn main() -> std::process::ExitCode {
+    tracing_subscriber::fmt().with_target(false).init();
+    tracing::error!("the Natsume Server application requires Linux");
+    std::process::ExitCode::FAILURE
 }
 
-#[cfg(test)]
-mod tests {
+#[cfg(target_os = "linux")]
+mod application {
+    use std::process::ExitCode;
+
     use clap::Parser;
+    use natsume_server::{
+        commands::{self, Command},
+        config::{CONFIG_PATH, ServerConfig},
+    };
 
-    use super::Cli;
-
-    #[test]
-    fn missing_subcommand_is_rejected() {
-        assert!(Cli::try_parse_from(["natsume-server"]).is_err());
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        command: Command,
     }
 
-    #[test]
-    fn unknown_subcommand_is_rejected() {
-        assert!(Cli::try_parse_from(["natsume-server", "unknown"]).is_err());
-        assert!(Cli::try_parse_from(["natsume-server", "reset_operator_password"]).is_err());
+    #[tokio::main]
+    pub(super) async fn run_application() -> ExitCode {
+        let cli = Cli::parse();
+        let config = match ServerConfig::load() {
+            Ok(config) => config,
+            Err(error) => {
+                eprintln!("error: {CONFIG_PATH}: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        match commands::run(config, cli.command).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("error: {error}");
+                ExitCode::FAILURE
+            }
+        }
     }
 
-    #[test]
-    fn password_reset_subcommand_is_bare_and_kebab_case() {
-        assert!(Cli::try_parse_from(["natsume-server", "reset-operator-password"]).is_ok());
-    }
+    #[cfg(test)]
+    mod tests {
+        use clap::Parser;
 
-    #[test]
-    fn extra_arguments_are_rejected() {
-        assert!(Cli::try_parse_from(["natsume-server", "serve", "extra"]).is_err());
-        assert!(Cli::try_parse_from(["natsume-server", "bootstrap", "extra"]).is_err());
-        assert!(
-            Cli::try_parse_from(["natsume-server", "reset-operator-password", "extra"]).is_err()
-        );
+        use super::Cli;
+
+        #[test]
+        fn missing_subcommand_is_rejected() {
+            assert!(Cli::try_parse_from(["natsume-server"]).is_err());
+        }
+
+        #[test]
+        fn unknown_subcommand_is_rejected() {
+            assert!(Cli::try_parse_from(["natsume-server", "unknown"]).is_err());
+            assert!(Cli::try_parse_from(["natsume-server", "reset_operator_password"]).is_err());
+        }
+
+        #[test]
+        fn password_reset_subcommand_is_bare_and_kebab_case() {
+            assert!(Cli::try_parse_from(["natsume-server", "reset-operator-password"]).is_ok());
+        }
+
+        #[test]
+        fn extra_arguments_are_rejected() {
+            assert!(Cli::try_parse_from(["natsume-server", "serve", "extra"]).is_err());
+            assert!(Cli::try_parse_from(["natsume-server", "bootstrap", "extra"]).is_err());
+            assert!(
+                Cli::try_parse_from(["natsume-server", "reset-operator-password", "extra"])
+                    .is_err()
+            );
+        }
     }
 }

@@ -13,6 +13,10 @@ name = "natsume-session-agent"
 path = "src/main.rs"
 
 [dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 image.workspace = true
 natsume-workstation-protocol = { path = "../natsume-workstation-protocol" }
 natsume-workstation-ipc = { path = "../natsume-workstation-ipc" }
@@ -23,12 +27,10 @@ serde_json.workspace = true
 skia-bindings.workspace = true
 slint = { workspace = true, features = ["backend-winit-wayland", "renderer-skia", "unstable-winit-030"] }
 tokio.workspace = true
-tracing.workspace = true
-tracing-subscriber.workspace = true
 uuid.workspace = true
 zbus.workspace = true
 
-[dev-dependencies]
+[target.'cfg(target_os = "linux")'.dev-dependencies]
 tempfile.workspace = true
 
 [build-dependencies]

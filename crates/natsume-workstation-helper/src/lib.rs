@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+#![cfg(target_os = "linux")]
 
 mod admission;
 mod boot;

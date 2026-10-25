@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 #[path = "schema_contract/print_execution.rs"]
 mod print_execution;
 

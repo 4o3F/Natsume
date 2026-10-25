@@ -1,3 +1,5 @@
+#![cfg(target_os = "linux")]
+
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
