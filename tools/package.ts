@@ -2,9 +2,12 @@ import { parse as parseToml } from "@std/toml";
 import { parse as parseYaml, stringify } from "@std/yaml";
 import { basename, resolve } from "@std/path";
 import { parseArgs } from "@std/cli/parse-args";
+import { packageWindows, validateWindowsVersion } from "./windows.ts";
 import {
   isPackageTarget,
   main,
+  packagesFor,
+  packageTargets,
   requirePrepared,
   root,
   run,
@@ -66,23 +69,32 @@ async function packages(): Promise<void> {
     values._.some((value) => value !== "all") &&
     requested.some((target) => !isPackageTarget(target))
   ) {
-    throw new Error("Expected server, client, print-domjudge or all");
+    throw new Error(`Expected ${packagesFor(Deno.build.os).join(", ")} or all`);
   }
   const selected = requested.filter(isPackageTarget);
   if (!selected.length) {
-    throw new Error("Expected server, client, print-domjudge or all");
+    throw new Error(`Expected ${packagesFor(Deno.build.os).join(", ")} or all`);
   }
   if (
-    Deno.build.os !== "linux" || Deno.build.arch !== "x86_64" ||
+    Deno.build.arch !== "x86_64" ||
     (Deno.env.get("ARCH") ?? "amd64") !== "amd64"
-  ) throw new Error("Package on Linux amd64; cross packaging is not supported");
+  ) {
+    throw new Error(
+      "Package on native amd64; cross packaging is not supported",
+    );
+  }
   await requirePrepared("scripts", ...selected);
   const workspace = parseToml(
     await Deno.readTextFile(resolve(root, "Cargo.toml")),
   ) as { workspace: { package: { version: string } } };
+  const windows = Deno.build.os === "windows";
   const version = values.version ?? Deno.env.get("VERSION") ??
-    `${workspace.workspace.package.version}${values.ci ? "~ci1" : ""}`;
-  if (!/^[0-9][A-Za-z0-9.+:~\-]*$/.test(version)) {
+    `${workspace.workspace.package.version}${
+      values.ci ? windows ? "-ci.1" : "~ci1" : ""
+    }`;
+  if (windows) {
+    validateWindowsVersion(version);
+  } else if (!/^[0-9][A-Za-z0-9.+:~\-]*$/.test(version)) {
     throw new Error("VERSION must be a nonempty Debian package version");
   }
   const prebuilt = Deno.env.get("RUST_RELEASE_DIR");
@@ -106,6 +118,10 @@ async function packages(): Promise<void> {
     RUNTIME_ASSETS: runtime,
   };
   for (const target of selected) {
+    if (packageTargets[target].format === "zip") {
+      await packageWindows(target, version, release, output);
+      continue;
+    }
     type Config = {
       arch: string;
       version: string;

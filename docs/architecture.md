@@ -1641,18 +1641,22 @@ Runtime/Session/Home：
 
 ### 19.5 常用验收命令
 
-构建编排使用 TypeScript／Deno。`.deno-version` 固定 CI 的验证版本并定义本地最低版本；本地允许同一主版本的更新稳定版，不要求降级，新主版本须另行验证。各脚本入口检查运行版本；失败提示包含当前版本、要求和实际执行文件路径，不自动安装或降级工具链。先运行 `deno task prepare` 下载依赖、工具与资产，再运行 check、build 或 package；也可选择 rust／web／server／client／print-domjudge 子集。后续任务使用已准备输入，不隐式联网补齐；CI 的编译和打包步骤使用同一入口。准备阶段输出当前步骤，失败时保留子命令输出并报告完整命令、工作目录及退出码，返回非零状态并明确提示准备尚未完成、不可继续离线检查；未成功准备的目标不建立就绪标记。Rust 依赖解析失败提示核对工作区、镜像和网络，不自动修改锁文件或依赖版本。包安装／登录脚本仍使用 POSIX sh，目标应用不新增 Deno 运行依赖。Node/pnpm 的配置、锁文件与 `node_modules` 只属于 `web/`，仓库根目录不再作为 Node 包或 pnpm 工作区。
+构建编排使用 TypeScript／Deno。`.deno-version` 固定 CI 的验证版本并定义本地最低版本；本地允许同一主版本的更新稳定版，不要求降级，新主版本须另行验证。各脚本入口检查运行版本；失败提示包含当前版本、要求和实际执行文件路径，不自动安装或降级工具链。先运行 `deno task prepare` 下载依赖、工具与资产，再运行 check、test、build 或 package；也可选择 rust／shared／web／server／client／print-domjudge／print-client 子集，包目标须在其交付平台原生构建和打包。后续任务使用已准备输入，不隐式联网补齐；CI 的编译和打包步骤使用同一入口。准备阶段输出当前步骤，失败时保留子命令输出并报告完整命令、工作目录及退出码，返回非零状态并明确提示准备尚未完成、不可继续离线检查；未成功准备的目标不建立就绪标记。Rust 依赖解析失败提示核对工作区、镜像和网络，不自动修改锁文件或依赖版本。包安装／登录脚本仍使用 POSIX sh，目标应用不新增 Deno 运行依赖。Node/pnpm 的配置、锁文件与 `node_modules` 只属于 `web/`，仓库根目录不再作为 Node 包或 pnpm 工作区。
 
 ```bash
 deno task prepare rust web
 cargo fmt --all --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+deno task check rust
+deno task test rust
 deno task schema:check
 deno task api --check
 ```
 
-上述 workspace 命令对应既有 Linux 基线的验收能力，不要求每轮在本地运行全量套件。 加入 Windows-only 包后按支持矩阵选择 Cargo 包集合与 CI／hook 范围；共享领域与成果格式 在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。 实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
+包目标表分别声明交付平台、Rust 检查平台、crate、binary 和打包格式。Linux 默认保留脚本、Rust、Web 和 Linux 包；Windows 默认只选择 Windows 包，不准备 Linux 工位资产或 Web。Linux Rust 检查保留已声明支持 Linux 的共享逻辑测试，排除仅支持 Windows 的应用；Windows 按声明选择原生应用 crate，CI 与 hook 复用相同入口。CI 在工作流 YAML 中直接声明 GitHub Actions 原生 `strategy.matrix.include` 模块矩阵，由 GitHub 展开和调度，不通过脚本生成矩阵，Server、工位 Client、DOMjudge 接入包分别在 Ubuntu 运行，Print Client 在 Windows 运行；每项独立检查、测试、release 构建及原生打包。Server 项拥有类型生成与数据库结构检查，Client 项包含协议和 IPC 库测试，公共检查保留打印客户端的 Linux 共享逻辑回归与全局格式、依赖策略检查。后续 Windows 应用增加目标定义与一条原生矩阵配置，不创建占位包或复制任务步骤。矩阵与包目标的覆盖范围及运行平台由回归测试核对。ZIP 只包含声明的程序、公开说明、项目许可、版本元数据和校验和，打包后解压并逐文件核对；不带配置、凭据或业务记录，不安装驱动、证书或运行库。标签发布沿用全部 CI 门禁，核对预期 Debian 和 Windows 产物后生成统一校验和；Debian 预发布版本转换与 Windows SemVer 标签分开处理。便携包不代替安装器、代码签名或干净系统运行库验收。
+
+CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明模块、运行平台、任务依赖和版本条件步骤，并调用现有准备、检查、测试、构建与打包入口；仅系统依赖安装和发布校验等过程逻辑放在职责明确的 Deno 脚本中，不增加通用 CI 命令路由或脚本调度层。Web 静态检查与单元、浏览器测试由独立 Web 项负责，Server 项只拥有 Web 生产构建，不重复运行 Web 检查。CI 只保留 Rust 工具链 Action 管理的编译缓存，按系统、模块、运行环境、工具链与原生输入区分，编译目录使用 `target/cargo`，不混入准备标记。Deno、pnpm 和固定资产不设置跨任务持久化缓存，每个任务正常执行准备和输入校验，后续检查、构建及打包仍只消费已准备输入。不缓存配置、凭据、业务记录、生成后的运行目录或最终交付包；Rust 缓存命中、缺失或逐出均不得改变验证、构建和发布门禁。
+
+上述命令按平台支持矩阵选择验收范围，不要求每轮在本地运行全量套件。共享领域与成果格式 在两端验证，不添加假成功空实现来掩盖不支持的平台。GUI／硬件测试不能由交叉编译替代。 实现批次还必须运行 secret scan 和对应目标环境的 package／desktop／Caddy 等适用证据。
 
 ## 20. Flag-day 实施计划
 
@@ -2054,7 +2058,7 @@ Print 组件拥有按尝试期限触发的到期检查循环，Server 组合层�
 
 #### 23.3.3 Windows 客户端执行与本地恢复
 
-`natsume-print-client` 在已登录 Windows 用户下运行正常应用入口，通过配置固定 HTTPS origin、Windows 队列和本地状态目录。图形入口采用 Slint 的 Windows winit 后端和软件渲染，按配置、配对和日常工作台组织，提供阶段及原 Job 身份展示、暂停／恢复与确认后正常退出，并通过安全封装提供托盘；不包含安装包。工作台分开展示领取开关与当前工作，设置弹层只读显示活动配置。界面固定采用浅色调色板，正文、标准输入控件和确认弹层不跟随系统深色主题改变。原型界面已由用户确认在 Windows 编译和启动，浅色配色修复后的文字显示也已确认正常；文件选择、系统快捷操作、配置加载及界面内执行尚无独立完整验收记录。Linux 工位 Agent 继续明确使用其 Wayland／Skia 配置，不将该后端配置强加给 Windows。配置与启动方法见[客户端说明](../crates/natsume-print-client/README.md)。客户端不持有 Operator session，不使用 DOMjudge 来源凭据，不提供诊断命令或任意远程执行入口。
+`natsume-print-client` 在已登录 Windows 用户下运行正常应用入口，通过配置固定 HTTPS origin、Windows 队列和本地状态目录。图形入口采用 Slint 的 Windows winit 后端和软件渲染，按配置、配对和日常工作台组织，提供阶段及原 Job 身份展示、暂停／恢复与确认后正常退出，并通过安全封装提供托盘；支持 CI 构建便携 ZIP，不提供安装器。工作台分开展示领取开关与当前工作，设置弹层只读显示活动配置。界面固定采用浅色调色板，正文、标准输入控件和确认弹层不跟随系统深色主题改变。原型界面已由用户确认在 Windows 编译和启动，浅色配色修复后的文字显示也已确认正常；文件选择、系统快捷操作、配置加载及界面内执行尚无独立完整验收记录。Linux 工位 Agent 继续明确使用其 Wayland／Skia 配置，不将该后端配置强加给 Windows。配置与启动方法见[客户端说明](../crates/natsume-print-client/README.md)。客户端不持有 Operator session，不使用 DOMjudge 来源凭据，不提供诊断命令或任意远程执行入口。
 
 图形线程通过有界命令通道控制单个应用流程，通过只含非秘密展示信息的最新快照读取状态；现有 Engine 继续独占执行、持久化与恢复决策，窗口不直接操作任务记录或打印句柄。新配置以排他创建方式写入，不覆盖已有文件；未指定 `--config` 时只打开设置窗口，不启动领取或建立本地执行记录。界面阶段与配对状态由实际应用状态投影，任务摘要包含已知序号、尝试号、Job ID 和原作业标签，不包含配对码、令牌或文档。Windows 桌面操作仅在用户点击后选择文件、打开配置目录或原队列、复制诊断摘要，不提供任务清理、重置或手动重印。正常关闭窗口在托盘可用时只隐藏，事件循环显式保持运行；托盘不可用时打开正常退出确认。退出请求在命令通道满时持续尝试投递，停止新提交并等待已启动原生调用，界面线程不强行中止打印。当前保留控制台承载 tracing，正式发布的日志保存、控制台隐藏、安装及登录启动策略另行确定。
 

@@ -2,6 +2,7 @@ import { resolve } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   exists,
+  packageTargets,
   root,
   sha256,
   targets,
@@ -9,7 +10,7 @@ import {
   work,
 } from "./process.ts";
 
-function assert(condition: boolean, message: string): void {
+function assert(condition: boolean, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
@@ -43,6 +44,11 @@ async function fixture() {
       "tools/build.ts",
       "tools/build_test.ts",
       "tools/package.ts",
+      "tools/windows.ts",
+      "tools/windows_test.ts",
+      "tools/entry.ts",
+      "tools/native-deps.ts",
+      "tools/release.ts",
       "packaging/server/nfpm.yaml",
       "packaging/client/nfpm.yaml",
       "packaging/print-domjudge/nfpm.yaml",
@@ -84,7 +90,11 @@ async function fixture() {
     }
   `,
   );
-  const env = { PATH: `${resolve(directory, "bin")}:${Deno.env.get("PATH")}` };
+  const env: Record<string, string> = {
+    PATH: `${resolve(directory, "bin")}:${Deno.env.get("PATH")}`,
+    CARGO_TARGET_DIR: "target",
+    GITHUB_OUTPUT: resolve(directory, "outputs"),
+  };
   const command = (file: string, ...args: string[]) =>
     new Deno.Command(Deno.execPath(), {
       args: [
@@ -107,7 +117,7 @@ async function fixture() {
     }).output();
   const prepared = await command("probe.ts", "record");
   assert(prepared.success, new TextDecoder().decode(prepared.stderr));
-  return { directory, command };
+  return { directory, command, env };
 }
 
 Deno.test("Deno baseline accepts the tested version and newer stable versions in the same major", () => {
@@ -359,7 +369,7 @@ printf '%s\\n' 'export type Example = string;' > "$output"
   }
 });
 
-Deno.test("Rust checks invoke Clippy once without a separate Cargo check", async () => {
+Deno.test("module checks invoke Clippy once and leave Web validation to its own target", async () => {
   const { directory, command } = await fixture();
   try {
     for (const name of ["cargo", "pnpm"]) {
@@ -378,12 +388,16 @@ Deno.test("Rust checks invoke Clippy once without a separate Cargo check", async
         "cargo clippy -p natsume-server --all-targets --all-features --frozen -- -D warnings\n",
       `Unexpected Rust commands: ${calls}`,
     );
-    const webCalls = await Deno.readTextFile(
-      resolve(directory, "web/calls.log"),
-    );
+    const webLog = resolve(directory, "web/calls.log");
+    assert(!await exists(webLog), "Server repeated the Web compile check");
+    const tested = await command("tools/build.ts", "test", "server");
+    assert(tested.success, new TextDecoder().decode(tested.stderr));
+    assert(!await exists(webLog), "Server repeated Web unit tests");
+    const web = await command("tools/build.ts", "check", "web");
+    assert(web.success, new TextDecoder().decode(web.stderr));
     assert(
-      webCalls === "pnpm typecheck\n",
-      `Unexpected Web commands: ${webCalls}`,
+      await Deno.readTextFile(webLog) === "pnpm typecheck\n",
+      "Web target lost its compile check",
     );
   } finally {
     await Deno.remove(directory, { recursive: true });
@@ -555,6 +569,416 @@ Deno.test("Client notices and renamed font caches prepare the installed inputs",
       !await exists(resolve(fonts, "renamed-font-cache.otf")),
       "The cache filename became a runtime path",
     );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("package tests retain Cargo documentation tests and require their native host", async () => {
+  const { directory, command } = await fixture();
+  try {
+    const cargo = resolve(directory, "bin/cargo");
+    await Deno.writeTextFile(
+      cargo,
+      '#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n',
+    );
+    await Deno.chmod(cargo, 0o755);
+    const result = await command("tools/build.ts", "test", "print-domjudge");
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    assert(
+      await Deno.readTextFile(resolve(directory, "calls.log")) ===
+        "test -p natsume-print-domjudge --all-features --frozen\n",
+      "Tests must use frozen dependencies without restricting Cargo's default test kinds",
+    );
+    const unsupported = await command("tools/assets.ts", "print-client");
+    assert(
+      !unsupported.success,
+      "Linux accepted a Windows package preparation request",
+    );
+    assert(
+      new TextDecoder().decode(unsupported.stderr).includes("requires windows"),
+      "Cross-platform failure did not identify the required host",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("native prerequisites bootstrap with an empty Deno cache and reject command flags", async () => {
+  const { directory, command, env } = await fixture();
+  try {
+    env.DENO_DIR = resolve(directory, "empty-deno-cache");
+    const marker = resolve(directory, "target/build/prepared-scripts");
+    await Deno.remove(marker);
+    const sudo = resolve(directory, "bin/sudo");
+    await Deno.writeTextFile(
+      sudo,
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> calls.log\n',
+    );
+    await Deno.chmod(sudo, 0o755);
+    const result = await command("tools/native-deps.ts", "curl", "pkg-config");
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    const calls = await Deno.readTextFile(resolve(directory, "calls.log"));
+    assert(
+      calls ===
+        "apt-get update\nenv DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends curl pkg-config\n",
+      calls,
+    );
+    const invalid = await command("tools/native-deps.ts", "--help");
+    assert(!invalid.success, "Accepted an apt-get flag as a package");
+    assert(
+      await Deno.readTextFile(resolve(directory, "calls.log")) === calls,
+      "Invalid prerequisites invoked sudo",
+    );
+    assert(
+      !await exists(marker),
+      "Bootstrap treated a cache as prepared inputs",
+    );
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("shared check preparation fetches Rust without Linux delivery assets", async () => {
+  const { directory, command } = await fixture();
+  try {
+    const cargo = resolve(directory, "bin/cargo");
+    await Deno.writeTextFile(
+      cargo,
+      '#!/bin/sh\nprintf "%s\\n" "$*" > calls.log\n',
+    );
+    await Deno.chmod(cargo, 0o755);
+    const result = await command("tools/assets.ts", "shared");
+    assert(result.success, new TextDecoder().decode(result.stderr));
+    assert(
+      await Deno.readTextFile(resolve(directory, "calls.log")) ===
+        "fetch --locked\n",
+      "Unexpected preparation commands",
+    );
+    for (const name of ["downloads", "tools/nfpm", "author-avatar.png"]) {
+      assert(
+        !await exists(resolve(directory, "target/build", name)),
+        `Shared checks prepared delivery asset: ${name}`,
+      );
+    }
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("CI uses a native module matrix and only Rust compilation caching", async () => {
+  type Step = {
+    name?: string;
+    run?: string;
+    uses?: string;
+    if?: string;
+    with?: Record<string, unknown>;
+  };
+  const ci = parseYaml(
+    await Deno.readTextFile(resolve(root, ".github/workflows/ci.yml")),
+  ) as {
+    jobs: Record<
+      string,
+      {
+        steps?: Step[];
+        strategy?: {
+          matrix: { include: { module: string; os: string }[] };
+        };
+        "runs-on"?: string;
+      }
+    >;
+  };
+  assert(
+    ci.jobs.modules["runs-on"] === "${{ matrix.os }}",
+    "Module runners are not matrix-selected",
+  );
+  const entries = ci.jobs.modules.strategy?.matrix.include;
+  assert(Array.isArray(entries), "Modules must use native YAML matrix.include");
+  assert(
+    entries.length === Object.keys(packageTargets).length &&
+      new Set(entries.map((entry) => entry.module)).size === entries.length,
+    "Matrix module ownership differs from package definitions",
+  );
+  for (const [name, config] of Object.entries(packageTargets)) {
+    const entry = entries.find((entry) => entry.module === name);
+    assert(
+      entry?.os ===
+        (config.platform === "linux" ? "ubuntu-24.04" : "windows-2022"),
+      `Wrong native runner: ${name}`,
+    );
+  }
+  for (const name of ["plan", "rust", "windows", "windows-print", "packages"]) {
+    assert(!(name in ci.jobs), `Legacy aggregate job remains: ${name}`);
+  }
+  const release = parseYaml(
+    await Deno.readTextFile(resolve(root, ".github/workflows/release.yml")),
+  ) as { jobs: Record<string, { steps?: Step[] }> };
+  const action = parseYaml(
+    await Deno.readTextFile(
+      resolve(root, ".github/actions/prepare-build/action.yml"),
+    ),
+  ) as { runs: { steps: Step[] } };
+  const steps = [...Object.values(ci.jobs), ...Object.values(release.jobs)]
+    .flatMap((job) => job.steps ?? []);
+  for (const step of [...steps, ...action.runs.steps]) {
+    if (step.run) {
+      assert(
+        !step.run.includes("\n") &&
+          /^(deno task |deno test |cargo |pnpm )/.test(step.run),
+        `Inline CI script: ${step.name}`,
+      );
+    }
+  }
+  assert(
+    !steps.some((step) =>
+      step.uses?.startsWith("actions-rust-lang/setup-rust-toolchain")
+    ),
+    "Workflow bypasses shared Rust setup",
+  );
+  assert(
+    ![...steps, ...action.runs.steps].some((step) =>
+      step.uses?.startsWith("actions/cache")
+    ),
+    "CI caches inputs beyond Rust compilation",
+  );
+  const rust = action.runs.steps.find((step) =>
+    step.uses?.startsWith("actions-rust-lang/setup-rust-toolchain")
+  );
+  assert(
+    rust?.with?.["cache-shared-key"] ===
+      "${{ runner.os }}-${{ inputs.module }}",
+    "Matrix modules share a conflicting Rust cache key",
+  );
+  assert(
+    rust.with["cache-workspaces"] === ". -> target/cargo",
+    "Rust cache includes preparation state",
+  );
+  assert(
+    String(rust.with["cache-key"]).startsWith("${{ inputs.runner }}-"),
+    "Rust cache omits the native runner environment",
+  );
+  assert(
+    rust.with["cache-on-failure"] === false &&
+      rust.with["cache-save-if"] ===
+        "${{ github.event_name == 'push' && github.ref == 'refs/heads/v2' }}",
+    "Unverified jobs can save shared Rust caches",
+  );
+  assert(
+    ci.jobs.modules.steps?.some((step) =>
+      step.with?.runner === "${{ matrix.os }}"
+    ) === true,
+    "Module cache does not use the declared native runner",
+  );
+  const prepare = action.runs.steps.find((step) =>
+    step.run === "deno task prepare ${{ inputs.module }}"
+  );
+  assert(
+    prepare !== undefined && prepare.if === undefined,
+    "Cache hits skip input preparation",
+  );
+  for (
+    const [prefix, setting] of [
+      ["denoland/setup-deno@", "cache"],
+      ["actions/setup-node@", "package-manager-cache"],
+      ["pnpm/action-setup@", "cache"],
+    ]
+  ) {
+    const setup = action.runs.steps.find((step) =>
+      step.uses?.startsWith(prefix)
+    );
+    assert(
+      setup?.with?.[setting] === false,
+      `Unexpected dependency cache: ${prefix}`,
+    );
+  }
+  assert(
+    (release.jobs.version.steps ?? []).some((step) =>
+      step.run === "deno task release:version"
+    ),
+    "Release versions bypass the tested entry",
+  );
+  assert(
+    (release.jobs.publish.steps ?? []).some((step) =>
+      step.run === "deno task release:publish packages"
+    ),
+    "Release publication bypasses the tested entry",
+  );
+});
+
+Deno.test("Web package-manager requirements agree with CI installation", async () => {
+  const manifest = JSON.parse(
+    await Deno.readTextFile(resolve(root, "web/package.json")),
+  ) as { engines: { pnpm: string } };
+  const range = /^>=([0-9]+) <([0-9]+)$/.exec(manifest.engines.pnpm);
+  assert(
+    range !== null && Number(range[2]) === Number(range[1]) + 1,
+    "Web must declare one supported pnpm major",
+  );
+  const action = parseYaml(
+    await Deno.readTextFile(
+      resolve(root, ".github/actions/prepare-build/action.yml"),
+    ),
+  ) as { runs: { steps: { uses?: string; with?: Record<string, unknown> }[] } };
+  const setup = action.runs.steps.find((step) =>
+    step.uses?.startsWith("pnpm/action-setup@")
+  );
+  assert(
+    setup?.with?.version === range[1],
+    "CI pnpm installation differs from the Web engine requirement",
+  );
+});
+
+Deno.test("Release tag validation separates Debian and portable prerelease versions", async () => {
+  const { directory, command, env } = await fixture();
+  try {
+    const output = resolve(directory, "outputs");
+    for (
+      const tag of [
+        "v2.10.3",
+        "v2.10.3-rc.1",
+        "v02.10.3",
+        "v2.10.3-01",
+        "v2.10.3+build.1",
+      ]
+    ) {
+      await Deno.writeTextFile(output, "");
+      env.RELEASE_TAG = tag;
+      const result = await command("tools/release.ts", "version");
+      if (tag === "v2.10.3" || tag === "v2.10.3-rc.1") {
+        assert(result.success, new TextDecoder().decode(result.stderr));
+        const values = await Deno.readTextFile(output);
+        const prerelease = tag.endsWith("-rc.1");
+        assert(
+          values.includes(
+            `package_version=2.10.3${prerelease ? "~rc.1" : ""}\n`,
+          ),
+          values,
+        );
+        assert(values.includes(`release_version=${tag.slice(1)}\n`), values);
+        assert(values.includes(`prerelease=${prerelease}\n`), values);
+      } else {
+        assert(!result.success, `Invalid tag was accepted: ${tag}`);
+        assert(
+          await Deno.readTextFile(output) === "",
+          "Invalid tag emitted release outputs",
+        );
+      }
+    }
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
+Deno.test("Release collects both package formats and refuses missing or mismatched Windows output", async () => {
+  const { directory, command, env } = await fixture();
+  try {
+    const gh = resolve(directory, "bin/gh");
+    await Deno.writeTextFile(
+      gh,
+      '#!/bin/sh\nprintf "%s\\n" "$@" > gh-args.txt\n',
+    );
+    await Deno.chmod(gh, 0o755);
+    const version = "2.10.3~rc.1";
+    const names = [
+      "natsume-client",
+      "natsume-server",
+      "natsume-print-domjudge",
+    ];
+    for (const name of names) {
+      const source = resolve(directory, name);
+      await Deno.mkdir(resolve(source, "DEBIAN"), { recursive: true });
+      await Deno.writeTextFile(
+        resolve(source, "DEBIAN/control"),
+        `Package: ${name}\nVersion: ${version}\nArchitecture: amd64\nMaintainer: Natsume Test <test@example.invalid>\nDescription: Package metadata fixture\n`,
+      );
+      const result = await new Deno.Command("dpkg-deb", {
+        args: [
+          "--build",
+          source,
+          resolve(directory, `${name}_${version}_amd64.deb`),
+        ],
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assert(result.success, new TextDecoder().decode(result.stderr));
+    }
+    const archive = resolve(
+      directory,
+      "natsume-print-client_2.10.3-rc.1_windows_amd64.zip",
+    );
+    const zip = async (version: string, target = "print-client") => {
+      const result = await new Deno.Command("python3", {
+        args: [
+          "-c",
+          'import json, sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w"); z.writestr("package.json", json.dumps({"name": sys.argv[3], "version": sys.argv[2], "platform": "windows", "architecture": "amd64"})); z.close()',
+          resolve(directory, `natsume-${target}_2.10.3-rc.1_windows_amd64.zip`),
+          version,
+          `natsume-${target}`,
+        ],
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assert(result.success, new TextDecoder().decode(result.stderr));
+    };
+    Object.assign(env, {
+      PACKAGE_VERSION: version,
+      RELEASE_VERSION: "2.10.3-rc.1",
+      RELEASE_TAG: "v2.10.3-rc.1",
+      PRERELEASE: "true",
+    });
+    const processPath = resolve(directory, "tools/process.ts");
+    await Deno.writeTextFile(
+      processPath,
+      (await Deno.readTextFile(processPath)).replace(
+        '  "print-client": {',
+        '  "future-client": { platform: "windows", format: "zip", crates: ["future-client"], binaries: ["future-client"], rustPlatforms: ["windows"], assets: [], web: false, readme: "README.md" },\n  "print-client": {',
+      ),
+    );
+    const publish = () => command("tools/release.ts", "publish", directory);
+    await zip("2.10.3-rc.1");
+    await zip("2.10.3-rc.1", "future-client");
+    const good = await publish();
+    assert(good.success, new TextDecoder().decode(good.stderr));
+    const argumentsPath = resolve(directory, "gh-args.txt");
+    const argumentsText = await Deno.readTextFile(argumentsPath);
+    assert(
+      argumentsText.includes("--prerelease") &&
+        argumentsText.includes("--latest=false"),
+      argumentsText,
+    );
+    for (
+      const name of [
+        ...names.map((name) => `${name}_${version}_amd64.deb`),
+        "natsume-print-client_2.10.3-rc.1_windows_amd64.zip",
+        "natsume-future-client_2.10.3-rc.1_windows_amd64.zip",
+      ]
+    ) {
+      assert(argumentsText.includes(name), `Release omitted ${name}`);
+      const checksum = await Deno.readTextFile(
+        resolve(directory, "SHA256SUMS"),
+      );
+      assert(
+        checksum.includes(
+          `${await sha256(resolve(directory, name))}  ${name}\n`,
+        ),
+        `Wrong release checksum: ${name}`,
+      );
+    }
+    for (const failure of ["version", "corrupt", "missing"]) {
+      await Deno.remove(argumentsPath);
+      if (failure === "version") await zip("2.10.4");
+      if (failure === "corrupt") {
+        await Deno.writeTextFile(archive, "invalid ZIP");
+      }
+      if (failure === "missing") await Deno.remove(archive);
+      const result = await publish();
+      assert(!result.success, `Release accepted ${failure} Windows output`);
+      assert(
+        !await exists(argumentsPath),
+        "Publication ran after package validation failed",
+      );
+      await Deno.writeTextFile(argumentsPath, "reset fixture");
+    }
   } finally {
     await Deno.remove(directory, { recursive: true });
   }

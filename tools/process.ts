@@ -1,21 +1,45 @@
 import { fromFileUrl, resolve } from "@std/path";
 import manifest from "../packaging/manifest.json" with { type: "json" };
+import { execute, type RunOptions } from "./entry.ts";
+export { main, validateDenoVersion } from "./entry.ts";
 
 export const root = fromFileUrl(new URL("../", import.meta.url));
 export const work = resolve(root, "target/build");
 export const runtime = resolve(root, "target/print-domjudge/runtime");
+type PackageDefinition =
+  & {
+    crates: readonly string[];
+    binaries: readonly string[];
+    rustPlatforms: readonly string[];
+    assets: readonly (keyof typeof manifest)[];
+    web: boolean;
+  }
+  & ({ platform: "linux"; format: "deb" } | {
+    platform: "windows";
+    format: "zip";
+    readme: string;
+  });
+
 export const packageTargets = {
   server: {
+    platform: "linux",
+    rustPlatforms: ["linux"],
+    format: "deb",
     crates: ["natsume-server"],
     binaries: ["natsume-server"],
     assets: ["nfpm"],
     web: true,
   },
   client: {
+    platform: "linux",
+    rustPlatforms: ["linux"],
+    format: "deb",
     crates: [
       "natsume-workstation-daemon",
       "natsume-workstation-helper",
       "natsume-workstation-agent",
+      "natsume-workstation-protocol",
+      "natsume-workstation-ipc",
     ],
     binaries: [
       "natsume-device-daemon",
@@ -26,16 +50,30 @@ export const packageTargets = {
     web: false,
   },
   "print-domjudge": {
+    platform: "linux",
+    rustPlatforms: ["linux"],
+    format: "deb",
     crates: ["natsume-print-domjudge"],
     binaries: ["natsume-print-domjudge"],
     assets: ["nfpm", "typst", "font", "font_license"],
     web: false,
   },
-} as const;
+  "print-client": {
+    platform: "windows",
+    rustPlatforms: ["linux", "windows"],
+    format: "zip",
+    crates: ["natsume-print-client"],
+    binaries: ["natsume-print-client"],
+    assets: [],
+    web: false,
+    readme: "packaging/print-client/README.md",
+  },
+} as const satisfies Record<string, PackageDefinition>;
 export type PackageTarget = keyof typeof packageTargets;
 export const targets = [
   "scripts",
   "rust",
+  "shared",
   "web",
   ...Object.keys(packageTargets) as PackageTarget[],
 ] as const;
@@ -45,51 +83,90 @@ export function isPackageTarget(target: Target): target is PackageTarget {
   return Object.hasOwn(packageTargets, target);
 }
 
-export function selection(args: string[]): Target[] {
+export function packagesFor(platform: string): PackageTarget[] {
+  return (Object.keys(packageTargets) as PackageTarget[]).filter((target) =>
+    packageTargets[target].platform === platform
+  );
+}
+
+export function sharedRustCrates(platform: string = Deno.build.os): string[] {
+  const definitions: readonly PackageDefinition[] = Object.values(
+    packageTargets,
+  );
+  return [
+    ...new Set(
+      definitions
+        .filter((target) =>
+          target.platform !== platform &&
+          target.rustPlatforms.includes(platform)
+        )
+        .flatMap((target) => target.crates),
+    ),
+  ];
+}
+
+export function selection(
+  args: string[],
+  platform: string = Deno.build.os,
+): Target[] {
   if (args.length === 0 || args.length === 1 && args[0] === "all") {
-    return [...targets];
+    return platform === "linux"
+      ? ["scripts", "rust", "web", ...packagesFor(platform)]
+      : packagesFor(platform);
   }
   if (args.some((value) => !targets.includes(value as Target))) {
     throw new Error(`Expected all or one or more of: ${targets.join(", ")}`);
   }
+  for (const target of args as Target[]) {
+    if (
+      isPackageTarget(target) && packageTargets[target].platform !== platform
+    ) {
+      throw new Error(
+        `${target} requires ${
+          packageTargets[target].platform
+        }; host is ${platform}`,
+      );
+    }
+  }
   return [...new Set(args as Target[])];
 }
 
-export async function run(
+export function rustArguments(
+  platform: string = Deno.build.os,
+  definitions: Record<string, {
+    crates: readonly string[];
+    rustPlatforms: readonly string[];
+  }> = packageTargets,
+): string[] {
+  if (platform !== "linux" && platform !== "windows") {
+    throw new Error(`Rust build platform is not supported: ${platform}`);
+  }
+  const packages = Object.values(definitions);
+  if (platform === "linux") {
+    return [
+      "--workspace",
+      ...packages
+        .filter((target) => !target.rustPlatforms.includes(platform))
+        .flatMap((target) =>
+          target.crates.flatMap((name) => ["--exclude", name])
+        ),
+    ];
+  }
+  return [
+    ...new Set(
+      packages
+        .filter((target) => target.rustPlatforms.includes(platform))
+        .flatMap((target) => target.crates),
+    ),
+  ].flatMap((name) => ["-p", name]);
+}
+
+export function run(
   command: string,
   args: string[],
-  options: { cwd?: string; env?: Record<string, string>; capture?: boolean } =
-    {},
+  options: RunOptions = {},
 ): Promise<string> {
-  const invocation = [command, ...args].join(" ");
-  const cwd = options.cwd ?? root;
-  console.log(`$ ${invocation}`);
-  let child: Deno.ChildProcess;
-  try {
-    child = new Deno.Command(command, {
-      args,
-      cwd,
-      env: options.env,
-      stdin: "null",
-      stdout: options.capture ? "piped" : "inherit",
-      stderr: "inherit",
-    }).spawn();
-  } catch (cause) {
-    const detail = cause instanceof Deno.errors.NotFound
-      ? `Command not found: ${command}\nCheck that the required tool or prepared executable exists and is available on PATH or at the specified path.`
-      : `Could not start command: ${invocation}`;
-    throw new Error(`${detail}\nWorking directory: ${cwd}`, { cause });
-  }
-  // Only small metadata outputs use capture; compiler logs remain streaming.
-  const result = options.capture
-    ? await child.output()
-    : { ...await child.status, stdout: new Uint8Array() };
-  if (!result.success) {
-    throw new Error(
-      `Command failed (exit ${result.code}): ${invocation}\nWorking directory: ${cwd}\nSee the command output above for details.`,
-    );
-  }
-  return new TextDecoder().decode(result.stdout);
+  return execute(command, args, { ...options, cwd: options.cwd ?? root });
 }
 
 export const offline = {
@@ -152,13 +229,17 @@ async function fingerprint(target: Target): Promise<string> {
     paths.push("packaging/print-domjudge/template.typ");
   }
   const assets = target === "rust"
-    ? ["skia"] as const
+    ? Deno.build.os === "linux" ? ["skia"] as const : []
     : isPackageTarget(target)
     ? packageTargets[target].assets
     : [];
-  const hashes = assets.map((name) =>
-    `${name}\0${JSON.stringify(manifest[name])}\0`
-  );
+  const hashes = [
+    `${Deno.build.os}\0${Deno.build.arch}\0`,
+    ...(isPackageTarget(target)
+      ? [JSON.stringify(packageTargets[target])]
+      : []),
+    ...assets.map((name) => `${name}\0${JSON.stringify(manifest[name])}\0`),
+  ];
   for (const path of paths.sort()) {
     hashes.push(`${path}\0${await sha256(resolve(root, path))}\0`);
   }
@@ -185,68 +266,5 @@ export async function requirePrepared(...selected: Target[]): Promise<void> {
         `Run deno task prepare ${target} before this task (inputs are missing or changed).`,
       );
     }
-  }
-}
-
-function stableVersion(value: string): number[] | undefined {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
-  return match?.slice(1).map(Number);
-}
-
-export function validateDenoVersion(
-  required: string,
-  current = Deno.version.deno,
-): void {
-  const minimum = stableVersion(required);
-  if (!minimum) {
-    throw new Error(
-      `Invalid .deno-version: ${
-        JSON.stringify(required)
-      }; expected a stable major.minor.patch version.`,
-    );
-  }
-  const actual = stableVersion(current);
-  if (
-    actual && actual[0] === minimum[0] &&
-    (actual[1] > minimum[1] ||
-      actual[1] === minimum[1] && actual[2] >= minimum[2])
-  ) return;
-  const guidance = actual && actual[0] > minimum[0]
-    ? `Deno ${
-      actual[0]
-    }.x has not been validated for this project. Use a supported ${
-      minimum[0]
-    }.x environment or validate the new major version before updating the project baseline.`
-    : "Update Deno to a supported stable release using your installation method (standalone Deno: deno upgrade).";
-  throw new Error(
-    `Unsupported Deno version.\nCurrent: ${current}\nRequired: stable Deno >= ${required} and < ${
-      minimum[0] + 1
-    }.0.0 (.deno-version)\nExecutable: ${Deno.execPath()}\n${guidance}\nNo task commands were executed.`,
-  );
-}
-
-export async function main(
-  action: () => Promise<void>,
-  task: string,
-): Promise<void> {
-  try {
-    const required = (await Deno.readTextFile(resolve(root, ".deno-version")))
-      .trim();
-    validateDenoVersion(required);
-    await action();
-  } catch (error) {
-    console.error(`[${task}] FAILED`);
-    console.error(error instanceof Error ? error.message : "Build task failed");
-    let cause = error instanceof Error ? error.cause : undefined;
-    while (cause instanceof Error) {
-      console.error(`Caused by: ${cause.message}`);
-      cause = cause.cause;
-    }
-    if (task === "prepare") {
-      console.error(
-        "Preparation is incomplete. Do not continue with offline checks or builds. Fix the error above, then rerun the same prepare command.",
-      );
-    }
-    Deno.exitCode = 1;
   }
 }

@@ -33,7 +33,7 @@ repos:
         pass_filenames: false
       - id: rust-test
         name: Natsume Rust tests
-        entry: cargo test --workspace --all-features --locked
+        entry: deno task test rust
         language: system
         always_run: true
         pass_filenames: false

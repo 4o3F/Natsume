@@ -11,6 +11,10 @@ on:
         description: Debian package version
         type: string
         default: ""
+      release_version:
+        description: Portable package version (SemVer)
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -21,154 +25,117 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_TARGET_DIR: target/cargo
 
 jobs:
-  rust:
-    name: rust
+  checks:
+    name: Shared checks
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    env:
-      SKIA_BINARIES_URL: file://${{ github.workspace }}/target/build/downloads/skia-binaries-{key}.tar.gz
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Install native dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-            dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config
-
-      - name: Setup pinned Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/prepare-build
         with:
-          components: clippy,rustfmt
-
-      - name: Install pinned Rust tools
-        run: |
-          cargo install cargo-deny --version 0.20.2 --locked
-          cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled
-
-      - name: Setup Node for TypeScript generation
-        uses: actions/setup-node@v7.0.0
-        with:
-          node-version-file: web/.node-version
-
-      - name: Enable pnpm 11
-        run: |
-          corepack enable
-          corepack prepare pnpm@11 --activate
-
-      - name: Setup pinned Deno
-        uses: denoland/setup-deno@v2.0.5
-        with:
-          deno-version-file: .deno-version
-
-      - name: Prepare Rust and TypeScript-generation dependencies
-        run: deno task prepare rust web
-
+          module: shared
+          ubuntu-packages: fonts-noto-cjk libfontconfig1-dev libudev-dev pkg-config
       - name: Rust format
         run: cargo fmt --all --check
-
-      - name: Rust compile checks
-        run: deno task check scripts rust
-
-      - name: Build orchestration tests
-        run: deno test --cached-only --frozen --allow-read --allow-write=target --allow-env --allow-run --deny-net tools/build_test.ts
-
-      - name: Check generated TypeScript bindings
-        run: deno task api --check
-
-      - name: Check generated Diesel schema
-        run: deno task schema:check
-
-      - name: Unit and integration tests
-        run: cargo test --workspace --all-features --locked --lib --bins --tests
-
-      - name: Documentation tests
-        run: cargo test --workspace --all-features --locked --doc
-
+      - name: Build-script and cross-platform compile checks
+        run: deno task check scripts shared
+      - name: Build orchestration and Linux shared-logic tests
+        run: deno task test scripts shared
+      - name: Install pinned dependency policy tool
+        run: cargo install cargo-deny --version 0.20.2 --locked
       - name: Dependency policy and advisories
         run: cargo deny check
 
-  windows-print:
-    name: Windows print engine
-    runs-on: windows-2022
-    timeout-minutes: 30
+  modules:
+    name: Module (${{ matrix.module }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - module: server
+            os: ubuntu-24.04
+            ubuntu_packages: curl dpkg-dev pkg-config
+          - module: client
+            os: ubuntu-24.04
+            ubuntu_packages: curl dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config tar xz-utils
+          - module: print-domjudge
+            os: ubuntu-24.04
+            ubuntu_packages: curl dpkg-dev pkg-config tar xz-utils
+          - module: print-client
+            os: windows-2022
+            ubuntu_packages: ""
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Setup pinned Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/prepare-build
         with:
-          components: clippy,rustfmt
-
-      - name: Setup pinned Deno
-        uses: denoland/setup-deno@v2.0.5
+          module: ${{ matrix.module }}
+          runner: ${{ matrix.os }}
+          ubuntu-packages: ${{ matrix.ubuntu_packages }}
+      - name: Compile and lint the module
+        run: deno task check ${{ matrix.module }}
+      - name: Unit, integration and documentation tests for the module
+        run: deno task test ${{ matrix.module }}
+      - name: Check Server-generated TypeScript bindings
+        if: matrix.module == 'server'
+        run: deno task api --check
+      - name: Install pinned Server schema tool
+        if: matrix.module == 'server'
+        run: cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled
+      - name: Check the Server Diesel schema
+        if: matrix.module == 'server'
+        run: deno task schema:check
+      - name: Test portable staging on Windows
+        if: runner.os == 'Windows'
+        run: deno test --cached-only --frozen --allow-read --allow-write=target --allow-env --deny-net tools/windows_test.ts
+      - name: Build module release binaries and required Web assets
+        run: deno task build ${{ matrix.module }}
+      - name: Package CI build
+        if: (runner.os == 'Windows' && inputs.release_version == '') || (runner.os != 'Windows' && inputs.package_version == '')
+        run: deno task package ${{ matrix.module }} --ci --output dist/packages/ci
+      - name: Package the requested release version
+        if: (runner.os == 'Windows' && inputs.release_version != '') || (runner.os != 'Windows' && inputs.package_version != '')
+        env:
+          VERSION: ${{ runner.os == 'Windows' && inputs.release_version || inputs.package_version }}
+        run: deno task package ${{ matrix.module }} --output dist/packages/ci
+      - name: Upload the module's verified package
+        uses: actions/upload-artifact@v7.0.1
         with:
-          deno-version-file: .deno-version
-
-      - name: Prepare Rust dependencies without Linux workstation assets
-        run: deno task prepare rust
-
-      - name: Compile and lint the Windows engine
-        run: cargo clippy --frozen -p natsume-print-client --all-targets -- -D warnings
-
-      - name: Test shared logic and the Windows PDF renderer
-        run: cargo test --frozen -p natsume-print-client
+          name: package-${{ matrix.module }}-${{ runner.os }}-amd64
+          path: dist/packages/ci/*
+          if-no-files-found: error
+          retention-days: 7
 
   web:
-    name: web
+    name: Web checks
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Setup Node
-        uses: actions/setup-node@v7.0.0
+      - uses: actions/checkout@v7.0.1
+      - uses: ./.github/actions/prepare-build
         with:
-          node-version-file: web/.node-version
-
-      - name: Enable pnpm 11
-        run: |
-          set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@11 --activate
-
-      - name: Setup pinned Deno
-        uses: denoland/setup-deno@v2.0.5
-        with:
-          deno-version-file: .deno-version
-
-      - name: Prepare Web dependencies
-        run: deno task prepare web
-
+          module: web
+          rust: false
       - name: Dependency audit
         run: pnpm --dir web audit --audit-level high --registry https://registry.npmjs.org
-
       - name: Format
         run: pnpm --dir web format:check
-
       - name: ESLint
         run: pnpm --dir web lint
-
       - name: Typecheck
         run: deno task check web
-
       - name: Unit tests
         run: pnpm --dir web test
-
       - name: Install pinned Chromium
         run: pnpm --dir web exec playwright install --with-deps chromium
-
       - name: Playwright smoke
         run: pnpm --dir web e2e
         env:
           CI: "true"
-
       - name: Upload Playwright diagnostics
         if: failure()
         uses: actions/upload-artifact@v7.0.1
@@ -178,62 +145,4 @@ jobs:
             web/playwright-report/
             web/test-results/
           if-no-files-found: ignore
-          retention-days: 7
-
-  packages:
-    name: packages
-    runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.1
-
-      - name: Setup pinned Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
-
-      - name: Install package build dependencies
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-            curl dpkg-dev libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config tar xz-utils
-
-      - name: Setup Node
-        uses: actions/setup-node@v7.0.0
-        with:
-          node-version-file: web/.node-version
-
-      - name: Enable pnpm 11
-        run: |
-          set -euo pipefail
-          corepack enable
-          corepack prepare pnpm@11 --activate
-
-      - name: Setup pinned Deno
-        uses: denoland/setup-deno@v2.0.5
-        with:
-          deno-version-file: .deno-version
-
-      - name: Prepare dependencies, tools and runtime assets
-        run: deno task prepare
-
-      - name: Build production binaries and Web
-        run: deno task build server client print-domjudge
-
-      - name: Build Deb packages
-        run: |
-          if [[ -n "$PACKAGE_VERSION" ]]; then
-            deno task package --version "$PACKAGE_VERSION" --output dist/packages/ci
-          else
-            deno task package --ci --output dist/packages/ci
-          fi
-        env:
-          PACKAGE_VERSION: ${{ inputs.package_version }}
-
-      - name: Upload package artifacts
-        uses: actions/upload-artifact@v7.0.1
-        with:
-          name: phase0-deb-content-smoke
-          path: dist/packages/ci/*.deb
-          if-no-files-found: error
           retention-days: 7

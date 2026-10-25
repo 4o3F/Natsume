@@ -10,6 +10,10 @@
     "prepare": "deno run --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run tools/assets.ts",
     "check": "deno run --cached-only --frozen --no-prompt --allow-read --allow-env --allow-run --deny-net tools/build.ts check",
     "build": "deno run --cached-only --frozen --no-prompt --allow-read --allow-env --allow-run --deny-net tools/build.ts build",
+    "test": "deno run --cached-only --frozen --no-prompt --allow-read --allow-env --allow-run --deny-net tools/build.ts test",
+    "native-deps": "deno run --cached-only --frozen --no-prompt --allow-read --allow-env --allow-run --deny-net tools/native-deps.ts",
+    "release:version": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write --allow-env --deny-net tools/release.ts version",
+    "release:publish": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write --allow-env --allow-run --deny-net tools/release.ts publish",
     "api": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run --deny-net tools/build.ts api",
     "schema:check": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write=target --allow-env --allow-run --deny-net tools/build.ts schema",
     "package": "deno run --cached-only --frozen --no-prompt --allow-read --allow-write --allow-env --allow-run --deny-net tools/package.ts"

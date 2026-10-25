@@ -1,6 +1,6 @@
 # Windows 打印客户端
 
-`natsume-print-client` 面向 Windows 10／11 x64、已登录用户会话，包含正常应用入口、Server 配对与执行协议、本地任务记录和原生打印后端。Slint 界面按配置、配对和日常工作台组织，提供 Windows 托盘，继续复用已有执行核心，不增加独立打印或恢复流程。此前执行核心已通过 Windows 原生检查及 Adobe PDF 单任务、连续双任务软件联调；用户也已确认先前版本图形入口正常。原型界面已由用户确认在 Windows 编译和启动，整体浅色配色修复后的显示也已确认正常；文件选择、系统快捷操作、配置加载及界面内打印执行没有独立的完整验收记录。不提供安装包，也不代表实体打印机验收。完整产品目标及业务规则以[架构第 23 节](../../docs/architecture.md#23-单赛事运营平台扩展)为准。
+`natsume-print-client` 面向 Windows 10／11 x64、已登录用户会话，包含正常应用入口、Server 配对与执行协议、本地任务记录和原生打印后端。Slint 界面按配置、配对和日常工作台组织，提供 Windows 托盘，继续复用已有执行核心，不增加独立打印或恢复流程。此前执行核心已通过 Windows 原生检查及 Adobe PDF 单任务、连续双任务软件联调；用户也已确认先前版本图形入口正常。原型界面已由用户确认在 Windows 编译和启动，整体浅色配色修复后的显示也已确认正常；文件选择、系统快捷操作、配置加载及界面内打印执行没有独立的完整验收记录。便携 ZIP 的构建与 CI 交付见[打包说明](../../packaging/README.md#windows-portable-packages)，不提供安装器，也不代表实体打印机验收。完整产品目标及业务规则以[架构第 23 节](../../docs/architecture.md#23-单赛事运营平台扩展)为准。
 
 ## 启动与操作
 
@@ -65,7 +65,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Clippy failed; do not continue.' }
 cargo test --frozen -p natsume-print-client
 ```
 
-Windows PowerShell 不会因外部程序返回非零退出码而自动停止，因此示例显式检查前一步是否成功。准备失败时先处理脚本报告的问题，不继续运行离线命令。版本错误会显示当前版本、最低版本和 Deno 执行文件路径；Rust 下载失败会保留 Cargo 原始输出，并提示检查镜像、离线设置和网络，不修改锁文件或改用预发布依赖来绕过错误。准备阶段允许下载 Rust 依赖；后面的命令使用 `--frozen`，不会隐式安装输入。Windows 的 Rust 准备不下载 Linux 工位的 Skia 库。持续集成中的 Windows 作业只选择该包进行编译检查和测试，不构建依赖 D-Bus／Wayland 的 Linux 包，也不发布独立工具。
+Windows PowerShell 不会因外部程序返回非零退出码而自动停止，因此示例显式检查前一步是否成功。准备失败时先处理脚本报告的问题，不继续运行离线命令。版本错误会显示当前版本、最低版本和 Deno 执行文件路径；Rust 下载失败会保留 Cargo 原始输出，并提示检查镜像、离线设置和网络，不修改锁文件或改用预发布依赖来绕过错误。准备阶段允许下载 Rust 依赖；后面的命令使用 `--frozen`，不会隐式安装输入。Windows 的 Rust 准备不下载 Linux 工位的 Skia 库。持续集成在工作流中直接声明 GitHub Actions 原生模块矩阵，Server、工位 Client 和 DOMjudge 接入包分别在 Ubuntu 运行，打印客户端在 Windows 项中依次运行统一的准备、检查、测试、release 构建和便携 ZIP 打包入口，不构建依赖 D-Bus／Wayland 的 Linux 包，不下载 nFPM 或 Linux 工位资产。ZIP 经解压和逐文件摘要核对后上传为 CI 产物；标签 Release 在全部检查通过后将其与 Debian 包一同发布。这里的 ZIP 是正常应用交付，不增加诊断命令。
 
 Linux 可运行 `cargo test --frozen -p natsume-print-client` 验证不可变输入、尝试身份、整页布局、保守容量判断和共享界面控制器，不能代替 Windows 平台验证。交叉运行 `cargo clippy --frozen -p natsume-print-client --target x86_64-pc-windows-msvc --all-targets -- -D warnings` 除 Windows Rust 标准库外，还需要能编译 TLS 等原生依赖的 Windows C 工具链和 SDK；该命令不运行 Windows 程序，也不能通过跳过原生依赖模拟通过。
 

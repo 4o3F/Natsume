@@ -270,12 +270,13 @@ async function prepare(): Promise<void> {
   selected.add("scripts");
   const needsSkia = selected.has("rust") && Deno.build.os !== "windows" ||
     selected.has("client") && Deno.env.get("RUST_RELEASE_DIR") === undefined;
+  if (selected.has("shared")) selected.add("rust");
   const packages = [...selected].filter(isPackageTarget);
   if (
     packages.length &&
-    (Deno.build.os !== "linux" || Deno.build.arch !== "x86_64" ||
+    (Deno.build.arch !== "x86_64" ||
       (Deno.env.get("ARCH") ?? "amd64") !== "amd64")
-  ) throw new Error("Package preparation requires Linux amd64");
+  ) throw new Error("Package preparation requires native amd64");
   if (packages.length && Deno.env.get("RUST_RELEASE_DIR") === "") {
     throw new Error("RUST_RELEASE_DIR must not be empty");
   }
@@ -301,6 +302,11 @@ async function prepare(): Promise<void> {
     "tools/build.ts",
     "tools/package.ts",
     "tools/build_test.ts",
+    "tools/windows.ts",
+    "tools/windows_test.ts",
+    "tools/entry.ts",
+    "tools/native-deps.ts",
+    "tools/release.ts",
   ]);
   if (selected.has("rust")) {
     console.log("[prepare] Fetching locked Rust workspace dependencies...");
@@ -320,7 +326,9 @@ async function prepare(): Promise<void> {
       cwd: resolve(root, "web"),
     });
   }
-  if (packages.length) await tool("nfpm");
+  if (packages.some((target) => packageTargets[target].format === "deb")) {
+    await tool("nfpm");
+  }
   if (selected.has("client")) {
     await tool("caddy");
     await clientLicenses();

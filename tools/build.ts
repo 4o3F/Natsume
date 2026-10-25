@@ -8,7 +8,9 @@ import {
   requirePrepared,
   root,
   run,
+  rustArguments,
   selection,
+  sharedRustCrates,
   work,
 } from "./process.ts";
 
@@ -86,8 +88,8 @@ async function exportApi(check: boolean): Promise<void> {
 
 async function build(): Promise<void> {
   const [command, ...args] = Deno.args;
-  if (!["check", "build", "api", "schema"].includes(command)) {
-    throw new Error("Expected check, build, api or schema");
+  if (!["check", "test", "build", "api", "schema"].includes(command)) {
+    throw new Error("Expected check, test, build, api or schema");
   }
   await requirePrepared("scripts");
   if (command === "schema") {
@@ -104,20 +106,54 @@ async function build(): Promise<void> {
   }
   const selected = selection(args);
   const selectedPackages = selected.filter(isPackageTarget);
-  const rust = selected.includes("rust") || selectedPackages.length > 0;
-  const web = selected.includes("web") ||
-    selectedPackages.some((target) => packageTargets[target].web);
+  const shared = selected.includes("shared") ? sharedRustCrates() : [];
+  if (selected.includes("shared") && (!shared.length || command === "build")) {
+    throw new Error(
+      "shared requires supported cross-platform crates and is only for check/test",
+    );
+  }
+  const rust = selected.includes("rust") || selectedPackages.length > 0 ||
+    shared.length > 0;
+  const web = selected.includes("web") || command === "build" &&
+      selectedPackages.some((target) => packageTargets[target].web);
   if (rust) await requirePrepared("rust");
   if (web) await requirePrepared("web");
-  const native = selected.includes("rust") || selected.includes("client");
+  const native = Deno.build.os === "linux" &&
+    (selected.includes("rust") || selected.includes("client"));
   const environment = native
     ? { ...offline, ...await skiaEnvironment() }
     : offline;
-  const packages = selected.includes("rust")
-    ? ["--workspace"]
-    : selectedPackages.flatMap((target) =>
-      packageTargets[target].crates.flatMap((name) => ["-p", name])
-    );
+  const packages = selected.includes("rust") ? rustArguments() : [
+    ...new Set([
+      ...selectedPackages.flatMap((target) => packageTargets[target].crates),
+      ...shared,
+    ]),
+  ].flatMap((name) => ["-p", name]);
+  if (command === "test") {
+    if (selected.includes("scripts")) {
+      await run(Deno.execPath(), [
+        "test",
+        "--cached-only",
+        "--frozen",
+        "--allow-read",
+        "--allow-write=target",
+        "--allow-env",
+        "--allow-run",
+        "--deny-net",
+        "tools/build_test.ts",
+        "tools/windows_test.ts",
+      ]);
+    }
+    if (rust) {
+      await run("cargo", ["test", ...packages, "--all-features", "--frozen"], {
+        env: environment,
+      });
+    }
+    if (web) {
+      await run("pnpm", ["test"], { cwd: resolve(root, "web"), env: offline });
+    }
+    return;
+  }
   if (command === "check") {
     if (selected.includes("scripts")) {
       await run(Deno.execPath(), [
@@ -130,6 +166,11 @@ async function build(): Promise<void> {
         "tools/package.ts",
         "tools/process.ts",
         "tools/build_test.ts",
+        "tools/windows.ts",
+        "tools/windows_test.ts",
+        "tools/entry.ts",
+        "tools/native-deps.ts",
+        "tools/release.ts",
       ]);
       await run(Deno.execPath(), ["fmt", "--check"]);
       await run(Deno.execPath(), ["lint"]);

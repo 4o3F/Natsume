@@ -1,0 +1,59 @@
+name: Prepare build inputs
+description: Install pinned tools, cache Rust compilation and prepare verified inputs
+inputs:
+  module:
+    description: Preparation target owning the Rust compilation cache
+    required: true
+  runner:
+    description: Native runner label included in the Rust cache key
+    default: ubuntu-24.04
+  rust:
+    description: Install Rust and restore its dependency compilation cache
+    default: "true"
+  ubuntu-packages:
+    description: Native Ubuntu prerequisites for this module
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Setup pinned Deno
+      uses: denoland/setup-deno@v2.0.5
+      with:
+        deno-version-file: .deno-version
+        cache: false
+
+    - name: Install native Ubuntu prerequisites
+      if: runner.os == 'Linux' && inputs.ubuntu-packages != ''
+      shell: bash
+      run: deno task native-deps ${{ inputs.ubuntu-packages }}
+
+    - name: Setup pinned Rust and the module-owned compilation cache
+      if: inputs.rust == 'true'
+      uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
+      with:
+        components: clippy,rustfmt
+        cache-workspaces: . -> target/cargo
+        cache-shared-key: ${{ runner.os }}-${{ inputs.module }}
+        cache-key: ${{ inputs.runner }}-${{ hashFiles('packaging/manifest.json') }}
+        cache-on-failure: false
+        cache-save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/v2' }}
+
+    - name: Setup pinned Node
+      if: inputs.module == 'server' || inputs.module == 'web'
+      uses: actions/setup-node@v7.0.0
+      with:
+        node-version-file: web/.node-version
+        package-manager-cache: false
+
+    - name: Setup pnpm 12
+      if: inputs.module == 'server' || inputs.module == 'web'
+      uses: pnpm/action-setup@v6.1.0
+      with:
+        version: "12"
+        package_json_file: web/package.json
+        run_install: false
+        cache: false
+
+    - name: Prepare selected inputs
+      shell: ${{ runner.os == 'Windows' && 'pwsh' || 'bash' }}
+      run: deno task prepare ${{ inputs.module }}

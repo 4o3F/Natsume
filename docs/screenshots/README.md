@@ -11,7 +11,7 @@ The root [feature gallery](../../README.md#feature-gallery) shows seven current 
 
 ## Web panel
 
-Use the Web project's Node.js 24.1.0 and pnpm 11.x, installed `web/node_modules` dependencies, and the Chromium version matching the locked Playwright dependency. From the repository root:
+Use the Web project's Node.js 24.1.0 and pnpm 12.x, installed `web/node_modules` dependencies, and the Chromium version matching the locked Playwright dependency. From the repository root:
 
 ```bash
 pnpm --dir web build
