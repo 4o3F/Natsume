@@ -388,6 +388,7 @@ export function TargetsPage() {
         >
           <DataTable
             label="Device targets"
+            virtualized
             columns={columns}
             data={rows}
             getRowId={(device) => device.device_id}

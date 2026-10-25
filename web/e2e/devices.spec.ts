@@ -20,6 +20,7 @@ import {
   openDeviceDetails,
   openDeviceMenu,
   refreshLabel,
+  scrollToTableRow,
   seatCells,
 } from "./fixtures/ui";
 
@@ -865,7 +866,10 @@ for (const width of [768, 1024, 1440]) {
     });
     await header.getByRole("button").click();
     await expect(header).toHaveAttribute("aria-sort", "ascending");
-    await expect(table.locator("tbody tr")).toHaveCount(200);
+    await expect(table).toHaveAttribute("aria-rowcount", "201");
+    await expect
+      .poll(() => table.locator("tbody > tr[data-index]").count())
+      .toBeLessThan(100);
     const noPageOverflow = () =>
       page.evaluate(
         () =>
@@ -877,9 +881,10 @@ for (const width of [768, 1024, 1440]) {
     const watchedRow = table
       .getByRole("row")
       .filter({ hasText: "machine-150" });
-    await watchedRow
-      .getByText("machine-150", { exact: true })
-      .scrollIntoViewIfNeeded();
+    await scrollToTableRow(page, table, 149);
+    await expect(
+      watchedRow.getByText("machine-150", { exact: true }),
+    ).toBeVisible();
     const tableNode = await table.elementHandle();
     const rowNode = await watchedRow.elementHandle();
     const scrollContainer = page.locator('[data-slot="table-container"]');
@@ -893,7 +898,10 @@ for (const width of [768, 1024, 1440]) {
     expect(initialTop).toBeGreaterThan(0);
     if (width === 768) expect(initialLeft).toBeGreaterThan(0);
     const unchangedViewport = async () => {
-      await expect(table.locator("tbody tr")).toHaveCount(200);
+      await expect(table).toHaveAttribute("aria-rowcount", "201");
+      await expect
+        .poll(() => table.locator("tbody > tr[data-index]").count())
+        .toBeLessThan(100);
       expect(
         await table.evaluate(
           (element, original) => element === original,
