@@ -51,10 +51,11 @@ jobs:
 
   modules:
     name: Module (${{ matrix.module }})
+    needs: [checks, web]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 75
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - module: server

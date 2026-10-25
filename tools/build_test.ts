@@ -681,7 +681,11 @@ Deno.test("CI uses a native module matrix and only Rust compilation caching", as
       string,
       {
         steps?: Step[];
+        needs?: string[];
+        if?: string;
+        "continue-on-error"?: boolean;
         strategy?: {
+          "fail-fast": boolean;
           matrix: { include: { module: string; os: string }[] };
         };
         "runs-on"?: string;
@@ -691,6 +695,26 @@ Deno.test("CI uses a native module matrix and only Rust compilation caching", as
   assert(
     ci.jobs.modules["runs-on"] === "${{ matrix.os }}",
     "Module runners are not matrix-selected",
+  );
+  assert(
+    JSON.stringify(ci.jobs.modules.needs?.toSorted()) ===
+      JSON.stringify(["checks", "web"]),
+    "Module delivery must wait for all shared and Web checks",
+  );
+  assert(
+    ci.jobs.modules.if === undefined &&
+      ci.jobs.modules["continue-on-error"] !== true,
+    "Module delivery bypasses a failed prerequisite",
+  );
+  for (const name of ["checks", "web"]) {
+    assert(
+      ci.jobs[name]["continue-on-error"] !== true,
+      `Failed gate is ignored: ${name}`,
+    );
+  }
+  assert(
+    ci.jobs.modules.strategy?.["fail-fast"] === true,
+    "A failed module must cancel remaining matrix work",
   );
   const entries = ci.jobs.modules.strategy?.matrix.include;
   assert(Array.isArray(entries), "Modules must use native YAML matrix.include");
