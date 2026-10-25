@@ -1641,7 +1641,11 @@ deno task schema:check
 deno task api --check
 ```
 
-包目标表分别声明交付平台、Rust 检查平台、crate、binary 和打包格式。Linux 默认保留脚本、Rust、Web 和 Linux 包；Windows 默认只选择 Windows 包，不准备 Linux 工位资产或 Web。Linux Rust 检查保留已声明支持 Linux 的共享逻辑测试，排除仅支持 Windows 的应用；Windows 按声明选择原生应用 crate，CI 与 hook 复用相同入口。CI 在工作流 YAML 中直接声明 GitHub Actions 原生 `strategy.matrix.include` 模块矩阵，由 GitHub 展开和调度，不通过脚本生成矩阵，Server、工位 Client、DOMjudge 接入包分别在 Ubuntu 运行，Print Client 在 Windows 运行；先并行执行公共检查和 Web 检查，两者全部成功后才启动模块矩阵；前置失败或取消时不开始模块构建及打包，矩阵项失败则取消其他尚未完成的模块任务。每项依次独立检查、测试、release 构建及原生打包。Server 项拥有类型生成与数据库结构检查，Client 项包含协议和 IPC 库测试，公共检查保留打印客户端的 Linux 共享逻辑回归与全局格式、依赖策略检查。后续 Windows 应用增加目标定义与一条原生矩阵配置，不创建占位包或复制任务步骤。矩阵与包目标的覆盖范围及运行平台由回归测试核对。ZIP 只包含声明的程序、公开说明、项目许可、版本元数据和校验和，打包后解压并逐文件核对；不带配置、凭据或业务记录，不安装驱动、证书或运行库。标签发布沿用全部 CI 门禁，核对预期 Debian 和 Windows 产物后生成统一校验和；Debian 预发布版本转换与 Windows SemVer 标签分开处理。
+包目标表分别声明交付平台、Rust 检查平台、crate、binary 和打包格式。Linux 默认保留脚本、Rust、Web 和 Linux 包；Windows 默认只选择 Windows 包，不准备 Linux 工位资产或 Web。显式运行 `deno task check rust` 和 `deno task test rust` 时，Windows 检查整个工作区，包括 Linux 专用程序的非 Linux 失败入口；这些程序在库、可执行文件、示例和测试入口隔离 Linux 实现。协议、IPC 和 Windows 打印客户端继续在 Windows 编译并运行测试。Linux Rust 检查保留已声明支持 Linux 的共享逻辑测试，排除仅支持 Windows 的应用。
+
+CI 在工作流 YAML 中直接声明 Ubuntu／Windows 公共检查矩阵，两边分别运行 Rust 工作区检查和测试；Linux 运行构建脚本检查、编排测试和依赖策略审计，Windows 运行便携包目录测试。Web 静态检查、单元和浏览器测试由独立任务执行。公共检查矩阵和 Web 任务全部成功后，才启动原生 `strategy.matrix.include` 交付矩阵：Server、工位 Client、DOMjudge 接入包在 Ubuntu 构建和打包，Print Client 在 Windows 构建和打包，不重复运行公共 Rust 检查和测试。Server 交付项另行核对生成的 TypeScript 类型和数据库结构。前置失败或取消时不开始模块构建及打包，矩阵项失败则取消同一矩阵内其他尚未完成的任务。工作区覆盖、原生运行平台、任务依赖和检查不重复执行由回归测试核对。
+
+ZIP 只包含声明的程序、公开说明、项目许可、版本元数据和校验和，打包后解压并逐文件核对；不带配置、凭据或业务记录，不安装驱动、证书或运行库。标签发布沿用全部 CI 门禁，核对预期 Debian 和 Windows 产物后生成统一校验和；Debian 预发布版本转换与 Windows SemVer 标签分开处理。
 
 CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明模块、运行平台、任务依赖和版本条件步骤，并调用现有准备、检查、测试、构建与打包入口；仅系统依赖安装和发布校验等过程逻辑放在职责明确的 Deno 脚本中，不增加通用 CI 命令路由或脚本调度层。Web 静态检查与单元、浏览器测试由独立 Web 项负责，Server 项只拥有 Web 生产构建，不重复运行 Web 检查。CI 只保留 Rust 工具链 Action 管理的编译缓存，按系统、模块、运行环境、工具链与原生输入区分，编译目录使用 `target/cargo`，不混入准备标记。Deno、pnpm 和固定资产不设置跨任务持久化缓存，每个任务正常执行准备和输入校验，后续检查、构建及打包仍只消费已准备输入。不缓存配置、凭据、业务记录、生成后的运行目录或最终交付包；Rust 缓存命中、缺失或逐出均不得改变验证、构建和发布门禁。
 

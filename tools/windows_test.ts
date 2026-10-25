@@ -46,7 +46,7 @@ Deno.test("package defaults and explicit selections respect the host platform", 
   rejects(() => selection(["client"], "windows"));
 });
 
-Deno.test("Rust checks preserve Linux shared coverage and isolate Windows crates", () => {
+Deno.test("Rust checks preserve Linux shared coverage and check the Windows workspace", () => {
   assert(
     !rustArguments("linux").some((argument, index, args) =>
       args[index - 1] === "--exclude" && argument === "natsume-print-client"
@@ -54,10 +54,9 @@ Deno.test("Rust checks preserve Linux shared coverage and isolate Windows crates
     "Linux must retain the print client's shared tests",
   );
   assert(
-    rustArguments("windows").includes("natsume-print-client") &&
-      !rustArguments("windows").includes("natsume-server") &&
-      !rustArguments("windows").includes("natsume-workstation-agent"),
-    "Windows must not select Linux workstation crates",
+    JSON.stringify(rustArguments("windows")) ===
+      JSON.stringify(["--workspace"]),
+    "Windows must check every workspace member, including Linux-only entry points",
   );
   const extended = {
     ...packageTargets,
@@ -73,8 +72,9 @@ Deno.test("Rust checks preserve Linux shared coverage and isolate Windows crates
     "A Windows-only addition must not break Linux workspace checks",
   );
   assert(
-    rustArguments("windows", extended).includes("future-windows-client"),
-    "Windows checks must include the new package without another branch",
+    JSON.stringify(rustArguments("windows", extended)) ===
+      JSON.stringify(["--workspace"]),
+    "Windows workspace checks must include future members without a package filter",
   );
 });
 
