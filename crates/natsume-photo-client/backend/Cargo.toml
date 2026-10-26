@@ -1,0 +1,31 @@
+[package]
+name = "natsume-photo-client"
+description = "Natsume Photo offline client backend"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap.workspace = true
+diesel.workspace = true
+diesel_migrations.workspace = true
+hex.workspace = true
+image.workspace = true
+percent-encoding.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+snafu.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+libsqlite3-sys = { version = "0.38.2", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

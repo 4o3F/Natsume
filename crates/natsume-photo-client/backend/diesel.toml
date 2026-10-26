@@ -1,0 +1,3 @@
+[print_schema]
+file = "src/diesel_schema.rs"
+filter.only_tables = ["^photo_workspace$", "^photo_roster$"]

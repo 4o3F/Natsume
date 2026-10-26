@@ -2,6 +2,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/natsume-photo-client/backend",
   "crates/natsume-server",
   "crates/natsume-workstation-daemon",
   "crates/natsume-workstation-helper",
@@ -12,6 +13,7 @@ members = [
   "crates/natsume-print-client"
 ]
 default-members = [
+  "crates/natsume-photo-client/backend",
   "crates/natsume-server",
   "crates/natsume-workstation-daemon",
   "crates/natsume-workstation-helper",

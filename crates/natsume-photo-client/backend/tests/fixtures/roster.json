@@ -1,0 +1,20 @@
+[
+  {
+    "account_id": "0199a000-0000-7000-8000-000000000001",
+    "account": "T-001",
+    "organization_id": 1,
+    "school_name_zh": "测试大学",
+    "school_name_en": "Test University",
+    "team_name_zh": "测试一队",
+    "team_name_en": "Test Team One"
+  },
+  {
+    "account_id": "0199a000-0000-7000-8000-000000000002",
+    "account": "T-002",
+    "organization_id": 2,
+    "school_name_zh": "第二测试大学",
+    "school_name_en": "",
+    "team_name_zh": "测试二队",
+    "team_name_en": ""
+  }
+]

@@ -58,6 +58,16 @@ export const packageTargets = {
     assets: ["nfpm", "typst", "font", "font_license"],
     web: false,
   },
+  "photo-client": {
+    platform: "windows",
+    rustPlatforms: ["windows"],
+    format: "zip",
+    crates: ["natsume-photo-client"],
+    binaries: ["natsume-photo-client"],
+    assets: [],
+    web: false,
+    readme: "crates/natsume-photo-client/backend/README.md",
+  },
   "print-client": {
     platform: "windows",
     rustPlatforms: ["linux", "windows"],
