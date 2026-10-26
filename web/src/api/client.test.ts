@@ -51,6 +51,30 @@ it("reads the operator print queue through the typed GET endpoint", async () => 
   expectTypeOf(result.data).toEqualTypeOf<PrintQueueEntry[] | undefined>();
 });
 
+it("requeues one execution with the expected manual round and accepts a no-content response", async () => {
+  let sent!: Request;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (request: Request) => {
+      sent = request;
+      return new Response(null, { status: 204 });
+    }),
+  );
+  const result = await client().requeuePrintExecution(
+    42,
+    { expected_requeue_count: 2 },
+    { baseUrl },
+  );
+  expect(sent.method).toBe("POST");
+  expect(new URL(sent.url).pathname).toBe(
+    "/api/v2/print/executions/42/requeue",
+  );
+  expect(await sent.json()).toEqual({ expected_requeue_count: 2 });
+  expect(sent.headers.has("authorization")).toBe(false);
+  expect(result.response.status).toBe(204);
+  expect(result.data).toBeUndefined();
+});
+
 it("invalidates an unauthorized session without treating rejected login as expiry", async () => {
   vi.stubGlobal(
     "fetch",

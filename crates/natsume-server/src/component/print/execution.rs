@@ -93,6 +93,7 @@ pub(crate) struct PrintExecution {
     pub ready_sequence: i64,
     pub state: ExecutionState,
     pub attempts_used: i32,
+    pub requeue_count: i32,
     #[specta(type = Option<specta_typescript::Number>)]
     pub retry_at_unix_ms: Option<i64>,
     pub last_outcome: Option<AttemptOutcome>,
@@ -128,6 +129,12 @@ pub(crate) struct PrintAttempt {
     pub document_bytes: i64,
     #[specta(type = specta_typescript::Number)]
     pub document_pages: i64,
+}
+
+#[derive(Debug, Deserialize, specta::Type)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PrintRequeue {
+    pub expected_requeue_count: i32,
 }
 
 #[derive(Debug, Deserialize, specta::Type)]
@@ -328,6 +335,25 @@ impl PrintComponent {
             super::ConflictSnafu
         );
         Ok(bytes)
+    }
+
+    pub(crate) async fn requeue(
+        &self,
+        sequence: i64,
+        input: PrintRequeue,
+    ) -> Result<(), PrintError> {
+        ensure!(
+            sequence > 0 && input.expected_requeue_count >= 0,
+            InvalidSnafu
+        );
+        self.database
+            .write(move |tx| {
+                let now = db::printers::now(tx)?;
+                db::execution::expire(tx, now)?;
+                db::execution::requeue(tx, sequence, input.expected_requeue_count, now)
+            })
+            .await
+            .map_err(TransactionError::into_error)
     }
 
     pub(crate) async fn list_executions(&self) -> Result<Vec<PrintExecution>, PrintError> {

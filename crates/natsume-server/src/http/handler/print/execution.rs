@@ -1,7 +1,10 @@
 use axum::{
     Extension, Json, Router,
-    extract::{Request, State, rejection::JsonRejection},
-    http::header,
+    extract::{
+        Path, Request, State,
+        rejection::{JsonRejection, PathRejection},
+    },
+    http::{StatusCode, header},
     middleware::{self as axum_middleware, Next},
     response::{IntoResponse as _, Response},
     routing::{MethodRouter, get, post, put},
@@ -10,7 +13,7 @@ use axum::{
 use super::{ApiError, AppState, PrintError, PrintPathId, middleware};
 use crate::component::print::{
     ClientIdentity,
-    execution::{AttemptReport, JobIdentity, PrintClaim},
+    execution::{AttemptReport, JobIdentity, PrintClaim, PrintRequeue},
 };
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
@@ -38,6 +41,10 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
         .route(
             "/print/client/attempts/{attempt_id}/document",
             require_client(state.clone(), get(document)),
+        )
+        .route(
+            "/print/executions/{ready_sequence}/requeue",
+            middleware::require_admin(state.clone(), post(requeue)),
         )
         .route(
             "/print/executions",
@@ -139,6 +146,23 @@ async fn document(
 ) -> Response {
     match state.print().attempt_document(client, id).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response(),
+        Err(error) => ApiError::from_print(error).into_response(),
+    }
+}
+
+async fn requeue(
+    State(state): State<AppState>,
+    path: Result<Path<i64>, PathRejection>,
+    body: Result<Json<PrintRequeue>, JsonRejection>,
+) -> Response {
+    let Ok(Path(sequence)) = path else {
+        return ApiError::invalid_request("print_execution_sequence").into_response();
+    };
+    let Ok(Json(input)) = body else {
+        return ApiError::invalid_request("print_requeue_json").into_response();
+    };
+    match state.print().requeue(sequence, input).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }

@@ -2028,6 +2028,7 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 | `PUT /api/v2/print/client/attempts/{attempt_id}/job` | `{ "queue_name": "原队列名", "job_id": 42, "label": "Natsume/<attempt_id>" }` | 200，登记后的尝试；重复同一登记不续期、不另建 Windows 任务 |
 | `POST /api/v2/print/client/attempts/{attempt_id}/reports` | 下述固定报告枚举 | 200，持久化后的原尝试状态 |
 | `GET /api/v2/print/executions` | Operator session，admin 或 viewer | 200，非秘密执行状态数组，通过 `ready_sequence` 对应现有队列元数据 |
+| `POST /api/v2/print/executions/{ready_sequence}/requeue` | admin Operator session；`{ "expected_requeue_count": 0 }` | 204，将当前已耗尽的任务重新入队，开启最多三次尝试的新一轮 |
 
 领取请求 ID 的幂等范围是当前客户端 ID。已接受的空池结果同样保存回执，重发该 ID 仍返回 null；下一次轮询使用新 ID。分配成功的 ID 永远对应原尝试，重放不会领取后来排队的任务，也不会因原尝试结束而重新计次。相同 ID 改变队列名返回 409；客户端持有活动尝试时使用新 ID 也返回 409。队列名为 1～256 个 Unicode 字符，不接受控制字符，仅作为本客户端选择和观察 Windows 队列的精确名称。客户端必须先确认队列空闲且可用，再发起领取。
 
@@ -2037,11 +2038,13 @@ Server 持久化尝试、次数、领取幂等关系、归属、Job ID、有效�
 
 登记前的 `contact` 更新最后联系时间并延长 60 秒失联期限，但不延长领取后两分钟的准备期限。登记 Job ID 后，`contact` 只记录联系事实，不延长归属；有效 `observed` 才更新最后观察时间和 60 秒期限。首次 Job ID 登记开启观察期限，重放登记不是新的观察；冲突 Job ID、队列或标签返回 409。到期判定使用 Server 数据库时间，等于截止时间即到期；迟到的联系、登记或结果都不能复活已结束尝试。重复或迟到报告返回原尝试的持久状态，不改变当前新尝试，客户端必须检查响应状态而不是只检查 HTTP 200。
 
-`print_jobs` 保存业务任务状态、已用次数、可重新领取时间、排序序号和最后结果，`print_attempts` 保存每次授权执行的归属、期限、联系与观察事实及结束结果，`print_claims` 保存包括空池结果在内的领取回执。首次受理快照和 `print_documents.ready_sequence` 保持不变。初次排队与重试统一按可领取时间、同时间内的持久排序序号排序；失败或未知在 Server 判定结束时确定 30 秒后的可领取时间。新任务在这 30 秒内排到其前方，在该期限之后入队则排到其后方，即使期间没有轮询或进程重启也不改变顺序。三次预算耗尽后不再自动分配。
+`print_jobs` 保存业务任务状态、已用次数、可重新领取时间、排序序号和最后结果，`print_attempts` 保存每次授权执行的归属、期限、联系与观察事实及结束结果，`print_claims` 保存包括空池结果在内的领取回执。首次受理快照和 `print_documents.ready_sequence` 保持不变。初次排队与重试统一按可领取时间、同时间内的持久排序序号排序；失败或未知在 Server 判定结束时确定 30 秒后的可领取时间。新任务在这 30 秒内排到其前方，在该期限之后入队则排到其后方，即使期间没有轮询或进程重启也不改变顺序。每轮三次预算耗尽后不再自动分配。管理员可以将 `exhausted` 任务重新入队；Server 在同一写事务内检查状态和 `expected_requeue_count`，将 `requeue_count` 加一、本轮 `attempts_used` 置零，并以当前数据库时间和新的排序序号排到已可领取任务之后。不重新受理文档，不修改 PDF、受理序号或入队快照，也不删除旧尝试和领取回执。重复请求或过期轮次返回 409，不能重复增加轮次；不存在的受理序号返回 404，非法路径、负轮次或非封闭请求字段返回 400。管理员认证和权限检查先于请求体读取，查看员、来源凭据和客户端凭据不能执行此操作。
+
+迁移 `00000000000008_print_requeue` 在业务任务和尝试中保存 `requeue_count`，已有记录从零开始。尝试号在每轮内仍为 1～3，唯一性由受理序号、轮次和尝试号共同保证；原尝试 ID、标签和 Job 身份不改变，客户端报文与恢复规则不变。迁移在外键约束开启时保留所有活动尝试和领取回执。发生过手动重新入队后，回退该迁移会拒绝执行，不能通过丢弃新轮次历史恢复旧表结构。
 
 Print 组件拥有按尝试期限触发的到期检查循环，Server 组合层显式启动该任务，由 `BackgroundTasks` 管理其取消、等待和异常释放，`serve` 命令不直接调用 Print 循环。循环收到正常关闭信号后停止发起新检查，已经开始的事务完成后再退出。相关业务事务也检查到期，检查失败通过 tracing 记录并在后续检查重试；任务异常退出在关闭等待时以保留源错误的 Snafu 错误报告，日志不包含 panic 内容。任务状态、次数、回执、结束结果及重试等待在同一 `Database::write` 事务内改变；数据库唯一约束同时防止同一任务、客户端或打印机存在多个活动尝试。启动完成文档核对后，仅为已登记 Job ID 且尚未结束的尝试设置从恢复时刻起的 60 秒观察宽限，不伪造新的联系或观察时间；未登记尝试保持原期限，终态和重试等待不重置。解除打印机绑定的事务先判定到期，再拒绝仍有活动尝试的打印机，不能以网络离线代替尝试结束。
 
-执行状态查询返回 `ready_sequence`、`state`、`attempts_used`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。`/print/queue` 保持原有入队元数据契约，Web 将其与执行状态关联。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试。
+执行状态查询返回 `ready_sequence`、`state`、本轮 `attempts_used`、从零开始的手动入队次数 `requeue_count`、可空的 `retry_at_unix_ms` 和可空的 `last_outcome`；`last_outcome` 保留最近一次历史尝试的结果。Web 显示当前轮次和本轮已用次数，仅向管理员在 `exhausted` 文件详情中提供单条重新入队按钮，不提供批量入口。确认框要求管理员检查实际出纸和 Windows 队列，并明确接受可能重复打印的风险。确认期间执行状态或轮次改变会禁用提交；请求失败后刷新执行状态，不自动重复提交，用户需要重新检查后确认。任务状态为 `queued`、`active`、`waiting`、`completed`、`exhausted`；等待期结束后查询呈现为 `queued`。它不返回客户端秘密、凭据摘要或文件路径。`/print/queue` 保持原有入队元数据契约，Web 将其与执行状态关联。Server 验证入口为 `cargo test --frozen -p natsume-server --lib print`、`cargo test --frozen -p natsume-server --test schema_contract`、`cargo test --frozen -p natsume-print-domjudge`、`deno task schema:check`、`deno task api --check` 和 `prek run --all-files`；上述检查通过。Server 与 DOMjudge wrapper 常规测试集各保留一个需要真实 Typst 环境的 ignored 测试。
 
 #### 23.3.3 Windows 客户端执行与本地恢复
 

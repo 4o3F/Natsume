@@ -171,10 +171,10 @@ pub(in crate::component::print) fn claim(
         .filter(j::state.eq_any(["queued", "waiting"]))
         .filter(j::available_at_unix_ms.le(now))
         .order((j::available_at_unix_ms, j::queue_order))
-        .select((j::ready_sequence, j::attempts_used))
-        .first::<(i64, i32)>(tx.connection())
+        .select((j::ready_sequence, j::attempts_used, j::requeue_count))
+        .first::<(i64, i32, i32)>(tx.connection())
         .optional()?;
-    let id = if let Some((sequence, used)) = next {
+    let id = if let Some((sequence, used, requeue_count)) = next {
         let id = Uuid::now_v7().to_string();
         diesel::insert_into(a::table)
             .values((
@@ -183,6 +183,7 @@ pub(in crate::component::print) fn claim(
                 a::printer_id.eq(printer),
                 a::client_id.eq(&client.client_id),
                 a::attempt_number.eq(used + 1),
+                a::requeue_count.eq(requeue_count),
                 a::queue_name.eq(queue),
                 a::claimed_at_unix_ms.eq(now),
                 a::prepare_expires_at_unix_ms.eq(deadline(now, 120_000)?),
@@ -206,6 +207,38 @@ pub(in crate::component::print) fn claim(
         ))
         .execute(tx.connection())?;
     id.map(|id| attempt(tx, client, &id)).transpose()
+}
+
+pub(in crate::component::print) fn requeue(
+    tx: &mut Transaction<'_>,
+    sequence: i64,
+    expected_requeue_count: i32,
+    now: i64,
+) -> Result<(), PrintError> {
+    let (state, requeue_count) = j::table
+        .filter(j::ready_sequence.eq(sequence))
+        .select((j::state, j::requeue_count))
+        .first::<(String, i32)>(tx.connection())
+        .optional()?
+        .context(NotFoundSnafu)?;
+    ensure!(
+        state == "exhausted" && requeue_count == expected_requeue_count,
+        ConflictSnafu
+    );
+    let next = requeue_count
+        .checked_add(1)
+        .context(super::super::PersistenceSnafu)?;
+    let order = queue_order(tx)?;
+    diesel::update(j::table.filter(j::ready_sequence.eq(sequence)))
+        .set((
+            j::state.eq("queued"),
+            j::attempts_used.eq(0),
+            j::requeue_count.eq(next),
+            j::available_at_unix_ms.eq(now),
+            j::queue_order.eq(order),
+        ))
+        .execute(tx.connection())?;
+    Ok(())
 }
 
 fn finish(
@@ -453,11 +486,12 @@ pub(in crate::component::print) fn list(
             j::attempts_used,
             j::available_at_unix_ms,
             j::last_outcome,
+            j::requeue_count,
         ))
-        .load::<(i64, String, i32, i64, Option<String>)>(tx.connection())?;
+        .load::<(i64, String, i32, i64, Option<String>, i32)>(tx.connection())?;
     rows.into_iter()
         .map(
-            |(ready_sequence, state, attempts_used, available, outcome)| {
+            |(ready_sequence, state, attempts_used, available, outcome, requeue_count)| {
                 let state = ExecutionState::parse(&state)?;
                 Ok(PrintExecution {
                     ready_sequence,
@@ -467,6 +501,7 @@ pub(in crate::component::print) fn list(
                         state
                     },
                     attempts_used,
+                    requeue_count,
                     retry_at_unix_ms: (state == ExecutionState::Waiting && available > now)
                         .then_some(available),
                     last_outcome: outcome.as_deref().map(AttemptOutcome::parse).transpose()?,

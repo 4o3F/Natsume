@@ -57,6 +57,7 @@ async function mockQueue(
           ready_sequence: entry.ready_sequence,
           state: "queued",
           attempts_used: 0,
+          requeue_count: 0,
           retry_at_unix_ms: null,
           last_outcome: null,
         })),

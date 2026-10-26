@@ -293,8 +293,9 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
         ))
     };
-    // All Print tables belong to one migration. Its rollback removes their data,
+    // Rolling back the Print migrations removes their database records,
     // not roster facts or files owned by the document directory.
+    must(connection.revert_last_migration(migrations()));
     must(connection.revert_last_migration(migrations()));
     assert_eq!(
         must(accounts::table.count().get_result::<i64>(&mut connection)),
@@ -307,7 +308,7 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
     must(f.print.documents.verify(&document.sha256, document.bytes));
     assert_eq!(
         must(connection.run_pending_migrations(migrations())).len(),
-        1
+        2
     );
     assert!(must(f.database.read(db::printers::list).await).is_empty());
     assert!(must(f.print.list_sources().await).is_empty());
