@@ -789,6 +789,39 @@ pub(crate) async fn power_off(connection: &Connection) -> Result<(), ResourceCon
         .map_err(logind_error)
 }
 
+/// Only `GetUser`'s documented `NoSuchUser` reply proves `RemoveIPC` finalization.
+pub(crate) async fn contest_user_absent(
+    connection: &Connection,
+    root: &Path,
+) -> Result<bool, ResourceControlError> {
+    let uid = account(root, account_name(SessionRole::Contest))?.uid;
+    let manager = fresh_proxy(
+        connection,
+        LOGIN1_SERVICE,
+        LOGIN1_MANAGER_PATH,
+        LOGIN1_MANAGER_INTERFACE,
+    )
+    .await
+    .map_err(logind_error)?;
+    user_absent_result(
+        manager
+            .call::<_, _, OwnedObjectPath>("GetUser", &(uid,))
+            .await,
+    )
+}
+
+fn user_absent_result(result: zbus::Result<OwnedObjectPath>) -> Result<bool, ResourceControlError> {
+    match result {
+        Ok(_) => Ok(false),
+        Err(zbus::Error::MethodError(name, _, _))
+            if name.as_str() == "org.freedesktop.login1.NoSuchUser" =>
+        {
+            Ok(true)
+        }
+        Err(error) => Err(logind_error(error)),
+    }
+}
+
 /// Drain only the captured contest generation. Unexpected logins are a fault,
 /// including remote/TTY sessions which ordinary desktop observation ignores.
 pub(crate) async fn drain_contest(
@@ -996,7 +1029,9 @@ async fn drain(
         if remaining.is_none()
             && processes.is_empty()
             && matches!(state.as_str(), "inactive" | "failed")
-            && (role == SessionRole::Waiting || crate::admission::require_no_workers(root).is_ok())
+            && (role == SessionRole::Waiting
+                || (crate::admission::require_no_workers(root).is_ok()
+                    && contest_user_absent(connection, root).await?))
         {
             return Ok(());
         }
@@ -1583,6 +1618,28 @@ mod tests {
                 usize::from(name == "dead"),
                 "{name}"
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn only_specific_get_user_no_such_user_proves_finalization()
+    -> Result<(), crate::home::cleanup::tests::TestError> {
+        assert!(!super::user_absent_result(Ok(OwnedObjectPath::try_from(
+            "/user/2000"
+        )?))?);
+        let missing = zbus::Error::MethodError(
+            zbus::names::OwnedErrorName::try_from("org.freedesktop.login1.NoSuchUser")?,
+            None,
+            zbus::message::Message::method_call("/", "GetUser").build(&())?,
+        );
+        assert!(super::user_absent_result(Err(missing))?);
+        for error in [
+            zbus::fdo::Error::UnknownObject("gone".to_owned()),
+            zbus::fdo::Error::AccessDenied("denied".to_owned()),
+            zbus::fdo::Error::NoReply("timeout".to_owned()),
+        ] {
+            assert!(super::user_absent_result(Err(error.into())).is_err());
         }
         Ok(())
     }

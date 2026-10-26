@@ -19,6 +19,8 @@ const TEMPLATE_RELATIVE_PATH: &str = "usr/lib/natsume/home-templates/current/low
 const STATE_RELATIVE_PATH: &str = "var/lib/natsume-privileged/home-reset";
 const CONTEST_HOME_RELATIVE_PATH: &str = "home/teams";
 
+pub(crate) mod cleanup;
+mod keys;
 mod template;
 pub(super) mod window;
 
@@ -495,7 +497,7 @@ pub(super) fn recover(root: &Path, epoch: u64) -> Result<(), ResourceControlErro
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::{
         fs,
         os::unix::fs::{MetadataExt as _, PermissionsExt as _, symlink},
@@ -511,7 +513,7 @@ mod tests {
         recover, state_directory, verify,
     };
 
-    fn fixture() -> TempDir {
+    pub(super) fn fixture() -> TempDir {
         let fixture =
             TempDir::new().unwrap_or_else(|error| panic!("fixture creation failed: {error}"));
         let lower = fixture

@@ -635,7 +635,7 @@ Home reset 使用单调 `reset_epoch`：
 - reset 是切到 waiting、关闭 contest 登录入口、结束旧 contest、清 Home、由 GDM 重建 contest 的完整流程；正常 reset 保持 waiting 的 session/GNOME compositor/Agent 及 GDM 实例不变，允许 greeter、闪屏及短暂前台变化；
 - Helper 持有覆盖 Prepare/Apply/Verify/Recover 的 root-only 维护窗口。确认 waiting 可展示并激活后，先持久化 reset epoch、阶段和捕获的 contest boot/session，再撤销每次开机重建的 `/run/natsume-privileged/contest-permit` 许可；Prepare 负责结束捕获的比赛会话，不要求管理员另发 terminate；
 - 采用发行版 pam_exec 调用固定 Helper 门禁子命令，覆盖允许的 contest 图形登录栈的 auth/account/open_session。门禁在共享短锁内确认许可并原子登记 GDM worker 的 boot/PID/start-time；登记保留到精确 worker 退出，不因 pam_exec 返回或 close_session 提前删除；
-- Helper 关闭许可、取消/排空登录事务，在同一文件排他锁内确认无存活的登记 worker、contest 会话、UID 进程、用户 manager 及 Home 占用，才允许普通卸载或更换 Home。单独取得 flock 不足以证明登录已排空；未知/损坏记录及超时保持门禁关闭，禁止 force/lazy umount；
+- Helper 关闭比赛登录许可、取消并排空登录事务，在同一文件排他锁内确认登记 worker、contest 会话、UID 进程、用户 manager 和 Home 占用均已消失。仅以 logind `GetUser` 返回的精确错误 `org.freedesktop.login1.NoSuchUser` 确认用户已最终退出并完成 `RemoveIPC`，其他 D-Bus 错误均保持比赛登录关闭；此后才允许普通卸载、清理或更换 Home。镜像设置 `UserStopDelaySec=0`，以满足现有 8 秒操作预算。取得 flock 后仍须核验上述条件；记录未知、损坏或操作超时时保持比赛登录关闭，禁止 force/lazy umount；
 - 移除旧的全局 home-ready/GDM 启动互锁，不停止 display-manager。waiting/greeter 不受 contest 门禁阻塞；双方禁用其他登录入口及 linger。只操作固定角色，不开放任意 unit 控制；
 - 当前 epoch 的宿主挂载和模板通过 Verify、完成进度 durable 后才允许 contest 登录；登录失败只重试桌面准备，不再次清空同一 generation。Home 完成与桌面/前台收敛独立上报，最终按最新 foreground_target 留在 waiting 或返回 contest；
 - 开机 GDM 自动登录 waiting，Home 恢复独立执行；固定启动预备经同一 Helper 排他规则等待 Home 许可，再请求 GDM 创建 contest 并返回 waiting。Home 失败或 Helper 未就绪不阻止 waiting 启动；持久化 Verified 不能替代本次宿主挂载证据。健康 Helper 重启保留已有桌面与挂载，不恢复旧业务授权；
@@ -643,9 +643,13 @@ Home reset 使用单调 `reset_epoch`：
 - Helper只向Daemon暴露该root-only目录是否包含状态；Startup在首次身份落盘前将其与Daemon-owned identity-bound artifact一并检查，任何残留都拒绝`CleanFirstStart`；
 - `Prepared` marker只在generation目录链全部fsync后发布，same epoch重放必须重新验证完整generation；
 - 当前generation验证成功后，Helper删除其他generation并fsync `generations/`，完成前不发布`Verified`；
-- 完成记录必须 durable 后才能发布；
+- 扩展清理的完成记录归 root 所有，文件名为 `cleanup-complete`，精确格式为 `2\n<reset_epoch>\n`。确认用户最终退出、临时文件及 FUSE 和 keyring 清理完成后，先持久化该记录，再发布 Home `Verified` 和登录许可。Prepare/Apply/Verify/Recover、启动恢复和 PAM 许可重放均要求同一 epoch 的当前版本清理记录。旧版仅验证 Home 的 `Verified` 或仅证明 CLEAR 成功的 v1 记录均不足以放行；升级时保留旧状态、关闭比赛登录，并显式提交新的 reset epoch 捕获、排空和清理旧会话。恢复流程不得捕获或终止未经授权的新会话；
 - 进行中继续报告上一个 completed epoch；
-- reset 只影响 contestant Home；
+- reset 仅清理 contestant Home，以及 `/tmp`、`/var/tmp`、`/run/lock` 和存在且有效的 `/var/crash` 中已确认属于 teams UID 的对象。目录遍历基于已打开的目录描述符，使用 nofollow 和 `NO_XDEV`，不跟随符号链接，也不跨越任何子挂载（包括同设备 bind mount）；保留共享目录和其他用户拥有的对象。遍历前，按精确 `user_id` 和固定路径范围识别遗留的 teams FUSE，并以普通方式卸载；未知、层叠、忙碌或不受管挂载均导致清理失败。teams 目录内含其他用户拥有的对象，或待删除对象的上级目录可被其他用户修改或重命名时，保留相关对象并保持比赛登录关闭，等待维护处理；
+- keyring 清理通过固定 `setpriv` 直接执行 Helper 的固定 `cleanup-keyrings` 子命令。子进程使用实际 teams UID/GID、空补充组、清空的环境、已移除的 inheritable/ambient capabilities 和 `NoNewPrivileges`，在新建的私有 session keyring 中调用安全 Rust API；长驻 Helper 的凭据保持不变，不使用 shell 或手写 unsafe。Helper 同步等待子进程；失败或超时时终止并回收子进程后才释放维护锁，避免留下后台清理任务。凭据核验失败、操作被拒绝或超时均保持比赛登录关闭；
+- keyring 清理用内核 Describe 逐一核验 `/proc/keys` 中密钥 serial 的实际属主并去重，再与 `/proc/key-users` 记录的该 UID 密钥总数比较，描述中的伪造换行或 UID 不参与属主判定。所有旧密钥和 keyring（包括仅被 keyring 限制规则引用的对象）均须失效（invalidate）；只有在原有时间预算内确认旧 serial 及描述已从内核中消失、该 UID 的密钥总数仅剩新建的 worker session，才允许发布完成记录。不延长预算等待默认 300 秒的垃圾回收。恶意移除 keyring WRITE/SETATTR/SEARCH 权限可能使清理无法完成，需要维护或重启；此时保持比赛登录关闭，不保证任意 ACL 下都能无重启恢复；
+- 镜像必须先限制受管用户通过系统服务持久写入并处理旧状态，最后发布归 root 所有的 `/etc/natsume/contest-reset-policy`，内容精确为 `1\n`；文件及每级父目录均须归 root 所有，且不得是符号链接或允许非特权用户写入。该文件是静态镜像契约，与站点配置和首次启动状态独立；每次发布或使用登录许可时均重新核验，包括已有 permit。镜像拒绝受管 UID 修改 colord、NetworkManager 和 power-profile 的状态或配置，保留只读功能和管理员操作；停用并 mask 本地 CUPS 的所有激活入口，保留 DOMjudge HTTP 打印；限制 privileged FUSE/utempter helpers。journald 设置 `SplitMode=none`，维护时撤销旧 per-UID journal 的受管用户 ACL，保护 utmp/wtmp 历史，并保留管理员及共享日志；
+- 当前版本清理记录对应的 epoch 已完成且宿主挂载仍有效时，同 epoch 重放或健康 Helper 重启仅重新核验，保留现有比赛桌面及完成后写入的 Home、临时文件和 keyring 数据。重启后若挂载丢失，只有确认不存在未捕获的比赛会话，才能在关闭比赛登录的维护窗口中恢复原 generation；已完成的清理范围不再清空；
 - 不得删除 control key、Gateway material、Binding credential artifact 或系统配置；
 - 损坏或无法验证时报告 recovery required 并 fail closed。
 

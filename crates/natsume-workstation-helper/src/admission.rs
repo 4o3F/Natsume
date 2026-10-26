@@ -93,6 +93,7 @@ pub(crate) fn close(root: &Path) -> Result<(), ResourceControlError> {
 }
 
 pub(crate) fn open(root: &Path) -> Result<(), ResourceControlError> {
+    home::cleanup::require_policy(root)?;
     let lock = lock_file(root, "contest-admission.lock")?;
     lock.try_lock()
         .map_err(|_| unavailable("contest admission is busy"))?;
@@ -115,6 +116,7 @@ pub(crate) fn open(root: &Path) -> Result<(), ResourceControlError> {
 }
 
 pub(crate) fn require_open(root: &Path) -> Result<(), ResourceControlError> {
+    home::cleanup::require_policy(root)?;
     let permit = fs::read_to_string(runtime(root).join(PERMIT))
         .map_err(|_| rejected("contest login permission is closed"))?;
     home::window::require_closed(root)?;
@@ -312,6 +314,7 @@ mod tests {
 
     fn fixture() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
         let root = tempfile::tempdir()?;
+        home::cleanup::tests::policy_fixture(root.path())?;
         for path in [runtime(root.path()), runtime(root.path()).join(WORKERS)] {
             fs::create_dir_all(&path)?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;

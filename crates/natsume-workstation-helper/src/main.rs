@@ -33,7 +33,7 @@ mod application {
     #[derive(Debug, Snafu)]
     enum ServiceError {
         #[snafu(display(
-            "usage: natsume-privileged-helper serve | close-admission | pam-gate | prepare-session waiting|contest | gdm-login waiting|contest | greeter-status | desktop-status waiting|contest"
+            "usage: natsume-privileged-helper serve | close-admission | pam-gate | cleanup-keyrings | prepare-session waiting|contest | gdm-login waiting|contest | greeter-status | desktop-status waiting|contest"
         ))]
         Arguments,
         #[snafu(display("fixed graphical operation failed: {source}"))]
@@ -82,6 +82,13 @@ mod application {
         {
             return Err(ServiceError::MountNamespaceDescriptor);
         }
+        // systemd passes fd 3 without CLOEXEC. Keep it out of every controlled
+        // UID executable; use the safe fcntl wrapper, never a raw ownership cast.
+        nix::fcntl::fcntl(
+            3,
+            nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
+        )
+        .map_err(|_| ServiceError::MountNamespaceDescriptor)?;
         // OpenFile supplies this sole descriptor at fd 3 before capabilities are reduced.
         // Inspecting PID 1's procfs link directly would require CAP_SYS_PTRACE.
         verify_mount_namespace(Path::new("/proc/self/ns/mnt"), Path::new("/proc/self/fd/3"))?;
@@ -152,6 +159,9 @@ mod application {
             [command] if command == "serve" => return serve().await,
             [command] if command == "close-admission" => {
                 natsume_workstation_helper::close_admission()
+            }
+            [command] if command == "cleanup-keyrings" => {
+                natsume_workstation_helper::cleanup_keyrings()
             }
             [command] if command == "pam-gate" => natsume_workstation_helper::pam_gate(),
             [command] if command == "greeter-status" => {
