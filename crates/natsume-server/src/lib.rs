@@ -10,9 +10,12 @@ pub(crate) mod component;
 pub mod config;
 pub(crate) mod db;
 pub(crate) mod device_control;
-#[path = "../diesel/schema.rs"]
+#[path = "../diesel/business/schema.rs"]
 pub(crate) mod diesel_schema;
 pub(crate) mod http;
+pub(crate) mod journal;
+#[path = "../diesel/journal/schema.rs"]
+pub(crate) mod journal_schema;
 pub(crate) mod logging;
 pub(crate) mod server_state;
 pub(crate) mod task;

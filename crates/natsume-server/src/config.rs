@@ -1,4 +1,4 @@
-use std::{fs, net::SocketAddr, path::Path, path::PathBuf};
+use std::{fs, net::SocketAddr, os::unix::fs::MetadataExt, path::Path, path::PathBuf};
 
 use serde::Deserialize;
 use snafu::Snafu;
@@ -17,6 +17,9 @@ pub struct ServerConfig {
     listen_address: SocketAddr,
     log_level: LogLevel,
     database_path: PathBuf,
+    journal_path: PathBuf,
+    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
+    journal: JournalConfig,
     organization_logos_path: PathBuf,
     print_documents_path: PathBuf,
     vault_master_key_path: PathBuf,
@@ -64,10 +67,17 @@ impl ServerConfig {
         if !is_canonical_https_origin(&raw.runtime.domjudge_origin) {
             return Err(ConfigError::InvalidDomjudgeOrigin);
         }
+        let journal_path = raw
+            .storage
+            .journal
+            .unwrap_or_else(|| raw.storage.database.with_file_name("natsume-journal.db"));
+        raw.journal.validate()?;
         let config = Self {
             listen_address,
             log_level: raw.log.level,
             database_path: raw.storage.database,
+            journal_path,
+            journal: raw.journal,
             organization_logos_path: raw.storage.organization_logos,
             print_documents_path: raw.storage.print_documents,
             vault_master_key_path: raw.storage.root_key,
@@ -83,6 +93,13 @@ impl ServerConfig {
 
     fn validate_paths(&self, control_root: &Path) -> Result<(), ConfigError> {
         require_absolute(&self.database_path, ConfigError::RelativeDatabasePath)?;
+        require_absolute(&self.journal_path, ConfigError::RelativeJournalPath)?;
+        if normalized_storage_path(&self.database_path)?
+            == normalized_storage_path(&self.journal_path)?
+            || same_storage_file(&self.database_path, &self.journal_path)?
+        {
+            return Err(ConfigError::SharedJournalPath);
+        }
         require_absolute(
             &self.organization_logos_path,
             ConfigError::RelativeOrganizationLogosPath,
@@ -132,6 +149,16 @@ impl ServerConfig {
 
     pub(crate) fn database_path(&self) -> &Path {
         &self.database_path
+    }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
+    pub(crate) fn journal_path(&self) -> &Path {
+        &self.journal_path
+    }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
+    pub(crate) const fn journal(&self) -> &JournalConfig {
+        &self.journal
     }
 
     pub(crate) fn vault_master_key_path(&self) -> &Path {
@@ -215,6 +242,8 @@ struct RawServerConfig {
     #[serde(default)]
     log: RawLogConfig,
     storage: RawStorageConfig,
+    #[serde(default)]
+    journal: JournalConfig,
     tls: RawTlsConfig,
     site: RawGatewaySiteConfig,
     trust: RawTrustConfig,
@@ -251,9 +280,96 @@ struct RawListenConfig {
 #[derive(Deserialize)]
 struct RawStorageConfig {
     database: PathBuf,
+    journal: Option<PathBuf>,
     root_key: PathBuf,
     organization_logos: PathBuf,
     print_documents: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+pub(crate) struct JournalConfig {
+    pub(crate) max_age_days: u32,
+    pub(crate) max_rows: i64,
+    pub(crate) max_bytes: u64,
+    pub(crate) min_free_bytes: u64,
+}
+
+impl Default for JournalConfig {
+    fn default() -> Self {
+        Self {
+            max_age_days: 30,
+            max_rows: 2_000_000,
+            max_bytes: 512 * 1024 * 1024,
+            min_free_bytes: 1024 * 1024 * 1024,
+        }
+    }
+}
+
+impl JournalConfig {
+    fn validate(&self) -> Result<(), ConfigError> {
+        if self.max_age_days == 0
+            || self.max_rows <= 0
+            || self.max_bytes == 0
+            || self.min_free_bytes == 0
+        {
+            return Err(ConfigError::InvalidJournalBudget);
+        }
+        Ok(())
+    }
+}
+
+fn same_storage_file(first: &Path, second: &Path) -> Result<bool, ConfigError> {
+    let metadata = |path| match fs::metadata(path) {
+        Ok(metadata) => Ok(Some(metadata)),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            Ok(None)
+        }
+        Err(source) => Err(ConfigError::JournalPath { source }),
+    };
+    Ok(match (metadata(first)?, metadata(second)?) {
+        (Some(first), Some(second)) => first.dev() == second.dev() && first.ino() == second.ino(),
+        _ => false,
+    })
+}
+
+fn normalized_storage_path(path: &Path) -> Result<PathBuf, ConfigError> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
+            let mut normalized = PathBuf::new();
+            for component in path.components() {
+                if component == std::path::Component::ParentDir {
+                    normalized.pop();
+                } else {
+                    normalized.push(component);
+                }
+            }
+            if let (Some(parent), Some(name)) = (normalized.parent(), normalized.file_name()) {
+                match fs::canonicalize(parent) {
+                    Ok(parent) => return Ok(parent.join(name)),
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied
+                        ) => {}
+                    Err(source) => return Err(ConfigError::JournalPath { source }),
+                }
+            }
+            Ok(normalized)
+        }
+        Err(source) => Err(ConfigError::JournalPath { source }),
+    }
 }
 
 #[derive(Deserialize)]
@@ -410,6 +526,14 @@ pub enum ConfigError {
     InvalidDomjudgeOrigin,
     #[snafu(display("storage.database must be an absolute path"))]
     RelativeDatabasePath,
+    #[snafu(display("storage.journal must be an absolute path"))]
+    RelativeJournalPath,
+    #[snafu(display("storage.journal must differ from storage.database"))]
+    SharedJournalPath,
+    #[snafu(display("journal retention and disk limits must be positive"))]
+    InvalidJournalBudget,
+    #[snafu(display("cannot resolve journal storage paths"))]
+    JournalPath { source: std::io::Error },
     #[snafu(display("storage.organization_logos must be an absolute path"))]
     RelativeOrganizationLogosPath,
     #[snafu(display("storage.print_documents must be an absolute path"))]
@@ -503,6 +627,87 @@ domjudge_origin = "https://judge.contest.example"
         let config = ServerConfig::load_from(fixture.path())
             .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(config.domjudge_origin(), "https://judge.contest.example");
+        Ok(())
+    }
+
+    #[test]
+    fn journal_defaults_and_overrides_are_backward_compatible() -> Result<(), TestFailure> {
+        let fixture = ConfigFixture::new(VALID_CONFIG)?;
+        let config = ServerConfig::load_from(fixture.path())
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        assert_eq!(
+            config.journal_path(),
+            Path::new("/var/lib/natsume-server/natsume-journal.db")
+        );
+        assert_eq!(config.journal().max_age_days, 30);
+        assert_eq!(config.journal().max_rows, 2_000_000);
+        assert_eq!(config.journal().max_bytes, 512 * 1024 * 1024);
+        assert_eq!(config.journal().min_free_bytes, 1024 * 1024 * 1024);
+        let encoded = VALID_CONFIG
+            .replace("[storage]", "[storage]\njournal = '/tmp/custom-journal.db'")
+            + "\n[journal]\nmax_age_days = 7\nmax_rows = 100\nmax_bytes = 8192\nmin_free_bytes = 4096\n";
+        let fixture = ConfigFixture::new(&encoded)?;
+        let config = ServerConfig::load_from(fixture.path())
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        assert_eq!(config.journal_path(), Path::new("/tmp/custom-journal.db"));
+        assert_eq!(config.journal().max_age_days, 7);
+        assert_eq!(config.journal().max_rows, 100);
+        assert_eq!(config.journal().max_bytes, 8192);
+        assert_eq!(config.journal().min_free_bytes, 4096);
+        Ok(())
+    }
+
+    #[test]
+    fn journal_rejects_symlink_and_hardlink_aliases() -> Result<(), TestFailure> {
+        let directory = TestDirectory::new()?;
+        let business = directory.path.join("business.db");
+        let link = directory.path.join("journal.db");
+        fs::File::create(&business).map_err(crate::test_error::TestError::from)?;
+        for hardlink in [false, true] {
+            if hardlink {
+                fs::hard_link(&business, &link).map_err(crate::test_error::TestError::from)?;
+            } else {
+                std::os::unix::fs::symlink(&business, &link)
+                    .map_err(crate::test_error::TestError::from)?;
+            }
+            let encoded = VALID_CONFIG
+                .replace(
+                    "/var/lib/natsume-server/natsume.db",
+                    &business.to_string_lossy(),
+                )
+                .replace(
+                    "[storage]",
+                    &format!("[storage]\njournal = '{}'", link.display()),
+                );
+            let fixture = ConfigFixture::new(&encoded)?;
+            assert!(matches!(
+                ServerConfig::load_from(fixture.path()),
+                Err(ConfigError::SharedJournalPath)
+            ));
+            fs::remove_file(&link).map_err(crate::test_error::TestError::from)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn journal_rejects_shared_relative_and_invalid_budget() -> Result<(), TestFailure> {
+        for value in [
+            "/var/lib/natsume-server/natsume.db",
+            "/var/lib/natsume-server/other/../natsume.db",
+            "relative.db",
+        ] {
+            let fixture = ConfigFixture::new(
+                &VALID_CONFIG.replace("[storage]", &format!("[storage]\njournal = '{value}'")),
+            )?;
+            assert!(ServerConfig::load_from(fixture.path()).is_err());
+        }
+        for key in ["max_age_days", "max_rows", "max_bytes", "min_free_bytes"] {
+            let fixture = ConfigFixture::new(&format!("{VALID_CONFIG}\n[journal]\n{key} = 0"))?;
+            assert!(matches!(
+                ServerConfig::load_from(fixture.path()),
+                Err(ConfigError::InvalidJournalBudget)
+            ));
+        }
         Ok(())
     }
 

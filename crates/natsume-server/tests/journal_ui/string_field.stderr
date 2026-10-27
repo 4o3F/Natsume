@@ -1,0 +1,23 @@
+error[E0277]: the trait bound `std::string::String: JournalField` is not satisfied
+  --> tests/journal_ui/string_field.rs:20:34
+   |
+20 |                 w.field("value", &self.value);
+   |                   -----          ^^^^^^^^^^^ the trait `JournalField` is not implemented for `std::string::String`
+   |                   |
+   |                   required by a bound introduced by this call
+   |
+   = help: the following other types implement trait `JournalField`:
+             Bounded<Vec<T>, N>
+             IpAddr
+             Uuid
+             bool
+             i64
+             std::option::Option<T>
+             u16
+             u32
+             u64
+note: required by a bound in `DetailsWriter::field`
+  --> tests/journal_ui/support/../../../src/journal/event/contract.rs
+   |
+   |     pub(crate) fn field<T: JournalField>(&mut self, name: &'static str, value: &T) {
+   |                            ^^^^^^^^^^^^ required by this bound in `DetailsWriter::field`

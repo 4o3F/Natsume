@@ -1,0 +1,7 @@
+[print_schema]
+file = "schema.rs"
+patch_file = "sqlite-integer-to-bigint.patch"
+filter.only_tables = ["^journal_events$"]
+
+[migrations_directory]
+dir = "migrations"

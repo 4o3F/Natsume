@@ -16,7 +16,7 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use snafu::Snafu;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+const MIGRATIONS: EmbeddedMigrations = embed_migrations!("diesel/business/migrations");
 const DATABASE_CONNECTIONS: u32 = 10;
 const SQLITE_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
@@ -234,18 +234,35 @@ impl Database {
     pub(crate) async fn connect_and_migrate(
         config: &DatabaseConfig,
     ) -> Result<Self, DatabaseError> {
-        if !config.is_valid() {
+        Self::connect_with(
+            config,
+            MIGRATIONS,
+            DATABASE_CONNECTIONS,
+            config.create_if_missing,
+            Box::new(SqliteConnectionCustomizer),
+        )
+        .await
+    }
+
+    pub(crate) async fn connect_with(
+        config: &DatabaseConfig,
+        migrations: EmbeddedMigrations,
+        pool_size: u32,
+        create_if_missing: bool,
+        customizer: Box<dyn CustomizeConnection<SqliteConnection, diesel::r2d2::Error>>,
+    ) -> Result<Self, DatabaseError> {
+        if !config.is_valid() || pool_size == 0 {
             return Err(DatabaseError::InvalidConfiguration);
         }
-
-        let pool = build_pool(config)?;
+        let config = DatabaseConfig::new(&config.database_path, create_if_missing);
+        let pool = build_pool(&config, pool_size, customizer)?;
         let migration_pool = pool.clone();
         tokio::task::spawn_blocking(move || {
             let mut connection = migration_pool
                 .get()
                 .map_err(|source| DatabaseError::ConnectionFailed { source })?;
             connection
-                .run_pending_migrations(MIGRATIONS)
+                .run_pending_migrations(migrations)
                 .map_err(|source| match source.downcast::<diesel::result::Error>() {
                     Ok(source) => DatabaseError::MigrationQuery { source: *source },
                     Err(source) => match source.downcast::<diesel_migrations::MigrationError>() {
@@ -263,7 +280,7 @@ impl Database {
         .map_err(|source| DatabaseError::Executor { source: source.into() })??;
         Ok(Self {
             pool,
-            work: Arc::new(Semaphore::new(DATABASE_CONNECTIONS as usize)),
+            work: Arc::new(Semaphore::new(pool_size as usize)),
         })
     }
 
@@ -394,6 +411,44 @@ impl Database {
             })
         })?
     }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
+    pub(crate) async fn journal_maintenance(
+        &self,
+        truncate: bool,
+    ) -> Result<(i32, i32, i32, i64), PersistenceError> {
+        let (permit, deadline) = self.reserve_work().await?;
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(PersistenceError::WorkBudgetExhausted)?;
+            let mut connection =
+                pool.get_timeout(remaining)
+                    .map_err(|source| PersistenceError::Pool {
+                        source,
+                        location: snafu::location!(),
+                    })?;
+            // SQLite checkpoint and vacuum must run in autocommit; Diesel has no typed pragma API.
+            let checkpoint = if truncate {
+                "PRAGMA wal_checkpoint(TRUNCATE)"
+            } else {
+                "PRAGMA wal_checkpoint(PASSIVE)"
+            };
+            let (busy, log, checkpointed) =
+                diesel::dsl::sql::<(Integer, Integer, Integer)>(checkpoint)
+                    .get_result::<(i32, i32, i32)>(&mut connection)?;
+            connection.batch_execute("PRAGMA incremental_vacuum(5000)")?;
+            let pages = diesel::dsl::sql::<diesel::sql_types::BigInt>("PRAGMA page_count")
+                .get_result::<i64>(&mut connection)?;
+            Ok((busy, log, checkpointed, pages))
+        })
+        .await
+        .map_err(|source| PersistenceError::Executor {
+            source: source.into(),
+        })?
+    }
 }
 
 fn transaction_timing_span(operation: &'static str) -> tracing::Span {
@@ -422,17 +477,19 @@ fn record_wait(span: &tracing::Span, field: &'static str, started: Option<Instan
 
 fn build_pool(
     config: &DatabaseConfig,
+    pool_size: u32,
+    customizer: Box<dyn CustomizeConnection<SqliteConnection, diesel::r2d2::Error>>,
 ) -> Result<Pool<ConnectionManager<SqliteConnection>>, DatabaseError> {
     let manager = ConnectionManager::new(diesel_database_url(config)?);
     Pool::builder()
-        .max_size(DATABASE_CONNECTIONS)
+        .max_size(pool_size)
         .min_idle(Some(0))
         .connection_timeout(Duration::from_secs(30))
         .idle_timeout(Some(Duration::from_mins(10)))
         .max_lifetime(Some(Duration::from_mins(30)))
         .test_on_check_out(true)
         .error_handler(Box::new(NopErrorHandler))
-        .connection_customizer(Box::new(SqliteConnectionCustomizer))
+        .connection_customizer(customizer)
         .build(manager)
         .map_err(|source| DatabaseError::ConnectionFailed { source })
 }
@@ -579,6 +636,10 @@ pub(crate) mod tests {
     };
 
     impl Database {
+        pub(crate) fn pool_size_for_test(&self) -> u32 {
+            self.pool.max_size()
+        }
+
         pub(crate) fn test_exhaust_pool(
             &self,
         ) -> Vec<diesel::r2d2::PooledConnection<diesel::r2d2::ConnectionManager<SqliteConnection>>>
@@ -603,6 +664,82 @@ pub(crate) mod tests {
             .await
             .map_err(TransactionError::into_error)
         }
+    }
+
+    #[test]
+    fn embedded_business_migration_versions_are_frozen() {
+        let migrations = diesel::migration::MigrationSource::<diesel::sqlite::Sqlite>::migrations(
+            &super::MIGRATIONS,
+        )
+        .unwrap_or_else(|error| panic!("embedded business migrations unavailable: {error}"));
+        let versions = migrations
+            .iter()
+            .map(|migration| migration.name().version().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            versions,
+            [
+                "00000000000001",
+                "00000000000002",
+                "00000000000003",
+                "00000000000004",
+                "00000000000005",
+                "00000000000006",
+                "00000000000007",
+                "00000000000008",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_business_database_preserves_data_without_pending_migrations()
+    -> Result<(), crate::test_error::TestError> {
+        use crate::diesel_schema::seats;
+        use diesel::{ExpressionMethods, QueryDsl};
+        use diesel_migrations::MigrationHarness as _;
+
+        let fixture = DatabaseFixture::new();
+        let database =
+            Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true)).await?;
+        let seat_id = Uuid::now_v7().to_string();
+        let inserted_id = seat_id.clone();
+        database
+            .write(move |transaction| {
+                diesel::insert_into(seats::table)
+                    .values((
+                        seats::seat_id.eq(inserted_id),
+                        seats::seat_code.eq("layout-preserved"),
+                    ))
+                    .execute(transaction.connection())
+                    .map_err(PersistenceError::from)
+            })
+            .await?;
+        drop(database);
+
+        let database =
+            Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, false)).await?;
+        let pending = database
+            .test_read(|connection| {
+                connection
+                    .pending_migrations(super::MIGRATIONS)
+                    .unwrap_or_else(|error| {
+                        panic!("pending business migrations unavailable: {error}")
+                    })
+                    .len()
+            })
+            .await?;
+        assert_eq!(pending, 0);
+        let seat_code = database
+            .read(move |transaction| {
+                seats::table
+                    .filter(seats::seat_id.eq(seat_id))
+                    .select(seats::seat_code)
+                    .first::<String>(transaction.connection())
+                    .map_err(PersistenceError::from)
+            })
+            .await?;
+        assert_eq!(seat_code, "layout-preserved");
+        Ok(())
     }
 
     struct HeldWork(Arc<(Mutex<bool>, Condvar)>);

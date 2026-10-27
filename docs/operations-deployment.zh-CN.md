@@ -1038,7 +1038,7 @@ Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板�
 
 - [Server 命令、配置和私有材料](../crates/natsume-server/README.md)、[Server 配置示例](../packaging/server/config.example.toml)、[Client 配置示例](../packaging/client/config.example.toml)。
 - [Server 配置解析](../crates/natsume-server/src/config.rs)、[TLS 加载](../crates/natsume-server/src/tls.rs)、[Gateway CA 签发](../crates/natsume-server/src/component/gateway/issuer.rs)。
-- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 migration 序列](../crates/natsume-server/migrations/)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
+- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 migration 序列](../crates/natsume-server/diesel/business/migrations/)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
 - [构建与发布](../packaging/README.md)、[Client manifest](../packaging/client/nfpm.yaml)、[Client 运行环境要求](client-environment.zh-CN.md)。
 
 架构目标由 [architecture.md](architecture.md) 定义。

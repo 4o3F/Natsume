@@ -8,9 +8,16 @@ level = "info"
 
 [storage]
 database = "/var/lib/natsume-server/natsume.db"
+journal = "/var/lib/natsume-server/natsume-journal.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
 organization_logos = "/var/lib/natsume-server/organization-logos"
 print_documents = "/var/lib/natsume-server/print-documents"
+
+[journal]
+max_age_days = 30
+max_rows = 2000000
+max_bytes = 536870912
+min_free_bytes = 1073741824
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"

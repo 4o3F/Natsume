@@ -1,0 +1,75 @@
+error[E0277]: the trait bound `ExternalSecret: Sealed` is not satisfied
+  --> tests/journal_ui/external_impl.rs:15:23
+   |
+15 | impl JournalField for ExternalSecret {}
+   |                       ^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Sealed` is not implemented for `ExternalSecret`
+  --> tests/journal_ui/external_impl.rs:14:1
+   |
+14 | struct ExternalSecret;
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `Sealed`:
+             Bounded<Vec<T>, N>
+             IpAddr
+             Uuid
+             bool
+             i64
+             std::option::Option<T>
+             u16
+             u32
+             u64
+note: required by a bound in `JournalField`
+  --> tests/journal_ui/support/../../../src/journal/event/contract.rs
+   |
+   | pub(crate) trait JournalField: sealed::Sealed + Serialize {}
+   |                                ^^^^^^^^^^^^^^ required by this bound in `JournalField`
+   = note: `JournalField` is a "sealed trait", because to implement it you also need to implement `journal::event::contract::sealed::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+   = help: the following types implement the trait:
+             bool
+             u16
+             u32
+             u64
+             i64
+             uuid::Uuid
+             std::net::IpAddr
+             std::option::Option<T>
+             journal::event::contract::Bounded<std::vec::Vec<T>, N>
+
+error[E0277]: the trait bound `ExternalSecret: Sealed` is not satisfied
+  --> tests/journal_ui/external_impl.rs:16:23
+   |
+16 | impl JournalEvent for ExternalSecret {
+   |                       ^^^^^^^^^^^^^^ unsatisfied trait bound
+   |
+help: the trait `Sealed` is not implemented for `ExternalSecret`
+  --> tests/journal_ui/external_impl.rs:14:1
+   |
+14 | struct ExternalSecret;
+   | ^^^^^^^^^^^^^^^^^^^^^
+   = help: the following other types implement trait `Sealed`:
+             Bounded<Vec<T>, N>
+             IpAddr
+             Uuid
+             bool
+             i64
+             std::option::Option<T>
+             u16
+             u32
+             u64
+note: required by a bound in `JournalEvent`
+  --> tests/journal_ui/support/../../../src/journal/event/contract.rs
+   |
+   | pub(crate) trait JournalEvent: sealed::Sealed {
+   |                                ^^^^^^^^^^^^^^ required by this bound in `JournalEvent`
+   = note: `JournalEvent` is a "sealed trait", because to implement it you also need to implement `journal::event::contract::sealed::Sealed`, which is not accessible; this is usually done to force you to use one of the provided types that already implement it
+   = help: the following types implement the trait:
+             bool
+             u16
+             u32
+             u64
+             i64
+             uuid::Uuid
+             std::net::IpAddr
+             std::option::Option<T>
+             journal::event::contract::Bounded<std::vec::Vec<T>, N>

@@ -16,8 +16,8 @@
 | Device Control wire 字段、field number、presence 与 descriptor | `crates/natsume-workstation-protocol/proto/*.proto` |
 | HTTP JSON 的精确字段与表示 | Server HTTP DTO、Serde 实现与 Specta 生成的 TypeScript |
 | 本地 IPC 的精确接口 | `crates/natsume-workstation-ipc` 与 D-Bus introspection |
-| SQLite 物理表、列、索引与约束 | `crates/natsume-server/migrations/` 中按顺序应用的完整 migration 序列 |
-| Diesel 生成类型 | `crates/natsume-server/diesel/schema.rs`，必须由 migration 重建 |
+| SQLite 物理表、列、索引与约束 | `crates/natsume-server/diesel/{business,journal}/migrations/` 中各数据库按顺序应用的完整 migration 序列 |
+| Diesel 生成类型 | `crates/natsume-server/diesel/{business,journal}/schema.rs`，必须由对应数据库的 migration 重建 |
 | Device Control `error_code` 字段与开放token语法 | `crates/natsume-workstation-protocol/proto/*.proto` 与 `crates/natsume-workstation-protocol` |
 | HTTP公开错误码与status映射 | Server HTTP adapter 与实际 HTTP 测试 |
 | 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
@@ -1474,8 +1474,16 @@ crates/natsume-photo-package/     # 成果包契约随双端实现提取，不�
 
 ```text
 crates/natsume-server/diesel/
-  schema.rs
-  sqlite-integer-to-bigint.patch
+  business/
+    diesel.toml
+    migrations/
+    schema.rs
+    sqlite-integer-to-bigint.patch
+  journal/
+    diesel.toml
+    migrations/
+    schema.rs
+    sqlite-integer-to-bigint.patch
 crates/natsume-server/src/
   main.rs
   commands.rs
@@ -1573,7 +1581,7 @@ crates/natsume-server/src/
 
 `http.rs`集中组装Public、Operator、Print Source、Print Client四个principal group；handler只贡献各组路由，认证在受保护组构造时统一施加。`http/middleware/completion.rs`保护所有API mutation运行至完成。TLS入口在`tls.rs`，Origin CA加载与签发在`component/gateway/issuer.rs`。
 
-`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/schema.rs` 是由 migration 生成、通过 `crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际 变大后才拆`types.rs`或`resolve.rs`。
+`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/business/schema.rs` 是由业务 migration 生成、通过 `crate::diesel_schema`引用的独立类型入口；`diesel/journal/schema.rs` 由日志库 migration 生成，通过 `crate::journal_schema`引用。`sqlite-integer-to-bigint.patch`只表达 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际 变大后才拆`types.rs`或`resolve.rs`。
 
 Contest的三个只读查询只占`contest.rs`与`contest/db.rs`，不按每个查询拆子模块； Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字段只在owning component内 可见，领域转换继续验证；不为直接字段读写增加无校验constructor/getter。 普通HTTP JSON响应使用Axum `Json`，不维护重复的手工序列化response wrapper。
 
