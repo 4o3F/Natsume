@@ -43,11 +43,11 @@ cargo run -p natsume-photo-client -- inspect-workspace $photoWorkspace
 
 身份比较保留输入原值，不自动裁剪、改大小写或根据名称匹配。此 JSON 是本地开发输入，尚不是已经实现的 Server DTO；检查通过不代表登记或初始化完成。
 
-仅输出成功队伍数或安全错误摘要，不输出名单内容。详细 Rust 学习说明位于仓库 `photodesign/W01.1-Rust学习说明.md`、`photodesign/W01.2-Rust学习说明.md` 和 `photodesign/W01.3-Rust学习说明.md`。
+仅输出成功队伍数或安全错误摘要，不输出名单内容。详细 Rust 学习说明位于仓库 `photodesign/explainfiles/W01.1-Rust学习说明.md`、`photodesign/explainfiles/W01.2-Rust学习说明.md` 和 `photodesign/explainfiles/W01.3-Rust学习说明.md`。
 
 W02 的 `capture::Session` 消费已经验证的 `Roster`，选队使用内部 `account_id`；选队不等于开始组，开始后锁定队伍。已知任务以独立身份登记，未全部结束时不能关闭组。暂停保留组和任务，阻止选队、开始和关闭，但允许登记和完成已有组的工作。未确认组只能明确放弃；正常结束要求已经确认并保存成功的事实，该事实由后续 W05 实现，当前没有公开的确认快捷接口。
 
-这些状态不写入 SQLite 或状态文件，销毁会话后全部丢弃；重新打开工作区仍须重新选队拍摄。W02 学习说明位于本地 `photodesign/W02-Rust学习说明.md`。
+这些状态不写入 SQLite 或状态文件，销毁会话后全部丢弃；重新打开工作区仍须重新选队拍摄。W02 学习说明位于本地 `photodesign/explainfiles/W02-Rust学习说明.md`。
 
 W03 通过 `hot_folder::HotFolder::prepare(&mut workspace, hot_folder)` 建立后台收图器，先建立原生监听再检查空目录。目录必须与工作区互不包含；新会话有任何文件或子目录就拒绝，绝不清空或导入残留。`select_team`、`start_group`、`abandon_group` 统一协调收图与组边界，调用者不能取得其内部可变 `Session`。当前没有新增拍摄 CLI；可用 `cargo test -p natsume-photo-client --test hot_folder --locked` 验证真实 Windows 文件事件。
 
@@ -57,4 +57,4 @@ Windows 用只允许共享读取的源句柄避免复制中并发写入/替换�
 
 无组时、监控中断期间发现的源版本，以及同一路径跨组覆盖，默认不归队。只能用 `assign_reviewed(photo_id, group_id)` 明确核对后关联到当前组。组边界前先扫描，避免已有来图首次挂到新组；全新路径在新组开始后才首次出现的迟到照片仍无法从时间戳判定真实队伍，须由摄影师核对，不能把任务归零当成相机已无来图。
 
-`snapshot`/`wait_until` 只读取或等待后台事实，不是手动刷新入口。销毁收图器会停止并等待线程退出，副本保留，但观察/候选归属不恢复，也不新增数据库表或状态文件。工作区/显示准入仍不能由裸 `Session::new` 或 `resume` 代替，来源登记及实际显示条件在后续阶段接入。完整代码与测试说明见本地 `photodesign/W03-Rust学习说明.md`。
+`snapshot`/`wait_until` 只读取或等待后台事实，不是手动刷新入口。销毁收图器会停止并等待线程退出，副本保留，但观察/候选归属不恢复，也不新增数据库表或状态文件。工作区/显示准入仍不能由裸 `Session::new` 或 `resume` 代替，来源登记及实际显示条件在后续阶段接入。完整代码与测试说明见本地 `photodesign/explainfiles/W03-Rust学习说明.md`。
