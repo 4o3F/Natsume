@@ -1,5 +1,6 @@
+use crate::http::Routes;
+
 use axum::{
-    Router,
     response::{IntoResponse, Response},
     routing::{delete, get, patch},
 };
@@ -7,7 +8,7 @@ use serde::Deserialize;
 
 use crate::component::device::DeviceId;
 
-use super::super::{AppState, error::ApiError, middleware};
+use super::super::{error::ApiError, middleware};
 
 pub(crate) mod binding;
 pub(crate) mod convergence;
@@ -21,34 +22,27 @@ use home::get_home;
 use lifecycle::{get_device, list_devices, update_device};
 use session::get_session_control;
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/devices",
-            middleware::require_operator(state.clone(), get(list_devices)),
-        )
-        .route(
+pub(in crate::http) fn operator_routes() -> Routes {
+    vec![
+        ("/devices", get(list_devices)),
+        (
             "/devices/{device_id}",
-            middleware::require_operator(state.clone(), get(get_device)).merge(
-                middleware::require_admin(state.clone(), patch(update_device)),
-            ),
-        )
-        .route(
+            get(get_device).merge(middleware::require_admin(patch(update_device))),
+        ),
+        (
             "/devices/{device_id}/binding",
-            middleware::require_admin(state.clone(), delete(delete_device_binding)),
-        )
-        .route(
+            middleware::require_admin(delete(delete_device_binding)),
+        ),
+        (
             "/devices/{device_id}/session-control",
-            middleware::require_operator(state.clone(), get(get_session_control)),
-        )
-        .route(
-            "/devices/{device_id}/home",
-            middleware::require_operator(state.clone(), get(get_home)),
-        )
-        .route(
+            get(get_session_control),
+        ),
+        ("/devices/{device_id}/home", get(get_home)),
+        (
             "/devices/{device_id}/convergence",
-            middleware::require_operator(state, get(get_device_convergence)),
-        )
+            get(get_device_convergence),
+        ),
+    ]
 }
 
 #[derive(Deserialize)]

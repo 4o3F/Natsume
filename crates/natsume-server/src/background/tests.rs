@@ -108,7 +108,7 @@ async fn shutdown_preserves_task_panic_as_a_typed_error() {
     let Err(BackgroundError::Task { source }) = background.shutdown().await else {
         panic!("expected background task failure");
     };
-    assert!(source.is_panic());
+    assert_eq!(source, crate::task::TaskFailure::Panicked);
 }
 
 #[tokio::test]
@@ -124,7 +124,10 @@ async fn shutdown_waits_for_other_tasks_after_an_operation_error_and_keeps_the_f
     let (failed, failure) = oneshot::channel();
     background.tasks.spawn(async move {
         must(failed.send(()));
-        Err(ExpiryError::InboxUnavailable).context(PrintExpirySnafu)
+        Err(ExpiryError::InboxUnavailable {
+            source: std::sync::PoisonError::new(()),
+        })
+        .context(PrintExpirySnafu)
     });
     must(must(
         tokio::time::timeout(Duration::from_secs(5), failure).await,
@@ -135,7 +138,7 @@ async fn shutdown_waits_for_other_tasks_after_an_operation_error_and_keeps_the_f
     assert!(matches!(
         closing.await,
         Err(BackgroundError::PrintExpiry {
-            source: ExpiryError::InboxUnavailable
+            source: ExpiryError::InboxUnavailable { .. }
         })
     ));
 }
@@ -165,7 +168,7 @@ async fn shutdown_waits_for_other_tasks_after_a_panic() {
     let Err(BackgroundError::Task { source }) = closing.await else {
         panic!("expected background task failure");
     };
-    assert!(source.is_panic());
+    assert_eq!(source, crate::task::TaskFailure::Panicked);
     must(completion.await);
 }
 

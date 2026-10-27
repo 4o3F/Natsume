@@ -227,7 +227,9 @@ pub(in crate::component::print) fn requeue(
     );
     let next = requeue_count
         .checked_add(1)
-        .context(super::super::PersistenceSnafu)?;
+        .ok_or_else(|| PrintError::Persistence {
+            source: crate::db::PersistenceError::invalid("attempt deadline"),
+        })?;
     let order = queue_order(tx)?;
     diesel::update(j::table.filter(j::ready_sequence.eq(sequence)))
         .set((

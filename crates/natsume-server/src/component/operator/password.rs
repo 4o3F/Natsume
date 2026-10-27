@@ -40,16 +40,18 @@ pub(super) fn hash_password(password: &OperatorPassword) -> Result<String, Opera
         ARGON2_PARALLELISM,
         None,
     )
-    .map_err(|_| OperatorError::InvalidHashingParameters)?;
+    .map_err(|source| OperatorError::InvalidHashingParameters { source })?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
     let mut salt_bytes = [0_u8; PASSWORD_SALT_LENGTH];
-    getrandom::fill(&mut salt_bytes).map_err(|_| OperatorError::EntropyUnavailable)?;
-    let salt = Salt::new(&salt_bytes).map_err(|_| OperatorError::SaltEncodingFailed)?;
+    getrandom::fill(&mut salt_bytes)
+        .map_err(|source| OperatorError::EntropyUnavailable { source })?;
+    let salt =
+        Salt::new(&salt_bytes).map_err(|source| OperatorError::SaltEncodingFailed { source })?;
     argon2
         .hash_password_with_salt(password.expose().as_bytes(), &salt)
         .map(|hash| hash.to_string())
-        .map_err(|_| OperatorError::PasswordHashingFailed)
+        .map_err(|source| OperatorError::PasswordHashingFailed { source })
 }
 
 pub(in crate::component::operator) fn verify_password_once(
@@ -70,7 +72,7 @@ pub(in crate::component::operator) fn verify_password_once(
         match verifier.verify_password(password.expose().as_bytes(), &parsed) {
             Ok(()) => true,
             Err(PasswordHashError::PasswordInvalid) => false,
-            Err(_) => return Err(OperatorError::PasswordVerificationFailed),
+            Err(source) => return Err(OperatorError::PasswordVerification { source }),
         };
 
     Ok(persisted_profile_valid && verification_succeeded)
@@ -101,6 +103,6 @@ fn frozen_argon2() -> Result<Argon2<'static>, OperatorError> {
         ARGON2_PARALLELISM,
         None,
     )
-    .map_err(|_| OperatorError::InvalidHashingParameters)?;
+    .map_err(|source| OperatorError::InvalidHashingParameters { source })?;
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }

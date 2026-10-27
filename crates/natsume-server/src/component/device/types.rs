@@ -84,40 +84,40 @@ impl fmt::Debug for ControlPublicKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum DeviceError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("persisted Device facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("Device persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
 }
 
 impl From<PersistenceError> for DeviceError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum ActivationError {
     #[snafu(display("the candidate control key cannot become current authority"))]
     CandidateKeyRejected,
     #[snafu(display("persisted Device authority facts are invalid"))]
-    InvalidAuthorityFacts,
+    InvalidAuthorityFacts { source: PersistenceError },
     #[snafu(display("Device authority persistence failed"))]
-    AuthorityPersistenceFailed,
+    AuthorityPersistenceFailed { source: PersistenceError },
 }
 
 impl From<PersistenceError> for ActivationError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidAuthorityFacts,
-            PersistenceError::OperationFailed => Self::AuthorityPersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidAuthorityFacts { source },
+            source => Self::AuthorityPersistenceFailed { source },
         }
     }
 }
@@ -251,7 +251,10 @@ impl DeviceNetworkInfo {
                     value
                         .parse::<IpAddr>()
                         .map(|ip| ip.to_canonical())
-                        .map_err(|_| PersistenceError::InvalidPersistedData)
+                        .map_err(|source| PersistenceError::Address {
+                            field: "device network address",
+                            source,
+                        })
                 };
                 Ok(Some(Self {
                     client_ip: client_ip.map(parse_ip).transpose()?,
@@ -259,7 +262,7 @@ impl DeviceNetworkInfo {
                     observed_at_unix_ms: observed_at.cast_unsigned(),
                 }))
             }
-            _ => Err(PersistenceError::InvalidPersistedData),
+            _ => Err(PersistenceError::invalid("persisted value")),
         }
     }
 }
@@ -275,17 +278,18 @@ impl DeviceProjection {
     ) -> Result<Self, PersistenceError> {
         Ok(Self {
             network,
-            device_id: DeviceId::parse(device_id).ok_or(PersistenceError::InvalidPersistedData)?,
+            device_id: DeviceId::parse(device_id)
+                .ok_or(PersistenceError::invalid("persisted value"))?,
             machine_hardware_id: MachineHardwareId::parse(machine_hardware_id)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
+                .ok_or(PersistenceError::invalid("persisted value"))?,
             evidence_quality: EvidenceQuality::from_persisted(evidence_quality)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
+                .ok_or(PersistenceError::invalid("persisted value"))?,
             state: DeviceState::from_persisted(state)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
+                .ok_or(PersistenceError::invalid("persisted value"))?,
             created_at_unix_ms: u64::try_from(created_at_unix_ms)
                 .ok()
                 .filter(|value| *value > 0)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
+                .ok_or(PersistenceError::invalid("persisted value"))?,
         })
     }
 
@@ -325,9 +329,10 @@ impl DeviceRecord {
         state: &str,
     ) -> Result<Self, PersistenceError> {
         Ok(Self {
-            device_id: DeviceId::parse(device_id).ok_or(PersistenceError::InvalidPersistedData)?,
+            device_id: DeviceId::parse(device_id)
+                .ok_or(PersistenceError::invalid("persisted value"))?,
             state: DeviceState::from_persisted(state)
-                .ok_or(PersistenceError::InvalidPersistedData)?,
+                .ok_or(PersistenceError::invalid("persisted value"))?,
         })
     }
 
@@ -350,14 +355,16 @@ mod tests {
 
     #[test]
     fn persistence_mappings_cover_every_neutral_variant() {
-        assert_eq!(
-            DeviceError::from(PersistenceError::InvalidPersistedData),
-            DeviceError::InvalidPersistedFacts
-        );
-        assert_eq!(
-            DeviceError::from(PersistenceError::OperationFailed),
-            DeviceError::PersistenceFailed
-        );
+        assert!(matches!(
+            DeviceError::from(PersistenceError::invalid("persisted value")),
+            DeviceError::InvalidPersistedFacts { .. }
+        ));
+        assert!(matches!(
+            DeviceError::from(PersistenceError::from(
+                diesel::result::Error::RollbackTransaction
+            )),
+            DeviceError::PersistenceFailed { .. }
+        ));
     }
 
     #[test]

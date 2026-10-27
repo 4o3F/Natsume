@@ -15,17 +15,21 @@ pub(in crate::component::operator) fn now(
         "CAST(unixepoch('subsec') * 1000 AS INTEGER)",
     ))
     .get_result(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 fn invitation(row: InvitationRow) -> Result<InvitationSummary, PersistenceError> {
     let (id, role, issuer, created, expires) = row;
     Ok(InvitationSummary {
-        invitation_id: Uuid::parse_str(&id).map_err(|_| PersistenceError::InvalidPersistedData)?,
-        role: OperatorRole::from_persisted(&role)
-            .map_err(|_| PersistenceError::InvalidPersistedData)?,
-        issuer_operator_id: Uuid::parse_str(&issuer)
-            .map_err(|_| PersistenceError::InvalidPersistedData)?,
+        invitation_id: Uuid::parse_str(&id).map_err(|source| PersistenceError::Uuid {
+            field: "identifier",
+            source,
+        })?,
+        role: OperatorRole::from_persisted(&role).map_err(super::persisted_identity_error)?,
+        issuer_operator_id: Uuid::parse_str(&issuer).map_err(|source| PersistenceError::Uuid {
+            field: "identifier",
+            source,
+        })?,
         created_at_unix_ms: created,
         expires_at_unix_ms: expires,
     })
@@ -47,7 +51,7 @@ pub(in crate::component::operator) fn list_invitations(
             invites::expires_at_unix_ms,
         ))
         .load::<InvitationRow>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .into_iter()
         .map(invitation)
         .collect()
@@ -68,7 +72,7 @@ pub(in crate::component::operator) fn find_invitation(
         ))
         .first::<InvitationRow>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(invitation)
         .transpose()
 }
@@ -88,7 +92,7 @@ pub(in crate::component::operator) fn invitation_by_id(
         ))
         .first::<InvitationRow>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(invitation)
         .transpose()?
         .ok_or(OperatorError::LinkUnavailable)
@@ -110,7 +114,7 @@ pub(in crate::component::operator) fn insert_invitation(
         ))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn delete_invitation(
@@ -120,7 +124,7 @@ pub(in crate::component::operator) fn delete_invitation(
     diesel::delete(invites::table.filter(invites::invitation_id.eq(id.to_string())))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn revoke_issued_links(
@@ -129,10 +133,10 @@ pub(in crate::component::operator) fn revoke_issued_links(
 ) -> Result<(), PersistenceError> {
     diesel::delete(invites::table.filter(invites::issuer_operator_id.eq(issuer.to_string())))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     diesel::delete(resets::table.filter(resets::issuer_operator_id.eq(issuer.to_string())))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     Ok(())
 }
 
@@ -143,7 +147,7 @@ pub(in crate::component::operator) fn delete_target_resets(
     diesel::delete(resets::table.filter(resets::operator_id.eq(target.to_string())))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn insert_reset(
@@ -166,7 +170,7 @@ pub(in crate::component::operator) fn insert_reset(
         ))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn find_reset(
@@ -183,19 +187,26 @@ pub(in crate::component::operator) fn find_reset(
         ))
         .first::<(String, String, String, i64)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     row.map(|(target, id, issuer, expires)| {
-        let target =
-            Uuid::parse_str(&target).map_err(|_| PersistenceError::InvalidPersistedData)?;
+        let target = Uuid::parse_str(&target).map_err(|source| PersistenceError::Uuid {
+            field: "identifier",
+            source,
+        })?;
         Ok((
             PasswordResetInspection {
                 operator_id: target,
-                reset_id: Uuid::parse_str(&id)
-                    .map_err(|_| PersistenceError::InvalidPersistedData)?,
+                reset_id: Uuid::parse_str(&id).map_err(|source| PersistenceError::Uuid {
+                    field: "identifier",
+                    source,
+                })?,
                 username: super::management::account_name(transaction, target)?,
                 expires_at_unix_ms: expires,
             },
-            Uuid::parse_str(&issuer).map_err(|_| PersistenceError::InvalidPersistedData)?,
+            Uuid::parse_str(&issuer).map_err(|source| PersistenceError::Uuid {
+                field: "identifier",
+                source,
+            })?,
         ))
     })
     .transpose()

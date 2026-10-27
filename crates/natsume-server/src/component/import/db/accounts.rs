@@ -20,7 +20,7 @@ pub(in crate::component::import) fn insert(
             accounts::credential_revision.eq(1_i64),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::import) fn delete_exact(
@@ -34,7 +34,7 @@ pub(in crate::component::import) fn delete_exact(
             .filter(accounts::credential_revision.eq(account.credential_revision())),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::import) fn advance_credential_revision(
@@ -50,5 +50,5 @@ pub(in crate::component::import) fn advance_credential_revision(
     )
     .set(accounts::credential_revision.eq(next))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

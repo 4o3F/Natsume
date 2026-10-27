@@ -1,7 +1,9 @@
-use std::{error::Error, fmt};
+use snafu::Snafu;
+use std::fmt;
 
 /// A workbook problem with an optional one-based worksheet cell location.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
+#[snafu(display("Teams{}: {kind}", cell_location(*row, *column)))]
 pub(crate) struct InputError {
     pub(crate) row: Option<u32>,
     pub(crate) column: Option<u32>,
@@ -55,13 +57,10 @@ impl InputError {
     }
 }
 
-impl fmt::Display for InputError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("Teams")?;
-        if let (Some(row), Some(column)) = (self.row, self.column) {
-            write!(f, " row {row}, column {column}")?;
-        }
-        write!(f, ": {}", self.kind)
+fn cell_location(row: Option<u32>, column: Option<u32>) -> String {
+    match (row, column) {
+        (Some(row), Some(column)) => format!(" row {row}, column {column}"),
+        _ => String::new(),
     }
 }
 
@@ -95,5 +94,3 @@ impl fmt::Display for InputErrorKind {
         }
     }
 }
-
-impl Error for InputError {}

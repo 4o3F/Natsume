@@ -65,7 +65,9 @@ pub(super) async fn commit_import(
             apply_plan(transaction, &vault, &parsed, &baseline, &roster, &diff)?;
         }
         if db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
-            return Err(ImportError::PersistenceFailure);
+            return Err(ImportError::PersistenceFailure {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
         }
         Ok(CommitOutcome::Committed)
     })
@@ -80,7 +82,9 @@ pub(super) async fn commit_import(
 
 fn require_one(count: usize) -> Result<(), ImportError> {
     if count != 1 {
-        return Err(ImportError::PersistenceFailure);
+        return Err(ImportError::PersistenceFailure {
+            source: crate::db::PersistenceError::unexpected_row_count(1, count),
+        });
     }
     Ok(())
 }
@@ -102,7 +106,9 @@ fn apply_plan(
         let seat = baseline
             .seats
             .get(code)
-            .ok_or(ImportError::PersistenceFailure)?;
+            .ok_or(ImportError::PersistenceFailure {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            })?;
         if seat.current_domjudge_username().is_some() {
             require_one(db::account_mappings::delete_for_seat(
                 transaction,
@@ -119,7 +125,9 @@ fn apply_plan(
         let seat = baseline
             .seats
             .get(code)
-            .ok_or(ImportError::PersistenceFailure)?;
+            .ok_or(ImportError::PersistenceFailure {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            })?;
         require_one(db::seats::delete_exact(transaction, seat)?)?;
         seat_ids.remove(code);
     }
@@ -134,7 +142,9 @@ fn apply_plan(
             baseline
                 .accounts
                 .get(account)
-                .ok_or(ImportError::PersistenceFailure)?,
+                .ok_or(ImportError::PersistenceFailure {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                })?,
         )?)?;
     }
     // Allocate in name order so first import matches the former preprocessor.
@@ -148,7 +158,9 @@ fn apply_plan(
         let details = roster
             .teams
             .get(team.account())
-            .ok_or(ImportError::PersistenceFailure)?;
+            .ok_or(ImportError::PersistenceFailure {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            })?;
         if baseline.teams.get(team.account()) != Some(details) {
             require_one(db::teams::save(transaction, &id, details)?)?;
         }
@@ -160,7 +172,9 @@ fn apply_plan(
         {
             let seat_id = seat_ids
                 .get(team.seat())
-                .ok_or(ImportError::PersistenceFailure)?;
+                .ok_or(ImportError::PersistenceFailure {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                })?;
             require_one(db::account_mappings::insert(transaction, seat_id, &id)?)?;
         }
     }
@@ -188,13 +202,14 @@ fn save_account(
             .binary_search_by(|account| account.as_str().cmp(team.account()))
             .is_ok()
         {
-            let next = current
-                .credential_revision()
-                .checked_add(1)
-                .ok_or(ImportError::PersistenceFailure)?;
+            let next = current.credential_revision().checked_add(1).ok_or(
+                ImportError::PersistenceFailure {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                },
+            )?;
             let (nonce, ciphertext) = vault
                 .seal(team.password().as_bytes())
-                .map_err(|_| ImportError::VaultFailure)?;
+                .map_err(|source| ImportError::VaultFailure { source })?;
             require_one(db::server_vault_records::save(
                 transaction,
                 current.account_id(),
@@ -213,7 +228,7 @@ fn save_account(
         require_one(db::accounts::insert(transaction, id, team.account())?)?;
         let (nonce, ciphertext) = vault
             .seal(team.password().as_bytes())
-            .map_err(|_| ImportError::VaultFailure)?;
+            .map_err(|source| ImportError::VaultFailure { source })?;
         require_one(db::server_vault_records::save(
             transaction,
             &id.to_string(),

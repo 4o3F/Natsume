@@ -1,7 +1,8 @@
+use crate::http::Routes;
+
 use std::sync::Arc;
 
 use axum::{
-    Router,
     extract::{ConnectInfo, State, ws::WebSocketUpgrade},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -15,8 +16,8 @@ use crate::tls::PeerAddress;
 use super::super::{AppState, error::ApiError};
 
 /// Registers the production Device Control WebSocket endpoint.
-pub(in crate::http) fn routes() -> Router<AppState> {
-    Router::new().route("/device/control", get(upgrade))
+pub(in crate::http) fn public_routes() -> Routes {
+    vec![("/device/control", get(upgrade))]
 }
 
 /// Accepts only an exact request for the Device Control subprotocol and applies the

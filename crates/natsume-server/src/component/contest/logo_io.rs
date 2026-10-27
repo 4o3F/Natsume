@@ -1,8 +1,7 @@
+use snafu::Snafu;
 use std::{
     collections::BTreeMap,
-    error::Error,
     ffi::OsString,
-    fmt,
     fs::{self, File},
     io::{self, Cursor, Read, Seek},
     os::unix::fs::MetadataExt as _,
@@ -52,7 +51,9 @@ impl LogoFile {
             if error == rustix::io::Errno::LOOP {
                 LogoError::NotRegularFile
             } else {
-                LogoError::Read(error.into())
+                LogoError::Read {
+                    source: error.into(),
+                }
             }
         })?;
         let source = Self {
@@ -67,7 +68,10 @@ impl LogoFile {
     /// # Errors
     /// Returns metadata errors, nonregular-file errors and byte-limit errors.
     pub(super) fn fingerprint(&self) -> Result<LogoFingerprint, LogoError> {
-        let metadata = self.file.metadata().map_err(LogoError::Read)?;
+        let metadata = self
+            .file
+            .metadata()
+            .map_err(|source| LogoError::Read { source })?;
         if !metadata.is_file() {
             return Err(LogoError::NotRegularFile);
         }
@@ -149,50 +153,32 @@ impl LogoDirectory {
     }
 }
 
-#[derive(Debug)]
-pub(super) enum LogoError {
-    Read(io::Error),
+#[derive(Debug, Snafu)]
+pub(crate) enum LogoError {
+    #[snafu(display("cannot read image: {source}"))]
+    Read { source: io::Error },
+    #[snafu(display("expected a regular file, not a symlink or directory"))]
     NotRegularFile,
+    #[snafu(display("image exceeds the 8 MiB limit"))]
     TooLarge,
+    #[snafu(display("expected PNG, JPEG, WebP or SVG content"))]
     UnsupportedFormat,
+    #[snafu(display("image exceeds 4096 pixels per side or 4194304 pixels in total"))]
     Dimensions,
-    Decode(image::ImageError),
-    Svg(usvg::Error),
-    Encode(String),
+    #[snafu(display("cannot decode image: {source}"))]
+    Decode { source: image::ImageError },
+    #[snafu(display("cannot parse SVG: {source}"))]
+    Svg { source: usvg::Error },
+    #[snafu(display("cannot encode PNG: {source}"))]
+    Encode { source: io::Error },
+    #[snafu(display(
+        "SVG images must be embedded, valid PNG, JPEG or WebP within the logo limits; external files and URLs are not loaded"
+    ))]
     SvgResources,
+    #[snafu(display(
+        "SVG text has no usable font; install the required fonts or convert the text to paths"
+    ))]
     SvgFont,
-}
-
-impl fmt::Display for LogoError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read(error) => write!(f, "cannot read image: {error}"),
-            Self::NotRegularFile => {
-                f.write_str("expected a regular file, not a symlink or directory")
-            }
-            Self::TooLarge => f.write_str("image exceeds the 8 MiB limit"),
-            Self::UnsupportedFormat => f.write_str("expected PNG, JPEG, WebP or SVG content"),
-            Self::Dimensions => {
-                f.write_str("image exceeds 4096 pixels per side or 4194304 pixels in total")
-            }
-            Self::Decode(error) => write!(f, "cannot decode image: {error}"),
-            Self::Encode(error) => write!(f, "cannot encode PNG: {error}"),
-            Self::Svg(error) => write!(f, "cannot parse SVG: {error}"),
-            Self::SvgResources => f.write_str("SVG images must be embedded, valid PNG, JPEG or WebP within the logo limits; external files and URLs are not loaded"),
-            Self::SvgFont => f.write_str("SVG text has no usable font; install the required fonts or convert the text to paths"),
-        }
-    }
-}
-
-impl Error for LogoError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match self {
-            Self::Read(error) => Some(error),
-            Self::Decode(error) => Some(error),
-            Self::Svg(error) => Some(error),
-            _ => None,
-        }
-    }
 }
 
 /// A validated logo, decoded once for HTTP delivery or PNG export.
@@ -225,9 +211,9 @@ impl DecodedLogo {
                 content_type: format.to_mime_type(),
             }),
             LogoContent::Svg(image) => Ok(LogoImage {
-                bytes: image
-                    .encode_png()
-                    .map_err(|error| LogoError::Encode(error.to_string()))?,
+                bytes: image.encode_png().map_err(|error| LogoError::Encode {
+                    source: std::io::Error::other(error),
+                })?,
                 content_type: "image/png",
             }),
         }
@@ -307,7 +293,9 @@ impl DecodedLogo {
         let mut output = Cursor::new(Vec::new());
         canvas
             .write_to(&mut output, ImageFormat::Png)
-            .map_err(|error| LogoError::Encode(error.to_string()))?;
+            .map_err(|error| LogoError::Encode {
+                source: std::io::Error::other(error),
+            })?;
         Ok(output.into_inner())
     }
 }
@@ -323,11 +311,11 @@ pub(super) fn read_logo(path: &Path) -> Result<DecodedLogo, LogoError> {
 }
 
 fn decode_logo(file: &mut File) -> Result<DecodedLogo, LogoError> {
-    file.rewind().map_err(LogoError::Read)?;
+    file.rewind().map_err(|source| LogoError::Read { source })?;
     let mut bytes = Vec::new();
     file.take(MAX_LOGO_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(LogoError::Read)?;
+        .map_err(|source| LogoError::Read { source })?;
     if bytes.len() as u64 > MAX_LOGO_BYTES {
         return Err(LogoError::TooLarge);
     }
@@ -353,10 +341,12 @@ fn decode_raster(bytes: &[u8], format: ImageFormat) -> Result<DynamicImage, Logo
     let mut limits = Limits::default();
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let decoder = reader.into_decoder().map_err(LogoError::Decode)?;
+    let decoder = reader
+        .into_decoder()
+        .map_err(|source| LogoError::Decode { source })?;
     let (width, height) = decoder.dimensions();
     validate_dimensions(width, height)?;
-    DynamicImage::from_decoder(decoder).map_err(LogoError::Decode)
+    DynamicImage::from_decoder(decoder).map_err(|source| LogoError::Decode { source })
 }
 
 fn validate_dimensions(width: u32, height: u32) -> Result<(), LogoError> {
@@ -370,6 +360,7 @@ fn validate_dimensions(width: u32, height: u32) -> Result<(), LogoError> {
 }
 
 fn render_svg(bytes: &[u8]) -> Result<tiny_skia::Pixmap, LogoError> {
+    // Malformed image input is a domain rejection; text parser detail is irrelevant.
     let text = std::str::from_utf8(bytes).map_err(|_| LogoError::UnsupportedFormat)?;
     if !text
         .trim_start_matches('\u{feff}')
@@ -386,7 +377,9 @@ fn render_svg(bytes: &[u8]) -> Result<tiny_skia::Pixmap, LogoError> {
             ..Default::default()
         },
     )
-    .map_err(|error| LogoError::Svg(usvg::Error::ParsingFailed(error)))?;
+    .map_err(|error| LogoError::Svg {
+        source: usvg::Error::ParsingFailed(error),
+    })?;
     if !document
         .root_element()
         .has_tag_name(("http://www.w3.org/2000/svg", "svg"))
@@ -447,7 +440,8 @@ fn render_svg(bytes: &[u8]) -> Result<tiny_skia::Pixmap, LogoError> {
             }),
         };
     }
-    let tree = usvg::Tree::from_xmltree(&document, &options).map_err(LogoError::Svg)?;
+    let tree = usvg::Tree::from_xmltree(&document, &options)
+        .map_err(|source| LogoError::Svg { source })?;
     if invalid_resource.load(Ordering::Relaxed) {
         return Err(LogoError::SvgResources);
     }

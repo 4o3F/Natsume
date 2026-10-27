@@ -36,9 +36,11 @@ pub(super) fn home_error(error: HomeError) -> ApiError {
     match error {
         HomeError::DeviceNotFound => ApiError::not_found("home_device_not_found"),
         HomeError::EpochExhausted => ApiError::conflict("home_reset_epoch_exhausted"),
-        HomeError::InvalidPersistedFacts => {
-            ApiError::internal_error("home_invalid_persisted_facts")
+        HomeError::InvalidPersistedFacts { .. } => {
+            ApiError::internal_error_from(error, "home_invalid_persisted_facts")
         }
-        HomeError::PersistenceFailed => ApiError::internal_error("home_persistence_failed"),
+        HomeError::PersistenceFailed { .. } => {
+            ApiError::internal_error_from(error, "home_persistence_failed")
+        }
     }
 }

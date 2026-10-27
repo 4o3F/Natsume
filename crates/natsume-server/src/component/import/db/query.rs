@@ -35,13 +35,14 @@ fn read_current_seats(
         ))
         .order(seats::seat_code)
         .load::<(String, String, Option<String>, Option<String>)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     rows.into_iter()
         .map(
             |(seat_id, seat_code, current_domjudge_username, device_id)| {
                 let device_id = device_id
                     .map(|device_id| {
-                        DeviceId::parse(&device_id).ok_or(PersistenceError::InvalidPersistedData)
+                        DeviceId::parse(&device_id)
+                            .ok_or(PersistenceError::invalid("persisted value"))
                     })
                     .transpose()?;
                 Ok(BaselineSeat::new(
@@ -69,15 +70,15 @@ fn read_current_accounts(
         ))
         .order(accounts::domjudge_username)
         .load::<(String, String, i64, Option<Vec<u8>>, Option<Vec<u8>>)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     rows.into_iter()
         .map(|(id, username, revision, nonce, ciphertext)| {
             Ok(BaselineAccount::new(
                 id,
                 username,
                 revision,
-                nonce.ok_or(PersistenceError::InvalidPersistedData)?,
-                ciphertext.ok_or(PersistenceError::InvalidPersistedData)?,
+                nonce.ok_or(PersistenceError::invalid("persisted value"))?,
+                ciphertext.ok_or(PersistenceError::invalid("persisted value"))?,
             ))
         })
         .collect()
@@ -214,7 +215,7 @@ mod tests {
                             rows.into_iter().map(|row| row.detail).collect::<Vec<_>>(),
                         )
                     })
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .collect()
     }

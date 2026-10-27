@@ -18,7 +18,7 @@ use crate::{
     },
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 fn body() -> Value {
     json!({"operation_id":"ec7737b0-1b2c-4def-8123-0123456789ab", "scope":{"kind":"all_enabled"}, "action":{"kind":"reset_home"}})
@@ -89,8 +89,8 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
     let fixture = TestDatabase::new().await?;
     seed_operator(&fixture.database, "batch-admin", "batch-test-password1!").await?;
     fixture.database.write(|tx| {
-        tx.connection().batch_execute("INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES ('01900000-0000-7000-8000-000000000001','m1','strong','enabled',1), ('01900000-0000-7000-8000-000000000002','m2','strong','disabled',1);").map_err(|_| PersistenceError::OperationFailed)
-    }).await.map_err(|e| format!("seed: {e:?}"))?;
+        tx.connection().batch_execute("INSERT INTO devices (device_id, machine_hardware_id, evidence_quality, state, created_at_unix_ms) VALUES ('01900000-0000-7000-8000-000000000001','m1','strong','enabled',1), ('01900000-0000-7000-8000-000000000002','m2','strong','disabled',1);").map_err(PersistenceError::from)
+    }).await.map_err(crate::test_error::TestError::from)?;
     let application = router(server_state(&fixture)?, unused_web_root());
     let path = "/api/v2/target-submissions";
     assert_eq!(
@@ -107,7 +107,7 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("cookie absent")?
+        .ok_or(crate::test_error::TestError::missing("cookie absent"))?
         .to_owned();
     let make_request = |payload: &Value| {
         Request::builder()
@@ -129,10 +129,10 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
         .write(|tx| {
             tx.connection()
                 .batch_execute("UPDATE devices SET state='disabled';")
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
-        .map_err(|e| format!("state: {e:?}"))?;
+        .map_err(crate::test_error::TestError::from)?;
     let replay = drive(&application, make_request(&body())?).await?;
     assert_eq!(replay.status, StatusCode::OK);
     assert_eq!(replay.body, first.body);
@@ -154,10 +154,10 @@ async fn batch_endpoint_is_admin_only_replayable_and_replaces_old_write_routes()
         .write(|tx| {
             tx.connection()
                 .batch_execute("UPDATE operator_accounts SET role='viewer';")
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
-        .map_err(|e| format!("role: {e:?}"))?;
+        .map_err(crate::test_error::TestError::from)?;
     assert_eq!(
         drive(&application, make_request(&body())?).await?.status,
         StatusCode::FORBIDDEN
@@ -193,5 +193,54 @@ async fn old_target_write_routes_are_removed() -> TestResult {
             status
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn submission_infrastructure_failure_reports_its_chain_with_the_same_response() -> TestResult
+{
+    use crate::{
+        config::LogLevel,
+        logging::tests::{CapturedLogs, SubscriberTestGuard},
+    };
+    use tracing::instrument::WithSubscriber as _;
+
+    let _guard = SubscriberTestGuard::acquire();
+    let fixture = TestDatabase::new().await?;
+    seed_operator(&fixture.database, "report-admin", "report-password1!").await?;
+    let application = router(server_state(&fixture)?, unused_web_root());
+    let login = drive(
+        &application,
+        login_request("report-admin", "report-password1!")?,
+    )
+    .await?;
+    let cookie = header_text(&login.headers, &header::SET_COOKIE)?
+        .split(';')
+        .next()
+        .ok_or(crate::test_error::TestError::missing("cookie absent"))?
+        .to_owned();
+    fixture.database.write(|tx| {
+        tx.connection().batch_execute("CREATE TRIGGER reject_receipt BEFORE INSERT ON target_submission_receipts BEGIN SELECT RAISE(ABORT, 'receipt failure evidence'); END;").map_err(PersistenceError::from)
+    }).await?;
+    let captured = CapturedLogs::default();
+    let response = drive(
+        &application,
+        Request::post("/api/v2/target-submissions")
+            .header(header::COOKIE, &cookie)
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(body().to_string()))?,
+    )
+    .with_subscriber(captured.subscriber(LogLevel::Trace))
+    .await?;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        response.body,
+        br#"{"title":"Internal Server Error","status":500,"code":"INTERNAL_ERROR"}"#
+    );
+    let logs = captured.text().unwrap_or_else(|()| panic!("logs"));
+    assert!(logs.contains("receipt failure evidence"));
+    assert!(logs.contains("the persistence query failed"));
+    assert_eq!(logs.matches("HTTP request failed").count(), 1);
+    assert!(!logs.contains(&cookie));
     Ok(())
 }

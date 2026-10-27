@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Json, Router,
+    Json,
     extract::{State, rejection::JsonRejection},
     response::{IntoResponse, Response},
     routing::{get, put},
@@ -10,13 +12,12 @@ use crate::component::provisioning::ProvisioningWindow;
 
 use super::super::{AppState, error::ApiError, middleware};
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    Router::new().route(
+pub(in crate::http) fn operator_routes() -> Routes {
+    vec![(
         "/provisioning-window",
-        middleware::require_operator(state.clone(), get(get_provisioning_window)).merge(
-            middleware::require_admin(state, put(update_provisioning_window)),
-        ),
-    )
+        get(get_provisioning_window)
+            .merge(middleware::require_admin(put(update_provisioning_window))),
+    )]
 }
 
 /// Current process-local automatic Enrollment approval state.

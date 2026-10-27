@@ -45,13 +45,15 @@ impl GatewayIssuer {
         site: &GatewaySiteConfig,
     ) -> Result<Self, GatewayIssuerError> {
         let ca_certificate_der = CertificateDer::from(
-            read_private_file(ca_certificate_path).map_err(|_| GatewayIssuerError::OriginCa)?,
+            read_private_file(ca_certificate_path)
+                .map_err(|source| GatewayIssuerError::IdentityFile { source })?,
         );
         let packaged_trust_root_der = parse_packaged_trust_root(
-            fs::read(packaged_trust_root_path).map_err(|_| GatewayIssuerError::OriginCa)?,
+            fs::read(packaged_trust_root_path)
+                .map_err(|source| GatewayIssuerError::TrustRootFile { source })?,
         )?;
-        let mut ca_private_key =
-            read_private_file(ca_private_key_path).map_err(|_| GatewayIssuerError::OriginCa)?;
+        let mut ca_private_key = read_private_file(ca_private_key_path)
+            .map_err(|source| GatewayIssuerError::IdentityFile { source })?;
         let result = Self::new(
             &ca_certificate_der,
             &PrivatePkcs8KeyDer::from(ca_private_key.as_slice()),
@@ -73,22 +75,22 @@ impl GatewayIssuer {
         }
 
         let (remainder, ca_certificate) = parse_x509_certificate(ca_certificate_der.as_ref())
-            .map_err(|_| GatewayIssuerError::OriginCa)?;
+            .map_err(|source| GatewayIssuerError::Certificate { source })?;
         if !remainder.is_empty()
             || !ca_certificate
                 .basic_constraints()
-                .map_err(|_| GatewayIssuerError::OriginCa)?
+                .map_err(|source| GatewayIssuerError::CertificateExtension { source })?
                 .is_some_and(|constraints| constraints.value.ca)
             || ca_certificate
                 .key_usage()
-                .map_err(|_| GatewayIssuerError::OriginCa)?
+                .map_err(|source| GatewayIssuerError::CertificateExtension { source })?
                 .is_some_and(|usage| !usage.value.key_cert_sign())
         {
-            return Err(GatewayIssuerError::OriginCa);
+            return Err(GatewayIssuerError::InvalidOriginCa);
         }
 
-        let key_pair =
-            KeyPair::try_from(ca_private_key_der).map_err(|_| GatewayIssuerError::OriginCa)?;
+        let key_pair = KeyPair::try_from(ca_private_key_der)
+            .map_err(|source| GatewayIssuerError::OriginCa { source })?;
         if key_pair.public_key_raw()
             != ca_certificate
                 .tbs_certificate
@@ -97,11 +99,11 @@ impl GatewayIssuer {
                 .data
                 .as_ref()
         {
-            return Err(GatewayIssuerError::OriginCa);
+            return Err(GatewayIssuerError::InvalidOriginCa);
         }
 
         let issuer = Issuer::from_ca_cert_der(ca_certificate_der, key_pair)
-            .map_err(|_| GatewayIssuerError::OriginCa)?;
+            .map_err(|source| GatewayIssuerError::OriginCa { source })?;
         Ok(Self {
             issuer,
             gateway_hostname: site.gateway_hostname().to_owned(),
@@ -127,9 +129,9 @@ impl GatewayIssuer {
         let public_key = parse_csr_public_key(csr_der)?;
         let not_before = OffsetDateTime::now_utc()
             .checked_sub(CLOCK_SKEW_ALLOWANCE)
-            .ok_or(GatewayIssuerError::IssuanceFailed)?;
+            .ok_or(GatewayIssuerError::InvalidValidity)?;
         if self.gateway_not_after <= not_before {
-            return Err(GatewayIssuerError::IssuanceFailed);
+            return Err(GatewayIssuerError::InvalidValidity);
         }
 
         let mut params = CertificateParams::default();
@@ -140,7 +142,7 @@ impl GatewayIssuer {
             self.gateway_hostname
                 .as_str()
                 .try_into()
-                .map_err(|_| GatewayIssuerError::IssuanceFailed)?,
+                .map_err(|source| GatewayIssuerError::IssuanceFailed { source })?,
         )];
         params.distinguished_name = DistinguishedName::new();
         params.is_ca = IsCa::ExplicitNoCa;
@@ -151,7 +153,7 @@ impl GatewayIssuer {
         self.issue_count.fetch_add(1, Ordering::Relaxed);
         let leaf = params
             .signed_by(&public_key, &self.issuer)
-            .map_err(|_| GatewayIssuerError::IssuanceFailed)?;
+            .map_err(|source| GatewayIssuerError::IssuanceFailed { source })?;
         Ok(IssuedGatewayCertificate {
             leaf_der: leaf.der().as_ref().to_vec(),
         })
@@ -169,15 +171,16 @@ impl GatewayIssuer {
             "2099-01-02T00:00:00Z",
             "2099-01-01T00:00:00Z",
         )
-        .map_err(|_| GatewayIssuerError::IssuanceFailed)?;
+        .map_err(|source| GatewayIssuerError::TestConfig { source })?;
         let mut ca_params = CertificateParams::default();
         ca_params.distinguished_name = DistinguishedName::new();
         ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
         ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
-        let ca_key = KeyPair::generate().map_err(|_| GatewayIssuerError::IssuanceFailed)?;
+        let ca_key =
+            KeyPair::generate().map_err(|source| GatewayIssuerError::IssuanceFailed { source })?;
         let ca_certificate = ca_params
             .self_signed(&ca_key)
-            .map_err(|_| GatewayIssuerError::IssuanceFailed)?;
+            .map_err(|source| GatewayIssuerError::IssuanceFailed { source })?;
         let mut ca_private_key = ca_key.serialize_der();
         let ca_certificate_der = ca_certificate.der().clone();
         let result = Self::new(
@@ -206,16 +209,39 @@ impl IssuedGatewayCertificate {
 }
 
 /// Redacted Gateway issuer failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
-pub(in crate::component::gateway) enum GatewayIssuerError {
+#[derive(Debug, Snafu)]
+pub(crate) enum GatewayIssuerError {
     #[snafu(display("Origin CA loading or validation failed"))]
-    OriginCa,
+    OriginCa { source: rcgen::Error },
+    #[snafu(display("Origin CA loading or validation failed"))]
+    OriginCaPem {
+        source: rustls_pki_types::pem::Error,
+    },
+    #[snafu(display("Origin CA loading or validation failed"))]
+    InvalidOriginCa,
+    #[snafu(display("Origin CA loading or validation failed"))]
+    Certificate {
+        source: x509_parser::asn1_rs::Err<x509_parser::error::X509Error>,
+    },
+    #[snafu(display("Origin CA loading or validation failed"))]
+    CertificateExtension {
+        source: x509_parser::error::X509Error,
+    },
+    #[snafu(display("Origin CA loading or validation failed"))]
+    IdentityFile { source: crate::tls::TlsError },
+    #[snafu(display("Origin CA loading or validation failed"))]
+    TrustRootFile { source: std::io::Error },
     #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
     TrustRootMismatch,
+    #[cfg(test)]
+    #[snafu(display("Gateway certificate issuance failed"))]
+    TestConfig { source: crate::config::ConfigError },
     #[snafu(display("Gateway CSR is invalid"))]
     InvalidCsr,
     #[snafu(display("Gateway certificate issuance failed"))]
-    IssuanceFailed,
+    IssuanceFailed { source: rcgen::Error },
+    #[snafu(display("Gateway certificate issuance failed"))]
+    InvalidValidity,
 }
 
 struct CsrPublicKey {
@@ -234,6 +260,7 @@ impl PublicKeyData for CsrPublicKey {
 
 fn parse_csr_public_key(csr_der: &[u8]) -> Result<CsrPublicKey, GatewayIssuerError> {
     let (remainder, csr) =
+        // Untrusted CSR validation has one domain rejection; parser or signature detail is irrelevant.
         X509CertificationRequest::from_der(csr_der).map_err(|_| GatewayIssuerError::InvalidCsr)?;
     if !remainder.is_empty()
         || csr.certification_request_info.version != X509Version::V1
@@ -254,6 +281,7 @@ fn parse_csr_public_key(csr_der: &[u8]) -> Result<CsrPublicKey, GatewayIssuerErr
         return Err(GatewayIssuerError::InvalidCsr);
     }
     csr.verify_signature()
+        // Untrusted CSR validation has one domain rejection; parser or signature detail is irrelevant.
         .map_err(|_| GatewayIssuerError::InvalidCsr)?;
 
     Ok(CsrPublicKey {
@@ -270,15 +298,24 @@ fn parse_packaged_trust_root(
 
     let certificates = CertificateDer::pem_slice_iter(&encoded)
         .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| GatewayIssuerError::OriginCa)?;
+        .map_err(|source| GatewayIssuerError::OriginCaPem { source })?;
     let [certificate] = certificates.as_slice() else {
-        return Err(GatewayIssuerError::OriginCa);
+        return Err(GatewayIssuerError::InvalidOriginCa);
     };
     Ok(certificate.clone())
 }
 
 fn parse_exact_certificate(der: &[u8]) -> bool {
     parse_x509_certificate(der).is_ok_and(|(remainder, _)| remainder.is_empty())
+}
+
+#[cfg(test)]
+impl From<GatewayIssuerError> for crate::test_error::TestError {
+    fn from(source: GatewayIssuerError) -> Self {
+        crate::test_error::TestError::Gateway {
+            source: super::GatewayError::IssuanceFailed { source },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,6 +343,11 @@ mod tests {
 
     #[derive(Debug, Snafu)]
     enum TestError {
+        #[snafu(context(false), display("test infrastructure operation failed"))]
+        Source {
+            #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+            source: Box<crate::test_error::TestError>,
+        },
         #[snafu(display("test setup failed"))]
         Setup,
         #[snafu(display("test assertion failed"))]
@@ -323,8 +365,11 @@ mod tests {
             params.distinguished_name = DistinguishedName::new();
             params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
             params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
-            let key = KeyPair::generate().map_err(|_| TestError::Setup)?;
-            let certificate = params.self_signed(&key).map_err(|_| TestError::Setup)?;
+            let key = KeyPair::generate()
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
+            let certificate = params
+                .self_signed(&key)
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
             Ok(Self {
                 certificate_der: certificate.der().clone(),
                 private_key_der: key.serialize_der(),
@@ -340,17 +385,19 @@ mod tests {
         fn new() -> Result<Self, TestError> {
             let path = std::env::temp_dir()
                 .join(format!("natsume-gateway-issuer-test-{}", Uuid::now_v7()));
-            fs::create_dir(&path).map_err(|_| TestError::Setup)?;
+            fs::create_dir(&path)
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .map_err(|_| TestError::Setup)?;
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
             Ok(Self { path })
         }
 
         fn write(&self, name: &str, contents: &[u8]) -> Result<PathBuf, TestError> {
             let path = self.path.join(name);
-            fs::write(&path, contents).map_err(|_| TestError::Setup)?;
+            fs::write(&path, contents)
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-                .map_err(|_| TestError::Setup)?;
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
             Ok(path)
         }
     }
@@ -363,7 +410,7 @@ mod tests {
 
     fn site() -> Result<GatewaySiteConfig, TestError> {
         GatewaySiteConfig::for_test(GATEWAY_HOSTNAME, GATEWAY_NOT_AFTER, CONTEST_END)
-            .map_err(|_| TestError::Setup)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))
     }
 
     fn issuer(ca: &TestCa) -> Result<GatewayIssuer, TestError> {
@@ -373,14 +420,14 @@ mod tests {
             &ca.certificate_der,
             &site()?,
         )
-        .map_err(|_| TestError::Setup)
+        .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))
     }
 
     fn csr(params: &CertificateParams, key: &KeyPair) -> Result<Vec<u8>, TestError> {
         params
             .serialize_request(key)
             .map(|request| request.der().as_ref().to_vec())
-            .map_err(|_| TestError::Setup)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))
     }
 
     #[test]
@@ -388,7 +435,7 @@ mod tests {
         let ca = TestCa::generate()?;
         let issuer = issuer(&ca)?;
         let mut requested = CertificateParams::new(vec!["attacker.example".to_owned()])
-            .map_err(|_| TestError::Setup)?;
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         requested
             .distinguished_name
             .push(DnType::CommonName, "attacker");
@@ -401,18 +448,20 @@ mod tests {
                 &[1, 3, 6, 1, 4, 1, 55555, 1],
                 vec![5, 0],
             ));
-        let subject_key = KeyPair::generate().map_err(|_| TestError::Setup)?;
+        let subject_key = KeyPair::generate()
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         let csr_der = csr(&requested, &subject_key)?;
         let credential_id = Uuid::now_v7();
         let issued_at = OffsetDateTime::now_utc();
 
-        GatewayIssuer::validate_csr(&csr_der).map_err(|_| TestError::Assertion)?;
+        GatewayIssuer::validate_csr(&csr_der)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         let leaf_der = issuer
             .issue(credential_id, &csr_der)
-            .map_err(|_| TestError::Assertion)?
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?
             .into_leaf_der();
-        let (remainder, certificate) =
-            parse_x509_certificate(&leaf_der).map_err(|_| TestError::Assertion)?;
+        let (remainder, certificate) = parse_x509_certificate(&leaf_der)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         if !remainder.is_empty()
             || certificate.subject().iter().next().is_some()
             || certificate.raw_serial() != credential_id.as_bytes()
@@ -422,35 +471,36 @@ mod tests {
             || certificate.validity().not_before.to_datetime() > issued_at - Duration::minutes(4)
             || certificate
                 .basic_constraints()
-                .map_err(|_| TestError::Assertion)?
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?
                 .is_none_or(|constraints| constraints.value.ca)
             || certificate
                 .key_usage()
-                .map_err(|_| TestError::Assertion)?
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?
                 .is_none_or(|usage| !usage.value.digital_signature())
             || certificate
                 .extended_key_usage()
-                .map_err(|_| TestError::Assertion)?
+                .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?
                 .is_none_or(|usage| !usage.value.server_auth || usage.value.client_auth)
         {
             return Err(TestError::Assertion);
         }
         let san = certificate
             .subject_alternative_name()
-            .map_err(|_| TestError::Assertion)?
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?
             .ok_or(TestError::Assertion)?;
         if san.value.general_names.as_slice() != [GeneralName::DNSName(GATEWAY_HOSTNAME)] {
             return Err(TestError::Assertion);
         }
         certificate
             .verify_signature(Some(ca_certificate(&ca)?.public_key()))
-            .map_err(|_| TestError::Assertion)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))
     }
 
     #[test]
     fn malformed_tampered_and_non_p256_csrs_are_rejected() -> Result<(), TestError> {
         let params = CertificateParams::default();
-        let p256_key = KeyPair::generate().map_err(|_| TestError::Setup)?;
+        let p256_key = KeyPair::generate()
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         let valid = csr(&params, &p256_key)?;
 
         let mut trailing = valid.clone();
@@ -458,8 +508,8 @@ mod tests {
         let mut tampered = valid;
         let last = tampered.last_mut().ok_or(TestError::Setup)?;
         *last ^= 1;
-        let p384_key =
-            KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384).map_err(|_| TestError::Setup)?;
+        let p384_key = KeyPair::generate_for(&PKCS_ECDSA_P384_SHA384)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         let p384 = csr(&params, &p384_key)?;
 
         for invalid in [
@@ -490,7 +540,7 @@ mod tests {
         )
         .err()
         .ok_or(TestError::Assertion)?;
-        if key_error != GatewayIssuerError::OriginCa {
+        if !matches!(key_error, GatewayIssuerError::InvalidOriginCa) {
             return Err(TestError::Assertion);
         }
 
@@ -519,23 +569,26 @@ mod tests {
 
         GatewayIssuer::load(&certificate_path, &key_path, &root_path, &site()?)
             .map(|_| ())
-            .map_err(|_| TestError::Assertion)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))
     }
 
     #[test]
     fn validation_does_not_increment_the_issue_counter() -> Result<(), TestError> {
-        let (issuer, issue_count) = GatewayIssuer::for_test().map_err(|_| TestError::Setup)?;
+        let (issuer, issue_count) = GatewayIssuer::for_test()
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         let params = CertificateParams::default();
-        let key = KeyPair::generate().map_err(|_| TestError::Setup)?;
+        let key = KeyPair::generate()
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         let csr_der = csr(&params, &key)?;
 
-        GatewayIssuer::validate_csr(&csr_der).map_err(|_| TestError::Assertion)?;
+        GatewayIssuer::validate_csr(&csr_der)
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         if issue_count.load(Ordering::Relaxed) != 0 {
             return Err(TestError::Assertion);
         }
         issuer
             .issue(Uuid::now_v7(), &csr_der)
-            .map_err(|_| TestError::Assertion)?;
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         if issue_count.load(Ordering::Relaxed) != 1 {
             return Err(TestError::Assertion);
         }
@@ -545,8 +598,8 @@ mod tests {
     fn ca_certificate(
         ca: &TestCa,
     ) -> Result<x509_parser::certificate::X509Certificate<'_>, TestError> {
-        let (remainder, certificate) =
-            parse_x509_certificate(ca.certificate_der.as_ref()).map_err(|_| TestError::Setup)?;
+        let (remainder, certificate) = parse_x509_certificate(ca.certificate_der.as_ref())
+            .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))?;
         if !remainder.is_empty() {
             return Err(TestError::Setup);
         }

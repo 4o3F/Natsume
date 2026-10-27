@@ -18,6 +18,7 @@ pub(in crate::component::operator) fn insert_session_if_current(
     identity: OperatorIdentity,
     expected_revision: i64,
 ) -> Result<usize, PersistenceError> {
+    // Raw SQL keeps the conditional INSERT ... SELECT and database-time expiry atomic.
     diesel::sql_query(
         "INSERT INTO operator_sessions \
          (session_credential_hash, operator_id, expires_at_unix_ms) \
@@ -28,7 +29,7 @@ pub(in crate::component::operator) fn insert_session_if_current(
     .bind::<Text, _>(identity.operator_id().to_string())
     .bind::<BigInt, _>(expected_revision)
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn delete_session_by_hash(
@@ -40,7 +41,7 @@ pub(in crate::component::operator) fn delete_session_by_hash(
             .filter(operator_sessions::session_credential_hash.eq(credential_hash.as_slice())),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn delete_sessions_by_operator(
@@ -51,5 +52,5 @@ pub(in crate::component::operator) fn delete_sessions_by_operator(
         operator_sessions::table.filter(operator_sessions::operator_id.eq(operator_id.to_string())),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

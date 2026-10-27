@@ -16,7 +16,7 @@ pub(in crate::component::home) fn device_exists(
         .first::<String>(transaction.connection())
         .optional()
         .map(|device_id| device_id.is_some())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::home) fn find_reset_epoch(
@@ -31,7 +31,7 @@ pub(in crate::component::home) fn find_reset_epoch(
         .filter(device_home_targets::device_id.eq(device_id.as_text()))
         .first::<(String, Option<i64>)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::home) fn list_reset_epochs(
@@ -43,7 +43,7 @@ pub(in crate::component::home) fn list_reset_epochs(
             device_home_targets::reset_epoch,
         ))
         .load(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::home) fn insert_target(
@@ -57,7 +57,7 @@ pub(in crate::component::home) fn insert_target(
             device_home_targets::reset_epoch.eq(reset_epoch),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::home) fn set_reset_epoch(
@@ -70,5 +70,5 @@ pub(in crate::component::home) fn set_reset_epoch(
     )
     .set(device_home_targets::reset_epoch.eq(Some(reset_epoch)))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

@@ -14,7 +14,7 @@ use crate::{
     },
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 #[tokio::test]
 async fn device_state_query_filters_at_the_server_and_preserves_records() -> TestResult {
@@ -31,7 +31,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
         ('01900000-0000-7000-8000-000000000001','11111111-1111-5111-8111-111111111111','strong','enabled',1),
         ('01900000-0000-7000-8000-000000000002','22222222-2222-5222-8222-222222222222','strong','disabled',1),
         ('01900000-0000-7000-8000-000000000003','33333333-3333-5333-8333-333333333333','strong','revoked',1);"
-    ).map_err(|_| PersistenceError::OperationFailed)).await.map_err(|error| format!("seed: {error:?}"))?;
+    ).map_err(PersistenceError::from)).await.map_err(crate::test_error::TestError::from)?;
     let application = router(server_state(&fixture)?, unused_web_root());
     let login = drive(
         &application,
@@ -41,7 +41,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("missing cookie")?;
+        .ok_or(crate::test_error::TestError::missing("missing cookie"))?;
     for (query, expected) in [
         ("?state=enabled", vec!["enabled"]),
         ("?state=disabled", vec!["disabled"]),
@@ -87,7 +87,7 @@ async fn device_state_query_filters_at_the_server_and_preserves_records() -> Tes
     // cannot break the enabled view. Viewers have the same read filter contract.
     fixture.database.write(|tx| tx.connection().batch_execute(
         "UPDATE devices SET machine_hardware_id='invalid' WHERE state='revoked'; UPDATE operator_accounts SET role='viewer';"
-    ).map_err(|_| PersistenceError::OperationFailed)).await.map_err(|error| format!("fixture update: {error:?}"))?;
+    ).map_err(PersistenceError::from)).await.map_err(crate::test_error::TestError::from)?;
     let response = drive(
         &application,
         cookie_request(Method::GET, "/api/v2/devices?state=enabled", cookie)?,

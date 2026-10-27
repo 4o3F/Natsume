@@ -19,7 +19,7 @@ pub(in crate::component::runtime) fn upsert(
         .set(runtime_config::domjudge_origin.eq(origin))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::runtime) fn read_all(
@@ -28,5 +28,5 @@ pub(in crate::component::runtime) fn read_all(
     runtime_config::table
         .select((runtime_config::singleton, runtime_config::domjudge_origin))
         .load(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }

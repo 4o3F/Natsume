@@ -1,4 +1,4 @@
-use std::{io, path::Path};
+use std::{io, path::Path, sync::Arc};
 
 use super::{
     ContestComponent, ExportError, OrganizationDetails,
@@ -18,7 +18,7 @@ pub(crate) struct LogoObservation {
     pub(crate) organization: OrganizationDetails,
     pub(crate) status: LogoStatus,
     pub(crate) files: Vec<String>,
-    pub(crate) detail: Option<String>,
+    pub(crate) failure: Option<Arc<LogoError>>,
 }
 
 impl ContestComponent {
@@ -30,6 +30,7 @@ impl ContestComponent {
             .image_work
             .clone()
             .try_acquire_owned()
+            // Capacity exhaustion is a domain rejection; semaphore detail does not change the decision.
             .map_err(|_| ExportError::Busy)?;
         let directory = self.logo_directory.clone();
         let validation = self.logo_validation.clone();
@@ -42,7 +43,9 @@ impl ContestComponent {
                 .collect())
         })
         .await
-        .map_err(|_| ExportError::Worker)?
+        .map_err(|source| ExportError::Worker {
+            source: source.into(),
+        })?
     }
 
     // Callers resolve a current or pending organization before reaching file IO.
@@ -55,7 +58,7 @@ impl ContestComponent {
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| ExportError::Worker)?;
+            .map_err(|source| ExportError::WorkerUnavailable { source })?;
         let directory = self.logo_directory.clone();
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
@@ -64,11 +67,13 @@ impl ContestComponent {
                 LogoMatch::Missing | LogoMatch::Ambiguous(_) => Err(ExportError::LogoUnavailable),
                 LogoMatch::Unique(path) => read_logo(&path)
                     .and_then(DecodedLogo::into_http)
-                    .map_err(|error| logo_error(&organization, &path, &error)),
+                    .map_err(|error| logo_error(&organization, &path, error)),
             }
         })
         .await
-        .map_err(|_| ExportError::Worker)?
+        .map_err(|source| ExportError::Worker {
+            source: source.into(),
+        })?
     }
 }
 
@@ -77,22 +82,19 @@ fn observe(
     organization: OrganizationDetails,
     validation: &LogoValidationCache,
 ) -> LogoObservation {
-    let (status, paths, detail) = match resolve(index, &organization) {
+    let (status, paths, failure) = match resolve(index, &organization) {
         LogoMatch::Missing => (LogoStatus::Missing, vec![], None),
         LogoMatch::Ambiguous(paths) => (LogoStatus::Ambiguous, paths, None),
         LogoMatch::Unique(path) => match validation.validate(&path) {
             Ok(()) => (LogoStatus::Available, vec![path], None),
-            Err(error) => {
-                tracing::warn!(organization_id = organization.organization_id, path = %path.display(), %error, "School logo could not be read");
-                (LogoStatus::Invalid, vec![path], Some(error))
-            }
+            Err(error) => (LogoStatus::Invalid, vec![path], Some(error)),
         },
     };
     LogoObservation {
         organization,
         status,
         files: paths.iter().map(|p| filename(p)).collect(),
-        detail,
+        failure,
     }
 }
 
@@ -100,10 +102,7 @@ pub(super) fn open_directory(path: &Path) -> Result<Option<LogoDirectory>, Expor
     match LogoDirectory::open(path) {
         Ok(index) => Ok(Some(index)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => {
-            tracing::error!(path = %path.display(), %error, "Cannot read school logo directory");
-            Err(ExportError::LogoDirectory)
-        }
+        Err(error) => Err(ExportError::LogoDirectory { source: error }),
     }
 }
 
@@ -123,12 +122,12 @@ pub(super) fn filename(path: &Path) -> String {
 pub(super) fn logo_error(
     school: &OrganizationDetails,
     path: &Path,
-    error: &LogoError,
+    error: LogoError,
 ) -> ExportError {
-    tracing::error!(organization_id = school.organization_id, path = %path.display(), %error, "School logo processing failed");
     ExportError::Logo {
         organization: format!("INST-{:03} {}", school.organization_id, school.key()),
         file: filename(path),
         reason: error.to_string(),
+        source: Box::new(error),
     }
 }

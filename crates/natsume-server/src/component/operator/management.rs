@@ -210,9 +210,11 @@ impl OperatorComponent {
                     operator_id: target,
                     reset_id: Uuid::now_v7(),
                     username: store::account_name(tx, target)?,
-                    expires_at_unix_ms: created
-                        .checked_add(RESET_TTL_MS)
-                        .ok_or(OperatorError::PersistenceFailed)?,
+                    expires_at_unix_ms: created.checked_add(RESET_TTL_MS).ok_or(
+                        OperatorError::PersistenceFailed {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        },
+                    )?,
                 };
                 links::insert_reset(tx, &reset, issuer_operator_id, &hash, created)?;
                 Ok::<_, OperatorError>(reset)
@@ -292,7 +294,9 @@ impl OperatorComponent {
             hash_password(&new_password).map(|hash| (hash, permit))
         })
         .await
-        .map_err(|_| OperatorError::PasswordTaskFailed)??;
+        .map_err(|source| OperatorError::PasswordTaskFailed {
+            source: source.into(),
+        })??;
         self.database
             .write(move |tx| {
                 change_password_hashed(tx, operator_id, revision, &password_hash)?;
@@ -318,7 +322,7 @@ fn confirmed_password(
 }
 
 fn mint(kind: LinkKind) -> Result<LinkToken, OperatorError> {
-    LinkToken::generate(kind).map_err(|_| OperatorError::EntropyUnavailable)
+    LinkToken::generate(kind).map_err(|source| OperatorError::EntropyUnavailable { source })
 }
 
 fn parse(kind: LinkKind, token: String) -> Result<LinkToken, OperatorError> {
@@ -328,6 +332,7 @@ fn parse(kind: LinkKind, token: String) -> Result<LinkToken, OperatorError> {
 fn password_permit() -> Result<SemaphorePermit<'static>, OperatorError> {
     SIGN_IN_GATE
         .try_acquire()
+        // Capacity exhaustion is a domain rejection; semaphore detail does not change the decision.
         .map_err(|_| OperatorError::SignInBusy)
 }
 
@@ -337,7 +342,9 @@ async fn hash_new_password(
 ) -> Result<(String, SemaphorePermit<'static>), OperatorError> {
     tokio::task::spawn_blocking(move || hash_password(&password).map(|hash| (hash, permit)))
         .await
-        .map_err(|_| OperatorError::PasswordTaskFailed)?
+        .map_err(|source| OperatorError::PasswordTaskFailed {
+            source: source.into(),
+        })?
 }
 
 // Links must not be issued by an ineligible persisted issuer, even by an
@@ -363,9 +370,11 @@ fn create_invitation(
         role,
         issuer_operator_id: issuer,
         created_at_unix_ms: created,
-        expires_at_unix_ms: created
-            .checked_add(INVITATION_TTL_MS)
-            .ok_or(OperatorError::PersistenceFailed)?,
+        expires_at_unix_ms: created.checked_add(INVITATION_TTL_MS).ok_or(
+            OperatorError::PersistenceFailed {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            },
+        )?,
     };
     links::insert_invitation(tx, &invitation, hash)?;
     Ok(invitation)

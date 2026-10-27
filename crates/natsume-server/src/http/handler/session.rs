@@ -1,28 +1,25 @@
+use crate::http::Routes;
+
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{FromRequest, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::component::operator::OperatorIdentity;
 
-use super::super::{AppState, cookie, error::ApiError, middleware};
+use super::super::{AppState, cookie, error::ApiError};
 
-pub(in crate::http) fn public_routes() -> Router<AppState> {
-    Router::new()
-        .route("/session", post(create_session))
-        .route("/session", delete(delete_session))
+pub(in crate::http) fn public_routes() -> Routes {
+    vec![("/session", post(create_session).delete(delete_session))]
 }
 
-pub(in crate::http) fn protected_routes(state: AppState) -> Router<AppState> {
-    Router::new().route(
-        "/session",
-        middleware::require_operator(state, get(read_session)),
-    )
+pub(in crate::http) fn operator_routes() -> Routes {
+    vec![("/session", get(read_session))]
 }
 
 #[derive(Deserialize, specta::Type)]
@@ -55,8 +52,12 @@ pub(crate) async fn create_session(State(state): State<AppState>, request: Reque
         Err(error) => return ApiError::from_operator(error).into_response(),
     };
     let wire_credential = signed_in.wire_credential();
-    let Ok(session_cookie) = cookie::issue_session_credential(wire_credential.expose()) else {
-        return ApiError::internal_error("session_cookie_issuance_failed").into_response();
+    let session_cookie = match cookie::issue_session_credential(wire_credential.expose()) {
+        Ok(value) => value,
+        Err(error) => {
+            return ApiError::internal_error_from(&error, "session_cookie_issuance_failed")
+                .into_response();
+        }
     };
     identity_response(&state, signed_in.identity(), Some(session_cookie)).await
 }
@@ -76,8 +77,8 @@ pub(crate) async fn delete_session(State(state): State<AppState>, headers: Heade
         },
         Err(()) => StatusCode::NO_CONTENT.into_response(),
     };
-    cookie::with_clearing_session_cookie(response).unwrap_or_else(|()| {
-        ApiError::internal_error("session_clearing_cookie_failed").into_response()
+    cookie::with_clearing_session_cookie(response).unwrap_or_else(|error| {
+        ApiError::internal_error_from(&error, "session_clearing_cookie_failed").into_response()
     })
 }
 

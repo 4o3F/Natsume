@@ -78,7 +78,13 @@ impl PrintComponent {
     pub(crate) fn admit_pairing(&self, source: IpAddr) -> Result<(), PrintError> {
         self.pairing_limits
             .lock()
-            .map_err(|_| PrintError::Persistence)?
+            // Never retain the guard state; preserve the safe native poison diagnostic.
+            .map_err(|source| {
+                drop(source.into_inner());
+                PrintError::StatePoisoned {
+                    source: std::sync::PoisonError::new(()),
+                }
+            })?
             .check(source, Instant::now())
     }
 
@@ -110,7 +116,7 @@ impl PrintComponent {
     ) -> Result<PrintPairingCode, PrintError> {
         canonical_id(&id)?;
         let mut random = [0; 8];
-        getrandom::fill(&mut random).map_err(|_| PrintError::Persistence)?;
+        getrandom::fill(&mut random).map_err(|source| PrintError::Entropy { source })?;
         // Each uniformly random byte selects one of 32 symbols without modulo bias.
         let raw: String = random
             .iter()
@@ -144,7 +150,7 @@ impl PrintComponent {
         let code_hash: [u8; 32] = Sha256::digest(normalized.as_bytes()).into();
         let client_id = Uuid::now_v7().to_string();
         let mut secret = [0; 32];
-        getrandom::fill(&mut secret).map_err(|_| PrintError::Persistence)?;
+        getrandom::fill(&mut secret).map_err(|source| PrintError::Entropy { source })?;
         let token = format!("npc1.{client_id}.{}", hex::encode(secret));
         let token_hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         self.database

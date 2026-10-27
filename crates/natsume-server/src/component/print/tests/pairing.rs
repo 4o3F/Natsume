@@ -324,15 +324,15 @@ fn source_limit_blocks_for_sixty_seconds_without_blocking_other_sources() {
     for _ in 0..5 {
         assert!(limits.check(first, now).is_ok());
     }
-    assert_eq!(
+    assert!(matches!(
         limits.check(first, now + Duration::from_secs(30)),
         Err(PrintError::RateLimited)
-    );
+    ));
     assert!(limits.check(second, now + Duration::from_secs(30)).is_ok());
-    assert_eq!(
+    assert!(matches!(
         limits.check(first, now + Duration::from_secs(89)),
         Err(PrintError::RateLimited)
-    );
+    ));
     assert!(limits.check(first, now + Duration::from_secs(90)).is_ok());
 }
 
@@ -344,10 +344,10 @@ fn ipv4_mapped_ipv6_cannot_bypass_the_source_limit() {
     for _ in 0..5 {
         assert!(limits.check(IpAddr::V4(ipv4), now).is_ok());
     }
-    assert_eq!(
+    assert!(matches!(
         limits.check(IpAddr::V6(ipv4.to_ipv6_mapped()), now),
         Err(PrintError::RateLimited)
-    );
+    ));
 }
 
 #[test]
@@ -360,13 +360,13 @@ fn global_limit_is_shared_and_has_a_sixty_second_cooldown() {
         }
     }
     let next = IpAddr::from([192, 0, 2, 13]);
-    assert_eq!(
+    assert!(matches!(
         limits.check(next, now + Duration::from_secs(10)),
         Err(PrintError::RateLimited)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         limits.check(next, now + Duration::from_secs(69)),
         Err(PrintError::RateLimited)
-    );
+    ));
     assert!(limits.check(next, now + Duration::from_secs(70)).is_ok());
 }

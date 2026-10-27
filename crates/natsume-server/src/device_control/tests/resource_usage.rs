@@ -16,7 +16,7 @@ use crate::{
     tls::{PeerAddress, TlsListener, tests::TestIdentity},
 };
 
-type ProbeResult<T = ()> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type ProbeResult<T = ()> = Result<T, crate::test_error::TestError>;
 
 async fn activate_device(
     fixture: &Fixture,
@@ -25,8 +25,10 @@ async fn activate_device(
 ) -> ProbeResult<(DeviceId, String)> {
     let hardware = Uuid::new_v5(&Uuid::NAMESPACE_OID, &index.to_le_bytes()).to_string();
     let evidence = ValidatedEnrollmentEvidence::new(
-        MachineHardwareId::parse(&hardware).ok_or("hardware ID")?,
-        ControlPublicKey::parse(&key.verifying_key().to_bytes()).ok_or("control key")?,
+        MachineHardwareId::parse(&hardware)
+            .ok_or(crate::test_error::TestError::missing("hardware ID"))?,
+        ControlPublicKey::parse(&key.verifying_key().to_bytes())
+            .ok_or(crate::test_error::TestError::missing("control key"))?,
         EvidenceQuality::Strong,
         "2.10.3".to_owned(),
         "2.10.3".to_owned(),
@@ -36,16 +38,18 @@ async fn activate_device(
         .device()
         .start_enrollment(evidence)
         .await
-        .map_err(|error| format!("enrollment start: {error:?}"))?
+        .map_err(crate::test_error::TestError::from)?
     else {
-        return Err("unexpected authority replay".into());
+        return Err(crate::test_error::TestError::missing(
+            "unexpected authority replay",
+        ));
     };
     let approval = fixture
         .state
         .device()
         .approve_enrollment(review.review_id())
         .await
-        .map_err(|error| format!("enrollment approval: {error:?}"))?;
+        .map_err(crate::test_error::TestError::from)?;
     let authority = approval.authority();
     approval.complete();
     assert!(activation.await?.is_ok());
@@ -73,7 +77,7 @@ async fn resume_socket(
     let Some(server_handshake_envelope::Body::ServerChallenge(challenge)) =
         receive_handshake(&mut socket).await.body
     else {
-        return Err("missing challenge".into());
+        return Err(crate::test_error::TestError::missing("missing challenge"));
     };
     let proof = sign_client_proof(
         key,
@@ -99,7 +103,9 @@ async fn resume_socket(
     let Some(server_handshake_envelope::Body::SessionReady(ready)) =
         receive_handshake(&mut socket).await.body
     else {
-        return Err("resume was not activated".into());
+        return Err(crate::test_error::TestError::missing(
+            "resume was not activated",
+        ));
     };
     socket
         .send(ClientMessage::Binary(
@@ -130,7 +136,7 @@ async fn keep_alive(
             _ = stop.changed() => { socket.close(None).await?; return Ok(()); }
             _ = interval.tick() => {
                 if let Some(started) = outstanding {
-                    if started.elapsed() > Duration::from_secs(5) { return Err("heartbeat exceeded existing five-second test bound".into()); }
+                    if started.elapsed() > Duration::from_secs(5) { return Err(crate::test_error::TestError::missing("heartbeat exceeded existing five-second test bound")); }
                 } else {
                     let started = Instant::now();
                     socket.send(ClientMessage::Ping(session.clone().into())).await?;
@@ -145,7 +151,7 @@ async fn keep_alive(
                 }
                 Some(Ok(ClientMessage::Binary(_))) => {},
                 Some(Ok(ClientMessage::Ping(payload))) => socket.send(ClientMessage::Pong(payload)).await?,
-                other => return Err(format!("unexpected control connection end: {other:?}").into()),
+                _ => return Err(crate::test_error::TestError::missing("live control connection")),
             }
         }
     }
@@ -154,7 +160,7 @@ async fn keep_alive(
 fn report(label: &str, samples: &mut [Duration]) {
     samples.sort_unstable();
     if !samples.is_empty() {
-        eprintln!(
+        tracing::info!(
             "{label}: samples={}, p50={:?}, p95={:?}, max={:?}",
             samples.len(),
             samples[(samples.len() - 1) / 2],
@@ -172,7 +178,8 @@ async fn measure_import_and_target_burst_with_six_hundred_tls_control_connection
 
 async fn run_mixed_probe() -> ProbeResult {
     let fixture = Fixture::new().await;
-    let identity = TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| "TLS test identity")?;
+    let identity =
+        TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(crate::test_error::TestError::from)?;
     let listener = TlsListener::bind(
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         identity.certificate_path(),
@@ -230,7 +237,7 @@ async fn run_mixed_probe() -> ProbeResult {
             .len(),
         600
     );
-    eprintln!("600 TLS 1.3 / authenticated WSS connections active");
+    tracing::info!("600 TLS 1.3 / authenticated WSS connections active");
     exercise_mixed_load(&fixture, &ids, &heartbeat_samples).await?;
     assert_eq!(
         fixture
@@ -259,7 +266,7 @@ async fn run_mixed_probe() -> ProbeResult {
         .lines()
         .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
     {
-        eprintln!("{line}");
+        tracing::info!("{line}");
     }
     let _ = shutdown.send(());
     timeout(Duration::from_secs(10), server).await???;
@@ -281,7 +288,7 @@ async fn observe_status(
                 .device_control()
                 .read_device_status(device)
                 .await
-                .map_err(|_| "device status query failed")?
+                .map_err(crate::test_error::TestError::from)?
                 .is_some()
         );
         samples.push(started.elapsed());
@@ -312,7 +319,7 @@ async fn exercise_mixed_load(
             .try_begin()?
             .create_candidate(&bytes)
             .await?;
-        fixture
+        let change = fixture
             .state
             .import()
             .try_begin()?
@@ -322,16 +329,16 @@ async fn exercise_mixed_load(
                 &bytes,
             )
             .await?;
-        fixture.state.device_control().dirty_all_devices().await;
-        eprintln!("preview + commit: {:?}", started.elapsed());
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        fixture.state.device_control().publish(change).await;
+        tracing::info!("preview + commit: {:?}", started.elapsed());
+        Ok::<_, crate::test_error::TestError>(())
     };
     let submitting = async {
         let mut jobs = Vec::new();
         for _ in 0..10 {
             jobs.push(async {
                 let started = Instant::now();
-                let result = fixture
+                let (result, change) = fixture
                     .state
                     .target_submission()
                     .submit(
@@ -345,19 +352,19 @@ async fn exercise_mixed_load(
                     .await?;
                 assert_eq!(result.results.len(), 600);
                 assert!(result.results.iter().all(|row| row.rejection.is_none()));
-                fixture.state.device_control().dirty_devices(ids).await;
-                Ok::<_, Box<dyn std::error::Error + Send + Sync>>(started.elapsed())
+                fixture.state.device_control().publish(change).await;
+                Ok::<_, crate::test_error::TestError>(started.elapsed())
             });
         }
         let mut samples = futures_util::future::try_join_all(jobs).await?;
         report("ten simultaneous 600-device submissions", &mut samples);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        Ok::<_, crate::test_error::TestError>(())
     };
     let (finished, completed) = watch::channel(false);
     let operations = async {
         tokio::try_join!(importing, submitting)?;
         finished.send(true)?;
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        Ok::<_, crate::test_error::TestError>(())
     };
     let observing = async {
         let mut samples = Vec::new();
@@ -367,7 +374,7 @@ async fn exercise_mixed_load(
             samples.extend(observe_status(fixture, ids[0], 1, Duration::from_millis(100)).await?);
         }
         report("single-device status during import/burst", &mut samples);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        Ok::<_, crate::test_error::TestError>(())
     };
     tokio::try_join!(operations, observing)?;
     Ok(())

@@ -65,7 +65,7 @@ pub(in crate::component::binding) fn find_device_state(
         .filter(devices::device_id.eq(device_id.as_text()))
         .first::<String>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn device_has_binding(
@@ -76,7 +76,7 @@ pub(in crate::component::binding) fn device_has_binding(
         device_bindings::table.filter(device_bindings::device_id.eq(device_id.as_text())),
     ))
     .get_result::<bool>(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn find_negotiation(
@@ -93,7 +93,7 @@ pub(in crate::component::binding) fn find_negotiation(
         .filter(binding_negotiations::device_id.eq(device_id.as_text()))
         .first::<PersistedNegotiation>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(parse_negotiation)
         .transpose()
 }
@@ -112,7 +112,7 @@ pub(in crate::component::binding) fn list_negotiations(
         .load::<(String, String, Option<i64>, Option<String>, Option<String>)>(
             transaction.connection(),
         )
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .into_iter()
         .map(
             |(device_id, negotiation_id, submission_epoch, seat_code, evaluation_error_code)| {
@@ -140,7 +140,7 @@ pub(in crate::component::binding) fn insert_negotiation(
             binding_negotiations::negotiation_id.eq(negotiation_id.hyphenated().to_string()),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn store_evaluation(
@@ -153,7 +153,7 @@ pub(in crate::component::binding) fn store_evaluation(
 ) -> Result<usize, PersistenceError> {
     require_uuid_v7(negotiation_id)?;
     if submission_epoch < 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     diesel::update(
         binding_negotiations::table
@@ -173,7 +173,7 @@ pub(in crate::component::binding) fn store_evaluation(
         binding_negotiations::evaluation_error_code.eq(Some(evaluation_error_code)),
     ))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn find_submission_seat(
@@ -185,7 +185,7 @@ pub(in crate::component::binding) fn find_submission_seat(
         .filter(seats::seat_code.eq(seat_code))
         .first::<String>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
     else {
         return Ok(None);
     };
@@ -195,7 +195,7 @@ pub(in crate::component::binding) fn find_submission_seat(
         .filter(account_mappings::seat_id.eq(seat_id.hyphenated().to_string()))
         .first::<String>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(|value| canonical_uuid_v7(&value))
         .transpose()?;
     let occupied = diesel::select(exists(
@@ -203,7 +203,7 @@ pub(in crate::component::binding) fn find_submission_seat(
             .filter(device_bindings::seat_id.eq(seat_id.hyphenated().to_string())),
     ))
     .get_result::<bool>(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)?;
+    .map_err(PersistenceError::from)?;
     Ok(Some(PersistedSubmissionSeatRow {
         seat_id,
         mapped: account_id.is_some(),
@@ -225,7 +225,7 @@ pub(in crate::component::binding) fn delete_negotiation(
             ),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn insert_binding(
@@ -243,7 +243,7 @@ pub(in crate::component::binding) fn insert_binding(
             device_bindings::seat_id.eq(seat_id.hyphenated().to_string()),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn delete_binding(
@@ -254,7 +254,7 @@ pub(in crate::component::binding) fn delete_binding(
         device_bindings::table.filter(device_bindings::device_id.eq(device_id.as_text())),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::binding) fn find_bound_target(
@@ -272,8 +272,8 @@ pub(in crate::component::binding) fn find_bound_target(
         .filter(server_vault_records::account_id.eq(context.account_id.hyphenated().to_string()))
         .first::<(Vec<u8>, Vec<u8>)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
-        .ok_or(PersistenceError::InvalidPersistedData)?;
+        .map_err(PersistenceError::from)?
+        .ok_or(PersistenceError::invalid("persisted value"))?;
     let (organization_id, team_name_zh, team_name_en, school_name_zh, school_name_en) =
         teams::table
             .inner_join(organizations::table)
@@ -287,8 +287,8 @@ pub(in crate::component::binding) fn find_bound_target(
             ))
             .first::<(i64, String, String, String, String)>(transaction.connection())
             .optional()
-            .map_err(|_| PersistenceError::OperationFailed)?
-            .ok_or(PersistenceError::InvalidPersistedData)?;
+            .map_err(PersistenceError::from)?
+            .ok_or(PersistenceError::invalid("persisted value"))?;
     if organization_id < 1
         || (team_name_zh.is_empty() && team_name_en.is_empty())
         || (school_name_zh.is_empty() && school_name_en.is_empty())
@@ -303,7 +303,7 @@ pub(in crate::component::binding) fn find_bound_target(
             name.len() > 1024 || name.trim() != name.as_str() || name.chars().any(char::is_control)
         })
     {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     let presentation = super::BindingPresentation {
         organization_id,
@@ -334,7 +334,7 @@ pub(in crate::component::binding) fn find_bound_context(
         .filter(device_bindings::device_id.eq(device_id.as_text()))
         .first::<(String, String, String)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
     else {
         return Ok(None);
     };
@@ -345,18 +345,18 @@ pub(in crate::component::binding) fn find_bound_context(
         .filter(account_mappings::seat_id.eq(seat_id.hyphenated().to_string()))
         .first::<String>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
-        .ok_or(PersistenceError::InvalidPersistedData)?;
+        .map_err(PersistenceError::from)?
+        .ok_or(PersistenceError::invalid("persisted value"))?;
     let account_id = canonical_uuid_v7(&account_id)?;
     let (domjudge_username, credential_revision) = accounts::table
         .select((accounts::domjudge_username, accounts::credential_revision))
         .filter(accounts::account_id.eq(account_id.hyphenated().to_string()))
         .first::<(String, i64)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
-        .ok_or(PersistenceError::InvalidPersistedData)?;
+        .map_err(PersistenceError::from)?
+        .ok_or(PersistenceError::invalid("persisted value"))?;
     if credential_revision < 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     Ok(Some(PersistedBoundContextRow {
         binding_id,
@@ -384,7 +384,7 @@ pub(in crate::component::binding) fn list_bound_contexts(
             accounts::credential_revision.nullable(),
         ))
         .load::<PersistedBoundContext>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .into_iter()
         .map(parse_bound_context)
         .collect()
@@ -403,16 +403,18 @@ fn parse_bound_context(
 ) -> Result<(String, PersistedBoundContextRow), PersistenceError> {
     let binding_id = canonical_uuid_v7(&binding_id)?;
     let _seat_id = canonical_uuid_v7(&seat_id)?;
-    let seat_code = seat_code.ok_or(PersistenceError::InvalidPersistedData)?;
+    let seat_code = seat_code.ok_or(PersistenceError::invalid("persisted value"))?;
     let account_id = canonical_uuid_v7(
         account_id
             .as_deref()
-            .ok_or(PersistenceError::InvalidPersistedData)?,
+            .ok_or(PersistenceError::invalid("persisted value"))?,
     )?;
-    let domjudge_username = domjudge_username.ok_or(PersistenceError::InvalidPersistedData)?;
-    let credential_revision = credential_revision.ok_or(PersistenceError::InvalidPersistedData)?;
+    let domjudge_username =
+        domjudge_username.ok_or(PersistenceError::invalid("persisted value"))?;
+    let credential_revision =
+        credential_revision.ok_or(PersistenceError::invalid("persisted value"))?;
     if credential_revision < 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     Ok((
         device_id,
@@ -441,7 +443,7 @@ fn parse_negotiation(
                 evaluation_error_code,
             })
         }
-        _ => return Err(PersistenceError::InvalidPersistedData),
+        _ => return Err(PersistenceError::invalid("persisted value")),
     };
     Ok(PersistedNegotiationRow {
         negotiation_id,
@@ -450,10 +452,13 @@ fn parse_negotiation(
 }
 
 fn canonical_uuid_v7(value: &str) -> Result<Uuid, PersistenceError> {
-    let parsed = Uuid::parse_str(value).map_err(|_| PersistenceError::InvalidPersistedData)?;
+    let parsed = Uuid::parse_str(value).map_err(|source| PersistenceError::Uuid {
+        field: "identifier",
+        source,
+    })?;
     require_uuid_v7(parsed)?;
     if parsed.hyphenated().to_string() != value {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     Ok(parsed)
 }
@@ -462,6 +467,6 @@ fn require_uuid_v7(value: Uuid) -> Result<(), PersistenceError> {
     if value.get_version() == Some(Version::SortRand) && value.get_variant() == Variant::RFC4122 {
         Ok(())
     } else {
-        Err(PersistenceError::InvalidPersistedData)
+        Err(PersistenceError::invalid("persisted value"))
     }
 }

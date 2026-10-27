@@ -31,7 +31,7 @@ pub(crate) fn ensure_master_key(master_key_path: &Path) -> Result<(), VaultError
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             create_master_key(master_key_path)?
         }
-        Err(_) => return Err(VaultError::InvalidExistingKey),
+        Err(source) => return Err(VaultError::Read { source }),
     };
     drop(master_key);
     Ok(())
@@ -46,7 +46,7 @@ pub(crate) fn load(master_key_path: &Path) -> Result<VaultSession, VaultError> {
     let file = OpenOptions::new()
         .read(true)
         .open(master_key_path)
-        .map_err(|_| VaultError::InvalidExistingKey)?;
+        .map_err(|source| VaultError::Read { source })?;
     Ok(VaultSession {
         master_key: read_existing_key(file)?,
     })
@@ -59,10 +59,11 @@ impl VaultSession {
     ) -> Result<([u8; RECORD_NONCE_LENGTH], Vec<u8>), VaultError> {
         let cipher = XChaCha20Poly1305::new(self.master_key.expose().into());
         let mut nonce_bytes = [0_u8; RECORD_NONCE_LENGTH];
-        getrandom::fill(&mut nonce_bytes).map_err(|_| VaultError::EntropyUnavailable)?;
+        getrandom::fill(&mut nonce_bytes)
+            .map_err(|source| VaultError::EntropyUnavailable { source })?;
         let ciphertext = cipher
             .encrypt(&XNonce::from(nonce_bytes), plaintext)
-            .map_err(|_| VaultError::RecordSealFailed)?;
+            .map_err(|source| VaultError::RecordSealFailed { source })?;
         Ok((nonce_bytes, ciphertext))
     }
 
@@ -71,13 +72,14 @@ impl VaultSession {
         nonce: &[u8],
         ciphertext: &[u8],
     ) -> Result<Zeroizing<Vec<u8>>, VaultError> {
-        let nonce_bytes: [u8; RECORD_NONCE_LENGTH] =
-            nonce.try_into().map_err(|_| VaultError::RecordOpenFailed)?;
+        let nonce_bytes: [u8; RECORD_NONCE_LENGTH] = nonce
+            .try_into()
+            .map_err(|source| VaultError::NonceLength { source })?;
         let cipher = XChaCha20Poly1305::new(self.master_key.expose().into());
         cipher
             .decrypt(&XNonce::from(nonce_bytes), ciphertext)
             .map(Zeroizing::new)
-            .map_err(|_| VaultError::RecordOpenFailed)
+            .map_err(|source| VaultError::RecordOpenFailed { source })
     }
 }
 
@@ -90,7 +92,8 @@ impl VaultMasterKey {
         let mut key = Self {
             bytes: [0; MASTER_KEY_LENGTH],
         };
-        getrandom::fill(&mut key.bytes).map_err(|_| VaultError::EntropyUnavailable)?;
+        getrandom::fill(&mut key.bytes)
+            .map_err(|source| VaultError::EntropyUnavailable { source })?;
         Ok(key)
     }
 
@@ -119,7 +122,7 @@ fn validate_private_directory(master_key_path: &Path) -> Result<(), VaultError> 
     let parent = master_key_path
         .parent()
         .ok_or(VaultError::InvalidExistingKey)?;
-    let metadata = fs::metadata(parent).map_err(|_| VaultError::InvalidExistingKey)?;
+    let metadata = fs::metadata(parent).map_err(|source| VaultError::Read { source })?;
     if !metadata.is_dir() {
         return Err(VaultError::InvalidExistingKey);
     }
@@ -132,7 +135,7 @@ fn validate_private_directory(master_key_path: &Path) -> Result<(), VaultError> 
 fn read_existing_key(mut file: File) -> Result<VaultMasterKey, VaultError> {
     let metadata = file
         .metadata()
-        .map_err(|_| VaultError::InvalidExistingKey)?;
+        .map_err(|source| VaultError::Read { source })?;
     if !metadata.is_file() {
         return Err(VaultError::InvalidExistingKey);
     }
@@ -142,11 +145,12 @@ fn read_existing_key(mut file: File) -> Result<VaultMasterKey, VaultError> {
 
     let mut key = VaultMasterKey::empty();
     file.read_exact(key.expose_mut())
-        .map_err(|_| VaultError::InvalidExistingKey)?;
+        .map_err(|source| VaultError::Read { source })?;
     let mut extra = [0_u8; 1];
     match file.read(&mut extra) {
         Ok(0) => Ok(key),
-        Ok(_) | Err(_) => Err(VaultError::InvalidExistingKey),
+        Ok(_) => Err(VaultError::InvalidExistingKey),
+        Err(source) => Err(VaultError::Read { source }),
     }
 }
 
@@ -156,7 +160,7 @@ fn create_master_key(master_key_path: &Path) -> Result<VaultMasterKey, VaultErro
     match OpenOptions::new().read(true).open(master_key_path) {
         Ok(file) => return read_existing_key(file),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err(VaultError::InvalidExistingKey),
+        Err(source) => return Err(VaultError::Read { source }),
     }
 
     let key = VaultMasterKey::generate()?;
@@ -179,7 +183,7 @@ impl TemporaryKeyFile {
             .create_new(true)
             .mode(0o600)
             .open(&path)
-            .map_err(|_| VaultError::PersistenceFailed)?;
+            .map_err(|source| VaultError::PersistenceFailed { source })?;
         Ok(Self {
             path,
             file: Some(file),
@@ -188,15 +192,22 @@ impl TemporaryKeyFile {
     }
 
     fn write_and_sync(&mut self, key: &[u8; MASTER_KEY_LENGTH]) -> Result<(), VaultError> {
-        let file = self.file.as_mut().ok_or(VaultError::PersistenceFailed)?;
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| VaultError::PersistenceFailed {
+                source: std::io::Error::other("temporary key file already closed"),
+            })?;
         file.write_all(key)
-            .map_err(|_| VaultError::PersistenceFailed)?;
-        file.sync_all().map_err(|_| VaultError::PersistenceFailed)
+            .map_err(|source| VaultError::PersistenceFailed { source })?;
+        file.sync_all()
+            .map_err(|source| VaultError::PersistenceFailed { source })
     }
 
     fn install(&mut self, master_key_path: &Path) -> Result<(), VaultError> {
         drop(self.file.take());
-        fs::rename(&self.path, master_key_path).map_err(|_| VaultError::PersistenceFailed)?;
+        fs::rename(&self.path, master_key_path)
+            .map_err(|source| VaultError::PersistenceFailed { source })?;
         self.installed = true;
         Ok(())
     }
@@ -204,8 +215,10 @@ impl TemporaryKeyFile {
 
 impl Drop for TemporaryKeyFile {
     fn drop(&mut self) {
-        if !self.installed && fs::remove_file(&self.path).is_err() {
-            tracing::error!("vault temporary key file cleanup failed");
+        if !self.installed
+            && let Err(error) = fs::remove_file(&self.path)
+        {
+            tracing::error!(error = %snafu::Report::from_error(error), "vault temporary key file cleanup failed");
         }
     }
 }
@@ -217,25 +230,37 @@ fn temporary_key_path(master_key_path: &Path) -> PathBuf {
 fn sync_parent_directory(master_key_path: &Path) -> Result<(), VaultError> {
     let parent = master_key_path
         .parent()
-        .ok_or(VaultError::PersistenceFailed)?;
+        .ok_or_else(|| VaultError::PersistenceFailed {
+            source: std::io::Error::other("temporary key file already closed"),
+        })?;
     File::open(parent)
         .and_then(|directory| directory.sync_all())
-        .map_err(|_| VaultError::PersistenceFailed)
+        .map_err(|source| VaultError::PersistenceFailed { source })
 }
 
 /// Redacted vault master-key lifecycle failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum VaultError {
     #[snafu(display("the existing vault master key is invalid"))]
     InvalidExistingKey,
+    #[snafu(display("the existing vault master key is invalid"))]
+    Read { source: std::io::Error },
     #[snafu(display("operating-system entropy is unavailable"))]
-    EntropyUnavailable,
+    EntropyUnavailable { source: getrandom::Error },
     #[snafu(display("the vault master key could not be persisted"))]
-    PersistenceFailed,
+    PersistenceFailed { source: std::io::Error },
     #[snafu(display("the vault record could not be sealed"))]
-    RecordSealFailed,
+    RecordSealFailed {
+        source: chacha20poly1305::aead::Error,
+    },
     #[snafu(display("the vault record could not be opened"))]
-    RecordOpenFailed,
+    RecordOpenFailed {
+        source: chacha20poly1305::aead::Error,
+    },
+    #[snafu(display("the vault record could not be opened"))]
+    NonceLength {
+        source: std::array::TryFromSliceError,
+    },
 }
 
 #[cfg(test)]
@@ -267,25 +292,27 @@ mod tests {
     fn vault_records_round_trip_and_authenticate_nonce_and_ciphertext() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        let session = load(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let session = load(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let plaintext = b"vault-record-plaintext-canary";
 
         let (nonce, ciphertext) = session
             .seal(plaintext)
-            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if ciphertext.as_slice() == plaintext {
             return Err(TestFailure::CiphertextMatchedPlaintext);
         }
         let (second_nonce, second_ciphertext) = session
             .seal(plaintext)
-            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if second_nonce == nonce || second_ciphertext == ciphertext {
             return Err(TestFailure::RecordSealWasReused);
         }
         let opened = session
             .open(&nonce, &ciphertext)
-            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if opened.as_slice() != plaintext {
             return Err(TestFailure::UnexpectedVaultFailure);
         }
@@ -312,17 +339,20 @@ mod tests {
     fn vault_session_reuses_one_loaded_master_key() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        let session = load(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        fs::remove_file(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let session = load(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        fs::remove_file(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
         let plaintext = b"single-load-vault-session-canary";
         let (nonce, ciphertext) = session
             .seal(plaintext)
-            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let opened = session
             .open(&nonce, &ciphertext)
-            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if opened.as_slice() != plaintext {
             return Err(TestFailure::UnexpectedVaultFailure);
         }
@@ -334,9 +364,11 @@ mod tests {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
 
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
-        let metadata = fs::metadata(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+        let metadata = fs::metadata(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if metadata.len() != MASTER_KEY_LENGTH as u64 {
             return Err(TestFailure::UnexpectedKeyLength);
         }
@@ -352,9 +384,11 @@ mod tests {
         let directory = TestDirectory::new(0o700)?;
         let temporary_path = directory.path.join("cleanup-failure-canary.tmp");
         let temporary = TemporaryKeyFile::claim(temporary_path.clone())
-            .map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        fs::remove_file(&temporary_path).map_err(|_| TestFailure::FixtureIoFailed)?;
-        fs::create_dir(&temporary_path).map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        fs::remove_file(&temporary_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        fs::create_dir(&temporary_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
         let captured = CapturedLogs::default();
         let subscriber = captured.subscriber(LogLevel::Error);
@@ -377,20 +411,26 @@ mod tests {
     fn second_open_reads_without_rewriting() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        let content_before =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let content_before = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         let modified_before = fs::metadata(&key_path)
             .and_then(|metadata| metadata.modified())
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
-        let content_after =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        let content_after = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         let modified_after = fs::metadata(&key_path)
             .and_then(|metadata| metadata.modified())
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if content_before.as_slice() != content_after.as_slice() {
             return Err(TestFailure::ExistingKeyWasRewritten);
         }
@@ -404,20 +444,28 @@ mod tests {
     fn load_reads_without_rewriting() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        let content_before =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let content_before = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         let modified_before = fs::metadata(&key_path)
             .and_then(|metadata| metadata.modified())
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
-        drop(load(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?);
+        drop(
+            load(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
 
-        let content_after =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        let content_after = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         let modified_after = fs::metadata(&key_path)
             .and_then(|metadata| metadata.modified())
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if content_before.as_slice() != content_after.as_slice()
             || modified_before != modified_after
         {
@@ -435,7 +483,7 @@ mod tests {
         let Err(error) = load(&key_path) else {
             return Err(TestFailure::ExpectedVaultFailure);
         };
-        if error != VaultError::InvalidExistingKey {
+        if !matches!(error, VaultError::Read { .. }) {
             return Err(TestFailure::UnexpectedVaultFailure);
         }
         if key_path.exists() || temporary_path.exists() {
@@ -449,7 +497,12 @@ mod tests {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
         install_key_fixture(&key_path, &[0_u8; MASTER_KEY_LENGTH - 1], 0o600)?;
-        assert_vault_error(&key_path, VaultError::InvalidExistingKey)
+        assert_vault_error(
+            &key_path,
+            &VaultError::Read {
+                source: std::io::ErrorKind::UnexpectedEof.into(),
+            },
+        )
     }
 
     #[test]
@@ -457,14 +510,14 @@ mod tests {
         let directory = TestDirectory::new(0o700)?;
         let key_path = directory.path.join("master.key");
         install_key_fixture(&key_path, &[0_u8; MASTER_KEY_LENGTH], 0o644)?;
-        assert_vault_error(&key_path, VaultError::InvalidExistingKey)
+        assert_vault_error(&key_path, &VaultError::InvalidExistingKey)
     }
 
     #[test]
     fn wide_directory_mode_fails_closed() -> Result<(), TestFailure> {
         let directory = TestDirectory::new(0o755)?;
         let key_path = directory.path.join("master.key");
-        assert_vault_error(&key_path, VaultError::InvalidExistingKey)
+        assert_vault_error(&key_path, &VaultError::InvalidExistingKey)
     }
 
     #[test]
@@ -475,7 +528,12 @@ mod tests {
             let temporary_path = temporary_key_path(&key_path);
             install_key_fixture(&temporary_path, b"stale temporary contents", mode)?;
 
-            assert_vault_error(&key_path, VaultError::PersistenceFailed)?;
+            assert_vault_error(
+                &key_path,
+                &VaultError::PersistenceFailed {
+                    source: std::io::ErrorKind::AlreadyExists.into(),
+                },
+            )?;
             if key_path.exists() || !temporary_path.exists() {
                 return Err(TestFailure::StaleTemporaryFileWasPromoted);
             }
@@ -503,24 +561,34 @@ mod tests {
         });
         barrier.wait();
 
-        let first_result = first.join().map_err(|_| TestFailure::ThreadFailed)?;
-        let second_result = second.join().map_err(|_| TestFailure::ThreadFailed)?;
+        let first_result = first
+            .join()
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let second_result = second
+            .join()
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if first_result.is_err() && second_result.is_err() {
             return Err(TestFailure::ConcurrentFirstStartFailed);
         }
 
-        let content_before =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        let content_before = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         let modified_before = fs::metadata(&key_path)
             .and_then(|metadata| metadata.modified())
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        ensure_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        let content_after =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        ensure_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let content_after = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         let modified_after = fs::metadata(&key_path)
             .and_then(|metadata| metadata.modified())
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if content_before.len() != MASTER_KEY_LENGTH
             || content_before.as_slice() != content_after.as_slice()
             || modified_before != modified_after
@@ -537,10 +605,12 @@ mod tests {
         let installed = [0x5a_u8; MASTER_KEY_LENGTH];
         install_key_fixture(&key_path, &installed, 0o600)?;
 
-        let observed =
-            create_master_key(&key_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        let persisted =
-            Zeroizing::new(fs::read(&key_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        let observed = create_master_key(&key_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let persisted = Zeroizing::new(
+            fs::read(&key_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         if observed.expose() != &installed || persisted.as_slice() != installed {
             return Err(TestFailure::ExistingKeyWasRewritten);
         }
@@ -556,13 +626,19 @@ mod tests {
         let first_path = first_directory.path.join("master.key");
         let second_directory = TestDirectory::new(0o700)?;
         let second_path = second_directory.path.join("master.key");
-        ensure_master_key(&first_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
-        ensure_master_key(&second_path).map_err(|_| TestFailure::UnexpectedVaultFailure)?;
+        ensure_master_key(&first_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        ensure_master_key(&second_path)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
-        let first =
-            Zeroizing::new(fs::read(&first_path).map_err(|_| TestFailure::FixtureIoFailed)?);
-        let second =
-            Zeroizing::new(fs::read(&second_path).map_err(|_| TestFailure::FixtureIoFailed)?);
+        let first = Zeroizing::new(
+            fs::read(&first_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
+        let second = Zeroizing::new(
+            fs::read(&second_path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+        );
         if first.len() != MASTER_KEY_LENGTH
             || second.len() != MASTER_KEY_LENGTH
             || first.iter().all(|byte| *byte == 0)
@@ -574,11 +650,11 @@ mod tests {
         Ok(())
     }
 
-    fn assert_vault_error(path: &Path, expected: VaultError) -> Result<(), TestFailure> {
+    fn assert_vault_error(path: &Path, expected: &VaultError) -> Result<(), TestFailure> {
         let Err(error) = ensure_master_key(path) else {
             return Err(TestFailure::ExpectedVaultFailure);
         };
-        if error != expected {
+        if std::mem::discriminant(&error) != std::mem::discriminant(expected) {
             return Err(TestFailure::UnexpectedVaultFailure);
         }
         let display = error.to_string();
@@ -599,7 +675,10 @@ mod tests {
         let Err(error) = session.open(nonce, ciphertext) else {
             return Err(TestFailure::ExpectedVaultFailure);
         };
-        if error != VaultError::RecordOpenFailed {
+        if !matches!(
+            error,
+            VaultError::RecordOpenFailed { .. } | VaultError::NonceLength { .. }
+        ) {
             return Err(TestFailure::UnexpectedVaultFailure);
         }
         let canary = String::from_utf8_lossy(plaintext_canary);
@@ -617,11 +696,11 @@ mod tests {
             .create_new(true)
             .mode(mode)
             .open(path)
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         file.write_all(contents)
-            .map_err(|_| TestFailure::FixtureIoFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         fs::set_permissions(path, fs::Permissions::from_mode(mode))
-            .map_err(|_| TestFailure::FixtureIoFailed)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
     }
 
     struct TestDirectory {
@@ -632,9 +711,10 @@ mod tests {
         fn new(mode: u32) -> Result<Self, TestFailure> {
             let path =
                 std::env::temp_dir().join(format!("natsume-server-vault-test-{}", Uuid::now_v7()));
-            fs::create_dir(&path).map_err(|_| TestFailure::FixtureIoFailed)?;
+            fs::create_dir(&path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             fs::set_permissions(&path, fs::Permissions::from_mode(mode))
-                .map_err(|_| TestFailure::FixtureIoFailed)?;
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             Ok(Self { path })
         }
     }
@@ -647,6 +727,11 @@ mod tests {
 
     #[derive(Debug, Snafu)]
     enum TestFailure {
+        #[snafu(context(false), display("test infrastructure operation failed"))]
+        Source {
+            #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+            source: Box<crate::test_error::TestError>,
+        },
         #[snafu(display("the vault fixture operation failed"))]
         FixtureIoFailed,
         #[snafu(display("captured vault logs could not be read"))]

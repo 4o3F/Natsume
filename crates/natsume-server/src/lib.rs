@@ -15,7 +15,11 @@ pub(crate) mod diesel_schema;
 pub(crate) mod http;
 pub(crate) mod logging;
 pub(crate) mod server_state;
+pub(crate) mod task;
 pub(crate) mod tls;
 pub(crate) mod vault;
 
 pub use commands::router;
+
+#[cfg(test)]
+pub(crate) mod test_error;

@@ -19,11 +19,13 @@ pub(super) fn validate(bytes: &[u8]) -> Result<i64> {
             ..LoadOptions::default()
         },
     )
+    // Malformed document input is a domain rejection; never retain PDF parser contents.
     .map_err(|_| PrintError::Invalid)?;
     if doc.trailer.has(b"Encrypt") || doc.is_encrypted() || doc.encryption_state.is_some() {
         return Err(PrintError::Invalid);
     }
     validate_objects(&doc)?;
+    // Malformed document input is a domain rejection; never retain PDF parser contents.
     let catalog = doc.catalog().map_err(|_| PrintError::Invalid)?;
     if !catalog.has_type(b"Catalog") {
         return Err(PrintError::Invalid);
@@ -31,6 +33,7 @@ pub(super) fn validate(bytes: &[u8]) -> Result<i64> {
     let root = catalog
         .get(b"Pages")
         .and_then(Object::as_reference)
+        // Malformed document input is a domain rejection; never retain PDF parser contents.
         .map_err(|_| PrintError::Invalid)?;
     page_tree(&doc, root)
 }
@@ -72,9 +75,11 @@ fn validate_objects(doc: &Document) -> Result<()> {
                     stream
                         .dict
                         .get(b"Length")
+                        // Malformed document input is a domain rejection; never retain PDF parser contents.
                         .map_err(|_| PrintError::Invalid)?,
                 )?
                 .as_i64()
+                // Malformed document input is a domain rejection; never retain PDF parser contents.
                 .map_err(|_| PrintError::Invalid)?;
                 if usize::try_from(length).ok() != Some(stream.content.len()) {
                     return Err(PrintError::Invalid);
@@ -220,6 +225,7 @@ fn page_tree(doc: &Document, root: ObjectId) -> Result<i64> {
         if !seen.insert(id) {
             return Err(PrintError::Invalid);
         }
+        // Malformed document input is a domain rejection; never retain PDF parser contents.
         let dict = doc.get_dictionary(id).map_err(|_| PrintError::Invalid)?;
         match parent {
             Some(parent)
@@ -241,6 +247,7 @@ fn page_tree(doc: &Document, root: ObjectId) -> Result<i64> {
         if let Ok(rotation) = dict.get(b"Rotate")
             && resolve(doc, rotation)?
                 .as_i64()
+                // Malformed document input is a domain rejection; never retain PDF parser contents.
                 .map_err(|_| PrintError::Invalid)?
                 % 90
                 != 0
@@ -248,11 +255,15 @@ fn page_tree(doc: &Document, root: ObjectId) -> Result<i64> {
             return Err(PrintError::Invalid);
         }
         if dict.has_type(b"Pages") {
+            // Malformed document input is a domain rejection; never retain PDF parser contents.
             let kids = resolve(doc, dict.get(b"Kids").map_err(|_| PrintError::Invalid)?)?
                 .as_array()
+                // Malformed document input is a domain rejection; never retain PDF parser contents.
                 .map_err(|_| PrintError::Invalid)?;
+            // Malformed document input is a domain rejection; never retain PDF parser contents.
             let count = resolve(doc, dict.get(b"Count").map_err(|_| PrintError::Invalid)?)?
                 .as_i64()
+                // Malformed document input is a domain rejection; never retain PDF parser contents.
                 .map_err(|_| PrintError::Invalid)?;
             if count < 0 || kids.is_empty() {
                 return Err(PrintError::Invalid);
@@ -260,6 +271,7 @@ fn page_tree(doc: &Document, root: ObjectId) -> Result<i64> {
             pending.push(Visit::End(pages, count));
             for kid in kids.iter().rev() {
                 pending.push(Visit::Node(
+                    // Malformed document input is a domain rejection; never retain PDF parser contents.
                     kid.as_reference().map_err(|_| PrintError::Invalid)?,
                     Some(id),
                     boxes.clone(),
@@ -317,15 +329,18 @@ fn validate_content_stream(stream: &lopdf::Stream) -> Result<()> {
     let content = if stream.dict.has(b"Filter") {
         stream
             .decompressed_content()
+            // Malformed document input is a domain rejection; never retain PDF parser contents.
             .map_err(|_| PrintError::Invalid)?
     } else {
         stream.content.clone()
     };
+    // Malformed document input is a domain rejection; never retain PDF parser contents.
     lopdf::content::Content::decode(&content).map_err(|_| PrintError::Invalid)?;
     Ok(())
 }
 
 fn number(value: &Object) -> Result<f32> {
+    // Malformed document input is a domain rejection; never retain PDF parser contents.
     let n = value.as_float().map_err(|_| PrintError::Invalid)?;
     if !n.is_finite() {
         return Err(PrintError::Invalid);
@@ -336,6 +351,7 @@ fn number(value: &Object) -> Result<f32> {
 fn rectangle(doc: &Document, value: &Object) -> Result<Vec<f32>> {
     let values = resolve(doc, value)?
         .as_array()
+        // Malformed document input is a domain rejection; never retain PDF parser contents.
         .map_err(|_| PrintError::Invalid)?;
     if values.len() != 4 {
         return Err(PrintError::Invalid);

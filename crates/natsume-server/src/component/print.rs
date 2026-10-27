@@ -102,7 +102,9 @@ impl GenerationFailure {
             "compile_failed" => Ok(Self::CompileFailed),
             "document_too_large" => Ok(Self::DocumentTooLarge),
             "wrapper_deadline" => Ok(Self::WrapperDeadline),
-            _ => Err(PrintError::Persistence),
+            _ => Err(PrintError::Persistence {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            }),
         }
     }
 }
@@ -146,7 +148,7 @@ pub(crate) struct PrintRequest {
     pub generation_failure: Option<GenerationFailure>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum PrintError {
     #[snafu(display("invalid print request"))]
     Invalid,
@@ -159,29 +161,37 @@ pub(crate) enum PrintError {
     #[snafu(display("print document exceeds the size limit"))]
     TooLarge,
     #[snafu(display("print persistence failed"))]
-    Persistence,
+    Persistence { source: PersistenceError },
+    #[snafu(display("print persistence failed"))]
+    Storage { source: StorageError },
+    #[snafu(display("print persistence failed"))]
+    Executor {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
+    #[snafu(display("print persistence failed"))]
+    Entropy { source: getrandom::Error },
+    #[snafu(display("print persistence failed"))]
+    Expiry { source: Box<expiry::ExpiryError> },
+    #[snafu(display("print persistence failed"))]
+    StatePoisoned { source: std::sync::PoisonError<()> },
     #[snafu(display("print pairing rate limit exceeded"))]
     RateLimited,
 }
 
 impl From<StorageError> for PrintError {
-    fn from(error: StorageError) -> Self {
-        match error {
-            StorageError::Io { source } => {
-                tracing::error!(kind = ?source.kind(), "print document filesystem operation failed");
-            }
-            other => tracing::error!(error = %other, "print document storage failed"),
-        }
-        Self::Persistence
+    fn from(source: StorageError) -> Self {
+        Self::Storage { source }
     }
 }
 
 impl From<PersistenceError> for PrintError {
-    fn from(_: PersistenceError) -> Self {
-        Self::Persistence
+    fn from(source: PersistenceError) -> Self {
+        Self::Persistence { source }
     }
 }
 pub(crate) fn canonical_id(value: &str) -> Result<(), PrintError> {
+    // Malformed request IDs are a domain rejection; UUID parser detail is irrelevant.
     let id = Uuid::parse_str(value).map_err(|_| PrintError::Invalid)?;
     if id.get_version_num() != 7
         || id.get_variant() != uuid::Variant::RFC4122
@@ -207,7 +217,9 @@ impl PrintComponent {
     pub(crate) async fn load(database: Database, root: PathBuf) -> Result<Self, PrintError> {
         let documents = tokio::task::spawn_blocking(move || DocumentStore::open(root))
             .await
-            .map_err(|_| PrintError::Persistence)??;
+            .map_err(|source| PrintError::Executor {
+                source: source.into(),
+            })??;
         let component = Self {
             database,
             documents,
@@ -225,7 +237,9 @@ impl PrintComponent {
             let store = component.documents.clone();
             tokio::task::spawn_blocking(move || store.verify(&hash, bytes))
                 .await
-                .map_err(|_| PrintError::Persistence)??;
+                .map_err(|source| PrintError::Executor {
+                    source: source.into(),
+                })??;
         }
         component
             .database
@@ -254,7 +268,7 @@ impl PrintComponent {
         }
         let source_id = Uuid::now_v7().to_string();
         let mut secret = [0; 32];
-        getrandom::fill(&mut secret).map_err(|_| PrintError::Persistence)?;
+        getrandom::fill(&mut secret).map_err(|source| PrintError::Entropy { source })?;
         let token = format!("nps1.{source_id}.{}", hex::encode(secret));
         let hash: [u8; 32] = Sha256::digest(token.as_bytes()).into();
         self.database
@@ -359,7 +373,9 @@ impl PrintComponent {
             let bytes = document.bytes;
             tokio::task::spawn_blocking(move || store.verify(&hash, bytes))
                 .await
-                .map_err(|_| PrintError::Persistence)??;
+                .map_err(|source| PrintError::Executor {
+                    source: source.into(),
+                })??;
         }
         Ok(request)
     }
@@ -397,6 +413,7 @@ impl PrintComponent {
         }
         // Parsing and durable file writes happen before taking the SQLite write lock.
         let store = self.documents.clone();
+        // An unrepresentable document size is the existing size-limit rejection.
         let length = i64::try_from(bytes.len()).map_err(|_| PrintError::TooLarge)?;
         let (pages, hash) = tokio::task::spawn_blocking(move || {
             let pages = pdf::validate(&bytes)?;
@@ -412,7 +429,9 @@ impl PrintComponent {
             Ok::<_, PrintError>((pages, hash))
         })
         .await
-        .map_err(|_| PrintError::Persistence)??;
+        .map_err(|source| PrintError::Executor {
+            source: source.into(),
+        })??;
         self.database
             .write(move |tx| {
                 db::authenticate(tx, &source)?;

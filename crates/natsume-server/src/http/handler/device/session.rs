@@ -68,11 +68,11 @@ pub(super) fn session_error(error: SessionControlError) -> ApiError {
         SessionControlError::TerminateEpochOverflow => {
             ApiError::conflict("session_terminate_epoch_exhausted")
         }
-        SessionControlError::InvalidPersistedFacts => {
-            ApiError::internal_error("session_invalid_persisted_facts")
+        SessionControlError::InvalidPersistedFacts { .. } => {
+            ApiError::internal_error_from(error, "session_invalid_persisted_facts")
         }
-        SessionControlError::PersistenceFailed => {
-            ApiError::internal_error("session_persistence_failed")
+        SessionControlError::PersistenceFailed { .. } => {
+            ApiError::internal_error_from(error, "session_persistence_failed")
         }
     }
 }

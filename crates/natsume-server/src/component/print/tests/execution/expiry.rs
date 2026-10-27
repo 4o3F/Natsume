@@ -457,10 +457,10 @@ async fn rollback_leaves_only_a_harmless_check_and_does_not_consume_budget() {
         let (task, gate, _) = held_claim(&f, client.clone(), true).await;
         must(tokio::time::timeout(Duration::from_secs(5), probe.started.notified()).await);
         drop(gate);
-        assert_eq!(
+        assert!(matches!(
             must(task.await),
             Err(crate::db::TransactionError::Operation(PrintError::Conflict))
-        );
+        ));
         must(tokio::time::timeout(Duration::from_secs(5), probe.finished.notified()).await);
         let attempt = public_claim(&f, &client).await;
         assert_eq!(attempt.attempt_number, 1);
@@ -616,7 +616,7 @@ async fn background_initialization_reports_snapshot_failure_instead_of_becoming_
             .is_some_and(|source| matches!(
                 source,
                 ExpiryError::Initialize {
-                    source: PrintError::Persistence
+                    source: PrintError::Persistence { .. }
                 }
             ))
     );

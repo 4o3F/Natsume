@@ -11,7 +11,7 @@ pub(in crate::component::import) fn delete_for_seat(
 ) -> Result<usize, PersistenceError> {
     diesel::delete(account_mappings::table.filter(account_mappings::seat_id.eq(seat_id)))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::import) fn insert(
@@ -25,5 +25,5 @@ pub(in crate::component::import) fn insert(
             account_mappings::account_id.eq(account_id),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }

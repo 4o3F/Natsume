@@ -1,3 +1,4 @@
+use crate::db::PersistenceError;
 mod account;
 pub(super) mod links;
 pub(super) mod management;
@@ -12,3 +13,37 @@ pub(super) use self::{
 
 #[cfg(test)]
 pub(super) mod tests;
+
+fn persisted_identity_error(error: super::OperatorError) -> PersistenceError {
+    match error {
+        super::OperatorError::InvalidPersistedIdentity { source } => PersistenceError::Uuid {
+            field: "operator identity",
+            source,
+        },
+        super::OperatorError::InvalidPersistedRole
+        | super::OperatorError::AuthenticationFailed
+        | super::OperatorError::SignInBusy
+        | super::OperatorError::CredentialsTooLong
+        | super::OperatorError::SessionAuthenticationFailed
+        | super::OperatorError::SessionCleanup { .. }
+        | super::OperatorError::AuthorizationDenied
+        | super::OperatorError::PersistenceFailed { .. }
+        | super::OperatorError::PasswordTaskFailed { .. }
+        | super::OperatorError::PasswordVerificationFailed
+        | super::OperatorError::PasswordVerification { .. }
+        | super::OperatorError::InvalidSessionCredential
+        | super::OperatorError::EmptyLoginName
+        | super::OperatorError::InvalidNewLoginName
+        | super::OperatorError::InvalidNewPassword
+        | super::OperatorError::PasswordMismatch
+        | super::OperatorError::EntropyUnavailable { .. }
+        | super::OperatorError::InvalidHashingParameters { .. }
+        | super::OperatorError::SaltEncodingFailed { .. }
+        | super::OperatorError::PasswordHashingFailed { .. }
+        | super::OperatorError::OperatorNotFound
+        | super::OperatorError::LoginNameConflict
+        | super::OperatorError::LastAdmin
+        | super::OperatorError::LinkUnavailable
+        | super::OperatorError::CredentialChanged => PersistenceError::invalid("operator role"),
+    }
+}

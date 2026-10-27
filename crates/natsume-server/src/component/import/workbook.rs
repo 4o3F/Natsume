@@ -130,12 +130,14 @@ impl Team {
 pub(super) fn parse_xlsx(bytes: &[u8]) -> Result<Roster, InputError> {
     check_archive(bytes)?;
     let mut workbook =
+        // Untrusted workbook errors can echo credential cells; retain only the safe input diagnostic.
         Xlsx::new(Cursor::new(bytes)).map_err(|_| InputError::file(Kind::Workbook))?;
     if !workbook.sheet_names().iter().any(|name| name == "Teams") {
         return Err(InputError::file(Kind::MissingWorksheet));
     }
     let mut reader = workbook
         .worksheet_cells_reader("Teams")
+        // Untrusted workbook errors can echo credential cells; retain only the safe input diagnostic.
         .map_err(|_| InputError::file(Kind::Worksheet))?;
     let mut rows: BTreeMap<u32, SheetRow> = BTreeMap::new();
     // Bound retained text independently of ZIP expansion. Repeated shared-string
@@ -143,6 +145,7 @@ pub(super) fn parse_xlsx(bytes: &[u8]) -> Result<Roster, InputError> {
     let mut remaining_cell_bytes = MAX_CELL_TEXT_BYTES;
     while let Some(cell) = reader
         .next_cell_with_formula_metadata()
+        // Untrusted workbook errors can echo credential cells; retain only the safe input diagnostic.
         .map_err(|_| InputError::file(Kind::Worksheet))?
     {
         if cell.formula.is_none() && matches!(&cell.value, DataRef::Empty) {
@@ -191,17 +194,20 @@ fn check_archive(bytes: &[u8]) -> Result<(), InputError> {
         return Err(InputError::file(Kind::WorkbookTooLarge));
     }
     let mut archive =
+        // Untrusted workbook errors can echo credential cells; retain only the safe input diagnostic.
         ZipArchive::new(Cursor::new(bytes)).map_err(|_| InputError::file(Kind::Archive))?;
     let mut remaining = MAX_EXPANDED_BYTES;
     // Validate actual decompressed sizes before Calamine loads shared strings.
     for index in 0..archive.len() {
         let entry = archive
             .by_index(index)
+            // Untrusted workbook errors can echo credential cells; retain only the safe input diagnostic.
             .map_err(|_| InputError::file(Kind::Archive))?;
         if entry.size() > remaining {
             return Err(InputError::file(Kind::ExpandedWorkbookTooLarge));
         }
         let consumed = io::copy(&mut entry.take(remaining + 1), &mut io::sink())
+            // Untrusted workbook errors can echo credential cells; retain only the safe input diagnostic.
             .map_err(|_| InputError::file(Kind::Archive))?;
         remaining = remaining
             .checked_sub(consumed)

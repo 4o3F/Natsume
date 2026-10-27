@@ -12,9 +12,7 @@ use super::{
 use crate::{component::print::PrintError, diesel_schema::print_jobs};
 
 async fn exhausted() -> Result<Fixture, ExecutionTestError> {
-    let f = Fixture::new()
-        .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+    let f = Fixture::new().await.map_err(ExecutionTestError::from)?;
     ready(&f).await?;
     f.database
         .database
@@ -28,7 +26,7 @@ async fn exhausted() -> Result<Fixture, ExecutionTestError> {
             Ok::<_, PrintError>(())
         })
         .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))?;
     Ok(f)
 }
 
@@ -79,7 +77,7 @@ async fn admin_requeue_changes_one_round_and_rejects_duplicate_or_stale_requests
             Ok::<_, PrintError>(())
         })
         .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))?;
     f.database
         .database
         .write(|tx| {
@@ -92,7 +90,7 @@ async fn admin_requeue_changes_one_round_and_rejects_duplicate_or_stale_requests
             Ok::<_, PrintError>(())
         })
         .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))?;
     assert_eq!(
         requeue(&f, path, r#"{"expected_requeue_count":0}"#)
             .await?
@@ -167,7 +165,7 @@ async fn requeue_requires_admin_before_reading_the_request_body() -> TestResult 
     }
     f.make_viewer()
         .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))?;
     let response = drive(
         &f.router,
         Request::builder()

@@ -28,8 +28,10 @@ extern "SQL" {
 }
 
 impl From<diesel::result::Error> for PrintError {
-    fn from(_: diesel::result::Error) -> Self {
-        Self::Persistence
+    fn from(source: diesel::result::Error) -> Self {
+        Self::Persistence {
+            source: source.into(),
+        }
     }
 }
 
@@ -236,7 +238,9 @@ pub(super) fn request(
     )) = document
     {
         if failure.is_some() {
-            return Err(PrintError::Persistence);
+            return Err(PrintError::Persistence {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
         }
         (
             PrintState::Ready,

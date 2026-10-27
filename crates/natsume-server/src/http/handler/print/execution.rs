@@ -1,77 +1,44 @@
+use crate::http::Routes;
+
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{
-        Path, Request, State,
+        Path, State,
         rejection::{JsonRejection, PathRejection},
     },
     http::{StatusCode, header},
-    middleware::{self as axum_middleware, Next},
     response::{IntoResponse as _, Response},
-    routing::{MethodRouter, get, post, put},
+    routing::{get, post, put},
 };
 
-use super::{ApiError, AppState, PrintError, PrintPathId, middleware};
+use super::{ApiError, AppState, PrintPathId, middleware};
 use crate::component::print::{
     ClientIdentity,
     execution::{AttemptReport, JobIdentity, PrintClaim, PrintRequeue},
 };
 
-pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/print/client/claims",
-            require_client(state.clone(), post(claim)),
-        )
-        .route(
-            "/print/client/attempts/current",
-            require_client(state.clone(), get(current)),
-        )
-        .route(
-            "/print/client/attempts/{attempt_id}",
-            require_client(state.clone(), get(attempt)),
-        )
-        .route(
-            "/print/client/attempts/{attempt_id}/job",
-            require_client(state.clone(), put(register_job)),
-        )
-        .route(
-            "/print/client/attempts/{attempt_id}/reports",
-            require_client(state.clone(), post(report)),
-        )
-        .route(
+pub(super) fn client_routes() -> Routes {
+    vec![
+        ("/print/client/claims", post(claim)),
+        ("/print/client/attempts/current", get(current)),
+        ("/print/client/attempts/{attempt_id}", get(attempt)),
+        ("/print/client/attempts/{attempt_id}/job", put(register_job)),
+        ("/print/client/attempts/{attempt_id}/reports", post(report)),
+        (
             "/print/client/attempts/{attempt_id}/document",
-            require_client(state.clone(), get(document)),
-        )
-        .route(
+            get(document),
+        ),
+    ]
+}
+
+pub(super) fn operator_routes() -> Routes {
+    vec![
+        (
             "/print/executions/{ready_sequence}/requeue",
-            middleware::require_admin(state.clone(), post(requeue)),
-        )
-        .route(
-            "/print/executions",
-            middleware::require_operator(state, get(executions)),
-        )
-}
-
-fn require_client(state: AppState, routes: MethodRouter<AppState>) -> MethodRouter<AppState> {
-    routes.route_layer(axum_middleware::from_fn_with_state(state, authenticate))
-}
-
-async fn authenticate(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
-    let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
-    let token = values
-        .next()
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let Some(token) = token.filter(|_| values.next().is_none()) else {
-        return ApiError::from_print(PrintError::Authentication).into_response();
-    };
-    match state.print().authenticate_client(token).await {
-        Ok(client) => {
-            request.extensions_mut().insert(client);
-            next.run(request).await
-        }
-        Err(error) => ApiError::from_print(error).into_response(),
-    }
+            middleware::require_admin(post(requeue)),
+        ),
+        ("/print/executions", get(executions)),
+    ]
 }
 
 async fn claim(

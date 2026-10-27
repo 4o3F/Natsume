@@ -79,7 +79,7 @@ async fn requeue_starts_a_new_three_attempt_round_without_replacing_history_or_a
         must(serde_json::to_value(must(f.print.list_queue().await))),
         admission
     );
-    assert_eq!(
+    assert!(matches!(
         f.print
             .requeue(
                 sequence,
@@ -89,7 +89,7 @@ async fn requeue_starts_a_new_three_attempt_round_without_replacing_history_or_a
             )
             .await,
         Err(PrintError::Conflict)
-    );
+    ));
     must(
         f.print
             .requeue(
@@ -126,7 +126,7 @@ async fn requeue_only_accepts_an_exhausted_current_round() {
     for state in ["queued", "active", "waiting", "completed"] {
         let current = must(f.print.list_executions().await);
         assert_eq!(current[0].state.as_str(), state);
-        assert_eq!(
+        assert!(matches!(
             f.print
                 .requeue(
                     sequence,
@@ -136,7 +136,7 @@ async fn requeue_only_accepts_an_exhausted_current_round() {
                 )
                 .await,
             Err(PrintError::Conflict)
-        );
+        ));
         if state == "queued" {
             assert!(
                 claim(&f, &c, &Uuid::now_v7().to_string(), now)
@@ -172,7 +172,7 @@ async fn requeue_only_accepts_an_exhausted_current_round() {
             );
         }
     }
-    assert_eq!(
+    assert!(matches!(
         f.print
             .requeue(
                 999,
@@ -182,8 +182,8 @@ async fn requeue_only_accepts_an_exhausted_current_round() {
             )
             .await,
         Err(PrintError::NotFound)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print
             .requeue(
                 0,
@@ -193,8 +193,8 @@ async fn requeue_only_accepts_an_exhausted_current_round() {
             )
             .await,
         Err(PrintError::Invalid)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print
             .requeue(
                 sequence,
@@ -204,7 +204,7 @@ async fn requeue_only_accepts_an_exhausted_current_round() {
             )
             .await,
         Err(PrintError::Invalid)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -265,7 +265,7 @@ async fn failed_requeue_preserves_the_exhausted_round() {
         tx.connection().batch_execute("CREATE TRIGGER reject_requeue BEFORE UPDATE ON print_jobs BEGIN SELECT RAISE(ABORT, 'fixture'); END")?;
         Ok(())
     }).await);
-    assert_eq!(
+    assert!(matches!(
         f.print
             .requeue(
                 sequence,
@@ -274,8 +274,8 @@ async fn failed_requeue_preserves_the_exhausted_round() {
                 }
             )
             .await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Persistence { .. })
+    ));
     let saved = must(f.print.list_executions().await);
     assert_eq!(saved[0].state.as_str(), "exhausted");
     assert_eq!(saved[0].attempts_used, 3);

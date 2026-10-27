@@ -12,13 +12,7 @@ fn main() -> std::process::ExitCode {
 
 #[cfg(target_os = "linux")]
 mod exporter {
-    use std::{
-        ffi::OsString,
-        fs,
-        io::{self, Write as _},
-        path::PathBuf,
-        process::ExitCode,
-    };
+    use std::{ffi::OsString, fs, path::PathBuf, process::ExitCode};
 
     // Link the Server library so Specta can collect its HTTP DTOs.
     use natsume_server as _;
@@ -28,8 +22,9 @@ mod exporter {
     const EXPORT_FAILURE_ID: &str = "NATSUME_TYPESCRIPT_EXPORT_FAILED";
 
     pub(super) fn run() -> ExitCode {
-        if export(std::env::args_os().skip(1)).is_err() {
-            let _write_result = writeln!(io::stderr().lock(), "{EXPORT_FAILURE_ID}");
+        tracing_subscriber::fmt().with_target(false).init();
+        if let Err(error) = export(std::env::args_os().skip(1)) {
+            tracing::error!(error = %snafu::Report::from_error(error), "{EXPORT_FAILURE_ID}");
             return ExitCode::FAILURE;
         }
         ExitCode::SUCCESS
@@ -37,8 +32,8 @@ mod exporter {
 
     fn export(args: impl IntoIterator<Item = OsString>) -> Result<(), ExportError> {
         let output_path = parse_output_path(args)?;
-        let encoded = bindings().map_err(|_| ExportError::TypeFailed)?;
-        fs::write(output_path, encoded).map_err(|_| ExportError::WriteFailed)
+        let encoded = bindings().map_err(|source| ExportError::TypeFailed { source })?;
+        fs::write(output_path, encoded).map_err(|source| ExportError::WriteFailed { source })
     }
 
     fn bindings() -> Result<String, specta_typescript::Error> {
@@ -60,19 +55,27 @@ mod exporter {
         Ok(PathBuf::from(output_path))
     }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+    #[derive(Debug, Snafu)]
     enum ExportError {
         #[snafu(display("the TypeScript exporter arguments are invalid"))]
         InvalidArguments,
         #[snafu(display("the HTTP types could not be exported"))]
-        TypeFailed,
+        TypeFailed { source: specta_typescript::Error },
         #[snafu(display("the TypeScript bindings could not be written"))]
-        WriteFailed,
+        WriteFailed { source: std::io::Error },
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[derive(Debug, Snafu)]
+        enum ExportTestError {
+            #[snafu(context(false), display("export fixture IO failed"))]
+            Io { source: std::io::Error },
+            #[snafu(context(false), display("export fixture failed"))]
+            Export { source: ExportError },
+        }
 
         #[derive(specta::Type)]
         struct AutoCollected;
@@ -99,7 +102,7 @@ mod exporter {
         }
 
         #[test]
-        fn exports_are_stable() -> Result<(), Box<dyn std::error::Error>> {
+        fn exports_are_stable() -> Result<(), ExportTestError> {
             let directory = tempfile::tempdir()?;
             let first = directory.path().join("first.ts");
             let second = directory.path().join("second.ts");
@@ -114,7 +117,7 @@ mod exporter {
         #[test]
         fn invalid_arguments_are_closed_and_redacted() {
             let error = export(["output-path-canary".into(), "extra-argument-canary".into()]);
-            assert_eq!(error, Err(ExportError::InvalidArguments));
+            assert!(matches!(error, Err(ExportError::InvalidArguments)));
             for message in [
                 ExportError::InvalidArguments.to_string(),
                 format!("{error:?}"),
@@ -124,12 +127,12 @@ mod exporter {
         }
 
         #[test]
-        fn write_failure_is_typed_and_redacted() -> Result<(), Box<dyn std::error::Error>> {
+        fn write_failure_is_typed_and_redacted() -> Result<(), ExportTestError> {
             let directory = tempfile::tempdir()?;
-            assert_eq!(
+            assert!(matches!(
                 export([directory.path().into()]),
-                Err(ExportError::WriteFailed)
-            );
+                Err(ExportError::WriteFailed { .. })
+            ));
             assert_eq!(EXPORT_FAILURE_ID, "NATSUME_TYPESCRIPT_EXPORT_FAILED");
             Ok(())
         }

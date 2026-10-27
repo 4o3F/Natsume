@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Json, Router,
+    Json,
     extract::{ConnectInfo, Request, State, rejection::JsonRejection},
     http::{StatusCode, header},
     middleware::{self as axum_middleware, Next},
@@ -23,25 +25,31 @@ pub(crate) struct PrintClientPair {
     code: String,
 }
 
-pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route(
+pub(super) fn operator_routes() -> Routes {
+    vec![
+        (
             "/print/printers",
-            middleware::require_admin(state.clone(), post(create).get(list)),
-        )
-        .route(
+            middleware::require_admin(post(create).get(list)),
+        ),
+        (
             "/print/printers/{printer_id}/pairing-code",
-            middleware::require_admin(state.clone(), post(issue_code)),
-        )
-        .route(
+            middleware::require_admin(post(issue_code)),
+        ),
+        (
             "/print/printers/{printer_id}/binding",
-            middleware::require_admin(state.clone(), delete(clear_binding)),
-        )
-        .route(
+            middleware::require_admin(delete(clear_binding)),
+        ),
+    ]
+}
+
+pub(super) fn public_routes(state: AppState) -> Routes {
+    vec![
+        (
             "/print/client/pair",
             post(pair).route_layer(axum_middleware::from_fn_with_state(state, pairing_limit)),
-        )
-        .route("/print/client/confirmation", post(confirm))
+        ),
+        ("/print/client/confirmation", post(confirm)),
+    ]
 }
 
 async fn pairing_limit(State(state): State<AppState>, request: Request, next: Next) -> Response {

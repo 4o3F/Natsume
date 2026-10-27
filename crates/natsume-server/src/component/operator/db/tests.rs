@@ -20,7 +20,7 @@ pub(in crate::component::operator) async fn test_now(
             diesel::sql_query("SELECT CAST(unixepoch('subsec') * 1000 AS INTEGER) AS value")
                 .get_result::<IntegerValue>(transaction.connection())
                 .map(|row| row.value)
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)
@@ -44,7 +44,7 @@ pub(in crate::component::operator) async fn test_sessions_have_expected_ttl(
             .bind::<diesel::sql_types::BigInt, _>(lower)
             .bind::<diesel::sql_types::BigInt, _>(upper)
             .get_result::<IntegerValue>(transaction.connection())
-            .map_err(|_| PersistenceError::OperationFailed)?;
+            .map_err(PersistenceError::from)?;
             Ok(row.value == 2)
         })
         .await
@@ -61,7 +61,7 @@ pub(in crate::component::operator) async fn test_session_hashes(
             crate::diesel_schema::operator_sessions::table
                 .select(crate::diesel_schema::operator_sessions::session_credential_hash)
                 .load::<Vec<u8>>(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)
@@ -77,7 +77,7 @@ pub(in crate::component::operator) async fn test_session_count(
             diesel::sql_query("SELECT COUNT(*) AS value FROM operator_sessions")
                 .get_result::<IntegerValue>(transaction.connection())
                 .map(|row| row.value)
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)
@@ -93,7 +93,7 @@ pub(in crate::component::operator) async fn test_expire_all_sessions(
             diesel::sql_query("UPDATE operator_sessions SET expires_at_unix_ms = 0")
                 .execute(transaction.connection())
                 .map(|_| ())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)
@@ -136,7 +136,7 @@ pub(in crate::component::operator) async fn test_account_credentials(
                     operator_accounts::credential_revision,
                 ))
                 .first(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)
@@ -160,7 +160,7 @@ pub(in crate::component::operator) async fn test_set_credential_revision(
             .set(operator_accounts::credential_revision.eq(revision))
             .execute(transaction.connection())
             .map(|_| ())
-            .map_err(|_| PersistenceError::OperationFailed)
+            .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)
@@ -180,7 +180,7 @@ pub(in crate::component::operator) async fn test_reject_session_deletion(
                     "CREATE TRIGGER reject_session_deletion BEFORE DELETE ON operator_sessions \
                  BEGIN SELECT RAISE(ABORT, 'test session deletion failure'); END;",
                 )
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)

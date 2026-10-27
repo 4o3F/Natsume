@@ -177,7 +177,7 @@ impl DeviceComponent {
             }),
             Err(error) => {
                 let error = EnrollmentApprovalError::from(error);
-                let _ = activation.send(Err(error));
+                let _ = activation.send(Err(error.clone()));
                 Err(error)
             }
         }

@@ -64,6 +64,7 @@ pub(super) async fn sign_in(
     super::credentials::validate_input(login_name, password.expose())?;
     let permit = SIGN_IN_GATE
         .try_acquire()
+        // Capacity exhaustion is a domain rejection; semaphore detail does not change the decision.
         .map_err(|_| OperatorError::SignInBusy)?;
     let login_name = login_name.to_owned();
     let (account, permit) = database
@@ -85,7 +86,9 @@ pub(super) async fn sign_in(
         verify_password_once(&password, &candidate_phc).map(|verified| (verified, permit))
     })
     .await
-    .map_err(|_| OperatorError::PasswordTaskFailed)??;
+    .map_err(|source| OperatorError::PasswordTaskFailed {
+        source: source.into(),
+    })??;
 
     // The unknown-login path verifies the fixed dummy PHC to equalize the
     // expensive work, but it can never authenticate: the result is discarded
@@ -153,6 +156,7 @@ pub(super) async fn authenticate_session(
     wire_credential: SessionCredentialHex,
 ) -> Result<OperatorIdentity, OperatorError> {
     let credential = SessionCredential::from_wire(&wire_credential)
+        // Malformed credentials share one authentication rejection; decoding detail is irrelevant.
         .map_err(|_| OperatorError::SessionAuthenticationFailed)?;
     let credential_hash = credential.sha256();
     let snapshot_hash = Zeroizing::new(*credential_hash.as_bytes());
@@ -185,7 +189,7 @@ pub(super) async fn authenticate_session(
             let deleted =
                 crate::component::operator::db::delete_session_by_hash(transaction, &cleanup_hash)?;
             if deleted != 1 {
-                return Err(PersistenceError::InvalidPersistedData);
+                return Err(PersistenceError::unexpected_row_count(1, deleted));
             }
             Ok(ExpiredSessionCleanup::Deleted(current.identity))
         })
@@ -199,13 +203,7 @@ pub(super) async fn authenticate_session(
             Err(OperatorError::SessionAuthenticationFailed)
         }
         Ok(ExpiredSessionCleanup::Missing) => Err(OperatorError::SessionAuthenticationFailed),
-        Err(_) => {
-            tracing::warn!(
-                cause = "operator_store_transaction_failed",
-                "expired operator session cleanup failed"
-            );
-            Err(OperatorError::SessionAuthenticationFailed)
-        }
+        Err(source) => Err(OperatorError::SessionCleanup { source }),
     }
 }
 
@@ -238,7 +236,7 @@ pub(super) async fn terminate_session(
                 &credential_hash,
             )?;
             if deleted != 1 {
-                return Err(PersistenceError::InvalidPersistedData);
+                return Err(PersistenceError::unexpected_row_count(1, deleted));
             }
             Ok(Some(current.identity))
         })

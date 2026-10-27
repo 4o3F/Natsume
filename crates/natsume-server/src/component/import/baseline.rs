@@ -30,7 +30,7 @@ impl ImportBaseline {
             .values()
             .any(|school| school.organization_id > organization_sequence)
         {
-            return Err(PersistenceError::InvalidPersistedData);
+            return Err(PersistenceError::invalid("persisted value"));
         }
         let mut seats_by_code = BTreeMap::new();
         for seat in seats {
@@ -38,7 +38,7 @@ impl ImportBaseline {
                 .insert(seat.seat_code().to_owned(), seat)
                 .is_some()
             {
-                return Err(PersistenceError::InvalidPersistedData);
+                return Err(PersistenceError::invalid("persisted value"));
             }
         }
 
@@ -49,7 +49,7 @@ impl ImportBaseline {
                     .insert(account.domjudge_username().to_owned(), account)
                     .is_some()
             {
-                return Err(PersistenceError::InvalidPersistedData);
+                return Err(PersistenceError::invalid("persisted value"));
             }
         }
 

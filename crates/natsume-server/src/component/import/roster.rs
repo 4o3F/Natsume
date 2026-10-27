@@ -36,7 +36,9 @@ impl CandidateRoster {
             } else {
                 sequence = sequence
                     .checked_add(1)
-                    .ok_or(ImportError::PersistenceFailure)?;
+                    .ok_or(ImportError::PersistenceFailure {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    })?;
                 sequence
             };
             organizations.insert(
@@ -85,7 +87,7 @@ pub(super) fn changed_passwords(
         };
         let plaintext = vault
             .open(&current.nonce, &current.ciphertext)
-            .map_err(|_| ImportError::VaultFailure)?;
+            .map_err(|source| ImportError::VaultFailure { source })?;
         if plaintext.as_slice() != team.password().as_bytes() {
             changed.push(team.account().to_owned());
         }

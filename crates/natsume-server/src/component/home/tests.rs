@@ -12,19 +12,63 @@ use crate::{
 use super::{HomeComponent, HomeError};
 
 #[tokio::test]
-async fn materialize_creates_default_and_reset_advances() {
+async fn materialize_defaults_and_mutated_epochs_do_not_wait_for_a_writer() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.insert_device().await;
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let target = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.component.materialize(device_id),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("default Home materialize waited for the writer"))
+    .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_eq!(target, None);
+    assert_eq!(fixture.target_count(device_id).await, 0);
+    drop(lock);
+    fixture
+        .component
+        .reset(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let _lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let target = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.component.materialize(device_id),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("stored Home materialize waited for the writer"))
+    .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_eq!(target, Some(1));
+    assert_eq!(fixture.target_count(device_id).await, 1);
+}
+
+#[tokio::test]
+async fn materialize_reads_the_default_without_inserting_and_reset_advances() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
 
-    assert_eq!(fixture.component.read_current(device_id).await, Ok(None));
+    assert!(
+        matches!(fixture.component.read_current(device_id).await, Ok(actual) if actual.is_none())
+    );
     assert_eq!(fixture.target_count(device_id).await, 0);
-    assert_eq!(fixture.component.materialize(device_id).await, Ok(None));
-    assert_eq!(fixture.target_count(device_id).await, 1);
-    assert_eq!(fixture.component.read_current(device_id).await, Ok(None));
-    assert_eq!(fixture.component.reset(device_id).await, Ok(1));
-    assert_eq!(fixture.component.reset(device_id).await, Ok(2));
-    assert_eq!(fixture.component.materialize(device_id).await, Ok(Some(2)));
-    assert_eq!(fixture.component.read_current(device_id).await, Ok(Some(2)));
+    assert!(
+        matches!(fixture.component.materialize(device_id).await, Ok(actual) if actual.is_none())
+    );
+    assert_eq!(fixture.target_count(device_id).await, 0);
+    assert!(
+        matches!(fixture.component.read_current(device_id).await, Ok(actual) if actual.is_none())
+    );
+    assert!(matches!(fixture.component.reset(device_id).await, Ok(actual) if actual == 1));
+    assert!(matches!(fixture.component.reset(device_id).await, Ok(actual) if actual == 2));
+    assert!(
+        matches!(fixture.component.materialize(device_id).await, Ok(actual) if actual == Some(2))
+    );
+    assert!(
+        matches!(fixture.component.read_current(device_id).await, Ok(actual) if actual == Some(2))
+    );
 }
 
 #[tokio::test]
@@ -32,10 +76,10 @@ async fn reset_epoch_survives_component_rebuild() {
     let fixture = Fixture::new().await;
     let device_id = fixture.insert_device().await;
 
-    assert_eq!(fixture.component.reset(device_id).await, Ok(1));
+    assert!(matches!(fixture.component.reset(device_id).await, Ok(actual) if actual == 1));
     let rebuilt = HomeComponent::new(fixture.database.clone());
-    assert_eq!(rebuilt.materialize(device_id).await, Ok(Some(1)));
-    assert_eq!(rebuilt.reset(device_id).await, Ok(2));
+    assert!(matches!(rebuilt.materialize(device_id).await, Ok(actual) if actual == Some(1)));
+    assert!(matches!(rebuilt.reset(device_id).await, Ok(actual) if actual == 2));
 }
 
 #[tokio::test]
@@ -53,7 +97,9 @@ async fn concurrent_resets_do_not_lose_epoch_advances() {
         .map(|result| result.unwrap_or_else(|error| panic!("concurrent reset failed: {error}")));
     epochs.sort_unstable();
     assert_eq!(epochs, [1, 2, 3, 4]);
-    assert_eq!(fixture.component.materialize(device_id).await, Ok(Some(4)));
+    assert!(
+        matches!(fixture.component.materialize(device_id).await, Ok(actual) if actual == Some(4))
+    );
 }
 
 #[tokio::test]
@@ -61,49 +107,54 @@ async fn missing_device_invalid_epoch_and_overflow_fail_closed() {
     let fixture = Fixture::new().await;
     let missing = DeviceId::parse(&Uuid::now_v7().hyphenated().to_string())
         .unwrap_or_else(|| panic!("fixture generated an invalid Device ID"));
-    assert_eq!(
+    assert!(matches!(
         fixture.component.materialize(missing).await,
         Err(HomeError::DeviceNotFound)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         fixture.component.read_current(missing).await,
         Err(HomeError::DeviceNotFound)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         fixture.component.reset(missing).await,
         Err(HomeError::DeviceNotFound)
-    );
+    ));
 
     let device_id = fixture.insert_device().await;
-    assert_eq!(fixture.component.materialize(device_id).await, Ok(None));
-
-    fixture.set_persisted_epoch(device_id, 0).await;
-    assert_eq!(
-        fixture.component.materialize(device_id).await,
-        Err(HomeError::InvalidPersistedFacts)
+    assert!(
+        matches!(fixture.component.materialize(device_id).await, Ok(actual) if actual.is_none())
     );
+
+    fixture
+        .component
+        .reset(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    fixture.set_persisted_epoch(device_id, 0).await;
+    assert!(matches!(
+        fixture.component.materialize(device_id).await,
+        Err(HomeError::InvalidPersistedFacts { .. })
+    ));
     assert!(matches!(
         fixture.component.read_all_current().await,
-        Err(HomeError::InvalidPersistedFacts)
+        Err(HomeError::InvalidPersistedFacts { .. })
     ));
     fixture.set_persisted_epoch(device_id, -1).await;
-    assert_eq!(
+    assert!(matches!(
         fixture.component.reset(device_id).await,
-        Err(HomeError::InvalidPersistedFacts)
-    );
+        Err(HomeError::InvalidPersistedFacts { .. })
+    ));
 
     fixture.set_persisted_epoch(device_id, i64::MAX).await;
-    assert_eq!(
-        fixture.component.materialize(device_id).await,
-        Ok(Some(i64::MAX.cast_unsigned()))
+    assert!(
+        matches!(fixture.component.materialize(device_id).await, Ok(actual) if actual == Some(i64::MAX.cast_unsigned()))
     );
-    assert_eq!(
+    assert!(matches!(
         fixture.component.reset(device_id).await,
         Err(HomeError::EpochExhausted)
-    );
-    assert_eq!(
-        fixture.component.materialize(device_id).await,
-        Ok(Some(i64::MAX.cast_unsigned()))
+    ));
+    assert!(
+        matches!(fixture.component.materialize(device_id).await, Ok(actual) if actual == Some(i64::MAX.cast_unsigned()))
     );
 }
 
@@ -148,7 +199,7 @@ impl Fixture {
                         devices::created_at_unix_ms.eq(1_i64),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await
@@ -164,7 +215,7 @@ impl Fixture {
                     .filter(device_home_targets::device_id.eq(device_id))
                     .count()
                     .get_result::<i64>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("Home target count failed: {error:?}"))
@@ -179,7 +230,7 @@ impl Fixture {
                 )
                 .set(device_home_targets::reset_epoch.eq(Some(epoch)))
                 .execute(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await

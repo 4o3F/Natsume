@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -15,20 +17,18 @@ use crate::component::device::{
 
 use super::super::{AppState, error::ApiError, middleware};
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/enrollment-reviews",
-            middleware::require_operator(state.clone(), get(list_enrollment_reviews)),
-        )
-        .route(
+pub(in crate::http) fn operator_routes() -> Routes {
+    vec![
+        ("/enrollment-reviews", get(list_enrollment_reviews)),
+        (
             "/enrollment-reviews/{review_id}/actions/approve",
-            middleware::require_admin(state.clone(), post(approve_enrollment_review)),
-        )
-        .route(
+            middleware::require_admin(post(approve_enrollment_review)),
+        ),
+        (
             "/enrollment-reviews/{review_id}/actions/deny",
-            middleware::require_admin(state, post(deny_enrollment_review)),
-        )
+            middleware::require_admin(post(deny_enrollment_review)),
+        ),
+    ]
 }
 
 #[derive(Deserialize)]
@@ -118,15 +118,17 @@ fn enrollment_approval_error(error: EnrollmentApprovalError) -> ApiError {
         EnrollmentApprovalError::ReviewNotFound => {
             ApiError::not_found("enrollment_review_not_found")
         }
-        EnrollmentApprovalError::Authority(error) => ApiError::from_device(error),
-        EnrollmentApprovalError::Activation(ActivationError::CandidateKeyRejected) => {
-            ApiError::conflict("enrollment_candidate_key_rejected")
-        }
-        EnrollmentApprovalError::Activation(ActivationError::InvalidAuthorityFacts) => {
-            ApiError::internal_error("enrollment_invalid_authority_facts")
-        }
-        EnrollmentApprovalError::Activation(ActivationError::AuthorityPersistenceFailed) => {
-            ApiError::internal_error("enrollment_authority_persistence_failed")
-        }
+        EnrollmentApprovalError::Authority { source: error } => ApiError::from_device(error),
+        EnrollmentApprovalError::Activation { ref source } => match source.as_ref() {
+            ActivationError::CandidateKeyRejected => {
+                ApiError::conflict("enrollment_candidate_key_rejected")
+            }
+            ActivationError::InvalidAuthorityFacts { .. } => {
+                ApiError::internal_error_from(error, "enrollment_invalid_authority_facts")
+            }
+            ActivationError::AuthorityPersistenceFailed { .. } => {
+                ApiError::internal_error_from(error, "enrollment_authority_persistence_failed")
+            }
+        },
     }
 }

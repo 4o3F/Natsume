@@ -277,7 +277,7 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 
 | 事实 | Owner | 备注 |
 |---|---|---|
-| Seat、Account、Seat→Account | Contest/Import Component | Import 唯一修改者 |
+| Organization、Team、Seat、Account、Seat→Account | Contest/Import Component | Import 唯一修改者 |
 | Account password ciphertext/revision | Contest/Import + Vault | plaintext 只存在于短生命周期内存 |
 | Device lifecycle | Device Component | enabled/disabled/revoked |
 | Pending Enrollment review | Device Component memory registry | 仅当前WSS连接有效，Server生成`review_id`供Panel定位 |
@@ -287,6 +287,8 @@ Server vault 使用 application-level XChaCha20-Poly1305 current-fact 加密；`
 | Runtime Config | Runtime Config Component | 当前 DOMjudge HTTPS origin |
 | Session target | Session Control Component | foreground target + terminate epoch |
 | Home target | Home Component | reset epoch |
+| Power target | Power Component | shutdown epoch 与服务器绝对 deadline；`device_power_targets` |
+| Target 提交 receipt 与事务协调 | TargetSubmission Component | receipt 与 Session/Home/Power mutation 原子提交；各目标表仍由所属组件写入 |
 | 当前lease的latest Actual与receive-time | DeviceActor memory | fresh snapshot；Input消费后丢弃，重连或重启后必须重报 |
 | Active control lease | DeviceActor | 只在内存，不持久化 |
 | 打印请求、队列及执行尝试 | Print Component | durable；领取原子化，旧尝试报告不得推进新尝试 |
@@ -681,7 +683,7 @@ Server 业务采用纵向组件：
 | 组件 | 是否由 `DeviceActor` 编排 | 主要职责 |
 |---|---|---|
 | Operator | 否 | 账户、会话、角色 |
-| Contest/Import | 否 | Seat、Account、mapping、vault import |
+| Contest/Import | 否 | Organization、Team、Seat、Account、mapping、vault import |
 | Provisioning | 否 | 进程内Enrollment自动审批窗口；open自动审批，closed人工审批，重启即closed |
 | Device | 否 | Device identity、control key、Enrollment review/activation、lifecycle |
 | Gateway | 是 | Gateway intent/input/target/actual |
@@ -689,6 +691,8 @@ Server 业务采用纵向组件：
 | Runtime Config | 是 | DOMjudge origin target/actual |
 | Session Control | 是 | foreground/terminate target/actual |
 | Home | 是 | reset target/actual |
+| Power | 是 | power-off target/actual、shutdown epoch 与 deadline |
+| TargetSubmission | 否 | receipt 去重及 Session/Home/Power 提交事务协调 |
 | Print | 否 | DOMjudge 受理、就绪 FIFO、领取、有限尝试与恢复 |
 | Photo | 否 | 来源授权、在线／离线成果接收、当前成品和候选 |
 
@@ -712,6 +716,8 @@ production `DeviceActor`是当前唯一编排消费者，而六个资源的Input
 2. 调用组件内部纯`resolve(intent, accepted_input)`；
 3. 只返回 committed stable target；
 4. 不读取 Actual 作为 current Resolve 参数。
+
+Session、Home、Power及无需签发／轮换的Gateway在稳态materialize中使用只读事务。Home缺行等价于无reset epoch，Power缺行等价于无shutdown epoch／deadline，默认读取不创建行，实际mutation才创建。Session的缺行在HTTP与convergence中表示尚未初始化，首次materialize仍以幂等写提交Waiting／无terminate epoch；Gateway generation ID同样必须先提交再发送。两者先读，只有缺行才申请写事务，Gateway签发及过期轮换保持既有提交顺序。
 
 组件可以在内部执行有限的 transition→re-read→resolve，但不建立通用 fixed-point engine。每个组件明确证明自己的 transition 会终止。
 
@@ -751,18 +757,18 @@ pub(crate) struct ServerState {
 }
 ```
 
-`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件， 并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。 同时被HTTP使用的六个组件共享同一`Arc`实例；Gateway和Runtime Config目前只有协调器消费， 构造后直接移交给它，`ServerState`不保留无消费者的副本或accessor。
+`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件， 并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。 HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费， 构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。
 
 生产构造入口统一为`ServerState::load(database, &config)`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
 
-跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。 当前仅提供九个有实际消费者的入口：
+跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。 当前仅提供七个有实际消费者的入口：
 
 - `read_device_status`、`read_device_statuses`汇总组件当前事实和lease observation； HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
 - `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction； 三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
-- `dirty_device`、`dirty_devices`、`dirty_all_devices`向已有Actor发出提交后通知，不创建Actor。
+- `publish(TargetChange)`消费组件返回的影响范围，向已有Actor发出提交后通知，不创建Actor。
 - `attach_device_lease`负责attach前后exact authority重检与lease替换； 只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
 
-单资源mutation仍直接调用owning component，成功后调用上述Dirty入口，不再增加一层 一对一业务包装。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
+单资源mutation仍直接调用owning component，成功后将返回的`TargetChange`交给`publish`，不再增加一层 一对一业务包装。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
 
 ### 10.5 组件内部数据库
 
@@ -790,7 +796,7 @@ pub(crate) struct BindingComponent {
 - 数据库 row、Diesel 类型和 store error 不泄漏出组件；
 - 不创建 Repository、UnitOfWork 或 DI framework trait。
 
-TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个短写事务，在同一事务中 通过 Device 的公开事务读方法确定资格，再调用 Session/Home 的同步事务业务入口。 Session/Home 仍独占各自表的校验与写入规则，DB adapter 不公开；HTTP 和 TargetSubmission 不直接写这两类目标表。每设备可继续的领域拒绝必须发生在该设备第一次写入前， 写入/行数不符/receipt 保存/commit 失败必须回滚整个提交，不引入通用跨组件事务框架。
+TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个短写事务，在同一事务中 通过 Device 的公开事务读方法确定资格，再调用 Session/Home/Power 的同步事务业务入口。 Session/Home/Power 仍独占各自表的校验与写入规则，DB adapter 不公开；HTTP 和 TargetSubmission 不直接写这三类目标表。每设备可继续的领域拒绝必须发生在该设备第一次写入前， 写入/行数不符/receipt 保存/commit 失败必须回滚整个提交，不引入通用跨组件事务框架。
 
 ## 11. Server runtime 与 Actor
 
@@ -843,7 +849,8 @@ Registry：
 - 不按 HWID 创建 MachineActor；
 - 不维护 public-key/HWID alias authority；
 - 不扫描数据库预热全部 Device；
-- 当前 fleet 规模下 Actor 可保持到进程结束。
+- 健康Actor可保持到进程结束；supervisor以Weak引用Registry，异常退出时只移除mailbox仍属于同一Actor实例的entry，迟到清理不能删除替代实例；
+- `get_or_spawn`发现mailbox已关闭时只warn一次并替换entry。清理和替换都先等待旧authority fence，避免在disable／revoke提交完成前暴露新的未fenced实例；新attach仍在lease替换前后复查数据库authority。
 
 HWID 并发和一个 non-revoked Device 约束由数据库 unique constraint 最终仲裁。
 
@@ -860,6 +867,8 @@ enum DeviceEvent {
     ClearLeaseIfCurrent { session_id },
 }
 ```
+
+Actor任务的JoinHandle由独立supervisor等待。非正常结束记录一次error，包含device_id与panicked分类，不记录panic payload；Registry及全部handle释放导致mailbox／Dirty关闭时正常退出，不作为故障。supervisor不持有强mailbox sender或强Registry引用，保留现有关闭语义。
 
 Actor 只拥有临时协调状态：
 
@@ -899,6 +908,12 @@ validate current lease
   → retain typed Actual observation
 ```
 
+Actor按失败所属步骤与typed source分类：不完整／非法snapshot、Gateway ingest的非法或冲突CSR、Binding ingest的冲突submission属于Client fault，以`info`报告后终止lease；其他非瞬态Server fault（包括损坏持久化数据、Vault／签发失败、epoch耗尽和Device不存在）以`error`报告后终止lease。
+
+连接池不可用、数据库工作预算耗尽，以及Diesel明确报告的SQLite BUSY／LOCKED属于Server transient fault。Actor以`warn`记录device ID、连续失败次数和完整错误链，保留当前lease，复用refresh计时器在5秒后重试。ClientState失败时仅保留最新一份完整pending snapshot及其原始receive-time；同一lease的新ClientState立即替换pending并照常处理。重试tick优先重新reconcile pending，否则重新materialize完整Target。两条路径共用每lease连续失败计数，成功清除pending并归零；连续第3次瞬态失败以`error`报告并终止lease。被fence的lease立即终止，不能进入重试。
+
+Session／Gateway的初始化完成后，Session、Home、Power和无需签发／轮换的Gateway materialize不再空开IMMEDIATE。Gateway／Binding ingest及Binding materialize仍保留既有写边界，完整ClientState reconcile并非只读。
+
 初期顺序执行。SQLite 是单写者，提前并行只会增加 cancellation、错误聚合和 race。只有测量证明瓶颈后才考虑并行 materialize。
 
 跨组件读取不要求同一数据库 snapshot。组件必须语义独立；Operator mutation在commit后 推进Actor独立的Dirty watch，重复通知可以合并；若发生在materialize期间，watch仍会触发下一份 完整`ServerStateSnapshot`。若发现两个资源必须在同一时点原子一致，应合并为一个组件。
@@ -907,11 +922,11 @@ validate current lease
 
 会改变Active resource target的Server mutation接入时：
 
-1. 先提交业务；
-2. application coordination根据当前mutation的具体语义确定影响一个Device还是全部在线Device；
-3. 调用`DeviceControl::dirty_device/dirty_all_devices`， 推进对应Actor的可合并`Dirty` watch。
+1. owning component提交业务后返回带`#[must_use]`的`TargetChange`，声明单Device、Device集合或全部已连接Device；
+2. 调用方将该值交给`DeviceControl::publish`，推进对应Actor的可合并`Dirty` watch；
+3. `/api/v2`中除GET、HEAD、OPTIONS之外的请求由进程持有的任务完成认证、业务提交与publish；请求取消不再截断提交后通知，任务保留当前request span与tracing dispatcher。
 
-组件不能反向持有 Registry。
+组件不能反向持有 Registry。Binding解绑、Operator Target提交（含receipt重放）和Import commit均返回`TargetChange`。Gateway／Binding的ingest及各资源materialize位于Actor自身的完整状态收敛流程，直接发送本轮结果；Runtime部署配置只在启动、接入连接前提交。
 
 Dirty不携带业务数据，也不占用业务mailbox；Actor在首个有效ClientState后另以固定低频周期从数据库重新生成并发送完整Target，作为独立反熵路径。各lease使用现有随机session ID将首次刷新分散到一分钟内，避免批量上线的Actor同相读取数据库。Client对与current/queued Target完全相同的周期帧直接合并；idle时仅在它刚发布了变化的Actual、正在等待Server回应时，才用相同Target重新执行收敛。当前规模允许Import/Runtime全局变化后直接dirty all connected actors。
 
@@ -920,7 +935,9 @@ Device disable、revoke和current control-key replacement不是普通target变�
 ### 11.6 Channel 与背压
 
 - Actor mailbox 和每 lease outbound queue 都必须有界；
-- ClientState 不能静默丢弃；
+- ClientState 不能静默丢弃；瞬态失败只保留当前lease最新一份boxed完整pending snapshot，新完整状态覆盖旧pending，不建立无界重试队列；
+- 每lease复用refresh interval进行5秒延迟重试，reconcile与materialize共用连续失败计数，第3次失败终止lease；成功恢复低频刷新，backoff期间Dirty合并到下一次重试，不绕过延迟增加数据库压力；
+- authority fence、Evict、Replace和Clear保持原有语义；fence／eviction立即终止lease，Replace丢弃旧pending与计数；
 - 重复 Dirty 可以合并，但mailbox饱和不能丢失尚未观察的Dirty状态；
 - Active Client每30秒发送携带exact session ID的Ping；Server只由该Ping推进一分钟Client silence deadline，超时即清除lease；
 - outbound queue满时终止 lease；
@@ -948,6 +965,8 @@ Device disable、revoke和current control-key replacement不是普通target变�
 
 运行期数据库读写在进入 `spawn_blocking` 前先取得 Database-owned 异步许可；同一连接池的 所有 Database clone 共用 10 个许可，与连接池容量一致。排队、blocking executor 等待和 取连接共用 30 秒获取预算，超时沿用既有持久化错误；SQL 的 `busy_timeout=5000` 不变。 许可随阻塞闭包存活，连接归还和事务结束后才释放；调用方取消不能提前释放正在排队或执行的 阻塞工作许可，也不回滚已经开始的事务。等待异步许可时取消则不执行 SQL。
 
+Database在独立的debug级`db.transaction` span中记录静态`db.operation`（read／write）及微秒耗时：`db.permit_wait_us`为异步许可等待，`db.pool_wait_us`为连接池checkout等待，`db.write_lock_wait_us`为IMMEDIATE开始前的等待（失败时记录该次尝试耗时），不包含事务业务执行。未到达的阶段不填写；debug span未启用时跳过额外计时。不记录SQL、bind参数或秘密值，不改变当前request span、许可数量、获取预算或读写共用许可的策略。
+
 ### 12.2 目标表与 mutation owner
 
 | 表 | Owner | 关键约束 |
@@ -957,6 +976,8 @@ Device disable、revoke和current control-key replacement不是普通target变�
 | `operator_sessions` | Operator | 只存cookie hash和绝对过期 |
 | `operator_invitations` | Operator | 单次注册授权、固定role、签发admin、token hash、创建时间与7天绝对过期；未注册时不创建账户 |
 | `operator_password_resets` | Operator | 绑定Operator ID、签发admin、token hash与1小时绝对过期；每账户至多一条current链接 |
+| `organizations` | Contest/Import | school ID 稳定分配，name key unique；Import 唯一修改者 |
+| `teams` | Contest/Import | account PK/FK，关联 Organization；Import 唯一修改者 |
 | `seats` | Contest/Import | seat code unique |
 | `accounts` | Contest/Import | username unique，credential revision正数 |
 | `server_vault_records` | Contest/Import + Vault | account PK/FK，一账户一current ciphertext |
@@ -970,7 +991,15 @@ Device disable、revoke和current control-key replacement不是普通target变�
 | `runtime_config` | Runtime | singleton canonical HTTPS origin |
 | `device_session_targets` | Session | 每 Device foreground target/terminate epoch |
 | `device_home_targets` | Home | 每Device reset epoch |
+| `device_power_targets` | Power | 每Device shutdown epoch 与服务器绝对 deadline |
 | `target_submission_receipts` | TargetSubmission | operation ID 全局唯一；操作者、规范化请求、逐设备结果 |
+| `print_sources` | Print | 独立 source token hash 与撤销状态 |
+| `print_requests` | Print | source/request ID 联合主键，受理快照与生成失败状态 |
+| `print_documents` | Print | durable ready sequence、PDF hash/大小/页数及初始队列快照；无 PDF bytes |
+| `print_jobs` | Print | 每文档一条 current 队列状态、尝试预算及重新排队次数 |
+| `print_attempts` | Print | 每次领取的精确 attempt、租约、Job ID 与结果 |
+| `print_claims` | Print | client/request ID 联合主键，领取重放幂等 |
+| `print_printers` | Print | 配对期限、current client/token hash 与确认状态 |
 
 receipt 与成功 Target 在同一事务提交；空集合和全部拒绝也保留 receipt。记录随当前比赛数据库 保留，不随 logout、Device revoke 或删除而级联删除，不提供自动过期或批次历史页面。
 
@@ -1051,7 +1080,7 @@ flag day 必须删除：
 现有 `Database::read` 和 `Database::write` 可继续作为 SQLite 基础设施：
 
 - 阻塞 Diesel 工作在 `spawn_blocking`；
-- 写使用短 `IMMEDIATE` transaction；
+- 实际mutation及必须持久化的首次初始化使用短`IMMEDIATE` transaction；上述materialize稳态读取使用`Database::read`，可由缺行表达的无操作默认值不写入；
 - 不得跨 `.await`、网络、CA、Vault文件I/O、Caddy或D-Bus持有事务；
 - 组件内部 table adapter可以保持“一函数写一表”；
 - 组件 application method负责同一组件多表原子组合；
@@ -1220,6 +1249,8 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 
 #### 15.1.6 Web会话边界
 
+Server路由按Public、Operator、Print Source和Print Client四类principal显式分组。模块只返回所属组的route定义，`http.rs`的组构造器统一在组边界应用一次认证；`require_admin`只检查已认证Operator的角色。Public组是显式allowlist，公开的学校Logo、配对入口及使用待确认token的打印确认握手保持原有边界；新增受保护route不依赖逐route选择认证wrapper。组认证只包裹已注册method，不包裹405或未挂载路径fallback；根层HEAD拒绝、no-store、request span及mutation完成任务保持不变。
+
 Panel的`/users`独立于DOMjudge `/accounts`，只有admin显示导航且路由要求admin；用户角色修改和删除有确认，最后admin有明确保护反馈。邀请与目标账户重置链接由当前Panel origin生成，只有签发/重新生成当次显示和复制，刷新、离开页面或会话换代后不能重新读取。
 
 `/register`与`/reset-password`先检查当前session；已登录时仅显示退出提示，保留尚未读取的URL fragment供显式退出后继续。确认匿名后读取用途固定的fragment token到页面内存，并replace导航清除fragment；检查与提交只通过JSON body发送token。注册展示固定role并允许自选username，重置只展示固定目标username，两者成功后返回Login且不自动登录。`/change-password`允许admin/viewer，兼容旧密码作为当前密码验证，成功后清除本地会话并返回Login。自我删除结束会话，自我降级立即按viewer展示。
@@ -1304,17 +1335,17 @@ Web 界面图标统一使用 `lucide-react` 的具名组件，保留状态的文
 
 Session foreground、terminate、Home reset 的单台/批量写入口统一为 `POST /api/v2/target-submissions`。旧单台 PUT session-control 和 POST terminate/reset 入口删除，原读取接口保留。这是 HTTP Breaking Change。请求包含 canonical nonnil UUID `operation_id`、`scope`（`all_enabled`、`devices` ID 列表或仅供关机的 `all_online_enabled`）和封闭 `action`：`set_foreground`（waiting/contest）、 `terminate_session`、`reset_home`、`power_off`。每次请求只包含一种动作。
 
-集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用 `all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备， 为每台写入单调 `shutdown_epoch` 与 60 秒 Server-time deadline。离线、Disabled、Revoked 和在 deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入 root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。 Panel 只显示 submission、latest Actual 和连接离线事实。
+集体关机也是同一 receipt/权限边界中的封闭 `power_off` action，但只能使用 `all_online_enabled` scope：Server 在处理时快照当前有 fresh Active lease 的 Enabled 设备， 并发读取Actor取得快照后才计算60秒Server-time deadline，为每台写入单调`shutdown_epoch`与该deadline。离线、Disabled、Revoked 和在 deadline 后重连的设备都不执行；同一 `operation_id` 只重放原结果。Client 将 epoch 写入 root-owned artifact 后才经固定 Helper 请求 logind `PowerOff(false)`，boot 后不重放该 epoch。 Panel 只显示 submission、latest Actual 和连接离线事实。
 
 进入 `BEGIN IMMEDIATE` 后先查询 receipt：相同 ID/操作者/规范化请求返回原名单和原结果， 不重新筛选或执行；同 ID 不同请求或操作者拒绝。首次提交才在事务中选择当前 Enabled， 离线设备包含在内。显式 ID 列表规范化去重；不存在、非 Enabled、无效目标、epoch 耗尽等 领域拒绝逐设备返回，其他设备继续。数据库写入或最终 COMMIT 失败整批回滚。 HTTP 200 表示完整提交结果已持久化，可以包含部分或全部拒绝；从不等待 Client converge。
 
 HTTP 方法表达资源语义，不为动词机械创建伪资源，也不把实际状态转换伪装成普通字段覆盖。`/api/v2` 根层在认证和路由处理前统一拒绝 `HEAD`。Panel API 不设置路由正文大小覆盖，JSON 和 Bytes 提取器使用 Axum 默认的 2 MiB 上限。JSON 提取失败沿用 400 错误映射，包括正文超限、格式错误和不支持的媒体类型；名单上传的 Bytes 提取超限返回 413。解析组件继续执行自己的格式、解压和解码限制；Import 内部的 XLSX 原始文件上限为 8 MiB，但不覆盖 HTTP 提取器的 2 MiB 上限。
 
-当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用 Import 名额，直到请求终止。
+当前 Operator API 尚未设置统一请求处理期限，也不对正文读取独立计时；慢速名单上传可长期占用Import名额，直到正文读取结束或传输失败；仅取消外层请求future不会释放仍在读取正文的进程任务所持名额。
 
 当前 `axum::serve` 入口未安装 Hyper 计时器，默认 HTTP/1 请求头读取超时不生效，慢请求头仍可占用连接容量。补齐请求头保护需独立调整服务入口，并验证 TLS、WebSocket upgrade 与优雅关闭。
 
-Operator Target 提交成功后通过 `DeviceControl::dirty_devices` 通知成功设备的已有 Actor。 receipt 重放也只触发从当前数据库重新读取，不恢复旧 Target。Dirty 丢失由现有周期刷新和 重连恢复；通知不在数据库事务内，也不等待终端执行。HTTP handler 不直接访问组件表。
+Operator Target提交成功后返回成功设备集合的`TargetChange`，HTTP任务通过`DeviceControl::publish`通知已有Actor。receipt重放也只触发从当前数据库重新读取，不恢复旧Target。HTTP请求取消不影响该提交与通知序列；周期刷新和重连仍为独立反熵路径。通知不在数据库事务内，也不等待终端执行。HTTP handler不直接访问组件表。
 
 ### 15.4 Panel状态
 
@@ -1352,6 +1383,10 @@ Web 视觉规范集中维护于根目录 [DESIGN.md](../DESIGN.md)，作为界�
 ### 16.1 错误
 
 - 组件拥有module-local typed error；
+- Rust错误统一使用Snafu；纯业务拒绝保持unit variant，查询、连接池、阻塞执行器、Vault和I/O等基础设施失败必须携带具体typed source，并通过context selector或移动source的转换保留完整错误链，不得以通用失败variant丢弃来源；
+- HTTP、Device Actor／协调器和命令入口作为报告边界，使用`snafu::Report`记录完整错误链一次；下层只传播，HTTP公开status、code和JSON不携带内部诊断；
+- 错误值、Display、Debug和source均不得包含password、token、session credential、key material、Vault明文或PDF bytes；依赖错误可能保留这些值时，只保留安全的unit分类，并在转换处简短说明原因；
+- 阻塞／异步任务的`JoinError`必须立即转换为安全的`TaskFailure::Cancelled/Panicked`，错误链不保留panic payload。日志bootstrap安装panic hook，只记录源码file/line及thread name，不记录payload，也不改变unwind／abort策略；
 - transport adapter对本边界可达的typed failure穷举映射；
 - 不建立global domain error enum；
 - 不建立跨HTTP、WSS和本地IPC的全局错误码registry或共享crate；
@@ -1442,6 +1477,11 @@ crates/natsume-server/diesel/
   schema.rs
   sqlite-integer-to-bigint.patch
 crates/natsume-server/src/
+  main.rs
+  commands.rs
+  config.rs
+  logging.rs
+  background.rs
   server_state.rs
   component.rs
   component/
@@ -1462,6 +1502,7 @@ crates/natsume-server/src/
     device/types.rs
     gateway.rs
     gateway/db.rs
+    gateway/issuer.rs
     binding.rs
     binding/db.rs
     runtime.rs
@@ -1470,11 +1511,25 @@ crates/natsume-server/src/
     session/db.rs
     home.rs
     home/db.rs
+    power.rs
+    power/db.rs
+    print.rs
+    print/db.rs
+    print/db/execution.rs
+    print/db/printers.rs
+    print/pairing.rs
+    print/execution.rs
+    print/expiry.rs
+    print/pdf.rs
+    print/storage.rs
+    target_submission.rs
+    target_submission/db.rs
   device_control.rs
   device_control/
     actor.rs
     admission.rs
     application.rs
+    change.rs
     state.rs
     convergence.rs
     convergence/
@@ -1484,7 +1539,25 @@ crates/natsume-server/src/
       session.rs
       home.rs
   http.rs
+  http/middleware.rs
+  http/middleware/
+    authentication.rs
+    completion.rs
+    request_context.rs
+  http/handler.rs
   http/handler/
+    health.rs
+    session.rs
+    operator.rs
+    contest.rs
+    device.rs
+    enrollment.rs
+    import.rs
+    provisioning.rs
+    target_submission.rs
+    print.rs
+    print/execution.rs
+    print/printers.rs
     device_control.rs
     device/convergence.rs
     device/convergence/
@@ -1495,8 +1568,10 @@ crates/natsume-server/src/
       home.rs
   db.rs
   vault.rs
-  pki.rs
+  tls.rs
 ```
+
+`http.rs`集中组装Public、Operator、Print Source、Print Client四个principal group；handler只贡献各组路由，认证在受保护组构造时统一施加。`http/middleware/completion.rs`保护所有API mutation运行至完成。TLS入口在`tls.rs`，Origin CA加载与签发在`component/gateway/issuer.rs`。
 
 `db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/schema.rs` 是由 migration 生成、通过 `crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际 变大后才拆`types.rs`或`resolve.rs`。
 

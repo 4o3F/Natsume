@@ -29,12 +29,53 @@ const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 type PersistedGatewayRow = (String, Option<Vec<u8>>, Option<Vec<u8>>);
 
 #[tokio::test]
+async fn generated_waiting_and_issued_targets_materialize_without_a_write_lock() {
+    let fixture = Fixture::new().await;
+    let waiting = fixture.materialize().await;
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let current = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.component.materialize(fixture.device_id),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("waiting Gateway materialize waited for the writer"))
+    .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_eq!(current, waiting);
+    drop(lock);
+    fixture
+        .component
+        .ingest(
+            fixture.device_id,
+            Some(GatewayCredentialInput::new(
+                waiting.intent().credential_id(),
+                Some(valid_csr()),
+            )),
+            GatewayActualState::Absent,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let issued = fixture.materialize().await;
+    assert!(issued.target().certificate().is_some());
+    let _lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let current = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        fixture.component.materialize(fixture.device_id),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("issued Gateway materialize waited for the writer"))
+    .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_eq!(current, issued);
+    assert_eq!(fixture.issue_count.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
 async fn first_materialization_creates_one_waiting_intent() {
     let fixture = Fixture::new().await;
 
-    assert_eq!(
-        fixture.component.read_current(fixture.device_id).await,
-        Ok(None)
+    assert!(
+        matches!(fixture.component.read_current(fixture.device_id).await, Ok(actual) if actual.is_none())
     );
     let materialized = fixture.materialize().await;
     let credential_id = materialized.intent().credential_id();
@@ -46,9 +87,8 @@ async fn first_materialization_creates_one_waiting_intent() {
         (credential_id.as_text(), None, None)
     );
     assert_eq!(fixture.issue_count.load(Ordering::Relaxed), 0);
-    assert_eq!(
-        fixture.component.read_current(fixture.device_id).await,
-        Ok(Some(materialized))
+    assert!(
+        matches!(fixture.component.read_current(fixture.device_id).await, Ok(actual) if actual == Some(materialized))
     );
     let all = fixture
         .component
@@ -129,7 +169,14 @@ async fn concurrent_materialization_returns_the_single_committed_grant() {
         second.materialize(fixture.device_id)
     );
 
-    assert_eq!(first, second);
+    assert_eq!(
+        first
+            .as_ref()
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))),
+        second
+            .as_ref()
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)))
+    );
     assert!(
         first
             .unwrap_or_else(|error| panic!("concurrent materialization failed: {error}"))
@@ -157,7 +204,7 @@ async fn same_csr_replays_but_a_different_valid_csr_conflicts() {
             .unwrap_or_else(|error| panic!("exact CSR replay failed: {error}"));
     }
 
-    assert_eq!(
+    assert!(matches!(
         fixture
             .component
             .ingest(
@@ -170,7 +217,7 @@ async fn same_csr_replays_but_a_different_valid_csr_conflicts() {
             )
             .await,
         Err(GatewayError::ConflictingCsr)
-    );
+    ));
     assert_eq!(fixture.gateway_row().await.1, Some(accepted_csr));
     assert_eq!(fixture.issue_count.load(Ordering::Relaxed), 0);
 }
@@ -266,41 +313,41 @@ async fn invalid_persisted_presence_and_der_fail_closed() {
     invalid_presence
         .insert_gateway_row(None, Some(vec![0x01]))
         .await;
-    assert_eq!(
+    assert!(matches!(
         invalid_presence
             .component
             .materialize(invalid_presence.device_id)
             .await,
-        Err(GatewayError::InvalidPersistedFacts)
-    );
+        Err(GatewayError::InvalidPersistedFacts { .. })
+    ));
     assert!(matches!(
         invalid_presence.component.read_all_current().await,
-        Err(GatewayError::InvalidPersistedFacts)
+        Err(GatewayError::InvalidPersistedFacts { .. })
     ));
 
     let invalid_csr = Fixture::new().await;
     invalid_csr
         .insert_gateway_row(Some(vec![0x30, 0x00]), None)
         .await;
-    assert_eq!(
+    assert!(matches!(
         invalid_csr
             .component
             .materialize(invalid_csr.device_id)
             .await,
-        Err(GatewayError::InvalidPersistedFacts)
-    );
+        Err(GatewayError::InvalidPersistedFacts { .. })
+    ));
 
     let invalid_leaf = Fixture::new().await;
     invalid_leaf
         .insert_gateway_row(Some(valid_csr()), Some(vec![0x30, 0x00]))
         .await;
-    assert_eq!(
+    assert!(matches!(
         invalid_leaf
             .component
             .materialize(invalid_leaf.device_id)
             .await,
-        Err(GatewayError::InvalidPersistedFacts)
-    );
+        Err(GatewayError::InvalidPersistedFacts { .. })
+    ));
 }
 
 #[tokio::test]
@@ -373,7 +420,7 @@ impl Fixture {
                         devices::created_at_unix_ms.eq(1_i64),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await
@@ -426,7 +473,7 @@ impl Fixture {
                     ))
                     .filter(gateway_credentials::device_id.eq(device_id))
                     .first::<PersistedGatewayRow>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("Gateway row read failed: {error:?}"))
@@ -450,7 +497,7 @@ impl Fixture {
                         gateway_credentials::gateway_leaf_der.eq(leaf_der),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await

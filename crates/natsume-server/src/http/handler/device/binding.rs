@@ -17,8 +17,8 @@ pub(crate) async fn delete_device_binding(
         return invalid_device_id();
     };
     match state.binding().unbind(device_id).await {
-        Ok(()) => {
-            state.device_control().dirty_device(device_id).await;
+        Ok(change) => {
+            state.device_control().publish(change).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => binding_error(error).into_response(),
@@ -30,10 +30,14 @@ pub(super) fn binding_error(error: BindingError) -> ApiError {
         BindingError::DeviceNotFound => ApiError::not_found("binding_device_not_found"),
         BindingError::DeviceNotEligible => ApiError::conflict("binding_device_not_eligible"),
         BindingError::ConflictingSubmission => ApiError::conflict("binding_submission_conflict"),
-        BindingError::InvalidPersistedFacts => {
-            ApiError::internal_error("binding_invalid_persisted_facts")
+        BindingError::InvalidPersistedFacts { .. } => {
+            ApiError::internal_error_from(error, "binding_invalid_persisted_facts")
         }
-        BindingError::PersistenceFailed => ApiError::internal_error("binding_persistence_failed"),
-        BindingError::VaultFailure => ApiError::internal_error("binding_vault_failure"),
+        BindingError::PersistenceFailed { .. } => {
+            ApiError::internal_error_from(error, "binding_persistence_failed")
+        }
+        BindingError::VaultFailure { .. } => {
+            ApiError::internal_error_from(error, "binding_vault_failure")
+        }
     }
 }

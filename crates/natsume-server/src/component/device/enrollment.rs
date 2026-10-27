@@ -1,4 +1,6 @@
+use snafu::Snafu;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tokio::sync::{Mutex, oneshot};
 use uuid::{Uuid, Variant, Version};
@@ -151,34 +153,43 @@ impl EnrollmentApproval {
 }
 
 /// Failure to start a new pending Enrollment review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Snafu)]
+#[snafu(module)]
 pub(crate) enum EnrollmentStartError {
     /// The process already holds the maximum number of pending reviews.
+    #[snafu(display("Enrollment review capacity is exhausted"))]
     ReviewCapacityReached,
     /// Current-authority lookup failed before replay classification.
-    Authority(DeviceError),
+    #[snafu(display("Enrollment authority lookup failed"))]
+    Authority { source: DeviceError },
 }
 
 impl From<DeviceError> for EnrollmentStartError {
     fn from(error: DeviceError) -> Self {
-        Self::Authority(error)
+        Self::Authority { source: error }
     }
 }
 
 /// Failure returned by an attempt to approve a pending Enrollment review.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Snafu)]
+#[snafu(module)]
 pub(crate) enum EnrollmentApprovalError {
     /// The review never existed or another terminal action already claimed it.
+    #[snafu(display("Enrollment review was not found"))]
     ReviewNotFound,
     /// Current-authority lookup failed before the review was claimed.
-    Authority(DeviceError),
+    #[snafu(display("Enrollment authority lookup failed"))]
+    Authority { source: Arc<DeviceError> },
     /// Activation failed after the review was claimed; delivery to the connection was attempted.
-    Activation(ActivationError),
+    #[snafu(display("Enrollment activation failed"))]
+    Activation { source: Arc<ActivationError> },
 }
 
 impl From<ActivationError> for EnrollmentApprovalError {
     fn from(error: ActivationError) -> Self {
-        Self::Activation(error)
+        Self::Activation {
+            source: Arc::new(error),
+        }
     }
 }
 

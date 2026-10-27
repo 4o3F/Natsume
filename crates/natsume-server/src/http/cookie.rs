@@ -11,15 +11,16 @@ const SESSION_COOKIE_NAME: &str = "__Secure-natsume_session";
 const SESSION_COOKIE_PATH: &str = "/api/v2";
 const SESSION_COOKIE_MAX_AGE_SECONDS: i64 = 57_600;
 
-pub(super) fn issue_session_credential(wire_credential: &str) -> Result<HeaderValue, ()> {
+pub(super) fn issue_session_credential(wire_credential: &str) -> Result<HeaderValue, CookieError> {
     let value =
         Zeroizing::new(session_cookie(wire_credential, SESSION_COOKIE_MAX_AGE_SECONDS).to_string());
-    HeaderValue::from_str(&value).map_err(|_| ())
+    HeaderValue::from_str(&value).map_err(|source| CookieError::Header { source })
 }
 
 pub(super) fn session_credential(headers: &HeaderMap) -> Result<SessionCredentialHex, ()> {
     let mut target = None;
     for header_value in headers.get_all(header::COOKIE) {
+        // Malformed credential headers share one authentication rejection; parser detail is irrelevant.
         let value = header_value.to_str().map_err(|_| ())?;
         for parsed in Cookie::split_parse(value).filter_map(Result::ok) {
             if parsed.name() == SESSION_COOKIE_NAME {
@@ -33,9 +34,12 @@ pub(super) fn session_credential(headers: &HeaderMap) -> Result<SessionCredentia
     target.ok_or(())
 }
 
-pub(super) fn with_clearing_session_cookie(mut response: Response) -> Result<Response, ()> {
+pub(super) fn with_clearing_session_cookie(
+    mut response: Response,
+) -> Result<Response, CookieError> {
     let clearing = session_cookie("", 0).to_string();
-    let value = HeaderValue::from_str(&clearing).map_err(|_| ())?;
+    let value =
+        HeaderValue::from_str(&clearing).map_err(|source| CookieError::Header { source })?;
     response.headers_mut().insert(header::SET_COOKIE, value);
     Ok(response)
 }
@@ -48,4 +52,12 @@ fn session_cookie(value: &str, max_age_seconds: i64) -> Cookie<'_> {
         .path(SESSION_COOKIE_PATH)
         .max_age(Duration::seconds(max_age_seconds))
         .build()
+}
+
+#[derive(Debug, snafu::Snafu)]
+pub(super) enum CookieError {
+    #[snafu(display("session cookie header construction failed"))]
+    Header {
+        source: axum::http::header::InvalidHeaderValue,
+    },
 }

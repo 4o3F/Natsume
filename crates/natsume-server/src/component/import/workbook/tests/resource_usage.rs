@@ -121,18 +121,18 @@ fn measure_workbook_resource_usage() {
     let bytes = checked(fs::read(&path));
     let started = Instant::now();
     let result = parse_xlsx(&bytes);
-    eprintln!(
+    tracing::info!(
         "workbook_bytes={}, parse_elapsed_ms={}",
         bytes.len(),
         started.elapsed().as_millis()
     );
     match &result {
-        Ok(roster) => eprintln!(
+        Ok(roster) => tracing::info!(
             "teams={}, organizations={}",
             roster.teams().len(),
             roster.organizations().len()
         ),
-        Err(error) => eprintln!("rejection={error}"),
+        Err(error) => tracing::info!("rejection={error}"),
     }
     match Path::new(&path).file_name().and_then(|name| name.to_str()) {
         Some("nominal.xlsx") => {
@@ -168,6 +168,6 @@ fn measure_workbook_resource_usage() {
         .lines()
         .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
     {
-        eprintln!("{line}");
+        tracing::info!("{line}");
     }
 }

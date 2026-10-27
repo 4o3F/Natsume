@@ -32,9 +32,12 @@ fn unavailable_inbox_is_a_typed_failure_for_both_publisher_and_consumer() {
             attempt_id: "attempt".to_owned(),
             check_at: Instant::now()
         }),
-        Err(ExpiryError::InboxUnavailable)
+        Err(ExpiryError::InboxUnavailable { .. })
     ));
-    assert!(matches!(inbox.take(), Err(ExpiryError::InboxUnavailable)));
+    assert!(matches!(
+        inbox.take(),
+        Err(ExpiryError::InboxUnavailable { .. })
+    ));
 }
 
 #[tokio::test]

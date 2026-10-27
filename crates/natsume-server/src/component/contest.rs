@@ -108,19 +108,15 @@ impl ContestComponent {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum ContestError {
     #[snafu(display("contest current facts could not be read"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
 }
 
 impl From<PersistenceError> for ContestError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData | PersistenceError::OperationFailed => {
-                Self::PersistenceFailed
-            }
-        }
+    fn from(source: PersistenceError) -> Self {
+        Self::PersistenceFailed { source }
     }
 }
 
@@ -161,7 +157,7 @@ mod tests {
                    ('binding-a', '01900000-0000-7000-8000-000000000001', 'seat-b'),
                    ('binding-b', '01900000-0000-7000-8000-000000000002', 'seat-a');",
                     )
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("fixture rows: {error:?}"));
@@ -247,10 +243,13 @@ mod tests {
     #[test]
     fn persistence_mapping_covers_every_neutral_variant() {
         for error in [
-            PersistenceError::InvalidPersistedData,
-            PersistenceError::OperationFailed,
+            PersistenceError::invalid("persisted value"),
+            PersistenceError::from(diesel::result::Error::RollbackTransaction),
         ] {
-            assert_eq!(ContestError::from(error), ContestError::PersistenceFailed);
+            assert!(matches!(
+                ContestError::from(error),
+                ContestError::PersistenceFailed { .. }
+            ));
         }
     }
 }

@@ -79,9 +79,24 @@ pub(super) struct ApiError {
     /// logged on the current request Span, never serialized or sent as a
     /// header.
     cause: &'static str,
+    reported: bool,
 }
 
 impl ApiError {
+    pub(super) fn internal_error_from<E: std::error::Error>(error: E, cause: &'static str) -> Self {
+        Self::internal_error(cause).report_from(error)
+    }
+
+    fn report_from<E: std::error::Error>(mut self, error: E) -> Self {
+        if self.status.is_server_error() && self.status != StatusCode::SERVICE_UNAVAILABLE {
+            tracing::error!(code = self.code.as_str(), cause = self.cause, error = %snafu::Report::from_error(error), "HTTP request failed");
+        } else {
+            tracing::warn!(code = self.code.as_str(), cause = self.cause, error = %snafu::Report::from_error(error), "HTTP request rejected");
+        }
+        self.reported = true;
+        self
+    }
+
     pub(super) fn unavailable(cause: &'static str) -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -160,36 +175,42 @@ impl ApiError {
             OperatorError::SessionAuthenticationFailed => {
                 Self::authentication_failed("operator_session_authentication_failed")
             }
+            OperatorError::SessionCleanup { .. } => {
+                Self::authentication_failed("operator_store_transaction_failed").report_from(error)
+            }
             OperatorError::InvalidSessionCredential => {
                 Self::authentication_failed("operator_invalid_session_credential")
             }
             OperatorError::AuthorizationDenied => {
                 Self::authorization_denied("operator_authorization_denied")
             }
-            OperatorError::PersistenceFailed => Self::internal_error("operator_persistence_failed"),
-            OperatorError::PasswordTaskFailed => {
-                Self::internal_error("operator_password_task_failed")
+            OperatorError::PersistenceFailed { .. } => {
+                Self::internal_error_from(error, "operator_persistence_failed")
             }
-            OperatorError::PasswordVerificationFailed => {
-                Self::internal_error("operator_password_verification_failed")
+            OperatorError::PasswordTaskFailed { .. } => {
+                Self::internal_error_from(error, "operator_password_task_failed")
             }
-            OperatorError::InvalidPersistedIdentity => {
-                Self::internal_error("operator_invalid_persisted_identity")
+            OperatorError::PasswordVerificationFailed
+            | OperatorError::PasswordVerification { .. } => {
+                Self::internal_error_from(error, "operator_password_verification_failed")
+            }
+            OperatorError::InvalidPersistedIdentity { .. } => {
+                Self::internal_error_from(error, "operator_invalid_persisted_identity")
             }
             OperatorError::InvalidPersistedRole => {
-                Self::internal_error("operator_invalid_persisted_role")
+                Self::internal_error_from(error, "operator_invalid_persisted_role")
             }
-            OperatorError::EntropyUnavailable => {
-                Self::internal_error("operator_entropy_unavailable")
+            OperatorError::EntropyUnavailable { .. } => {
+                Self::internal_error_from(error, "operator_entropy_unavailable")
             }
-            OperatorError::InvalidHashingParameters => {
-                Self::internal_error("operator_invalid_hashing_parameters")
+            OperatorError::InvalidHashingParameters { .. } => {
+                Self::internal_error_from(error, "operator_invalid_hashing_parameters")
             }
-            OperatorError::SaltEncodingFailed => {
-                Self::internal_error("operator_salt_encoding_failed")
+            OperatorError::SaltEncodingFailed { .. } => {
+                Self::internal_error_from(error, "operator_salt_encoding_failed")
             }
-            OperatorError::PasswordHashingFailed => {
-                Self::internal_error("operator_password_hashing_failed")
+            OperatorError::PasswordHashingFailed { .. } => {
+                Self::internal_error_from(error, "operator_password_hashing_failed")
             }
             OperatorError::EmptyLoginName => Self::invalid_request("operator_empty_login_name"),
             OperatorError::InvalidNewLoginName => {
@@ -250,24 +271,29 @@ impl ApiError {
 
     pub(super) fn from_contest(error: ContestError) -> Self {
         match error {
-            ContestError::PersistenceFailed => Self::internal_error("contest_persistence_failed"),
+            ContestError::PersistenceFailed { .. } => {
+                Self::internal_error_from(error, "contest_persistence_failed")
+            }
         }
     }
 
-    pub(super) fn from_device(error: DeviceError) -> Self {
+    pub(super) fn from_device(error: impl std::borrow::Borrow<DeviceError>) -> Self {
+        let error = error.borrow();
         match error {
             DeviceError::DeviceNotFound => Self::not_found("device_not_found"),
-            DeviceError::InvalidPersistedFacts => {
-                Self::internal_error("device_invalid_persisted_facts")
+            DeviceError::InvalidPersistedFacts { .. } => {
+                Self::internal_error_from(error, "device_invalid_persisted_facts")
             }
-            DeviceError::PersistenceFailed => Self::internal_error("device_persistence_failed"),
+            DeviceError::PersistenceFailed { .. } => {
+                Self::internal_error_from(error, "device_persistence_failed")
+            }
         }
     }
 
     pub(super) fn from_import(error: ImportError) -> Self {
         match error {
             ImportError::Busy => Self::unavailable("import_busy"),
-            ImportError::InvalidWorkbook(diagnostic) => {
+            ImportError::InvalidWorkbook { source: diagnostic } => {
                 let mut error = Self::new(
                     StatusCode::BAD_REQUEST,
                     "Bad Request",
@@ -276,6 +302,15 @@ impl ApiError {
                 );
                 error.title = diagnostic.to_string().into();
                 error
+            }
+            ImportError::CandidateWorker { .. } | ImportError::CandidateEncoding { .. } => {
+                Self::new(
+                    StatusCode::BAD_REQUEST,
+                    "Bad Request",
+                    ApiErrorCode::ImportCandidateInvalid,
+                    "import_candidate_invalid",
+                )
+                .report_from(error)
             }
             ImportError::CandidateInvalid => Self::new(
                 StatusCode::BAD_REQUEST,
@@ -307,9 +342,15 @@ impl ApiError {
                 ApiErrorCode::ImportSeatOccupied,
                 "import_seat_occupied",
             ),
-            ImportError::EntropyUnavailable => Self::internal_error("import_entropy_unavailable"),
-            ImportError::VaultFailure => Self::internal_error("import_vault_failure"),
-            ImportError::PersistenceFailure => Self::internal_error("import_persistence_failure"),
+            ImportError::EntropyUnavailable { .. } => {
+                Self::internal_error_from(error, "import_entropy_unavailable")
+            }
+            ImportError::VaultFailure { .. } => {
+                Self::internal_error_from(error, "import_vault_failure")
+            }
+            ImportError::PersistenceFailure { .. } => {
+                Self::internal_error_from(error, "import_persistence_failure")
+            }
         }
     }
 
@@ -319,12 +360,27 @@ impl ApiError {
             ExportError::Busy => Self::unavailable("roster_export_busy"),
             ExportError::IncompleteRoster => Self::conflict("roster_export_incomplete"),
             ExportError::LogoUnavailable => Self::not_found("organization_logo_unavailable"),
-            ExportError::Persistence => Self::internal_error("roster_export_persistence"),
-            ExportError::Vault => Self::internal_error("roster_export_vault"),
-            ExportError::LogoDirectory => Self::internal_error("organization_logo_directory"),
-            ExportError::Logo { .. } => Self::internal_error("organization_logo_invalid"),
-            ExportError::Archive => Self::internal_error("roster_export_archive"),
-            ExportError::Worker => Self::internal_error("roster_export_worker"),
+            ExportError::Persistence { .. } => {
+                Self::internal_error_from(error, "roster_export_persistence")
+            }
+            ExportError::Vault { .. } | ExportError::CredentialText { .. } => {
+                Self::internal_error_from(error, "roster_export_vault")
+            }
+            ExportError::LogoDirectory { .. } => {
+                Self::internal_error_from(error, "organization_logo_directory")
+            }
+            ExportError::Logo { .. } => {
+                Self::internal_error_from(error, "organization_logo_invalid")
+            }
+            ExportError::Archive
+            | ExportError::ArchiveZip { .. }
+            | ExportError::ArchiveIo { .. }
+            | ExportError::ArchiveJson { .. } => {
+                Self::internal_error_from(error, "roster_export_archive")
+            }
+            ExportError::Worker { .. } | ExportError::WorkerUnavailable { .. } => {
+                Self::internal_error_from(error, "roster_export_worker")
+            }
         };
         response.title = error.to_string().into();
         response
@@ -343,7 +399,14 @@ impl ApiError {
                 ApiErrorCode::PayloadTooLarge,
                 "print_document_too_large",
             ),
-            PrintError::Persistence => Self::internal_error("print_persistence"),
+            PrintError::Persistence { .. }
+            | PrintError::Storage { .. }
+            | PrintError::Executor { .. }
+            | PrintError::Entropy { .. }
+            | PrintError::Expiry { .. }
+            | PrintError::StatePoisoned { .. } => {
+                Self::internal_error_from(error, "print_persistence")
+            }
             PrintError::RateLimited => Self::new(
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too Many Requests",
@@ -364,6 +427,7 @@ impl ApiError {
             title: Cow::Borrowed(title),
             code,
             cause,
+            reported: false,
         }
     }
 }
@@ -375,18 +439,20 @@ impl IntoResponse for ApiError {
             status: self.status.as_u16(),
             code: self.code.as_str(),
         };
-        if self.status.is_server_error() && self.status != StatusCode::SERVICE_UNAVAILABLE {
-            tracing::error!(
-                code = self.code.as_str(),
-                cause = self.cause,
-                "HTTP request failed"
-            );
-        } else {
-            tracing::warn!(
-                code = self.code.as_str(),
-                cause = self.cause,
-                "HTTP request rejected"
-            );
+        if !self.reported {
+            if self.status.is_server_error() && self.status != StatusCode::SERVICE_UNAVAILABLE {
+                tracing::error!(
+                    code = self.code.as_str(),
+                    cause = self.cause,
+                    "HTTP request failed"
+                );
+            } else {
+                tracing::warn!(
+                    code = self.code.as_str(),
+                    cause = self.cause,
+                    "HTTP request rejected"
+                );
+            }
         }
         let mut response = (self.status, Json(error_response)).into_response();
         if self.status == StatusCode::SERVICE_UNAVAILABLE {

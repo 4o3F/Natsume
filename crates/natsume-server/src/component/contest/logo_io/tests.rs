@@ -135,7 +135,7 @@ fn malformed_svg_and_non_svg_xml_are_rejected_despite_webp_extension() {
         &path,
         b"<svg xmlns=\"http://www.w3.org/2000/svg\"><path>",
     ));
-    assert!(matches!(validate_logo(&path), Err(LogoError::Svg(_))));
+    assert!(matches!(validate_logo(&path), Err(LogoError::Svg { .. })));
     for input in [
         "<html><body>download failed</body></html>",
         "<root><svg xmlns=\"http://www.w3.org/2000/svg\"/></root>",
@@ -206,7 +206,7 @@ fn missing_directory_and_invalid_image_content_are_distinct() {
     assert!(LogoDirectory::open(&directory.path().join("absent")).is_err());
     assert!(matches!(
         validate_logo(&directory.path().join("absent.png")),
-        Err(LogoError::Read(_))
+        Err(LogoError::Read { .. })
     ));
     let path = directory.path().join("logo.png");
     checked(fs::write(&path, b"not an image"));
@@ -217,7 +217,10 @@ fn missing_directory_and_invalid_image_content_are_distinct() {
     write_image(&path, ImageFormat::WebP);
     checked(validate_logo(&path));
     checked(fs::write(&path, b"\x89PNG\r\n\x1a\ntruncated"));
-    assert!(matches!(validate_logo(&path), Err(LogoError::Decode(_))));
+    assert!(matches!(
+        validate_logo(&path),
+        Err(LogoError::Decode { .. })
+    ));
     checked(fs::write(&path, b"GIF89a"));
     assert!(matches!(
         validate_logo(&path),
@@ -278,7 +281,7 @@ fn unreadable_images_report_the_os_error() {
     // Privileged test runners may read mode-000 files; ordinary users cannot.
     if File::open(&path).is_err() {
         assert!(
-            matches!(validate_logo(&path), Err(LogoError::Read(error)) if error.kind() == io::ErrorKind::PermissionDenied)
+            matches!(validate_logo(&path), Err(LogoError::Read { source: error }) if error.kind() == io::ErrorKind::PermissionDenied)
         );
     }
 }

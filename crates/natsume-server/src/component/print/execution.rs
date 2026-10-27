@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use snafu::{OptionExt as _, ensure};
+use snafu::ensure;
 use tokio::time::Instant;
 
 use super::{
@@ -39,7 +39,9 @@ impl AttemptOutcome {
             "printed" => Ok(Self::Printed),
             "failed" => Ok(Self::Failed),
             "unknown" => Ok(Self::Unknown),
-            _ => Err(PrintError::Persistence),
+            _ => Err(PrintError::Persistence {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            }),
         }
     }
 }
@@ -82,7 +84,9 @@ impl ExecutionState {
             "waiting" => Ok(Self::Waiting),
             "completed" => Ok(Self::Completed),
             "exhausted" => Ok(Self::Exhausted),
-            _ => Err(PrintError::Persistence),
+            _ => Err(PrintError::Persistence {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            }),
         }
     }
 }
@@ -245,9 +249,8 @@ impl PrintComponent {
                         attempt_id: attempt.attempt_id.clone(),
                         check_at: check_at(sampled_at, now, deadline),
                     })
-                    .map_err(|error| {
-                        tracing::error!(%error, "print expiry check registration failed");
-                        PrintError::Persistence
+                    .map_err(|error| PrintError::Expiry {
+                        source: Box::new(error),
                     })?;
             }
             Ok(result)
@@ -324,7 +327,9 @@ impl PrintComponent {
             store.read_verified(&attempt.document_sha256, attempt.document_bytes)
         })
         .await
-        .map_err(|_| PrintError::Persistence)??;
+        .map_err(|source| PrintError::Executor {
+            source: source.into(),
+        })??;
         // File I/O never holds SQLite's write lock. Recheck revocation and ownership afterwards.
         let current = self.get_attempt(client, id).await?;
         ensure!(
@@ -377,5 +382,8 @@ fn validate_queue(name: &str) -> Result<(), PrintError> {
 }
 
 pub(super) fn deadline(now: i64, duration: i64) -> Result<i64, PrintError> {
-    now.checked_add(duration).context(super::PersistenceSnafu)
+    now.checked_add(duration)
+        .ok_or_else(|| PrintError::Persistence {
+            source: crate::db::PersistenceError::invalid("print deadline"),
+        })
 }

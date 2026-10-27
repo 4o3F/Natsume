@@ -45,8 +45,10 @@ impl ServerConfig {
     /// Returns a redacted [`ConfigError`] when the file cannot be read,
     /// decoded, or validated.
     pub fn load_from(path: &Path) -> Result<Self, ConfigError> {
-        let encoded = fs::read_to_string(path)
-            .map_err(|error| ConfigError::ReadFailed { kind: error.kind() })?;
+        let encoded = fs::read_to_string(path).map_err(|error| ConfigError::ReadFailed {
+            kind: error.kind(),
+            source: error,
+        })?;
         let raw: RawServerConfig =
             toml::from_str(&encoded).map_err(|error| decode_error(&error, &encoded))?;
         Self::validate(raw)
@@ -57,6 +59,7 @@ impl ServerConfig {
             .listen
             .https
             .parse::<SocketAddr>()
+            // Malformed configuration is a domain rejection; the address parser detail is irrelevant.
             .map_err(|_| ConfigError::InvalidListenAddress)?;
         if !is_canonical_https_origin(&raw.runtime.domjudge_origin) {
             return Err(ConfigError::InvalidDomjudgeOrigin);
@@ -386,12 +389,15 @@ impl GatewayNotAfter {
 }
 
 /// Redacted Server configuration failure.
-#[derive(Debug, Clone, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub enum ConfigError {
     #[snafu(display(
         "cannot read UTF-8 configuration ({kind:?}); check file existence and read permissions"
     ))]
-    ReadFailed { kind: std::io::ErrorKind },
+    ReadFailed {
+        kind: std::io::ErrorKind,
+        source: std::io::Error,
+    },
     #[snafu(display("missing required field `{field}`"))]
     MissingField { field: String },
     #[snafu(display("invalid TOML syntax or field type near line {line}, column {column}"))]
@@ -495,7 +501,7 @@ domjudge_origin = "https://judge.contest.example"
     fn valid_file_parses() -> Result<(), TestFailure> {
         let fixture = ConfigFixture::new(VALID_CONFIG)?;
         let config = ServerConfig::load_from(fixture.path())
-            .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(config.domjudge_origin(), "https://judge.contest.example");
         Ok(())
     }
@@ -557,15 +563,15 @@ domjudge_origin = "https://judge.contest.example"
             env!("CARGO_MANIFEST_DIR"),
             "/../../packaging/server/config.example.toml"
         )))
-        .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if config
             .origin_ca_certificate_path()
-            .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
             .as_path()
             != Path::new("/var/lib/natsume-server/keys/origin-ca.der")
             || config
                 .origin_ca_private_key_path()
-                .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
                 .as_path()
                 != Path::new("/var/lib/natsume-server/keys/origin-ca-key.pk8")
         {
@@ -578,7 +584,7 @@ domjudge_origin = "https://judge.contest.example"
     fn site_issuance_policy_is_loaded_from_the_single_server_config() -> Result<(), TestFailure> {
         let fixture = ConfigFixture::new(VALID_CONFIG)?;
         let config = ServerConfig::load_from(fixture.path())
-            .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let site = config.site();
         let timestamp = site.gateway_not_after().timestamp();
         if site.gateway_hostname() != "gateway.contest.example"
@@ -687,7 +693,7 @@ domjudge_origin = "https://judge.contest.example"
             };
             let display = error.to_string();
             let debug = format!("{error:?}");
-            if error != expected
+            if std::mem::discriminant(&error) != std::mem::discriminant(&expected)
                 || contains_canary(&display, canary)
                 || contains_canary(&debug, canary)
             {
@@ -716,7 +722,7 @@ domjudge_origin = "https://judge.contest.example"
             let fixture =
                 ConfigFixture::new(&format!("{VALID_CONFIG}\n[log]\nlevel = \"{encoded}\"\n"))?;
             let config = ServerConfig::load_from(fixture.path())
-                .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             if config.log_level() != expected {
                 return Err(TestFailure::LogLevelContractChanged);
             }
@@ -740,7 +746,7 @@ domjudge_origin = "https://judge.contest.example"
         for encoded in [VALID_CONFIG.to_owned(), format!("{VALID_CONFIG}\n[log]\n")] {
             let fixture = ConfigFixture::new(&encoded)?;
             let config = ServerConfig::load_from(fixture.path())
-                .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             if config.log_level() != LogLevel::Info {
                 return Err(TestFailure::LogLevelContractChanged);
             }
@@ -755,6 +761,7 @@ domjudge_origin = "https://judge.contest.example"
             &directory.path.join("missing-config-canary.toml"),
             &ConfigError::ReadFailed {
                 kind: std::io::ErrorKind::NotFound,
+                source: std::io::ErrorKind::NotFound.into(),
             },
             &["missing-config-canary"],
         )
@@ -826,7 +833,7 @@ domjudge_origin = "https://judge.contest.example"
     -> Result<(), TestFailure> {
         let fixture = ConfigFixture::new(VALID_CONFIG)?;
         let config = ServerConfig::load_from(fixture.path())
-            .map_err(|_| TestFailure::ExpectedConfigurationFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(
             config.organization_logos_path(),
             std::path::Path::new("/var/lib/natsume-server/organization-logos")
@@ -846,7 +853,7 @@ domjudge_origin = "https://judge.contest.example"
     fn print_documents_requires_an_explicit_absolute_path() -> Result<(), TestFailure> {
         let fixture = ConfigFixture::new(VALID_CONFIG)?;
         let config = ServerConfig::load_from(fixture.path())
-            .map_err(|_| TestFailure::ExpectedConfigurationFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(
             config.print_documents_path(),
             std::path::Path::new("/var/lib/natsume-server/print-documents")
@@ -903,7 +910,7 @@ domjudge_origin = "https://judge.contest.example"
         config.push_str("\n[future_phase]\nfuture-key-canary = \"future-value-canary\"\n");
         let fixture = ConfigFixture::new(&config)?;
         ServerConfig::load_from(fixture.path())
-            .map_err(|_| TestFailure::UnexpectedConfigurationFailure)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         Ok(())
     }
 
@@ -915,8 +922,10 @@ domjudge_origin = "https://judge.contest.example"
         let Err(error) = ServerConfig::load_from(path) else {
             return Err(TestFailure::ExpectedConfigurationFailure);
         };
-        if &error != expected {
-            eprintln!("expected {expected:?}, received {error:?}");
+        if std::mem::discriminant(&error) != std::mem::discriminant(expected)
+            || error.to_string() != expected.to_string()
+        {
+            tracing::error!(expected = %snafu::Report::from_error(expected), error = %snafu::Report::from_error(&error), "configuration classification changed");
             return Err(TestFailure::UnexpectedConfigurationFailure);
         }
 
@@ -944,7 +953,8 @@ domjudge_origin = "https://judge.contest.example"
         fn new(contents: &str) -> Result<Self, TestFailure> {
             let directory = TestDirectory::new()?;
             let path = directory.path.join("config.toml");
-            fs::write(&path, contents).map_err(|_| TestFailure::FixtureCreationFailed)?;
+            fs::write(&path, contents)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             Ok(Self {
                 _directory: directory,
                 path,
@@ -964,7 +974,8 @@ domjudge_origin = "https://judge.contest.example"
         fn new() -> Result<Self, TestFailure> {
             let path =
                 std::env::temp_dir().join(format!("natsume-server-config-test-{}", Uuid::now_v7()));
-            fs::create_dir(&path).map_err(|_| TestFailure::FixtureCreationFailed)?;
+            fs::create_dir(&path)
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             Ok(Self { path })
         }
     }
@@ -977,6 +988,11 @@ domjudge_origin = "https://judge.contest.example"
 
     #[derive(Debug, Snafu)]
     enum TestFailure {
+        #[snafu(context(false), display("test infrastructure operation failed"))]
+        Source {
+            #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+            source: Box<crate::test_error::TestError>,
+        },
         #[snafu(display("the configuration fixture could not be created"))]
         FixtureCreationFailed,
         #[snafu(display("a configuration failure was expected"))]

@@ -1,3 +1,5 @@
+use crate::http::Routes;
+
 mod dto;
 mod execution;
 mod printers;
@@ -7,88 +9,59 @@ pub(crate) use dto::{
 };
 
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     body::Bytes,
     extract::{
-        DefaultBodyLimit, FromRequestParts, Path, Request, State,
+        DefaultBodyLimit, FromRequestParts, Path, State,
         rejection::{BytesRejection, JsonRejection},
     },
     http::{StatusCode, header, request::Parts},
-    middleware::{self as axum_middleware, Next},
     response::{IntoResponse as _, Response},
-    routing::{MethodRouter, delete, get, post, put},
+    routing::{delete, get, post, put},
 };
 use serde::Deserialize;
 
 use super::super::{AppState, error::ApiError, middleware};
 use crate::component::print::{DOCUMENT_LIMIT, PrintError, SourceIdentity, canonical_id};
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    let source = Router::new()
-        .route(
-            "/print/requests",
-            require_source(state.clone(), post(register)),
-        )
-        .route(
-            "/print/requests/{request_id}",
-            require_source(state.clone(), get(get_request)),
-        )
-        .route(
+pub(in crate::http) fn source_routes() -> Routes {
+    vec![
+        ("/print/requests", post(register)),
+        ("/print/requests/{request_id}", get(get_request)),
+        (
             "/print/requests/{request_id}/generation-failure",
-            require_source(state.clone(), post(generation_failure)),
-        )
-        .route(
+            post(generation_failure),
+        ),
+        (
             "/print/requests/{request_id}/document",
-            require_source(
-                state.clone(),
-                put(upload).layer(DefaultBodyLimit::max(DOCUMENT_LIMIT)),
-            ),
-        );
-    source
-        .merge(printers::routes(state.clone()))
-        .merge(execution::routes(state.clone()))
-        .route(
-            "/print/queue",
-            middleware::require_operator(state.clone(), get(list_queue)),
-        )
-        .route(
+            put(upload).layer(DefaultBodyLimit::max(DOCUMENT_LIMIT)),
+        ),
+    ]
+}
+
+pub(in crate::http) fn operator_routes() -> Routes {
+    let mut routes = vec![
+        ("/print/queue", get(list_queue)),
+        (
             "/print/sources",
-            middleware::require_admin(state.clone(), post(create_source).get(list_sources)),
-        )
-        .route(
+            middleware::require_admin(post(create_source).get(list_sources)),
+        ),
+        (
             "/print/sources/{source_id}",
-            middleware::require_admin(state, delete(revoke_source)),
-        )
+            middleware::require_admin(delete(revoke_source)),
+        ),
+    ];
+    routes.extend(printers::operator_routes());
+    routes.extend(execution::operator_routes());
+    routes
 }
 
-fn require_source(state: AppState, routes: MethodRouter<AppState>) -> MethodRouter<AppState> {
-    routes.route_layer(axum_middleware::from_fn_with_state(
-        state,
-        authenticate_source,
-    ))
+pub(in crate::http) fn public_routes(state: AppState) -> Routes {
+    printers::public_routes(state)
 }
 
-async fn authenticate_source(
-    State(state): State<AppState>,
-    mut request: Request,
-    next: Next,
-) -> Response {
-    let headers = request.headers();
-    let mut auth = headers.get_all(header::AUTHORIZATION).iter();
-    let token = auth
-        .next()
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let Some(token) = token.filter(|_| auth.next().is_none()) else {
-        return ApiError::from_print(PrintError::Authentication).into_response();
-    };
-    match state.print().authenticate(token).await {
-        Ok(identity) => {
-            request.extensions_mut().insert(identity);
-            next.run(request).await
-        }
-        Err(error) => ApiError::from_print(error).into_response(),
-    }
+pub(in crate::http) fn client_routes() -> Routes {
+    execution::client_routes()
 }
 
 #[derive(Deserialize, specta::Type)]
@@ -105,6 +78,7 @@ impl<S: Send + Sync> FromRequestParts<S> for PrintPathId {
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let Path(id) = Path::<String>::from_request_parts(parts, state)
             .await
+            // Malformed request input is a domain rejection; parser detail is irrelevant.
             .map_err(|_| ApiError::invalid_request("print_path").into_response())?;
         canonical_id(&id).map_err(|error| ApiError::from_print(error).into_response())?;
         Ok(Self(id))

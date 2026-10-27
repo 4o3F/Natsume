@@ -15,7 +15,7 @@ use crate::{
     diesel_schema::{account_mappings, accounts, organizations, print_documents, seats, teams},
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -184,9 +184,8 @@ async fn registration_is_exact_idempotent_and_source_scoped() {
     assert!(
         first.document.is_none() && first.admission.is_none() && first.generation_failure.is_none()
     );
-    assert_eq!(
-        f.print.register(f.source.clone(), input.clone()).await,
-        Ok(first)
+    assert!(
+        matches!(f.print.register(f.source.clone(), input.clone()).await, Ok(actual) if actual == first)
     );
     for changed in [
         PrintRegistration {
@@ -202,23 +201,23 @@ async fn registration_is_exact_idempotent_and_source_scoped() {
             ..input.clone()
         },
     ] {
-        assert_eq!(
+        assert!(matches!(
             f.print.register(f.source.clone(), changed).await,
             Err(PrintError::Conflict)
-        );
+        ));
     }
     let (other, _) = add_source(&f.database).await;
-    assert_eq!(
+    assert!(matches!(
         f.print.get(other.clone(), input.request_id.clone()).await,
         Err(PrintError::NotFound)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print
             .upload(other.clone(), input.request_id.clone(), pdf(1))
             .await,
         Err(PrintError::NotFound)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print
             .generation_failure(
                 other.clone(),
@@ -229,7 +228,7 @@ async fn registration_is_exact_idempotent_and_source_scoped() {
             )
             .await,
         Err(PrintError::NotFound)
-    );
+    ));
     assert!(f.print.register(other.clone(), input.clone()).await.is_ok());
     assert!(
         f.print
@@ -246,7 +245,7 @@ async fn registration_is_exact_idempotent_and_source_scoped() {
         PrintState::Preparing
     );
     for account in [" team-1", "TEAM-1", "1", "A-01", "队伍"] {
-        assert_eq!(
+        assert!(matches!(
             f.print
                 .register(
                     f.source.clone(),
@@ -257,7 +256,7 @@ async fn registration_is_exact_idempotent_and_source_scoped() {
                 )
                 .await,
             Err(PrintError::Invalid)
-        );
+        ));
     }
 }
 
@@ -314,7 +313,7 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
         assert_eq!(fact.generation_failure, Some(code));
         assert!(fact.document.is_none() && fact.admission.is_none());
     }
-    assert_eq!(
+    assert!(matches!(
         f.print
             .generation_failure(
                 f.source.clone(),
@@ -325,11 +324,11 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
             )
             .await,
         Err(PrintError::Conflict)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print.upload(f.source.clone(), failed, pdf(1)).await,
         Err(PrintError::Conflict)
-    );
+    ));
     let ready = f.register().await.request_id;
     let bytes = pdf(3);
     let first = f
@@ -342,17 +341,16 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
         first.document.as_ref().map(|d| (d.bytes, d.pages)),
         Some((i64::try_from(bytes.len()).unwrap_or_default(), 3))
     );
-    assert_eq!(
-        f.print.upload(f.source.clone(), ready.clone(), bytes).await,
-        Ok(first)
+    assert!(
+        matches!(f.print.upload(f.source.clone(), ready.clone(), bytes).await, Ok(actual) if actual == first)
     );
-    assert_eq!(
+    assert!(matches!(
         f.print
             .upload(f.source.clone(), ready.clone(), pdf(2))
             .await,
         Err(PrintError::Conflict)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print
             .generation_failure(
                 f.source.clone(),
@@ -363,7 +361,7 @@ async fn failure_and_document_transitions_are_closed_and_replay_first_results() 
             )
             .await,
         Err(PrintError::Conflict)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -439,9 +437,8 @@ async fn fifo_uses_committed_documents_across_sources_excluding_other_states() {
     let print = PrintComponent::load(reopened, f.documents_path())
         .await
         .unwrap_or_else(|error| panic!("print storage reopen: {error}"));
-    assert_eq!(
-        print.get(f.source.clone(), first_registered.clone()).await,
-        Ok(second)
+    assert!(
+        matches!(print.get(f.source.clone(), first_registered.clone()).await, Ok(actual) if actual == second)
     );
     assert_eq!(
         print
@@ -518,13 +515,12 @@ async fn deleted_recreated_account_cannot_retarget_preparing_but_ready_survives(
         })
         .await
         .unwrap_or_else(|error| panic!("replace account: {error:?}"));
-    assert_eq!(
+    assert!(matches!(
         f.print.upload(f.source.clone(), preparing, pdf(1)).await,
         Err(PrintError::Conflict)
-    );
-    assert_eq!(
-        f.print.get(f.source.clone(), ready.clone()).await,
-        Ok(committed)
+    ));
+    assert!(
+        matches!(f.print.get(f.source.clone(), ready.clone()).await, Ok(actual) if actual == committed)
     );
     assert!(f.print.upload(f.source, ready, pdf(1)).await.is_ok());
 }
@@ -554,19 +550,19 @@ async fn revoked_source_is_rechecked_in_each_operation_even_with_stale_identity(
         f.print.authenticate(&f.token).await,
         Err(PrintError::Authentication)
     ));
-    assert_eq!(
+    assert!(matches!(
         f.print.register(f.source.clone(), registration()).await,
         Err(PrintError::Authentication)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print.get(f.source.clone(), id.clone()).await,
         Err(PrintError::Authentication)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print.upload(f.source.clone(), id.clone(), pdf(1)).await,
         Err(PrintError::Authentication)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print
             .generation_failure(
                 f.source,
@@ -577,7 +573,7 @@ async fn revoked_source_is_rechecked_in_each_operation_even_with_stale_identity(
             )
             .await,
         Err(PrintError::Authentication)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -592,14 +588,14 @@ async fn admission_keeps_durable_file_but_rolls_back_metadata_and_sequence_on_da
                     "CREATE TRIGGER fail_admission AFTER INSERT ON print_documents \
          BEGIN SELECT RAISE(ABORT, 'injected'); END;",
                 )
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .unwrap_or_else(|error| panic!("trigger: {error:?}"));
-    assert_eq!(
+    assert!(matches!(
         f.print.upload(f.source.clone(), id.clone(), pdf(1)).await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Persistence { .. })
+    ));
     assert_eq!(
         f.print
             .get(f.source.clone(), id.clone())
@@ -612,7 +608,7 @@ async fn admission_keeps_durable_file_but_rolls_back_metadata_and_sequence_on_da
         .write(|tx| {
             tx.connection()
                 .batch_execute("DROP TRIGGER fail_admission;")
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .unwrap_or_else(|e| panic!("drop trigger: {e:?}"));
@@ -725,13 +721,19 @@ async fn concurrent_admissions_allocate_unique_fifo_snapshots() {
 
 #[test]
 fn parser_accepts_real_page_trees_and_rejects_invalid_active_and_external_objects() {
-    assert_eq!(super::pdf::validate(&pdf(3)), Ok(3));
-    assert_eq!(super::pdf::validate(&pdf(0)), Err(PrintError::Invalid));
+    assert!(matches!(super::pdf::validate(&pdf(3)), Ok(actual) if actual == 3));
+    assert!(matches!(
+        super::pdf::validate(&pdf(0)),
+        Err(PrintError::Invalid)
+    ));
     for bytes in [
         b"%PDF-1.7\n/Type /Page\n%%EOF".to_vec(),
         pdf(1)[..80].to_vec(),
     ] {
-        assert_eq!(super::pdf::validate(&bytes), Err(PrintError::Invalid));
+        assert!(matches!(
+            super::pdf::validate(&bytes),
+            Err(PrintError::Invalid)
+        ));
     }
     for (key, value) in [
         ("OpenAction", Object::Integer(1)),
@@ -747,19 +749,21 @@ fn parser_accepts_real_page_trees_and_rejects_invalid_active_and_external_object
         let mut doc = pdf_document(1);
         let indirect = doc.add_object(value);
         doc.add_object(dictionary! {key => indirect});
-        assert_eq!(
-            super::pdf::validate(&save_pdf(&mut doc)),
-            Err(PrintError::Invalid),
+        assert!(
+            matches!(
+                super::pdf::validate(&save_pdf(&mut doc)),
+                Err(PrintError::Invalid)
+            ),
             "key {key}"
         );
     }
     let mut encrypted = pdf_document(1);
     let encryption = encrypted.add_object(dictionary! {});
     encrypted.trailer.set("Encrypt", encryption);
-    assert_eq!(
+    assert!(matches!(
         super::pdf::validate(&save_pdf(&mut encrypted)),
         Err(PrintError::Invalid)
-    );
+    ));
     for (key, value) in [
         ("Count", Object::Integer(2)),
         (
@@ -780,9 +784,11 @@ fn parser_accepts_real_page_trees_and_rejects_invalid_active_and_external_object
         doc.get_dictionary_mut(root)
             .unwrap_or_else(|e| panic!("tree: {e}"))
             .set(key, value);
-        assert_eq!(
-            super::pdf::validate(&save_pdf(&mut doc)),
-            Err(PrintError::Invalid),
+        assert!(
+            matches!(
+                super::pdf::validate(&save_pdf(&mut doc)),
+                Err(PrintError::Invalid)
+            ),
             "key {key}"
         );
     }
@@ -792,7 +798,7 @@ fn parser_accepts_real_page_trees_and_rejects_invalid_active_and_external_object
 async fn registration_rejects_invalid_ids_and_display_paths() -> TestResult {
     let f = Fixture::new().await;
     for filename in ["../main.cpp", "a\\b", "a\n.cpp", "a\0.cpp"] {
-        assert_eq!(
+        assert!(matches!(
             f.print
                 .register(
                     f.source.clone(),
@@ -803,14 +809,14 @@ async fn registration_rejects_invalid_ids_and_display_paths() -> TestResult {
                 )
                 .await,
             Err(PrintError::Invalid)
-        );
+        ));
     }
     for id in [
         Uuid::new_v5(&Uuid::NAMESPACE_URL, b"a").to_string(),
         Uuid::now_v7().to_string().to_uppercase(),
         "not-an-id".into(),
     ] {
-        assert_eq!(
+        assert!(matches!(
             f.print
                 .register(
                     f.source.clone(),
@@ -821,9 +827,9 @@ async fn registration_rejects_invalid_ids_and_display_paths() -> TestResult {
                 )
                 .await,
             Err(PrintError::Invalid)
-        );
+        ));
     }
-    assert_eq!(
+    assert!(matches!(
         f.print
             .register(
                 f.source,
@@ -834,7 +840,7 @@ async fn registration_rejects_invalid_ids_and_display_paths() -> TestResult {
             )
             .await,
         Err(PrintError::Invalid)
-    );
+    ));
     Ok(())
 }
 
@@ -851,10 +857,10 @@ fn parser_rejects_page_tree_cycles_dangling_references_and_corrupt_stream_length
         .get_dictionary_mut(root)
         .unwrap_or_else(|e| panic!("root: {e}"))
         .set("Kids", vec![Object::Reference(root)]);
-    assert_eq!(
+    assert!(matches!(
         super::pdf::validate(&save_pdf(&mut cyclic)),
         Err(PrintError::Invalid)
-    );
+    ));
     let mut duplicate = doc.clone();
     let dict = duplicate
         .get_dictionary_mut(root)
@@ -866,15 +872,15 @@ fn parser_rejects_page_tree_cycles_dangling_references_and_corrupt_stream_length
         .clone();
     dict.set("Kids", vec![kid.clone(), kid]);
     dict.set("Count", 2);
-    assert_eq!(
+    assert!(matches!(
         super::pdf::validate(&save_pdf(&mut duplicate)),
         Err(PrintError::Invalid)
-    );
+    ));
     doc.add_object(dictionary! {"Missing" => Object::Reference((999, 0))});
-    assert_eq!(
+    assert!(matches!(
         super::pdf::validate(&save_pdf(&mut doc)),
         Err(PrintError::Invalid)
-    );
+    ));
     let mut malformed = pdf(1);
     let marker = b"/Length 3";
     let offset = malformed
@@ -882,7 +888,10 @@ fn parser_rejects_page_tree_cycles_dangling_references_and_corrupt_stream_length
         .position(|v| v == marker)
         .unwrap_or_else(|| panic!("length marker"));
     malformed[offset + marker.len() - 1] = b'9';
-    assert_eq!(super::pdf::validate(&malformed), Err(PrintError::Invalid));
+    assert!(matches!(
+        super::pdf::validate(&malformed),
+        Err(PrintError::Invalid)
+    ));
     let mut bad_xref = pdf(1);
     let marker = b"startxref\n";
     let offset = bad_xref
@@ -891,7 +900,10 @@ fn parser_rejects_page_tree_cycles_dangling_references_and_corrupt_stream_length
         .unwrap_or_else(|| panic!("xref marker"))
         + marker.len();
     bad_xref[offset] = b'0';
-    assert_eq!(super::pdf::validate(&bad_xref), Err(PrintError::Invalid));
+    assert!(matches!(
+        super::pdf::validate(&bad_xref),
+        Err(PrintError::Invalid)
+    ));
 }
 
 #[test]
@@ -915,9 +927,9 @@ fn parser_rejects_encryption_even_when_empty_password_is_automatically_decrypted
         .unwrap_or_else(|e| panic!("encryption state: {e}"));
         doc.encrypt(&state)
             .unwrap_or_else(|e| panic!("encrypt: {e}"));
-        assert_eq!(
+        assert!(matches!(
             super::pdf::validate(&save_pdf(&mut doc)),
             Err(PrintError::Invalid)
-        );
+        ));
     }
 }

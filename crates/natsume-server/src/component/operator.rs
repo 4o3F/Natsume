@@ -128,7 +128,7 @@ impl OperatorIdentity {
     fn from_persisted(operator_id: &str, role: &str) -> Result<Self, OperatorError> {
         Ok(Self {
             operator_id: Uuid::parse_str(operator_id)
-                .map_err(|_| OperatorError::InvalidPersistedIdentity)?,
+                .map_err(|source| OperatorError::InvalidPersistedIdentity { source })?,
             role: OperatorRole::from_persisted(role)?,
         })
     }
@@ -165,7 +165,7 @@ const fn require_admin(role: OperatorRole) -> Result<(), OperatorError> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum OperatorError {
     #[snafu(display("operator authentication failed"))]
     AuthenticationFailed,
@@ -175,16 +175,25 @@ pub(crate) enum OperatorError {
     CredentialsTooLong,
     #[snafu(display("operator session authentication failed"))]
     SessionAuthenticationFailed,
+    #[snafu(display("expired operator session cleanup failed"))]
+    SessionCleanup { source: PersistenceError },
     #[snafu(display("operator authorization was denied"))]
     AuthorizationDenied,
     #[snafu(display("operator persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
     #[snafu(display("the operator password task failed"))]
-    PasswordTaskFailed,
+    PasswordTaskFailed {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
     #[snafu(display("operator password verification failed"))]
     PasswordVerificationFailed,
+    #[snafu(display("operator password verification failed"))]
+    PasswordVerification {
+        source: argon2::password_hash::Error,
+    },
     #[snafu(display("the persisted operator identity is invalid"))]
-    InvalidPersistedIdentity,
+    InvalidPersistedIdentity { source: uuid::Error },
     #[snafu(display("the session credential is invalid"))]
     InvalidSessionCredential,
     #[snafu(display("the persisted operator role is invalid"))]
@@ -198,13 +207,17 @@ pub(crate) enum OperatorError {
     #[snafu(display("the operator password confirmation does not match"))]
     PasswordMismatch,
     #[snafu(display("operator password entropy is unavailable"))]
-    EntropyUnavailable,
+    EntropyUnavailable { source: getrandom::Error },
     #[snafu(display("the operator password hashing parameters are invalid"))]
-    InvalidHashingParameters,
+    InvalidHashingParameters { source: argon2::Error },
     #[snafu(display("the operator password salt could not be encoded"))]
-    SaltEncodingFailed,
+    SaltEncodingFailed {
+        source: argon2::password_hash::phc::Error,
+    },
     #[snafu(display("the operator password could not be hashed"))]
-    PasswordHashingFailed,
+    PasswordHashingFailed {
+        source: argon2::password_hash::Error,
+    },
     #[snafu(display("the operator does not exist"))]
     OperatorNotFound,
     #[snafu(display("the operator login name is already in use"))]
@@ -218,12 +231,8 @@ pub(crate) enum OperatorError {
 }
 
 impl From<PersistenceError> for OperatorError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData | PersistenceError::OperationFailed => {
-                Self::PersistenceFailed
-            }
-        }
+    fn from(source: PersistenceError) -> Self {
+        Self::PersistenceFailed { source }
     }
 }
 

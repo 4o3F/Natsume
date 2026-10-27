@@ -27,7 +27,7 @@ use crate::{
     diesel_schema::{accounts, operator_accounts, organizations, teams},
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
     database: TestDatabase,
@@ -38,7 +38,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    async fn new() -> Result<Self, crate::test_error::TestError> {
         let database = TestDatabase::new().await?;
         seed_operator(&database.database, LOGIN_NAME, PASSWORD).await?;
         database
@@ -72,13 +72,13 @@ impl Fixture {
                 Ok::<_, PrintError>(())
             })
             .await
-            .map_err(|error| format!("roster: {error:?}"))?;
+            .map_err(crate::test_error::TestError::from)?;
         let router = router(server_state(&database)?, unused_web_root());
         let login = drive(&router, login_request(LOGIN_NAME, PASSWORD)?).await?;
         let cookie = header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')
             .next()
-            .ok_or("cookie")?
+            .ok_or(crate::test_error::TestError::missing("cookie"))?
             .to_owned();
         let source = drive(
             &router,
@@ -96,8 +96,14 @@ impl Fixture {
             database,
             router,
             cookie,
-            token: value["token"].as_str().ok_or("token")?.to_owned(),
-            source_id: value["source_id"].as_str().ok_or("source_id")?.to_owned(),
+            token: value["token"]
+                .as_str()
+                .ok_or(crate::test_error::TestError::missing("token"))?
+                .to_owned(),
+            source_id: value["source_id"]
+                .as_str()
+                .ok_or(crate::test_error::TestError::missing("source_id"))?
+                .to_owned(),
         })
     }
 
@@ -109,7 +115,7 @@ impl Fixture {
                     .set(operator_accounts::role.eq("viewer"))
                     .execute(transaction.connection())
                     .map(|_| ())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .map_err(TransactionError::into_error)
@@ -121,7 +127,7 @@ impl Fixture {
         path: &str,
         content_type: &str,
         body: Body,
-    ) -> Result<Captured, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Captured, crate::test_error::TestError> {
         let response = drive(
             &self.router,
             Request::builder()
@@ -136,7 +142,7 @@ impl Fixture {
         Ok(response)
     }
 
-    async fn register(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    async fn register(&self) -> Result<String, crate::test_error::TestError> {
         let id = Uuid::now_v7().to_string();
         for (key, value) in [("pages", json!(1)), ("protocol_version", json!(1))] {
             let mut unexpected = registration(&id);
@@ -250,7 +256,13 @@ async fn print_sources_use_admin_authorization_dedicated_tokens_and_no_store() -
     )
     .await?;
     let list: Value = serde_json::from_slice(&list.body)?;
-    assert_eq!(list[0].as_object().ok_or("source")?.len(), 3);
+    assert_eq!(
+        list[0]
+            .as_object()
+            .ok_or(crate::test_error::TestError::missing("source"))?
+            .len(),
+        3
+    );
     assert!(list[0].get("token").is_none() && list[0].get("token_hash").is_none());
     let denied = f
         .send(
@@ -426,7 +438,9 @@ async fn print_revocation_during_body_read_is_rechecked_without_body_deadline() 
         .await?;
         assert_eq!(response.status, StatusCode::NO_CONTENT);
     }
-    release.send(()).map_err(|()| "body release")?;
+    release
+        .send(())
+        .map_err(crate::test_error::TestError::from)?;
     assert_eq!(task.await??.status(), StatusCode::UNAUTHORIZED);
     let denied = f
         .send(Method::PUT, &path, "application/pdf", unread_body())
@@ -571,11 +585,13 @@ async fn print_logs_never_include_credentials_document_bytes_or_registration_dat
         )
         .await?;
         assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
-        Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        Ok::<_, crate::test_error::TestError>(())
     }
     .with_subscriber(captured.subscriber(LogLevel::Trace))
     .await?;
-    let logs = captured.text().map_err(|()| "captured logs")?;
+    let logs = captured
+        .text()
+        .map_err(crate::test_error::TestError::from)?;
     assert!(logs.contains("print_invalid"));
     for secret in [
         &f.token,
@@ -633,7 +649,9 @@ async fn authorized_print_management_finishes_after_caller_demotion() -> TestRes
         )
         .await?;
         assert_eq!(denied.status, StatusCode::FORBIDDEN);
-        release.send(()).map_err(|()| "body release")?;
+        release
+            .send(())
+            .map_err(crate::test_error::TestError::from)?;
         let response = pending.await??;
         assert_eq!(response.status(), StatusCode::OK);
         let value: Value =

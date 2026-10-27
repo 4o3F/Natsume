@@ -17,7 +17,7 @@ pub(in crate::component::power) fn device_exists(
         .first::<String>(transaction.connection())
         .optional()
         .map(|value| value.is_some())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 pub(in crate::component::power) fn find(
     transaction: &mut Transaction<'_>,
@@ -31,7 +31,7 @@ pub(in crate::component::power) fn find(
         .filter(device_power_targets::device_id.eq(device_id.as_text()))
         .first(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 pub(in crate::component::power) fn insert(
     transaction: &mut Transaction<'_>,
@@ -40,7 +40,7 @@ pub(in crate::component::power) fn insert(
     diesel::insert_into(device_power_targets::table)
         .values(device_power_targets::device_id.eq(device_id.as_text()))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 pub(in crate::component::power) fn update(
     transaction: &mut Transaction<'_>,
@@ -56,5 +56,5 @@ pub(in crate::component::power) fn update(
         device_power_targets::expires_at_unix_ms.eq(Some(deadline)),
     ))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

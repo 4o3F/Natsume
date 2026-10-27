@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Json, Router,
+    Json,
     body::Bytes,
     extract::{FromRequest, Path, Request, State},
     http::{HeaderMap, StatusCode, header},
@@ -43,29 +45,29 @@ const PREVIEW_TOKEN_WIRE_LENGTH: usize = 43;
 const XLSX_CONTENT_TYPE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const PREVIEW_TOKEN_HEADER: &str = "x-natsume-preview-token";
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    let upload = middleware::require_admin(
-        state.clone(),
-        post(create_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type)),
-    );
-    let commit = middleware::require_admin(
-        state.clone(),
-        post(commit_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type)),
-    );
-    Router::new()
-        .route(
+pub(in crate::http) fn operator_routes() -> Routes {
+    let upload =
+        post(create_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
+    let commit =
+        post(commit_import).route_layer(axum_middleware::from_fn(require_xlsx_content_type));
+    vec![
+        (
             "/imports",
-            upload.merge(middleware::require_admin(state.clone(), get(get_import))),
-        )
-        .route(
+            middleware::require_admin(upload.merge(get(get_import))),
+        ),
+        (
             "/imports/template",
-            middleware::require_admin(state.clone(), get(get_template)),
-        )
-        .route("/imports/{import_id}/actions/commit", commit)
-        .route(
+            middleware::require_admin(get(get_template)),
+        ),
+        (
+            "/imports/{import_id}/actions/commit",
+            middleware::require_admin(commit),
+        ),
+        (
             "/imports/{import_id}",
-            middleware::require_admin(state, delete(delete_import)),
-        )
+            middleware::require_admin(delete(delete_import)),
+        ),
+    ]
 }
 
 async fn require_xlsx_content_type(request: Request, next: Next) -> Response {
@@ -243,8 +245,8 @@ pub(crate) async fn commit_import(
         .commit(import_id, &token, &upload.bytes)
         .await
     {
-        Ok(()) => {
-            state.device_control().dirty_all_devices().await;
+        Ok(change) => {
+            state.device_control().publish(change).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(error) => ApiError::from_import(error).into_response(),

@@ -1,4 +1,5 @@
 mod authentication;
+mod completion;
 mod request_context;
 
 use axum::{
@@ -16,6 +17,8 @@ use crate::component::operator::OperatorIdentity;
 
 use super::{AppState, error::ApiError};
 
+pub(super) use authentication::{authenticate_client, authenticate_operator, authenticate_source};
+pub(super) use completion::complete_mutation;
 pub(super) use request_context::request_context;
 
 pub(super) async fn reject_head(request: Request, next: Next) -> Response {
@@ -27,25 +30,8 @@ pub(super) async fn reject_head(request: Request, next: Next) -> Response {
     next.run(request).await
 }
 
-pub(in crate::http) fn require_operator(
-    state: AppState,
-    routes: MethodRouter<AppState>,
-) -> MethodRouter<AppState> {
-    routes.route_layer(axum_middleware::from_fn_with_state(
-        state,
-        authentication::authenticate_operator,
-    ))
-}
-
-/// Protects routes with operator authentication and the Administrator role.
-pub(in crate::http) fn require_admin(
-    state: AppState,
-    routes: MethodRouter<AppState>,
-) -> MethodRouter<AppState> {
-    require_operator(
-        state,
-        routes.route_layer(axum_middleware::from_fn(require_admin_role)),
-    )
+pub(in crate::http) fn require_admin(routes: MethodRouter<AppState>) -> MethodRouter<AppState> {
+    routes.route_layer(axum_middleware::from_fn(require_admin_role))
 }
 
 async fn require_admin_role(

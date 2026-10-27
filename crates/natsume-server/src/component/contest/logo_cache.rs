@@ -22,11 +22,11 @@ struct Entry {
 
 struct ValidatedLogo {
     fingerprint: LogoFingerprint,
-    result: Result<(), String>,
+    result: Result<(), Arc<LogoError>>,
 }
 
 impl LogoValidationCache {
-    pub(super) fn validate(&self, path: &Path) -> Result<(), String> {
+    pub(super) fn validate(&self, path: &Path) -> Result<(), Arc<LogoError>> {
         self.validate_with(path, LogoFile::validate)
     }
 
@@ -65,13 +65,13 @@ impl LogoValidationCache {
         &self,
         path: &Path,
         validate: impl FnOnce(&mut LogoFile) -> Result<(), LogoError>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Arc<LogoError>> {
         let entry = self.entry(path);
         // Runs only inside the existing bounded image workers. The map lock is
         // not held across I/O; callers for the same path share one validation.
         let mut cached = entry.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut source = LogoFile::open(path).map_err(|error| error.to_string())?;
-        let before = source.fingerprint().map_err(|error| error.to_string())?;
+        let mut source = LogoFile::open(path).map_err(Arc::new)?;
+        let before = source.fingerprint().map_err(Arc::new)?;
         if let Some(cached) = cached.as_ref()
             && cached.fingerprint == before
         {
@@ -79,13 +79,13 @@ impl LogoValidationCache {
         }
         *cached = None;
         let result = validate(&mut source);
-        let transient = matches!(result, Err(LogoError::Read(_)));
-        let result = result.map_err(|error| error.to_string());
+        let transient = matches!(result, Err(LogoError::Read { .. }));
+        let result = result.map_err(Arc::new);
         if !transient
             && result
                 .as_ref()
                 .err()
-                .is_none_or(|error| error.len() <= MAX_CACHED_ERROR_BYTES)
+                .is_none_or(|error| error.to_string().len() <= MAX_CACHED_ERROR_BYTES)
             && source.fingerprint().is_ok_and(|after| before == after)
         {
             *cached = Some(ValidatedLogo {

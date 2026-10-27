@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 const PASSWORD: &str = "http-operator-password1!";
 const NEW_PASSWORD: &str = "http-replacement-password2@";
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
     database: TestDatabase,
@@ -26,7 +26,7 @@ struct Fixture {
     admin_cookie: String,
 }
 impl Fixture {
-    async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    async fn new() -> Result<Self, crate::test_error::TestError> {
         let database = TestDatabase::new().await?;
         let admin_id = seed_operator(&database.database, "admin", PASSWORD).await?;
         let state = support::server_state(&database)?;
@@ -46,10 +46,10 @@ impl Fixture {
         path: &str,
         cookie: Option<&str>,
         body: Value,
-    ) -> Result<Captured, Box<dyn std::error::Error>> {
+    ) -> Result<Captured, crate::test_error::TestError> {
         send(&self.app, method, path, cookie, body.to_string()).await
     }
-    async fn invite(&self, role: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn invite(&self, role: &str) -> Result<Value, crate::test_error::TestError> {
         let response = self
             .request(
                 Method::POST,
@@ -62,7 +62,7 @@ impl Fixture {
         assert_no_store(&response);
         Ok(serde_json::from_slice(&response.body)?)
     }
-    async fn signup(&self, name: &str, role: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn signup(&self, name: &str, role: &str) -> Result<Value, crate::test_error::TestError> {
         let invitation = self.invite(role).await?;
         let response = self
             .request(
@@ -76,7 +76,7 @@ impl Fixture {
         assert!(!response.headers.contains_key(header::SET_COOKIE));
         Ok(serde_json::from_slice(&response.body)?)
     }
-    async fn recovery(&self, id: &str) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn recovery(&self, id: &str) -> Result<Value, crate::test_error::TestError> {
         let response = self
             .request(
                 Method::POST,
@@ -97,7 +97,7 @@ async fn send(
     path: &str,
     cookie: Option<&str>,
     body: String,
-) -> Result<Captured, Box<dyn std::error::Error>> {
+) -> Result<Captured, crate::test_error::TestError> {
     let mut builder = Request::builder()
         .method(method)
         .uri(path)
@@ -111,14 +111,14 @@ async fn login(
     app: &Router,
     username: &str,
     password: &str,
-) -> Result<String, Box<dyn std::error::Error>> {
+) -> Result<String, crate::test_error::TestError> {
     let response = drive(app, support::login_request(username, password)?).await?;
     assert_eq!(response.status, StatusCode::OK);
     Ok(response.headers[header::SET_COOKIE]
         .to_str()?
         .split(';')
         .next()
-        .ok_or("missing cookie")?
+        .ok_or(crate::test_error::TestError::missing("missing cookie"))?
         .to_owned())
 }
 fn registration(invite: &Value, name: &str) -> Value {
@@ -139,7 +139,12 @@ fn assert_error(response: &Captured, status: StatusCode, code: &str) -> TestResu
     let body: Value = serde_json::from_slice(&response.body)?;
     assert_eq!(body["status"], status.as_u16());
     assert_eq!(body["code"], code);
-    assert_eq!(body.as_object().ok_or("not an object")?.len(), 3);
+    assert_eq!(
+        body.as_object()
+            .ok_or(crate::test_error::TestError::missing("not an object"))?
+            .len(),
+        3
+    );
     Ok(())
 }
 
@@ -216,7 +221,7 @@ async fn session_responses_include_account_username_for_admin_and_viewer() -> Te
         let cookie = support::header_text(&login.headers, &header::SET_COOKIE)?
             .split(';')
             .next()
-            .ok_or("missing cookie")?;
+            .ok_or(crate::test_error::TestError::missing("missing cookie"))?;
         let session = drive(
             &f.app,
             support::cookie_request(Method::GET, "/api/v2/session", cookie)?,
@@ -268,12 +273,18 @@ fn unread_management_body() -> Body {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the route matrix verifies authentication before reading every admin request body"
+)]
 async fn every_admin_route_rejects_before_body_reads_and_observes_demotion() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let second = f.signup("second", "admin").await?;
     let cookie = login(&f.app, "second", PASSWORD).await?;
-    let second_id = second["operator_id"].as_str().ok_or("missing id")?;
+    let second_id = second["operator_id"]
+        .as_str()
+        .ok_or(crate::test_error::TestError::missing("missing id"))?;
     let demotion = f
         .request(
             Method::PATCH,
@@ -353,7 +364,12 @@ async fn every_admin_route_rejects_before_body_reads_and_observes_demotion() -> 
             };
             assert_eq!(response.status, status, "{method} {path}");
             let body: Value = serde_json::from_slice(&response.body)?;
-            assert_eq!(body.as_object().ok_or("invalid error")?.len(), 3);
+            assert_eq!(
+                body.as_object()
+                    .ok_or(crate::test_error::TestError::missing("invalid error"))?
+                    .len(),
+                3
+            );
             assert_eq!(body["status"], status.as_u16());
             assert_eq!(
                 body["code"],
@@ -431,7 +447,13 @@ async fn registration_is_closed_consumes_once_and_keeps_conflicting_invites_usab
     let account: Value = serde_json::from_slice(&accepted.body)?;
     assert_eq!(account["username"], "Admin");
     assert_eq!(account["role"], "viewer");
-    assert_eq!(account.as_object().ok_or("invalid account")?.len(), 3);
+    assert_eq!(
+        account
+            .as_object()
+            .ok_or(crate::test_error::TestError::missing("invalid account"))?
+            .len(),
+        3
+    );
     assert_error(
         &f.request(Method::POST, "/api/v2/operator/register", None, form)
             .await?,
@@ -448,7 +470,13 @@ async fn registration_is_closed_consumes_once_and_keeps_conflicting_invites_usab
         )
         .await?;
     let accounts: Value = serde_json::from_slice(&list.body)?;
-    assert_eq!(accounts.as_array().ok_or("invalid list")?.len(), 2);
+    assert_eq!(
+        accounts
+            .as_array()
+            .ok_or(crate::test_error::TestError::missing("invalid list"))?
+            .len(),
+        2
+    );
     assert!(!String::from_utf8(list.body)?.contains("password"));
     Ok(())
 }
@@ -465,7 +493,7 @@ async fn list_expiry_regeneration_and_revocation_never_return_old_plaintext() ->
             sql_query("UPDATE operator_invitations SET expires_at_unix_ms = 0")
                 .execute(tx.connection())
                 .map(|_| ())
-                .map_err(|_| crate::db::PersistenceError::OperationFailed)
+                .map_err(crate::db::PersistenceError::from)
         })
         .await
         .map_err(crate::db::TransactionError::into_error)?;
@@ -480,11 +508,17 @@ async fn list_expiry_regeneration_and_revocation_never_return_old_plaintext() ->
     assert_no_store(&list);
     let body: Value = serde_json::from_slice(&list.body)?;
     assert_eq!(body[0]["expired"], true);
-    assert_eq!(body[0].as_object().ok_or("invalid invite")?.len(), 6);
+    assert_eq!(
+        body[0]
+            .as_object()
+            .ok_or(crate::test_error::TestError::missing("invalid invite"))?
+            .len(),
+        6
+    );
     assert!(!String::from_utf8(list.body)?.contains("token"));
     let id = one["invitation"]["invitation_id"]
         .as_str()
-        .ok_or("missing id")?;
+        .ok_or(crate::test_error::TestError::missing("missing id"))?;
     let refreshed = f
         .request(
             Method::POST,
@@ -511,7 +545,7 @@ async fn list_expiry_regeneration_and_revocation_never_return_old_plaintext() ->
     )?;
     let id = two["invitation"]["invitation_id"]
         .as_str()
-        .ok_or("missing id")?;
+        .ok_or(crate::test_error::TestError::missing("missing id"))?;
     for _ in 0..2 {
         assert_eq!(
             f.request(
@@ -546,7 +580,9 @@ async fn reset_replaces_target_grants_preserves_sessions_until_success_and_never
     let f = Fixture::new().await?;
     let viewer = f.signup("viewer", "viewer").await?;
     let viewer_cookie = login(&f.app, "viewer", PASSWORD).await?;
-    let id = viewer["operator_id"].as_str().ok_or("missing id")?;
+    let id = viewer["operator_id"]
+        .as_str()
+        .ok_or(crate::test_error::TestError::missing("missing id"))?;
     let old = f.recovery(id).await?;
     assert_eq!(old["username"], "viewer");
     assert_eq!(
@@ -675,7 +711,11 @@ async fn own_password_error_keeps_the_session_and_success_clears_every_session()
             StatusCode::OK
         );
         let recovery = f
-            .recovery(account["operator_id"].as_str().ok_or("missing id")?)
+            .recovery(
+                account["operator_id"]
+                    .as_str()
+                    .ok_or(crate::test_error::TestError::missing("missing id"))?,
+            )
             .await?;
         let response = f
             .request(
@@ -818,7 +858,9 @@ async fn last_admin_self_demotion_and_self_deletion_are_visible_over_http() -> T
     let cookie = login(&f.app, "second", PASSWORD).await?;
     let second_path = format!(
         "/api/v2/operator/accounts/{}",
-        second["operator_id"].as_str().ok_or("missing id")?
+        second["operator_id"]
+            .as_str()
+            .ok_or(crate::test_error::TestError::missing("missing id"))?
     );
     assert_eq!(
         f.request(
@@ -1065,7 +1107,12 @@ async fn capacity_rejection_is_bounded_and_keeps_existing_sessions() -> TestResu
     assert_eq!(
         f.state
             .operator()
-            .inspect_invitation(invite["token"].as_str().ok_or("missing token")?.to_owned())
+            .inspect_invitation(
+                invite["token"]
+                    .as_str()
+                    .ok_or(crate::test_error::TestError::missing("missing token"))?
+                    .to_owned()
+            )
             .await?
             .role,
         crate::component::operator::OperatorRole::Viewer
@@ -1081,7 +1128,7 @@ async fn infrastructure_errors_are_redacted_and_do_not_consume_grants() -> TestR
     f.database.database.write(|tx| {
         use diesel::connection::SimpleConnection;
         tx.connection().batch_execute("CREATE TRIGGER reject_invite_consumption BEFORE DELETE ON operator_invitations BEGIN SELECT RAISE(ABORT, 'private-sql-error-canary'); END")
-            .map_err(|_|crate::db::PersistenceError::OperationFailed)
+            .map_err(crate::db::PersistenceError::from)
     }).await.map_err(crate::db::TransactionError::into_error)?;
     let response = f
         .request(
@@ -1100,7 +1147,9 @@ async fn infrastructure_errors_are_redacted_and_do_not_consume_grants() -> TestR
     for secret in [
         "private-sql-error-canary",
         PASSWORD,
-        invite["token"].as_str().ok_or("missing token")?,
+        invite["token"]
+            .as_str()
+            .ok_or(crate::test_error::TestError::missing("missing token"))?,
     ] {
         assert!(!body.contains(secret));
     }
@@ -1126,7 +1175,7 @@ async fn infrastructure_errors_are_redacted_and_do_not_consume_grants() -> TestR
     assert_eq!(
         serde_json::from_slice::<Value>(&accounts.body)?
             .as_array()
-            .ok_or("not a list")?
+            .ok_or(crate::test_error::TestError::missing("not a list"))?
             .len(),
         1
     );
@@ -1148,16 +1197,18 @@ async fn secret_forms_and_issued_links_do_not_escape_into_trace_logs() -> TestRe
     let subscriber = captured.subscriber(LogLevel::Trace);
     let (token,recovery)=async {
         let invite=f.invite("viewer").await?;
-        let token=invite["token"].as_str().ok_or("missing token")?.to_owned();
+        let token=invite["token"].as_str().ok_or(crate::test_error::TestError::missing("missing token"))?.to_owned();
         f.request(Method::POST,"/api/v2/operator/register/inspect",None,json!({"token":token})).await?;
         let response=f.request(Method::POST,"/api/v2/operator/register",None,registration(&invite,"new")).await?;
         let account:Value=serde_json::from_slice(&response.body)?;
-        let recovery=f.recovery(account["operator_id"].as_str().ok_or("missing id")?).await?;
+        let recovery=f.recovery(account["operator_id"].as_str().ok_or(crate::test_error::TestError::missing("missing id"))?).await?;
         f.request(Method::POST,"/api/v2/operator/password/reset",None,reset_form(&recovery)).await?;
         f.request(Method::POST,"/api/v2/operator/password/change",Some(&f.admin_cookie),json!({"current_password":"wrong-password-canary","password":NEW_PASSWORD,"password_confirmation":NEW_PASSWORD})).await?;
-        Ok::<_,Box<dyn std::error::Error>>((token,recovery["token"].as_str().ok_or("missing token")?.to_owned()))
+        Ok::<_,crate::test_error::TestError>((token,recovery["token"].as_str().ok_or(crate::test_error::TestError::missing("missing token"))?.to_owned()))
     }.with_subscriber(subscriber).await?;
-    let text = captured.text().map_err(|()| "log capture failed")?;
+    let text = captured
+        .text()
+        .map_err(crate::test_error::TestError::from)?;
     for secret in [
         &token,
         &recovery,
@@ -1210,10 +1261,14 @@ async fn authorized_account_change_finishes_after_caller_demotion_or_deletion() 
         let second = f.signup("second", "admin").await?;
         let cookie = login(&f.app, "second", PASSWORD).await?;
         let target = f.signup("target", "viewer").await?;
-        let second_id = second["operator_id"].as_str().ok_or("missing id")?;
+        let second_id = second["operator_id"]
+            .as_str()
+            .ok_or(crate::test_error::TestError::missing("missing id"))?;
         let path = format!(
             "/api/v2/operator/accounts/{}",
-            target["operator_id"].as_str().ok_or("missing id")?
+            target["operator_id"]
+                .as_str()
+                .ok_or(crate::test_error::TestError::missing("missing id"))?
         );
         let (body, polled, release) = held_management_body(br#"{"role":"admin"}"#);
         let pending = tokio::spawn(
@@ -1259,14 +1314,16 @@ async fn authorized_account_change_finishes_after_caller_demotion_or_deletion() 
                 StatusCode::FORBIDDEN
             }
         );
-        release.send(()).map_err(|()| "body release")?;
+        release
+            .send(())
+            .map_err(crate::test_error::TestError::from)?;
         assert_eq!(pending.await??.status(), StatusCode::NO_CONTENT);
         let accounts = f.state.operator().list_accounts().await?;
         assert_eq!(
             accounts
                 .iter()
                 .find(|account| account.username == "target")
-                .ok_or("missing target")?
+                .ok_or(crate::test_error::TestError::missing("missing target"))?
                 .role,
             crate::component::operator::OperatorRole::Admin
         );
@@ -1284,7 +1341,9 @@ async fn authorized_invitation_issuance_rechecks_persisted_issuer_not_caller_rol
         let f = Fixture::new().await?;
         let second = f.signup("second", "admin").await?;
         let cookie = login(&f.app, "second", PASSWORD).await?;
-        let second_id = second["operator_id"].as_str().ok_or("missing id")?;
+        let second_id = second["operator_id"]
+            .as_str()
+            .ok_or(crate::test_error::TestError::missing("missing id"))?;
         let (body, polled, release) = held_management_body(br#"{"role":"viewer"}"#);
         let pending = tokio::spawn(
             f.app.clone().oneshot(
@@ -1310,13 +1369,33 @@ async fn authorized_invitation_issuance_rechecks_persisted_issuer_not_caller_rol
             )
             .await?;
         assert_eq!(changed.status, StatusCode::NO_CONTENT);
-        release.send(()).map_err(|()| "body release")?;
+        release
+            .send(())
+            .map_err(crate::test_error::TestError::from)?;
         let response = pending.await??;
         assert_eq!(response.status(), StatusCode::GONE);
         let body: Value =
             serde_json::from_slice(&axum::body::to_bytes(response.into_body(), usize::MAX).await?)?;
         assert_eq!(body["code"], "OPERATOR_LINK_UNAVAILABLE");
         assert!(f.state.operator().list_invitations().await?.is_empty());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn logged_out_only_routes_reject_wrong_methods_before_session_authentication() -> TestResult {
+    let fixture = Fixture::new().await?;
+    for path in [
+        "/api/v2/operator/register/inspect",
+        "/api/v2/operator/register",
+        "/api/v2/operator/password/reset/inspect",
+        "/api/v2/operator/password/reset",
+    ] {
+        let response = fixture
+            .request(Method::GET, path, Some(&fixture.admin_cookie), json!({}))
+            .await?;
+        assert_eq!(response.status, StatusCode::METHOD_NOT_ALLOWED, "{path}");
+        assert_no_store(&response);
     }
     Ok(())
 }

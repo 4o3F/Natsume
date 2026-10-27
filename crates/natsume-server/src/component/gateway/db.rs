@@ -31,7 +31,7 @@ pub(in crate::component::gateway) fn find_by_device_id(
                 gateway_leaf_der: leaf,
             })
         })
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::gateway) fn list(
@@ -59,7 +59,7 @@ pub(in crate::component::gateway) fn list(
                 })
                 .collect()
         })
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::gateway) fn insert_initial_generation(
@@ -73,7 +73,7 @@ pub(in crate::component::gateway) fn insert_initial_generation(
             gateway_credentials::credential_id.eq(credential_id),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::gateway) fn accept_exact_csr(
@@ -91,7 +91,7 @@ pub(in crate::component::gateway) fn accept_exact_csr(
     )
     .set(gateway_credentials::gateway_csr_der.eq(Some(gateway_csr_der)))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::gateway) fn replace_generation(
@@ -111,7 +111,7 @@ pub(in crate::component::gateway) fn replace_generation(
         gateway_credentials::gateway_leaf_der.eq(None::<&[u8]>),
     ))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::gateway) fn store_exact_grant(
@@ -130,5 +130,5 @@ pub(in crate::component::gateway) fn store_exact_grant(
     )
     .set(gateway_credentials::gateway_leaf_der.eq(Some(gateway_leaf_der)))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

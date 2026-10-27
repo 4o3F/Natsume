@@ -12,6 +12,7 @@ use crate::{
 struct Fixture {
     database: Database,
     component: TargetSubmissionComponent,
+    state: crate::server_state::ServerState,
     ids: Vec<DeviceId>,
     owner: Uuid,
     _root: TempDir,
@@ -48,18 +49,41 @@ impl Fixture {
                 diesel::insert_into(devices::table)
                     .values(rows)
                     .execute(tx.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<_, PersistenceError>(())
             })
             .await
             .unwrap_or_else(|error| panic!("fixtures: {error:?}"));
+        let state =
+            crate::server_state::tests::for_test(database.clone(), root.path().join("documents"))
+                .unwrap_or_else(|error| panic!("state: {error}"));
         Self {
+            state,
             component: TargetSubmissionComponent::new(database.clone()),
             database,
             ids,
             owner: Uuid::now_v7(),
             _root: root,
         }
+    }
+
+    async fn submit(
+        &self,
+        owner: Uuid,
+        request: TargetSubmissionRequest,
+    ) -> Result<TargetSubmissionResult, TargetSubmissionError> {
+        self.submit_with(&self.component, owner, request).await
+    }
+
+    async fn submit_with(
+        &self,
+        component: &TargetSubmissionComponent,
+        owner: Uuid,
+        request: TargetSubmissionRequest,
+    ) -> Result<TargetSubmissionResult, TargetSubmissionError> {
+        let (result, change) = component.submit(owner, request).await?;
+        self.state.device_control().publish(change).await;
+        Ok(result)
     }
 
     fn request(action: TargetAction) -> TargetSubmissionRequest {
@@ -75,7 +99,7 @@ impl Fixture {
             .write(move |tx| {
                 tx.connection()
                     .batch_execute(&sql)
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("SQL fixture: {error:?}"));
@@ -88,7 +112,7 @@ impl Fixture {
                     .order(device_home_targets::device_id)
                     .select(device_home_targets::reset_epoch)
                     .load(tx.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("epochs: {error:?}"))
@@ -100,7 +124,7 @@ impl Fixture {
                 target_submission_receipts::table
                     .count()
                     .get_result(tx.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("receipts: {error:?}"))
@@ -118,7 +142,6 @@ async fn replay_preserves_scope_results_and_epochs_after_restart_and_lifecycle_c
         .await;
     let request = Fixture::request(TargetAction::ResetHome);
     let result = fixture
-        .component
         .submit(fixture.owner, request.clone())
         .await
         .unwrap_or_else(|error| panic!("submit: {error}"));
@@ -131,22 +154,21 @@ async fn replay_preserves_scope_results_and_epochs_after_restart_and_lifecycle_c
         )
         .await;
     let rebuilt = TargetSubmissionComponent::new(fixture.database.clone());
-    assert_eq!(
-        rebuilt.submit(fixture.owner, request.clone()).await,
-        Ok(result)
+    assert!(
+        matches!(fixture.submit_with(&rebuilt, fixture.owner, request.clone()).await, Ok(actual) if actual == result)
     );
     assert_eq!(fixture.home_epochs().await, [Some(1), Some(1)]);
     assert_eq!(fixture.receipts().await, 1);
     let mut changed = request.clone();
     changed.action = TargetAction::TerminateSession;
-    assert_eq!(
-        rebuilt.submit(fixture.owner, changed).await,
+    assert!(matches!(
+        fixture.submit_with(&rebuilt, fixture.owner, changed).await,
         Err(TargetSubmissionError::OperationIdConflict)
-    );
-    assert_eq!(
-        rebuilt.submit(Uuid::now_v7(), request).await,
+    ));
+    assert!(matches!(
+        fixture.submit_with(&rebuilt, Uuid::now_v7(), request).await,
         Err(TargetSubmissionError::OperationIdConflict)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -157,7 +179,6 @@ async fn domain_rejections_do_not_change_failed_targets_or_block_other_devices()
     let mut request = Fixture::request(TargetAction::ResetHome);
     request.scope = TargetScope::Devices(fixture.ids.clone());
     let result = fixture
-        .component
         .submit(fixture.owner, request.clone())
         .await
         .unwrap_or_else(|error| panic!("submit: {error}"));
@@ -176,10 +197,7 @@ async fn domain_rejections_do_not_change_failed_targets_or_block_other_devices()
         fixture.home_epochs().await,
         [Some(i64::MAX), Some(0), Some(1)]
     );
-    assert_eq!(
-        fixture.component.submit(fixture.owner, request).await,
-        Ok(result)
-    );
+    assert!(matches!(fixture.submit(fixture.owner, request).await, Ok(actual) if actual == result));
 }
 
 #[tokio::test]
@@ -193,10 +211,15 @@ async fn concurrent_same_id_advances_each_epoch_once_and_id_sets_are_canonical()
     ids.push(fixture.ids[0]);
     replay.scope = TargetScope::Devices(ids);
     let (a, b) = tokio::join!(
-        fixture.component.submit(fixture.owner, request),
-        fixture.component.submit(fixture.owner, replay)
+        fixture.submit(fixture.owner, request),
+        fixture.submit(fixture.owner, replay)
     );
-    assert_eq!(a, b);
+    assert_eq!(
+        a.as_ref()
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))),
+        b.as_ref()
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)))
+    );
     assert!(a.is_ok());
     assert_eq!(fixture.home_epochs().await, vec![Some(1); 4]);
     assert_eq!(fixture.receipts().await, 1);
@@ -212,11 +235,11 @@ async fn receipt_or_target_write_failure_rolls_back_all_targets_and_the_id() {
         let fixture = Fixture::new(3).await;
         fixture.sql(trigger).await;
         let request = Fixture::request(TargetAction::ResetHome);
-        assert_eq!(fixture.component.submit(fixture.owner, request.clone()).await, Err(TargetSubmissionError::PersistenceFailed));
+        assert!(matches!(fixture.submit(fixture.owner, request.clone()).await, Err(TargetSubmissionError::PersistenceFailed { .. })));
         assert!(fixture.home_epochs().await.is_empty());
         assert_eq!(fixture.receipts().await, 0);
         fixture.sql("DROP TRIGGER fail_write".into()).await;
-        assert!(fixture.component.submit(fixture.owner, request).await.is_ok());
+        assert!(fixture.submit(fixture.owner, request).await.is_ok());
         assert_eq!(fixture.home_epochs().await, [Some(1); 3]);
     }
 }
@@ -226,23 +249,14 @@ async fn commit_failure_rolls_back_targets_and_receipt_together() {
     let fixture = Fixture::new(2).await;
     fixture.sql("CREATE TABLE receipt_commit_guard (id INTEGER REFERENCES operator_accounts(operator_id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER fail_commit AFTER INSERT ON target_submission_receipts BEGIN INSERT INTO receipt_commit_guard VALUES (123); END;".into()).await;
     let request = Fixture::request(TargetAction::ResetHome);
-    assert_eq!(
-        fixture
-            .component
-            .submit(fixture.owner, request.clone())
-            .await,
-        Err(TargetSubmissionError::PersistenceFailed)
-    );
+    assert!(matches!(
+        fixture.submit(fixture.owner, request.clone()).await,
+        Err(TargetSubmissionError::PersistenceFailed { .. })
+    ));
     assert!(fixture.home_epochs().await.is_empty());
     assert_eq!(fixture.receipts().await, 0);
     fixture.sql("DROP TRIGGER fail_commit".into()).await;
-    assert!(
-        fixture
-            .component
-            .submit(fixture.owner, request)
-            .await
-            .is_ok()
-    );
+    assert!(fixture.submit(fixture.owner, request).await.is_ok());
 }
 
 #[tokio::test]
@@ -255,12 +269,10 @@ async fn empty_and_all_rejected_submissions_are_replayable() {
     let mut rejected = Fixture::request(TargetAction::ResetHome);
     rejected.scope = TargetScope::Devices(fixture.ids.clone());
     let a = fixture
-        .component
         .submit(fixture.owner, empty.clone())
         .await
         .unwrap_or_else(|error| panic!("empty: {error}"));
     let b = fixture
-        .component
         .submit(fixture.owner, rejected.clone())
         .await
         .unwrap_or_else(|error| panic!("rejected: {error}"));
@@ -272,11 +284,8 @@ async fn empty_and_all_rejected_submissions_are_replayable() {
     fixture
         .sql("UPDATE devices SET state='enabled'".into())
         .await;
-    assert_eq!(fixture.component.submit(fixture.owner, empty).await, Ok(a));
-    assert_eq!(
-        fixture.component.submit(fixture.owner, rejected).await,
-        Ok(b)
-    );
+    assert!(matches!(fixture.submit(fixture.owner, empty).await, Ok(actual) if actual == a));
+    assert!(matches!(fixture.submit(fixture.owner, rejected).await, Ok(actual) if actual == b));
     assert!(fixture.home_epochs().await.is_empty());
 }
 
@@ -292,7 +301,6 @@ async fn foreground_and_terminate_share_the_submission_boundary() {
         .await;
     let request = Fixture::request(TargetAction::TerminateSession);
     let result = fixture
-        .component
         .submit(fixture.owner, request.clone())
         .await
         .unwrap_or_else(|error| panic!("terminate: {error}"));
@@ -301,18 +309,9 @@ async fn foreground_and_terminate_share_the_submission_boundary() {
         Some(TargetRejection::EpochExhausted)
     );
     assert_eq!(result.results[1].rejection, None);
-    assert_eq!(
-        fixture.component.submit(fixture.owner, request).await,
-        Ok(result)
-    );
+    assert!(matches!(fixture.submit(fixture.owner, request).await, Ok(actual) if actual == result));
     let foreground = Fixture::request(TargetAction::SetForeground(ForegroundTarget::Contest));
-    assert!(
-        fixture
-            .component
-            .submit(fixture.owner, foreground)
-            .await
-            .is_ok()
-    );
+    assert!(fixture.submit(fixture.owner, foreground).await.is_ok());
     let targets: Vec<(String, Option<i64>)> = fixture
         .database
         .read(|tx| {
@@ -323,7 +322,7 @@ async fn foreground_and_terminate_share_the_submission_boundary() {
                     device_session_targets::terminate_epoch,
                 ))
                 .load(tx.connection())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .unwrap_or_else(|error| panic!("targets: {error:?}"));
@@ -364,7 +363,6 @@ async fn measure_six_hundred_device_submission_cost() {
             };
             let started = std::time::Instant::now();
             let result = fixture
-                .component
                 .submit(fixture.owner, request.clone())
                 .await
                 .unwrap_or_else(|error| panic!("submission: {error}"));
@@ -372,16 +370,16 @@ async fn measure_six_hundred_device_submission_cost() {
             assert_eq!(result.results.len(), 600);
             assert!(result.results.iter().all(|row| row.rejection.is_none()));
             let replay = fixture
-                .component
                 .submit(fixture.owner, request)
                 .await
                 .unwrap_or_else(|error| panic!("replay: {error}"));
             assert_eq!(replay, result);
         }
         elapsed.sort_unstable();
-        eprintln!(
+        tracing::info!(
             "{kind}: 600 actual device writes, 10 samples, p50={:?}, p95={:?}",
-            elapsed[4], elapsed[9]
+            elapsed[4],
+            elapsed[9]
         );
     }
     assert_eq!(fixture.home_epochs().await, vec![Some(20); 600]);
@@ -392,11 +390,44 @@ async fn measure_six_hundred_device_submission_cost() {
 async fn six_hundred_devices_commit_without_any_client_connection() {
     let fixture = Fixture::new(600).await;
     let result = fixture
-        .component
         .submit(fixture.owner, Fixture::request(TargetAction::ResetHome))
         .await
         .unwrap_or_else(|error| panic!("fleet: {error}"));
     assert_eq!(result.results.len(), 600);
     assert!(result.results.iter().all(|row| row.rejection.is_none()));
     assert_eq!(fixture.home_epochs().await, vec![Some(1); 600]);
+}
+
+#[tokio::test]
+async fn ignored_mutations_report_row_counts_and_roll_back_instead_of_domain_rejection() {
+    for action in [
+        TargetAction::ResetHome,
+        TargetAction::TerminateSession,
+        TargetAction::PowerOff {
+            expires_at_unix_ms: 60_000,
+        },
+    ] {
+        let fixture = Fixture::new(1).await;
+        let table = match action {
+            TargetAction::ResetHome => "device_home_targets",
+            TargetAction::TerminateSession => "device_session_targets",
+            TargetAction::PowerOff { .. } => "device_power_targets",
+            TargetAction::SetForeground(_) => unreachable!(),
+        };
+        fixture.sql(format!("CREATE TRIGGER ignore_target BEFORE INSERT ON {table} BEGIN SELECT RAISE(IGNORE); END;")).await;
+        let error = fixture
+            .submit(fixture.owner, Fixture::request(action))
+            .await;
+        assert!(matches!(
+            error,
+            Err(TargetSubmissionError::PersistenceFailed {
+                source: PersistenceError::UnexpectedRowCount {
+                    expected: 1,
+                    actual: 0,
+                    ..
+                }
+            })
+        ));
+        assert_eq!(fixture.receipts().await, 0);
+    }
 }

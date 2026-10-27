@@ -19,7 +19,7 @@ const SECOND_MACHINE: &str = "bbbbbbbb-bbbb-5bbb-8bbb-bbbbbbbbbbbb";
 
 #[tokio::test]
 async fn network_addresses_survive_restart_and_replace_the_complete_pair()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), crate::test_error::TestError> {
     let fixture = Fixture::new().await;
     let authority = activate(
         &fixture,
@@ -34,7 +34,7 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
             .component
             .find_device(device_id)
             .await?
-            .ok_or("missing Device")?
+            .ok_or(crate::test_error::TestError::missing("missing Device"))?
             .network()
             .is_none()
     );
@@ -50,9 +50,9 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
         .component
         .find_device(device_id)
         .await?
-        .ok_or("missing Device")?
+        .ok_or(crate::test_error::TestError::missing("missing Device"))?
         .network()
-        .ok_or("missing network")?;
+        .ok_or(crate::test_error::TestError::missing("missing network"))?;
     assert_eq!(saved.server_observed_ip.to_string(), "192.0.2.10");
     assert_eq!(
         saved.client_ip.map(|ip| ip.to_string()).as_deref(),
@@ -66,7 +66,7 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
         restarted
             .find_device(device_id)
             .await?
-            .ok_or("missing Device")?
+            .ok_or(crate::test_error::TestError::missing("missing Device"))?
             .network(),
         Some(saved)
     );
@@ -76,9 +76,9 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
     let replaced = restarted
         .find_device(device_id)
         .await?
-        .ok_or("missing Device")?
+        .ok_or(crate::test_error::TestError::missing("missing Device"))?
         .network()
-        .ok_or("missing network")?;
+        .ok_or(crate::test_error::TestError::missing("missing network"))?;
     assert_eq!(replaced.server_observed_ip.to_string(), "192.0.2.11");
     assert_eq!(replaced.client_ip, None);
     assert!(replaced.observed_at_unix_ms >= saved.observed_at_unix_ms);
@@ -97,7 +97,7 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
         restarted
             .find_device(device_id)
             .await?
-            .ok_or("missing Device")?
+            .ok_or(crate::test_error::TestError::missing("missing Device"))?
             .network(),
         Some(replaced)
     );
@@ -110,7 +110,7 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
         restarted
             .find_device(device_id)
             .await?
-            .ok_or("missing Device")?
+            .ok_or(crate::test_error::TestError::missing("missing Device"))?
             .network(),
         Some(replaced)
     );
@@ -167,9 +167,8 @@ async fn operator_projection_lists_and_finds_only_valid_durable_fields() {
     assert_eq!(projection.evidence_quality(), EvidenceQuality::Strong);
     assert_eq!(projection.state(), DeviceState::Enabled);
     assert!(projection.created_at_unix_ms() > 0);
-    assert_eq!(
-        fixture.component.find_device(activated.device_id()).await,
-        Ok(Some(projection))
+    assert!(
+        matches!(fixture.component.find_device(activated.device_id()).await, Ok(actual) if actual == Some(projection))
     );
 }
 
@@ -233,10 +232,10 @@ async fn a_key_already_owned_by_another_device_cannot_replace_authority() {
     .await
     .unwrap_or_else(|error| panic!("second Device activation failed: {error}"));
 
-    assert_eq!(
+    assert!(matches!(
         activate(&fixture, first_machine, second_key, EvidenceQuality::Medium).await,
         Err(ActivationError::CandidateKeyRejected)
-    );
+    ));
     assert_eq!(
         current_authority(&fixture, first_machine)
             .await
@@ -261,42 +260,35 @@ async fn disabled_authority_is_retained_and_revoke_is_terminal() {
         .unwrap_or_else(|error| panic!("first activation failed: {error}"));
     let device_id = activated.device_id();
 
-    assert_eq!(
-        fixture.component.disable(device_id).await,
-        Ok(LifecycleOutcome::Changed)
+    assert!(
+        matches!(fixture.component.disable(device_id).await, Ok(actual) if actual == LifecycleOutcome::Changed)
     );
     let disabled = current_authority(&fixture, machine).await;
     assert_eq!(disabled.control_public_key(), old_key);
     assert_eq!(disabled.device_state(), DeviceState::Disabled);
-    assert_eq!(
-        fixture.component.disable(device_id).await,
-        Ok(LifecycleOutcome::Unchanged)
+    assert!(
+        matches!(fixture.component.disable(device_id).await, Ok(actual) if actual == LifecycleOutcome::Unchanged)
     );
-    assert_eq!(
-        fixture.component.enable(device_id).await,
-        Ok(LifecycleOutcome::Changed)
+    assert!(
+        matches!(fixture.component.enable(device_id).await, Ok(actual) if actual == LifecycleOutcome::Changed)
     );
 
-    assert_eq!(
-        fixture.component.revoke(device_id).await,
-        Ok(LifecycleOutcome::Changed)
+    assert!(
+        matches!(fixture.component.revoke(device_id).await, Ok(actual) if actual == LifecycleOutcome::Changed)
     );
-    assert_eq!(
-        fixture.component.find_current_authority(machine).await,
-        Ok(None)
+    assert!(
+        matches!(fixture.component.find_current_authority(machine).await, Ok(actual) if actual.is_none())
     );
-    assert_eq!(
-        fixture.component.enable(device_id).await,
-        Ok(LifecycleOutcome::RejectedTerminal)
+    assert!(
+        matches!(fixture.component.enable(device_id).await, Ok(actual) if actual == LifecycleOutcome::RejectedTerminal)
     );
-    assert_eq!(
-        fixture.component.revoke(device_id).await,
-        Ok(LifecycleOutcome::Unchanged)
+    assert!(
+        matches!(fixture.component.revoke(device_id).await, Ok(actual) if actual == LifecycleOutcome::Unchanged)
     );
-    assert_eq!(
+    assert!(matches!(
         activate(&fixture, machine, old_key, EvidenceQuality::Strong).await,
         Err(ActivationError::CandidateKeyRejected)
-    );
+    ));
 
     let new_key = key(0x42);
     let new_authority = activate(&fixture, machine, new_key, EvidenceQuality::Medium)
@@ -333,21 +325,21 @@ async fn old_authority_remains_visible_until_replacement_commit() {
         writer_database
             .write(move |transaction| -> Result<(), PersistenceError> {
                 let device = db::find_non_revoked_by_machine(transaction, &machine)?
-                    .ok_or(PersistenceError::InvalidPersistedData)?;
+                    .ok_or(PersistenceError::invalid("persisted value"))?;
                 let current = db::find_current_for_device(transaction, &device.device_id())?
-                    .ok_or(PersistenceError::InvalidPersistedData)?;
+                    .ok_or(PersistenceError::invalid("persisted value"))?;
                 let now = db::current_unix_ms(transaction)?;
                 if db::retire_current(transaction, &current, &device.device_id(), now)? != 1 {
-                    return Err(PersistenceError::InvalidPersistedData);
+                    return Err(PersistenceError::invalid("persisted value"));
                 }
                 retired_sender
                     .send(())
-                    .map_err(|()| PersistenceError::OperationFailed)?;
+                    .unwrap_or_else(|()| panic!("test retirement notification failed"));
                 continue_receiver
                     .recv_timeout(Duration::from_secs(5))
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
                 if db::insert_current(transaction, &new_key, &device.device_id(), now)? != 1 {
-                    return Err(PersistenceError::InvalidPersistedData);
+                    return Err(PersistenceError::invalid("persisted value"));
                 }
                 Ok(())
             })
@@ -402,7 +394,7 @@ async fn invalid_persisted_lifecycle_fails_closed() {
                     devices::created_at_unix_ms.eq(1_i64),
                 ))
                 .execute(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
             diesel::insert_into(device_control_keys::table)
                 .values((
                     device_control_keys::public_key.eq(key_bytes),
@@ -412,25 +404,25 @@ async fn invalid_persisted_lifecycle_fails_closed() {
                     device_control_keys::retired_at_unix_ms.eq(None::<i64>),
                 ))
                 .execute(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
             Ok::<(), PersistenceError>(())
         })
         .await
         .map_err(TransactionError::into_error)
         .unwrap_or_else(|error| panic!("invalid persisted fixture failed: {error}"));
 
-    assert_eq!(
+    assert!(matches!(
         fixture.component.find_current_authority(machine).await,
-        Err(DeviceError::InvalidPersistedFacts)
-    );
-    assert_eq!(
+        Err(DeviceError::InvalidPersistedFacts { .. })
+    ));
+    assert!(matches!(
         fixture
             .component
             .list_devices(crate::component::device::DeviceListFilter::All)
             .await,
-        Err(DeviceError::InvalidPersistedFacts)
-    );
-    assert_eq!(
+        Err(DeviceError::InvalidPersistedFacts { .. })
+    ));
+    assert!(matches!(
         fixture
             .component
             .find_device(
@@ -438,8 +430,8 @@ async fn invalid_persisted_lifecycle_fails_closed() {
                     .unwrap_or_else(|| panic!("invalid persisted fixture Device ID")),
             )
             .await,
-        Err(DeviceError::InvalidPersistedFacts)
-    );
+        Err(DeviceError::InvalidPersistedFacts { .. })
+    ));
 }
 
 #[tokio::test]
@@ -447,14 +439,14 @@ async fn lifecycle_mutation_rejects_an_unknown_device() {
     let fixture = Fixture::new().await;
     let missing = DeviceId::parse("01900000-0000-7000-8000-000000000099")
         .unwrap_or_else(|| panic!("missing Device fixture ID is invalid"));
-    assert_eq!(
+    assert!(matches!(
         fixture.component.disable(missing).await,
         Err(DeviceError::DeviceNotFound)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         fixture.component.revoke(missing).await,
         Err(DeviceError::DeviceNotFound)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -504,9 +496,8 @@ async fn approval_claims_the_review_once() {
         fixture.component.pending_enrollment_reviews().await.len(),
         1
     );
-    assert_eq!(
-        fixture.component.find_current_authority(machine).await,
-        Ok(None)
+    assert!(
+        matches!(fixture.component.find_current_authority(machine).await, Ok(actual) if actual.is_none())
     );
 
     let approval = fixture
@@ -517,12 +508,9 @@ async fn approval_claims_the_review_once() {
     let activated = approval.authority();
     assert_eq!(activated.control_public_key(), candidate);
     approval.complete();
-    assert_eq!(
-        activation
+    assert!(matches!(activation
             .await
-            .unwrap_or_else(|error| panic!("activation notification failed: {error}")),
-        Ok(super::EnrollmentReviewDecision::Activated(activated))
-    );
+            .unwrap_or_else(|error| panic!("activation notification failed: {error}")), Ok(actual) if actual == super::EnrollmentReviewDecision::Activated(activated)));
     assert!(
         fixture
             .component
@@ -566,9 +554,8 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
     ));
-    assert_eq!(
-        fixture.component.find_current_authority(machine).await,
-        Ok(None)
+    assert!(
+        matches!(fixture.component.find_current_authority(machine).await, Ok(actual) if actual.is_none())
     );
 
     let second = fixture
@@ -586,12 +573,9 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
         .unwrap_or_else(|error| panic!("second review activation failed: {error:?}"));
     let activated = approval.authority();
     approval.complete();
-    assert_eq!(
-        second_activation
+    assert!(matches!(second_activation
             .await
-            .unwrap_or_else(|error| panic!("activation notification failed: {error}")),
-        Ok(super::EnrollmentReviewDecision::Activated(activated))
-    );
+            .unwrap_or_else(|error| panic!("activation notification failed: {error}")), Ok(actual) if actual == super::EnrollmentReviewDecision::Activated(activated)));
 
     let replay = fixture
         .component
@@ -628,12 +612,9 @@ async fn denial_claims_the_review_and_notifies_only_its_connection() {
             .deny_enrollment_review(review.review_id())
             .await
     );
-    assert_eq!(
-        decision
+    assert!(matches!(decision
             .await
-            .unwrap_or_else(|error| panic!("denial notification failed: {error}")),
-        Ok(super::EnrollmentReviewDecision::Denied)
-    );
+            .unwrap_or_else(|error| panic!("denial notification failed: {error}")), Ok(actual) if actual == super::EnrollmentReviewDecision::Denied));
     assert!(
         !fixture
             .component
@@ -731,7 +712,7 @@ impl Fixture {
                     ))
                     .order(devices::device_id)
                     .load::<PersistedDeviceRow>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .map_err(TransactionError::into_error)
@@ -751,7 +732,7 @@ impl Fixture {
                     ))
                     .order(device_control_keys::public_key)
                     .load::<PersistedControlKeyRow>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .map_err(TransactionError::into_error)

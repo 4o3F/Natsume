@@ -1,12 +1,13 @@
 use axum::{
     extract::{Request, State},
+    http::header,
     middleware::Next,
     response::{IntoResponse, Response},
 };
 
 use super::super::{AppState, cookie, error::ApiError};
 
-pub(super) async fn authenticate_operator(
+pub(in crate::http) async fn authenticate_operator(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
@@ -24,4 +25,51 @@ pub(super) async fn authenticate_operator(
         .record("actor_id", actor_id.as_str());
     request.extensions_mut().insert(identity);
     next.run(request).await
+}
+
+pub(in crate::http) async fn authenticate_source(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let headers = request.headers();
+    let mut auth = headers.get_all(header::AUTHORIZATION).iter();
+    let token = auth
+        .next()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let Some(token) = token.filter(|_| auth.next().is_none()) else {
+        return ApiError::from_print(crate::component::print::PrintError::Authentication)
+            .into_response();
+    };
+    match state.print().authenticate(token).await {
+        Ok(identity) => {
+            request.extensions_mut().insert(identity);
+            next.run(request).await
+        }
+        Err(error) => ApiError::from_print(error).into_response(),
+    }
+}
+
+pub(in crate::http) async fn authenticate_client(
+    State(state): State<AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
+    let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
+    let token = values
+        .next()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    let Some(token) = token.filter(|_| values.next().is_none()) else {
+        return ApiError::from_print(crate::component::print::PrintError::Authentication)
+            .into_response();
+    };
+    match state.print().authenticate_client(token).await {
+        Ok(client) => {
+            request.extensions_mut().insert(client);
+            next.run(request).await
+        }
+        Err(error) => ApiError::from_print(error).into_response(),
+    }
 }
