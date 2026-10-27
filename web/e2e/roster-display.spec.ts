@@ -1,4 +1,18 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function expectPlainSchoolLogos(page: Page) {
+  for (const logo of [
+    page.getByRole("img", { name: "示例科技大学 logo", exact: true }),
+    page.getByRole("img", { name: /\(logo unavailable\)$/ }),
+  ]) {
+    await expect(logo).toBeVisible();
+    await expect(logo).toHaveCSS("border-width", "0px");
+    await expect(logo).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    await expect(logo).toHaveCSS("box-shadow", "none");
+    await expect(logo).toHaveCSS("width", "32px");
+    await expect(logo).toHaveCSS("height", "32px");
+  }
+}
 
 test("seat binding filters remain usable with no matches and support the keyboard", async ({
   page,
@@ -131,12 +145,11 @@ for (const width of [1024, 1440]) {
     });
     await page.goto("/accounts");
     await expect(page.getByText("Voyagers of the Stars")).toBeVisible();
-    await expect(
-      page.getByRole("img", { name: "示例科技大学 logo" }),
-    ).toBeVisible();
-    await expect(
-      page.getByRole("img", { name: /\(logo unavailable\)$/ }),
-    ).toBeVisible();
+    await expectPlainSchoolLogos(page);
+    await page.screenshot({
+      path: testInfo.outputPath("accounts-school-logos.png"),
+      fullPage: true,
+    });
     await expect(page.getByText("Offline", { exact: true })).toHaveCount(0);
     await page.goto("/seats");
     await page.getByRole("radio", { name: "List view", exact: true }).click();
@@ -146,9 +159,7 @@ for (const width of [1024, 1440]) {
     await expect(
       page.getByRole("row").filter({ hasText: "A-01" }),
     ).toContainText(teams[1].team_name_zh);
-    await expect(
-      page.getByRole("img", { name: /\(logo unavailable\)$/ }),
-    ).toBeVisible();
+    await expectPlainSchoolLogos(page);
     expect(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,

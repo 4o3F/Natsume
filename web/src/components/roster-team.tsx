@@ -42,7 +42,7 @@ export function SchoolLogo({
       src={`/api/v2/organizations/${encodeURIComponent(team.organization_id)}/logo`}
       alt={`${name} logo`}
       loading="lazy"
-      className={`${className} shrink-0 rounded-md border bg-card object-contain p-0.5`}
+      className={`${className} shrink-0 rounded-md object-contain p-0.5`}
       onError={() => setFailedSchool(team.organization_id)}
     />
   ) : (
@@ -50,7 +50,7 @@ export function SchoolLogo({
       role="img"
       aria-label={`${name} (logo unavailable)`}
       title="Logo unavailable"
-      className={`${className} inline-flex shrink-0 items-center justify-center rounded-md bg-secondary text-xs font-semibold text-secondary-foreground ring-1 ring-border`}
+      className={`${className} inline-flex shrink-0 items-center justify-center rounded-md text-xs font-semibold text-secondary-foreground`}
     >
       {monogram(team.school_name_en || name)}
     </span>
