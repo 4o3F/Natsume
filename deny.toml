@@ -38,6 +38,13 @@ allow = [
   "Zlib",
 ]
 
+# Native filesystem notifications for the Photo Client. Keep this permission
+# specific to the reviewed dependency version; upgrades need a new review.
+[[licenses.exceptions]]
+name = "notify"
+version = "=8.2.1"
+allow = ["CC0-1.0"]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

@@ -13,20 +13,19 @@ diesel.workspace = true
 diesel_migrations.workspace = true
 hex.workspace = true
 image.workspace = true
+notify.workspace = true
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 snafu.workspace = true
+tempfile.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 libsqlite3-sys = { version = "0.38.2", features = ["bundled"] }
-
-[dev-dependencies]
-tempfile.workspace = true
 
 [lints]
 workspace = true
