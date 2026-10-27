@@ -20,6 +20,7 @@ sha2.workspace = true
 snafu.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 libsqlite3-sys = { version = "0.38.2", features = ["bundled"] }
