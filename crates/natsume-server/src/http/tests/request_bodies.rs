@@ -16,7 +16,7 @@ use super::{
     login_request, router, seed_operator, server_state, unused_web_root,
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 fn streamed_body(bytes: Vec<u8>) -> Body {
     let bytes = Bytes::from(bytes);
@@ -39,7 +39,9 @@ async fn json_extraction_rejections_remain_bad_requests() -> TestResult {
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("missing session cookie")?;
+        .ok_or(crate::test_error::TestError::missing(
+            "missing session cookie",
+        ))?;
     for (method, path, authenticated) in [
         (
             Method::PATCH,
@@ -111,7 +113,9 @@ async fn json_routes_use_default_body_limit_for_declared_and_streamed_requests()
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("missing session cookie")?;
+        .ok_or(crate::test_error::TestError::missing(
+            "missing session cookie",
+        ))?;
     let invitation = drive(
         &application,
         Request::builder()
@@ -202,7 +206,9 @@ async fn fully_escaped_six_hundred_device_submission_is_accepted() -> TestResult
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("missing session cookie")?;
+        .ok_or(crate::test_error::TestError::missing(
+            "missing session cookie",
+        ))?;
     let mut ids = Vec::new();
     for index in 0..600 {
         let id = format!("01900000-0000-7000-8000-{index:012x}");
@@ -234,7 +240,7 @@ async fn fully_escaped_six_hundred_device_submission_is_accepted() -> TestResult
     Ok(())
 }
 
-fn padded_workbook(padding: usize) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+fn padded_workbook(padding: usize) -> Result<Vec<u8>, crate::test_error::TestError> {
     let mut source = ZipArchive::new(Cursor::new(include_bytes!(
         "../../component/import/examples/roster.xlsx"
     )))?;
@@ -262,7 +268,9 @@ async fn workbook_uploads_use_default_two_mib_limit() -> TestResult {
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("missing session cookie")?;
+        .ok_or(crate::test_error::TestError::missing(
+            "missing session cookie",
+        ))?;
     for path in [
         "/api/v2/imports",
         "/api/v2/imports/01900000-0000-7000-8000-000000000001/actions/commit",
@@ -303,8 +311,10 @@ async fn workbook_uploads_use_default_two_mib_limit() -> TestResult {
     let preview: Value = serde_json::from_slice(&preview.body)?;
     let candidate = preview["candidate_id"]
         .as_str()
-        .ok_or("missing candidate")?;
-    let token = preview["preview_token"].as_str().ok_or("missing token")?;
+        .ok_or(crate::test_error::TestError::missing("missing candidate"))?;
+    let token = preview["preview_token"]
+        .as_str()
+        .ok_or(crate::test_error::TestError::missing("missing token"))?;
     let committed = drive(
         &application,
         Request::builder()

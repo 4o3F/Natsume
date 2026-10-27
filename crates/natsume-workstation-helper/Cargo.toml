@@ -17,6 +17,9 @@ tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util.workspace = true
+nix = { version = "0.29", features = ["fs"] }
+keyutils = "0.4"
+keyutils-raw = "0.4"
 snafu.workspace = true
 natsume-workstation-ipc = { path = "../natsume-workstation-ipc" }
 procfs = { version = "0.18", default-features = false }

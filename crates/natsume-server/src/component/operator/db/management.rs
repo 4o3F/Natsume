@@ -21,11 +21,11 @@ pub(in crate::component::operator) fn list_accounts(
             operator_accounts::role,
         ))
         .load::<(String, String, String)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .into_iter()
         .map(|(id, username, role)| {
             let identity = OperatorIdentity::from_persisted(&id, &role)
-                .map_err(|_| PersistenceError::InvalidPersistedData)?;
+                .map_err(super::persisted_identity_error)?;
             Ok(OperatorSummary {
                 operator_id: identity.operator_id(),
                 username,
@@ -44,7 +44,7 @@ pub(in crate::component::operator) fn find_account_by_id(
         .select(operator_accounts::username)
         .first::<String>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     name.map(|name| super::find_account(transaction, &name))
         .transpose()
         .map(Option::flatten)
@@ -59,7 +59,7 @@ pub(in crate::component::operator) fn account_name(
         .select(operator_accounts::username)
         .first(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .ok_or(OperatorError::OperatorNotFound)
 }
 
@@ -73,7 +73,7 @@ pub(in crate::component::operator) fn protect_last_admin(
             .filter(operator_accounts::role.eq("admin"))
             .count()
             .get_result::<i64>(transaction.connection())
-            .map_err(|_| PersistenceError::OperationFailed)?;
+            .map_err(PersistenceError::from)?;
         if admins <= 1 {
             return Err(OperatorError::LastAdmin);
         }
@@ -91,9 +91,9 @@ pub(in crate::component::operator) fn update_role(
     )
     .set(operator_accounts::role.eq(role.as_persisted()))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)?;
+    .map_err(PersistenceError::from)?;
     if changed != 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::unexpected_row_count(1, changed));
     }
     Ok(())
 }
@@ -106,9 +106,9 @@ pub(in crate::component::operator) fn delete_account(
         operator_accounts::table.filter(operator_accounts::operator_id.eq(id.to_string())),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)?;
+    .map_err(PersistenceError::from)?;
     if deleted != 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::unexpected_row_count(1, deleted));
     }
     Ok(())
 }

@@ -1,4 +1,5 @@
 mod expiry;
+mod requeue;
 
 use super::{Fixture, pdf, registration};
 use crate::component::print::{
@@ -96,7 +97,7 @@ async fn claims_are_durable_idempotent_and_empty_results_do_not_later_claim() {
     assert_eq!(first.attempt_number, 1);
     assert_eq!(claim(&f, &c, &request, now + 1).await, Some(first.clone()));
     let other = c.clone();
-    assert_eq!(
+    assert!(matches!(
         write(&f, move |tx| store::claim(
             tx,
             &other,
@@ -106,10 +107,10 @@ async fn claims_are_durable_idempotent_and_empty_results_do_not_later_claim() {
         ))
         .await,
         Err(PrintError::Conflict)
-    );
+    ));
     let other = c.clone();
     let reused = request.clone();
-    assert_eq!(
+    assert!(matches!(
         write(&f, move |tx| store::claim(
             tx,
             &other,
@@ -119,7 +120,7 @@ async fn claims_are_durable_idempotent_and_empty_results_do_not_later_claim() {
         ))
         .await,
         Err(PrintError::Conflict)
-    );
+    ));
     let reopened = must(
         crate::db::Database::connect_and_migrate(&crate::db::DatabaseConfig::new(&f.path, false))
             .await,
@@ -274,10 +275,10 @@ async fn success_is_idempotent_and_late_reports_cannot_finish_a_new_attempt() {
     let a = claim(&f, &c, &Uuid::now_v7().to_string(), now)
         .await
         .unwrap_or_else(|| panic!("claim"));
-    assert_eq!(
+    assert!(matches!(
         report(&f, &c, &a, AttemptReport::Printed(job(&a)), now).await,
         Err(PrintError::Conflict)
-    );
+    ));
     let identity = c.clone();
     let id = a.attempt_id.clone();
     let j = job(&a);
@@ -362,20 +363,20 @@ async fn binding_clear_and_stale_identity_are_guarded_by_persisted_active_attemp
     let a = claim(&f, &c, &Uuid::now_v7().to_string(), now)
         .await
         .unwrap_or_else(|| panic!("claim"));
-    assert_eq!(
+    assert!(matches!(
         f.print.clear_printer_binding(a.printer_id.clone()).await,
         Err(PrintError::Conflict)
-    );
+    ));
     must(write(&f, move |tx| store::expire(tx, now + 60_000)).await);
     must(f.print.clear_printer_binding(a.printer_id.clone()).await);
-    assert_eq!(
+    assert!(matches!(
         f.print.get_attempt(c.clone(), a.attempt_id.clone()).await,
         Err(PrintError::Authentication)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.print.attempt_document(c, a.attempt_id).await,
         Err(PrintError::Authentication)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -433,7 +434,7 @@ async fn registration_and_observation_mismatches_do_not_renew_or_replace_job() {
             ..job(&a)
         },
     ] {
-        assert_eq!(
+        assert!(matches!(
             report(
                 &f,
                 &c,
@@ -443,10 +444,10 @@ async fn registration_and_observation_mismatches_do_not_renew_or_replace_job() {
             )
             .await,
             Err(PrintError::Conflict)
-        );
+        ));
         let identity = c.clone();
         let id = a.attempt_id.clone();
-        assert_eq!(
+        assert!(matches!(
             write(&f, move |tx| store::register_job(
                 tx,
                 &identity,
@@ -456,7 +457,7 @@ async fn registration_and_observation_mismatches_do_not_renew_or_replace_job() {
             ))
             .await,
             Err(PrintError::Conflict)
-        );
+        ));
     }
     let identity = c.clone();
     let id = a.attempt_id.clone();
@@ -485,7 +486,7 @@ async fn failed_claim_and_report_transactions_preserve_attempt_budget_and_receip
     let request = Uuid::now_v7().to_string();
     let identity = c.clone();
     let request_copy = request.clone();
-    assert_eq!(
+    assert!(matches!(
         write(&f, move |tx| store::claim(
             tx,
             &identity,
@@ -494,8 +495,8 @@ async fn failed_claim_and_report_transactions_preserve_attempt_budget_and_receip
             now
         ))
         .await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Persistence { .. })
+    ));
     assert_eq!(must(f.print.list_executions().await)[0].attempts_used, 0);
     must(
         write(&f, |tx| {
@@ -509,10 +510,10 @@ async fn failed_claim_and_report_transactions_preserve_attempt_budget_and_receip
         .unwrap_or_else(|| panic!("claim"));
     assert_eq!(a.attempt_number, 1);
     must(write(&f, |tx| { tx.connection().batch_execute("CREATE TRIGGER reject_job_update BEFORE UPDATE ON print_jobs BEGIN SELECT RAISE(ABORT, 'fixture'); END")?; Ok(()) }).await);
-    assert_eq!(
+    assert!(matches!(
         report(&f, &c, &a, AttemptReport::Failed, now + 1).await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Persistence { .. })
+    ));
     let identity = c.clone();
     assert_eq!(
         must(write(&f, move |tx| store::current(tx, &identity)).await),
@@ -621,7 +622,7 @@ async fn background_tasks_expire_attempts_and_shutdown_stops_maintenance() {
     };
     let result = must(tokio::time::timeout(std::time::Duration::from_secs(5), service).await);
     must(background.shutdown().await);
-    assert_eq!(result, Err(PrintError::Conflict));
+    assert!(matches!(result, Err(PrintError::Conflict)));
     let identity = c.clone();
     let id = first.attempt_id;
     assert_eq!(
@@ -694,10 +695,10 @@ async fn assigned_document_is_verified_before_bytes_are_returned() {
             .join(format!("{}.pdf", a.document_sha256)),
         b"corrupt fixture",
     ));
-    assert_eq!(
+    assert!(matches!(
         f.print.attempt_document(c, a.attempt_id).await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Storage { .. })
+    ));
     assert_eq!(must(f.print.list_executions().await)[0].attempts_used, 1);
 }
 

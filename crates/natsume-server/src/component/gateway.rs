@@ -57,6 +57,7 @@ impl GatewayComponent {
         actual: GatewayActualState,
     ) -> Result<(), GatewayError> {
         if let Some(csr_der) = input.as_ref().and_then(GatewayCredentialInput::csr_der) {
+            // Untrusted CSR validation is a domain rejection; parser detail is irrelevant.
             GatewayIssuer::validate_csr(csr_der).map_err(|_| GatewayError::InvalidCsr)?;
         }
 
@@ -121,7 +122,9 @@ impl GatewayComponent {
                     &leaf_der,
                 )?;
                 if updated > 1 {
-                    return Err(GatewayError::InvalidPersistedFacts);
+                    return Err(GatewayError::InvalidPersistedFacts {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    });
                 }
                 Ok(())
             })
@@ -157,7 +160,9 @@ impl GatewayComponent {
                 let mut targets = HashMap::with_capacity(rows.len());
                 for (device_id, row) in rows {
                     let device_id =
-                        DeviceId::parse(&device_id).ok_or(GatewayError::InvalidPersistedFacts)?;
+                        DeviceId::parse(&device_id).ok_or(GatewayError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        })?;
                     let target = resolve(GatewayFact::from_persisted(row)?);
                     targets.insert(device_id, target);
                 }
@@ -168,6 +173,9 @@ impl GatewayComponent {
     }
 
     async fn ensure_generation(&self, device_id: DeviceId) -> Result<(), GatewayError> {
+        if self.read_current(device_id).await?.is_some() {
+            return Ok(());
+        }
         let initial_id = GatewayCredentialId::new();
         self.database
             .write(move |transaction| {
@@ -187,8 +195,11 @@ impl GatewayComponent {
     async fn read_current_fact(&self, device_id: DeviceId) -> Result<GatewayFact, GatewayError> {
         self.database
             .read(move |transaction| {
-                let row = db::find_by_device_id(transaction, &device_id.as_text())?
-                    .ok_or(GatewayError::InvalidPersistedFacts)?;
+                let row = db::find_by_device_id(transaction, &device_id.as_text())?.ok_or(
+                    GatewayError::InvalidPersistedFacts {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    },
+                )?;
                 GatewayFact::from_persisted(row)
             })
             .await
@@ -294,7 +305,9 @@ fn replace_generation(
     match updated {
         0 => Ok(false),
         1 => Ok(true),
-        _ => Err(GatewayError::InvalidPersistedFacts),
+        _ => Err(GatewayError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        }),
     }
 }
 
@@ -302,7 +315,9 @@ fn require_change(changed: bool) -> Result<(), GatewayError> {
     if changed {
         Ok(())
     } else {
-        Err(GatewayError::InvalidPersistedFacts)
+        Err(GatewayError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        })
     }
 }
 
@@ -310,7 +325,9 @@ fn require_one(updated: usize) -> Result<(), GatewayError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(GatewayError::InvalidPersistedFacts)
+        Err(GatewayError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::unexpected_row_count(1, updated),
+        })
     }
 }
 
@@ -326,10 +343,19 @@ fn resolve(fact: GatewayFact) -> MaterializedGateway {
 }
 
 fn grant_is_expired(grant: &GatewayCertificateGrant) -> Result<bool, GatewayError> {
-    let (remainder, certificate) = X509Certificate::from_der(&grant.leaf_der)
-        .map_err(|_| GatewayError::InvalidPersistedFacts)?;
+    let (remainder, certificate) =
+        X509Certificate::from_der(&grant.leaf_der).map_err(|source| {
+            GatewayError::InvalidPersistedFacts {
+                source: PersistenceError::Certificate {
+                    field: "gateway certificate",
+                    source,
+                },
+            }
+        })?;
     if !remainder.is_empty() {
-        return Err(GatewayError::InvalidPersistedFacts);
+        return Err(GatewayError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        });
     }
     Ok(certificate.validity().not_after.timestamp()
         <= time::OffsetDateTime::now_utc().unix_timestamp())
@@ -337,19 +363,41 @@ fn grant_is_expired(grant: &GatewayCertificateGrant) -> Result<bool, GatewayErro
 
 fn map_persisted_issuer_error(error: GatewayIssuerError) -> GatewayError {
     match error {
-        GatewayIssuerError::InvalidCsr => GatewayError::InvalidPersistedFacts,
-        GatewayIssuerError::OriginCa
+        #[cfg(test)]
+        GatewayIssuerError::TestConfig { .. } => GatewayError::IssuanceFailed { source: error },
+        GatewayIssuerError::InvalidCsr => GatewayError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        },
+        GatewayIssuerError::OriginCa { .. }
+        | GatewayIssuerError::OriginCaPem { .. }
+        | GatewayIssuerError::InvalidOriginCa
+        | GatewayIssuerError::InvalidValidity
+        | GatewayIssuerError::Certificate { .. }
+        | GatewayIssuerError::CertificateExtension { .. }
+        | GatewayIssuerError::IdentityFile { .. }
+        | GatewayIssuerError::TrustRootFile { .. }
         | GatewayIssuerError::TrustRootMismatch
-        | GatewayIssuerError::IssuanceFailed => GatewayError::IssuanceFailed,
+        | GatewayIssuerError::IssuanceFailed { .. } => {
+            GatewayError::IssuanceFailed { source: error }
+        }
     }
 }
 
 fn map_load_error(error: GatewayIssuerError) -> GatewayLoadError {
     match error {
+        #[cfg(test)]
+        GatewayIssuerError::TestConfig { .. } => GatewayLoadError::OriginCa { source: error },
         GatewayIssuerError::TrustRootMismatch => GatewayLoadError::TrustRootMismatch,
-        GatewayIssuerError::OriginCa
+        GatewayIssuerError::OriginCa { .. }
+        | GatewayIssuerError::OriginCaPem { .. }
+        | GatewayIssuerError::InvalidOriginCa
+        | GatewayIssuerError::InvalidValidity
+        | GatewayIssuerError::Certificate { .. }
+        | GatewayIssuerError::CertificateExtension { .. }
+        | GatewayIssuerError::IdentityFile { .. }
+        | GatewayIssuerError::TrustRootFile { .. }
         | GatewayIssuerError::InvalidCsr
-        | GatewayIssuerError::IssuanceFailed => GatewayLoadError::OriginCa,
+        | GatewayIssuerError::IssuanceFailed { .. } => GatewayLoadError::OriginCa { source: error },
     }
 }
 
@@ -451,13 +499,20 @@ impl GatewayFact {
     }
 
     fn from_persisted(row: db::PersistedGatewayRow) -> Result<Self, GatewayError> {
-        let credential_id = GatewayCredentialId::parse(&row.credential_id)
-            .ok_or(GatewayError::InvalidPersistedFacts)?;
+        let credential_id = GatewayCredentialId::parse(&row.credential_id).ok_or(
+            GatewayError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            },
+        )?;
         let csr_der = row.gateway_csr_der;
         let grant = match (csr_der.as_ref(), row.gateway_leaf_der) {
             (None | Some(_), None) => None,
             (Some(_), Some(leaf_der)) => Some(GatewayCertificateGrant { leaf_der }),
-            _ => return Err(GatewayError::InvalidPersistedFacts),
+            _ => {
+                return Err(GatewayError::InvalidPersistedFacts {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                });
+            }
         };
         Ok(Self {
             credential_id,
@@ -521,33 +576,39 @@ impl MaterializedGateway {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum GatewayError {
     #[snafu(display("the Gateway CSR is invalid"))]
     InvalidCsr,
     #[snafu(display("the current Gateway CSR conflicts with the accepted CSR"))]
     ConflictingCsr,
     #[snafu(display("persisted Gateway facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("Gateway persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
     #[snafu(display("Gateway certificate issuance failed"))]
-    IssuanceFailed,
+    IssuanceFailed { source: GatewayIssuerError },
+}
+
+impl GatewayError {
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::PersistenceFailed { source } if source.is_transient())
+    }
 }
 
 impl From<PersistenceError> for GatewayError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum GatewayLoadError {
     #[snafu(display("Origin CA loading or validation failed"))]
-    OriginCa,
+    OriginCa { source: GatewayIssuerError },
     #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
     TrustRootMismatch,
 }

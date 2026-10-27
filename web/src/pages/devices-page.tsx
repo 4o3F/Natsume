@@ -486,7 +486,7 @@ export function DevicesPage() {
           label="Listed"
           value={stats.total}
           icon={<Monitor aria-hidden="true" />}
-          hint={`${states.length === 3 ? "all" : states.join(" + ") || "no"} states`}
+          hint="ALL"
         />
         <StatTile
           label="Online"
@@ -628,6 +628,7 @@ export function DevicesPage() {
         >
           <DataTable
             label="Devices"
+            virtualized
             columns={columns}
             data={visibleDevices}
             getRowId={(device) => device.device_id}
@@ -686,9 +687,20 @@ export function DevicesPage() {
                     }
                   </Badge>
                 </div>
-                <SheetDescription className="font-mono text-xs break-all">
-                  {selectedDevice.machine_hardware_id} ·{" "}
-                  {selectedDevice.device_id}
+                <SheetDescription
+                  asChild
+                  className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs"
+                >
+                  <dl>
+                    <dt>Hardware ID</dt>
+                    <dd className="font-mono break-all">
+                      {selectedDevice.machine_hardware_id}
+                    </dd>
+                    <dt>Device ID</dt>
+                    <dd className="font-mono break-all">
+                      {selectedDevice.device_id}
+                    </dd>
+                  </dl>
                 </SheetDescription>
               </SheetHeader>
               <SheetBody>

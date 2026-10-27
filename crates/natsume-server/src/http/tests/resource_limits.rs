@@ -1,4 +1,4 @@
-use std::{task::Poll, time::Duration};
+use std::{future::Future as _, pin::Pin, task::Poll, time::Duration};
 
 use axum::{
     body::{Body, Bytes},
@@ -12,20 +12,28 @@ use super::{
     login_request, router, seed_operator, server_state, unused_web_root,
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 const XLSX: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
-fn stalled_body() -> (Body, oneshot::Receiver<()>) {
+fn stalled_body() -> (Body, oneshot::Receiver<()>, oneshot::Sender<()>) {
     let (entered, receiver) = oneshot::channel();
     let mut entered = Some(entered);
+    let (disconnect, mut disconnected) = oneshot::channel();
     (
-        Body::from_stream(futures_util::stream::poll_fn(move |_| {
+        Body::from_stream(futures_util::stream::poll_fn(move |context| {
             if let Some(entered) = entered.take() {
                 let _ = entered.send(());
+            }
+            if Pin::new(&mut disconnected).poll(context).is_ready() {
+                return Poll::Ready(Some(Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "test client disconnected",
+                ))));
             }
             Poll::<Option<Result<Bytes, std::io::Error>>>::Pending
         })),
         receiver,
+        disconnect,
     )
 }
 
@@ -38,7 +46,7 @@ fn unread_body() -> Body {
 }
 
 #[tokio::test]
-async fn import_rejects_busy_requests_before_buffering_and_recovers_after_cancellation()
+async fn import_rejects_busy_requests_before_buffering_and_recovers_after_body_disconnect()
 -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
@@ -49,10 +57,10 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_cancel
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("cookie")?;
+        .ok_or(crate::test_error::TestError::missing("cookie"))?;
     let commit = "/api/v2/imports/01900000-0000-7000-8000-000000000001/actions/commit";
     for path in ["/api/v2/imports", commit] {
-        let (body, entered) = stalled_body();
+        let (body, entered, disconnect) = stalled_body();
         let task = tokio::spawn(
             application.clone().oneshot(
                 Request::builder()
@@ -103,7 +111,14 @@ async fn import_rejects_busy_requests_before_buffering_and_recovers_after_cancel
         assert_eq!(anonymous.status, StatusCode::UNAUTHORIZED);
         task.abort();
         assert!(task.await.is_err());
-        assert!(state.import().try_begin().is_ok());
+        assert!(state.import().try_begin().is_err());
+        assert!(disconnect.send(()).is_ok());
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while state.import().try_begin().is_err() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
     }
     let response = drive(
         &application,

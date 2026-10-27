@@ -32,9 +32,9 @@ pub(in crate::component::device) fn enabled_ids(
         .filter(devices::state.eq("enabled"))
         .order(devices::device_id)
         .load::<String>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .iter()
-        .map(|id| DeviceId::parse(id).ok_or(PersistenceError::InvalidPersistedData))
+        .map(|id| DeviceId::parse(id).ok_or(PersistenceError::invalid("persisted value")))
         .collect()
 }
 
@@ -68,7 +68,7 @@ pub(in crate::component::device) fn list(
     query
         .order(devices::device_id)
         .load::<PersistedDeviceProjection>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .iter()
         .map(parse_projection)
         .collect()
@@ -92,7 +92,7 @@ pub(in crate::component::device) fn find_projection(
         .filter(devices::device_id.eq(device_id.as_text()))
         .first::<PersistedDeviceProjection>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .as_ref()
         .map(parse_projection)
         .transpose()
@@ -107,7 +107,7 @@ pub(in crate::component::device) fn find_by_id(
         .filter(devices::device_id.eq(device_id.as_text()))
         .first::<PersistedDevice>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(|row| parse(&row))
         .transpose()
 }
@@ -122,7 +122,7 @@ pub(in crate::component::device) fn find_non_revoked_by_machine(
         .filter(devices::state.ne(DeviceState::Revoked.as_persisted()))
         .first::<PersistedDevice>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(|row| parse(&row))
         .transpose()
 }
@@ -143,7 +143,7 @@ pub(in crate::component::device) fn insert(
             devices::created_at_unix_ms.eq(created_at_unix_ms),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::device) fn update_evidence(
@@ -154,7 +154,7 @@ pub(in crate::component::device) fn update_evidence(
     diesel::update(devices::table.filter(devices::device_id.eq(device_id.as_text())))
         .set(devices::evidence_quality.eq(next.as_persisted()))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::device) fn update_state(
@@ -165,7 +165,7 @@ pub(in crate::component::device) fn update_state(
     diesel::update(devices::table.filter(devices::device_id.eq(device_id.as_text())))
         .set(devices::state.eq(next.as_persisted()))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 fn parse(row: &PersistedDevice) -> Result<DeviceRecord, PersistenceError> {
@@ -197,5 +197,5 @@ pub(in crate::component::device) fn update_network_addresses(
             devices::ip_observed_at_unix_ms.eq(observed_at),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }

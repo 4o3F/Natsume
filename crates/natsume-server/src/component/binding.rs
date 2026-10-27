@@ -10,6 +10,7 @@ use zeroize::Zeroizing;
 use crate::{
     component::device::DeviceId,
     db::{Database, PersistenceError, Transaction, TransactionError},
+    device_control::TargetChange,
     vault::VaultSession,
 };
 
@@ -38,7 +39,9 @@ impl BindingComponent {
                 let has_binding = db::device_has_binding(transaction, &device_id)?;
                 let negotiation = db::find_negotiation(transaction, &device_id)?;
                 match (has_binding, negotiation) {
-                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts),
+                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    }),
                     (true, None) => Ok(()),
                     (false, negotiation) => {
                         let negotiation = if let Some(row) = negotiation {
@@ -77,10 +80,14 @@ impl BindingComponent {
                 let has_binding = db::device_has_binding(transaction, &device_id)?;
                 let negotiation = db::find_negotiation(transaction, &device_id)?;
                 match (has_binding, negotiation) {
-                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts),
+                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    }),
                     (true, None) => db::find_bound_target(transaction, &device_id)?
                         .map(BindingFact::Bound)
-                        .ok_or(BindingError::InvalidPersistedFacts),
+                        .ok_or(BindingError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        }),
                     (false, Some(row)) => {
                         NegotiationFact::from_persisted(&row).map(BindingFact::Unbound)
                     }
@@ -113,13 +120,17 @@ impl BindingComponent {
                 let has_binding = db::device_has_binding(transaction, &device_id)?;
                 let negotiation = db::find_negotiation(transaction, &device_id)?;
                 match (has_binding, negotiation) {
-                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts),
+                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    }),
                     (true, None) => db::find_bound_context(transaction, &device_id)?
                         .as_ref()
                         .map(BindingContext::from_persisted)
                         .transpose()?
                         .map(BindingProjection::Bound)
-                        .ok_or(BindingError::InvalidPersistedFacts)
+                        .ok_or(BindingError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        })
                         .map(Some),
                     (false, Some(row)) => NegotiationFact::from_persisted(&row)
                         .map(NegotiationFact::into_intent)
@@ -143,7 +154,9 @@ impl BindingComponent {
                 let mut projections = HashMap::with_capacity(negotiations.len() + contexts.len());
                 for (device_id, row) in negotiations {
                     let device_id =
-                        DeviceId::parse(&device_id).ok_or(BindingError::InvalidPersistedFacts)?;
+                        DeviceId::parse(&device_id).ok_or(BindingError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        })?;
                     let projection = BindingProjection::Unbound(
                         NegotiationFact::from_persisted(&row)?.into_intent(),
                     );
@@ -151,11 +164,15 @@ impl BindingComponent {
                 }
                 for (device_id, row) in contexts {
                     let device_id =
-                        DeviceId::parse(&device_id).ok_or(BindingError::InvalidPersistedFacts)?;
+                        DeviceId::parse(&device_id).ok_or(BindingError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        })?;
                     let projection =
                         BindingProjection::Bound(BindingContext::from_persisted(&row)?);
                     if projections.insert(device_id, projection).is_some() {
-                        return Err(BindingError::InvalidPersistedFacts);
+                        return Err(BindingError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        });
                     }
                 }
                 Ok(projections)
@@ -175,7 +192,7 @@ impl BindingComponent {
                 let plaintext = self
                     .vault
                     .open(&row.nonce, &row.ciphertext)
-                    .map_err(|_| BindingError::VaultFailure)?;
+                    .map_err(|source| BindingError::VaultFailure { source })?;
                 let password = BindingPassword::new(plaintext)?;
                 Ok(MaterializedBinding {
                     intent: None,
@@ -192,7 +209,7 @@ impl BindingComponent {
     }
 
     /// Removes the current Binding and starts a fresh negotiation if needed.
-    pub(crate) async fn unbind(&self, device_id: DeviceId) -> Result<(), BindingError> {
+    pub(crate) async fn unbind(&self, device_id: DeviceId) -> Result<TargetChange, BindingError> {
         let replacement_negotiation_id = BindingNegotiationId::new();
         self.database
             .write(move |transaction| {
@@ -200,7 +217,9 @@ impl BindingComponent {
                 let has_binding = db::device_has_binding(transaction, &device_id)?;
                 let negotiation = db::find_negotiation(transaction, &device_id)?;
                 match (has_binding, negotiation) {
-                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts),
+                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    }),
                     (true, None) => {
                         require_one(db::delete_binding(transaction, &device_id)?)?;
                         require_one(db::insert_negotiation(
@@ -219,6 +238,7 @@ impl BindingComponent {
             })
             .await
             .map_err(TransactionError::into_error)
+            .map(|()| TargetChange::device(device_id))
     }
 }
 
@@ -266,7 +286,9 @@ fn ingest_submission(
         )?);
     }
 
-    let seat = seat.ok_or(BindingError::InvalidPersistedFacts)?;
+    let seat = seat.ok_or(BindingError::InvalidPersistedFacts {
+        source: crate::db::PersistenceError::invalid("persisted facts"),
+    })?;
     require_one(db::insert_binding(
         transaction,
         binding_id.value(),
@@ -288,7 +310,9 @@ fn require_enabled_device(
         None => Err(BindingError::DeviceNotFound),
         Some("enabled") => Ok(()),
         Some("disabled" | "revoked") => Err(BindingError::DeviceNotEligible),
-        Some(_) => Err(BindingError::InvalidPersistedFacts),
+        Some(_) => Err(BindingError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        }),
     }
 }
 
@@ -299,7 +323,9 @@ fn require_existing_device(
     match db::find_device_state(transaction, device_id)?.as_deref() {
         None => Err(BindingError::DeviceNotFound),
         Some("enabled" | "disabled" | "revoked") => Ok(()),
-        Some(_) => Err(BindingError::InvalidPersistedFacts),
+        Some(_) => Err(BindingError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        }),
     }
 }
 
@@ -307,7 +333,9 @@ fn require_one(updated: usize) -> Result<(), BindingError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(BindingError::InvalidPersistedFacts)
+        Err(BindingError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::unexpected_row_count(1, updated),
+        })
     }
 }
 
@@ -455,12 +483,16 @@ impl NegotiationFact {
                 submission_epoch: BindingSubmissionEpoch::from_persisted(
                     submission.submission_epoch,
                 )
-                .ok_or(BindingError::InvalidPersistedFacts)?,
+                .ok_or(BindingError::InvalidPersistedFacts {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                })?,
                 seat_code: submission.seat_code.clone(),
                 evaluation_code: BindingEvaluationCode::from_error_code(
                     &submission.evaluation_error_code,
                 )
-                .ok_or(BindingError::InvalidPersistedFacts)?,
+                .ok_or(BindingError::InvalidPersistedFacts {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                })?,
             })
         } else {
             None
@@ -542,7 +574,9 @@ impl BindingContext {
         let seat_code = &row.seat_code;
         let domjudge_username = &row.domjudge_username;
         if !valid_public_text(seat_code) || !is_valid_domjudge_username(domjudge_username) {
-            return Err(BindingError::InvalidPersistedFacts);
+            return Err(BindingError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
         }
         Ok(Self {
             binding_id: BindingId::from_uuid(row.binding_id),
@@ -552,7 +586,9 @@ impl BindingContext {
             credential_revision: u64::try_from(row.credential_revision)
                 .ok()
                 .filter(|revision| *revision >= 1)
-                .ok_or(BindingError::InvalidPersistedFacts)?,
+                .ok_or(BindingError::InvalidPersistedFacts {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                })?,
         })
     }
 
@@ -581,13 +617,21 @@ pub(crate) struct BindingPassword(Zeroizing<Vec<u8>>);
 
 impl BindingPassword {
     fn new(value: Zeroizing<Vec<u8>>) -> Result<Self, BindingError> {
-        let text = std::str::from_utf8(value.as_slice())
-            .map_err(|_| BindingError::InvalidPersistedFacts)?;
+        let text = std::str::from_utf8(value.as_slice()).map_err(|source| {
+            BindingError::InvalidPersistedFacts {
+                source: PersistenceError::Utf8 {
+                    field: "binding password",
+                    source,
+                },
+            }
+        })?;
         if text.is_empty()
             || text.len() > PASSWORD_LENGTH_LIMIT
             || text.chars().any(char::is_control)
         {
-            return Err(BindingError::InvalidPersistedFacts);
+            return Err(BindingError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
         }
         Ok(Self(value))
     }
@@ -686,7 +730,7 @@ fn valid_public_text(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_control)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum BindingError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
@@ -695,18 +739,24 @@ pub(crate) enum BindingError {
     #[snafu(display("the Binding submission conflicts with the persisted submission epoch"))]
     ConflictingSubmission,
     #[snafu(display("persisted Binding facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("Binding persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
     #[snafu(display("Binding credential decryption failed"))]
-    VaultFailure,
+    VaultFailure { source: crate::vault::VaultError },
+}
+
+impl BindingError {
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::PersistenceFailed { source } if source.is_transient())
+    }
 }
 
 impl From<PersistenceError> for BindingError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }

@@ -25,25 +25,39 @@ pub(crate) enum ExportError {
     #[snafu(display("Import a complete roster before exporting"))]
     IncompleteRoster,
     #[snafu(display("The committed roster could not be read"))]
-    Persistence,
+    Persistence { source: PersistenceError },
     #[snafu(display("The current account credentials could not be decrypted"))]
-    Vault,
+    Vault { source: crate::vault::VaultError },
     #[snafu(display("School logo is missing or ambiguous"))]
     LogoUnavailable,
     #[snafu(display(
         "Cannot read storage.organization_logos; check the directory and service user permissions"
     ))]
-    LogoDirectory,
+    LogoDirectory { source: std::io::Error },
     #[snafu(display("{organization}: {file}: {reason}"))]
     Logo {
         organization: String,
         file: String,
         reason: String,
+        source: Box<super::logo_io::LogoError>,
     },
     #[snafu(display("Export encoding failed or the ZIP exceeds 256 MiB"))]
     Archive,
+    #[snafu(display("Export encoding failed or the ZIP exceeds 256 MiB"))]
+    ArchiveZip { source: zip::result::ZipError },
+    #[snafu(display("Export encoding failed or the ZIP exceeds 256 MiB"))]
+    ArchiveIo { source: std::io::Error },
+    #[snafu(display("Export encoding failed or the ZIP exceeds 256 MiB"))]
+    ArchiveJson { source: serde_json::Error },
+    #[snafu(display("The current account credentials could not be decrypted"))]
+    CredentialText { source: std::str::Utf8Error },
     #[snafu(display("Export worker failed"))]
-    Worker,
+    WorkerUnavailable { source: tokio::sync::AcquireError },
+    #[snafu(display("Export worker failed"))]
+    Worker {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
 }
 
 impl ContestComponent {
@@ -52,14 +66,15 @@ impl ContestComponent {
             .export_work
             .clone()
             .try_acquire_owned()
+            // Capacity exhaustion is a domain rejection; semaphore detail does not change the decision.
             .map_err(|_| ExportError::Busy)?;
         let roster = self
             .database
             .read(db::export_roster)
             .await
             .map_err(|error| match error.into_error() {
-                PersistenceError::InvalidPersistedData => ExportError::IncompleteRoster,
-                PersistenceError::OperationFailed => ExportError::Persistence,
+                PersistenceError::InvalidPersistedData { .. } => ExportError::IncompleteRoster,
+                source => ExportError::Persistence { source },
             })?;
         let vault = self.vault.clone();
         let directory = self.logo_directory.clone();
@@ -70,7 +85,9 @@ impl ContestComponent {
             build(&roster, &vault, &directory)
         })
         .await
-        .map_err(|_| ExportError::Worker)?
+        .map_err(|source| ExportError::Worker {
+            source: source.into(),
+        })?
     }
 }
 
@@ -168,7 +185,7 @@ fn build(
         .map(|t| {
             vault
                 .open(&t.nonce, &t.ciphertext)
-                .map_err(|_| ExportError::Vault)
+                .map_err(|source| ExportError::Vault { source })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let accounts = roster
@@ -182,19 +199,25 @@ fn build(
                 name: &t.account,
                 team_id: &t.account,
                 r#type: "team",
-                password: std::str::from_utf8(password).map_err(|_| ExportError::Vault)?,
+                password: std::str::from_utf8(password)
+                    .map_err(|source| ExportError::CredentialText { source })?,
             })
         })
         .collect::<Result<Vec<_>, ExportError>>()?;
-    let yaml =
-        Zeroizing::new(serde_saphyr::to_string(&accounts).map_err(|_| ExportError::Archive)?);
+    let yaml = Zeroizing::new(
+        serde_saphyr::to_string(&accounts)
+            // Serializer diagnostics can retain account passwords; keep a redacted archive failure.
+            .map_err(|_| ExportError::Archive)?,
+    );
     add(&mut zip, "accounts.yaml", yaml.as_bytes())?;
     drop(yaml);
     drop(accounts);
     drop(passwords);
 
     add_logos(&mut zip, roster, directory)?;
-    let mut archive = zip.finish().map_err(|_| ExportError::Archive)?;
+    let mut archive = zip
+        .finish()
+        .map_err(|source| ExportError::ArchiveZip { source })?;
     Ok(std::mem::take(archive.0.get_mut()))
 }
 
@@ -210,7 +233,7 @@ fn add_logos(
             LogoMatch::Unique(path) => {
                 let png = read_logo(&path)
                     .and_then(DecodedLogo::into_domjudge_png)
-                    .map_err(|error| logos::logo_error(school, &path, &error))?;
+                    .map_err(|error| logos::logo_error(school, &path, error))?;
                 add(
                     zip,
                     &format!("logos/INST-{:03}.png", school.organization_id),
@@ -230,7 +253,7 @@ fn add_json<T: Serialize>(
     add(
         zip,
         name,
-        &serde_json::to_vec_pretty(value).map_err(|_| ExportError::Archive)?,
+        &serde_json::to_vec_pretty(value).map_err(|source| ExportError::ArchiveJson { source })?,
     )
 }
 fn add(zip: &mut ZipWriter<LimitedArchive>, name: &str, bytes: &[u8]) -> Result<(), ExportError> {
@@ -240,8 +263,9 @@ fn add(zip: &mut ZipWriter<LimitedArchive>, name: &str, bytes: &[u8]) -> Result<
             .compression_method(zip::CompressionMethod::Deflated)
             .unix_permissions(0o600),
     )
-    .map_err(|_| ExportError::Archive)?;
-    zip.write_all(bytes).map_err(|_| ExportError::Archive)
+    .map_err(|source| ExportError::ArchiveZip { source })?;
+    zip.write_all(bytes)
+        .map_err(|source| ExportError::ArchiveIo { source })
 }
 
 // Limit total in-memory output, including ZIP metadata. Erase aborted plaintext archives.

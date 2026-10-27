@@ -167,6 +167,7 @@ diesel::table! {
         job_id -> Nullable<BigInt>,
         finished_at_unix_ms -> Nullable<BigInt>,
         outcome -> Nullable<Text>,
+        requeue_count -> Integer,
     }
 }
 
@@ -201,6 +202,7 @@ diesel::table! {
         available_at_unix_ms -> BigInt,
         queue_order -> BigInt,
         last_outcome -> Nullable<Text>,
+        requeue_count -> Integer,
     }
 }
 

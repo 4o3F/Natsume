@@ -26,6 +26,7 @@ describe("print execution projection", () => {
       ready_sequence: 1,
       state: "waiting",
       attempts_used: 2,
+      requeue_count: 0,
       retry_at_unix_ms: 30000,
       last_outcome: "unknown",
     };

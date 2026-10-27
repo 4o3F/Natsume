@@ -13,6 +13,7 @@ import { unwrap } from "@/api/errors";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSessionScope } from "@/auth/session-context";
 import { CopyButton } from "@/components/copy-button";
+import { usePageToast } from "@/components/use-page-toast";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
 import { RefreshCountdown, StatusDot } from "@/components/device-status";
@@ -20,8 +21,19 @@ import { tones } from "@/components/device-status-style";
 import { PageHeader } from "@/components/page-header";
 import { StatGrid, StatTile } from "@/components/stat-tile";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { InputGroup } from "@/components/ui/input";
 import {
   Popover,
@@ -33,11 +45,14 @@ import {
   SheetBody,
   SheetContent,
   SheetDescription,
+  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useNow } from "@/lib/use-now";
 import { cn } from "@/lib/utils";
+import { useOperatorAction } from "@/operator/use-operator-action";
+import { printManagementError } from "@/pages/print-management";
 import {
   executionCounts,
   executionRows,
@@ -309,7 +324,7 @@ export function PrintQueuePage() {
         onOpenChange={(open) => !open && setOpenId(null)}
       >
         <SheetContent className="sm:max-w-md">
-          {openRow && <DocumentDetails entry={openRow} />}
+          {openRow && <DocumentDetails key={rowId(openRow)} entry={openRow} />}
         </SheetContent>
       </Sheet>
     </div>
@@ -433,29 +448,72 @@ function StatusCell({ entry }: { entry: PrintRow }) {
   return (
     <div className="flex flex-col items-start gap-1">
       <StageBadge stage={stage} />
-      {execution && execution.attempts_used > 0 && (
-        <span className="text-xs text-muted-foreground">
-          {execution.attempts_used}{" "}
-          {execution.attempts_used === 1 ? "attempt" : "attempts"}
-          {execution.retry_at_unix_ms != null ? (
-            <>
-              {" · "}
-              <RetryIn at={execution.retry_at_unix_ms} />
-            </>
-          ) : (
-            execution.last_outcome && (
-              <> · {outcomeLabels[execution.last_outcome].toLowerCase()}</>
-            )
-          )}
-        </span>
-      )}
+      {execution &&
+        (execution.attempts_used > 0 || execution.requeue_count > 0) && (
+          <span className="text-xs text-muted-foreground">
+            {execution.requeue_count > 0 && (
+              <>Round {execution.requeue_count + 1} · </>
+            )}
+            {execution.attempts_used}{" "}
+            {execution.attempts_used === 1 ? "attempt" : "attempts"}
+            {execution.retry_at_unix_ms != null ? (
+              <>
+                {" · "}
+                <RetryIn at={execution.retry_at_unix_ms} />
+              </>
+            ) : (
+              execution.last_outcome && (
+                <> · {outcomeLabels[execution.last_outcome].toLowerCase()}</>
+              )
+            )}
+          </span>
+        )}
     </div>
   );
 }
 
 function DocumentDetails({ entry }: { entry: PrintRow }) {
+  const { api, identity, queryClient } = useSessionScope();
+  const toast = usePageToast();
+  const action = useOperatorAction(printManagementError);
+  const [confirmation, setConfirmation] = useState<number | null>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
   const execution = entry.execution;
   const stage = stageOf(entry);
+  const isAdmin = identity?.role === "admin";
+  const unchanged =
+    stage === "exhausted" && execution?.requeue_count === confirmation;
+  const requeue = () => {
+    if (!isAdmin || !unchanged || !acknowledged || confirmation === null)
+      return;
+    void action.run(
+      async (signal) => {
+        try {
+          return unwrap(
+            await api.requeuePrintExecution(
+              entry.ready_sequence,
+              {
+                expected_requeue_count: confirmation,
+              },
+              { signal },
+            ),
+          );
+        } finally {
+          if (!signal.aborted)
+            void queryClient.invalidateQueries({
+              queryKey: ["print-executions"],
+            });
+        }
+      },
+      () => {
+        setConfirmation(null);
+        toast.success("Document requeued", {
+          description:
+            "A new round allows up to 3 attempts. This does not confirm printing.",
+        });
+      },
+    );
+  };
   return (
     <>
       <SheetHeader>
@@ -478,8 +536,11 @@ function DocumentDetails({ entry }: { entry: PrintRow }) {
             </span>
           </div>
           <dl className="grid grid-cols-2 gap-3 text-sm">
-            <Fact label="Attempts used">
-              {execution?.attempts_used ?? "Unknown"}
+            <Fact label="Attempts used (this round)">
+              {execution ? `${execution.attempts_used} of 3` : "Unknown"}
+            </Fact>
+            <Fact label="Attempt round">
+              {execution ? execution.requeue_count + 1 : "Unknown"}
             </Fact>
             <Fact label="Last outcome">
               {execution
@@ -516,6 +577,80 @@ function DocumentDetails({ entry }: { entry: PrintRow }) {
           </Fact>
         </dl>
       </SheetBody>
+      <AlertDialog
+        open={confirmation !== null}
+        onOpenChange={(open) => {
+          if (action.pending) return;
+          if (open && isAdmin && stage === "exhausted" && execution) {
+            setAcknowledged(false);
+            setConfirmation(execution.requeue_count);
+          } else if (!open) setConfirmation(null);
+        }}
+      >
+        {isAdmin && stage === "exhausted" && execution && (
+          <SheetFooter>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                className="min-h-12"
+                disabled={action.pending}
+              >
+                Requeue document
+              </Button>
+            </AlertDialogTrigger>
+          </SheetFooter>
+        )}
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Requeue this document?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {entry.original_filename} will be added to the back of the ready
+              queue with up to 3 new attempts. The original document and attempt
+              history are preserved. Previous attempts may already have printed;
+              requeuing can produce duplicate copies. Check the physical output
+              and Windows queue first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="flex min-h-12 items-start gap-2 text-sm">
+            <Checkbox
+              checked={acknowledged}
+              disabled={action.pending}
+              onCheckedChange={(value) => setAcknowledged(value === true)}
+            />
+            <span>
+              I have checked the output and accept the risk of duplicate
+              printing.
+            </span>
+          </label>
+          {action.error && (
+            <Alert variant="destructive">
+              <AlertTitle>{action.error}</AlertTitle>
+            </Alert>
+          )}
+          {!unchanged && (
+            <Alert>
+              <AlertTitle>
+                Print state changed. Close this confirmation and review the
+                current state.
+              </AlertTitle>
+            </Alert>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel className="min-h-12" disabled={action.pending}>
+              Cancel
+            </AlertDialogCancel>
+            <Button
+              type="button"
+              loading={action.pending}
+              className="min-h-12"
+              disabled={!acknowledged || !unchanged || !isAdmin}
+              onClick={requeue}
+            >
+              Requeue document
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

@@ -74,15 +74,133 @@ impl Transaction<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum PersistenceError {
-    #[snafu(display("persisted data is invalid"))]
-    InvalidPersistedData,
-    #[snafu(display("the persistence operation failed"))]
-    OperationFailed,
+    #[snafu(display("persisted data is invalid ({field})"))]
+    InvalidPersistedData {
+        field: &'static str,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+    #[snafu(display("unexpected affected row count (expected {expected}, actual {actual})"))]
+    UnexpectedRowCount {
+        expected: usize,
+        actual: usize,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+    #[snafu(display("the persistence query failed"))]
+    Query {
+        source: diesel::result::Error,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+    #[snafu(display("the persistence connection pool failed"))]
+    Pool {
+        source: diesel::r2d2::PoolError,
+        #[snafu(implicit)]
+        location: snafu::Location,
+    },
+    #[snafu(display("the persistence executor failed"))]
+    Executor {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
+    #[snafu(display("the persistence work budget is exhausted"))]
+    WorkBudgetExhausted,
+    #[snafu(display("persisted JSON is invalid ({field})"))]
+    Json {
+        field: &'static str,
+        source: serde_json::Error,
+    },
+    #[snafu(display("persisted UUID is invalid ({field})"))]
+    Uuid {
+        field: &'static str,
+        source: uuid::Error,
+    },
+    #[snafu(display("persisted integer is invalid ({field})"))]
+    Integer {
+        field: &'static str,
+        source: std::num::TryFromIntError,
+    },
+    #[snafu(display("persisted text is invalid ({field})"))]
+    Utf8 {
+        field: &'static str,
+        source: std::str::Utf8Error,
+    },
+    #[snafu(display("persisted address is invalid ({field})"))]
+    Address {
+        field: &'static str,
+        source: std::net::AddrParseError,
+    },
+    #[snafu(display("persisted certificate is invalid ({field})"))]
+    Certificate {
+        field: &'static str,
+        source: x509_parser::asn1_rs::Err<x509_parser::error::X509Error>,
+    },
+    #[snafu(display("persisted byte length is invalid ({field})"))]
+    ByteLength {
+        field: &'static str,
+        source: std::array::TryFromSliceError,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl PersistenceError {
+    pub(crate) fn is_transient(&self) -> bool {
+        match self {
+            Self::Pool { .. } | Self::WorkBudgetExhausted => true,
+            Self::Query {
+                source:
+                    diesel::result::Error::DatabaseError(
+                        diesel::result::DatabaseErrorKind::Unknown,
+                        information,
+                    ),
+                ..
+            } => {
+                // Diesel exposes SQLite BUSY/LOCKED as Unknown with these SQLite messages.
+                matches!(
+                    information.message(),
+                    "database is locked" | "database table is locked"
+                )
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn is_invalid_data(&self) -> bool {
+        matches!(
+            self,
+            Self::InvalidPersistedData { .. }
+                | Self::Json { .. }
+                | Self::Uuid { .. }
+                | Self::Integer { .. }
+                | Self::Utf8 { .. }
+                | Self::Address { .. }
+                | Self::Certificate { .. }
+                | Self::ByteLength { .. }
+        )
+    }
+
+    #[track_caller]
+    pub(crate) fn unexpected_row_count(expected: usize, actual: usize) -> Self {
+        UnexpectedRowCountSnafu { expected, actual }.build()
+    }
+
+    #[track_caller]
+    pub(crate) fn invalid(field: &'static str) -> Self {
+        InvalidPersistedDataSnafu { field }.build()
+    }
+}
+
+impl From<diesel::result::Error> for PersistenceError {
+    #[track_caller]
+    fn from(source: diesel::result::Error) -> Self {
+        use snafu::IntoError as _;
+        QuerySnafu.into_error(source)
+    }
+}
+
+#[derive(Debug)]
 pub(crate) enum TransactionError<E> {
     Operation(E),
     Persistence(PersistenceError),
@@ -101,8 +219,8 @@ impl<E> TransactionError<E> {
 }
 
 impl<E> From<diesel::result::Error> for TransactionError<E> {
-    fn from(_source: diesel::result::Error) -> Self {
-        Self::Persistence(PersistenceError::OperationFailed)
+    fn from(source: diesel::result::Error) -> Self {
+        Self::Persistence(source.into())
     }
 }
 
@@ -125,14 +243,24 @@ impl Database {
         tokio::task::spawn_blocking(move || {
             let mut connection = migration_pool
                 .get()
-                .map_err(|_| DatabaseError::ConnectionFailed)?;
+                .map_err(|source| DatabaseError::ConnectionFailed { source })?;
             connection
                 .run_pending_migrations(MIGRATIONS)
-                .map_err(|_| DatabaseError::MigrationFailed)?;
+                .map_err(|source| match source.downcast::<diesel::result::Error>() {
+                    Ok(source) => DatabaseError::MigrationQuery { source: *source },
+                    Err(source) => match source.downcast::<diesel_migrations::MigrationError>() {
+                        Ok(source) => DatabaseError::MigrationSource { source: *source },
+                        // Diesel's embedded migration query wrapper is private and has no source().
+                        Err(error) => {
+                            tracing::error!(error = %snafu::Report::from_error(error.as_ref()), "embedded migration failed");
+                            DatabaseError::MigrationFailed
+                        },
+                    },
+                })?;
             Ok::<(), DatabaseError>(())
         })
         .await
-        .map_err(|_| DatabaseError::ConnectionFailed)??;
+        .map_err(|source| DatabaseError::Executor { source: source.into() })??;
         Ok(Self {
             pool,
             work: Arc::new(Semaphore::new(DATABASE_CONNECTIONS as usize)),
@@ -146,8 +274,10 @@ impl Database {
             Arc::clone(&self.work).acquire_owned(),
         )
         .await
-        .map_err(|_| PersistenceError::OperationFailed)?
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        // Capacity timeout and semaphore closure both exhaust this work budget.
+        .map_err(|_| PersistenceError::WorkBudgetExhausted)?
+        // A closed capacity gate is represented by the same exhausted work budget.
+        .map_err(|_| PersistenceError::WorkBudgetExhausted)?;
         Ok((permit, deadline))
     }
 
@@ -157,10 +287,11 @@ impl Database {
         E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
-        let (permit, deadline) = self
-            .reserve_work()
-            .await
-            .map_err(TransactionError::Persistence)?;
+        let timing = transaction_timing_span("read");
+        let waiting_since = wait_started(&timing);
+        let reservation = self.reserve_work().await;
+        record_wait(&timing, "db.permit_wait_us", waiting_since);
+        let (permit, deadline) = reservation.map_err(TransactionError::Persistence)?;
         let pool = self.pool.clone();
         // A blocking thread inherits neither the scoped dispatcher nor the
         // current span. Capture both at this shared boundary so database work
@@ -173,11 +304,18 @@ impl Database {
             let _permit = permit;
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
+                    let transaction_timing = timing;
                     let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
-                        TransactionError::Persistence(PersistenceError::OperationFailed),
+                        TransactionError::Persistence(PersistenceError::WorkBudgetExhausted),
                     )?;
-                    let mut connection = pool.get_timeout(remaining).map_err(|_| {
-                        TransactionError::Persistence(PersistenceError::OperationFailed)
+                    let waiting_since = wait_started(&transaction_timing);
+                    let connection = pool.get_timeout(remaining);
+                    record_wait(&transaction_timing, "db.pool_wait_us", waiting_since);
+                    let mut connection = connection.map_err(|source| {
+                        TransactionError::Persistence(PersistenceError::Pool {
+                            source,
+                            location: snafu::location!(),
+                        })
                     })?;
                     connection.transaction::<T, TransactionError<E>, _>(|connection| {
                         let mut transaction = Transaction { connection };
@@ -187,7 +325,11 @@ impl Database {
             })
         })
         .await
-        .map_err(|_| TransactionError::Persistence(PersistenceError::OperationFailed))?
+        .map_err(|source| {
+            TransactionError::Persistence(PersistenceError::Executor {
+                source: source.into(),
+            })
+        })?
     }
 
     pub(crate) async fn write<T, E, F>(&self, operation: F) -> Result<T, TransactionError<E>>
@@ -196,10 +338,11 @@ impl Database {
         E: Send + 'static,
         F: FnOnce(&mut Transaction<'_>) -> Result<T, E> + Send + 'static,
     {
-        let (permit, deadline) = self
-            .reserve_work()
-            .await
-            .map_err(TransactionError::Persistence)?;
+        let timing = transaction_timing_span("write");
+        let waiting_since = wait_started(&timing);
+        let reservation = self.reserve_work().await;
+        record_wait(&timing, "db.permit_wait_us", waiting_since);
+        let (permit, deadline) = reservation.map_err(TransactionError::Persistence)?;
         let pool = self.pool.clone();
         // A blocking thread inherits neither the scoped dispatcher nor the
         // current span. Capture both at this shared boundary so database work
@@ -210,21 +353,70 @@ impl Database {
             let _permit = permit;
             tracing::dispatcher::with_default(&dispatcher, || {
                 span.in_scope(|| {
+                    let transaction_timing = timing;
                     let remaining = deadline.checked_duration_since(Instant::now()).ok_or(
-                        TransactionError::Persistence(PersistenceError::OperationFailed),
+                        TransactionError::Persistence(PersistenceError::WorkBudgetExhausted),
                     )?;
-                    let mut connection = pool.get_timeout(remaining).map_err(|_| {
-                        TransactionError::Persistence(PersistenceError::OperationFailed)
+                    let waiting_since = wait_started(&transaction_timing);
+                    let connection = pool.get_timeout(remaining);
+                    record_wait(&transaction_timing, "db.pool_wait_us", waiting_since);
+                    let mut connection = connection.map_err(|source| {
+                        TransactionError::Persistence(PersistenceError::Pool {
+                            source,
+                            location: snafu::location!(),
+                        })
                     })?;
-                    connection.immediate_transaction::<T, TransactionError<E>, _>(|connection| {
-                        let mut transaction = Transaction { connection };
-                        operation(&mut transaction).map_err(TransactionError::Operation)
-                    })
+                    let waiting_since = wait_started(&transaction_timing);
+                    let mut acquired = false;
+                    let result = connection.immediate_transaction::<T, TransactionError<E>, _>(
+                        |connection| {
+                            acquired = true;
+                            record_wait(
+                                &transaction_timing,
+                                "db.write_lock_wait_us",
+                                waiting_since,
+                            );
+                            let mut transaction = Transaction { connection };
+                            operation(&mut transaction).map_err(TransactionError::Operation)
+                        },
+                    );
+                    if !acquired {
+                        record_wait(&transaction_timing, "db.write_lock_wait_us", waiting_since);
+                    }
+                    result
                 })
             })
         })
         .await
-        .map_err(|_| TransactionError::Persistence(PersistenceError::OperationFailed))?
+        .map_err(|source| {
+            TransactionError::Persistence(PersistenceError::Executor {
+                source: source.into(),
+            })
+        })?
+    }
+}
+
+fn transaction_timing_span(operation: &'static str) -> tracing::Span {
+    tracing::debug_span!(
+        target: "natsume_server::db",
+        "db.transaction",
+        "db.operation" = operation,
+        "db.permit_wait_us" = tracing::field::Empty,
+        "db.pool_wait_us" = tracing::field::Empty,
+        "db.write_lock_wait_us" = tracing::field::Empty,
+    )
+}
+
+fn wait_started(span: &tracing::Span) -> Option<Instant> {
+    (!span.is_disabled()).then(Instant::now)
+}
+
+fn record_wait(span: &tracing::Span, field: &'static str, started: Option<Instant>) {
+    if let Some(started) = started {
+        span.record(
+            field,
+            u64::try_from(started.elapsed().as_micros()).unwrap_or(u64::MAX),
+        );
     }
 }
 
@@ -242,7 +434,7 @@ fn build_pool(
         .error_handler(Box::new(NopErrorHandler))
         .connection_customizer(Box::new(SqliteConnectionCustomizer))
         .build(manager)
-        .map_err(|_| DatabaseError::ConnectionFailed)
+        .map_err(|source| DatabaseError::ConnectionFailed { source })
 }
 
 fn diesel_database_url(config: &DatabaseConfig) -> Result<String, DatabaseError> {
@@ -325,14 +517,29 @@ fn sqlite_pragma_values(
     Ok((foreign_keys, journal_mode, busy_timeout))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
+#[snafu(module)]
 pub(crate) enum DatabaseError {
     #[snafu(display("the database configuration is invalid"))]
     InvalidConfiguration,
     #[snafu(display("the database connection failed"))]
-    ConnectionFailed,
+    ConnectionFailed { source: diesel::r2d2::PoolError },
     #[snafu(display("the database migration failed"))]
     MigrationFailed,
+    #[snafu(display("the database migration query failed"))]
+    MigrationQuery { source: diesel::result::Error },
+    #[snafu(display("the database migration source failed"))]
+    MigrationSource {
+        source: diesel_migrations::MigrationError,
+    },
+    #[snafu(display("the database executor failed"))]
+    Executor {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
+    #[snafu(display("the database observer connection failed"))]
+    #[cfg(test)]
+    Observer { source: diesel::ConnectionError },
 }
 
 #[cfg(test)]
@@ -356,7 +563,7 @@ pub(crate) mod tests {
         Instrument as _, Subscriber,
         field::{Field, Visit},
         instrument::WithSubscriber as _,
-        span::{Attributes, Id},
+        span::{Attributes, Id, Record},
     };
     use tracing_subscriber::{
         Layer, Registry,
@@ -473,11 +680,11 @@ pub(crate) mod tests {
             assert!(threads.load(Ordering::SeqCst) <= DATABASE_CONNECTIONS as usize);
             drop(held);
             for task in tasks {
-                assert_eq!(
+                assert!(matches!(
                     task.await
                         .unwrap_or_else(|error| panic!("database task: {error}")),
                     Ok(())
-                );
+                ));
             }
             assert_eq!(
                 database.work.available_permits(),
@@ -496,7 +703,7 @@ pub(crate) mod tests {
                 transaction
                     .connection()
                     .batch_execute("CREATE TABLE work_probe (value INTEGER NOT NULL)")
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await
@@ -511,7 +718,7 @@ pub(crate) mod tests {
                     transaction
                         .connection()
                         .batch_execute("INSERT INTO work_probe VALUES (1)")
-                        .map_err(|_| PersistenceError::OperationFailed)?;
+                        .map_err(PersistenceError::from)?;
                     let _ = entered.send(());
                     HeldWork::wait(&gate);
                     Ok::<(), PersistenceError>(())
@@ -574,13 +781,13 @@ pub(crate) mod tests {
         });
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_secs(31)).await;
-        assert_eq!(
+        assert!(matches!(
             task.await
                 .unwrap_or_else(|error| panic!("waiting task: {error}")),
             Err(TransactionError::Persistence(
-                PersistenceError::OperationFailed
+                PersistenceError::WorkBudgetExhausted
             ))
-        );
+        ));
         assert!(!executed.load(Ordering::SeqCst));
         drop(permit);
     }
@@ -628,13 +835,13 @@ pub(crate) mod tests {
             blocker
                 .await
                 .unwrap_or_else(|error| panic!("blocking task: {error}"));
-            assert_eq!(
+            assert!(matches!(
                 task.await
                     .unwrap_or_else(|error| panic!("queued work: {error}")),
                 Err(TransactionError::Persistence(
-                    PersistenceError::OperationFailed
+                    PersistenceError::WorkBudgetExhausted
                 ))
-            );
+            ));
             assert_eq!(
                 database.work.available_permits(),
                 DATABASE_CONNECTIONS as usize
@@ -651,16 +858,16 @@ pub(crate) mod tests {
                 transaction
                     .connection()
                     .batch_execute("CREATE TABLE rolled_back (value INTEGER)")
-                    .map_err(|_| PersistenceError::OperationFailed)?;
-                Err::<(), PersistenceError>(PersistenceError::InvalidPersistedData)
+                    .map_err(PersistenceError::from)?;
+                Err::<(), PersistenceError>(PersistenceError::invalid("persisted value"))
             })
             .await;
-        assert_eq!(
+        assert!(matches!(
             failed,
             Err(TransactionError::Operation(
-                PersistenceError::InvalidPersistedData
+                PersistenceError::InvalidPersistedData { .. }
             ))
-        );
+        ));
         let tables = database
             .read(|transaction| {
                 diesel::dsl::sql::<BigInt>(
@@ -674,19 +881,18 @@ pub(crate) mod tests {
         let failed = database
             .read::<(), PersistenceError, _>(|_| panic!("intentional database worker panic"))
             .await;
-        assert_eq!(
+        assert!(matches!(
             failed,
             Err(TransactionError::Persistence(
-                PersistenceError::OperationFailed
+                PersistenceError::Executor { .. }
             ))
-        );
+        ));
         assert_eq!(
             database.work.available_permits(),
             DATABASE_CONNECTIONS as usize
         );
-        assert_eq!(
-            database.read(|_| Ok::<_, PersistenceError>(42)).await,
-            Ok(42)
+        assert!(
+            matches!(database.read(|_| Ok::<_, PersistenceError>(42)).await, Ok(actual) if actual == 42)
         );
     }
 
@@ -694,7 +900,7 @@ pub(crate) mod tests {
     /// committed state without joining the pool's own contention.
     pub(crate) fn test_observer(path: &Path) -> Result<SqliteConnection, DatabaseError> {
         let path = path.to_str().ok_or(DatabaseError::InvalidConfiguration)?;
-        SqliteConnection::establish(path).map_err(|_| DatabaseError::ConnectionFailed)
+        SqliteConnection::establish(path).map_err(|source| DatabaseError::Observer { source })
     }
 
     /// Holds the `SQLite` write lock for as long as the returned connection
@@ -703,7 +909,7 @@ pub(crate) mod tests {
         let mut connection = test_observer(path)?;
         connection
             .batch_execute("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE;")
-            .map_err(|_| DatabaseError::ConnectionFailed)?;
+            .map_err(|source| DatabaseError::MigrationQuery { source })?;
         Ok(connection)
     }
 
@@ -714,7 +920,67 @@ pub(crate) mod tests {
     ) -> Result<i64, DatabaseError> {
         diesel::dsl::sql::<BigInt>("PRAGMA data_version")
             .get_result(connection)
-            .map_err(|_| DatabaseError::ConnectionFailed)
+            .map_err(|source| DatabaseError::MigrationQuery { source })
+    }
+
+    #[tokio::test]
+    async fn transient_persistence_errors_are_only_capacity_and_sqlite_lock_failures() {
+        use diesel::result::{DatabaseErrorKind, Error};
+        use snafu::IntoError as _;
+
+        for (kind, message, expected) in [
+            (DatabaseErrorKind::Unknown, "database is locked", true),
+            (DatabaseErrorKind::Unknown, "database table is locked", true),
+            (DatabaseErrorKind::Unknown, "disk I/O error", false),
+            (DatabaseErrorKind::Unknown, "SQLITE_BUSY", false),
+            (
+                DatabaseErrorKind::UniqueViolation,
+                "database is locked",
+                false,
+            ),
+        ] {
+            let error =
+                PersistenceError::from(Error::DatabaseError(kind, Box::new(message.to_owned())));
+            assert_eq!(error.is_transient(), expected, "{message}");
+        }
+        assert!(!PersistenceError::from(Error::NotFound).is_transient());
+        assert!(!PersistenceError::invalid("test field").is_transient());
+        assert!(PersistenceError::WorkBudgetExhausted.is_transient());
+
+        let fixture = DatabaseFixture::new();
+        let database = fixture_database(&fixture).await;
+        let _connections = database.test_exhaust_pool();
+        let Err(source) = database.pool.get_timeout(Duration::ZERO) else {
+            panic!("the exhausted test pool must reject acquisition");
+        };
+        assert!(super::PoolSnafu.into_error(source).is_transient());
+    }
+
+    #[tokio::test]
+    async fn locked_write_preserves_the_sqlite_query_source_and_report() {
+        let fixture = DatabaseFixture::new();
+        let database = fixture_database(&fixture).await;
+        let _lock = test_lock_database(&fixture.path)
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+        let result = database.write(|_| Ok::<(), PersistenceError>(())).await;
+        let Err(TransactionError::Persistence(error)) = result else {
+            panic!("the locked write must fail before its operation");
+        };
+        assert!(error.is_transient());
+        let PersistenceError::Query {
+            source: diesel::result::Error::DatabaseError(_, ref information),
+            ..
+        } = error
+        else {
+            panic!("the SQLite query source must be preserved: {error:?}");
+        };
+        let message = information.message();
+        assert!(message.contains("locked") || message.contains("busy"));
+        assert!(
+            snafu::Report::from_error(&error)
+                .to_string()
+                .contains(message)
+        );
     }
 
     #[tokio::test]
@@ -729,7 +995,7 @@ pub(crate) mod tests {
                 }
             };
 
-        assert_eq!(error, DatabaseError::ConnectionFailed);
+        assert!(matches!(error, DatabaseError::ConnectionFailed { .. }));
         for path in [&fixture.path, &fixture.wal_path(), &fixture.shm_path()] {
             assert!(!path.exists(), "serve-mode database artifacts were created");
         }
@@ -743,23 +1009,26 @@ pub(crate) mod tests {
 
     #[test]
     fn transaction_error_preserves_operation_and_persistence_failures() {
-        let operation = TransactionError::Operation(PersistenceError::InvalidPersistedData);
-        assert_eq!(
+        let operation = TransactionError::Operation(PersistenceError::invalid("persisted value"));
+        assert!(matches!(
             operation,
-            TransactionError::Operation(PersistenceError::InvalidPersistedData)
-        );
-        assert_eq!(
+            TransactionError::Operation(PersistenceError::InvalidPersistedData { .. })
+        ));
+        assert!(matches!(
             operation.into_error(),
-            PersistenceError::InvalidPersistedData
-        );
+            PersistenceError::InvalidPersistedData { .. }
+        ));
 
         let persistence =
             TransactionError::<PersistenceError>::from(diesel::result::Error::RollbackTransaction);
-        assert_eq!(
+        assert!(matches!(
             persistence,
-            TransactionError::Persistence(PersistenceError::OperationFailed)
-        );
-        assert_eq!(persistence.into_error(), PersistenceError::OperationFailed);
+            TransactionError::Persistence(PersistenceError::Query { .. })
+        ));
+        assert!(matches!(
+            persistence.into_error(),
+            PersistenceError::Query { .. }
+        ));
     }
 
     #[tokio::test]
@@ -767,12 +1036,12 @@ pub(crate) mod tests {
         let fixture = DatabaseFixture::new();
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
             .await
-            .map_err(|_| TestFailure::DatabaseCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let pragmas = database
             .test_read(sqlite_pragma_values)
             .await
-            .map_err(|_| TestFailure::DieselInteractionFailed)?
-            .map_err(|_| TestFailure::PragmasWereNotReadable)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if pragmas != (1, "wal".to_owned(), 5_000) {
             return Err(TestFailure::PragmasWereNotExact);
         }
@@ -786,7 +1055,7 @@ pub(crate) mod tests {
         let fixture = DatabaseFixture::new();
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
             .await
-            .map_err(|_| TestFailure::DatabaseCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let pool = &database.pool;
         let state = pool.state();
         if pool.max_size() != 10
@@ -811,7 +1080,7 @@ pub(crate) mod tests {
         let fixture = DatabaseFixture::new();
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
             .await
-            .map_err(|_| TestFailure::DatabaseCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
         let (read_span_matches, write_span_matches) = async {
             let span = tracing::info_span!("database_span_propagation_test");
@@ -825,7 +1094,9 @@ pub(crate) mod tests {
                         )
                     })
                     .await
-                    .map_err(|_| TestFailure::DieselInteractionFailed)?;
+                    .map_err(|source| {
+                        TestFailure::from(crate::test_error::TestError::from(source))
+                    })?;
                 let write_span_matches = database
                     .write(move |_transaction| {
                         Ok::<bool, DatabaseError>(
@@ -833,7 +1104,9 @@ pub(crate) mod tests {
                         )
                     })
                     .await
-                    .map_err(|_| TestFailure::DieselInteractionFailed)?;
+                    .map_err(|source| {
+                        TestFailure::from(crate::test_error::TestError::from(source))
+                    })?;
                 Ok::<(bool, bool), TestFailure>((read_span_matches, write_span_matches))
             }
             .instrument(span)
@@ -855,7 +1128,7 @@ pub(crate) mod tests {
         let fixture = DatabaseFixture::new();
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
             .await
-            .map_err(|_| TestFailure::DatabaseCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let captured = CapturedSqlSpans::default();
         let subscriber = Registry::default().with(captured.clone());
 
@@ -868,8 +1141,8 @@ pub(crate) mod tests {
                     .get_result::<String>(connection)
                 })
                 .await
-                .map_err(|_| TestFailure::DieselInteractionFailed)?
-                .map_err(|_| TestFailure::DieselInteractionFailed)?;
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
             Ok::<(), TestFailure>(())
         }
         .with_subscriber(subscriber)
@@ -878,6 +1151,186 @@ pub(crate) mod tests {
         let evidence = captured.snapshot();
         if evidence.query_span_count == 0 || evidence.secret_was_recorded {
             return Err(TestFailure::DatabaseQuerySpanChanged);
+        }
+        Ok(())
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedWaitSpans {
+        rows: Arc<Mutex<Vec<WaitEvidence>>>,
+    }
+
+    #[derive(Clone, Default)]
+    struct WaitEvidence {
+        id: u64,
+        operation: String,
+        permit_wait_us: Option<u64>,
+        pool_wait_us: Option<u64>,
+        write_lock_wait_us: Option<u64>,
+        secret_was_recorded: bool,
+    }
+
+    impl CapturedWaitSpans {
+        fn snapshot(&self) -> Vec<WaitEvidence> {
+            self.rows
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl<S: Subscriber> Layer<S> for CapturedWaitSpans {
+        fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, _context: Context<'_, S>) {
+            if attributes.metadata().name() == "db.transaction" {
+                let mut row = WaitEvidence {
+                    id: id.into_u64(),
+                    ..WaitEvidence::default()
+                };
+                attributes.record(&mut row);
+                self.rows
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .push(row);
+            }
+        }
+
+        fn on_record(&self, id: &Id, values: &Record<'_>, _context: Context<'_, S>) {
+            if let Some(row) = self
+                .rows
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter_mut()
+                .find(|row| row.id == id.into_u64())
+            {
+                values.record(row);
+            }
+        }
+    }
+
+    impl Visit for WaitEvidence {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "db.operation" {
+                self.operation = value.to_owned();
+            }
+            self.secret_was_recorded |= value.contains("db-timing-secret-canary");
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            match field.name() {
+                "db.permit_wait_us" => self.permit_wait_us = Some(value),
+                "db.pool_wait_us" => self.pool_wait_us = Some(value),
+                "db.write_lock_wait_us" => self.write_lock_wait_us = Some(value),
+                _ => {}
+            }
+        }
+
+        fn record_debug(&mut self, _field: &Field, value: &dyn std::fmt::Debug) {
+            self.secret_was_recorded |= format!("{value:?}").contains("db-timing-secret-canary");
+        }
+    }
+
+    async fn wait_for_timing_stage(
+        captured: &CapturedWaitSpans,
+        index: usize,
+        ready: impl Fn(&WaitEvidence) -> bool,
+    ) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if captured.snapshot().get(index).is_some_and(&ready) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timing stage did not start"));
+    }
+
+    #[tokio::test]
+    async fn transaction_timings_distinguish_permit_pool_and_write_lock_waits()
+    -> Result<(), crate::test_error::TestError> {
+        let _guard = SubscriberTestGuard::acquire();
+        let fixture = DatabaseFixture::new();
+        let database = fixture_database(&fixture).await;
+        let captured = CapturedWaitSpans::default();
+        async {
+            let permits = Arc::clone(&database.work)
+                .acquire_many_owned(DATABASE_CONNECTIONS)
+                .await?;
+            let connection = database.clone();
+            let queued = tokio::spawn(
+                async move {
+                    connection
+                        .read(|_| Ok::<_, PersistenceError>("db-timing-secret-canary"))
+                        .await
+                }
+                .with_current_subscriber(),
+            );
+            wait_for_timing_stage(&captured, 0, |_| true).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(permits);
+            assert_eq!(queued.await??, "db-timing-secret-canary");
+            assert!(
+                captured.snapshot()[0]
+                    .permit_wait_us
+                    .is_some_and(|wait| wait >= 10_000)
+            );
+
+            let connections = database.test_exhaust_pool();
+            let connection = database.clone();
+            let queued = tokio::spawn(
+                async move { connection.read(|_| Ok::<_, PersistenceError>(())).await }
+                    .with_current_subscriber(),
+            );
+            wait_for_timing_stage(&captured, 1, |row| row.permit_wait_us.is_some()).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(connections);
+            queued.await??;
+            assert!(
+                captured.snapshot()[1]
+                    .pool_wait_us
+                    .is_some_and(|wait| wait >= 10_000)
+            );
+
+            let lock = test_lock_database(&fixture.path)?;
+            let connection = database.clone();
+            let queued = tokio::spawn(
+                async move { connection.write(|_| Ok::<_, PersistenceError>(())).await }
+                    .with_current_subscriber(),
+            );
+            wait_for_timing_stage(&captured, 2, |row| row.pool_wait_us.is_some()).await;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            drop(lock);
+            queued.await??;
+            assert!(
+                captured.snapshot()[2]
+                    .write_lock_wait_us
+                    .is_some_and(|wait| wait >= 10_000)
+            );
+
+            for mut connection in database.test_exhaust_pool() {
+                connection.batch_execute("PRAGMA busy_timeout = 0;")?;
+            }
+            let _lock = test_lock_database(&fixture.path)?;
+            let failure = database.write(|_| Ok::<_, PersistenceError>(())).await;
+            assert!(matches!(
+                failure,
+                Err(TransactionError::Persistence(
+                    PersistenceError::Query { .. }
+                ))
+            ));
+            Ok::<_, crate::test_error::TestError>(())
+        }
+        .with_subscriber(Registry::default().with(captured.clone()))
+        .await?;
+        let rows = captured.snapshot();
+        assert_eq!(rows.len(), 4);
+        for (index, row) in rows.iter().enumerate() {
+            assert_eq!(row.operation, if index < 2 { "read" } else { "write" });
+            assert!(row.permit_wait_us.is_some());
+            assert!(row.pool_wait_us.is_some());
+            assert_eq!(row.write_lock_wait_us.is_some(), index >= 2);
+            assert!(!row.secret_was_recorded);
         }
         Ok(())
     }
@@ -901,11 +1354,14 @@ pub(crate) mod tests {
         S: Subscriber,
     {
         fn on_new_span(&self, attributes: &Attributes<'_>, _id: &Id, _context: Context<'_, S>) {
-            if attributes.metadata().name() != "db.query" {
+            let name = attributes.metadata().name();
+            if name != "db.query" && name != "db.transaction" {
                 return;
             }
             let mut evidence = self.evidence.lock().unwrap_or_else(PoisonError::into_inner);
-            evidence.query_span_count += 1;
+            if name == "db.query" {
+                evidence.query_span_count += 1;
+            }
             attributes.record(&mut SqlSpanVisitor {
                 evidence: &mut evidence,
             });
@@ -934,8 +1390,8 @@ pub(crate) mod tests {
     fn diesel_read_write_mode_does_not_create_a_missing_database() -> Result<(), TestFailure> {
         let fixture = DatabaseFixture::new();
         let config = DatabaseConfig::new(&fixture.path, false);
-        let database_url =
-            diesel_database_url(&config).map_err(|_| TestFailure::DatabaseUrlCreationFailed)?;
+        let database_url = diesel_database_url(&config)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if let Ok(connection) = diesel::sqlite::SqliteConnection::establish(&database_url) {
             drop(connection);
             return Err(TestFailure::MissingDatabaseWasOpened);
@@ -945,7 +1401,9 @@ pub(crate) mod tests {
                 return Err(TestFailure::MissingDatabaseArtifactWasCreated);
             }
         }
-        let error = DatabaseError::ConnectionFailed;
+        let error = DatabaseError::Observer {
+            source: diesel::ConnectionError::BadConnection("connection failed".to_owned()),
+        };
         let canary = fixture.path.to_string_lossy();
         let display = error.to_string();
         let debug = format!("{error:?}");
@@ -959,9 +1417,9 @@ pub(crate) mod tests {
     fn diesel_database_url_uses_the_frozen_path_encoding_set() -> Result<(), TestFailure> {
         let path = PathBuf::from("/tmp/Natsume URL#%?汉字-._~!$&'()*+,;=:@/db.sqlite3");
         let read_write = diesel_database_url(&DatabaseConfig::new(&path, false))
-            .map_err(|_| TestFailure::DatabaseUrlCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let create = diesel_database_url(&DatabaseConfig::new(&path, true))
-            .map_err(|_| TestFailure::DatabaseUrlCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let encoded =
             "sqlite:///tmp/Natsume%20URL%23%25%3F%E6%B1%89%E5%AD%97-._~!$&'()*+,;=:@/db.sqlite3";
         if read_write != format!("{encoded}?mode=rw") || create != format!("{encoded}?mode=rwc") {
@@ -978,18 +1436,18 @@ pub(crate) mod tests {
             .to_str()
             .ok_or(TestFailure::DatabasePathWasNotUtf8)?;
         let mut owner = diesel::sqlite::SqliteConnection::establish(path)
-            .map_err(|_| TestFailure::TransactionProbeFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let mut competitor = diesel::sqlite::SqliteConnection::establish(path)
-            .map_err(|_| TestFailure::TransactionProbeFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         competitor
             .batch_execute("PRAGMA busy_timeout = 0;")
-            .map_err(|_| TestFailure::TransactionProbeFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
         owner.immediate_transaction(|_connection| {
             if competitor.batch_execute("BEGIN IMMEDIATE;").is_ok() {
-                competitor
-                    .batch_execute("ROLLBACK;")
-                    .map_err(|_| TestFailure::TransactionProbeFailed)?;
+                competitor.batch_execute("ROLLBACK;").map_err(|source| {
+                    TestFailure::from(crate::test_error::TestError::from(source))
+                })?;
                 return Err(TestFailure::ImmediateTransactionDidNotReserveWrite);
             }
             Ok(())
@@ -997,13 +1455,18 @@ pub(crate) mod tests {
     }
 
     impl From<diesel::result::Error> for TestFailure {
-        fn from(_source: diesel::result::Error) -> Self {
-            Self::TransactionProbeFailed
+        fn from(source: diesel::result::Error) -> Self {
+            Self::from(crate::test_error::TestError::from(source))
         }
     }
 
     #[derive(Debug, Snafu)]
     enum TestFailure {
+        #[snafu(context(false), display("test infrastructure operation failed"))]
+        Source {
+            #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+            source: Box<crate::test_error::TestError>,
+        },
         #[snafu(display("the test database could not be created"))]
         DatabaseCreationFailed,
         #[snafu(display("the Diesel interaction failed"))]

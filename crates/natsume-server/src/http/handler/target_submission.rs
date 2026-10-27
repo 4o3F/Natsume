@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{State, rejection::JsonRejection},
     response::{IntoResponse, Response},
     routing::post,
@@ -23,11 +25,11 @@ use super::{
     device::session::ForegroundTargetResponse,
 };
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    Router::new().route(
+pub(in crate::http) fn operator_routes() -> Routes {
+    vec![(
         "/target-submissions",
-        middleware::require_admin(state, post(submit_targets)),
-    )
+        middleware::require_admin(post(submit_targets)),
+    )]
 }
 
 /// One durable, replayable Server target submission. No Client execution is awaited.
@@ -194,6 +196,7 @@ pub(crate) async fn submit_targets(
     let Ok(Json(body)) = body else {
         return ApiError::invalid_request("target_submission_body_rejected").into_response();
     };
+    let active_devices = state.device_control().active_device_ids().await;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
@@ -201,7 +204,6 @@ pub(crate) async fn submit_targets(
     let Some(expires_at_unix_ms) = now.and_then(|value| value.checked_add(60_000)) else {
         return ApiError::internal_error("target_submission_clock_unavailable").into_response();
     };
-    let active_devices = state.device_control().active_device_ids().await;
     let Some(request) = body.into_request_with(active_devices, expires_at_unix_ms) else {
         return ApiError::invalid_request("target_submission_body_rejected").into_response();
     };
@@ -210,24 +212,20 @@ pub(crate) async fn submit_targets(
         .submit(identity.operator_id(), request)
         .await
     {
-        Ok(result) => {
-            let devices = result
-                .results
-                .iter()
-                .filter(|row| row.rejection.is_none())
-                .map(|row| row.device_id)
-                .collect::<Vec<_>>();
-            state.device_control().dirty_devices(&devices).await;
+        Ok((result, change)) => {
+            state.device_control().publish(change).await;
             Json(TargetSubmissionResponse::from(result)).into_response()
         }
         Err(TargetSubmissionError::OperationIdConflict) => {
             ApiError::conflict("target_submission_id_conflict").into_response()
         }
-        Err(TargetSubmissionError::InvalidPersistedFacts) => {
-            ApiError::internal_error("target_submission_invalid_persisted_facts").into_response()
+        Err(error @ TargetSubmissionError::InvalidPersistedFacts { .. }) => {
+            ApiError::internal_error_from(error, "target_submission_invalid_persisted_facts")
+                .into_response()
         }
-        Err(TargetSubmissionError::PersistenceFailed) => {
-            ApiError::internal_error("target_submission_persistence_failed").into_response()
+        Err(error @ TargetSubmissionError::PersistenceFailed { .. }) => {
+            ApiError::internal_error_from(error, "target_submission_persistence_failed")
+                .into_response()
         }
     }
 }

@@ -25,6 +25,8 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 enum CheckError {
+    #[snafu(context(false), display("test timed out"))]
+    Elapsed { source: tokio::time::error::Elapsed },
     #[snafu(context(false), display("test filesystem operation failed"))]
     Io { source: std::io::Error },
     #[snafu(context(false), display("test SQL operation failed"))]
@@ -38,7 +40,10 @@ enum CheckError {
     #[snafu(context(false), display("test document storage failed"))]
     Storage { source: StorageError },
     #[snafu(context(false), display("test task failed"))]
-    Join { source: tokio::task::JoinError },
+    Join {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
     #[snafu(display("test filesystem path is not UTF-8"))]
     Path,
     #[snafu(display("document was not persisted before the database write lock"))]
@@ -94,12 +99,12 @@ async fn failed_metadata_commit_leaves_reusable_file_without_admitting_request()
         "CREATE TRIGGER fail_file_admission AFTER INSERT ON print_documents \
          BEGIN SELECT RAISE(ABORT, 'injected'); END;",
     )?;
-    assert_eq!(
+    assert!(matches!(
         f.print
             .upload(f.source.clone(), id.clone(), bytes.clone())
             .await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Persistence { .. })
+    ));
     let path = f.documents_path().join(format!("{hash}.pdf"));
     assert_eq!(fs::read(&path)?, bytes);
     let inode = fs::metadata(&path)?.ino();
@@ -127,10 +132,10 @@ async fn file_failure_never_commits_ready_metadata() -> CheckResult {
     let directory = f.documents_path();
     fs::remove_dir(&directory)?;
     fs::write(&directory, b"not a directory")?;
-    assert_eq!(
+    assert!(matches!(
         f.print.upload(f.source.clone(), id.clone(), pdf(1)).await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Storage { .. })
+    ));
     assert_eq!(
         f.print.get(f.source, id).await?.state,
         PrintState::Preparing
@@ -188,16 +193,16 @@ async fn missing_or_corrupt_referenced_file_fails_startup_and_ready_queries() ->
             .await
             .is_err()
     );
-    assert_eq!(
+    assert!(matches!(
         f.print
             .get(f.source.clone(), input.request_id.clone())
             .await,
-        Err(PrintError::Persistence)
-    );
-    assert_eq!(
+        Err(PrintError::Storage { .. })
+    ));
+    assert!(matches!(
         f.print.register(f.source.clone(), input).await,
-        Err(PrintError::Persistence)
-    );
+        Err(PrintError::Storage { .. })
+    ));
     f.print.documents.put(&hash, &bytes)?;
     fs::write(&path, b"corrupted")?;
     assert!(
@@ -229,7 +234,7 @@ async fn durable_file_write_does_not_hold_or_require_sqlite_write_lock() -> Chec
         }
     })
     .await
-    .map_err(|_| CheckError::Timeout)?;
+    .map_err(CheckError::from)?;
     assert!(!task.is_finished());
     assert_eq!(
         print_documents::table

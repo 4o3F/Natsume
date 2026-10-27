@@ -68,14 +68,21 @@ pub(crate) enum ConvergenceStatus {
 }
 
 /// Component failure encountered while assembling one convergence projection.
-#[derive(Clone, Copy)]
+#[derive(Debug, snafu::Snafu)]
+#[snafu(module)]
 pub(crate) enum DeviceConvergenceError {
-    Device(DeviceError),
-    Gateway(GatewayError),
-    Binding(BindingError),
-    Runtime(RuntimeConfigError),
-    Session(SessionControlError),
-    Home(HomeError),
+    #[snafu(display("Device convergence read failed"))]
+    Device { source: DeviceError },
+    #[snafu(display("Gateway convergence read failed"))]
+    Gateway { source: GatewayError },
+    #[snafu(display("Binding convergence read failed"))]
+    Binding { source: BindingError },
+    #[snafu(display("Runtime convergence read failed"))]
+    Runtime { source: RuntimeConfigError },
+    #[snafu(display("Session convergence read failed"))]
+    Session { source: SessionControlError },
+    #[snafu(display("Home convergence read failed"))]
+    Home { source: HomeError },
 }
 
 /// Complete validated Actual retained only for the current Device lease.

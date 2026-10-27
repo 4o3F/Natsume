@@ -16,6 +16,14 @@ mod waiting;
 
 pub use admission::pam_gate;
 
+/// Clears the fixed contestant's keyrings after an isolated UID transition.
+///
+/// # Errors
+/// Rejects nonisolated credentials or any inaccessible/protected keyring.
+pub fn cleanup_keyrings() -> Result<(), natsume_workstation_ipc::ResourceControlError> {
+    home::cleanup::keyring_worker(std::path::Path::new("/"))
+}
+
 /// Withdraws contest permission during service shutdown, including crash cleanup.
 ///
 /// # Errors
@@ -248,11 +256,17 @@ impl PrivilegedService {
     }
 
     #[zbus(name = "VerifyHomeReset")]
-    fn verify_home_reset(
+    async fn verify_home_reset(
         &mut self,
         reset_epoch: u64,
+        #[zbus(connection)] connection: &zbus::Connection,
     ) -> Result<HomeResetProgress, ResourceControlError> {
-        home::window::verify(&self.filesystem_root, reset_epoch)
+        bounded_session_operation(home::window::verify(
+            &self.filesystem_root,
+            connection,
+            reset_epoch,
+        ))
+        .await
     }
 
     #[zbus(name = "RecoverHomeReset")]

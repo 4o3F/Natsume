@@ -21,7 +21,7 @@ pub(in crate::component::contest) fn list_seats(
                 .map(|(seat_id, seat_code)| SeatFacts { seat_id, seat_code })
                 .collect()
         })
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::contest) fn list_accounts(
@@ -46,7 +46,7 @@ pub(in crate::component::contest) fn list_accounts(
         .load::<(String, String, String, i64, String, String, String, String)>(
             transaction.connection(),
         )
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     let mut profiles = profiles
         .into_iter()
         .map(
@@ -95,7 +95,7 @@ pub(in crate::component::contest) fn list_accounts(
                 )
                 .collect()
         })
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::contest) fn list_bindings(
@@ -109,11 +109,11 @@ pub(in crate::component::contest) fn list_bindings(
         ))
         .order(device_bindings::seat_id)
         .load::<(String, String, String)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     rows.into_iter()
         .map(|(binding_id, seat_id, device_id)| {
             let device_id =
-                DeviceId::parse(&device_id).ok_or(PersistenceError::InvalidPersistedData)?;
+                DeviceId::parse(&device_id).ok_or(PersistenceError::invalid("persisted value"))?;
             Ok(BindingFacts {
                 binding: binding_id,
                 seat: seat_id,
@@ -137,7 +137,7 @@ pub(super) fn list_organizations(
         ))
         .order(organizations::organization_id)
         .load::<(i64, String, String, String)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     Ok(rows
         .into_iter()
         .map(
@@ -160,7 +160,7 @@ pub(super) fn export_roster(
     let count = accounts::table
         .count()
         .get_result::<i64>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     let rows = teams::table
         .inner_join(accounts::table)
         .inner_join(account_mappings::table.on(account_mappings::account_id.eq(teams::account_id)))
@@ -189,9 +189,14 @@ pub(super) fn export_roster(
             Vec<u8>,
             Vec<u8>,
         )>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
-    if count != i64::try_from(rows.len()).map_err(|_| PersistenceError::InvalidPersistedData)? {
-        return Err(PersistenceError::InvalidPersistedData);
+        .map_err(PersistenceError::from)?;
+    if count
+        != i64::try_from(rows.len()).map_err(|source| PersistenceError::Integer {
+            field: "integer",
+            source,
+        })?
+    {
+        return Err(PersistenceError::invalid("persisted value"));
     }
     Ok(super::roster::ExportRoster {
         organizations,

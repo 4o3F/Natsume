@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::State,
     response::{IntoResponse, Response},
     routing::get,
@@ -8,13 +10,10 @@ use serde::Serialize;
 
 use crate::component::{contest::AccountFacts, operator::OperatorIdentity};
 
-use super::{super::super::error::ApiError, AppState, middleware};
+use super::{super::super::error::ApiError, AppState};
 
-pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new().route(
-        "/accounts",
-        middleware::require_operator(state, get(list_accounts)),
-    )
+pub(super) fn operator_routes() -> Routes {
+    vec![("/accounts", get(list_accounts))]
 }
 
 #[derive(Serialize, specta::Type)]

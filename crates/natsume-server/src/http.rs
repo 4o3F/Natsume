@@ -11,7 +11,7 @@ use axum::{
     http::{HeaderValue, header::CACHE_CONTROL},
     middleware::{self as axum_middleware, Next},
     response::Response,
-    routing::any_service,
+    routing::{MethodRouter, any_service},
 };
 use tower_http::{
     services::{ServeDir, ServeFile},
@@ -23,6 +23,8 @@ use crate::server_state::ServerState;
 use self::error::ApiError;
 
 pub(crate) type AppState = Arc<ServerState>;
+
+type Routes<S = AppState> = Vec<(&'static str, MethodRouter<S>)>;
 
 /// Builds the mounted Server HTTP surface over process-wide business state.
 pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
@@ -57,25 +59,83 @@ async fn private_namespace_no_store(request: Request, next: Next) -> Response {
     response
 }
 
+fn route_groups(state: &AppState) -> [Routes; 4] {
+    let public = [
+        handler::health::public_routes(),
+        handler::device_control::public_routes(),
+        handler::session::public_routes(),
+        handler::operator::public_routes(state.clone()),
+        handler::contest::public_routes(),
+        handler::print::public_routes(state.clone()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let operator = [
+        handler::contest::operator_routes(),
+        handler::device::operator_routes(),
+        handler::enrollment::operator_routes(),
+        handler::import::operator_routes(),
+        handler::provisioning::operator_routes(),
+        handler::target_submission::operator_routes(),
+        handler::session::operator_routes(),
+        handler::operator::operator_routes(),
+        handler::print::operator_routes(),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    [
+        public,
+        operator,
+        handler::print::source_routes(),
+        handler::print::client_routes(),
+    ]
+}
+
+fn operator_group(state: AppState, routes: Routes) -> Router<AppState> {
+    let authentication =
+        axum_middleware::from_fn_with_state(state, middleware::authenticate_operator);
+    routes
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods.route_layer(authentication.clone()))
+        })
+}
+
+fn source_group(state: AppState, routes: Routes) -> Router<AppState> {
+    let authentication =
+        axum_middleware::from_fn_with_state(state, middleware::authenticate_source);
+    routes
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods.route_layer(authentication.clone()))
+        })
+}
+
+fn client_group(state: AppState, routes: Routes) -> Router<AppState> {
+    let authentication =
+        axum_middleware::from_fn_with_state(state, middleware::authenticate_client);
+    routes
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods.route_layer(authentication.clone()))
+        })
+}
+
 fn api_v2(state: &AppState) -> Router<AppState> {
-    let authenticated = Router::new()
-        .merge(handler::contest::routes(state.clone()))
-        .merge(handler::device::routes(state.clone()))
-        .merge(handler::enrollment::routes(state.clone()))
-        .merge(handler::import::routes(state.clone()))
-        .merge(handler::provisioning::routes(state.clone()))
-        .merge(handler::target_submission::routes(state.clone()))
-        .merge(handler::session::protected_routes(state.clone()));
-    let public = Router::new()
-        .merge(handler::device_control::routes())
-        .merge(handler::health::routes())
-        .merge(handler::session::public_routes());
+    let [public, operator, source, client] = route_groups(state);
     public
-        .merge(authenticated)
-        .merge(handler::operator::routes(state.clone()))
-        .merge(handler::print::routes(state.clone()))
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods)
+        })
+        .merge(operator_group(state.clone(), operator))
+        .merge(source_group(state.clone(), source))
+        .merge(client_group(state.clone(), client))
         .fallback(not_found)
         .layer(axum_middleware::from_fn(middleware::reject_head))
+        .layer(axum_middleware::from_fn(middleware::complete_mutation))
 }
 
 async fn not_found() -> ApiError {

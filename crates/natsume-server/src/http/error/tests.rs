@@ -18,11 +18,13 @@ const RESPONSE_BODY_LIMIT_BYTES: usize = 4 * 1024;
 
 #[tokio::test]
 async fn invalid_username_response_identifies_the_excel_cell_and_supported_contract() {
-    let response = ApiError::from_import(ImportError::InvalidWorkbook(InputError {
-        row: Some(3),
-        column: Some(4),
-        kind: InputErrorKind::InvalidIdentifier,
-    }))
+    let response = ApiError::from_import(ImportError::InvalidWorkbook {
+        source: InputError {
+            row: Some(3),
+            column: Some(4),
+            kind: InputErrorKind::InvalidIdentifier,
+        },
+    })
     .into_response();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
@@ -137,14 +139,19 @@ async fn assert_cause_stays_internal(
     }
     let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
         .await
-        .map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
-    let body = std::str::from_utf8(&body).map_err(|_| TestFailure::ResponseBodyWasNotReadable)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    let body = std::str::from_utf8(&body)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     if body.contains(cause) {
         return Err(TestFailure::CauseEscapedIntoTheResponse);
     }
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the compatibility table covers each operator failure mapping"
+)]
 fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
     [
         (
@@ -178,12 +185,16 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
             StatusCode::FORBIDDEN,
         ),
         (
-            OperatorError::PersistenceFailed,
+            OperatorError::PersistenceFailed {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            },
             "operator_persistence_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            OperatorError::PasswordTaskFailed,
+            OperatorError::PasswordTaskFailed {
+                source: task_failure().into(),
+            },
             "operator_password_task_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
@@ -193,7 +204,11 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            OperatorError::InvalidPersistedIdentity,
+            OperatorError::InvalidPersistedIdentity {
+                source: uuid::Uuid::parse_str("invalid")
+                    .err()
+                    .unwrap_or_else(|| panic!("invalid UUID fixture")),
+            },
             "operator_invalid_persisted_identity",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
@@ -203,22 +218,30 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            OperatorError::EntropyUnavailable,
+            OperatorError::EntropyUnavailable {
+                source: getrandom::Error::UNSUPPORTED,
+            },
             "operator_entropy_unavailable",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            OperatorError::InvalidHashingParameters,
+            OperatorError::InvalidHashingParameters {
+                source: argon2::Error::MemoryTooLittle,
+            },
             "operator_invalid_hashing_parameters",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            OperatorError::SaltEncodingFailed,
+            OperatorError::SaltEncodingFailed {
+                source: argon2::password_hash::phc::Error::SaltTooShort,
+            },
             "operator_salt_encoding_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            OperatorError::PasswordHashingFailed,
+            OperatorError::PasswordHashingFailed {
+                source: argon2::password_hash::Error::Crypto,
+            },
             "operator_password_hashing_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
@@ -237,7 +260,9 @@ fn operator_causes() -> [(OperatorError, &'static str, StatusCode); 17] {
 
 fn contest_causes() -> [(ContestError, &'static str, StatusCode); 1] {
     [(
-        ContestError::PersistenceFailed,
+        ContestError::PersistenceFailed {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        },
         "contest_persistence_failed",
         StatusCode::INTERNAL_SERVER_ERROR,
     )]
@@ -251,12 +276,16 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
             StatusCode::NOT_FOUND,
         ),
         (
-            DeviceError::InvalidPersistedFacts,
+            DeviceError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            },
             "device_invalid_persisted_facts",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            DeviceError::PersistenceFailed,
+            DeviceError::PersistenceFailed {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            },
             "device_persistence_failed",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
@@ -266,11 +295,13 @@ fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
 fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
     [
         (
-            ImportError::InvalidWorkbook(InputError {
-                row: None,
-                column: None,
-                kind: InputErrorKind::EmptyRoster,
-            }),
+            ImportError::InvalidWorkbook {
+                source: InputError {
+                    row: None,
+                    column: None,
+                    kind: InputErrorKind::EmptyRoster,
+                },
+            },
             "import_workbook_invalid",
             StatusCode::BAD_REQUEST,
         ),
@@ -295,17 +326,25 @@ fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
             StatusCode::CONFLICT,
         ),
         (
-            ImportError::EntropyUnavailable,
+            ImportError::EntropyUnavailable {
+                source: getrandom::Error::UNSUPPORTED,
+            },
             "import_entropy_unavailable",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            ImportError::VaultFailure,
+            ImportError::VaultFailure {
+                source: crate::vault::VaultError::RecordOpenFailed {
+                    source: chacha20poly1305::aead::Error,
+                },
+            },
             "import_vault_failure",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
         (
-            ImportError::PersistenceFailure,
+            ImportError::PersistenceFailure {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            },
             "import_persistence_failure",
             StatusCode::INTERNAL_SERVER_ERROR,
         ),
@@ -314,6 +353,11 @@ fn import_causes() -> [(ImportError, &'static str, StatusCode); 8] {
 
 #[derive(Debug, Snafu)]
 enum TestFailure {
+    #[snafu(context(false), display("test infrastructure operation failed"))]
+    Source {
+        #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+        source: Box<crate::test_error::TestError>,
+    },
     #[snafu(display("captured HTTP error logs could not be read"))]
     LogCaptureFailed,
     #[snafu(display("an HTTP error response body could not be read"))]
@@ -374,4 +418,84 @@ async fn operator_form_errors_have_distinct_codes_without_session_unauthorized()
         assert_eq!(body["code"], code);
         assert_ne!(body["status"], 401);
     }
+}
+
+fn task_failure() -> tokio::task::JoinError {
+    std::thread::spawn(|| {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap_or_else(|error| panic!("runtime: {error}"));
+        runtime.block_on(async {
+            tokio::spawn(async { panic!("test task failure") })
+                .await
+                .unwrap_err()
+        })
+    })
+    .join()
+    .unwrap_or_else(|_| panic!("task fixture thread failed"))
+}
+
+#[tokio::test]
+async fn persistence_reports_preserve_the_chain_once_without_bound_values() {
+    use crate::{
+        db::{Database, DatabaseConfig, PersistenceError, TransactionError},
+        diesel_schema::accounts,
+    };
+    use diesel::{ExpressionMethods as _, RunQueryDsl as _};
+    let _subscriber_guard = SubscriberTestGuard::acquire();
+    let directory = tempfile::tempdir().unwrap_or_else(|error| panic!("fixture: {error}"));
+    let database = Database::connect_and_migrate(&DatabaseConfig::new(
+        directory.path().join("database.sqlite3"),
+        true,
+    ))
+    .await
+    .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let captured = CapturedLogs::default();
+    let subscriber = captured.subscriber(LogLevel::Trace);
+    let response = async {
+        let result = database
+            .write(|transaction| {
+                diesel::insert_into(accounts::table)
+                    .values((
+                        accounts::account_id.eq("bound-secret-canary"),
+                        accounts::domjudge_username.eq("credential-secret-canary"),
+                        accounts::credential_revision.eq(1_i64),
+                    ))
+                    .execute(transaction.connection())
+                    .map_err(PersistenceError::from)?;
+                diesel::insert_into(accounts::table)
+                    .values((
+                        accounts::account_id.eq("bound-secret-canary"),
+                        accounts::domjudge_username.eq("credential-secret-canary"),
+                        accounts::credential_revision.eq(1_i64),
+                    ))
+                    .execute(transaction.connection())
+                    .map_err(PersistenceError::from)
+            })
+            .await;
+        let Err(error) = result.map_err(TransactionError::into_error) else {
+            panic!("duplicate fixture insert must fail");
+        };
+        ApiError::from_contest(ContestError::PersistenceFailed { source: error }).into_response()
+    }
+    .with_subscriber(subscriber)
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), RESPONSE_BODY_LIMIT_BYTES)
+        .await
+        .unwrap_or_else(|error| panic!("response: {error}"));
+    assert_eq!(
+        body.as_ref(),
+        br#"{"title":"Internal Server Error","status":500,"code":"INTERNAL_ERROR"}"#
+    );
+    let logs = captured.text().unwrap_or_else(|()| panic!("captured logs"));
+    assert!(logs.contains("contest current facts could not be read"));
+    assert!(logs.contains("the persistence query failed"));
+    assert!(
+        logs.contains("UNIQUE constraint failed: accounts.domjudge_username")
+            || logs.contains("UNIQUE constraint failed: accounts.account_id")
+    );
+    assert_eq!(logs.matches("HTTP request failed").count(), 1);
+    assert!(!logs.contains("bound-secret-canary"));
+    assert!(!logs.contains("credential-secret-canary"));
 }

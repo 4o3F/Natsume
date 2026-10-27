@@ -14,7 +14,7 @@ pub(in crate::component::session) fn device_exists(
         devices::table.filter(devices::device_id.eq(device_id.as_text())),
     ))
     .get_result::<bool>(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::session) fn find_target(
@@ -29,7 +29,7 @@ pub(in crate::component::session) fn find_target(
         .filter(device_session_targets::device_id.eq(device_id.as_text()))
         .first::<(String, Option<i64>)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::session) fn list_targets(
@@ -42,7 +42,7 @@ pub(in crate::component::session) fn list_targets(
             device_session_targets::terminate_epoch,
         ))
         .load(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::session) fn insert_default_target(
@@ -55,7 +55,7 @@ pub(in crate::component::session) fn insert_default_target(
             device_session_targets::foreground_target.eq("waiting"),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::session) fn update_foreground_target(
@@ -69,7 +69,7 @@ pub(in crate::component::session) fn update_foreground_target(
     )
     .set(device_session_targets::foreground_target.eq(foreground_target))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::session) fn update_terminate_epoch(
@@ -78,7 +78,7 @@ pub(in crate::component::session) fn update_terminate_epoch(
     terminate_epoch: i64,
 ) -> Result<usize, PersistenceError> {
     if terminate_epoch < 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     diesel::update(
         device_session_targets::table
@@ -86,5 +86,5 @@ pub(in crate::component::session) fn update_terminate_epoch(
     )
     .set(device_session_targets::terminate_epoch.eq(Some(terminate_epoch)))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

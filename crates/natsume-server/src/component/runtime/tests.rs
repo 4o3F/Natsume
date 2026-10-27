@@ -22,9 +22,8 @@ async fn accepts_only_exact_canonical_https_origins() {
         assert!(is_canonical_https_origin(origin));
         fixture.persist(1, origin).await;
         assert_eq!(fixture.materialize().await, origin);
-        assert_eq!(
-            fixture.component.read_current().await,
-            Ok(Some(origin.to_owned()))
+        assert!(
+            matches!(fixture.component.read_current().await, Ok(actual) if actual == Some(origin.to_owned()))
         );
     }
 }
@@ -50,11 +49,11 @@ fn rejects_invalid_or_noncanonical_origins() {
 #[tokio::test]
 async fn missing_config_fails_closed() {
     let fixture = Fixture::new().await;
-    assert_eq!(fixture.component.read_current().await, Ok(None));
-    assert_eq!(
+    assert!(matches!(fixture.component.read_current().await, Ok(actual) if actual.is_none()));
+    assert!(matches!(
         fixture.component.materialize().await,
         Err(RuntimeConfigError::MissingConfiguration)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -77,14 +76,14 @@ async fn replacement_survives_component_rebuild() {
 async fn invalid_persisted_fact_fails_closed() {
     let fixture = Fixture::new().await;
     fixture.persist(1, "http://judge.example.test").await;
-    assert_eq!(
+    assert!(matches!(
         fixture.component.materialize().await,
-        Err(RuntimeConfigError::InvalidPersistedFacts)
-    );
-    assert_eq!(
+        Err(RuntimeConfigError::InvalidPersistedFacts { .. })
+    ));
+    assert!(matches!(
         fixture.component.read_current().await,
-        Err(RuntimeConfigError::InvalidPersistedFacts)
-    );
+        Err(RuntimeConfigError::InvalidPersistedFacts { .. })
+    ));
 }
 
 struct Fixture {
@@ -126,7 +125,7 @@ impl Fixture {
                         runtime_config::domjudge_origin.eq(origin),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await

@@ -24,13 +24,13 @@ pub(in crate::component::operator) fn find_account(
         ))
         .first::<(String, String, String, i64)>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     row.map(|(operator_id, role, password_hash, credential_revision)| {
         if credential_revision < 1 {
-            return Err(PersistenceError::InvalidPersistedData);
+            return Err(PersistenceError::invalid("persisted value"));
         }
         let identity = OperatorIdentity::from_persisted(&operator_id, &role)
-            .map_err(|_| PersistenceError::InvalidPersistedData)?;
+            .map_err(super::persisted_identity_error)?;
         Ok(AccountFacts {
             identity,
             password_hash,
@@ -47,7 +47,7 @@ pub(in crate::component::operator) fn any_account_exists(
         operator_accounts::table.select(operator_accounts::operator_id),
     ))
     .get_result::<bool>(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn insert_account(
@@ -67,7 +67,7 @@ pub(in crate::component::operator) fn insert_account(
         ))
         .execute(transaction.connection())
         .map(|_| ())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::operator) fn update_password(
@@ -84,9 +84,9 @@ pub(in crate::component::operator) fn update_password(
         operator_accounts::credential_revision.eq(next_revision),
     ))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)?;
+    .map_err(PersistenceError::from)?;
     if updated != 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::unexpected_row_count(1, updated));
     }
     Ok(())
 }

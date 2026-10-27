@@ -19,18 +19,7 @@ impl HomeComponent {
     }
 
     pub(crate) async fn materialize(&self, device_id: DeviceId) -> Result<Option<u64>, HomeError> {
-        self.database
-            .write(move |transaction| {
-                require_existing_device(transaction, &device_id)?;
-                if let Some(row) = db::find_reset_epoch(transaction, &device_id)? {
-                    parse_reset_epoch(row)
-                } else {
-                    require_one(db::insert_target(transaction, &device_id, None)?)?;
-                    Ok(None)
-                }
-            })
-            .await
-            .map_err(TransactionError::into_error)
+        self.read_current(device_id).await
     }
 
     /// Reads the current durable reset epoch without creating a target row.
@@ -57,7 +46,9 @@ impl HomeComponent {
                 let mut targets = HashMap::with_capacity(rows.len());
                 for row in rows {
                     let device_id =
-                        DeviceId::parse(&row.0).ok_or(HomeError::InvalidPersistedFacts)?;
+                        DeviceId::parse(&row.0).ok_or(HomeError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        })?;
                     let target = parse_reset_epoch(row)?;
                     targets.insert(device_id, target);
                 }
@@ -80,7 +71,11 @@ impl HomeComponent {
         let next_epoch = match persisted_epoch {
             None => 1,
             Some(epoch) if epoch > 0 => epoch.checked_add(1).ok_or(HomeError::EpochExhausted)?,
-            Some(_) => return Err(HomeError::InvalidPersistedFacts),
+            Some(_) => {
+                return Err(HomeError::InvalidPersistedFacts {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                });
+            }
         };
         require_one(db::set_reset_epoch(transaction, device_id, next_epoch)?)?;
         Ok(next_epoch.cast_unsigned())
@@ -91,7 +86,9 @@ fn parse_reset_epoch((_, epoch): (String, Option<i64>)) -> Result<Option<u64>, H
     match epoch {
         None => Ok(None),
         Some(epoch) if epoch > 0 => Ok(Some(epoch.cast_unsigned())),
-        Some(_) => Err(HomeError::InvalidPersistedFacts),
+        Some(_) => Err(HomeError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        }),
     }
 }
 
@@ -110,27 +107,35 @@ fn require_one(updated: usize) -> Result<(), HomeError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(HomeError::PersistenceFailed)
+        Err(HomeError::PersistenceFailed {
+            source: crate::db::PersistenceError::unexpected_row_count(1, updated),
+        })
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum HomeError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("the Home reset epoch is exhausted"))]
     EpochExhausted,
     #[snafu(display("persisted Home facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("Home persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
+}
+
+impl HomeError {
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::PersistenceFailed { source } if source.is_transient())
+    }
 }
 
 impl From<PersistenceError> for HomeError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }

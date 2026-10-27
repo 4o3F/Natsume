@@ -21,6 +21,7 @@ import type {
   OrganizationLogoResponse,
   PrintQueueEntry,
   PrintExecution,
+  PrintRequeue,
   PrintPrinter,
   PrintPrinterCreate,
   PrintPairingCode,
@@ -129,6 +130,17 @@ export function createApiClient(
       request<PrintQueueEntry[]>("GET", "/api/v2/print/queue", options),
     listPrintExecutions: (options?: RequestOptions) =>
       request<PrintExecution[]>("GET", "/api/v2/print/executions", options),
+    requeuePrintExecution: (
+      sequence: number,
+      body: PrintRequeue,
+      options?: RequestOptions,
+    ) =>
+      json<void>(
+        "POST",
+        `/api/v2/print/executions/${sequence}/requeue`,
+        body,
+        options,
+      ),
     listPrintPrinters: (options?: RequestOptions) =>
       request<PrintPrinter[]>("GET", "/api/v2/print/printers", options),
     createPrintPrinter: (body: PrintPrinterCreate, options?: RequestOptions) =>

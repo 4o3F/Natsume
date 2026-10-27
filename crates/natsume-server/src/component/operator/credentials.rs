@@ -103,36 +103,39 @@ mod tests {
             (login + "x", password.clone()),
             ("admin".to_owned(), password + "x"),
         ] {
-            assert_eq!(
+            assert!(matches!(
                 super::validate_input(&login, &password),
                 Err(super::OperatorError::CredentialsTooLong)
-            );
-            assert_eq!(
+            ));
+            assert!(matches!(
                 OperatorCredentials::new(login, password.clone(), password).err(),
                 Some(super::OperatorError::CredentialsTooLong)
-            );
+            ));
         }
     }
 
     #[test]
     fn registration_names_preserve_case_and_use_utf8_byte_limits() {
         for name in ["Alice", "alice", "A B", "用户", &"é".repeat(64)] {
-            assert_eq!(super::validate_new_login_name(name), Ok(()));
+            assert!(matches!(super::validate_new_login_name(name), Ok(())));
         }
-        assert_eq!(
+        assert!(matches!(
             super::validate_new_login_name(""),
             Err(super::OperatorError::EmptyLoginName)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             super::validate_new_login_name(&("é".repeat(64) + "x")),
             Err(super::OperatorError::CredentialsTooLong)
-        );
+        ));
         for name in [" Alice", "Alice ", "\tAlice", "Alice\n", "\u{3000}Alice"] {
-            assert_eq!(
+            assert!(matches!(
                 super::validate_new_login_name(name),
                 Err(super::OperatorError::InvalidNewLoginName)
-            );
-            assert_eq!(super::validate_input(name, "old password"), Ok(()));
+            ));
+            assert!(matches!(
+                super::validate_input(name, "old password"),
+                Ok(())
+            ));
         }
     }
 
@@ -145,22 +148,22 @@ mod tests {
             "abcdefghijklmnop1",
             "中文密码123456789012345!",
         ] {
-            assert_eq!(
+            assert!(matches!(
                 super::validate_new_password(password),
                 Err(super::OperatorError::InvalidNewPassword)
-            );
+            ));
         }
         for password in ["Password1234567!", "123456789012345!"] {
-            assert_eq!(super::validate_new_password(password), Ok(()));
+            assert!(matches!(super::validate_new_password(password), Ok(())));
         }
-        assert_eq!(
+        assert!(matches!(
             super::validate_new_password(&("a".repeat(1022) + "1!")),
             Ok(())
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             super::validate_new_password(&("a".repeat(1023) + "1!")),
             Err(super::OperatorError::CredentialsTooLong)
-        );
+        ));
     }
 
     #[test]
@@ -172,25 +175,25 @@ mod tests {
             assert_eq!(super::validate_new_password(&password).is_ok(), allowed);
         }
         for byte in b"!@#$%^&*()-_=+[]{};:,.?/~" {
-            assert_eq!(
+            assert!(matches!(
                 super::validate_new_password(&format!("Password1234567{}", char::from(*byte))),
                 Ok(())
-            );
+            ));
         }
     }
 
     #[test]
     fn tty_credentials_enforce_new_password_policy_and_exact_confirmation() {
         let password = "Password1234567!";
-        assert_eq!(
+        assert!(matches!(
             OperatorCredentials::new("admin".into(), "old password".into(), "old password".into())
                 .err(),
             Some(super::OperatorError::InvalidNewPassword)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             OperatorCredentials::new("admin".into(), password.into(), "different".into()).err(),
             Some(super::OperatorError::PasswordMismatch)
-        );
+        ));
         let credentials =
             OperatorCredentials::new(" admin ".into(), password.into(), password.into())
                 .unwrap_or_else(|error| panic!("legacy recovery login rejected: {error}"));

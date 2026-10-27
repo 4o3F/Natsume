@@ -75,7 +75,13 @@ fn complete_zip_contains_stable_data_deduplicated_pngs_and_missing_ambiguous_map
         organizations: vec![school(1, "甲"), school(2, "乙"), school(3, "丙")],
         teams: vec![
             team(&vault, "001", 1, "00123"),
-            team(&vault, "team2", 1, "特殊: # \"密码\"\\\n"),
+            team(
+                &vault,
+                "team2",
+                1,
+                "特殊: # \"密码\"\\\n
+",
+            ),
             team(&vault, "team3", 2, "yes"),
             team(&vault, "team4", 3, "no"),
         ],
@@ -104,7 +110,11 @@ fn complete_zip_contains_stable_data_deduplicated_pngs_and_missing_ambiguous_map
     let accounts: Vec<Value> = checked(serde_saphyr::from_slice(&first["accounts.yaml"]));
     assert_eq!(accounts[0]["id"], "001");
     assert_eq!(accounts[0]["password"], "00123");
-    assert_eq!(accounts[1]["password"], "特殊: # \"密码\"\\\n");
+    assert_eq!(
+        accounts[1]["password"],
+        "特殊: # \"密码\"\\\n
+"
+    );
     for account in &accounts {
         assert_eq!(account["id"], account["username"]);
         assert_eq!(account["id"], account["team_id"]);
@@ -142,6 +152,10 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
         Database::connect_and_migrate(&DatabaseConfig::new(root.path().join("db"), true)).await,
     );
     let import = ImportComponent::new(database.clone(), vault.clone());
+    let state = checked(crate::server_state::tests::for_test(
+        database.clone(),
+        root.path().join("documents"),
+    ));
     let contest = ContestComponent::new(database, vault, root.path().join("absent-logos"));
     assert!(matches!(
         contest.export_domjudge().await,
@@ -173,11 +187,12 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
         contest.export_domjudge().await,
         Err(ExportError::IncompleteRoster)
     ));
-    checked(
+    let change = checked(
         checked(import.try_begin())
             .commit(preview.candidate_id(), preview.preview_token_bytes(), &xlsx)
             .await,
     );
+    state.device_control().publish(change).await;
     let first = entries(checked(contest.export_domjudge().await));
     assert_eq!(
         json(&first, "teams.json").as_array().map(Vec::len),
@@ -201,7 +216,7 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
             .await,
     );
     assert_eq!(entries(checked(contest.export_domjudge().await)), first);
-    checked(
+    let change = checked(
         checked(import.try_begin())
             .commit(
                 preview.candidate_id(),
@@ -210,6 +225,7 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
             )
             .await,
     );
+    state.device_control().publish(change).await;
     let next = entries(checked(contest.export_domjudge().await));
     let accounts: Vec<Value> = checked(serde_saphyr::from_slice(&next["accounts.yaml"]));
     assert_eq!(accounts.len(), 400);
@@ -236,7 +252,7 @@ async fn export_reads_committed_full_roster_and_current_vault_independent_of_can
                     .batch_execute(
                         "INSERT INTO accounts VALUES ('legacy-account', 'legacy-account', 1)",
                     )
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await,
     );

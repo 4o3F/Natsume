@@ -1,3 +1,5 @@
+mod requeue;
+
 use axum::{
     body::Body,
     http::{Method, Request, StatusCode, header},
@@ -11,6 +13,11 @@ use crate::http::tests::{Captured, SupportFailure};
 
 #[derive(Debug, Snafu)]
 enum ExecutionTestError {
+    #[snafu(context(false), display("test infrastructure operation failed"))]
+    Source {
+        #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+        source: Box<crate::test_error::TestError>,
+    },
     #[snafu(display("print execution fixture setup failed"))]
     Setup,
     #[snafu(context(false), display("print execution request failed"))]
@@ -82,9 +89,9 @@ async fn paired(f: &Fixture, confirm: bool) -> Result<Value, ExecutionTestError>
             .method(Method::POST)
             .uri("/api/v2/print/client/pair")
             .extension(axum::extract::ConnectInfo(crate::tls::PeerAddress(
-                "192.0.2.10"
-                    .parse()
-                    .map_err(|_| ExecutionTestError::Setup)?,
+                "192.0.2.10".parse().map_err(|source| {
+                    ExecutionTestError::from(crate::test_error::TestError::from(source))
+                })?,
             )))
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(json!({"code":value["code"]}).to_string()))?,
@@ -107,7 +114,7 @@ async fn paired(f: &Fixture, confirm: bool) -> Result<Value, ExecutionTestError>
 }
 
 async fn ready(f: &Fixture) -> Result<Vec<u8>, ExecutionTestError> {
-    let id = f.register().await.map_err(|_| ExecutionTestError::Setup)?;
+    let id = f.register().await.map_err(ExecutionTestError::from)?;
     let bytes = pdf(2);
     let result = f
         .send(
@@ -117,7 +124,7 @@ async fn ready(f: &Fixture) -> Result<Vec<u8>, ExecutionTestError> {
             Body::from(bytes.clone()),
         )
         .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+        .map_err(ExecutionTestError::from)?;
     assert_eq!(result.status, StatusCode::OK);
     Ok(bytes)
 }
@@ -129,9 +136,7 @@ fn claim() -> Value {
 #[tokio::test]
 async fn execution_rejects_wrong_identities_before_reading_bodies() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new()
-        .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+    let f = Fixture::new().await.map_err(ExecutionTestError::from)?;
     let pending = paired(&f, false).await?;
     let id = Uuid::now_v7().to_string();
     for (method, path) in [
@@ -280,9 +285,7 @@ async fn assert_printed_replay(
 #[tokio::test]
 async fn complete_http_execution_is_owned_idempotent_and_separate_from_admission() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new()
-        .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+    let f = Fixture::new().await.map_err(ExecutionTestError::from)?;
     let client = paired(&f, true).await?;
     let other = paired(&f, true).await?;
     let token = client["token"].as_str().ok_or(ExecutionTestError::Setup)?;
@@ -384,9 +387,7 @@ async fn complete_http_execution_is_owned_idempotent_and_separate_from_admission
 #[tokio::test]
 async fn binding_revocation_while_claim_body_is_pending_is_rechecked() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new()
-        .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+    let f = Fixture::new().await.map_err(ExecutionTestError::from)?;
     let client = paired(&f, true).await?;
     let token = client["token"].as_str().ok_or(ExecutionTestError::Setup)?;
     ready(&f).await?;
@@ -418,8 +419,8 @@ async fn binding_revocation_while_claim_body_is_pending_is_rechecked() -> TestRe
     let pending = tokio::spawn(async move { drive(&router, request).await });
     tokio::time::timeout(std::time::Duration::from_secs(5), polled)
         .await
-        .map_err(|_| ExecutionTestError::Setup)?
-        .map_err(|_| ExecutionTestError::Setup)?;
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))?
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))?;
     let path = format!(
         "/api/v2/print/printers/{}/binding",
         client["printer_id"]
@@ -437,7 +438,9 @@ async fn binding_revocation_while_claim_body_is_pending_is_rechecked() -> TestRe
     .await?;
     assert_eq!(result.status, StatusCode::NO_CONTENT);
     release.send(()).map_err(|()| ExecutionTestError::Setup)?;
-    let response = pending.await.map_err(|_| ExecutionTestError::Setup)??;
+    let response = pending
+        .await
+        .map_err(|source| ExecutionTestError::from(crate::test_error::TestError::from(source)))??;
     assert_eq!(response.status, StatusCode::UNAUTHORIZED);
     Ok(())
 }
@@ -452,9 +455,7 @@ async fn execution_logs_do_not_include_client_credentials_or_document_bytes() ->
     use tracing::instrument::WithSubscriber as _;
     let _subscriber = SubscriberTestGuard::acquire();
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new()
-        .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+    let f = Fixture::new().await.map_err(ExecutionTestError::from)?;
     let capture = CapturedLogs::default();
     let subscriber = capture.subscriber(LogLevel::Trace);
     let token = async {
@@ -517,9 +518,7 @@ async fn execution_logs_do_not_include_client_credentials_or_document_bytes() ->
 #[tokio::test]
 async fn execution_rejects_open_fields_invalid_ids_queues_jobs_and_report_shapes() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new()
-        .await
-        .map_err(|_| ExecutionTestError::Setup)?;
+    let f = Fixture::new().await.map_err(ExecutionTestError::from)?;
     let client = paired(&f, true).await?;
     let token = client["token"].as_str().ok_or(ExecutionTestError::Setup)?;
     for input in [

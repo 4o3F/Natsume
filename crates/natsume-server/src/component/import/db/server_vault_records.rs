@@ -24,5 +24,5 @@ pub(in crate::component::import) fn save(
             server_vault_records::ciphertext.eq(ciphertext),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }

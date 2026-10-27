@@ -18,7 +18,7 @@ pub(super) fn find(
         ))
         .first(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(super) fn insert(
@@ -36,9 +36,9 @@ pub(super) fn insert(
             receipts::results_json.eq(results),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     if changed != 1 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::unexpected_row_count(1, changed));
     }
     Ok(())
 }

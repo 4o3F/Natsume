@@ -23,7 +23,7 @@ pub(in crate::component::import) fn read(
         ))
         .order(organizations::organization_id)
         .load::<(i64, String, String, String, String)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     let mut result = BTreeMap::new();
     for (organization_id, key, name_zh, name_en, country) in rows {
         let details = OrganizationDetails {
@@ -37,7 +37,7 @@ pub(in crate::component::import) fn read(
             || details.key() != key
             || result.insert(key, details).is_some()
         {
-            return Err(PersistenceError::InvalidPersistedData);
+            return Err(PersistenceError::invalid("persisted value"));
         }
     }
     Ok(result)
@@ -54,10 +54,10 @@ pub(in crate::component::import) fn sequence(
     let value = diesel::sql_query("SELECT seq FROM sqlite_sequence WHERE name = 'organizations'")
         .get_result::<Sequence>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map_or(0, |row| row.seq);
     if value < 0 {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     Ok(value)
 }
@@ -82,7 +82,7 @@ pub(in crate::component::import) fn save(
             organizations::country.eq(&school.country),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::import) fn delete(
@@ -91,5 +91,5 @@ pub(in crate::component::import) fn delete(
 ) -> Result<usize, PersistenceError> {
     diesel::delete(organizations::table.filter(organizations::organization_id.eq(id)))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }

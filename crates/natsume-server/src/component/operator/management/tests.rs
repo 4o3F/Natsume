@@ -8,7 +8,7 @@ use tokio::sync::Barrier;
 
 const PASSWORD: &str = "operator-password1!";
 const NEW_PASSWORD: &str = "replacement-password2@";
-type TestResult = Result<(), Box<dyn std::error::Error>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
     component: OperatorComponent,
@@ -17,7 +17,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    async fn new() -> Result<Self, crate::test_error::TestError> {
         let directory = tempfile::tempdir()?;
         let database = Database::connect_and_migrate(&DatabaseConfig::new(
             directory.path().join("operators.sqlite"),
@@ -57,7 +57,7 @@ impl Fixture {
             .write(move |tx| {
                 tx.connection()
                     .batch_execute(&statement)
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .map_err(TransactionError::into_error)
@@ -113,11 +113,11 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
             .await?,
         issued.invitation
     );
-    assert_eq!(
+    assert!(matches!(
         register(&f.component, &issued.token, " admin").await,
         Err(OperatorError::InvalidNewLoginName)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .register(
                 issued.token.expose().to_owned(),
@@ -127,11 +127,11 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
             )
             .await,
         Err(OperatorError::PasswordMismatch)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         register(&f.component, &issued.token, "admin").await,
         Err(OperatorError::LoginNameConflict)
-    );
+    ));
     assert_eq!(
         f.component.list_invitations().await?,
         vec![issued.invitation.clone()]
@@ -140,10 +140,10 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
     assert_eq!(viewer.role, OperatorRole::Viewer);
     assert_eq!(f.component.list_accounts().await?.len(), 2);
     assert!(f.component.list_invitations().await?.is_empty());
-    assert_eq!(
+    assert!(matches!(
         register(&f.component, &issued.token, "another").await,
         Err(OperatorError::LinkUnavailable)
-    );
+    ));
     let session = f.component.sign_in("Admin", PASSWORD.to_owned()).await?;
     assert_eq!(session.identity(), viewer);
     Ok(())
@@ -156,16 +156,16 @@ async fn last_admin_is_protected_including_concurrent_self_removals() -> TestRes
     f.component
         .issue_invitation(f.admin.operator_id(), OperatorRole::Admin)
         .await?;
-    assert_eq!(
+    assert!(matches!(
         f.component.delete_account(f.admin.operator_id()).await,
         Err(OperatorError::LastAdmin)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .change_role(f.admin.operator_id(), OperatorRole::Viewer)
             .await,
         Err(OperatorError::LastAdmin)
-    );
+    ));
     // An idempotent admin assignment is allowed even for the sole admin.
     f.component
         .change_role(f.admin.operator_id(), OperatorRole::Admin)
@@ -226,18 +226,18 @@ async fn account_demotion_and_deletion_affect_subsequent_authentication() -> Tes
         OperatorRole::Viewer
     );
     f.component.delete_account(second.operator_id()).await?;
-    assert_eq!(
+    assert!(matches!(
         f.component
             .authenticate_session(session.wire_credential())
             .await,
         Err(OperatorError::SessionAuthenticationFailed)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .change_role(second.operator_id(), OperatorRole::Admin)
             .await,
         Err(OperatorError::OperatorNotFound)
-    );
+    ));
     Ok(())
 }
 
@@ -252,13 +252,13 @@ async fn expired_invitations_remain_visible_and_regeneration_revokes_old_tokens(
     f.sql("UPDATE operator_invitations SET expires_at_unix_ms = 0")
         .await?;
     assert_eq!(f.component.list_invitations().await?.len(), 1);
-    assert_eq!(
+    assert!(matches!(
         f.component
             .inspect_invitation(issued.token.expose().to_owned())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
+    ));
     let new = f
         .component
         .regenerate_invitation(f.admin.operator_id(), issued.invitation.invitation_id)
@@ -272,20 +272,20 @@ async fn expired_invitations_remain_visible_and_regeneration_revokes_old_tokens(
         new.invitation.expires_at_unix_ms - new.invitation.created_at_unix_ms,
         INVITATION_TTL_MS
     );
-    assert_eq!(
+    assert!(matches!(
         register(&f.component, &issued.token, "old").await,
         Err(OperatorError::LinkUnavailable)
-    );
+    ));
     f.component
         .revoke_invitation(new.invitation.invitation_id)
         .await?;
     f.component
         .revoke_invitation(new.invitation.invitation_id)
         .await?;
-    assert_eq!(
+    assert!(matches!(
         register(&f.component, &new.token, "new").await,
         Err(OperatorError::LinkUnavailable)
-    );
+    ));
     Ok(())
 }
 
@@ -319,20 +319,20 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
                 .change_role(issuer.operator_id(), OperatorRole::Admin)
                 .await?;
         }
-        assert_eq!(
+        assert!(matches!(
             f.component
                 .inspect_invitation(invite.token.expose().to_owned())
                 .await
                 .err(),
             Some(OperatorError::LinkUnavailable)
-        );
-        assert_eq!(
+        ));
+        assert!(matches!(
             f.component
                 .inspect_password_reset(reset_link.token.expose().to_owned())
                 .await
                 .err(),
             Some(OperatorError::LinkUnavailable)
-        );
+        ));
         assert!(
             f.component
                 .list_accounts()
@@ -341,13 +341,13 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
                 .any(|account| account.operator_id == registered.operator_id())
         );
         if delete {
-            assert_eq!(
+            assert!(matches!(
                 f.component
                     .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
                     .await
                     .err(),
                 Some(OperatorError::LinkUnavailable)
-            );
+            ));
         }
         assert!(f.component.list_invitations().await?.is_empty());
     }
@@ -396,14 +396,11 @@ async fn concurrent_registration_consumes_once_and_keeps_the_conflicting_invitat
         );
         assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
         let failure = a.err().or(b.err());
-        assert_eq!(
-            failure,
-            Some(if same_token {
-                OperatorError::LinkUnavailable
-            } else {
-                OperatorError::LoginNameConflict
-            })
-        );
+        if same_token {
+            assert!(matches!(failure, Some(OperatorError::LinkUnavailable)));
+        } else {
+            assert!(matches!(failure, Some(OperatorError::LoginNameConflict)));
+        }
         let remaining = f.component.list_invitations().await?;
         assert_eq!(remaining.len(), 1);
         let remaining_token = if remaining[0].invitation_id == one.invitation.invitation_id {
@@ -452,23 +449,23 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
         .component
         .issue_password_reset(f.admin.operator_id(), target.operator_id())
         .await?;
-    assert_eq!(
+    assert!(matches!(
         reset(&f.component, &one.token).await,
         Err(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .inspect_invitation(two.token.expose().to_owned())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
+    ));
     f.sql("UPDATE operator_password_resets SET expires_at_unix_ms = 0")
         .await?;
-    assert_eq!(
+    assert!(matches!(
         reset(&f.component, &two.token).await,
         Err(OperatorError::LinkUnavailable)
-    );
+    ));
     let old = f
         .component
         .issue_password_reset(f.admin.operator_id(), target.operator_id())
@@ -480,16 +477,16 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
         .await?;
     let new_target = register(&f.component, &invite.token, "target").await?;
     assert_ne!(new_target.operator_id(), target.operator_id());
-    assert_eq!(
+    assert!(matches!(
         reset(&f.component, &old.token).await,
         Err(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .authenticate_session(session.wire_credential())
             .await,
         Err(OperatorError::SessionAuthenticationFailed)
-    );
+    ));
     Ok(())
 }
 
@@ -525,20 +522,20 @@ async fn concurrent_reset_consumes_once_and_revokes_all_sessions() -> TestResult
         2
     );
     for session in [a, b] {
-        assert_eq!(
+        assert!(matches!(
             f.component
                 .authenticate_session(session.wire_credential())
                 .await,
             Err(OperatorError::SessionAuthenticationFailed)
-        );
+        ));
     }
-    assert_eq!(
+    assert!(matches!(
         f.component
             .sign_in("admin", PASSWORD.to_owned())
             .await
             .err(),
         Some(OperatorError::AuthenticationFailed)
-    );
+    ));
     f.component
         .sign_in("admin", NEW_PASSWORD.to_owned())
         .await?;
@@ -560,7 +557,7 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
         .issue_password_reset(f.admin.operator_id(), id)
         .await?;
     let actor = session.identity();
-    assert_eq!(
+    assert!(matches!(
         f.component
             .change_password(
                 actor.operator_id(),
@@ -570,7 +567,7 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
             )
             .await,
         Err(OperatorError::AuthenticationFailed)
-    );
+    ));
     assert_eq!(
         fixtures::test_account_credentials(&f.component.database, "legacy").await?,
         (phc, 1)
@@ -586,16 +583,16 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
             NEW_PASSWORD.to_owned(),
         )
         .await?;
-    assert_eq!(
+    assert!(matches!(
         f.component
             .authenticate_session(session.wire_credential())
             .await,
         Err(OperatorError::SessionAuthenticationFailed)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         reset(&f.component, &issued.token).await,
         Err(OperatorError::LinkUnavailable)
-    );
+    ));
     f.component
         .sign_in("legacy", NEW_PASSWORD.to_owned())
         .await?;
@@ -625,19 +622,19 @@ async fn tty_reset_uses_the_same_grant_and_session_revocation_transaction() -> T
         .await?;
     let phc = hash_password(&OperatorPassword::new(NEW_PASSWORD.to_owned()))?;
     f.component.reset_password("admin", &phc).await?;
-    assert_eq!(
+    assert!(matches!(
         f.component
             .inspect_password_reset(issued.token.expose().to_owned())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .authenticate_session(session.wire_credential())
             .await,
         Err(OperatorError::SessionAuthenticationFailed)
-    );
+    ));
     assert_eq!(
         fixtures::test_account_credentials(&f.component.database, "admin").await?,
         (phc, 2)
@@ -654,18 +651,18 @@ async fn registration_and_regeneration_roll_back_if_invitation_deletion_fails() 
         .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
         .await?;
     f.sql("CREATE TRIGGER reject_invitation_delete BEFORE DELETE ON operator_invitations BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
-    assert_eq!(
+    assert!(matches!(
         register(&f.component, &invite.token, "new").await,
-        Err(OperatorError::PersistenceFailed)
-    );
+        Err(OperatorError::PersistenceFailed { .. })
+    ));
     assert_eq!(f.component.list_accounts().await?.len(), 1);
-    assert_eq!(
+    assert!(matches!(
         f.component
             .regenerate_invitation(f.admin.operator_id(), invite.invitation.invitation_id)
             .await
             .err(),
-        Some(OperatorError::PersistenceFailed)
-    );
+        Some(OperatorError::PersistenceFailed { .. })
+    ));
     f.component
         .inspect_invitation(invite.token.expose().to_owned())
         .await?;
@@ -690,10 +687,10 @@ async fn failed_reset_and_demotion_preserve_credentials_sessions_and_grants() ->
         .await?;
     let before = fixtures::test_account_credentials(&f.component.database, "second").await?;
     f.sql("CREATE TRIGGER reject_reset_delete BEFORE DELETE ON operator_password_resets BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
-    assert_eq!(
+    assert!(matches!(
         reset(&f.component, &issued.token).await,
-        Err(OperatorError::PersistenceFailed)
-    );
+        Err(OperatorError::PersistenceFailed { .. })
+    ));
     assert_eq!(
         fixtures::test_account_credentials(&f.component.database, "second").await?,
         before
@@ -704,16 +701,16 @@ async fn failed_reset_and_demotion_preserve_credentials_sessions_and_grants() ->
             .await?,
         second
     );
-    assert_eq!(
+    assert!(matches!(
         f.component
             .change_role(second.operator_id(), OperatorRole::Viewer)
             .await,
-        Err(OperatorError::PersistenceFailed)
-    );
-    assert_eq!(
+        Err(OperatorError::PersistenceFailed { .. })
+    ));
+    assert!(matches!(
         f.component.delete_account(second.operator_id()).await,
-        Err(OperatorError::PersistenceFailed)
-    );
+        Err(OperatorError::PersistenceFailed { .. })
+    ));
     f.component
         .inspect_invitation(invite.token.expose().to_owned())
         .await?;
@@ -774,7 +771,7 @@ async fn final_registration_rechecks_expiry_issuer_and_replacement_after_hash_sn
             "replacement" => { f.component.regenerate_invitation(f.admin.operator_id(), invite.invitation.invitation_id).await?; },
             _ => f.component.delete_account(issuer.operator_id()).await?,
         }
-        assert_eq!(pending.await, Err(OperatorError::LinkUnavailable));
+        assert!(matches!(pending.await, Err(OperatorError::LinkUnavailable)));
         assert!(
             !f.component
                 .list_accounts()
@@ -813,7 +810,7 @@ async fn final_reset_rechecks_expiry_issuer_and_replacement_after_hash_snapshot(
             "target_deletion" => f.component.delete_account(target.operator_id()).await?,
             _ => f.component.delete_account(issuer.operator_id()).await?,
         }
-        assert_eq!(pending.await, Err(OperatorError::LinkUnavailable));
+        assert!(matches!(pending.await, Err(OperatorError::LinkUnavailable)));
         if event != "target_deletion" {
             assert_eq!(
                 fixtures::test_account_credentials(&f.component.database, "target").await?,
@@ -849,7 +846,10 @@ async fn stale_own_password_change_cannot_overwrite_a_newer_reset() -> TestResul
         )
         .await?;
     let after_reset = fixtures::test_account_credentials(&f.component.database, "admin").await?;
-    assert_eq!(pending.await, Err(OperatorError::CredentialChanged));
+    assert!(matches!(
+        pending.await,
+        Err(OperatorError::CredentialChanged)
+    ));
     assert_eq!(
         fixtures::test_account_credentials(&f.component.database, "admin").await?,
         after_reset
@@ -892,10 +892,10 @@ async fn in_flight_old_sign_ins_are_fenced_by_every_password_replacement_and_del
                 f.component.delete_account(target.operator_id()).await?;
             }
         }
-        assert_eq!(
+        assert!(matches!(
             pending.await.err(),
             Some(OperatorError::AuthenticationFailed)
-        );
+        ));
         assert_eq!(
             fixtures::test_session_count(&f.component.database).await?,
             0
@@ -918,15 +918,15 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
         .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     let held = SIGN_IN_GATE.acquire_many(4).await?;
-    assert_eq!(
+    assert!(matches!(
         register(&f.component, &invite.token, "new").await.err(),
         Some(OperatorError::SignInBusy)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         reset(&f.component, &link.token).await,
         Err(OperatorError::SignInBusy)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .change_password(
                 f.admin.operator_id(),
@@ -936,7 +936,7 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
             )
             .await,
         Err(OperatorError::SignInBusy)
-    );
+    ));
     drop(held);
     let connections = f.component.database.test_exhaust_pool();
     let mut registration = Box::pin(register(&f.component, &invite.token, "new"));
@@ -981,7 +981,7 @@ async fn persisted_links_survive_reconnect_without_renewing_ttl_and_store_only_h
             crate::diesel_schema::operator_invitations::table
                 .select(crate::diesel_schema::operator_invitations::token_hash)
                 .first::<Vec<u8>>(tx.connection())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)?;
@@ -1007,13 +1007,13 @@ async fn persisted_links_survive_reconnect_without_renewing_ttl_and_store_only_h
         link.reset
     );
     register(&reconnected, &invite.token, "new").await?;
-    assert_eq!(
+    assert!(matches!(
         f.component
             .inspect_invitation(invite.token.expose().to_owned())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
+    ));
     Ok(())
 }
 
@@ -1030,20 +1030,20 @@ async fn replacement_insert_failures_restore_the_previous_authorizations() -> Te
         .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
         .await?;
     f.sql("CREATE TRIGGER reject_invitation_insert BEFORE INSERT ON operator_invitations BEGIN SELECT RAISE(ABORT, 'test'); END; CREATE TRIGGER reject_reset_insert BEFORE INSERT ON operator_password_resets BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
-    assert_eq!(
+    assert!(matches!(
         f.component
             .regenerate_invitation(f.admin.operator_id(), invite.invitation.invitation_id)
             .await
             .err(),
-        Some(OperatorError::PersistenceFailed)
-    );
-    assert_eq!(
+        Some(OperatorError::PersistenceFailed { .. })
+    ));
+    assert!(matches!(
         f.component
             .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
             .await
             .err(),
-        Some(OperatorError::PersistenceFailed)
-    );
+        Some(OperatorError::PersistenceFailed { .. })
+    ));
     assert_eq!(
         f.component
             .inspect_invitation(invite.token.expose().to_owned())
@@ -1070,7 +1070,7 @@ async fn deleted_identity_leaves_receipts_bound_to_the_original_uuid() -> TestRe
     f.component.database.write(move |tx| {
         diesel::sql_query("INSERT INTO target_submission_receipts VALUES ('operation', ?, 'request', 'results')")
             .bind::<diesel::sql_types::Text, _>(stored_id).execute(tx.connection())
-            .map(|_| ()).map_err(|_| PersistenceError::OperationFailed)
+            .map(|_| ()).map_err(PersistenceError::from)
     }).await.map_err(TransactionError::into_error)?;
     f.component.delete_account(target.operator_id()).await?;
     let invite = f
@@ -1092,7 +1092,7 @@ async fn deleted_identity_leaves_receipts_bound_to_the_original_uuid() -> TestRe
                     receipts::results_json,
                 ))
                 .first::<(String, String, String)>(tx.connection())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)?;
@@ -1190,37 +1190,37 @@ async fn grant_issuance_racing_issuer_demotion_cannot_leave_usable_links() -> Te
     let (invite, recovery, demotion) = tokio::join!(issue_invite, issue_reset, demote);
     demotion?;
     if let Err(error) = &invite {
-        assert_eq!(*error, OperatorError::LinkUnavailable);
+        assert!(matches!(*error, OperatorError::LinkUnavailable));
     }
     if let Err(error) = &recovery {
-        assert_eq!(*error, OperatorError::LinkUnavailable);
+        assert!(matches!(*error, OperatorError::LinkUnavailable));
     }
     assert_eq!(
         f.component.list_invitations().await?,
         vec![original.invitation.clone()]
     );
-    assert_eq!(
+    assert!(matches!(
         f.component
             .regenerate_invitation(issuer.operator_id(), original.invitation.invitation_id)
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
+    ));
     // A persisted issuer who lost eligibility cannot sign grants that might revive.
-    assert_eq!(
+    assert!(matches!(
         f.component
             .issue_invitation(issuer.operator_id(), OperatorRole::Viewer)
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
+    ));
     f.component
         .change_role(issuer.operator_id(), OperatorRole::Admin)
         .await?;
@@ -1232,22 +1232,22 @@ async fn grant_issuance_racing_issuer_demotion_cannot_leave_usable_links() -> Te
         .inspect_invitation(original.token.expose().to_owned())
         .await?;
     if let Ok(invite) = invite {
-        assert_eq!(
+        assert!(matches!(
             f.component
                 .inspect_invitation(invite.token.expose().to_owned())
                 .await
                 .err(),
             Some(OperatorError::LinkUnavailable)
-        );
+        ));
     }
     if let Ok(recovery) = recovery {
-        assert_eq!(
+        assert!(matches!(
             f.component
                 .inspect_password_reset(recovery.token.expose().to_owned())
                 .await
                 .err(),
             Some(OperatorError::LinkUnavailable)
-        );
+        ));
     }
     Ok(())
 }
@@ -1280,32 +1280,32 @@ async fn link_validation_rejects_ineligible_persisted_issuers_even_if_links_rema
             .set(operator_accounts::role.eq("viewer"))
             .execute(tx.connection())
             .map(|_| ())
-            .map_err(|_| PersistenceError::OperationFailed)
+            .map_err(PersistenceError::from)
         })
         .await
         .map_err(TransactionError::into_error)?;
     assert_eq!(f.component.list_invitations().await?.len(), 1);
-    assert_eq!(
+    assert!(matches!(
         f.component
             .inspect_invitation(invitation.token.expose().to_owned())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         f.component
             .inspect_password_reset(recovery.token.expose().to_owned())
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         register(&f.component, &invitation.token, "new").await.err(),
         Some(OperatorError::LinkUnavailable)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         reset(&f.component, &recovery.token).await.err(),
         Some(OperatorError::LinkUnavailable)
-    );
+    ));
     Ok(())
 }

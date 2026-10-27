@@ -1,8 +1,5 @@
-use std::{
-    error::Error,
-    fmt::{self, Display, Formatter},
-    sync::Arc,
-};
+use snafu::Snafu;
+use std::sync::Arc;
 
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -112,7 +109,8 @@ impl PreviewToken {
         let mut token = Self {
             bytes: [0; PREVIEW_TOKEN_LENGTH],
         };
-        getrandom::fill(&mut token.bytes).map_err(|_| ImportError::EntropyUnavailable)?;
+        getrandom::fill(&mut token.bytes)
+            .map_err(|source| ImportError::EntropyUnavailable { source })?;
         Ok(token)
     }
 
@@ -200,9 +198,11 @@ pub(super) async fn create_import_candidate(
             let changed = changed_passwords(&baseline, &parsed, &vault)?;
             let diff = compute_diff(&baseline, &roster, changed);
             let now = super::db::pending_import_candidate::current_time_unix_ms(transaction)?;
-            let expires_at_unix_ms = now
-                .checked_add(IMPORT_CANDIDATE_TTL_MS)
-                .ok_or(ImportError::PersistenceFailure)?;
+            let expires_at_unix_ms = now.checked_add(IMPORT_CANDIDATE_TTL_MS).ok_or(
+                ImportError::PersistenceFailure {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                },
+            )?;
             let candidate = CandidateRecord::new(
                 candidate_id,
                 expires_at_unix_ms,
@@ -215,7 +215,9 @@ pub(super) async fn create_import_candidate(
             );
 
             if super::db::pending_import_candidate::insert(transaction, &candidate)? != 1 {
-                return Err(ImportError::PersistenceFailure);
+                return Err(ImportError::PersistenceFailure {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                });
             }
             Ok(CreatedImportCandidate {
                 candidate_id,
@@ -263,7 +265,9 @@ pub(super) async fn discard_import(
                 return Ok(DiscardOutcome::Unavailable);
             }
             if super::db::pending_import_candidate::delete_exact(transaction, &candidate)? != 1 {
-                return Err(ImportError::PersistenceFailure);
+                return Err(ImportError::PersistenceFailure {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                });
             }
             Ok(DiscardOutcome::Discarded)
         })
@@ -280,7 +284,9 @@ pub(super) fn expire_candidate(
     candidate: &CandidateRecord,
 ) -> Result<(), ImportError> {
     if super::db::pending_import_candidate::delete_exact(transaction, candidate)? != 1 {
-        return Err(ImportError::PersistenceFailure);
+        return Err(ImportError::PersistenceFailure {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        });
     }
     Ok(())
 }
@@ -290,44 +296,39 @@ enum DiscardOutcome {
     Unavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Snafu)]
 pub(crate) enum ImportError {
+    #[snafu(display("import work capacity is exhausted"))]
     Busy,
-    InvalidWorkbook(super::InputError),
+    #[snafu(display("the import candidate is invalid"))]
     CandidateInvalid,
+    #[snafu(display("the import candidate is invalid"))]
+    CandidateWorker {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
+    #[snafu(display("the import candidate is invalid"))]
+    CandidateEncoding { source: serde_json::Error },
+    #[snafu(display("an import candidate is already pending"))]
     CandidatePending,
+    #[snafu(display("the import candidate is unavailable"))]
     CandidateUnavailable,
+    #[snafu(display("the import preview is stale"))]
     PreviewStale,
+    #[snafu(display("the import would remove an occupied seat"))]
     SeatOccupied,
-    EntropyUnavailable,
-    VaultFailure,
-    PersistenceFailure,
+    #[snafu(display("import candidate entropy is unavailable"))]
+    EntropyUnavailable { source: getrandom::Error },
+    #[snafu(display("an import credential could not be accessed"))]
+    VaultFailure { source: crate::vault::VaultError },
+    #[snafu(display("the import could not be persisted"))]
+    PersistenceFailure { source: PersistenceError },
+    #[snafu(display("the import candidate is invalid"))]
+    InvalidWorkbook { source: super::InputError },
 }
 
 impl From<PersistenceError> for ImportError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData | PersistenceError::OperationFailed => {
-                Self::PersistenceFailure
-            }
-        }
+    fn from(source: PersistenceError) -> Self {
+        Self::PersistenceFailure { source }
     }
 }
-
-impl Display for ImportError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Busy => "import work capacity is exhausted",
-            Self::InvalidWorkbook(_) | Self::CandidateInvalid => "the import candidate is invalid",
-            Self::CandidatePending => "an import candidate is already pending",
-            Self::CandidateUnavailable => "the import candidate is unavailable",
-            Self::PreviewStale => "the import preview is stale",
-            Self::SeatOccupied => "the import would remove an occupied seat",
-            Self::EntropyUnavailable => "import candidate entropy is unavailable",
-            Self::VaultFailure => "an import credential could not be accessed",
-            Self::PersistenceFailure => "the import could not be persisted",
-        })
-    }
-}
-
-impl Error for ImportError {}

@@ -12,7 +12,7 @@ use crate::{
     tls::{PeerAddress, TlsListener},
 };
 
-use super::CommandError;
+use super::error::CommandFailure as CommandError;
 
 const WEB_ASSETS_PATH: &str = "/usr/share/natsume-server/web";
 
@@ -29,7 +29,10 @@ pub(super) async fn execute(config: ServerConfig) -> Result<(), CommandError> {
 /// # Errors
 ///
 /// Returns a redacted [`CommandError`] when startup infrastructure cannot be loaded.
-pub async fn router(config: ServerConfig, web_root: &Path) -> Result<axum::Router, CommandError> {
+pub(super) async fn router(
+    config: ServerConfig,
+    web_root: &Path,
+) -> Result<axum::Router, CommandError> {
     let state = Arc::new(load_state(&config).await?);
     Ok(http::router(state, web_root))
 }
@@ -38,7 +41,7 @@ async fn load_state(config: &ServerConfig) -> Result<ServerState, CommandError> 
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
-        .map_err(|_| CommandError::Database)?;
+        .map_err(|source| CommandError::Database { source })?;
     tracing::info!("database ready");
     let state = ServerState::load(database.clone(), config)
         .await
@@ -52,17 +55,19 @@ async fn configure_runtime(database: &Database, origin: &str) -> Result<(), Comm
     database
         .write(move |transaction| {
             if !OperatorComponent::is_initialized(transaction)
-                .map_err(|_| CommandError::Database)?
+                .map_err(|source| CommandError::Operator { source })?
             {
                 return Err(CommandError::NotBootstrapped);
             }
             RuntimeConfigComponent::apply_deployment_config(transaction, &origin)
-                .map_err(|_| CommandError::Configuration)
+                .map_err(|source| CommandError::Runtime { source })
         })
         .await
         .map_err(|error| match error {
             crate::db::TransactionError::Operation(error) => error,
-            crate::db::TransactionError::Persistence(_) => CommandError::Database,
+            crate::db::TransactionError::Persistence(source) => {
+                CommandError::Persistence { source }
+            }
         })
 }
 
@@ -71,7 +76,7 @@ async fn configure_runtime(database: &Database, origin: &str) -> Result<(), Comm
 /// # Errors
 ///
 /// Returns a redacted [`CommandError`] when a startup or serving stage fails.
-pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), CommandError>
+pub(super) async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), CommandError>
 where
     F: Future<Output = ()> + Send + 'static,
 {
@@ -83,12 +88,12 @@ where
         config.tls_private_key_path(),
     )
     .await
-    .map_err(|_| CommandError::Tls)?;
+    .map_err(|source| CommandError::Tls { source })?;
     tracing::info!("TLS identity loaded");
     tracing::info!(listen_address = %config.listen_address(), "listener bound");
     let background = start_background_tasks(&state)
         .await
-        .map_err(|_| CommandError::Background)?;
+        .map_err(|source| CommandError::Background { source })?;
     let router = http::router(state, Path::new(WEB_ASSETS_PATH));
 
     let dispatcher = tracing::dispatcher::get_default(Clone::clone);
@@ -103,11 +108,11 @@ where
     )
     .with_graceful_shutdown(shutdown)
     .await
-    .map_err(|_| CommandError::Http);
+    .map_err(|source| CommandError::Http { source });
     let stopped = background
         .shutdown()
         .await
-        .map_err(|_| CommandError::Background);
+        .map_err(|source| CommandError::Background { source });
     let result = result.and(stopped);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
@@ -117,9 +122,9 @@ where
 
 fn shutdown_signal() -> Result<impl Future<Output = ()>, CommandError> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
-        .map_err(|_| CommandError::Signal)?;
+        .map_err(|source| CommandError::Signal { source })?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-        .map_err(|_| CommandError::Signal)?;
+        .map_err(|source| CommandError::Signal { source })?;
     Ok(async move {
         tokio::select! {
             Some(()) = interrupt.recv() => {}
@@ -146,17 +151,14 @@ mod tests {
         configure_runtime(&database, "https://new.example.test")
             .await
             .unwrap_or_else(|error| panic!("configure runtime failed: {error}"));
-        assert_eq!(
-            RuntimeConfigComponent::new(database.clone())
+        assert!(matches!(RuntimeConfigComponent::new(database.clone())
                 .materialize()
-                .await,
-            Ok("https://new.example.test".to_owned())
-        );
+                .await, Ok(actual) if actual == "https://new.example.test"));
         fixture.sql("CREATE TRIGGER fail_runtime_update BEFORE UPDATE ON runtime_config BEGIN SELECT RAISE(ABORT, 'unexpected write'); END;").await;
-        assert_eq!(
+        assert!(matches!(
             configure_runtime(&database, "https://new.example.test").await,
             Ok(())
-        );
+        ));
     }
 
     #[tokio::test]
@@ -171,9 +173,8 @@ mod tests {
         configure_runtime(&database, "https://judge.example.test")
             .await
             .unwrap_or_else(|error| panic!("initialize runtime failed: {error}"));
-        assert_eq!(
-            RuntimeConfigComponent::new(database).materialize().await,
-            Ok("https://judge.example.test".to_owned())
+        assert!(
+            matches!(RuntimeConfigComponent::new(database).materialize().await, Ok(actual) if actual == "https://judge.example.test")
         );
     }
 
@@ -181,13 +182,12 @@ mod tests {
     async fn startup_rejects_database_without_completed_bootstrap() {
         let fixture = Fixture::new();
         let database = fixture.database(true).await;
-        assert_eq!(
+        assert!(matches!(
             configure_runtime(&database, "https://judge.example.test").await,
             Err(CommandError::NotBootstrapped)
-        );
-        assert_eq!(
-            RuntimeConfigComponent::new(database).read_current().await,
-            Ok(None)
+        ));
+        assert!(
+            matches!(RuntimeConfigComponent::new(database).read_current().await, Ok(actual) if actual.is_none())
         );
     }
 }

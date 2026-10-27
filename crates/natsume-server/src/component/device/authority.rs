@@ -46,7 +46,7 @@ fn find_current_authority_in_transaction(
     };
     let current_key = current_key_for_device(transaction, &device)?;
     ControlAuthority::new(device.device_id(), current_key, device.state())
-        .ok_or(PersistenceError::InvalidPersistedData)
+        .ok_or(PersistenceError::invalid("persisted value"))
         .map(Some)
 }
 
@@ -118,8 +118,11 @@ fn authority_for(
     public_key: ControlPublicKey,
     state: DeviceState,
 ) -> Result<ControlAuthority, ActivationError> {
-    ControlAuthority::new(device_id, public_key, state)
-        .ok_or(ActivationError::InvalidAuthorityFacts)
+    ControlAuthority::new(device_id, public_key, state).ok_or(
+        ActivationError::InvalidAuthorityFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        },
+    )
 }
 
 fn current_key_for_device(
@@ -127,13 +130,13 @@ fn current_key_for_device(
     device: &DeviceRecord,
 ) -> Result<ControlPublicKey, PersistenceError> {
     db::find_current_for_device(transaction, &device.device_id())?
-        .ok_or(PersistenceError::InvalidPersistedData)
+        .ok_or(PersistenceError::invalid("persisted value"))
 }
 
 fn require_one(updated: usize) -> Result<(), PersistenceError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(PersistenceError::InvalidPersistedData)
+        Err(PersistenceError::unexpected_row_count(1, updated))
     }
 }

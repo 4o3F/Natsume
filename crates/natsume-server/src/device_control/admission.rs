@@ -27,7 +27,8 @@ pub(super) struct ProofWindow {
 impl ProofWindow {
     pub(super) fn new() -> Result<Self, AdmissionError> {
         let mut challenge_nonce = [0_u8; 32];
-        getrandom::fill(&mut challenge_nonce).map_err(|_| AdmissionError::EntropyUnavailable)?;
+        getrandom::fill(&mut challenge_nonce)
+            .map_err(|source| AdmissionError::EntropyUnavailable { source })?;
         Ok(Self::from_challenge_nonce(challenge_nonce))
     }
 
@@ -143,6 +144,7 @@ impl ResumeProof {
             &self.challenge,
             &self.proof,
         )
+        // Untrusted proof failures share one domain rejection; cryptographic detail is irrelevant.
         .map_err(|_| AdmissionError::ProofRejected)?;
         if !authority.device_state().is_enabled() {
             return Err(AdmissionError::ResumeAuthorityInactive);
@@ -201,6 +203,7 @@ fn classify_proof(
         .as_deref()
         .map(str::parse::<IpAddr>)
         .transpose()
+        // Malformed reported IP input is a domain rejection; parser detail is irrelevant.
         .map_err(|_| AdmissionError::InvalidClientIp)?
         .map(|ip| ip.to_canonical());
     match proof
@@ -220,6 +223,7 @@ fn classify_proof(
                     }
                 };
             verify_client_proof(candidate_public_key.as_bytes(), &challenge, &proof)
+                // Untrusted proof failures share one domain rejection; cryptographic detail is irrelevant.
                 .map_err(|_| AdmissionError::ProofRejected)?;
             Ok(ProofSubmission::Enrollment(EnrollmentPreAuth {
                 client_ip,
@@ -260,14 +264,14 @@ fn is_canonical_version(value: &str) -> bool {
 ///
 /// The transport does not retry or downgrade any of these failures on the same
 /// connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(super) enum AdmissionError {
     #[snafu(display("the connection proof window was already consumed"))]
     ProofWindowConsumed,
     #[snafu(display("unexpected Device Control handshake message"))]
     UnexpectedHandshakeMessage,
     #[snafu(display("challenge entropy is unavailable"))]
-    EntropyUnavailable,
+    EntropyUnavailable { source: getrandom::Error },
     #[snafu(display("the Daemon version is not canonical SemVer"))]
     InvalidDaemonVersion,
     #[snafu(display("the Session Agent version is not canonical SemVer"))]

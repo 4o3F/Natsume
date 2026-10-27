@@ -116,39 +116,45 @@ pub(crate) async fn get_device_convergence(
 
 pub(super) fn convergence_error(error: DeviceConvergenceError) -> ApiError {
     match error {
-        DeviceConvergenceError::Device(error) => ApiError::from_device(error),
-        DeviceConvergenceError::Gateway(error) => gateway_error(error),
-        DeviceConvergenceError::Binding(error) => binding_error(error),
-        DeviceConvergenceError::Runtime(error) => runtime_error(error),
-        DeviceConvergenceError::Session(error) => session_error(error),
-        DeviceConvergenceError::Home(error) => home_error(error),
+        DeviceConvergenceError::Device { source: error } => ApiError::from_device(error),
+        DeviceConvergenceError::Gateway { source: error } => gateway_error(error),
+        DeviceConvergenceError::Binding { source: error } => binding_error(error),
+        DeviceConvergenceError::Runtime { source: error } => runtime_error(error),
+        DeviceConvergenceError::Session { source: error } => session_error(error),
+        DeviceConvergenceError::Home { source: error } => home_error(error),
     }
 }
 
 fn gateway_error(error: GatewayError) -> ApiError {
     match error {
-        GatewayError::InvalidCsr => ApiError::internal_error("gateway_invalid_persisted_csr"),
+        GatewayError::InvalidCsr => {
+            ApiError::internal_error_from(error, "gateway_invalid_persisted_csr")
+        }
         GatewayError::ConflictingCsr => {
-            ApiError::internal_error("gateway_conflicting_persisted_csr")
+            ApiError::internal_error_from(error, "gateway_conflicting_persisted_csr")
         }
-        GatewayError::InvalidPersistedFacts => {
-            ApiError::internal_error("gateway_invalid_persisted_facts")
+        GatewayError::InvalidPersistedFacts { .. } => {
+            ApiError::internal_error_from(error, "gateway_invalid_persisted_facts")
         }
-        GatewayError::PersistenceFailed => ApiError::internal_error("gateway_persistence_failed"),
-        GatewayError::IssuanceFailed => ApiError::internal_error("gateway_issuance_failed"),
+        GatewayError::PersistenceFailed { .. } => {
+            ApiError::internal_error_from(error, "gateway_persistence_failed")
+        }
+        GatewayError::IssuanceFailed { .. } => {
+            ApiError::internal_error_from(error, "gateway_issuance_failed")
+        }
     }
 }
 
 fn runtime_error(error: RuntimeConfigError) -> ApiError {
     match error {
         RuntimeConfigError::MissingConfiguration => {
-            ApiError::internal_error("runtime_config_missing_configuration")
+            ApiError::internal_error_from(error, "runtime_config_missing_configuration")
         }
-        RuntimeConfigError::InvalidPersistedFacts => {
-            ApiError::internal_error("runtime_config_invalid_persisted_facts")
+        RuntimeConfigError::InvalidPersistedFacts { .. } => {
+            ApiError::internal_error_from(error, "runtime_config_invalid_persisted_facts")
         }
-        RuntimeConfigError::PersistenceFailed => {
-            ApiError::internal_error("runtime_config_persistence_failed")
+        RuntimeConfigError::PersistenceFailed { .. } => {
+            ApiError::internal_error_from(error, "runtime_config_persistence_failed")
         }
     }
 }

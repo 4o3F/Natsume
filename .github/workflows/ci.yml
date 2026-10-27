@@ -29,24 +29,40 @@ env:
 
 jobs:
   checks:
-    name: Shared checks
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    name: Shared checks (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: ./.github/actions/prepare-build
         with:
-          module: shared
-          ubuntu-packages: fonts-noto-cjk libfontconfig1-dev libudev-dev pkg-config
+          module: rust
+          runner: ${{ matrix.os }}
+          ubuntu-packages: dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config
       - name: Rust format
         run: cargo fmt --all --check
-      - name: Build-script and cross-platform compile checks
-        run: deno task check scripts shared
-      - name: Build orchestration and Linux shared-logic tests
-        run: deno task test scripts shared
+      - name: Build-script checks
+        if: runner.os == 'Linux'
+        run: deno task check scripts
+      - name: Compile and lint the Rust workspace
+        run: deno task check rust
+      - name: Build orchestration tests
+        if: runner.os == 'Linux'
+        run: deno task test scripts
+      - name: Rust workspace tests
+        run: deno task test rust
+      - name: Test portable staging on Windows
+        if: runner.os == 'Windows'
+        run: deno test --cached-only --frozen --allow-read --allow-write=target --allow-env --deny-net tools/windows_test.ts
       - name: Install pinned dependency policy tool
+        if: runner.os == 'Linux'
         run: cargo install cargo-deny --version 0.20.2 --locked
       - name: Dependency policy and advisories
+        if: runner.os == 'Linux'
         run: cargo deny check
 
   modules:
@@ -80,10 +96,6 @@ jobs:
           module: ${{ matrix.module }}
           runner: ${{ matrix.os }}
           ubuntu-packages: ${{ matrix.ubuntu_packages }}
-      - name: Compile and lint the module
-        run: deno task check ${{ matrix.module }}
-      - name: Unit, integration and documentation tests for the module
-        run: deno task test ${{ matrix.module }}
       - name: Check Server-generated TypeScript bindings
         if: matrix.module == 'server'
         run: deno task api --check
@@ -93,9 +105,6 @@ jobs:
       - name: Check the Server Diesel schema
         if: matrix.module == 'server'
         run: deno task schema:check
-      - name: Test portable staging on Windows
-        if: runner.os == 'Windows'
-        run: deno test --cached-only --frozen --allow-read --allow-write=target --allow-env --deny-net tools/windows_test.ts
       - name: Build module release binaries and required Web assets
         run: deno task build ${{ matrix.module }}
       - name: Package CI build

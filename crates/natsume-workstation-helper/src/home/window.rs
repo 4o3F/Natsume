@@ -83,19 +83,35 @@ pub(crate) fn require_closed(root: &Path) -> Result<(), ResourceControlError> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Ok(_) => Err(rejected("Home maintenance window is open")),
         Err(_) => Err(unavailable("Home maintenance window cannot be inspected")),
+    }?;
+    if let Some(progress) = super::query(root)?
+        && (progress.phase != HomeResetPhase::Verified
+            || !super::cleanup::complete(root, progress.reset_epoch)?)
+    {
+        return Err(rejected("native reset completion has not been established"));
     }
+    Ok(())
 }
 
 pub(crate) fn query(root: &Path) -> Result<Option<HomeResetProgress>, ResourceControlError> {
-    let progress = super::query(root)?;
-    if let Some(window) = Window::read(root)? {
-        if let Some(progress) = progress.filter(|progress| progress.reset_epoch == window.epoch) {
-            return Ok(Some(progress));
-        }
-        return Ok(Some(HomeResetProgress {
+    let mut progress = super::query(root)?;
+    if let Some(window) = Window::read(root)?
+        && progress
+            .as_ref()
+            .is_none_or(|p| p.reset_epoch != window.epoch)
+    {
+        progress = Some(HomeResetProgress {
             reset_epoch: window.epoch,
             phase: HomeResetPhase::Draining,
-        }));
+        });
+    }
+    if let Some(progress) = &mut progress
+        && progress.phase == HomeResetPhase::Verified
+    {
+        super::cleanup::require_policy(root)?;
+        if !super::cleanup::complete(root, progress.reset_epoch)? {
+            progress.phase = HomeResetPhase::RecoveryRequired;
+        }
     }
     Ok(progress)
 }
@@ -111,6 +127,7 @@ async fn enter(
     // The shared PAM lock now excludes a late worker registration. The drain
     // proved session, user manager and UID processes gone before any Home write.
     if !session::contest_absent(connection, root).await?
+        || !session::contest_user_absent(connection, root).await?
         || !crate::processes::owned_by(
             root,
             session::account(root, session::account_name(SessionRole::Contest))?.uid,
@@ -125,11 +142,16 @@ async fn enter(
         window.maintaining = true;
         window.persist(root)?;
     }
+    super::cleanup::run(root, window.epoch)?;
     Ok(guard)
 }
 
 fn require_epoch(root: &Path, epoch: u64) -> Result<Option<Window>, ResourceControlError> {
     super::require_epoch(epoch)?;
+    if let Err(error) = super::cleanup::require_policy(root) {
+        admission::close(root)?;
+        return Err(error);
+    }
     let window = Window::read(root)?;
     if window.as_ref().is_some_and(|window| window.epoch != epoch)
         || super::query(root)?.is_some_and(|p| {
@@ -151,6 +173,22 @@ pub(crate) async fn prepare(
     let owned = require_epoch(root, epoch)?;
     if owned.is_none() && verified_mount(root, epoch)? {
         return admission::open(root);
+    }
+    if owned.is_none() && super::cleanup::complete(root, epoch)? {
+        // Replaying an already-cleaned epoch does not authorize capturing a new
+        // contest just because its mount was lost. Recover must prove absence.
+        admission::close(root)?;
+        return Err(unavailable("completed reset requires Home mount recovery"));
+    }
+    if owned.is_none()
+        && super::query(root)?
+            .is_some_and(|p| p.reset_epoch == epoch && p.phase == HomeResetPhase::Verified)
+        && !super::cleanup::complete(root, epoch)?
+    {
+        admission::close(root)?;
+        return Err(rejected(
+            "legacy Home completion requires an explicit new reset epoch",
+        ));
     }
     if let Err(error) = super::prepare_metadata(root, epoch) {
         admission::close(root)?;
@@ -212,6 +250,10 @@ fn verified_mount(root: &Path, epoch: u64) -> Result<bool, ResourceControlError>
     {
         return Ok(false);
     }
+    if !super::cleanup::complete(root, epoch)? {
+        admission::close(root)?;
+        return Ok(false);
+    }
     match super::mounted_generation(root, epoch) {
         Ok(mounted) => Ok(mounted),
         Err(error) => {
@@ -242,7 +284,14 @@ async fn recover_owned(
     let mut window = if let Some(window) = owned {
         window
     } else {
-        super::require_target_progress(root, epoch)?;
+        if super::require_target_progress(root, epoch)? == HomeResetPhase::Verified
+            && !super::cleanup::complete(root, epoch)?
+        {
+            admission::close(root)?;
+            return Err(rejected(
+                "legacy Home completion requires an explicit new reset epoch",
+            ));
+        }
         // Mount recovery after a new boot owns the durable generation, but has
         // no authority to terminate an unexpected new session.
         if !session::contest_absent(connection, root).await? {
@@ -274,12 +323,17 @@ async fn recover_owned(
     finish(root, epoch)
 }
 
-pub(crate) fn verify(root: &Path, epoch: u64) -> Result<HomeResetProgress, ResourceControlError> {
+pub(crate) async fn verify(
+    root: &Path,
+    connection: &Connection,
+    epoch: u64,
+) -> Result<HomeResetProgress, ResourceControlError> {
     // GDM preparation holds the mutation lock while it waits for the desktop.
     // Observing a completed, still mounted generation needs no mutation. Check
     // admission on both sides so an in-progress Home window cannot use this path;
     // incomplete publication must still take the lock and finish below.
     super::require_epoch(epoch)?;
+    super::cleanup::require_policy(root)?;
     if admission::require_open(root).is_ok()
         && verified_mount(root, epoch)?
         && admission::require_open(root).is_ok()
@@ -290,14 +344,24 @@ pub(crate) fn verify(root: &Path, epoch: u64) -> Result<HomeResetProgress, Resou
         });
     }
     let _mutation = admission::mutation(root)?;
-    require_epoch(root, epoch)?;
+    let owned = require_epoch(root, epoch)?;
     if query(root)?.is_some_and(|p| p.reset_epoch == epoch && p.phase == HomeResetPhase::Draining) {
         return Ok(HomeResetProgress {
             reset_epoch: epoch,
             phase: HomeResetPhase::Draining,
         });
     }
+    let guard = if let Some(mut window) = owned {
+        Some(enter(root, connection, &mut window).await?)
+    } else {
+        if !super::cleanup::complete(root, epoch)? {
+            admission::close(root)?;
+            return Err(rejected("native reset completion has not been established"));
+        }
+        None
+    };
     let progress = super::verify(root, epoch)?;
+    drop(guard);
     if progress.phase == HomeResetPhase::Verified {
         finish(root, epoch)?;
     } else {
@@ -307,6 +371,10 @@ pub(crate) fn verify(root: &Path, epoch: u64) -> Result<HomeResetProgress, Resou
 }
 
 fn finish(root: &Path, epoch: u64) -> Result<(), ResourceControlError> {
+    if !super::cleanup::complete(root, epoch)? {
+        admission::close(root)?;
+        return Err(rejected("native reset completion has not been established"));
+    }
     if let Some(window) = Window::read(root)? {
         if window.epoch != epoch
             || super::require_target_progress(root, epoch)? != HomeResetPhase::Verified
@@ -328,6 +396,7 @@ pub(crate) async fn restore_home(
 ) -> Result<(), ResourceControlError> {
     let _mutation = admission::mutation(root)?;
     admission::close(root)?;
+    super::cleanup::require_policy(root)?;
     if let Some(progress) = query(root)? {
         return recover_owned(root, connection, progress.reset_epoch).await;
     }
@@ -350,13 +419,15 @@ pub(crate) async fn restore_home(
 
 #[cfg(test)]
 mod tests {
+    use super::super::cleanup::tests::TestError;
     use super::*;
-    use std::{error::Error, os::unix::fs::PermissionsExt as _};
+    use std::os::unix::fs::PermissionsExt as _;
 
     const BOOT: &str = "550e8400-e29b-41d4-a716-446655440000";
 
-    fn fixture() -> Result<tempfile::TempDir, Box<dyn Error>> {
+    fn fixture() -> Result<tempfile::TempDir, TestError> {
         let root = tempfile::tempdir()?;
+        super::super::cleanup::tests::policy_fixture(root.path())?;
         fs::create_dir_all(super::super::state_directory(root.path()))?;
         let runtime = root.path().join("run/natsume-privileged");
         fs::create_dir_all(&runtime)?;
@@ -367,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_window_withdraws_even_a_previously_published_permit() -> Result<(), Box<dyn Error>> {
+    fn durable_window_withdraws_even_a_previously_published_permit() -> Result<(), TestError> {
         let root = fixture()?;
         admission::open(root.path())?;
         admission::require_open(root.path())?;
@@ -395,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_windows_stay_closed_and_are_not_rewritten() -> Result<(), Box<dyn Error>> {
+    fn invalid_windows_stay_closed_and_are_not_rewritten() -> Result<(), TestError> {
         let root = fixture()?;
         for invalid in [
             "9\n7\ndraining\n66f2fc8e-5672-4fb4-8a84-ced3d96c83f6\nc9\n",
@@ -414,25 +485,243 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn a_verified_marker_without_a_mount_is_not_ready_while_mutation_is_busy()
-    -> Result<(), Box<dyn Error>> {
+    #[tokio::test]
+    async fn a_verified_marker_without_a_mount_is_not_ready_while_mutation_is_busy()
+    -> Result<(), TestError> {
         let root = fixture()?;
         fs::create_dir_all(root.path().join("proc/self"))?;
         fs::write(root.path().join("proc/self/mountinfo"), "")?;
-        super::super::write_progress(root.path(), 7, HomeResetPhase::Verified)?;
         admission::open(root.path())?;
+        super::super::write_progress(root.path(), 7, HomeResetPhase::Verified)?;
         let _mutation = admission::mutation(root.path())?;
 
+        let (left, right) = tokio::net::UnixStream::pair()?;
+        let guid = zbus::Guid::generate();
+        let (connection, _peer) = tokio::try_join!(
+            zbus::connection::Builder::unix_stream(left.into_std()?)
+                .server(guid)
+                .p2p()
+                .build(),
+            zbus::connection::Builder::unix_stream(right.into_std()?)
+                .p2p()
+                .build(),
+        )?;
         assert!(matches!(
-            verify(root.path(), 7),
+            verify(root.path(), &connection, 7).await,
             Err(ResourceControlError::Unavailable(_))
         ));
         assert_eq!(
             super::super::query(root.path())?.map(|progress| progress.phase),
             Some(HomeResetPhase::Verified)
         );
+        assert!(admission::require_open(root.path()).is_err());
+        Ok(())
+    }
+
+    async fn peer() -> Result<(Connection, Connection), TestError> {
+        let (left, right) = tokio::net::UnixStream::pair()?;
+        Ok(tokio::try_join!(
+            zbus::connection::Builder::unix_stream(left.into_std()?)
+                .server(zbus::Guid::generate())
+                .p2p()
+                .build(),
+            zbus::connection::Builder::unix_stream(right.into_std()?)
+                .p2p()
+                .build(),
+        )?)
+    }
+
+    fn verified_fixture() -> Result<tempfile::TempDir, TestError> {
+        let root = super::super::tests::fixture();
+        super::super::cleanup::tests::policy_fixture(root.path())?;
+        let runtime = root.path().join("run/natsume-privileged");
+        fs::create_dir_all(&runtime)?;
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+        fs::create_dir_all(root.path().join("proc/sys/kernel/random"))?;
+        fs::write(root.path().join("proc/sys/kernel/random/boot_id"), BOOT)?;
+        super::super::prepare(root.path(), 7)?;
+        super::super::apply(root.path(), 7)?;
+        super::super::record_verification(root.path(), 7, true)?;
+        let mounts = root.path().join("proc/self/mountinfo");
+        let original = fs::read_to_string(&mounts)?;
+        fs::write(
+            mounts,
+            format!(
+                "{original}43 25 0:44 / {} rw - overlay overlay rw,lowerdir={},upperdir={},workdir={}\n",
+                root.path().join("home/teams").display(),
+                root.path()
+                    .join(super::super::TEMPLATE_RELATIVE_PATH)
+                    .display(),
+                super::super::generation_directory(root.path(), 7)
+                    .join("upper")
+                    .display(),
+                super::super::generation_directory(root.path(), 7)
+                    .join("work")
+                    .display()
+            ),
+        )?;
+        Ok(root)
+    }
+
+    #[tokio::test]
+    async fn legacy_verified_cannot_bypass_any_entry_point_or_existing_permit()
+    -> Result<(), TestError> {
+        let root = verified_fixture()?;
+        let (connection, _peer) = peer().await?;
+        let waiting = GraphicalSession {
+            boot_id: BOOT.to_owned(),
+            logind_session_id: "newwaiting".to_owned(),
+        };
+        fs::write(
+            root.path().join("run/natsume-privileged/contest-permit"),
+            BOOT,
+        )?;
+        fs::write(root.path().join("home/teams/current"), "keep")?;
+        assert!(admission::require_open(root.path()).is_err());
+        assert!(admission::open(root.path()).is_err());
+        assert_eq!(
+            query(root.path())?.map(|p| p.phase),
+            Some(HomeResetPhase::RecoveryRequired)
+        );
+        assert!(
+            prepare(root.path(), &connection, 7, &waiting)
+                .await
+                .is_err()
+        );
+        assert!(apply(root.path(), &connection, 7).await.is_err());
+        assert!(verify(root.path(), &connection, 7).await.is_err());
+        assert!(recover(root.path(), &connection, 7).await.is_err());
+        assert!(restore_home(root.path(), &connection).await.is_err());
+        assert!(Window::read(root.path())?.is_none());
+        assert!(require_epoch(root.path(), 8)?.is_none());
+        assert_eq!(
+            fs::read_to_string(root.path().join("home/teams/current"))?,
+            "keep"
+        );
+        assert_eq!(
+            super::super::query(root.path())?.map(|p| p.phase),
+            Some(HomeResetPhase::Verified)
+        );
+        // The former CLEAR-only proof is parsed as legacy, not malformed, so
+        // a new explicit epoch remains possible but no old fast path can admit.
+        super::super::write_state(root.path(), "cleanup-complete", "1\n7\n")?;
+        assert!(admission::require_open(root.path()).is_err());
+        assert!(
+            prepare(root.path(), &connection, 7, &waiting)
+                .await
+                .is_err()
+        );
+        assert!(apply(root.path(), &connection, 7).await.is_err());
+        assert!(verify(root.path(), &connection, 7).await.is_err());
+        assert!(recover(root.path(), &connection, 7).await.is_err());
+        assert!(restore_home(root.path(), &connection).await.is_err());
+        assert!(require_epoch(root.path(), 8)?.is_none());
+        // Nor may a crash-persisted Home Verified inside an owned window grant admission.
+        Window {
+            epoch: 7,
+            boot: BOOT.to_owned(),
+            contest_id: Some("old".to_owned()),
+            maintaining: true,
+        }
+        .persist(root.path())?;
+        assert_eq!(
+            query(root.path())?.map(|p| p.phase),
+            Some(HomeResetPhase::RecoveryRequired)
+        );
+        assert!(finish(root.path(), 7).is_err());
+        assert!(Window::read(root.path())?.is_some());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_prepare_with_lost_mount_cannot_capture_a_new_contest()
+    -> Result<(), TestError> {
+        let root = verified_fixture()?;
+        let (connection, _peer) = peer().await?;
+        super::super::write_state(root.path(), "cleanup-complete", "2\n7\n")?;
+        let mounts = root.path().join("proc/self/mountinfo");
+        let lower_only: String = fs::read_to_string(&mounts)?
+            .lines()
+            .filter(|line| !line.contains(" - overlay "))
+            .fold(String::new(), |mut encoded, line| {
+                encoded.push_str(line);
+                encoded.push('\n');
+                encoded
+            });
+        fs::write(mounts, lower_only)?;
+        fs::write(root.path().join("home/teams/current"), "new Home state")?;
+        let waiting = GraphicalSession {
+            boot_id: BOOT.to_owned(),
+            logind_session_id: "waiting".to_owned(),
+        };
+        for phase in [HomeResetPhase::Verified, HomeResetPhase::RecoveryRequired] {
+            super::super::write_progress(root.path(), 7, phase)?;
+            assert!(matches!(
+                prepare(root.path(), &connection, 7, &waiting).await,
+                Err(ResourceControlError::Unavailable(message)) if message == "completed reset requires Home mount recovery"
+            ));
+            assert!(Window::read(root.path())?.is_none());
+            assert!(admission::require_open(root.path()).is_err());
+        }
+        assert_eq!(
+            fs::read_to_string(root.path().join("home/teams/current"))?,
+            "new Home state"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn full_scope_replays_and_healthy_restart_never_drain_or_reclean_current_writes()
+    -> Result<(), TestError> {
+        let root = verified_fixture()?;
+        let (connection, _peer) = peer().await?; // Deliberately no logind/cleanup services.
+        super::super::write_state(root.path(), "cleanup-complete", "2\n7\n")?;
+        fs::create_dir(root.path().join("tmp"))?;
+        fs::write(root.path().join("tmp/current"), "new temporary state")?;
+        fs::write(root.path().join("home/teams/current"), "new Home state")?;
+        let waiting = GraphicalSession {
+            boot_id: BOOT.to_owned(),
+            logind_session_id: "waiting".to_owned(),
+        };
+        for _ in 0..2 {
+            prepare(root.path(), &connection, 7, &waiting).await?;
+            apply(root.path(), &connection, 7).await?;
+            assert_eq!(
+                verify(root.path(), &connection, 7).await?.phase,
+                HomeResetPhase::Verified
+            );
+            recover(root.path(), &connection, 7).await?;
+            restore_home(root.path(), &connection).await?;
+            assert_eq!(
+                fs::read_to_string(root.path().join("tmp/current"))?,
+                "new temporary state"
+            );
+            assert_eq!(
+                fs::read_to_string(root.path().join("home/teams/current"))?,
+                "new Home state"
+            );
+            admission::require_open(root.path())?;
+        }
+        // Crash after proof publication, before window deletion / permit publication.
+        admission::close(root.path())?;
+        Window {
+            epoch: 7,
+            boot: BOOT.to_owned(),
+            contest_id: Some("old".to_owned()),
+            maintaining: true,
+        }
+        .persist(root.path())?;
+        recover(root.path(), &connection, 7).await?;
+        assert!(Window::read(root.path())?.is_none());
         admission::require_open(root.path())?;
+        assert_eq!(
+            fs::read_to_string(root.path().join("tmp/current"))?,
+            "new temporary state"
+        );
+        // Removing or changing the image contract revokes even a current permit.
+        fs::write(root.path().join("etc/natsume/contest-reset-policy"), "2\n")?;
+        assert!(admission::require_open(root.path()).is_err());
+        assert!(verify(root.path(), &connection, 7).await.is_err());
         Ok(())
     }
 }

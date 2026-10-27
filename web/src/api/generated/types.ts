@@ -503,6 +503,7 @@ export type PrintExecution = {
   ready_sequence: number;
   state: ExecutionState;
   attempts_used: number;
+  requeue_count: number;
   retry_at_unix_ms: number | null;
   last_outcome: AttemptOutcome | null;
 };
@@ -560,6 +561,10 @@ export type PrintRequest = {
   document: PrintDocument | null;
   admission: PrintAdmission | null;
   generation_failure: GenerationFailure | null;
+};
+
+export type PrintRequeue = {
+  expected_requeue_count: number;
 };
 
 export type PrintSource = {

@@ -53,14 +53,14 @@ impl ServerState {
         database: Database,
         config: &ServerConfig,
     ) -> Result<Self, ServerStateError> {
-        let vault =
-            vault::load(config.vault_master_key_path()).map_err(|_| ServerStateError::Vault)?;
+        let vault = vault::load(config.vault_master_key_path())
+            .map_err(|source| ServerStateError::Vault { source })?;
         let ca_certificate_path = config
             .origin_ca_certificate_path()
-            .map_err(|_| ServerStateError::Configuration)?;
+            .map_err(|source| ServerStateError::Configuration { source })?;
         let ca_private_key_path = config
             .origin_ca_private_key_path()
-            .map_err(|_| ServerStateError::Configuration)?;
+            .map_err(|source| ServerStateError::Configuration { source })?;
         let gateway = GatewayComponent::load(
             database.clone(),
             &ca_certificate_path,
@@ -75,7 +75,7 @@ impl ServerState {
             config.print_documents_path().to_path_buf(),
         )
         .await
-        .map_err(|_| ServerStateError::PrintStorage)?;
+        .map_err(|source| ServerStateError::PrintStorage { source })?;
         Ok(Self::from_parts(
             database,
             print,
@@ -172,20 +172,22 @@ impl ServerState {
 fn map_gateway_load_error(error: GatewayLoadError) -> ServerStateError {
     match error {
         GatewayLoadError::TrustRootMismatch => ServerStateError::OriginCaTrustRootMismatch,
-        GatewayLoadError::OriginCa => ServerStateError::OriginCa,
+        GatewayLoadError::OriginCa { .. } => ServerStateError::OriginCa { source: error },
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum ServerStateError {
     #[snafu(display("server configuration failed"))]
-    Configuration,
+    Configuration { source: crate::config::ConfigError },
     #[snafu(display("vault startup failed"))]
-    Vault,
+    Vault { source: crate::vault::VaultError },
     #[snafu(display("print document storage initialization failed"))]
-    PrintStorage,
+    PrintStorage {
+        source: crate::component::print::PrintError,
+    },
     #[snafu(display("Origin CA startup failed"))]
-    OriginCa,
+    OriginCa { source: GatewayLoadError },
     #[snafu(display("Origin CA issuing certificate and packaged trust root differ"))]
     OriginCaTrustRootMismatch,
 }
@@ -216,17 +218,24 @@ pub(crate) mod tests {
         logos: std::path::PathBuf,
     ) -> Result<ServerState, ServerStateError> {
         let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
-        fs::create_dir(&root).map_err(|_| ServerStateError::Vault)?;
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-            .map_err(|_| ServerStateError::Vault)?;
+        fs::create_dir(&root).map_err(|source| ServerStateError::Vault {
+            source: vault::VaultError::Read { source },
+        })?;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).map_err(|source| {
+            ServerStateError::Vault {
+                source: vault::VaultError::Read { source },
+            }
+        })?;
         let key_path = root.join("master.key");
-        vault::ensure_master_key(&key_path).map_err(|_| ServerStateError::Vault)?;
-        let vault = vault::load(&key_path).map_err(|_| ServerStateError::Vault)?;
-        fs::remove_dir_all(root).map_err(|_| ServerStateError::Vault)?;
+        vault::ensure_master_key(&key_path).map_err(|source| ServerStateError::Vault { source })?;
+        let vault = vault::load(&key_path).map_err(|source| ServerStateError::Vault { source })?;
+        fs::remove_dir_all(root).map_err(|source| ServerStateError::Vault {
+            source: vault::VaultError::Read { source },
+        })?;
         let gateway =
             GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
         let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
-            .map_err(|_| ServerStateError::PrintStorage)?;
+            .map_err(|source| ServerStateError::PrintStorage { source })?;
         Ok(ServerState::from_parts(
             database, print, vault, gateway, logos,
         ))

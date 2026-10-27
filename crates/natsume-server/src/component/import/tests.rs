@@ -101,10 +101,13 @@ impl Fixture {
         preview: &CreatedImportCandidate,
         bytes: &[u8],
     ) -> Result<(), ImportError> {
-        self.import
+        let change = self
+            .import
             .try_begin()?
             .commit(preview.candidate_id(), preview.preview_token_bytes(), bytes)
-            .await
+            .await?;
+        self.control.publish(change).await;
+        Ok(())
     }
     async fn import(&self, bytes: &[u8]) {
         checked(self.commit(&self.preview(bytes).await, bytes).await);
@@ -120,9 +123,11 @@ impl Fixture {
         checked(
             self.database
                 .write(move |tx| {
-                    tx.connection()
-                        .batch_execute(sql)
-                        .map_err(|_| ImportError::PersistenceFailure)
+                    tx.connection().batch_execute(sql).map_err(|source| {
+                        ImportError::PersistenceFailure {
+                            source: source.into(),
+                        }
+                    })
                 })
                 .await,
         );
@@ -140,14 +145,16 @@ async fn invalid_workbook_is_rejected_before_persisting_a_preview_or_secret() {
         .create_candidate(&bytes)
         .await
         .err();
-    assert_eq!(
+    assert!(matches!(
         error,
-        Some(ImportError::InvalidWorkbook(super::InputError {
-            row: Some(3),
-            column: Some(4),
-            kind: super::InputErrorKind::InvalidIdentifier
-        }))
-    );
+        Some(ImportError::InvalidWorkbook {
+            source: super::InputError {
+                row: Some(3),
+                column: Some(4),
+                kind: super::InputErrorKind::InvalidIdentifier
+            }
+        })
+    ));
     assert!(
         checked(super::candidate::read_pending_import_candidate(&fixture.database).await).is_none()
     );
@@ -197,7 +204,9 @@ async fn identical_and_metadata_only_imports_preserve_credentials_and_binding_ta
                 diesel::sql_query("SELECT foreground_target AS value FROM device_session_targets")
                     .get_result::<TextValue>(tx.connection())
                     .map(|row| row.value)
-                    .map_err(|_| ImportError::PersistenceFailure)
+                    .map_err(|source| ImportError::PersistenceFailure {
+                        source: source.into(),
+                    })
             })
             .await,
     );
@@ -222,10 +231,10 @@ async fn only_changed_passwords_advance_revisions_and_commit_checks_the_change_s
             .await
             .contains("password-canary")
     );
-    assert_eq!(
+    assert!(matches!(
         fixture.commit(&preview, &workbook(&[original])).await,
         Err(ImportError::PreviewStale)
-    );
+    ));
     assert_eq!(before, fixture.fingerprint().await);
     checked(fixture.commit(&preview, &bytes).await);
     let evidence = contest_evidence(&fixture.database).await;
@@ -340,10 +349,10 @@ async fn occupied_seat_removal_is_blocked_but_swaps_preserve_the_binding() {
     let removal = workbook(&[b]);
     let preview = fixture.preview(&removal).await;
     assert!(preview.diff().blocks_commit());
-    assert_eq!(
+    assert!(matches!(
         fixture.commit(&preview, &removal).await,
         Err(ImportError::SeatOccupied)
-    );
+    ));
     assert_eq!(before, fixture.fingerprint().await);
     checked(super::candidate::discard_import(&fixture.database, preview.candidate_id()).await);
     let mut a = a;
@@ -369,15 +378,15 @@ async fn concurrent_baseline_changes_and_changed_uploads_require_a_new_preview()
     let preview = fixture.preview(&bytes).await;
     let mut renamed = original;
     renamed[6] = "Different";
-    assert_eq!(
+    assert!(matches!(
         fixture.commit(&preview, &workbook(&[renamed])).await,
         Err(ImportError::PreviewStale)
-    );
+    ));
     install_binding(&fixture.database).await;
-    assert_eq!(
+    assert!(matches!(
         fixture.commit(&preview, &bytes).await,
         Err(ImportError::PreviewStale)
-    );
+    ));
 }
 
 #[tokio::test]
@@ -387,10 +396,10 @@ async fn transaction_failure_rolls_back_roster_ids_credentials_and_candidate_con
     let preview = fixture.preview(&bytes).await;
     let before = fixture.fingerprint().await;
     fixture.execute("CREATE TRIGGER reject_team BEFORE INSERT ON teams BEGIN SELECT RAISE(ABORT, 'test failure'); END").await;
-    assert_eq!(
+    assert!(matches!(
         fixture.commit(&preview, &bytes).await,
-        Err(ImportError::PersistenceFailure)
-    );
+        Err(ImportError::PersistenceFailure { .. })
+    ));
     assert_eq!(before, fixture.fingerprint().await);
     assert_eq!(vault_record_count(&fixture.database).await, 0);
     assert!(
@@ -445,7 +454,7 @@ async fn pending_preview_json(database: &Database) -> String {
             )
             .get_result::<TextValue>(transaction.connection())
             .map(|row| row.value)
-            .map_err(|_| ImportError::PersistenceFailure)
+            .map_err(|source| ImportError::PersistenceFailure { source: source.into() })
         })
         .await
         .unwrap_or_else(|_| panic!("pending preview could not be read"))
@@ -457,7 +466,9 @@ async fn vault_record_count(database: &Database) -> i64 {
             diesel::sql_query("SELECT COUNT(*) AS value FROM server_vault_records")
                 .get_result::<IntegerValue>(transaction.connection())
                 .map(|row| row.value)
-                .map_err(|_| ImportError::PersistenceFailure)
+                .map_err(|source| ImportError::PersistenceFailure {
+                    source: source.into(),
+                })
         })
         .await
         .unwrap_or_else(|_| panic!("vault record count could not be read"))
@@ -474,7 +485,9 @@ async fn contest_evidence(database: &Database) -> ContestEvidence {
                  FROM accounts a JOIN server_vault_records v ON v.account_id = a.account_id",
             )
             .get_result::<ContestEvidence>(transaction.connection())
-            .map_err(|_| ImportError::PersistenceFailure)
+            .map_err(|source| ImportError::PersistenceFailure {
+                source: source.into(),
+            })
         })
         .await
         .unwrap_or_else(|_| panic!("contest evidence could not be read"))
@@ -486,7 +499,7 @@ async fn install_binding(database: &Database) {
             let seat_id =
                 diesel::sql_query("SELECT seat_id AS value FROM seats WHERE seat_code = 'A-01'")
                     .get_result::<TextValue>(transaction.connection())
-                    .map_err(|_| ImportError::PersistenceFailure)?
+                    .map_err(|source| ImportError::PersistenceFailure { source: source.into() })?
                     .value;
             let device_id = Uuid::now_v7();
             let binding_id = Uuid::now_v7();
@@ -500,7 +513,7 @@ async fn install_binding(database: &Database) {
                      ('{binding_id}', '{device_id}', '{seat_id}'); \
                      INSERT INTO device_session_targets VALUES ('{device_id}', 'contest', NULL);"
                 ))
-                .map_err(|_| ImportError::PersistenceFailure)
+                .map_err(|source| ImportError::PersistenceFailure { source: source.into() })
         })
         .await
         .unwrap_or_else(|_| panic!("binding fixture could not be installed"));
@@ -522,7 +535,9 @@ async fn binding_and_seat_counts(database: &Database) -> (i64, i64) {
             )
             .get_result::<Counts>(transaction.connection())
             .map(|row| (row.bindings, row.seats))
-            .map_err(|_| ImportError::PersistenceFailure)
+            .map_err(|source| ImportError::PersistenceFailure {
+                source: source.into(),
+            })
         })
         .await
         .unwrap_or_else(|_| panic!("binding evidence could not be read"))
@@ -542,6 +557,7 @@ struct TextValue {
 
 struct Fixture {
     import: ImportComponent,
+    control: Arc<crate::device_control::DeviceControl>,
     database: Database,
     root: PathBuf,
     vault: Arc<vault::VaultSession>,
@@ -563,7 +579,13 @@ impl Fixture {
                 .await
                 .unwrap_or_else(|_| panic!("fixture database could not be created"));
         let vault = Arc::new(vault);
+        let state = checked(crate::server_state::tests::for_test(
+            database.clone(),
+            root.join("documents"),
+        ));
+        let control = Arc::clone(state.device_control());
         Self {
+            control,
             import: ImportComponent::new(database.clone(), Arc::clone(&vault)),
             database,
             root,

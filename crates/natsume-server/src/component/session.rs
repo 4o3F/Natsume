@@ -22,6 +22,9 @@ impl SessionControlComponent {
         &self,
         device_id: DeviceId,
     ) -> Result<SessionControlTarget, SessionControlError> {
+        if let Some(target) = self.read_current(device_id).await? {
+            return Ok(target);
+        }
         self.database
             .write(move |transaction| find_or_insert_target(transaction, &device_id))
             .await
@@ -53,8 +56,11 @@ impl SessionControlComponent {
                 let rows = db::list_targets(transaction)?;
                 let mut targets = HashMap::with_capacity(rows.len());
                 for (device_id, foreground_target, terminate_epoch) in rows {
-                    let device_id = DeviceId::parse(&device_id)
-                        .ok_or(SessionControlError::InvalidPersistedFacts)?;
+                    let device_id = DeviceId::parse(&device_id).ok_or(
+                        SessionControlError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        },
+                    )?;
                     let target = parse_target((foreground_target, terminate_epoch))?;
                     targets.insert(device_id, target);
                 }
@@ -141,12 +147,20 @@ fn parse_target(
     let foreground_target = match foreground_target.as_str() {
         "contest" => ForegroundTarget::Contest,
         "waiting" => ForegroundTarget::Waiting,
-        _ => return Err(SessionControlError::InvalidPersistedFacts),
+        _ => {
+            return Err(SessionControlError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
+        }
     };
     let terminate_epoch = match terminate_epoch {
         None => None,
         Some(epoch) if epoch > 0 => Some(epoch.cast_unsigned()),
-        Some(_) => return Err(SessionControlError::InvalidPersistedFacts),
+        Some(_) => {
+            return Err(SessionControlError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
+        }
     };
     Ok(SessionControlTarget {
         foreground_target,
@@ -158,7 +172,9 @@ fn require_one(updated: usize) -> Result<(), SessionControlError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(SessionControlError::PersistenceFailed)
+        Err(SessionControlError::PersistenceFailed {
+            source: crate::db::PersistenceError::unexpected_row_count(1, updated),
+        })
     }
 }
 
@@ -184,23 +200,29 @@ impl SessionControlTarget {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum SessionControlError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("the terminate epoch cannot advance further"))]
     TerminateEpochOverflow,
     #[snafu(display("persisted Session Control facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("Session Control persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
+}
+
+impl SessionControlError {
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::PersistenceFailed { source } if source.is_transient())
+    }
 }
 
 impl From<PersistenceError> for SessionControlError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }

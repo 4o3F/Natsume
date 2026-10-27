@@ -12,9 +12,12 @@ pub(super) mod server_vault_records;
 pub(super) mod teams;
 
 fn canonical_uuid_v7(value: &str) -> Result<Uuid, PersistenceError> {
-    let parsed = Uuid::parse_str(value).map_err(|_| PersistenceError::InvalidPersistedData)?;
+    let parsed = Uuid::parse_str(value).map_err(|source| PersistenceError::Uuid {
+        field: "identifier",
+        source,
+    })?;
     if parsed.get_version_num() != 7 || parsed.hyphenated().to_string() != value {
-        return Err(PersistenceError::InvalidPersistedData);
+        return Err(PersistenceError::invalid("persisted value"));
     }
     Ok(parsed)
 }

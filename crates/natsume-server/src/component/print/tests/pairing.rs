@@ -293,8 +293,9 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
         ))
     };
-    // All Print tables belong to one migration. Its rollback removes their data,
+    // Rolling back the Print migrations removes their database records,
     // not roster facts or files owned by the document directory.
+    must(connection.revert_last_migration(migrations()));
     must(connection.revert_last_migration(migrations()));
     assert_eq!(
         must(accounts::table.count().get_result::<i64>(&mut connection)),
@@ -307,7 +308,7 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
     must(f.print.documents.verify(&document.sha256, document.bytes));
     assert_eq!(
         must(connection.run_pending_migrations(migrations())).len(),
-        1
+        2
     );
     assert!(must(f.database.read(db::printers::list).await).is_empty());
     assert!(must(f.print.list_sources().await).is_empty());
@@ -323,15 +324,15 @@ fn source_limit_blocks_for_sixty_seconds_without_blocking_other_sources() {
     for _ in 0..5 {
         assert!(limits.check(first, now).is_ok());
     }
-    assert_eq!(
+    assert!(matches!(
         limits.check(first, now + Duration::from_secs(30)),
         Err(PrintError::RateLimited)
-    );
+    ));
     assert!(limits.check(second, now + Duration::from_secs(30)).is_ok());
-    assert_eq!(
+    assert!(matches!(
         limits.check(first, now + Duration::from_secs(89)),
         Err(PrintError::RateLimited)
-    );
+    ));
     assert!(limits.check(first, now + Duration::from_secs(90)).is_ok());
 }
 
@@ -343,10 +344,10 @@ fn ipv4_mapped_ipv6_cannot_bypass_the_source_limit() {
     for _ in 0..5 {
         assert!(limits.check(IpAddr::V4(ipv4), now).is_ok());
     }
-    assert_eq!(
+    assert!(matches!(
         limits.check(IpAddr::V6(ipv4.to_ipv6_mapped()), now),
         Err(PrintError::RateLimited)
-    );
+    ));
 }
 
 #[test]
@@ -359,13 +360,13 @@ fn global_limit_is_shared_and_has_a_sixty_second_cooldown() {
         }
     }
     let next = IpAddr::from([192, 0, 2, 13]);
-    assert_eq!(
+    assert!(matches!(
         limits.check(next, now + Duration::from_secs(10)),
         Err(PrintError::RateLimited)
-    );
-    assert_eq!(
+    ));
+    assert!(matches!(
         limits.check(next, now + Duration::from_secs(69)),
         Err(PrintError::RateLimited)
-    );
+    ));
     assert!(limits.check(next, now + Duration::from_secs(70)).is_ok());
 }

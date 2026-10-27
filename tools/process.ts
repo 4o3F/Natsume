@@ -162,13 +162,7 @@ export function rustArguments(
         ),
     ];
   }
-  return [
-    ...new Set(
-      packages
-        .filter((target) => target.rustPlatforms.includes(platform))
-        .flatMap((target) => target.crates),
-    ),
-  ].flatMap((name) => ["-p", name]);
+  return ["--workspace"];
 }
 
 export function run(

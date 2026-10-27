@@ -24,7 +24,7 @@ pub(in crate::component::import) fn read(
             teams::category,
         ))
         .load::<(String, Option<String>, i64, String, String, String)>(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)?;
+        .map_err(PersistenceError::from)?;
     Ok(rows
         .into_iter()
         .map(
@@ -67,5 +67,5 @@ pub(in crate::component::import) fn save(
             teams::category.eq(&team.category),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }

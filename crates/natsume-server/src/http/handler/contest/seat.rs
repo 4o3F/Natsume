@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::State,
     response::{IntoResponse, Response},
     routing::get,
@@ -8,13 +10,10 @@ use serde::Serialize;
 
 use crate::component::{contest::SeatFacts, operator::OperatorIdentity};
 
-use super::{super::super::error::ApiError, AppState, middleware};
+use super::{super::super::error::ApiError, AppState};
 
-pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new().route(
-        "/seats",
-        middleware::require_operator(state, get(list_seats)),
-    )
+pub(super) fn operator_routes() -> Routes {
+    vec![("/seats", get(list_seats))]
 }
 
 #[derive(Serialize, specta::Type)]

@@ -1,70 +1,44 @@
+use crate::http::Routes;
+
 use axum::{
-    Extension, Json, Router,
-    extract::{Request, State, rejection::JsonRejection},
-    http::header,
-    middleware::{self as axum_middleware, Next},
+    Extension, Json,
+    extract::{
+        Path, State,
+        rejection::{JsonRejection, PathRejection},
+    },
+    http::{StatusCode, header},
     response::{IntoResponse as _, Response},
-    routing::{MethodRouter, get, post, put},
+    routing::{get, post, put},
 };
 
-use super::{ApiError, AppState, PrintError, PrintPathId, middleware};
+use super::{ApiError, AppState, PrintPathId, middleware};
 use crate::component::print::{
     ClientIdentity,
-    execution::{AttemptReport, JobIdentity, PrintClaim},
+    execution::{AttemptReport, JobIdentity, PrintClaim, PrintRequeue},
 };
 
-pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route(
-            "/print/client/claims",
-            require_client(state.clone(), post(claim)),
-        )
-        .route(
-            "/print/client/attempts/current",
-            require_client(state.clone(), get(current)),
-        )
-        .route(
-            "/print/client/attempts/{attempt_id}",
-            require_client(state.clone(), get(attempt)),
-        )
-        .route(
-            "/print/client/attempts/{attempt_id}/job",
-            require_client(state.clone(), put(register_job)),
-        )
-        .route(
-            "/print/client/attempts/{attempt_id}/reports",
-            require_client(state.clone(), post(report)),
-        )
-        .route(
+pub(super) fn client_routes() -> Routes {
+    vec![
+        ("/print/client/claims", post(claim)),
+        ("/print/client/attempts/current", get(current)),
+        ("/print/client/attempts/{attempt_id}", get(attempt)),
+        ("/print/client/attempts/{attempt_id}/job", put(register_job)),
+        ("/print/client/attempts/{attempt_id}/reports", post(report)),
+        (
             "/print/client/attempts/{attempt_id}/document",
-            require_client(state.clone(), get(document)),
-        )
-        .route(
-            "/print/executions",
-            middleware::require_operator(state, get(executions)),
-        )
+            get(document),
+        ),
+    ]
 }
 
-fn require_client(state: AppState, routes: MethodRouter<AppState>) -> MethodRouter<AppState> {
-    routes.route_layer(axum_middleware::from_fn_with_state(state, authenticate))
-}
-
-async fn authenticate(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
-    let mut values = request.headers().get_all(header::AUTHORIZATION).iter();
-    let token = values
-        .next()
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    let Some(token) = token.filter(|_| values.next().is_none()) else {
-        return ApiError::from_print(PrintError::Authentication).into_response();
-    };
-    match state.print().authenticate_client(token).await {
-        Ok(client) => {
-            request.extensions_mut().insert(client);
-            next.run(request).await
-        }
-        Err(error) => ApiError::from_print(error).into_response(),
-    }
+pub(super) fn operator_routes() -> Routes {
+    vec![
+        (
+            "/print/executions/{ready_sequence}/requeue",
+            middleware::require_admin(post(requeue)),
+        ),
+        ("/print/executions", get(executions)),
+    ]
 }
 
 async fn claim(
@@ -139,6 +113,23 @@ async fn document(
 ) -> Response {
     match state.print().attempt_document(client, id).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "application/pdf")], bytes).into_response(),
+        Err(error) => ApiError::from_print(error).into_response(),
+    }
+}
+
+async fn requeue(
+    State(state): State<AppState>,
+    path: Result<Path<i64>, PathRejection>,
+    body: Result<Json<PrintRequeue>, JsonRejection>,
+) -> Response {
+    let Ok(Path(sequence)) = path else {
+        return ApiError::invalid_request("print_execution_sequence").into_response();
+    };
+    let Ok(Json(input)) = body else {
+        return ApiError::invalid_request("print_requeue_json").into_response();
+    };
+    match state.print().requeue(sequence, input).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }

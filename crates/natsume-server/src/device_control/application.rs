@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use tokio::sync::mpsc;
+use tracing::{Instrument as _, instrument::WithSubscriber as _};
 use uuid::Uuid;
 
 use crate::component::device::{
@@ -29,7 +30,7 @@ impl DeviceControl {
             .device
             .find_device(device_id)
             .await
-            .map_err(DeviceConvergenceError::Device)?
+            .map_err(|source| DeviceConvergenceError::Device { source })?
         else {
             return Ok(None);
         };
@@ -37,27 +38,27 @@ impl DeviceControl {
             .gateway
             .read_current(device_id)
             .await
-            .map_err(DeviceConvergenceError::Gateway)?;
+            .map_err(|source| DeviceConvergenceError::Gateway { source })?;
         let binding = self
             .binding
             .read_current(device_id)
             .await
-            .map_err(DeviceConvergenceError::Binding)?;
+            .map_err(|source| DeviceConvergenceError::Binding { source })?;
         let runtime_config = self
             .runtime
             .read_current()
             .await
-            .map_err(DeviceConvergenceError::Runtime)?;
+            .map_err(|source| DeviceConvergenceError::Runtime { source })?;
         let session_control = self
             .session
             .read_current(device_id)
             .await
-            .map_err(DeviceConvergenceError::Session)?;
+            .map_err(|source| DeviceConvergenceError::Session { source })?;
         let home = self
             .home
             .read_current(device_id)
             .await
-            .map_err(DeviceConvergenceError::Home)?;
+            .map_err(|source| DeviceConvergenceError::Home { source })?;
         let targets = DeviceTargets {
             gateway,
             binding,
@@ -81,7 +82,7 @@ impl DeviceControl {
             .device
             .list_devices(filter)
             .await
-            .map_err(DeviceConvergenceError::Device)?;
+            .map_err(|source| DeviceConvergenceError::Device { source })?;
         if devices.is_empty() {
             return Ok(Vec::new());
         }
@@ -93,27 +94,27 @@ impl DeviceControl {
             .gateway
             .read_all_current()
             .await
-            .map_err(DeviceConvergenceError::Gateway)?;
+            .map_err(|source| DeviceConvergenceError::Gateway { source })?;
         let mut bindings = self
             .binding
             .read_all_current()
             .await
-            .map_err(DeviceConvergenceError::Binding)?;
+            .map_err(|source| DeviceConvergenceError::Binding { source })?;
         let runtime_config = self
             .runtime
             .read_current()
             .await
-            .map_err(DeviceConvergenceError::Runtime)?;
+            .map_err(|source| DeviceConvergenceError::Runtime { source })?;
         let mut sessions = self
             .session
             .read_all_current()
             .await
-            .map_err(DeviceConvergenceError::Session)?;
+            .map_err(|source| DeviceConvergenceError::Session { source })?;
         let mut homes = self
             .home
             .read_all_current()
             .await
-            .map_err(DeviceConvergenceError::Home)?;
+            .map_err(|source| DeviceConvergenceError::Home { source })?;
         let mut connections = self.registry.read_connection_states(&device_ids).await;
 
         Ok(devices
@@ -146,23 +147,23 @@ impl DeviceControl {
         let control = Arc::clone(self);
         tokio::spawn(async move { control.disable_device_inner(device_id).await })
             .await
-            .unwrap_or(Err(DeviceError::PersistenceFailed))
+            .map_err(|source| DeviceError::PersistenceFailed {
+                source: crate::db::PersistenceError::Executor {
+                    source: source.into(),
+                },
+            })?
     }
 
     async fn disable_device_inner(
         &self,
         device_id: DeviceId,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        let handle = if let Some(handle) = self.registry.get(device_id).await {
-            handle
-        } else {
-            if self.device.find_device(device_id).await?.is_none() {
-                return Err(DeviceError::DeviceNotFound);
-            }
-            self.registry.get_or_spawn(device_id).await
-        };
-        let authority_fence = Arc::clone(&handle.authority_fence);
-        let mut fenced = authority_fence.lock().await;
+        if self.registry.get(device_id).await.is_none()
+            && self.device.find_device(device_id).await?.is_none()
+        {
+            return Err(DeviceError::DeviceNotFound);
+        }
+        let (handle, mut fenced) = self.registry.lock_current_fence(device_id).await;
         let outcome = self.device.disable(device_id).await?;
         if matches!(
             outcome,
@@ -188,23 +189,23 @@ impl DeviceControl {
         let control = Arc::clone(self);
         tokio::spawn(async move { control.revoke_device_inner(device_id).await })
             .await
-            .unwrap_or(Err(DeviceError::PersistenceFailed))
+            .map_err(|source| DeviceError::PersistenceFailed {
+                source: crate::db::PersistenceError::Executor {
+                    source: source.into(),
+                },
+            })?
     }
 
     async fn revoke_device_inner(
         &self,
         device_id: DeviceId,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        let handle = if let Some(handle) = self.registry.get(device_id).await {
-            handle
-        } else {
-            if self.device.find_device(device_id).await?.is_none() {
-                return Err(DeviceError::DeviceNotFound);
-            }
-            self.registry.get_or_spawn(device_id).await
-        };
-        let authority_fence = Arc::clone(&handle.authority_fence);
-        let mut fenced = authority_fence.lock().await;
+        if self.registry.get(device_id).await.is_none()
+            && self.device.find_device(device_id).await?.is_none()
+        {
+            return Err(DeviceError::DeviceNotFound);
+        }
+        let (handle, mut fenced) = self.registry.lock_current_fence(device_id).await;
         let outcome = self.device.revoke(device_id).await?;
         if matches!(
             outcome,
@@ -227,12 +228,41 @@ impl DeviceControl {
         self: &Arc<Self>,
         review_id: EnrollmentReviewId,
     ) -> Result<ControlAuthority, EnrollmentApprovalError> {
-        let control = Arc::clone(self);
-        tokio::spawn(async move { control.approve_enrollment_inner(review_id).await })
+        self.approve_enrollment_with_reporting(review_id, false)
             .await
-            .unwrap_or(Err(EnrollmentApprovalError::Activation(
-                crate::component::device::ActivationError::AuthorityPersistenceFailed,
-            )))
+    }
+
+    pub(super) async fn automatically_approve_enrollment(
+        self: &Arc<Self>,
+        review_id: EnrollmentReviewId,
+    ) -> Result<ControlAuthority, EnrollmentApprovalError> {
+        self.approve_enrollment_with_reporting(review_id, true)
+            .await
+    }
+
+    async fn approve_enrollment_with_reporting(
+        self: &Arc<Self>,
+        review_id: EnrollmentReviewId,
+        automatic: bool,
+    ) -> Result<ControlAuthority, EnrollmentApprovalError> {
+        let control = Arc::clone(self);
+        tokio::spawn(async move {
+            control.approve_enrollment_inner(review_id).await.inspect_err(|error| {
+                if automatic && !matches!(error, EnrollmentApprovalError::ReviewNotFound) {
+                    tracing::warn!(error = %snafu::Report::from_error(error), "Device automatic enrollment approval failed");
+                }
+            })
+        }.in_current_span().with_current_subscriber())
+            .await
+            .map_err(|source| EnrollmentApprovalError::Activation {
+                source: Arc::new(
+                    crate::component::device::ActivationError::AuthorityPersistenceFailed {
+                        source: crate::db::PersistenceError::Executor {
+                            source: source.into(),
+                        },
+                    },
+                ),
+            })?
     }
 
     async fn approve_enrollment_inner(
@@ -248,18 +278,16 @@ impl DeviceControl {
             .device
             .find_current_authority(machine_hardware_id)
             .await
-            .map_err(EnrollmentApprovalError::Authority)?
+            .map_err(|source| EnrollmentApprovalError::Authority {
+                source: std::sync::Arc::new(source),
+            })?
             .map(ControlAuthority::device_id);
-        let handle = match current_device_id {
-            Some(device_id) => Some(self.registry.get_or_spawn(device_id).await),
-            None => None,
-        };
-        let authority_fence = handle
-            .as_ref()
-            .map(|handle| Arc::clone(&handle.authority_fence));
-        let mut fenced = match authority_fence.as_ref() {
-            Some(fence) => Some(fence.lock().await),
-            None => None,
+        let (handle, mut fenced) = match current_device_id {
+            Some(device_id) => {
+                let (handle, fenced) = self.registry.lock_current_fence(device_id).await;
+                (Some(handle), Some(fenced))
+            }
+            None => (None, None),
         };
         let approval = self.device.approve_enrollment(review_id).await?;
         let authority = approval.authority();
@@ -277,19 +305,16 @@ impl DeviceControl {
         Ok(authority)
     }
 
-    /// Notifies an existing actor after a committed single-Device target change.
-    pub(crate) async fn dirty_device(&self, device_id: DeviceId) {
-        self.registry.dirty_one(device_id).await;
-    }
-
-    /// Notifies existing actors after a committed fleet-wide target change.
-    pub(crate) async fn dirty_all_devices(&self) {
-        self.registry.dirty_all().await;
-    }
-
-    /// Wakes only existing actors; receipt persistence never waits for Client execution.
-    pub(crate) async fn dirty_devices(&self, devices: &[DeviceId]) {
-        self.registry.dirty_many(devices).await;
+    pub(crate) async fn publish(&self, change: super::TargetChange) {
+        match change.into_scope() {
+            super::change::TargetScope::Device(device_id) => {
+                self.registry.dirty_one(device_id).await;
+            }
+            super::change::TargetScope::Devices(devices) => {
+                self.registry.dirty_many(&devices).await;
+            }
+            super::change::TargetScope::AllConnected => self.registry.dirty_all().await,
+        }
     }
 
     /// Replaces the current lease and then closes the precheck-to-replacement authority race.
@@ -303,6 +328,7 @@ impl DeviceControl {
             .device
             .find_current_authority(machine_hardware_id)
             .await
+            .inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device lease authority lookup failed"))
             .ok()
             != Some(Some(authority))
         {
@@ -316,6 +342,7 @@ impl DeviceControl {
             .device
             .find_current_authority(machine_hardware_id)
             .await
+            .inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device lease authority lookup failed"))
             .ok()
             != Some(Some(authority))
         {
@@ -323,5 +350,18 @@ impl DeviceControl {
             return None;
         }
         Some((session_id, handle))
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn mutate_authority_for_test(
+    control: &DeviceControl,
+    device_id: DeviceId,
+    revoke: bool,
+) -> Result<LifecycleOutcome, DeviceError> {
+    if revoke {
+        control.revoke_device_inner(device_id).await
+    } else {
+        control.disable_device_inner(device_id).await
     }
 }

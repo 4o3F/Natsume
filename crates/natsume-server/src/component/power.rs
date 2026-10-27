@@ -36,7 +36,19 @@ impl PowerControlComponent {
         device_id: DeviceId,
     ) -> Result<PowerControlTarget, PowerError> {
         self.database
-            .write(move |transaction| find_or_insert(transaction, &device_id))
+            .read(move |transaction| {
+                if !db::device_exists(transaction, &device_id)? {
+                    return Err(PowerError::DeviceNotFound);
+                }
+                if let Some(value) = db::find(transaction, &device_id)? {
+                    parse(value)
+                } else {
+                    Ok(PowerControlTarget {
+                        shutdown_epoch: None,
+                        expires_at_unix_ms: None,
+                    })
+                }
+            })
             .await
             .map_err(TransactionError::into_error)
     }
@@ -95,18 +107,22 @@ fn parse((epoch, deadline): (Option<i64>, Option<i64>)) -> Result<PowerControlTa
             shutdown_epoch: Some(epoch.cast_unsigned()),
             expires_at_unix_ms: Some(deadline),
         }),
-        _ => Err(PowerError::InvalidPersistedFacts),
+        _ => Err(PowerError::InvalidPersistedFacts {
+            source: crate::db::PersistenceError::invalid("persisted facts"),
+        }),
     }
 }
 fn require_one(rows: usize) -> Result<(), PowerError> {
     if rows == 1 {
         Ok(())
     } else {
-        Err(PowerError::PersistenceFailed)
+        Err(PowerError::PersistenceFailed {
+            source: crate::db::PersistenceError::unexpected_row_count(1, rows),
+        })
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum PowerError {
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
@@ -115,15 +131,24 @@ pub(crate) enum PowerError {
     #[snafu(display("the shutdown deadline is invalid"))]
     InvalidDeadline,
     #[snafu(display("persisted Power Control facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("Power Control persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
 }
+impl PowerError {
+    pub(crate) fn is_transient(&self) -> bool {
+        matches!(self, Self::PersistenceFailed { source } if source.is_transient())
+    }
+}
+
 impl From<PersistenceError> for PowerError {
-    fn from(value: PersistenceError) -> Self {
-        match value {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

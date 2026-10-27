@@ -66,12 +66,12 @@ async fn negotiation_fences_replay_conflict_and_stale_epochs() {
         .ingest(device_id, negotiation_id, 2, "UNKNOWN")
         .await
         .unwrap_or_else(|error| panic!("exact replay failed: {error}"));
-    assert_eq!(
+    assert!(matches!(
         fixture
             .ingest(device_id, negotiation_id, 2, "DIFFERENT")
             .await,
         Err(BindingError::ConflictingSubmission)
-    );
+    ));
     fixture
         .ingest(device_id, negotiation_id, 1, "STALE")
         .await
@@ -134,7 +134,7 @@ async fn accepted_binding_materializes_one_redacted_current_credential() {
                     .filter(server_vault_records::account_id.eq(account_id_text)),
             )
             .execute(transaction.connection())
-            .map_err(|_| PersistenceError::OperationFailed)?;
+            .map_err(PersistenceError::from)?;
             Ok::<(), PersistenceError>(())
         })
         .await
@@ -213,8 +213,8 @@ async fn concurrent_acceptance_preserves_seat_and_device_occupancy() {
         .component
         .ingest(second_device, Some(input(second_negotiation, 1, "A-01")));
     let (first, second) = tokio::join!(first, second);
-    assert_eq!(first, Ok(()));
-    assert_eq!(second, Ok(()));
+    assert!(matches!(first, Ok(())));
+    assert!(matches!(second, Ok(())));
 
     let first = fixture.materialize(first_device).await;
     let second = fixture.materialize(second_device).await;
@@ -250,8 +250,8 @@ async fn concurrent_acceptance_preserves_seat_and_device_occupancy() {
         .component
         .ingest(third_device, Some(input(third_negotiation, 1, "A-03")));
     let (first_seat, second_seat) = tokio::join!(first_seat, second_seat);
-    assert_eq!(first_seat, Ok(()));
-    assert_eq!(second_seat, Ok(()));
+    assert!(matches!(first_seat, Ok(())));
+    assert!(matches!(second_seat, Ok(())));
     assert_eq!(fixture.binding_count(third_device).await, 1);
     assert_eq!(fixture.negotiation_count(third_device).await, 0);
     assert_eq!(fixture.total_binding_count().await, 2);
@@ -271,7 +271,6 @@ async fn explicit_unbind_releases_occupancy_and_creates_one_new_negotiation() {
         .unwrap_or_else(|error| panic!("binding setup failed: {error}"));
 
     fixture
-        .component
         .unbind(device_id)
         .await
         .unwrap_or_else(|error| panic!("unbind failed: {error}"));
@@ -280,7 +279,6 @@ async fn explicit_unbind_releases_occupancy_and_creates_one_new_negotiation() {
     assert_eq!(fixture.binding_count(device_id).await, 0);
 
     fixture
-        .component
         .unbind(device_id)
         .await
         .unwrap_or_else(|error| panic!("idempotent unbind failed: {error}"));
@@ -314,14 +312,14 @@ async fn ineligible_devices_and_invalid_persisted_evaluations_fail_closed() {
                     binding_negotiations::evaluation_error_code.eq(Some("SEAT_UNKNOWN")),
                 ))
                 .execute(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
             Ok::<(), PersistenceError>(())
         })
         .await
         .unwrap_or_else(|error| panic!("invalid evaluation fixture failed: {error:?}"));
     assert!(matches!(
         fixture.component.materialize(enabled).await,
-        Err(BindingError::InvalidPersistedFacts)
+        Err(BindingError::InvalidPersistedFacts { .. })
     ));
 
     for invalid_password in [
@@ -353,14 +351,13 @@ async fn unsupported_persisted_username_cannot_materialize_credentials() {
 
     assert!(matches!(
         fixture.component.materialize(device_id).await,
-        Err(BindingError::InvalidPersistedFacts)
+        Err(BindingError::InvalidPersistedFacts { .. })
     ));
     assert!(matches!(
         fixture.component.read_current(device_id).await,
-        Err(BindingError::InvalidPersistedFacts)
+        Err(BindingError::InvalidPersistedFacts { .. })
     ));
     fixture
-        .component
         .unbind(device_id)
         .await
         .unwrap_or_else(|error| panic!("invalid legacy binding must remain removable: {error}"));
@@ -390,7 +387,7 @@ async fn batch_read_rejects_a_device_with_both_bound_and_negotiating_facts() {
                         .eq(Uuid::now_v7().hyphenated().to_string()),
                 ))
                 .execute(transaction.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
             Ok::<(), PersistenceError>(())
         })
         .await
@@ -398,7 +395,7 @@ async fn batch_read_rejects_a_device_with_both_bound_and_negotiating_facts() {
 
     assert!(matches!(
         fixture.component.read_all_current().await,
-        Err(BindingError::InvalidPersistedFacts)
+        Err(BindingError::InvalidPersistedFacts { .. })
     ));
 }
 
@@ -416,6 +413,7 @@ struct Fixture {
     database: Database,
     vault: Arc<VaultSession>,
     component: BindingComponent,
+    control: Arc<crate::device_control::DeviceControl>,
 }
 
 impl Fixture {
@@ -437,12 +435,22 @@ impl Fixture {
                 .await
                 .unwrap_or_else(|error| panic!("Binding fixture database failed: {error:?}"));
         let component = BindingComponent::new(database.clone(), Arc::clone(&vault));
+        let state = crate::server_state::tests::for_test(database.clone(), root.join("documents"))
+            .unwrap_or_else(|error| panic!("state: {error}"));
+        let control = Arc::clone(state.device_control());
         Self {
             root,
             database,
             vault,
             component,
+            control,
         }
+    }
+
+    async fn unbind(&self, device_id: DeviceId) -> Result<(), BindingError> {
+        let change = self.component.unbind(device_id).await?;
+        self.control.publish(change).await;
+        Ok(())
     }
 
     async fn insert_device(&self, state: &'static str) -> DeviceId {
@@ -463,7 +471,7 @@ impl Fixture {
                         devices::created_at_unix_ms.eq(1_i64),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await
@@ -499,7 +507,7 @@ impl Fixture {
                         seats::seat_code.eq(seat_code),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 diesel::insert_into(accounts::table)
                     .values((
                         accounts::account_id.eq(&account_id_text),
@@ -507,7 +515,7 @@ impl Fixture {
                         accounts::credential_revision.eq(1_i64),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 diesel::insert_into(organizations::table)
                     .values((
                         organizations::organization_id.eq(1_i64),
@@ -518,7 +526,7 @@ impl Fixture {
                     ))
                     .on_conflict_do_nothing()
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 diesel::insert_into(teams::table)
                     .values((
                         teams::account_id.eq(&account_id_text),
@@ -528,7 +536,7 @@ impl Fixture {
                         teams::category.eq("official"),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 diesel::insert_into(server_vault_records::table)
                     .values((
                         server_vault_records::account_id.eq(&account_id_text),
@@ -536,14 +544,14 @@ impl Fixture {
                         server_vault_records::ciphertext.eq(ciphertext),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 diesel::insert_into(account_mappings::table)
                     .values((
                         account_mappings::seat_id.eq(seat_id_text),
                         account_mappings::account_id.eq(account_id_text),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await
@@ -560,7 +568,7 @@ impl Fixture {
                         seats::seat_code.eq(seat_code),
                     ))
                     .execute(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)?;
+                    .map_err(PersistenceError::from)?;
                 Ok::<(), PersistenceError>(())
             })
             .await
@@ -629,7 +637,7 @@ impl Fixture {
                     .filter(binding_negotiations::device_id.eq(device_id))
                     .count()
                     .get_result::<i64>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("negotiation count failed: {error:?}"))
@@ -643,7 +651,7 @@ impl Fixture {
                     .filter(device_bindings::device_id.eq(device_id))
                     .count()
                     .get_result::<i64>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("Device binding count failed: {error:?}"))
@@ -655,7 +663,7 @@ impl Fixture {
                 device_bindings::table
                     .count()
                     .get_result::<i64>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("binding count failed: {error:?}"))
@@ -689,7 +697,7 @@ async fn bound_profile_refresh_preserves_credentials_and_missing_profile_fails_c
             diesel::update(teams::table.filter(teams::account_id.eq(account.to_string())))
                 .set(teams::name_zh.eq("更新队名"))
                 .execute(tx.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
             Ok::<(), PersistenceError>(())
         })
         .await
@@ -703,7 +711,7 @@ async fn bound_profile_refresh_preserves_credentials_and_missing_profile_fails_c
         .write(move |tx| {
             diesel::delete(teams::table.filter(teams::account_id.eq(account.to_string())))
                 .execute(tx.connection())
-                .map_err(|_| PersistenceError::OperationFailed)?;
+                .map_err(PersistenceError::from)?;
             Ok::<(), PersistenceError>(())
         })
         .await

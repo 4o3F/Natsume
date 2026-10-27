@@ -15,7 +15,7 @@ pub(in crate::component::import) fn insert(
     diesel::insert_into(seats::table)
         .values((seats::seat_id.eq(seat_id), seats::seat_code.eq(seat_code)))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::import) fn delete_exact(
@@ -28,5 +28,5 @@ pub(in crate::component::import) fn delete_exact(
             .filter(seats::seat_code.eq(seat.seat_code())),
     )
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

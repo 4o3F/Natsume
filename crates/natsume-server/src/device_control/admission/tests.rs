@@ -238,7 +238,7 @@ fn resume_verifies_the_selected_current_enabled_authority() {
     assert_eq!(resume.machine_hardware_id().as_text(), MACHINE_HARDWARE_ID);
     let authority = ControlAuthority::new(device_id, control_public_key, DeviceState::Enabled)
         .unwrap_or_else(|| panic!("enabled authority fixture was rejected"));
-    assert_eq!(resume.verify_authority(Some(authority)), Ok(authority));
+    assert!(matches!(resume.verify_authority(Some(authority)), Ok(actual) if actual == authority));
 
     let mut window = proof_window();
     let Ok(ProofSubmission::Resume(resume)) =
@@ -279,8 +279,8 @@ fn enrollment_ready_requires_the_exact_authority_echo() {
             barrier.enrollment_activated().clone(),
         )),
     };
-    assert_eq!(barrier.receive(ready.clone()), Ok(authority));
-    assert_eq!(barrier.receive(ready), Ok(authority));
+    assert!(matches!(barrier.receive(ready.clone()), Ok(actual) if actual == authority));
+    assert!(matches!(barrier.receive(ready), Ok(actual) if actual == authority));
 
     let mismatch = ClientHandshakeEnvelope {
         body: Some(client_handshake_envelope::Body::EnrollmentReady(
@@ -289,8 +289,8 @@ fn enrollment_ready_requires_the_exact_authority_echo() {
             },
         )),
     };
-    assert_eq!(
+    assert!(matches!(
         barrier.receive(mismatch),
         Err(AdmissionError::EnrollmentAuthorityMismatch)
-    );
+    ));
 }

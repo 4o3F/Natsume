@@ -20,7 +20,7 @@ pub(in crate::component::device) fn public_key_exists(
         .first::<Vec<u8>>(transaction.connection())
         .optional()
         .map(|row| row.is_some())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::device) fn find_current_for_device(
@@ -34,9 +34,9 @@ pub(in crate::component::device) fn find_current_for_device(
         .filter(device_control_keys::retired_at_unix_ms.is_null())
         .first::<Vec<u8>>(transaction.connection())
         .optional()
-        .map_err(|_| PersistenceError::OperationFailed)?
+        .map_err(PersistenceError::from)?
         .map(|public_key| {
-            ControlPublicKey::parse(&public_key).ok_or(PersistenceError::InvalidPersistedData)
+            ControlPublicKey::parse(&public_key).ok_or(PersistenceError::invalid("persisted value"))
         })
         .transpose()
 }
@@ -56,7 +56,7 @@ pub(in crate::component::device) fn insert_current(
             device_control_keys::retired_at_unix_ms.eq(None::<i64>),
         ))
         .execute(transaction.connection())
-        .map_err(|_| PersistenceError::OperationFailed)
+        .map_err(PersistenceError::from)
 }
 
 pub(in crate::component::device) fn retire_current(
@@ -77,5 +77,5 @@ pub(in crate::component::device) fn retire_current(
         device_control_keys::retired_at_unix_ms.eq(Some(retired_at_unix_ms)),
     ))
     .execute(transaction.connection())
-    .map_err(|_| PersistenceError::OperationFailed)
+    .map_err(PersistenceError::from)
 }

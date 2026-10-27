@@ -1,3 +1,5 @@
+use crate::http::Routes;
+
 mod dto;
 
 use self::dto::SecretValue;
@@ -11,7 +13,7 @@ pub(crate) use self::dto::{
 use super::super::{AppState, cookie, error::ApiError, middleware};
 use crate::component::operator::{OperatorError, OperatorIdentity};
 use axum::{
-    Extension, Json, Router,
+    Extension, Json,
     extract::{FromRequest, Path, Request, State, rejection::JsonRejection},
     http::StatusCode,
     middleware::{self as axum_middleware, Next},
@@ -20,49 +22,56 @@ use axum::{
 };
 use uuid::Uuid;
 
-pub(in crate::http) fn routes(state: AppState) -> Router<AppState> {
-    let public = Router::new()
-        .route("/operator/register/inspect", post(inspect_registration))
-        .route("/operator/register", post(register_operator))
-        .route(
+pub(in crate::http) fn public_routes(state: AppState) -> Routes {
+    let logged_out = axum_middleware::from_fn_with_state(state, require_logged_out);
+    vec![
+        (
+            "/operator/register/inspect",
+            post(inspect_registration).route_layer(logged_out.clone()),
+        ),
+        (
+            "/operator/register",
+            post(register_operator).route_layer(logged_out.clone()),
+        ),
+        (
             "/operator/password/reset/inspect",
-            post(inspect_password_reset),
-        )
-        .route("/operator/password/reset", post(reset_password))
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            require_logged_out,
-        ));
-    Router::new()
-        .route(
+            post(inspect_password_reset).route_layer(logged_out.clone()),
+        ),
+        (
+            "/operator/password/reset",
+            post(reset_password).route_layer(logged_out),
+        ),
+    ]
+}
+
+pub(in crate::http) fn operator_routes() -> Routes {
+    vec![
+        (
             "/operator/accounts",
-            middleware::require_admin(state.clone(), get(list_accounts)),
-        )
-        .route(
+            middleware::require_admin(get(list_accounts)),
+        ),
+        (
             "/operator/accounts/{operator_id}",
-            middleware::require_admin(state.clone(), patch(update_account).delete(delete_account)),
-        )
-        .route(
+            middleware::require_admin(patch(update_account).delete(delete_account)),
+        ),
+        (
             "/operator/invitations",
-            middleware::require_admin(state.clone(), get(list_invitations).post(create_invitation)),
-        )
-        .route(
+            middleware::require_admin(get(list_invitations).post(create_invitation)),
+        ),
+        (
             "/operator/invitations/{invite_id}",
-            middleware::require_admin(state.clone(), delete(revoke_invitation)),
-        )
-        .route(
+            middleware::require_admin(delete(revoke_invitation)),
+        ),
+        (
             "/operator/invitations/{invite_id}/actions/regenerate",
-            middleware::require_admin(state.clone(), post(regenerate_invitation)),
-        )
-        .route(
+            middleware::require_admin(post(regenerate_invitation)),
+        ),
+        (
             "/operator/accounts/{operator_id}/password-resets",
-            middleware::require_admin(state.clone(), post(create_password_reset)),
-        )
-        .route(
-            "/operator/password/change",
-            middleware::require_operator(state, post(change_password)),
-        )
-        .merge(public)
+            middleware::require_admin(post(create_password_reset)),
+        ),
+        ("/operator/password/change", post(change_password)),
+    ]
 }
 
 async fn require_logged_out(
@@ -82,6 +91,7 @@ async fn require_logged_out(
 
 fn parse_id(value: &str) -> Result<Uuid, ApiError> {
     let id = Uuid::parse_str(value)
+        // Malformed request input is a domain rejection; parser detail is irrelevant.
         .map_err(|_| ApiError::invalid_request("operator_id_not_canonical_uuid_v7"))?;
     if id.get_version_num() != 7 || id.to_string() != value {
         return Err(ApiError::invalid_request(
@@ -93,12 +103,12 @@ fn parse_id(value: &str) -> Result<Uuid, ApiError> {
 
 fn now_ms() -> Result<i64, ApiError> {
     i64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
-        .map_err(|_| ApiError::internal_error("operator_clock_invalid"))
+        .map_err(|error| ApiError::internal_error_from(error, "operator_clock_invalid"))
 }
 
 fn clear_session(response: Response) -> Response {
-    cookie::with_clearing_session_cookie(response).unwrap_or_else(|()| {
-        ApiError::internal_error("operator_clearing_cookie_failed").into_response()
+    cookie::with_clearing_session_cookie(response).unwrap_or_else(|error| {
+        ApiError::internal_error_from(&error, "operator_clearing_cookie_failed").into_response()
     })
 }
 

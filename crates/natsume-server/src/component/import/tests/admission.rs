@@ -2,7 +2,7 @@ use std::{sync::mpsc, time::Duration};
 
 use super::*;
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 #[tokio::test]
 async fn import_capacity_is_shared_and_lightweight_operations_remain_available() {
@@ -69,11 +69,15 @@ async fn cancelled_write_keeps_capacity_and_does_not_claim_to_undo_a_transaction
                 transaction
                     .connection()
                     .batch_execute("INSERT INTO import_capacity_evidence VALUES (1);")
-                    .map_err(|_| ImportError::PersistenceFailure)?;
+                    .map_err(|source| ImportError::PersistenceFailure {
+                        source: source.into(),
+                    })?;
                 let _ = entered.send(());
                 let _ = waiting.recv_timeout(Duration::from_secs(10));
                 if fail {
-                    Err(ImportError::PersistenceFailure)
+                    Err(ImportError::PersistenceFailure {
+                        source: crate::db::PersistenceError::invalid("persisted facts"),
+                    })
                 } else {
                     Ok(())
                 }
@@ -93,7 +97,9 @@ async fn cancelled_write_keeps_capacity_and_does_not_claim_to_undo_a_transaction
                 diesel::sql_query("SELECT COUNT(*) AS value FROM import_capacity_evidence")
                     .get_result::<IntegerValue>(transaction.connection())
                     .map(|row| row.value)
-                    .map_err(|_| ImportError::PersistenceFailure)
+                    .map_err(|source| ImportError::PersistenceFailure {
+                        source: source.into(),
+                    })
             })
             .await
             .map_err(crate::db::TransactionError::into_error)?;

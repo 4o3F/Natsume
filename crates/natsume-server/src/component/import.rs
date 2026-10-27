@@ -13,6 +13,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::{
     db::{Database, Transaction, TransactionError},
+    device_control::TargetChange,
     vault::VaultSession,
 };
 
@@ -51,6 +52,7 @@ impl ImportComponent {
     pub(crate) fn try_begin(&self) -> Result<ImportOperation, ImportError> {
         let permit = Arc::clone(&self.work)
             .try_acquire_owned()
+            // Capacity exhaustion is a domain rejection; semaphore detail does not change the decision.
             .map_err(|_| ImportError::Busy)?;
         Ok(ImportOperation {
             database: self.database.clone(),
@@ -81,7 +83,7 @@ impl ImportOperation {
         candidate_id: uuid::Uuid,
         presented_token: &[u8; 32],
         raw_xlsx: &[u8],
-    ) -> Result<(), ImportError> {
+    ) -> Result<TargetChange, ImportError> {
         commit::commit_import(
             &self.database,
             self.vault,
@@ -91,6 +93,7 @@ impl ImportOperation {
             self.permit,
         )
         .await
+        .map(|()| TargetChange::all_connected())
     }
 }
 
@@ -101,19 +104,23 @@ async fn parse_roster(
     permit: OwnedSemaphorePermit,
 ) -> Result<(workbook::Roster, OwnedSemaphorePermit), ImportError> {
     if raw.len() > MAX_WORKBOOK_BYTES {
-        return Err(ImportError::InvalidWorkbook(InputError {
-            row: None,
-            column: None,
-            kind: InputErrorKind::WorkbookTooLarge,
-        }));
+        return Err(ImportError::InvalidWorkbook {
+            source: InputError {
+                row: None,
+                column: None,
+                kind: InputErrorKind::WorkbookTooLarge,
+            },
+        });
     }
     let bytes = zeroize::Zeroizing::new(raw.to_vec());
     // Return the permit with the result. Dropping the caller cannot release it
     // while the blocking closure is still queued or parsing.
     tokio::task::spawn_blocking(move || workbook::parse_xlsx(&bytes).map(|roster| (roster, permit)))
         .await
-        .map_err(|_| ImportError::CandidateInvalid)?
-        .map_err(ImportError::InvalidWorkbook)
+        .map_err(|source| ImportError::CandidateWorker {
+            source: source.into(),
+        })?
+        .map_err(|source| ImportError::InvalidWorkbook { source })
 }
 
 // Carry capacity in both transaction outcomes until COMMIT/ROLLBACK completes,
@@ -137,7 +144,8 @@ async fn write_import<T: Send + 'static>(
 }
 
 fn candidate_fingerprint(roster: &CandidateRoster) -> Result<[u8; 32], ImportError> {
-    let bytes = serde_json::to_vec(roster).map_err(|_| ImportError::CandidateInvalid)?;
+    let bytes =
+        serde_json::to_vec(roster).map_err(|source| ImportError::CandidateEncoding { source })?;
     let mut hasher = Sha256::new();
     write_field(&mut hasher, b"natsume/import-candidate/v2");
     write_field(&mut hasher, &bytes);

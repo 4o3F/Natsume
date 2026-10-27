@@ -7,8 +7,35 @@ mod error;
 mod reset_operator_password;
 mod serve;
 
+pub use crate::logging::Logging;
 pub use error::CommandError;
-pub use serve::{router, run_until};
+/// Builds the mounted Server HTTP surface over an already-bootstrapped database.
+///
+/// # Errors
+///
+/// Returns a redacted [`CommandError`] when startup infrastructure cannot be loaded.
+pub async fn router(
+    config: ServerConfig,
+    web_root: &std::path::Path,
+) -> Result<axum::Router, CommandError> {
+    serve::router(config, web_root)
+        .await
+        .map_err(CommandError::from)
+}
+
+/// Runs the production Server stack until the supplied shutdown future resolves.
+///
+/// # Errors
+///
+/// Returns a redacted [`CommandError`] when a startup or serving stage fails.
+pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), CommandError>
+where
+    F: std::future::Future<Output = ()> + Send + 'static,
+{
+    serve::run_until(config, shutdown)
+        .await
+        .map_err(CommandError::from)
+}
 
 use crate::{config::ServerConfig, logging};
 
@@ -30,13 +57,27 @@ impl Command {
     }
 }
 
-/// Initializes process logging and runs the selected Server command.
+/// Installs stderr logging before command-line parsing or configuration loading.
+///
+/// # Errors
+///
+/// Returns a typed error if a process subscriber has already been installed.
+pub fn bootstrap_logging() -> Result<Logging, CommandError> {
+    logging::bootstrap().map_err(|source| error::CommandFailure::Logging { source }.into())
+}
+
+/// Configures the startup subscriber and runs the selected Server command.
 ///
 /// # Errors
 ///
 /// Returns a redacted [`CommandError`] when logging or command execution fails.
-pub async fn run(config: ServerConfig, command: Command) -> Result<(), CommandError> {
-    let telemetry = logging::initialize(config.log_level()).map_err(|_| CommandError::Logging)?;
+pub async fn run(
+    config: ServerConfig,
+    command: Command,
+    logging: Logging,
+) -> Result<(), CommandError> {
+    let telemetry = logging::initialize(logging, config.log_level())
+        .map_err(|source| error::CommandFailure::Logging { source })?;
     let root_span = tracing::info_span!(
         "server_command",
         "otel.kind" = "internal",
@@ -61,7 +102,7 @@ pub async fn run(config: ServerConfig, command: Command) -> Result<(), CommandEr
     .instrument(root_span)
     .await;
     telemetry.shutdown();
-    result
+    result.map_err(CommandError::from)
 }
 
 fn log_mode(mode: &'static str) {

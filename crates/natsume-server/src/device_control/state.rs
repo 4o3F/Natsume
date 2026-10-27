@@ -1,3 +1,7 @@
+//! Reconcile complete Client snapshots before publishing complete Server targets.
+//! Invalid Client input terminates its lease; transient persistence failures retain
+//! the latest snapshot for bounded retries, while other Server failures terminate it.
+
 use natsume_workstation_protocol::generated::{
     BindingAccessTarget, BindingContext, BindingEvaluation, BindingInput as WireBindingInput,
     BindingNegotiationIntent, BoundTarget, ClientStateSnapshot, ConcreteTargetState,
@@ -6,6 +10,7 @@ use natsume_workstation_protocol::generated::{
     HomeTarget, PowerControlTarget, RuntimeConfigTarget, SecretBytes, ServerIntentState,
     ServerStateSnapshot, SessionControlTarget,
 };
+use snafu::{OptionExt as _, ResultExt as _, Snafu};
 
 use crate::component::{
     binding::{
@@ -25,45 +30,36 @@ use super::{
 
 const SEAT_CODE_LENGTH_LIMIT: usize = 64;
 
-/// Validates one complete Client snapshot, applies its consumed inputs, and
-/// materializes one complete Server snapshot together with the validated Actual
-/// retained by the current Device lease.
-///
-/// All wire-level Input and Actual validation finishes before the first component
-/// call, so malformed or partial snapshots cause no component writes. Gateway and
-/// Binding ingest run first, followed by Gateway, Binding, Runtime, Session, and Home
-/// materialization. `None` covers both invalid input and component failure; the Device
-/// actor gives both the same terminal lease behavior and therefore does not need a
-/// richer error type.
 pub(super) async fn reconcile(
     control: &DeviceControl,
     device_id: DeviceId,
-    snapshot: ClientStateSnapshot,
-) -> Option<(ServerStateSnapshot, ObservedActualState)> {
-    let input = snapshot.input?;
-    let actual = snapshot.actual?;
-    let gateway_input = match input.gateway_credential {
-        Some(input) => Some(parse_gateway_input(input)?),
+    snapshot: &ClientStateSnapshot,
+) -> Result<(ServerStateSnapshot, ObservedActualState), ReconcileError> {
+    let input = snapshot.input.as_ref().context(InvalidSnapshotSnafu)?;
+    let actual = snapshot.actual.as_ref().context(InvalidSnapshotSnafu)?;
+    let gateway_input = match input.gateway_credential.as_ref() {
+        Some(input) => Some(parse_gateway_input(input).context(InvalidSnapshotSnafu)?),
         None => None,
     };
-    let binding_input = match input.binding {
-        Some(input) => Some(parse_binding_input(input)?),
+    let binding_input = match input.binding.as_ref() {
+        Some(input) => Some(parse_binding_input(input).context(InvalidSnapshotSnafu)?),
         None => None,
     };
-    let (gateway_actual, observed) = convergence::parse_actual(actual)?;
+    let (gateway_actual, observed) =
+        convergence::parse_actual(actual.clone()).context(InvalidSnapshotSnafu)?;
 
     control
         .gateway
         .ingest(device_id, gateway_input, gateway_actual)
         .await
-        .ok()?;
+        .context(GatewayIngestSnafu)?;
     control
         .binding
         .ingest(device_id, binding_input)
         .await
-        .ok()?;
+        .context(BindingIngestSnafu)?;
 
-    Some((materialize(control, device_id).await?, observed))
+    Ok((materialize(control, device_id).await?, observed))
 }
 
 /// Materializes one complete Server snapshot without replaying Client input.
@@ -74,15 +70,39 @@ pub(super) async fn reconcile(
 pub(super) async fn materialize(
     control: &DeviceControl,
     device_id: DeviceId,
-) -> Option<ServerStateSnapshot> {
-    let gateway = control.gateway.materialize(device_id).await.ok()?;
-    let binding = control.binding.materialize(device_id).await.ok()?;
-    let runtime = control.runtime.materialize().await.ok()?;
-    let session = control.session.materialize(device_id).await.ok()?;
-    let home = control.home.materialize(device_id).await.ok()?;
-    let power = control.power.materialize(device_id).await.ok()?;
+) -> Result<ServerStateSnapshot, ReconcileError> {
+    let gateway = control
+        .gateway
+        .materialize(device_id)
+        .await
+        .context(GatewayMaterializeSnafu)?;
+    let binding = control
+        .binding
+        .materialize(device_id)
+        .await
+        .context(BindingMaterializeSnafu)?;
+    let runtime = control
+        .runtime
+        .materialize()
+        .await
+        .context(RuntimeMaterializeSnafu)?;
+    let session = control
+        .session
+        .materialize(device_id)
+        .await
+        .context(SessionMaterializeSnafu)?;
+    let home = control
+        .home
+        .materialize(device_id)
+        .await
+        .context(HomeMaterializeSnafu)?;
+    let power = control
+        .power
+        .materialize(device_id)
+        .await
+        .context(PowerMaterializeSnafu)?;
 
-    Some(ServerStateSnapshot {
+    Ok(ServerStateSnapshot {
         intent: Some(ServerIntentState {
             gateway_credential: Some(GatewayCredentialIntent {
                 credential_id: gateway.intent().credential_id().as_text(),
@@ -127,17 +147,17 @@ fn encode_power_target(target: ComponentPowerControlTarget) -> PowerControlTarge
 }
 
 /// Converts the optional Gateway Input at the wire boundary.
-fn parse_gateway_input(input: WireGatewayCredentialInput) -> Option<GatewayCredentialInput> {
+fn parse_gateway_input(input: &WireGatewayCredentialInput) -> Option<GatewayCredentialInput> {
     let credential_id = GatewayCredentialId::parse(&input.credential_id)?;
     Some(GatewayCredentialInput::new(
         credential_id,
-        input.gateway_csr_der,
+        input.gateway_csr_der.clone(),
     ))
 }
 
 /// Converts Binding Input only when its identifiers, epoch, and seat code are
 /// canonical component inputs.
-fn parse_binding_input(input: WireBindingInput) -> Option<BindingInput> {
+fn parse_binding_input(input: &WireBindingInput) -> Option<BindingInput> {
     let negotiation_id = BindingNegotiationId::parse(&input.negotiation_id)?;
     let submission_epoch = BindingSubmissionEpoch::new(input.submission_epoch)?;
     if !valid_text(&input.seat_code, SEAT_CODE_LENGTH_LIMIT) {
@@ -146,7 +166,7 @@ fn parse_binding_input(input: WireBindingInput) -> Option<BindingInput> {
     Some(BindingInput::new(
         negotiation_id,
         submission_epoch,
-        input.seat_code,
+        input.seat_code.clone(),
     ))
 }
 
@@ -196,4 +216,87 @@ fn encode_binding_context(context: &ComponentBindingContext) -> BindingContext {
 
 fn valid_text(value: &str, length_limit: usize) -> bool {
     !value.is_empty() && value.len() <= length_limit && !value.chars().any(char::is_control)
+}
+
+#[derive(Debug, Snafu)]
+pub(super) enum ReconcileError {
+    #[snafu(display("the Client snapshot is invalid"))]
+    InvalidSnapshot,
+    #[snafu(display("Device reconciliation failed at GatewayIngest"))]
+    GatewayIngest {
+        source: crate::component::gateway::GatewayError,
+    },
+    #[snafu(display("Device reconciliation failed at BindingIngest"))]
+    BindingIngest {
+        source: crate::component::binding::BindingError,
+    },
+    #[snafu(display("Device reconciliation failed at GatewayMaterialize"))]
+    GatewayMaterialize {
+        source: crate::component::gateway::GatewayError,
+    },
+    #[snafu(display("Device reconciliation failed at BindingMaterialize"))]
+    BindingMaterialize {
+        source: crate::component::binding::BindingError,
+    },
+    #[snafu(display("Device reconciliation failed at RuntimeMaterialize"))]
+    RuntimeMaterialize {
+        source: crate::component::runtime::RuntimeConfigError,
+    },
+    #[snafu(display("Device reconciliation failed at SessionMaterialize"))]
+    SessionMaterialize {
+        source: crate::component::session::SessionControlError,
+    },
+    #[snafu(display("Device reconciliation failed at HomeMaterialize"))]
+    HomeMaterialize {
+        source: crate::component::home::HomeError,
+    },
+    #[snafu(display("Device reconciliation failed at PowerMaterialize"))]
+    PowerMaterialize {
+        source: crate::component::power::PowerError,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ReconcileFault {
+    Client,
+    ServerTransient,
+    Server,
+}
+
+impl ReconcileError {
+    pub(super) fn fault(&self) -> ReconcileFault {
+        use crate::component::{binding::BindingError, gateway::GatewayError};
+        match self {
+            Self::InvalidSnapshot
+            | Self::GatewayIngest {
+                source: GatewayError::InvalidCsr | GatewayError::ConflictingCsr,
+            }
+            | Self::BindingIngest {
+                source: BindingError::ConflictingSubmission,
+            } => ReconcileFault::Client,
+            Self::GatewayIngest { source } | Self::GatewayMaterialize { source }
+                if source.is_transient() =>
+            {
+                ReconcileFault::ServerTransient
+            }
+            Self::BindingIngest { source } | Self::BindingMaterialize { source }
+                if source.is_transient() =>
+            {
+                ReconcileFault::ServerTransient
+            }
+            Self::RuntimeMaterialize { source } if source.is_transient() => {
+                ReconcileFault::ServerTransient
+            }
+            Self::SessionMaterialize { source } if source.is_transient() => {
+                ReconcileFault::ServerTransient
+            }
+            Self::HomeMaterialize { source } if source.is_transient() => {
+                ReconcileFault::ServerTransient
+            }
+            Self::PowerMaterialize { source } if source.is_transient() => {
+                ReconcileFault::ServerTransient
+            }
+            _ => ReconcileFault::Server,
+        }
+    }
 }

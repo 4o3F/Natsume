@@ -18,7 +18,11 @@ fn checked<T, E: std::fmt::Debug>(value: Result<T, E>) -> T {
     value.unwrap_or_else(|error| panic!("test fixture: {error:?}"))
 }
 
-fn validate(cache: &LogoValidationCache, path: &Path, calls: &AtomicUsize) -> Result<(), String> {
+fn validate(
+    cache: &LogoValidationCache,
+    path: &Path,
+    calls: &AtomicUsize,
+) -> Result<(), Arc<LogoError>> {
     cache.validate_with(path, |source| {
         calls.fetch_add(1, Ordering::SeqCst);
         source.validate()
@@ -39,7 +43,10 @@ fn unchanged_valid_and_invalid_files_are_decoded_once() {
     checked(fs::write(&path, "not an image"));
     let first = validate(&cache, &path, &calls);
     assert!(first.is_err());
-    assert_eq!(validate(&cache, &path, &calls), first);
+    let repeated = validate(&cache, &path, &calls);
+    assert!(
+        matches!((first, repeated), (Err(first), Err(repeated)) if Arc::ptr_eq(&first, &repeated))
+    );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     checked(fs::write(&path, SVG));
     checked(validate(&cache, &path, &calls));
@@ -185,8 +192,12 @@ fn transient_io_and_large_errors_are_not_retained() {
     let path = root.path().join("logo.svg");
     checked(fs::write(&path, SVG));
     for failure in [
-        LogoError::Read(io::Error::other("transient")),
-        LogoError::Encode("x".repeat(MAX_CACHED_ERROR_BYTES + 1)),
+        LogoError::Read {
+            source: io::Error::other("transient"),
+        },
+        LogoError::Encode {
+            source: io::Error::other("x".repeat(MAX_CACHED_ERROR_BYTES + 1)),
+        },
     ] {
         let cache = LogoValidationCache::default();
         assert!(cache.validate_with(&path, |_| Err(failure)).is_err());

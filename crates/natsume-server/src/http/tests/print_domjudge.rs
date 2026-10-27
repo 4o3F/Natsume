@@ -32,7 +32,7 @@ use crate::{
     tls::{TlsListener, tests::TestIdentity},
 };
 
-type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+type TestResult = Result<(), crate::test_error::TestError>;
 
 struct RunningServer(JoinHandle<std::io::Result<()>>);
 
@@ -45,14 +45,14 @@ impl Drop for RunningServer {
 async fn listen(
     application: axum::Router,
     identity: &TestIdentity,
-) -> Result<(RunningServer, String), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(RunningServer, String), crate::test_error::TestError> {
     let listener = TlsListener::bind(
         SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
         identity.certificate_path(),
         identity.private_key_path(),
     )
     .await
-    .map_err(|_| "TLS listener")?;
+    .map_err(crate::test_error::TestError::from)?;
     let origin = format!("https://{}", listener.local_addr()?);
     let task = tokio::spawn(async move { axum::serve(listener, application).await });
     Ok((RunningServer(task), origin))
@@ -143,13 +143,13 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
             Ok::<_, diesel::result::Error>(())
         })
         .await
-        .map_err(|e| format!("seed: {e:?}"))?;
+        .map_err(crate::test_error::TestError::from)?;
     let application = router(server_state(&database)?, unused_web_root());
     let login = drive(&application, login_request(LOGIN_NAME, PASSWORD)?).await?;
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("cookie")?
+        .ok_or(crate::test_error::TestError::missing("cookie"))?
         .to_owned();
     let issued = drive(
         &application,
@@ -163,8 +163,12 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     .await?;
     assert_eq!(issued.status, StatusCode::OK);
     let issued: Value = serde_json::from_slice(&issued.body)?;
-    let source_id = issued["source_id"].as_str().ok_or("source_id")?.to_owned();
-    let identity = TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| "TLS identity")?;
+    let source_id = issued["source_id"]
+        .as_str()
+        .ok_or(crate::test_error::TestError::missing("source_id"))?
+        .to_owned();
+    let identity =
+        TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(crate::test_error::TestError::from)?;
     let hide = Arc::new(AtomicBool::new(false));
     let tested = application.clone().layer(middleware::from_fn_with_state(
         hide.clone(),
@@ -173,7 +177,12 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     let (_server, origin) = listen(tested, &identity).await?;
     let private = tempfile::tempdir()?;
     let token = private.path().join("token");
-    std::fs::write(&token, issued["token"].as_str().ok_or("token")?)?;
+    std::fs::write(
+        &token,
+        issued["token"]
+            .as_str()
+            .ok_or(crate::test_error::TestError::missing("token"))?,
+    )?;
     std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o600))?;
     let config_path = private.path().join("config.toml");
     std::fs::write(
@@ -201,13 +210,19 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     };
     let first = run(&config, &runtime, &input).await?;
     assert_eq!(first.state, State::Ready);
-    let first_admission = first.admission.as_ref().ok_or("admission")?;
+    let first_admission = first
+        .admission
+        .as_ref()
+        .ok_or(crate::test_error::TestError::missing("admission"))?;
     assert_eq!(
         (first_admission.ahead_tasks, first_admission.ahead_pages),
         (0, 0)
     );
     assert_eq!(first.team_name, "中文队伍");
-    let first_document = first.document.as_ref().ok_or("document")?;
+    let first_document = first
+        .document
+        .as_ref()
+        .ok_or(crate::test_error::TestError::missing("document"))?;
     let pdf = std::fs::read(
         database
             .documents_path()
@@ -228,10 +243,12 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     assert!(text.contains("中文队伍") && text.contains("中文源码"));
     let source_text = text
         .split_once("abcdefghij")
-        .ok_or("source missing")?
+        .ok_or(crate::test_error::TestError::missing("source missing"))?
         .1
         .split_once("FINAL_SOURCE_MARKER")
-        .ok_or("final source marker missing")?
+        .ok_or(crate::test_error::TestError::missing(
+            "final source marker missing",
+        ))?
         .0
         .chars()
         .filter(|character| !character.is_whitespace())
@@ -243,7 +260,11 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     };
     let replay = run(&config, &unavailable_runtime, &input).await?;
     assert_eq!(
-        replay.admission.as_ref().ok_or("replay")?.ready_sequence,
+        replay
+            .admission
+            .as_ref()
+            .ok_or(crate::test_error::TestError::missing("replay"))?
+            .ready_sequence,
         first_admission.ready_sequence
     );
     input.request_id = Uuid::now_v7().to_string();
@@ -253,7 +274,10 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         !hide.load(Ordering::SeqCst),
         "committed response was hidden"
     );
-    let second_admission = second.admission.as_ref().ok_or("second")?;
+    let second_admission = second
+        .admission
+        .as_ref()
+        .ok_or(crate::test_error::TestError::missing("second"))?;
     assert_eq!(
         (second_admission.ahead_tasks, second_admission.ahead_pages),
         (1, first_document.pages)
@@ -262,18 +286,19 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     // A hidden registration conflict must not make an old ready task appear successful.
     input.original = "different.cpp".to_owned();
     hide.store(true, Ordering::SeqCst);
-    assert_eq!(
+    assert!(matches!(
         run(&config, &unavailable_runtime, &input).await.err(),
         Some(natsume_print_domjudge::Error::Rejected(409))
-    );
+    ));
     assert!(!hide.load(Ordering::SeqCst));
     input.original = "main.cpp".to_owned();
-    let wrong_identity = TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(|_| "wrong trust root")?;
+    let wrong_identity =
+        TestIdentity::new(Ipv4Addr::LOCALHOST).map_err(crate::test_error::TestError::from)?;
     config.ca_certificate = Some(wrong_identity.directory_path().join("local-origin-ca.crt"));
-    assert_eq!(
+    assert!(matches!(
         run(&config, &unavailable_runtime, &input).await.err(),
         Some(natsume_print_domjudge::Error::Ambiguous)
-    );
+    ));
     config.ca_certificate = Some(identity.directory_path().join("local-origin-ca.crt"));
     let reopened = crate::db::Database::connect_and_migrate(&crate::db::DatabaseConfig::new(
         &database.path,
@@ -292,7 +317,7 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
         after_reopen
             .admission
             .as_ref()
-            .ok_or("reopened")?
+            .ok_or(crate::test_error::TestError::missing("reopened"))?
             .ready_sequence,
         second_admission.ready_sequence
     );
@@ -306,9 +331,9 @@ async fn real_typst_https_admission_replay_lost_response_restart_and_revocation(
     )
     .await?;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-    assert_eq!(
+    assert!(matches!(
         run(&config, &unavailable_runtime, &input).await.err(),
         Some(natsume_print_domjudge::Error::Rejected(401))
-    );
+    ));
     Ok(())
 }

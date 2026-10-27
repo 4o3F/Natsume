@@ -1,4 +1,18 @@
-import { Fragment, type MouseEvent, type ReactNode } from "react";
+import {
+  Fragment,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  useCallback,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  defaultRangeExtractor,
+  type Range,
+  useWindowVirtualizer,
+} from "@tanstack/react-virtual";
 import {
   type ColumnDef,
   type RowData,
@@ -52,6 +66,7 @@ export function DataTable<TData extends RowData>({
   getRowId,
   renderExpandedRow,
   scrollable = false,
+  virtualized = false,
   selection,
   onRowClick,
   activeRowId,
@@ -64,6 +79,7 @@ export function DataTable<TData extends RowData>({
   getRowId?: (row: TData) => string;
   renderExpandedRow?: (row: TData) => ReactNode;
   scrollable?: boolean;
+  virtualized?: boolean;
   selection?: DataTableSelection;
   onRowClick?: (row: TData) => void;
   activeRowId?: string | null;
@@ -78,6 +94,81 @@ export function DataTable<TData extends RowData>({
     defaultColumn: { enableSorting: false },
   });
   const rows = table.getRowModel().rows;
+  const bodyRef = useRef<HTMLTableSectionElement>(null);
+  const [scrollMargin, setScrollMargin] = useState(0);
+  const [focusedRowId, setFocusedRowId] = useState<string | null>(null);
+  const pendingFocus = useRef<{ id: string; last: boolean } | null>(null);
+  const virtual = virtualized && rows.length > 100 && !renderExpandedRow;
+  const getItemKey = useCallback((index: number) => rows[index].id, [rows]);
+  const rangeExtractor = useCallback(
+    (range: Range) => {
+      const indexes = new Set(defaultRangeExtractor(range));
+      // Keep focus and detail-sheet return targets mounted outside the viewport.
+      for (const id of [focusedRowId, activeRowId]) {
+        const index = id ? rows.findIndex((row) => row.id === id) : -1;
+        if (index >= 0) indexes.add(index);
+      }
+      return [...indexes].sort((a, b) => a - b);
+    },
+    [rows, focusedRowId, activeRowId],
+  );
+  const virtualizer = useWindowVirtualizer({
+    count: rows.length,
+    enabled: virtual,
+    estimateSize: () => 56,
+    overscan: 5,
+    getItemKey,
+    rangeExtractor,
+    scrollMargin,
+    scrollPaddingStart: 48,
+  });
+  useLayoutEffect(() => {
+    if (!virtual) return;
+    const updateMargin = () => {
+      const body = bodyRef.current;
+      if (body)
+        setScrollMargin(body.getBoundingClientRect().top + window.scrollY);
+    };
+    updateMargin();
+    const observer = new ResizeObserver(updateMargin);
+    observer.observe(document.documentElement);
+    return () => observer.disconnect();
+  }, [virtual]);
+  useLayoutEffect(() => {
+    const request = pendingFocus.current;
+    if (!request) return;
+    if (!virtual) {
+      pendingFocus.current = null;
+      return;
+    }
+    const index = rows.findIndex((row) => row.id === request.id);
+    if (index < 0) {
+      pendingFocus.current = null;
+      return;
+    }
+    const row = bodyRef.current?.querySelector<HTMLTableRowElement>(
+      `tr[data-index="${index}"]`,
+    );
+    if (!row) return;
+    const target = request.last ? (rowTabStops(row).at(-1) ?? row) : row;
+    target.focus({ preventScroll: true });
+    pendingFocus.current = null;
+  });
+  const virtualItems = virtualizer.getVirtualItems();
+  const renderedRows = virtual
+    ? virtualItems.map((item, position) => ({
+        row: rows[item.index],
+        index: item.index,
+        paddingBefore:
+          item.start - (virtualItems[position - 1]?.end ?? scrollMargin),
+      }))
+    : rows.map((row, index) => ({ row, index, paddingBefore: 0 }));
+  const paddingAfter = virtual
+    ? virtualizer.getTotalSize() -
+      ((virtualItems.at(-1)?.end ?? scrollMargin) - scrollMargin)
+    : 0;
+  const columnCount =
+    table.getVisibleLeafColumns().length + (selection ? 1 : 0);
   const selectableIds = selection
     ? rows
         .map((row) => row.id)
@@ -109,15 +200,64 @@ export function DataTable<TData extends RowData>({
     onRowClick(row);
   }
 
+  function focusRow(index: number, last = false) {
+    pendingFocus.current = { id: rows[index].id, last };
+    setFocusedRowId(rows[index].id);
+    virtualizer.scrollToIndex(index, { align: "auto" });
+  }
+
+  function handleRowKeyDown(
+    event: KeyboardEvent<HTMLTableRowElement>,
+    index: number,
+  ) {
+    if (!virtual || !onRowClick) return;
+    const row = event.currentTarget;
+    if (event.key === "Tab") {
+      const last = rowTabStops(row).at(-1) ?? row;
+      if (event.shiftKey && event.target === row && index > 0) {
+        event.preventDefault();
+        focusRow(index - 1, true);
+      } else if (
+        !event.shiftKey &&
+        event.target === last &&
+        index < rows.length - 1
+      ) {
+        event.preventDefault();
+        focusRow(index + 1);
+      }
+      return;
+    }
+    if (event.target !== row) return;
+    const next =
+      event.key === "ArrowDown"
+        ? Math.min(index + 1, rows.length - 1)
+        : event.key === "ArrowUp"
+          ? Math.max(index - 1, 0)
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? rows.length - 1
+              : null;
+    if (next !== null) {
+      event.preventDefault();
+      if (next !== index) focusRow(next);
+    }
+  }
+
   return (
     <div className="w-full min-w-0 overflow-hidden border bg-card">
       <Table
         aria-label={label}
+        aria-rowcount={virtual ? rows.length + 1 : undefined}
         containerClassName={scrollable ? "isolate max-h-96" : undefined}
       >
         <TableHeader className={scrollable ? "sticky top-0 z-10" : undefined}>
           {table.getHeaderGroups().map((headerGroup) => (
-            <TableRow key={headerGroup.id} className="hover:bg-transparent">
+            <TableRow
+              key={headerGroup.id}
+              aria-rowindex={virtual ? 1 : undefined}
+              className="hover:bg-transparent"
+            >
               {selection && (
                 <TableHead>
                   <Checkbox
@@ -180,15 +320,24 @@ export function DataTable<TData extends RowData>({
             </TableRow>
           ))}
         </TableHeader>
-        <TableBody>
+        <TableBody ref={bodyRef}>
           {rows.length ? (
-            rows.map((row) => {
+            renderedRows.map(({ row, index, paddingBefore }) => {
               const expanded = renderExpandedRow?.(row.original);
               const isSelected = selection?.selected.has(row.id) ?? false;
               const selectable = selection?.isSelectable?.(row.id) ?? true;
               return (
                 <Fragment key={row.id}>
+                  {virtual && (
+                    <RowSpacer height={paddingBefore} columns={columnCount} />
+                  )}
                   <TableRow
+                    ref={virtual ? virtualizer.measureElement : undefined}
+                    data-index={virtual ? index : undefined}
+                    aria-rowindex={virtual ? index + 2 : undefined}
+                    onFocusCapture={
+                      virtual ? () => setFocusedRowId(row.id) : undefined
+                    }
                     data-state={
                       isSelected || activeRowId === row.id
                         ? "selected"
@@ -203,6 +352,7 @@ export function DataTable<TData extends RowData>({
                     )}
                     tabIndex={onRowClick ? 0 : undefined}
                     onKeyDown={(event) => {
+                      handleRowKeyDown(event, index);
                       if (
                         onRowClick &&
                         event.target === event.currentTarget &&
@@ -260,8 +410,31 @@ export function DataTable<TData extends RowData>({
               </TableCell>
             </TableRow>
           )}
+          {virtual && <RowSpacer height={paddingAfter} columns={columnCount} />}
         </TableBody>
       </Table>
     </div>
+  );
+}
+
+function RowSpacer({ height, columns }: { height: number; columns: number }) {
+  if (height <= 0) return null;
+  return (
+    <tr aria-hidden="true" role="presentation">
+      <td colSpan={columns} style={{ height, padding: 0, border: 0 }} />
+    </tr>
+  );
+}
+
+function rowTabStops(row: HTMLTableRowElement) {
+  return [
+    ...row.querySelectorAll<HTMLElement>(
+      "button, a[href], input, select, textarea, [tabindex]",
+    ),
+  ].filter(
+    (element) =>
+      element.tabIndex >= 0 &&
+      !element.matches(":disabled") &&
+      element.getClientRects().length > 0,
   );
 }

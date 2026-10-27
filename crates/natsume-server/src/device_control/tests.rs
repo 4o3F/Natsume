@@ -2,7 +2,9 @@ mod resource_usage;
 
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc, time::Duration};
 
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection};
+use diesel::{
+    Connection as _, ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection,
+};
 use ed25519_dalek::SigningKey;
 use futures_util::{SinkExt as _, StreamExt as _};
 use natsume_workstation_protocol::{
@@ -21,7 +23,7 @@ use natsume_workstation_protocol::{
 use prost::Message as _;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc,
+    sync::{Notify, mpsc},
     time::timeout,
 };
 use tokio_tungstenite::{
@@ -44,24 +46,409 @@ use crate::{
     server_state::{self, ServerState},
 };
 
-use super::actor::{DeviceConnectionState, DeviceHandle, DeviceRegistry, TARGET_REFRESH_INTERVAL};
+use super::actor::{
+    DeviceConnectionState, DeviceHandle, DeviceRegistry, TARGET_REFRESH_INTERVAL,
+    TRANSIENT_FAILURE_LIMIT, TRANSIENT_RETRY_DELAY,
+};
 
 const MACHINE_HARDWARE_ID: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
 const DOMJUDGE_ORIGIN: &str = "https://domjudge.example.test";
 
+async fn wait_for_failed_actor(handle: &DeviceHandle) {
+    timeout(Duration::from_secs(5), async {
+        while handle
+            .enqueue_client_state(Uuid::nil(), valid_snapshot())
+            .await
+            .is_ok()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("actor mailbox did not close"));
+}
+
+async fn assert_supervised_reattach(fixture: &Fixture) {
+    let control = fixture.state.device_control();
+    let machine =
+        MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine ID"));
+    let authority = control
+        .device
+        .find_current_authority(machine)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)))
+        .unwrap_or_else(|| panic!("authority"));
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = control
+        .attach_device_lease(machine, authority, outbound)
+        .await
+        .unwrap_or_else(|| panic!("reattach failed"));
+    assert!(
+        handle
+            .enqueue_client_state(session, valid_snapshot())
+            .await
+            .is_ok()
+    );
+    assert_complete_target(
+        timeout(Duration::from_secs(5), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("snapshot timeout"))
+            .unwrap_or_else(|| panic!("lease closed")),
+    );
+}
+
+#[tokio::test]
+async fn supervision_reports_panics_without_payload_and_recovers_attachment() {
+    use crate::{
+        config::LogLevel,
+        logging::tests::{CapturedLogs, SubscriberTestGuard},
+    };
+    use tracing::instrument::WithSubscriber as _;
+
+    let _guard = SubscriberTestGuard::acquire();
+    let captured = CapturedLogs::default();
+    let device_id = async {
+        let fixture = Fixture::new().await;
+        let device_id = fixture.activate(&SigningKey::from_bytes(&[0x78; 32])).await;
+        let (_handle, supervisor) = super::actor::spawn_test_actor(
+            &fixture.state.device_control().registry,
+            device_id,
+            async {
+                panic!("actor_panic_secret_canary");
+            },
+        )
+        .await;
+        timeout(
+            Duration::from_secs(5),
+            tokio::spawn(supervisor.with_current_subscriber()),
+        )
+        .await
+        .unwrap_or_else(|_| panic!("supervisor timeout"))
+        .unwrap_or_else(|error| panic!("supervisor: {error}"));
+        assert!(
+            fixture
+                .state
+                .device_control()
+                .registry
+                .get(device_id)
+                .await
+                .is_none()
+        );
+        assert_supervised_reattach(&fixture).await;
+        device_id
+    }
+    .with_subscriber(captured.subscriber(LogLevel::Trace))
+    .await;
+    let events = captured.text().unwrap_or_else(|()| panic!("logs"));
+    assert_eq!(
+        events.matches("Device actor stopped unexpectedly").count(),
+        1
+    );
+    assert!(events.contains("ERROR"));
+    assert!(events.contains("panicked=true"));
+    assert!(events.contains(&device_id.as_text()));
+    assert!(!events.contains("actor_panic_secret_canary"));
+}
+
+#[tokio::test]
+async fn supervision_closed_entry_is_replaced_once_and_late_cleanup_preserves_replacement() {
+    use crate::{
+        config::LogLevel,
+        logging::tests::{CapturedLogs, SubscriberTestGuard},
+    };
+    use tracing::instrument::WithSubscriber as _;
+
+    let _guard = SubscriberTestGuard::acquire();
+    let captured = CapturedLogs::default();
+    async {
+        let fixture = Fixture::new().await;
+        let device_id = fixture.activate(&SigningKey::from_bytes(&[0x79; 32])).await;
+        let registry = &fixture.state.device_control().registry;
+        let (stale, supervisor) = super::actor::spawn_test_actor(registry, device_id, async {
+            panic!("late_actor_secret_canary");
+        })
+        .await;
+        wait_for_failed_actor(&stale).await;
+        *stale.authority_fence.lock().await = true;
+        let (first, second) = tokio::join!(
+            registry.get_or_spawn(device_id),
+            registry.get_or_spawn(device_id)
+        );
+        assert!(Arc::ptr_eq(&first.authority_fence, &second.authority_fence));
+        assert!(!Arc::ptr_eq(&first.authority_fence, &stale.authority_fence));
+        assert!(!*first.authority_fence.lock().await);
+        supervisor.await;
+        let current = registry
+            .get(device_id)
+            .await
+            .unwrap_or_else(|| panic!("late supervisor removed replacement"));
+        assert!(Arc::ptr_eq(
+            &current.authority_fence,
+            &first.authority_fence
+        ));
+        assert_supervised_reattach(&fixture).await;
+    }
+    .with_subscriber(captured.subscriber(LogLevel::Trace))
+    .await;
+    let events = captured.text().unwrap_or_else(|()| panic!("logs"));
+    assert_eq!(
+        events
+            .matches("Replacing closed Device actor mailbox")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events.matches("Device actor stopped unexpectedly").count(),
+        1
+    );
+    assert!(events.contains("WARN"));
+    assert!(!events.contains("late_actor_secret_canary"));
+}
+
+#[tokio::test]
+async fn supervision_unexpected_clean_exit_is_reported_and_removed() {
+    use crate::{
+        config::LogLevel,
+        logging::tests::{CapturedLogs, SubscriberTestGuard},
+    };
+    use tracing::instrument::WithSubscriber as _;
+
+    let _guard = SubscriberTestGuard::acquire();
+    let captured = CapturedLogs::default();
+    async {
+        let registry = DeviceRegistry::new();
+        let device_id = DeviceId::parse("01900000-0000-7000-8000-000000000001")
+            .unwrap_or_else(|| panic!("device ID"));
+        let (_handle, supervisor) =
+            super::actor::spawn_test_actor(&registry, device_id, async {}).await;
+        timeout(Duration::from_secs(5), supervisor)
+            .await
+            .unwrap_or_else(|_| panic!("supervisor timeout"));
+        assert!(registry.get(device_id).await.is_none());
+    }
+    .with_subscriber(captured.subscriber(LogLevel::Trace))
+    .await;
+    let events = captured.text().unwrap_or_else(|()| panic!("logs"));
+    assert_eq!(
+        events.matches("Device actor stopped unexpectedly").count(),
+        1
+    );
+    assert!(events.contains("panicked=false"));
+}
+
+#[tokio::test]
+async fn supervision_respawn_waits_for_in_flight_disable_and_revoke_commits() {
+    for revoke in [false, true] {
+        assert_supervised_authority_commit(revoke).await;
+    }
+}
+
+async fn assert_supervised_authority_commit(revoke: bool) {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x7a; 32])).await;
+    let control = fixture.state.device_control();
+    let machine =
+        MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine ID"));
+    let authority = control
+        .device
+        .find_current_authority(machine)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)))
+        .unwrap_or_else(|| panic!("authority"));
+    let (fail, failed) = tokio::sync::oneshot::channel();
+    let (stale, supervisor) = super::actor::spawn_test_actor(&control.registry, device_id, async {
+        let _ = failed.await;
+        panic!("fenced actor panic canary");
+    })
+    .await;
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let composition = Arc::clone(&fixture.state);
+    let mutation = tokio::spawn(async move {
+        if revoke {
+            composition.device_control().revoke_device(device_id).await
+        } else {
+            composition.device_control().disable_device(device_id).await
+        }
+    });
+    timeout(Duration::from_secs(2), async {
+        while stale.authority_fence.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("authority mutation did not acquire its fence"));
+    assert!(fail.send(()).is_ok());
+    wait_for_failed_actor(&stale).await;
+    tokio::pin!(supervisor);
+    assert!(futures_util::poll!(&mut supervisor).is_pending());
+    let respawn = control.registry.get_or_spawn(device_id);
+    tokio::pin!(respawn);
+    assert!(futures_util::poll!(&mut respawn).is_pending());
+    assert!(control.registry.get(device_id).await.is_some());
+    drop(lock);
+    let outcome = timeout(Duration::from_secs(5), mutation)
+        .await
+        .unwrap_or_else(|_| panic!("mutation timeout"))
+        .unwrap_or_else(|error| panic!("mutation task: {error}"));
+    assert!(matches!(outcome, Ok(LifecycleOutcome::Changed)));
+    supervisor.await;
+    let replacement = timeout(Duration::from_secs(5), respawn)
+        .await
+        .unwrap_or_else(|_| panic!("respawn timeout"));
+    assert!(!Arc::ptr_eq(
+        &replacement.authority_fence,
+        &stale.authority_fence
+    ));
+    assert!(!*replacement.authority_fence.lock().await);
+    assert!(*stale.authority_fence.lock().await);
+    let (outbound, _outgoing) = mpsc::channel(1);
+    assert!(
+        control
+            .attach_device_lease(machine, authority, outbound)
+            .await
+            .is_none()
+    );
+    let device = control
+        .device
+        .find_device(device_id)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)))
+        .unwrap_or_else(|| panic!("device missing"));
+    assert_eq!(
+        device.state(),
+        if revoke {
+            crate::component::device::DeviceState::Revoked
+        } else {
+            crate::component::device::DeviceState::Disabled
+        }
+    );
+    assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
+}
+
+#[tokio::test]
+async fn supervision_authority_mutation_relocks_replacement_after_lookup_race() {
+    for supervised in [false, true] {
+        for revoke in [false, true] {
+            assert_replacement_fence_is_current(supervised, revoke).await;
+        }
+    }
+}
+
+async fn assert_replacement_fence_is_current(supervised: bool, revoke: bool) {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x7b; 32])).await;
+    let control = fixture.state.device_control();
+    let (exit, exited) = tokio::sync::oneshot::channel();
+    let (stale, supervisor) = super::actor::spawn_test_actor(&control.registry, device_id, async {
+        let _ = exited.await;
+    })
+    .await;
+    let gate = Arc::clone(&stale.authority_fence).lock_owned().await;
+    assert!(exit.send(()).is_ok());
+    wait_for_failed_actor(&stale).await;
+    tokio::pin!(supervisor);
+    let mutation = super::application::mutate_authority_for_test(control, device_id, revoke);
+    tokio::pin!(mutation);
+    let gap = {
+        let cleanup = async {
+            if supervised {
+                supervisor.as_mut().await;
+            } else {
+                control.registry.get_or_spawn(device_id).await;
+            }
+        };
+        tokio::pin!(cleanup);
+        assert!(futures_util::poll!(&mut cleanup).is_pending());
+        let hold_lookup_gap = Arc::clone(&stale.authority_fence).lock_owned();
+        tokio::pin!(hold_lookup_gap);
+        assert!(futures_util::poll!(&mut hold_lookup_gap).is_pending());
+        assert!(futures_util::poll!(&mut mutation).is_pending());
+        drop(gate);
+        cleanup.await;
+        hold_lookup_gap.await
+    };
+    let machine =
+        MachineHardwareId::parse(MACHINE_HARDWARE_ID).unwrap_or_else(|| panic!("machine"));
+    let authority = control
+        .device
+        .find_current_authority(machine)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)))
+        .unwrap_or_else(|| panic!("authority"));
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, attached) = control
+        .attach_device_lease(machine, authority, outbound)
+        .await
+        .unwrap_or_else(|| panic!("replacement attach"));
+    assert!(
+        attached
+            .enqueue_client_state(session, valid_snapshot())
+            .await
+            .is_ok()
+    );
+    assert_complete_target(
+        timeout(Duration::from_secs(5), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("snapshot timeout"))
+            .unwrap_or_else(|| panic!("lease closed")),
+    );
+    let replacement = control
+        .registry
+        .get(device_id)
+        .await
+        .unwrap_or_else(|| panic!("replacement"));
+    assert!(!Arc::ptr_eq(
+        &replacement.authority_fence,
+        &stale.authority_fence
+    ));
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    drop(gap);
+    assert!(futures_util::poll!(&mut mutation).is_pending());
+    timeout(Duration::from_secs(2), async {
+        while replacement.authority_fence.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("mutation locked a retired actor"));
+    drop(lock);
+    let result = timeout(Duration::from_secs(5), mutation)
+        .await
+        .unwrap_or_else(|_| panic!("mutation timeout"));
+    assert!(matches!(result, Ok(LifecycleOutcome::Changed)));
+    assert!(
+        timeout(Duration::from_secs(2), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("replacement lease survived mutation"))
+            .is_none()
+    );
+    assert!(
+        control
+            .attach_device_lease(machine, authority, mpsc::channel(1).0)
+            .await
+            .is_none()
+    );
+    if !supervised {
+        supervisor.await;
+    }
+}
+
 #[tokio::test]
 async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), crate::test_error::TestError> {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x76; 32])).await;
     let control = fixture.state.device_control();
     let authority = control
         .device
         .find_current_authority(
-            MachineHardwareId::parse(MACHINE_HARDWARE_ID).ok_or("invalid machine")?,
+            MachineHardwareId::parse(MACHINE_HARDWARE_ID)
+                .ok_or(crate::test_error::TestError::missing("invalid machine"))?,
         )
         .await?
-        .ok_or("missing authority")?;
+        .ok_or(crate::test_error::TestError::missing("missing authority"))?;
     let (outbound, _first_receiver) = mpsc::channel(1);
     let (old_session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
     let (outbound, _current_receiver) = mpsc::channel(1);
@@ -86,9 +473,9 @@ async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
         .device
         .find_device(device_id)
         .await?
-        .ok_or("missing Device")?
+        .ok_or(crate::test_error::TestError::missing("missing Device"))?
         .network()
-        .ok_or("missing network")?;
+        .ok_or(crate::test_error::TestError::missing("missing network"))?;
     assert_eq!(saved.server_observed_ip.to_string(), "192.0.2.20");
     assert_eq!(saved.client_ip, Some(saved.server_observed_ip));
     handle.clear_lease_if_current(session).await;
@@ -101,7 +488,7 @@ async fn network_addresses_ignore_replaced_leases_and_survive_disconnect()
             .device
             .find_device(device_id)
             .await?
-            .ok_or("missing Device")?
+            .ok_or(crate::test_error::TestError::missing("missing Device"))?
             .network(),
         Some(saved)
     );
@@ -214,7 +601,7 @@ async fn actor_rejects_stale_and_invalid_frames_before_component_writes() {
         .unwrap_or_else(|_| panic!("the actor did not materialize the valid first snapshot"))
         .unwrap_or_else(|| panic!("the actor closed the valid lease"));
     assert_complete_target(envelope);
-    assert_eq!(fixture.component_row_counts().await, [1, 1, 1, 1]);
+    assert_eq!(fixture.component_row_counts().await, [1, 1, 1, 0]);
 }
 
 #[tokio::test]
@@ -251,6 +638,568 @@ async fn full_outbound_queue_terminates_the_current_lease() {
 }
 
 #[tokio::test]
+async fn failure_transient_client_state_keeps_the_lease_and_retries() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x81; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let failures = fixture.query_failures();
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    handle
+        .enqueue_client_state(session, valid_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    await_query_failure(&failures).await;
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::AwaitingFreshState
+    ));
+    assert!(!outgoing.is_closed());
+    let failed_at = time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000;
+    drop(lock);
+
+    let envelope = timeout(
+        TRANSIENT_RETRY_DELAY + Duration::from_secs(2),
+        outgoing.recv(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("the pending snapshot was not retried"))
+    .unwrap_or_else(|| panic!("the transient failure closed the lease"));
+    assert_complete_target(envelope);
+    let DeviceConnectionState::Active {
+        received_at_unix_ms,
+        ..
+    } = fixture
+        .state
+        .device_control()
+        .registry
+        .read_connection_state(device_id)
+        .await
+    else {
+        panic!("the retried snapshot did not become active");
+    };
+    assert!(i128::from(received_at_unix_ms) <= failed_at);
+}
+
+#[tokio::test]
+async fn failure_invalid_csr_still_terminates_the_lease() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x82; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let mut snapshot = valid_snapshot();
+    snapshot
+        .input
+        .as_mut()
+        .unwrap_or_else(|| panic!("fixture input"))
+        .gateway_credential = Some(
+        natsume_workstation_protocol::generated::GatewayCredentialInput {
+            credential_id: Uuid::now_v7().to_string(),
+            gateway_csr_der: Some(vec![0xff]),
+        },
+    );
+    handle
+        .enqueue_client_state(session, snapshot)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert!(
+        timeout(Duration::from_secs(2), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("invalid CSR did not close the lease"))
+            .is_none()
+    );
+    assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
+}
+
+#[tokio::test]
+async fn failure_transient_limit_is_shared_by_refresh_and_client_state() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x83; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    handle
+        .enqueue_client_state(session, valid_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_complete_target(
+        timeout(Duration::from_secs(2), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("initial target timed out"))
+            .unwrap_or_else(|| panic!("initial lease closed")),
+    );
+    let failures = fixture.query_failures();
+    let _lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    fixture
+        .state
+        .device_control()
+        .publish(super::TargetChange::device(device_id))
+        .await;
+    await_query_failure(&failures).await;
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::Active { .. }
+    ));
+    assert!(!outgoing.is_closed());
+
+    for attempt in 2..=TRANSIENT_FAILURE_LIMIT {
+        handle
+            .enqueue_client_state(session, valid_snapshot())
+            .await
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+        await_query_failure(&failures).await;
+        let state = fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await;
+        if attempt < TRANSIENT_FAILURE_LIMIT {
+            assert!(matches!(state, DeviceConnectionState::Active { .. }));
+            assert!(!outgoing.is_closed());
+        } else {
+            assert!(matches!(state, DeviceConnectionState::Offline));
+        }
+    }
+    assert!(outgoing.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn failure_fencing_evicts_a_lease_with_pending_transient_work() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x84; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let failures = fixture.query_failures();
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    handle
+        .enqueue_client_state(session, valid_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    await_query_failure(&failures).await;
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::AwaitingFreshState
+    ));
+    drop(lock);
+
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .disable_device(device_id)
+            .await,
+        Ok(LifecycleOutcome::Changed)
+    ));
+    assert!(
+        timeout(Duration::from_secs(2), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("disable did not evict the pending lease"))
+            .is_none()
+    );
+    handle
+        .enqueue_client_state(session, valid_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::Offline
+    ));
+    assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
+}
+
+#[tokio::test]
+async fn failure_newer_snapshot_replaces_pending_and_success_resets_the_limit() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x85; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    let failures = fixture.query_failures();
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    for _ in 1..TRANSIENT_FAILURE_LIMIT {
+        handle
+            .enqueue_client_state(session, valid_snapshot())
+            .await
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+        await_query_failure(&failures).await;
+        assert!(matches!(
+            fixture
+                .state
+                .device_control()
+                .registry
+                .read_connection_state(device_id)
+                .await,
+            DeviceConnectionState::AwaitingFreshState
+        ));
+    }
+    drop(lock);
+    let mut newer = valid_snapshot();
+    newer
+        .actual
+        .as_mut()
+        .unwrap_or_else(|| panic!("fixture Actual"))
+        .runtime_config = Some(RuntimeConfigActualState {
+        state: RuntimeConfigState::Applied.into(),
+        applied_domjudge_origin: Some(DOMJUDGE_ORIGIN.to_owned()),
+    });
+    let (_, expected) = super::convergence::parse_actual(
+        newer
+            .actual
+            .clone()
+            .unwrap_or_else(|| panic!("fixture Actual")),
+    )
+    .unwrap_or_else(|| panic!("new fixture Actual must validate"));
+    handle
+        .enqueue_client_state(session, newer)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_complete_target(
+        timeout(Duration::from_secs(2), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("new complete state waited for the retry timer"))
+            .unwrap_or_else(|| panic!("new complete state closed the lease")),
+    );
+    assert!(
+        matches!(fixture.state.device_control().registry.read_connection_state(device_id).await,
+        DeviceConnectionState::Active { actual, .. } if *actual == expected)
+    );
+
+    let _lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    handle
+        .enqueue_client_state(session, valid_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    await_query_failure(&failures).await;
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::Active { .. }
+    ));
+    assert!(!outgoing.is_closed());
+    handle.evict_current_lease().await;
+}
+
+#[tokio::test]
+async fn failure_transient_refresh_retries_without_a_pending_client_snapshot() {
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x86; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    handle
+        .enqueue_client_state(session, valid_snapshot())
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    assert_complete_target(
+        timeout(Duration::from_secs(2), outgoing.recv())
+            .await
+            .unwrap_or_else(|_| panic!("initial target timed out"))
+            .unwrap_or_else(|| panic!("initial lease closed")),
+    );
+    let failures = fixture.query_failures();
+    let lock = crate::db::tests::test_lock_database(&fixture.path)
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    fixture
+        .state
+        .device_control()
+        .publish(super::TargetChange::device(device_id))
+        .await;
+    await_query_failure(&failures).await;
+    assert!(matches!(
+        fixture
+            .state
+            .device_control()
+            .registry
+            .read_connection_state(device_id)
+            .await,
+        DeviceConnectionState::Active { .. }
+    ));
+    assert!(!outgoing.is_closed());
+    drop(lock);
+    fixture
+        .state
+        .session()
+        .set_foreground(device_id, ForegroundTarget::Contest)
+        .await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    let envelope = timeout(
+        TRANSIENT_RETRY_DELAY + Duration::from_secs(2),
+        outgoing.recv(),
+    )
+    .await
+    .unwrap_or_else(|_| panic!("refresh was not retried"))
+    .unwrap_or_else(|| panic!("refresh failure closed the lease"));
+    let Some(server_active_envelope::Body::ServerState(ref snapshot)) = envelope.body else {
+        panic!("retry must return ServerState");
+    };
+    assert_eq!(
+        snapshot
+            .target
+            .as_ref()
+            .and_then(|target| target.session_control.as_ref())
+            .map(|target| target.foreground_target),
+        Some(natsume_workstation_protocol::generated::ForegroundTarget::Contest.into())
+    );
+    assert_complete_target(envelope);
+}
+
+#[test]
+fn reconcile_faults_distinguish_client_transient_and_server_errors() {
+    use super::state::{ReconcileError, ReconcileFault};
+    use crate::component::{
+        binding::BindingError, gateway::GatewayError, home::HomeError, power::PowerError,
+        runtime::RuntimeConfigError, session::SessionControlError,
+    };
+    for error in [
+        ReconcileError::GatewayIngest {
+            source: GatewayError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::GatewayMaterialize {
+            source: GatewayError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::BindingIngest {
+            source: BindingError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::BindingMaterialize {
+            source: BindingError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::RuntimeMaterialize {
+            source: RuntimeConfigError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::SessionMaterialize {
+            source: SessionControlError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::HomeMaterialize {
+            source: HomeError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+        ReconcileError::PowerMaterialize {
+            source: PowerError::PersistenceFailed {
+                source: PersistenceError::WorkBudgetExhausted,
+            },
+        },
+    ] {
+        assert_eq!(error.fault(), ReconcileFault::ServerTransient);
+    }
+    for error in [
+        ReconcileError::InvalidSnapshot,
+        ReconcileError::GatewayIngest {
+            source: GatewayError::InvalidCsr,
+        },
+        ReconcileError::GatewayIngest {
+            source: GatewayError::ConflictingCsr,
+        },
+        ReconcileError::BindingIngest {
+            source: BindingError::ConflictingSubmission,
+        },
+    ] {
+        assert_eq!(error.fault(), ReconcileFault::Client);
+    }
+    for error in [
+        ReconcileError::GatewayMaterialize {
+            source: GatewayError::InvalidCsr,
+        },
+        ReconcileError::BindingMaterialize {
+            source: BindingError::DeviceNotFound,
+        },
+        ReconcileError::HomeMaterialize {
+            source: HomeError::EpochExhausted,
+        },
+        ReconcileError::SessionMaterialize {
+            source: SessionControlError::InvalidPersistedFacts {
+                source: PersistenceError::invalid("session"),
+            },
+        },
+        ReconcileError::RuntimeMaterialize {
+            source: RuntimeConfigError::PersistenceFailed {
+                source: PersistenceError::from(diesel::result::Error::NotFound),
+            },
+        },
+    ] {
+        assert_eq!(error.fault(), ReconcileFault::Server);
+    }
+}
+
+#[tokio::test]
+async fn cancelled_http_mutation_commits_and_publishes_the_complete_target()
+-> Result<(), crate::test_error::TestError> {
+    use crate::component::operator::{
+        OperatorCredentials,
+        tests::{PasswordVerificationTestGuard, test_insert_admin_account},
+    };
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode, header},
+    };
+    use tower::ServiceExt as _;
+
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let fixture = Fixture::new().await;
+    let device_id = fixture.activate(&SigningKey::from_bytes(&[0x77; 32])).await;
+    let (outbound, mut outgoing) = mpsc::channel(1);
+    let (session_id, handle) = replace_current_lease(&fixture.state, device_id, outbound).await;
+    assert!(
+        handle
+            .enqueue_client_state(session_id, valid_snapshot())
+            .await
+            .is_ok()
+    );
+    assert_complete_target(
+        timeout(Duration::from_secs(5), outgoing.recv())
+            .await?
+            .ok_or(crate::test_error::TestError::missing("initial snapshot"))?,
+    );
+
+    let credentials = OperatorCredentials::new(
+        "completion-admin".to_owned(),
+        "completion-password1!".to_owned(),
+        "completion-password1!".to_owned(),
+    )?;
+    test_insert_admin_account(
+        &fixture.database,
+        credentials.login_name(),
+        &credentials.hash_password()?,
+    )
+    .await?;
+    let application = crate::http::router(
+        Arc::clone(&fixture.state),
+        std::path::Path::new("/nonexistent/completion-web"),
+    );
+    let login = application.clone().oneshot(Request::builder().method("POST").uri("/api/v2/session").header(header::CONTENT_TYPE, "application/json").body(Body::from(serde_json::json!({"login_name":"completion-admin", "password":"completion-password1!"}).to_string()))?).await?;
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login.headers()[header::SET_COOKIE]
+        .to_str()?
+        .split(';')
+        .next()
+        .ok_or(crate::test_error::TestError::missing("cookie"))?
+        .to_owned();
+
+    let writing = Arc::new(Notify::new());
+    for mut connection in fixture.database.test_exhaust_pool() {
+        connection.set_instrumentation(WriteStarted(Arc::clone(&writing)));
+    }
+    let lock = crate::db::tests::test_lock_database(&fixture.path)?;
+    let operation_id = Uuid::now_v7();
+    let request = Request::builder().method("POST").uri("/api/v2/target-submissions").header(header::COOKIE, cookie).header(header::CONTENT_TYPE, "application/json").body(Body::from(serde_json::json!({"operation_id":operation_id, "scope":{"kind":"devices", "device_ids":[device_id.as_text()]}, "action":{"kind":"reset_home"}}).to_string()))?;
+    let request_task = tokio::spawn(application.oneshot(request));
+    timeout(Duration::from_secs(2), writing.notified()).await?;
+    assert!(!request_task.is_finished());
+    request_task.abort();
+    assert!(request_task.await.is_err_and(|error| error.is_cancelled()));
+    drop(lock);
+
+    let envelope = timeout(Duration::from_secs(5), outgoing.recv())
+        .await?
+        .ok_or(crate::test_error::TestError::missing(
+            "post-commit snapshot",
+        ))?;
+    assert_complete_target(envelope.clone());
+    let Some(server_active_envelope::Body::ServerState(snapshot)) = envelope.body else {
+        panic!("snapshot absent");
+    };
+    assert_eq!(
+        snapshot
+            .target
+            .and_then(|target| target.home)
+            .and_then(|home| home.reset_epoch),
+        Some(1)
+    );
+    assert_eq!(
+        fixture
+            .state
+            .home()
+            .read_current(device_id)
+            .await
+            .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))),
+        Some(1)
+    );
+    let receipts = fixture
+        .database
+        .read(move |tx| {
+            use crate::diesel_schema::target_submission_receipts;
+            target_submission_receipts::table
+                .filter(target_submission_receipts::operation_id.eq(operation_id.to_string()))
+                .count()
+                .get_result::<i64>(tx.connection())
+                .map_err(PersistenceError::from)
+        })
+        .await?;
+    assert_eq!(receipts, 1);
+    Ok(())
+}
+
+struct WriteStarted(Arc<Notify>);
+
+impl diesel::connection::Instrumentation for WriteStarted {
+    fn on_connection_event(&mut self, event: diesel::connection::InstrumentationEvent<'_>) {
+        if let diesel::connection::InstrumentationEvent::StartQuery { query, .. } = event
+            && query.to_string() == "BEGIN IMMEDIATE"
+        {
+            self.0.notify_one();
+        }
+    }
+}
+
+struct QueryFailures(Arc<Notify>);
+
+impl diesel::connection::Instrumentation for QueryFailures {
+    fn on_connection_event(&mut self, event: diesel::connection::InstrumentationEvent<'_>) {
+        if matches!(
+            event,
+            diesel::connection::InstrumentationEvent::FinishQuery { error: Some(_), .. }
+        ) {
+            self.0.notify_one();
+        }
+    }
+}
+
+async fn await_query_failure(failures: &Notify) {
+    timeout(Duration::from_secs(2), failures.notified())
+        .await
+        .unwrap_or_else(|_| panic!("the actor did not encounter the injected SQLite lock"));
+}
+
+#[tokio::test]
 async fn dirty_refreshes_the_complete_target_after_commit() {
     let fixture = Fixture::new().await;
     let device_id = fixture.activate(&SigningKey::from_bytes(&[0x63; 32])).await;
@@ -274,7 +1223,11 @@ async fn dirty_refreshes_the_complete_target_after_commit() {
         .set_foreground(device_id, ForegroundTarget::Contest)
         .await
         .unwrap_or_else(|error| panic!("Session Control mutation failed: {error:?}"));
-    fixture.state.device_control().dirty_device(device_id).await;
+    fixture
+        .state
+        .device_control()
+        .publish(super::TargetChange::device(device_id))
+        .await;
 
     let refreshed = timeout(Duration::from_secs(5), outgoing.recv())
         .await
@@ -434,12 +1387,9 @@ async fn authority_commit_fences_a_waiting_old_client_state_before_component_wri
     );
     drop(gate);
 
-    assert_eq!(
-        disable
+    assert!(matches!(disable
             .await
-            .unwrap_or_else(|error| panic!("disable task failed: {error}")),
-        Ok(LifecycleOutcome::Changed)
-    );
+            .unwrap_or_else(|error| panic!("disable task failed: {error}")), Ok(actual) if actual == LifecycleOutcome::Changed));
     assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
     assert!(outgoing.recv().await.is_none());
 }
@@ -492,12 +1442,20 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
             .unwrap_or_else(|_| panic!("missing Device query failed"))
             .is_none()
     );
-    fixture.state.device_control().dirty_device(missing).await;
-    fixture.state.device_control().dirty_all_devices().await;
-    assert_eq!(
+    fixture
+        .state
+        .device_control()
+        .publish(super::TargetChange::device(missing))
+        .await;
+    fixture
+        .state
+        .device_control()
+        .publish(super::TargetChange::all_connected())
+        .await;
+    assert!(matches!(
         fixture.state.device_control().disable_device(missing).await,
         Err(DeviceError::DeviceNotFound)
-    );
+    ));
     assert!(
         fixture
             .state
@@ -507,10 +1465,10 @@ async fn missing_lifecycle_mutations_do_not_create_an_actor() {
             .await
             .is_none()
     );
-    assert_eq!(
+    assert!(matches!(
         fixture.state.device_control().revoke_device(missing).await,
         Err(DeviceError::DeviceNotFound)
-    );
+    ));
     assert!(
         fixture
             .state
@@ -575,9 +1533,8 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
         .approve_enrollment(first_review.review_id())
         .await
         .unwrap_or_else(|error| panic!("first approval failed: {error:?}"));
-    assert_eq!(
-        first_activation.await,
-        Ok(Ok(EnrollmentReviewDecision::Activated(first_authority)))
+    assert!(
+        matches!(first_activation.await, Ok(Ok(actual)) if actual == EnrollmentReviewDecision::Activated(first_authority))
     );
 
     let device_id = first_authority.device_id();
@@ -608,9 +1565,8 @@ async fn approval_uses_current_authority_instead_of_review_creation_state() {
     assert_eq!(authority.device_id(), device_id);
     assert_eq!(fixture.component_row_counts().await, [0, 0, 0, 0]);
     assert!(outgoing.recv().await.is_none());
-    assert_eq!(
-        second_activation.await,
-        Ok(Ok(EnrollmentReviewDecision::Activated(authority)))
+    assert!(
+        matches!(second_activation.await, Ok(Ok(actual)) if actual == EnrollmentReviewDecision::Activated(authority))
     );
 }
 
@@ -739,27 +1695,27 @@ async fn failed_authority_commits_leave_the_current_lease_unfenced() {
                     "CREATE TRIGGER reject_lifecycle BEFORE UPDATE OF state ON devices
              BEGIN SELECT RAISE(ABORT, 'fixture commit rejected'); END;",
                 )
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
         })
         .await
         .unwrap_or_else(|error| panic!("failure fixture: {error:?}"));
 
-    assert_eq!(
+    assert!(matches!(
         fixture
             .state
             .device_control()
             .disable_device(device_id)
             .await,
-        Err(DeviceError::PersistenceFailed)
-    );
-    assert_eq!(
+        Err(DeviceError::PersistenceFailed { .. })
+    ));
+    assert!(matches!(
         fixture
             .state
             .device_control()
             .revoke_device(device_id)
             .await,
-        Err(DeviceError::PersistenceFailed)
-    );
+        Err(DeviceError::PersistenceFailed { .. })
+    ));
     assert!(!*handle.authority_fence.lock().await);
     assert!(!outgoing.is_closed());
     assert!(
@@ -829,9 +1785,8 @@ async fn approval_coordinator_evicts_the_old_lease_and_notifies() {
         authority.unwrap_or_else(|error| panic!("replacement approval failed: {error:?}"));
     assert_eq!(authority.device_id(), device_id);
     assert!(outgoing.recv().await.is_none());
-    assert_eq!(
-        activation.await,
-        Ok(Ok(EnrollmentReviewDecision::Activated(authority)))
+    assert!(
+        matches!(activation.await, Ok(Ok(actual)) if actual == EnrollmentReviewDecision::Activated(authority))
     );
 }
 
@@ -1285,9 +2240,8 @@ async fn enrollment_denial_is_delivered_to_the_originating_connection() {
     else {
         panic!("Server did not deliver the Enrollment denial");
     };
-    assert_eq!(
-        EnrollmentReviewState::try_from(status.state),
-        Ok(EnrollmentReviewState::Denied)
+    assert!(
+        matches!(EnrollmentReviewState::try_from(status.state), Ok(actual) if actual == EnrollmentReviewState::Denied)
     );
     assert_eq!(status.error_code, "ENROLLMENT_DENIED");
 
@@ -1762,7 +2716,7 @@ impl Fixture {
                     ))
                     .execute(transaction.connection())
                     .map(|_| ())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("Runtime Config fixture failed: {error:?}"));
@@ -1775,6 +2729,17 @@ impl Fixture {
             database,
             state,
         }
+    }
+
+    fn query_failures(&self) -> Arc<Notify> {
+        let failures = Arc::new(Notify::new());
+        for mut connection in self.database.test_exhaust_pool() {
+            connection
+                .batch_execute("PRAGMA busy_timeout = 0;")
+                .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+            connection.set_instrumentation(QueryFailures(Arc::clone(&failures)));
+        }
+        failures
     }
 
     async fn activate(&self, signing_key: &SigningKey) -> DeviceId {
@@ -1805,9 +2770,8 @@ impl Fixture {
             .unwrap_or_else(|error| panic!("Enrollment approval failed: {error:?}"));
         let authority = approval.authority();
         approval.complete();
-        assert_eq!(
-            activation.await,
-            Ok(Ok(super::EnrollmentReviewDecision::Activated(authority)))
+        assert!(
+            matches!(activation.await, Ok(Ok(actual)) if actual == super::EnrollmentReviewDecision::Activated(authority))
         );
         authority.device_id()
     }
@@ -1879,5 +2843,48 @@ async fn old_or_mixed_control_protocols_are_rejected_before_handshake() {
             .available_permits(),
         63
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn automatic_approval_failure_is_reported_once_when_activation_wins() {
+    use crate::{
+        config::LogLevel,
+        logging::tests::{CapturedLogs, SubscriberTestGuard},
+    };
+    let _guard = SubscriberTestGuard::acquire();
+    let captured = CapturedLogs::default();
+    let _subscriber = tracing::subscriber::set_default(captured.subscriber(LogLevel::Trace));
+    let fixture = Fixture::new().await;
+    Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, false)).await
+        .unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error))).write(|tx| {
+        tx.connection().batch_execute("CREATE TRIGGER reject_activation BEFORE INSERT ON devices BEGIN SELECT RAISE(ABORT, 'automatic activation evidence'); END;").map_err(PersistenceError::from)
+    }).await.map_err(crate::db::TransactionError::into_error).unwrap_or_else(|error| panic!("{}", snafu::Report::from_error(error)));
+    fixture.state.provisioning().open_window();
+    let (mut socket, server) = connect(&fixture).await;
+    submit_enrollment_proof(&mut socket).await;
+    assert_closed(&mut socket).await;
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if captured
+                .text()
+                .unwrap_or_else(|()| panic!("logs"))
+                .contains("Device automatic enrollment approval failed")
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("automatic failure report lost"));
+    let logs = captured.text().unwrap_or_else(|()| panic!("logs"));
+    assert_eq!(
+        logs.matches("Device automatic enrollment approval failed")
+            .count(),
+        1
+    );
+    assert!(logs.contains("automatic activation evidence"));
+    drop(socket);
     server.abort();
 }

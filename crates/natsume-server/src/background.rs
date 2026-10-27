@@ -8,7 +8,10 @@ use crate::{component::print::ExpiryError, server_state::ServerState};
 #[derive(Debug, Snafu)]
 pub(crate) enum BackgroundError {
     #[snafu(display("background task stopped unexpectedly"))]
-    Task { source: tokio::task::JoinError },
+    Task {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
     #[snafu(display("print expiry operation failed"))]
     PrintExpiry { source: ExpiryError },
     #[snafu(display("print expiry did not initialize"))]
@@ -51,20 +54,14 @@ impl BackgroundTasks {
         while let Some(result) = self.tasks.join_next().await {
             let error = match result {
                 Ok(Ok(())) => continue,
-                Ok(Err(error)) => {
-                    tracing::error!(%error, "background task failed");
-                    error
-                }
-                Err(source) => {
-                    tracing::error!(
-                        panicked = source.is_panic(),
-                        cancelled = source.is_cancelled(),
-                        "background task stopped unexpectedly"
-                    );
-                    TaskSnafu.into_error(source)
-                }
+                Ok(Err(error)) => error,
+                Err(source) => TaskSnafu.into_error(source),
             };
-            first_error.get_or_insert(error);
+            if first_error.is_some() {
+                tracing::error!(error = %snafu::Report::from_error(error), "background task failed");
+            } else {
+                first_error = Some(error);
+            }
         }
         first_error.map_or(Ok(()), Err)
     }

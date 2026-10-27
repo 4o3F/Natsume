@@ -17,8 +17,11 @@ use uuid::Uuid;
 mod actor;
 mod admission;
 mod application;
+mod change;
 mod convergence;
 mod state;
+
+pub(crate) use change::TargetChange;
 
 pub(crate) use convergence::{
     BindingActual, BindingArtifactState, BindingContext, BindingConvergence, BindingEvaluation,
@@ -179,7 +182,7 @@ async fn admit(
     control: &Arc<DeviceControl>,
     permit: &mut Option<OwnedSemaphorePermit>,
 ) -> Option<(MachineHardwareId, ControlAuthority, Option<IpAddr>)> {
-    let mut proof_window = ProofWindow::new().ok()?;
+    let mut proof_window = ProofWindow::new().inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission failed")).ok()?;
     let challenge = proof_window.server_challenge()?.clone();
     if !send_handshake(
         socket,
@@ -192,7 +195,7 @@ async fn admit(
         return None;
     }
     let proof = receive_handshake(socket).await?;
-    let submission = proof_window.submit(proof).ok()?;
+    let submission = proof_window.submit(proof).inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission failed")).ok()?;
     let client_ip = submission.client_ip();
     let (machine_hardware_id, authority) = match submission {
         ProofSubmission::Resume(resume) => {
@@ -201,10 +204,11 @@ async fn admit(
                 .device
                 .find_current_authority(machine_hardware_id)
                 .await
+                .inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission authority lookup failed"))
                 .ok()?;
             Some((
                 machine_hardware_id,
-                resume.verify_authority(authority).ok()?,
+                resume.verify_authority(authority).inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission failed")).ok()?,
             ))
         }
         ProofSubmission::Enrollment(enrollment) => {
@@ -230,7 +234,7 @@ async fn admit_enrollment(
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
     let evidence = enrollment.review_evidence();
     let machine_hardware_id = evidence.machine_hardware_id();
-    let authority = match control.device.start_enrollment(evidence).await.ok()? {
+    let authority = match control.device.start_enrollment(evidence).await.inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device enrollment start failed")).ok()? {
         EnrollmentStartOutcome::Replay(authority) => authority,
         EnrollmentStartOutcome::Pending(review, mut activation) => {
             // The bounded review registry now owns this connection's admission
@@ -264,7 +268,7 @@ async fn admit_enrollment(
             let mut window = control.provisioning.subscribe();
             let automatic_approval = async {
                 window.wait_for(|window| window.is_open()).await.ok()?;
-                Some(control.approve_enrollment(review.review_id()).await)
+                Some(control.automatically_approve_enrollment(review.review_id()).await)
             };
             tokio::pin!(automatic_approval);
             let mut automatic_approval_finished = false;
@@ -315,7 +319,7 @@ async fn admit_enrollment(
             }
         }
     };
-    let barrier = enrollment.activated(authority).ok()?;
+    let barrier = enrollment.activated(authority).inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission failed")).ok()?;
     if !send_handshake(
         socket,
         ServerHandshakeEnvelope {
@@ -328,7 +332,7 @@ async fn admit_enrollment(
     {
         return None;
     }
-    let authority = barrier.receive(receive_handshake(socket).await?).ok()?;
+    let authority = barrier.receive(receive_handshake(socket).await?).inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission failed")).ok()?;
     Some((machine_hardware_id, authority))
 }
 
@@ -375,7 +379,8 @@ async fn run_active(
                             biased;
                             () = &mut client_deadline => break,
                             result = handle.enqueue_client_state(received_session_id, snapshot) => {
-                                if result.is_err() {
+                                if let Err(error) = result {
+                                    tracing::warn!(error = %snafu::Report::from_error(error), "Device actor inbox unavailable");
                                     break;
                                 }
                             }

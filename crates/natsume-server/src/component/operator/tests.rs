@@ -63,9 +63,18 @@ impl PasswordVerificationTestGuard {
 fn persisted_roles_are_closed() -> Result<(), TestFailure> {
     if OperatorRole::Admin.as_persisted() != "admin"
         || OperatorRole::Viewer.as_persisted() != "viewer"
-        || OperatorRole::from_persisted("admin") != Ok(OperatorRole::Admin)
-        || OperatorRole::from_persisted("viewer") != Ok(OperatorRole::Viewer)
-        || OperatorRole::from_persisted("owner") != Err(OperatorError::InvalidPersistedRole)
+        || !matches!(
+            OperatorRole::from_persisted("admin"),
+            Ok(OperatorRole::Admin)
+        )
+        || !matches!(
+            OperatorRole::from_persisted("viewer"),
+            Ok(OperatorRole::Viewer)
+        )
+        || !matches!(
+            OperatorRole::from_persisted("owner"),
+            Err(OperatorError::InvalidPersistedRole)
+        )
     {
         return Err(TestFailure::PersistedRolesWereNotClosed);
     }
@@ -96,10 +105,11 @@ fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailur
     let password = "CorrectHorseBatteryStaple1!";
     let credentials =
         OperatorCredentials::new("admin".to_owned(), password.to_owned(), password.to_owned())
-            .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let encoded = hash_raw_password(credentials.password())
-        .map_err(|_| TestFailure::PasswordHashingFailed)?;
-    let parsed = PasswordHash::new(&encoded).map_err(|_| TestFailure::GeneratedPhcWasInvalid)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    let parsed = PasswordHash::new(&encoded)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
     if parsed.algorithm.as_str() != "argon2id"
         || parsed.version != Some(19)
@@ -127,16 +137,13 @@ fn password_hash_uses_the_frozen_profile_and_verifies() -> Result<(), TestFailur
 fn password_hash_matches_existing_phc_with_fixed_salt() -> Result<(), TestFailure> {
     let encoded = frozen_argon2()?
         .hash_password_with_salt(b"natsume-dummy-password", b"natsume-dummy-sl")
-        .map_err(|_| TestFailure::PasswordHashingFailed)?
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
         .to_string();
     assert_eq!(encoded, DUMMY_PASSWORD_PHC);
-    assert_eq!(
-        verify_password_once(
+    assert!(matches!(verify_password_once(
             &OperatorPassword::new("natsume-dummy-password".to_owned()),
             DUMMY_PASSWORD_PHC,
-        ),
-        Ok(true)
-    );
+        ), Ok(actual) if actual));
     Ok(())
 }
 
@@ -144,13 +151,14 @@ fn password_hash_matches_existing_phc_with_fixed_salt() -> Result<(), TestFailur
 fn password_verification_returns_typed_expected_outcomes() -> Result<(), TestFailure> {
     let correct = OperatorPassword::new("verification-contract-password".to_owned());
     let wrong = OperatorPassword::new("wrong-verification-contract-password".to_owned());
-    let encoded = hash_raw_password(&correct).map_err(|_| TestFailure::PasswordHashingFailed)?;
+    let encoded = hash_raw_password(&correct)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let correct_verified = verify_password_once(&correct, &encoded)
-        .map_err(|_| TestFailure::PasswordVerificationFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let wrong_verified = verify_password_once(&wrong, &encoded)
-        .map_err(|_| TestFailure::PasswordVerificationFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let invalid_profile_verified = verify_password_once(&correct, "invalid-persisted-password-phc")
-        .map_err(|_| TestFailure::PasswordVerificationFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     if !correct_verified || wrong_verified || invalid_profile_verified {
         return Err(TestFailure::PasswordVerificationContractChanged);
     }
@@ -162,15 +170,15 @@ fn session_credentials_use_fixed_lower_hex_and_hash_raw_bytes() -> Result<(), Te
     for byte in u8::MIN..=u8::MAX {
         let credential = SessionCredential(Zeroizing::new([byte; SESSION_CREDENTIAL_LENGTH]));
         let wire = credential.to_wire();
-        let decoded =
-            SessionCredential::from_wire(&wire).map_err(|_| TestFailure::CredentialDecodeFailed)?;
+        let decoded = SessionCredential::from_wire(&wire)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if decoded.0.as_slice() != credential.0.as_slice() {
             return Err(TestFailure::CredentialRoundTripChangedBytes);
         }
     }
 
-    let credential =
-        SessionCredential::generate().map_err(|_| TestFailure::CredentialGenerationFailed)?;
+    let credential = SessionCredential::generate()
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let wire = credential.to_wire();
     if wire.expose().len() != 64
         || !wire
@@ -180,8 +188,8 @@ fn session_credentials_use_fixed_lower_hex_and_hash_raw_bytes() -> Result<(), Te
     {
         return Err(TestFailure::CredentialWireEncodingWasInvalid);
     }
-    let decoded =
-        SessionCredential::from_wire(&wire).map_err(|_| TestFailure::CredentialDecodeFailed)?;
+    let decoded = SessionCredential::from_wire(&wire)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     if decoded.0.as_slice() != credential.0.as_slice() {
         return Err(TestFailure::CredentialRoundTripChangedBytes);
     }
@@ -207,7 +215,7 @@ fn session_credentials_use_fixed_lower_hex_and_hash_raw_bytes() -> Result<(), Te
         let Err(error) = decode_lower_hex(&value) else {
             return Err(TestFailure::InvalidCredentialWasAccepted);
         };
-        if error != OperatorError::InvalidSessionCredential {
+        if !matches!(error, OperatorError::InvalidSessionCredential) {
             return Err(TestFailure::CredentialDecodeErrorWasNotUnified);
         }
         for encoded in [error.to_string(), format!("{error:?}")] {
@@ -230,20 +238,20 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
 
     let before_sign_in = db_operator::test_now(&fixture.database)
         .await
-        .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let admin_session = sign_in(&fixture.database, "exact-admin", admin_password.to_owned())
         .await
-        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let viewer_session = sign_in(
         &fixture.database,
         "exact-viewer",
         viewer_password.to_owned(),
     )
     .await
-    .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let after_sign_in = db_operator::test_now(&fixture.database)
         .await
-        .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     if admin_session.identity().role() != OperatorRole::Admin
         || viewer_session.identity().role() != OperatorRole::Viewer
     {
@@ -255,21 +263,21 @@ async fn sign_in_unifies_failures_and_supports_both_roles() -> Result<(), TestFa
         &after_sign_in,
     )
     .await
-    .map_err(|_| TestFailure::SessionEvidenceReadFailed)?
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
     {
         return Err(TestFailure::SignedInSessionTtlWasNotFrozen);
     }
 
     let authenticated = authenticate_session(&fixture.database, admin_session.wire_credential())
         .await
-        .map_err(|_| TestFailure::SessionAuthenticationFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     if authenticated != admin_session.identity() {
         return Err(TestFailure::AuthenticatedIdentityChanged);
     }
 
     let persisted_hashes = db_operator::test_session_hashes(&fixture.database)
         .await
-        .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let expected_hash = admin_session.credential_for_test().sha256();
     if !persisted_hashes
         .iter()
@@ -295,18 +303,18 @@ async fn legacy_passwords_and_login_names_remain_usable_after_policy_changes()
         assert!(super::credentials::validate_new_password(password).is_err());
         let login_name = format!(" legacy-admin-{index} ");
         let phc = hash_raw_password(&OperatorPassword::new(password.to_owned()))
-            .map_err(|_| TestFailure::PasswordHashingFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let operator_id = test_insert_admin_account(&fixture.database, &login_name, &phc)
             .await
-            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let session = sign_in(&fixture.database, &login_name, password.to_owned())
             .await
-            .map_err(|_| TestFailure::CorrectSignInFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(session.identity().operator_id(), operator_id);
         assert_eq!(
             authenticate_session(&fixture.database, session.wire_credential())
                 .await
-                .map_err(|_| TestFailure::SessionEvidenceReadFailed)?,
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
             session.identity()
         );
     }
@@ -343,7 +351,7 @@ async fn prepare_sign_in_accounts(
     ] {
         db_operator::test_insert_account(database, login_name, role, password_hash)
             .await
-            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     }
     Ok(())
 }
@@ -351,7 +359,7 @@ async fn prepare_sign_in_accounts(
 async fn assert_failed_sign_ins_are_unified(database: &Database) -> Result<(), TestFailure> {
     let before_failures = db_operator::test_session_count(database)
         .await
-        .map_err(|_| TestFailure::SessionEvidenceReadFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let wrong_password = failed_sign_in_once(
         database,
         "exact-admin",
@@ -387,17 +395,17 @@ async fn assert_failed_sign_ins_are_unified(database: &Database) -> Result<(), T
         TestFailure::DummyPlaintextAuthenticatedUnknownLogin,
     )
     .await?;
-    if wrong_password != OperatorError::AuthenticationFailed
-        || corrupt_phc != wrong_password
-        || extra_parameter != wrong_password
-        || short_salt != wrong_password
-        || unknown_login != wrong_password
+    if !matches!(wrong_password, OperatorError::AuthenticationFailed)
+        || !matches!(corrupt_phc, OperatorError::AuthenticationFailed)
+        || !matches!(extra_parameter, OperatorError::AuthenticationFailed)
+        || !matches!(short_salt, OperatorError::AuthenticationFailed)
+        || !matches!(unknown_login, OperatorError::AuthenticationFailed)
     {
         return Err(TestFailure::SignInFailuresWereDistinguishable);
     }
     if db_operator::test_session_count(database)
         .await
-        .map_err(|_| TestFailure::SessionEvidenceReadFailed)?
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
         != before_failures
     {
         return Err(TestFailure::FailedSignInWroteRows);
@@ -438,28 +446,28 @@ async fn password_verification_concurrency_is_bounded() -> Result<(), TestFailur
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     let permits = u32::try_from(SIGN_IN_CONCURRENCY)
-        .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
     // All but one permit held: the gate must still admit one verification.
     let held = SIGN_IN_GATE
         .acquire_many(permits - 1)
         .await
-        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     gated_sign_in_fails(&fixture.database).await?;
 
     // Every permit held: reject before even attempting the account lookup.
     let last = SIGN_IN_GATE
         .acquire()
         .await
-        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let _connections = fixture.database.test_exhaust_pool();
     let rejected = tokio::time::timeout(
         GATE_RELEASE_TIMEOUT,
         sign_in(&fixture.database, "unknown", "password".to_owned()),
     )
     .await
-    .map_err(|_| TestFailure::VerificationGateDidNotBoundConcurrency)?;
-    assert_eq!(rejected.err(), Some(OperatorError::SignInBusy));
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    assert!(matches!(rejected.err(), Some(OperatorError::SignInBusy)));
     drop(last);
     drop(held);
     if SIGN_IN_GATE.available_permits() != SIGN_IN_CONCURRENCY {
@@ -480,8 +488,8 @@ async fn cancelling_a_queued_account_read_keeps_the_sign_in_slot() -> Result<(),
     drop(connections);
     let permits = tokio::time::timeout(GATE_RELEASE_TIMEOUT, SIGN_IN_GATE.acquire_many(4))
         .await
-        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
-        .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     drop(permits);
     assert_eq!(SIGN_IN_GATE.available_permits(), SIGN_IN_CONCURRENCY);
     Ok(())
@@ -503,7 +511,7 @@ async fn gated_sign_in_fails(database: &Database) -> Result<(), TestFailure> {
     .await
     .err()
     .ok_or(TestFailure::InvalidSignInSucceeded)?;
-    if error != OperatorError::AuthenticationFailed {
+    if !matches!(error, OperatorError::AuthenticationFailed) {
         return Err(TestFailure::SignInFailuresWereDistinguishable);
     }
     Ok(())
@@ -518,7 +526,7 @@ async fn password_reset_fences_pending_sign_in_even_when_the_phc_is_unchanged()
     let phc = password_phc("reset-admin", password)?;
     test_insert_admin_account(&fixture.database, "reset-admin", &phc)
         .await
-        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let mut pending = Box::pin(sign_in(
         &fixture.database,
         "reset-admin",
@@ -528,21 +536,19 @@ async fn password_reset_fences_pending_sign_in_even_when_the_phc_is_unchanged()
 
     super::account::reset_operator_password(&fixture.database, "reset-admin", &phc)
         .await
-        .map_err(|_| TestFailure::PasswordResetFailed)?;
-    assert_eq!(
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    assert!(matches!(
         pending.await.err(),
         Some(OperatorError::AuthenticationFailed)
-    );
-    assert_eq!(
-        db_operator::test_session_count(&fixture.database).await,
-        Ok(0)
+    ));
+    assert!(
+        matches!(db_operator::test_session_count(&fixture.database).await, Ok(actual) if actual == 0)
     );
     let fresh = sign_in(&fixture.database, "reset-admin", password.to_owned())
         .await
-        .map_err(|_| TestFailure::CorrectSignInFailed)?;
-    assert_eq!(
-        authenticate_session(&fixture.database, fresh.wire_credential()).await,
-        Ok(fresh.identity())
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    assert!(
+        matches!(authenticate_session(&fixture.database, fresh.wire_credential()).await, Ok(actual) if actual == fresh.identity())
     );
     Ok(())
 }
@@ -554,7 +560,7 @@ fn cancelled_sign_in_keeps_its_permit_until_the_blocking_verification_finishes()
         .enable_all()
         .max_blocking_threads(1)
         .build()
-        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     runtime.block_on(async {
         let _verification_guard = PasswordVerificationTestGuard::acquire().await;
         let fixture = TestDatabase::new().await?;
@@ -575,7 +581,7 @@ fn cancelled_sign_in_keeps_its_permit_until_the_blocking_verification_finishes()
         });
         started_rx
             .await
-            .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         assert!(futures_util::poll!(pending.as_mut()).is_pending());
         drop(pending);
         let available_while_queued = SIGN_IN_GATE.available_permits();
@@ -583,14 +589,14 @@ fn cancelled_sign_in_keeps_its_permit_until_the_blocking_verification_finishes()
         drop(release);
         blocker
             .await
-            .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let permits = u32::try_from(SIGN_IN_CONCURRENCY)
-            .map_err(|_| TestFailure::VerificationGateBoundWasInvalid)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let restored =
             tokio::time::timeout(GATE_RELEASE_TIMEOUT, SIGN_IN_GATE.acquire_many(permits))
                 .await
-                .map_err(|_| TestFailure::VerificationGateDidNotRelease)?
-                .map_err(|_| TestFailure::VerificationGateWasClosed)?;
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         drop(restored);
         assert_eq!(available_while_queued, SIGN_IN_CONCURRENCY - 1);
         assert_eq!(SIGN_IN_GATE.available_permits(), SIGN_IN_CONCURRENCY);
@@ -612,53 +618,48 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
             super::account::create_first_admin(transaction, "reset-admin", &bootstrap_phc)
         })
         .await
-        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     test_insert_admin_account(&fixture.database, "other-admin", &phc)
         .await
-        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let old = sign_in(
         &fixture.database,
         "reset-admin",
         "old-password-123!".to_owned(),
     )
     .await
-    .map_err(|_| TestFailure::CorrectSignInFailed)?;
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let other = sign_in(
         &fixture.database,
         "other-admin",
         "old-password-123!".to_owned(),
     )
     .await
-    .map_err(|_| TestFailure::CorrectSignInFailed)?;
-    assert_eq!(
-        db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
-        Ok((phc.clone(), 1))
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    assert!(
+        matches!(db_operator::test_account_credentials(&fixture.database, "reset-admin").await, Ok(actual) if actual == (phc.clone(), 1))
     );
 
     super::account::reset_operator_password(&fixture.database, "reset-admin", &new_phc)
         .await
-        .map_err(|_| TestFailure::PasswordResetFailed)?;
-    assert_eq!(
-        db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
-        Ok((new_phc, 2))
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    assert!(
+        matches!(db_operator::test_account_credentials(&fixture.database, "reset-admin").await, Ok(actual) if actual == (new_phc, 2))
     );
-    assert_eq!(
-        db_operator::test_account_credentials(&fixture.database, "other-admin").await,
-        Ok((phc, 1))
+    assert!(
+        matches!(db_operator::test_account_credentials(&fixture.database, "other-admin").await, Ok(actual) if actual == (phc, 1))
     );
-    assert_eq!(
-        db_operator::test_session_count(&fixture.database).await,
-        Ok(1)
+    assert!(
+        matches!(db_operator::test_session_count(&fixture.database).await, Ok(actual) if actual == 1)
     );
-    assert_eq!(
+    assert!(matches!(
         authenticate_session(&fixture.database, old.wire_credential()).await,
         Err(OperatorError::SessionAuthenticationFailed)
+    ));
+    assert!(
+        matches!(authenticate_session(&fixture.database, other.wire_credential()).await, Ok(actual) if actual == other.identity())
     );
-    assert_eq!(
-        authenticate_session(&fixture.database, other.wire_credential()).await,
-        Ok(other.identity())
-    );
-    assert_eq!(
+    assert!(matches!(
         sign_in(
             &fixture.database,
             "reset-admin",
@@ -667,17 +668,16 @@ async fn password_reset_advances_revision_and_revokes_only_its_operators_session
         .await
         .err(),
         Some(OperatorError::AuthenticationFailed)
-    );
+    ));
     let fresh = sign_in(
         &fixture.database,
         "reset-admin",
         "new-password-123!".to_owned(),
     )
     .await
-    .map_err(|_| TestFailure::CorrectSignInFailed)?;
-    assert_eq!(
-        authenticate_session(&fixture.database, fresh.wire_credential()).await,
-        Ok(fresh.identity())
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    assert!(
+        matches!(authenticate_session(&fixture.database, fresh.wire_credential()).await, Ok(actual) if actual == fresh.identity())
     );
     Ok(())
 }
@@ -692,39 +692,36 @@ async fn failed_password_reset_preserves_the_phc_revision_and_sessions() -> Resu
         let fixture = TestDatabase::new().await?;
         test_insert_admin_account(&fixture.database, "reset-admin", &phc)
             .await
-            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         db_operator::test_set_credential_revision(&fixture.database, "reset-admin", revision)
             .await
-            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let session = sign_in(
             &fixture.database,
             "reset-admin",
             "old-password-123!".to_owned(),
         )
         .await
-        .map_err(|_| TestFailure::CorrectSignInFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if revision == 1 {
             // Fails after the PHC and revision update, proving transaction rollback.
             db_operator::test_reject_session_deletion(&fixture.database)
                 .await
-                .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         }
-        assert_eq!(
+        assert!(matches!(
             super::account::reset_operator_password(&fixture.database, "reset-admin", &new_phc)
                 .await,
-            Err(OperatorError::PersistenceFailed)
+            Err(OperatorError::PersistenceFailed { .. })
+        ));
+        assert!(
+            matches!(db_operator::test_account_credentials(&fixture.database, "reset-admin").await, Ok(actual) if actual == (phc.clone(), revision))
         );
-        assert_eq!(
-            db_operator::test_account_credentials(&fixture.database, "reset-admin").await,
-            Ok((phc.clone(), revision))
+        assert!(
+            matches!(db_operator::test_session_count(&fixture.database).await, Ok(actual) if actual == 1)
         );
-        assert_eq!(
-            db_operator::test_session_count(&fixture.database).await,
-            Ok(1)
-        );
-        assert_eq!(
-            authenticate_session(&fixture.database, session.wire_credential()).await,
-            Ok(session.identity())
+        assert!(
+            matches!(authenticate_session(&fixture.database, session.wire_credential()).await, Ok(actual) if actual == session.identity())
         );
     }
     Ok(())
@@ -736,34 +733,32 @@ async fn invalid_persisted_credential_revisions_fail_closed() -> Result<(), Test
     let fixture = TestDatabase::new().await?;
     test_insert_admin_account(&fixture.database, "invalid-revision", DUMMY_PASSWORD_PHC)
         .await
-        .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     for revision in [0, -1] {
         db_operator::test_set_credential_revision(&fixture.database, "invalid-revision", revision)
             .await
-            .map_err(|_| TestFailure::AccountFixtureInsertFailed)?;
-        assert_eq!(
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        assert!(matches!(
             sign_in(&fixture.database, "invalid-revision", "password".to_owned())
                 .await
                 .err(),
-            Some(OperatorError::PersistenceFailed)
-        );
-        assert_eq!(
+            Some(OperatorError::PersistenceFailed { .. })
+        ));
+        assert!(matches!(
             super::account::reset_operator_password(
                 &fixture.database,
                 "invalid-revision",
                 DUMMY_PASSWORD_PHC
             )
             .await,
-            Err(OperatorError::PersistenceFailed)
-        );
-        assert_eq!(
-            db_operator::test_account_credentials(&fixture.database, "invalid-revision").await,
-            Ok((DUMMY_PASSWORD_PHC.to_owned(), revision))
+            Err(OperatorError::PersistenceFailed { .. })
+        ));
+        assert!(
+            matches!(db_operator::test_account_credentials(&fixture.database, "invalid-revision").await, Ok(actual) if actual == (DUMMY_PASSWORD_PHC.to_owned(), revision))
         );
     }
-    assert_eq!(
-        db_operator::test_session_count(&fixture.database).await,
-        Ok(0)
+    assert!(
+        matches!(db_operator::test_session_count(&fixture.database).await, Ok(actual) if actual == 0)
     );
     Ok(())
 }
@@ -793,14 +788,17 @@ async fn pause_before_password_verification(
     drop(connections);
     tokio::time::timeout(GATE_RELEASE_TIMEOUT, notification.0.notified())
         .await
-        .map_err(|_| TestFailure::VerificationGateDidNotRelease)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     Ok(())
 }
 
 #[test]
 fn admin_authorization_is_closed() -> Result<(), TestFailure> {
     if require_admin(OperatorRole::Admin).is_err()
-        || require_admin(OperatorRole::Viewer) != Err(OperatorError::AuthorizationDenied)
+        || !matches!(
+            require_admin(OperatorRole::Viewer),
+            Err(OperatorError::AuthorizationDenied)
+        )
     {
         return Err(TestFailure::AdminAuthorizationWasNotClosed);
     }
@@ -818,12 +816,12 @@ fn verify_with_frozen_profile(password: &[u8], parsed: &PasswordHash) -> Result<
     }
     frozen_argon2()?
         .verify_password(password, parsed)
-        .map_err(|_| TestFailure::PasswordVerificationFailed)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
 }
 
 fn assert_dummy_password_phc_is_frozen() -> Result<(), TestFailure> {
-    let parsed =
-        PasswordHash::new(DUMMY_PASSWORD_PHC).map_err(|_| TestFailure::DummyPhcWasInvalid)?;
+    let parsed = PasswordHash::new(DUMMY_PASSWORD_PHC)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     if parsed.algorithm.as_str() != "argon2id"
         || parsed.version != Some(19)
         || parsed.params.get_decimal("m") != Some(19_456)
@@ -840,8 +838,8 @@ fn assert_dummy_password_phc_is_frozen() -> Result<(), TestFailure> {
 }
 
 fn frozen_argon2() -> Result<Argon2<'static>, TestFailure> {
-    let params =
-        Params::new(19_456, 2, 1, None).map_err(|_| TestFailure::FrozenParametersWereRejected)?;
+    let params = Params::new(19_456, 2, 1, None)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
 }
 
@@ -851,32 +849,32 @@ fn password_phc(login_name: &str, password: &str) -> Result<String, TestFailure>
         password.to_owned(),
         password.to_owned(),
     )
-    .map_err(|_| TestFailure::ValidCredentialsWereRejected)?;
-    hash_raw_password(credentials.password()).map_err(|_| TestFailure::PasswordHashingFailed)
+    .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    hash_raw_password(credentials.password())
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
 }
 
 fn extra_parameter_phc(password: &str) -> Result<String, TestFailure> {
     let mut builder = ParamsBuilder::new();
-    builder
-        .m_cost(19_456)
-        .t_cost(2)
-        .p_cost(1)
-        .keyid(KeyId::new(&[0x93_u8; 4]).map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)?);
+    builder.m_cost(19_456).t_cost(2).p_cost(1).keyid(
+        KeyId::new(&[0x93_u8; 4])
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
+    );
     let params = builder
         .build()
-        .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     argon2
         .hash_password_with_salt(password.as_bytes(), &[0x91_u8; 16])
         .map(|hash| hash.to_string())
-        .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
 }
 
 fn short_salt_phc(password: &str) -> Result<String, TestFailure> {
     frozen_argon2()?
         .hash_password_with_salt(password.as_bytes(), &[0x92_u8; 8])
         .map(|hash| hash.to_string())
-        .map_err(|_| TestFailure::NonFrozenPhcFixtureFailed)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
 }
 
 struct TestDatabase {
@@ -892,7 +890,7 @@ impl TestDatabase {
         ));
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&path, true))
             .await
-            .map_err(|_| TestFailure::TestDatabaseCreationFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         Ok(Self { database, path })
     }
 }
@@ -907,6 +905,11 @@ impl Drop for TestDatabase {
 
 #[derive(Debug, Snafu)]
 enum TestFailure {
+    #[snafu(context(false), display("test infrastructure operation failed"))]
+    Source {
+        #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+        source: Box<crate::test_error::TestError>,
+    },
     #[snafu(display("operator password reset failed unexpectedly"))]
     PasswordResetFailed,
     #[snafu(display("persisted operator roles did not remain closed"))]

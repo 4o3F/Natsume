@@ -101,7 +101,7 @@ impl TlsListener {
         let server_config = load_server_config(certificate_path, private_key_path)?;
         let tcp_listener = TcpListener::bind(address)
             .await
-            .map_err(|_| TlsError::Bind)?;
+            .map_err(|source| TlsError::Bind { source })?;
         Ok(Self {
             tcp_listener,
             tls_acceptor: TlsAcceptor::from(server_config),
@@ -139,11 +139,21 @@ impl Listener for TlsListener {
                             self.handshakes.spawn(async move {
                                 match timeout(HANDSHAKE_TIMEOUT, tls_acceptor.accept(tcp_stream)).await {
                                     Ok(Ok(tls_stream)) => Some((tls_stream, remote_address)),
-                                    Ok(Err(_)) | Err(_) => None,
+                                    Ok(Err(source)) => {
+                                        tracing::warn!(error = %snafu::Report::from_error(TlsError::Handshake { source }), "TLS handshake rejected");
+                                        None
+                                    }
+                                    Err(error) => {
+                                        tracing::warn!(error = %snafu::Report::from_error(error), "TLS handshake timed out");
+                                        None
+                                    }
                                 }
                             });
                         }
-                        Err(_) => sleep(ACCEPT_RETRY_DELAY).await,
+                        Err(error) => {
+                            tracing::warn!(error = %snafu::Report::from_error(error), "TLS listener accept failed");
+                            sleep(ACCEPT_RETRY_DELAY).await;
+                        }
                     }
                 }
             }
@@ -162,7 +172,7 @@ fn load_server_config(
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
-        .map_err(|_| TlsError::Identity)?
+        .map_err(|source| TlsError::Identity { source })?
         .with_no_client_auth();
     let certificate = CertificateDer::from(read_private_file(certificate_path)?);
     let mut private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(read_private_file(
@@ -170,7 +180,9 @@ fn load_server_config(
     )?));
     let signing_key = load_signing_key(&mut private_key)?;
     let certified_key = CertifiedKey::new(vec![certificate], signing_key);
-    certified_key.keys_match().map_err(|_| TlsError::Identity)?;
+    certified_key
+        .keys_match()
+        .map_err(|source| TlsError::Identity { source })?;
     let resolver = rustls::sign::SingleCertAndKey::from(certified_key);
     let mut config = builder.with_cert_resolver(Arc::new(resolver));
     config.alpn_protocols = vec![ALPN_HTTP_1_1.to_vec()];
@@ -183,34 +195,41 @@ fn load_signing_key(
 ) -> Result<Arc<dyn SigningKey>, TlsError> {
     let signing_key = rustls::crypto::ring::sign::any_supported_type(private_key);
     private_key.zeroize();
-    signing_key.map_err(|_| TlsError::Identity)
+    signing_key.map_err(|source| TlsError::Identity { source })
 }
 
 pub(crate) fn read_private_file(path: &Path) -> Result<Vec<u8>, TlsError> {
-    let parent = path.parent().ok_or(TlsError::Identity)?;
-    let parent_metadata = fs::metadata(parent).map_err(|_| TlsError::Identity)?;
+    let parent = path.parent().ok_or(TlsError::InvalidIdentity)?;
+    let parent_metadata =
+        fs::metadata(parent).map_err(|source| TlsError::ReadIdentity { source })?;
     if !parent_metadata.is_dir()
         || parent_metadata.permissions().mode() & PRIVATE_DIRECTORY_FORBIDDEN_BITS != 0
     {
-        return Err(TlsError::Identity);
+        return Err(TlsError::InvalidIdentity);
     }
-    let metadata = fs::metadata(path).map_err(|_| TlsError::Identity)?;
+    let metadata = fs::metadata(path).map_err(|source| TlsError::ReadIdentity { source })?;
     if !metadata.is_file() {
-        return Err(TlsError::Identity);
+        return Err(TlsError::InvalidIdentity);
     }
     if metadata.permissions().mode() & PRIVATE_FILE_FORBIDDEN_BITS != 0 {
-        return Err(TlsError::Identity);
+        return Err(TlsError::InvalidIdentity);
     }
-    fs::read(path).map_err(|_| TlsError::Identity)
+    fs::read(path).map_err(|source| TlsError::ReadIdentity { source })
 }
 
 /// Redacted TLS identity, configuration, or binding failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum TlsError {
     #[snafu(display("the TLS identity is invalid"))]
-    Identity,
+    Identity { source: rustls::Error },
+    #[snafu(display("the TLS identity is invalid"))]
+    InvalidIdentity,
+    #[snafu(display("the TLS identity is invalid"))]
+    ReadIdentity { source: std::io::Error },
     #[snafu(display("the TLS listener could not bind"))]
-    Bind,
+    Bind { source: std::io::Error },
+    #[snafu(display("the TLS handshake failed"))]
+    Handshake { source: std::io::Error },
 }
 
 #[cfg(test)]
@@ -260,7 +279,14 @@ pub(crate) mod tests {
 
     use super::{ALPN_HTTP_1_1, TlsError, TlsListener, load_server_config, load_signing_key};
 
-    pub(crate) struct TestSupportError;
+    #[derive(Debug, snafu::Snafu)]
+    pub(crate) enum TestSupportError {
+        #[snafu(context(false), display("TLS fixture operation failed"))]
+        Source {
+            #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+            source: Box<crate::test_error::TestError>,
+        },
+    }
 
     pub(crate) struct TestIdentity {
         directory: TestDirectory,
@@ -273,18 +299,21 @@ pub(crate) mod tests {
         pub(crate) fn new(ip_san: Ipv4Addr) -> Result<Self, TestSupportError> {
             let directory = TestDirectory::new()?;
 
-            let mut ca_params =
-                CertificateParams::new(Vec::<String>::new()).map_err(|_| TestSupportError)?;
+            let mut ca_params = CertificateParams::new(Vec::<String>::new()).map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?;
             ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
             ca_params.key_usages = vec![
                 KeyUsagePurpose::DigitalSignature,
                 KeyUsagePurpose::KeyCertSign,
                 KeyUsagePurpose::CrlSign,
             ];
-            let ca_key = KeyPair::generate().map_err(|_| TestSupportError)?;
-            let ca_certificate = ca_params
-                .self_signed(&ca_key)
-                .map_err(|_| TestSupportError)?;
+            let ca_key = KeyPair::generate().map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?;
+            let ca_certificate = ca_params.self_signed(&ca_key).map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?;
             install_der(
                 &directory.path.join(ORIGIN_CA_CERTIFICATE_FILENAME),
                 ca_certificate.der().as_ref(),
@@ -302,14 +331,20 @@ pub(crate) mod tests {
             origin_key_result?;
             let issuer = Issuer::new(ca_params, ca_key);
 
-            let leaf_key = KeyPair::generate().map_err(|_| TestSupportError)?;
+            let leaf_key = KeyPair::generate().map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?;
             let mut leaf_params =
-                CertificateParams::new(vec![ip_san.to_string()]).map_err(|_| TestSupportError)?;
+                CertificateParams::new(vec![ip_san.to_string()]).map_err(|source| {
+                    TestSupportError::from(crate::test_error::TestError::from(source))
+                })?;
             leaf_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
             leaf_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
             let leaf_certificate = leaf_params
                 .signed_by(&leaf_key, &issuer)
-                .map_err(|_| TestSupportError)?;
+                .map_err(|source| {
+                    TestSupportError::from(crate::test_error::TestError::from(source))
+                })?;
 
             let certificate_path = directory.path.join("server-tls-leaf.der");
             let private_key_path = directory.path.join("server-tls-key.pk8");
@@ -349,7 +384,9 @@ pub(crate) mod tests {
         ) -> Result<(), TestSupportError> {
             fs::copy(&other.private_key_path, &self.private_key_path)
                 .map(|_| ())
-                .map_err(|_| TestSupportError)
+                .map_err(|source| {
+                    TestSupportError::from(crate::test_error::TestError::from(source))
+                })
         }
     }
 
@@ -359,15 +396,18 @@ pub(crate) mod tests {
             .create_new(true)
             .mode(0o600)
             .open(path)
-            .map_err(|_| TestSupportError)?;
-        file.write_all(contents).map_err(|_| TestSupportError)
+            .map_err(|source| TestSupportError::from(crate::test_error::TestError::from(source)))?;
+        file.write_all(contents)
+            .map_err(|source| TestSupportError::from(crate::test_error::TestError::from(source)))
     }
 
     fn install_certificate_pem(path: &Path, der: &[u8]) -> Result<(), TestSupportError> {
         let base64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, der);
         let mut pem = String::from("-----BEGIN CERTIFICATE-----\n");
         for line in base64.as_bytes().chunks(64) {
-            pem.push_str(std::str::from_utf8(line).map_err(|_| TestSupportError)?);
+            pem.push_str(std::str::from_utf8(line).map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?);
             pem.push('\n');
         }
         pem.push_str("-----END CERTIFICATE-----\n");
@@ -382,9 +422,12 @@ pub(crate) mod tests {
         fn new() -> Result<Self, TestSupportError> {
             let path = std::env::temp_dir()
                 .join(format!("natsume-server-tls-path-canary-{}", Uuid::now_v7()));
-            fs::create_dir(&path).map_err(|_| TestSupportError)?;
-            fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
-                .map_err(|_| TestSupportError)?;
+            fs::create_dir(&path).map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).map_err(|source| {
+                TestSupportError::from(crate::test_error::TestError::from(source))
+            })?;
             Ok(Self { path })
         }
     }
@@ -402,9 +445,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn health_uses_http1_tls13_and_shuts_down_gracefully() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         let mut tls_stream = connect_client(
@@ -431,9 +476,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn tls12_only_client_is_rejected() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         let result = connect_client(
@@ -455,11 +502,13 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn wrong_trust_root_is_rejected() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
-        let wrong_identity =
-            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let wrong_identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         let result = connect_client(
@@ -481,9 +530,11 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn wrong_ip_san_is_rejected() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         let result = connect_client(
@@ -505,20 +556,21 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn mismatched_identity_fails_before_bind() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
-        let other_identity =
-            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let other_identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         identity
             .replace_private_key_from(&other_identity)
-            .map_err(|_| TestFailure::FixtureFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let occupied = StdTcpListener::bind(SocketAddr::from((LOCALHOST, 0)))
-            .map_err(|_| TestFailure::FixtureFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let address = occupied
             .local_addr()
-            .map_err(|_| TestFailure::FixtureFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
         let error = expect_bind_error(&identity, address).await?;
-        if error != TlsError::Identity {
+        if !matches!(error, TlsError::Identity { .. }) {
             return Err(TestFailure::UnexpectedTlsError);
         }
         drop(occupied);
@@ -527,11 +579,12 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn malformed_der_error_is_redacted() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         fs::write(identity.certificate_path(), b"malformed-der-content-canary")
-            .map_err(|_| TestFailure::FixtureFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let error = expect_bind_error(&identity, SocketAddr::from((LOCALHOST, 0))).await?;
-        if error != TlsError::Identity {
+        if !matches!(error, TlsError::Identity { .. }) {
             return Err(TestFailure::UnexpectedTlsError);
         }
         let display = error.to_string();
@@ -548,41 +601,45 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn material_permissions_fail_closed() -> Result<(), TestFailure> {
-        let certificate_wide =
-            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let certificate_wide = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         fs::set_permissions(
             certificate_wide.certificate_path(),
             fs::Permissions::from_mode(0o644),
         )
-        .map_err(|_| TestFailure::FixtureFailed)?;
-        if expect_bind_error(&certificate_wide, SocketAddr::from((LOCALHOST, 0))).await?
-            != TlsError::Identity
-        {
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        if !matches!(
+            expect_bind_error(&certificate_wide, SocketAddr::from((LOCALHOST, 0))).await?,
+            TlsError::InvalidIdentity
+        ) {
             return Err(TestFailure::UnexpectedTlsError);
         }
 
-        let key_wide = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let key_wide = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         fs::set_permissions(
             key_wide.private_key_path(),
             fs::Permissions::from_mode(0o644),
         )
-        .map_err(|_| TestFailure::FixtureFailed)?;
-        if expect_bind_error(&key_wide, SocketAddr::from((LOCALHOST, 0))).await?
-            != TlsError::Identity
-        {
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        if !matches!(
+            expect_bind_error(&key_wide, SocketAddr::from((LOCALHOST, 0))).await?,
+            TlsError::InvalidIdentity
+        ) {
             return Err(TestFailure::UnexpectedTlsError);
         }
 
-        let directory_wide =
-            TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let directory_wide = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         fs::set_permissions(
             directory_wide.directory_path(),
             fs::Permissions::from_mode(0o755),
         )
-        .map_err(|_| TestFailure::FixtureFailed)?;
-        if expect_bind_error(&directory_wide, SocketAddr::from((LOCALHOST, 0))).await?
-            != TlsError::Identity
-        {
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        if !matches!(
+            expect_bind_error(&directory_wide, SocketAddr::from((LOCALHOST, 0))).await?,
+            TlsError::InvalidIdentity
+        ) {
             return Err(TestFailure::UnexpectedTlsError);
         }
         Ok(())
@@ -590,9 +647,11 @@ pub(crate) mod tests {
 
     #[test]
     fn tls_policy_is_exact() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
-        let config = load_server_config(identity.certificate_path(), identity.private_key_path())
-            .map_err(|_| TestFailure::ListenerFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+        let config =
+            load_server_config(identity.certificate_path(), identity.private_key_path())
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if config.alpn_protocols != vec![ALPN_HTTP_1_1.to_vec()] || config.max_early_data_size != 0
         {
             return Err(TestFailure::TlsPolicyWasNotExact);
@@ -602,11 +661,14 @@ pub(crate) mod tests {
 
     #[test]
     fn signing_key_der_is_zeroed_before_return() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let mut private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-            fs::read(identity.private_key_path()).map_err(|_| TestFailure::FixtureFailed)?,
+            fs::read(identity.private_key_path())
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?,
         ));
-        load_signing_key(&mut private_key).map_err(|_| TestFailure::ListenerFailed)?;
+        load_signing_key(&mut private_key)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         if private_key.secret_der().iter().any(|byte| *byte != 0) {
             return Err(TestFailure::PrivateKeyDerWasNotZeroed);
         }
@@ -615,12 +677,14 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stalled_handshake_does_not_serialize_acceptance() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let stalled_socket = TcpStream::connect(address)
             .await
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         let request = async {
@@ -637,7 +701,7 @@ pub(crate) mod tests {
         };
         timeout(TEST_TIMEOUT, request)
             .await
-            .map_err(|_| TestFailure::HandshakeWasSerialized)??;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))??;
         shutdown
             .send(())
             .map_err(|()| TestFailure::ShutdownSignalFailed)?;
@@ -647,12 +711,14 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn shutdown_aborts_stalled_handshake() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let stalled_socket = TcpStream::connect(address)
             .await
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         shutdown
@@ -665,12 +731,14 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn stalled_handshake_closes_after_fixed_timeout() -> Result<(), TestFailure> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| TestFailure::FixtureFailed)?;
+        let identity = TestIdentity::new(LOCALHOST)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let listener = bind_identity(&identity).await?;
-        let address = Listener::local_addr(&listener).map_err(|_| TestFailure::ListenerFailed)?;
+        let address = Listener::local_addr(&listener)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let mut stalled_socket = TcpStream::connect(address)
             .await
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let (shutdown, server) = spawn_server(listener);
 
         let mut byte = [0_u8; 1];
@@ -686,10 +754,10 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn connection_capacity_covers_idle_tls_and_websocket_upgrade()
-    -> Result<(), Box<dyn std::error::Error>> {
+    -> Result<(), crate::test_error::TestError> {
         use axum::extract::{ConnectInfo, ws::WebSocketUpgrade};
         use futures_util::{SinkExt as _, StreamExt as _};
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| "identity fixture")?;
+        let identity = TestIdentity::new(LOCALHOST).map_err(crate::test_error::TestError::from)?;
         let mut listener = bind_identity(&identity).await?;
         listener.connections = Arc::new(tokio::sync::Semaphore::new(1));
         let capacity = Arc::clone(&listener.connections);
@@ -759,8 +827,8 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn repeated_slow_handshake_overload_is_bounded_and_recovers()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let identity = TestIdentity::new(LOCALHOST).map_err(|_| "identity fixture")?;
+    -> Result<(), crate::test_error::TestError> {
+        let identity = TestIdentity::new(LOCALHOST).map_err(crate::test_error::TestError::from)?;
         let listener = bind_identity(&identity).await?;
         let capacity = Arc::clone(&listener.connections);
         let address = listener.local_addr()?;
@@ -778,7 +846,7 @@ pub(crate) mod tests {
                 }
             })
             .await
-            .map_err(|_| "overload fixture did not reach handshake capacity")?;
+            .map_err(crate::test_error::TestError::from)?;
             // Bound client concurrency while avoiding serial socket latency
             // consuming the stalled handshakes' five-second lifetime.
             for _ in 0..16 {
@@ -823,21 +891,23 @@ pub(crate) mod tests {
             .await?;
             let response = request_health(&mut tls).await?;
             assert!(response.starts_with(b"HTTP/1.1 200"));
-            eprintln!(
+            tracing::info!(
                 "TLS overload recovery health latency: {:?}",
                 started.elapsed()
             );
         }
-        eprintln!(
+        tracing::info!(
             "TLS overload: 3 rounds, 64 stalled + 512 rejected connections per round; peak process FDs (including test clients): {peak_fds}"
         );
         for line in fs::read_to_string("/proc/self/status")?
             .lines()
             .filter(|line| line.starts_with("VmRSS:") || line.starts_with("VmHWM:"))
         {
-            eprintln!("{line}");
+            tracing::info!("{line}");
         }
-        shutdown.send(()).map_err(|()| "shutdown channel")?;
+        shutdown
+            .send(())
+            .map_err(crate::test_error::TestError::from)?;
         await_server(server).await?;
         Ok(())
     }
@@ -849,7 +919,7 @@ pub(crate) mod tests {
             identity.private_key_path(),
         )
         .await
-        .map_err(|_| TestFailure::ListenerFailed)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
     }
 
     async fn expect_bind_error(
@@ -899,39 +969,40 @@ pub(crate) mod tests {
         let mut roots = RootCertStore::empty();
         roots
             .add(trust_root.clone())
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let mut config =
             ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
                 .with_protocol_versions(versions)
-                .map_err(|_| TestFailure::ClientFailed)?
+                .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
                 .with_root_certificates(roots)
                 .with_no_client_auth();
         config.alpn_protocols = alpn_protocols;
         let connector = TlsConnector::from(Arc::new(config));
         let tcp_stream = TcpStream::connect(address)
             .await
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         connector
             .connect(ServerName::from(server_ip), tcp_stream)
             .await
-            .map_err(|_| TestFailure::ClientFailed)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
     }
 
     async fn request_health(tls_stream: &mut TlsStream<TcpStream>) -> Result<Vec<u8>, TestFailure> {
         tls_stream
             .write_all(HEALTH_REQUEST)
             .await
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let mut response = Vec::new();
         tls_stream
             .read_to_end(&mut response)
             .await
-            .map_err(|_| TestFailure::ClientFailed)?;
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         Ok(response)
     }
 
     fn assert_health_response(response: &[u8]) -> Result<(), TestFailure> {
-        let response = std::str::from_utf8(response).map_err(|_| TestFailure::InvalidResponse)?;
+        let response = std::str::from_utf8(response)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
         let Some((headers, body)) = response.split_once("\r\n\r\n") else {
             return Err(TestFailure::InvalidResponse);
         };
@@ -951,7 +1022,12 @@ pub(crate) mod tests {
     }
 
     #[derive(Debug, Snafu)]
-    enum TestFailure {
+    pub(crate) enum TestFailure {
+        #[snafu(context(false), display("test infrastructure operation failed"))]
+        Source {
+            #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+            source: Box<crate::test_error::TestError>,
+        },
         #[snafu(display("the TLS test fixture failed"))]
         FixtureFailed,
         #[snafu(display("the TLS listener failed unexpectedly"))]

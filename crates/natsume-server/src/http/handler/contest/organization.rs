@@ -1,5 +1,7 @@
+use crate::http::Routes;
+
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
@@ -11,29 +13,32 @@ use sha2::{Digest, Sha256};
 use super::{super::super::error::ApiError, AppState, middleware};
 use crate::component::contest::{LogoObservation, LogoStatus, OrganizationDetails};
 
-pub(super) fn routes(state: AppState) -> Router<AppState> {
-    Router::new()
-        .route(
+pub(super) fn operator_routes() -> Routes {
+    vec![
+        (
             "/organizations",
-            middleware::require_admin(state.clone(), get(list_organizations)),
-        )
-        .route(
+            middleware::require_admin(get(list_organizations)),
+        ),
+        (
             "/imports/{import_id}/organizations",
-            middleware::require_admin(state.clone(), get(list_candidate_organizations)),
-        )
-        .route(
+            middleware::require_admin(get(list_candidate_organizations)),
+        ),
+        (
             "/imports/{import_id}/organizations/{organization_id}/logo",
-            middleware::require_admin(state.clone(), get(candidate_logo)),
-        )
-        .route(
+            middleware::require_admin(get(candidate_logo)),
+        ),
+        (
             "/exports/domjudge",
-            middleware::require_admin(state, get(export_domjudge)),
-        )
-        // School logos are public images; this route never exposes a roster or password.
-        .route(
-            "/organizations/{organization_id}/logo",
-            get(organization_logo),
-        )
+            middleware::require_admin(get(export_domjudge)),
+        ),
+    ]
+}
+
+pub(super) fn public_routes() -> Routes {
+    vec![(
+        "/organizations/{organization_id}/logo",
+        get(organization_logo),
+    )]
 }
 
 #[derive(Serialize, specta::Type)]
@@ -69,7 +74,7 @@ impl From<LogoObservation> for OrganizationLogoResponse {
                 LogoStatus::Invalid => OrganizationLogoStatus::Invalid,
             },
             files: value.files,
-            detail: value.detail,
+            detail: value.failure.map(|error| error.to_string()),
         }
     }
 }
@@ -94,12 +99,18 @@ pub(crate) async fn list_candidate_organizations(
 
 async fn observations(state: &AppState, schools: Vec<OrganizationDetails>) -> Response {
     let response = match state.contest().observe_logos(schools).await {
-        Ok(rows) => Json(
-            rows.into_iter()
-                .map(OrganizationLogoResponse::from)
-                .collect::<Vec<_>>(),
-        )
-        .into_response(),
+        Ok(rows) => {
+            let mut failures = rows.iter().filter_map(|row| row.failure.as_deref());
+            if let Some(error) = failures.next() {
+                tracing::warn!(failed_organizations = 1 + failures.count(), error = %snafu::Report::from_error(error), "School logo could not be read");
+            }
+            Json(
+                rows.into_iter()
+                    .map(OrganizationLogoResponse::from)
+                    .collect::<Vec<_>>(),
+            )
+            .into_response()
+        }
         Err(error) => ApiError::from_export(&error).into_response(),
     };
     no_store(response)

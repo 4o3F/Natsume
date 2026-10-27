@@ -8,7 +8,10 @@ use crate::{
     vault::ensure_master_key,
 };
 
-use super::{CommandError, credentials};
+use super::{
+    credentials,
+    error::{CommandFailure as CommandError, WorkError},
+};
 
 pub(super) async fn execute(config: ServerConfig) -> Result<(), CommandError> {
     bootstrap_with(config, read_credentials_from_tty).await?;
@@ -23,14 +26,17 @@ where
     let database_config = DatabaseConfig::new(config.database_path(), true);
     let database = Database::connect_and_migrate(&database_config)
         .await
-        .map_err(|_| CommandError::Database)?;
+        .map_err(|source| CommandError::Database { source })?;
     tracing::info!("database ready");
-    ensure_master_key(config.vault_master_key_path()).map_err(|_| CommandError::Vault)?;
+    ensure_master_key(config.vault_master_key_path())
+        .map_err(|source| CommandError::Vault { source })?;
     tracing::info!("vault key verified");
     let credentials = read_credentials()?;
     let password_hash = credentials
         .hash_password()
-        .map_err(|_| CommandError::Bootstrap)?;
+        .map_err(|source| CommandError::Bootstrap {
+            source: WorkError::Operator { source },
+        })?;
     database
         .write(move |transaction| {
             OperatorComponent::create_first_admin(
@@ -38,17 +44,18 @@ where
                 credentials.login_name(),
                 &password_hash,
             )
-            .map_err(|_| CommandError::Bootstrap)?;
+            .map_err(|source| WorkError::Operator { source })?;
             RuntimeConfigComponent::apply_deployment_config(transaction, config.domjudge_origin())
-                .map_err(|_| CommandError::Bootstrap)
+                .map_err(|source| WorkError::Runtime { source })
         })
         .await
-        .map_err(|_| CommandError::Bootstrap)?;
+        .map_err(crate::db::TransactionError::into_error)
+        .map_err(|source| CommandError::Bootstrap { source })?;
     Ok(())
 }
 
 fn read_credentials_from_tty() -> Result<OperatorCredentials, CommandError> {
-    credentials::read_from_tty(CommandError::Bootstrap)
+    credentials::read_from_tty(|source| CommandError::Bootstrap { source })
 }
 
 #[cfg(test)]
@@ -69,7 +76,7 @@ pub(super) mod tests {
         db::{Database, DatabaseConfig, PersistenceError},
     };
 
-    use super::{CommandError, bootstrap_with};
+    use super::{CommandError, WorkError, bootstrap_with};
 
     #[tokio::test]
     async fn bootstrap_initializes_admin_and_runtime_configuration() {
@@ -85,9 +92,8 @@ pub(super) mod tests {
             .await
             .unwrap_or_else(|error| panic!("bootstrap administrator cannot sign in: {error}"));
         assert_eq!(session.identity().role_name(), "admin");
-        assert_eq!(
-            RuntimeConfigComponent::new(database).materialize().await,
-            Ok("https://judge.example.test".to_owned())
+        assert!(
+            matches!(RuntimeConfigComponent::new(database).materialize().await, Ok(actual) if actual == "https://judge.example.test")
         );
     }
 
@@ -101,21 +107,18 @@ pub(super) mod tests {
         let key_path = fixture.directory.join("keys/server-root.key");
         let key = fs::read(&key_path).unwrap_or_else(|error| panic!("read vault key: {error}"));
         fixture.set_origin("https://other.example.test");
-        assert_eq!(
+        assert!(matches!(
             fixture.bootstrap("second-admin").await,
-            Err(CommandError::Bootstrap)
-        );
+            Err(CommandError::Bootstrap { .. })
+        ));
         assert_eq!(
             fs::read(&key_path).unwrap_or_else(|error| panic!("reread vault key: {error}")),
             key
         );
         let database = fixture.database(false).await;
-        assert_eq!(
-            RuntimeConfigComponent::new(database.clone())
+        assert!(matches!(RuntimeConfigComponent::new(database.clone())
                 .materialize()
-                .await,
-            Ok("https://judge.example.test".to_owned())
-        );
+                .await, Ok(actual) if actual == "https://judge.example.test"));
         let accounts = database
             .read(|transaction| {
                 use crate::diesel_schema::operator_accounts;
@@ -123,7 +126,7 @@ pub(super) mod tests {
                 operator_accounts::table
                     .select(operator_accounts::username)
                     .load::<String>(transaction.connection())
-                    .map_err(|_| PersistenceError::OperationFailed)
+                    .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|error| panic!("read administrators: {error:?}"));
@@ -135,29 +138,25 @@ pub(super) mod tests {
         let fixture = Fixture::new();
         let database = fixture.database(true).await;
         fixture.sql("CREATE TRIGGER fail_runtime BEFORE INSERT ON runtime_config BEGIN SELECT RAISE(ABORT, 'injected failure'); END;").await;
-        assert_eq!(
+        assert!(matches!(
             fixture.bootstrap("admin").await,
-            Err(CommandError::Bootstrap)
-        );
+            Err(CommandError::Bootstrap { .. })
+        ));
         let initialized = database
             .read(OperatorComponent::is_initialized)
             .await
             .unwrap_or_else(|error| panic!("read bootstrap status: {error:?}"));
         assert!(!initialized);
-        assert_eq!(
-            RuntimeConfigComponent::new(database.clone())
+        assert!(matches!(RuntimeConfigComponent::new(database.clone())
                 .read_current()
-                .await,
-            Ok(None)
-        );
+                .await, Ok(actual) if actual.is_none()));
         fixture.sql("DROP TRIGGER fail_runtime;").await;
         fixture
             .bootstrap("admin")
             .await
             .unwrap_or_else(|error| panic!("bootstrap retry failed: {error}"));
-        assert_eq!(
-            RuntimeConfigComponent::new(database).materialize().await,
-            Ok("https://judge.example.test".to_owned())
+        assert!(
+            matches!(RuntimeConfigComponent::new(database).materialize().await, Ok(actual) if actual == "https://judge.example.test")
         );
     }
 
@@ -222,7 +221,9 @@ domjudge_origin = "https://judge.example.test"
                     "test-password-123!".to_owned(),
                     "test-password-123!".to_owned(),
                 )
-                .map_err(|_| CommandError::Bootstrap)
+                .map_err(|source| CommandError::Bootstrap {
+                    source: WorkError::Operator { source },
+                })
             })
             .await
         }
@@ -234,7 +235,7 @@ domjudge_origin = "https://judge.example.test"
                     transaction
                         .connection()
                         .batch_execute(sql)
-                        .map_err(|_| PersistenceError::OperationFailed)
+                        .map_err(PersistenceError::from)
                 })
                 .await
                 .unwrap_or_else(|error| panic!("apply database fixture: {error:?}"));

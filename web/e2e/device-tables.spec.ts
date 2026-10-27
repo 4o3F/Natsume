@@ -18,6 +18,7 @@ for (const path of ["/devices", "/targets"]) {
     context,
   }, testInfo) => {
     const fleet = targetFleet(3);
+    fleet[0].machine_hardware_id = "240f10f2-e7e6-5a08-9d96-f511b8eb4843";
     fleet[0].network = {
       client_ip: "192.0.2.1",
       server_observed_ip: "192.0.2.2",
@@ -25,11 +26,40 @@ for (const path of ["/devices", "/targets"]) {
     };
     await mockTargets(context, fleet);
     await page.goto(path);
-    const first = deviceRow(page, "machine-01");
+    const first = deviceRow(page, fleet[0].machine_hardware_id);
     await first.focus();
     await first.press("Enter");
     const drawer = page.getByRole("dialog");
     await expect(drawer).toContainText(fleet[0].device_id);
+    const identity = drawer.locator('[data-slot="sheet-description"]');
+    await expect(identity.getByRole("term")).toHaveText([
+      "Hardware ID",
+      "Device ID",
+    ]);
+    await expect(identity.getByRole("definition")).toHaveText([
+      fleet[0].machine_hardware_id,
+      fleet[0].device_id,
+    ]);
+    await expect(drawer).toHaveAccessibleDescription(
+      `Hardware ID ${fleet[0].machine_hardware_id} Device ID ${fleet[0].device_id}`,
+    );
+    for (const width of [390, 1440]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(
+        await identity.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth,
+        ),
+      ).toBe(true);
+      const values = await identity
+        .getByRole("definition")
+        .evaluateAll((elements) =>
+          elements.map((element) => {
+            const bounds = element.getBoundingClientRect();
+            return { top: bounds.top, bottom: bounds.bottom };
+          }),
+        );
+      expect(values[1].top).toBeGreaterThan(values[0].bottom);
+    }
     if (path === "/targets") {
       await expect(
         drawer.getByRole("region", { name: "Network addresses", exact: true }),
@@ -118,6 +148,13 @@ for (const path of ["/devices", "/targets"]) {
     ] as const) {
       await selectDeviceStates(page, [...states]);
       await expect(await seatCells(page)).toHaveText([...seats]);
+      if (path === "/devices")
+        await expect(
+          page
+            .getByText("Listed", { exact: true })
+            .locator("../..")
+            .getByText("ALL", { exact: true }),
+        ).toBeVisible();
       if (states.length === 1 && states[0] === "revoked")
         await expect(page.locator("tbody tr")).toHaveClass(
           /text-muted-foreground/,

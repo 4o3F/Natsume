@@ -18,7 +18,9 @@ pub(super) fn create_first_admin(
 ) -> Result<Uuid, OperatorError> {
     let operator_id = Uuid::now_v7();
     if crate::component::operator::db::any_account_exists(transaction)? {
-        return Err(OperatorError::from(PersistenceError::InvalidPersistedData));
+        return Err(OperatorError::from(PersistenceError::invalid(
+            "persisted value",
+        )));
     }
     crate::component::operator::db::insert_account(
         transaction,
@@ -39,18 +41,15 @@ pub(super) async fn reset_operator_password(
 ) -> Result<(), OperatorError> {
     let login_name = login_name.to_owned();
     let password_hash = password_hash.to_owned();
-    let result = database
+
+    database
         .write(move |transaction| -> Result<_, OperatorError> {
             let account = crate::component::operator::db::find_account(transaction, &login_name)?
-                .ok_or(PersistenceError::InvalidPersistedData)?;
+                .ok_or(PersistenceError::invalid("persisted value"))?;
             replace_password(transaction, &account, &password_hash)
         })
         .await
-        .map_err(TransactionError::into_error);
-    if result.is_err() {
-        tracing::warn!("operator password reset failed");
-    }
-    result
+        .map_err(TransactionError::into_error)
 }
 
 /// All password replacement paths advance the fence and revoke sessions and
@@ -60,10 +59,13 @@ pub(super) fn replace_password(
     account: &AccountFacts,
     password_hash: &str,
 ) -> Result<(), OperatorError> {
-    let next_revision = account
-        .credential_revision
-        .checked_add(1)
-        .ok_or(OperatorError::PersistenceFailed)?;
+    let next_revision =
+        account
+            .credential_revision
+            .checked_add(1)
+            .ok_or(OperatorError::PersistenceFailed {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            })?;
     let id = account.identity.operator_id();
     super::db::update_password(transaction, id, password_hash, next_revision)?;
     super::db::delete_sessions_by_operator(transaction, id)?;

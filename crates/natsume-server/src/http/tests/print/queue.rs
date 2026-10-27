@@ -15,6 +15,11 @@ use crate::{
 
 #[derive(Debug, Snafu)]
 enum QueueTestError {
+    #[snafu(context(false), display("test infrastructure operation failed"))]
+    Source {
+        #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+        source: Box<crate::test_error::TestError>,
+    },
     #[snafu(display("print queue fixture setup failed"))]
     Setup,
     #[snafu(context(false), display("queue test request failed"))]
@@ -43,7 +48,7 @@ async fn read_queue(f: &Fixture) -> Result<Captured, QueueTestError> {
 #[tokio::test]
 async fn queue_requires_operator_session_and_allows_both_roles() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new().await.map_err(|_| QueueTestError::Setup)?;
+    let f = Fixture::new().await.map_err(QueueTestError::from)?;
     for bearer in [false, true] {
         let mut request = Request::builder().uri("/api/v2/print/queue");
         if bearer {
@@ -55,7 +60,9 @@ async fn queue_requires_operator_session_and_allows_both_roles() -> TestResult {
     }
     for viewer in [false, true] {
         if viewer {
-            f.make_viewer().await.map_err(|_| QueueTestError::Setup)?;
+            f.make_viewer().await.map_err(|source| {
+                QueueTestError::from(crate::test_error::TestError::from(source))
+            })?;
         }
         let response = read_queue(&f).await?;
         assert_eq!(response.status, StatusCode::OK);
@@ -86,9 +93,9 @@ async fn queue_requires_operator_session_and_allows_both_roles() -> TestResult {
 #[tokio::test]
 async fn queue_follows_admission_order_without_duplicating_replays() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new().await.map_err(|_| QueueTestError::Setup)?;
-    let first = f.register().await.map_err(|_| QueueTestError::Setup)?;
-    let second = f.register().await.map_err(|_| QueueTestError::Setup)?;
+    let f = Fixture::new().await.map_err(QueueTestError::from)?;
+    let first = f.register().await.map_err(QueueTestError::from)?;
+    let second = f.register().await.map_err(QueueTestError::from)?;
     assert_eq!(
         serde_json::from_slice::<Value>(&read_queue(&f).await?.body)?,
         json!([])
@@ -102,7 +109,7 @@ async fn queue_follows_admission_order_without_duplicating_replays() -> TestResu
                 Body::from(super::pdf(2)),
             )
             .await
-            .map_err(|_| QueueTestError::Setup)?;
+            .map_err(QueueTestError::from)?;
         assert_eq!(response.status, StatusCode::OK);
     }
     let response = read_queue(&f).await?;
@@ -122,7 +129,7 @@ async fn queue_follows_admission_order_without_duplicating_replays() -> TestResu
 #[tokio::test]
 async fn queue_preserves_cross_source_fifo_and_snapshots_using_only_metadata() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
-    let f = Fixture::new().await.map_err(|_| QueueTestError::Setup)?;
+    let f = Fixture::new().await.map_err(QueueTestError::from)?;
     let source = f.source_id.clone();
     f.database
         .database
@@ -183,7 +190,7 @@ async fn queue_preserves_cross_source_fifo_and_snapshots_using_only_metadata() -
             Ok::<_, PrintError>(())
         })
         .await
-        .map_err(|_| QueueTestError::Setup)?;
+        .map_err(|source| QueueTestError::from(crate::test_error::TestError::from(source)))?;
     // Queue polling reads committed metadata, not the PDF directory or live roster.
     std::fs::remove_dir_all(f.database.documents_path())?;
     let response = read_queue(&f).await?;

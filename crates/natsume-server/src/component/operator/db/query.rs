@@ -1,50 +1,34 @@
 use diesel::{
-    OptionalExtension, QueryableByName, RunQueryDsl,
-    sql_types::{BigInt, Binary, Text},
+    ExpressionMethods, OptionalExtension, QueryDsl, RunQueryDsl, dsl::sql, sql_types::BigInt,
 };
 
 use crate::{
     component::operator::{OperatorIdentity, SessionFacts},
     db::{PersistenceError, Transaction},
+    diesel_schema::{operator_accounts, operator_sessions},
 };
-
-#[derive(QueryableByName)]
-struct PersistedSessionFacts {
-    #[diesel(sql_type = Text)]
-    operator_id: String,
-    #[diesel(sql_type = Text)]
-    role: String,
-    #[diesel(sql_type = BigInt)]
-    expired: i64,
-}
 
 pub(in crate::component::operator) fn find_session(
     transaction: &mut Transaction<'_>,
     credential_hash: &[u8; 32],
 ) -> Result<Option<SessionFacts>, PersistenceError> {
-    let row = diesel::sql_query(
-        "SELECT accounts.operator_id AS operator_id, accounts.role AS role, \
-         CASE WHEN sessions.expires_at_unix_ms <= \
-              CAST(unixepoch('subsec') * 1000 AS INTEGER) THEN 1 ELSE 0 END AS expired \
-         FROM operator_sessions AS sessions \
-         INNER JOIN operator_accounts AS accounts ON accounts.operator_id = sessions.operator_id \
-         WHERE sessions.session_credential_hash = ?",
-    )
-    .bind::<Binary, _>(credential_hash.as_slice())
-    .get_result::<PersistedSessionFacts>(transaction.connection())
-    .optional()
-    .map_err(|_| PersistenceError::OperationFailed)?;
+    let row = operator_sessions::table
+        .inner_join(operator_accounts::table)
+        .select((
+            operator_accounts::operator_id,
+            operator_accounts::role,
+            operator_sessions::expires_at_unix_ms
+                .le(sql::<BigInt>("CAST(unixepoch('subsec') * 1000 AS INTEGER)")),
+        ))
+        .filter(operator_sessions::session_credential_hash.eq(credential_hash.as_slice()))
+        .get_result::<(String, String, bool)>(transaction.connection())
+        .optional()
+        .map_err(PersistenceError::from)?;
 
-    row.map(|row| {
-        if !matches!(row.expired, 0 | 1) {
-            return Err(PersistenceError::InvalidPersistedData);
-        }
-        let identity = OperatorIdentity::from_persisted(&row.operator_id, &row.role)
-            .map_err(|_| PersistenceError::InvalidPersistedData)?;
-        Ok(SessionFacts {
-            identity,
-            expired: row.expired == 1,
-        })
+    row.map(|(operator_id, role, expired)| {
+        let identity = OperatorIdentity::from_persisted(&operator_id, &role)
+            .map_err(super::persisted_identity_error)?;
+        Ok(SessionFacts { identity, expired })
     })
     .transpose()
 }
@@ -77,17 +61,17 @@ mod tests {
             .read(|transaction| {
                 diesel::sql_query(
                     "EXPLAIN QUERY PLAN \
-                     SELECT accounts.operator_id, accounts.role, \
-                     CASE WHEN sessions.expires_at_unix_ms <= \
-                     CAST(unixepoch('subsec') * 1000 AS INTEGER) THEN 1 ELSE 0 END \
-                     FROM operator_sessions AS sessions \
-                     INNER JOIN operator_accounts AS accounts \
-                     ON accounts.operator_id = sessions.operator_id \
-                     WHERE sessions.session_credential_hash = zeroblob(32)",
+                     SELECT operator_accounts.operator_id, operator_accounts.role, \
+                     operator_sessions.expires_at_unix_ms <= \
+                     CAST(unixepoch('subsec') * 1000 AS INTEGER) \
+                     FROM operator_sessions \
+                     INNER JOIN operator_accounts \
+                     ON operator_accounts.operator_id = operator_sessions.operator_id \
+                     WHERE operator_sessions.session_credential_hash = zeroblob(32)",
                 )
                 .load::<QueryPlanRow>(transaction.connection())
                 .map(|rows| rows.into_iter().map(|row| row.detail).collect::<Vec<_>>())
-                .map_err(|_| PersistenceError::OperationFailed)
+                .map_err(PersistenceError::from)
             })
             .await
             .unwrap_or_else(|_| panic!("operator query plan could not be read"));

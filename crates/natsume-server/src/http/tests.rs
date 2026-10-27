@@ -2,6 +2,7 @@ mod print;
 mod print_domjudge;
 mod request_bodies;
 mod resource_limits;
+mod routes;
 
 use std::{
     fs,
@@ -58,7 +59,14 @@ use super::{
 
 pub(crate) fn health_router() -> Router {
     Router::new()
-        .nest("/api/v2", health::routes())
+        .nest(
+            "/api/v2",
+            health::public_routes()
+                .into_iter()
+                .fold(Router::new(), |router, (path, methods)| {
+                    router.route(path, methods)
+                }),
+        )
         .fallback(not_found)
         .layer(axum_middleware::from_fn(request_context))
 }
@@ -162,12 +170,12 @@ pub(super) async fn drive(
         .clone()
         .oneshot(request)
         .await
-        .map_err(|_| SupportFailure::RouterFailed)?;
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
     let status = response.status();
     let headers = response.headers().clone();
     let body = to_bytes(response.into_body(), 16 * 1024)
         .await
-        .map_err(|_| SupportFailure::ResponseBodyFailed)?;
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
     Ok(Captured {
         status,
         headers,
@@ -184,7 +192,7 @@ pub(super) fn request(
         .method(method)
         .uri(uri)
         .body(Body::from(body))
-        .map_err(|_| SupportFailure::HelperRequestBuildFailed)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 pub(super) fn login_request(
@@ -197,7 +205,7 @@ pub(super) fn login_request(
         .uri("/api/v2/session")
         .header(header::CONTENT_TYPE, "application/json")
         .body(Body::from(body))
-        .map_err(|_| SupportFailure::HelperRequestBuildFailed)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 pub(super) fn cookie_request(
@@ -210,7 +218,7 @@ pub(super) fn cookie_request(
         .uri(uri)
         .header(header::COOKIE, cookie)
         .body(Body::empty())
-        .map_err(|_| SupportFailure::HelperRequestBuildFailed)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 pub(super) fn header_text<'a>(
@@ -221,7 +229,7 @@ pub(super) fn header_text<'a>(
         .get(name)
         .ok_or(SupportFailure::ResponseHeaderMissing)?
         .to_str()
-        .map_err(|_| SupportFailure::ResponseHeaderInvalid)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 pub(super) fn check_error_response(
@@ -235,8 +243,8 @@ pub(super) fn check_error_response(
     {
         return Err(SupportFailure::ErrorResponseContractChanged);
     }
-    let value: Value =
-        serde_json::from_slice(&response.body).map_err(|_| SupportFailure::ResponseJsonInvalid)?;
+    let value: Value = serde_json::from_slice(&response.body)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
     let object = value
         .as_object()
         .ok_or(SupportFailure::ErrorResponseContractChanged)?;
@@ -259,7 +267,8 @@ pub(super) fn check_error_response(
 }
 
 pub(super) fn response_body_text(response: &Captured) -> Result<&str, SupportFailure> {
-    std::str::from_utf8(&response.body).map_err(|_| SupportFailure::ResponseBodyFailed)
+    std::str::from_utf8(&response.body)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 pub(super) fn response_contains(response: &Captured, value: &str) -> bool {
@@ -283,7 +292,7 @@ impl TestDatabase {
         ));
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&path, true))
             .await
-            .map_err(|_| SupportFailure::FixtureFailed)?;
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         Ok(Self { database, path })
     }
 
@@ -308,13 +317,15 @@ struct TestWebRoot {
 impl TestWebRoot {
     fn new() -> Result<Self, SupportFailure> {
         let path = std::env::temp_dir().join(format!("natsume-server-web-test-{}", Uuid::now_v7()));
-        fs::create_dir(&path).map_err(|_| SupportFailure::FixtureFailed)?;
+        fs::create_dir(&path)
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         let web_root = Self { path };
-        fs::create_dir(web_root.path.join("assets")).map_err(|_| SupportFailure::FixtureFailed)?;
+        fs::create_dir(web_root.path.join("assets"))
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         fs::write(web_root.path.join("index.html"), INDEX_HTML)
-            .map_err(|_| SupportFailure::FixtureFailed)?;
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         fs::write(web_root.path.join("assets/app.js"), APP_JS)
-            .map_err(|_| SupportFailure::FixtureFailed)?;
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         Ok(web_root)
     }
 
@@ -339,17 +350,22 @@ pub(super) async fn seed_operator(
         password.to_owned(),
         password.to_owned(),
     )
-    .map_err(|_| SupportFailure::FixtureFailed)?;
+    .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
     let password_hash = credentials
         .hash_password()
-        .map_err(|_| SupportFailure::FixtureFailed)?;
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
     db_operator::test_insert_admin_account(database, login_name, &password_hash)
         .await
-        .map_err(|_| SupportFailure::FixtureFailed)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 #[derive(Debug, Snafu)]
 pub(crate) enum SupportFailure {
+    #[snafu(context(false), display("test infrastructure operation failed"))]
+    Source {
+        #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+        source: Box<crate::test_error::TestError>,
+    },
     #[snafu(display("the HTTP test fixture failed"))]
     FixtureFailed,
     #[snafu(display("the HTTP request could not be built"))]
@@ -381,7 +397,7 @@ pub(crate) fn unused_web_root() -> &'static Path {
 pub(super) fn server_state(fixture: &TestDatabase) -> Result<AppState, SupportFailure> {
     server_state::tests::for_test(fixture.database.clone(), fixture.documents_path())
         .map(Arc::new)
-        .map_err(|_| SupportFailure::FixtureFailed)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 #[tokio::test]
@@ -457,7 +473,7 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
     let closed_fixture = TestDatabase::new().await?;
     let health_router = router(server_state(&closed_fixture)?, unused_web_root());
     let _database_lock = test_lock_database(&closed_fixture.path)
-        .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let health_response =
         drive(&health_router, request(Method::GET, "/api/v2/health", "")?).await?;
     if health_response.status != StatusCode::OK
@@ -476,7 +492,7 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
         .uri("/api/v2/health")
         .header("x-correlation-id", supplied)
         .body(Body::empty())
-        .map_err(|_| TestFailure::RequestBuildFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let supplied_response = drive(&application, supplied_request).await?;
     if supplied_response.headers.contains_key("x-correlation-id")
         || response_contains(&supplied_response, supplied)
@@ -484,28 +500,7 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
         return Err(TestFailure::CorrelationContractWasRetained);
     }
 
-    let post_request = Request::builder()
-        .method(Method::POST)
-        .uri("/api/v2/session")
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(Body::from("{}"))
-        .map_err(|_| TestFailure::RequestBuildFailed)?;
-    let mounted = mounted_route_responses(&application, post_request).await?;
-    let expected_statuses = [
-        StatusCode::BAD_REQUEST,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::NO_CONTENT,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-        StatusCode::UNAUTHORIZED,
-    ];
-    for (response, expected_status) in mounted.iter().zip(expected_statuses) {
+    for (response, expected_status) in routes::mounted_route_responses(&application).await? {
         if response.status != expected_status {
             return Err(TestFailure::MountedRouteWasNotReachable);
         }
@@ -515,64 +510,6 @@ async fn mounted_and_unmounted_routes_are_exact_without_correlation_contract()
     }
 
     Ok(())
-}
-
-async fn mounted_route_responses(
-    application: &Router,
-    session_post: Request<Body>,
-) -> Result<Vec<Captured>, SupportFailure> {
-    Ok(vec![
-        drive(application, session_post).await?,
-        drive(application, request(Method::GET, "/api/v2/session", "")?).await?,
-        drive(application, request(Method::DELETE, "/api/v2/session", "")?).await?,
-        drive(application, request(Method::GET, "/api/v2/seats", "")?).await?,
-        drive(application, request(Method::GET, "/api/v2/accounts", "")?).await?,
-        drive(application, request(Method::GET, "/api/v2/bindings", "")?).await?,
-        drive(application, request(Method::GET, "/api/v2/imports", "")?).await?,
-        drive(
-            application,
-            request(Method::GET, "/api/v2/imports/template", "")?,
-        )
-        .await?,
-        drive(
-            application,
-            request(Method::GET, "/api/v2/provisioning-window", "")?,
-        )
-        .await?,
-        drive(
-            application,
-            request(Method::PUT, "/api/v2/provisioning-window", "")?,
-        )
-        .await?,
-        drive(
-            application,
-            Request::builder()
-                .method(Method::POST)
-                .uri("/api/v2/imports")
-                .header(header::CONTENT_TYPE, XLSX_MEDIA_TYPE)
-                .body(Body::empty())
-                .map_err(|_| SupportFailure::HelperRequestBuildFailed)?,
-        )
-        .await?,
-        drive(
-            application,
-            request(
-                Method::POST,
-                "/api/v2/imports/01900000-0000-7000-8000-000000000000/actions/commit",
-                "",
-            )?,
-        )
-        .await?,
-        drive(
-            application,
-            request(
-                Method::DELETE,
-                "/api/v2/imports/01900000-0000-7000-8000-000000000000",
-                "",
-            )?,
-        )
-        .await?,
-    ])
 }
 
 #[tokio::test]
@@ -726,7 +663,7 @@ async fn http_root_span_inherits_the_remote_w3c_trace_parent() -> Result<(), Tes
             "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
         )
         .body(Body::empty())
-        .map_err(|_| TestFailure::RequestBuildFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
     let response = async { drive(&application, request).await }
         .with_subscriber(subscriber)
@@ -746,7 +683,7 @@ async fn http_root_span_inherits_the_remote_w3c_trace_parent() -> Result<(), Tes
     }
     provider
         .shutdown()
-        .map_err(|_| TestFailure::TraceContextSpanChanged)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     Ok(())
 }
 
@@ -859,10 +796,7 @@ async fn login_and_error_logs_enforce_the_redaction_contract() -> Result<(), Tes
     Ok(())
 }
 
-/// The expired-cleanup warning is the only place an operator store cause
-/// survives, and it is emitted inside a `Database::read` closure, so this
-/// also proves the blocking thread reaches the scoped subscriber. A write-locked
-/// database blocks the lazy-expiry escalation, and the pool's `busy_timeout` is
+/// A write-locked database blocks the lazy-expiry escalation, and the pool's `busy_timeout` is
 /// 5000 ms, so the request below spends about five seconds blocked.
 #[tokio::test]
 async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<(), TestFailure> {
@@ -882,9 +816,9 @@ async fn blocked_expiry_cleanup_logs_its_cause_and_never_returns_it() -> Result<
         .to_owned();
     db_operator::test_expire_all_sessions(&fixture.database)
         .await
-        .map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
-    let _database_lock =
-        test_lock_database(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    let _database_lock = test_lock_database(&fixture.path)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
     let captured = CapturedLogs::default();
     let subscriber = captured.subscriber(LogLevel::Warn);
@@ -930,13 +864,13 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
         .next()
         .ok_or(TestFailure::CookieContractChanged)?
         .to_owned();
-    let mut observer =
-        test_observer(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    let mut observer = test_observer(&fixture.path)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
     let session_count_before = session_count_on(&mut observer)?;
-    let version_before =
-        test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
-    let _database_lock =
-        test_lock_database(&fixture.path).map_err(|_| TestFailure::DatabaseEvidenceFailed)?;
+    let version_before = test_data_version(&mut observer)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
+    let _database_lock = test_lock_database(&fixture.path)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?;
 
     let health_head = drive(&application, request(Method::HEAD, "/api/v2/health", "")?).await?;
     let session_head = drive(
@@ -971,7 +905,8 @@ async fn head_is_rejected_without_session_persistence_access() -> Result<(), Tes
         }
     }
     if session_count_on(&mut observer)? != session_count_before
-        || test_data_version(&mut observer).map_err(|_| TestFailure::DatabaseEvidenceFailed)?
+        || test_data_version(&mut observer)
+            .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))?
             != version_before
     {
         return Err(TestFailure::HeadRequestAccessedSessionPersistence);
@@ -1046,7 +981,7 @@ fn session_count_on(connection: &mut SqliteConnection) -> Result<i64, TestFailur
     diesel::sql_query("SELECT COUNT(*) AS sessions FROM operator_sessions")
         .get_result::<PersistenceCountsRow>(connection)
         .map(|row| row.sessions)
-        .map_err(|_| TestFailure::DatabaseEvidenceFailed)
+        .map_err(|source| TestFailure::from(crate::test_error::TestError::from(source)))
 }
 
 #[derive(QueryableByName)]
@@ -1057,6 +992,11 @@ struct PersistenceCountsRow {
 
 #[derive(Debug, Snafu)]
 enum TestFailure {
+    #[snafu(context(false), display("test infrastructure operation failed"))]
+    Source {
+        #[snafu(source(from(crate::test_error::TestError, Box::new)))]
+        source: Box<crate::test_error::TestError>,
+    },
     #[snafu(display("an HTTP test helper failed"))]
     #[snafu(context(false))]
     Support { source: SupportFailure },
@@ -1153,7 +1093,7 @@ async fn roster_http_accepts_binary_xlsx_and_keeps_credentials_out_of_previews_a
         .await?;
         assert_eq!(response.status, StatusCode::CREATED);
         let preview: Value = serde_json::from_slice(&response.body)
-            .map_err(|_| SupportFailure::ResponseJsonInvalid)?;
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         assert!(!String::from_utf8_lossy(&response.body).contains("example-password"));
         assert_eq!(
             preview["diff"]["organizations"][0]["organization_id"],
@@ -1208,7 +1148,7 @@ async fn roster_http_accepts_binary_xlsx_and_keeps_credentials_out_of_previews_a
         )
         .await?;
         let accounts: Value = serde_json::from_slice(&accounts.body)
-            .map_err(|_| SupportFailure::ResponseJsonInvalid)?;
+            .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))?;
         assert_eq!(accounts.as_array().map(Vec::len), Some(3));
         Ok::<_, SupportFailure>(token.to_owned())
     }
@@ -1239,13 +1179,14 @@ fn roster_request(
     }
     request
         .body(Body::from(body))
-        .map_err(|_| SupportFailure::HelperRequestBuildFailed)
+        .map_err(|source| SupportFailure::from(crate::test_error::TestError::from(source)))
 }
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacements()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), crate::test_error::TestError> {
+    let _subscriber_guard = SubscriberTestGuard::acquire();
     let _verification_guard = PasswordVerificationTestGuard::acquire().await;
     let fixture = TestDatabase::new().await?;
     let logos = tempfile::TempDir::new()?;
@@ -1278,7 +1219,7 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     let cookie = header_text(&login.headers, &header::SET_COOKIE)?
         .split(';')
         .next()
-        .ok_or("cookie absent")?;
+        .ok_or(crate::test_error::TestError::missing("cookie absent"))?;
     let public_logo = "/api/v2/organizations/INST-001/logo";
     assert_eq!(
         drive(&application, request(Method::GET, public_logo, "")?)
@@ -1306,11 +1247,12 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
     assert_eq!(schools[0]["status"], "available");
     assert_eq!(schools[0]["files"], serde_json::json!(["示例大学.webp"]));
     assert!(!String::from_utf8_lossy(&observation.body).contains("example-password"));
-    state
+    let change = state
         .import()
         .try_begin()?
         .commit(preview.candidate_id(), preview.preview_token_bytes(), xlsx)
         .await?;
+    state.device_control().publish(change).await;
     assert_eq!(
         drive(
             &application,
@@ -1395,7 +1337,9 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
         "{}.png",
         schools[0]["name_en"]
             .as_str()
-            .ok_or("English school name missing")?
+            .ok_or(crate::test_error::TestError::missing(
+                "English school name missing"
+            ))?
     ));
     fs::copy(&source, &duplicate)?;
     let observed = drive(
@@ -1418,15 +1362,21 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
         "available"
     );
     fs::write(&source, "corrupt")?;
+    let captured = CapturedLogs::default();
     let observed = drive(
         &application,
         cookie_request(Method::GET, "/api/v2/organizations", cookie)?,
     )
+    .with_subscriber(captured.subscriber(LogLevel::Trace))
     .await?;
     assert_eq!(
         serde_json::from_slice::<Value>(&observed.body)?[0]["status"],
         "invalid"
     );
+    let events = captured.text().unwrap_or_else(|()| panic!("logs"));
+    assert_eq!(events.matches("School logo could not be read").count(), 1);
+    assert!(events.contains("failed_organizations=1"));
+    assert!(events.contains("expected PNG, JPEG, WebP or SVG content"));
     let failed = drive(
         &application,
         cookie_request(Method::GET, "/api/v2/exports/domjudge", cookie)?,
@@ -1443,10 +1393,10 @@ async fn school_logos_and_export_enforce_authorization_and_follow_hot_replacemen
             use diesel::connection::SimpleConnection as _;
             tx.connection()
                 .batch_execute("UPDATE operator_accounts SET role = 'viewer'")
-                .map_err(|_| crate::db::PersistenceError::OperationFailed)
+                .map_err(crate::db::PersistenceError::from)
         })
         .await
-        .map_err(|_| "cannot change fixture role")?;
+        .map_err(crate::test_error::TestError::from)?;
     for path in private_routes {
         assert_eq!(
             drive(&application, cookie_request(Method::GET, path, cookie)?)

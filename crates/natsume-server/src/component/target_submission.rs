@@ -4,7 +4,10 @@ use serde::{Deserialize, Serialize};
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::db::{Database, PersistenceError, Transaction, TransactionError};
+use crate::{
+    db::{Database, PersistenceError, Transaction, TransactionError},
+    device_control::TargetChange,
+};
 
 use super::{
     device::{DeviceComponent, DeviceId, DeviceState},
@@ -28,7 +31,7 @@ impl TargetSubmissionComponent {
         &self,
         operator_id: Uuid,
         mut request: TargetSubmissionRequest,
-    ) -> Result<TargetSubmissionResult, TargetSubmissionError> {
+    ) -> Result<(TargetSubmissionResult, TargetChange), TargetSubmissionError> {
         if let TargetScope::Devices(devices) = &mut request.scope {
             devices.sort_unstable_by_key(DeviceId::as_text);
             devices.dedup();
@@ -70,8 +73,14 @@ impl TargetSubmissionComponent {
                         rejection: row.rejection,
                     })
                     .collect();
-                let stored = serde_json::to_string(&stored)
-                    .map_err(|_| TargetSubmissionError::PersistenceFailed)?;
+                let stored = serde_json::to_string(&stored).map_err(|source| {
+                    TargetSubmissionError::PersistenceFailed {
+                        source: PersistenceError::Json {
+                            field: "target receipt",
+                            source,
+                        },
+                    }
+                })?;
                 // Even zero devices or all rejected results must reserve this ID.
                 db::insert(transaction, &operation_id, &owner, &canonical, &stored)?;
                 Ok(TargetSubmissionResult {
@@ -81,6 +90,15 @@ impl TargetSubmissionComponent {
             })
             .await
             .map_err(TransactionError::into_error)
+            .map(|result| {
+                let devices = result
+                    .results
+                    .iter()
+                    .filter(|row| row.rejection.is_none())
+                    .map(|row| row.device_id)
+                    .collect();
+                (result, TargetChange::devices(devices))
+            })
     }
 }
 
@@ -88,13 +106,22 @@ fn decode_result(
     operation_id: Uuid,
     stored: &str,
 ) -> Result<TargetSubmissionResult, TargetSubmissionError> {
-    let rows: Vec<StoredResult> =
-        serde_json::from_str(stored).map_err(|_| TargetSubmissionError::InvalidPersistedFacts)?;
+    let rows: Vec<StoredResult> = serde_json::from_str(stored).map_err(|source| {
+        TargetSubmissionError::InvalidPersistedFacts {
+            source: PersistenceError::Json {
+                field: "target receipt",
+                source,
+            },
+        }
+    })?;
     let results = rows
         .into_iter()
         .map(|row| {
-            let device_id = DeviceId::parse(&row.device_id)
-                .ok_or(TargetSubmissionError::InvalidPersistedFacts)?;
+            let device_id = DeviceId::parse(&row.device_id).ok_or(
+                TargetSubmissionError::InvalidPersistedFacts {
+                    source: crate::db::PersistenceError::invalid("persisted facts"),
+                },
+            )?;
             Ok(DeviceSubmissionResult {
                 device_id,
                 rejection: row.rejection,
@@ -116,7 +143,7 @@ fn apply(
         Ok(Some(DeviceState::Enabled)) => {}
         Ok(Some(_)) => return Ok(Some(TargetRejection::DeviceNotEnabled)),
         Ok(None) => return Ok(Some(TargetRejection::DeviceNotFound)),
-        Err(PersistenceError::InvalidPersistedData) => {
+        Err(PersistenceError::InvalidPersistedData { .. }) => {
             return Ok(Some(TargetRejection::InvalidDeviceState));
         }
         Err(error) => return Err(error.into()),
@@ -132,9 +159,13 @@ fn apply(
             match HomeComponent::reset_in_transaction(transaction, device_id) {
                 Ok(_) => Ok(None),
                 Err(HomeError::DeviceNotFound) => Ok(Some(TargetRejection::DeviceNotFound)),
-                Err(HomeError::InvalidPersistedFacts) => Ok(Some(TargetRejection::InvalidTarget)),
+                Err(HomeError::InvalidPersistedFacts { .. }) => {
+                    Ok(Some(TargetRejection::InvalidTarget))
+                }
                 Err(HomeError::EpochExhausted) => Ok(Some(TargetRejection::EpochExhausted)),
-                Err(HomeError::PersistenceFailed) => Err(TargetSubmissionError::PersistenceFailed),
+                Err(HomeError::PersistenceFailed { source }) => {
+                    Err(TargetSubmissionError::PersistenceFailed { source })
+                }
             }
         }
         TargetAction::PowerOff { expires_at_unix_ms } => {
@@ -146,10 +177,12 @@ fn apply(
                 Ok(_) => Ok(None),
                 Err(PowerError::DeviceNotFound) => Ok(Some(TargetRejection::DeviceNotFound)),
                 Err(PowerError::EpochExhausted) => Ok(Some(TargetRejection::EpochExhausted)),
-                Err(PowerError::InvalidDeadline | PowerError::InvalidPersistedFacts) => {
+                Err(PowerError::InvalidDeadline | PowerError::InvalidPersistedFacts { .. }) => {
                     Ok(Some(TargetRejection::InvalidTarget))
                 }
-                Err(PowerError::PersistenceFailed) => Err(TargetSubmissionError::PersistenceFailed),
+                Err(PowerError::PersistenceFailed { source }) => {
+                    Err(TargetSubmissionError::PersistenceFailed { source })
+                }
             }
         }
     }
@@ -161,12 +194,14 @@ fn session_result(
     match result {
         Ok(_) => Ok(None),
         Err(SessionControlError::DeviceNotFound) => Ok(Some(TargetRejection::DeviceNotFound)),
-        Err(SessionControlError::InvalidPersistedFacts) => Ok(Some(TargetRejection::InvalidTarget)),
+        Err(SessionControlError::InvalidPersistedFacts { .. }) => {
+            Ok(Some(TargetRejection::InvalidTarget))
+        }
         Err(SessionControlError::TerminateEpochOverflow) => {
             Ok(Some(TargetRejection::EpochExhausted))
         }
-        Err(SessionControlError::PersistenceFailed) => {
-            Err(TargetSubmissionError::PersistenceFailed)
+        Err(SessionControlError::PersistenceFailed { source }) => {
+            Err(TargetSubmissionError::PersistenceFailed { source })
         }
     }
 }
@@ -194,8 +229,14 @@ impl TargetSubmissionRequest {
             }
             TargetScope::AllOnlineEnabled(_) => Some(vec!["all_online_enabled".to_owned()]),
         };
-        serde_json::to_string(&(action, devices))
-            .map_err(|_| TargetSubmissionError::PersistenceFailed)
+        serde_json::to_string(&(action, devices)).map_err(|source| {
+            TargetSubmissionError::PersistenceFailed {
+                source: PersistenceError::Json {
+                    field: "target receipt",
+                    source,
+                },
+            }
+        })
     }
 }
 
@@ -243,21 +284,21 @@ struct StoredResult {
     rejection: Option<TargetRejection>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+#[derive(Debug, Snafu)]
 pub(crate) enum TargetSubmissionError {
     #[snafu(display("the operation ID belongs to a different request"))]
     OperationIdConflict,
     #[snafu(display("persisted target submission facts are invalid"))]
-    InvalidPersistedFacts,
+    InvalidPersistedFacts { source: PersistenceError },
     #[snafu(display("target submission persistence failed"))]
-    PersistenceFailed,
+    PersistenceFailed { source: PersistenceError },
 }
 
 impl From<PersistenceError> for TargetSubmissionError {
-    fn from(error: PersistenceError) -> Self {
-        match error {
-            PersistenceError::InvalidPersistedData => Self::InvalidPersistedFacts,
-            PersistenceError::OperationFailed => Self::PersistenceFailed,
+    fn from(source: PersistenceError) -> Self {
+        match source {
+            source if source.is_invalid_data() => Self::InvalidPersistedFacts { source },
+            source => Self::PersistenceFailed { source },
         }
     }
 }

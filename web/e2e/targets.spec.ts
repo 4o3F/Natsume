@@ -12,7 +12,12 @@ import {
   confirmAll,
   targetFleet,
 } from "./fixtures/devices";
-import { closeDetails, deviceRow, targetFact } from "./fixtures/ui";
+import {
+  closeDetails,
+  deviceRow,
+  scrollToTableRow,
+  targetFact,
+} from "./fixtures/ui";
 
 const fleetActions = (page: Page) =>
   page.getByRole("region", { name: "All device actions", exact: true });
@@ -530,14 +535,18 @@ for (const width of [1024, 1440]) {
       name: "Device targets",
       exact: true,
     });
-    await expect(table.locator("tbody tr")).toHaveCount(200);
+    await expect(table).toHaveAttribute("aria-rowcount", "201");
+    await expect
+      .poll(() => table.locator("tbody > tr[data-index]").count())
+      .toBeLessThan(100);
     await page.getByRole("button", { name: "Seat", exact: true }).click();
     expect(
       await page.evaluate(() => document.documentElement.scrollWidth),
     ).toBeLessThanOrEqual(width);
     await page.screenshot({ path: testInfo.outputPath("targets.png") });
     const row = deviceRow(page, fleet[150].machine_hardware_id);
-    await row.scrollIntoViewIfNeeded();
+    await scrollToTableRow(page, table, 150);
+    await expect(row).toBeVisible();
     const before = await page.evaluate(() => window.scrollY);
     expect(before).toBeGreaterThan(0);
     fleet[150].convergence.session_control.target!.foreground_target =

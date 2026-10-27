@@ -59,7 +59,9 @@ fn revoke_in_transaction(
     let device = db::find_by_id(transaction, device_id)?.ok_or(DeviceError::DeviceNotFound)?;
     if device.state() == DeviceState::Revoked {
         if db::find_current_for_device(transaction, device_id)?.is_some() {
-            return Err(DeviceError::InvalidPersistedFacts);
+            return Err(DeviceError::InvalidPersistedFacts {
+                source: crate::db::PersistenceError::invalid("persisted facts"),
+            });
         }
         return Ok(LifecycleOutcome::Unchanged);
     }
@@ -84,13 +86,15 @@ fn require_current_key(
     transaction: &mut Transaction<'_>,
     device_id: &DeviceId,
 ) -> Result<super::ControlPublicKey, DeviceError> {
-    db::find_current_for_device(transaction, device_id)?.ok_or(DeviceError::InvalidPersistedFacts)
+    db::find_current_for_device(transaction, device_id)?.ok_or(DeviceError::InvalidPersistedFacts {
+        source: crate::db::PersistenceError::invalid("persisted facts"),
+    })
 }
 
 fn require_one(updated: usize) -> Result<(), DeviceError> {
     if updated == 1 {
         Ok(())
     } else {
-        Err(PersistenceError::InvalidPersistedData.into())
+        Err(PersistenceError::unexpected_row_count(1, updated).into())
     }
 }

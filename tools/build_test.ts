@@ -666,7 +666,7 @@ Deno.test("shared check preparation fetches Rust without Linux delivery assets",
   }
 });
 
-Deno.test("CI uses a native module matrix and only Rust compilation caching", async () => {
+Deno.test("CI checks both Rust platforms before its native delivery matrix and only caches Rust compilation", async () => {
   type Step = {
     name?: string;
     run?: string;
@@ -686,12 +686,64 @@ Deno.test("CI uses a native module matrix and only Rust compilation caching", as
         "continue-on-error"?: boolean;
         strategy?: {
           "fail-fast": boolean;
-          matrix: { include: { module: string; os: string }[] };
+          matrix: { include?: { module: string; os: string }[]; os?: string[] };
         };
         "runs-on"?: string;
       }
     >;
   };
+  assert(
+    ci.jobs.checks["runs-on"] === "${{ matrix.os }}" &&
+      JSON.stringify(ci.jobs.checks.strategy?.matrix.os?.toSorted()) ===
+        JSON.stringify(["ubuntu-24.04", "windows-2022"]),
+    "Shared checks must run natively on both Linux and Windows",
+  );
+  const checkSteps = ci.jobs.checks.steps ?? [];
+  assert(
+    checkSteps.some((step) =>
+      step.uses === "./.github/actions/prepare-build" &&
+      step.with?.module === "rust" &&
+      step.with?.runner === "${{ matrix.os }}"
+    ),
+    "Shared checks must prepare and cache the workspace for their native runner",
+  );
+  for (const command of ["deno task check rust", "deno task test rust"]) {
+    assert(
+      checkSteps.filter((step) => step.run === command && !step.if).length ===
+        1,
+      `Each platform must run the workspace command once: ${command}`,
+    );
+  }
+  for (
+    const command of [
+      "deno task check scripts",
+      "deno task test scripts",
+      "cargo install cargo-deny --version 0.20.2 --locked",
+      "cargo deny check",
+    ]
+  ) {
+    assert(
+      checkSteps.some((step) =>
+        step.run === command && step.if === "runner.os == 'Linux'"
+      ),
+      `Linux-only validation must not be duplicated on Windows: ${command}`,
+    );
+  }
+  assert(
+    checkSteps.some((step) =>
+      step.run?.includes("tools/windows_test.ts") &&
+      step.if === "runner.os == 'Windows'"
+    ),
+    "Shared checks must validate Windows staging on Windows",
+  );
+  assert(
+    !ci.jobs.modules.steps?.some((step) =>
+      /^(deno task (check|test) |deno test |cargo (clippy|test) )/.test(
+        step.run ?? "",
+      )
+    ),
+    "Module delivery must not repeat centralized checks and tests",
+  );
   assert(
     ci.jobs.modules["runs-on"] === "${{ matrix.os }}",
     "Module runners are not matrix-selected",

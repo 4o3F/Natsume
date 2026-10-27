@@ -1,12 +1,12 @@
 use axum::{
-    Json, Router,
+    Json,
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
 
-pub(in crate::http) fn routes<S: Clone + Send + Sync + 'static>() -> Router<S> {
-    Router::new().route("/health", get(health))
+pub(in crate::http) fn public_routes<S: Clone + Send + Sync + 'static>() -> crate::http::Routes<S> {
+    vec![("/health", get(health))]
 }
 
 pub(crate) async fn health() -> Response {

@@ -29,7 +29,7 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 #[derive(Debug, Snafu)]
 pub(crate) enum ExpiryError {
     #[snafu(display("print expiry inbox is unavailable"))]
-    InboxUnavailable,
+    InboxUnavailable { source: std::sync::PoisonError<()> },
     #[snafu(display("print expiry initialization failed"))]
     Initialize { source: PrintError },
 }
@@ -56,7 +56,13 @@ impl Inbox {
             let mut pending = self
                 .pending
                 .lock()
-                .map_err(|_| ExpiryError::InboxUnavailable)?;
+                // Never retain the guard state; preserve the safe native poison diagnostic.
+                .map_err(|source| {
+                    drop(source.into_inner());
+                    ExpiryError::InboxUnavailable {
+                        source: std::sync::PoisonError::new(()),
+                    }
+                })?;
             pending
                 .entry(request.attempt_id)
                 .and_modify(|at| *at = (*at).min(request.check_at))
@@ -70,7 +76,13 @@ impl Inbox {
         let mut pending = self
             .pending
             .lock()
-            .map_err(|_| ExpiryError::InboxUnavailable)?;
+            // Never retain the guard state; preserve the safe native poison diagnostic.
+            .map_err(|source| {
+                drop(source.into_inner());
+                ExpiryError::InboxUnavailable {
+                    source: std::sync::PoisonError::new(()),
+                }
+            })?;
         Ok(pending
             .extract_if(|_, _| true)
             .take(BATCH_SIZE)
@@ -224,7 +236,7 @@ impl Driver {
                 self.collect_due().await;
                 if !self.pending.is_empty() {
                     if let Err(error) = self.check_pending().await {
-                        tracing::error!(%error, "print attempt expiry failed");
+                        tracing::error!(error = %snafu::Report::from_error(error), "print attempt expiry failed");
                         retry_at = Some(Instant::now() + RETRY_DELAY);
                     }
                     continue;

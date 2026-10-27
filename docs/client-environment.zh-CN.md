@@ -30,6 +30,12 @@ GDM 首次启动进入 waiting，后续 waiting/contest 的准备与重建由 Cl
 - `current/lower` 必须是所选镜像唯一的只读 SquashFS 挂载点。模板、元数据及父目录由 root 所有且不可由非特权用户修改；挂载后的 Home 内容归实际 teams UID/GID。
 - Helper 必须运行在宿主 mount namespace。模板不可用时禁止比赛登录，但必须保留 waiting 和管理员诊断能力，不能让整个 GDM 依赖 Home 恢复成功。
 - Home reset 归 Natsume 管理；镜像或登录脚本不得并行重建 Home、删除恢复进度或绕过 admission。普通会话切换不重置 Home。
+- 镜像完成受管用户隔离策略和旧状态处理后，最后写入 `/etc/natsume/contest-reset-policy`，内容精确为 `1\n`。文件及所有父目录必须归 root 所有、不可由非特权用户写入，且均不得是符号链接；该静态镜像契约与站点配置和 Home reset 进度独立。缺失、版本不符或无法确认可信时，Helper/PAM 保持比赛登录关闭，包括使用已有 permit 的情况。
+- 系统设置 `RemoveIPC=yes` 和 `UserStopDelaySec=0`，两个受管 UID 均禁止 linger。Helper 仅在 logind `GetUser` 返回精确的 `NoSuchUser` 错误后执行扩展清理，以满足现有 8 秒操作预算。清理在关闭比赛登录、排空旧进程后的维护窗口内进行，保留 waiting 和 GDM。
+- 除比赛 Home 外，reset 清理 `/tmp`、`/var/tmp`、`/run/lock` 和可选 `/var/crash` 内已确认属于 teams UID 的对象、固定范围内精确 teams `user_id` 的遗留 FUSE，以及 teams 的 user/user-session/persistent keyrings。遍历不跟随链接、不跨子挂载，保留共享目录和其他用户拥有的对象。无法安全遍历、teams 目录内含其他用户拥有的对象、待删除对象的上级目录可被其他用户修改或重命名、挂载忙碌或超时时，保持比赛登录关闭，等待维护处理。
+- keyring worker 由固定 `/usr/bin/setpriv`（util-linux）直接执行 Helper，以 teams UID/GID、空补充组、无有效/许可/inheritable/ambient capabilities 和 `NoNewPrivileges` 运行。在同一私有 session keyring 中，安全 Rust keyutils API 取得所需权限，逐一核验密钥的实际属主并与内核记录的该 UID 密钥总数比较；所有旧密钥和 keyring（包括仅被限制规则引用的对象）失效后，还须在原预算内确认旧 serial 及描述已被内核回收，才允许完成清理。运行时无需系统 keyctl CLI，Helper 的 capability set 保持不变。权限不足或 keyring ACL 拒绝清理时，保持比赛登录关闭；恶意移除 WRITE/SETATTR/SEARCH 权限后可能需要维护或重启，不能仅凭 root 权限或新 keyring 为空判定旧内容已不可读取。
+- 镜像必须限制受管用户修改 colord、NetworkManager 和 power-profile 的持久状态，保留只读功能和管理员操作；停用并 mask 本地 CUPS 的 service/socket/path/D-Bus 激活，保留 DOMjudge HTTP 打印；限制 privileged FUSE/utempter executables，并确保包升级不会恢复受限权限。journald 使用 `SplitMode=none`；迁移时撤销旧 per-UID journal 的受管用户 ACL，保护 utmp/wtmp/lastlog 的读权限及其重建、轮转行为，保留管理员和共享日志。
+- 扩展清理的完成记录与 reset epoch 绑定，当前 `cleanup-complete` 格式为 `2\n<reset_epoch>\n`。旧版仅验证 Home 的 `Verified` 和仅证明 CLEAR 成功的 v1 记录不足以放行；升级已部署设备后须保留旧进度并显式提交新的 reset epoch，让 Helper 捕获和清理旧 contest。当前版本清理完成后，同 epoch 重放和健康 Helper 重启保留比赛桌面及之后写入的 Home、临时文件和 keyring 数据；重启后若挂载丢失，仅恢复原 generation，不重复清空。
 - 通用镜像不得携带设备身份、私钥、Enrollment、Binding、Home 恢复记录或队伍展示缓存；首次身份在实际机器生成。升级已部署工位时则必须保留这些状态，不能按新镜像清空。
 
 ## 部署输入与服务所有权

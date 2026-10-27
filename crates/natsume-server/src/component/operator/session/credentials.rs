@@ -17,7 +17,8 @@ pub(in crate::component::operator) struct SessionCredential(
 impl SessionCredential {
     pub(in crate::component::operator) fn generate() -> Result<Self, OperatorError> {
         let mut bytes = Zeroizing::new([0_u8; SESSION_CREDENTIAL_LENGTH]);
-        getrandom::fill(&mut *bytes).map_err(|_| OperatorError::EntropyUnavailable)?;
+        getrandom::fill(&mut *bytes)
+            .map_err(|source| OperatorError::EntropyUnavailable { source })?;
         Ok(Self(bytes))
     }
 
@@ -74,6 +75,7 @@ pub(in crate::component::operator) fn decode_lower_hex(
     }
     let mut bytes = Zeroizing::new([0_u8; SESSION_CREDENTIAL_LENGTH]);
     hex::decode_to_slice(value, &mut *bytes)
+        // Malformed credentials share one authentication rejection; decoding detail is irrelevant.
         .map_err(|_| OperatorError::InvalidSessionCredential)?;
     Ok(SessionCredential(bytes))
 }
