@@ -16,6 +16,7 @@ pub(crate) mod http;
 pub(crate) mod journal;
 #[path = "../diesel/journal/schema.rs"]
 pub(crate) mod journal_schema;
+pub(crate) mod lifecycle;
 pub(crate) mod logging;
 pub(crate) mod server_state;
 pub(crate) mod task;

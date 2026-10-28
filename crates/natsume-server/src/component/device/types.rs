@@ -86,6 +86,8 @@ impl fmt::Debug for ControlPublicKey {
 
 #[derive(Debug, Snafu)]
 pub(crate) enum DeviceError {
+    #[snafu(display("the Server is stopping"))]
+    ServerStopping,
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("persisted Device facts are invalid"))]

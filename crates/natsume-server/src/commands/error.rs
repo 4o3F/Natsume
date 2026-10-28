@@ -43,6 +43,11 @@ pub(super) enum CommandFailure {
     OriginCaTrustRootMismatch,
     #[snafu(display("HTTP serving failed"))]
     Http { source: std::io::Error },
+    #[snafu(display("HTTP serving task failed"))]
+    ServingTask {
+        #[snafu(source(from(tokio::task::JoinError, crate::task::TaskFailure::from)))]
+        source: crate::task::TaskFailure,
+    },
     #[snafu(display("server background task shutdown failed"))]
     Background {
         source: crate::background::BackgroundError,

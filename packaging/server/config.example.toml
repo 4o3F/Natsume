@@ -18,6 +18,7 @@ max_age_days = 30
 max_rows = 2000000
 max_bytes = 536870912
 min_free_bytes = 1073741824
+flush_timeout_seconds = 10
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"

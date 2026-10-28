@@ -412,7 +412,6 @@ impl Database {
         })?
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) async fn journal_maintenance(
         &self,
         truncate: bool,
@@ -579,6 +578,8 @@ fn sqlite_pragma_values(
 pub(crate) enum DatabaseError {
     #[snafu(display("the database configuration is invalid"))]
     InvalidConfiguration,
+    #[snafu(display("the database file could not be opened"))]
+    File { source: std::io::Error },
     #[snafu(display("the database connection failed"))]
     ConnectionFailed { source: diesel::r2d2::PoolError },
     #[snafu(display("the database migration failed"))]

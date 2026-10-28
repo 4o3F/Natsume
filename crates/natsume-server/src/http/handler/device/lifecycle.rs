@@ -1,5 +1,5 @@
 use axum::{
-    Json,
+    Extension, Json,
     extract::{
         Path, Query, State,
         rejection::{JsonRejection, QueryRejection},
@@ -187,6 +187,7 @@ pub(crate) async fn get_device(
 
 pub(crate) async fn update_device(
     State(state): State<AppState>,
+    Extension(admission): Extension<crate::lifecycle::Admission>,
     Path(path): Path<DevicePath>,
     request: Result<Json<DeviceUpdateRequest>, JsonRejection>,
 ) -> Response {
@@ -198,8 +199,18 @@ pub(crate) async fn update_device(
     };
     let outcome = match request.state {
         DeviceStateResponse::Enabled => state.device().enable(device_id).await,
-        DeviceStateResponse::Disabled => state.device_control().disable_device(device_id).await,
-        DeviceStateResponse::Revoked => state.device_control().revoke_device(device_id).await,
+        DeviceStateResponse::Disabled => {
+            state
+                .device_control()
+                .disable_device(&admission, device_id)
+                .await
+        }
+        DeviceStateResponse::Revoked => {
+            state
+                .device_control()
+                .revoke_device(&admission, device_id)
+                .await
+        }
     };
     match outcome {
         Ok(LifecycleOutcome::Changed | LifecycleOutcome::Unchanged) => {

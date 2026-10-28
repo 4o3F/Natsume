@@ -268,8 +268,13 @@ fn contest_causes() -> [(ContestError, &'static str, StatusCode); 1] {
     )]
 }
 
-fn device_causes() -> [(DeviceError, &'static str, StatusCode); 3] {
+fn device_causes() -> [(DeviceError, &'static str, StatusCode); 4] {
     [
+        (
+            DeviceError::ServerStopping,
+            "server_stopping",
+            StatusCode::SERVICE_UNAVAILABLE,
+        ),
         (
             DeviceError::DeviceNotFound,
             "device_not_found",

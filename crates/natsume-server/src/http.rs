@@ -135,7 +135,10 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .merge(client_group(state.clone(), client))
         .fallback(not_found)
         .layer(axum_middleware::from_fn(middleware::reject_head))
-        .layer(axum_middleware::from_fn(middleware::complete_mutation))
+        .layer(axum_middleware::from_fn_with_state(
+            state.lifecycle().clone(),
+            middleware::complete_mutation,
+        ))
 }
 
 async fn not_found() -> ApiError {

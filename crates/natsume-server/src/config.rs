@@ -18,7 +18,6 @@ pub struct ServerConfig {
     log_level: LogLevel,
     database_path: PathBuf,
     journal_path: PathBuf,
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     journal: JournalConfig,
     organization_logos_path: PathBuf,
     print_documents_path: PathBuf,
@@ -151,12 +150,10 @@ impl ServerConfig {
         &self.database_path
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) fn journal_path(&self) -> &Path {
         &self.journal_path
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn journal(&self) -> &JournalConfig {
         &self.journal
     }
@@ -286,6 +283,9 @@ struct RawStorageConfig {
     print_documents: PathBuf,
 }
 
+/// Default maximum journal drain duration in seconds during graceful shutdown.
+const DEFAULT_FLUSH_TIMEOUT_SECONDS: u64 = 10;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
 pub(crate) struct JournalConfig {
@@ -293,6 +293,8 @@ pub(crate) struct JournalConfig {
     pub(crate) max_rows: i64,
     pub(crate) max_bytes: u64,
     pub(crate) min_free_bytes: u64,
+    /// Maximum writer drain duration in seconds, fixed by configuration; must be positive.
+    pub(crate) flush_timeout_seconds: u64,
 }
 
 impl Default for JournalConfig {
@@ -302,6 +304,7 @@ impl Default for JournalConfig {
             max_rows: 2_000_000,
             max_bytes: 512 * 1024 * 1024,
             min_free_bytes: 1024 * 1024 * 1024,
+            flush_timeout_seconds: DEFAULT_FLUSH_TIMEOUT_SECONDS,
         }
     }
 }
@@ -312,6 +315,7 @@ impl JournalConfig {
             || self.max_rows <= 0
             || self.max_bytes == 0
             || self.min_free_bytes == 0
+            || self.flush_timeout_seconds == 0
         {
             return Err(ConfigError::InvalidJournalBudget);
         }
@@ -530,7 +534,7 @@ pub enum ConfigError {
     RelativeJournalPath,
     #[snafu(display("storage.journal must differ from storage.database"))]
     SharedJournalPath,
-    #[snafu(display("journal retention and disk limits must be positive"))]
+    #[snafu(display("journal retention, disk limits and flush timeout must be positive"))]
     InvalidJournalBudget,
     #[snafu(display("cannot resolve journal storage paths"))]
     JournalPath { source: std::io::Error },
@@ -640,6 +644,7 @@ domjudge_origin = "https://judge.contest.example"
             Path::new("/var/lib/natsume-server/natsume-journal.db")
         );
         assert_eq!(config.journal().max_age_days, 30);
+        assert_eq!(config.journal().flush_timeout_seconds, 10);
         assert_eq!(config.journal().max_rows, 2_000_000);
         assert_eq!(config.journal().max_bytes, 512 * 1024 * 1024);
         assert_eq!(config.journal().min_free_bytes, 1024 * 1024 * 1024);
@@ -701,7 +706,13 @@ domjudge_origin = "https://judge.contest.example"
             )?;
             assert!(ServerConfig::load_from(fixture.path()).is_err());
         }
-        for key in ["max_age_days", "max_rows", "max_bytes", "min_free_bytes"] {
+        for key in [
+            "max_age_days",
+            "max_rows",
+            "max_bytes",
+            "min_free_bytes",
+            "flush_timeout_seconds",
+        ] {
             let fixture = ConfigFixture::new(&format!("{VALID_CONFIG}\n[journal]\n{key} = 0"))?;
             assert!(matches!(
                 ServerConfig::load_from(fixture.path()),

@@ -21,6 +21,8 @@ use crate::{
     config::ServerConfig,
     db::Database,
     device_control::DeviceControl,
+    journal::JournalComponent,
+    lifecycle::ServerLifecycle,
     vault::{self, VaultSession},
 };
 
@@ -41,6 +43,10 @@ pub(crate) struct ServerState {
     home: Arc<HomeComponent>,
     target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
+    /// Process-owned journal writer and producer handle; joined after producers stop.
+    journal: JournalComponent,
+    /// Shared admission and producer ownership, closed once by the composition root.
+    lifecycle: ServerLifecycle,
 }
 
 impl ServerState {
@@ -76,12 +82,15 @@ impl ServerState {
         )
         .await
         .map_err(|source| ServerStateError::PrintStorage { source })?;
+        let journal =
+            JournalComponent::start(config.journal_path().to_owned(), config.journal().clone());
         Ok(Self::from_parts(
             database,
             print,
             vault,
             gateway,
             config.organization_logos_path().to_path_buf(),
+            journal,
         ))
     }
 
@@ -91,7 +100,9 @@ impl ServerState {
         vault: VaultSession,
         gateway: GatewayComponent,
         logos: std::path::PathBuf,
+        journal: JournalComponent,
     ) -> Self {
+        let lifecycle = ServerLifecycle::new();
         let vault = Arc::new(vault);
         let provisioning = Arc::new(ProvisioningComponent::new());
         let device = Arc::new(DeviceComponent::new(database.clone()));
@@ -108,6 +119,8 @@ impl ServerState {
             Arc::clone(&session),
             Arc::clone(&home),
             Arc::clone(&power),
+            journal.emitter(),
+            lifecycle.clone(),
         ));
         Self {
             operator: OperatorComponent::new(database.clone()),
@@ -121,9 +134,17 @@ impl ServerState {
             session,
             home,
             device_control,
+            journal,
+            lifecycle,
         }
     }
 
+    pub(crate) const fn journal(&self) -> &JournalComponent {
+        &self.journal
+    }
+    pub(crate) const fn lifecycle(&self) -> &ServerLifecycle {
+        &self.lifecycle
+    }
     pub(crate) const fn device_control(&self) -> &Arc<DeviceControl> {
         &self.device_control
     }
@@ -217,6 +238,20 @@ pub(crate) mod tests {
         documents: std::path::PathBuf,
         logos: std::path::PathBuf,
     ) -> Result<ServerState, ServerStateError> {
+        for_test_with_journal(
+            database,
+            documents,
+            logos,
+            crate::journal::JournalComponent::channel(crate::journal::CAPACITY).0,
+        )
+    }
+
+    pub(crate) fn for_test_with_journal(
+        database: Database,
+        documents: std::path::PathBuf,
+        logos: std::path::PathBuf,
+        journal: crate::journal::JournalComponent,
+    ) -> Result<ServerState, ServerStateError> {
         let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
         fs::create_dir(&root).map_err(|source| ServerStateError::Vault {
             source: vault::VaultError::Read { source },
@@ -237,7 +272,7 @@ pub(crate) mod tests {
         let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
             .map_err(|source| ServerStateError::PrintStorage { source })?;
         Ok(ServerState::from_parts(
-            database, print, vault, gateway, logos,
+            database, print, vault, gateway, logos, journal,
         ))
     }
 }

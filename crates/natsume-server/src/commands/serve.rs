@@ -1,4 +1,9 @@
-use std::{future::Future, path::Path, sync::Arc};
+use std::{
+    future::{Future, IntoFuture},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use tracing::instrument::WithSubscriber as _;
 
@@ -11,6 +16,9 @@ use crate::{
     server_state::ServerState,
     tls::{PeerAddress, TlsListener},
 };
+
+/// Maximum time admitted mutations may finish before actor shutdown proceeds.
+const PRODUCER_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
 use super::error::CommandFailure as CommandError;
 
@@ -94,26 +102,51 @@ where
     let background = start_background_tasks(&state)
         .await
         .map_err(|source| CommandError::Background { source })?;
-    let router = http::router(state, Path::new(WEB_ASSETS_PATH));
+    let router = http::router(Arc::clone(&state), Path::new(WEB_ASSETS_PATH));
 
-    let dispatcher = tracing::dispatcher::get_default(Clone::clone);
-    let shutdown = async move {
-        shutdown.await;
-        tracing::info!("graceful shutdown initiated");
+    let http_stop = tokio_util::sync::CancellationToken::new();
+    let stopped = http_stop.clone();
+    let mut serving = tokio::spawn(
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<PeerAddress>(),
+        )
+        .with_graceful_shutdown(stopped.cancelled_owned())
+        .into_future()
+        .with_subscriber(tracing::dispatcher::get_default(Clone::clone)),
+    );
+    tokio::pin!(shutdown);
+    let completed = tokio::select! {
+        () = &mut shutdown => None,
+        result = &mut serving => Some(result),
+    };
+    state.lifecycle().begin_shutdown();
+    http_stop.cancel();
+    tracing::info!("graceful shutdown initiated");
+    if tokio::time::timeout(PRODUCER_WAIT_TIMEOUT, state.lifecycle().wait())
+        .await
+        .is_err()
+    {
+        state.journal().record_producer_timeout();
+        tracing::warn!("in-flight mutation shutdown timed out");
     }
-    .with_subscriber(dispatcher);
-    let result = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<PeerAddress>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
-    .map_err(|source| CommandError::Http { source });
-    let stopped = background
+    state.device_control().shutdown().await;
+    let background_result = background
         .shutdown()
         .await
         .map_err(|source| CommandError::Background { source });
-    let result = result.and(stopped);
+    state.journal().shutdown().await;
+    let serving_result = match completed {
+        Some(result) => result,
+        None => serving.await,
+    };
+    let result = match serving_result {
+        Ok(result) => result.map_err(|source| CommandError::Http { source }),
+        Err(source) => Err(CommandError::ServingTask {
+            source: source.into(),
+        }),
+    }
+    .and(background_result);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }

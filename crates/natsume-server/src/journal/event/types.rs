@@ -18,12 +18,69 @@ impl<'de> Deserialize<'de> for DeviceId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct RequestId(
+    /// Request correlation UUID supplied explicitly by the producer.
+    Uuid,
+);
+impl sealed::Sealed for RequestId {}
+impl JournalField for RequestId {}
+impl RequestId {
+    #[cfg_attr(not(test), expect(dead_code, reason = "request contexts in S4/S5"))]
+    pub(crate) const fn from_request(id: Uuid) -> Self {
+        Self(id)
+    }
+    pub(crate) const fn value(self) -> Uuid {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct OperationId(
+    /// Operation correlation UUID supplied explicitly by the producer.
+    Uuid,
+);
+impl sealed::Sealed for OperationId {}
+impl JournalField for OperationId {}
+impl OperationId {
+    #[cfg_attr(not(test), expect(dead_code, reason = "request contexts in S4/S5"))]
+    pub(crate) const fn from_operation(id: Uuid) -> Self {
+        Self(id)
+    }
+    pub(crate) const fn value(self) -> Uuid {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub(crate) struct SessionId(
+    /// Lease session UUID supplied explicitly by the producer.
+    Uuid,
+);
+impl sealed::Sealed for SessionId {}
+impl JournalField for SessionId {}
+impl SessionId {
+    #[cfg_attr(not(test), expect(dead_code, reason = "request contexts in S4/S5"))]
+    pub(crate) const fn from_lease(id: Uuid) -> Self {
+        Self(id)
+    }
+    pub(crate) const fn value(self) -> Uuid {
+        self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(crate) struct OperatorId(Uuid);
 impl sealed::Sealed for OperatorId {}
 impl JournalField for OperatorId {}
 impl OperatorId {
+    pub(crate) const fn value(&self) -> Uuid {
+        self.0
+    }
     #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn from_authenticated_operator(id: Uuid) -> Self {
         Self(id)
@@ -36,6 +93,9 @@ pub(crate) struct SeatCode(String);
 impl sealed::Sealed for SeatCode {}
 impl JournalField for SeatCode {}
 impl SeatCode {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
     #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) fn from_committed_binding(value: &str) -> Result<Self, BoundError> {
         Self::from_persisted(value.to_owned())
@@ -302,7 +362,6 @@ impl sealed::Sealed for PauseReason {}
 impl JournalField for PauseReason {}
 
 impl Category {
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             Self::Device => "device",
@@ -313,7 +372,6 @@ impl Category {
     }
 }
 impl Severity {
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             Self::Info => "info",

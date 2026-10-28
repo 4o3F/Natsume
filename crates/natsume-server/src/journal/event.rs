@@ -1,8 +1,8 @@
 use serde::Deserialize;
 
 mod contract;
-mod payload;
-mod types;
+pub(crate) mod payload;
+pub(crate) mod types;
 
 pub(super) use contract::EventError;
 use contract::{DetailsWriter, JournalEvent};
@@ -87,7 +87,6 @@ impl Event {
         JournalResumed::KIND,
     ];
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn kind(&self) -> &'static str {
         match self {
             Self::AdmissionRejected(..) => AdmissionRejected::KIND,
@@ -124,7 +123,6 @@ impl Event {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn category(&self) -> Category {
         match self {
             Self::AdmissionRejected(..) => AdmissionRejected::CATEGORY,
@@ -161,7 +159,6 @@ impl Event {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(crate) const fn severity(&self) -> Severity {
         match self {
             Self::AdmissionRejected(..) => AdmissionRejected::SEVERITY,
@@ -198,7 +195,6 @@ impl Event {
         }
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(super) fn details(&self) -> Result<String, EventError> {
         match self {
             Self::AdmissionRejected(payload) => DetailsWriter::encode(payload),
@@ -302,7 +298,7 @@ pub(super) enum ReadEvent {
 }
 
 impl ReadEvent {
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read API in S6"))]
     pub(super) fn from_persisted(id: i64, kind: &str, details: &str) -> Self {
         if details.len() <= 2048 {
             match Event::decode(kind, details) {

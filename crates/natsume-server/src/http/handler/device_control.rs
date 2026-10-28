@@ -49,8 +49,14 @@ async fn upgrade(
             .into_response();
     }
     let control = Arc::clone(state.device_control());
-    let Some(permit) = control.try_reserve_handshake() else {
-        return ApiError::unavailable("device_handshake_capacity_exhausted").into_response();
+    let permit = match control.try_reserve_handshake() {
+        Ok(permit) => permit,
+        Err(crate::device_control::AdmissionUnavailable::ServerStopping) => {
+            return ApiError::unavailable("server_stopping").into_response();
+        }
+        Err(crate::device_control::AdmissionUnavailable::Capacity { .. }) => {
+            return ApiError::unavailable("device_handshake_capacity_exhausted").into_response();
+        }
     };
     upgrade
         .max_message_size(MAX_MESSAGE_BYTES)

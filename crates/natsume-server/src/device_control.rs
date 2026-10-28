@@ -57,18 +57,33 @@ use self::{
 /// ordering between those operations and current leases, with explicit dependencies
 /// instead of a reference back to the process composition object.
 pub(crate) struct DeviceControl {
+    /// Composition-root provisioning policy; shared for the coordinator lifetime.
     provisioning: Arc<ProvisioningComponent>,
+    /// Composition-root durable authority and enrollment operations; shared handle.
     device: Arc<DeviceComponent>,
+    /// Composition-root gateway materialization dependency; immutable handle.
     gateway: GatewayComponent,
+    /// Composition-root committed binding dependency; shared handle.
     binding: Arc<BindingComponent>,
+    /// Composition-root runtime configuration dependency; immutable handle.
     runtime: RuntimeConfigComponent,
+    /// Composition-root session target dependency; shared handle.
     session: Arc<SessionControlComponent>,
+    /// Composition-root home target dependency; shared handle.
     home: Arc<HomeComponent>,
+    /// Composition-root power target dependency; shared handle.
     power: Arc<PowerControlComponent>,
+    /// Actor directory; owns insertion identity checks and permanent closure on shutdown.
     registry: DeviceRegistry,
     /// Prevents concurrent approvals from acting on the same stale authority read.
     enrollment_approval: Mutex<()>,
+    /// Capacity-only limit of `MAX_HANDSHAKES` concurrent short exchanges; never closed for shutdown.
     handshakes: Arc<Semaphore>,
+    /// Shared process admission and shutdown notification, supplied by the composition root.
+    lifecycle: crate::lifecycle::ServerLifecycle,
+    #[expect(dead_code, reason = "device emissions in S4")]
+    /// Emit-only journal handle supplied by the composition root for device events.
+    journal: crate::journal::Journal,
 }
 
 impl DeviceControl {
@@ -82,6 +97,8 @@ impl DeviceControl {
         session: Arc<SessionControlComponent>,
         home: Arc<HomeComponent>,
         power: Arc<PowerControlComponent>,
+        journal: crate::journal::Journal,
+        lifecycle: crate::lifecycle::ServerLifecycle,
     ) -> Self {
         Self {
             provisioning,
@@ -95,12 +112,26 @@ impl DeviceControl {
             registry: DeviceRegistry::new(),
             enrollment_approval: Mutex::new(()),
             handshakes: Arc::new(Semaphore::new(MAX_HANDSHAKES)),
+            lifecycle,
+            journal,
         }
     }
 
     /// Reserves short-lived protocol work before HTTP upgrades the connection.
-    pub(crate) fn try_reserve_handshake(&self) -> Option<OwnedSemaphorePermit> {
-        Arc::clone(&self.handshakes).try_acquire_owned().ok()
+    pub(crate) fn try_reserve_handshake(
+        &self,
+    ) -> Result<OwnedSemaphorePermit, AdmissionUnavailable> {
+        let _admission = self
+            .lifecycle
+            .admit()
+            .ok_or(AdmissionUnavailable::ServerStopping)?;
+        Arc::clone(&self.handshakes)
+            .try_acquire_owned()
+            .map_err(|source| AdmissionUnavailable::Capacity { source })
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.registry.shutdown().await;
     }
 
     async fn evict_current_lease(&self, device_id: DeviceId) {
@@ -110,6 +141,16 @@ impl DeviceControl {
         *handle.authority_fence.lock().await = true;
         handle.evict_current_lease().await;
     }
+}
+
+#[derive(Debug, snafu::Snafu)]
+pub(crate) enum AdmissionUnavailable {
+    #[snafu(display("server is stopping"))]
+    ServerStopping,
+    #[snafu(display("device handshake capacity is exhausted"))]
+    Capacity {
+        source: tokio::sync::TryAcquireError,
+    },
 }
 
 /// Maximum accepted Device Control WebSocket frame and protobuf message size.
@@ -135,19 +176,30 @@ pub(crate) async fn serve_connection(
     permit: OwnedSemaphorePermit,
     peer_ip: IpAddr,
 ) {
+    let Some(admission) = control.lifecycle.admit() else {
+        return;
+    };
     let mut permit = Some(permit);
-    let Some((machine_hardware_id, authority, client_ip)) =
-        admit(&mut socket, &control, &mut permit).await
-    else {
+    let admitted = tokio::select! {
+        biased;
+        () = admission.stopping() => None,
+        admitted = admit(&mut socket, &control, &admission, &mut permit) => admitted,
+    };
+    let Some((machine_hardware_id, authority, client_ip)) = admitted else {
         return;
     };
     let (outbound, mut outgoing) = mpsc::channel(OUTBOUND_CAPACITY);
-    let Some((session_id, handle)) = control
-        .attach_device_lease(machine_hardware_id, authority, outbound)
-        .await
-    else {
+    let attached = tokio::select! {
+        biased;
+        () = admission.stopping() => None,
+        attached = control.attach_device_lease(&admission, machine_hardware_id, authority, outbound) => attached.ok().flatten(),
+    };
+    let Some((session_id, handle)) = attached else {
         return;
     };
+    // Admission covers the handshake and attach, never the long-lived lease:
+    // shutdown waits for admissions before it terminates leases.
+    drop(admission);
     if !send_handshake(
         &mut socket,
         ServerHandshakeEnvelope {
@@ -180,6 +232,7 @@ pub(crate) async fn serve_connection(
 async fn admit(
     socket: &mut WebSocket,
     control: &Arc<DeviceControl>,
+    admission: &crate::lifecycle::Admission,
     permit: &mut Option<OwnedSemaphorePermit>,
 ) -> Option<(MachineHardwareId, ControlAuthority, Option<IpAddr>)> {
     let mut proof_window = ProofWindow::new().inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device admission failed")).ok()?;
@@ -212,7 +265,7 @@ async fn admit(
             ))
         }
         ProofSubmission::Enrollment(enrollment) => {
-            admit_enrollment(socket, control, enrollment, permit).await
+            admit_enrollment(socket, control, admission, enrollment, permit).await
         }
     }?;
     Some((machine_hardware_id, authority, client_ip))
@@ -229,6 +282,7 @@ async fn admit(
 async fn admit_enrollment(
     socket: &mut WebSocket,
     control: &Arc<DeviceControl>,
+    admission: &crate::lifecycle::Admission,
     enrollment: EnrollmentPreAuth,
     permit: &mut Option<OwnedSemaphorePermit>,
 ) -> Option<(MachineHardwareId, ControlAuthority)> {
@@ -268,7 +322,7 @@ async fn admit_enrollment(
             let mut window = control.provisioning.subscribe();
             let automatic_approval = async {
                 window.wait_for(|window| window.is_open()).await.ok()?;
-                Some(control.automatically_approve_enrollment(review.review_id()).await)
+                Some(control.automatically_approve_enrollment(admission, review.review_id()).await)
             };
             tokio::pin!(automatic_approval);
             let mut automatic_approval_finished = false;

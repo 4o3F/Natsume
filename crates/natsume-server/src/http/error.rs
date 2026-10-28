@@ -280,6 +280,7 @@ impl ApiError {
     pub(super) fn from_device(error: impl std::borrow::Borrow<DeviceError>) -> Self {
         let error = error.borrow();
         match error {
+            DeviceError::ServerStopping => Self::unavailable("server_stopping"),
             DeviceError::DeviceNotFound => Self::not_found("device_not_found"),
             DeviceError::InvalidPersistedFacts { .. } => {
                 Self::internal_error_from(error, "device_invalid_persisted_facts")

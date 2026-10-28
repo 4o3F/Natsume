@@ -14,6 +14,9 @@ use crate::{
     journal_schema::journal_events as events,
 };
 
+/// Maximum IDs deleted per short journal-pruning transaction.
+pub(super) const PRUNE_CHUNK: u16 = 5000;
+
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("diesel/journal/migrations");
 
 #[derive(Clone)]
@@ -38,7 +41,6 @@ pub(super) struct StoredEvent {
 }
 
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
 pub(super) enum Prune {
     OlderThan(i64),
     RowsBeyond(i64),
@@ -54,8 +56,23 @@ pub(super) struct Maintenance {
 }
 
 impl JournalDatabase {
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(super) async fn open(path: &Path) -> Result<Self, DatabaseError> {
+        if !DatabaseConfig::new(path, true).is_valid() {
+            return Err(DatabaseError::InvalidConfiguration);
+        }
+        let file_path = path.to_owned();
+        tokio::task::spawn_blocking(move || {
+            std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file_path)
+                .map(drop)
+                .map_err(|source| DatabaseError::File { source })
+        })
+        .await
+        .map_err(|source| DatabaseError::Executor {
+            source: source.into(),
+        })??;
         Database::connect_with(
             &DatabaseConfig::new(path, true),
             MIGRATIONS,
@@ -67,11 +84,11 @@ impl JournalDatabase {
         .map(Self)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(super) async fn insert_batch(
         &self,
-        batch: Vec<StoredEvent>,
+        batch: &[StoredEvent],
     ) -> Result<usize, PersistenceError> {
+        let batch = batch.to_owned();
         self.0
             .write(move |transaction| {
                 diesel::insert_into(events::table)
@@ -83,7 +100,7 @@ impl JournalDatabase {
             .map_err(TransactionError::into_error)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
+    #[cfg_attr(not(test), expect(dead_code, reason = "read API in S6"))]
     pub(super) async fn read_cursor(
         &self,
         before: Option<i64>,
@@ -128,7 +145,6 @@ impl JournalDatabase {
             .map_err(TransactionError::into_error)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(super) async fn prune(&self, policy: Prune) -> Result<usize, PersistenceError> {
         self.0
             .write(move |transaction| {
@@ -139,15 +155,15 @@ impl JournalDatabase {
                 let limit = match policy {
                     Prune::OlderThan(cutoff) => {
                         query = query.filter(events::occurred_at_ms.lt(cutoff));
-                        5000
+                        i64::from(PRUNE_CHUNK)
                     }
                     Prune::RowsBeyond(max_rows) => {
                         let count = events::table
                             .select(diesel::dsl::count_star())
                             .get_result::<i64>(transaction.connection())?;
-                        (count - max_rows.max(0)).clamp(0, 5000)
+                        (count - max_rows.max(0)).clamp(0, i64::from(PRUNE_CHUNK))
                     }
-                    Prune::OldestBatch => 5000,
+                    Prune::OldestBatch => i64::from(PRUNE_CHUNK),
                 };
                 let ids = query.limit(limit).load::<i64>(transaction.connection())?;
                 diesel::delete(events::table.filter(events::id.eq_any(ids)))
@@ -158,7 +174,6 @@ impl JournalDatabase {
             .map_err(TransactionError::into_error)
     }
 
-    #[cfg_attr(not(test), expect(dead_code, reason = "wired in S3"))]
     pub(super) async fn maintenance(
         &self,
         truncate: bool,
@@ -209,7 +224,7 @@ impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for JournalConne
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::test_error::TestError;
 
@@ -223,6 +238,15 @@ mod tests {
             .map(|migration| migration.name().version().to_string())
             .collect::<Vec<_>>();
         assert_eq!(versions, ["00000000000001"]);
+    }
+
+    pub(in crate::journal) fn fast_busy_timeout(
+        database: &JournalDatabase,
+    ) -> Result<(), crate::test_error::TestError> {
+        for mut connection in database.0.test_exhaust_pool() {
+            connection.batch_execute("PRAGMA busy_timeout = 0")?;
+        }
+        Ok(())
     }
 
     fn event(at: i64) -> StoredEvent {
@@ -252,7 +276,7 @@ mod tests {
         assert_eq!(database.0.pool_size_for_test(), 3);
         assert_eq!(
             database
-                .insert_batch(vec![event(20), event(10), event(30)])
+                .insert_batch(&[event(20), event(10), event(30)])
                 .await?,
             3
         );
@@ -272,7 +296,7 @@ mod tests {
         assert_eq!(database.maintenance(true).await?.wal_pages, 0);
         drop(database);
         let database = JournalDatabase::open(&path).await?;
-        assert_eq!(database.insert_batch(vec![event(40)]).await?, 1);
+        assert_eq!(database.insert_batch(&[event(40)]).await?, 1);
         assert_eq!(database.read_cursor(None, None, 1).await?[0].0, 4);
         Ok(())
     }
@@ -282,7 +306,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let database = JournalDatabase::open(&directory.path().join("journal.db")).await?;
         database
-            .insert_batch((0..5002).map(event).collect())
+            .insert_batch(&(0..5002).map(event).collect::<Vec<_>>())
             .await?;
         assert_eq!(
             database.read_cursor(None, None, u16::MAX).await?.len(),
