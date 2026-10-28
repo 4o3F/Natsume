@@ -3,6 +3,7 @@ mod issuer;
 
 use std::{collections::HashMap, path::Path, sync::Arc};
 
+use rustls_pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use sha2::{Digest as _, Sha256};
 use snafu::Snafu;
 use uuid::{Uuid, Variant, Version};
@@ -40,6 +41,38 @@ impl GatewayComponent {
             site,
         )
         .map(|issuer| Self::new(database, Arc::new(issuer)))
+        .map_err(map_load_error)
+    }
+
+    pub(crate) fn validate_files(
+        ca_certificate_path: &Path,
+        ca_private_key_path: &Path,
+        packaged_trust_root_path: &Path,
+        site: &GatewaySiteConfig,
+    ) -> Result<(), GatewayLoadError> {
+        GatewayIssuer::load(
+            ca_certificate_path,
+            ca_private_key_path,
+            packaged_trust_root_path,
+            site,
+        )
+        .map(|_| ())
+        .map_err(map_load_error)
+    }
+
+    pub(crate) fn validate_der(
+        ca_certificate_der: &CertificateDer<'_>,
+        ca_private_key_der: &PrivatePkcs8KeyDer<'_>,
+        packaged_trust_root_der: &CertificateDer<'_>,
+        site: &GatewaySiteConfig,
+    ) -> Result<(), GatewayLoadError> {
+        GatewayIssuer::new(
+            ca_certificate_der,
+            ca_private_key_der,
+            packaged_trust_root_der,
+            site,
+        )
+        .map(|_| ())
         .map_err(map_load_error)
     }
 

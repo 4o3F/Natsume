@@ -62,7 +62,7 @@ specta.workspace = true
 specta-serde.workspace = true
 specta-typescript.workspace = true
 uuid.workspace = true
-x509-parser.workspace = true
+x509-parser = { workspace = true, features = ["verify"] }
 zeroize.workspace = true
 zip.workspace = true
 
