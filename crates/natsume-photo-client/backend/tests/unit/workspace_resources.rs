@@ -26,8 +26,7 @@ async fn changed_source_during_preparation_leaves_workspace_incomplete() -> Test
         br#"{"school_logos":[{"organization_id":1,"path":"logo.png"}]}"#,
     )
     .context(IoSnafu)?;
-    let roster = Roster::parse(include_bytes!("../../../tests/fixtures/roster.json"))
-        .context(RosterSnafu)?;
+    let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
     let prepared = Prepared::load(
         &manifest,
         &roster.teams().iter().map(|t| t.organization_id).collect(),
@@ -85,8 +84,7 @@ fn manifest_rejects_unknown_fields() -> TestResult {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let path = directory.path().join("resources.json");
     std::fs::write(&path, br#"{"school_logos":[],"password":"forbidden"}"#).context(IoSnafu)?;
-    let roster = Roster::parse(include_bytes!("../../../tests/fixtures/roster.json"))
-        .context(RosterSnafu)?;
+    let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
     assert!(matches!(
         Prepared::load(
             &path,

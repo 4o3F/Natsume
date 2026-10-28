@@ -251,4 +251,5 @@ impl Session {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/capture.rs"]
 mod tests;

@@ -15,7 +15,7 @@ enum TestError {
 type TestResult<T = ()> = std::result::Result<T, TestError>;
 
 fn roster() -> TestResult<Roster> {
-    Roster::parse(include_bytes!("../../../tests/fixtures/roster.json")).context(RosterSnafu)
+    Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)
 }
 async fn unready() -> TestResult<(tempfile::TempDir, std::path::PathBuf, Database)> {
     let directory = tempfile::tempdir().context(IoSnafu)?;

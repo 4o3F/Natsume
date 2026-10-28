@@ -130,6 +130,6 @@ cargo test -p natsume-photo-client --test hot_folder --locked
 | `backend/src/capture.rs` | 内存会话、拍摄组与任务屏障 |
 | `backend/src/hot_folder.rs`、`backend/src/hot_folder/` | 自动监控、对账和复制归档 |
 | `backend/migrations/`、`backend/src/diesel_schema.rs` | 本地数据库迁移和生成 schema |
-| `backend/tests/` | 公共接口、文件系统及 CLI 集成测试 |
+| `backend/tests/` | 公共接口、文件系统及 CLI 集成测试；`unit/` 保存私有模块单元测试，`fixtures/` 保存测试数据 |
 
 本文件作为 Photo Client 的持续功能总览。新增或改变功能时，同步更新对应的当前能力、调用/启动方式、数据保存行为与测试范围；尚未实现或未验收的能力继续明确标注，不把开发计划写成已支持。后端细节另见 [`backend/README.md`](backend/README.md)。

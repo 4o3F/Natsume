@@ -194,4 +194,5 @@ fn read_image(path: &Path) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 #[cfg(test)]
+#[path = "../../tests/unit/workspace_resources.rs"]
 mod tests;

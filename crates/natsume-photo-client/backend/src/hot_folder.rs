@@ -600,4 +600,5 @@ impl Inner {
 }
 
 #[cfg(test)]
+#[path = "../tests/unit/hot_folder.rs"]
 mod tests;

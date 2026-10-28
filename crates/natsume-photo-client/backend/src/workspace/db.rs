@@ -200,4 +200,5 @@ impl Database {
     }
 }
 #[cfg(test)]
+#[path = "../../tests/unit/workspace_db.rs"]
 mod tests;

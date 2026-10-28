@@ -40,6 +40,10 @@ cargo test -p natsume-photo-client --locked
 
 当前没有候选图解码、选图确认、成品持久化或成果 ZIP。后续确认成功后才清理本组未采用的工作区副本，热文件夹原图保留。
 
+## 测试文件组织
+
+所有测试内容集中在 `tests/`：根目录的 Rust 文件是集成测试，`unit/` 中的五个文件分别测试 capture、hot_folder、native、workspace_db 和 workspace_resources，`fixtures/` 保存测试输入。业务模块通过 `#[cfg(test)]` 和 `#[path = "..."]` 引用对应单元测试，因此仍能访问父模块的私有实现，不需要扩大业务 API 的可见性。`tests/unit/` 没有独立的集成测试入口，Cargo 不会重复运行这些测试。
+
 ## 验证
 
 Windows 测试覆盖事务回滚、资料完整性、校徽限额、拍摄屏障、原生通知、分段写入、故障恢复、HTTPS 初始化和完成重放。`cargo clippy -p natsume-photo-client --all-targets --all-features -- -D warnings` 检查代码，`cargo doc -p natsume-photo-client --no-deps` 检查文档。

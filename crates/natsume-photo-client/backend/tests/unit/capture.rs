@@ -9,8 +9,7 @@ enum TestError {
 
 /// Only the fixture supplies a confirmed fact. No public confirmation shortcut.
 fn confirmed_session() -> std::result::Result<(Session, GroupId), TestError> {
-    let roster =
-        Roster::parse(include_bytes!("../../tests/fixtures/roster.json")).context(RosterSnafu)?;
+    let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
     let account_id = roster.teams()[0].account_id.clone();
     let mut session = Session::new(roster);
     session.select_team(&account_id).context(CaptureSnafu)?;

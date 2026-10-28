@@ -18,8 +18,7 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
     let archive = directory.path().join("archive");
     fs::create_dir(&hot_folder).context(IoSnafu)?;
     fs::create_dir(&archive).context(IoSnafu)?;
-    let roster =
-        Roster::parse(include_bytes!("../../tests/fixtures/roster.json")).context(RosterSnafu)?;
+    let roster = Roster::parse(include_bytes!("../fixtures/roster.json")).context(RosterSnafu)?;
     Ok((
         directory,
         Inner {
