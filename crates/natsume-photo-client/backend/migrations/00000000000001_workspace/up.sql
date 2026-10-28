@@ -1,10 +1,10 @@
 CREATE TABLE photo_workspace (
-    singleton INTEGER NOT NULL PRIMARY KEY CHECK (singleton = 1),
+    singleton INTEGER NOT NULL PRIMARY KEY,
     format_version INTEGER NOT NULL,
-    ready BOOLEAN NOT NULL CHECK (ready IN (0, 1))
+    ready INTEGER NOT NULL
 );
 
-INSERT INTO photo_workspace (singleton, format_version, ready) VALUES (1, 1, 0);
+INSERT INTO photo_workspace (singleton, format_version, ready) VALUES (1, 2, 0);
 
 CREATE TABLE photo_roster (
     account_id TEXT NOT NULL PRIMARY KEY,

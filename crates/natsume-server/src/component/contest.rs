@@ -13,10 +13,12 @@ mod export;
 mod logo_cache;
 mod logo_io;
 mod logos;
+mod photo;
 mod roster;
 
 pub(crate) use export::ExportError;
 pub(crate) use logos::{LogoObservation, LogoStatus};
+pub(crate) use photo::PhotoTeam;
 pub(crate) use roster::OrganizationDetails;
 
 pub(crate) struct TeamDetails {

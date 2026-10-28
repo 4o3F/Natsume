@@ -1,4 +1,4 @@
-use std::process::Command;
+#![cfg(windows)]
 
 use natsume_photo_client::{
     roster::Roster,
@@ -22,17 +22,21 @@ enum Error {
 }
 type Result<T = ()> = std::result::Result<T, Error>;
 
-#[test]
-fn roster_survives_close_reopen_and_source_removal() -> Result {
+#[tokio::test]
+async fn roster_survives_close_reopen_and_source_removal() -> Result {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let source = directory.path().join("roster.json");
     std::fs::write(&source, FIXTURE).context(IoSnafu)?;
     let roster = Roster::load(&source).context(RosterSnafu)?;
     let root = directory.path().join("工作区 #1% 比赛");
-    drop(Workspace::create(&root, &roster).context(WorkspaceSnafu)?);
+    drop(
+        Workspace::create(&root, &roster)
+            .await
+            .context(WorkspaceSnafu)?,
+    );
     std::fs::remove_file(&source).context(IoSnafu)?;
-    let mut reopened = Workspace::open(&root).context(WorkspaceSnafu)?;
-    let persisted = reopened.roster().context(WorkspaceSnafu)?;
+    let reopened = Workspace::open(&root).await.context(WorkspaceSnafu)?;
+    let persisted = reopened.roster().await.context(WorkspaceSnafu)?;
     assert_eq!(persisted.teams().len(), 2);
     for (actual, expected) in persisted.teams().iter().zip(roster.teams()) {
         assert_eq!(actual.account_id, expected.account_id);
@@ -50,105 +54,81 @@ fn roster_survives_close_reopen_and_source_removal() -> Result {
     Ok(())
 }
 
-#[test]
-fn create_never_overwrites_existing_targets_or_neighbor_files() -> Result {
+#[tokio::test]
+async fn create_never_overwrites_existing_targets_or_neighbor_files() -> Result {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
     let neighbor = directory.path().join("neighbor.bin");
     std::fs::write(&neighbor, b"keep").context(IoSnafu)?;
     let root = directory.path().join("workspace");
-    drop(Workspace::create(&root, &roster).context(WorkspaceSnafu)?);
+    drop(
+        Workspace::create(&root, &roster)
+            .await
+            .context(WorkspaceSnafu)?,
+    );
     let database = root.join("workspace.sqlite3");
     let before = std::fs::read(&database).context(IoSnafu)?;
     assert!(matches!(
-        Workspace::create(&root, &roster),
-        Err(WorkspaceError::Exists)
+        Workspace::create(&root, &roster).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Exists
+        })
     ));
     assert!(matches!(
-        Workspace::create(&neighbor, &roster),
-        Err(WorkspaceError::Exists)
+        Workspace::create(&neighbor, &roster).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Exists
+        })
     ));
     assert_eq!(std::fs::read(database).context(IoSnafu)?, before);
     assert_eq!(std::fs::read(neighbor).context(IoSnafu)?, b"keep");
     Ok(())
 }
 
-#[test]
-fn invalid_paths_and_file_failures_never_create_a_ready_workspace() -> Result {
+#[tokio::test]
+async fn invalid_paths_and_file_failures_never_create_a_ready_workspace() -> Result {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
     assert!(matches!(
-        Workspace::create(std::path::Path::new("relative"), &roster),
-        Err(WorkspaceError::Path)
+        Workspace::create(std::path::Path::new("relative"), &roster).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Path
+        })
     ));
     let escaping = directory.path().join("..").join("not-created");
     assert!(matches!(
-        Workspace::create(&escaping, &roster),
-        Err(WorkspaceError::Path)
+        Workspace::create(&escaping, &roster).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Path
+        })
     ));
     let missing_parent = directory.path().join("missing").join("workspace");
     assert!(matches!(
-        Workspace::create(&missing_parent, &roster),
-        Err(WorkspaceError::Io { .. })
+        Workspace::create(&missing_parent, &roster).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Io { .. }
+        })
     ));
     assert!(!directory.path().join("missing").exists());
     Ok(())
 }
 
-#[test]
-fn open_rejects_missing_and_corrupt_databases_without_creating_one() -> Result {
+#[tokio::test]
+async fn open_rejects_missing_and_corrupt_databases_without_creating_one() -> Result {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     assert!(matches!(
-        Workspace::open(directory.path()),
-        Err(WorkspaceError::Path)
+        Workspace::open(directory.path()).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Io { .. }
+        })
     ));
     let database = directory.path().join("workspace.sqlite3");
     assert!(!database.exists());
     std::fs::write(&database, b"not-a-database").context(IoSnafu)?;
     assert!(matches!(
-        Workspace::open(directory.path()),
-        Err(WorkspaceError::Database { .. } | WorkspaceError::Connection { .. })
+        Workspace::open(directory.path()).await,
+        Err(WorkspaceError::Persistence { .. } | WorkspaceError::Storage { .. })
     ));
     assert_eq!(std::fs::read(database).context(IoSnafu)?, b"not-a-database");
-    Ok(())
-}
-
-#[test]
-fn create_and_inspect_work_in_independent_processes() -> Result {
-    let directory = tempfile::tempdir().context(IoSnafu)?;
-    let source = directory.path().join("roster.json");
-    let root = directory.path().join("workspace");
-    std::fs::write(&source, FIXTURE).context(IoSnafu)?;
-    let executable = env!("CARGO_BIN_EXE_natsume-photo-client");
-    let created = Command::new(executable)
-        .arg("create-workspace")
-        .arg(&root)
-        .arg("--roster")
-        .arg(&source)
-        .output()
-        .context(IoSnafu)?;
-    assert!(created.status.success());
-    std::fs::remove_file(source).context(IoSnafu)?;
-    let inspected = Command::new(executable)
-        .arg("inspect-workspace")
-        .arg(&root)
-        .output()
-        .context(IoSnafu)?;
-    assert!(inspected.status.success());
-    assert!(String::from_utf8_lossy(&inspected.stdout).contains("team_count=2"));
-    let duplicate = Command::new(executable)
-        .arg("create-workspace")
-        .arg(&root)
-        .arg("--roster")
-        .arg(directory.path().join("missing.json"))
-        .output()
-        .context(IoSnafu)?;
-    assert!(!duplicate.status.success());
-    let invalid = Command::new(executable)
-        .arg("inspect-workspace")
-        .arg(directory.path().join("missing"))
-        .output()
-        .context(IoSnafu)?;
-    assert!(!invalid.status.success());
     Ok(())
 }

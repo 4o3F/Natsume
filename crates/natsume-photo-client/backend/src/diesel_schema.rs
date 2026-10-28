@@ -18,9 +18,7 @@ diesel::table! {
     photo_workspace (singleton) {
         singleton -> Integer,
         format_version -> Integer,
-        ready -> Bool,
-        default_image_path -> Nullable<Text>,
-        default_image_sha256 -> Nullable<Text>,
+        ready -> Integer,
     }
 }
 

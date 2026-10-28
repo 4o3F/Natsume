@@ -1,3 +1,4 @@
+#![cfg(windows)]
 use natsume_photo_client::{
     capture::{Error as CaptureError, GroupId, GroupState, Session},
     roster::Roster,
@@ -292,13 +293,15 @@ fn callbacks_from_another_session_are_rejected() -> Result {
     Ok(())
 }
 
-#[test]
-fn reopening_workspace_restores_roster_but_not_selection_group_or_pending_tasks() -> Result {
+#[tokio::test]
+async fn reopening_workspace_restores_roster_but_not_selection_group_or_pending_tasks() -> Result {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let root = directory.path().join("工作区");
     let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
-    let mut workspace = Workspace::create(&root, &roster).context(WorkspaceSnafu)?;
-    let mut old = Session::new(workspace.roster().context(WorkspaceSnafu)?);
+    let workspace = Workspace::create(&root, &roster)
+        .await
+        .context(WorkspaceSnafu)?;
+    let mut old = Session::new(workspace.roster().await.context(WorkspaceSnafu)?);
     let old_id = start(&mut old)?;
     let old_task = old.task_started(old_id).context(CaptureSnafu)?;
     old.pause();
@@ -306,8 +309,8 @@ fn reopening_workspace_restores_roster_but_not_selection_group_or_pending_tasks(
     drop(workspace);
     let database_path = root.join("workspace.sqlite3");
     let before = std::fs::read(&database_path).context(IoSnafu)?;
-    let mut workspace = Workspace::open(&root).context(WorkspaceSnafu)?;
-    let mut fresh = Session::new(workspace.roster().context(WorkspaceSnafu)?);
+    let workspace = Workspace::open(&root).await.context(WorkspaceSnafu)?;
+    let mut fresh = Session::new(workspace.roster().await.context(WorkspaceSnafu)?);
     assert!(fresh.selected_team().is_none());
     assert!(fresh.group().is_none());
     assert!(!fresh.is_paused());

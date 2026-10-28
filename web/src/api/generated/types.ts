@@ -450,6 +450,82 @@ export type OrganizationLogoResponse = {
 export type OrganizationLogoStatus =
   "available" | "missing" | "ambiguous" | "invalid";
 
+export type PhotoConfirmation = {
+  enrollment_id: string;
+  signing_public_key: string;
+};
+
+export type PhotoEnrollmentIssued = {
+  source_id: string;
+  enrollment_id: string;
+  token: string;
+  expires_at_unix_ms: number;
+};
+
+export type PhotoInitialization = {
+  format_version: number;
+  source_id: string;
+  dataset_id: string;
+  initialization_id: string;
+  teams: PhotoTeam[];
+  school_logos: PhotoLogo[];
+};
+
+export type PhotoInitializationComplete = {
+  initialization_id: string;
+  manifest_sha256: string;
+  request_id: string;
+};
+
+export type PhotoLogo = {
+  organization_id: number;
+  sha256: string;
+  content_type: string;
+  size_bytes: number;
+};
+
+export type PhotoPairRequest = {
+  code: string;
+  signing_public_key: string;
+  client_version: string;
+};
+
+export type PhotoPairingCode = {
+  source_id: string;
+  code: string;
+  expires_at_unix_ms: number;
+};
+
+export type PhotoPairingCodeRequest = {
+  replace_pending_enrollment?: boolean;
+};
+
+export type PhotoSource = {
+  source_id: string;
+  name: string;
+  state: SourceState;
+  enrollment_confirmed: boolean;
+  initialization_completed: boolean;
+};
+
+export type PhotoSourceCreate = {
+  name: string;
+};
+
+export type PhotoSourceStateUpdate = {
+  state: SourceState;
+};
+
+export type PhotoTeam = {
+  account_id: string;
+  account: string;
+  organization_id: number;
+  school_name_zh: string;
+  school_name_en: string;
+  team_name_zh: string;
+  team_name_en: string;
+};
+
 export type PrintAdmission = {
   ready_sequence: number;
   ahead_tasks: number;
@@ -666,6 +742,8 @@ export type SessionResponse = {
 /**  Session state vocabulary exposed by the convergence projection. */
 export type SessionStateResponse =
   "none" | "starting" | "running" | "terminating" | "ambiguous" | "error";
+
+export type SourceState = "enabled" | "disabled" | "revoked";
 
 export type TargetActionBody =
   | { kind: "set_foreground"; foreground_target: ForegroundTargetResponse }

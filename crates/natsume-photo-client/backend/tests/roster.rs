@@ -1,3 +1,4 @@
+#![cfg(windows)]
 use natsume_photo_client::roster::{Error as RosterError, Roster};
 use serde_json::{Value, json};
 use snafu::{OptionExt as _, ResultExt as _, Snafu};

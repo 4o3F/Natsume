@@ -1,60 +1,47 @@
 # Natsume Photo Client 后端
 
-当前实现 W01.1～W01.3、W02 和 W03：名单与资源工作区、内存会话/拍摄组规则，以及自动热文件夹监控和安全复制归档。没有 UI 或网络。Windows 内置编译 SQLite，不需要安装数据库服务。
-
-在仓库根目录执行：
+Windows 专用 Rust 后端，当前没有 UI。首次通过 HTTPS 授权并下载名单和学校校徽，之后本地操作离线。SQLite 随 Windows 构建，不需要安装数据库服务。启动、恢复及产品边界见[上级 README](../README.md)。
 
 ```powershell
-cargo run -p natsume-photo-client -- check-roster crates/natsume-photo-client/backend/tests/fixtures/roster.json
+cargo run -p natsume-photo-client -- initialize C:\PhotoData\Contest --server https://natsume.example:8443
+cargo run -p natsume-photo-client -- doctor C:\PhotoData\Contest
 cargo test -p natsume-photo-client --locked
 ```
 
-创建并检查练习工作区（父目录必须存在，目标目录必须尚不存在）：
+初始化输入隐藏的一次性配对码。签名密钥和临时 token 保存在 Windows 凭据库；工作区及恢复日志只存非秘密资料。`doctor` 不联网、不写文件、不重新配对，验证名单、校徽、下载快照与授权上下文，并核对原签名密钥。JSON 读取只供内部准备和测试夹具使用，正式 CLI 没有本地 JSON 初始化命令。
 
-```powershell
-$photoWorkspace = Join-Path $PWD ('target\photo-workspace-' + [guid]::NewGuid().ToString('N'))
-cargo run -p natsume-photo-client -- create-workspace $photoWorkspace --roster crates/natsume-photo-client/backend/tests/fixtures/roster.json
-cargo run -p natsume-photo-client -- inspect-workspace $photoWorkspace
-```
+## 持久化与调用关系
 
-工作区有 `workspace.sqlite3`，配置图片时还会创建 `resources/`。仍只有 `photo_workspace` 和 `photo_roster` 两张业务表及 Diesel 自身迁移记录；校徽路径/哈希放在名单行，默认图路径/哈希放在元信息。格式版本为 1，独立的 `ready` 标记在资源复制校验后随名单和引用一起提交；它不代表正式 Server 初始化或授权。重新打开会检查版本、完成标记、名单和配置过的资源，名单按外部 `account` 排序返回。
+`Initializer::run().await` 完成配对、确认、下载、暂存、完成回执与工作区发布。`Workspace::create_with_resources().await` 验证校徽，调用 `storage::create().await` 创建目录和安装 schema，再将名单、校徽引用和 ready 标记放在同一事务提交。`Workspace::open().await` 只打开现有文件，检查资料就绪、名单和校徽；不迁移、不检查旧格式版本。
 
-可给 `create-workspace` 增加 `--resources <资源清单JSON路径>`，例如准备目录中有 `logo.png`、`default.jpg` 和以下 `resources.json`：
+| 模块 | 职责 |
+| --- | --- |
+| `initialization/` | HTTPS、协议验证、Windows 凭据、恢复日志、只读诊断 |
+| `workspace/mod.rs` | 资料就绪、名单和校徽的业务校验 |
+| `workspace/storage.rs` | 在 Tokio 阻塞任务中装配目录、连接和 schema |
+| `workspace/db.rs` | typed Diesel 查询、事务和持久化错误 |
+| `workspace/resources.rs` | 校徽输入、路径、限额、解码和哈希校验 |
+| `capture.rs` | 内存会话、队伍锁定、拍摄组与任务屏障 |
+| `hot_folder.rs` | 单一拥有者管理的收图状态机 |
+| `hot_folder/native.rs` | 安全 WinRT 文件通知，不使用系统索引服务 |
+| `hot_folder/archive.rs` | 有界复制、源版本复核及不覆盖发布 |
 
-```json
-{
-  "school_logos": [{ "organization_id": 1, "path": "logo.png" }],
-  "default_image": "default.jpg"
-}
-```
+数据库只有 `photo_workspace` 与 `photo_roster` 两张业务表，另有 Diesel 迁移记录。`photo_workspace` 保存 singleton、保留的 format_version 和资料 ready 标记。`photo_roster` 保存七字段队伍资料与可空的校徽相对路径和哈希。没有默认图片字段、接口或输入；没有照片时留空。工作区直接重建，不实现旧格式兼容或拒绝逻辑。
 
-路径相对资源清单所在目录，禁止绝对路径、`..` 和链接越界；校徽学校必须出现在名单中且不能重复配置。图片只接受 PNG/JPEG，每张最多 16 MiB、宽高各不超过 4096 像素，解码分配上限 64 MiB。内容按 SHA-256 命名并去重，复制后不依赖源文件。
+数据库连接、迁移和事务实际运行在 `spawn_blocking` 中；异步调用者不持有 SQLite 锁。资源解码和归档复制同样在阻塞任务中完成。业务条件在 Rust 中检查，数据库保留主键及唯一性约束。`ready` 只表示本地资料提交完成，不能单独证明来源授权完成。
 
-没有配置图片时返回空引用，UI 阶段使用内置图；配置后文件缺失或哈希不符会拒绝打开，不悄悄忽略。校验哈希不是来源签名。W01.2 旧工作区打开时自动增加可空资源列，原名单保留。
+## 收图状态与生命周期
 
-创建失败时保留不完整目录供检查，不自动删除或覆盖。请检查失败原因并选择新的目标路径重试。SQLite 事务不覆盖目录创建，也不承诺完整断电恢复。
+依次 await `HotFolder::prepare`、`select_team`、`start_group`。准备时先注册通知，再验证热文件夹为空。目录与工作区不得互相包含。消息通道处理操作，Tokio 定时器和原生通知触发同一对账入口；WinRT 对象在一个 Tokio 管理的线程中创建、使用和释放，不添加 unsafe 或手写 Send。
 
-输入是队伍 JSON 数组，字段见 `tests/fixtures/roster.json`：
+`IngestionState` 区分 Running、RecoveringMonitor、PausedDirectory、PausedArchive、Stopped。`Error` 表示一次调用失败，状态表示持续运行情况。文件句柄共享限制防止读取正在写入的照片；通知可能晚于写入，周期扫描仍会发现待处理任务。复制、目录或监控故障阻止切组并重试，身份和任务不丢失。
 
-- `account_id`：内部稳定身份；`account`：外部 Team ID，对应 Server 的 DOMjudge username。均不能为空且分别唯一。
-- `organization_id`、`school_name_zh`、`team_name_zh`：学校标识及中英文资料中的必填项。
-- `school_name_en`、`team_name_en`：允许空字符串，缺省时为空；不接受 null。
-- 拒绝未知字段，包括密码、座位和凭据修订字段。
+`snapshot()` 返回 `HotFolderSnapshot`；`wait_until().await` 等待后台发布，不主动扫描。显式 `shutdown().await` 等待运行中的文件任务及监听清理，Drop 只取消。未确认会话和组只在内存中，重启不恢复；源照片永不移动或删除，归属不确定的副本需要人工核对。
 
-身份比较保留输入原值，不自动裁剪、改大小写或根据名称匹配。此 JSON 是本地开发输入，尚不是已经实现的 Server DTO；检查通过不代表登记或初始化完成。
+当前没有候选图解码、选图确认、成品持久化或成果 ZIP。后续确认成功后才清理本组未采用的工作区副本，热文件夹原图保留。
 
-仅输出成功队伍数或安全错误摘要，不输出名单内容。详细 Rust 学习说明位于仓库 `photodesign/explainfiles/W01.1-Rust学习说明.md`、`photodesign/explainfiles/W01.2-Rust学习说明.md` 和 `photodesign/explainfiles/W01.3-Rust学习说明.md`。
+## 验证
 
-W02 的 `capture::Session` 消费已经验证的 `Roster`，选队使用内部 `account_id`；选队不等于开始组，开始后锁定队伍。已知任务以独立身份登记，未全部结束时不能关闭组。暂停保留组和任务，阻止选队、开始和关闭，但允许登记和完成已有组的工作。未确认组只能明确放弃；正常结束要求已经确认并保存成功的事实，该事实由后续 W05 实现，当前没有公开的确认快捷接口。
+Windows 测试覆盖事务回滚、资料完整性、校徽限额、拍摄屏障、原生通知、分段写入、故障恢复、HTTPS 初始化和完成重放。`cargo clippy -p natsume-photo-client --all-targets --all-features -- -D warnings` 检查代码，`cargo doc -p natsume-photo-client --no-deps` 检查文档。
 
-这些状态不写入 SQLite 或状态文件，销毁会话后全部丢弃；重新打开工作区仍须重新选队拍摄。W02 学习说明位于本地 `photodesign/explainfiles/W02-Rust学习说明.md`。
-
-W03 通过 `hot_folder::HotFolder::prepare(&mut workspace, hot_folder)` 建立后台收图器，先建立原生监听再检查空目录。目录必须与工作区互不包含；新会话有任何文件或子目录就拒绝，绝不清空或导入残留。`select_team`、`start_group`、`abandon_group` 统一协调收图与组边界，调用者不能取得其内部可变 `Session`。当前没有新增拍摄 CLI；可用 `cargo test -p natsume-photo-client --test hot_folder --locked` 验证真实 Windows 文件事件。
-
-通知和每 250ms 等待后的自动对账共用扫描入口，只处理顶层 `.jpg`、`.jpeg`、`.png`（大小写不敏感）。运行中出现子目录/链接会暂停；其他扩展名保留但不导入。每次扫描流式重新计算文件哈希，补偿漏通知及同名同大小变化；大量照片时扫描耗时会延长对账周期。单文件最多 50 MiB，复制缓冲区为 64 KiB；一次处理一个文件，未同时把整批原图载入内存。
-
-Windows 用只允许共享读取的源句柄避免复制中并发写入/替换；被写入者占用时等待重试。观察版本稳定后，先写临时文件、核对版本/哈希、同步文件，再不覆盖地发布到 `captures/<session_id>/<sha256>.source`。这些仍是未解码的源副本，扩展名筛选和短暂稳定不证明图片完整，W04 才校验实际图片。相同字节可共享文件，但每次源版本观察保留独立身份与组归属。归档失败暂停切组并自动重试，不删除源文件或旧副本。
-
-无组时、监控中断期间发现的源版本，以及同一路径跨组覆盖，默认不归队。只能用 `assign_reviewed(photo_id, group_id)` 明确核对后关联到当前组。组边界前先扫描，避免已有来图首次挂到新组；全新路径在新组开始后才首次出现的迟到照片仍无法从时间戳判定真实队伍，须由摄影师核对，不能把任务归零当成相机已无来图。
-
-`snapshot`/`wait_until` 只读取或等待后台事实，不是手动刷新入口。销毁收图器会停止并等待线程退出，副本保留，但观察/候选归属不恢复，也不新增数据库表或状态文件。工作区/显示准入仍不能由裸 `Session::new` 或 `resume` 代替，来源登记及实际显示条件在后续阶段接入。完整代码与测试说明见本地 `photodesign/explainfiles/W03-Rust学习说明.md`。
+Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows 的 `initialization` 测试可执行文件，通过临时 CA 和真实 HTTPS 完成初始化；双方显式 ignored 的联调用例需要一起执行，常规测试不会将它算为通过。原生 Windows 凭据库和真实相机仍需手工验收。全仓检查统一使用 `prek run --all-files`。

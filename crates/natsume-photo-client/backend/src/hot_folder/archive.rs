@@ -9,12 +9,27 @@ use std::{
 use sha2::{Digest as _, Sha256};
 use snafu::{IntoError as _, ResultExt as _, ensure};
 
-use super::{ChangedSnafu, InvalidArchiveSnafu, IoSnafu, LimitSnafu, Result, UnsafePathSnafu};
+use snafu::Snafu;
+
+#[derive(Debug, Snafu)]
+pub enum ArchiveError {
+    #[snafu(display("source or archive file operation failed"))]
+    Io { source: std::io::Error },
+    #[snafu(display("source path or archive directory is not the expected local path"))]
+    UnsafePath,
+    #[snafu(display("source file changed while it was being read"))]
+    Changed,
+    #[snafu(display("source file exceeds the 50 MiB limit"))]
+    Limit,
+    #[snafu(display("existing archive content is corrupt and cannot be overwritten"))]
+    InvalidArchive,
+}
+pub(super) type Result<T> = std::result::Result<T, ArchiveError>;
 
 const MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Version {
+pub(super) struct SourceFileVersion {
     pub bytes: u64,
     pub modified: SystemTime,
     pub sha256: String,
@@ -30,7 +45,6 @@ fn open_source(path: &Path, hot_folder: &Path) -> Result<File> {
     ensure!(resolved.parent() == Some(hot_folder), UnsafePathSnafu);
     let mut options = OpenOptions::new();
     options.read(true);
-    #[cfg(windows)]
     {
         use std::os::windows::fs::OpenOptionsExt as _;
         // FILE_SHARE_READ: while this safe std handle is held, Windows rejects
@@ -66,7 +80,7 @@ fn same_metadata(first: &Metadata, second: &Metadata) -> Result<bool> {
         && first.created().ok() == second.created().ok())
 }
 
-pub(super) fn probe(path: &Path, hot_folder: &Path) -> Result<Version> {
+pub(super) fn probe(path: &Path, hot_folder: &Path) -> Result<SourceFileVersion> {
     let mut file = open_source(path, hot_folder)?;
     let before = file.metadata().context(IoSnafu)?;
     ensure!(before.len() <= MAX_BYTES, LimitSnafu);
@@ -75,7 +89,7 @@ pub(super) fn probe(path: &Path, hot_folder: &Path) -> Result<Version> {
         bytes > 0 && same_metadata(&before, &file.metadata().context(IoSnafu)?)?,
         ChangedSnafu
     );
-    Ok(Version {
+    Ok(SourceFileVersion {
         bytes,
         modified: before.modified().context(IoSnafu)?,
         sha256,
@@ -86,7 +100,7 @@ pub(super) fn copy(
     source: &Path,
     hot_folder: &Path,
     archive: &Path,
-    expected: &Version,
+    expected: &SourceFileVersion,
 ) -> Result<PathBuf> {
     // Reject a replaced archive directory, including links outside the workspace.
     ensure!(

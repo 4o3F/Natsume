@@ -58,25 +58,27 @@ impl Group {
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("队伍不在当前名单中，请使用内部 account_id 选队"))]
+    #[snafu(display("team is not in this roster; select by internal account_id"))]
     UnknownTeam,
-    #[snafu(display("当前拍摄组尚未关闭，不能切队或重复开始"))]
+    #[snafu(display("an active group prevents switching teams or starting another group"))]
     GroupActive,
-    #[snafu(display("请先选择并核对队伍"))]
+    #[snafu(display("select and verify a team first"))]
     NoSelection,
-    #[snafu(display("当前没有拍摄组"))]
+    #[snafu(display("there is no active capture group"))]
     NoGroup,
-    #[snafu(display("会话已暂停，不能选队、开始或关闭拍摄组"))]
+    #[snafu(display("session is paused; team selection and group transitions are blocked"))]
     Paused,
-    #[snafu(display("还有 {count} 个已知任务未结束，不能关闭拍摄组"))]
+    #[snafu(display("cannot close a group with {count} pending tasks"))]
     PendingTasks { count: usize },
-    #[snafu(display("当前组尚未确认并成功保存成品，只能继续拍摄或明确放弃"))]
+    #[snafu(display(
+        "confirm and save the final photo before finishing, or explicitly abandon this group"
+    ))]
     Unconfirmed,
-    #[snafu(display("该组已有确认成品，请正常结束本组"))]
+    #[snafu(display("this group already has a confirmed final; finish it normally"))]
     AlreadyConfirmed,
-    #[snafu(display("任务回调不属于当前拍摄组"))]
+    #[snafu(display("task callback does not belong to the active capture group"))]
     StaleGroup,
-    #[snafu(display("任务不存在或已经结束"))]
+    #[snafu(display("task does not exist or has already completed"))]
     UnknownTask,
 }
 

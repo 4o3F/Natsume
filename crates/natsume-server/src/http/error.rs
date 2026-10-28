@@ -83,6 +83,82 @@ pub(super) struct ApiError {
 }
 
 impl ApiError {
+    pub(super) fn from_photo_enrollment(error: crate::component::photo::EnrollmentError) -> Self {
+        use crate::component::photo::EnrollmentError;
+        match error {
+            EnrollmentError::Authentication => {
+                Self::authentication_failed("photo_credential_rejected")
+            }
+            EnrollmentError::NotFound => Self::not_found("photo_source_not_found"),
+            EnrollmentError::Conflict => Self::conflict("photo_source_conflict"),
+            EnrollmentError::InvalidId => Self::invalid_request("photo_identifier"),
+            EnrollmentError::InvalidName => Self::invalid_request("photo_source_name"),
+            EnrollmentError::InvalidPairing => Self::invalid_request("photo_pairing_request"),
+            EnrollmentError::InvalidKey => Self::invalid_request("photo_signing_key"),
+            EnrollmentError::RateLimited => Self::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too Many Requests",
+                ApiErrorCode::RateLimited,
+                "photo_pairing_limit",
+            ),
+            EnrollmentError::Persistence { ref source } if source.is_transient() => {
+                Self::unavailable("photo_database_busy").report_from(error)
+            }
+            EnrollmentError::Persistence { .. } => {
+                Self::internal_error_from(error, "photo_enrollment_persistence")
+            }
+            EnrollmentError::Entropy { .. } => {
+                Self::internal_error_from(error, "photo_enrollment_entropy")
+            }
+        }
+    }
+
+    pub(super) fn from_photo_initialization(
+        error: crate::component::photo::InitializationError,
+    ) -> Self {
+        use crate::component::photo::InitializationError;
+        match error {
+            InitializationError::Enrollment { source } => Self::from_photo_enrollment(source),
+            InitializationError::Unconfirmed => {
+                Self::authorization_denied("photo_enrollment_unconfirmed")
+            }
+            InitializationError::InvalidRequest => {
+                Self::invalid_request("photo_initialization_request")
+            }
+            InitializationError::NotFound => Self::not_found("photo_initialization_resource"),
+            InitializationError::Conflict => Self::conflict("photo_initialization_conflict"),
+            InitializationError::EmptyRoster => Self::conflict("photo_roster_empty"),
+            InitializationError::Busy => Self::unavailable("photo_initialization_busy"),
+            InitializationError::Limit => Self::new(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Payload Too Large",
+                ApiErrorCode::PayloadTooLarge,
+                "photo_initialization_limit",
+            ),
+            InitializationError::Persistence { ref source } if source.is_transient() => {
+                Self::unavailable("photo_database_busy").report_from(error)
+            }
+            InitializationError::Persistence { .. } => {
+                Self::internal_error_from(error, "photo_initialization_persistence")
+            }
+            InitializationError::Corrupt => {
+                Self::internal_error_from(error, "photo_initialization_corrupt")
+            }
+            InitializationError::Roster { .. } => {
+                Self::internal_error_from(error, "photo_initialization_roster")
+            }
+            InitializationError::Logo { .. } => {
+                Self::internal_error_from(error, "photo_initialization_logo")
+            }
+            InitializationError::Io { .. } => {
+                Self::internal_error_from(error, "photo_initialization_io")
+            }
+            InitializationError::Json { .. } => {
+                Self::internal_error_from(error, "photo_initialization_json")
+            }
+        }
+    }
+
     pub(super) fn internal_error_from<E: std::error::Error>(error: E, cause: &'static str) -> Self {
         Self::internal_error(cause).report_from(error)
     }

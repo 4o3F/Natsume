@@ -147,6 +147,7 @@ it("does not leak credential fields outside explicitly authorized HTTP DTOs", ()
     "SessionRequest.password",
     "PrintSourceIssued.token",
     "PrintClientIssued.token",
+    "PhotoEnrollmentIssued.token",
     "ImportPreviewResponse.preview_token",
     "OperatorInvitationIssuedResponse.token",
     "OperatorPasswordResetIssuedResponse.token",

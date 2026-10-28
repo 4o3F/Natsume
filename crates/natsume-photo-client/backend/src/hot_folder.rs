@@ -1,68 +1,66 @@
-//! Automatic in-process monitoring and reconciliation, with copy-only archives.
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fs,
-    path::{Component, Path, PathBuf},
-    sync::{
-        Arc, Condvar, Mutex, MutexGuard,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{self, SyncSender},
-    },
-    thread::{self, JoinHandle},
-    time::{Duration, Instant, SystemTime},
-};
-
-use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
-use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
-use uuid::Uuid;
-
+//! Tokio-owned ingestion state, safe native notifications and copy-only archives.
 use crate::{
     capture::{self, GroupId, Session, TaskId},
     workspace::Workspace,
 };
+use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::{Component, Path, PathBuf},
+    time::{Duration, Instant},
+};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio_util::sync::CancellationToken;
+use uuid::Uuid;
 
 mod archive;
+mod native;
+pub use archive::ArchiveError;
+use native::NativeMonitor;
 
 const INTERVAL: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("热文件夹或归档文件操作失败"))]
+    #[snafu(display("hot-folder directory operation failed"))]
     Io { source: std::io::Error },
-    #[snafu(display("无法建立热文件夹监控"))]
-    Watch { source: notify::Error },
-    #[snafu(display("无法读取工作区名单"))]
+    #[snafu(display("native directory monitoring failed"))]
+    Monitor { source: windows::core::Error },
+    #[snafu(display("cannot read the workspace roster: {source}"))]
     Workspace { source: crate::workspace::Error },
-    #[snafu(display("拍摄组操作失败：{source}"))]
+    #[snafu(display("capture transition rejected: {source}"))]
     Capture { source: capture::Error },
-    #[snafu(display("请选择与工作区不重叠的绝对目录，且不能包含链接越界"))]
+    #[snafu(display("source archival failed: {source}"))]
+    Archive { source: ArchiveError },
+    #[snafu(display("hot folder must be an absolute local directory outside the workspace"))]
     UnsafePath,
-    #[snafu(display("新会话要求热文件夹完全为空，请自行整理或选择新的空目录"))]
+    #[snafu(display("a new capture session requires an empty hot folder"))]
     NotEmpty,
-    #[snafu(display("源文件仍在变化，请等待后重试"))]
-    Changed,
-    #[snafu(display("照片源文件超过 50 MiB 限额"))]
-    Limit,
-    #[snafu(display("热文件夹后台状态不可用"))]
-    Worker,
-    #[snafu(display("监控尚未恢复，禁止开始或关闭拍摄组"))]
+    #[snafu(display("directory monitoring has not recovered; group transitions are blocked"))]
     MonitorUnavailable,
-    #[snafu(display("已有归档内容损坏，禁止覆盖，请先检查本地文件"))]
-    InvalidArchive,
-    #[snafu(display("指定的待核对归档不存在或已有队伍归属"))]
+    #[snafu(display("photo cannot be assigned to this active group"))]
     NotReviewable,
+    #[snafu(display("ingestion state invariant was violated"))]
+    Invariant,
+    #[snafu(display("ingestion worker has stopped"))]
+    Stopped,
+    #[snafu(display("ingestion task failed"))]
+    Worker { source: tokio::task::JoinError },
 }
-
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Persistent-in-memory worker state, distinct from a failed method call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Issue {
-    Monitor,
-    Directory,
-    Archive,
+pub enum IngestionState {
+    Running,
+    RecoveringMonitor,
+    PausedDirectory,
+    PausedArchive,
+    Stopped,
 }
 
-/// An immutable source copy, not a decoded candidate or confirmed final.
+/// A stable source copy, never a decoded candidate or a confirmed final.
 #[derive(Debug, Clone)]
 pub struct ArchivedPhoto {
     pub id: Uuid,
@@ -70,362 +68,419 @@ pub struct ArchivedPhoto {
     pub path: PathBuf,
     pub sha256: String,
     pub bytes: u64,
-    /// None means explicit photographer review is required.
+    /// None requires explicit photographer review.
     pub group_id: Option<GroupId>,
 }
-
-/// Owned facts for a future operator UI, never the read-only contestant screen.
+/// Owned operator facts; this is not the contestant presentation state.
 #[derive(Debug, Clone)]
-pub struct Snapshot {
+pub struct HotFolderSnapshot {
     pub session_id: Uuid,
     pub group_id: Option<GroupId>,
     pub account_id: Option<String>,
     pub pending_tasks: usize,
     pub paused: bool,
-    pub issue: Option<Issue>,
+    pub state: IngestionState,
     pub photos: Vec<ArchivedPhoto>,
-    /// Native event count helps distinguish watcher traffic from reconciliation.
     pub notifications: u64,
 }
-
 struct Pending {
     owner: Option<GroupId>,
     task: Option<TaskId>,
-    version: Option<archive::Version>,
+    version: Option<archive::SourceFileVersion>,
     stable_since: Instant,
 }
-
 struct Inner {
     session: Session,
     hot_folder: PathBuf,
     archive: PathBuf,
     pending: BTreeMap<PathBuf, Pending>,
-    seen: BTreeMap<PathBuf, (archive::Version, Option<GroupId>)>,
+    seen: BTreeMap<PathBuf, (archive::SourceFileVersion, Option<GroupId>)>,
     photos: Vec<ArchivedPhoto>,
-    issue: Option<Issue>,
+    state: IngestionState,
     uncertain: bool,
 }
-
-struct Shared {
-    inner: Mutex<Inner>,
-    changed: Condvar,
-    stopped: AtomicBool,
-    monitor_fault: AtomicBool,
-    notifications: AtomicU64,
+enum Action {
+    Select(String),
+    Start,
+    Abandon(GroupId),
+    Assign(Uuid, GroupId),
+    Scan,
+}
+enum Response {
+    Done,
+    Group(GroupId),
+}
+struct Command {
+    action: Action,
+    reply: oneshot::Sender<Result<Response>>,
 }
 
-/// Owns the background worker. Drop stops and joins it; no state is serialized.
+/// Owns a Tokio worker; explicit shutdown drains running I/O, Drop only requests it.
 pub struct HotFolder {
-    shared: Arc<Shared>,
-    wake: SyncSender<()>,
-    worker: Option<JoinHandle<()>>,
+    commands: mpsc::Sender<Command>,
+    snapshots: watch::Receiver<HotFolderSnapshot>,
+    stop: CancellationToken,
+    worker: Option<tokio::task::JoinHandle<()>>,
 }
-
 impl HotFolder {
-    /// Registers native monitoring before testing emptiness, then starts automatic
-    /// reconciliation. Does not perform display or source-enrollment admission.
-    ///
+    /// Registers native monitoring before checking emptiness and starts reconciliation.
     /// # Errors
-    /// Rejects nonempty/overlapping/invalid paths or failed watcher/workspace setup.
-    pub fn prepare(workspace: &mut Workspace, hot_folder: &Path) -> Result<Self> {
-        ensure!(
-            hot_folder.is_absolute()
-                && !hot_folder
-                    .components()
-                    .any(|part| part == Component::ParentDir),
-            UnsafePathSnafu
-        );
-        let hot_folder = fs::canonicalize(hot_folder).context(IoSnafu)?;
-        ensure!(hot_folder.is_dir(), UnsafePathSnafu);
-        ensure!(
-            !hot_folder.starts_with(workspace.root()) && !workspace.root().starts_with(&hot_folder),
-            UnsafePathSnafu
-        );
-        let session = Session::new(workspace.roster().context(WorkspaceSnafu)?);
-        let (wake, receiver) = mpsc::sync_channel(1);
-        let shared = Arc::new(Shared {
-            inner: Mutex::new(Inner {
-                archive: workspace
-                    .root()
-                    .join("captures")
-                    .join(session.id().to_string()),
+    /// Rejects nonempty, overlapping or unsafe directories and failed setup.
+    pub async fn prepare(workspace: &Workspace, hot_folder: &Path) -> Result<Self> {
+        let session = Session::new(workspace.roster().await.context(WorkspaceSnafu)?);
+        let hot_folder = hot_folder.to_owned();
+        let root = workspace.root().to_owned();
+        let inner = tokio::task::spawn_blocking(move || {
+            ensure!(
+                hot_folder.is_absolute()
+                    && !hot_folder.components().any(|c| c == Component::ParentDir),
+                UnsafePathSnafu
+            );
+            let hot_folder = fs::canonicalize(hot_folder).context(IoSnafu)?;
+            ensure!(
+                hot_folder.is_dir()
+                    && !hot_folder.starts_with(&root)
+                    && !root.starts_with(&hot_folder),
+                UnsafePathSnafu
+            );
+            Ok(Inner {
+                archive: root.join("captures").join(session.id().to_string()),
                 session,
-                hot_folder: hot_folder.clone(),
+                hot_folder,
                 pending: BTreeMap::new(),
                 seen: BTreeMap::new(),
                 photos: Vec::new(),
-                issue: None,
+                state: IngestionState::Running,
                 uncertain: false,
-            }),
-            changed: Condvar::new(),
-            stopped: AtomicBool::new(false),
-            monitor_fault: AtomicBool::new(false),
-            notifications: AtomicU64::new(0),
-        });
-        let watcher = watch(&hot_folder, &shared, &wake)?;
-        ensure!(
-            fs::read_dir(&hot_folder).context(IoSnafu)?.next().is_none(),
-            NotEmptySnafu
-        );
-        let created = fs::metadata(&hot_folder).context(IoSnafu)?.created().ok();
-        {
-            let inner = shared.inner.lock().map_err(|_| Error::Worker)?;
-            let parent = inner.archive.parent().context(UnsafePathSnafu)?;
-            match fs::create_dir(parent) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(source) => return Err(IoSnafu.into_error(source)),
-            }
-            // Validate the existing parent before creating anything beneath it.
-            ensure!(
-                fs::canonicalize(parent).context(IoSnafu)? == parent,
-                UnsafePathSnafu
-            );
-            fs::create_dir(&inner.archive).context(IoSnafu)?;
-            ensure!(
-                fs::canonicalize(&inner.archive).context(IoSnafu)? == inner.archive,
-                UnsafePathSnafu
-            );
-        }
-        let worker_shared = Arc::clone(&shared);
-        let worker_wake = wake.clone();
-        let worker = thread::Builder::new()
-            .name("photo-hot-folder".into())
-            .spawn(move || {
-                run_worker(&worker_shared, &receiver, &worker_wake, watcher, created);
             })
-            .context(IoSnafu)?;
+        })
+        .await
+        .context(WorkerSnafu)??;
+        let (wake, events) = mpsc::channel(1);
+        let (publish, snapshots) = watch::channel(inner.snapshot(0));
+        let (commands, receive) = mpsc::channel(16);
+        let stop = CancellationToken::new();
+        let (ready, started) = oneshot::channel();
+        let worker_stop = stop.clone();
+        // WinRT query objects are apartment-bound and !Send. Construct, use and
+        // release them on one Tokio-managed blocking thread; never assert Send.
+        let worker =
+            tokio::task::spawn_blocking(
+                move || match tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    Ok(runtime) => runtime.block_on(run_worker(
+                        inner,
+                        receive,
+                        events,
+                        wake,
+                        publish,
+                        worker_stop,
+                        ready,
+                    )),
+                    Err(source) => {
+                        let _ = ready.send(Err(IoSnafu.into_error(source)));
+                    }
+                },
+            );
+        started.await.map_err(|_| StoppedSnafu.build())??;
         Ok(Self {
-            shared,
-            wake,
+            commands,
+            snapshots,
+            stop,
             worker: Some(worker),
         })
     }
-
-    fn lock(&self) -> Result<MutexGuard<'_, Inner>> {
-        self.shared.inner.lock().map_err(|_| Error::Worker)
-    }
-
+    /// Returns the most recently published facts without scanning or blocking I/O.
     /// # Errors
-    /// Returns a worker error if its state cannot be accessed.
-    pub fn snapshot(&self) -> Result<Snapshot> {
-        Ok(self
-            .lock()?
-            .snapshot(self.shared.notifications.load(Ordering::Relaxed)))
+    /// Reserved for ingestion API consistency; stopped state is observable in the result.
+    pub fn snapshot(&self) -> Result<HotFolderSnapshot> {
+        Ok(self.snapshots.borrow().clone())
     }
-
-    /// Waits for observable state, with a deadline. The background worker still
-    /// performs all monitoring and reconciliation; this is not manual refresh.
-    ///
+    /// Waits for published facts only; it does not drive ingestion or refresh files.
     /// # Errors
-    /// Returns a worker error if locking/waiting fails.
-    pub fn wait_until(
+    /// Returns Stopped if the worker exits before the predicate is satisfied.
+    pub async fn wait_until(
         &self,
         timeout: Duration,
-        predicate: impl Fn(&Snapshot) -> bool,
-    ) -> Result<Option<Snapshot>> {
-        let deadline = Instant::now() + timeout;
-        let mut inner = self.lock()?;
-        loop {
-            let snapshot = inner.snapshot(self.shared.notifications.load(Ordering::Relaxed));
-            if predicate(&snapshot) {
-                return Ok(Some(snapshot));
+        predicate: impl Fn(&HotFolderSnapshot) -> bool,
+    ) -> Result<Option<HotFolderSnapshot>> {
+        let mut snapshots = self.snapshots.clone();
+        match tokio::time::timeout(timeout, async {
+            loop {
+                let snapshot = snapshots.borrow_and_update().clone();
+                if predicate(&snapshot) {
+                    return Ok(snapshot);
+                }
+                snapshots
+                    .changed()
+                    .await
+                    .map_err(|_| StoppedSnafu.build())?;
             }
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-                return Ok(None);
-            };
-            let (guard, _) = self
-                .shared
-                .changed
-                .wait_timeout(inner, remaining)
-                .map_err(|_| Error::Worker)?;
-            inner = guard;
+        })
+        .await
+        {
+            Ok(result) => result.map(Some),
+            Err(_) => Ok(None),
         }
     }
-
-    /// # Errors
-    /// Rejects worker failure or invalid selection according to capture rules.
-    pub fn select_team(&self, account_id: &str) -> Result<()> {
-        self.lock()?
-            .session
-            .select_team(account_id)
-            .context(CaptureSnafu)
+    async fn request(&self, action: Action) -> Result<Response> {
+        let (reply, receive) = oneshot::channel();
+        self.commands
+            .send(Command { action, reply })
+            .await
+            .map_err(|_| StoppedSnafu.build())?;
+        receive.await.map_err(|_| StoppedSnafu.build())?
     }
-
-    /// Reconciles before the boundary, so already-present files are never first
-    /// observed under the new group. This cannot prove the camera has no late files.
-    ///
+    /// Selects a known team without starting a group.
     /// # Errors
-    /// Rejects paused/invalid capture state or worker failure.
-    pub fn start_group(&self) -> Result<GroupId> {
-        let mut inner = self.lock()?;
-        ensure!(
-            inner.issue != Some(Issue::Monitor)
-                && !self.shared.monitor_fault.load(Ordering::Acquire),
-            MonitorUnavailableSnafu
-        );
-        inner.reconcile();
-        inner.session.start_group().context(CaptureSnafu)
+    /// Rejects active/paused groups and a stopped worker.
+    pub async fn select_team(&self, account_id: &str) -> Result<()> {
+        self.request(Action::Select(account_id.to_owned()))
+            .await
+            .map(|_| ())
     }
-
+    /// Reconciles existing files before locking the selected team into a new group.
     /// # Errors
-    /// Rejects paused groups, pending tasks, or mismatched group identities.
-    pub fn abandon_group(&self, group_id: GroupId) -> Result<()> {
-        let mut inner = self.lock()?;
-        ensure!(
-            inner.issue != Some(Issue::Monitor)
-                && !self.shared.monitor_fault.load(Ordering::Acquire),
-            MonitorUnavailableSnafu
-        );
-        inner.reconcile();
-        inner.session.abandon_group(group_id).context(CaptureSnafu)
+    /// Rejects unavailable monitoring, paused state and invalid group transitions.
+    pub async fn start_group(&self) -> Result<GroupId> {
+        match self.request(Action::Start).await? {
+            Response::Group(id) => Ok(id),
+            Response::Done => InvariantSnafu.fail(),
+        }
     }
-
-    /// Explicitly assigns an unowned archive to the active group after review.
-    ///
+    /// Explicitly abandons an unconfirmed group without deleting its source images.
     /// # Errors
-    /// Rejects absent/paused/mismatched groups or photos already assigned.
-    pub fn assign_reviewed(&self, photo_id: Uuid, group_id: GroupId) -> Result<()> {
-        let mut inner = self.lock()?;
-        ensure!(!inner.session.is_paused(), NotReviewableSnafu);
-        let group = inner.session.group().context(NotReviewableSnafu)?;
-        ensure!(group.id() == group_id, NotReviewableSnafu);
-        let photo = inner
-            .photos
-            .iter_mut()
-            .find(|photo| photo.id == photo_id && photo.group_id.is_none())
-            .context(NotReviewableSnafu)?;
-        photo.group_id = Some(group_id);
+    /// Rejects pending work, stale identities and unavailable monitoring.
+    pub async fn abandon_group(&self, id: GroupId) -> Result<()> {
+        self.request(Action::Abandon(id)).await.map(|_| ())
+    }
+    /// Assigns an unowned archive after photographer review.
+    /// # Errors
+    /// Rejects paused groups and invalid or already-owned archives.
+    pub async fn assign_reviewed(&self, photo: Uuid, group: GroupId) -> Result<()> {
+        self.request(Action::Assign(photo, group)).await.map(|_| ())
+    }
+    /// Stops accepting new work and waits for running blocking copies and cleanup.
+    /// # Errors
+    /// Reports a failed worker task.
+    pub async fn shutdown(mut self) -> Result<()> {
+        self.stop.cancel();
+        if let Some(worker) = self.worker.take() {
+            worker.await.context(WorkerSnafu)?;
+        }
         Ok(())
     }
 }
-
 impl Drop for HotFolder {
     fn drop(&mut self) {
-        self.shared.stopped.store(true, Ordering::Release);
-        let _ = self.wake.try_send(());
-        if let Some(worker) = self.worker.take()
-            && worker.join().is_err()
-        {
-            tracing::error!("热文件夹后台线程异常退出");
-        }
+        self.stop.cancel();
     }
 }
 
-fn watch(path: &Path, shared: &Arc<Shared>, wake: &SyncSender<()>) -> Result<RecommendedWatcher> {
-    let shared = Arc::clone(shared);
-    let wake = wake.clone();
-    let mut watcher = notify::recommended_watcher(move |result: notify::Result<notify::Event>| {
-        if let Ok(event) = &result {
-            // Reading/hashing a file must not create a self-sustaining event loop.
-            if matches!(event.kind, notify::EventKind::Access(_)) {
-                return;
-            }
-        }
-        shared.notifications.fetch_add(1, Ordering::Relaxed);
-        if !result.as_ref().is_ok_and(|event| !event.need_rescan()) {
-            shared.monitor_fault.store(true, Ordering::Release);
-        }
-        // Bounded notifications are hints. A full channel is covered by scanning.
-        let _ = wake.try_send(());
+async fn prepare_archive(inner: Inner) -> Result<Inner> {
+    tokio::task::spawn_blocking(move || {
+        ensure!(
+            fs::read_dir(&inner.hot_folder)
+                .context(IoSnafu)?
+                .next()
+                .is_none(),
+            NotEmptySnafu
+        );
+        fs::create_dir_all(&inner.archive).context(IoSnafu)?;
+        ensure!(
+            fs::canonicalize(&inner.archive).context(IoSnafu)? == inner.archive,
+            UnsafePathSnafu
+        );
+        Ok(inner)
     })
-    .context(WatchSnafu)?;
-    watcher
-        .watch(path, RecursiveMode::NonRecursive)
-        .context(WatchSnafu)?;
-    Ok(watcher)
+    .await
+    .context(WorkerSnafu)
+    .and_then(|result| result)
 }
 
-fn run_worker(
-    shared: &Arc<Shared>,
-    receiver: &mpsc::Receiver<()>,
-    wake: &SyncSender<()>,
-    watcher: RecommendedWatcher,
-    mut created: Option<SystemTime>,
+async fn run_worker(
+    inner: Inner,
+    mut commands: mpsc::Receiver<Command>,
+    mut events: mpsc::Receiver<()>,
+    wake: mpsc::Sender<()>,
+    publish: watch::Sender<HotFolderSnapshot>,
+    stop: CancellationToken,
+    ready: oneshot::Sender<Result<()>>,
 ) {
-    let mut watcher = Some(watcher);
-    while !shared.stopped.load(Ordering::Acquire) {
-        let _ = receiver.recv_timeout(INTERVAL);
-        if shared.stopped.load(Ordering::Acquire) {
-            break;
+    let monitor = match NativeMonitor::open(&inner.hot_folder, wake.clone())
+        .await
+        .context(MonitorSnafu)
+    {
+        Ok(monitor) => monitor,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return;
         }
-        let Ok(mut inner) = shared.inner.lock() else {
-            tracing::error!("热文件夹后台锁失效");
+    };
+    let initialized = prepare_archive(inner).await;
+    let mut inner = match initialized {
+        Ok(inner) => inner,
+        Err(error) => {
+            let _ = ready.send(Err(error));
+            return;
+        }
+    };
+    let _ = ready.send(Ok(()));
+    let mut monitor = Some(monitor);
+    let mut notifications = 0;
+    let mut stamp = fs::metadata(&inner.hot_folder)
+        .ok()
+        .and_then(|m| m.created().ok());
+    let mut timer = tokio::time::interval(INTERVAL);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        let command = tokio::select! {
+            biased;
+            ()=stop.cancelled()=>break,
+            event=events.recv()=>{
+                if event.is_none(){break;}
+                notifications+=1;
+                if let Some(current)=&monitor && current.refresh().await.is_err(){monitor=None;}
+                None
+            },
+            command=commands.recv()=>{if command.is_none(){break;}command},
+            _=timer.tick()=>None,
+        };
+        let folder = inner.hot_folder.clone();
+        let current = tokio::task::spawn_blocking(move || {
+            fs::metadata(folder).ok().and_then(|m| m.created().ok())
+        })
+        .await;
+        let Ok(current) = current else {
             break;
         };
-        let stamp = fs::metadata(&inner.hot_folder)
-            .ok()
-            .and_then(|meta| meta.created().ok());
-        if shared.monitor_fault.swap(false, Ordering::AcqRel) || stamp != created {
-            watcher = None;
+        if current != stamp || current.is_none() {
+            monitor = None;
             inner.uncertain = true;
-            inner.fail(Issue::Monitor);
-            created = stamp;
-            shared.changed.notify_all();
-            continue;
+            inner.fail(IngestionState::RecoveringMonitor);
+            stamp = current;
         }
-        if watcher.is_none() {
-            if let Ok(replacement) = watch(&inner.hot_folder, shared, wake) {
-                watcher = Some(replacement);
-            } else {
-                inner.fail(Issue::Monitor);
-                shared.changed.notify_all();
-                continue;
+        if monitor.is_none() {
+            inner.fail(IngestionState::RecoveringMonitor);
+            if let Ok(replacement) = NativeMonitor::open(&inner.hot_folder, wake.clone()).await {
+                monitor = Some(replacement);
             }
         }
-        inner.reconcile();
-        shared.changed.notify_all();
+        let available = monitor.is_some();
+        let worked = tokio::task::spawn_blocking(move || {
+            if let Some(command) = command {
+                let result = inner.apply(command.action, available);
+                let _ = command.reply.send(result);
+            } else if available {
+                let _ = inner.apply(Action::Scan, true);
+            }
+            inner
+        })
+        .await;
+        let Ok(returned) = worked else {
+            tracing::error!("Photo ingestion blocking task failed");
+            let mut stopped = publish.borrow().clone();
+            stopped.state = IngestionState::Stopped;
+            stopped.paused = true;
+            publish.send_replace(stopped);
+            return;
+        };
+        inner = returned;
+        publish.send_replace(inner.snapshot(notifications));
     }
+    drop(monitor);
+    inner.state = IngestionState::Stopped;
+    inner.session.pause();
+    publish.send_replace(inner.snapshot(notifications));
 }
-
 impl Inner {
-    fn snapshot(&self, notifications: u64) -> Snapshot {
-        Snapshot {
+    fn snapshot(&self, notifications: u64) -> HotFolderSnapshot {
+        HotFolderSnapshot {
             session_id: self.session.id(),
             group_id: self.session.group().map(capture::Group::id),
-            account_id: self
-                .session
-                .group()
-                .map(|group| group.account_id().to_owned()),
+            account_id: self.session.group().map(|g| g.account_id().to_owned()),
             pending_tasks: self
                 .session
                 .group()
                 .map_or(0, capture::Group::pending_tasks),
             paused: self.session.is_paused(),
-            issue: self.issue,
+            state: self.state,
             photos: self.photos.clone(),
             notifications,
         }
     }
-
-    fn fail(&mut self, issue: Issue) {
-        if self.issue != Some(issue) {
-            tracing::warn!(?issue, "收图暂停，等待自动重试；禁止切组");
+    fn fail(&mut self, state: IngestionState) {
+        if self.state != state {
+            tracing::warn!(
+                ?state,
+                "Photo ingestion paused; group transitions are blocked"
+            );
         }
-        self.issue = Some(issue);
+        self.state = state;
         self.session.pause();
     }
-
     fn reconcile(&mut self) {
         match self.scan() {
             Ok(()) => {
-                self.issue = None;
+                self.state = IngestionState::Running;
                 self.session.resume();
                 self.uncertain = false;
             }
             Err(error) => {
-                // Error sources stay typed here, never log paths or image bytes.
-                let issue = if matches!(error, Error::UnsafePath | Error::NotEmpty) {
-                    Issue::Directory
+                let state = if matches!(
+                    error,
+                    Error::UnsafePath
+                        | Error::Archive {
+                            source: ArchiveError::UnsafePath
+                        }
+                ) {
+                    IngestionState::PausedDirectory
                 } else {
-                    Issue::Archive
+                    IngestionState::PausedArchive
                 };
-                self.fail(issue);
+                tracing::warn!(error=%error,"Photo ingestion reconciliation failed");
+                self.fail(state);
                 self.uncertain = true;
             }
         }
     }
-
+    fn apply(&mut self, action: Action, monitor_available: bool) -> Result<Response> {
+        match action {
+            Action::Select(account) => {
+                self.session.select_team(&account).context(CaptureSnafu)?;
+            }
+            Action::Start => {
+                ensure!(monitor_available, MonitorUnavailableSnafu);
+                self.reconcile();
+                return self
+                    .session
+                    .start_group()
+                    .map(Response::Group)
+                    .context(CaptureSnafu);
+            }
+            Action::Abandon(id) => {
+                ensure!(monitor_available, MonitorUnavailableSnafu);
+                self.reconcile();
+                self.session.abandon_group(id).context(CaptureSnafu)?;
+            }
+            Action::Assign(photo, group) => {
+                ensure!(
+                    !self.session.is_paused()
+                        && self.session.group().is_some_and(|g| g.id() == group),
+                    NotReviewableSnafu
+                );
+                self.photos
+                    .iter_mut()
+                    .find(|p| p.id == photo && p.group_id.is_none())
+                    .context(NotReviewableSnafu)?
+                    .group_id = Some(group);
+            }
+            Action::Scan => self.reconcile(),
+        }
+        Ok(Response::Done)
+    }
     fn scan(&mut self) -> Result<()> {
         ensure!(
             fs::canonicalize(&self.hot_folder).context(IoSnafu)? == self.hot_folder,
@@ -454,7 +509,7 @@ impl Inner {
         // Disappearing pending sources are never silently declared completed.
         ensure!(
             self.pending.keys().all(|path| present.contains(path)),
-            ChangedSnafu
+            InvariantSnafu
         );
         Ok(())
     }
@@ -462,9 +517,11 @@ impl Inner {
     fn observe(&mut self, path: &Path) -> Result<()> {
         let version = match archive::probe(path, &self.hot_folder) {
             Ok(version) => Some(version),
-            Err(Error::Changed) => None,
-            Err(Error::Io { source }) if matches!(source.raw_os_error(), Some(32 | 33)) => None,
-            Err(error) => return Err(error),
+            Err(ArchiveError::Changed) => None,
+            Err(ArchiveError::Io { source }) if matches!(source.raw_os_error(), Some(32 | 33)) => {
+                None
+            }
+            Err(error) => return Err(ArchiveSnafu.into_error(error)),
         };
         if let Some(version) = &version
             && self.seen.get(path).is_some_and(|(seen, _)| seen == version)
@@ -504,7 +561,7 @@ impl Inner {
             );
             return Ok(());
         }
-        let pending = self.pending.get_mut(path).context(WorkerSnafu)?;
+        let pending = self.pending.get_mut(path).context(InvariantSnafu)?;
         if pending.version != version || version.is_none() {
             pending.version = version;
             pending.stable_since = Instant::now();
@@ -513,16 +570,16 @@ impl Inner {
         if pending.stable_since.elapsed() < INTERVAL {
             return Ok(());
         }
-        let version = version.context(ChangedSnafu)?;
+        let version = version.ok_or_else(|| ArchiveSnafu.into_error(ArchiveError::Changed))?;
         let destination = match archive::copy(path, &self.hot_folder, &self.archive, &version) {
             Ok(path) => path,
-            Err(Error::Changed) => {
+            Err(ArchiveError::Changed) => {
                 pending.version = None;
                 return Ok(());
             }
-            Err(error) => return Err(error),
+            Err(error) => return Err(ArchiveSnafu.into_error(error)),
         };
-        let pending = self.pending.remove(path).context(WorkerSnafu)?;
+        let pending = self.pending.remove(path).context(InvariantSnafu)?;
         if let (Some(group), Some(task)) = (pending.owner, pending.task) {
             self.session
                 .task_finished(group, task)

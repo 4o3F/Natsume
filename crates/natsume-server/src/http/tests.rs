@@ -1,3 +1,4 @@
+mod photo;
 mod print;
 mod print_domjudge;
 mod request_bodies;
@@ -304,6 +305,10 @@ impl TestDatabase {
 impl Drop for TestDatabase {
     fn drop(&mut self) {
         let _documents_result = fs::remove_dir_all(self.documents_path());
+        let _photo_result = fs::remove_dir_all(
+            self.documents_path()
+                .with_extension("photo-initializations"),
+        );
         let _database_result = fs::remove_file(&self.path);
         let _wal_result = fs::remove_file(format!("{}-wal", self.path.display()));
         let _shm_result = fs::remove_file(format!("{}-shm", self.path.display()));

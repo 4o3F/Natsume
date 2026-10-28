@@ -2,6 +2,14 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 pub(crate) enum TestError {
+    #[snafu(context(false), display("test Photo enrollment failed"))]
+    PhotoEnrollment {
+        source: crate::component::photo::EnrollmentError,
+    },
+    #[snafu(context(false), display("test Photo initialization failed"))]
+    PhotoInitialization {
+        source: crate::component::photo::InitializationError,
+    },
     #[snafu(context(false), display("test filesystem operation failed"))]
     Io { source: std::io::Error },
     #[snafu(context(false), display("test database startup failed"))]

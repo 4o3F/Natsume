@@ -24,6 +24,53 @@ pub(in crate::component::contest) fn list_seats(
         .map_err(PersistenceError::from)
 }
 
+pub(super) fn photo_roster(
+    transaction: &mut Transaction<'_>,
+) -> Result<Vec<super::PhotoTeam>, PersistenceError> {
+    use crate::diesel_schema::{account_mappings, organizations, teams};
+    use diesel::JoinOnDsl as _;
+    type Row = (String, String, i64, String, String, String, String);
+    let rows: Vec<Row> = teams::table
+        .inner_join(accounts::table)
+        .inner_join(organizations::table)
+        .inner_join(account_mappings::table.on(account_mappings::account_id.eq(teams::account_id)))
+        .inner_join(seats::table.on(seats::seat_id.eq(account_mappings::seat_id)))
+        .select((
+            accounts::account_id,
+            accounts::domjudge_username,
+            teams::organization_id,
+            organizations::name_zh,
+            organizations::name_en,
+            teams::name_zh,
+            teams::name_en,
+        ))
+        .order(accounts::account_id)
+        .load(transaction.connection())
+        .map_err(PersistenceError::from)?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                account_id,
+                account,
+                organization_id,
+                school_name_zh,
+                school_name_en,
+                team_name_zh,
+                team_name_en,
+            )| super::PhotoTeam {
+                account_id,
+                account,
+                organization_id,
+                school_name_zh,
+                school_name_en,
+                team_name_zh,
+                team_name_en,
+            },
+        )
+        .collect())
+}
+
 pub(in crate::component::contest) fn list_accounts(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<AccountFacts>, PersistenceError> {

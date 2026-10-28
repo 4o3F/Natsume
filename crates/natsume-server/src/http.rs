@@ -49,7 +49,9 @@ async fn private_namespace_no_store(request: Request, next: Next) -> Response {
     let private = path == "/api/v2/operator"
         || path.starts_with("/api/v2/operator/")
         || path == "/api/v2/print"
-        || path.starts_with("/api/v2/print/");
+        || path.starts_with("/api/v2/print/")
+        || path == "/api/v2/photo"
+        || path.starts_with("/api/v2/photo/");
     let mut response = next.run(request).await;
     if private {
         response
@@ -67,6 +69,7 @@ fn route_groups(state: &AppState) -> [Routes; 4] {
         handler::operator::public_routes(state.clone()),
         handler::contest::public_routes(),
         handler::print::public_routes(state.clone()),
+        handler::photo::enrollment_routes(),
     ]
     .into_iter()
     .flatten()
@@ -81,6 +84,7 @@ fn route_groups(state: &AppState) -> [Routes; 4] {
         handler::session::operator_routes(),
         handler::operator::operator_routes(),
         handler::print::operator_routes(),
+        handler::photo::operator_routes(),
     ]
     .into_iter()
     .flatten()

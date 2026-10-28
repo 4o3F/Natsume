@@ -5,7 +5,7 @@ use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu, ensure};
 
 /// The minimum team facts used by the offline client.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Team {
     pub account_id: String,
@@ -22,15 +22,15 @@ pub struct Team {
 
 #[derive(Debug, Snafu)]
 pub enum Error {
-    #[snafu(display("无法读取名单文件"))]
+    #[snafu(display("cannot read roster file"))]
     Read { source: std::io::Error },
-    #[snafu(display("名单 JSON 格式或字段不符合要求"))]
+    #[snafu(display("roster JSON format or fields are invalid"))]
     Json { source: serde_json::Error },
-    #[snafu(display("名单不能为空"))]
+    #[snafu(display("roster must contain at least one team"))]
     Empty,
-    #[snafu(display("第 {row} 支队伍的 {field} 不能为空"))]
+    #[snafu(display("team row {row} requires a nonempty {field}"))]
     MissingIdentity { row: usize, field: &'static str },
-    #[snafu(display("第 {row} 支队伍的 {field} 与其他队伍重复"))]
+    #[snafu(display("team row {row} duplicates {field}"))]
     DuplicateIdentity { row: usize, field: &'static str },
 }
 

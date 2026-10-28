@@ -152,6 +152,40 @@ diesel::table! {
 }
 
 diesel::table! {
+    photo_initializations (initialization_id) {
+        initialization_id -> Text,
+        source_id -> Text,
+        manifest_json -> Text,
+        manifest_sha256 -> Text,
+        completion_request_id -> Nullable<Text>,
+        completed_at_unix_ms -> Nullable<BigInt>,
+    }
+}
+
+diesel::table! {
+    photo_server_metadata (singleton) {
+        singleton -> Integer,
+        dataset_id -> Text,
+    }
+}
+
+diesel::table! {
+    photo_sources (source_id) {
+        source_id -> Text,
+        name -> Text,
+        state -> Text,
+        enrollment_id -> Nullable<Text>,
+        public_key -> Nullable<Text>,
+        confirmed -> Integer,
+        pairing_code_hash -> Nullable<Binary>,
+        pairing_expires_at_unix_ms -> Nullable<BigInt>,
+        token_hash -> Nullable<Binary>,
+        token_expires_at_unix_ms -> Nullable<BigInt>,
+        created_at_unix_ms -> BigInt,
+    }
+}
+
+diesel::table! {
     print_attempts (attempt_id) {
         attempt_id -> Text,
         ready_sequence -> BigInt,
@@ -301,6 +335,7 @@ diesel::joinable!(device_session_targets -> devices (device_id));
 diesel::joinable!(gateway_credentials -> devices (device_id));
 diesel::joinable!(operator_invitations -> operator_accounts (issuer_operator_id));
 diesel::joinable!(operator_sessions -> operator_accounts (operator_id));
+diesel::joinable!(photo_initializations -> photo_sources (source_id));
 diesel::joinable!(print_attempts -> print_jobs (ready_sequence));
 diesel::joinable!(print_attempts -> print_printers (printer_id));
 diesel::joinable!(print_claims -> print_attempts (attempt_id));
@@ -327,6 +362,9 @@ diesel::allow_tables_to_appear_in_same_query!(
     operator_sessions,
     organizations,
     pending_import_candidate,
+    photo_initializations,
+    photo_server_metadata,
+    photo_sources,
     print_attempts,
     print_claims,
     print_documents,

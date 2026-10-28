@@ -7,6 +7,7 @@ enum TestError {
     Roster { source: crate::roster::Error },
     Capture { source: capture::Error },
     HotFolder { source: Error },
+    Archive { source: archive::ArchiveError },
     Fixture,
 }
 type TestResult<T = ()> = std::result::Result<T, TestError>;
@@ -28,7 +29,7 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
             pending: BTreeMap::new(),
             seen: BTreeMap::new(),
             photos: Vec::new(),
-            issue: None,
+            state: IngestionState::Running,
             uncertain: false,
         },
     ))
@@ -82,11 +83,11 @@ fn replacement_between_probe_and_copy_discards_temporary_file() -> TestResult {
     let (_directory, inner) = fixture()?;
     let path = inner.hot_folder.join("one.png");
     fs::write(&path, b"before").context(IoSnafu)?;
-    let version = archive::probe(&path, &inner.hot_folder).context(HotFolderSnafu)?;
+    let version = archive::probe(&path, &inner.hot_folder).context(ArchiveSnafu)?;
     fs::write(&path, b"after replacement").context(IoSnafu)?;
     assert!(matches!(
         archive::copy(&path, &inner.hot_folder, &inner.archive, &version),
-        Err(Error::Changed)
+        Err(archive::ArchiveError::Changed)
     ));
     assert_eq!(fs::read_dir(&inner.archive).context(IoSnafu)?.count(), 0);
     assert_eq!(fs::read(path).context(IoSnafu)?, b"after replacement");
@@ -141,7 +142,7 @@ fn source_byte_limit_is_checked_before_allocating_source_contents() -> TestResul
     drop(file);
     assert!(matches!(
         archive::probe(&path, &inner.hot_folder),
-        Err(Error::Limit)
+        Err(archive::ArchiveError::Limit)
     ));
     assert_eq!(fs::read_dir(&inner.archive).context(IoSnafu)?.count(), 0);
     Ok(())
@@ -152,12 +153,12 @@ fn corrupt_existing_archive_is_never_overwritten() -> TestResult {
     let (_directory, inner) = fixture()?;
     let source = inner.hot_folder.join("one.png");
     fs::write(&source, b"original image").context(IoSnafu)?;
-    let version = archive::probe(&source, &inner.hot_folder).context(HotFolderSnafu)?;
+    let version = archive::probe(&source, &inner.hot_folder).context(ArchiveSnafu)?;
     let destination = inner.archive.join(format!("{}.source", version.sha256));
     fs::write(&destination, b"corrupt archive").context(IoSnafu)?;
     assert!(matches!(
         archive::copy(&source, &inner.hot_folder, &inner.archive, &version),
-        Err(Error::InvalidArchive)
+        Err(archive::ArchiveError::InvalidArchive)
     ));
     assert_eq!(fs::read(destination).context(IoSnafu)?, b"corrupt archive");
     assert_eq!(fs::read_dir(&inner.archive).context(IoSnafu)?.count(), 1);

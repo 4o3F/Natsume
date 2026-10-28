@@ -11,6 +11,7 @@ use crate::{
         home::HomeComponent,
         import::ImportComponent,
         operator::OperatorComponent,
+        photo::PhotoComponent,
         power::PowerControlComponent,
         print::PrintComponent,
         provisioning::ProvisioningComponent,
@@ -32,6 +33,7 @@ use crate::{
 pub(crate) struct ServerState {
     operator: OperatorComponent,
     print: PrintComponent,
+    photo: PhotoComponent,
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: Arc<ProvisioningComponent>,
@@ -82,6 +84,7 @@ impl ServerState {
             vault,
             gateway,
             config.organization_logos_path().to_path_buf(),
+            config.photo_initializations_path().to_path_buf(),
         ))
     }
 
@@ -91,6 +94,7 @@ impl ServerState {
         vault: VaultSession,
         gateway: GatewayComponent,
         logos: std::path::PathBuf,
+        photo_directory: std::path::PathBuf,
     ) -> Self {
         let vault = Arc::new(vault);
         let provisioning = Arc::new(ProvisioningComponent::new());
@@ -112,6 +116,7 @@ impl ServerState {
         Self {
             operator: OperatorComponent::new(database.clone()),
             print,
+            photo: PhotoComponent::new(database.clone(), photo_directory),
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
             target_submission: TargetSubmissionComponent::new(database.clone()),
             import: ImportComponent::new(database, vault),
@@ -130,6 +135,10 @@ impl ServerState {
 
     pub(crate) const fn print(&self) -> &PrintComponent {
         &self.print
+    }
+
+    pub(crate) const fn photo(&self) -> &PhotoComponent {
+        &self.photo
     }
 
     pub(crate) const fn operator(&self) -> &OperatorComponent {
@@ -234,10 +243,16 @@ pub(crate) mod tests {
         })?;
         let gateway =
             GatewayComponent::for_test(database.clone()).map_err(map_gateway_load_error)?;
+        let photo_directory = documents.with_extension("photo-initializations");
         let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
             .map_err(|source| ServerStateError::PrintStorage { source })?;
         Ok(ServerState::from_parts(
-            database, print, vault, gateway, logos,
+            database,
+            print,
+            vault,
+            gateway,
+            logos,
+            photo_directory,
         ))
     }
 }
