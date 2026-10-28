@@ -385,13 +385,18 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
     const calls = await Deno.readTextFile(resolve(directory, "calls.log"));
     assert(
       calls ===
-        "cargo clippy -p natsume-server --all-targets --all-features --frozen -- -D warnings\n",
+        "cargo clippy -p natsume-server -p natsume-server-setup --all-targets --all-features --frozen -- -D warnings\n",
       `Unexpected Rust commands: ${calls}`,
     );
     const webLog = resolve(directory, "web/calls.log");
     assert(!await exists(webLog), "Server repeated the Web compile check");
     const tested = await command("tools/build.ts", "test", "server");
     assert(tested.success, new TextDecoder().decode(tested.stderr));
+    assert(
+      await Deno.readTextFile(resolve(directory, "calls.log")) ===
+        `${calls}cargo test -p natsume-server -p natsume-server-setup --all-features --frozen\n`,
+      "Server tests omitted a crate or repeated a Rust command",
+    );
     assert(!await exists(webLog), "Server repeated Web unit tests");
     const web = await command("tools/build.ts", "check", "web");
     assert(web.success, new TextDecoder().decode(web.stderr));

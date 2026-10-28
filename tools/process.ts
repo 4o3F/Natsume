@@ -25,7 +25,7 @@ export const packageTargets = {
     platform: "linux",
     rustPlatforms: ["linux"],
     format: "deb",
-    crates: ["natsume-server"],
+    crates: ["natsume-server", "natsume-server-setup"],
     binaries: ["natsume-server"],
     assets: ["nfpm"],
     web: true,
