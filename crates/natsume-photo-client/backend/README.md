@@ -34,7 +34,7 @@ cargo test -p natsume-photo-client --locked
 
 依次 await `HotFolder::prepare`、`select_team`、`start_group`。准备时先注册通知，再验证热文件夹为空。目录与工作区不得互相包含。消息通道处理操作，Tokio 定时器和原生通知触发同一对账入口；WinRT 对象在一个 Tokio 管理的线程中创建、使用和释放，不添加 unsafe 或手写 Send。
 
-`IngestionState` 区分 Running、RecoveringMonitor、PausedDirectory、PausedArchive、Stopped。`Error` 表示一次调用失败，状态表示持续运行情况。文件句柄共享限制防止读取正在写入的照片；通知可能晚于写入，周期扫描仍会发现待处理任务。复制、目录或监控故障阻止切组并重试，身份和任务不丢失。
+`IngestionState` 区分 Running、RecoveringMonitor、PausedDirectory、PausedArchive、Stopped。`Error` 表示一次调用失败，状态表示持续运行情况。文件句柄共享限制防止读取正在写入的照片；通知可能晚于写入，周期扫描仍会发现待处理任务。复制、目录或监控故障阻止切组并重试，身份和任务不丢失。完整目录枚举成功后发现 pending 源消失，则解除对应任务，在 `missing_sources: Vec<MissingSource>` 记录源路径与组身份；不创建虚假 ArchivedPhoto。同轮出现的新路径先留待核对，目录失效仍暂停。
 
 `snapshot()` 返回 `HotFolderSnapshot`；`wait_until().await` 等待后台发布，不主动扫描。显式 `shutdown().await` 等待运行中的文件任务及监听清理，Drop 只取消。未确认会话和组只在内存中，重启不恢复；源照片永不移动或删除，归属不确定的副本需要人工核对。
 

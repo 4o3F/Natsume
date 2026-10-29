@@ -27,6 +27,7 @@ use crate::{
 type TestResult = Result<(), TestError>;
 
 mod client_interop;
+mod recovery;
 
 #[tokio::test]
 async fn invalid_persisted_source_state_cannot_be_silently_reenabled() -> TestResult {
@@ -421,7 +422,7 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
     assert!(matches!(
         f.state
             .photo()
-            .issue_code(f.source.clone(), PendingEnrollment::Replace)
+            .issue_code(f.source.clone(), PendingEnrollment::Preserve)
             .await,
         Err(EnrollmentError::Conflict)
     ));

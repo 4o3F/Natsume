@@ -288,11 +288,14 @@ impl PhotoComponent {
                 let source = db::source(tx, &id)?.context(NotFoundSnafu)?;
                 ensure!(
                     matches!(source.state, SourceState::Enabled)
-                        && !source.confirmed
+                        && !db::initialization_completed(tx, &id)?
                         && (source.enrollment_id.is_none()
                             || matches!(pending, PendingEnrollment::Replace)),
                     ConflictSnafu
                 );
+                if matches!(pending, PendingEnrollment::Replace) {
+                    db::discard_uncompleted_initialization(tx, &id)?;
+                }
                 let expires = db::now(tx)? + CODE_LIFETIME;
                 db::issue_code(tx, &id, &digest, expires)?;
                 Ok(PhotoPairingCode {

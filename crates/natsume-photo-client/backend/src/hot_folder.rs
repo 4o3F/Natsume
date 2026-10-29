@@ -71,6 +71,12 @@ pub struct ArchivedPhoto {
     /// None requires explicit photographer review.
     pub group_id: Option<GroupId>,
 }
+/// A source that vanished before archival, retained for photographer review.
+#[derive(Debug, Clone)]
+pub struct MissingSource {
+    pub source: PathBuf,
+    pub group_id: Option<GroupId>,
+}
 /// Owned operator facts; this is not the contestant presentation state.
 #[derive(Debug, Clone)]
 pub struct HotFolderSnapshot {
@@ -81,6 +87,7 @@ pub struct HotFolderSnapshot {
     pub paused: bool,
     pub state: IngestionState,
     pub photos: Vec<ArchivedPhoto>,
+    pub missing_sources: Vec<MissingSource>,
     pub notifications: u64,
 }
 struct Pending {
@@ -96,6 +103,7 @@ struct Inner {
     pending: BTreeMap<PathBuf, Pending>,
     seen: BTreeMap<PathBuf, (archive::SourceFileVersion, Option<GroupId>)>,
     photos: Vec<ArchivedPhoto>,
+    missing_sources: Vec<MissingSource>,
     state: IngestionState,
     uncertain: bool,
 }
@@ -150,6 +158,7 @@ impl HotFolder {
                 pending: BTreeMap::new(),
                 seen: BTreeMap::new(),
                 photos: Vec::new(),
+                missing_sources: Vec::new(),
                 state: IngestionState::Running,
                 uncertain: false,
             })
@@ -408,6 +417,7 @@ impl Inner {
             paused: self.session.is_paused(),
             state: self.state,
             photos: self.photos.clone(),
+            missing_sources: self.missing_sources.clone(),
             notifications,
         }
     }
@@ -503,14 +513,34 @@ impl Inner {
             if !supported {
                 continue;
             }
-            present.insert(path.clone());
+            present.insert(path);
+        }
+        // Only a complete, valid directory listing can establish source loss.
+        // Retire losses before observing new names, so renamed files need review.
+        let missing: Vec<_> = self
+            .pending
+            .keys()
+            .filter(|path| !present.contains(*path))
+            .cloned()
+            .collect();
+        for path in missing {
+            let pending = self.pending.get(&path).context(InvariantSnafu)?;
+            if let (Some(group), Some(task)) = (pending.owner, pending.task) {
+                self.session
+                    .task_finished(group, task)
+                    .context(CaptureSnafu)?;
+            }
+            let pending = self.pending.remove(&path).context(InvariantSnafu)?;
+            tracing::warn!("Photo source vanished before archival; photographer review required");
+            self.missing_sources.push(MissingSource {
+                source: path,
+                group_id: pending.owner,
+            });
+            self.uncertain = true;
+        }
+        for path in present {
             self.observe(&path)?;
         }
-        // Disappearing pending sources are never silently declared completed.
-        ensure!(
-            self.pending.keys().all(|path| present.contains(path)),
-            InvariantSnafu
-        );
         Ok(())
     }
 

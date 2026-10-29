@@ -384,3 +384,57 @@ async fn unknown_extensions_are_not_imported_but_remain_in_source_folder() -> Re
     assert!(fixture.hot.join("camera.raw").is_file());
     Ok(())
 }
+
+#[tokio::test]
+async fn worker_reports_deleted_and_renamed_pending_sources_without_stalling() -> Result {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    for rename in [false, true] {
+        let fixture = fixture().await?;
+        let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+            .await
+            .context(HotFolderSnafu)?;
+        folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+        let group = folder.start_group().await.context(HotFolderSnafu)?;
+        let source = fixture.hot.join("unfinished.jpg");
+        // Permit external rename/deletion, but keep the writer open so archival
+        // cannot complete before the test observes the pending task.
+        let mut writer = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .share_mode(1 | 4)
+            .open(&source)
+            .context(IoSnafu)?;
+        writer
+            .write_all(b"unfinished source bytes")
+            .context(IoSnafu)?;
+        writer.flush().context(IoSnafu)?;
+        wait(&folder, |s| s.pending_tasks == 1).await?;
+        let renamed = fixture.hot.join("renamed.jpg");
+        if rename {
+            fs::rename(&source, &renamed).context(IoSnafu)?;
+        } else {
+            fs::remove_file(&source).context(IoSnafu)?;
+        }
+        drop(writer);
+        let loss = wait(&folder, |s| s.missing_sources.len() == 1).await?;
+        assert_eq!(
+            loss.missing_sources[0].source.file_name(),
+            source.file_name()
+        );
+        assert_eq!(loss.missing_sources[0].group_id, Some(group));
+        assert_eq!(loss.pending_tasks, 0);
+        if rename {
+            let archived = wait(&folder, |s| s.photos.len() == 1).await?;
+            assert!(archived.photos[0].group_id.is_none());
+            assert!(renamed.is_file());
+        }
+        folder.abandon_group(group).await.context(HotFolderSnafu)?;
+        folder.select_team(TEAM_B).await.context(HotFolderSnafu)?;
+        let next = folder.start_group().await.context(HotFolderSnafu)?;
+        assert_ne!(next, group);
+        folder.shutdown().await.context(HotFolderSnafu)?;
+        let remaining_sources = fs::read_dir(&fixture.hot).context(IoSnafu)?.count();
+        assert_eq!(remaining_sources, usize::from(rename));
+    }
+    Ok(())
+}

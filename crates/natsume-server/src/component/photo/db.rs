@@ -183,6 +183,20 @@ pub(super) fn issue_code(
     Ok(())
 }
 
+pub(super) fn discard_uncompleted_initialization(
+    tx: &mut Transaction<'_>,
+    source: &str,
+) -> Result<(), PersistenceError> {
+    diesel::delete(
+        initializations::table
+            .filter(initializations::source_id.eq(source))
+            .filter(initializations::completed_at_unix_ms.is_null()),
+    )
+    .execute(tx.connection())
+    .map_err(PersistenceError::from)?;
+    Ok(())
+}
+
 pub(super) fn code_source(
     tx: &mut Transaction<'_>,
     hash: &[u8],
