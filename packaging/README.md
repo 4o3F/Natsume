@@ -26,6 +26,8 @@ Client installs Helper/Daemon/Agent and its package-owned runtime integration. I
 
 Use Linux amd64 with stable Deno at or above `.deno-version` within the same major, the repository Rust toolchain, Node/pnpm for Web, and native build dependencies. CI uses the exact Deno baseline; local newer stable releases in that major do not require downgrading. Preparation also needs curl, tar and xz; Server/wrapper packaging needs Debian `dpkg-dev` for `dpkg-shlibdeps`. No Python or globally installed nFPM is needed for this build path.
 
+Linux workspace and Client tests additionally require cargo-nextest **0.9.150**, installed with `cargo install cargo-nextest --version 0.9.150 --locked`. Helper tests use process isolation to avoid intermittent failures caused by fork inheriting flock descriptors; other crates retain `cargo test`, including documentation tests. `deno task test rust` and `deno task test client` first run Cargo tests excluding Helper, then run `cargo nextest run -p natsume-workstation-helper --all-features --frozen` with the same offline environment. Helper currently has no documentation tests or `tests/` directory. Missing nextest stops the task with installation guidance. CI installs the pinned runner only in Linux Shared checks before workspace tests; module delivery jobs do not repeat tests. Windows tests do not require nextest.
+
 ```sh
 deno task prepare                         # Download dependencies, tools and runtime assets
 deno task check                           # Script, Rust and Web compile checks

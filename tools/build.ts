@@ -161,9 +161,50 @@ async function build(): Promise<void> {
       ]);
     }
     if (rust) {
-      await run("cargo", ["test", ...packages, "--all-features", "--frozen"], {
-        env: environment,
-      });
+      const helper = "natsume-workstation-helper";
+      const testHelper = Deno.build.os === "linux" &&
+        (packages.includes("--workspace") || packages.includes(helper));
+      const testPackages = !testHelper
+        ? packages
+        : packages.includes("--workspace")
+        ? [...packages, "--exclude", helper]
+        : packages.filter((argument, index) =>
+          argument !== helper &&
+          !(argument === "-p" && packages[index + 1] === helper)
+        );
+      if (testHelper) {
+        try {
+          await run("cargo", ["nextest", "--version"], {
+            env: environment,
+            capture: true,
+          });
+        } catch (cause) {
+          throw new Error(
+            "Helper tests require cargo-nextest. Install it with: cargo install cargo-nextest --version 0.9.150 --locked",
+            { cause },
+          );
+        }
+      }
+      if (testPackages.length) {
+        await run("cargo", [
+          "test",
+          ...testPackages,
+          "--all-features",
+          "--frozen",
+        ], {
+          env: environment,
+        });
+      }
+      if (testHelper) {
+        await run("cargo", [
+          "nextest",
+          "run",
+          "-p",
+          helper,
+          "--all-features",
+          "--frozen",
+        ], { env: environment });
+      }
     }
     if (web) {
       await run("pnpm", ["test"], { cwd: resolve(root, "web"), env: offline });

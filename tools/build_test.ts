@@ -409,6 +409,86 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
   }
 });
 
+Deno.test("Linux Helper tests use nextest isolation and require its installation", async () => {
+  const { directory, command, env } = await fixture();
+  try {
+    const manifestPath = resolve(directory, "packaging/manifest.json");
+    const manifest = JSON.parse(await Deno.readTextFile(manifestPath));
+    const archive = resolve(
+      directory,
+      "target/build/downloads",
+      manifest.skia.filename,
+    );
+    await Deno.mkdir(resolve(archive, ".."), { recursive: true });
+    await Deno.writeTextFile(archive, "Skia fixture");
+    manifest.skia.sha256 = await sha256(archive);
+    await Deno.writeTextFile(manifestPath, JSON.stringify(manifest));
+    await Deno.writeTextFile(
+      resolve(directory, "Cargo.lock"),
+      `name = "skia-bindings"\nversion = "${manifest.skia.version}"\n`,
+    );
+    const prepared = await command("probe.ts", "record");
+    assert(prepared.success, new TextDecoder().decode(prepared.stderr));
+    const cargo = resolve(directory, "bin/cargo");
+    await Deno.writeTextFile(
+      cargo,
+      `#!/bin/sh
+printf '%s\\n' "$*|$CARGO_NET_OFFLINE|$SKIA_BINARIES_URL" >> calls.log
+if [ "$1 $2" = 'nextest --version' ] && [ "$NATSUME_TEST_MISSING_NEXTEST" = '1' ]; then exit 101; fi
+`,
+    );
+    await Deno.chmod(cargo, 0o755);
+    const calls = resolve(directory, "calls.log");
+    const skia =
+      `file://${directory}/target/build/downloads/skia-binaries-{key}.tar.gz`;
+    const helper = "natsume-workstation-helper";
+    for (
+      const target of ["rust", "client", "server", "shared", "print-domjudge"]
+    ) {
+      await Deno.writeTextFile(calls, "");
+      const result = await command("tools/build.ts", "test", target);
+      assert(result.success, new TextDecoder().decode(result.stderr));
+      const native = target === "rust" || target === "client";
+      const packages = target === "rust"
+        ? `--workspace --exclude ${helper}`
+        : (target === "shared"
+          ? ["natsume-print-client"]
+          : packageTargets[target as keyof typeof packageTargets].crates)
+          .filter((name) => name !== helper)
+          .map((name) => `-p ${name}`).join(" ");
+      const expected = [
+        ...(native ? ["nextest --version"] : []),
+        `test ${packages} --all-features --frozen`,
+        ...(native ? [`nextest run -p ${helper} --all-features --frozen`] : []),
+      ].map((call) => `${call}|true|${native ? skia : ""}\n`).join("");
+      const actual = await Deno.readTextFile(calls);
+      assert(
+        actual === expected,
+        `${target}: unexpected Cargo calls: ${actual}`,
+      );
+    }
+    env.NATSUME_TEST_MISSING_NEXTEST = "1";
+    for (const target of ["rust", "client"]) {
+      await Deno.writeTextFile(calls, "");
+      const result = await command("tools/build.ts", "test", target);
+      const stderr = new TextDecoder().decode(result.stderr);
+      assert(!result.success, `${target}: missing nextest was accepted`);
+      assert(
+        stderr.includes(
+          "cargo install cargo-nextest --version 0.9.150 --locked",
+        ),
+        stderr,
+      );
+      assert(
+        await Deno.readTextFile(calls) === `nextest --version|true|${skia}\n`,
+        `${target}: missing nextest fell back to cargo test`,
+      );
+    }
+  } finally {
+    await Deno.remove(directory, { recursive: true });
+  }
+});
+
 Deno.test("all package manifests preserve explicit Debian versions", async () => {
   const { directory, command } = await fixture();
   try {
@@ -757,6 +837,7 @@ Deno.test("CI checks both Rust platforms before its native delivery matrix and o
     const command of [
       "deno task check scripts",
       "deno task test scripts",
+      "cargo install cargo-nextest --version 0.9.150 --locked",
       "cargo install cargo-deny --version 0.20.2 --locked",
       "cargo deny check",
     ]
@@ -768,6 +849,15 @@ Deno.test("CI checks both Rust platforms before its native delivery matrix and o
       `Linux-only validation must not be duplicated on Windows: ${command}`,
     );
   }
+  const nextestInstall = checkSteps.findIndex((step) =>
+    step.run === "cargo install cargo-nextest --version 0.9.150 --locked"
+  );
+  assert(
+    nextestInstall >= 0 &&
+      nextestInstall <
+        checkSteps.findIndex((step) => step.run === "deno task test rust"),
+    "Linux must install pinned nextest before workspace tests",
+  );
   assert(
     checkSteps.some((step) =>
       step.run?.includes("tools/windows_test.ts") &&
