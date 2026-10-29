@@ -19,7 +19,7 @@ fn roster() -> TestResult<Roster> {
 }
 async fn unready() -> TestResult<(tempfile::TempDir, std::path::PathBuf, Database)> {
     let directory = tempfile::tempdir().context(IoSnafu)?;
-    let (root, database) = storage::create(directory.path().join("workspace"))
+    let (root, database, _owner) = storage::create(directory.path().join("workspace"))
         .await
         .context(StorageSnafu)?;
     Ok((directory, root, database))
@@ -29,7 +29,7 @@ async fn unready() -> TestResult<(tempfile::TempDir, std::path::PathBuf, Databas
 async fn incomplete_workspace_is_rejected() -> TestResult {
     let (_directory, root, _database) = unready().await?;
     assert!(matches!(
-        Workspace::open(&root).await,
+        Workspace::open_readonly(&root).await,
         Err(Error::Incomplete)
     ));
     Ok(())
@@ -65,7 +65,7 @@ async fn failed_roster_write_rolls_back_all_rows_and_ready_flag() -> TestResult 
         0
     );
     assert!(matches!(
-        Workspace::open(&root).await,
+        Workspace::open_readonly(&root).await,
         Err(Error::Incomplete)
     ));
     Ok(())
@@ -88,7 +88,7 @@ async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        Workspace::open(&root).await,
+        Workspace::open_readonly(&root).await,
         Err(Error::InvalidReadiness)
     ));
     database
@@ -104,7 +104,7 @@ async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        Workspace::open(&root).await,
+        Workspace::open_readonly(&root).await,
         Err(Error::Roster {
             source: crate::roster::Error::MissingIdentity { .. }
         })
@@ -117,7 +117,7 @@ async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        Workspace::open(&root).await,
+        Workspace::open_readonly(&root).await,
         Err(Error::Roster {
             source: crate::roster::Error::Empty
         })

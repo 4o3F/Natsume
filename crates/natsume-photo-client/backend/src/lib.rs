@@ -2,6 +2,7 @@
 #![cfg(windows)]
 
 pub mod capture;
+pub mod capture_session;
 mod diesel_schema;
 pub mod hot_folder;
 pub mod initialization;

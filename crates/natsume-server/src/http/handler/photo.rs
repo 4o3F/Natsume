@@ -32,10 +32,7 @@ pub(crate) struct PhotoSourceStateUpdate {
 }
 #[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PhotoPairingCodeRequest {
-    #[serde(default)]
-    replace_pending_enrollment: bool,
-}
+pub(crate) struct PhotoPairingCodeRequest {}
 #[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PhotoPairRequest {
@@ -68,6 +65,10 @@ pub(in crate::http) fn operator_routes() -> Routes {
             middleware::require_admin(post(issue_code)),
         ),
         (
+            "/photo/sources/{source_id}/reset-enrollment",
+            middleware::require_admin(post(reset_enrollment)),
+        ),
+        (
             "/photo/sources/{source_id}/state",
             middleware::require_admin(post(update_state)),
         ),
@@ -80,7 +81,7 @@ pub(in crate::http) fn enrollment_routes() -> Routes {
     vec![
         ("/photo/enrollment/pair", post(pair)),
         ("/photo/enrollment/confirm", post(confirm)),
-        ("/photo/client/initialization", get(initialization)),
+        ("/photo/client/initialization", post(initialization)),
         ("/photo/client/resources/{sha256}", get(resource)),
         ("/photo/client/initialization/complete", post(complete)),
     ]
@@ -129,15 +130,24 @@ async fn issue_code(
     Path(id): Path<String>,
     body: Result<Json<PhotoPairingCodeRequest>, JsonRejection>,
 ) -> Response {
-    let Ok(Json(body)) = body else {
+    let Ok(Json(_body)) = body else {
         return ApiError::invalid_request("photo_pairing_code_json").into_response();
     };
-    let pending = if body.replace_pending_enrollment {
-        PendingEnrollment::Replace
-    } else {
-        PendingEnrollment::Preserve
-    };
-    match state.photo().issue_code(id, pending).await {
+    match state
+        .photo()
+        .issue_code(id, PendingEnrollment::Preserve)
+        .await
+    {
+        Ok(code) => Json(code).into_response(),
+        Err(error) => ApiError::from_photo_enrollment(error).into_response(),
+    }
+}
+async fn reset_enrollment(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+    match state
+        .photo()
+        .issue_code(id, PendingEnrollment::Replace)
+        .await
+    {
         Ok(code) => Json(code).into_response(),
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
@@ -161,7 +171,7 @@ async fn pair(State(state): State<AppState>, request: Request) -> Response {
     else {
         return ApiError::unavailable("photo_pairing_peer_unavailable").into_response();
     };
-    if let Err(error) = state.photo().admit_pairing(*peer).await {
+    if let Err(error) = state.photo().admit_pairing(*peer) {
         return ApiError::from_photo_enrollment(error).into_response();
     }
     let Ok(Json(body)) = Json::<PhotoPairRequest>::from_request(request, &state).await else {
@@ -212,7 +222,7 @@ async fn initialization(State(state): State<AppState>, headers: HeaderMap) -> Re
         Ok(token) => token,
         Err(error) => return error.into_response(),
     };
-    match state.photo().initialization(token, state.contest()).await {
+    match state.photo_initialization().run(token).await {
         Ok(download) => (
             [
                 (header::CONTENT_TYPE, "application/json".to_owned()),
@@ -221,7 +231,10 @@ async fn initialization(State(state): State<AppState>, headers: HeaderMap) -> Re
             download.json,
         )
             .into_response(),
-        Err(error) => ApiError::from_photo_initialization(error).into_response(),
+        Err(crate::photo_initialization::Error::Photo { source }) => initialization_error(source),
+        Err(error) => {
+            ApiError::internal_error_from(error, "photo_initialization_facts").into_response()
+        }
     }
 }
 async fn resource(
@@ -248,7 +261,7 @@ async fn resource(
             )
                 .into_response()
         }
-        Err(error) => ApiError::from_photo_initialization(error).into_response(),
+        Err(error) => initialization_error(error),
     }
 }
 async fn complete(State(state): State<AppState>, request: Request) -> Response {
@@ -271,6 +284,18 @@ async fn complete(State(state): State<AppState>, request: Request) -> Response {
         .await
     {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => ApiError::from_photo_initialization(error).into_response(),
+        Err(error) => initialization_error(error),
     }
+}
+
+fn initialization_error(error: crate::component::photo::InitializationError) -> Response {
+    let busy = matches!(error, crate::component::photo::InitializationError::Busy);
+    let mut response = ApiError::from_photo_initialization(error).into_response();
+    if busy {
+        response.headers_mut().insert(
+            header::RETRY_AFTER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+    }
+    response
 }

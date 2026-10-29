@@ -24,15 +24,29 @@ pub enum ArchiveError {
     #[snafu(display("existing archive content is corrupt and cannot be overwritten"))]
     InvalidArchive,
 }
-pub(super) type Result<T> = std::result::Result<T, ArchiveError>;
+pub(crate) type Result<T> = std::result::Result<T, ArchiveError>;
 
 const MAX_BYTES: u64 = 50 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SourceFileVersion {
+pub(crate) struct SourceFileVersion {
     pub bytes: u64,
     pub modified: SystemTime,
+    pub created: Option<SystemTime>,
     pub sha256: String,
+}
+
+/// A cheap observation, not proof of content identity. Periodic bounded probes
+/// also cover writers that restore the length and modification timestamp.
+pub(crate) fn unchanged(path: &Path, version: &SourceFileVersion) -> Result<bool> {
+    let metadata = fs::symlink_metadata(path).context(IoSnafu)?;
+    ensure!(
+        metadata.is_file() && !metadata.is_symlink(),
+        UnsafePathSnafu
+    );
+    Ok(metadata.len() == version.bytes
+        && metadata.modified().context(IoSnafu)? == version.modified
+        && metadata.created().ok() == version.created)
 }
 
 fn open_source(path: &Path, hot_folder: &Path) -> Result<File> {
@@ -80,7 +94,7 @@ fn same_metadata(first: &Metadata, second: &Metadata) -> Result<bool> {
         && first.created().ok() == second.created().ok())
 }
 
-pub(super) fn probe(path: &Path, hot_folder: &Path) -> Result<SourceFileVersion> {
+pub(crate) fn probe(path: &Path, hot_folder: &Path) -> Result<SourceFileVersion> {
     let mut file = open_source(path, hot_folder)?;
     let before = file.metadata().context(IoSnafu)?;
     ensure!(before.len() <= MAX_BYTES, LimitSnafu);
@@ -92,11 +106,12 @@ pub(super) fn probe(path: &Path, hot_folder: &Path) -> Result<SourceFileVersion>
     Ok(SourceFileVersion {
         bytes,
         modified: before.modified().context(IoSnafu)?,
+        created: before.created().ok(),
         sha256,
     })
 }
 
-pub(super) fn copy(
+pub(crate) fn copy(
     source: &Path,
     hot_folder: &Path,
     archive: &Path,

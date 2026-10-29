@@ -44,6 +44,8 @@ mod application {
     }
     #[derive(Debug, Snafu)]
     enum Error {
+        #[snafu(display("Photo command blocking task failed"))]
+        Worker { source: tokio::task::JoinError },
         #[snafu(display("invalid command arguments; use --help"))]
         Arguments { source: clap::Error },
         #[snafu(display("cannot start the Photo runtime"))]
@@ -66,24 +68,32 @@ mod application {
                 server,
                 ca_certificate,
             } => {
-                let initializer = Initializer::open(
-                    Config {
-                        server_url: server,
-                        workspace: path,
-                        ca_certificate,
-                    },
-                    VaultSecrets,
-                )
-                .context(InitializationSnafu)?;
-                let code = if initializer
-                    .needs_pairing_code()
-                    .context(InitializationSnafu)?
-                {
+                let (initializer, needs_code) = tokio::task::spawn_blocking(move || {
+                    let initializer = Initializer::open(
+                        Config {
+                            server_url: server,
+                            workspace: path,
+                            ca_certificate,
+                        },
+                        VaultSecrets,
+                    )
+                    .context(InitializationSnafu)?;
+                    let needs_code = initializer
+                        .needs_pairing_code()
+                        .context(InitializationSnafu)?;
+                    Ok::<_, Error>((initializer, needs_code))
+                })
+                .await
+                .context(WorkerSnafu)??;
+                let code = if needs_code {
                     tracing::info!(
                         "enter the administrator's one-time pairing code; input is hidden"
                     );
                     Some(zeroize::Zeroizing::new(
-                        rpassword::read_password().context(PairingInputSnafu)?,
+                        tokio::task::spawn_blocking(rpassword::read_password)
+                            .await
+                            .context(WorkerSnafu)?
+                            .context(PairingInputSnafu)?,
                     ))
                 } else {
                     None
@@ -103,7 +113,9 @@ mod application {
                 );
             }
             Command::Doctor { path } => {
-                let workspace = Workspace::open(&path).await.context(WorkspaceSnafu)?;
+                let workspace = Workspace::open_readonly(&path)
+                    .await
+                    .context(WorkspaceSnafu)?;
                 let teams = workspace
                     .roster()
                     .await

@@ -18,7 +18,7 @@ mod roster;
 
 pub(crate) use export::ExportError;
 pub(crate) use logos::{LogoObservation, LogoStatus};
-pub(crate) use photo::PhotoTeam;
+pub(crate) use photo::{PhotoLogoError, PhotoTeam};
 pub(crate) use roster::OrganizationDetails;
 
 pub(crate) struct TeamDetails {

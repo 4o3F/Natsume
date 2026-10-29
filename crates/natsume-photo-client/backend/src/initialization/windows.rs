@@ -5,6 +5,7 @@ use zeroize::Zeroizing;
 use super::{CredentialSnafu, Result, Secrets};
 
 /// Stores signing seeds and temporary enrollment credentials in the current user's vault.
+#[derive(Clone, Copy)]
 pub struct VaultSecrets;
 
 impl Secrets for VaultSecrets {
@@ -34,3 +35,7 @@ impl Secrets for VaultSecrets {
         vault.Add(&credential).context(CredentialSnafu)
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/windows_credentials.rs"]
+mod tests;

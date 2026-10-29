@@ -35,6 +35,7 @@ pub(in crate::http) fn classify(path: &str) -> Option<AuditRoute> {
         "/print/sources/{source_id}" => AuditRoute::PrintSource,
         "/photo/sources" => AuditRoute::PhotoSources,
         "/photo/sources/{source_id}/pairing-code" => AuditRoute::PhotoPairingCode,
+        "/photo/sources/{source_id}/reset-enrollment" => AuditRoute::PhotoEnrollmentReset,
         "/photo/sources/{source_id}/state" => AuditRoute::PhotoSourceState,
         "/provisioning-window" => AuditRoute::Provisioning,
         "/target-submissions" => AuditRoute::TargetSubmission,
@@ -72,7 +73,9 @@ pub(super) fn path_target(route: AuditRoute, params: &RawPathParams) -> Option<A
         AuditRoute::PrintSource => {
             canonical_uuid(value("source_id")?).map(AuditTarget::PrintSource)
         }
-        AuditRoute::PhotoPairingCode | AuditRoute::PhotoSourceState => {
+        AuditRoute::PhotoPairingCode
+        | AuditRoute::PhotoEnrollmentReset
+        | AuditRoute::PhotoSourceState => {
             canonical_uuid(value("source_id")?).map(AuditTarget::PhotoSource)
         }
         AuditRoute::PrinterBinding | AuditRoute::PrinterPairingCode => {

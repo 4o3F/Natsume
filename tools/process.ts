@@ -60,9 +60,9 @@ export const packageTargets = {
   },
   "photo-client": {
     platform: "windows",
-    rustPlatforms: ["windows"],
+    rustPlatforms: ["linux", "windows"],
     format: "zip",
-    crates: ["natsume-photo-client"],
+    crates: ["natsume-photo-client", "natsume-photo-protocol"],
     binaries: ["natsume-photo-client"],
     assets: [],
     web: false,

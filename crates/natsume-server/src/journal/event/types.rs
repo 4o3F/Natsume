@@ -397,6 +397,7 @@ pub(crate) enum AuditRoute {
     PrintSource,
     PhotoSources,
     PhotoPairingCode,
+    PhotoEnrollmentReset,
     PhotoSourceState,
     Provisioning,
     TargetSubmission,

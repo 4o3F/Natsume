@@ -53,7 +53,7 @@ pub(super) struct Metadata {
     pub ready: i32,
 }
 pub(super) type LogoColumns = (Option<String>, Option<String>);
-pub(super) struct Database(Arc<Mutex<SqliteConnection>>);
+pub(super) struct Database(Arc<Mutex<SqliteConnection>>, Option<Arc<std::fs::File>>);
 pub(super) struct Transaction<'connection> {
     connection: &'connection mut SqliteConnection,
 }
@@ -65,11 +65,28 @@ impl Transaction<'_> {
 impl Database {
     // Storage invokes connection and schema installation only inside spawn_blocking.
     pub(super) fn connect(path: &Path) -> Result<Self> {
+        Self::connect_mode(path, false)
+    }
+    pub(super) fn connect_mode(path: &Path, read_only: bool) -> Result<Self> {
         let path = path.to_str().ok_or_else(|| PathSnafu.build())?;
         let encoded = utf8_percent_encode(path, PATH_ENCODE_SET);
-        SqliteConnection::establish(&format!("sqlite://{encoded}?mode=rw"))
-            .map(|connection| Self(Arc::new(Mutex::new(connection))))
-            .context(ConnectionSnafu)
+        SqliteConnection::establish(&format!(
+            "sqlite://{encoded}?mode={}",
+            if read_only { "ro" } else { "rw" }
+        ))
+        .context(ConnectionSnafu)
+        .and_then(|mut connection| {
+            use diesel::connection::SimpleConnection as _;
+            // SQLite connection configuration; no typed Diesel PRAGMA API.
+            connection
+                .batch_execute("PRAGMA busy_timeout = 3000;")
+                .context(QuerySnafu)?;
+            Ok(Self(Arc::new(Mutex::new(connection)), None))
+        })
+    }
+    pub(super) fn with_owner(mut self, owner: Arc<std::fs::File>) -> Self {
+        self.1 = Some(owner);
+        self
     }
     pub(super) fn install(&self) -> Result<()> {
         let mut connection = self.0.lock().map_err(|_| UnavailableSnafu.build())?;
@@ -96,7 +113,9 @@ impl Database {
         operation: impl FnOnce(&mut Transaction<'_>) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let database = Arc::clone(&self.0);
+        let owner = self.1.clone();
         tokio::task::spawn_blocking(move || {
+            let _owner = owner;
             let mut connection = database.lock().map_err(|_| UnavailableSnafu.build())?;
             connection.transaction(|connection| operation(&mut Transaction { connection }))
         })
@@ -145,6 +164,21 @@ impl Database {
                 .select((photo_roster::logo_path, photo_roster::logo_sha256))
                 .first(tx.connection())
                 .optional()
+                .map_err(PersistenceError::from)
+        })
+        .await
+    }
+    pub(super) async fn logo_entries(
+        &self,
+    ) -> Result<Vec<(String, Option<String>, Option<String>)>> {
+        self.read(|tx| {
+            photo_roster::table
+                .select((
+                    photo_roster::account_id,
+                    photo_roster::logo_path,
+                    photo_roster::logo_sha256,
+                ))
+                .load(tx.connection())
                 .map_err(PersistenceError::from)
         })
         .await

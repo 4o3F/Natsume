@@ -1,6 +1,6 @@
 //! In-memory capture rules. This module does not admit a real hot-folder session.
-//! A future capture coordinator must check monitoring and display prerequisites
-//! before allowing shooting. No CLI shooting entry point is exposed in W02.
+//! `CaptureSession` coordinates monitoring before group transitions. Presentation
+//! admission remains a future boundary; there is no CLI shooting entry point.
 
 use std::collections::BTreeSet;
 

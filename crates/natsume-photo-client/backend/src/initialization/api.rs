@@ -6,13 +6,13 @@ use serde_json::{Value, json};
 use snafu::{ResultExt as _, ensure};
 
 use super::{
-    Config, InvalidSnafu, IoSnafu, JsonSnafu, RejectedSnafu, Result, TransportSnafu,
+    Config, InvalidSnafu, IoSnafu, RejectedSnafu, Result, TransportSnafu,
     store::Receipt,
     wire::{self, Logo, Manifest, PairingCredentials},
 };
 
 pub(super) fn origin(value: &str) -> Result<String> {
-    let url = url::Url::parse(value).map_err(|_| InvalidSnafu.build())?;
+    let url = url::Url::parse(value).context(super::UrlSnafu)?;
     ensure!(
         url.scheme() == "https"
             && url.host_str().is_some()
@@ -21,7 +21,7 @@ pub(super) fn origin(value: &str) -> Result<String> {
             && url.path() == "/"
             && url.query().is_none()
             && url.fragment().is_none(),
-        InvalidSnafu
+        super::OriginSnafu
     );
     Ok(url.origin().ascii_serialization())
 }
@@ -62,7 +62,38 @@ impl Api {
         status: StatusCode,
         limit: usize,
     ) -> Result<(reqwest::header::HeaderMap, Vec<u8>)> {
+        let retryable = request.try_clone();
         let mut response = request.send().await.context(TransportSnafu)?;
+        if let Some(request) = retryable {
+            for attempt in 0..4_u32 {
+                // Only snapshot/download capacity rejections carry Retry-After.
+                // Pairing and acknowledgements are deliberately not retried.
+                if response.status() != StatusCode::SERVICE_UNAVAILABLE {
+                    break;
+                }
+                let Some(delay) = response
+                    .headers()
+                    .get(header::RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<u64>().ok())
+                else {
+                    break;
+                };
+                let url = response.url().path();
+                if !url.ends_with("/client/initialization") && !url.contains("/client/resources/") {
+                    break;
+                }
+                let Some(next) = request.try_clone() else {
+                    break;
+                };
+                drop(response);
+                tokio::time::sleep(Duration::from_secs(
+                    delay.clamp(1, 8) * (1_u64 << attempt).min(4),
+                ))
+                .await;
+                response = next.send().await.context(TransportSnafu)?;
+            }
+        }
         ensure!(
             response.status() == status,
             RejectedSnafu {
@@ -73,14 +104,14 @@ impl Api {
             response
                 .content_length()
                 .is_none_or(|length| length <= limit as u64),
-            InvalidSnafu
+            super::LimitSnafu { limit }
         );
         let headers = response.headers().clone();
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.context(TransportSnafu)? {
             ensure!(
                 chunk.len() <= limit.saturating_sub(bytes.len()),
-                InvalidSnafu
+                super::LimitSnafu { limit }
             );
             bytes.extend_from_slice(&chunk);
         }
@@ -91,11 +122,11 @@ impl Api {
         status: StatusCode,
     ) -> Result<T> {
         let (_, bytes) = Self::bytes(request, status, 8192).await?;
-        serde_json::from_slice(&bytes).context(JsonSnafu)
+        serde_json::from_slice(&bytes).map_err(super::json_error)
     }
     pub async fn pair(&self, code: &str, public_key: &str) -> Result<PairingCredentials> {
         let issued: PairingCredentials = Self::json(self.request(Method::POST, "enrollment/pair").json(&json!({"code":code,"signing_public_key":public_key,"client_version":env!("CARGO_PKG_VERSION")})), StatusCode::CREATED).await?;
-        issued.validate()?;
+        issued.validate().context(super::ContractSnafu)?;
         Ok(issued)
     }
     pub async fn confirm(&self, enrollment: &PairingCredentials, public_key: &str) -> Result<()> {
@@ -111,7 +142,7 @@ impl Api {
     }
     pub async fn manifest(&self, enrollment: &PairingCredentials) -> Result<(Vec<u8>, Manifest)> {
         let (headers, bytes) = Self::bytes(
-            self.request(Method::GET, "client/initialization")
+            self.request(Method::POST, "client/initialization")
                 .bearer_auth(&enrollment.token),
             StatusCode::OK,
             wire::MANIFEST_LIMIT,
@@ -122,8 +153,10 @@ impl Api {
                 == Some(format!("\"{}\"", wire::digest(&bytes)).as_str()),
             InvalidSnafu
         );
-        let manifest: Manifest = serde_json::from_slice(&bytes).context(JsonSnafu)?;
-        manifest.validate(&enrollment.source_id)?;
+        let manifest: Manifest = serde_json::from_slice(&bytes).map_err(super::json_error)?;
+        manifest
+            .validate(&enrollment.source_id)
+            .context(super::ContractSnafu)?;
         Ok((bytes, manifest))
     }
     pub async fn resource(&self, enrollment: &PairingCredentials, logo: &Logo) -> Result<Vec<u8>> {

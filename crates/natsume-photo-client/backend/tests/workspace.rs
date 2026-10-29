@@ -23,6 +23,30 @@ enum Error {
 type Result<T = ()> = std::result::Result<T, Error>;
 
 #[tokio::test]
+async fn only_one_writable_owner_is_allowed_but_readonly_diagnosis_can_open() -> Result {
+    let directory = tempfile::tempdir().context(IoSnafu)?;
+    let roster = Roster::parse(FIXTURE).context(RosterSnafu)?;
+    let root = directory.path().join("workspace");
+    let owner = Workspace::create(&root, &roster)
+        .await
+        .context(WorkspaceSnafu)?;
+    assert!(matches!(
+        Workspace::open(&root).await,
+        Err(WorkspaceError::Storage {
+            source: natsume_photo_client::workspace::StorageError::Busy
+        })
+    ));
+    drop(
+        Workspace::open_readonly(&root)
+            .await
+            .context(WorkspaceSnafu)?,
+    );
+    drop(owner);
+    drop(Workspace::open(&root).await.context(WorkspaceSnafu)?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn roster_survives_close_reopen_and_source_removal() -> Result {
     let directory = tempfile::tempdir().context(IoSnafu)?;
     let source = directory.path().join("roster.json");

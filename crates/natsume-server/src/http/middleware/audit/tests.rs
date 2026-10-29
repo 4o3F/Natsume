@@ -692,12 +692,7 @@ async fn photo_administrator_mutations_are_audited_without_credentials() -> Test
     assert!(!record.details().contains(name));
     let pairing_path = format!("/api/v2/photo/sources/{id}/pairing-code");
     let response = f
-        .request(
-            Method::POST,
-            &pairing_path,
-            Some(&f.admin_cookie),
-            "{\"replace_pending_enrollment\":true}",
-        )
+        .request(Method::POST, &pairing_path, Some(&f.admin_cookie), "{}")
         .await?;
     assert_eq!(response.status(), StatusCode::OK);
     let issued: Value =
@@ -710,6 +705,16 @@ async fn photo_administrator_mutations_are_audited_without_credentials() -> Test
     assert!(!record.details().contains(code));
     let details: Value = serde_json::from_str(&record.details())?;
     assert_eq!(details["targets"], json!([{"photo_source":id}]));
+    let reset_path = format!("/api/v2/photo/sources/{id}/reset-enrollment");
+    let reset = f
+        .request(Method::POST, &reset_path, Some(&f.admin_cookie), "{}")
+        .await?;
+    assert_eq!(reset.status(), StatusCode::OK);
+    request_record(
+        &f.records(),
+        AuditRoute::PhotoEnrollmentReset,
+        StatusCode::OK,
+    );
     let state_path = format!("/api/v2/photo/sources/{id}/state");
     let response = f
         .request(

@@ -231,6 +231,7 @@ const auditRouteLabels = {
   print_source: "Print source",
   photo_sources: "Photo sources",
   photo_pairing_code: "Photo pairing code",
+  photo_enrollment_reset: "Photo enrollment reset",
   photo_source_state: "Photo source state",
   provisioning: "Provisioning window",
   target_submission: "Target submission",

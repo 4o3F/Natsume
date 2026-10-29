@@ -43,9 +43,9 @@ struct Inputs {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SchoolLogo {
-    organization_id: i64,
-    path: PathBuf,
+pub(crate) struct SchoolLogo {
+    pub organization_id: i64,
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -118,11 +118,19 @@ impl Prepared {
                 .unwrap_or(Path::new(".")),
         )
         .context(IoSnafu)?;
+        Self::from_paths(&source, input.school_logos, organizations)
+    }
+    pub(crate) fn from_paths(
+        source: &Path,
+        logos: Vec<SchoolLogo>,
+        organizations: &BTreeSet<i64>,
+    ) -> Result<Self> {
+        let mut references = BTreeMap::new();
         let mut prepared = Self {
             cache: Cache::default(),
             files: BTreeMap::new(),
         };
-        for logo in input.school_logos {
+        for logo in logos {
             ensure!(
                 organizations.contains(&logo.organization_id),
                 UnknownSchoolSnafu
@@ -140,8 +148,14 @@ impl Prepared {
                 PathSnafu
             );
             let path = std::fs::canonicalize(source.join(logo.path)).context(IoSnafu)?;
-            ensure!(path.starts_with(&source), PathSnafu);
-            let reference = ImageRef::for_bytes(&read_image(&path)?);
+            ensure!(path.starts_with(source), PathSnafu);
+            let reference = if let Some(reference) = references.get(&path) {
+                Clone::clone(reference)
+            } else {
+                let reference = ImageRef::for_bytes(&read_image(&path)?);
+                references.insert(path.clone(), reference.clone());
+                reference
+            };
             prepared
                 .files
                 .insert(reference.path.clone(), (path, reference.clone()));
@@ -161,7 +175,6 @@ impl Prepared {
             file.write_all(&bytes).context(IoSnafu)?;
             file.sync_all().context(IoSnafu)?;
             drop(file);
-            reference.verify(root)?;
         }
         Ok(self.cache)
     }

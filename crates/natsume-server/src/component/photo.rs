@@ -2,34 +2,35 @@
 mod db;
 mod enrollment;
 mod initialization;
+mod storage;
 
 pub(crate) use enrollment::{CredentialUse, EnrollmentError, PendingEnrollment, SourceState};
-pub(crate) use initialization::InitializationError;
+pub(crate) use initialization::{InitializationError, Preparation, SnapshotDownload};
 
-use std::{collections::VecDeque, net::IpAddr, path::PathBuf, sync::Arc};
-use tokio::{
-    sync::{Mutex, Semaphore},
-    time::Instant,
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
 };
+use tokio::sync::Semaphore;
 
 use crate::db::Database;
 
 pub(crate) struct PhotoComponent {
     database: Database,
-    directory: PathBuf,
-    pairing_attempts: Mutex<VecDeque<(Instant, IpAddr)>>,
+    storage: storage::PhotoStore,
+    pairing_attempts: Mutex<super::pairing::PairingBudget>,
     snapshot_work: Arc<Semaphore>,
     download_work: Arc<Semaphore>,
 }
 
 impl PhotoComponent {
-    pub(crate) fn new(database: Database, directory: PathBuf) -> Self {
-        Self {
+    pub(crate) fn new(database: Database, directory: &Path) -> Result<Self, InitializationError> {
+        Ok(Self {
             database,
-            directory,
-            pairing_attempts: Mutex::new(VecDeque::new()),
+            storage: storage::PhotoStore::open(directory)?,
+            pairing_attempts: Mutex::new(super::pairing::PairingBudget::default()),
             snapshot_work: Arc::new(Semaphore::new(1)),
             download_work: Arc::new(Semaphore::new(2)),
-        }
+        })
     }
 }

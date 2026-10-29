@@ -57,6 +57,39 @@ async fn fixture() -> Result<Fixture> {
     })
 }
 
+#[tokio::test]
+async fn awaited_commands_publish_their_snapshot_and_capture_keeps_workspace_ownership() -> Result {
+    let fixture = fixture().await?;
+    let root = fixture.workspace.root().to_owned();
+    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+        .await
+        .context(HotFolderSnafu)?;
+    folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
+    let group = folder.start_group().await.context(HotFolderSnafu)?;
+    assert_eq!(
+        folder.snapshot().context(HotFolderSnafu)?.group_id,
+        Some(group)
+    );
+    folder.abandon_group(group).await.context(HotFolderSnafu)?;
+    assert!(
+        folder
+            .snapshot()
+            .context(HotFolderSnafu)?
+            .group_id
+            .is_none()
+    );
+    drop(fixture.workspace);
+    assert!(matches!(
+        Workspace::open(&root).await,
+        Err(natsume_photo_client::workspace::Error::Storage {
+            source: natsume_photo_client::workspace::StorageError::Busy
+        })
+    ));
+    folder.shutdown().await.context(HotFolderSnafu)?;
+    drop(Workspace::open(&root).await.context(WorkspaceSnafu)?);
+    Ok(())
+}
+
 async fn wait(
     folder: &HotFolder,
     predicate: impl Fn(&HotFolderSnapshot) -> bool,

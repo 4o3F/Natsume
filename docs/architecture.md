@@ -1270,7 +1270,7 @@ Operator API及Operator公开认证流程的mutation审计固定层次（外→�
 
 审计范围仅包括Operator认证路由和Operator公开认证流程（session登录／登出、邀请注册及inspect、密码重置及inspect、本人改密）；Print Client／Source认证路由、机器配对／确认及未挂载路径不产生审计记录。范围内的非GET／HEAD请求在完成后尝试发出一个`OperatorRequest`，包括401、403、400、405、取消调用方后的真实完成结果及panic→500；GET／HEAD不产生通用请求记录。panic由现有任务边界脱敏为500，审计完成guard在展开时记录同一静态错误分类，不读取panic payload；调用方取消不取消已获准的mutation，也不额外伪造一次取消记录。
 
-`MatchedPath`只映射为封闭`AuditRoute`，路由清单测试约束所有Operator mutation及Operator公开认证mutation都有映射，并证明Print Client／Source路由没有映射。Photo 管理员创建来源、签发／替换配对码、更新来源状态也在审计范围内，分别映射为 PhotoSources、PhotoPairingCode、PhotoSourceState，并只关联 typed PhotoSource ID；Photo Client 配对／确认／下载／完成不属于 Operator 审计。新来源创建成功后 handler 补记返回的来源 ID，配对码、token、公钥和请求／响应正文不写入详情。targets按route解析canonical UUIDv7／正序号，非法值省略，未分类路径不审计，不回退原URI、query或路径文本。handler只从已经校验或提交的结果补充operation/result ID，不重新查询业务库；targets去重并最多保留16个，保证details的2 KiB上限，批量操作的完整逐设备事实由`TargetSubmitted`及共同operation ID关联。`ApiError`只在response extensions附加封闭`ApiErrorCode`和编译期static cause，供audit写入可选`api_code`／`cause`；不读取错误title、source chain、headers或body作为事件内容，不改变既有响应格式。
+`MatchedPath`只映射为封闭`AuditRoute`，路由清单测试约束所有Operator mutation及Operator公开认证mutation都有映射，并证明Print Client／Source路由没有映射。Photo 管理员创建来源、签发配对码、重置绑定、更新来源状态也在审计范围内，分别映射为 PhotoSources、PhotoPairingCode、PhotoEnrollmentReset、PhotoSourceState，并只关联 typed PhotoSource ID；Photo Client 配对／确认／下载／完成不属于 Operator 审计。新来源创建成功后 handler 补记返回的来源 ID，配对码、token、公钥和请求／响应正文不写入详情。targets按route解析canonical UUIDv7／正序号，非法值省略，未分类路径不审计，不回退原URI、query或路径文本。handler只从已经校验或提交的结果补充operation/result ID，不重新查询业务库；targets去重并最多保留16个，保证details的2 KiB上限，批量操作的完整逐设备事实由`TargetSubmitted`及共同operation ID关联。`ApiError`只在response extensions附加封闭`ApiErrorCode`和编译期static cause，供audit写入可选`api_code`／`cause`；不读取错误title、source chain、headers或body作为事件内容，不改变既有响应格式。
 
 Auth事实只由`OperatorComponent`发出：成功创建session后记`AuthSucceeded`，仅登录尝试失败记`AuthFailed`，按invalid credentials／rate limited／infrastructure封闭分类；普通会话校验无论成功、过期或无效都不产生认证事件，mutation的401由`OperatorRequest`记录。删除确实存在的session后记`LoggedOut`，重复或未知logout只保留请求记录；本人改密、重置签发／消费及邀请注册在各自提交后发对应事件。logout和reset completion从原有查询／事务结果返回已知Operator ID，不新增认证或用户名查询。事件不保存尝试登录名、密码、token、session credential或响应中的秘密。离线CLI bootstrap／password reset继续使用数据库边界，不打开或写入journal。request span中的有效trace ID在`RequestAudit`创建时一次捕获，随后显式传给所有auth／domain事件及最终请求记录，包括panic和关闭准入拒绝路径；没有有效OpenTelemetry上下文时省略。
 
@@ -2343,11 +2343,19 @@ Photo Client 首次联网登记来源、信任和非秘密名单快照，之后�
 
 管理员沿用 Operator 登录，创建独立 Photo source 并签发十分钟一次性配对码。Photo Client 先在本地保存 Ed25519 签名密钥，再用配对码、公钥与版本兑换一小时的 Photo 专用初始化凭据；本地可靠保存后回显 enrollment ID 与公钥确认绑定。凭据不复用 Operator、Print 或 Device 授权，Server 只保存配对码和凭据的哈希。启用且尚未完成初始化的来源，可由管理员明确替换 enrollment（包括已确认绑定）；替换在同一事务中失效旧绑定、公钥和 token，并移除未完成快照引用，重新绑定后发布新快照。普通发码不能隐式覆盖绑定，已完成来源禁止重置；禁用可恢复，撤销永久生效。
 
+初始化快照获取使用 `POST /photo/client/initialization`，因为首次请求会写缓存与数据库；复用 ServerLifecycle mutation 准入、在途跟踪与停止等待。资源 GET 保持只读。普通 `POST /photo/sources/{source_id}/pairing-code` 不重置授权；显式重置使用独立的 `POST /photo/sources/{source_id}/reset-enrollment`，生成新码与失效旧绑定在同一事务内完成，并形成可区分的 OperatorRequest 路由分类。
+
+Photo 与 Contest 的初始化编排由具体 `PhotoInitialization` 协调入口负责，PhotoComponent 不持有或接收 ContestComponent 实例。Contest 提供非秘密名单和按学校名称解析的 PNG；Photo 拥有来源验证、快照发布与存储。`natsume-photo-protocol` 统一两端 DTO、规范 UUIDv7、凭据格式、资源限额和发布／安装校验；不承载数据库、HTTP 或 Windows 凭据逻辑。私有缓存启动时校验 owner／权限，运行时以固定目录句柄进行相对打开，拒绝符号链接；容量拒绝给出 Retry-After，Client 只对快照获取与资源下载做有界重试，不自动重试配对和完成操作。Print／Photo 共用配对原语与一分钟阻断机制，各自保留独立领域预算。
+
 首次下载发布来源专属、不可变的初始化 JSON 快照，包含独立 dataset ID、initialization ID、七字段队伍名单与按 organization ID 关联的 PNG 校徽目录。名单保持 Contest 原有队伍／账号／学校／座位关联语义，但只选择 account_id、account、organization_id、学校及队伍的中英文名，不读取密码或输出座位、credential revision。校徽归 Contest 解析并转换为保持原尺寸的 PNG；同校共用，缺失或名称匹配不唯一时省略，已匹配但损坏时整体失败。Client 不配置默认展示图；没有照片时展示留空。
 
 快照先同步资源文件，再提交数据库中的 JSON 与哈希；同一绑定内重试及 Server 重启返回相同字节，不追随实时名单／校徽变更。资源下载只允许访问本来源已发布快照列出的哈希。Client 校验并可靠保存后，以 initialization ID、JSON 原始字节 SHA-256 与稳定 request ID 提交完成；Server 持久化完成回执并关闭该来源全部下载，同一完成请求可在凭据过期后重放，其他 request ID 冲突，禁用／撤销仍拒绝。Photo 新增独立来源、数据集元信息及初始化表，不改写名单、座位或其他业务表；未发布的中断缓存保留供维护，不自动回收。
 
 Windows Photo Client 将签名种子和初始化凭据保存到当前用户凭据库，非秘密的来源、信任 origin、客户端身份和恢复阶段保存在目标同级的初始化日志中。只接受 HTTPS origin，不跟随重定向，不跳过证书验证；可显式配置部署 CA。Client 在暂存工作区内校验名单、校徽和原始 JSON 哈希，先记录稳定完成请求，再通知 Server；完成响应丢失时只重放同一回执，本地文件损坏则停止。收到成功回执后发布正式工作区，重试发布与日常打开不依赖网络。管理员替换未完成来源后，Client 使用新目标路径和新码重新初始化，旧失败日志不自动改绑；旧暂存及未引用快照文件保留供维护。完成与替换在事务内竞争：完成先提交则拒绝替换，替换先提交则旧凭据不能发布或完成。未完成目录不冒充正式目标，不自动覆盖已有工作区；日志中断恢复及文件发布遵守各平台文件同步语义，Windows 不宣称与 Unix 父目录 fsync 相同的断电保证。
+
+Client 在创建初始化目录之前取得目标同级排他锁；只有没有配对标记或其他业务事实的空目录／空首记录可以恢复为新初始化。verify、publish、doctor 共同验证严格授权字段及凭据库私钥与公钥匹配，完成前不通过则不关闭下载权。工作区可写所有者持有进程级文件锁，拍摄会话延长该锁的生命周期；doctor 通过只读连接检查，不声称拥有拍摄权限。
+
+`CaptureSession` 拥有 Session 和收图命令的顺序协调，Ingestion 仅接收明确的会话上下文处理文件，不拥有队伍选择策略。操作先发布快照再应答。周期扫描先比较元数据，未变原图不每轮全量哈希；保留全局每三十秒至多一个原图的有界内容复核，以覆盖保留元数据的改写，这类改写的发现延迟随目录大小增长。消失来源告警可明确确认处理，返回的来源仍需人工归属，不因切队而自动归到下一队。任务失败发布停止状态并通过 shutdown 返回。
 
 摄影师窗口与选手展示窗口分开，流程为：
 

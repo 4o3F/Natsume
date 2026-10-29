@@ -94,6 +94,9 @@ impl ApiError {
     pub(super) fn from_photo_enrollment(error: crate::component::photo::EnrollmentError) -> Self {
         use crate::component::photo::EnrollmentError;
         match error {
+            EnrollmentError::StatePoisoned { .. } => {
+                Self::internal_error_from(error, "photo_pairing_state")
+            }
             EnrollmentError::Authentication => {
                 Self::authentication_failed("photo_credential_rejected")
             }
@@ -152,11 +155,8 @@ impl ApiError {
             InitializationError::Corrupt => {
                 Self::internal_error_from(error, "photo_initialization_corrupt")
             }
-            InitializationError::Roster { .. } => {
-                Self::internal_error_from(error, "photo_initialization_roster")
-            }
-            InitializationError::Logo { .. } => {
-                Self::internal_error_from(error, "photo_initialization_logo")
+            InitializationError::Worker { .. } => {
+                Self::internal_error_from(error, "photo_initialization_worker")
             }
             InitializationError::Io { .. } => {
                 Self::internal_error_from(error, "photo_initialization_io")

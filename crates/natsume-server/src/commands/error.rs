@@ -33,6 +33,8 @@ pub(super) enum CommandFailure {
     Vault { source: crate::vault::VaultError },
     #[snafu(display("print document storage startup failed"))]
     PrintStorage { source: ServerStateError },
+    #[snafu(display("Photo storage startup failed"))]
+    PhotoStorage { source: ServerStateError },
     #[snafu(display("web assets startup failed"))]
     WebAssets,
     #[snafu(display("TLS startup failed"))]
@@ -68,6 +70,7 @@ impl From<ServerStateError> for CommandFailure {
             ServerStateError::Configuration { .. } => Self::Configuration { source },
             ServerStateError::Vault { source } => Self::Vault { source },
             ServerStateError::PrintStorage { .. } => Self::PrintStorage { source },
+            ServerStateError::PhotoStorage { .. } => Self::PhotoStorage { source },
             ServerStateError::OriginCa { .. } => Self::OriginCa { source },
             ServerStateError::OriginCaTrustRootMismatch => Self::OriginCaTrustRootMismatch,
         }

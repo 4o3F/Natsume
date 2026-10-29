@@ -130,8 +130,18 @@ cargo test -p natsume-photo-client --test hot_folder --locked
 | `backend/src/roster.rs` | 名单类型与身份验证 |
 | `backend/src/workspace/` | 工作区、私有数据库访问及展示资源缓存 |
 | `backend/src/capture.rs` | 内存会话、拍摄组与任务屏障 |
-| `backend/src/hot_folder.rs`、`backend/src/hot_folder/` | 自动监控、对账和复制归档 |
+| `backend/src/capture_session.rs` | 拥有拍摄会话，顺序协调操作、监控与归档；操作发布快照后应答 |
+| `backend/src/hot_folder.rs`、`backend/src/hot_folder/` | 增量对账、有界内容复核、原生通知和复制归档 |
+| `../natsume-photo-protocol/` | 两端共用的初始化 DTO、凭据格式及校验上限 |
 | `backend/migrations/`、`backend/src/diesel_schema.rs` | 本地数据库迁移和生成 schema |
 | `backend/tests/` | 公共接口、文件系统及 CLI 集成测试；`unit/` 保存私有模块单元测试，`fixtures/` 保存测试数据 |
 
 本文件作为 Photo Client 的持续功能总览。新增或改变功能时，同步更新对应的当前能力、调用/启动方式、数据保存行为与测试范围；尚未实现或未验收的能力继续明确标注，不把开发计划写成已支持。后端细节另见 [`backend/README.md`](backend/README.md)。
+
+### Review 后的初始化与拍摄约束
+
+快照获取使用 POST，资源下载使用 GET。Server 容量耗尽时，Client 对这两类可重放请求按 Retry-After 有界重试；不会自动重试配对、确认或完成。完成前以及工作区发布前，均核对原始 manifest、名单、校徽和凭据库中的签名密钥。授权 JSON 拒绝未知字段，解析错误不输出被拒绝的字段值。
+
+同一工作区只允许一个可写所有者，拍摄会话会延长写锁生命周期。doctor 使用只读数据库连接；`.writer.lock` 和目标同级 `.NAME.photo-init.lock` 是持久锁文件，不要在进程运行时删除。锁文件保留不表示进程仍在运行，系统在句柄关闭或进程退出后释放锁。
+
+热文件夹周期扫描先检查元数据，不每轮读取全部相机原图；全局每三十秒至多额外复核一个未变文件，覆盖保留时间戳的改写，复核发现延迟随文件数增长。消失后的来源重现仍需明确归属，告警确认不会让它自动归给新队伍。Session 由 `CaptureSession` 管理，监控/归档处理不拥有队伍选择策略；尚未实现选定成品与展示确认。

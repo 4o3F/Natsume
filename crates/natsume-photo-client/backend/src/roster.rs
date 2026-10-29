@@ -1,24 +1,9 @@
 //! Local non-secret roster input. This does not grant server enrollment.
 use std::{collections::BTreeSet, path::Path};
 
-use serde::Deserialize;
 use snafu::{ResultExt as _, Snafu, ensure};
 
-/// The minimum team facts used by the offline client.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct Team {
-    pub account_id: String,
-    /// External Team ID, sourced from the server's `DOMjudge` username.
-    pub account: String,
-    pub organization_id: i64,
-    pub school_name_zh: String,
-    #[serde(default)]
-    pub school_name_en: String,
-    pub team_name_zh: String,
-    #[serde(default)]
-    pub team_name_en: String,
-}
+pub use natsume_photo_protocol::PhotoTeam as Team;
 
 #[derive(Debug, Snafu)]
 pub enum Error {

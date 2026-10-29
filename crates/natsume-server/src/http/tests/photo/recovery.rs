@@ -50,8 +50,8 @@ async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
         .pair(replacement?.code, key.clone(), "2.11.0".into())
         .await?;
     assert_eq!(issued.source_id, f.source);
-    f.token = issued.token;
-    f.enrollment = issued.enrollment_id;
+    f.token = issued.token.clone();
+    f.enrollment = issued.enrollment_id.clone();
     f.key = key;
     f.confirm().await
 }
@@ -62,14 +62,14 @@ async fn confirmed_source_recovers_after_token_expiry_without_a_snapshot() -> Te
     f.confirm().await?;
     expire_token(&f).await?;
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::UNAUTHORIZED
     );
     replace_and_confirm(&mut f).await?;
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::OK
@@ -82,7 +82,7 @@ async fn confirmed_source_replaces_an_uncompleted_snapshot_after_roster_correcti
     let mut f = Fixture::new().await?;
     f.confirm().await?;
     let original = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(original.status, StatusCode::OK);
     let before: Value = serde_json::from_slice(&original.body)?;
@@ -103,7 +103,7 @@ async fn confirmed_source_replaces_an_uncompleted_snapshot_after_roster_correcti
         .await?;
     replace_and_confirm(&mut f).await?;
     let replacement = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(replacement.status, StatusCode::OK);
     let after: Value = serde_json::from_slice(&replacement.body)?;
@@ -126,7 +126,7 @@ async fn completed_source_still_rejects_explicit_replacement() -> TestResult {
     let f = Fixture::new().await?;
     f.confirm().await?;
     let snapshot = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(snapshot.status, StatusCode::OK);
     let manifest: Value = serde_json::from_slice(&snapshot.body)?;
@@ -184,8 +184,8 @@ async fn confirmed_source_replacement_requires_an_administrator_session() -> Tes
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     f.confirm().await?;
-    let path = format!("sources/{}/pairing-code", f.source);
-    let body = json!({"replace_pending_enrollment":true});
+    let path = format!("sources/{}/reset-enrollment", f.source);
+    let body = json!({});
     assert_eq!(
         f.send(Method::POST, &path, body.clone()).await?.status,
         StatusCode::UNAUTHORIZED
@@ -212,7 +212,7 @@ async fn confirmed_source_replacement_requires_an_administrator_session() -> Tes
     .await?;
     assert_eq!(response.status, StatusCode::OK);
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::UNAUTHORIZED
@@ -225,7 +225,7 @@ async fn replacement_and_completion_cannot_both_commit() -> TestResult {
     let f = Fixture::new().await?;
     f.confirm().await?;
     let snapshot = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(snapshot.status, StatusCode::OK);
     let manifest: Value = serde_json::from_slice(&snapshot.body)?;
@@ -271,7 +271,7 @@ async fn replacement_prevents_old_snapshot_publication() -> TestResult {
     let f = Fixture::new().await?;
     f.confirm().await?;
     let (download, replacement) = tokio::join!(
-        f.send(Method::GET, "client/initialization", Value::Null),
+        f.send(Method::POST, "client/initialization", Value::Null),
         f.state
             .photo()
             .issue_code(f.source.clone(), PendingEnrollment::Replace)
@@ -299,7 +299,7 @@ async fn replacement_prevents_old_snapshot_publication() -> TestResult {
         "reset must remove or prevent the old enrollment's snapshot"
     );
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::UNAUTHORIZED
@@ -313,7 +313,7 @@ async fn failed_replacement_rolls_back_snapshot_removal_and_preserves_credential
     let f = Fixture::new().await?;
     f.confirm().await?;
     let before = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(before.status, StatusCode::OK);
     // Fault injection only: fail the credential update after snapshot deletion.
@@ -338,7 +338,7 @@ async fn failed_replacement_rolls_back_snapshot_removal_and_preserves_credential
         Err(EnrollmentError::Persistence { .. })
     ));
     let after = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(after.status, StatusCode::OK);
     assert_eq!(before.body, after.body);

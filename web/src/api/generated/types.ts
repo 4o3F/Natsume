@@ -122,6 +122,7 @@ export type AuditRoute =
   | "print_source"
   | "photo_sources"
   | "photo_pairing_code"
+  | "photo_enrollment_reset"
   | "photo_source_state"
   | "provisioning"
   | "target_submission";
@@ -1140,6 +1141,7 @@ export type PhotoConfirmation = {
   signing_public_key: string;
 };
 
+/**  Contains a secret: intentionally has no Debug implementation. */
 export type PhotoEnrollmentIssued = {
   source_id: string;
   enrollment_id: string;
@@ -1181,9 +1183,7 @@ export type PhotoPairingCode = {
   expires_at_unix_ms: number;
 };
 
-export type PhotoPairingCodeRequest = {
-  replace_pending_enrollment?: boolean;
-};
+export type PhotoPairingCodeRequest = Record<string, never>;
 
 export type PhotoSource = {
   source_id: string;
@@ -1203,12 +1203,13 @@ export type PhotoSourceStateUpdate = {
 
 export type PhotoTeam = {
   account_id: string;
+  /**  External Team ID, the `DOMjudge` username; never a password or seat. */
   account: string;
   organization_id: number;
   school_name_zh: string;
-  school_name_en: string;
+  school_name_en?: string;
   team_name_zh: string;
-  team_name_en: string;
+  team_name_en?: string;
 };
 
 export type PrintAdmission = {

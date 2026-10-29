@@ -2,6 +2,7 @@
 [workspace]
 resolver = "3"
 members = [
+  "crates/natsume-photo-protocol",
   "crates/natsume-photo-client/backend",
   "crates/natsume-server",
   "crates/natsume-workstation-daemon",

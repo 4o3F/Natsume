@@ -78,6 +78,7 @@ impl Secrets for MemorySecrets {
 }
 
 enum Reply {
+    Busy,
     Pair,
     Confirm,
     Manifest(Vec<u8>),
@@ -203,6 +204,7 @@ async fn read_request(socket: &mut (impl tokio::io::AsyncRead + Unpin)) -> Resul
 
 fn response(reply: Reply) -> Result<(u16, String, Vec<u8>)> {
     let (status, headers, bytes) = match reply {
+        Reply::Busy => (503, "Retry-After: 1\r\n".into(), Vec::new()),
         Reply::Pair => (
             201,
             String::new(),
@@ -338,7 +340,7 @@ async fn https_enrollment_downloads_shared_logo_and_then_opens_offline() -> Resu
         database_before
     );
     assert_eq!(
-        Workspace::open(&config.workspace)
+        Workspace::open_readonly(&config.workspace)
             .await?
             .roster()
             .await?
@@ -511,7 +513,7 @@ async fn origin_paths_exclusive_lock_and_existing_targets_are_checked() -> Resul
         };
         assert!(matches!(
             Initializer::open(config, secrets.clone()),
-            Err(InitError::Invalid)
+            Err(InitError::Origin)
         ));
     }
     let config = Config {
@@ -582,7 +584,7 @@ fn changed_origin_corrupt_journal_and_existing_directory_are_not_reused() -> Res
     };
     drop(reopen(&config, &secrets)?);
     config.server_url = "https://other.example".into();
-    assert!(matches!(reopen(&config, &secrets), Err(InitError::Invalid)));
+    assert!(matches!(reopen(&config, &secrets), Err(InitError::Journal)));
     config.server_url = "https://localhost".into();
     let journal = directory
         .path()
@@ -595,7 +597,7 @@ fn changed_origin_corrupt_journal_and_existing_directory_are_not_reused() -> Res
     config.workspace = directory.path().join("existing");
     std::fs::create_dir(&config.workspace)?;
     std::fs::write(config.workspace.join("keep"), b"original")?;
-    assert!(matches!(reopen(&config, &secrets), Err(InitError::Invalid)));
+    assert!(matches!(reopen(&config, &secrets), Err(InitError::Journal)));
     assert_eq!(std::fs::read(config.workspace.join("keep"))?, b"original");
     Ok(())
 }
@@ -628,5 +630,130 @@ async fn windows_client_against_live_server() -> Result {
     drop(workspace);
     let offline = Workspace::open(&config.workspace).await?;
     natsume_photo_client::initialization::diagnose(&offline, &secrets).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_first_journal_record_recovers_without_changing_existing_state() -> Result {
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join(".workspace.photo-init");
+    std::fs::create_dir(&root)?;
+    let config = Config {
+        server_url: "https://127.0.0.1:8443".into(),
+        workspace: directory.path().join("workspace"),
+        ca_certificate: None,
+    };
+    let secrets = MemorySecrets::default();
+    drop(reopen(&config, &secrets)?);
+    let journal = std::fs::read(root.join("initialization.jsonl"))?;
+    drop(reopen(&config, &secrets)?);
+    assert_eq!(journal, std::fs::read(root.join("initialization.jsonl"))?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn changed_signing_public_key_prevents_completion_replay() -> Result {
+    let image = png()?;
+    let server = Https::start(vec![
+        Reply::Pair,
+        Reply::Confirm,
+        Reply::Manifest(manifest(&image)?),
+        Reply::Logo(image),
+        Reply::Lost,
+        Reply::Complete,
+    ])
+    .await?;
+    let directory = tempfile::tempdir()?;
+    let config = config(&server, directory.path())?;
+    let secrets = MemorySecrets::default();
+    assert!(
+        reopen(&config, &secrets)?
+            .run(Some("ABCD-EFGH"))
+            .await
+            .is_err()
+    );
+    let staging = directory.path().join(".workspace.photo-init");
+    let prepared = std::fs::read_dir(staging)?
+        .filter_map(std::result::Result::ok)
+        .map(|entry| entry.path().join("authorization.json"))
+        .find(|path| path.is_file())
+        .ok_or(TestError::Fixture)?;
+    let mut identity: Value = serde_json::from_slice(&std::fs::read(&prepared)?)?;
+    identity["signing_public_key"] = json!("00".repeat(32));
+    std::fs::write(prepared, serde_json::to_vec(&identity)?)?;
+    let before = server.requests()?.len();
+    assert!(matches!(
+        reopen(&config, &secrets)?.run(None).await,
+        Err(InitError::Authorization)
+    ));
+    assert_eq!(
+        server.requests()?.len(),
+        before,
+        "invalid signing identity must fail before complete"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn capacity_response_retries_snapshot_without_repeating_pairing() -> Result {
+    let image = png()?;
+    let server = Https::start(vec![
+        Reply::Pair,
+        Reply::Confirm,
+        Reply::Busy,
+        Reply::Manifest(manifest(&image)?),
+        Reply::Logo(image),
+        Reply::Complete,
+    ])
+    .await?;
+    let directory = tempfile::tempdir()?;
+    let config = config(&server, directory.path())?;
+    drop(
+        reopen(&config, &MemorySecrets::default())?
+            .run(Some("ABCD-EFGH"))
+            .await?,
+    );
+    let seen = server.requests()?;
+    assert_eq!(
+        seen.iter()
+            .filter(|request| request.path.ends_with("enrollment/pair"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        seen.iter()
+            .filter(|request| request.path.ends_with("client/initialization"))
+            .count(),
+        2
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_json_value_is_absent_from_debug_and_error_chain() -> Result {
+    let image = png()?;
+    let mut value: Value = serde_json::from_slice(&manifest(&image)?)?;
+    let canary = "secret-json-canary-DO-NOT-LOG";
+    value["format_version"] = json!(canary);
+    let server = Https::start(vec![
+        Reply::Pair,
+        Reply::Confirm,
+        Reply::Manifest(serde_json::to_vec(&value)?),
+    ])
+    .await?;
+    let directory = tempfile::tempdir()?;
+    let config = config(&server, directory.path())?;
+    let Err(error) = reopen(&config, &MemorySecrets::default())?
+        .run(Some("ABCD-EFGH"))
+        .await
+    else {
+        return FixtureSnafu.fail();
+    };
+    assert!(!format!("{error:?}").contains(canary));
+    assert!(
+        !snafu::Report::from_error(error)
+            .to_string()
+            .contains(canary)
+    );
     Ok(())
 }

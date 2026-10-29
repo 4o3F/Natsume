@@ -1,4 +1,4 @@
-use std::{net::IpAddr, time::Duration};
+use std::{net::IpAddr, time::Instant};
 
 use sha2::{Digest as _, Sha256};
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
@@ -8,12 +8,13 @@ use uuid::Uuid;
 use super::{PhotoComponent, db};
 use crate::db::{PersistenceError, Transaction, TransactionError};
 
-const CODE_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 const CODE_LIFETIME: i64 = 600_000;
 const TOKEN_LIFETIME: i64 = 3_600_000;
 
 #[derive(Debug, Snafu)]
 pub(crate) enum EnrollmentError {
+    #[snafu(display("Photo pairing state is unavailable"))]
+    StatePoisoned { source: std::sync::PoisonError<()> },
     #[snafu(display("Photo source name is invalid"))]
     InvalidName,
     #[snafu(display("Photo identifier is invalid"))]
@@ -96,14 +97,7 @@ pub(crate) struct PhotoPairingCode {
     pub expires_at_unix_ms: i64,
 }
 // No Debug derive: this value contains a freshly issued credential.
-#[derive(serde::Serialize, specta::Type)]
-pub(crate) struct PhotoEnrollmentIssued {
-    pub source_id: String,
-    pub enrollment_id: String,
-    pub token: String,
-    #[specta(type = specta_typescript::Number)]
-    pub expires_at_unix_ms: i64,
-}
+pub(crate) use natsume_photo_protocol::PhotoEnrollmentIssued;
 
 #[derive(Clone)]
 pub(super) struct Credential {
@@ -113,10 +107,7 @@ pub(super) struct Credential {
 }
 
 pub(super) fn canonical_id(value: &str) -> Result<(), EnrollmentError> {
-    ensure!(
-        Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value),
-        InvalidIdSnafu
-    );
+    ensure!(natsume_photo_protocol::id(value), InvalidIdSnafu);
     Ok(())
 }
 
@@ -124,25 +115,8 @@ pub(super) fn hash(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
 }
 pub(super) fn credential(token: &str) -> Result<Credential, EnrollmentError> {
-    let mut parts = token.split('.');
-    let (Some("nph1"), Some(source), Some(enrollment), Some(secret), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return AuthenticationSnafu.fail();
-    };
-    ensure!(
-        canonical_id(source).is_ok()
-            && canonical_id(enrollment).is_ok()
-            && secret.len() == 64
-            && secret
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
-        AuthenticationSnafu
-    );
+    let (source, enrollment) =
+        natsume_photo_protocol::credential_parts(token).context(AuthenticationSnafu)?;
     Ok(Credential {
         source: source.to_owned(),
         enrollment: enrollment.to_owned(),
@@ -205,16 +179,12 @@ impl PhotoComponent {
             .map_err(TransactionError::into_error)
     }
 
-    pub(crate) async fn admit_pairing(&self, peer: IpAddr) -> Result<(), EnrollmentError> {
-        let mut attempts = self.pairing_attempts.lock().await;
-        let now = tokio::time::Instant::now();
-        attempts.retain(|(time, _)| now.duration_since(*time) < Duration::from_mins(1));
-        let peer = peer.to_canonical();
-        ensure!(
-            attempts.len() < 60 && attempts.iter().filter(|(_, ip)| *ip == peer).count() < 5,
-            RateLimitedSnafu
-        );
-        attempts.push_back((now, peer));
+    pub(crate) fn admit_pairing(&self, peer: IpAddr) -> Result<(), EnrollmentError> {
+        let mut attempts = self.pairing_attempts.lock().map_err(|source| {
+            drop(source.into_inner());
+            StatePoisonedSnafu.into_error(std::sync::PoisonError::new(()))
+        })?;
+        ensure!(attempts.admit(peer, Instant::now()), RateLimitedSnafu);
         Ok(())
     }
 
@@ -278,10 +248,7 @@ impl PhotoComponent {
         canonical_id(&id)?;
         let mut random = [0; 8];
         getrandom::fill(&mut random).context(EntropySnafu)?;
-        let raw: String = random
-            .iter()
-            .map(|byte| char::from(CODE_ALPHABET[usize::from(byte & 31)]))
-            .collect();
+        let raw = super::super::pairing::code(random);
         let digest = hash(raw.as_bytes());
         self.database
             .write(move |tx| {
@@ -314,11 +281,9 @@ impl PhotoComponent {
         public_key: String,
         version: String,
     ) -> Result<PhotoEnrollmentIssued, EnrollmentError> {
-        let raw = code.trim().replace('-', "").to_ascii_uppercase();
+        let raw = super::super::pairing::normalize(&code).context(InvalidPairingSnafu)?;
         ensure!(
-            raw.len() == 8
-                && raw.bytes().all(|byte| CODE_ALPHABET.contains(&byte))
-                && semver::Version::parse(&version).is_ok(),
+            semver::Version::parse(&version).is_ok(),
             InvalidPairingSnafu
         );
         let key: [u8; 32] = hex::decode(&public_key)

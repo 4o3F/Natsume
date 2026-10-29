@@ -326,7 +326,7 @@ async fn reopening_workspace_restores_roster_but_not_selection_group_or_pending_
     ));
     drop(workspace);
     assert_eq!(std::fs::read(database_path).context(IoSnafu)?, before);
-    // No session state file or new database is created.
-    assert_eq!(std::fs::read_dir(root).context(IoSnafu)?.count(), 1);
+    // Only the existing database and the persistent writer lock are present.
+    assert_eq!(std::fs::read_dir(root).context(IoSnafu)?.count(), 2);
     Ok(())
 }

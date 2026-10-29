@@ -80,7 +80,7 @@ const INVENTORY: &[Route] = &[
     Route {
         principal: Principal::Public,
         admin: false,
-        method: Method::GET,
+        method: Method::POST,
         path: "/photo/client/initialization",
     },
     Route {
@@ -118,6 +118,12 @@ const INVENTORY: &[Route] = &[
         admin: true,
         method: Method::POST,
         path: "/photo/sources/{source_id}/state",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::POST,
+        path: "/photo/sources/{source_id}/reset-enrollment",
     },
     Route {
         principal: Principal::Public,

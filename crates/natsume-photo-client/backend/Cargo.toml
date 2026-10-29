@@ -12,6 +12,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+natsume-photo-protocol = { path = "../../natsume-photo-protocol" }
 clap.workspace = true
 diesel.workspace = true
 diesel_migrations.workspace = true

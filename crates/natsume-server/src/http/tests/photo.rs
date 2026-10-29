@@ -188,8 +188,8 @@ impl Fixture {
             state,
             app,
             source,
-            token: issued.token,
-            enrollment: issued.enrollment_id,
+            token: issued.token.clone(),
+            enrollment: issued.enrollment_id.clone(),
             key,
         })
     }
@@ -225,14 +225,14 @@ impl Fixture {
 async fn immutable_roster_and_logo_survive_restart() -> TestResult {
     let mut f = Fixture::new().await?;
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::FORBIDDEN
     );
     f.confirm().await?;
     let first = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(first.status, StatusCode::OK);
     assert_eq!(first.headers[header::CACHE_CONTROL], "no-store");
@@ -294,7 +294,7 @@ async fn immutable_roster_and_logo_survive_restart() -> TestResult {
     )?);
     f.app = router(f.state.clone(), unused_web_root());
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .body,
         first.body
@@ -311,7 +311,7 @@ async fn completion_closes_downloads_and_only_replays_the_same_receipt() -> Test
     let f = Fixture::new().await?;
     f.confirm().await?;
     let first = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     let manifest: Value = serde_json::from_slice(&first.body)?;
     let hash = manifest["school_logos"][0]["sha256"]
@@ -370,7 +370,7 @@ async fn completion_closes_downloads_and_only_replays_the_same_receipt() -> Test
         StatusCode::CONFLICT
     );
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::UNAUTHORIZED
@@ -417,7 +417,11 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
     let issued = a.or(b)?;
     f.state
         .photo()
-        .confirm(&issued.token, issued.enrollment_id, f.key.clone())
+        .confirm(
+            &issued.token.clone(),
+            issued.enrollment_id.clone(),
+            f.key.clone(),
+        )
         .await?;
     assert!(matches!(
         f.state
@@ -433,7 +437,7 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
     assert!(
         f.state
             .photo()
-            .check_token(&issued.token, CredentialUse::Initialization)
+            .check_token(&issued.token.clone(), CredentialUse::Initialization)
             .await
             .is_err()
     );
@@ -443,7 +447,7 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
         .await?;
     f.state
         .photo()
-        .check_token(&issued.token, CredentialUse::Initialization)
+        .check_token(&issued.token.clone(), CredentialUse::Initialization)
         .await?;
     f.database
         .database
@@ -458,7 +462,7 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
     assert!(
         f.state
             .photo()
-            .check_token(&issued.token, CredentialUse::Initialization)
+            .check_token(&issued.token.clone(), CredentialUse::Initialization)
             .await
             .is_err()
     );
@@ -529,10 +533,10 @@ async fn protected_routes_authenticate_before_body_and_reject_other_credentials(
     let response = drive(&f.app, Request::builder().method(Method::POST).uri("/api/v2/photo/enrollment/pair").extension(ConnectInfo(PeerAddress("192.0.2.1".parse()?))).header(header::CONTENT_TYPE, "application/json").body(Body::from(json!({"code":"ABCD-EFGH", "signing_public_key":"00".repeat(32), "client_version":"2.11.0"}).to_string()))?).await?;
     assert_eq!(response.status, StatusCode::BAD_REQUEST);
     for _ in 0..5 {
-        f.state.photo().admit_pairing("192.0.2.2".parse()?).await?;
+        f.state.photo().admit_pairing("192.0.2.2".parse()?)?;
     }
     assert!(matches!(
-        f.state.photo().admit_pairing("192.0.2.2".parse()?).await,
+        f.state.photo().admit_pairing("192.0.2.2".parse()?),
         Err(EnrollmentError::RateLimited)
     ));
     Ok(())
@@ -544,7 +548,7 @@ async fn missing_logos_are_optional_and_corrupt_cache_is_rejected() -> TestResul
     std::fs::remove_file(f.logos.path().join("School.png"))?;
     f.confirm().await?;
     let snapshot = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     assert_eq!(snapshot.status, StatusCode::OK);
     let value: Value = serde_json::from_slice(&snapshot.body)?;
@@ -560,7 +564,7 @@ async fn missing_logos_are_optional_and_corrupt_cache_is_rejected() -> TestResul
         .await
         .map_err(crate::db::TransactionError::into_error)?;
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::INTERNAL_SERVER_ERROR
@@ -570,15 +574,16 @@ async fn missing_logos_are_optional_and_corrupt_cache_is_rejected() -> TestResul
 
 #[tokio::test]
 async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
-    let f = Fixture::new().await?;
+    let mut f = Fixture::new().await?;
     f.confirm().await?;
     let root = f
         .database
         .documents_path()
         .with_extension("photo-initializations");
+    std::fs::remove_dir(&root)?;
     std::fs::write(&root, b"not a directory")?;
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::INTERNAL_SERVER_ERROR
@@ -595,8 +600,16 @@ async fn failed_storage_does_not_publish_a_snapshot() -> TestResult {
         .map_err(crate::db::TransactionError::into_error)?;
     assert_eq!(count, 0);
     std::fs::remove_file(root)?;
+    // The store pins the validated directory handle. Restore it through the
+    // normal startup boundary, never by following a replacement pathname.
+    f.state = Arc::new(server_state::tests::for_test_with_logos(
+        f.database.database.clone(),
+        f.database.documents_path(),
+        f.logos.path().to_path_buf(),
+    )?);
+    f.app = router(f.state.clone(), unused_web_root());
     assert_eq!(
-        f.send(Method::GET, "client/initialization", Value::Null)
+        f.send(Method::POST, "client/initialization", Value::Null)
             .await?
             .status,
         StatusCode::OK
@@ -621,7 +634,7 @@ async fn secret_storage_and_resource_ownership_are_scoped() -> TestResult {
     assert!(stored.1.is_none());
     f.confirm().await?;
     let snapshot = f
-        .send(Method::GET, "client/initialization", Value::Null)
+        .send(Method::POST, "client/initialization", Value::Null)
         .await?;
     let manifest: Value = serde_json::from_slice(&snapshot.body)?;
     let hash = manifest["school_logos"][0]["sha256"]
@@ -645,7 +658,7 @@ async fn secret_storage_and_resource_ownership_are_scoped() -> TestResult {
         .await?;
     f.state
         .photo()
-        .confirm(&other.token, other.enrollment_id, f.key.clone())
+        .confirm(&other.token, other.enrollment_id.clone(), f.key.clone())
         .await?;
     assert!(matches!(
         f.state.photo().resource(&other.token, hash).await,
@@ -766,5 +779,53 @@ async fn admin_routes_and_public_pairing_form_a_complete_boundary() -> TestResul
             .iter()
             .all(|v| v.get("token").is_none() && v.get("public_key").is_none())
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshot_publication_is_rejected_after_shutdown_admission_closes() -> TestResult {
+    let f = Fixture::new().await?;
+    f.confirm().await?;
+    f.state.lifecycle().begin_shutdown();
+    let response = f
+        .send(Method::POST, "client/initialization", Value::Null)
+        .await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    f.state.lifecycle().wait().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshot_resource_rejects_symlinks_even_with_matching_bytes() -> TestResult {
+    let f = Fixture::new().await?;
+    f.confirm().await?;
+    let response = f
+        .send(Method::POST, "client/initialization", Value::Null)
+        .await?;
+    let manifest: Value = serde_json::from_slice(&response.body)?;
+    let id = manifest["initialization_id"]
+        .as_str()
+        .ok_or(TestError::missing("initialization id"))?;
+    let hash = manifest["school_logos"][0]["sha256"]
+        .as_str()
+        .ok_or(TestError::missing("logo hash"))?;
+    let file = f
+        .database
+        .documents_path()
+        .with_extension("photo-initializations")
+        .join(id)
+        .join(format!("{hash}.png"));
+    let outside = f.logos.path().join("outside.png");
+    std::fs::write(&outside, std::fs::read(&file)?)?;
+    std::fs::remove_file(&file)?;
+    std::os::unix::fs::symlink(outside, file)?;
+    let response = f
+        .send(
+            Method::GET,
+            &format!("client/resources/{hash}"),
+            Value::Null,
+        )
+        .await?;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
     Ok(())
 }

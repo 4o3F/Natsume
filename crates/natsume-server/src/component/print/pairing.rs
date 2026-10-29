@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, VecDeque},
-    net::IpAddr,
-    time::{Duration, Instant},
-};
+use std::{net::IpAddr, time::Instant};
 
 use sha2::{Digest as _, Sha256};
 use snafu::ensure;
@@ -13,9 +9,6 @@ use super::{
     db, lowercase_hash,
 };
 use crate::db::TransactionError;
-
-const CODE_ALPHABET: &[u8; 32] = b"23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-const WINDOW: Duration = Duration::from_mins(1);
 
 #[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PrintPrinter {
@@ -44,32 +37,10 @@ pub(crate) struct PrintClientIssued {
 
 /// Bounded by the global admission limit; rejected traffic cannot grow the maps.
 #[derive(Default)]
-pub(super) struct PairingLimits {
-    attempts: VecDeque<(Instant, IpAddr)>,
-    source_blocks: HashMap<IpAddr, Instant>,
-    global_block: Option<Instant>,
-}
-
+pub(super) struct PairingLimits(super::super::pairing::PairingBudget);
 impl PairingLimits {
     pub(super) fn check(&mut self, source: IpAddr, now: Instant) -> Result<(), PrintError> {
-        let source = source.to_canonical();
-        self.attempts
-            .retain(|(at, _)| now.duration_since(*at) < WINDOW);
-        self.source_blocks.retain(|_, until| *until > now);
-        if self.global_block.is_some_and(|until| until > now)
-            || self.source_blocks.contains_key(&source)
-        {
-            return RateLimitedSnafu.fail();
-        }
-        if self.attempts.len() >= 60 {
-            self.global_block = Some(now + WINDOW);
-            return RateLimitedSnafu.fail();
-        }
-        if self.attempts.iter().filter(|(_, ip)| *ip == source).count() >= 5 {
-            self.source_blocks.insert(source, now + WINDOW);
-            return RateLimitedSnafu.fail();
-        }
-        self.attempts.push_back((now, source));
+        ensure!(self.0.admit(source, now), RateLimitedSnafu);
         Ok(())
     }
 }
@@ -118,10 +89,7 @@ impl PrintComponent {
         let mut random = [0; 8];
         getrandom::fill(&mut random).map_err(|source| PrintError::Entropy { source })?;
         // Each uniformly random byte selects one of 32 symbols without modulo bias.
-        let raw: String = random
-            .iter()
-            .map(|byte| char::from(CODE_ALPHABET[usize::from(byte & 31)]))
-            .collect();
+        let raw = super::super::pairing::code(random);
         let hash: [u8; 32] = Sha256::digest(raw.as_bytes()).into();
         self.database
             .write(move |tx| {
@@ -188,16 +156,5 @@ impl PrintComponent {
 }
 
 fn normalize_code(value: &str) -> Result<String, PrintError> {
-    let value = value.trim();
-    let raw = if value.len() == 9 && value.as_bytes()[4] == b'-' {
-        format!("{}{}", &value[..4], &value[5..])
-    } else {
-        value.to_owned()
-    }
-    .to_ascii_uppercase();
-    ensure!(
-        raw.len() == 8 && raw.bytes().all(|byte| CODE_ALPHABET.contains(&byte)),
-        AuthenticationSnafu
-    );
-    Ok(raw)
+    super::super::pairing::normalize(value).ok_or_else(|| AuthenticationSnafu.build())
 }

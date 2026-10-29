@@ -10,13 +10,13 @@ use windows::{
     Storage::StorageFolder,
 };
 
-pub(super) struct NativeMonitor {
+pub(crate) struct NativeMonitor {
     query: StorageFileQueryResult,
     subscription: i64,
 }
 
 impl NativeMonitor {
-    pub(super) async fn open(path: &Path, wake: mpsc::Sender<()>) -> windows::core::Result<Self> {
+    pub(crate) async fn open(path: &Path, wake: mpsc::Sender<()>) -> windows::core::Result<Self> {
         // WinRT expects a DOS/UNC path, not canonicalize's verbatim prefix.
         // Keep UTF-16 intact so non-Unicode Windows names are not replaced.
         let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
@@ -51,7 +51,7 @@ impl NativeMonitor {
         Ok(monitor)
     }
 
-    pub(super) async fn refresh(&self) -> windows::core::Result<()> {
+    pub(crate) async fn refresh(&self) -> windows::core::Result<()> {
         // Reading the result arms the next coalesced ContentsChanged event.
         self.query.GetFilesAsync(0, 1)?.await?;
         Ok(())

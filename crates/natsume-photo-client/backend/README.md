@@ -12,7 +12,7 @@ cargo test -p natsume-photo-client --locked
 
 ## 持久化与调用关系
 
-`Initializer::run().await` 完成配对、确认、下载、暂存、完成回执与工作区发布。`Workspace::create_with_resources().await` 验证校徽，调用 `storage::create().await` 创建目录和安装 schema，再将名单、校徽引用和 ready 标记放在同一事务提交。`Workspace::open().await` 只打开现有文件，检查资料就绪、名单和校徽；不迁移、不检查旧格式版本。
+`Initializer::run().await` 完成配对、确认、下载、暂存、完成回执与工作区发布。`Workspace::create_with_logos().await` 从类型化下载资料验证校徽（内部准备不经过 resources.json），调用 `storage::create().await` 创建目录和安装 schema，再将名单、校徽引用和 ready 标记放在同一事务提交。`Workspace::open().await` 只打开现有文件，检查资料就绪、名单和校徽；不迁移、不检查旧格式版本。
 
 | 模块 | 职责 |
 | --- | --- |
@@ -22,7 +22,8 @@ cargo test -p natsume-photo-client --locked
 | `workspace/db.rs` | typed Diesel 查询、事务和持久化错误 |
 | `workspace/resources.rs` | 校徽输入、路径、限额、解码和哈希校验 |
 | `capture.rs` | 内存会话、队伍锁定、拍摄组与任务屏障 |
-| `hot_folder.rs` | 单一拥有者管理的收图状态机 |
+| `capture_session.rs` | 拍摄会话所有者与有序命令/快照协调 |
+| `hot_folder.rs` | 不拥有 Session 的增量收图状态 |
 | `hot_folder/native.rs` | 安全 WinRT 文件通知，不使用系统索引服务 |
 | `hot_folder/archive.rs` | 有界复制、源版本复核及不覆盖发布 |
 
@@ -42,10 +43,12 @@ cargo test -p natsume-photo-client --locked
 
 ## 测试文件组织
 
-所有测试内容集中在 `tests/`：根目录的 Rust 文件是集成测试，`unit/` 中的五个文件分别测试 capture、hot_folder、native、workspace_db 和 workspace_resources，`fixtures/` 保存测试输入。业务模块通过 `#[cfg(test)]` 和 `#[path = "..."]` 引用对应单元测试，因此仍能访问父模块的私有实现，不需要扩大业务 API 的可见性。`tests/unit/` 没有独立的集成测试入口，Cargo 不会重复运行这些测试。
+所有测试内容集中在 `tests/`：根目录的 Rust 文件是集成测试，`unit/` 中的七个文件分别测试 capture、hot_folder、native、workspace_db、workspace_resources、初始化日志锁的取消安全，以及显式运行的 Windows 凭据库读写，`fixtures/` 保存测试输入。业务模块通过 `#[cfg(test)]` 和 `#[path = "..."]` 引用对应单元测试，因此仍能访问父模块的私有实现，不需要扩大业务 API 的可见性。`tests/unit/` 没有独立的集成测试入口，Cargo 不会重复运行这些测试。
 
 ## 验证
 
 Windows 测试覆盖事务回滚、资料完整性、校徽限额、拍摄屏障、原生通知、分段写入、故障恢复、HTTPS 初始化和完成重放。`cargo clippy -p natsume-photo-client --all-targets --all-features -- -D warnings` 检查代码，`cargo doc -p natsume-photo-client --no-deps` 检查文档。
 
-Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows 的 `initialization` 测试可执行文件，通过临时 CA 和真实 HTTPS 完成初始化；双方显式 ignored 的联调用例需要一起执行，常规测试不会将它算为通过。原生 Windows 凭据库和真实相机仍需手工验收。全仓检查统一使用 `prek run --all-files`。
+Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows 的 `initialization` 测试可执行文件，通过临时 CA 和真实 HTTPS 完成初始化；双方显式 ignored 的联调用例需要一起执行，常规测试不会将它算为通过。Windows 凭据库的阻塞线程读写有显式运行的专项测试，使用隔离的临时条目并删除；完整现场恢复和真实相机仍需手工验收。全仓检查统一使用 `prek run --all-files`。
+
+工作区可写打开持有排他锁，并设置 SQLite 三秒 busy_timeout；后者只应对短暂数据库竞争，不能替代写锁。`Workspace::open_readonly()` 只打开就绪名单元信息，CLI 随后调用 `diagnose()` 完整检查资源、授权与签名凭据。初始化的 verify 与 doctor 使用同一校验入口；同一轮校徽按内容引用去重读取/解码，工作区发布前保留必要的重新校验。

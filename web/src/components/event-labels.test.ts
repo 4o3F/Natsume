@@ -84,6 +84,7 @@ it("labels Photo administrator audit routes and source targets", () => {
   for (const [route, label] of [
     ["photo_sources", "Photo sources"],
     ["photo_pairing_code", "Photo pairing code"],
+    ["photo_enrollment_reset", "Photo enrollment reset"],
     ["photo_source_state", "Photo source state"],
   ] as const) {
     expect(

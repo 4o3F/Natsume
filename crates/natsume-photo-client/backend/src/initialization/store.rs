@@ -7,13 +7,14 @@ use std::{
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, ensure};
 
-use super::{
-    Config, InvalidSnafu, IoSnafu, JsonSnafu, Result, WorkspaceSnafu,
-    wire::{self, Manifest},
-};
+use super::{Config, IoSnafu, JournalSnafu, Result, WorkspaceSnafu, wire};
 use crate::workspace::Workspace;
 
 const JOURNAL_LIMIT: u64 = 64 * 1024;
+
+#[cfg(test)]
+#[path = "../../tests/unit/initialization_store.rs"]
+mod tests;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -51,7 +52,8 @@ struct Record {
 pub(super) struct Store {
     pub root: PathBuf,
     pub state: State,
-    journal: File,
+    journal: std::sync::Arc<File>,
+    lock: std::sync::Arc<File>,
 }
 impl Store {
     pub fn open(config: &Config) -> Result<Self> {
@@ -61,55 +63,55 @@ impl Store {
                 && !target
                     .components()
                     .any(|c| matches!(c, Component::ParentDir)),
-            InvalidSnafu
+            super::PathSnafu
         );
-        let parent = std::fs::canonicalize(target.parent().ok_or_else(|| InvalidSnafu.build())?)
+        let parent = std::fs::canonicalize(target.parent().ok_or_else(|| JournalSnafu.build())?)
             .context(IoSnafu)?;
-        let name = target.file_name().ok_or_else(|| InvalidSnafu.build())?;
+        let name = target.file_name().ok_or_else(|| JournalSnafu.build())?;
         let target = parent.join(name);
         let mut staging_name = std::ffi::OsString::from(".");
         staging_name.push(name);
         staging_name.push(".photo-init");
         let root = parent.join(staging_name);
-        let fresh = match std::fs::create_dir(&root) {
-            Ok(()) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+        // Lock before creating the recovery directory or its first record.
+        // Keep this inode permanently; unlinking a lock file splits ownership.
+        let lock_path = root.with_extension("photo-init.lock");
+        let lock = lock_initialization(&lock_path)?;
+        match std::fs::create_dir(&root) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(source) => return Err(source).context(IoSnafu),
-        };
+        }
         ensure!(
             std::fs::canonicalize(&root).context(IoSnafu)? == root,
-            InvalidSnafu
+            JournalSnafu
         );
         let path = root.join("initialization.jsonl");
-        let journal = if fresh {
-            File::create_new(&path).context(IoSnafu)?
-        } else {
+        let fresh = !path.exists() || std::fs::metadata(&path).context(IoSnafu)?.len() == 0;
+        if fresh {
+            // Only an untouched directory may recover an absent first record.
+            // Pairing markers, prepared data or any other entries forbid reset.
+            for entry in std::fs::read_dir(&root).context(IoSnafu)? {
+                ensure!(entry.context(IoSnafu)?.path() == path, JournalSnafu);
+            }
+        }
+        if path.exists() {
             ensure!(
                 !std::fs::symlink_metadata(&path)
                     .context(IoSnafu)?
                     .is_symlink(),
-                InvalidSnafu
+                JournalSnafu
             );
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(&path)
-                .context(IoSnafu)?
-        };
-        // Reopen create_new's write-only handle for journal validation on every run.
-        drop(journal);
+        }
         let mut journal = OpenOptions::new()
             .read(true)
             .write(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
             .context(IoSnafu)?;
-        match journal.try_lock() {
-            Ok(()) => {}
-            Err(std::fs::TryLockError::WouldBlock) => return super::BusySnafu.fail(),
-            Err(std::fs::TryLockError::Error(source)) => return Err(source).context(IoSnafu),
-        }
         let state = if fresh {
-            ensure!(!target.exists(), InvalidSnafu);
+            ensure!(!target.exists(), JournalSnafu);
             State {
                 format_version: 1,
                 origin: config.server_url.clone(),
@@ -126,13 +128,13 @@ impl Store {
                 && state.origin == config.server_url
                 && state.target == target
                 && wire::id(&state.client_id),
-            InvalidSnafu
+            JournalSnafu
         );
         match &state.phase {
-            Phase::Unpaired => ensure!(state.source_id.is_none(), InvalidSnafu),
+            Phase::Unpaired => ensure!(state.source_id.is_none(), JournalSnafu),
             _ => ensure!(
                 state.source_id.as_deref().is_some_and(wire::id),
-                InvalidSnafu
+                JournalSnafu
             ),
         }
         if let Phase::Saved { receipt } | Phase::Completed { receipt } = &state.phase {
@@ -141,13 +143,14 @@ impl Store {
                     && wire::id(&receipt.initialization_id)
                     && wire::id(&receipt.request_id)
                     && wire::hash(&receipt.manifest_sha256),
-                InvalidSnafu
+                JournalSnafu
             );
         }
-        let mut store = Self {
+        let store = Self {
             root,
             state,
-            journal,
+            journal: std::sync::Arc::new(journal),
+            lock: std::sync::Arc::new(lock),
         };
         if fresh {
             store.append()?;
@@ -156,111 +159,115 @@ impl Store {
         Ok(store)
     }
 
-    fn append(&mut self) -> Result<()> {
-        let encoded = serde_json::to_vec(&self.state).context(JsonSnafu)?;
-        let mut line = serde_json::to_vec(&Record {
-            state: self.state.clone(),
-            sha256: wire::digest(&encoded),
+    // A cancelled async caller must not release ownership while blocking I/O
+    // can still append or publish. The task holds the same locked handle.
+    pub async fn blocking<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let ownership = std::sync::Arc::clone(&self.lock);
+        tokio::task::spawn_blocking(move || {
+            let _ownership = ownership;
+            operation()
         })
-        .context(JsonSnafu)?;
-        line.push(b'\n');
-        ensure!(
-            self.journal.metadata().context(IoSnafu)?.len() + line.len() as u64 <= JOURNAL_LIMIT,
-            InvalidSnafu
-        );
-        self.journal.write_all(&line).context(IoSnafu)?;
-        self.journal.sync_all().context(IoSnafu)?;
-        validate_directory(&self.root)
+        .await
+        .context(super::WorkerSnafu)?
     }
-    pub fn advance(&mut self, phase: Phase) -> Result<()> {
-        self.state.phase = phase;
-        self.append()
+    fn append(&self) -> Result<()> {
+        append(&self.journal, &self.root, &self.state)
     }
-    fn workspace_path(&self, receipt: &Receipt) -> PathBuf {
+    pub async fn advance(&mut self, phase: Phase) -> Result<()> {
+        let mut state = self.state.clone();
+        state.phase = phase;
+        let written = state.clone();
+        let journal = std::sync::Arc::clone(&self.journal);
+        let root = self.root.clone();
+        self.blocking(move || append(&journal, &root, &written))
+            .await?;
+        self.state = state;
+        Ok(())
+    }
+    async fn workspace_path(&self, receipt: &Receipt) -> Result<PathBuf> {
         let staged = self.root.join(&receipt.prepared);
-        if staged.exists() {
-            staged
-        } else {
-            self.state.target.clone()
-        }
+        let target = self.state.target.clone();
+        self.blocking(move || Ok(if staged.exists() { staged } else { target }))
+            .await
     }
-    pub async fn verify(&self, receipt: &Receipt) -> Result<Workspace> {
-        let path = self.workspace_path(receipt);
-        let bytes = read_bounded(
-            &path.join("initialization.json"),
-            wire::MANIFEST_LIMIT as u64,
-        )?;
+    pub async fn verify(
+        &self,
+        receipt: &Receipt,
+        secrets: &impl super::Secrets,
+    ) -> Result<Workspace> {
+        let path = self.workspace_path(receipt).await?;
+        let workspace = Workspace::open_for_verification(&path, true)
+            .await
+            .context(WorkspaceSnafu)?;
+        let identity = super::doctor::verify(&workspace, secrets).await?;
         ensure!(
-            wire::digest(&bytes) == receipt.manifest_sha256,
-            InvalidSnafu
+            identity.client_id == self.state.client_id
+                && identity.server_url == self.state.origin
+                && Some(&identity.source_id) == self.state.source_id.as_ref()
+                && identity.initialization_id == receipt.initialization_id
+                && identity.manifest_sha256 == receipt.manifest_sha256,
+            super::AuthorizationSnafu
         );
-        let manifest: Manifest = serde_json::from_slice(&bytes).context(JsonSnafu)?;
-        manifest.validate(
-            self.state
-                .source_id
-                .as_deref()
-                .ok_or_else(|| InvalidSnafu.build())?,
-        )?;
-        ensure!(
-            manifest.initialization_id == receipt.initialization_id,
-            InvalidSnafu
-        );
-        let identity: serde_json::Value =
-            serde_json::from_slice(&read_bounded(&path.join("authorization.json"), 8192)?)
-                .context(JsonSnafu)?;
-        ensure!(
-            identity["client_id"] == self.state.client_id
-                && identity["server_url"] == self.state.origin
-                && identity["source_id"] == manifest.source_id
-                && identity["dataset_id"] == manifest.dataset_id
-                && identity["initialization_id"] == receipt.initialization_id
-                && identity["manifest_sha256"] == receipt.manifest_sha256,
-            InvalidSnafu
-        );
-        let workspace = Workspace::open(&path).await.context(WorkspaceSnafu)?;
-        let roster = workspace.roster().await.context(WorkspaceSnafu)?;
-        let actual: std::collections::BTreeMap<_, _> =
-            roster.teams().iter().map(|t| (&t.account_id, t)).collect();
-        let expected: std::collections::BTreeMap<_, _> =
-            manifest.teams.iter().map(|t| (&t.account_id, t)).collect();
-        ensure!(actual == expected, InvalidSnafu);
-        for team in &manifest.teams {
-            let logo = workspace
-                .logo_path(&team.account_id)
-                .await
-                .context(WorkspaceSnafu)?;
-            let expected = manifest
-                .school_logos
-                .iter()
-                .find(|l| l.organization_id == team.organization_id);
-            match (logo, expected) {
-                (None, None) => {}
-                (Some(path), Some(expected)) => ensure!(
-                    wire::digest(&read_bounded(&path, wire::IMAGE_LIMIT as u64)?)
-                        == expected.sha256,
-                    InvalidSnafu
-                ),
-                _ => return InvalidSnafu.fail(),
-            }
-        }
         Ok(workspace)
     }
-    pub async fn publish(&self, receipt: &Receipt) -> Result<Workspace> {
-        drop(self.verify(receipt).await?);
+    pub async fn publish(
+        &self,
+        receipt: &Receipt,
+        secrets: &impl super::Secrets,
+    ) -> Result<Workspace> {
+        drop(self.verify(receipt, secrets).await?);
         let staged = self.root.join(&receipt.prepared);
-        if staged.exists() {
-            ensure!(!self.state.target.exists(), InvalidSnafu);
-            std::fs::rename(staged, &self.state.target).context(IoSnafu)?;
-            validate_directory(&self.root)?;
-            validate_directory(
-                self.state
-                    .target
-                    .parent()
-                    .ok_or_else(|| InvalidSnafu.build())?,
-            )?;
-        }
-        self.verify(receipt).await
+        let root = self.root.clone();
+        let target = self.state.target.clone();
+        self.blocking(move || {
+            if staged.exists() {
+                ensure!(!target.exists(), JournalSnafu);
+                std::fs::rename(staged, &target).context(IoSnafu)?;
+                validate_directory(&root)?;
+                validate_directory(target.parent().ok_or_else(|| JournalSnafu.build())?)?;
+            }
+            Ok(())
+        })
+        .await?;
+        Workspace::open_for_verification(&self.state.target, false)
+            .await
+            .context(WorkspaceSnafu)
     }
+}
+
+fn lock_initialization(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .context(IoSnafu)?;
+    match file.try_lock() {
+        Ok(()) => Ok(file),
+        Err(std::fs::TryLockError::WouldBlock) => super::BusySnafu.fail(),
+        Err(std::fs::TryLockError::Error(source)) => Err(source).context(IoSnafu),
+    }
+}
+
+fn append(mut journal: &File, root: &Path, state: &State) -> Result<()> {
+    let encoded = serde_json::to_vec(state).map_err(super::json_error)?;
+    let mut line = serde_json::to_vec(&Record {
+        state: state.clone(),
+        sha256: wire::digest(&encoded),
+    })
+    .map_err(super::json_error)?;
+    line.push(b'\n');
+    ensure!(
+        journal.metadata().context(IoSnafu)?.len() + line.len() as u64 <= JOURNAL_LIMIT,
+        JournalSnafu
+    );
+    journal.write_all(&line).context(IoSnafu)?;
+    journal.sync_all().context(IoSnafu)?;
+    validate_directory(root)
 }
 
 fn read_state(journal: &mut File) -> Result<State> {
@@ -269,21 +276,22 @@ fn read_state(journal: &mut File) -> Result<State> {
         .take(JOURNAL_LIMIT + 1)
         .read_to_end(&mut bytes)
         .context(IoSnafu)?;
-    ensure!(bytes.len() as u64 <= JOURNAL_LIMIT, InvalidSnafu);
+    ensure!(bytes.len() as u64 <= JOURNAL_LIMIT, JournalSnafu);
     let end = bytes
         .iter()
         .rposition(|b| *b == b'\n')
-        .ok_or_else(|| InvalidSnafu.build())?
+        .ok_or_else(|| JournalSnafu.build())?
         + 1;
     let mut state = None;
     for line in bytes[..end]
         .split(|b| *b == b'\n')
         .filter(|line| !line.is_empty())
     {
-        let record: Record = serde_json::from_slice(line).context(JsonSnafu)?;
+        let record: Record = serde_json::from_slice(line).map_err(super::json_error)?;
         ensure!(
-            record.sha256 == wire::digest(&serde_json::to_vec(&record.state).context(JsonSnafu)?),
-            InvalidSnafu
+            record.sha256
+                == wire::digest(&serde_json::to_vec(&record.state).map_err(super::json_error)?),
+            JournalSnafu
         );
         state = Some(record.state);
     }
@@ -291,7 +299,7 @@ fn read_state(journal: &mut File) -> Result<State> {
     journal.set_len(end as u64).context(IoSnafu)?;
     journal.seek(SeekFrom::End(0)).context(IoSnafu)?;
     journal.sync_all().context(IoSnafu)?;
-    state.ok_or_else(|| InvalidSnafu.build())
+    state.ok_or_else(|| JournalSnafu.build())
 }
 pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
@@ -300,7 +308,7 @@ pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         .take(limit + 1)
         .read_to_end(&mut bytes)
         .context(IoSnafu)?;
-    ensure!(bytes.len() as u64 <= limit, InvalidSnafu);
+    ensure!(bytes.len() as u64 <= limit, JournalSnafu);
     Ok(bytes)
 }
 pub(super) fn save_new_or_verify(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -311,16 +319,16 @@ pub(super) fn save_new_or_verify(path: &Path, bytes: &[u8]) -> Result<()> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => ensure!(
             read_bounded(path, bytes.len() as u64)? == bytes,
-            InvalidSnafu
+            JournalSnafu
         ),
         Err(source) => return Err(source).context(IoSnafu),
     }
-    validate_directory(path.parent().ok_or_else(|| InvalidSnafu.build())?)
+    validate_directory(path.parent().ok_or_else(|| JournalSnafu.build())?)
 }
 pub(super) fn validate_directory(path: &Path) -> Result<()> {
     ensure!(
         std::fs::metadata(path).context(IoSnafu)?.is_dir(),
-        InvalidSnafu
+        JournalSnafu
     );
     Ok(())
 }
