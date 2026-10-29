@@ -1,19 +1,20 @@
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use diesel::{
-    Connection, RunQueryDsl,
+    Connection, QueryDsl, RunQueryDsl,
     connection::{CacheSize, Instrumentation, InstrumentationEvent, SimpleConnection},
+    migration::MigrationSource,
     r2d2::{ConnectionManager, CustomizeConnection, NopErrorHandler, Pool},
-    sql_types::{Integer, Text},
-    sqlite::SqliteConnection,
+    sql_types::{Bool, Integer, Text},
+    sqlite::{Sqlite, SqliteConnection},
 };
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness, embed_migrations};
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use snafu::Snafu;
+use snafu::{IntoError as _, ResultExt as _, Snafu};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("diesel/business/migrations");
@@ -68,14 +69,89 @@ pub(crate) struct Transaction<'a> {
     connection: &'a mut SqliteConnection,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SchemaState {
+    Empty,
+    Current,
+}
+
 impl Transaction<'_> {
     pub(crate) fn connection(&mut self) -> &mut SqliteConnection {
         self.connection
+    }
+
+    pub(crate) fn schema_state(&mut self) -> Result<SchemaState, PersistenceError> {
+        use crate::diesel_schema::{devices, operator_accounts, site_identity};
+
+        // Diesel's migration harness runs CREATE TABLE before reading versions.
+        // SQLite and Diesel migration metadata have no generated schema tables.
+        let has_migrations = diesel::select(
+            diesel::dsl::sql::<Bool>(
+                "EXISTS (SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ",
+            )
+            .bind::<Text, _>("__diesel_schema_migrations")
+            .sql(")"),
+        )
+        .get_result::<bool>(self.connection())?;
+        let applied = if has_migrations {
+            diesel::dsl::sql::<Text>(
+                "SELECT version FROM __diesel_schema_migrations ORDER BY version",
+            )
+            .load::<String>(self.connection())?
+        } else {
+            Vec::new()
+        };
+        if applied.is_empty() {
+            let has_unknown_schema = diesel::select(diesel::dsl::sql::<Bool>(
+                "EXISTS (SELECT 1 FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' \
+                 AND NOT (type = 'table' AND name = '__diesel_schema_migrations'))",
+            ))
+            .get_result::<bool>(self.connection())?;
+            if has_unknown_schema {
+                return Err(PersistenceError::invalid("bootstrap schema"));
+            }
+            return Ok(SchemaState::Empty);
+        }
+        let migrations = <EmbeddedMigrations as MigrationSource<Sqlite>>::migrations(&MIGRATIONS);
+        let migrations = migrations.map_err(|source| {
+            let source = match source.downcast::<diesel_migrations::MigrationError>() {
+                Ok(source) => *source,
+                Err(source) => {
+                    diesel_migrations::MigrationError::IoError(std::io::Error::other(source))
+                }
+            };
+            EmbeddedMigrationsSnafu.into_error(source)
+        })?;
+        let mut expected = migrations
+            .iter()
+            .map(|migration| migration.name().version().to_string())
+            .collect::<Vec<_>>();
+        expected.sort();
+        if applied != expected {
+            return Err(PersistenceError::invalid("schema migration versions"));
+        }
+        site_identity::table
+            .select(site_identity::all_columns)
+            .limit(0)
+            .execute(self.connection())?;
+        operator_accounts::table
+            .select(operator_accounts::all_columns)
+            .limit(0)
+            .execute(self.connection())?;
+        devices::table
+            .select(devices::all_columns)
+            .limit(0)
+            .execute(self.connection())?;
+        Ok(SchemaState::Current)
     }
 }
 
 #[derive(Debug, Snafu)]
 pub(crate) enum PersistenceError {
+    #[snafu(display("embedded migrations could not be read"))]
+    EmbeddedMigrations {
+        source: diesel_migrations::MigrationError,
+    },
     #[snafu(display("persisted data is invalid ({field})"))]
     InvalidPersistedData {
         field: &'static str,
@@ -225,6 +301,33 @@ impl<E> From<diesel::result::Error> for TransactionError<E> {
 }
 
 impl Database {
+    pub(crate) fn connect_read_only(path: &Path) -> Result<Option<Self>, DatabaseError> {
+        let path_text = path
+            .to_str()
+            .filter(|_| path.is_absolute())
+            .ok_or(DatabaseError::InvalidConfiguration)?;
+        if !path
+            .try_exists()
+            .context(database_error::ReadOnlyPathSnafu)?
+        {
+            return Ok(None);
+        }
+        let encoded = utf8_percent_encode(path_text, SQLITE_PATH_ENCODE_SET);
+        let manager = ConnectionManager::new(format!("file:{encoded}?mode=ro"));
+        let pool = Pool::builder()
+            .max_size(1)
+            .min_idle(Some(0))
+            .connection_timeout(Duration::from_secs(30))
+            .error_handler(Box::new(NopErrorHandler))
+            .connection_customizer(Box::new(ReadOnlySqliteConnectionCustomizer))
+            .build(manager)
+            .context(database_error::ConnectionFailedSnafu)?;
+        Ok(Some(Self {
+            pool,
+            work: Arc::new(Semaphore::new(1)),
+        }))
+    }
+
     /// Connects to `SQLite` and applies embedded migrations.
     ///
     /// # Errors
@@ -511,6 +614,21 @@ fn diesel_database_url(config: &DatabaseConfig) -> Result<String, DatabaseError>
 }
 
 #[derive(Debug)]
+struct ReadOnlySqliteConnectionCustomizer;
+
+impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error>
+    for ReadOnlySqliteConnectionCustomizer
+{
+    fn on_acquire(&self, connection: &mut SqliteConnection) -> Result<(), diesel::r2d2::Error> {
+        connection
+            .batch_execute("PRAGMA busy_timeout = 5000;")
+            .map_err(diesel::r2d2::Error::QueryError)?;
+        connection.set_instrumentation(SqliteQueryInstrumentation::default());
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 struct SqliteConnectionCustomizer;
 
 impl CustomizeConnection<SqliteConnection, diesel::r2d2::Error> for SqliteConnectionCustomizer {
@@ -578,6 +696,8 @@ fn sqlite_pragma_values(
 pub(crate) enum DatabaseError {
     #[snafu(display("the database configuration is invalid"))]
     InvalidConfiguration,
+    #[snafu(display("the read-only database path could not be inspected"))]
+    ReadOnlyPath { source: std::io::Error },
     #[snafu(display("the database file could not be opened"))]
     File { source: std::io::Error },
     #[snafu(display("the database connection failed"))]
@@ -633,7 +753,7 @@ pub(crate) mod tests {
 
     use super::{
         DATABASE_CONNECTIONS, Database, DatabaseConfig, DatabaseError, PersistenceError,
-        TransactionError, diesel_database_url, sqlite_pragma_values,
+        SchemaState, TransactionError, diesel_database_url, sqlite_pragma_values,
     };
 
     impl Database {
@@ -771,6 +891,174 @@ pub(crate) mod tests {
         Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true))
             .await
             .unwrap_or_else(|error| panic!("fixture database: {error}"))
+    }
+
+    #[test]
+    fn read_only_missing_database_does_not_create_artifacts()
+    -> Result<(), crate::test_error::TestError> {
+        let fixture = DatabaseFixture::new();
+        assert!(Database::connect_read_only(&fixture.path)?.is_none());
+        assert!(!fixture.path.exists());
+        assert!(!fixture.wal_path().exists());
+        assert!(!fixture.shm_path().exists());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_only_database_reads_migrated_schema_and_rejects_writes()
+    -> Result<(), crate::test_error::TestError> {
+        use crate::diesel_schema::site_identity;
+        use diesel::{ExpressionMethods, QueryDsl};
+
+        let fixture = DatabaseFixture::new();
+        let writer = fixture_database(&fixture).await;
+        writer
+            .write(|transaction| {
+                diesel::insert_into(site_identity::table)
+                    .values((
+                        site_identity::singleton.eq(1),
+                        site_identity::fleet_namespace_uuid.eq(Uuid::now_v7().to_string()),
+                    ))
+                    .execute(transaction.connection())
+            })
+            .await?;
+        let reader = Database::connect_read_only(&fixture.path)?.ok_or(
+            crate::test_error::TestError::missing("missing read-only database"),
+        )?;
+        assert_eq!(reader.pool.max_size(), 1);
+        assert_eq!(reader.pool.min_idle(), Some(0));
+        assert_eq!(reader.work.available_permits(), 1);
+        reader
+            .read(|transaction| {
+                assert_eq!(transaction.schema_state()?, SchemaState::Current);
+                assert_eq!(
+                    site_identity::table
+                        .select(site_identity::singleton)
+                        .first::<i32>(transaction.connection())?,
+                    1
+                );
+                assert!(matches!(
+                    diesel::delete(site_identity::table).execute(transaction.connection()),
+                    Err(diesel::result::Error::DatabaseError(
+                        _, information
+                    )) if information.message() == "attempt to write a readonly database"
+                ));
+                Ok::<_, PersistenceError>(())
+            })
+            .await?;
+        assert!(
+            reader
+                .write(|transaction| diesel::delete(site_identity::table)
+                    .execute(transaction.connection()))
+                .await
+                .is_err()
+        );
+        let journal_mode = reader
+            .read(|transaction| {
+                diesel::dsl::sql::<diesel::sql_types::Text>("PRAGMA journal_mode")
+                    .get_result::<String>(transaction.connection())
+            })
+            .await?;
+        assert_eq!(journal_mode, "wal");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_only_unmigrated_database_stays_uninitialized_and_preserves_journal_mode()
+    -> Result<(), crate::test_error::TestError> {
+        for contents in [
+            None,
+            Some("CREATE TABLE unrelated (value INTEGER)"),
+            Some(
+                "CREATE TABLE __diesel_schema_migrations (version TEXT PRIMARY KEY NOT NULL, run_on TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP)",
+            ),
+        ] {
+            let fixture = DatabaseFixture::new();
+            fs::write(&fixture.path, [])?;
+            if let Some(contents) = contents {
+                let mut connection = SqliteConnection::establish(&diesel_database_url(
+                    &DatabaseConfig::new(&fixture.path, false),
+                )?)?;
+                connection.batch_execute(contents)?;
+            }
+            let before = fs::read(&fixture.path)?;
+            let reader = Database::connect_read_only(&fixture.path)?.ok_or(
+                crate::test_error::TestError::missing("missing read-only database"),
+            )?;
+            reader
+                .read(move |transaction| {
+                    if contents.is_some_and(|sql| sql.contains("unrelated")) {
+                        assert!(transaction.schema_state().is_err());
+                    } else {
+                        assert_eq!(transaction.schema_state()?, SchemaState::Empty);
+                    }
+                    let journal_mode =
+                        diesel::dsl::sql::<diesel::sql_types::Text>("PRAGMA journal_mode")
+                            .get_result::<String>(transaction.connection())?;
+                    assert_eq!(journal_mode, "delete");
+                    Ok::<_, PersistenceError>(())
+                })
+                .await?;
+            assert_eq!(fs::read(&fixture.path)?, before);
+            assert!(!fixture.wal_path().exists());
+            assert!(!fixture.shm_path().exists());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_only_schema_rejects_missing_tables_columns_and_unrecognized_versions()
+    -> Result<(), crate::test_error::TestError> {
+        for damage in [
+            "DELETE FROM __diesel_schema_migrations WHERE version = (SELECT MAX(version) FROM __diesel_schema_migrations)",
+            "DROP TABLE devices",
+            "DROP TABLE operator_accounts",
+            "DROP TABLE site_identity",
+            "ALTER TABLE devices DROP COLUMN client_ip",
+            "UPDATE __diesel_schema_migrations SET version = '99999999999999' WHERE version = (SELECT MAX(version) FROM __diesel_schema_migrations)",
+            "DELETE FROM __diesel_schema_migrations WHERE version = (SELECT MIN(version) FROM __diesel_schema_migrations)",
+        ] {
+            let fixture = DatabaseFixture::new();
+            let writer = fixture_database(&fixture).await;
+            writer
+                .write(move |transaction| transaction.connection().batch_execute(damage))
+                .await?;
+            let reader = Database::connect_read_only(&fixture.path)?.ok_or(
+                crate::test_error::TestError::missing("missing read-only database"),
+            )?;
+            assert!(
+                reader
+                    .read(|transaction| {
+                        transaction.schema_state()?;
+                        Ok::<_, PersistenceError>(())
+                    })
+                    .await
+                    .is_err(),
+                "accepted damaged schema: {damage}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn read_only_schema_rejects_corrupt_database() -> Result<(), crate::test_error::TestError>
+    {
+        let fixture = DatabaseFixture::new();
+        fs::write(&fixture.path, b"not a SQLite database")?;
+        let reader = Database::connect_read_only(&fixture.path)?.ok_or(
+            crate::test_error::TestError::missing("missing read-only database"),
+        )?;
+        assert!(
+            reader
+                .read(|transaction| {
+                    transaction.schema_state()?;
+                    Ok::<_, PersistenceError>(())
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(fs::read(&fixture.path)?, b"not a SQLite database");
+        Ok(())
     }
 
     #[test]

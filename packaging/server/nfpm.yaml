@@ -15,6 +15,9 @@ contents:
   - src: ${RUST_RELEASE_DIR}/natsume-server
     dst: /usr/bin/natsume-server
     file_info: {mode: 0o755}
+  - src: ${RUST_RELEASE_DIR}/natsume-server-setup
+    dst: /usr/bin/natsume-server-setup
+    file_info: {mode: 0o755}
   - src: web/dist/
     dst: /usr/share/natsume-server/web/
     type: tree

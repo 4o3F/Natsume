@@ -1,0 +1,50 @@
+[package]
+name = "natsume-server-setup"
+description = "Interactive first-install setup for the Natsume Server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "natsume-server-setup"
+path = "src/main.rs"
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+natsume-server = { path = "../natsume-server" }
+rcgen = { workspace = true, features = ["pem", "x509-parser", "zeroize"] }
+x509-parser = { workspace = true, features = ["verify"] }
+pkcs8.workspace = true
+pkcs5.workspace = true
+sec1.workspace = true
+rustls-pki-types.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+sha2.workspace = true
+hex.workspace = true
+time.workspace = true
+toml = { workspace = true, features = ["display"] }
+snafu.workspace = true
+clap.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+inquire.workspace = true
+chrono.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "termios"] }
+tempfile.workspace = true
+signal-hook = "0.3.18"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio-rustls.workspace = true
+
+[lints]
+workspace = true

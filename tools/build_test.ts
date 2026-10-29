@@ -385,13 +385,18 @@ Deno.test("module checks invoke Clippy once and leave Web validation to its own 
     const calls = await Deno.readTextFile(resolve(directory, "calls.log"));
     assert(
       calls ===
-        "cargo clippy -p natsume-server --all-targets --all-features --frozen -- -D warnings\n",
+        "cargo clippy -p natsume-server -p natsume-server-setup --all-targets --all-features --frozen -- -D warnings\n",
       `Unexpected Rust commands: ${calls}`,
     );
     const webLog = resolve(directory, "web/calls.log");
     assert(!await exists(webLog), "Server repeated the Web compile check");
     const tested = await command("tools/build.ts", "test", "server");
     assert(tested.success, new TextDecoder().decode(tested.stderr));
+    assert(
+      await Deno.readTextFile(resolve(directory, "calls.log")) ===
+        `${calls}cargo test -p natsume-server -p natsume-server-setup --all-features --frozen\n`,
+      "Server tests omitted a crate or repeated a Rust command",
+    );
     assert(!await exists(webLog), "Server repeated Web unit tests");
     const web = await command("tools/build.ts", "check", "web");
     assert(web.success, new TextDecoder().decode(web.stderr));
@@ -432,11 +437,17 @@ cp "$config" "rendered-$name.yaml"
     const shlibdeps = resolve(directory, "bin/dpkg-shlibdeps");
     await Deno.writeTextFile(
       shlibdeps,
-      "#!/bin/sh\nprintf 'shlibs:Depends=libc6\\n'\n",
+      `#!/bin/sh
+printf '%s\\n' "$@" >> "${directory}/shlibdeps-args.log"
+printf 'shlibs:Depends=libc6\\n'
+`,
     );
     await Deno.chmod(shlibdeps, 0o755);
     for (
       const name of [
+        ...packageTargets.server.binaries.map((name) =>
+          `target/release/${name}`
+        ),
         "target/release/natsume-print-domjudge",
         "target/print-domjudge/runtime/typst",
       ]
@@ -461,8 +472,36 @@ cp "$config" "rendered-$name.yaml"
         ) as {
           version: string;
           version_schema: string;
+          depends?: string[];
+          contents: {
+            src: string;
+            dst: string;
+            file_info?: { mode: string | number };
+          }[];
         };
         assert(config.version === version, `${name}: version changed`);
+        if (name === "server") {
+          assert(
+            config.depends?.includes("libc6") === true,
+            "Server dependencies omitted",
+          );
+          const setup = config.contents.find((entry) =>
+            entry.dst === "/usr/bin/natsume-server-setup"
+          );
+          assert(
+            Number(setup?.file_info?.mode) === 0o755,
+            "Setup executable missing or not 0755",
+          );
+          const scanned = await Deno.readTextFile(
+            resolve(directory, "shlibdeps-args.log"),
+          );
+          for (const binary of ["natsume-server", "natsume-server-setup"]) {
+            assert(
+              scanned.includes(`/usr/bin/${binary}\n`),
+              `Dependency scan omitted ${binary}`,
+            );
+          }
+        }
         assert(
           config.version_schema === "none",
           `${name}: nFPM must not normalize Debian versions`,

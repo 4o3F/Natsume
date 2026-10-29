@@ -42,7 +42,7 @@ jobs:
         with:
           module: rust
           runner: ${{ matrix.os }}
-          ubuntu-packages: dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev pkg-config
+          ubuntu-packages: dbus-daemon fonts-noto-cjk libfontconfig1-dev libgl1-mesa-dev libudev-dev openssl pkg-config
       - name: Rust format
         run: cargo fmt --all --check
       - name: Build-script checks

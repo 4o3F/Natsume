@@ -169,15 +169,22 @@ fn load_server_config(
     certificate_path: &Path,
     private_key_path: &Path,
 ) -> Result<Arc<rustls::ServerConfig>, TlsError> {
+    let certificate = CertificateDer::from(read_private_file(certificate_path)?);
+    let private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(read_private_file(
+        private_key_path,
+    )?));
+    server_config_from_der(certificate, private_key)
+}
+
+pub(crate) fn server_config_from_der(
+    certificate: CertificateDer<'static>,
+    mut private_key: PrivateKeyDer<'static>,
+) -> Result<Arc<rustls::ServerConfig>, TlsError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .map_err(|source| TlsError::Identity { source })?
         .with_no_client_auth();
-    let certificate = CertificateDer::from(read_private_file(certificate_path)?);
-    let mut private_key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(read_private_file(
-        private_key_path,
-    )?));
     let signing_key = load_signing_key(&mut private_key)?;
     let certified_key = CertifiedKey::new(vec![certificate], signing_key);
     certified_key
@@ -277,7 +284,10 @@ pub(crate) mod tests {
         http,
     };
 
-    use super::{ALPN_HTTP_1_1, TlsError, TlsListener, load_server_config, load_signing_key};
+    use super::{
+        ALPN_HTTP_1_1, TlsError, TlsListener, load_server_config, load_signing_key,
+        server_config_from_der,
+    };
 
     #[derive(Debug, snafu::Snafu)]
     pub(crate) enum TestSupportError {
@@ -656,6 +666,45 @@ pub(crate) mod tests {
         {
             return Err(TestFailure::TlsPolicyWasNotExact);
         }
+        Ok(())
+    }
+
+    #[test]
+    fn server_config_from_der_accepts_matching_identity() -> Result<(), crate::test_error::TestError>
+    {
+        let identity = TestIdentity::new(LOCALHOST)?;
+        let config = server_config_from_der(
+            CertificateDer::from(fs::read(identity.certificate_path())?),
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(fs::read(
+                identity.private_key_path(),
+            )?)),
+        )?;
+        assert_eq!(
+            config.alpn_protocols,
+            vec![ALPN_HTTP_1_1.to_vec()],
+            "DER configuration must preserve HTTP/1.1 ALPN"
+        );
+        assert_eq!(
+            config.max_early_data_size, 0,
+            "DER configuration must disable early data"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn server_config_from_der_rejects_mismatched_key() -> Result<(), crate::test_error::TestError> {
+        let identity = TestIdentity::new(LOCALHOST)?;
+        let other_identity = TestIdentity::new(LOCALHOST)?;
+        let result = server_config_from_der(
+            CertificateDer::from(fs::read(identity.certificate_path())?),
+            PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(fs::read(
+                other_identity.private_key_path(),
+            )?)),
+        );
+        assert!(
+            matches!(result, Err(TlsError::Identity { .. })),
+            "DER configuration must reject a key that does not match the certificate"
+        );
         Ok(())
     }
 

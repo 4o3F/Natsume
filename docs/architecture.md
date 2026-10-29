@@ -249,7 +249,7 @@ Client 使用固定三个来源：
 | Control Root | 离线，不在运行中 Server | 签发 Server TLS leaf |
 | Local Origin CA | Server 私有状态目录 | 在 Active Session 中签发每台 Device 的 Gateway leaf |
 
-Server TLS leaf 必须包含部署实际 Control Endpoint 的 IP-SAN。Server 只读取离线提供的 leaf/key，不自签、不自动生成回退。
+Server TLS leaf 必须包含部署实际 Control Endpoint 的 IP-SAN。Server 只读取离线提供的 leaf/key，不自签、不自动生成回退。部署方可显式运行随包提供的 `natsume-server-setup` 生成或导入这些材料，这是部署操作而非 Server 回退；Control Root 私钥默认不落盘，不进入服务目录。
 
 ### 5.4 秘密边界
 

@@ -64,7 +64,7 @@ impl GatewayIssuer {
         result
     }
 
-    fn new(
+    pub(super) fn new(
         ca_certificate_der: &CertificateDer<'_>,
         ca_private_key_der: &PrivatePkcs8KeyDer<'_>,
         packaged_trust_root_der: &CertificateDer<'_>,
@@ -335,7 +335,7 @@ mod tests {
     use super::{
         CertificateParams, DistinguishedName, GatewayIssuer, GatewayIssuerError, PrivatePkcs8KeyDer,
     };
-    use crate::config::GatewaySiteConfig;
+    use crate::{component::gateway::GatewayComponent, config::GatewaySiteConfig};
 
     const GATEWAY_HOSTNAME: &str = "gateway.contest.example";
     const GATEWAY_NOT_AFTER: &str = "2099-01-02T00:00:00Z";
@@ -570,6 +570,58 @@ mod tests {
         GatewayIssuer::load(&certificate_path, &key_path, &root_path, &site()?)
             .map(|_| ())
             .map_err(|source| TestError::from(crate::test_error::TestError::from(source)))
+    }
+
+    #[test]
+    fn file_and_der_validation_agree_on_origin_materials() -> Result<(), TestError> {
+        let ca = TestCa::generate()?;
+        let other = TestCa::generate()?;
+        let directory = TestDirectory::new()?;
+        let certificate_path = directory.write("origin-ca.der", ca.certificate_der.as_ref())?;
+        let site = site()?;
+
+        for (key, root, expected_error) in [
+            (&ca.private_key_der, &ca.certificate_der, None),
+            (
+                &other.private_key_der,
+                &ca.certificate_der,
+                Some("Origin CA loading or validation failed"),
+            ),
+            (
+                &ca.private_key_der,
+                &other.certificate_der,
+                Some("Origin CA issuing certificate and packaged trust root differ"),
+            ),
+        ] {
+            let key_path = directory.write("origin-ca-key.pk8", key)?;
+            for encoded_root in [root.as_ref().to_vec(), pem(root.as_ref())] {
+                let root_path = directory.write("local-origin-ca.crt", &encoded_root)?;
+                let file_result = GatewayComponent::validate_files(
+                    &certificate_path,
+                    &key_path,
+                    &root_path,
+                    &site,
+                );
+                let der_result = GatewayComponent::validate_der(
+                    &ca.certificate_der,
+                    &PrivatePkcs8KeyDer::from(key.as_slice()),
+                    root,
+                    &site,
+                );
+                let file_error = file_result.err().map(|error| error.to_string());
+                let der_error = der_result.err().map(|error| error.to_string());
+                assert_eq!(
+                    file_error.as_deref(),
+                    expected_error,
+                    "file validation must preserve the expected rejection"
+                );
+                assert_eq!(
+                    der_error, file_error,
+                    "DER and file validation must accept or reject the same materials"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[test]
