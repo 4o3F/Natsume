@@ -36,10 +36,14 @@ pub enum PromptId {
     GatewayHostname,
     /// Collects the upstream HTTPS origin.
     DomjudgeOrigin,
-    /// Collects the competition completion time.
-    ContestEnd,
-    /// Collects the Gateway certificate validity deadline.
-    GatewayNotAfter,
+    /// Selects the local competition completion date.
+    ContestEndDate,
+    /// Collects the local competition completion time.
+    ContestEndTime,
+    /// Selects the local Gateway certificate expiry date.
+    GatewayNotAfterDate,
+    /// Collects the local Gateway certificate expiry time.
+    GatewayNotAfterTime,
     /// Chooses how to obtain the Control trust anchor.
     ControlCaSource,
     /// Locates an existing Control certificate.
@@ -140,6 +144,17 @@ pub trait Interaction {
         default: Option<&str>,
         help: Option<&str>,
     ) -> Result<Answer<String>, InteractionError>;
+    /// Selects a calendar date, optionally excluding dates before the supplied minimum.
+    ///
+    /// # Errors
+    /// Returns interruption, date conversion failures, or terminal failures.
+    fn date(
+        &mut self,
+        id: PromptId,
+        prompt: &str,
+        default: time::Date,
+        min: Option<time::Date>,
+    ) -> Result<Answer<time::Date>, InteractionError>;
     /// Reads a yes/no decision with an explicit default.
     ///
     /// # Errors
@@ -199,6 +214,21 @@ pub enum InteractionError {
     Output {
         /// Original terminal I/O failure.
         source: std::io::Error,
+    },
+    /// A calendar date cannot be represented by the prompt backend.
+    #[snafu(display("calendar date is outside the supported range"))]
+    CalendarDateOutOfRange,
+    /// A prompt backend calendar component cannot fit the application's component type.
+    #[snafu(display("calendar component is outside the supported range"))]
+    CalendarComponent {
+        /// Original numeric conversion failure.
+        source: std::num::TryFromIntError,
+    },
+    /// The prompt backend returned an unsupported calendar component.
+    #[snafu(display("invalid calendar date"))]
+    CalendarDate {
+        /// Original calendar component validation failure.
+        source: time::error::ComponentRange,
     },
     /// No available selection or accepted phrase was supplied.
     #[snafu(display("prompt has no available answers"))]

@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 
 pub(super) enum Reply {
     Text(String),
+    Date(time::Date),
+    Default,
     Secret(SecretString),
     Select(usize),
     Confirm(bool),
@@ -12,6 +14,14 @@ pub(super) enum Reply {
     Interrupt,
 }
 impl Reply {
+    /// Builds a calendar answer from a fixture's UTC date.
+    pub fn date(timestamp: &str) -> Self {
+        match time::OffsetDateTime::parse(timestamp, &time::format_description::well_known::Rfc3339)
+        {
+            Ok(timestamp) => Self::Date(timestamp.date()),
+            Err(error) => panic!("invalid scripted date {timestamp:?}: {error}"),
+        }
+    }
     pub fn text(text: &str) -> Self {
         Self::Text(text.into())
     }
@@ -36,6 +46,8 @@ pub(super) struct ScriptedInteraction {
     pub summary_changed_file: Option<PathBuf>,
     pub selections: Vec<Selection>,
     pub defaults: Vec<(PromptId, String)>,
+    /// Calendar defaults and lower bounds observed by the script.
+    pub date_defaults: Vec<(PromptId, time::Date, Option<time::Date>)>,
     pub reveals: usize,
     pub clears: usize,
 }
@@ -51,6 +63,7 @@ impl ScriptedInteraction {
             summary_changed_file: None,
             selections: Vec::new(),
             defaults: Vec::new(),
+            date_defaults: Vec::new(),
             reveals: 0,
             clears: 0,
         }
@@ -139,8 +152,35 @@ impl Interaction for ScriptedInteraction {
         }
         match self.next(id)? {
             Reply::Text(text) => Ok(Answer::Value(text)),
+            Reply::Default => {
+                let Some(default) = default else {
+                    panic!("script requested a missing text default")
+                };
+                Ok(Answer::Value(default.into()))
+            }
             Reply::Back => Ok(Answer::Back),
             _ => panic!("expected text at {id:?}"),
+        }
+    }
+    fn date(
+        &mut self,
+        id: PromptId,
+        _prompt: &str,
+        default: time::Date,
+        min: Option<time::Date>,
+    ) -> Result<Answer<time::Date>, InteractionError> {
+        self.date_defaults.push((id, default, min));
+        match self.next(id)? {
+            Reply::Default => Ok(Answer::Value(default)),
+            Reply::Date(date) => {
+                assert!(
+                    min.is_none_or(|min| date >= min),
+                    "script date below calendar minimum"
+                );
+                Ok(Answer::Value(date))
+            }
+            Reply::Back => Ok(Answer::Back),
+            _ => panic!("expected date at {id:?}"),
         }
     }
     fn confirm(

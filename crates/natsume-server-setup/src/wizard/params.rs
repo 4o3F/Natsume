@@ -3,20 +3,27 @@ use crate::{
     config::{ConfigRenderError, DeploymentParameters, ParameterRejection},
     interaction::{
         PromptId,
-        notice::{self, Notice},
+        notice::{self, LocalTimeSummary, Notice},
     },
 };
 use std::net::IpAddr;
-use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Date, OffsetDateTime, Time, format_description::well_known::Rfc3339};
 
+/// Parameter fields in forward navigation order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Field {
     Ips,
     Port,
     Hostname,
     Origin,
-    ContestEnd,
-    GatewayExpiry,
+    /// Selects the local competition completion date.
+    ContestEndDate,
+    /// Collects the local competition completion time.
+    ContestEndTime,
+    /// Selects the local Gateway expiry date.
+    GatewayExpiryDate,
+    /// Collects the local Gateway expiry time.
+    GatewayExpiryTime,
 }
 
 impl Field {
@@ -26,8 +33,10 @@ impl Field {
             Self::Port => PromptId::HttpsPort,
             Self::Hostname => PromptId::GatewayHostname,
             Self::Origin => PromptId::DomjudgeOrigin,
-            Self::ContestEnd => PromptId::ContestEnd,
-            Self::GatewayExpiry => PromptId::GatewayNotAfter,
+            Self::ContestEndDate => PromptId::ContestEndDate,
+            Self::ContestEndTime => PromptId::ContestEndTime,
+            Self::GatewayExpiryDate => PromptId::GatewayNotAfterDate,
+            Self::GatewayExpiryTime => PromptId::GatewayNotAfterTime,
         }
     }
     pub(super) const fn previous(self) -> Option<Self> {
@@ -36,10 +45,19 @@ impl Field {
             Self::Port => Some(Self::Ips),
             Self::Hostname => Some(Self::Port),
             Self::Origin => Some(Self::Hostname),
-            Self::ContestEnd => Some(Self::Origin),
-            Self::GatewayExpiry => Some(Self::ContestEnd),
+            Self::ContestEndDate => Some(Self::Origin),
+            Self::ContestEndTime => Some(Self::ContestEndDate),
+            Self::GatewayExpiryDate => Some(Self::ContestEndTime),
+            Self::GatewayExpiryTime => Some(Self::GatewayExpiryDate),
         }
     }
+}
+
+#[derive(Debug, Default)]
+struct Deadline {
+    date: Option<Date>,
+    time: Option<Time>,
+    utc: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -48,8 +66,8 @@ pub(super) struct Draft {
     port: Option<u16>,
     hostname: Option<String>,
     origin: Option<String>,
-    contest_end: Option<String>,
-    gateway_expiry: Option<String>,
+    contest_end: Deadline,
+    gateway_expiry: Deadline,
 }
 
 pub(super) const fn rejection_prompt(reason: ParameterRejection) -> PromptId {
@@ -60,10 +78,10 @@ pub(super) const fn rejection_prompt(reason: ParameterRejection) -> PromptId {
         ParameterRejection::HttpsPortOutOfRange => PromptId::HttpsPort,
         ParameterRejection::EmptyGatewayHostname => PromptId::GatewayHostname,
         ParameterRejection::EmptyDomjudgeOrigin => PromptId::DomjudgeOrigin,
-        ParameterRejection::ContestEndFormat => PromptId::ContestEnd,
+        ParameterRejection::ContestEndFormat => PromptId::ContestEndDate,
         ParameterRejection::GatewayNotAfterFormat
         | ParameterRejection::GatewayValidityTooShort
-        | ParameterRejection::GatewayExpired => PromptId::GatewayNotAfter,
+        | ParameterRejection::GatewayExpired => PromptId::GatewayNotAfterDate,
     }
 }
 
@@ -78,38 +96,78 @@ fn rejection_field(error: &ConfigRenderError) -> Option<Field> {
         PromptId::HttpsPort => Field::Port,
         PromptId::GatewayHostname => Field::Hostname,
         PromptId::DomjudgeOrigin => Field::Origin,
-        PromptId::ContestEnd => Field::ContestEnd,
-        _ => Field::GatewayExpiry,
+        PromptId::ContestEndDate => Field::ContestEndDate,
+        _ => Field::GatewayExpiryDate,
     })
+}
+
+fn parse_time(text: &str) -> Option<Time> {
+    let (hour, minute) = text.split_once(':')?;
+    if hour.len() != 2
+        || minute.len() != 2
+        || !hour
+            .bytes()
+            .chain(minute.bytes())
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    Time::from_hms(hour.parse().ok()?, minute.parse().ok()?, 0).ok()
 }
 
 impl<I: Interaction, H: Host> Wizard<'_, I, H> {
     pub(super) fn parameter(&mut self, field: Field) -> Result<Step, WizardFailure> {
-        let default = match field {
-            Field::Port => Some(self.answers.draft.port.unwrap_or(8443).to_string()),
-            Field::GatewayExpiry => self.answers.draft.gateway_expiry.clone().or_else(|| {
-                let end =
-                    OffsetDateTime::parse(self.answers.draft.contest_end.as_deref()?, &Rfc3339)
-                        .ok()?;
-                end.checked_add(Duration::days(1))?.format(&Rfc3339).ok()
-            }),
-            _ => None,
-        };
         let id = field.prompt();
-        let text =
-            value(
-                self.interaction
-                    .text(id, notice::prompt(id), default.as_deref(), None)?,
-            )?;
-        let valid = self.answers.draft.set(field, text);
-        if !valid {
-            let message = match field {
-                Field::Ips => notice::INVALID_IP,
-                Field::Port => notice::INVALID_PORT,
-                _ => notice::INVALID_TIME,
-            };
-            self.rejected(message)?;
-            return Ok(Step::Parameters(field));
+        match field {
+            Field::ContestEndDate | Field::GatewayExpiryDate => {
+                let today = self.host.utc_to_local(self.host.now())?.date();
+                let (default, min) = if field == Field::ContestEndDate {
+                    (today, today)
+                } else {
+                    let Some(end) = self.answers.draft.contest_end.date else {
+                        unreachable!("contest date precedes Gateway expiry")
+                    };
+                    let Some(default) = end.next_day() else {
+                        self.rejected(notice::INVALID_EXPIRY_DATE)?;
+                        self.reset(Step::Parameters(Field::ContestEndDate));
+                        return Ok(Step::Parameters(Field::ContestEndDate));
+                    };
+                    (default, end)
+                };
+                let date =
+                    value(
+                        self.interaction
+                            .date(id, notice::prompt(id), default, Some(min))?,
+                    )?;
+                if field == Field::ContestEndDate {
+                    self.answers.draft.contest_end.date = Some(date);
+                } else {
+                    self.answers.draft.gateway_expiry.date = Some(date);
+                }
+            }
+            Field::ContestEndTime | Field::GatewayExpiryTime => {
+                if !self.parameter_time(field)? {
+                    return Ok(Step::Parameters(field));
+                }
+            }
+            _ => {
+                let default = (field == Field::Port)
+                    .then(|| self.answers.draft.port.unwrap_or(8443).to_string());
+                let text = value(self.interaction.text(
+                    id,
+                    notice::prompt(id),
+                    default.as_deref(),
+                    None,
+                )?)?;
+                if !self.answers.draft.set_text(field, text) {
+                    self.rejected(if field == Field::Ips {
+                        notice::INVALID_IP
+                    } else {
+                        notice::INVALID_PORT
+                    })?;
+                    return Ok(Step::Parameters(field));
+                }
+            }
         }
         let draft = &self.answers.draft;
         if let (Some(ips), Some(port), Some(hostname), Some(origin), Some(end), Some(expiry)) = (
@@ -117,8 +175,8 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             draft.port,
             &draft.hostname,
             &draft.origin,
-            &draft.contest_end,
-            &draft.gateway_expiry,
+            &draft.contest_end.utc,
+            &draft.gateway_expiry.utc,
         ) {
             match DeploymentParameters::new(
                 ips.clone(),
@@ -136,6 +194,9 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 Err(error) => {
                     if let Some(retry) = rejection_field(&error) {
                         self.rejected(&snafu::Report::from_error(&error).to_string())?;
+                        if matches!(retry, Field::ContestEndDate | Field::GatewayExpiryDate) {
+                            self.answers.draft.clear_from(retry);
+                        }
                         return Ok(Step::Parameters(retry));
                     }
                     return Err(error.into());
@@ -146,11 +207,83 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             Field::Ips => Field::Port,
             Field::Port => Field::Hostname,
             Field::Hostname => Field::Origin,
-            Field::Origin => Field::ContestEnd,
-            Field::ContestEnd => Field::GatewayExpiry,
-            Field::GatewayExpiry => unreachable!("all parameter fields were collected"),
+            Field::Origin => Field::ContestEndDate,
+            Field::ContestEndDate => Field::ContestEndTime,
+            Field::ContestEndTime => Field::GatewayExpiryDate,
+            Field::GatewayExpiryDate => Field::GatewayExpiryTime,
+            Field::GatewayExpiryTime => unreachable!("all parameter fields were collected"),
         };
         Ok(Step::Parameters(next))
+    }
+
+    fn parameter_time(&mut self, field: Field) -> Result<bool, WizardFailure> {
+        let id = field.prompt();
+        let default = if field == Field::GatewayExpiryTime {
+            self.answers
+                .draft
+                .contest_end
+                .time
+                .map(|time| format!("{:02}:{:02}", time.hour(), time.minute()))
+        } else {
+            None
+        };
+        let text =
+            value(
+                self.interaction
+                    .text(id, notice::prompt(id), default.as_deref(), None)?,
+            )?;
+        let Some(time) = parse_time(&text) else {
+            self.rejected(notice::INVALID_TIME)?;
+            return Ok(false);
+        };
+        let deadline = if field == Field::ContestEndTime {
+            &self.answers.draft.contest_end
+        } else {
+            &self.answers.draft.gateway_expiry
+        };
+        let Some(date) = deadline.date else {
+            unreachable!("calendar date precedes time input")
+        };
+        let utc = match self.host.local_to_utc(date, time) {
+            Ok(utc) => utc,
+            Err(error) => {
+                self.rejected(&snafu::Report::from_error(&error).to_string())?;
+                return Ok(false);
+            }
+        };
+        let timestamp = utc.format(&Rfc3339)?;
+        let summary = self.local_time_summary(
+            &timestamp,
+            if field == Field::ContestEndTime {
+                ParameterRejection::ContestEndFormat
+            } else {
+                ParameterRejection::GatewayNotAfterFormat
+            },
+        )?;
+        self.interaction
+            .show(&Notice::SelectedTime { field: id, summary })?;
+        let deadline = if field == Field::ContestEndTime {
+            &mut self.answers.draft.contest_end
+        } else {
+            &mut self.answers.draft.gateway_expiry
+        };
+        deadline.time = Some(time);
+        deadline.utc = Some(timestamp);
+        Ok(true)
+    }
+
+    pub(super) fn local_time_summary(
+        &self,
+        timestamp: &str,
+        reason: ParameterRejection,
+    ) -> Result<LocalTimeSummary, WizardFailure> {
+        let utc = OffsetDateTime::parse(timestamp, &Rfc3339)
+            .map_err(|source| ConfigRenderError::TimestampParse { reason, source })?;
+        Ok(LocalTimeSummary {
+            local: self.host.utc_to_local(utc)?,
+            timezone: self.host.timezone(),
+            utc: timestamp.into(),
+        })
     }
 
     pub(super) fn rejected(&mut self, message: &str) -> Result<(), WizardFailure> {
@@ -162,7 +295,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
 }
 
 impl Draft {
-    fn set(&mut self, field: Field, text: String) -> bool {
+    fn set_text(&mut self, field: Field, text: String) -> bool {
         match field {
             Field::Ips => match text
                 .split(',')
@@ -190,18 +323,7 @@ impl Draft {
                 self.origin = Some(text);
                 true
             }
-            Field::ContestEnd | Field::GatewayExpiry => {
-                if text.ends_with('Z') && OffsetDateTime::parse(&text, &Rfc3339).is_ok() {
-                    if field == Field::ContestEnd {
-                        self.contest_end = Some(text);
-                    } else {
-                        self.gateway_expiry = Some(text);
-                    }
-                    true
-                } else {
-                    false
-                }
-            }
+            _ => unreachable!("calendar fields use date and time prompts"),
         }
     }
 
@@ -221,13 +343,25 @@ impl Draft {
             }
             Field::Origin => {
                 self.origin = None;
-                self.clear_from(Field::ContestEnd);
+                self.clear_from(Field::ContestEndDate);
             }
-            Field::ContestEnd => {
-                self.contest_end = None;
-                self.clear_from(Field::GatewayExpiry);
+            Field::ContestEndDate => {
+                self.contest_end.date = None;
+                self.clear_from(Field::ContestEndTime);
             }
-            Field::GatewayExpiry => self.gateway_expiry = None,
+            Field::ContestEndTime => {
+                self.contest_end.time = None;
+                self.contest_end.utc = None;
+                self.clear_from(Field::GatewayExpiryDate);
+            }
+            Field::GatewayExpiryDate => {
+                self.gateway_expiry.date = None;
+                self.clear_from(Field::GatewayExpiryTime);
+            }
+            Field::GatewayExpiryTime => {
+                self.gateway_expiry.time = None;
+                self.gateway_expiry.utc = None;
+            }
         }
     }
 }

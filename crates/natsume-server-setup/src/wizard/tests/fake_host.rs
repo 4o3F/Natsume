@@ -3,7 +3,7 @@ use crate::{
     account::ServiceAccount,
     cli::ProbeCommand,
     health::HealthError,
-    host::{InputError, MAX_INPUT_BYTES},
+    host::{InputError, LocalTimeError, LocalTimezone, MAX_INPUT_BYTES},
     preflight::{PreflightError, PreflightReport, PreflightWarning},
     probe::ProbeExit,
     process::{BootstrapExit, ProcessError},
@@ -32,6 +32,12 @@ pub(super) struct FakeHost {
     pub interrupted: Arc<AtomicBool>,
     pub interrupt_after: Option<Call>,
     pub now: OffsetDateTime,
+    /// Fixed local timezone offset used by conversion fixtures.
+    pub offset: time::UtcOffset,
+    /// Configured timezone name reported during preflight.
+    pub timezone: LocalTimezone,
+    /// Deterministic timezone transition failures keyed by local calendar time.
+    pub local_time_errors: BTreeMap<time::PrimitiveDateTime, LocalTimeError>,
     pub preflight: Option<Result<PreflightReport, PreflightError>>,
     pub warnings: Vec<PreflightWarning>,
     inputs: BTreeMap<PathBuf, Zeroizing<Vec<u8>>>,
@@ -49,6 +55,11 @@ impl FakeHost {
             interrupted: Arc::new(AtomicBool::new(false)),
             interrupt_after: None,
             now,
+            offset: time::UtcOffset::UTC,
+            timezone: LocalTimezone {
+                name: Some("UTC".into()),
+            },
+            local_time_errors: BTreeMap::new(),
             preflight: None,
             warnings: Vec::new(),
             inputs: BTreeMap::new(),
@@ -110,6 +121,25 @@ impl Host for FakeHost {
     }
     fn now(&self) -> OffsetDateTime {
         self.now
+    }
+    fn timezone(&self) -> LocalTimezone {
+        self.timezone.clone()
+    }
+    fn local_to_utc(
+        &self,
+        date: time::Date,
+        time: time::Time,
+    ) -> Result<OffsetDateTime, LocalTimeError> {
+        let local = date.with_time(time);
+        if let Some(error) = self.local_time_errors.get(&local) {
+            return Err(*error);
+        }
+        Ok(local
+            .assume_offset(self.offset)
+            .to_offset(time::UtcOffset::UTC))
+    }
+    fn utc_to_local(&self, utc: OffsetDateTime) -> Result<OffsetDateTime, LocalTimeError> {
+        Ok(utc.to_offset(self.offset))
     }
     fn read_input(&mut self, path: &Path) -> Result<Zeroizing<Vec<u8>>, InputError> {
         self.record_call(Call::Read(path.into()));

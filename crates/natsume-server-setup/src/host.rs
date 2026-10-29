@@ -1,7 +1,7 @@
 //! Injectable operating-system boundary for the first-install wizard.
 
 use crate::{
-    account::{SERVICE_USER, ServiceAccount},
+    account::{SERVICE_USER, SYSTEM_PATH, ServiceAccount},
     cli::ProbeCommand,
     health::{self, HealthError},
     pki::Certificate,
@@ -10,19 +10,21 @@ use crate::{
     process::{self, BootstrapExit, ProcessError},
     service::{self, ServiceAction, ServiceError},
 };
+use chrono::{Local, LocalResult, TimeZone as _};
 use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
 use std::{
-    fs::File,
+    fs::{self, File},
     io::{self, Read as _},
     net::SocketAddr,
     path::Path,
+    process::Command,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
-use time::OffsetDateTime;
+use time::{Date, OffsetDateTime, Time, UtcOffset};
 use zeroize::Zeroizing;
 
 /// Maximum size of administrator-supplied certificates and private keys.
@@ -31,6 +33,71 @@ pub const MAX_INPUT_BYTES: u64 = 1024 * 1024;
 const HEALTH_ATTEMPTS: usize = 20;
 /// Delay between startup checks while the Server opens its listener.
 const HEALTH_INTERVAL: Duration = Duration::from_millis(1500);
+
+/// Name of the Server host's configured timezone, absent when discovery failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalTimezone {
+    /// IANA timezone name reported by the operating system.
+    pub name: Option<String>,
+}
+
+/// Local calendar conversion failures without administrator input or secret material.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Snafu)]
+pub enum LocalTimeError {
+    /// The clock skipped this local time during a timezone transition.
+    #[snafu(display(
+        "this local time does not exist due to a timezone transition; choose another time"
+    ))]
+    Nonexistent,
+    /// Two UTC instants share this local time during a timezone transition.
+    #[snafu(display(
+        "this local time is ambiguous due to a timezone transition; choose another time"
+    ))]
+    Ambiguous,
+    /// Calendar components exceed the timezone backend's supported range.
+    #[snafu(display("local date or time is outside the supported range"))]
+    OutOfRange,
+    /// The converted instant or offset exceeds the application's supported range.
+    #[snafu(display("converted local time is outside the supported range"))]
+    Component {
+        /// Original instant or offset validation failure.
+        source: time::error::ComponentRange,
+    },
+}
+
+fn system_timezone() -> LocalTimezone {
+    let name = Command::new("/usr/bin/timedatectl")
+        .args(["show", "-p", "Timezone", "--value"])
+        .env_clear()
+        .env("PATH", SYSTEM_PATH)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            let path = fs::canonicalize("/etc/localtime").ok()?;
+            path.strip_prefix("/usr/share/zoneinfo")
+                .ok()?
+                .to_str()
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        });
+    LocalTimezone { name }
+}
+
+fn local_result(
+    result: LocalResult<chrono::DateTime<Local>>,
+) -> Result<OffsetDateTime, LocalTimeError> {
+    match result {
+        LocalResult::None => NonexistentSnafu.fail(),
+        LocalResult::Ambiguous(_, _) => AmbiguousSnafu.fail(),
+        LocalResult::Single(local) => {
+            OffsetDateTime::from_unix_timestamp(local.timestamp()).context(ComponentSnafu)
+        }
+    }
+}
 
 /// System operations invoked by the wizard, excluding protected deployment-file publication.
 pub trait Host {
@@ -43,6 +110,18 @@ pub trait Host {
     fn preflight(&mut self) -> Result<PreflightReport, PreflightError>;
     /// Returns the time used for certificate and deployment validation.
     fn now(&self) -> OffsetDateTime;
+    /// Reports the host timezone name without changing system configuration.
+    fn timezone(&self) -> LocalTimezone;
+    /// Interprets a local calendar date and time using the host's timezone rules.
+    ///
+    /// # Errors
+    /// Returns nonexistent, ambiguous, or unrepresentable local times.
+    fn local_to_utc(&self, date: Date, time: Time) -> Result<OffsetDateTime, LocalTimeError>;
+    /// Converts a UTC instant to local time for plan summaries, including resumed requests.
+    ///
+    /// # Errors
+    /// Returns an instant or offset outside the supported range.
+    fn utc_to_local(&self, utc: OffsetDateTime) -> Result<OffsetDateTime, LocalTimeError>;
     /// Reads a regular administrator input file with a one MiB limit.
     ///
     /// # Errors
@@ -131,6 +210,34 @@ impl Host for SystemHost {
     }
     fn now(&self) -> OffsetDateTime {
         OffsetDateTime::now_utc()
+    }
+    fn timezone(&self) -> LocalTimezone {
+        system_timezone()
+    }
+    fn local_to_utc(&self, date: Date, time: Time) -> Result<OffsetDateTime, LocalTimeError> {
+        let local = chrono::NaiveDate::from_ymd_opt(
+            date.year(),
+            u32::from(u8::from(date.month())),
+            u32::from(date.day()),
+        )
+        .and_then(|date| {
+            date.and_hms_opt(
+                u32::from(time.hour()),
+                u32::from(time.minute()),
+                u32::from(time.second()),
+            )
+        })
+        .context(OutOfRangeSnafu)?;
+        local_result(Local.from_local_datetime(&local))
+    }
+    fn utc_to_local(&self, utc: OffsetDateTime) -> Result<OffsetDateTime, LocalTimeError> {
+        let local = Local
+            .timestamp_opt(utc.unix_timestamp(), 0)
+            .single()
+            .context(OutOfRangeSnafu)?;
+        let offset = UtcOffset::from_whole_seconds(local.offset().local_minus_utc())
+            .context(ComponentSnafu)?;
+        utc.checked_to_offset(offset).context(OutOfRangeSnafu)
     }
     fn read_input(&mut self, path: &Path) -> Result<Zeroizing<Vec<u8>>, InputError> {
         let file = File::from(
@@ -239,6 +346,26 @@ mod tests {
 
     fn host() -> Result<SystemHost, HostError> {
         SystemHost::new()
+    }
+
+    #[test]
+    fn local_result_distinguishes_timezone_transitions_and_utc_instants()
+    -> Result<(), LocalTimeError> {
+        assert!(matches!(
+            local_result(LocalResult::None),
+            Err(LocalTimeError::Nonexistent)
+        ));
+        let Some(local) = Local.timestamp_opt(1_700_000_000, 0).single() else {
+            panic!("fixture instant must be representable")
+        };
+        assert!(matches!(
+            local_result(LocalResult::Ambiguous(local, local)),
+            Err(LocalTimeError::Ambiguous)
+        ));
+        let utc = local_result(LocalResult::Single(local))?;
+        assert_eq!(utc.unix_timestamp(), 1_700_000_000);
+        assert_eq!(utc.offset(), UtcOffset::UTC);
+        Ok(())
     }
 
     #[test]

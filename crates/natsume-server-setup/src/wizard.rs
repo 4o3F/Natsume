@@ -19,7 +19,7 @@ use crate::{
     },
     handoff::{CertificateSummary, HandoffError, HandoffReport},
     health::HealthError,
-    host::{Host, InputError},
+    host::{Host, InputError, LocalTimeError},
     interaction::{Answer, CaRole, Interaction, InteractionError},
     pki::{
         Certificate, PrivateKey,
@@ -168,6 +168,18 @@ pub enum WizardFailure {
     Generate {
         /// Original cryptographic failure.
         source: GenerateError,
+    },
+    /// A host timezone conversion failed while preparing a plan summary.
+    #[snafu(context(false), display("local time conversion failed"))]
+    LocalTime {
+        /// Original timezone conversion failure.
+        source: LocalTimeError,
+    },
+    /// Formatting a selected UTC timestamp failed.
+    #[snafu(context(false), display("cannot format UTC deployment timestamp"))]
+    TimeFormat {
+        /// Original timestamp formatting failure.
+        source: time::error::Format,
     },
     /// Parameter or configuration validation failed.
     #[snafu(context(false), display("configuration validation failed"))]

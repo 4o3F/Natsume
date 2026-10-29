@@ -12,12 +12,20 @@ use crate::{
 
 impl<I: Interaction, H: Host> Wizard<'_, I, H> {
     pub(super) fn execute(&mut self) -> Result<WizardOutcome, WizardFailure> {
-        let report = self.host.preflight()?;
+        let mut report = self.host.preflight()?;
         self.check_interrupted()?;
         self.service_owner = Some(crate::deployment::file::Ownership {
             uid: report.account.uid,
             gid: report.account.gid,
         });
+        let timezone = self.host.timezone();
+        if timezone.name.is_none() {
+            report
+                .warnings
+                .push(crate::preflight::PreflightWarning::TimezoneUnknown);
+        }
+        self.interaction
+            .show(&Notice::PreflightTimezone { timezone })?;
         if !report.warnings.is_empty() {
             self.interaction.show(&Notice::PreflightWarnings {
                 warnings: report.warnings,
@@ -162,7 +170,7 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             Step::Parameters(field) => {
                 Step::Parameters(field.previous().ok_or(WizardFailure::Cancelled)?)
             }
-            Step::ControlCa => Step::Parameters(Field::GatewayExpiry),
+            Step::ControlCa => Step::Parameters(Field::GatewayExpiryTime),
             Step::ServerTls => Step::ControlCa,
             Step::OriginCa if self.pending.is_some() => Step::SignedCertificate,
             Step::OriginCa => Step::ServerTls,

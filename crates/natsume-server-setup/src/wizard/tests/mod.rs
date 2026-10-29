@@ -35,6 +35,8 @@ enum TestError {
     Config { source: ConfigRenderError },
     #[snafu(context(false), display("fixture time parsing failed"))]
     Time { source: time::error::Parse },
+    #[snafu(context(false), display("fixture time component failed"))]
+    TimeComponent { source: time::error::ComponentRange },
     #[snafu(context(false), display("fixture certificate construction failed"))]
     Certificate { source: rcgen::Error },
     #[snafu(context(false), display("fixture key encoding failed"))]
@@ -179,8 +181,10 @@ fn parameters() -> Vec<(crate::interaction::PromptId, Reply)> {
             PromptId::DomjudgeOrigin,
             Reply::text("https://judge.contest.example"),
         ),
-        (PromptId::ContestEnd, Reply::text(END)),
-        (PromptId::GatewayNotAfter, Reply::text(EXPIRY)),
+        (PromptId::ContestEndDate, Reply::date(END)),
+        (PromptId::ContestEndTime, Reply::text("00:00")),
+        (PromptId::GatewayNotAfterDate, Reply::date(EXPIRY)),
+        (PromptId::GatewayNotAfterTime, Reply::text("00:00")),
     ]
 }
 

@@ -45,10 +45,10 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                     } => super::params::Field::Origin,
                     config::ConfigRenderError::Validation {
                         source: ConfigError::InvalidContestEnd,
-                    } => super::params::Field::ContestEnd,
+                    } => super::params::Field::ContestEndDate,
                     config::ConfigRenderError::Validation {
                         source: ConfigError::InvalidGatewayNotAfter,
-                    } => super::params::Field::GatewayExpiry,
+                    } => super::params::Field::GatewayExpiryDate,
                     _ => return Err(error.into()),
                 };
                 self.rejected(&snafu::Report::from_error(&error).to_string())?;
@@ -195,6 +195,14 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
             });
         }
         self.interaction.show(&Notice::PlanSummary {
+            contest_end: self.local_time_summary(
+                params.contest_end(),
+                crate::config::ParameterRejection::ContestEndFormat,
+            )?,
+            gateway_not_after: self.local_time_summary(
+                params.gateway_not_after(),
+                crate::config::ParameterRejection::GatewayNotAfterFormat,
+            )?,
             parameters: params.clone(),
             certificates,
             entries,
@@ -209,6 +217,10 @@ impl<I: Interaction, H: Host> Wizard<'_, I, H> {
                 Step::Reveal
             });
         }
+        self.decline_plan()
+    }
+
+    fn decline_plan(&mut self) -> Result<Step, WizardFailure> {
         let id = PromptId::PlanDeclined;
         let options = [
             Choice {

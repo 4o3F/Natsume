@@ -91,7 +91,7 @@ fn fresh_generation_external_retention_and_log_canary() -> TestResult {
     assert!(
         script
             .defaults
-            .contains(&(PromptId::GatewayNotAfter, EXPIRY.into()))
+            .contains(&(PromptId::GatewayNotAfterTime, "00:00".into()))
     );
     let Ok(log) = log.lock() else {
         panic!("log capture lock poisoned")
@@ -875,10 +875,18 @@ fn invalid_parameters_reprompt_only_the_rejected_field() -> TestResult {
         (PromptId::HttpsPort, Reply::text("80")),
         (PromptId::HttpsPort, Reply::text("8443")),
     ];
-    prompts.extend(parameters().into_iter().skip(2).take(3));
+    prompts.extend(parameters().into_iter().skip(2).take(4));
     prompts.extend([
-        (PromptId::GatewayNotAfter, Reply::text(END)),
-        (PromptId::GatewayNotAfter, Reply::text(EXPIRY)),
+        (
+            PromptId::GatewayNotAfterDate,
+            Reply::Date(OffsetDateTime::parse(END, &Rfc3339)?.date()),
+        ),
+        (PromptId::GatewayNotAfterTime, Reply::text("00:00")),
+        (
+            PromptId::GatewayNotAfterDate,
+            Reply::Date(OffsetDateTime::parse(EXPIRY, &Rfc3339)?.date()),
+        ),
+        (PromptId::GatewayNotAfterTime, Reply::text("00:00")),
         (PromptId::ControlCaSource, Reply::Interrupt),
     ]);
     let mut script = ScriptedInteraction::new(prompts);
@@ -963,18 +971,21 @@ fn every_parameter_rejection_maps_to_its_prompt() {
             ParameterRejection::EmptyDomjudgeOrigin,
             PromptId::DomjudgeOrigin,
         ),
-        (ParameterRejection::ContestEndFormat, PromptId::ContestEnd),
+        (
+            ParameterRejection::ContestEndFormat,
+            PromptId::ContestEndDate,
+        ),
         (
             ParameterRejection::GatewayNotAfterFormat,
-            PromptId::GatewayNotAfter,
+            PromptId::GatewayNotAfterDate,
         ),
         (
             ParameterRejection::GatewayValidityTooShort,
-            PromptId::GatewayNotAfter,
+            PromptId::GatewayNotAfterDate,
         ),
         (
             ParameterRejection::GatewayExpired,
-            PromptId::GatewayNotAfter,
+            PromptId::GatewayNotAfterDate,
         ),
     ] {
         assert_eq!(
@@ -1691,5 +1702,364 @@ fn health_failure_takes_precedence_over_simultaneous_interrupt() -> TestResult {
     ));
     fixture.assert_no_deployment()?;
     assert!(files_under(&fixture.path("/admin/pki"))?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn local_plus_eight_renders_utc_and_csr_resume_preserves_parameters() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.offset = time::UtcOffset::from_hms(8, 0, 0)?;
+    fixture.host.timezone.name = Some("Asia/Shanghai".into());
+    let (ca, key) = generate::generate_ca("Offline Control", "Natsume", fixture.host.now)?;
+    fixture.host.input("control.crt", ca.der());
+    let mut prompts: Vec<_> = parameters()
+        .into_iter()
+        .map(|(id, reply)| {
+            (
+                id,
+                if matches!(id, PromptId::ContestEndTime | PromptId::GatewayNotAfterTime) {
+                    Reply::text("18:00")
+                } else {
+                    reply
+                },
+            )
+        })
+        .collect();
+    import_control(&mut prompts, false);
+    prompts.extend([
+        (PromptId::ServerTlsSource, Reply::Select(2)),
+        (PromptId::PlanConfirmation, Reply::Confirm(true)),
+    ]);
+    let mut script = ScriptedInteraction::new(prompts);
+    assert!(matches!(
+        fixture.run(&mut script)?,
+        WizardOutcome::PendingSignature { .. }
+    ));
+    let end = "2029-01-02T10:00:00Z";
+    let expiry = "2029-01-03T10:00:00Z";
+    let request = fs::read_to_string(fixture.path("/admin/pki/pending/request.toml"))?;
+    assert!(
+        request.contains(end) && request.contains(expiry),
+        "pending parameters must contain UTC timestamps"
+    );
+    let Some(plan) = script
+        .notices
+        .iter()
+        .find(|notice| matches!(notice, Notice::PlanSummary { .. }))
+    else {
+        panic!("CSR plan must be displayed")
+    };
+    let plan = plan.to_string();
+    assert!(plan.contains(
+        "Contest end: 2029-01-02 18:00 (Asia/Shanghai, UTC+08:00) → 2029-01-02T10:00:00Z"
+    ));
+    assert!(plan.contains(
+        "Gateway expiry: 2029-01-03 18:00 (Asia/Shanghai, UTC+08:00) → 2029-01-03T10:00:00Z"
+    ));
+    assert!(script.notices.iter().any(|notice| notice.to_string()
+        == "Contest end: 2029-01-02 18:00 (Asia/Shanghai, UTC+08:00) → 2029-01-02T10:00:00Z"));
+
+    let signed = sign_pending(&fixture, &ca, &key, false)?;
+    let (origin, origin_key) =
+        generate::generate_ca("Imported Origin", "Natsume", fixture.host.now)?;
+    fixture.host.input("signed.crt", signed.der());
+    fixture.host.input("origin.crt", origin.der());
+    fixture.host.input("origin.key", origin_key.pkcs8_der());
+    fixture.host.offset = time::UtcOffset::from_hms(-8, 0, 0)?;
+    fixture.host.timezone.name = Some("America/Los_Angeles".into());
+    fixture.host.install_probes(ProbeExit::Passed);
+    let mut script = ScriptedInteraction::new(vec![
+        (PromptId::SignedCertificatePath, Reply::text("signed.crt")),
+        (PromptId::OriginCaSource, Reply::Select(1)),
+        (PromptId::OriginCaCertificatePath, Reply::text("origin.crt")),
+        (PromptId::OriginCaKeyPath, Reply::text("origin.key")),
+        (PromptId::PlanConfirmation, Reply::Confirm(true)),
+    ]);
+    assert!(matches!(
+        fixture.run(&mut script)?,
+        WizardOutcome::Installed(_)
+    ));
+    fixture.assert_installed()?;
+    let config = fs::read_to_string(fixture.path(config::CONFIG_PATH))?;
+    assert!(config.contains(&format!("contest_end = \"{end}\"")));
+    assert!(config.contains(&format!("gateway_not_after = \"{expiry}\"")));
+    let Some(plan) = script
+        .notices
+        .iter()
+        .find(|notice| matches!(notice, Notice::PlanSummary { .. }))
+    else {
+        panic!("resumed plan must be displayed")
+    };
+    let plan = plan.to_string();
+    assert!(
+        plan.contains("2029-01-02 02:00 (America/Los_Angeles, UTC-08:00) → 2029-01-02T10:00:00Z")
+    );
+    assert!(
+        plan.contains("2029-01-03 02:00 (America/Los_Angeles, UTC-08:00) → 2029-01-03T10:00:00Z")
+    );
+    assert!(
+        script.date_defaults.is_empty(),
+        "CSR continuation must not prompt for dates"
+    );
+    Ok(())
+}
+
+#[test]
+fn negative_offset_converts_local_times_across_utc_day_boundary() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.offset = time::UtcOffset::from_hms(-8, 0, 0)?;
+    fixture.host.timezone.name = Some("America/Los_Angeles".into());
+    let mut prompts: Vec<_> = parameters()
+        .into_iter()
+        .map(|(id, reply)| {
+            (
+                id,
+                if matches!(id, PromptId::ContestEndTime | PromptId::GatewayNotAfterTime) {
+                    Reply::text("23:30")
+                } else {
+                    reply
+                },
+            )
+        })
+        .collect();
+    prompts.push((PromptId::ControlCaSource, Reply::Interrupt));
+    let mut script = ScriptedInteraction::new(prompts);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    for expected in [
+        "Contest end: 2029-01-02 23:30 (America/Los_Angeles, UTC-08:00) → 2029-01-03T07:30:00Z",
+        "Gateway expiry: 2029-01-03 23:30 (America/Los_Angeles, UTC-08:00) → 2029-01-04T07:30:00Z",
+    ] {
+        assert!(
+            script
+                .notices
+                .iter()
+                .any(|notice| notice.to_string() == expected),
+            "missing conversion: {expected}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn calendar_and_gateway_defaults_use_local_today_and_exactly_twenty_four_hours() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    fixture.host.now = OffsetDateTime::parse("2029-01-01T20:00:00Z", &Rfc3339)?;
+    fixture.host.offset = time::UtcOffset::from_hms(8, 0, 0)?;
+    let mut prompts: Vec<_> = parameters()
+        .into_iter()
+        .map(|(id, reply)| {
+            (
+                id,
+                match id {
+                    PromptId::ContestEndDate
+                    | PromptId::GatewayNotAfterDate
+                    | PromptId::GatewayNotAfterTime => Reply::Default,
+                    PromptId::ContestEndTime => Reply::text("18:00"),
+                    _ => reply,
+                },
+            )
+        })
+        .collect();
+    prompts.push((PromptId::ControlCaSource, Reply::Interrupt));
+    let mut script = ScriptedInteraction::new(prompts);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    let date = OffsetDateTime::parse(END, &Rfc3339)?.date();
+    let next = OffsetDateTime::parse(EXPIRY, &Rfc3339)?.date();
+    assert_eq!(
+        script.date_defaults,
+        [
+            (PromptId::ContestEndDate, date, Some(date)),
+            (PromptId::GatewayNotAfterDate, next, Some(date)),
+        ]
+    );
+    assert!(
+        script
+            .defaults
+            .contains(&(PromptId::GatewayNotAfterTime, "18:00".into()))
+    );
+    assert!(
+        !script
+            .defaults
+            .iter()
+            .any(|(id, _)| *id == PromptId::ContestEndTime),
+        "contest time has no default"
+    );
+    let timestamps: Vec<_> = script
+        .notices
+        .iter()
+        .filter_map(|notice| match notice {
+            Notice::SelectedTime { summary, .. } => {
+                Some(OffsetDateTime::parse(&summary.utc, &Rfc3339))
+            }
+            _ => None,
+        })
+        .collect::<Result<_, _>>()?;
+    let mut timestamps = timestamps.into_iter();
+    let (Some(end), Some(expiry)) = (timestamps.next(), timestamps.next()) else {
+        panic!("both deadline conversions must be displayed")
+    };
+    assert_eq!(
+        end,
+        OffsetDateTime::parse("2029-01-02T10:00:00Z", &Rfc3339)?
+    );
+    assert_eq!(expiry - end, time::Duration::seconds(86400));
+    assert!(
+        !script
+            .notices
+            .iter()
+            .any(|notice| matches!(notice, Notice::ValidationFailed { .. }))
+    );
+    Ok(())
+}
+
+#[test]
+fn invalid_hh_mm_reprompts_the_same_time_field() -> TestResult {
+    let mut fixture = Fixture::new()?;
+    let invalid = [
+        "",
+        "8:00",
+        "18:0",
+        "24:00",
+        "23:60",
+        "-1:00",
+        " 18:00",
+        "18:00 ",
+        "１８:００",
+        "18:00:00",
+        "18:00Z",
+    ];
+    let mut prompts: Vec<_> = parameters().into_iter().take(5).collect();
+    prompts.extend(
+        invalid
+            .iter()
+            .map(|time| (PromptId::ContestEndTime, Reply::text(time))),
+    );
+    prompts.extend(parameters().into_iter().skip(5));
+    prompts.push((PromptId::ControlCaSource, Reply::Interrupt));
+    let mut script = ScriptedInteraction::new(prompts);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    assert_eq!(
+        script
+            .notices
+            .iter()
+            .filter(|notice| matches!(notice, Notice::ValidationFailed { .. }))
+            .count(),
+        invalid.len()
+    );
+    assert_eq!(
+        script.date_defaults.len(),
+        2,
+        "invalid time must not reask dates"
+    );
+    Ok(())
+}
+
+#[test]
+fn ambiguous_and_nonexistent_local_times_reprompt_only_the_time() -> TestResult {
+    use crate::host::LocalTimeError;
+    for field in [PromptId::ContestEndTime, PromptId::GatewayNotAfterTime] {
+        for error in [LocalTimeError::Ambiguous, LocalTimeError::Nonexistent] {
+            let mut fixture = Fixture::new()?;
+            let timestamp = if field == PromptId::ContestEndTime {
+                END
+            } else {
+                EXPIRY
+            };
+            let local = OffsetDateTime::parse(timestamp, &Rfc3339)?
+                .date()
+                .with_time(time::Time::from_hms(18, 0, 0)?);
+            let expected = error.to_string();
+            fixture.host.local_time_errors.insert(local, error);
+            let mut prompts = Vec::new();
+            for (id, reply) in parameters() {
+                if id == field {
+                    prompts.push((id, Reply::text("18:00")));
+                }
+                prompts.push((id, reply));
+            }
+            prompts.push((PromptId::ControlCaSource, Reply::Interrupt));
+            let mut script = ScriptedInteraction::new(prompts);
+            assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+            assert_eq!(
+                script.date_defaults.len(),
+                2,
+                "timezone errors must not reask dates"
+            );
+            assert!(script.notices.iter().any(|notice| matches!(notice, Notice::ValidationFailed { message } if message.contains(&expected))), "missing {expected}");
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn escape_from_each_time_returns_to_its_date_and_clears_later_answers() -> TestResult {
+    for field in [PromptId::ContestEndTime, PromptId::GatewayNotAfterTime] {
+        let mut fixture = Fixture::new()?;
+        let mut prompts = Vec::new();
+        let date_id = if field == PromptId::ContestEndTime {
+            PromptId::ContestEndDate
+        } else {
+            PromptId::GatewayNotAfterDate
+        };
+        for (id, reply) in parameters() {
+            if id == field {
+                prompts.push((id, Reply::Back));
+                let timestamp = if field == PromptId::ContestEndTime {
+                    EXPIRY
+                } else {
+                    END
+                };
+                prompts.push((
+                    date_id,
+                    Reply::Date(OffsetDateTime::parse(timestamp, &Rfc3339)?.date()),
+                ));
+                prompts.push((id, Reply::text("00:00")));
+                if field == PromptId::ContestEndTime {
+                    break;
+                }
+                prompts.push((
+                    PromptId::GatewayNotAfterDate,
+                    Reply::Date(OffsetDateTime::parse(EXPIRY, &Rfc3339)?.date()),
+                ));
+            }
+            prompts.push((id, reply));
+        }
+        if field == PromptId::ContestEndTime {
+            prompts.extend([
+                (PromptId::GatewayNotAfterDate, Reply::Default),
+                (PromptId::GatewayNotAfterTime, Reply::Default),
+            ]);
+        }
+        prompts.push((PromptId::ControlCaSource, Reply::Interrupt));
+        let mut script = ScriptedInteraction::new(prompts);
+        assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+        let expected = if field == PromptId::ContestEndTime {
+            "2029-01-03T00:00:00Z"
+        } else {
+            END
+        };
+        assert!(script.notices.iter().any(|notice| matches!(notice, Notice::SelectedTime { field: id, summary } if *id == field && summary.utc == expected)));
+    }
+    Ok(())
+}
+
+#[test]
+fn unknown_timezone_requires_preflight_warning_acknowledgement() -> TestResult {
+    use crate::preflight::PreflightWarning;
+    let mut fixture = Fixture::new()?;
+    fixture.host.timezone.name = None;
+    let mut script = ScriptedInteraction::new(vec![(
+        PromptId::ContinueAfterWarnings,
+        Reply::Confirm(false),
+    )]);
+    assert!(matches!(fixture.run(&mut script)?, WizardOutcome::Aborted));
+    assert!(script.notices.iter().any(|notice| matches!(notice, Notice::PreflightWarnings { warnings } if warnings.contains(&PreflightWarning::TimezoneUnknown))));
+    assert!(
+        script
+            .notices
+            .iter()
+            .any(|notice| notice.to_string().contains("Server timezone: unknown"))
+    );
+    fixture.assert_no_deployment()?;
     Ok(())
 }

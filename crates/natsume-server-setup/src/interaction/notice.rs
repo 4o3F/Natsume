@@ -6,6 +6,7 @@ use crate::{
     config::{DeploymentParameters, JOURNAL_DATABASE},
     deployment::file::FileSpec,
     handoff::CertificateSummary,
+    host::LocalTimezone,
     pki::rules::{ServerTlsOption, Unavailability},
     wizard::{CaSource, KeyRetention},
 };
@@ -25,6 +26,18 @@ const BOOTSTRAP_PASSWORD_POLICY: &str = "Server bootstrap will ask for the initi
 /// Context displayed by the P3a terminal and system adapters.
 #[derive(Debug, Clone)]
 pub enum Notice {
+    /// Current host timezone to verify before entering local calendar times.
+    PreflightTimezone {
+        /// Configured timezone name, or unknown when discovery failed.
+        timezone: LocalTimezone,
+    },
+    /// A selected local date and time together with the resulting UTC timestamp.
+    SelectedTime {
+        /// Parameter whose date and time were collected.
+        field: PromptId,
+        /// Local calendar time, timezone and canonical UTC value.
+        summary: LocalTimeSummary,
+    },
     /// Host observations requiring acknowledgement before installation.
     PreflightWarnings {
         /// Nonfatal host conditions.
@@ -77,6 +90,10 @@ pub enum Notice {
     PlanSummary {
         /// Validated advertised deployment parameters.
         parameters: DeploymentParameters,
+        /// Contest completion in local time and UTC.
+        contest_end: LocalTimeSummary,
+        /// Gateway expiry in local time and UTC.
+        gateway_not_after: LocalTimeSummary,
         /// Public certificate identities and their selected sources.
         certificates: Vec<PlannedCertificate>,
         /// Ordered paths with ownership and permission metadata.
@@ -119,9 +136,29 @@ pub enum Notice {
 impl fmt::Display for Notice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PreflightTimezone { timezone } => write!(
+                f,
+                "Server timezone: {}. Verify the VM timezone with timedatectl before entering dates and times.",
+                timezone
+                    .name
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .escape_default()
+            ),
+            Self::SelectedTime { field, summary } => write!(
+                f,
+                "{}: {summary}",
+                match field {
+                    PromptId::ContestEndDate | PromptId::ContestEndTime => "Contest end",
+                    _ => "Gateway expiry",
+                }
+            ),
             Self::PreflightWarnings { warnings } => {
                 for warning in warnings {
                     let message = match warning {
+                        PreflightWarning::TimezoneUnknown => {
+                            "Server timezone is unknown; verify the VM timezone with timedatectl before continuing."
+                        }
                         PreflightWarning::ClockNotSynchronized => CLOCK_NOT_SYNCHRONIZED,
                         PreflightWarning::ClockSynchronizationUnknown => {
                             CLOCK_SYNCHRONIZATION_UNKNOWN
@@ -199,6 +236,41 @@ impl fmt::Display for Notice {
 
 const REVOKE_KEYS: &str = "Discard every private key revealed by this aborted installation attempt; generate fresh keys before retrying.";
 
+/// Local calendar representation and canonical UTC timestamp of a deployment deadline.
+#[derive(Debug, Clone)]
+pub struct LocalTimeSummary {
+    /// Calendar time carrying the offset effective at this instant.
+    pub local: time::OffsetDateTime,
+    /// Host timezone name used to interpret the calendar selection.
+    pub timezone: LocalTimezone,
+    /// Strict RFC 3339 UTC value saved in deployment parameters.
+    pub utc: String,
+}
+
+impl fmt::Display for LocalTimeSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let local = self.local;
+        let offset = local.offset().whole_seconds();
+        let sign = if offset < 0 { '-' } else { '+' };
+        let seconds = offset.unsigned_abs();
+        write!(
+            f,
+            "{} {:02}:{:02} ({}, UTC{sign}{:02}:{:02}) → {}",
+            local.date(),
+            local.hour(),
+            local.minute(),
+            self.timezone
+                .name
+                .as_deref()
+                .unwrap_or("unknown")
+                .escape_default(),
+            seconds / 3600,
+            seconds % 3600 / 60,
+            self.utc.escape_default()
+        )
+    }
+}
+
 /// Public certificate details used in the installation confirmation plan.
 #[derive(Debug, Clone)]
 pub struct PlannedCertificate {
@@ -230,10 +302,10 @@ pub(crate) fn prompt(id: PromptId) -> &'static str {
         PromptId::HttpsPort => "HTTPS port (1024-65535)",
         PromptId::GatewayHostname => "Gateway hostname",
         PromptId::DomjudgeOrigin => "DOMjudge HTTPS origin",
-        PromptId::ContestEnd => "Contest end (RFC 3339 UTC Z)",
-        PromptId::GatewayNotAfter => {
-            "Gateway expiry (at least contest end + one day; RFC 3339 UTC Z)"
-        }
+        PromptId::ContestEndDate => "Contest end date (Server local timezone)",
+        PromptId::ContestEndTime => "Contest end time (HH:MM, 24-hour Server local time)",
+        PromptId::GatewayNotAfterDate => "Gateway expiry date (at least contest end + one day)",
+        PromptId::GatewayNotAfterTime => "Gateway expiry time (HH:MM, 24-hour Server local time)",
         PromptId::ControlCaSource => "Control CA source",
         PromptId::ControlCaCertificatePath => "Control CA certificate path",
         PromptId::ControlCaKeyPath => "Control CA private key path",
@@ -333,7 +405,10 @@ pub(crate) const KEY_MISMATCH: &str = "The private key does not match the certif
 pub(crate) const ORIGIN_P256: &str = "The Local Origin CA and private key must use ECDSA P-256.";
 pub(crate) const INVALID_IP: &str = "Enter at least one usable IP address, separated by commas.";
 pub(crate) const INVALID_PORT: &str = "Enter an HTTPS port from 1024 through 65535.";
-pub(crate) const INVALID_TIME: &str = "Enter a valid RFC 3339 UTC timestamp ending in Z.";
+pub(crate) const INVALID_EXPIRY_DATE: &str =
+    "Choose a contest end date that leaves room for a Gateway expiry at least one day later.";
+pub(crate) const INVALID_TIME: &str =
+    "Enter HH:MM using exactly two digits each, from 00:00 through 23:59.";
 pub(crate) const EDIT_LABEL: &str = "Edit parameters";
 pub(crate) const EDIT_ORIGIN_LABEL: &str = "Review Local Origin CA";
 pub(crate) const ABORT_LABEL: &str = "Abort";
@@ -358,6 +433,8 @@ impl Notice {
     fn format_plan(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self::PlanSummary {
             parameters,
+            contest_end,
+            gateway_not_after,
             certificates,
             entries,
             pending_only,
@@ -368,6 +445,8 @@ impl Notice {
         };
 
         writeln!(f, "First-install plan: {parameters:?}")?;
+        writeln!(f, "Contest end: {contest_end}")?;
+        writeln!(f, "Gateway expiry: {gateway_not_after}")?;
         for certificate in certificates {
             writeln!(
                 f,

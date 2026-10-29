@@ -38,6 +38,7 @@ rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 inquire.workspace = true
+chrono.workspace = true
 rustix = { workspace = true, features = ["fs", "process", "termios"] }
 tempfile.workspace = true
 signal-hook = "0.3.18"

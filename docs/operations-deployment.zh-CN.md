@@ -46,11 +46,11 @@ Server 的完整 config.toml 包含 DOMjudge 上游地址。bootstrap 创建/迁
 | HTTPS port | 8443 | 默认 8443，范围 1024–65535；Server、Client、防火墙一致 |
 | Gateway hostname | domjudge | 每台比赛机解析到自己的 127.0.0.1 和 ::1 |
 | DOMjudge 上游 origin | https://judge.contest.example | 真实 DOMjudge，不能指向 Client loopback |
-| contest end | 2026-12-06T10:00:00Z | 按实际赛事填写 UTC 比赛结束时间 |
-| Gateway expiry | 2026-12-08T10:00:00Z | 默认 contest end + 一天；至少覆盖结束后 **86400 秒**，严格 UTC Z 且仍在未来 |
+| contest end | 2026-12-06 18:00（Asia/Shanghai） | 日历面板选择日期，再输入 HH:MM；按 Server 本机时区解释；日期默认本地今天且不早于今天，时间无默认值 |
+| Gateway expiry | 2026-12-08 18:00（Asia/Shanghai） | 日期默认比赛结束次日、下限为比赛结束日期；时间默认沿用比赛结束时间；换算 UTC 后至少覆盖结束后 **86400 秒**且仍在未来 |
 | 版本 | 选定的已发布版本，命令示例为 2.10.3 | 两端使用同一标签，Client 与镜像集成要求配套 |
 
-setup 对纯 IPv4 使用 0.0.0.0 监听，含任意 IPv6 时使用 [::]；混合地址族须验证目标系统双栈可达性。时间均填写严格 RFC 3339 UTC Z，例如 2026-12-06T10:00:00Z。
+setup 对纯 IPv4 使用 0.0.0.0 监听，含任意 IPv6 时使用 [::]；混合地址族须验证目标系统双栈可达性。先用 `timedatectl status` 核对 Server VM 的时区。向导用日期面板和严格两位数的 24 小时制 `HH:MM`（00:00–23:59），按 **Server 本机时区**解释并换算 UTC。例如 Asia/Shanghai 的 2026-12-06 18:00 会保存为 2026-12-06T10:00:00Z。配置和 pending request.toml 仍使用严格 RFC 3339 UTC Z 字符串。
 
 本文以 domjudge 为本机 Gateway 名称，可改用 gateway.contest.example 等名字；保持两端 config.toml 的 Gateway hostname 一致，Client 启动时会自动同步本机 hosts、Firefox 主页和比赛书签。
 
@@ -270,7 +270,7 @@ getent passwd natsume-server
 
 预期架构 amd64、包已配置、服务账号存在。安装脚本初始化服务账号和目录等，不生成配置/CA、不初始化管理员、不自动启用或启动服务；缺少部署文件时允许通用包预装。
 
-setup 还要求 root、stdin/stdout/stderr 均为 TTY、可用的 controlling terminal、运行中的 systemd、amd64 和 Deb 创建的服务账号/目录。时钟未同步或状态未知时会警告并要求确认；应先修正时间。不能重定向 stderr，其中包含提示和作答上下文；诊断请直接查看终端输出，不录制含密钥导出的终端会话。
+setup 还要求 root、stdin/stdout/stderr 均为 TTY、可用的 controlling terminal、运行中的 systemd、amd64 和 Deb 创建的服务账号/目录。预检显示当前 Server 时区，管理员须先用 `timedatectl status` 核对 VM 时区。时钟未同步、同步状态未知或时区未知时会警告并要求确认；应先修正时间和时区。不能重定向 stderr，其中包含提示和作答上下文；诊断请直接查看终端输出，不录制含密钥导出的终端会话。
 
 ~~~bash
 sudo natsume-server-setup
@@ -287,6 +287,8 @@ sudo natsume-server-setup --pki-dir /root/contest-pki
 ### 4.2 交互、计划确认与私钥保存
 
 向导顺序是预检 → 第 1 节参数 → Control CA 来源 → TLS 来源 → Origin CA 来源 → PKI 目录说明与新 CA 口令 → 校验 → 计划确认。CSR 首轮在 TLS 来源后直接准备请求，不询问 Origin CA。计划列出参数、证书指纹/期限、路径、属主权限；确认前不发布部署文件。Esc 可在写入/私钥展示前返回支持的上一步，Ctrl-C 中止。
+
+比赛结束和 Gateway 到期各分为日期面板与 `HH:MM` 时间输入；时间按 Server 本机时区换算为 UTC。每项完成后及计划摘要中均显示本地时间、时区名称、该时刻的 UTC 偏移和 UTC 结果，确认时逐项核对。比赛结束日期默认今天、时间无默认；Gateway 日期默认次日，时间默认相同。跨夏令时变更时仍须满足实际经过至少 86400 秒的规则；不存在或重复的本地时间会说明原因并重问时间。时间字段按 Esc 返回对应日期，日期字段按 Esc 返回前一参数。
 
 确认后，每把新生成的 CA 私钥以各自口令加密的 PKCS#8 PEM **展示一次**；口令非空并输入两次，运维应使用强口令。先安全复制，再回答是否落盘；默认否，否时必须输入 key saved 确认另存，或 abort 取消。选是则以 root:root 0600 保存 control-ca-key.pem / origin-ca-key.pem；新生成 Control CA 的公共证书保存为 control-ca.crt（0644）。工具尝试清屏和清理回滚缓冲；不要录制含私钥的终端会话。导入的 CA 私钥原件不另存，Control CA 私钥永不进入服务目录。
 

@@ -5,7 +5,7 @@ use super::{
     notice::Notice,
 };
 use inquire::{
-    Confirm, Password, PasswordDisplayMode, Select, Text, error::InquireError,
+    Confirm, DateSelect, Password, PasswordDisplayMode, Select, Text, error::InquireError,
     validator::Validation,
 };
 use secrecy::{ExposeSecret as _, SecretString};
@@ -35,6 +35,24 @@ fn write_terminal(text: &str) -> Result<(), InteractionError> {
         .write_all(text.as_bytes())
         .and_then(|()| terminal.flush())
         .context(OutputSnafu)
+}
+
+fn calendar_date(date: time::Date) -> Result<chrono::NaiveDate, InteractionError> {
+    use snafu::OptionExt as _;
+    chrono::NaiveDate::from_ymd_opt(
+        date.year(),
+        u32::from(u8::from(date.month())),
+        u32::from(date.day()),
+    )
+    .context(super::CalendarDateOutOfRangeSnafu)
+}
+
+fn selected_date(date: chrono::NaiveDate) -> Result<time::Date, InteractionError> {
+    use chrono::Datelike as _;
+    let month = u8::try_from(date.month()).context(super::CalendarComponentSnafu)?;
+    let month = time::Month::try_from(month).context(super::CalendarDateSnafu)?;
+    let day = u8::try_from(date.day()).context(super::CalendarComponentSnafu)?;
+    time::Date::from_calendar_date(date.year(), month, day).context(super::CalendarDateSnafu)
 }
 
 impl Interaction for TerminalInteraction {
@@ -94,6 +112,25 @@ impl Interaction for TerminalInteraction {
             input = input.with_help_message(help);
         }
         answer(input.prompt())
+    }
+
+    fn date(
+        &mut self,
+        _id: PromptId,
+        prompt: &str,
+        default: time::Date,
+        min: Option<time::Date>,
+    ) -> Result<Answer<time::Date>, InteractionError> {
+        let mut input = DateSelect::new(prompt)
+            .with_default(calendar_date(default)?)
+            .with_week_start(chrono::Weekday::Mon);
+        if let Some(min) = min {
+            input = input.with_min_date(calendar_date(min)?);
+        }
+        match answer(input.prompt())? {
+            Answer::Back => Ok(Answer::Back),
+            Answer::Value(date) => Ok(Answer::Value(selected_date(date)?)),
+        }
     }
 
     fn confirm(
@@ -181,6 +218,31 @@ impl Interaction for TerminalInteraction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn calendar_dates_roundtrip_and_out_of_range_dates_retain_the_source()
+    -> Result<(), InteractionError> {
+        use std::error::Error as _;
+        for date in [time::Date::MIN, time::Date::MAX] {
+            assert_eq!(selected_date(calendar_date(date)?)?, date);
+        }
+        let Some(date) = chrono::NaiveDate::from_ymd_opt(2028, 2, 29) else {
+            panic!("fixture leap date must exist")
+        };
+        assert_eq!(calendar_date(selected_date(date)?)?, date);
+        let Some(unsupported) = chrono::NaiveDate::from_ymd_opt(10000, 1, 1) else {
+            panic!("backend must support fixture year 10000")
+        };
+        let Err(error) = selected_date(unsupported) else {
+            panic!("application must reject year 10000")
+        };
+        assert!(matches!(error, InteractionError::CalendarDate { .. }));
+        assert!(
+            error.source().is_some(),
+            "calendar conversion must retain its cause"
+        );
+        Ok(())
+    }
+
     #[test]
     fn escape_and_interrupt_have_distinct_semantics() -> Result<(), InteractionError> {
         assert!(matches!(

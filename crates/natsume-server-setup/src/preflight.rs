@@ -71,6 +71,8 @@ pub enum PreflightWarning {
     ClockNotSynchronized,
     /// The system did not report a reliable synchronization state.
     ClockSynchronizationUnknown,
+    /// The local timezone name could not be discovered.
+    TimezoneUnknown,
 }
 
 /// Eligible host context and warnings to present before collecting installation input.
