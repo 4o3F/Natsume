@@ -1,7 +1,8 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::RequestAudit;
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -84,21 +85,33 @@ pub(crate) async fn list_enrollment_reviews(State(state): State<AppState>) -> Re
     Json(response).into_response()
 }
 
-pub(crate) async fn approve_enrollment_review(
+pub(in crate::http) async fn approve_enrollment_review(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
+    Extension(admission): Extension<crate::lifecycle::Admission>,
     Path(path): Path<EnrollmentReviewPath>,
 ) -> Response {
     let Some(review_id) = EnrollmentReviewId::parse(&path.review_id) else {
         return ApiError::invalid_request("enrollment_review_id_not_canonical_uuid_v7")
             .into_response();
     };
-    match state.device_control().approve_enrollment(review_id).await {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+    match state
+        .device_control()
+        .approve_enrollment(&admission, review_id, audit.context())
+        .await
+    {
+        Ok(authority) => {
+            audit.record_target(crate::journal::event::types::AuditTarget::Device(
+                authority.device_id(),
+            ));
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(error) => enrollment_approval_error(error).into_response(),
     }
 }
 
-pub(crate) async fn deny_enrollment_review(
+pub(in crate::http) async fn deny_enrollment_review(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Path(path): Path<EnrollmentReviewPath>,
 ) -> Response {
@@ -106,7 +119,11 @@ pub(crate) async fn deny_enrollment_review(
         return ApiError::invalid_request("enrollment_review_id_not_canonical_uuid_v7")
             .into_response();
     };
-    if state.device().deny_enrollment_review(review_id).await {
+    if state
+        .device()
+        .deny_enrollment_review(review_id, audit.context())
+        .await
+    {
         StatusCode::NO_CONTENT.into_response()
     } else {
         ApiError::not_found("enrollment_review_not_found").into_response()
@@ -115,6 +132,7 @@ pub(crate) async fn deny_enrollment_review(
 
 fn enrollment_approval_error(error: EnrollmentApprovalError) -> ApiError {
     match error {
+        EnrollmentApprovalError::ServerStopping => ApiError::unavailable("server_stopping"),
         EnrollmentApprovalError::ReviewNotFound => {
             ApiError::not_found("enrollment_review_not_found")
         }
@@ -130,5 +148,28 @@ fn enrollment_approval_error(error: EnrollmentApprovalError) -> ApiError {
                 ApiError::internal_error_from(error, "enrollment_authority_persistence_failed")
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shutdown_refusal_returns_the_mutation_gate_response() {
+        let refused =
+            enrollment_approval_error(EnrollmentApprovalError::ServerStopping).into_response();
+        let gate = ApiError::unavailable("server_stopping").into_response();
+        assert_eq!(
+            refused.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        let refused = axum::body::to_bytes(refused.into_body(), usize::MAX)
+            .await
+            .unwrap_or_else(|error| panic!("refusal body: {error}"));
+        let gate = axum::body::to_bytes(gate.into_body(), usize::MAX)
+            .await
+            .unwrap_or_else(|error| panic!("gate body: {error}"));
+        assert_eq!(refused, gate);
     }
 }

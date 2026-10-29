@@ -1,0 +1,7 @@
+--- generated-schema.rs
++++ journal-schema.rs
+@@ -5,2 +5,2 @@
+-        id -> Integer,
+-        occurred_at_ms -> Integer,
++        id -> BigInt,
++        occurred_at_ms -> BigInt,

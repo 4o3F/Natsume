@@ -174,6 +174,9 @@ impl From<DeviceError> for EnrollmentStartError {
 #[derive(Debug, Clone, Snafu)]
 #[snafu(module)]
 pub(crate) enum EnrollmentApprovalError {
+    /// Shutdown closed the registry before approval could acquire its authority fence.
+    #[snafu(display("the Server is stopping"))]
+    ServerStopping,
     /// The review never existed or another terminal action already claimed it.
     #[snafu(display("Enrollment review was not found"))]
     ReviewNotFound,

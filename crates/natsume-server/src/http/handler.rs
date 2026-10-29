@@ -9,3 +9,5 @@ pub(crate) mod print;
 pub(crate) mod provisioning;
 pub(crate) mod session;
 pub(crate) mod target_submission;
+
+pub(crate) mod journal;

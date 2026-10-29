@@ -29,5 +29,5 @@ Stop the only Server process for the entire backup window. Capture a consistent 
 - `cargo test --frozen -p natsume-server --lib component::print`: 20 tests passed, including file-write failure, database rollback, concurrent admission, cancellation, missing/corrupt files, and database-plus-document restore.
 - `cargo test --frozen -p natsume-server --test schema_contract`: 14 tests passed, covering metadata-only storage, preserved constraints and migration round trips.
 - After `deno task prepare rust print-domjudge`, `cargo test --frozen -p natsume-server --lib http::tests::print_domjudge -- --ignored`: the real Typst/HTTPS test passed, including replay, hidden responses, database reopen and source revocation; it reads the admitted PDF from the file store.
-- `deno task schema:check`: passed; `diesel/schema.rs` is generated from migrations 01–07 and contains only document metadata, not PDF bytes.
+- `deno task schema:check`: passed; `diesel/business/schema.rs` is generated from migrations 01–07 and contains only document metadata, not PDF bytes.
 - `prek run --all-files`: passed with no hooks skipped, including workspace Clippy and the full non-ignored workspace Rust tests. The builder used the prepared pinned Skia archive.

@@ -44,12 +44,25 @@ pub const SERVER_TLS_LEAF: &str = "/var/lib/natsume-server/keys/server-tls-leaf.
 pub const SERVER_TLS_KEY: &str = "/var/lib/natsume-server/keys/server-tls-key.pk8";
 /// Persistent Server database, excluded from deployment rollback.
 pub const DATABASE: &str = "/var/lib/natsume-server/natsume.db";
+/// Service-created operational event journal database, excluded from deployment rollback.
+pub const JOURNAL_DATABASE: &str = "/var/lib/natsume-server/natsume-journal.db";
 /// Bootstrap-owned vault root key, excluded from deployment rollback.
 pub const ROOT_KEY: &str = "/var/lib/natsume-server/keys/server-root.key";
 /// Directory containing deployment-supplied organization logos.
 pub const ORGANIZATION_LOGOS: &str = "/var/lib/natsume-server/organization-logos";
 /// Directory containing persisted print documents.
 pub const PRINT_DOCUMENTS: &str = "/var/lib/natsume-server/print-documents";
+
+/// Journal retention days matching Server defaults and the packaged configuration example.
+const JOURNAL_MAX_AGE_DAYS: i64 = 30;
+/// Journal row budget matching Server defaults and the packaged configuration example.
+const JOURNAL_MAX_ROWS: i64 = 2_000_000;
+/// Journal DB, WAL and SHM byte budget matching Server defaults and the packaged example.
+const JOURNAL_MAX_BYTES: i64 = 512 * 1024 * 1024;
+/// Journal filesystem free-space floor matching Server defaults and the packaged example.
+const JOURNAL_MIN_FREE_BYTES: i64 = 1024 * 1024 * 1024;
+/// Journal shutdown drain seconds matching Server defaults and the packaged example.
+const JOURNAL_FLUSH_TIMEOUT_SECONDS: i64 = 10;
 
 /// Validated first-install parameters retaining the deployer's timestamp spelling.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,9 +271,23 @@ pub fn render_server_config(params: &DeploymentParameters) -> Result<String, Con
             "storage".to_owned(),
             section([
                 ("database", DATABASE.into()),
+                ("journal", JOURNAL_DATABASE.into()),
                 ("root_key", ROOT_KEY.into()),
                 ("organization_logos", ORGANIZATION_LOGOS.into()),
                 ("print_documents", PRINT_DOCUMENTS.into()),
+            ]),
+        ),
+        (
+            "journal".to_owned(),
+            section([
+                ("max_age_days", JOURNAL_MAX_AGE_DAYS.into()),
+                ("max_rows", JOURNAL_MAX_ROWS.into()),
+                ("max_bytes", JOURNAL_MAX_BYTES.into()),
+                ("min_free_bytes", JOURNAL_MIN_FREE_BYTES.into()),
+                (
+                    "flush_timeout_seconds",
+                    JOURNAL_FLUSH_TIMEOUT_SECONDS.into(),
+                ),
             ]),
         ),
         (
@@ -527,9 +554,28 @@ mod tests {
             params.gateway_not_after_timestamp(),
             OffsetDateTime::parse(params.gateway_not_after(), &Rfc3339)?
         );
+        assert_eq!(
+            actual["storage"]["journal"].as_str(),
+            Some(JOURNAL_DATABASE)
+        );
         assert!(
-            !text.contains("[journal]"),
-            "journal is outside the v2 configuration"
+            text.contains("[journal]"),
+            "journal budgets must be explicit"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rendered_journal_matches_validated_packaged_example() -> Result<(), TestError> {
+        let text = render_server_config(&Parameters::default().build()?)?;
+        let example = include_str!("../../../packaging/server/config.example.toml");
+        validate_server_config(&text)?;
+        validate_server_config(example)?;
+        let actual: Table = toml::from_str(&text)?;
+        let expected: Table = toml::from_str(example)?;
+        assert_eq!(
+            actual["journal"], expected["journal"],
+            "setup journal budgets must track the packaged Server defaults"
         );
         Ok(())
     }

@@ -1,4 +1,5 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::RequestAudit;
 
 use axum::{
     Extension, Json,
@@ -188,7 +189,8 @@ impl From<TargetSubmissionResult> for TargetSubmissionResponse {
     }
 }
 
-pub(crate) async fn submit_targets(
+pub(in crate::http) async fn submit_targets(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Extension(identity): Extension<OperatorIdentity>,
     body: Result<Json<TargetSubmissionBody>, JsonRejection>,
@@ -207,14 +209,20 @@ pub(crate) async fn submit_targets(
     let Some(request) = body.into_request_with(active_devices, expires_at_unix_ms) else {
         return ApiError::invalid_request("target_submission_body_rejected").into_response();
     };
+    audit.record_operation(request.operation_id);
     match state
         .target_submission()
-        .submit(identity.operator_id(), request)
+        .submit(identity.operator_id(), request, audit.context())
         .await
     {
-        Ok((result, change)) => {
-            state.device_control().publish(change).await;
-            Json(TargetSubmissionResponse::from(result)).into_response()
+        Ok(outcome) => {
+            for row in &outcome.result.results {
+                audit.record_target(crate::journal::event::types::AuditTarget::Device(
+                    row.device_id,
+                ));
+            }
+            state.device_control().publish(outcome.change).await;
+            Json(TargetSubmissionResponse::from(outcome.result)).into_response()
         }
         Err(TargetSubmissionError::OperationIdConflict) => {
             ApiError::conflict("target_submission_id_conflict").into_response()

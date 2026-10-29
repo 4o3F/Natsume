@@ -2,6 +2,18 @@ use snafu::Snafu;
 
 #[derive(Debug, Snafu)]
 pub(crate) enum TestError {
+    #[snafu(context(false), display("test journal bounded value failed"))]
+    JournalBound {
+        source: crate::journal::event::BoundError,
+    },
+    #[snafu(context(false), display("test journal event failed"))]
+    JournalEvent {
+        source: crate::journal::event::EventError,
+    },
+    #[snafu(context(false), display("test journal query failed"))]
+    JournalQuery {
+        source: crate::journal_query::QueryError,
+    },
     #[snafu(context(false), display("test filesystem operation failed"))]
     Io { source: std::io::Error },
     #[snafu(context(false), display("test database startup failed"))]

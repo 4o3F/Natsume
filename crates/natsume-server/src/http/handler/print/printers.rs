@@ -1,4 +1,6 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::{RequestAudit, canonical_uuid};
+use axum::Extension;
 
 use axum::{
     Json,
@@ -66,6 +68,7 @@ async fn pairing_limit(State(state): State<AppState>, request: Request, next: Ne
 }
 
 async fn create(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     body: Result<Json<PrintPrinterCreate>, JsonRejection>,
 ) -> Response {
@@ -73,7 +76,12 @@ async fn create(
         return ApiError::invalid_request("print_printer_json").into_response();
     };
     match state.print().create_printer(body.name).await {
-        Ok(printer) => Json(printer).into_response(),
+        Ok(printer) => {
+            if let Some(id) = canonical_uuid(&printer.printer_id) {
+                audit.record_target(crate::journal::event::types::AuditTarget::Printer(id));
+            }
+            Json(printer).into_response()
+        }
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }

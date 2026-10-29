@@ -1,4 +1,5 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::{RequestAudit, canonical_uuid};
 
 mod dto;
 mod execution;
@@ -92,7 +93,8 @@ pub(crate) async fn list_queue(State(state): State<AppState>) -> Response {
     }
 }
 
-pub(crate) async fn create_source(
+pub(in crate::http) async fn create_source(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     body: Result<Json<PrintSourceCreate>, JsonRejection>,
 ) -> Response {
@@ -100,7 +102,12 @@ pub(crate) async fn create_source(
         return ApiError::invalid_request("print_json").into_response();
     };
     match state.print().create_source(body.name).await {
-        Ok(source) => Json(PrintSourceIssued::from(source)).into_response(),
+        Ok(source) => {
+            if let Some(id) = canonical_uuid(&source.source_id) {
+                audit.record_target(crate::journal::event::types::AuditTarget::PrintSource(id));
+            }
+            Json(PrintSourceIssued::from(source)).into_response()
+        }
         Err(error) => ApiError::from_print(error).into_response(),
     }
 }
@@ -128,7 +135,7 @@ pub(crate) async fn revoke_source(
     }
 }
 
-pub(crate) async fn register(
+pub(in crate::http) async fn register(
     State(state): State<AppState>,
     Extension(source): Extension<SourceIdentity>,
     body: Result<Json<PrintRegistration>, JsonRejection>,

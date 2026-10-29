@@ -8,6 +8,77 @@ export type AccountResponse = {
   team: TeamResponse | null;
 };
 
+export type ActivationCommitted = Record<string, never>;
+
+export type ActorStopped = {
+  panicked: boolean;
+  session_id: SessionId | null;
+};
+
+export type ActualChanged = {
+  resource: ActualResource;
+  /**  Previous reported state; None marks the first observation after attach. */
+  from: ActualState | null;
+  to: ActualState;
+};
+
+export type ActualResource =
+  | "gateway"
+  | "binding_access"
+  | "runtime_config"
+  | "foreground"
+  | "session"
+  | "home"
+  | "power";
+
+export type ActualState =
+  | "unknown"
+  | "none"
+  | "starting"
+  | "running"
+  | "terminating"
+  | "ambiguous"
+  | "error"
+  | "waiting"
+  | "contest"
+  | "greeter"
+  | "other"
+  | "steady"
+  | "resetting"
+  | "recovery_required"
+  | "idle"
+  | "pending"
+  | "accepted"
+  | "expired"
+  | "absent"
+  | "applied"
+  | "failed"
+  | "blocked"
+  | "restoring"
+  | "ready"
+  | "upstream_unhealthy";
+
+export type AdmissionCompleted = Record<string, never>;
+
+export type AdmissionRejected = {
+  stage: AdmissionStage;
+  peer_ip: string;
+  device_id: DeviceId | null;
+};
+
+export type AdmissionStage =
+  | "server_stopping"
+  | "capacity"
+  | "protocol_version"
+  | "challenge"
+  | "proof"
+  | "metadata"
+  | "resume_authority"
+  | "enrollment"
+  | "activation"
+  | "ready_exchange"
+  | "attach";
+
 export type AttemptOutcome = "printed" | "failed" | "unknown";
 
 export type AttemptReport =
@@ -20,6 +91,208 @@ export type AttemptReport =
 export type AttemptState =
   "preparing" | "observing" | "printed" | "failed" | "unknown";
 
+export type AuditCause =
+  /**  Validated static API failure discriminant, stored without response text. */
+  string;
+
+export type AuditRoute =
+  | "session"
+  | "device"
+  | "device_binding"
+  | "review_approve"
+  | "review_deny"
+  | "imports"
+  | "import"
+  | "import_commit"
+  | "operator_account"
+  | "password_reset_issue"
+  | "invitations"
+  | "invitation"
+  | "invitation_regenerate"
+  | "password_change"
+  | "password_reset"
+  | "password_reset_inspect"
+  | "registration"
+  | "registration_inspect"
+  | "print_requeue"
+  | "printers"
+  | "printer_binding"
+  | "printer_pairing_code"
+  | "print_sources"
+  | "print_source"
+  | "provisioning"
+  | "target_submission";
+
+export type AuditTarget =
+  | ({ device: DeviceId } & {
+      account?: never;
+      binding?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ operator: OperatorId } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ binding: string } & {
+      account?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ seat: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+    })
+  | ({ account: string } & {
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ invitation: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ review: ReviewId } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      seat?: never;
+    })
+  | ({ import: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ print_source: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ printer: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_execution?: never;
+      print_source?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ print_execution: number } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      password_reset?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    })
+  | ({ password_reset: string } & {
+      account?: never;
+      binding?: never;
+      device?: never;
+      import?: never;
+      invitation?: never;
+      operator?: never;
+      print_execution?: never;
+      print_source?: never;
+      printer?: never;
+      review?: never;
+      seat?: never;
+    });
+
+export type AuthFailed = {
+  class: AuthFailureClass;
+};
+
+export type AuthFailureClass =
+  "invalid_credentials" | "rate_limited" | "infrastructure";
+
+export type AuthSucceeded = Record<string, never>;
+
+/**  Closed writer availability classification exposed to operators. */
+export type Availability = "ready" | "paused" | "degraded";
+
 /**  Latest validated Binding artifact Actual reported by the current lease. */
 export type BindingActualResponse = {
   assignment_state: BindingArtifactStateResponse;
@@ -29,6 +302,13 @@ export type BindingActualResponse = {
 
 /**  Binding artifact state vocabulary exposed by the convergence projection. */
 export type BindingArtifactStateResponse = "absent" | "applied" | "failed";
+
+export type BindingBound = {
+  binding_id: string;
+  seat_code: SeatCode;
+};
+
+export type BindingCode = "not_found" | "unmapped" | "occupied";
 
 /**  Non-secret Binding identity context shared by target and Actual. */
 export type BindingContextResponse = {
@@ -67,6 +347,10 @@ export type BindingEvaluationResponse = {
   error_code: BindingEvaluationCodeResponse;
 };
 
+export type BindingRejected = {
+  code: BindingCode;
+};
+
 export type BindingResponse = {
   binding_id: string;
   seat_id: string;
@@ -100,6 +384,36 @@ export type BindingTargetResponse_Serialize =
       evaluation?: never;
       negotiation_id?: never;
     });
+
+export type BindingUnbound = {
+  seat_code: SeatCode;
+};
+
+/**  Named category counters without numeric indexing or enum encodings. */
+export type CategoriesStatus = {
+  /**  Device-category producer/writer counters. */
+  device: CategoryStatus;
+  /**  Operator request counters. */
+  audit: CategoryStatus;
+  /**  Authentication decision counters. */
+  auth: CategoryStatus;
+  /**  Journal lifecycle and gap counters. */
+  journal: CategoryStatus;
+};
+
+export type Category = "device" | "audit" | "auth" | "journal";
+
+/**  Boot counters for one journal category, sampled independently. */
+export type CategoryStatus = {
+  /**  Boot-total lost events in this category. */
+  dropped: number;
+  /**  Boot-total serialization/write failures in this category. */
+  write_failed: number;
+  /**  Events still awaiting a final writer outcome, including an in-flight batch. */
+  queued: number;
+  /**  Earliest known category loss in Unix milliseconds. */
+  dropped_since: number | null;
+};
 
 export type ConnectionStateResponse =
   "offline" | "awaiting_fresh_state" | "active";
@@ -136,6 +450,9 @@ export type DeviceConvergenceResponse_Serialize = {
 
 /**  Closed Device Enrollment evidence-quality vocabulary exposed by the API. */
 export type DeviceEvidenceQualityResponse = "medium" | "strong";
+
+/**  Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device. */
+export type DeviceId = string;
 
 export type DeviceListState = "enabled" | "disabled" | "revoked";
 
@@ -191,9 +508,78 @@ export type DeviceSubmissionResponse =
       message: string;
     };
 
+/**  Retained per-device summaries accompanied by journal health. */
+export type DeviceSummaries = {
+  /**  One summary per device with retained journal facts. */
+  devices: DeviceSummary[];
+  /**  Health and retention metadata explaining incomplete history. */
+  journal: JournalHealth;
+};
+
+/**  Connection facts and windowed terminal counts from retained device events. */
+export type DeviceSummary = {
+  /**  Device identity obtained solely from device journal facts. */
+  device_id: DeviceId;
+  /**  Latest connection occurrence time in Unix milliseconds. */
+  last_connected_at: number | null;
+  /**  Latest terminal occurrence time in Unix milliseconds. */
+  last_disconnected_at: number | null;
+  /**  Closed reason for the latest terminal; `None` when unknown or replaced. */
+  last_disconnect_reason: DisconnectReason | null;
+  /**  Known terminal count within the requested wall-clock window. */
+  disconnects: number;
+};
+
+export type DeviceTimeline = {
+  /**  Device requested by the authenticated operator. */
+  device_id: DeviceId;
+  /**  Reconstructed retained sessions, in journal causal order. */
+  sessions: TimelineSession[];
+  /**  Explicit retention, loss, pause and unreadable evidence gaps. */
+  gaps: TimelineGap[];
+  /**  Writer/retention health accompanying reconstruction. */
+  journal: JournalHealth;
+};
+
 /**  Complete replacement of the mutable Device lifecycle field. */
 export type DeviceUpdateRequest = {
   state: DeviceStateResponse;
+};
+
+export type DisconnectReason =
+  | "disabled"
+  | "revoked"
+  | "control_key_replaced"
+  | "ping_silence"
+  | "client_close"
+  | "transport_error"
+  | "protocol_violation"
+  | "actor_inbox_unavailable"
+  | "send_failed"
+  | "send_timeout"
+  | "outgoing_closed"
+  | "client_fault"
+  | "server_fault"
+  | "transient_limit"
+  | "outbound_backpressure"
+  | "outbound_closed"
+  | "server_shutdown"
+  | "actor_failed";
+
+export type Disconnected = {
+  session_id: SessionId;
+  reason: DisconnectReason;
+};
+
+export type EnrollmentApproved = {
+  /**  Connection-local review identity claimed by this transition. */
+  review_id: ReviewId;
+  automatic: boolean;
+};
+
+export type EnrollmentDenied = {
+  /**  Connection-local review identity claimed by the denial. */
+  review_id: ReviewId;
 };
 
 /**  Non-secret evidence awaiting an Administrator decision in this process. */
@@ -206,10 +592,117 @@ export type EnrollmentReviewResponse = {
   agent_version: string;
 };
 
+export type ErrorClass =
+  | "open"
+  | "write"
+  | "serialization"
+  | "filesystem"
+  | "flush_timeout"
+  | "producer_timeout";
+
 export type ErrorResponse = {
   title: string;
   status: number;
   code: string;
+};
+
+export type ErrorToken = string;
+
+export type Event =
+  | ({
+      kind: "admission_rejected";
+    } & AdmissionRejected)
+  | ({
+      kind: "lease_attached";
+    } & LeaseAttached)
+  | ({
+      kind: "lease_replaced";
+    } & LeaseReplaced)
+  | ({
+      kind: "disconnected";
+    } & Disconnected)
+  | ({
+      kind: "reconcile_retry";
+    } & ReconcileRetry)
+  | ({
+      kind: "actor_stopped";
+    } & ActorStopped)
+  | ({
+      kind: "actual_changed";
+    } & ActualChanged)
+  | ({
+      kind: "review_created";
+    } & ReviewCreated)
+  | ({
+      kind: "review_cancelled";
+    } & ReviewCancelled)
+  | ({
+      kind: "enrollment_approved";
+    } & EnrollmentApproved)
+  | ({
+      kind: "enrollment_denied";
+    } & EnrollmentDenied)
+  | { kind: "activation_committed" }
+  | { kind: "admission_completed" }
+  | ({
+      kind: "lifecycle_changed";
+    } & LifecycleChanged)
+  | ({
+      kind: "binding_bound";
+    } & BindingBound)
+  | ({
+      kind: "binding_rejected";
+    } & BindingRejected)
+  | ({
+      kind: "binding_unbound";
+    } & BindingUnbound)
+  | ({
+      kind: "target_submitted";
+    } & TargetSubmitted)
+  | ({
+      kind: "operator_request";
+    } & OperatorRequest)
+  | { kind: "auth_succeeded" }
+  | ({
+      kind: "auth_failed";
+    } & AuthFailed)
+  | { kind: "logged_out" }
+  | { kind: "password_changed" }
+  | { kind: "password_reset_issued" }
+  | { kind: "password_reset_completed" }
+  | { kind: "invitation_registered" }
+  | ({
+      kind: "server_started";
+    } & ServerStarted)
+  | ({
+      kind: "server_stopping";
+    } & ServerStopping)
+  | ({
+      kind: "journal_dropped";
+    } & JournalDropped)
+  | ({
+      kind: "journal_paused";
+    } & JournalPaused)
+  | { kind: "journal_resumed" };
+
+/**  Versioned output rebuilt exclusively through the sealed event writer. */
+export type EventDetails = {
+  /**  Supported event format version, currently one. */
+  v: number;
+} & Event;
+
+/**  A descending event page with continuation, names and health metadata. */
+export type EventPage = {
+  /**  Validated journal records ordered by descending ID. */
+  events: JournalRecord[];
+  /**  True when more records match this cursor range. */
+  has_more: boolean;
+  /**  Continue with this before cursor and the same filters/after lower bound. */
+  next_before: number | null;
+  /**  Current actor names resolved in one bounded business read per page. */
+  operators: OperatorDisplayName[];
+  /**  Writer health and current retention boundary. */
+  journal: JournalHealth;
 };
 
 export type EvidenceQualityResponse = "medium" | "strong";
@@ -217,8 +710,38 @@ export type EvidenceQualityResponse = "medium" | "strong";
 export type ExecutionState =
   "queued" | "active" | "waiting" | "completed" | "exhausted";
 
+export type ExportFailure = "journal_read_failed";
+
+/**  Tagged `JSONL` records for exported events, pruning metadata or terminal failure. */
+export type ExportLine =
+  | {
+      type: "event";
+      /**  One validated event from the fixed ID snapshot. */
+      event: JournalRecord;
+      /**  Current actor display name, absent for unknown/deleted actors or lookup failure. */
+      operator_display_name: string | null;
+    }
+  | {
+      type: "metadata";
+      /**  Inclusive high-water ID fixed before the first response byte. */
+      high_water_id: number | null;
+      /**  Matching snapshot rows lost before their page could be read. */
+      pruned_rows: number;
+      /**  Current retention boundary; missing rows below it were pruned during export. */
+      pruned_before_id: number | null;
+      /**  Conservative ID range containing missing snapshot rows; `None` without observed loss. */
+      pruned_range: PrunedRange | null;
+    }
+  | {
+      type: "error";
+      /**  Closed export termination reason; source details remain in tracing only. */
+      code: ExportFailure;
+    };
+
 /**  Desired Session foreground role accepted and returned by the API. */
 export type ForegroundTargetResponse = "contest" | "waiting";
+
+export type GapKind = "pruned" | "dropped" | "paused" | "unreadable";
 
 /**  Latest validated Gateway Actual reported by the current lease. */
 export type GatewayActualResponse = {
@@ -282,6 +805,16 @@ export type HomeResponse = {
 
 /**  Home Actual state vocabulary exposed by the convergence projection. */
 export type HomeStateResponse = "steady" | "resetting" | "recovery_required";
+
+export type HttpMethod =
+  | "post"
+  | "put"
+  | "patch"
+  | "delete"
+  | "options"
+  | "connect"
+  | "trace"
+  | "other";
 
 export type ImportBindingImpactResponse = {
   seat_code: string;
@@ -354,17 +887,123 @@ export type ImportTeamResponse = {
   category: string;
 };
 
+export type InvitationRegistered = Record<string, never>;
+
 export type JobIdentity = {
   queue_name: string;
   job_id: number;
   label: string;
 };
 
+export type JournalDropped = {
+  count: number;
+  since: number;
+  category: Category;
+};
+
+/**  Writer health, retention boundaries and the injected startup offset. */
+export type JournalHealth = {
+  /**  Writer availability sampled from process state, independently of the read transaction. */
+  status: Availability;
+  /**  True precisely while the writer has a pause reason. */
+  paused: boolean;
+  /**  Boot-total lost events across every category. */
+  dropped_total: number;
+  /**  Earliest known loss bound in Unix milliseconds; `None` before any drop this boot. */
+  dropped_since: number | null;
+  /**  Oldest currently retained cursor, absent for an empty journal. */
+  oldest_retained_id: number | null;
+  /**  Occurrence time associated with the oldest retained cursor, in Unix milliseconds. */
+  oldest_retained_at: number | null;
+  /**  Server-local UTC offset captured at startup, in minutes; UTC fallback on startup failure. */
+  server_utc_offset_minutes: number;
+};
+
+export type JournalPaused = {
+  reason: PauseReason;
+};
+
+/**  Validated event data or bounded metadata for an unreadable stored row. */
+export type JournalRecord =
+  | {
+      state: "readable";
+      /**  Validated common event facts, separate from persisted SQL row types. */
+      header: RecordHeader;
+      /**  Versioned details rebuilt from the sealed event model, never raw stored JSON. */
+      details: EventDetails;
+    }
+  | {
+      state: "unreadable";
+      /**  Database cursor identity, safe even when the remainder cannot be decoded. */
+      id: number;
+      /**  Known closed kind or `unknown`; never arbitrary persisted text. */
+      kind: string;
+    };
+
+export type JournalResumed = Record<string, never>;
+
+/**  Admin-only writer counters and optional filesystem measurements. */
+export type JournalStatus = {
+  /**  Availability and retention metadata. */
+  journal: JournalHealth;
+  /**  Estimated channel occupancy, excluding the in-flight writer batch. */
+  queue_depth: number;
+  /**  Explicit named category counters; writes fail at batch scope, counted below. */
+  categories: CategoriesStatus;
+  /**  Boot-total serialization/write failures across all categories. */
+  write_failed: number;
+  /**  Current writer pause reason, absent while writable. */
+  pause_reason: PauseReason | null;
+  /**  Last observed failure classification, absent before any failure or after successful reopen. */
+  last_error: ErrorClass | null;
+  /**  Boot-total producer/flush deadline expirations. */
+  shutdown_timeouts: number;
+  /**  Main `SQLite` file size in bytes; unknown if sampling fails. */
+  db_bytes: number | null;
+  /**  WAL sidecar size in bytes; zero when absent, unknown if sampling fails. */
+  wal_bytes: number | null;
+  /**  Shared-memory sidecar size in bytes; zero when absent, unknown if sampling fails. */
+  shm_bytes: number | null;
+  /**  Available filesystem bytes; unknown if sampling fails. */
+  free_bytes: number | null;
+};
+
+export type LeaseAttached = {
+  session_id: SessionId;
+};
+
+export type LeaseReplaced = {
+  old: SessionId;
+  new: SessionId;
+};
+
+export type LifecycleChanged = {
+  to: LifecycleState;
+};
+
+export type LifecycleState = "enabled" | "disabled" | "revoked";
+
+export type LoggedOut = Record<string, never>;
+
+export type OperationId =
+  /**  Operation correlation UUID supplied explicitly by the producer. */
+  string;
+
 export type OperatorAccountResponse = {
   operator_id: string;
   username: string;
   role: OperatorRoleValue;
 };
+
+/**  A durable actor ID paired with its optional current account name. */
+export type OperatorDisplayName = {
+  /**  Durable operator identity, retained even when the account has been deleted. */
+  operator_id: string;
+  /**  Current account display name; `None` on missing account or name lookup failure. */
+  display_name: string | null;
+};
+
+export type OperatorId = string;
 
 /**  Only creation/regeneration can return the plaintext authorization. */
 export type OperatorInvitationIssuedResponse = {
@@ -425,6 +1064,15 @@ export type OperatorRegistrationRequest = {
   password_confirmation: string;
 };
 
+export type OperatorRequest = {
+  route: AuditRoute;
+  method: HttpMethod;
+  targets: AuditTarget[];
+  status: number;
+  api_code: ErrorToken | null;
+  cause: AuditCause | null;
+};
+
 /**  The sole mutable account field, also used to choose an invitation's fixed role. */
 export type OperatorRoleRequest = {
   role: OperatorRoleValue;
@@ -449,6 +1097,14 @@ export type OrganizationLogoResponse = {
 
 export type OrganizationLogoStatus =
   "available" | "missing" | "ambiguous" | "invalid";
+
+export type PasswordChanged = Record<string, never>;
+
+export type PasswordResetCompleted = Record<string, never>;
+
+export type PasswordResetIssued = Record<string, never>;
+
+export type PauseReason = "disk_budget";
 
 export type PrintAdmission = {
   ready_sequence: number;
@@ -598,6 +1254,73 @@ export type ProvisioningWindowResponse = {
 
 export type ProvisioningWindowState = "closed" | "open";
 
+export type PrunedRange = {
+  /**  Exclusive original lower cursor, absent for an unbounded start. */
+  after_id: number | null;
+  /**  Inclusive snapshot upper bound, reduced by the original before cursor if supplied. */
+  through_id: number | null;
+};
+
+export type ReconcileRetry = {
+  attempt: number;
+};
+
+/**  Validated common facts for a readable journal event. */
+export type RecordHeader = {
+  /**  Monotonic `SQLite` row ID used for cursors. */
+  id: number;
+  /**  Wall-clock occurrence time in Unix milliseconds, possibly non-monotonic. */
+  occurred_at_ms: number;
+  /**  Process identity stamped by the writer. */
+  boot_id: string;
+  /**  Category derived from the decoded event, never trusted from stored text. */
+  category: Category;
+  /**  Severity derived from the decoded event. */
+  severity: Severity;
+  /**  Canonical device identity, absent for non-device work. */
+  device_id: DeviceId | null;
+  /**  Canonical lease identity, absent for non-lease work. */
+  session_id: string | null;
+  /**  Authenticated actor identity, absent when unknown. */
+  actor_operator_id: string | null;
+  /**  Request correlation supplied at the HTTP boundary. */
+  request_id: string | null;
+  /**  Application operation identity, when applicable. */
+  operation_id: string | null;
+  /**  Valid 32-digit lowercase OpenTelemetry trace ID, when captured. */
+  trace_id: string | null;
+  /**  Committed seat snapshot, absent without a binding fact. */
+  seat_code: SeatCode | null;
+};
+
+export type RequestId =
+  /**  Request correlation UUID supplied explicitly by the producer. */
+  string;
+
+export type ReviewCancelCause =
+  | "client_close"
+  | "timeout"
+  | "replaced"
+  | "server_stopping"
+  | "transport_error";
+
+export type ReviewCancelled = {
+  /**  Connection-local review identity claimed by this transition. */
+  review_id: ReviewId;
+  cause: ReviewCancelCause;
+};
+
+export type ReviewCreated = {
+  /**  Connection-local review identity created by the enrollment component. */
+  review_id: ReviewId;
+  /**  Peer address of the proved connection that created this review. */
+  peer_ip: string;
+};
+
+export type ReviewId =
+  /**  Connection-local review identity supplied by the enrollment component. */
+  string;
+
 /**  Latest validated Runtime Config Actual reported by the current lease. */
 export type RuntimeConfigActualResponse = {
   state: RuntimeConfigStateResponse;
@@ -614,9 +1337,19 @@ export type RuntimeConfigConvergenceResponse = {
 /**  Runtime Config Actual state vocabulary exposed by the convergence projection. */
 export type RuntimeConfigStateResponse = "absent" | "applied" | "failed";
 
+export type SeatCode = string;
+
 export type SeatResponse = {
   seat_id: string;
   seat_code: string;
+};
+
+export type ServerStarted = {
+  boot_id: string;
+};
+
+export type ServerStopping = {
+  lost_on_flush: number | null;
 };
 
 /**  Latest validated Session Control Actual reported by the current lease. */
@@ -646,9 +1379,29 @@ export type SessionConvergenceResponse = {
   actual: SessionActualResponse | null;
 };
 
+/**  Observed terminal state, conservative end bound or verified live lease. */
+export type SessionEnd =
+  | {
+      state: "disconnected";
+      /**  Observed terminal time, in Unix milliseconds. */
+      at: number;
+      /**  Known closed reason; `None` for connection replacement. */
+      reason: DisconnectReason | null;
+    }
+  | {
+      state: "unknown";
+      /**  Upper bound from a later boot/stop marker; `None` without evidence of an end time. */
+      no_later_than: number | null;
+    }
+  | { state: "ongoing" };
+
 /**  The physical foreground is separate from the requested managed role. */
 export type SessionForegroundResponse =
   "unknown" | "waiting" | "contest" | "greeter" | "other" | "none";
+
+export type SessionId =
+  /**  Lease session UUID supplied explicitly by the producer. */
+  string;
 
 export type SessionRequest = {
   /**  Nonempty login name, at most 128 UTF-8 bytes; never normalized or truncated. */
@@ -667,6 +1420,11 @@ export type SessionResponse = {
 export type SessionStateResponse =
   "none" | "starting" | "running" | "terminating" | "ambiguous" | "error";
 
+export type Severity = "info" | "warning" | "error";
+
+export type TargetAction =
+  "set_foreground" | "terminate_session" | "reset_home" | "power_off";
+
 export type TargetActionBody =
   | { kind: "set_foreground"; foreground_target: ForegroundTargetResponse }
   | { kind: "terminate_session" }
@@ -674,6 +1432,14 @@ export type TargetActionBody =
   | { kind: "power_off" };
 
 export type TargetRejectionCode =
+  | "device_not_found"
+  | "device_not_enabled"
+  | "invalid_device_state"
+  | "invalid_target"
+  | "epoch_exhausted";
+
+export type TargetResult =
+  | "accepted"
   | "device_not_found"
   | "device_not_enabled"
   | "invalid_device_state"
@@ -697,6 +1463,13 @@ export type TargetSubmissionResponse = {
   results: DeviceSubmissionResponse[];
 };
 
+export type TargetSubmitted = {
+  operation_id: string;
+  action: TargetAction;
+  result: TargetResult;
+  replayed: boolean;
+};
+
 export type TeamResponse = {
   seat_id: string;
   seat_code: string;
@@ -705,4 +1478,38 @@ export type TeamResponse = {
   team_name_en: string;
   school_name_zh: string;
   school_name_en: string;
+};
+
+export type TimelineGap = {
+  /**  Closed explanation for missing evidence. */
+  kind: GapKind;
+  /**  Lower gap bound in Unix milliseconds, clipped to the window. */
+  from: number;
+  /**  Upper gap bound in Unix milliseconds; `None` while a pause remains unresolved. */
+  to: number | null;
+};
+
+export type TimelineSession = {
+  /**  Lease identity from a typed attach or replacement event. */
+  session_id: string;
+  /**  Writer boot in which the lease was attached. */
+  boot_id: string;
+  /**  Observed attach time, in Unix milliseconds. */
+  started_at: number;
+  /**  Observed terminal, conservative end bound, or verified live state. */
+  end: SessionEnd;
+  /**  Visible start clipped to the requested interval, in Unix milliseconds. */
+  visible_from: number;
+  /**  Visible end clipped to the requested interval, in Unix milliseconds. */
+  visible_to: number;
+  /**  Known visible duration in milliseconds; `None` for unknown ends, zero on backwards clock steps. */
+  duration_ms: number | null;
+  /**  True when attachment preceded the requested interval. */
+  truncated_start: boolean;
+  /**  True when the lease may extend past the requested interval. */
+  truncated_end: boolean;
+  /**  True when wall-clock order cannot provide a precise duration. */
+  imprecise: boolean;
+  /**  Last committed binding snapshot observed for this lease; never current business state. */
+  seat_code: SeatCode | null;
 };

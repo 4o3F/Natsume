@@ -723,7 +723,7 @@ sudo openssl x509 -inform DER \
   -in /var/lib/natsume-server/keys/server-tls-leaf.der -noout -dates
 ~~~
 
-Web 检查各设备实际状态和报告时间。不要公开原始数据库、cookie、私钥或运行中的 Caddy 配置，READY 配置包含访问凭据。普通 tracing/OTLP 用于诊断；系统不提供持久业务审计。
+Web 检查各设备实际状态和报告时间。不要公开原始数据库、cookie、私钥或运行中的 Caddy 配置，READY 配置包含访问凭据。tracing/OTLP 用于运行诊断；Events 和设备 Timeline 提供有损的 operational event journal，不构成无损审计账本。日志健康、预算和独立备份见第 8.5 节。
 
 ### 8.2 Server 冷备份
 
@@ -760,6 +760,8 @@ sudo systemctl start natsume-server.service
 ~~~
 
 完整性应为 ok。源数据库由服务用户打开，避免产生 root 所有的运行状态文件；备份完成后目录和文件归 root 管理。归档包含 DB 一致副本、PDF 目录、vault root、Origin CA、TLS 和完整公共配置，缺一不可。使用 SQLite .backup 避免仅复制主库漏掉 WAL，依据 [SQLite Online Backup](https://www.sqlite.org/backup.html)。
+
+这里的 DB 是业务库。`natsume-journal.db` 是独立的可选诊断历史，按第 8.5 节另做备份；两库不构成同一事务快照，业务恢复不要求恢复日志库。
 
 `NATSUME_PKI_DIR` 必须是安装时的 PKI 目录，默认 `/root/natsume-pki`；使用过 `--pki-dir` 则填入当时路径。`pki.tar` 保存该目录实际存在的内容，包括显式落盘的加密 CA 私钥备份、证书和签发记录；`handoff/` 只有公共交接材料，不能代替私钥备份。未选择落盘、由管理员另行保存的加密导出，以及导入 CA 的原件，须由管理员分别纳入备份并验证可解密。离线 Control CA 私钥与签发记录由离线 CA 保管方负责备份，本机归档不包含它们。备份期间暂停 PKI 签发操作；私钥口令与归档分开保管。
 
@@ -807,6 +809,114 @@ Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板�
 
 旧版使用站点 UUID 的 Client 不能通过删除配置项完成原地升级：本版的硬件 ID 派生规则和 identity.json 格式均已改变。维护时先完成 Home 恢复、退出受管会话并备份所需数据，再在 Server 解除旧 Binding、Revoke 旧设备，从干净镜像重新部署，按 7.5 节重新审批和绑定。不要只删除 identity.json 或混用旧身份、Control/Gateway 凭据。Daemon 与 Helper 必须配套更新；未运行过的 Client 可直接使用本文的新配置。
 
+### 8.5 Operational event journal日志库
+
+**位置与配置。** 业务库与日志库是两个独立 SQLite 文件。`[storage].journal` 可省略，默认为业务库同目录的 `natsume-journal.db`；按本文业务库路径即 `/var/lib/natsume-server/natsume-journal.db`。自定义值必须是绝对路径，不能与业务库为同一路径／同一文件，符号链接和硬链接别名也会检查。旧配置不写 `[journal]` 或省略其中单项时使用默认值；这些值均必须大于零，修改后重启生效。
+
+| 配置项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `[journal].max_age_days` | `30` | 按事件发生时间保留的天数 |
+| `[journal].max_rows` | `2000000` | 保留行数上限 |
+| `[journal].max_bytes` | `536870912`（512 MiB） | 日志 DB＋WAL＋SHM 的合计预算，单位字节 |
+| `[journal].min_free_bytes` | `1073741824`（1 GiB） | 日志所在文件系统可用空间下限，单位字节 |
+| `[journal].flush_timeout_seconds` | `10` | 关闭时排空 writer 的最长等待秒数 |
+
+`packaging/server/config.example.toml` 包含以上配置。日志库打开时自动创建／迁移文件，不创建缺失的父目录。日志是可裁剪的诊断历史，不参与业务事务或恢复；两个文件共用文件系统时，仍会争用磁盘空间，预算不是硬配额。
+
+**权限与自定义路径。** Deb 通过 sysusers 创建 `natsume-server` 用户，通过 tmpfiles 创建 `/var/lib/natsume-server`（owner/group 均为 `natsume-server`，`0750`）。实际 unit 位于 `/usr/lib/systemd/system/natsume-server.service`，以该用户运行，未使用 `StateDirectory`；`ProtectSystem=strict`、`ProtectHome=yes`，`ReadWritePaths` 仅声明 `/var/lib/natsume-server` 和 `/var/log/natsume-server`。默认日志文件与 WAL／SHM 均位于允许写入的目录，文件系统权限也须允许服务用户创建、更新和删除它们。
+
+自定义路径的父目录须预先创建，授予服务用户写入和遍历权限，并位于 unit 可写范围内；不能只改 TOML 后放到只读目录或被 `ProtectHome` 隔离的 home。若使用 `/srv/natsume-journal/natsume-journal.db`，先准备目录并添加 drop-in：
+
+~~~bash
+sudo install -d -o natsume-server -g natsume-server -m 0750 /srv/natsume-journal
+sudo systemctl edit natsume-server.service
+~~~
+
+在编辑器中写入：
+
+~~~ini
+[Service]
+ReadWritePaths=/srv/natsume-journal
+~~~
+
+这是追加允许路径，保留包内原有路径。将 `/etc/natsume-server/config.toml` 的 `[storage].journal` 改为上述绝对文件路径，再执行 `sudo systemctl daemon-reload` 和 `sudo systemctl restart natsume-server.service`。路径切换不自动迁移旧历史；需要保留时，按下文备份／恢复转移。可用以下命令核对配置与父目录权限，最终仍以服务内实际打开结果为准：
+
+~~~bash
+systemctl cat natsume-server.service
+sudo -u natsume-server test -w /srv/natsume-journal
+sudo -u natsume-server test -x /srv/natsume-journal
+~~~
+
+**预算、停写与恢复。** writer 启动时及每 5 分钟校准行数估计并清理过龄事件；按实际插入／删除数更新估计，仅超过 max_rows 时裁剪，不在每批写后执行 COUNT；每次短事务最多删除 5000 行。正常磁盘采样最多每秒一次，合计用量超过预算 80% 时预裁剪并尝试 PASSIVE checkpoint；达到预算或文件系统可用空间低于下限时进入 paused，普通事件停止插入、按类别计丢弃。暂停期间每秒删除最旧批次、尝试 TRUNCATE checkpoint 和 incremental vacuum；用量低于预算 60% 且可用空间至少达到下限才自动恢复。不能仅清理其他文件至下限就假定已恢复，还须满足日志用量条件；不补写停写期间丢失的事件。
+
+日志库尚未打开或打开失败时为 degraded，Server 继续运行，事件计丢弃，每 60 秒重试打开。修复目录权限／挂载或释放空间后检查状态；不要通过修改业务库解决日志故障。暂停标记保留原发生时间，恢复时尽力写入 JournalPaused／JournalResumed；日志本身不可写或关闭超时时，健康标记也可能缺失。正常关闭先等待业务生产者和设备 lease，再 flush 日志；超时计丢失并写 tracing，`ServerStopping.lost_on_flush` 仅尽力保存。
+
+观察入口：
+
+- Panel 的 **Events** 和设备 **Timeline** 提示 degraded、paused 和本次 Server 启动以来的丢弃数；Events 还显示最早保留时间。读取失败有独立错误提示，不代表没有事件。
+- admin 的 `GET /api/v2/journal/status` 返回队列深度估计、按类别的 dropped／write_failed／queued、pause_reason、last_error、shutdown_timeouts，以及 DB／WAL／SHM 大小和文件系统可用字节；测量失败的大小为空。计数随进程重启重新开始。
+- `journalctl` 查看日志库 unavailable、batch write failed、checkpoint incomplete、maintenance failed 和 flush timed out 等 tracing 诊断；停写／恢复状态以 status 和 Panel 为准。
+
+用第 5.3 节的 admin 会话变量查询（会话失效先重新登录）：
+
+~~~bash
+curl --fail-with-body --silent --show-error --http1.1 \
+  --cacert "$NATSUME_CONTROL_CA" --cookie "$NATSUME_API_DIR/cookies" \
+  "$NATSUME_SERVER_ORIGIN/api/v2/journal/status"
+sudo journalctl -u natsume-server.service --since '1 hour ago' --no-pager
+~~~
+
+viewer 仅可读取 device 类事件、设备时间线和概要，不能访问 status 或导出。所有日志 GET 响应 no-store，不再产生请求审计；事件时间按 Server 启动时捕获的 UTC offset 显示。Device 表的 Drops (24h) 是保留历史中的断开次数（至少 3 次标记 flapping），与队列丢弃数不同。日志不包含密码、token、key、CSR／证书正文、完整 HWID 或尝试登录名；历史仍含设备／操作者 ID、IP 和座位等信息，应限制备份访问。
+
+**独立在线备份。** 无需停止 Server，使用 SQLite `.backup` 获取一致的日志库副本；不要在运行中仅复制 `.db`，也不要分别复制运行中的 WAL／SHM。先确认日志库确实存在，避免 sqlite3 把错误路径建成空库。下例使用默认日志路径，自定义时同步修改变量：
+
+~~~bash
+NATSUME_JOURNAL_DB=/var/lib/natsume-server/natsume-journal.db
+NATSUME_JOURNAL_BACKUP_DIR="/var/backups/natsume/journal-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo -u natsume-server test -f "$NATSUME_JOURNAL_DB"
+# 上一条成功后继续。
+sudo install -d -o root -g natsume-server -m 0710 /var/backups/natsume
+sudo install -d -o natsume-server -g natsume-server -m 0700 "$NATSUME_JOURNAL_BACKUP_DIR"
+sudo -u natsume-server sqlite3 "$NATSUME_JOURNAL_DB" \
+  ".backup '$NATSUME_JOURNAL_BACKUP_DIR/natsume-journal.db'"
+sudo -u natsume-server sqlite3 "$NATSUME_JOURNAL_BACKUP_DIR/natsume-journal.db" \
+  'PRAGMA integrity_check;'
+sudo chown root:root "$NATSUME_JOURNAL_BACKUP_DIR" "$NATSUME_JOURNAL_BACKUP_DIR/natsume-journal.db"
+sudo chmod 0600 "$NATSUME_JOURNAL_BACKUP_DIR/natsume-journal.db"
+~~~
+
+确认 `.backup` 成功且完整性为 ok，再按现场备份制度复制到独立存储，并保存匹配 Server 版本。两库的独立备份没有跨库时间点一致性保证；日志中的 actor ID 可能无法在恢复后的业务库解析显示名，仍可显示 ID。admin 的 JSONL 导出适合诊断分享，固定 high-water 并在流尾报告期间裁剪，不是可还原 SQLite 文件的备份。
+
+**恢复或放弃历史。** 只恢复日志库时无需回滚业务库，不运行 bootstrap。维护窗口先停止唯一 Server 并确认没有手动 serve；保存现有日志 DB 及配套 WAL／SHM 到故障副本目录，禁止新旧配套文件混用。以下路径中的备份日期须替换为实际备份集：
+
+~~~bash
+sudo systemctl stop natsume-server.service
+systemctl is-active natsume-server.service
+~~~
+
+预期 inactive；确认后继续：
+
+~~~bash
+NATSUME_JOURNAL_DB=/var/lib/natsume-server/natsume-journal.db
+NATSUME_JOURNAL_BACKUP=/var/backups/natsume/journal-20261028T000000Z/natsume-journal.db
+NATSUME_JOURNAL_FAILED_DIR="/var/backups/natsume/journal-failed-$(date -u +%Y%m%dT%H%M%SZ)"
+sudo test -f "$NATSUME_JOURNAL_BACKUP"
+# 确认备份文件存在后继续。
+sudo sqlite3 "$NATSUME_JOURNAL_BACKUP" 'PRAGMA integrity_check;'
+# 确认 ok 后继续；保留故障现场，移走全部旧配套文件。
+sudo install -d -o root -g root -m 0700 "$NATSUME_JOURNAL_FAILED_DIR"
+for suffix in '' '-wal' '-shm'; do
+  if sudo test -e "${NATSUME_JOURNAL_DB}${suffix}"; then
+    sudo mv -- "${NATSUME_JOURNAL_DB}${suffix}" "$NATSUME_JOURNAL_FAILED_DIR/"
+  fi
+done
+sudo install -o natsume-server -g natsume-server -m 0600 \
+  "$NATSUME_JOURNAL_BACKUP" "$NATSUME_JOURNAL_DB"
+sudo systemctl start natsume-server.service
+~~~
+
+恢复后检查 status、Panel 历史边界及业务设备重连。若不保留日志历史，停服并移走旧 DB／WAL／SHM 后不执行 install 恢复，直接启动即可在可写父目录重建日志库。丢失／删除仅使诊断历史不可恢复，业务 authority、vault 和业务恢复不受影响；运行时不要删除或替换打开的日志文件，重启后也不会重建过去的事件或计数。已裁剪或未成功持久化的事件无法从业务库补全。离线 `reset-operator-password` 不打开／写入日志库。
+
 ## 9. 故障定位表
 
 | 现象 | 先检查 | 处理方向 |
@@ -834,7 +944,9 @@ Client 升级不会自动修改镜像项目维护的桌面配置或 Home 模板�
 - [首次安装工具](../crates/natsume-server-setup/README.md)、[安装工具决策](adr/0001-server-setup-installer.md)。
 - [Server 命令、配置和私有材料](../crates/natsume-server/README.md)、[Server 配置示例](../packaging/server/config.example.toml)、[Client 配置示例](../packaging/client/config.example.toml)。
 - [Server 配置解析](../crates/natsume-server/src/config.rs)、[TLS 加载](../crates/natsume-server/src/tls.rs)、[Gateway CA 签发](../crates/natsume-server/src/component/gateway/issuer.rs)。
-- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 migration 序列](../crates/natsume-server/migrations/)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
+- [Runtime Config 读取](../crates/natsume-server/src/component/runtime.rs)、[数据库 migration 序列](../crates/natsume-server/diesel/business/migrations/)、[注册窗口 API](../crates/natsume-server/src/http/handler/provisioning.rs)。
+- [日志 writer](../crates/natsume-server/src/journal/writer.rs)、[磁盘预算](../crates/natsume-server/src/journal/budget.rs)、[日志库 migration](../crates/natsume-server/diesel/journal/migrations/)、[Journal 只读 API](../crates/natsume-server/src/http/handler/journal.rs)。
+- [Server systemd unit](../packaging/server/rootfs/usr/lib/systemd/system/natsume-server.service)、[状态目录 tmpfiles](../packaging/server/rootfs/usr/lib/tmpfiles.d/natsume-server.conf)。
 - [构建与发布](../packaging/README.md)、[Client manifest](../packaging/client/nfpm.yaml)、[Client 运行环境要求](client-environment.zh-CN.md)。
 
 架构目标由 [architecture.md](architecture.md) 定义。

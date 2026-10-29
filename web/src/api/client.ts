@@ -3,8 +3,11 @@ import type {
   BindingResponse,
   DeviceListState,
   DeviceResponse_Serialize as DeviceResponse,
+  DeviceSummaries,
+  DeviceTimeline,
   DeviceUpdateRequest,
   EnrollmentReviewResponse,
+  EventPage,
   ImportPendingResponse,
   ImportPreviewResponse,
   OperatorAccountResponse,
@@ -46,6 +49,12 @@ export interface ApiResult<T> {
 interface RequestOptions {
   signal?: AbortSignal;
   baseUrl?: string;
+}
+
+/** Admin-only `JSONL` download, linked directly so the browser streams it. */
+export function journalExportHref(query: URLSearchParams) {
+  const search = query.toString();
+  return `/api/v2/journal/export${search ? `?${search}` : ""}`;
 }
 
 const XLSX_CONTENT_TYPE =
@@ -206,6 +215,34 @@ export function createApiClient(
         "POST",
         "/api/v2/target-submissions",
         body,
+        options,
+      ),
+    listJournalEvents: (query: URLSearchParams, options?: RequestOptions) => {
+      const search = query.toString();
+      return request<EventPage>(
+        "GET",
+        `/api/v2/journal/events${search ? `?${search}` : ""}`,
+        options,
+      );
+    },
+    getDeviceTimeline: (
+      id: string,
+      window: { from: number; to: number },
+      options?: RequestOptions,
+    ) =>
+      request<DeviceTimeline>(
+        "GET",
+        `/api/v2/journal/devices/${encodeURIComponent(id)}/timeline?${new URLSearchParams(
+          { from: String(window.from), to: String(window.to) },
+        )}`,
+        options,
+      ),
+    listDeviceSummaries: (windowMs: number, options?: RequestOptions) =>
+      request<DeviceSummaries>(
+        "GET",
+        `/api/v2/journal/device-summaries?${new URLSearchParams({
+          window_ms: String(windowMs),
+        })}`,
         options,
       ),
     getProvisioningWindow: (options?: RequestOptions) =>

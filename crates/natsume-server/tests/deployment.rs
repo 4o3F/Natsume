@@ -15,7 +15,7 @@ use diesel::{
 use diesel_migrations::{EmbeddedMigrations, MigrationHarness as _, embed_migrations};
 use uuid::Uuid;
 
-#[path = "../diesel/schema.rs"]
+#[path = "../diesel/business/schema.rs"]
 mod schema;
 
 use natsume_server::{
@@ -32,7 +32,7 @@ use snafu::Snafu;
 use tempfile::TempDir;
 use time::{OffsetDateTime, macros::datetime};
 
-const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
+const MIGRATIONS: EmbeddedMigrations = embed_migrations!("diesel/business/migrations");
 const NOW: OffsetDateTime = datetime!(2029-01-01 00:00 UTC);
 const GATEWAY_EXPIRY: OffsetDateTime = datetime!(2030-01-02 00:00 UTC);
 const IPS: [IpAddr; 2] = [

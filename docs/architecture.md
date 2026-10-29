@@ -16,8 +16,9 @@
 | Device Control wire 字段、field number、presence 与 descriptor | `crates/natsume-workstation-protocol/proto/*.proto` |
 | HTTP JSON 的精确字段与表示 | Server HTTP DTO、Serde 实现与 Specta 生成的 TypeScript |
 | 本地 IPC 的精确接口 | `crates/natsume-workstation-ipc` 与 D-Bus introspection |
-| SQLite 物理表、列、索引与约束 | `crates/natsume-server/migrations/` 中按顺序应用的完整 migration 序列 |
-| Diesel 生成类型 | `crates/natsume-server/diesel/schema.rs`，必须由 migration 重建 |
+| SQLite 物理表、列、索引与约束 | `crates/natsume-server/diesel/{business,journal}/migrations/` 中各数据库按顺序应用的完整 migration 序列 |
+| Diesel 生成类型 | `crates/natsume-server/diesel/{business,journal}/schema.rs`，必须由对应数据库的 migration 重建 |
+| Operational event种类、字段白名单与持久化编码 | `crates/natsume-server/src/journal/event.rs` 及其 `event/{contract,types,payload}.rs`；HTTP表示仍以DTO与生成类型为准 |
 | Device Control `error_code` 字段与开放token语法 | `crates/natsume-workstation-protocol/proto/*.proto` 与 `crates/natsume-workstation-protocol` |
 | HTTP公开错误码与status映射 | Server HTTP adapter 与实际 HTTP 测试 |
 | 本地IPC typed失败 | `crates/natsume-workstation-ipc` 与各IPC adapter |
@@ -68,7 +69,7 @@ Natsume 是服务一场现场竞赛的统一运营平台，工位控制目标规
 - 自动 Device merge/split 或静默身份迁移；
 - 多桌面环境同时支持；
 - 可编辑角色和权限策略；
-- 业务审计账本、操作历史或审计Panel；
+- 保证无损、不可篡改或可作事务证据的业务审计账本；§16.3的operational event journal仅提供有损的诊断历史；
 - 将 UI 遮罩、会话切换或 Caddy 状态页当作强隔离边界。
 
 ## 3. 核心设计原则
@@ -444,7 +445,7 @@ Server另外从proof context取得Machine Hardware ID和版本信息。Client必
 
 Client 本地 control manifest 以 exact Ed25519 public key 标识 authority，并与私钥文件重新派生的公钥比较，不另建 `ControlKeyId`。
 
-Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不落库。Server重启清空所有pending review并把Provisioning window恢复为closed；未提交的注册请求随Client重连重新进入人工审批。
+Panel只使用Server生成的`review_id`访问pending registry；该ID不进入Device Proto，也不作为业务恢复状态落库，仅在journal中用于关联review事件。Server重启清空所有pending review并把Provisioning window恢复为closed；未提交的注册请求随Client重连重新进入人工审批。
 
 ### 8.3 Resume 与 lease
 
@@ -743,7 +744,8 @@ WP4-WP6实现concrete Active components；WP7的production `DeviceActor`通过 `
 
 ```rust
 pub(crate) struct ServerState {
-    operator: OperatorComponent,
+    operator: Arc<OperatorComponent>,
+    journal_query: JournalQuery,
     print: PrintComponent,
     contest: ContestComponent,
     import: ImportComponent,
@@ -754,21 +756,26 @@ pub(crate) struct ServerState {
     home: Arc<HomeComponent>,
     target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
+    journal: JournalComponent,
+    lifecycle: ServerLifecycle,
 }
 ```
 
-`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件， 并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。 HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费， 构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。
+`DeviceControl`是设备应用协调器，构造时显式取得Device、Provisioning和六个资源组件，以及`Journal` emit句柄和`ServerLifecycle`，并私有持有`DeviceRegistry`、Enrollment审批串行门及fencing/eviction操作。它只负责跨组件编排或需要Registry、fence、actor等运行时状态的用例，不为单组件mutation增加一对一转发。HTTP也使用的Provisioning、Device、Binding、Session、Home共享同一`Arc`实例；Gateway、Runtime Config和Power目前只有协调器消费，构造时将Power句柄交给它，`ServerState`不保留无消费者的副本或accessor。分层、调用路径和事件归属统一遵循§10.6。
 
-生产构造入口统一为`ServerState::load(database, &config)`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
+生产构造入口统一为`ServerState::load(database, &config, utc_offset)`：加载一次`VaultSession`， 调用组件自己的concrete constructor，再把具体依赖注入`DeviceControl::new`。 完整`ServerConfig`不下传给各组件，不增加`Components` wrapper、service locator、 `DeviceService → DeviceControl`转发层或通用用例执行器。 HTTP通过component reference处理单组件业务，通过`state.device_control()`处理设备跨组件用例； Operator Target 提交由独立的 `state.target_submission()` 负责事务与去重； 不能取得Registry、actor handle、审批锁或authority fence。
 
-跨组件实现集中在`device_control/application.rs`的`impl DeviceControl`分片。 当前仅提供七个有实际消费者的入口：
+设备应用用例集中在`device_control/application.rs`的`impl DeviceControl`分片，准入和关闭原语位于`device_control.rs`。当前共有十二个有实际消费者的用例／运行时入口，不计构造函数和私有实现方法：
 
-- `read_device_status`、`read_device_statuses`汇总组件当前事实和lease observation； HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
-- `disable_device`、`revoke_device`、`approve_enrollment`编排authority提交与fencing/eviction； 三者使用`self: &Arc<Self>`，独立任务只克隆协调器，不持有`ServerState`。
+- `read_device_status`、`read_device_statuses`汇总组件当前事实和lease observation；HTTP convergence端点从单Device结果中提取convergence，不另建查询转发方法。
+- `active_device_ids`读取Registry的在线集合，供TargetSubmission入口显式构造在线设备scope。
+- `disable_device`、`revoke_device`、`approve_enrollment`、`automatically_approve_enrollment`编排authority提交与fencing/eviction；它们通过`Admission`派生进程持有的任务，只克隆协调器，不持有`ServerState`。自动审批和人工审批共用提交、fence和eviction顺序。
 - `publish(TargetChange)`消费组件返回的影响范围，向已有Actor发出提交后通知，不创建Actor。
-- `attach_device_lease`负责attach前后exact authority重检与lease替换； 只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
+- `attach_device_lease`负责attach前后exact authority重检与lease替换；只在Device Control模块内向WSS处理返回既有lease ID和handle，不接管socket。
+- `try_reserve_handshake`在upgrade前检查生命周期准入并预留短期认证容量；`reject_admission`记录带封闭stage的运行时拒绝事实。
+- `shutdown`关闭Registry并等待所有actor确认结束lease，包括等待首个Actual的lease。
 
-单资源mutation仍直接调用owning component，成功后将返回的`TargetChange`交给`publish`，不再增加一层 一对一业务包装。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
+单资源mutation仍直接调用owning component：Binding解绑调用`state.binding().unbind`，Device启用和review否决调用`state.device()`，Target提交调用`state.target_submission().submit`；有`TargetChange`时，成功后交给`publish`。这些操作不经协调器的一对一包装。组件在自己提交后发出对应事实，入口显式传入`JournalContext`，详见§10.6。协调器方法不接受父容器；Registry操作与锁不再向组合对象暴露。 Attach携带的`Weak<DeviceControl>`属于lease运行上下文，Actor按事件临时upgrade， 不建立协调器、Registry与Actor之间的长期强引用环。
 
 ### 10.5 组件内部数据库
 
@@ -783,6 +790,7 @@ pub(crate) struct GatewayComponent {
 pub(crate) struct BindingComponent {
     database: Database,
     vault: Arc<VaultSession>,
+    journal: Journal,
 }
 ```
 
@@ -798,6 +806,31 @@ pub(crate) struct BindingComponent {
 
 TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个短写事务，在同一事务中 通过 Device 的公开事务读方法确定资格，再调用 Session/Home/Power 的同步事务业务入口。 Session/Home/Power 仍独占各自表的校验与写入规则，DB adapter 不公开；HTTP 和 TargetSubmission 不直接写这三类目标表。每设备可继续的领域拒绝必须发生在该设备第一次写入前， 写入/行数不符/receipt 保存/commit 失败必须回滚整个提交，不引入通用跨组件事务框架。
 
+### 10.6 分层、调用路径与事件归属
+
+Server按调用职责分成四层，依赖只向下：
+
+```text
+入口层：HTTP handlers / WSS serve_connection / BackgroundTasks
+  ├─ 单组件操作 ─────────────────────────→ 组件层
+  └─ 设备编排／日志查询 → 协调层：DeviceControl / JournalQuery
+                              ↓
+                         组件层：各owning component
+                              ↓
+基础设施层：Database / Journal emit句柄 / ServerLifecycle / Vault
+```
+
+`ServerState`是组合入口构造后交给入口层的共享句柄容器，不是额外一层。HTTP从容器取得具体组件或协调器；WSS处理取得显式传入的`Arc<DeviceControl>`，后台任务只保留自己需要的依赖，不重新组装组件，也不让协调器反向依赖`ServerState`。
+
+协调层有两个成员：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用`state.journal_query()`并序列化，不实现重建或跨组件业务规则。
+
+1. **依赖只向下。** 组件只持有自身需要的基础设施，不持有协调器、Registry或其他组件实例；不为日志发出互调组件。TargetSubmission既有的同步事务业务入口继续遵循§10.5，不扩展成组件实例间的隐式调用。协调器依赖具体组件和基础设施，不能依赖入口或父容器；协调器之间也不互相依赖。
+2. **调用路径由实际用例决定。** 单组件操作由入口直调组件；设备mutation只有跨组件编排或需要Registry、fence、actor等运行时状态时才走`DeviceControl`；日志查询由`JournalQuery`协调只读依赖。协调器不增加一对一转发方法；组件返回的`TargetChange`仍由调用方交给`publish`，组件不反向通知Registry。
+3. **谁提交，谁在提交后发事件。** Binding拥有`BindingBound`／`BindingRejected`／`BindingUnbound`，Device拥有`LifecycleChanged`、`ReviewCreated`／`ReviewCancelled`／`EnrollmentDenied`／`EnrollmentApproved`，TargetSubmission拥有逐设备`TargetSubmitted`（包括receipt replay）；Operator拥有`AuthSucceeded`／`AuthFailed`、`LoggedOut`、`PasswordChanged`、`PasswordResetIssued`／`PasswordResetCompleted`和`InvitationRegistered`。事件只在事务提交、进程内review转换成功或认证决策完成后发出；Changed-only、winning-only、no-op静默和提交快照规则由owning component维护。协调器及其actor、连接处理拥有lease、`Disconnected`、`ActorStopped`、`ReconcileRetry`、`ActualChanged`、`AdmissionRejected`、`ActivationCommitted`和`AdmissionCompleted`等运行时事实。入口层只负责请求级事实，`OperatorRequest`由审计入口发出，不重复发出领域事件。
+4. **发起者上下文显式传参。** HTTP审计入口创建共享typed `RequestAudit`，认证层写入已验证的`OperatorIdentity`，handler补充operation/result ID；入口在request span内一次捕获有效OpenTelemetry trace ID，并从这些事实构造包含request ID、trace ID和已知actor的`JournalContext`，显式传给组件或协调器；WSS显式传peer IP和当前已知事实。不在组件或协调器内部从request extensions隐式读取身份。actor只携带device/session上下文；操作人身份只通过显式的`FenceReason`／Evict上下文传入。
+
+`Journal`像`Database`一样在构造时注入确实发事件的组件：当前为Binding、Device、TargetSubmission和Operator。`JournalComponent`由组合入口构造并持有writer生命周期，组件只持有可廉价克隆的emit句柄，不打开日志库、不启动writer，也不负责关闭。日志投递仍是有界、同步、无I/O的best effort操作，不参与业务提交或控制决策。
+
 ## 11. Server runtime 与 Actor
 
 ### 11.1 Composition root
@@ -805,13 +838,20 @@ TargetSubmission 是明确的事务协调用例：它拥有 receipt 表和整个
 当前 Server 启动顺序是：
 
 ```text
-Database + ServerConfig
+main：bootstrap_logging → 单线程捕获UtcOffset（失败只告警一次并退回UTC）
+  → Tokio runtime
+Database + ServerConfig + startup UtcOffset
   → ServerState::load
       → VaultSession
       → GatewayComponent { Origin CA }
-      → concrete business components
-      → Arc<DeviceControl> { concrete dependencies, DeviceRegistry }
-  → Arc<ServerState>
+      → PrintComponent { document storage }
+      → JournalComponent::start { writer + ServerStarted }
+      → ServerState::from_parts
+          → ServerLifecycle { admission + TaskTracker + shutdown signal }
+          → concrete business components { Database / Vault / Journal }
+          → Arc<DeviceControl> { concrete dependencies, DeviceRegistry, Journal, lifecycle }
+          → JournalQuery { journal reader, Arc<OperatorComponent>, LiveLeaseView, startup UtcOffset }
+  → Arc<ServerState> { shared handles + journal + lifecycle }
   → TLS listener
   → background::start_background_tasks { Print attempt expiry }
       → BackgroundTasks { cancellation + JoinSet }
@@ -819,7 +859,25 @@ Database + ServerConfig
       → Device WSS { Arc<DeviceControl> }
 ```
 
-HTTP持有组合对象，WSS和DeviceActor使用其中构造的同一协调器。`GatewayIssuer`由Gateway Component持有。 不存在全局 singleton，也不允许transport重新组装 组件依赖。`serve` 只负责启动和关闭：连接／迁移数据库、加载共享状态、成功绑定 TLS listener，然后调用组合层的后台工作启动入口，直接等待 `axum::serve(...).with_graceful_shutdown(...)`。HTTP 结束后，不论成功还是返回错误，均调用 `BackgroundTasks::shutdown`：先发出取消信号，再等待后台任务退出并检查结果；如果 HTTP 和后台关闭同时失败，保留 HTTP 原错误，后台错误另有结构化日志。HTTP 优雅关闭期间后台检查仍运行。命令不直接调用 Print 维护方法，也不为组件增加各自的定时器或 `select!` 分支。后续实际需要的后台工作在组合层增加明确的启动调用、必要的初始化等待和具名业务错误映射，任务交给同一个集合持有，不增加专用句柄字段或重复关闭流程，也不引入通用任务注册表、任务 trait 或后台任务管理框架。`ServerState` 不持有完整 `ServerConfig`，组件也不自行重复加载共享依赖。
+HTTP持有组合对象，按用例取得DeviceControl或JournalQuery；WSS和DeviceActor使用其中构造的同一DeviceControl。JournalQuery只读，不新增后台任务或关闭步骤。`GatewayIssuer`由Gateway Component持有。不存在全局singleton，也不允许transport重新组装组件依赖。`serve`负责连接／迁移业务数据库、加载共享状态、绑定TLS listener、启动后台工作和运行HTTP；组件不自行重复加载共享依赖，`ServerState`不持有完整`ServerConfig`。日志库打开失败进入degraded并由writer重试，不使业务Server启动失败。
+
+`serve::run_until`在收到关闭信号或HTTP服务结束后，按以下顺序关闭：
+
+```text
+state.lifecycle().begin_shutdown()
+  → 通知axum进入graceful shutdown，停止新HTTP
+  → lifecycle.wait()，最多10秒，超时记journal计数和tracing
+  → DeviceControl::shutdown()，结束全部registry lease并等待actor确认
+  → BackgroundTasks::shutdown()
+  → state.journal().shutdown()，ServerStopping → closed → drain/flush → join writer
+  → 等待HTTP serving task结束并汇总结果
+```
+
+`begin_shutdown`一次性关闭准入并取消在途WSS握手，待人工审批的Enrollment也释放`Admission`；新mutation返回503 `server_stopping`。已获准的HTTP mutation及其派生任务由同一`ServerLifecycle`跟踪，等待完成业务提交和publish后才关闭actor与journal。准入凭证覆盖attach后的SessionReady最终发送及AdmissionCompleted／AdmissionRejected收尾，并响应关闭信号；进入run_active前释放，不覆盖长连接，其lease由下一步Registry关闭终止；不能先等待全部WSS自然结束再关闭Registry。Registry在自身锁内关闭并取出handle，锁外发送actor关闭事件、等待确认并join全部supervisor（包括已退休actor），确保其终止事件先于journal关闭，继续保持fence→registry锁序及identity re-check协议。
+
+HTTP优雅关闭期间后台检查继续运行，直到显式关闭`BackgroundTasks`。不论HTTP成功还是返回错误，均完成生产者、actor、后台任务和journal的关闭；HTTP与后台关闭同时失败时保留HTTP原错误，后台错误另有结构化日志。Journal flush使用`[journal].flush_timeout_seconds`（默认10秒），超时计数、日志及best effort终止标记由`JournalComponent`负责。
+
+命令不直接调用Print维护方法，也不为组件增加各自的定时器或`select!`分支。后续实际需要的后台工作在组合入口增加明确的启动调用、必要的初始化等待和具名业务错误映射，任务交给同一个集合持有，不增加专用句柄字段或重复关闭流程，也不引入通用任务注册表、任务trait或后台任务管理框架。
 
 `BackgroundTasks` 使用现有 `tokio-util` 的 `DropGuard` 和 Tokio 的 `JoinSet<Result<(), BackgroundError>>` 管理取消及异常释放。正常关闭先统一取消，再持续等待直到任务集合排空；业务错误、panic 或任务取消均记录日志，不因单个任务失败而提前结束等待，最终返回首先收到的错误并保留其源错误。panic 日志只记录状态，不记录 panic 内容。服务运行或关闭过程被取消时，所有者释放会取消并请求中止所有剩余异步任务，不把任务遗留为独立循环。释放不能异步等待，也不能强行终止已经提交给共享数据库执行器的阻塞事务，这些事务仍按原有边界完成或回滚。Print 后台任务只持有数据库依赖，不保留整个 `ServerState`；任务继承启动处的 tracing 订阅器和当前 span。
 
@@ -948,12 +1006,12 @@ Device disable、revoke和current control-key replacement不是普通target变�
 
 ### 12.1 基础原则
 
-- SQLite 单数据库、单 Server writer；
+- 单Server进程使用两个独立SQLite文件：业务库保存authority／intent及业务恢复状态，日志库默认在同目录的`natsume-journal.db`保存有损诊断历史；独立migration、连接池和事务，不跨库建立FK；
 - 既有 V2 预发布 initial migration 属于该基线；平台扩展的 schema 演进和已部署数据保留单独审阅，不自动沿用重写 initial 或清库策略；
 - SQLite只表达typed column、`NOT NULL`、PK、FK、UNIQUE和索引；
 - 禁止用数据库`CHECK`承载UUID格式、长度、枚举、状态组合、时间范围或presence等业务校验；
-- 所有持久化值必须先通过owning component的Rust validated type和事务规则；读取到非法历史值时fail closed；
-- 不用通用 resource、event-sourcing、operation、JSON payload 表；
+- 所有持久化值必须先通过owning component的Rust validated type和事务规则；业务读取到非法历史值时fail closed，日志坏行只呈现有界`Unreadable`，不返回原文；
+- 业务库不用通用 resource、event-sourcing、operation、JSON payload 表；日志库的封闭事件JSON不承担业务authority或重放恢复；
 - 不持久化 `ServerStateSnapshot`/ConcreteTarget blob；
 - 不持久化 Device Control lease；打印自身的领取归属、恢复和 fencing 事实由 Print Component 持久化，不复用 control lease；
 - 不持久化原始Client Input/Actual projection；只有参与恢复或replay fencing的accepted input字段才进入owning component的current-fact表；
@@ -963,7 +1021,9 @@ Device disable、revoke和current control-key replacement不是普通target变�
 - 时间统一为 UTC epoch milliseconds；
 - UUID 使用 canonical UUIDv7，wire Session ID 例外为 16-byte network-order。
 
-运行期数据库读写在进入 `spawn_blocking` 前先取得 Database-owned 异步许可；同一连接池的 所有 Database clone 共用 10 个许可，与连接池容量一致。排队、blocking executor 等待和 取连接共用 30 秒获取预算，超时沿用既有持久化错误；SQL 的 `busy_timeout=5000` 不变。 许可随阻塞闭包存活，连接归还和事务结束后才释放；调用方取消不能提前释放正在排队或执行的 阻塞工作许可，也不回滚已经开始的事务。等待异步许可时取消则不执行 SQL。
+运行期数据库读写在进入 `spawn_blocking` 前先取得 Database-owned 异步许可；同一连接池的所有Database clone共用与池容量相同的许可，业务库10个、日志库3个，两库不共用许可。排队、blocking executor等待和取连接共用30秒获取预算，超时沿用既有持久化错误。两库均使用WAL和`busy_timeout=5000`毫秒；业务连接启用`foreign_keys=ON`，日志连接显式设置`synchronous=NORMAL`，在新文件创建Diesel migration表前设置`auto_vacuum=INCREMENTAL`，并核验这些pragma。两套migration定义的业务表与日志事件表使用STRICT，业务值校验仍在Rust。许可随阻塞闭包存活，连接归还和事务结束后才释放；调用方取消不能提前释放正在排队或执行的阻塞工作许可，也不回滚已经开始的事务。等待异步许可时取消则不执行SQL。
+
+两套schema位于`diesel/{business,journal}/`，分别嵌入各自migration；业务类型入口仍为`crate::diesel_schema`，日志为`#[path]`引入的`crate::journal_schema`。目录和生成规则见§17.2。
 
 Database在独立的debug级`db.transaction` span中记录静态`db.operation`（read／write）及微秒耗时：`db.permit_wait_us`为异步许可等待，`db.pool_wait_us`为连接池checkout等待，`db.write_lock_wait_us`为IMMEDIATE开始前的等待（失败时记录该次尝试耗时），不包含事务业务执行。未到达的阶段不填写；debug span未启用时跳过额外计时。不记录SQL、bind参数或秘密值，不改变当前request span、许可数量、获取预算或读写共用许可的策略。
 
@@ -1000,6 +1060,9 @@ Database在独立的debug级`db.transaction` span中记录静态`db.operation`�
 | `print_attempts` | Print | 每次领取的精确 attempt、租约、Job ID 与结果 |
 | `print_claims` | Print | client/request ID 联合主键，领取重放幂等 |
 | `print_printers` | Print | 配对期限、current client/token hash 与确认状态 |
+| `journal_events`（独立日志库） | JournalComponent writer | STRICT；自增ID为入库顺序游标，UTC-ms为发生墙钟；封闭kind/category/severity、可选typed关联列、带版本details ≤2 KiB；只追加及按保留／预算删除，无业务FK |
+
+`journal_events`索引由日志库migration定义：`(device_id,id)`和`(actor_operator_id,id)`为非空partial index，另有`(kind,id)`、非空`operation_id`／`request_id`索引及`occurred_at_ms`索引。组件只向队列投递事实；追加和裁剪由JournalComponent写端通过私有JournalDatabase执行（含关闭时尽力写终止标记），查询协调者只读。
 
 receipt 与成功 Target 在同一事务提交；空集合和全部拒绝也保留 receipt。记录随当前比赛数据库 保留，不随 logout、Device revoke 或删除而级联删除，不提供自动过期或批次历史页面。
 
@@ -1007,7 +1070,7 @@ receipt 与成功 Target 在同一事务提交；空集合和全部拒绝也保�
 
 ### 12.3 Enrollment 与 control key
 
-数据库不保存Enrollment attempt、pending review、approval或denial。`device_control_keys`只保存已激活authority的public key、Device、current/terminal状态和时间，不包含`enrollment_id`或review关联。
+业务库不保存Enrollment attempt、pending review、approval或denial。日志库可记录review／审批事实，但不能用于恢复pending或activation authority。`device_control_keys`只保存已激活authority的public key、Device、current/terminal状态和时间，不包含`enrollment_id`或review关联。
 
 `device_control_keys`不需要global authority revision。current key由partial unique index表达。Replacement activation事务原子supersede old、activate new并保留历史。已提交activation的恢复通过“proved Machine Hardware ID + exact current public key”查询完成，不依赖attempt记录。
 
@@ -1055,7 +1118,7 @@ Binding成功后旧Input由“没有current negotiation”自然fence；Unbind�
 
 Server重启会丢失所有Client observation，但同时也会使所有lease失效；Client重连后的fresh barrier要求重新发送完整snapshot，因此不影响恢复、Resolve或transition completion。旧Actual不得参与新lease决策。
 
-WP8 的 Panel query 只读取durable authority和当前在线Actor状态。如果未来出现明确的离线last-seen/telemetry需求，应建立独立诊断projection；不得让诊断数据参与控制正确性。
+控制与convergence查询只读取durable authority和当前在线Actor状态。离线last-seen及连接时间线从独立journal重建（§15.1.7、§15.4）；ActualChanged只记录封闭状态的基线／变化，不持久化完整Actual，也不得参与控制正确性。
 
 ### 12.7 必须删除的旧表和字段
 
@@ -1075,6 +1138,14 @@ flag day 必须删除：
 
 不要为这些删除项保留 compatibility table、view、adapter、feature flag或 `reserved` wire字段。
 
+### 12.8 日志库的保留、预算与故障边界
+
+日志是append-only诊断流，不修改已有事件内容；保留与磁盘预算允许删除历史，不构成审计账本。默认保留30天、最多2,000,000行，DB＋WAL＋SHM预算512 MiB，文件系统可用空间下限1 GiB；配置和独立备份／恢复见[运维手册§8.5](operations-deployment.zh-CN.md#85-operational-event-journal日志库)。日志库不参与业务事务，业务启动、恢复、授权和控制决策都不依赖日志可用或完整。
+
+writer启动时及每5分钟COUNT校准行数估计并按发生时间清理过龄行；成功插入／删除按实际行数更新估计，仅估计超过max_rows时裁剪，普通批次和预算预裁剪不重复COUNT；每次短事务最多选出并删除5000个ID。正常写入的磁盘采样最多每秒一次；用量超过预算80%时预裁剪并做PASSIVE checkpoint，达到预算或可用空间低于下限时paused，停止普通事件插入并计丢弃。暂停期每秒裁剪最旧批次、尝试TRUNCATE checkpoint及增量vacuum；只有用量低于预算60%且可用空间达标才恢复。checkpoint不完整或维护失败进入tracing诊断。预算是采样后的写入门限，不是磁盘硬配额；两文件仍可能共享文件系统，不能把独立文件理解为完全资源隔离。
+
+日志尚未打开或打开失败为degraded：业务Server继续启动，事件计丢弃，writer每60秒重试打开；不补写已丢弃事件。paused表示池已打开但预算阻止写入；`JournalPaused`保留发生时间，恢复时尽力与`JournalResumed`一起入库。投递、丢失与关闭契约见§16.3；读侧缺口和健康状态见§15.1.7。
+
 ## 13. 数据库与事务纪律
 
 现有 `Database::read` 和 `Database::write` 可继续作为 SQLite 基础设施：
@@ -1086,7 +1157,7 @@ flag day 必须删除：
 - 组件 application method负责同一组件多表原子组合；
 - read model可以 JOIN 多表，但必须只读、显式命名、索引可验证。
 
-跨组件 partial commit 是设计允许的恢复状态，不使用补偿事务。可观测性数据不参与业务事务，也不影响SQLite提交结果。
+跨组件 partial commit 是设计允许的恢复状态，不使用补偿事务。业务库与日志库之间没有跨库事务；业务commit后投递事件，可观测性写入失败或丢失不回滚、不改变业务提交结果。
 
 Operator HTTP response、WSS发送和 Dirty notification均发生在 commit 之后。网络失败不能回滚 durable authority。
 
@@ -1195,6 +1266,15 @@ Operator账户与session在Server数据库：
 
 所有请求调用者的 Operator 管理员角色检查只由 HTTP 中间件负责：受保护路由先验证当前 session／账户，再由 `middleware::require_admin` 检查角色，未认证返回 401，viewer 返回 403，均在读取请求体之前拒绝。业务组件不重复校验调用者角色，也不接收仅用于角色门禁的 Operator 身份；只传递实际业务所需的目标、签发者或本人 Operator UUID。
 
+Operator API及Operator公开认证流程的mutation审计固定层次（外→内）为`complete_mutation` → audit → principal authentication → authorization → handler。`complete_mutation`先取得`ServerLifecycle`准入并由进程持有任务，保护认证、业务提交、领域事件和publish运行至完成；audit在该任务内建立`RequestAudit`，共享状态只保存有界typed ID和已认证actor，锁不跨await。未通过关闭准入的请求由completion入口使用同一审计记录逻辑发出503结果。
+
+审计范围仅包括Operator认证路由和Operator公开认证流程（session登录／登出、邀请注册及inspect、密码重置及inspect、本人改密）；Print Client／Source认证路由、机器配对／确认及未挂载路径不产生审计记录。范围内的非GET／HEAD请求在完成后尝试发出一个`OperatorRequest`，包括401、403、400、405、取消调用方后的真实完成结果及panic→500；GET／HEAD不产生通用请求记录。panic由现有任务边界脱敏为500，审计完成guard在展开时记录同一静态错误分类，不读取panic payload；调用方取消不取消已获准的mutation，也不额外伪造一次取消记录。
+
+`MatchedPath`只映射为封闭`AuditRoute`，路由清单测试约束所有Operator mutation及Operator公开认证mutation都有映射，并证明Print Client／Source路由没有映射。targets按route解析canonical UUIDv7／正序号，非法值省略，未分类路径不审计，不回退原URI、query或路径文本。handler只从已经校验或提交的结果补充operation/result ID，不重新查询业务库；targets去重并最多保留16个，保证details的2 KiB上限，批量操作的完整逐设备事实由`TargetSubmitted`及共同operation ID关联。`ApiError`只在response extensions附加封闭`ApiErrorCode`和编译期static cause，供audit写入可选`api_code`／`cause`；不读取错误title、source chain、headers或body作为事件内容，不改变既有响应格式。
+
+Auth事实只由`OperatorComponent`发出：成功创建session后记`AuthSucceeded`，仅登录尝试失败记`AuthFailed`，按invalid credentials／rate limited／infrastructure封闭分类；普通会话校验无论成功、过期或无效都不产生认证事件，mutation的401由`OperatorRequest`记录。删除确实存在的session后记`LoggedOut`，重复或未知logout只保留请求记录；本人改密、重置签发／消费及邀请注册在各自提交后发对应事件。logout和reset completion从原有查询／事务结果返回已知Operator ID，不新增认证或用户名查询。事件不保存尝试登录名、密码、token、session credential或响应中的秘密。离线CLI bootstrap／password reset继续使用数据库边界，不打开或写入journal。request span中的有效trace ID在`RequestAudit`创建时一次捕获，随后显式传给所有auth／domain事件及最终请求记录，包括panic和关闭准入拒绝路径；没有有效OpenTelemetry上下文时省略。
+
+
 最后管理员保护、用户名唯一性、当前密码、归属、来源／客户端认证与撤销及链接有效性仍由所属组件维护，涉及并发的约束保留在事务内。邀请与密码重置的持久签发者资格是链接业务规则，不是当前请求调用者角色门禁：创建、重新生成、检查和消费链接时，在事务内查询签发者仍存在且为 admin；资格丧失返回链接不可用，而不重新判定调用者 403。这避免已通过中间件的迟到签发在降级后留下将来升级可能复活的链接；其他已授权在途操作允许完成，但仍须满足各自业务不变量。
 
 - admin可以查看用户列表、修改固定角色、删除用户、管理邀请和签发密码重置链接；viewer不能进入用户管理或调用其API。两种角色都可以修改本人的密码；
@@ -1249,7 +1329,7 @@ admin指定固定role生成邀请，受邀人自行选择用户名和设置密�
 
 #### 15.1.6 Web会话边界
 
-Server路由按Public、Operator、Print Source和Print Client四类principal显式分组。模块只返回所属组的route定义，`http.rs`的组构造器统一在组边界应用一次认证；`require_admin`只检查已认证Operator的角色。Public组是显式allowlist，公开的学校Logo、配对入口及使用待确认token的打印确认握手保持原有边界；新增受保护route不依赖逐route选择认证wrapper。组认证只包裹已注册method，不包裹405或未挂载路径fallback；根层HEAD拒绝、no-store、request span及mutation完成任务保持不变。
+Server路由按Public、Operator、Print Source和Print Client四类principal显式分组。模块只返回所属组的route定义，`http.rs`的组构造器统一在组边界应用一次认证；`require_admin`只检查已认证Operator的角色。Public组是显式allowlist，公开的学校Logo、配对入口及使用待确认token的打印确认握手保持原有边界；新增受保护route不依赖逐route选择认证wrapper。组认证只包裹已注册method，不包裹405或未挂载路径fallback；外层audit仅对已分类的Operator路由及公开认证流程记录非GET／HEAD的405拒绝，不审计未挂载路径或机器客户端，且不改变认证／授权先于body提取的顺序。根层HEAD拒绝、no-store、request span及mutation完成任务保持不变，审计职责与固定层次见§15.1.2。
 
 Panel的`/users`独立于DOMjudge `/accounts`，只有admin显示导航且路由要求admin；用户角色修改和删除有确认，最后admin有明确保护反馈。邀请与目标账户重置链接由当前Panel origin生成，只有签发/重新生成当次显示和复制，刷新、离开页面或会话换代后不能重新读取。
 
@@ -1260,6 +1340,28 @@ Panel的`/users`独立于DOMjudge `/accounts`，只有admin显示导航且路由
 Web以本地会话代次持有独立的API客户端、QueryClient和临时Import预览状态。登录成功（包括同账号重新登录）、退出成功、当前代次收到非登录请求的401，或会话轮询发现Operator身份/角色变化时，统一换代；正常轮询不换代。换代先使旧代次失效，再取消旧请求、清空旧缓存/预览并重新挂载页面，文件选择和操作提示随页面释放。旧请求和回调只能访问旧代次；旧401不能结束新会话，退出后完成的文件读取不能借用新会话发起上传，晚到响应不能恢复旧token或清除新预览。
 
 Import预览token仅保留在创建它的当前前端会话内，页面刷新或会话换代后不继承。新会话重新读取Server的非秘密pending candidate；有权限的Administrator通过现有的丢弃、重新上传流程恢复提交。前端换代不删除Server candidate，也不撤销Server已接受的业务变更。
+
+#### 15.1.7 Journal只读HTTP契约
+
+所有日志端点位于`/api/v2/journal`，统一`Cache-Control: no-store`，GET不产生OperatorRequest：
+
+| GET路径 | 权限 | JournalQuery方法 |
+|---|---|---|
+| `/events` | Operator；viewer默认仅Device，显式受限category／kind返回403 | `events` |
+| `/devices/{device_id}/timeline?from&to` | Operator | `timeline` |
+| `/device-summaries?window_ms` | Operator | `summaries` |
+| `/export` | admin | `export` |
+| `/status` | admin | `status` |
+
+`events`支持重复的`category[]`／`kind[]`／`severity[]`、device、字面seat prefix、actor、operation、request和Unix-ms `from`／`to`过滤。每个读事务最多1000行，默认500，结果按ID降序；一般页以limit+1做lookahead，请求1000行时将额外ID探测放在另一短只读事务，保持事务行数上限；`before`翻旧页，`after`取头部增量；`has_more`时用`next_before`及相同after下界继续，避免一次新增超过500条时漏页。响应附writer可用性、暂停、分类丢弃的总数／起点、保留边界与main在tracing初始化后、Tokio及其他线程启动前捕获的UTC offset（分钟；失败仅在启动时告警一次并退回UTC，响应不再向OS查询）。业务显示名按页批量解析；不把尝试登录名当显示名。不可解码行只返回有界`Unreadable{id,kind}`，未知kind归一为unknown，不返回原始JSON或损坏的common columns。
+
+时间线以ID保持因果顺序，回溯窗口前最近的lease开启／终止及必要的binding、pause快照，再分别通过device/ID索引读取设备行、通过kind/ID索引读取全局journal kinds，并按ID有序合并、去重，保持统一cursor及high-water；不使用device OR category全表扫描。Disconnect、replace旧lease、ActorStopped关闭对应session；新boot／ServerStopping只给未知终点的上界，不伪造精确断开。无终止记录的末次session仅在LiveLeaseView确认同一session仍在线时标ongoing，否则unknown；窗口前已结束的不复活。anchor同样受已捕获high-water约束；检测到窗口前的ID顺序时间回拨或不可读证据时从保留起点保守回溯。迟到终止按session关联，可修正旧区间的未知原因；无session的ActorStopped不关闭当前lease。扫描时丢弃窗口外已完成区间和gap，每请求最多保留最近500个session与500个gap，超出时首个保留session标truncated_start，不声称返回完整窗口历史。返回保留裁剪、丢弃、暂停和不可读缺口，窗口截断标记及墙钟回拨标记；负时长钳为零，未知终点的duration为空。座位只取Binding提交快照，不读取当前座位来补历史。
+
+设备概要仅按kind索引扫描窗口内连接终止事实；设备ID元数据按device索引有界分页，最后连接／终止时间按每设备最新事实作有界查询，不加载全量device类payload历史。
+
+保留边界独立读取oldest ID／发生时间及max ID，不加载event payload；status和时间线等只需边界的查询不再构造空page。只有导出开始时在同一只读事务固定high-water ID并COUNT一次匹配条数，用于精确报告后续裁剪丢失；普通page只用lookahead判断has_more。
+
+导出在响应前固定high-water ID及匹配条数，按有界ID页生成JSONL，响应背压只暂停只读导出任务；调用方丢弃body后停止。后续插入不进入本次导出，读取前被裁剪的匹配行在尾部metadata记录数量、保守ID范围和当前保留边界；读取失败以静态export error行结束，源错误仅进tracing。status附队列估计、具名分类dropped／write_failed／queued、全局write_failed、pause reason、末次错误分类、关闭超时计数和DB／WAL／SHM字节数及可用空间。
 
 ### 15.2 Import
 
@@ -1356,6 +1458,7 @@ Panel展示：
 - latest Actual和receive-time；
 - typed convergence/drift；
 - Enrollment/Binding evaluation；
+- 独立journal中的设备连接历史、事件流和日志健康状态；
 
 Panel query可以显式汇总组件read model，缺失fresh state时显示未知。
 
@@ -1373,6 +1476,16 @@ Devices在行内详情展示双方IP和记录时间，支持复制；离线设�
 Web 每个页面/浏览器 tab 只允许一个未确认提交；请求发送前按 Operator 身份在 sessionStorage 保存原 operation ID 和完整非秘密请求。刷新后先确认登录身份再恢复，旧 scope 的回调不能 清除新 scope 的请求。存储失败不发送；网络/5xx 等结果不明时保留原请求，提供同 ID 手动重试， 不自动重试。收到明确结果即可发起下一次操作，不等待设备收敛；期间仍可浏览和切换设备。 “仅重试失败设备”创建新 ID，只包含上次明确拒绝的设备，并重新检查 Enabled 资格。 提交结果与 Target/Actual/convergence 分别展示，确认后的结果仅保留在当前页面，不增加 Server 后台任务、执行队列或独立批次进度。已有请求失败、轮询失败和陈旧状态均明确展示。
 
 `DeviceActor`只在ClientState入口完成一次完整Actual校验并保留typed observation， 不缓存target或convergence。`DeviceControl`读取各组件当前durable target与内部Registry返回的 current-lease observation，通过`device_control/convergence`的共享纯builder即时比较。 该模块只定义transport-neutral observation、查询模型与比较规则，不引用HTTP、Serde或Specta； `convergence`及其资源子模块保持私有，仅由`device_control`根模块显式重导出HTTP需要的 查询结果类型和枚举；HTTP不依赖内部模块路径，observation与比较函数不对外导出。 HTTP的`convergence.rs`及资源子文件拥有原DTO、字段表示和schema，纯`From`转换不查询、 校验或重新计算convergence，也不引入秘密材料。HTTP handler只处理请求、错误映射和序列化。单Device 详情保留直接读取路径；Device collection先筛选Device，再为匹配集合执行固定批量读取：Device、Gateway、 Runtime Config、Session Control和Home各一条查询，Binding以negotiation和bound public context两条查询完成，并在内存中按`device_id`组装。Registry只在一次短锁内复制已有handle， 释放锁后并发查询Actor；从未连接的Device直接视为offline，不为查询创建Actor。非空集合的数据库业务 查询固定为七条，Actor查询和内存计算仍随Device数量线性增长。离线Device、进程重启后尚未创建 Actor的Device以及周期刷新前尚未收到新Target的Device仍以数据库当前target为准。该Panel投影不是 跨组件事务快照；不增加跨组件缓存、持久化read model或通用batch abstraction。
+
+#### 连接历史与事件页
+
+Devices表增加`Last seen`与`Drops (24h)`，概要每10秒刷新。当前有lease（包括等待首个fresh state）时Last seen为Now；离线时取保留历史中最后连接／断开的较晚时间，无记录为Not recorded、概要不可用为Unknown。Drops统计最近24小时内已记录的断开，不是journal丢弃计数；至少3次标为flapping，Flapping tile可筛选当前生命周期列表内的设备。计数来自有损、可裁剪历史，不能当作完整断网次数。
+
+设备Sheet以State／Timeline标签切换；Timeline默认24h，可选1h／6h／24h／7d，每10秒刷新服务端重建结果。区分进行中、已断开和终点未知，显示断开原因、座位提交快照、窗口截断、时钟回拨导致的时长不精确及保留／丢弃／暂停／不可读缺口，不由浏览器推定在线。刷新失败保留上次结果并提示；重建契约见§15.1.7。
+
+`/events`位于Contest floor导航，默认Device类，过滤器写入URL：类别预设、Any time／15 min／1 hour／Today／Custom、Device ID或seat prefix、kind、severity；admin另可按Operator筛选，并查看Audit／Auth／Journal／All预设。viewer只提供Device，服务端仍独立执行受限过滤403检查（§15.1.7）。事件按ID倒序，以Load older翻旧页；非Custom范围每10秒用after游标追赶新事件，离开顶部时暂存并提示新事件，确认后显示，不让新行推移正在阅读的内容。Custom固定范围停止轮询；页面最多保留2000行，超出提示并可继续向旧页读取。
+
+事件页与Timeline显示degraded／paused／本次Server启动以来丢弃计数的健康提示；事件页另显示最早保留边界。请求失败作为独立错误呈现，不把不可用历史当作空记录。时间按响应中的Server UTC offset显示，列头／时间线标出偏移；事件页首次响应前仅以浏览器偏移暂代，Server偏移为启动时快照而非浏览器时区（§15.1.7）。admin可通过普通下载链接按当前事件过滤器导出JSONL，不在浏览器累计完整导出；viewer没有导出入口，Server也要求admin。会话换代与缓存边界沿用§15.1.6。
 
 ### 15.5 Panel视觉规范
 
@@ -1403,28 +1516,46 @@ Web 视觉规范集中维护于根目录 [DESIGN.md](../DESIGN.md)，作为界�
 
 ### 16.2 Distributed tracing
 
-Server可观测性只使用标准 `tracing`、 `tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现自定义 operation log schema、应用内JSONL writer或OpenTelemetry Logs signal。trace是 best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源 耗尽或异常退出时可能丢失span。
+诊断trace使用标准`tracing`、`tracing-opentelemetry`、OpenTelemetry SDK和OTLP trace exporter，不实现OpenTelemetry Logs signal。独立的operational event journal见§16.3；JSONL只作为日志只读导出格式，不作为另一套应用日志writer。trace是best-effort诊断数据，不参与业务正确性、授权或事务；Batch Span Processor在资源耗尽或异常退出时可能丢失span。
 
 设置非空的标准`OTEL_EXPORTER_OTLP_ENDPOINT`或 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`时启用OTLP/gRPC导出；未设置endpoint时只启用 stderr fmt日志，不尝试连接默认Collector。`OTEL_SDK_DISABLED=true`强制禁用导出。 Exporter的endpoint、timeout和headers继续使用OpenTelemetry标准环境变量。endpoint配置 无法建立exporter时启动失败；进程正常退出时显式shutdown provider以flush已排队span， 但shutdown/export失败只输出固定诊断，不覆盖业务命令结果。
 
-每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和 success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从 W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。 认证成功后可向当前Span补充不含secret的actor ID，但HTTP header、错误体、生成类型和 业务函数参数都不公开或传递自定义correlation/operation ID。CLI命令建立internal根Span。
+每个HTTP请求建立`otel.kind=server`根Span，记录method、matched route、status和success/client-error/server-error结果；只把5xx标记为OpenTelemetry error。入口从W3C `traceparent`提取父上下文，trace ID、span ID和父子关系均由OpenTelemetry生成。认证成功后可向当前Span补充不含secret的actor ID，HTTP header和错误体不增加自定义correlation ID。journal的request／operation ID属于显式typed关联事实，trace ID只从有效request span捕获一次再显式传参（§10.6、§15.1.2），不充当业务authority。CLI命令建立internal根Span。
 
 async调用依靠tracing instrumentation传播；进入`spawn_blocking`时共享数据库边界显式 捕获subscriber和当前Span。每个Diesel连接通过官方`Instrumentation`接口为query建立 `otel.kind=client`子Span，只记录SQLite类型和成功/失败，不读取或记录SQL文本、bind参数、 数据库URL、错误正文或其他secret。
 
 ### 16.3 日志和metrics
 
-允许：
+`tracing`／OTLP回答运行诊断、延迟和错误链；operational event journal回答保留范围内“发生过什么”，写入独立SQLite，供Panel、时间线和JSONL读取。二者都best effort，journal不是事务证据或控制输入。事件类别固定：
+
+| 类别 | 事实与边界 |
+|---|---|
+| `device` | 准入、lease、断开、收敛重试、Actual封闭状态变化、review、lifecycle、binding与target提交；不存完整Input／Actual |
+| `audit` | Operator API及其公开认证流程的mutation请求结果，包括拒绝和失败；不覆盖机器Client／Source路由，GET不记请求事件 |
+| `auth` | OperatorComponent提交后的登录成功、logout、改密、重置签发／消费、邀请注册；AuthFailed只记录登录尝试，不记录普通session校验失败 |
+| `journal` | ServerStarted／ServerStopping、JournalDropped／JournalPaused／JournalResumed等自身生命周期与缺口标记 |
+
+事件载荷为普通struct，显式实现sealed `JournalEvent`；`DetailsWriter::field<T: JournalField>`是唯一details写入入口，顶层Event以穷举match分发。sealed白名单限typed ID、受限SeatCode／静态错误码与cause、IP、实际使用的整数／bool、封闭枚举及其Option／有界Vec；不允许任意String、`&str`、bytes或`serde_json::Value`作为事件字段。包装构造器按值来源命名，details带kind与版本v且编码后不超过2 KiB。trybuild覆盖String、Value字段及外部实现sealed trait不能编译；类型白名单不证明任意值都无秘密，仍须审查出处。解码坏行只返回Unreadable，精确目录及编码权威见§1。
+
+生产者通过显式注入的`Journal`同步`try_send`到8192容量队列；emit只捕获墙钟和typed事件，不做I/O、await、序列化或DB读取。队列满、关闭、degraded或paused造成的丢失按类别计数；每次状态转换至多尝试发出一次，不保证恰好一次持久化。单writer每批最多256条，序列化并写库；transient写失败在首次尝试后按50／100／200毫秒退避重试3次，耗尽后丢批，计write_failed和dropped。积压清空后writer直接尽力写JournalDropped，包含分类、数量和最早已知丢失事件的发生时间；失败批次按类别取最早发生时间，较早的失败可向前修正此前队列满的丢失起点。计数属于本次boot，进程重启不恢复内存计数；读侧仍可见保留的缺口标记。
+
+保留天数、行数、DB＋WAL＋SHM预算、可用空间下限、degraded重开及paused恢复均由writer独立负责（§12.8），不让日志失败改变业务响应。JournalComponent启动writer后投递ServerStarted；正常关闭先静默生产者、终止lease和后台任务，再ServerStopping→closed→排空→join，精确顺序见§11.1。flush默认最多10秒，超时将剩余queued计为丢失、记录tracing，并额外最多250毫秒尽力写`ServerStopping.lost_on_flush`；停写、锁库或异常退出时终止标记也可能缺失，不承诺保存所有关闭事件。
+
+事件提交归属与上下文见§10.6，认证和审计边界见§15.1.2，会话隔离见§15.1.6，只读权限／缺口语义见§15.1.7，模块边界见§17.2。Panel健康提示见§15.4；管理员status提供队列估计、分类计数、暂停原因、末次错误、文件字节数和可用空间，不增加独立metrics服务或高基数秘密label。
+
+诊断日志／metrics允许：
 
 - 当前边界已审查的error code；
 - component kind；
 - opaque ID；
 - 计数、延迟、连接状态。
 
-禁止：
+日志、trace、metrics和journal均禁止：
 
-- password/token/private key；
+- 密码、token、session credential、key material；
 - CSR/leaf/chain正文；
 - 完整HWID；
+- 尝试登录名；
 - 本地path；
 - username+credential组合；
 - peer free text；
@@ -1474,15 +1605,37 @@ crates/natsume-photo-package/     # 成果包契约随双端实现提取，不�
 
 ```text
 crates/natsume-server/diesel/
-  schema.rs
-  sqlite-integer-to-bigint.patch
+  business/
+    diesel.toml
+    migrations/
+    schema.rs
+    sqlite-integer-to-bigint.patch
+  journal/
+    diesel.toml
+    migrations/
+    schema.rs
+    sqlite-integer-to-bigint.patch
 crates/natsume-server/src/
   main.rs
   commands.rs
   config.rs
   logging.rs
   background.rs
+  lifecycle.rs
+  task.rs
   server_state.rs
+  journal.rs
+  journal/
+    event.rs
+    event/
+      contract.rs
+      types.rs
+      payload.rs
+    budget.rs
+    writer.rs
+    db.rs
+    db/read.rs
+    read.rs
   component.rs
   component/
     operator.rs
@@ -1524,6 +1677,11 @@ crates/natsume-server/src/
     print/storage.rs
     target_submission.rs
     target_submission/db.rs
+  journal_query.rs
+  journal_query/
+    dto.rs
+    timeline.rs
+    export.rs
   device_control.rs
   device_control/
     actor.rs
@@ -1541,6 +1699,9 @@ crates/natsume-server/src/
   http.rs
   http/middleware.rs
   http/middleware/
+    audit.rs
+    audit/
+      route.rs
     authentication.rs
     completion.rs
     request_context.rs
@@ -1555,6 +1716,8 @@ crates/natsume-server/src/
     import.rs
     provisioning.rs
     target_submission.rs
+    journal.rs
+    journal/query.rs
     print.rs
     print/execution.rs
     print/printers.rs
@@ -1571,9 +1734,9 @@ crates/natsume-server/src/
   tls.rs
 ```
 
-`http.rs`集中组装Public、Operator、Print Source、Print Client四个principal group；handler只贡献各组路由，认证在受保护组构造时统一施加。`http/middleware/completion.rs`保护所有API mutation运行至完成。TLS入口在`tls.rs`，Origin CA加载与签发在`component/gateway/issuer.rs`。
+`http.rs`集中组装Public、Operator、Print Source、Print Client四个principal group；handler只贡献各组路由，认证在受保护组构造时统一施加。`http/middleware/completion.rs`保护所有API mutation运行至完成；内层`audit.rs`仅为Operator API及公开认证流程保存typed请求上下文并在完成时发出一次`OperatorRequest`，`audit/route.rs`维护封闭路由分类和typed路径target解析。TLS入口在`tls.rs`，Origin CA加载与签发在`component/gateway/issuer.rs`。
 
-`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/schema.rs` 是由 migration 生成、通过 `crate::diesel_schema`引用的独立类型入口。`sqlite-integer-to-bigint.patch`只表达 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际 变大后才拆`types.rs`或`resolve.rs`。
+`db.rs`只提供连接和transaction；目标 `crates/natsume-server/diesel/business/schema.rs` 是由业务 migration 生成、通过 `crate::diesel_schema`引用的独立类型入口；`diesel/journal/schema.rs` 由日志库 migration 生成，通过 `crate::journal_schema`引用。`sqlite-integer-to-bigint.patch`只表达 SQLite STRICT `INTEGER`到Diesel `BigInt`的类型映射差异。业务SQL进入owning component的私有`db.rs`。组件父文件先容纳types/rules/implementation；只有实际 变大后才拆`types.rs`或`resolve.rs`。
 
 Contest的三个只读查询只占`contest.rs`与`contest/db.rs`，不按每个查询拆子模块； Facts用具名字段交给HTTP转换。Gateway/Binding的原始持久化row字段只在owning component内 可见，领域转换继续验证；不为直接字段读写增加无校验constructor/getter。 普通HTTP JSON响应使用Axum `Json`，不维护重复的手工序列化response wrapper。
 
@@ -1633,7 +1796,9 @@ Helper和Agent保留各自capability/UI边界，不复制Server组件。
 - stale ID/epoch零authority写入；
 - secret redaction测试。
 
-可观测性基础设施另行覆盖：HTTP success/4xx/5xx根Span字段、actor late record、W3C父上下文、跨async与`spawn_blocking`传播、无SQL/bind secret以及provider graceful shutdown。HTTP契约测试必须证明response header、错误体和生成类型均无自定义correlation ID。
+可观测性基础设施另行覆盖：HTTP success/4xx/5xx根Span字段、actor late record、W3C父上下文、跨async与`spawn_blocking`传播、无SQL/bind secret以及provider graceful shutdown。HTTP契约测试必须证明response header和错误体不增加自定义correlation ID；journal DTO中的typed request／operation关联列按§15.1.7验证。
+
+Journal另覆盖封闭字段trybuild、全事件往返／版本／大小限制、坏行不回显、双库migration与重开兼容；不可写／锁库／队列满／预算停写均不阻塞业务，恢复与flush超时损失可观测。设备竞态断言每session至多一个终止事件及原因优先级；审计覆盖取消、401／403／400、panic和有效trace传递，AuthFailed只在登录尝试发出。读API覆盖权限、游标／页上限、真实Diesel查询索引、时间线未知／缺口／回拨、导出high-water及期间裁剪；秘密canary检查存储、WAL和HTTP／导出。Web单测与浏览器验收覆盖viewer限制、健康提示、时间线、flapping、轮询不跳动及导出入口。
 
 不为数据库组件建立Repository mock。使用临时SQLite和真实constraint。
 
@@ -1733,6 +1898,8 @@ CI 的工具准备与缓存由一个组合 Action 管理。工作流直接声明
 ## 20. Flag-day 实施计划
 
 以下 Work Package 按依赖顺序记录既有工位控制 flag-day 基线及历史验收，每个 WP 在列出的验收满足后结束。第 23 节的平台扩展单独实施，清库或协议改写须另行授权。
+
+Operational event journal是该基线后的增量交付：独立存储／事件模型、writer与关闭协议、device／audit／auth埋点、JournalQuery及Panel已接入；本节历史WP不作为重写已部署业务migration的授权，当前契约见§12、§15.1.7和§16.3。
 
 ### 当前实现基线
 
@@ -1982,6 +2149,7 @@ TODO(R5)：在最终镜像完成正式模板、从零安装、100/20/10 次重�
 - 数据库没有Command、Observed、Token、Bundle、global revision或通用resource表；
 - 密码、private key、CSR/leaf正文不越过规定边界；
 - OpenTelemetry trace仅作best-effort可观测性，不充当业务审计或事务证据；
+- operational event journal同样有损、可裁剪，业务恢复不依赖它；缺口、停写、降级和未知终点显式呈现，不伪造在线或完整历史；
 - 所有已建模业务故障只造成暂时drift或明确fail closed，不产生双authority、错误Binding、旧Session副作用或不可判断投递结果；
 - 完整测试、生成物、目标环境和恢复演练通过。
 

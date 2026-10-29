@@ -21,26 +21,37 @@ use crate::{
     config::ServerConfig,
     db::Database,
     device_control::DeviceControl,
+    journal::JournalComponent,
+    journal_query::JournalQuery,
+    lifecycle::ServerLifecycle,
     vault::{self, VaultSession},
 };
 
 /// Process-wide business composition shared by every transport.
 ///
-/// Startup assembles concrete components and the Device Control coordinator once.
+/// Startup assembles concrete components and mutation/read coordinators once.
 /// HTTP receives their shared handles; Device Control and actors never depend on
 /// this composition object.
 pub(crate) struct ServerState {
-    operator: OperatorComponent,
+    /// Shared authentication owner also serving bounded display-name reads.
+    operator: Arc<OperatorComponent>,
+    /// Read-only journal coordinator with bounded storage, names and narrow lease dependencies.
+    journal_query: JournalQuery,
     print: PrintComponent,
     contest: ContestComponent,
     import: ImportComponent,
     provisioning: Arc<ProvisioningComponent>,
     device: Arc<DeviceComponent>,
+    /// Shared Binding owner used directly by single-component entrypoints.
     binding: Arc<BindingComponent>,
     session: Arc<SessionControlComponent>,
     home: Arc<HomeComponent>,
     target_submission: TargetSubmissionComponent,
     device_control: Arc<DeviceControl>,
+    /// Process-owned journal writer and producer handle; joined after producers stop.
+    journal: JournalComponent,
+    /// Shared admission and producer ownership, closed once by the composition root.
+    lifecycle: ServerLifecycle,
 }
 
 impl ServerState {
@@ -52,6 +63,7 @@ impl ServerState {
     pub(crate) async fn load(
         database: Database,
         config: &ServerConfig,
+        utc_offset: time::UtcOffset,
     ) -> Result<Self, ServerStateError> {
         let vault = vault::load(config.vault_master_key_path())
             .map_err(|source| ServerStateError::Vault { source })?;
@@ -76,12 +88,16 @@ impl ServerState {
         )
         .await
         .map_err(|source| ServerStateError::PrintStorage { source })?;
+        let journal =
+            JournalComponent::start(config.journal_path().to_owned(), config.journal().clone());
         Ok(Self::from_parts(
             database,
             print,
             vault,
             gateway,
             config.organization_logos_path().to_path_buf(),
+            journal,
+            utc_offset,
         ))
     }
 
@@ -91,11 +107,18 @@ impl ServerState {
         vault: VaultSession,
         gateway: GatewayComponent,
         logos: std::path::PathBuf,
+        journal: JournalComponent,
+        utc_offset: time::UtcOffset,
     ) -> Self {
+        let lifecycle = ServerLifecycle::new();
         let vault = Arc::new(vault);
         let provisioning = Arc::new(ProvisioningComponent::new());
-        let device = Arc::new(DeviceComponent::new(database.clone()));
-        let binding = Arc::new(BindingComponent::new(database.clone(), Arc::clone(&vault)));
+        let device = Arc::new(DeviceComponent::new(database.clone(), journal.emitter()));
+        let binding = Arc::new(BindingComponent::new(
+            database.clone(),
+            Arc::clone(&vault),
+            journal.emitter(),
+        ));
         let session = Arc::new(SessionControlComponent::new(database.clone()));
         let home = Arc::new(HomeComponent::new(database.clone()));
         let power = Arc::new(PowerControlComponent::new(database.clone()));
@@ -108,12 +131,22 @@ impl ServerState {
             Arc::clone(&session),
             Arc::clone(&home),
             Arc::clone(&power),
+            journal.emitter(),
+            lifecycle.clone(),
         ));
+        let operator = Arc::new(OperatorComponent::new(database.clone(), journal.emitter()));
+        let journal_query = JournalQuery::new(
+            journal.reader(),
+            Arc::clone(&operator),
+            device_control.live_lease_view(),
+            utc_offset,
+        );
         Self {
-            operator: OperatorComponent::new(database.clone()),
+            operator,
+            journal_query,
             print,
             contest: ContestComponent::new(database.clone(), Arc::clone(&vault), logos),
-            target_submission: TargetSubmissionComponent::new(database.clone()),
+            target_submission: TargetSubmissionComponent::new(database.clone(), journal.emitter()),
             import: ImportComponent::new(database, vault),
             provisioning,
             device,
@@ -121,9 +154,17 @@ impl ServerState {
             session,
             home,
             device_control,
+            journal,
+            lifecycle,
         }
     }
 
+    pub(crate) const fn journal(&self) -> &JournalComponent {
+        &self.journal
+    }
+    pub(crate) const fn lifecycle(&self) -> &ServerLifecycle {
+        &self.lifecycle
+    }
     pub(crate) const fn device_control(&self) -> &Arc<DeviceControl> {
         &self.device_control
     }
@@ -132,7 +173,11 @@ impl ServerState {
         &self.print
     }
 
-    pub(crate) const fn operator(&self) -> &OperatorComponent {
+    pub(crate) const fn journal_query(&self) -> &JournalQuery {
+        &self.journal_query
+    }
+
+    pub(crate) fn operator(&self) -> &OperatorComponent {
         &self.operator
     }
 
@@ -217,6 +262,20 @@ pub(crate) mod tests {
         documents: std::path::PathBuf,
         logos: std::path::PathBuf,
     ) -> Result<ServerState, ServerStateError> {
+        for_test_with_journal(
+            database,
+            documents,
+            logos,
+            crate::journal::JournalComponent::channel(crate::journal::CAPACITY).0,
+        )
+    }
+
+    pub(crate) fn for_test_with_journal(
+        database: Database,
+        documents: std::path::PathBuf,
+        logos: std::path::PathBuf,
+        journal: crate::journal::JournalComponent,
+    ) -> Result<ServerState, ServerStateError> {
         let root = std::env::temp_dir().join(format!("natsume-server-state-{}", Uuid::now_v7()));
         fs::create_dir(&root).map_err(|source| ServerStateError::Vault {
             source: vault::VaultError::Read { source },
@@ -237,7 +296,13 @@ pub(crate) mod tests {
         let print = crate::component::print::PrintComponent::for_test(database.clone(), documents)
             .map_err(|source| ServerStateError::PrintStorage { source })?;
         Ok(ServerState::from_parts(
-            database, print, vault, gateway, logos,
+            database,
+            print,
+            vault,
+            gateway,
+            logos,
+            journal,
+            time::UtcOffset::UTC,
         ))
     }
 }

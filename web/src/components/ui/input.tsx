@@ -9,7 +9,7 @@ function Input({ className, type, ...props }: React.ComponentProps<"input">) {
       data-slot="input"
       className={cn(
         // Carbon text input: field surface, square, bottom hairline.
-        "flex h-10 w-full min-w-0 rounded-none border-0 border-b border-border-strong bg-input px-4 py-2.5 text-sm transition-[color,outline-color,border-color] outline-none selection:bg-primary selection:text-primary-foreground file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-subtle-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:border-transparent disabled:text-subtle-foreground",
+        "flex h-10 touch:h-12 w-full min-w-0 rounded-none border-0 border-b border-border-strong bg-input px-4 py-2.5 text-sm transition-[color,outline-color,border-color] outline-none selection:bg-primary selection:text-primary-foreground file:inline-flex file:h-7 file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-subtle-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:border-transparent disabled:text-subtle-foreground",
         "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-ring",
         "aria-invalid:outline-2 aria-invalid:-outline-offset-2 aria-invalid:outline-destructive",
         "[&::-webkit-search-cancel-button]:appearance-none",

@@ -6,7 +6,7 @@ use uuid::{Uuid, Variant, Version};
 use crate::db::PersistenceError;
 
 /// Canonical, lowercase, hyphenated `UUIDv7` identifier for a Device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, specta::Type)]
 pub(crate) struct DeviceId(Uuid);
 
 impl DeviceId {
@@ -86,6 +86,8 @@ impl fmt::Debug for ControlPublicKey {
 
 #[derive(Debug, Snafu)]
 pub(crate) enum DeviceError {
+    #[snafu(display("the Server is stopping"))]
+    ServerStopping,
     #[snafu(display("the Device does not exist"))]
     DeviceNotFound,
     #[snafu(display("persisted Device facts are invalid"))]

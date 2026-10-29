@@ -33,7 +33,7 @@ The private keys directory must be owned by `natsume-server:natsume-server` with
 
 The first-install setup tool additionally requires Origin CA P-256, explicit CA keyUsage, validity coverage through `gateway_not_after`, and a directly trusted Server leaf chain covering every advertised IP SAN and suitable for serverAuth. These stricter policies are checked only by setup; `serve` does not perform them or a probe signature. Runtime hardening remains follow-up work.
 
-The server embeds and runs its Diesel migrations at runtime; deployed packages and production hosts do not require Diesel CLI. Developers and CI use exactly `diesel_cli 2.3.12` only for `deno task schema:check`, which rebuilds the committed private `diesel/schema.rs` artifact from a temporary database and checks the clean diff. CI installs it with `cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled`.
+The server embeds and runs its Diesel migrations at runtime; deployed packages and production hosts do not require Diesel CLI. Developers and CI use exactly `diesel_cli 2.3.12` only for `deno task schema:check`, which rebuilds the committed private `diesel/{business,journal}/schema.rs` artifacts from separate temporary databases and checks their clean diffs. CI installs it with `cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled`.
 
 For the manual first-install workflow, install the package and complete the fixed non-secret configuration, then open an interactive TTY and run:
 

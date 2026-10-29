@@ -218,9 +218,9 @@ pub(super) async fn authenticate_session(
 pub(super) async fn terminate_session(
     database: &Database,
     wire_credential: SessionCredentialHex,
-) -> Result<(), OperatorError> {
+) -> Result<Option<OperatorIdentity>, OperatorError> {
     let Ok(credential) = SessionCredential::from_wire(&wire_credential) else {
-        return Ok(());
+        return Ok(None);
     };
     let credential_hash = credential.sha256();
     let credential_hash = Zeroizing::new(*credential_hash.as_bytes());
@@ -246,7 +246,7 @@ pub(super) async fn terminate_session(
     if let Some(identity) = identity {
         record_actor(identity);
     }
-    Ok(())
+    Ok(identity)
 }
 
 fn record_actor(identity: OperatorIdentity) {

@@ -1,4 +1,6 @@
+use crate::http::middleware::audit::RequestAudit;
 use axum::{
+    Extension,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -9,14 +11,15 @@ use crate::component::binding::BindingError;
 use super::super::super::{AppState, error::ApiError};
 use super::{DevicePath, invalid_device_id, parse_device_id};
 
-pub(crate) async fn delete_device_binding(
+pub(in crate::http) async fn delete_device_binding(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Path(path): Path<DevicePath>,
 ) -> Response {
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
-    match state.binding().unbind(device_id).await {
+    match state.binding().unbind(device_id, audit.context()).await {
         Ok(change) => {
             state.device_control().publish(change).await;
             StatusCode::NO_CONTENT.into_response()
