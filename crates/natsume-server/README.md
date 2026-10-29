@@ -29,7 +29,7 @@ The two Origin CA files have fixed names under the Server private keys directory
 
 The private keys directory must be owned by `natsume-server:natsume-server` with mode `0700`; both files must have the same ownership and mode `0600`. `serve` validates both encodings, their public-key match, and a probe signature before binding. The CA certificate must also be the exact certificate provisioned on the Server and injected into the Client image as `/etc/natsume/trust/local-origin-ca.crt` (PEM there): startup decodes that public certificate to DER and requires byte-for-byte equality with `origin-ca.der`. Missing, malformed, mismatched, or overly broad private material fails closed. `bootstrap`, reset, package install, and package upgrade never create or rewrite these files.
 
-The server embeds and runs its Diesel migrations at runtime; deployed packages and production hosts do not require Diesel CLI. Developers and CI use exactly `diesel_cli 2.3.12` only for `deno task schema:check`, which rebuilds the committed private `diesel/schema.rs` artifact from a temporary database and checks the clean diff. CI installs it with `cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled`.
+The server embeds and runs its Diesel migrations at runtime; deployed packages and production hosts do not require Diesel CLI. Developers and CI use exactly `diesel_cli 2.3.12` only for `deno task schema:check`, which rebuilds the committed private `diesel/{business,journal}/schema.rs` artifacts from separate temporary databases and checks their clean diffs. CI installs it with `cargo install diesel_cli --version 2.3.12 --locked --no-default-features --features sqlite-bundled`.
 
 For initial provisioning, install the package and complete the fixed non-secret configuration, then open an interactive TTY and run:
 
@@ -62,6 +62,8 @@ The current `axum::serve` entry point does not install a Hyper timer, so the def
 Photo Client goes online only for first-time initialization. Administrators use the existing Operator session; clients use a separate Photo-only bearer credential. The Windows [Client adapter and initialization command](../natsume-photo-client/README.md#启动与操作) use these APIs. Web UI and result ZIP ingestion are not implemented. The authoritative lifecycle is [architecture section 23.4](../../docs/architecture.md#234-离线工作区与队伍优先拍摄组).
 
 All paths below are relative to `/api/v2`; JSON rejects unknown fields. Admin routes require an admin Operator cookie. Client routes never accept that cookie as Photo authorization.
+
+Photo administrator mutations use the shared operational journal: source creation, pairing-code issuance/replacement, and source-state updates record `OperatorRequest` with the authenticated actor, request correlation, typed source ID, route, HTTP status and API error metadata. GETs and Photo Client enrollment/download/completion routes are outside Operator audit scope. Pairing codes, bearer credentials, public keys and request/response bodies are not journal details. This best-effort history does not participate in Photo transactions. Photo tables remain in the business database; the journal uses its separate database and migration tree.
 
 | Method and path | Authorization | Request / result |
 | --- | --- | --- |

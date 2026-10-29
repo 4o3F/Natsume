@@ -1,4 +1,5 @@
 //! Opt-in loopback TLS/WSS load probe with synthetic authorities and a temporary DB.
+use crate::journal::JournalContext;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     sync::Mutex,
@@ -36,7 +37,11 @@ async fn activate_device(
     let EnrollmentStartOutcome::Pending(review, activation) = fixture
         .state
         .device()
-        .start_enrollment(evidence)
+        .start_enrollment(
+            evidence,
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            JournalContext::default(),
+        )
         .await
         .map_err(crate::test_error::TestError::from)?
     else {
@@ -47,7 +52,11 @@ async fn activate_device(
     let approval = fixture
         .state
         .device()
-        .approve_enrollment(review.review_id())
+        .approve_enrollment(
+            review.review_id(),
+            crate::component::device::EnrollmentApprovalMode::Manual,
+            JournalContext::default(),
+        )
         .await
         .map_err(crate::test_error::TestError::from)?;
     let authority = approval.authority();
@@ -338,7 +347,7 @@ async fn exercise_mixed_load(
         for _ in 0..10 {
             jobs.push(async {
                 let started = Instant::now();
-                let (result, change) = fixture
+                let outcome = fixture
                     .state
                     .target_submission()
                     .submit(
@@ -348,11 +357,18 @@ async fn exercise_mixed_load(
                             scope: TargetScope::AllEnabled,
                             action: TargetAction::ResetHome,
                         },
+                        JournalContext::default(),
                     )
                     .await?;
-                assert_eq!(result.results.len(), 600);
-                assert!(result.results.iter().all(|row| row.rejection.is_none()));
-                fixture.state.device_control().publish(change).await;
+                assert_eq!(outcome.result.results.len(), 600);
+                assert!(
+                    outcome
+                        .result
+                        .results
+                        .iter()
+                        .all(|row| row.rejection.is_none())
+                );
+                fixture.state.device_control().publish(outcome.change).await;
                 Ok::<_, crate::test_error::TestError>(started.elapsed())
             });
         }

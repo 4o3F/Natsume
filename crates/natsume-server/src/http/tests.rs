@@ -345,7 +345,7 @@ impl Drop for TestWebRoot {
     }
 }
 
-pub(super) async fn seed_operator(
+pub(crate) async fn seed_operator(
     database: &Database,
     login_name: &str,
     password: &str,

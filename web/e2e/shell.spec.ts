@@ -175,6 +175,7 @@ test("navbar highlights only the current page across navigation and reloads", as
   await page.route("**/api/v2/**", (route) => {
     expect(route.request().method()).toBe("GET");
     const path = new URL(route.request().url()).pathname;
+    if (path.startsWith("/api/v2/journal/")) return fulfillJson(route, 404, {});
     return fulfillJson(
       route,
       200,

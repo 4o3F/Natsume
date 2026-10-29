@@ -7,12 +7,14 @@ use uuid::Uuid;
 
 use crate::component::device::{
     ControlAuthority, DeviceError, DeviceId, DeviceListFilter, EnrollmentApprovalError,
-    EnrollmentReviewId, LifecycleOutcome, MachineHardwareId,
+    EnrollmentApprovalMode, EnrollmentReviewId, LifecycleOutcome, MachineHardwareId,
 };
+
+use crate::journal::{JournalContext, event::types::DisconnectReason};
 
 use super::{
     DeviceControl,
-    actor::{DeviceConnectionState, DeviceHandle},
+    actor::{DeviceConnectionState, DeviceHandle, FenceKind, FenceReason, LeaseEnd},
     convergence::{DeviceConvergenceError, DeviceStatus, DeviceTargets, build_convergence},
 };
 
@@ -142,41 +144,60 @@ impl DeviceControl {
     /// Completes disable, fencing, and eviction independently of request cancellation.
     pub(crate) async fn disable_device(
         self: &Arc<Self>,
+        admission: &crate::lifecycle::Admission,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
         let control = Arc::clone(self);
-        tokio::spawn(async move { control.disable_device_inner(device_id).await })
+        admission
+            .spawn(
+                async move { control.disable_device_inner(device_id, context).await }
+                    .in_current_span()
+                    .with_current_subscriber(),
+            )
             .await
-            .map_err(|source| DeviceError::PersistenceFailed {
-                source: crate::db::PersistenceError::Executor {
-                    source: source.into(),
-                },
-            })?
+            .map_err(lifecycle_task_failure)?
     }
 
     async fn disable_device_inner(
         &self,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
+        if self.registry.is_closed().await {
+            return Err(DeviceError::ServerStopping);
+        }
         if self.registry.get(device_id).await.is_none()
             && self.device.find_device(device_id).await?.is_none()
         {
             return Err(DeviceError::DeviceNotFound);
         }
-        let (handle, mut fenced) = self.registry.lock_current_fence(device_id).await;
-        let outcome = self.device.disable(device_id).await?;
+        let (handle, mut fenced) = self
+            .registry
+            .lock_current_fence(device_id)
+            .await
+            .ok_or(DeviceError::ServerStopping)?;
+        let outcome = self.device.disable(device_id, context.clone()).await?;
         if matches!(
             outcome,
             LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
         ) {
-            *fenced = true;
+            *fenced = Some(FenceReason {
+                kind: FenceKind::Disabled,
+                context: context.clone(),
+            });
         }
         drop(fenced);
         if matches!(
             outcome,
             LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
         ) {
-            handle.evict_current_lease().await;
+            handle
+                .evict_current_lease(LeaseEnd {
+                    reason: DisconnectReason::Disabled,
+                    context: context.clone(),
+                })
+                .await;
         }
         Ok(outcome)
     }
@@ -184,41 +205,60 @@ impl DeviceControl {
     /// Completes revoke, fencing, and eviction independently of request cancellation.
     pub(crate) async fn revoke_device(
         self: &Arc<Self>,
+        admission: &crate::lifecycle::Admission,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
         let control = Arc::clone(self);
-        tokio::spawn(async move { control.revoke_device_inner(device_id).await })
+        admission
+            .spawn(
+                async move { control.revoke_device_inner(device_id, context).await }
+                    .in_current_span()
+                    .with_current_subscriber(),
+            )
             .await
-            .map_err(|source| DeviceError::PersistenceFailed {
-                source: crate::db::PersistenceError::Executor {
-                    source: source.into(),
-                },
-            })?
+            .map_err(lifecycle_task_failure)?
     }
 
     async fn revoke_device_inner(
         &self,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
+        if self.registry.is_closed().await {
+            return Err(DeviceError::ServerStopping);
+        }
         if self.registry.get(device_id).await.is_none()
             && self.device.find_device(device_id).await?.is_none()
         {
             return Err(DeviceError::DeviceNotFound);
         }
-        let (handle, mut fenced) = self.registry.lock_current_fence(device_id).await;
-        let outcome = self.device.revoke(device_id).await?;
+        let (handle, mut fenced) = self
+            .registry
+            .lock_current_fence(device_id)
+            .await
+            .ok_or(DeviceError::ServerStopping)?;
+        let outcome = self.device.revoke(device_id, context.clone()).await?;
         if matches!(
             outcome,
             LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
         ) {
-            *fenced = true;
+            *fenced = Some(FenceReason {
+                kind: FenceKind::Revoked,
+                context: context.clone(),
+            });
         }
         drop(fenced);
         if matches!(
             outcome,
             LifecycleOutcome::Changed | LifecycleOutcome::Unchanged
         ) {
-            handle.evict_current_lease().await;
+            handle
+                .evict_current_lease(LeaseEnd {
+                    reason: DisconnectReason::Revoked,
+                    context: context.clone(),
+                })
+                .await;
         }
         Ok(outcome)
     }
@@ -226,50 +266,65 @@ impl DeviceControl {
     /// Completes approval, fencing, eviction, and notification independently of the request.
     pub(crate) async fn approve_enrollment(
         self: &Arc<Self>,
+        admission: &crate::lifecycle::Admission,
         review_id: EnrollmentReviewId,
+        context: JournalContext,
     ) -> Result<ControlAuthority, EnrollmentApprovalError> {
-        self.approve_enrollment_with_reporting(review_id, false)
-            .await
+        self.approve_enrollment_with_reporting(
+            admission,
+            review_id,
+            context,
+            EnrollmentApprovalMode::Manual,
+        )
+        .await
     }
 
     pub(super) async fn automatically_approve_enrollment(
         self: &Arc<Self>,
+        admission: &crate::lifecycle::Admission,
         review_id: EnrollmentReviewId,
+        context: JournalContext,
     ) -> Result<ControlAuthority, EnrollmentApprovalError> {
-        self.approve_enrollment_with_reporting(review_id, true)
-            .await
+        self.approve_enrollment_with_reporting(
+            admission,
+            review_id,
+            context,
+            EnrollmentApprovalMode::Automatic,
+        )
+        .await
     }
 
     async fn approve_enrollment_with_reporting(
         self: &Arc<Self>,
+        admission: &crate::lifecycle::Admission,
         review_id: EnrollmentReviewId,
-        automatic: bool,
+        context: JournalContext,
+        mode: EnrollmentApprovalMode,
     ) -> Result<ControlAuthority, EnrollmentApprovalError> {
         let control = Arc::clone(self);
-        tokio::spawn(async move {
-            control.approve_enrollment_inner(review_id).await.inspect_err(|error| {
-                if automatic && !matches!(error, EnrollmentApprovalError::ReviewNotFound) {
+        let operation = async move {
+            control.approve_enrollment_inner(review_id, context, mode).await.inspect_err(|error| {
+                if mode.is_automatic() && !matches!(error, EnrollmentApprovalError::ReviewNotFound) {
                     tracing::warn!(error = %snafu::Report::from_error(error), "Device automatic enrollment approval failed");
                 }
             })
-        }.in_current_span().with_current_subscriber())
+        }.in_current_span().with_current_subscriber();
+        admission
+            .spawn(operation)
             .await
-            .map_err(|source| EnrollmentApprovalError::Activation {
-                source: Arc::new(
-                    crate::component::device::ActivationError::AuthorityPersistenceFailed {
-                        source: crate::db::PersistenceError::Executor {
-                            source: source.into(),
-                        },
-                    },
-                ),
-            })?
+            .map_err(approval_task_failure)?
     }
 
     async fn approve_enrollment_inner(
         &self,
         review_id: EnrollmentReviewId,
+        context: JournalContext,
+        mode: EnrollmentApprovalMode,
     ) -> Result<ControlAuthority, EnrollmentApprovalError> {
         let _approval = self.enrollment_approval.lock().await;
+        if self.registry.is_closed().await {
+            return Err(EnrollmentApprovalError::ServerStopping);
+        }
         let machine_hardware_id = self
             .device
             .enrollment_review_machine_hardware_id(review_id)
@@ -284,21 +339,46 @@ impl DeviceControl {
             .map(ControlAuthority::device_id);
         let (handle, mut fenced) = match current_device_id {
             Some(device_id) => {
-                let (handle, fenced) = self.registry.lock_current_fence(device_id).await;
+                let (handle, fenced) = self
+                    .registry
+                    .lock_current_fence(device_id)
+                    .await
+                    .ok_or(EnrollmentApprovalError::ServerStopping)?;
                 (Some(handle), Some(fenced))
             }
             None => (None, None),
         };
-        let approval = self.device.approve_enrollment(review_id).await?;
+        let approval = self
+            .device
+            .approve_enrollment(review_id, mode, context.clone())
+            .await?;
         let authority = approval.authority();
         if let Some(fenced) = fenced.as_mut() {
-            **fenced = true;
+            **fenced = Some(FenceReason {
+                kind: FenceKind::ControlKeyReplaced,
+                context: context.clone(),
+            });
         }
+        let context = context.with_device(authority.device_id());
         drop(fenced);
         match handle {
-            Some(handle) => handle.evict_current_lease().await,
+            Some(handle) => {
+                handle
+                    .evict_current_lease(LeaseEnd {
+                        reason: DisconnectReason::ControlKeyReplaced,
+                        context,
+                    })
+                    .await;
+            }
             None => {
-                self.evict_current_lease(authority.device_id()).await;
+                self.evict_current_lease(
+                    authority.device_id(),
+                    FenceReason {
+                        kind: FenceKind::ControlKeyReplaced,
+                        context,
+                    },
+                )
+                .await;
             }
         }
         approval.complete();
@@ -320,10 +400,14 @@ impl DeviceControl {
     /// Replaces the current lease and then closes the precheck-to-replacement authority race.
     pub(super) async fn attach_device_lease(
         self: &Arc<Self>,
+        _admission: &crate::lifecycle::Admission,
         machine_hardware_id: MachineHardwareId,
         authority: ControlAuthority,
         outbound: mpsc::Sender<natsume_workstation_protocol::generated::ServerActiveEnvelope>,
-    ) -> Option<(Uuid, DeviceHandle)> {
+    ) -> Result<Option<(Uuid, DeviceHandle)>, super::AdmissionUnavailable> {
+        if self.registry.is_closed().await {
+            return Err(super::AdmissionUnavailable::ServerStopping);
+        }
         if self
             .device
             .find_current_authority(machine_hardware_id)
@@ -332,24 +416,72 @@ impl DeviceControl {
             .ok()
             != Some(Some(authority))
         {
-            return None;
+            return Ok(None);
         }
-        let handle = self.registry.get_or_spawn(authority.device_id()).await;
-        let session_id = handle
+        let handle = self
+            .registry
+            .get_or_spawn(authority.device_id())
+            .await
+            .ok_or(super::AdmissionUnavailable::ServerStopping)?;
+        let Some(session_id) = handle
             .replace_current_lease(Arc::downgrade(self), outbound)
-            .await?;
-        if self
-            .device
-            .find_current_authority(machine_hardware_id)
             .await
-            .inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device lease authority lookup failed"))
-            .ok()
-            != Some(Some(authority))
-        {
-            handle.clear_lease_if_current(session_id).await;
-            return None;
+        else {
+            return if self.registry.is_closed().await {
+                Err(super::AdmissionUnavailable::ServerStopping)
+            } else {
+                Ok(None)
+            };
+        };
+        let current = self.device.find_current_authority(machine_hardware_id).await
+            .inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "Device lease authority lookup failed"));
+        if current.as_ref().ok() != Some(&Some(authority)) {
+            let reason = match current {
+                Ok(Some(current)) => match current.device_state() {
+                    crate::component::device::DeviceState::Disabled => DisconnectReason::Disabled,
+                    crate::component::device::DeviceState::Revoked => DisconnectReason::Revoked,
+                    crate::component::device::DeviceState::Enabled => {
+                        DisconnectReason::ControlKeyReplaced
+                    }
+                },
+                Ok(None) => DisconnectReason::ControlKeyReplaced,
+                Err(_) => DisconnectReason::ServerFault,
+            };
+            handle
+                .end_lease_if_current(session_id, LeaseEnd::local(reason))
+                .await;
+            return Ok(None);
         }
-        Some((session_id, handle))
+        if self.registry.is_closed().await {
+            handle
+                .end_lease_if_current(
+                    session_id,
+                    LeaseEnd::local(DisconnectReason::ServerShutdown),
+                )
+                .await;
+            return Err(super::AdmissionUnavailable::ServerStopping);
+        }
+        Ok(Some((session_id, handle)))
+    }
+}
+
+fn lifecycle_task_failure(source: impl Into<crate::task::TaskFailure>) -> DeviceError {
+    DeviceError::PersistenceFailed {
+        source: crate::db::PersistenceError::Executor {
+            source: source.into(),
+        },
+    }
+}
+
+fn approval_task_failure(source: impl Into<crate::task::TaskFailure>) -> EnrollmentApprovalError {
+    EnrollmentApprovalError::Activation {
+        source: Arc::new(
+            crate::component::device::ActivationError::AuthorityPersistenceFailed {
+                source: crate::db::PersistenceError::Executor {
+                    source: source.into(),
+                },
+            },
+        ),
     }
 }
 
@@ -360,8 +492,12 @@ pub(super) async fn mutate_authority_for_test(
     revoke: bool,
 ) -> Result<LifecycleOutcome, DeviceError> {
     if revoke {
-        control.revoke_device_inner(device_id).await
+        control
+            .revoke_device_inner(device_id, JournalContext::default())
+            .await
     } else {
-        control.disable_device_inner(device_id).await
+        control
+            .disable_device_inner(device_id, JournalContext::default())
+            .await
     }
 }

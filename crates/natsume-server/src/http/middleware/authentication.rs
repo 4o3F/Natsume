@@ -1,3 +1,4 @@
+use crate::http::middleware::audit::RequestAudit;
 use axum::{
     extract::{Request, State},
     http::header,
@@ -19,6 +20,9 @@ pub(in crate::http) async fn authenticate_operator(
         Ok(identity) => identity,
         Err(error) => return ApiError::from_operator(error).into_response(),
     };
+    if let Some(audit) = request.extensions().get::<RequestAudit>() {
+        audit.record_actor(identity);
+    }
     let actor_id = identity.operator_id().to_string();
     tracing::Span::current()
         .record("actor_kind", "operator")

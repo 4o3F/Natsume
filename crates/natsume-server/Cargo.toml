@@ -52,7 +52,7 @@ sha2.workspace = true
 snafu.workspace = true
 subtle.workspace = true
 tempfile.workspace = true
-time.workspace = true
+time = { workspace = true, features = ["local-offset"] }
 tokio.workspace = true
 tokio-rustls.workspace = true
 tokio-util = { workspace = true, features = ["time"] }
@@ -69,6 +69,7 @@ zeroize.workspace = true
 zip.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+trybuild.workspace = true
 natsume-print-domjudge = { path = "../natsume-print-domjudge" }
 serde-saphyr = { workspace = true, features = ["deserialize"] }
 regex.workspace = true

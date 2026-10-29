@@ -11,7 +11,19 @@ use super::{
     password::{OperatorPassword, hash_password, verify_password_once},
     session::SIGN_IN_GATE,
 };
-use crate::db::{Transaction, TransactionError};
+use crate::{
+    db::{Transaction, TransactionError},
+    journal::{
+        JournalContext,
+        event::{
+            Event,
+            payload::{
+                InvitationRegistered, PasswordChanged, PasswordResetCompleted, PasswordResetIssued,
+            },
+            types::OperatorId,
+        },
+    },
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct OperatorSummary {
@@ -169,6 +181,7 @@ impl OperatorComponent {
         username: String,
         password: String,
         confirmation: String,
+        context: JournalContext,
     ) -> Result<OperatorIdentity, OperatorError> {
         let token = parse(LinkKind::Invitation, wire_token);
         let password = confirmed_password(password, confirmation);
@@ -184,20 +197,29 @@ impl OperatorComponent {
             .map_err(TransactionError::into_error)?;
         let (password_hash, permit) = hash_new_password(password, permit).await?;
         let hash = Zeroizing::new(token.sha256());
-        self.database
+        let identity = self
+            .database
             .write(move |tx| {
                 let identity = register_hashed(tx, &hash, &username, &password_hash)?;
-                Ok((identity, permit))
+                Ok::<_, OperatorError>((identity, permit))
             })
             .await
             .map(|(identity, _)| identity)
-            .map_err(TransactionError::into_error)
+            .map_err(TransactionError::into_error)?;
+        self.journal.emit(
+            Event::InvitationRegistered(InvitationRegistered {}),
+            context.with_actor(OperatorId::from_authenticated_operator(
+                identity.operator_id(),
+            )),
+        );
+        Ok(identity)
     }
 
     pub(crate) async fn issue_password_reset(
         &self,
         issuer_operator_id: Uuid,
         target: Uuid,
+        context: JournalContext,
     ) -> Result<IssuedPasswordReset, OperatorError> {
         let token = mint(LinkKind::PasswordReset)?;
         let hash = Zeroizing::new(token.sha256());
@@ -221,6 +243,8 @@ impl OperatorComponent {
             })
             .await
             .map_err(TransactionError::into_error)?;
+        self.journal
+            .emit(Event::PasswordResetIssued(PasswordResetIssued {}), context);
         Ok(IssuedPasswordReset { reset, token })
     }
 
@@ -241,7 +265,8 @@ impl OperatorComponent {
         wire_token: String,
         password: String,
         confirmation: String,
-    ) -> Result<(), OperatorError> {
+        context: JournalContext,
+    ) -> Result<Uuid, OperatorError> {
         let token = parse(LinkKind::PasswordReset, wire_token);
         let password = confirmed_password(password, confirmation);
         let token = token?;
@@ -255,14 +280,20 @@ impl OperatorComponent {
             .map_err(TransactionError::into_error)?;
         let (password_hash, permit) = hash_new_password(password, permit).await?;
         let hash = Zeroizing::new(token.sha256());
-        self.database
+        let operator_id = self
+            .database
             .write(move |tx| {
-                reset_hashed(tx, &hash, &password_hash)?;
-                Ok(permit)
+                let operator_id = reset_hashed(tx, &hash, &password_hash)?;
+                Ok::<_, OperatorError>((operator_id, permit))
             })
             .await
-            .map(|_| ())
-            .map_err(TransactionError::into_error)
+            .map(|(operator_id, _)| operator_id)
+            .map_err(TransactionError::into_error)?;
+        self.journal.emit(
+            Event::PasswordResetCompleted(PasswordResetCompleted {}),
+            context.with_actor(OperatorId::from_authenticated_operator(operator_id)),
+        );
+        Ok(operator_id)
     }
 
     pub(crate) async fn change_password(
@@ -271,6 +302,7 @@ impl OperatorComponent {
         current_password: String,
         new_password: String,
         confirmation: String,
+        context: JournalContext,
     ) -> Result<(), OperatorError> {
         let current_password = OperatorPassword::new(current_password);
         let new_password = confirmed_password(new_password, confirmation)?;
@@ -300,11 +332,16 @@ impl OperatorComponent {
         self.database
             .write(move |tx| {
                 change_password_hashed(tx, operator_id, revision, &password_hash)?;
-                Ok(permit)
+                Ok::<_, OperatorError>(permit)
             })
             .await
             .map(|_| ())
-            .map_err(TransactionError::into_error)
+            .map_err(TransactionError::into_error)?;
+        self.journal.emit(
+            Event::PasswordChanged(PasswordChanged {}),
+            context.with_actor(OperatorId::from_authenticated_operator(operator_id)),
+        );
+        Ok(())
     }
 }
 
@@ -435,11 +472,12 @@ fn reset_hashed(
     tx: &mut Transaction<'_>,
     hash: &[u8; 32],
     password_hash: &str,
-) -> Result<(), OperatorError> {
+) -> Result<Uuid, OperatorError> {
     let reset = valid_reset(tx, hash)?;
     let account =
         store::find_account_by_id(tx, reset.operator_id)?.ok_or(OperatorError::LinkUnavailable)?;
-    replace_password(tx, &account, password_hash)
+    replace_password(tx, &account, password_hash)?;
+    Ok(reset.operator_id)
 }
 
 fn change_password_hashed(

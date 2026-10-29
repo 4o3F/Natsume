@@ -1,4 +1,5 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::RequestAudit;
 
 use axum::{
     Extension, Json,
@@ -39,18 +40,23 @@ pub(crate) struct SessionResponse {
     role: &'static str,
 }
 
-pub(crate) async fn create_session(State(state): State<AppState>, request: Request) -> Response {
+pub(in crate::http) async fn create_session(
+    Extension(audit): Extension<RequestAudit>,
+    State(state): State<AppState>,
+    request: Request,
+) -> Response {
     let Ok(Json(request)) = Json::<SessionRequest>::from_request(request, &state).await else {
         return ApiError::invalid_request("session_request_body_rejected").into_response();
     };
     let signed_in = match state
         .operator()
-        .sign_in(&request.login_name, request.password)
+        .sign_in(&request.login_name, request.password, audit.context())
         .await
     {
         Ok(signed_in) => signed_in,
         Err(error) => return ApiError::from_operator(error).into_response(),
     };
+    audit.record_actor(signed_in.identity());
     let wire_credential = signed_in.wire_credential();
     let session_cookie = match cookie::issue_session_credential(wire_credential.expose()) {
         Ok(value) => value,
@@ -69,10 +75,22 @@ pub(crate) async fn read_session(
     identity_response(&state, identity, None).await
 }
 
-pub(crate) async fn delete_session(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub(in crate::http) async fn delete_session(
+    Extension(audit): Extension<RequestAudit>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Response {
     let response = match cookie::session_credential(&headers) {
-        Ok(wire_credential) => match state.operator().terminate_session(wire_credential).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(wire_credential) => match state
+            .operator()
+            .terminate_session(wire_credential, audit.context())
+            .await
+        {
+            Ok(Some(identity)) => {
+                audit.record_actor(identity);
+                StatusCode::NO_CONTENT.into_response()
+            }
+            Ok(None) => StatusCode::NO_CONTENT.into_response(),
             Err(error) => ApiError::from_operator(error).into_response(),
         },
         Err(()) => StatusCode::NO_CONTENT.into_response(),

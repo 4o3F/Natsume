@@ -1,3 +1,4 @@
+pub(in crate::http) mod audit;
 mod authentication;
 mod completion;
 mod request_context;
@@ -18,7 +19,7 @@ use crate::component::operator::OperatorIdentity;
 use super::{AppState, error::ApiError};
 
 pub(super) use authentication::{authenticate_client, authenticate_operator, authenticate_source};
-pub(super) use completion::complete_mutation;
+pub(super) use completion::{CompletionState, complete_mutation};
 pub(super) use request_context::request_context;
 
 pub(super) async fn reject_head(request: Request, next: Next) -> Response {

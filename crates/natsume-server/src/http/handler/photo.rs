@@ -1,6 +1,6 @@
 //! Phase-specific Photo authentication; no Operator credential reaches a client.
 use axum::{
-    Json,
+    Extension, Json,
     body::{Body, Bytes},
     extract::{
         ConnectInfo, DefaultBodyLimit, FromRequest as _, Path, Request, State,
@@ -12,9 +12,11 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::http::middleware::audit::{RequestAudit, canonical_uuid};
 use crate::{
     component::photo::{CredentialUse, PendingEnrollment, SourceState},
     http::{AppState, Routes, error::ApiError, middleware},
+    journal::event::types::AuditTarget,
     tls::PeerAddress,
 };
 
@@ -99,6 +101,7 @@ fn bearer(headers: &HeaderMap) -> Result<&str, ApiError> {
 }
 
 async fn create_source(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     body: Result<Json<PhotoSourceCreate>, JsonRejection>,
 ) -> Response {
@@ -106,7 +109,12 @@ async fn create_source(
         return ApiError::invalid_request("photo_source_json").into_response();
     };
     match state.photo().create_source(body.name).await {
-        Ok(source) => (StatusCode::CREATED, Json(source)).into_response(),
+        Ok(source) => {
+            if let Some(id) = canonical_uuid(&source.source_id) {
+                audit.record_target(AuditTarget::PhotoSource(id));
+            }
+            (StatusCode::CREATED, Json(source)).into_response()
+        }
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
 }

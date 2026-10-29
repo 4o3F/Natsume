@@ -36,6 +36,8 @@ pub(in crate::component::binding) struct PersistedRejectedSubmissionRow {
 }
 
 pub(in crate::component::binding) struct PersistedSubmissionSeatRow {
+    /// Canonical seat code read from the seat row, returned with a committed binding.
+    pub(in crate::component::binding) seat_code: String,
     pub(in crate::component::binding) seat_id: Uuid,
     pub(in crate::component::binding) mapped: bool,
     pub(in crate::component::binding) occupied: bool,
@@ -180,10 +182,10 @@ pub(in crate::component::binding) fn find_submission_seat(
     transaction: &mut Transaction<'_>,
     seat_code: &str,
 ) -> Result<Option<PersistedSubmissionSeatRow>, PersistenceError> {
-    let Some(seat_id) = seats::table
-        .select(seats::seat_id)
+    let Some((seat_id, committed_seat_code)) = seats::table
+        .select((seats::seat_id, seats::seat_code))
         .filter(seats::seat_code.eq(seat_code))
-        .first::<String>(transaction.connection())
+        .first::<(String, String)>(transaction.connection())
         .optional()
         .map_err(PersistenceError::from)?
     else {
@@ -205,6 +207,7 @@ pub(in crate::component::binding) fn find_submission_seat(
     .get_result::<bool>(transaction.connection())
     .map_err(PersistenceError::from)?;
     Ok(Some(PersistedSubmissionSeatRow {
+        seat_code: committed_seat_code,
         seat_id,
         mapped: account_id.is_some(),
         occupied,
@@ -243,6 +246,19 @@ pub(in crate::component::binding) fn insert_binding(
             device_bindings::seat_id.eq(seat_id.hyphenated().to_string()),
         ))
         .execute(transaction.connection())
+        .map_err(PersistenceError::from)
+}
+
+pub(in crate::component::binding) fn find_bound_seat_code(
+    transaction: &mut Transaction<'_>,
+    device_id: &DeviceId,
+) -> Result<Option<String>, PersistenceError> {
+    device_bindings::table
+        .inner_join(seats::table)
+        .select(seats::seat_code)
+        .filter(device_bindings::device_id.eq(device_id.as_text()))
+        .first::<String>(transaction.connection())
+        .optional()
         .map_err(PersistenceError::from)
 }
 

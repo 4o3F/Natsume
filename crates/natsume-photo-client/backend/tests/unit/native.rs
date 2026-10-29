@@ -19,10 +19,24 @@ async fn safe_winrt_subscription_observes_repeated_changes() -> Result<(), Error
     for index in 0..2 {
         std::fs::write(directory.path().join(format!("photo-{index}.jpg")), b"test")
             .context(IoSnafu)?;
-        tokio::time::timeout(std::time::Duration::from_secs(5), receive.recv())
+        // Notifications can coalesce or miss the first immediate change. Keep
+        // producing bounded changes, but still require a real wake each round.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut changes = tokio::time::interval(std::time::Duration::from_millis(250));
+            let mut revision = 0;
+            loop {
+                tokio::select! {
+                    event = receive.recv() => return event.ok_or(Error::Closed),
+                    _ = changes.tick() => {
+                        revision += 1;
+                        std::fs::write(directory.path().join(format!("photo-{index}-{revision}.jpg")), b"test")
+                            .context(IoSnafu)?;
+                    }
+                }
+            }
+        })
             .await
-            .context(TimeoutSnafu)?
-            .ok_or(Error::Closed)?;
+            .context(TimeoutSnafu)??;
         monitor.refresh().await.context(NativeSnafu)?;
     }
     Ok(())

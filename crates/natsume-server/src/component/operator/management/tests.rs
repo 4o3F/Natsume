@@ -1,6 +1,7 @@
 use super::super::{db::tests as fixtures, tests::PasswordVerificationTestGuard};
 use super::*;
 use crate::db::{Database, DatabaseConfig, PersistenceError, TransactionError};
+use crate::journal::JournalContext;
 use diesel::{RunQueryDsl, connection::SimpleConnection};
 use std::{future::Future, pin::Pin, sync::Arc, task::Context, time::Duration};
 use tempfile::TempDir;
@@ -12,6 +13,8 @@ type TestResult = Result<(), crate::test_error::TestError>;
 
 struct Fixture {
     component: OperatorComponent,
+    /// Captured authentication facts from the component under test.
+    events: tokio::sync::mpsc::Receiver<crate::journal::Envelope>,
     admin: OperatorIdentity,
     directory: TempDir,
 }
@@ -27,8 +30,10 @@ impl Fixture {
         let phc = hash_password(&OperatorPassword::new(PASSWORD.to_owned()))?;
         let id =
             fixtures::test_insert_account(&database, "admin", OperatorRole::Admin, &phc).await?;
+        let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         Ok(Self {
-            component: OperatorComponent::new(database),
+            component: OperatorComponent::new(database, journal.emitter()),
+            events,
             admin: OperatorIdentity {
                 operator_id: id,
                 role: OperatorRole::Admin,
@@ -76,6 +81,7 @@ async fn register(
             name.to_owned(),
             PASSWORD.to_owned(),
             PASSWORD.to_owned(),
+            JournalContext::default(),
         )
         .await
 }
@@ -86,8 +92,10 @@ async fn reset(component: &OperatorComponent, token: &LinkToken) -> Result<(), O
             token.expose().to_owned(),
             NEW_PASSWORD.to_owned(),
             NEW_PASSWORD.to_owned(),
+            JournalContext::default(),
         )
         .await
+        .map(|_| ())
 }
 
 #[tokio::test]
@@ -123,7 +131,8 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
                 issued.token.expose().to_owned(),
                 "new".to_owned(),
                 PASSWORD.to_owned(),
-                NEW_PASSWORD.to_owned()
+                NEW_PASSWORD.to_owned(),
+                JournalContext::default()
             )
             .await,
         Err(OperatorError::PasswordMismatch)
@@ -144,7 +153,10 @@ async fn invitation_registration_preserves_conflicts_and_secret_boundaries() -> 
         register(&f.component, &issued.token, "another").await,
         Err(OperatorError::LinkUnavailable)
     ));
-    let session = f.component.sign_in("Admin", PASSWORD.to_owned()).await?;
+    let session = f
+        .component
+        .sign_in("Admin", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
     assert_eq!(session.identity(), viewer);
     Ok(())
 }
@@ -209,7 +221,10 @@ async fn account_demotion_and_deletion_affect_subsequent_authentication() -> Tes
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let second = f.account("second", OperatorRole::Admin).await?;
-    let session = f.component.sign_in("second", PASSWORD.to_owned()).await?;
+    let session = f
+        .component
+        .sign_in("second", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
     let already_authenticated = f
         .component
         .authenticate_session(session.wire_credential())
@@ -307,7 +322,11 @@ async fn issuer_loss_revokes_both_link_kinds_and_promotion_does_not_resurrect_th
             .await?;
         let reset_link = f
             .component
-            .issue_password_reset(issuer.operator_id(), target.operator_id())
+            .issue_password_reset(
+                issuer.operator_id(),
+                target.operator_id(),
+                JournalContext::default(),
+            )
             .await?;
         if delete {
             f.component.delete_account(issuer.operator_id()).await?;
@@ -374,7 +393,13 @@ async fn concurrent_registration_consumes_once_and_keeps_the_conflicting_invitat
             async move {
                 barrier.wait().await;
                 component
-                    .register(token, name, PASSWORD.to_owned(), PASSWORD.to_owned())
+                    .register(
+                        token,
+                        name,
+                        PASSWORD.to_owned(),
+                        PASSWORD.to_owned(),
+                        JournalContext::default(),
+                    )
                     .await
             }
         };
@@ -418,12 +443,19 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let target = f.account("target", OperatorRole::Viewer).await?;
-    let session = f.component.sign_in("target", PASSWORD.to_owned()).await?;
+    let session = f
+        .component
+        .sign_in("target", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
     let before = fixtures::test_account_credentials(&f.component.database, "target").await?;
     let before_issue = fixtures::test_now(&f.component.database).await?;
     let one = f
         .component
-        .issue_password_reset(f.admin.operator_id(), target.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            target.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     let now = fixtures::test_now(&f.component.database).await?;
     assert!((before_issue..=now).contains(&(one.reset.expires_at_unix_ms - RESET_TTL_MS)));
@@ -447,7 +479,11 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
     );
     let two = f
         .component
-        .issue_password_reset(f.admin.operator_id(), target.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            target.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     assert!(matches!(
         reset(&f.component, &one.token).await,
@@ -468,7 +504,11 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
     ));
     let old = f
         .component
-        .issue_password_reset(f.admin.operator_id(), target.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            target.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     f.component.delete_account(target.operator_id()).await?;
     let invite = f
@@ -494,11 +534,21 @@ async fn reset_generation_replacement_expiry_and_uuid_binding() -> TestResult {
 async fn concurrent_reset_consumes_once_and_revokes_all_sessions() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
-    let a = f.component.sign_in("admin", PASSWORD.to_owned()).await?;
-    let b = f.component.sign_in("admin", PASSWORD.to_owned()).await?;
+    let a = f
+        .component
+        .sign_in("admin", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
+    let b = f
+        .component
+        .sign_in("admin", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     let barrier = Arc::new(Barrier::new(2));
     let attempt = |barrier: Arc<Barrier>| {
@@ -531,13 +581,13 @@ async fn concurrent_reset_consumes_once_and_revokes_all_sessions() -> TestResult
     }
     assert!(matches!(
         f.component
-            .sign_in("admin", PASSWORD.to_owned())
+            .sign_in("admin", PASSWORD.to_owned(), JournalContext::default())
             .await
             .err(),
         Some(OperatorError::AuthenticationFailed)
     ));
     f.component
-        .sign_in("admin", NEW_PASSWORD.to_owned())
+        .sign_in("admin", NEW_PASSWORD.to_owned(), JournalContext::default())
         .await?;
     Ok(())
 }
@@ -551,10 +601,13 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
     let id =
         fixtures::test_insert_account(&f.component.database, "legacy", OperatorRole::Viewer, &phc)
             .await?;
-    let session = f.component.sign_in("legacy", legacy.to_owned()).await?;
+    let session = f
+        .component
+        .sign_in("legacy", legacy.to_owned(), JournalContext::default())
+        .await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin.operator_id(), id)
+        .issue_password_reset(f.admin.operator_id(), id, JournalContext::default())
         .await?;
     let actor = session.identity();
     assert!(matches!(
@@ -563,7 +616,8 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
                 actor.operator_id(),
                 "wrong".to_owned(),
                 NEW_PASSWORD.to_owned(),
-                NEW_PASSWORD.to_owned()
+                NEW_PASSWORD.to_owned(),
+                JournalContext::default()
             )
             .await,
         Err(OperatorError::AuthenticationFailed)
@@ -581,6 +635,7 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
             legacy.to_owned(),
             NEW_PASSWORD.to_owned(),
             NEW_PASSWORD.to_owned(),
+            JournalContext::default(),
         )
         .await?;
     assert!(matches!(
@@ -594,12 +649,12 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
         Err(OperatorError::LinkUnavailable)
     ));
     f.component
-        .sign_in("legacy", NEW_PASSWORD.to_owned())
+        .sign_in("legacy", NEW_PASSWORD.to_owned(), JournalContext::default())
         .await?;
     // Replacing a password with itself still advances the credential fence.
     let issued = f
         .component
-        .issue_password_reset(f.admin.operator_id(), id)
+        .issue_password_reset(f.admin.operator_id(), id, JournalContext::default())
         .await?;
     reset(&f.component, &issued.token).await?;
     assert_eq!(
@@ -615,13 +670,20 @@ async fn own_password_change_accepts_legacy_password_and_revokes_recovery_grants
 async fn tty_reset_uses_the_same_grant_and_session_revocation_transaction() -> TestResult {
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
-    let session = f.component.sign_in("admin", PASSWORD.to_owned()).await?;
+    let session = f
+        .component
+        .sign_in("admin", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     let phc = hash_password(&OperatorPassword::new(NEW_PASSWORD.to_owned()))?;
-    f.component.reset_password("admin", &phc).await?;
+    OperatorComponent::reset_password_offline(&f.component.database, "admin", &phc).await?;
     assert!(matches!(
         f.component
             .inspect_password_reset(issued.token.expose().to_owned())
@@ -676,14 +738,21 @@ async fn failed_reset_and_demotion_preserve_credentials_sessions_and_grants() ->
     let _guard = PasswordVerificationTestGuard::acquire().await;
     let f = Fixture::new().await?;
     let second = f.account("second", OperatorRole::Admin).await?;
-    let session = f.component.sign_in("second", PASSWORD.to_owned()).await?;
+    let session = f
+        .component
+        .sign_in("second", PASSWORD.to_owned(), JournalContext::default())
+        .await?;
     let invite = f
         .component
         .issue_invitation(second.operator_id(), OperatorRole::Viewer)
         .await?;
     let issued = f
         .component
-        .issue_password_reset(second.operator_id(), second.operator_id())
+        .issue_password_reset(
+            second.operator_id(),
+            second.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     let before = fixtures::test_account_credentials(&f.component.database, "second").await?;
     f.sql("CREATE TRIGGER reject_reset_delete BEFORE DELETE ON operator_password_resets BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
@@ -798,7 +867,11 @@ async fn final_reset_rechecks_expiry_issuer_and_replacement_after_hash_snapshot(
         let target = f.account("target", OperatorRole::Viewer).await?;
         let recovery = f
             .component
-            .issue_password_reset(issuer.operator_id(), target.operator_id())
+            .issue_password_reset(
+                issuer.operator_id(),
+                target.operator_id(),
+                JournalContext::default(),
+            )
             .await?;
         let before = fixtures::test_account_credentials(&f.component.database, "target").await?;
         let mut pending = Box::pin(reset(&f.component, &recovery.token));
@@ -806,7 +879,7 @@ async fn final_reset_rechecks_expiry_issuer_and_replacement_after_hash_snapshot(
         match event {
             "expiry" => f.sql("UPDATE operator_password_resets SET expires_at_unix_ms = CAST(unixepoch('subsec') * 1000 AS INTEGER)").await?,
             "demotion" => f.component.change_role(issuer.operator_id(), OperatorRole::Viewer).await?,
-            "replacement" => { f.component.issue_password_reset(f.admin.operator_id(), target.operator_id()).await?; },
+            "replacement" => { f.component.issue_password_reset(f.admin.operator_id(), target.operator_id(), JournalContext::default()).await?; },
             "target_deletion" => f.component.delete_account(target.operator_id()).await?,
             _ => f.component.delete_account(issuer.operator_id()).await?,
         }
@@ -830,11 +903,16 @@ async fn stale_own_password_change_cannot_overwrite_a_newer_reset() -> TestResul
         PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
+        JournalContext::default(),
     ));
     pause_after_read(&f.component.database, pending.as_mut()).await?;
     let issued = f
         .component
-        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     // Reset to the same old password: checking PHC/password alone would fail to
     // detect this race, whereas the monotonic revision must reject it.
@@ -843,6 +921,7 @@ async fn stale_own_password_change_cannot_overwrite_a_newer_reset() -> TestResul
             issued.token.expose().to_owned(),
             PASSWORD.to_owned(),
             PASSWORD.to_owned(),
+            JournalContext::default(),
         )
         .await?;
     let after_reset = fixtures::test_account_credentials(&f.component.database, "admin").await?;
@@ -864,13 +943,21 @@ async fn in_flight_old_sign_ins_are_fenced_by_every_password_replacement_and_del
     for action in ["link", "own", "tty", "delete"] {
         let f = Fixture::new().await?;
         let target = f.account("target", OperatorRole::Viewer).await?;
-        let mut pending = Box::pin(f.component.sign_in("target", PASSWORD.to_owned()));
+        let mut pending = Box::pin(f.component.sign_in(
+            "target",
+            PASSWORD.to_owned(),
+            JournalContext::default(),
+        ));
         pause_after_read(&f.component.database, pending.as_mut()).await?;
         match action {
             "link" => {
                 let link = f
                     .component
-                    .issue_password_reset(f.admin.operator_id(), target.operator_id())
+                    .issue_password_reset(
+                        f.admin.operator_id(),
+                        target.operator_id(),
+                        JournalContext::default(),
+                    )
                     .await?;
                 reset(&f.component, &link.token).await?;
             }
@@ -881,12 +968,14 @@ async fn in_flight_old_sign_ins_are_fenced_by_every_password_replacement_and_del
                         PASSWORD.to_owned(),
                         NEW_PASSWORD.to_owned(),
                         NEW_PASSWORD.to_owned(),
+                        JournalContext::default(),
                     )
                     .await?;
             }
             "tty" => {
                 let phc = hash_password(&OperatorPassword::new(NEW_PASSWORD.to_owned()))?;
-                f.component.reset_password("target", &phc).await?;
+                OperatorComponent::reset_password_offline(&f.component.database, "target", &phc)
+                    .await?;
             }
             _ => {
                 f.component.delete_account(target.operator_id()).await?;
@@ -915,7 +1004,11 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
         .await?;
     let link = f
         .component
-        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     let held = SIGN_IN_GATE.acquire_many(4).await?;
     assert!(matches!(
@@ -932,7 +1025,8 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
                 f.admin.operator_id(),
                 PASSWORD.to_owned(),
                 NEW_PASSWORD.to_owned(),
-                NEW_PASSWORD.to_owned()
+                NEW_PASSWORD.to_owned(),
+                JournalContext::default()
             )
             .await,
         Err(OperatorError::SignInBusy)
@@ -946,6 +1040,7 @@ async fn all_new_password_operations_share_the_gate_and_cancelled_reads_retain_p
         PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
         NEW_PASSWORD.to_owned(),
+        JournalContext::default(),
     ));
     assert!(futures_util::poll!(registration.as_mut()).is_pending());
     assert!(futures_util::poll!(recovery.as_mut()).is_pending());
@@ -971,7 +1066,11 @@ async fn persisted_links_survive_reconnect_without_renewing_ttl_and_store_only_h
         .await?;
     let link = f
         .component
-        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     let hash = f
         .component
@@ -993,6 +1092,7 @@ async fn persisted_links_survive_reconnect_without_renewing_ttl_and_store_only_h
             false,
         ))
         .await?,
+        f.component.journal.clone(),
     );
     assert_eq!(
         reconnected
@@ -1027,7 +1127,11 @@ async fn replacement_insert_failures_restore_the_previous_authorizations() -> Te
         .await?;
     let recovery = f
         .component
-        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            f.admin.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     f.sql("CREATE TRIGGER reject_invitation_insert BEFORE INSERT ON operator_invitations BEGIN SELECT RAISE(ABORT, 'test'); END; CREATE TRIGGER reject_reset_insert BEFORE INSERT ON operator_password_resets BEGIN SELECT RAISE(ABORT, 'test'); END;").await?;
     assert!(matches!(
@@ -1039,7 +1143,11 @@ async fn replacement_insert_failures_restore_the_previous_authorizations() -> Te
     ));
     assert!(matches!(
         f.component
-            .issue_password_reset(f.admin.operator_id(), f.admin.operator_id())
+            .issue_password_reset(
+                f.admin.operator_id(),
+                f.admin.operator_id(),
+                JournalContext::default()
+            )
             .await
             .err(),
         Some(OperatorError::PersistenceFailed { .. })
@@ -1178,7 +1286,11 @@ async fn grant_issuance_racing_issuer_demotion_cannot_leave_usable_links() -> Te
     let issue_reset = async {
         barrier.wait().await;
         f.component
-            .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
+            .issue_password_reset(
+                issuer.operator_id(),
+                f.admin.operator_id(),
+                JournalContext::default(),
+            )
             .await
     };
     let demote = async {
@@ -1216,7 +1328,11 @@ async fn grant_issuance_racing_issuer_demotion_cannot_leave_usable_links() -> Te
     ));
     assert!(matches!(
         f.component
-            .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
+            .issue_password_reset(
+                issuer.operator_id(),
+                f.admin.operator_id(),
+                JournalContext::default()
+            )
             .await
             .err(),
         Some(OperatorError::LinkUnavailable)
@@ -1266,7 +1382,11 @@ async fn link_validation_rejects_ineligible_persisted_issuers_even_if_links_rema
         .await?;
     let recovery = f
         .component
-        .issue_password_reset(issuer.operator_id(), f.admin.operator_id())
+        .issue_password_reset(
+            issuer.operator_id(),
+            f.admin.operator_id(),
+            JournalContext::default(),
+        )
         .await?;
     // Leave the links present to exercise validation itself, independently of
     // change_role's atomic link revocation and deletion's cascading foreign keys.
@@ -1307,5 +1427,214 @@ async fn link_validation_rejects_ineligible_persisted_issuers_even_if_links_rema
         reset(&f.component, &recovery.token).await.err(),
         Some(OperatorError::LinkUnavailable)
     ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn authentication_events_follow_sign_in_logout_and_password_commits() -> TestResult {
+    use crate::journal::{
+        event::{
+            Event,
+            types::{AuthFailureClass, OperatorId, RequestId},
+        },
+        tests::drain_events,
+    };
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    let request_id = RequestId::from_request(Uuid::now_v7());
+    let context = JournalContext::default().with_request(request_id);
+    assert!(matches!(
+        f.component
+            .sign_in(
+                "login-secret-canary",
+                "password-secret-canary".into(),
+                context.clone()
+            )
+            .await,
+        Err(OperatorError::AuthenticationFailed)
+    ));
+    let signed_in = f
+        .component
+        .sign_in("admin", PASSWORD.into(), context.clone())
+        .await?;
+    assert_eq!(
+        f.component
+            .terminate_session(signed_in.wire_credential(), context.clone())
+            .await?,
+        Some(f.admin)
+    );
+    assert_eq!(
+        f.component
+            .terminate_session(signed_in.wire_credential(), context.clone())
+            .await?,
+        None
+    );
+    f.component
+        .change_password(
+            f.admin.operator_id(),
+            PASSWORD.into(),
+            NEW_PASSWORD.into(),
+            NEW_PASSWORD.into(),
+            context,
+        )
+        .await?;
+    let records = drain_events(&mut f.events);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.event.kind())
+            .collect::<Vec<_>>(),
+        [
+            "auth_failed",
+            "auth_succeeded",
+            "logged_out",
+            "password_changed"
+        ]
+    );
+    assert!(
+        matches!(&records[0].event, Event::AuthFailed(event) if event.class == AuthFailureClass::InvalidCredentials)
+    );
+    assert!(records[0].actor_operator_id.is_none());
+    assert!(records[1..].iter().all(|record| {
+        record.actor_operator_id.as_ref().map(OperatorId::value) == Some(f.admin.operator_id())
+    }));
+    for record in records {
+        let details = record.details();
+        for secret in [
+            "login-secret-canary",
+            "password-secret-canary",
+            PASSWORD,
+            NEW_PASSWORD,
+            signed_in.wire_credential().expose(),
+        ] {
+            assert!(!details.contains(secret));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn link_auth_events_follow_commits_and_report_the_resolved_operator() -> TestResult {
+    use crate::journal::{
+        event::{Event, types::OperatorId},
+        tests::drain_events,
+    };
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    let context = JournalContext::for_operator(&f.admin);
+    let reset = f
+        .component
+        .issue_password_reset(f.admin.operator_id(), f.admin.operator_id(), context)
+        .await?;
+    let resolved = f
+        .component
+        .consume_password_reset(
+            reset.token.expose().into(),
+            NEW_PASSWORD.into(),
+            NEW_PASSWORD.into(),
+            JournalContext::default(),
+        )
+        .await?;
+    assert_eq!(resolved, f.admin.operator_id());
+    let invitation = f
+        .component
+        .issue_invitation(f.admin.operator_id(), OperatorRole::Viewer)
+        .await?;
+    let registered = f
+        .component
+        .register(
+            invitation.token.expose().into(),
+            "registration-name-secret-canary".into(),
+            PASSWORD.into(),
+            PASSWORD.into(),
+            JournalContext::default(),
+        )
+        .await?;
+    let records = drain_events(&mut f.events);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.event.kind())
+            .collect::<Vec<_>>(),
+        [
+            "password_reset_issued",
+            "password_reset_completed",
+            "invitation_registered"
+        ]
+    );
+    assert_eq!(
+        records[0].actor_operator_id.as_ref().map(OperatorId::value),
+        Some(f.admin.operator_id())
+    );
+    assert_eq!(
+        records[1].actor_operator_id.as_ref().map(OperatorId::value),
+        Some(resolved)
+    );
+    assert_eq!(
+        records[2].actor_operator_id.as_ref().map(OperatorId::value),
+        Some(registered.operator_id())
+    );
+    assert!(
+        !records
+            .iter()
+            .any(|record| matches!(&record.event, Event::AuthFailed(_)))
+    );
+    for record in records {
+        let details = record.details();
+        for secret in [
+            "registration-name-secret-canary",
+            reset.token.expose(),
+            invitation.token.expose(),
+            PASSWORD,
+            NEW_PASSWORD,
+        ] {
+            assert!(!details.contains(secret));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn session_checks_are_silent_and_sign_in_failures_have_closed_classes() -> TestResult {
+    use crate::journal::{
+        event::{Event, types::AuthFailureClass},
+        tests::drain_events,
+    };
+    let _guard = PasswordVerificationTestGuard::acquire().await;
+    let mut f = Fixture::new().await?;
+    let signed_in = f
+        .component
+        .sign_in("admin", PASSWORD.into(), JournalContext::default())
+        .await?;
+    fixtures::test_expire_all_sessions(&f.component.database).await?;
+    assert!(matches!(
+        f.component
+            .authenticate_session(signed_in.wire_credential())
+            .await,
+        Err(OperatorError::SessionAuthenticationFailed)
+    ));
+    let held = super::super::tests::occupy_sign_in_capacity().await;
+    assert!(matches!(
+        f.component
+            .sign_in("admin", PASSWORD.into(), JournalContext::default())
+            .await,
+        Err(OperatorError::SignInBusy)
+    ));
+    drop(held);
+    f.sql("DROP TABLE operator_sessions").await?;
+    assert!(matches!(
+        f.component
+            .sign_in("admin", PASSWORD.into(), JournalContext::default())
+            .await,
+        Err(OperatorError::PersistenceFailed { .. })
+    ));
+    let records = drain_events(&mut f.events);
+    assert_eq!(records.len(), 3);
+    assert!(
+        matches!(&records[1].event, Event::AuthFailed(event) if event.class == AuthFailureClass::RateLimited)
+    );
+    assert!(
+        matches!(&records[2].event, Event::AuthFailed(event) if event.class == AuthFailureClass::Infrastructure)
+    );
     Ok(())
 }

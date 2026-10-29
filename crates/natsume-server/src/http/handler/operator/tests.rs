@@ -242,7 +242,11 @@ async fn session_read_rejects_account_deleted_after_authentication() -> TestResu
     let signed_in = f
         .state
         .operator()
-        .sign_in("viewer", PASSWORD.into())
+        .sign_in(
+            "viewer",
+            PASSWORD.into(),
+            crate::journal::JournalContext::default(),
+        )
         .await?;
     let identity = signed_in.identity();
     let deletion = f

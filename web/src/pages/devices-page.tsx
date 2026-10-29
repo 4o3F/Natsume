@@ -1,11 +1,13 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "react-router";
 import {
+  Activity,
   Ban,
   CirclePause,
   CirclePlay,
   Clock3,
+  History,
   Monitor,
   RotateCcw,
   Search,
@@ -22,6 +24,8 @@ import { ApiError, unwrap } from "@/api/errors";
 import type {
   DeviceConvergenceResponse_Serialize as DeviceConvergenceResponse,
   DeviceResponse_Serialize as DeviceResponse,
+  DeviceSummaries,
+  DeviceSummary,
 } from "@/api/generated/types";
 import { LIST_POLL_MS } from "@/api/polling";
 import { useSession } from "@/auth/use-session";
@@ -32,6 +36,7 @@ import { MultiSelectFilter } from "@/components/multi-select-filter";
 import { DeviceIpWarning } from "@/components/device-network-info";
 import { DataTable, type DataTableColumnDef } from "@/components/data-table";
 import { DataState } from "@/components/data-state";
+import { disconnectReasonLabels, labelFor } from "@/components/event-labels";
 import {
   defaultDeviceStateFilter,
   selectedDeviceStates,
@@ -51,6 +56,7 @@ import {
 } from "@/components/device-status-style";
 import { PageHeader } from "@/components/page-header";
 import { StatGrid, StatTile } from "@/components/stat-tile";
+import { ViewTabPanel, ViewTabs } from "@/components/view-tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup } from "@/components/ui/input";
@@ -63,8 +69,16 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { formatOffset, formatTimestamp } from "@/lib/time";
 import { DeviceActions, type DeviceActionHandlers } from "./device-actions";
 import { DeviceConvergence } from "./device-convergence";
+import {
+  FLAPPING_DISCONNECTS,
+  SUMMARY_WINDOW_MS,
+  isFlapping,
+  lastSeen,
+} from "./device-summaries";
+import { DeviceTimeline } from "./device-timeline";
 
 type Device = DeviceResponse;
 type Convergence = DeviceConvergenceResponse;
@@ -94,6 +108,15 @@ const bindingOptions = [
   { value: "unknown", label: "Unknown" },
 ] as const;
 const defaultBindingFilter = { bound: true, unbound: true, unknown: true };
+const sheetViews = [
+  { value: "state", label: "State", icon: <Monitor aria-hidden="true" /> },
+  {
+    value: "timeline",
+    label: "Timeline",
+    icon: <History aria-hidden="true" />,
+  },
+] as const;
+type SheetView = (typeof sheetViews)[number]["value"];
 const lifecycleBadges = {
   enabled: { variant: "success", label: "Enabled" },
   disabled: { variant: "muted", label: "Disabled" },
@@ -136,6 +159,9 @@ export function DevicesPage() {
   );
   const [search, setSearch] = useState(() => searchParams.get("q") ?? "");
   const [attentionOnly, setAttentionOnly] = useState(false);
+  const [flappingOnly, setFlappingOnly] = useState(false);
+  const [sheetView, setSheetView] = useState<SheetView>("state");
+  const sheetTabs = useId();
   const [connectionFilter, setConnectionFilter] = useState(
     defaultConnectionFilter,
   );
@@ -151,6 +177,28 @@ export function DevicesPage() {
     refetchInterval: LIST_POLL_MS,
     enabled: states.length > 0,
   });
+  const summaries = useQuery({
+    queryKey: ["journal", "device-summaries", SUMMARY_WINDOW_MS],
+    queryFn: async ({ signal }) =>
+      unwrap<DeviceSummaries>(
+        await api.listDeviceSummaries(SUMMARY_WINDOW_MS, { signal }),
+      ),
+    refetchInterval: LIST_POLL_MS,
+  });
+  const summaryById = useMemo(
+    () =>
+      summaries.data
+        ? new Map(
+            summaries.data.devices.map((summary) => [
+              summary.device_id,
+              summary,
+            ]),
+          )
+        : null,
+    [summaries.data],
+  );
+  // A failed refresh keeps the last summaries; they are shown as stale.
+  const summariesStale = summaries.isError && summaries.data !== undefined;
   const invalidate = () =>
     Promise.all([
       queryClient.invalidateQueries({ queryKey: ["bindings"] }),
@@ -226,6 +274,7 @@ export function DevicesPage() {
       connectionFilter[device.convergence.connection_state] &&
       bindingFilter[binding?.state ?? "unknown"] &&
       (!attentionOnly || needsAttention(device)) &&
+      (!flappingOnly || isFlapping(summaryById?.get(device.device_id))) &&
       (!query ||
         [seatOf(device), device.device_id, device.machine_hardware_id].some(
           (value) => value?.toLowerCase().includes(query),
@@ -244,11 +293,15 @@ export function DevicesPage() {
       offline: count((d) => d.convergence.connection_state === "offline"),
       attention: count(needsAttention),
       unbound: count((d) => d.convergence.binding.target?.state !== "bound"),
+      flapping: summaryById
+        ? count((d) => isFlapping(summaryById.get(d.device_id)))
+        : null,
     };
-  }, [listedDevices]);
+  }, [listedDevices, summaryById]);
   const hasActiveFilters =
     search !== "" ||
     attentionOnly ||
+    flappingOnly ||
     connectionStates.some((state) => !connectionFilter[state]) ||
     bindingOptions.some(({ value }) => !bindingFilter[value]) ||
     stateFilter.enabled !== defaultDeviceStateFilter.enabled ||
@@ -257,6 +310,7 @@ export function DevicesPage() {
   function resetFilters() {
     setSearch("");
     setAttentionOnly(false);
+    setFlappingOnly(false);
     setStateFilter(defaultDeviceStateFilter);
     setConnectionFilter(defaultConnectionFilter);
     setBindingFilter(defaultBindingFilter);
@@ -295,6 +349,7 @@ export function DevicesPage() {
   );
   const checkedBound = checkedDevices.filter((device) => seatOf(device));
 
+  const summaryOffset = summaries.data?.journal.server_utc_offset_minutes ?? 0;
   const columns = useMemo(() => {
     const columns: DataTableColumnDef<Device>[] = [
       {
@@ -431,6 +486,44 @@ export function DevicesPage() {
           </span>
         ),
       },
+      {
+        id: "last-seen",
+        header: "Last seen",
+        cell: ({ row }) => (
+          <LastSeen
+            summary={summaryById?.get(row.original.device_id)}
+            known={summaryById !== null}
+            connection={row.original.convergence.connection_state}
+            offset={summaryOffset}
+          />
+        ),
+      },
+      {
+        id: "drops",
+        header: "Drops (24h)",
+        cell: ({ row }) => {
+          if (!summaryById)
+            return (
+              <span className="text-xs text-muted-foreground">Unknown</span>
+            );
+          const summary = summaryById.get(row.original.device_id);
+          const drops = summary?.disconnects ?? 0;
+          return (
+            <span
+              className={
+                isFlapping(summary)
+                  ? "text-sm font-semibold text-warning-strong tabular-nums"
+                  : "text-sm tabular-nums"
+              }
+            >
+              {drops}
+              {isFlapping(summary) && (
+                <span className="sr-only"> (flapping)</span>
+              )}
+            </span>
+          );
+        },
+      },
     ];
 
     if (isAdmin) {
@@ -452,6 +545,8 @@ export function DevicesPage() {
     }
     return columns;
   }, [
+    summaryById,
+    summaryOffset,
     isAdmin,
     isUpdatingLifecycle,
     updateLifecycle,
@@ -481,7 +576,16 @@ export function DevicesPage() {
         }
       />
 
-      <StatGrid>
+      {summariesStale && (
+        <p role="status" className="text-xs text-warning-strong">
+          Journal summaries failed to refresh. Last seen, Drops and Flapping
+          show data from{" "}
+          {formatTimestamp(summaries.dataUpdatedAt, summaryOffset)}{" "}
+          {formatOffset(summaryOffset)}.
+        </p>
+      )}
+
+      <StatGrid className="xl:grid-cols-7">
         <StatTile
           label="Listed"
           value={stats.total}
@@ -544,6 +648,19 @@ export function DevicesPage() {
                 ? defaultBindingFilter
                 : { bound: false, unbound: true, unknown: true },
             )
+          }
+        />
+        <StatTile
+          label="Flapping"
+          value={stats.flapping ?? "Unknown"}
+          hint={`${summariesStale ? "Stale · " : ""}≥${FLAPPING_DISCONNECTS} drops / 24h`}
+          tone={stats.flapping ? "warning" : "muted"}
+          icon={<Activity aria-hidden="true" />}
+          active={flappingOnly}
+          onClick={
+            stats.flapping === null
+              ? undefined
+              : () => setFlappingOnly((value) => !value)
           }
         />
       </StatGrid>
@@ -704,7 +821,20 @@ export function DevicesPage() {
                 </SheetDescription>
               </SheetHeader>
               <SheetBody>
-                <DeviceConvergence device={selectedDevice} />
+                <ViewTabs
+                  scope={sheetTabs}
+                  label="Device view"
+                  value={sheetView}
+                  onValueChange={setSheetView}
+                  items={sheetViews}
+                />
+                <ViewTabPanel scope={sheetTabs} value={sheetView}>
+                  {sheetView === "state" ? (
+                    <DeviceConvergence device={selectedDevice} />
+                  ) : (
+                    <DeviceTimeline deviceId={selectedDevice.device_id} />
+                  )}
+                </ViewTabPanel>
               </SheetBody>
               {isAdmin && (
                 <SheetFooter>
@@ -832,6 +962,36 @@ function Legend() {
         </span>
       ))}
     </div>
+  );
+}
+
+function LastSeen({
+  summary,
+  known,
+  connection,
+  offset,
+}: {
+  summary: DeviceSummary | undefined;
+  known: boolean;
+  connection: Convergence["connection_state"];
+  offset: number;
+}) {
+  const seen = lastSeen(summary, connection);
+  if (seen === "now") return <span className="text-xs tabular-nums">Now</span>;
+  if (!known)
+    return <span className="text-xs text-muted-foreground">Unknown</span>;
+  if (seen === null)
+    return <span className="text-xs text-muted-foreground">Not recorded</span>;
+  const reason = summary?.last_disconnect_reason;
+  return (
+    <span
+      className="text-xs text-muted-foreground tabular-nums"
+      title={`${formatTimestamp(seen, offset)} ${formatOffset(offset)}${
+        reason ? ` · ${labelFor(disconnectReasonLabels, reason)}` : ""
+      }`}
+    >
+      {relativeTime(seen)}
+    </span>
   );
 }
 

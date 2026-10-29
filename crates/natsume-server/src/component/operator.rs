@@ -1,7 +1,17 @@
 use snafu::Snafu;
 use uuid::Uuid;
 
-use crate::db::{Database, PersistenceError, Transaction, TransactionError};
+use crate::{
+    db::{Database, PersistenceError, Transaction, TransactionError},
+    journal::{
+        Journal, JournalContext,
+        event::{
+            Event,
+            payload::{AuthFailed, AuthSucceeded, LoggedOut},
+            types::{AuthFailureClass, OperatorId},
+        },
+    },
+};
 
 mod account;
 mod credentials;
@@ -22,11 +32,13 @@ pub(crate) use self::{
 /// Operator authentication and account authority with private persistence.
 pub(crate) struct OperatorComponent {
     database: Database,
+    /// Emit-only handle for authentication facts committed by this component.
+    journal: Journal,
 }
 
 impl OperatorComponent {
-    pub(crate) const fn new(database: Database) -> Self {
-        Self { database }
+    pub(crate) const fn new(database: Database, journal: Journal) -> Self {
+        Self { database, journal }
     }
 
     /// Creates the first administrator within the caller's bootstrap transaction.
@@ -42,20 +54,31 @@ impl OperatorComponent {
         db::any_account_exists(transaction).map_err(OperatorError::from)
     }
 
-    pub(crate) async fn reset_password(
-        &self,
+    pub(crate) async fn reset_password_offline(
+        database: &Database,
         login_name: &str,
         password_hash: &str,
     ) -> Result<(), OperatorError> {
-        account::reset_operator_password(&self.database, login_name, password_hash).await
+        account::reset_operator_password(database, login_name, password_hash).await
     }
 
     pub(crate) async fn sign_in(
         &self,
         login_name: &str,
         submitted_password: String,
+        context: JournalContext,
     ) -> Result<SignedInSession, OperatorError> {
-        session::sign_in(&self.database, login_name, submitted_password).await
+        let result = session::sign_in(&self.database, login_name, submitted_password).await;
+        match &result {
+            Ok(session) => self.journal.emit(
+                Event::AuthSucceeded(AuthSucceeded {}),
+                context.with_actor(OperatorId::from_authenticated_operator(
+                    session.identity().operator_id(),
+                )),
+            ),
+            Err(error) => self.record_auth_failure(error, context),
+        }
+        result
     }
 
     pub(crate) async fn authenticate_session(
@@ -63,6 +86,16 @@ impl OperatorComponent {
         wire_credential: SessionCredentialHex,
     ) -> Result<OperatorIdentity, OperatorError> {
         session::authenticate_session(&self.database, wire_credential).await
+    }
+
+    pub(crate) async fn display_names(
+        &self,
+        ids: Vec<Uuid>,
+    ) -> Result<std::collections::HashMap<Uuid, String>, PersistenceError> {
+        self.database
+            .read(move |transaction| db::management::display_names(transaction, &ids))
+            .await
+            .map_err(TransactionError::into_error)
     }
 
     pub(crate) async fn session_username(
@@ -84,8 +117,32 @@ impl OperatorComponent {
     pub(crate) async fn terminate_session(
         &self,
         wire_credential: SessionCredentialHex,
-    ) -> Result<(), OperatorError> {
-        session::terminate_session(&self.database, wire_credential).await
+        context: JournalContext,
+    ) -> Result<Option<OperatorIdentity>, OperatorError> {
+        let identity = session::terminate_session(&self.database, wire_credential).await?;
+        if let Some(identity) = identity {
+            self.journal.emit(
+                Event::LoggedOut(LoggedOut {}),
+                context.with_actor(OperatorId::from_authenticated_operator(
+                    identity.operator_id(),
+                )),
+            );
+        }
+        Ok(identity)
+    }
+
+    fn record_auth_failure(&self, error: &OperatorError, context: JournalContext) {
+        let class = match error {
+            OperatorError::SignInBusy => AuthFailureClass::RateLimited,
+            OperatorError::AuthenticationFailed
+            | OperatorError::SessionAuthenticationFailed
+            | OperatorError::InvalidSessionCredential
+            | OperatorError::CredentialsTooLong
+            | OperatorError::EmptyLoginName => AuthFailureClass::InvalidCredentials,
+            _ => AuthFailureClass::Infrastructure,
+        };
+        self.journal
+            .emit(Event::AuthFailed(AuthFailed { class }), context);
     }
 }
 

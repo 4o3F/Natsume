@@ -36,6 +36,36 @@ struct Route {
 
 const INVENTORY: &[Route] = &[
     Route {
+        principal: Principal::Operator,
+        admin: false,
+        method: Method::GET,
+        path: "/journal/events",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: false,
+        method: Method::GET,
+        path: "/journal/devices/{device_id}/timeline",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: false,
+        method: Method::GET,
+        path: "/journal/device-summaries",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/journal/export",
+    },
+    Route {
+        principal: Principal::Operator,
+        admin: true,
+        method: Method::GET,
+        path: "/journal/status",
+    },
+    Route {
         principal: Principal::Public,
         admin: false,
         method: Method::POST,
@@ -861,4 +891,34 @@ async fn method_rejections_and_unmounted_paths_stay_outside_group_authentication
         );
     }
     Ok(())
+}
+
+#[test]
+fn mutating_route_inventory_is_exhaustively_classified_for_operator_audit() {
+    for route in INVENTORY
+        .iter()
+        .filter(|route| !matches!(route.method, Method::GET | Method::HEAD))
+    {
+        let expected = match route.principal {
+            Principal::Operator => true,
+            Principal::Public => matches!(
+                route.path,
+                "/session"
+                    | "/operator/register"
+                    | "/operator/register/inspect"
+                    | "/operator/password/reset"
+                    | "/operator/password/reset/inspect"
+            ),
+            Principal::PrintSource | Principal::PrintClient => false,
+        };
+        assert_eq!(
+            crate::http::middleware::audit::classify(route.path).is_some(),
+            expected,
+            "audit scope mismatch: {} {} ({:?})",
+            route.method,
+            route.path,
+            route.principal,
+        );
+    }
+    assert!(crate::http::middleware::audit::classify("/not-registered").is_none());
 }

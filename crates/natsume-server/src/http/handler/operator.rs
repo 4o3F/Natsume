@@ -1,4 +1,6 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::RequestAudit;
+use crate::journal::event::types::{AuditTarget, OperatorId};
 
 mod dto;
 
@@ -81,7 +83,12 @@ async fn require_logged_out(
 ) -> Response {
     if let Ok(credential) = cookie::session_credential(request.headers()) {
         match state.operator().authenticate_session(credential).await {
-            Ok(_) => return ApiError::operator_logout_required().into_response(),
+            Ok(identity) => {
+                if let Some(audit) = request.extensions().get::<RequestAudit>() {
+                    audit.record_actor(identity);
+                }
+                return ApiError::operator_logout_required().into_response();
+            }
             Err(OperatorError::SessionAuthenticationFailed) => {}
             Err(error) => return ApiError::from_operator(error).into_response(),
         }
@@ -183,7 +190,8 @@ pub(crate) async fn list_invitations(State(state): State<AppState>) -> Response 
     .into_response()
 }
 
-pub(crate) async fn create_invitation(
+pub(in crate::http) async fn create_invitation(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
     request: Result<Json<OperatorRoleRequest>, JsonRejection>,
@@ -197,6 +205,7 @@ pub(crate) async fn create_invitation(
         .await
     {
         Ok(issued) => {
+            audit.record_target(AuditTarget::Invitation(issued.invitation.invitation_id));
             let now = match now_ms() {
                 Ok(now) => now,
                 Err(error) => return error.into_response(),
@@ -228,7 +237,8 @@ pub(crate) async fn revoke_invitation(
     }
 }
 
-pub(crate) async fn regenerate_invitation(
+pub(in crate::http) async fn regenerate_invitation(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorInvitationPath>,
@@ -243,6 +253,7 @@ pub(crate) async fn regenerate_invitation(
         .await
     {
         Ok(issued) => {
+            audit.record_target(AuditTarget::Invitation(issued.invitation.invitation_id));
             let now = match now_ms() {
                 Ok(now) => now,
                 Err(error) => return error.into_response(),
@@ -260,7 +271,8 @@ pub(crate) async fn regenerate_invitation(
     }
 }
 
-pub(crate) async fn create_password_reset(
+pub(in crate::http) async fn create_password_reset(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
     Path(path): Path<OperatorAccountPath>,
@@ -271,20 +283,23 @@ pub(crate) async fn create_password_reset(
     };
     match state
         .operator()
-        .issue_password_reset(actor.operator_id(), target)
+        .issue_password_reset(actor.operator_id(), target, audit.context())
         .await
     {
-        Ok(issued) => (
-            StatusCode::CREATED,
-            Json(OperatorPasswordResetIssuedResponse {
-                operator_id: issued.reset.operator_id,
-                reset_id: issued.reset.reset_id,
-                username: issued.reset.username,
-                expires_at_unix_ms: issued.reset.expires_at_unix_ms,
-                token: SecretValue::new(issued.token.expose()),
-            }),
-        )
-            .into_response(),
+        Ok(issued) => {
+            audit.record_target(AuditTarget::PasswordReset(issued.reset.reset_id));
+            (
+                StatusCode::CREATED,
+                Json(OperatorPasswordResetIssuedResponse {
+                    operator_id: issued.reset.operator_id,
+                    reset_id: issued.reset.reset_id,
+                    username: issued.reset.username,
+                    expires_at_unix_ms: issued.reset.expires_at_unix_ms,
+                    token: SecretValue::new(issued.token.expose()),
+                }),
+            )
+                .into_response()
+        }
         Err(error) => ApiError::from_operator(error).into_response(),
     }
 }
@@ -309,7 +324,8 @@ pub(crate) async fn inspect_registration(
     }
 }
 
-pub(crate) async fn register_operator(
+pub(in crate::http) async fn register_operator(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     request: Result<Json<OperatorRegistrationRequest>, JsonRejection>,
 ) -> Response {
@@ -323,18 +339,24 @@ pub(crate) async fn register_operator(
             request.username.clone(),
             request.password.into_string(),
             request.password_confirmation.into_string(),
+            audit.context(),
         )
         .await
     {
-        Ok(identity) => (
-            StatusCode::CREATED,
-            Json(OperatorAccountResponse {
-                operator_id: identity.operator_id(),
-                username: request.username,
-                role: identity.role().into(),
-            }),
-        )
-            .into_response(),
+        Ok(identity) => {
+            audit.record_target(AuditTarget::Operator(OperatorId::from_committed_operator(
+                identity.operator_id(),
+            )));
+            (
+                StatusCode::CREATED,
+                Json(OperatorAccountResponse {
+                    operator_id: identity.operator_id(),
+                    username: request.username,
+                    role: identity.role().into(),
+                }),
+            )
+                .into_response()
+        }
         Err(error) => ApiError::from_operator(error).into_response(),
     }
 }
@@ -359,7 +381,8 @@ pub(crate) async fn inspect_password_reset(
     }
 }
 
-pub(crate) async fn reset_password(
+pub(in crate::http) async fn reset_password(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     request: Result<Json<OperatorPasswordResetRequest>, JsonRejection>,
 ) -> Response {
@@ -372,15 +395,22 @@ pub(crate) async fn reset_password(
             request.token.into_string(),
             request.password.into_string(),
             request.password_confirmation.into_string(),
+            audit.context(),
         )
         .await
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(operator_id) => {
+            audit.record_target(AuditTarget::Operator(OperatorId::from_committed_operator(
+                operator_id,
+            )));
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(error) => ApiError::from_operator(error).into_response(),
     }
 }
 
-pub(crate) async fn change_password(
+pub(in crate::http) async fn change_password(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
     Extension(actor): Extension<OperatorIdentity>,
     request: Result<Json<OperatorPasswordChangeRequest>, JsonRejection>,
@@ -395,6 +425,7 @@ pub(crate) async fn change_password(
             request.current_password.into_string(),
             request.password.into_string(),
             request.password_confirmation.into_string(),
+            audit.context(),
         )
         .await
     {

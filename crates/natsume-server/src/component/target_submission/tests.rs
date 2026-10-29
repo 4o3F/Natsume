@@ -1,3 +1,4 @@
+use crate::journal::JournalContext;
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection};
 use tempfile::TempDir;
 
@@ -12,6 +13,8 @@ use crate::{
 struct Fixture {
     database: Database,
     component: TargetSubmissionComponent,
+    /// Captured per-device facts from committed submissions and replays.
+    events: tokio::sync::mpsc::Receiver<crate::journal::Envelope>,
     state: crate::server_state::ServerState,
     ids: Vec<DeviceId>,
     owner: Uuid,
@@ -57,9 +60,11 @@ impl Fixture {
         let state =
             crate::server_state::tests::for_test(database.clone(), root.path().join("documents"))
                 .unwrap_or_else(|error| panic!("state: {error}"));
+        let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
         Self {
             state,
-            component: TargetSubmissionComponent::new(database.clone()),
+            component: TargetSubmissionComponent::new(database.clone(), journal.emitter()),
+            events,
             database,
             ids,
             owner: Uuid::now_v7(),
@@ -81,9 +86,11 @@ impl Fixture {
         owner: Uuid,
         request: TargetSubmissionRequest,
     ) -> Result<TargetSubmissionResult, TargetSubmissionError> {
-        let (result, change) = component.submit(owner, request).await?;
-        self.state.device_control().publish(change).await;
-        Ok(result)
+        let outcome = component
+            .submit(owner, request, JournalContext::default())
+            .await?;
+        self.state.device_control().publish(outcome.change).await;
+        Ok(outcome.result)
     }
 
     fn request(action: TargetAction) -> TargetSubmissionRequest {
@@ -153,7 +160,8 @@ async fn replay_preserves_scope_results_and_epochs_after_restart_and_lifecycle_c
                 .into(),
         )
         .await;
-    let rebuilt = TargetSubmissionComponent::new(fixture.database.clone());
+    let rebuilt =
+        TargetSubmissionComponent::new(fixture.database.clone(), fixture.component.journal.clone());
     assert!(
         matches!(fixture.submit_with(&rebuilt, fixture.owner, request.clone()).await, Ok(actual) if actual == result)
     );
@@ -430,4 +438,59 @@ async fn ignored_mutations_report_row_counts_and_roll_back_instead_of_domain_rej
         ));
         assert_eq!(fixture.receipts().await, 0);
     }
+}
+
+#[tokio::test]
+async fn submitted_targets_record_each_device_and_receipt_replay_without_reapplying() {
+    use crate::journal::{
+        JournalContext,
+        event::{
+            Event,
+            types::{OperationId, OperatorId, TargetResult},
+        },
+        tests::drain_events,
+    };
+    let mut fixture = Fixture::new(1).await;
+    let device = fixture.ids[0];
+    let absent = DeviceId::parse("01900000-0000-7000-8000-000000000099")
+        .unwrap_or_else(|| panic!("absent ID"));
+    let operator = Uuid::now_v7();
+    let operation = Uuid::now_v7();
+    let request = TargetSubmissionRequest {
+        operation_id: operation,
+        scope: TargetScope::Devices(vec![device, absent]),
+        action: TargetAction::ResetHome,
+    };
+    for expected_replayed in [false, true] {
+        let outcome = fixture
+            .component
+            .submit(
+                operator,
+                request.clone(),
+                JournalContext::default()
+                    .with_actor(OperatorId::from_authenticated_operator(operator)),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("submit: {error}"));
+        assert_eq!(outcome.replayed, expected_replayed);
+        let records = drain_events(&mut fixture.events);
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            assert_eq!(
+                record.actor_operator_id.as_ref().map(OperatorId::value),
+                Some(operator)
+            );
+            assert_eq!(
+                record.operation_id,
+                Some(OperationId::from_operation(operation))
+            );
+            assert!(record.session_id.is_none());
+            assert!(
+                matches!(&record.event, Event::TargetSubmitted(event) if event.replayed == expected_replayed && event.operation_id == operation)
+            );
+        }
+        assert!(records.iter().any(|record| record.device_id == Some(absent) && matches!(&record.event, Event::TargetSubmitted(event) if event.result == TargetResult::DeviceNotFound)));
+        assert!(records.iter().any(|record| record.device_id == Some(device) && matches!(&record.event, Event::TargetSubmitted(event) if event.result == TargetResult::Accepted)));
+    }
+    assert_eq!(fixture.home_epochs().await, vec![Some(1)]);
 }

@@ -87,10 +87,17 @@ pub(super) mod tests {
             .await
             .unwrap_or_else(|error| panic!("bootstrap failed: {error}"));
         let database = fixture.database(false).await;
-        let session = OperatorComponent::new(database.clone())
-            .sign_in("admin", "test-password-123!".to_owned())
-            .await
-            .unwrap_or_else(|error| panic!("bootstrap administrator cannot sign in: {error}"));
+        let session = OperatorComponent::new(
+            database.clone(),
+            crate::journal::JournalComponent::channel(16).0.emitter(),
+        )
+        .sign_in(
+            "admin",
+            "test-password-123!".to_owned(),
+            crate::journal::JournalContext::default(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("bootstrap administrator cannot sign in: {error}"));
         assert_eq!(session.identity().role_name(), "admin");
         assert!(
             matches!(RuntimeConfigComponent::new(database).materialize().await, Ok(actual) if actual == "https://judge.example.test")

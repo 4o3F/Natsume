@@ -1,3 +1,11 @@
+use crate::journal::{
+    JournalContext,
+    event::{
+        Event,
+        types::{LifecycleState, ReviewCancelCause, ReviewId},
+    },
+    tests::drain_events,
+};
 use std::{fs, path::PathBuf, sync::mpsc, time::Duration};
 
 use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
@@ -10,8 +18,8 @@ use crate::{
 
 use super::{
     ActivationError, ControlPublicKey, DeviceComponent, DeviceError, DeviceId, DeviceState,
-    EnrollmentApprovalError, EnrollmentStartOutcome, EvidenceQuality, LifecycleOutcome,
-    MachineHardwareId, ValidatedEnrollmentEvidence, db,
+    EnrollmentApprovalError, EnrollmentApprovalMode, EnrollmentStartOutcome, EvidenceQuality,
+    LifecycleOutcome, MachineHardwareId, ValidatedEnrollmentEvidence, db,
 };
 
 const FIRST_MACHINE: &str = "a9aa9d04-3ece-5567-8260-910930ff5e03";
@@ -61,7 +69,7 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
     assert!(saved.observed_at_unix_ms > 0);
 
     let reopened = Database::connect_and_migrate(&DatabaseConfig::new(&fixture.path, true)).await?;
-    let restarted = DeviceComponent::new(reopened);
+    let restarted = DeviceComponent::new(reopened, fixture.component.journal.clone());
     assert_eq!(
         restarted
             .find_device(device_id)
@@ -102,7 +110,9 @@ async fn network_addresses_survive_restart_and_replace_the_complete_pair()
         Some(replaced)
     );
     let current = current_authority(&fixture, machine(FIRST_MACHINE)).await;
-    restarted.disable(device_id).await?;
+    restarted
+        .disable(device_id, JournalContext::default())
+        .await?;
     restarted
         .record_network_addresses(current, "192.0.2.98".parse()?, None)
         .await?;
@@ -252,7 +262,7 @@ async fn a_key_already_owned_by_another_device_cannot_replace_authority() {
 
 #[tokio::test]
 async fn disabled_authority_is_retained_and_revoke_is_terminal() {
-    let fixture = Fixture::new().await;
+    let mut fixture = Fixture::new().await;
     let machine = machine(FIRST_MACHINE);
     let old_key = key(0x41);
     let activated = activate(&fixture, machine, old_key, EvidenceQuality::Strong)
@@ -261,29 +271,29 @@ async fn disabled_authority_is_retained_and_revoke_is_terminal() {
     let device_id = activated.device_id();
 
     assert!(
-        matches!(fixture.component.disable(device_id).await, Ok(actual) if actual == LifecycleOutcome::Changed)
+        matches!(fixture.component.disable(device_id, JournalContext::default()).await, Ok(actual) if actual == LifecycleOutcome::Changed)
     );
     let disabled = current_authority(&fixture, machine).await;
     assert_eq!(disabled.control_public_key(), old_key);
     assert_eq!(disabled.device_state(), DeviceState::Disabled);
     assert!(
-        matches!(fixture.component.disable(device_id).await, Ok(actual) if actual == LifecycleOutcome::Unchanged)
+        matches!(fixture.component.disable(device_id, JournalContext::default()).await, Ok(actual) if actual == LifecycleOutcome::Unchanged)
     );
     assert!(
-        matches!(fixture.component.enable(device_id).await, Ok(actual) if actual == LifecycleOutcome::Changed)
+        matches!(fixture.component.enable(device_id, JournalContext::default()).await, Ok(actual) if actual == LifecycleOutcome::Changed)
     );
 
     assert!(
-        matches!(fixture.component.revoke(device_id).await, Ok(actual) if actual == LifecycleOutcome::Changed)
+        matches!(fixture.component.revoke(device_id, JournalContext::default()).await, Ok(actual) if actual == LifecycleOutcome::Changed)
     );
     assert!(
         matches!(fixture.component.find_current_authority(machine).await, Ok(actual) if actual.is_none())
     );
     assert!(
-        matches!(fixture.component.enable(device_id).await, Ok(actual) if actual == LifecycleOutcome::RejectedTerminal)
+        matches!(fixture.component.enable(device_id, JournalContext::default()).await, Ok(actual) if actual == LifecycleOutcome::RejectedTerminal)
     );
     assert!(
-        matches!(fixture.component.revoke(device_id).await, Ok(actual) if actual == LifecycleOutcome::Unchanged)
+        matches!(fixture.component.revoke(device_id, JournalContext::default()).await, Ok(actual) if actual == LifecycleOutcome::Unchanged)
     );
     assert!(matches!(
         activate(&fixture, machine, old_key, EvidenceQuality::Strong).await,
@@ -306,6 +316,22 @@ async fn disabled_authority_is_retained_and_revoke_is_terminal() {
     assert_eq!(devices.len(), 2);
     assert_eq!(devices.iter().filter(|row| row.3 == "revoked").count(), 1);
     assert_eq!(devices.iter().filter(|row| row.3 == "enabled").count(), 1);
+    let records = drain_events(&mut fixture.events);
+    assert_eq!(records.len(), 3);
+    assert!(
+        matches!(&records[0].event, Event::LifecycleChanged(event) if event.to == LifecycleState::Disabled)
+    );
+    assert!(
+        matches!(&records[1].event, Event::LifecycleChanged(event) if event.to == LifecycleState::Enabled)
+    );
+    assert!(
+        matches!(&records[2].event, Event::LifecycleChanged(event) if event.to == LifecycleState::Revoked)
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record.device_id == Some(device_id))
+    );
 }
 
 #[tokio::test]
@@ -440,11 +466,17 @@ async fn lifecycle_mutation_rejects_an_unknown_device() {
     let missing = DeviceId::parse("01900000-0000-7000-8000-000000000099")
         .unwrap_or_else(|| panic!("missing Device fixture ID is invalid"));
     assert!(matches!(
-        fixture.component.disable(missing).await,
+        fixture
+            .component
+            .disable(missing, JournalContext::default())
+            .await,
         Err(DeviceError::DeviceNotFound)
     ));
     assert!(matches!(
-        fixture.component.revoke(missing).await,
+        fixture
+            .component
+            .revoke(missing, JournalContext::default())
+            .await,
         Err(DeviceError::DeviceNotFound)
     ));
 }
@@ -460,7 +492,11 @@ async fn exact_replay_skips_review_but_a_new_candidate_waits() {
 
     let replay = fixture
         .component
-        .start_enrollment(evidence(machine, current_key))
+        .start_enrollment(
+            evidence(machine, current_key),
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            JournalContext::default(),
+        )
         .await;
     assert!(matches!(
         replay,
@@ -469,7 +505,11 @@ async fn exact_replay_skips_review_but_a_new_candidate_waits() {
 
     let pending = fixture
         .component
-        .start_enrollment(evidence(machine, key(0x72)))
+        .start_enrollment(
+            evidence(machine, key(0x72)),
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            JournalContext::default(),
+        )
         .await;
     assert!(matches!(pending, Ok(EnrollmentStartOutcome::Pending(_, _))));
     assert_eq!(
@@ -480,12 +520,16 @@ async fn exact_replay_skips_review_but_a_new_candidate_waits() {
 
 #[tokio::test]
 async fn approval_claims_the_review_once() {
-    let fixture = Fixture::new().await;
+    let mut fixture = Fixture::new().await;
     let machine = machine(FIRST_MACHINE);
     let candidate = key(0x73);
     let pending = fixture
         .component
-        .start_enrollment(evidence(machine, candidate))
+        .start_enrollment(
+            evidence(machine, candidate),
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            JournalContext::default(),
+        )
         .await
         .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(pending, activation) = pending else {
@@ -502,7 +546,11 @@ async fn approval_claims_the_review_once() {
 
     let approval = fixture
         .component
-        .approve_enrollment(pending.review_id())
+        .approve_enrollment(
+            pending.review_id(),
+            EnrollmentApprovalMode::Manual,
+            JournalContext::default(),
+        )
         .await
         .unwrap_or_else(|error| panic!("fenced approval failed: {error:?}"));
     let activated = approval.authority();
@@ -521,20 +569,40 @@ async fn approval_claims_the_review_once() {
     assert!(matches!(
         fixture
             .component
-            .approve_enrollment(pending.review_id())
+            .approve_enrollment(
+                pending.review_id(),
+                EnrollmentApprovalMode::Manual,
+                JournalContext::default()
+            )
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
     ));
+    let records = drain_events(&mut fixture.events);
+    assert_eq!(records.len(), 2);
+    let review_id = ReviewId::from_enrollment_review(pending.review_id());
+    assert!(
+        matches!(&records[0].event, Event::ReviewCreated(event) if event.review_id == review_id && event.peer_ip == std::net::IpAddr::from([127, 0, 0, 1]))
+    );
+    assert!(
+        matches!(&records[1].event, Event::EnrollmentApproved(event) if event.review_id == review_id && !event.automatic)
+    );
+    assert_eq!(records[1].device_id, Some(activated.device_id()));
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps cancellation, approval, replay, and journal causality in one scenario"
+)]
 async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_replays() {
-    let fixture = Fixture::new().await;
+    let mut fixture = Fixture::new().await;
     let machine = machine(FIRST_MACHINE);
     let candidate = key(0x74);
+    let peer_ip = std::net::IpAddr::from([127, 0, 0, 1]);
+    let context = JournalContext::default();
     let first = fixture
         .component
-        .start_enrollment(evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate), peer_ip, context.clone())
         .await
         .unwrap_or_else(|error| panic!("first review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(first, first_activation) = first else {
@@ -543,14 +611,22 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
     assert!(
         fixture
             .component
-            .remove_enrollment_review(first.review_id())
+            .remove_enrollment_review(
+                first.review_id(),
+                ReviewCancelCause::ClientClose,
+                context.clone()
+            )
             .await
     );
     assert!(first_activation.await.is_err());
     assert!(matches!(
         fixture
             .component
-            .approve_enrollment(first.review_id())
+            .approve_enrollment(
+                first.review_id(),
+                EnrollmentApprovalMode::Manual,
+                context.clone()
+            )
             .await,
         Err(EnrollmentApprovalError::ReviewNotFound)
     ));
@@ -560,7 +636,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
 
     let second = fixture
         .component
-        .start_enrollment(evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate), peer_ip, context.clone())
         .await
         .unwrap_or_else(|error| panic!("second review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(second, second_activation) = second else {
@@ -568,7 +644,11 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
     };
     let approval = fixture
         .component
-        .approve_enrollment(second.review_id())
+        .approve_enrollment(
+            second.review_id(),
+            EnrollmentApprovalMode::Manual,
+            context.clone(),
+        )
         .await
         .unwrap_or_else(|error| panic!("second review activation failed: {error:?}"));
     let activated = approval.authority();
@@ -579,7 +659,7 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
 
     let replay = fixture
         .component
-        .start_enrollment(evidence(machine, candidate))
+        .start_enrollment(evidence(machine, candidate), peer_ip, context.clone())
         .await;
     assert!(matches!(
         replay,
@@ -592,14 +672,44 @@ async fn pre_activation_disconnect_restarts_review_and_post_commit_disconnect_re
             .await
             .is_empty()
     );
+    assert!(
+        !fixture
+            .component
+            .remove_enrollment_review(
+                first.review_id(),
+                ReviewCancelCause::Timeout,
+                context.clone()
+            )
+            .await
+    );
+    let records = drain_events(&mut fixture.events);
+    assert_eq!(
+        records
+            .iter()
+            .map(|record| record.event.kind())
+            .collect::<Vec<_>>(),
+        [
+            "review_created",
+            "review_cancelled",
+            "review_created",
+            "enrollment_approved"
+        ]
+    );
+    assert!(
+        matches!(&records[1].event, Event::ReviewCancelled(event) if event.review_id == ReviewId::from_enrollment_review(first.review_id()) && event.cause == ReviewCancelCause::ClientClose)
+    );
 }
 
 #[tokio::test]
 async fn denial_claims_the_review_and_notifies_only_its_connection() {
-    let fixture = Fixture::new().await;
+    let mut fixture = Fixture::new().await;
     let pending = fixture
         .component
-        .start_enrollment(evidence(machine(FIRST_MACHINE), key(0x75)))
+        .start_enrollment(
+            evidence(machine(FIRST_MACHINE), key(0x75)),
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            JournalContext::default(),
+        )
         .await
         .unwrap_or_else(|error| panic!("review creation failed: {error:?}"));
     let EnrollmentStartOutcome::Pending(review, decision) = pending else {
@@ -609,7 +719,7 @@ async fn denial_claims_the_review_and_notifies_only_its_connection() {
     assert!(
         fixture
             .component
-            .deny_enrollment_review(review.review_id())
+            .deny_enrollment_review(review.review_id(), JournalContext::default())
             .await
     );
     assert!(matches!(decision
@@ -618,8 +728,27 @@ async fn denial_claims_the_review_and_notifies_only_its_connection() {
     assert!(
         !fixture
             .component
-            .deny_enrollment_review(review.review_id())
+            .deny_enrollment_review(review.review_id(), JournalContext::default())
             .await
+    );
+    assert!(
+        !fixture
+            .component
+            .remove_enrollment_review(
+                review.review_id(),
+                ReviewCancelCause::ClientClose,
+                JournalContext::default()
+            )
+            .await
+    );
+    let records = drain_events(&mut fixture.events);
+    assert_eq!(records.len(), 2);
+    let review_id = ReviewId::from_enrollment_review(review.review_id());
+    assert!(
+        matches!(&records[0].event, Event::ReviewCreated(event) if event.review_id == review_id)
+    );
+    assert!(
+        matches!(&records[1].event, Event::EnrollmentDenied(event) if event.review_id == review_id)
     );
 }
 
@@ -680,6 +809,8 @@ struct Fixture {
     path: PathBuf,
     database: Database,
     component: DeviceComponent,
+    /// Captured review and lifecycle facts from this component instance.
+    events: tokio::sync::mpsc::Receiver<crate::journal::Envelope>,
 }
 
 impl Fixture {
@@ -691,11 +822,13 @@ impl Fixture {
         let database = Database::connect_and_migrate(&DatabaseConfig::new(&path, true))
             .await
             .unwrap_or_else(|error| panic!("test database creation failed: {error:?}"));
-        let component = DeviceComponent::new(database.clone());
+        let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
+        let component = DeviceComponent::new(database.clone(), journal.emitter());
         Self {
             path,
             database,
             component,
+            events,
         }
     }
 

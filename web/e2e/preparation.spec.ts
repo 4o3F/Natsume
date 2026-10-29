@@ -160,6 +160,8 @@ async function mockPreparationApi(
       });
     }
 
+    if (pathname.startsWith("/api/v2/journal/"))
+      return fulfillJson(route, 404, {});
     return fulfillJson(route, 200, []);
   });
 }
