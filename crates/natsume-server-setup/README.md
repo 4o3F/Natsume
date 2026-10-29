@@ -12,7 +12,7 @@ It supports first installation only. It does not reconfigure, renew certificates
 - `/var/lib/natsume-server/keys/server-tls-leaf.der`
 - `/var/lib/natsume-server/keys/server-tls-key.pk8`
 
-The database and `server-root.key` are excluded from this detection so a rolled-back first installation can resume safely. Existing deployments follow the runbook's [manual maintenance procedure](../../docs/operations-deployment.zh-CN.md#84-配置证书和版本更新).
+The business database, journal database, their `-wal`/`-shm` files and `server-root.key` are excluded from this detection so a rolled-back first installation can resume safely. Existing deployments follow the runbook's [manual maintenance procedure](../../docs/operations-deployment.zh-CN.md#84-配置证书和版本更新).
 
 ## Run and prerequisites
 
@@ -72,6 +72,8 @@ The wizard attempts to clear the terminal scrollback after each export. Prompts,
 | `keys/origin-ca-key.pk8`, `keys/server-tls-key.pk8` | `natsume-server:natsume-server` | `0600`, unencrypted PKCS#8 DER |
 | Administrator PKI directory | `root:root` | `0700` |
 
+The generated configuration sets `[storage].journal` to `/var/lib/natsume-server/natsume-journal.db` and writes the Server's default `[journal]` budgets: `max_age_days = 30`, `max_rows = 2000000`, `max_bytes = 536870912`, `min_free_bytes = 1073741824` and `flush_timeout_seconds = 10`, matching `packaging/server/config.example.toml`. No journal settings are prompted for. Server creates the journal as the service user on first startup; setup never creates, modifies or deletes either database. Rollback preserves the journal and both databases' `-wal`/`-shm` files. Adjust budgets after installation following [runbook §8.5](../../docs/operations-deployment.zh-CN.md#85-operational-event-journal日志库).
+
 Origin CA DER is identical to the decoded public `local-origin-ca.crt`. Publication orders keys, trust, then configuration. Each file uses a same-directory temporary file, metadata setting, fsync and non-overwriting atomic publication, rejecting symlinks in deployment paths. Existing managed directories are checked through no-follow handles before confirmation and again during publication. `/etc` must be root-owned without group/other write access; `/var/lib/natsume-server` must match the packaged service ownership and `0750`. This is single-file atomicity, not a power-loss transaction across the entire set.
 
 ## Offline CSR and continuation
@@ -97,7 +99,7 @@ After health succeeds, `<pki-dir>/handoff/<YYYYMMDDTHHMMSSZ>/` contains Client `
 
 ## Failure, cancellation and exit status
 
-The installation commits when HTTPS health passes. Before that point, Ctrl-C is handled during prompts, child processes and health checks; setup waits for interrupted child processes to exit, then rolls back. Earlier ordinary failures attempt to stop the service, disable it if this run enabled it, and remove only this attempt's unchanged deployment files, saved CA exports and newly created empty directories. Changed files and nonempty directories are preserved and cleanup failures are reported. Setup never deletes the database or `server-root.key`. A rolled-back retry can therefore skip completed bootstrap. Discard every CA private key revealed during an aborted attempt and generate fresh keys; a terminal export cannot be recalled.
+The installation commits when HTTPS health passes. Before that point, Ctrl-C is handled during prompts, child processes and health checks; setup waits for interrupted child processes to exit, then rolls back. Earlier ordinary failures attempt to stop the service, disable it if this run enabled it, and remove only this attempt's unchanged deployment files, saved CA exports and newly created empty directories. Changed files and nonempty directories are preserved and cleanup failures are reported. Setup never deletes the business database, journal database, either database's `-wal`/`-shm` files or `server-root.key`. The Deb-supplied state directory is preserved even if recreated after planning. A rolled-back retry can therefore skip completed bootstrap and retain history from a previous service start. Discard every CA private key revealed during an aborted attempt and generate fresh keys; a terminal export cannot be recalled.
 
 Before publishing deployment files, setup creates or verifies `<target-root>/var/lib/natsume-server-setup-rollback/` (root:root `0700`), retains its directory handle, and checks that it shares the keys directory's filesystem. Planning checks existing directory metadata and mount compatibility before confirmation. A preparation failure rejects installation before deployment writes. Rollback uses actual parent ownership and permissions: root-owned directories without group/other write permission (including `/etc` and administrator PKI storage) use fd device/inode/SHA-256 validation followed by same-directory `unlinkat`, without allocating quarantine entries. Service-writable directories use quarantine isolation before validation and deletion. Thus `/etc` may be on another filesystem; keys and quarantine must share one. Modified isolated objects are restored without overwriting the original path; restoration conflicts retain the object in quarantine and report both paths. An empty quarantine created by this attempt is removed after rollback (or when its report is dropped).
 

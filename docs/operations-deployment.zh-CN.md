@@ -292,6 +292,8 @@ sudo natsume-server-setup --pki-dir /root/contest-pki
 
 完整安装写入 /etc/natsume-server/config.toml、两份 /etc/natsume/trust/*.crt（root:root 0644，父目录 0755），以及 keys 下 origin-ca.der、origin-ca-key.pk8、server-tls-leaf.der、server-tls-key.pk8（natsume-server:natsume-server 0600，keys 0700）。在线 key 为未加密 PKCS#8 DER，Origin DER 与公共 PEM 解码结果完全相同。写入顺序为 keys → trust → config，单文件原子发布且不覆盖已有文件。
 
+生成配置显式写入 `[storage].journal = "/var/lib/natsume-server/natsume-journal.db"` 和 `[journal]` 的 Server 默认保留预算，与 `packaging/server/config.example.toml` 一致，不增加交互问题。Server 首次启动时以 `natsume-server` 服务用户创建日志库；setup 不直接创建、修改或删除业务库与日志库。安装后按第 8.5 节调整日志预算。
+
 随后以服务用户 probe 复核部署并只读检测数据库。已初始化则跳过 bootstrap；否则以 natsume-server UID/GID 继承当前 TTY 调用 bootstrap，管理员凭据由 Server 直接读取，setup 不接收。失败先重新探测，再提示重试，最多三次。不要自行以 root 运行 bootstrap。
 
 ### 4.3 CSR 两阶段续接
@@ -309,7 +311,7 @@ sudo natsume-server-setup
 
 setup 执行 daemon-reload、enable、start，并对首个 Server IP 的 /api/v2/health 进行唯一 Control CA 信任的 TLS 1.3 / HTTP/1.1 检查，不用代理或重定向；每次超时 5 秒、响应上限 4 KiB，最多 20 次，间隔 1.5 秒。要求 HTTP 200 且 JSON 仅包含 status: ok。这是服务存活检查；DOMjudge、Client 网络与桌面仍按后文验收。
 
-**提交点为健康检查通过。**此前普通失败会尝试停服、在本次已 enable 时 disable，删除本次创建且未变动的配置/trust/在线材料和本次落盘 CA 备份，清理新建空目录。已变动文件、不空目录及清理失败会报告；数据库和 server-root.key 永不删除。bootstrap 完成后失败的重跑会跳过初始化。已展示的 CA 私钥必须作废，重试生成新钥。
+**提交点为健康检查通过。**此前普通失败会尝试停服、在本次已 enable 时 disable，删除本次创建且未变动的配置/trust/在线材料和本次落盘 CA 备份，清理新建空目录。已变动文件、不空目录及清理失败会报告；业务库 `natsume.db`、日志库 `natsume-journal.db`、两库的 `-wal`／`-shm` 和 `keys/server-root.key` 永不删除。Deb 通过 tmpfiles 提供的 state 目录也保留，即使它在规划后由本次 apply 重建。bootstrap 完成或服务曾启动后回滚，这些持久文件均不参与已部署检测，重跑仍可继续，已完成的初始化会跳过；日志预算调整见第 8.5 节。已展示的 CA 私钥必须作废，重试生成新钥。
 
 若任意七个部署路径存在（config、两份 trust、四份 TLS/Origin 文件），setup 拒绝覆盖；已部署变更见第 8.4 节。断电或强制终止不保证整组回滚，须先检查残留，不能直接删除数据库或 key 强行重装。
 
@@ -1156,9 +1158,17 @@ level = "info"
 
 [storage]
 database = "/var/lib/natsume-server/natsume.db"
+journal = "/var/lib/natsume-server/natsume-journal.db"
 root_key = "/var/lib/natsume-server/keys/server-root.key"
 organization_logos = "/var/lib/natsume-server/organization-logos"
 print_documents = "/var/lib/natsume-server/print-documents"
+
+[journal]
+max_age_days = 30
+max_rows = 2000000
+max_bytes = 536870912
+min_free_bytes = 1073741824
+flush_timeout_seconds = 10
 
 [tls]
 certificate = "/var/lib/natsume-server/keys/server-tls-leaf.der"

@@ -117,7 +117,15 @@ pub fn apply_plan(plan: &DeploymentPlan) -> Result<ApplyReport, ApplyError> {
     };
     for directory in plan.prerequisites.iter().chain(&plan.directories) {
         match file::ensure_directory(&directory.path, directory.owner, directory.mode) {
-            Ok(created) => report.created_directories.extend(created),
+            Ok(created) => {
+                if !plan
+                    .prerequisites
+                    .iter()
+                    .any(|prerequisite| prerequisite.path == directory.path)
+                {
+                    report.created_directories.extend(created);
+                }
+            }
             Err(source) => {
                 tracing::error!(path = ?directory.path, "cannot ensure deployment directory");
                 return Err(source).context(EnsureDirectorySnafu {
@@ -156,6 +164,10 @@ pub fn apply_plan(plan: &DeploymentPlan) -> Result<ApplyReport, ApplyError> {
 }
 
 /// Reverses this attempt's creations, preserving modified files and nonempty directories.
+///
+/// Never removes `natsume.db`, `natsume-journal.db`, either database's `-wal` or `-shm`,
+/// or `keys/server-root.key`: these are never recorded as setup creations. The Deb-supplied
+/// state directory is also excluded, even if recreated after planning.
 #[must_use]
 pub fn rollback(report: &ApplyReport) -> RollbackOutcome {
     let mut outcome = RollbackOutcome::default();
@@ -528,25 +540,76 @@ mod tests {
     }
 
     #[test]
-    fn rollback_keeps_bootstrap_files_created_after_apply_without_failures() -> Result<(), TestError>
+    fn rollback_keeps_databases_sidecars_and_root_key_created_after_apply() -> Result<(), TestError>
     {
         let fixture = Fixture::new()?;
-        let report = apply_plan(&fixture.plan()?)?;
+        let plan = fixture.plan()?;
+        fs::remove_dir(fixture.path(config::STATE_DIRECTORY))?;
+        let report = apply_plan(&plan)?;
         assert!(
             report
                 .created_directories
                 .contains(&fixture.path(config::KEYS_DIRECTORY))
         );
         let unrelated = fixture.write("/var/lib/natsume-server/keys/unrelated", b"later file")?;
-        let database = fixture.write(config::DATABASE, b"new database")?;
-        let root_key = fixture.write(config::ROOT_KEY, b"new root key")?;
+        let protected = [
+            config::DATABASE,
+            "/var/lib/natsume-server/natsume.db-wal",
+            "/var/lib/natsume-server/natsume.db-shm",
+            config::JOURNAL_DATABASE,
+            "/var/lib/natsume-server/natsume-journal.db-wal",
+            "/var/lib/natsume-server/natsume-journal.db-shm",
+            config::ROOT_KEY,
+        ];
+        for destination in protected {
+            fixture.write(destination, destination.as_bytes())?;
+        }
+        assert!(
+            !report
+                .created_directories
+                .contains(&fixture.path(config::STATE_DIRECTORY)),
+            "state directory must stay outside the rollback set"
+        );
         let outcome = rollback(&report);
-        assert_eq!(fs::read(database)?, b"new database");
+        for destination in protected {
+            let path = fixture.path(destination);
+            assert!(
+                report
+                    .created_files
+                    .iter()
+                    .all(|created| created.path != path),
+                "persistent file must stay outside the rollback set: {path:?}"
+            );
+            assert!(
+                !outcome.removed.contains(&path),
+                "removed persistent file: {path:?}"
+            );
+            assert_eq!(fs::read(&path)?, destination.as_bytes(), "{path:?}");
+        }
         assert_eq!(fs::read(unrelated)?, b"later file");
         assert_eq!(outcome.kept, [fixture.path(config::KEYS_DIRECTORY)]);
-        assert_eq!(fs::read(root_key)?, b"new root key");
+        assert!(fixture.path(config::STATE_DIRECTORY).is_dir());
+        assert!(
+            !plan.rollback_directory.path.exists(),
+            "quarantine must be empty and removed"
+        );
         assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
         assert!(outcome.failures.is_empty(), "{outcome:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn rollback_keeps_empty_state_directory_recreated_after_planning() -> Result<(), TestError> {
+        let fixture = Fixture::new()?;
+        let plan = fixture.plan()?;
+        let state = fixture.path(config::STATE_DIRECTORY);
+        fs::remove_dir(&state)?;
+        let report = apply_plan(&plan)?;
+        assert!(!report.created_directories.contains(&state));
+        let outcome = rollback(&report);
+        assert!(outcome.failures.is_empty(), "{outcome:?}");
+        assert!(!outcome.removed.contains(&state));
+        assert_eq!(fs::read_dir(&state)?.count(), 0);
         Ok(())
     }
 

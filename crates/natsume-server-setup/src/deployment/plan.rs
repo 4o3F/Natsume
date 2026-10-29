@@ -151,6 +151,9 @@ impl DeploymentPlan {
 
 /// Finds occupied deployment file paths, including dangling symbolic links.
 ///
+/// Ignores `natsume.db`, `natsume-journal.db`, both databases' `-wal` and `-shm`, and
+/// `keys/server-root.key`, allowing retries after bootstrap or a rolled-back service start.
+///
 /// # Errors
 /// Returns the path and source when filesystem inspection fails.
 pub fn detect_existing_deployment(target_root: &Path) -> Result<Vec<PathBuf>, PlanError> {
@@ -707,9 +710,27 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn journal_database_alone_does_not_count_as_existing_deployment() -> Result<(), TestError> {
+        let fixture = Fixture::new()?;
+        fixture.write(config::JOURNAL_DATABASE, b"journal database")?;
+        assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
+        fixture.plan()?;
+        Ok(())
+    }
+
+    #[test]
     fn detects_all_existing_paths_but_ignores_database_and_root_key() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
         fixture.write(config::DATABASE, b"database")?;
+        fixture.write(config::JOURNAL_DATABASE, b"journal database")?;
+        for destination in [
+            "/var/lib/natsume-server/natsume.db-wal",
+            "/var/lib/natsume-server/natsume.db-shm",
+            "/var/lib/natsume-server/natsume-journal.db-wal",
+            "/var/lib/natsume-server/natsume-journal.db-shm",
+        ] {
+            fixture.write(destination, b"sidecar")?;
+        }
         fixture.write(config::ROOT_KEY, b"vault key")?;
         assert!(detect_existing_deployment(fixture.root.path())?.is_empty());
         fixture.plan()?;

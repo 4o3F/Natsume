@@ -3,7 +3,7 @@
 use super::{CaRole, Choice, PromptId};
 use crate::preflight::PreflightWarning;
 use crate::{
-    config::DeploymentParameters,
+    config::{DeploymentParameters, JOURNAL_DATABASE},
     deployment::file::FileSpec,
     handoff::CertificateSummary,
     pki::rules::{ServerTlsOption, Unavailability},
@@ -402,7 +402,11 @@ impl Notice {
                 "{role}: encrypted private key will be revealed once; saving it to administrator PKI storage is optional and defaults to no."
             )?;
         }
-        f.write_str("The database and server-root.key will never be modified or removed by setup.")
+        writeln!(
+            f,
+            "On first startup, Server creates {JOURNAL_DATABASE} as the natsume-server service user, using the default journal retention budgets. Adjust them after installation following operations manual section 8.5."
+        )?;
+        f.write_str("Setup never creates, modifies or deletes the business database, journal database, their -wal/-shm files, or server-root.key.")
     }
     fn format_installation(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let Self::InstallationSummary {

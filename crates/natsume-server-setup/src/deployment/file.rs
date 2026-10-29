@@ -563,6 +563,9 @@ impl RollbackDirectory {
 
     /// Selects protected-directory unlink or service-writable quarantine using actual metadata.
     ///
+    /// Deployment records exclude `natsume.db`, `natsume-journal.db`, their `-wal` and
+    /// `-shm` files, and `keys/server-root.key`; none enter rollback isolation or deletion.
+    ///
     /// # Errors
     /// Returns the original validation, isolation, or removal error.
     pub(super) fn remove_deployment_file(&self, created: &CreatedFile) -> Result<(), FileError> {
