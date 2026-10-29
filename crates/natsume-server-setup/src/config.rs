@@ -11,6 +11,13 @@ use snafu::{OptionExt, ResultExt, Snafu, ensure};
 use time::{Duration, OffsetDateTime, format_description::well_known::Rfc3339};
 use toml::{Table, Value};
 
+/// Administrator-owned PKI directory used when no override is supplied.
+pub const DEFAULT_PKI_DIRECTORY: &str = "/root/natsume-pki";
+/// Server executable installed by the Deb package.
+pub const SERVER_BINARY: &str = "/usr/bin/natsume-server";
+/// Systemd unit installed by the Server package.
+pub const SERVICE_UNIT: &str = "natsume-server.service";
+
 /// Existing system configuration directory required before setup.
 pub const SYSTEM_CONFIG_DIRECTORY: &str = "/etc";
 /// Root-owned directory containing Server deployment configuration.

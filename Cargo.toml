@@ -83,6 +83,7 @@ image = { version = "0.25.10", default-features = false, features = [
   "jpeg",
   "webp"
 ] }
+inquire = { version = "0.9.4", default-features = false, features = ["crossterm"] }
 resvg = { version = "0.48", default-features = false, features = [
   "text",
   "system-fonts",

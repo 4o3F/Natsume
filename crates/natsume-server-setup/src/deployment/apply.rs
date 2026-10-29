@@ -152,7 +152,7 @@ mod tests {
     fn applies_complete_materials_and_metadata_then_rolls_back_in_reverse() -> Result<(), TestError>
     {
         let fixture = Fixture::new()?;
-        let plan = fixture.unprivileged_plan()?;
+        let plan = fixture.plan()?;
         let report = apply_plan(&plan)?;
         assert_eq!(report.created_files.len(), 7);
         assert_eq!(detect_existing_deployment(fixture.root.path())?.len(), 7);
@@ -211,7 +211,7 @@ mod tests {
             let root_key = fixture.write(config::ROOT_KEY, b"root key unchanged")?;
             let unrelated =
                 fixture.write("/var/lib/natsume-server/keys/unrelated", b"unrelated")?;
-            let plan = fixture.unprivileged_plan()?;
+            let plan = fixture.plan()?;
             let conflict = &plan.files[index].spec.path;
             fs::create_dir_all(conflict.parent().ok_or(TestError::MissingParent)?)?;
             fs::write(conflict, b"conflict unchanged")?;
@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn directory_conflict_rolls_back_created_parents() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
-        let plan = fixture.unprivileged_plan()?;
+        let plan = fixture.plan()?;
         fixture.write("/etc/natsume", b"directory conflict")?;
         let Err(error) = apply_plan(&plan) else {
             panic!("non-directory trust parent must reject apply");
@@ -293,7 +293,7 @@ mod tests {
         fs::set_permissions(&keys, fs::Permissions::from_mode(0o750))?;
         let before = fs::metadata(&keys)?;
         for _ in 0..2 {
-            let report = apply_plan(&fixture.unprivileged_plan()?)?;
+            let report = apply_plan(&fixture.plan()?)?;
             assert!(!report.created_directories.contains(&keys));
             let outcome = rollback(&report);
             assert!(outcome.failures.is_empty(), "{outcome:?}");
@@ -312,7 +312,7 @@ mod tests {
     #[test]
     fn rollback_reports_modified_file_and_keeps_nonempty_directories() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
-        let report = apply_plan(&fixture.unprivileged_plan()?)?;
+        let report = apply_plan(&fixture.plan()?)?;
         let changed = fixture.path(config::SERVER_TLS_KEY);
         fs::write(&changed, b"external change")?;
         let outcome = rollback(&report);
@@ -352,7 +352,7 @@ mod tests {
     fn rollback_keeps_replaced_file_and_symlink() -> Result<(), TestError> {
         for link in [false, true] {
             let fixture = Fixture::new()?;
-            let report = apply_plan(&fixture.unprivileged_plan()?)?;
+            let report = apply_plan(&fixture.plan()?)?;
             let changed = fixture.path(config::CONFIG_PATH);
             let contents = fs::read(&changed)?;
             let original = fs::File::open(&changed)?;
@@ -384,7 +384,7 @@ mod tests {
     fn rollback_keeps_bootstrap_files_created_after_apply_without_failures() -> Result<(), TestError>
     {
         let fixture = Fixture::new()?;
-        let report = apply_plan(&fixture.unprivileged_plan()?)?;
+        let report = apply_plan(&fixture.plan()?)?;
         assert!(
             report
                 .created_directories
@@ -410,7 +410,7 @@ mod tests {
         fs::create_dir_all(fixture.path("/var/lib/natsume-server"))?;
         let keys = fixture.path(config::KEYS_DIRECTORY);
         symlink(outside.path(), &keys)?;
-        let plan = fixture.unprivileged_plan()?;
+        let plan = fixture.plan()?;
         let Err(error) = apply_plan(&plan) else {
             panic!("symlink keys directory must reject apply");
         };
@@ -433,7 +433,7 @@ mod tests {
             return Ok(());
         }
         let fixture = Fixture::new()?;
-        let plan = fixture.unprivileged_plan()?;
+        let plan = fixture.plan()?;
         let trust = fixture.path("/etc/natsume/trust");
         fs::create_dir_all(&trust)?;
         fs::set_permissions(&trust, fs::Permissions::from_mode(0o555))?;

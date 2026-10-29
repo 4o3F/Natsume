@@ -7,6 +7,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[[bin]]
+name = "natsume-server-setup"
+path = "src/main.rs"
+
+[dependencies]
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
 [target.'cfg(target_os = "linux")'.dependencies]
 natsume-server = { path = "../natsume-server" }
 rcgen = { workspace = true, features = ["pem", "x509-parser"] }
@@ -23,9 +31,18 @@ hex.workspace = true
 time.workspace = true
 toml = { workspace = true, features = ["display"] }
 snafu.workspace = true
-tracing.workspace = true
-rustix = { workspace = true, features = ["fs"] }
+clap.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+inquire.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "termios"] }
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio-rustls.workspace = true
 
 [lints]
 workspace = true

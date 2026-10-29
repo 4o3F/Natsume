@@ -23,7 +23,14 @@ const DEPLOYMENT_FILES: [&str; 7] = [
     config::LOCAL_ORIGIN_TRUST,
     config::CONFIG_PATH,
 ];
-const ROOT: Ownership = Ownership { uid: 0, gid: 0 };
+/// Ownership applied to public system files and private service materials.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Owners {
+    /// Administrator identity owning configuration and trust anchors.
+    pub root: Ownership,
+    /// Service identity owning online private keys.
+    pub service: Ownership,
+}
 
 /// First-install detection failure retaining filesystem causes.
 #[derive(Debug, Snafu)]
@@ -101,6 +108,20 @@ pub struct DeploymentPlan {
     pub(super) directories: Vec<PlannedDirectory>,
 }
 
+impl DeploymentPlan {
+    /// Lists planned directory and file metadata in publication order, without contents.
+    pub fn entries(&self) -> impl Iterator<Item = FileSpec> + '_ {
+        self.directories
+            .iter()
+            .map(|directory| FileSpec {
+                path: directory.path.clone(),
+                owner: directory.owner,
+                mode: directory.mode,
+            })
+            .chain(self.files.iter().map(|file| file.spec.clone()))
+    }
+}
+
 /// Finds occupied deployment file paths, including dangling symbolic links.
 ///
 /// # Errors
@@ -127,7 +148,7 @@ pub fn detect_existing_deployment(target_root: &Path) -> Result<Vec<PathBuf>, Pl
 /// Rejects missing prerequisites, existing deployment files, and unsuccessful filesystem inspections.
 pub fn build_plan(
     target_root: &Path,
-    service: Ownership,
+    owners: Owners,
     materials: PlanMaterials<'_>,
 ) -> Result<DeploymentPlan, PlanError> {
     for prerequisite in [config::SYSTEM_CONFIG_DIRECTORY, config::STATE_DIRECTORY] {
@@ -151,49 +172,49 @@ pub fn build_plan(
         planned_file(
             target_root,
             config::ORIGIN_CA_DER,
-            service,
+            owners.service,
             0o600,
             materials.origin_ca.der(),
         ),
         planned_file(
             target_root,
             config::ORIGIN_CA_KEY,
-            service,
+            owners.service,
             0o600,
             materials.origin_key.pkcs8_der(),
         ),
         planned_file(
             target_root,
             config::SERVER_TLS_LEAF,
-            service,
+            owners.service,
             0o600,
             materials.tls_leaf.der(),
         ),
         planned_file(
             target_root,
             config::SERVER_TLS_KEY,
-            service,
+            owners.service,
             0o600,
             materials.tls_key.pkcs8_der(),
         ),
         planned_file(
             target_root,
             config::CONTROL_CA_TRUST,
-            ROOT,
+            owners.root,
             0o644,
             materials.control_ca.to_pem().as_bytes(),
         ),
         planned_file(
             target_root,
             config::LOCAL_ORIGIN_TRUST,
-            ROOT,
+            owners.root,
             0o644,
             materials.origin_ca.to_pem().as_bytes(),
         ),
         planned_file(
             target_root,
             config::CONFIG_PATH,
-            ROOT,
+            owners.root,
             0o644,
             materials.config.as_bytes(),
         ),
@@ -201,22 +222,22 @@ pub fn build_plan(
     let directories = vec![
         PlannedDirectory {
             path: rooted(target_root, config::CONFIG_DIRECTORY),
-            owner: ROOT,
+            owner: owners.root,
             mode: 0o755,
         },
         PlannedDirectory {
             path: rooted(target_root, config::TRUST_PARENT_DIRECTORY),
-            owner: ROOT,
+            owner: owners.root,
             mode: 0o755,
         },
         PlannedDirectory {
             path: rooted(target_root, config::TRUST_DIRECTORY),
-            owner: ROOT,
+            owner: owners.root,
             mode: 0o755,
         },
         PlannedDirectory {
             path: rooted(target_root, config::KEYS_DIRECTORY),
-            owner: service,
+            owner: owners.service,
             mode: 0o700,
         },
     ];
@@ -345,18 +366,14 @@ pub(super) mod tests {
         }
 
         pub fn plan(&self) -> Result<DeploymentPlan, TestError> {
-            Ok(build_plan(self.root.path(), ownership(), self.materials())?)
-        }
-
-        pub fn unprivileged_plan(&self) -> Result<DeploymentPlan, TestError> {
-            let mut plan = self.plan()?;
-            for file in &mut plan.files {
-                file.spec.owner = ownership();
-            }
-            for directory in &mut plan.directories {
-                directory.owner = ownership();
-            }
-            Ok(plan)
+            Ok(build_plan(
+                self.root.path(),
+                Owners {
+                    root: ownership(),
+                    service: ownership(),
+                },
+                self.materials(),
+            )?)
         }
 
         pub fn write(&self, destination: &str, contents: &[u8]) -> Result<PathBuf, TestError> {
@@ -377,16 +394,26 @@ pub(super) mod tests {
     #[test]
     fn plan_orders_files_and_sets_metadata_without_writing() -> Result<(), TestError> {
         let fixture = Fixture::new()?;
-        let plan = fixture.plan()?;
+        let owners = Owners {
+            root: Ownership {
+                uid: 1234,
+                gid: 2345,
+            },
+            service: Ownership {
+                uid: 3456,
+                gid: 4567,
+            },
+        };
+        let plan = build_plan(fixture.root.path(), owners, fixture.materials())?;
         assert_eq!(plan.files.len(), 7);
         for (file, (destination, owner, mode)) in plan.files.iter().zip([
-            (config::ORIGIN_CA_DER, ownership(), 0o600),
-            (config::ORIGIN_CA_KEY, ownership(), 0o600),
-            (config::SERVER_TLS_LEAF, ownership(), 0o600),
-            (config::SERVER_TLS_KEY, ownership(), 0o600),
-            (config::CONTROL_CA_TRUST, ROOT, 0o644),
-            (config::LOCAL_ORIGIN_TRUST, ROOT, 0o644),
-            (config::CONFIG_PATH, ROOT, 0o644),
+            (config::ORIGIN_CA_DER, owners.service, 0o600),
+            (config::ORIGIN_CA_KEY, owners.service, 0o600),
+            (config::SERVER_TLS_LEAF, owners.service, 0o600),
+            (config::SERVER_TLS_KEY, owners.service, 0o600),
+            (config::CONTROL_CA_TRUST, owners.root, 0o644),
+            (config::LOCAL_ORIGIN_TRUST, owners.root, 0o644),
+            (config::CONFIG_PATH, owners.root, 0o644),
         ]) {
             assert_eq!(file.spec.path, fixture.path(destination));
             assert_eq!(file.spec.mode, mode);
@@ -395,7 +422,10 @@ pub(super) mod tests {
         for directory in &plan.directories {
             let private = directory.path == fixture.path(config::KEYS_DIRECTORY);
             assert_eq!(directory.mode, if private { 0o700 } else { 0o755 });
-            assert_eq!(directory.owner, if private { ownership() } else { ROOT });
+            assert_eq!(
+                directory.owner,
+                if private { owners.service } else { owners.root }
+            );
         }
         assert_eq!(
             plan.directories

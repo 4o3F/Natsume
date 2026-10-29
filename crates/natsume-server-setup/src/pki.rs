@@ -2,6 +2,7 @@
 
 pub mod generate;
 pub mod import;
+pub mod pending;
 pub mod rules;
 pub mod validate;
 

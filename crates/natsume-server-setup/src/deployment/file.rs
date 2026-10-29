@@ -10,6 +10,7 @@ use std::{
 use rustix::fs::{self as unix_fs, AtFlags, FileType, Gid, Mode, OFlags, RenameFlags, Uid};
 use sha2::{Digest as _, Sha256};
 use snafu::{OptionExt as _, ResultExt as _, Snafu, ensure};
+use zeroize::Zeroizing;
 
 /// Numeric Unix ownership applied to newly created deployment entries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +20,9 @@ pub struct Ownership {
     /// Group ID of the entry owner.
     pub gid: u32,
 }
+
+/// Root ownership required for administrator signing material.
+pub const ROOT_OWNER: Ownership = Ownership { uid: 0, gid: 0 };
 
 /// Destination and final metadata for a newly installed file.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,10 +75,28 @@ pub enum FileError {
         /// Path whose identity or contents differ from the creation record.
         path: PathBuf,
     },
-    /// A file destination has no final filename.
-    #[snafu(display("invalid file path: {}", path.display()))]
+    /// A filesystem path has an invalid shape or contains forbidden parent traversal.
+    #[snafu(display("invalid filesystem path: {}", path.display()))]
     InvalidPath {
-        /// Destination lacking a final filename or parent.
+        /// Rejected directory or file path.
+        path: PathBuf,
+    },
+    /// An absolute administrator PKI path could not be rooted.
+    #[snafu(display("cannot resolve administrator PKI path"))]
+    PathPrefix {
+        /// Original path normalization cause.
+        source: std::path::StripPrefixError,
+    },
+    /// A protected input has unsafe ownership, permissions, or entry type.
+    #[snafu(display("unsafe input ownership, permissions, or type: {}", path.display()))]
+    Metadata {
+        /// Input with rejected metadata.
+        path: PathBuf,
+    },
+    /// An input exceeds its bounded read allowance.
+    #[snafu(display("input too large: {}", path.display()))]
+    TooLarge {
+        /// Oversized input path.
         path: PathBuf,
     },
     /// The underlying filesystem operation failed.
@@ -395,6 +417,105 @@ pub fn remove_created_directory(path: &Path) -> Result<DirectoryRemoval, FileErr
     Ok(DirectoryRemoval::Removed)
 }
 
+/// Resolves an absolute administrator PKI path beneath the selected target root.
+///
+/// # Errors
+/// Rejects relative paths and parent traversal, retaining any prefix-removal failure.
+pub(crate) fn rooted_pki(target_root: &Path, pki_dir: &Path) -> Result<PathBuf, FileError> {
+    ensure!(
+        pki_dir.is_absolute()
+            && pki_dir
+                .components()
+                .all(|part| !matches!(part, Component::ParentDir)),
+        InvalidPathSnafu { path: pki_dir }
+    );
+    Ok(target_root.join(pki_dir.strip_prefix("/").context(PathPrefixSnafu)?))
+}
+
+fn open_directory(path: &Path) -> Result<File, FileError> {
+    ensure!(
+        !path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir)),
+        InvalidPathSnafu { path }
+    );
+    walk_directory(path, None).map(|(directory, _)| directory)
+}
+
+/// Verifies ownership and exact permissions through a symlink-resistant directory walk.
+///
+/// # Errors
+/// Rejects parent traversal, symbolic links, unsafe metadata, and filesystem failures.
+pub(crate) fn check_directory(path: &Path, owner: Ownership, mode: u32) -> Result<(), FileError> {
+    let metadata = open_directory(path)?.metadata().context(IoSnafu { path })?;
+    ensure!(
+        metadata.uid() == owner.uid
+            && metadata.gid() == owner.gid
+            && metadata.mode() & 0o7777 == mode,
+        MetadataSnafu { path }
+    );
+    Ok(())
+}
+
+/// Reads a protected regular file within the byte limit and records its identity and digest.
+///
+/// # Errors
+/// Rejects symbolic links, unsafe metadata, oversized inputs, and filesystem failures.
+pub(crate) fn read_file(
+    path: &Path,
+    owner: Ownership,
+    mode: u32,
+    max_bytes: u64,
+) -> Result<(Zeroizing<Vec<u8>>, CreatedFile), FileError> {
+    let parent = path.parent().context(InvalidPathSnafu { path })?;
+    let name = path.file_name().context(InvalidPathSnafu { path })?;
+    let directory = open_directory(parent)?;
+    let file = File::from(
+        unix_fs::openat(
+            &directory,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(io::Error::from)
+        .context(IoSnafu { path })?,
+    );
+    let metadata = file.metadata().context(IoSnafu { path })?;
+    ensure!(
+        metadata.is_file()
+            && metadata.uid() == owner.uid
+            && metadata.gid() == owner.gid
+            && metadata.mode() & 0o7777 == mode,
+        MetadataSnafu { path }
+    );
+    let mut bytes = Zeroizing::new(Vec::new());
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .context(IoSnafu { path })?;
+    ensure!(bytes.len() as u64 <= max_bytes, TooLargeSnafu { path });
+    let created = CreatedFile {
+        path: path.into(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        sha256: Sha256::digest(&bytes).into(),
+    };
+    Ok((bytes, created))
+}
+
+/// Reverses only recorded creations after a failed pending or handoff publication.
+pub(crate) fn cleanup(files: &[CreatedFile], directories: &[PathBuf]) {
+    for file in files.iter().rev() {
+        if let Err(error) = remove_created_file(file) {
+            tracing::error!(error = %snafu::Report::from_error(error), "cannot remove incomplete setup file");
+        }
+    }
+    for directory in directories.iter().rev() {
+        if let Err(error) = remove_created_directory(directory) {
+            tracing::error!(error = %snafu::Report::from_error(error), "cannot remove incomplete setup directory");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{error::Error as _, fs, os::unix::fs::PermissionsExt as _};
@@ -428,6 +549,89 @@ mod tests {
             mode: 0o640,
         };
         Ok((directory, spec))
+    }
+
+    #[test]
+    fn protected_reads_enforce_metadata_and_size_and_record_identity() -> TestResult {
+        let (directory, spec) = fixture()?;
+        let created = create_new_file(&spec, b"contents").context(TestFileSnafu)?;
+        let (bytes, read) =
+            read_file(&spec.path, spec.owner, spec.mode, 8).context(TestFileSnafu)?;
+        assert_eq!(bytes.as_slice(), b"contents");
+        assert_eq!(read, created);
+        assert!(matches!(
+            read_file(&spec.path, spec.owner, spec.mode, 7),
+            Err(FileError::TooLarge { .. })
+        ));
+        assert!(matches!(
+            read_file(&spec.path, spec.owner, 0o600, 8),
+            Err(FileError::Metadata { .. })
+        ));
+        let other_owner = Ownership {
+            uid: spec.owner.uid ^ 1,
+            ..spec.owner
+        };
+        assert!(matches!(
+            read_file(&spec.path, other_owner, spec.mode, 8),
+            Err(FileError::Metadata { .. })
+        ));
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700))
+            .context(TestIoSnafu)?;
+        check_directory(directory.path(), spec.owner, 0o700).context(TestFileSnafu)?;
+        assert!(matches!(
+            check_directory(directory.path(), spec.owner, 0o755),
+            Err(FileError::Metadata { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn protected_reads_reject_symlinks_and_parent_traversal() -> TestResult {
+        let (directory, spec) = fixture()?;
+        create_new_file(&spec, b"contents").context(TestFileSnafu)?;
+        let link = directory.path().join("link");
+        std::os::unix::fs::symlink(directory.path(), &link).context(TestIoSnafu)?;
+        assert!(matches!(
+            check_directory(&link, spec.owner, 0o700),
+            Err(FileError::SymlinkRejected { .. })
+        ));
+        assert!(matches!(
+            read_file(&link.join("installed"), spec.owner, spec.mode, 8),
+            Err(FileError::SymlinkRejected { .. })
+        ));
+        let file_link = directory.path().join("file-link");
+        std::os::unix::fs::symlink(&spec.path, &file_link).context(TestIoSnafu)?;
+        let Err(error) = read_file(&file_link, spec.owner, spec.mode, 8) else {
+            panic!("protected read accepted a file symlink");
+        };
+        assert!(
+            error.source().is_some(),
+            "symlink open failure must retain its source"
+        );
+        for path in [Path::new("relative"), Path::new("/pki/../elsewhere")] {
+            assert!(matches!(
+                rooted_pki(directory.path(), path),
+                Err(FileError::InvalidPath { .. })
+            ));
+        }
+        assert_eq!(
+            rooted_pki(directory.path(), Path::new("/pki")).context(TestFileSnafu)?,
+            directory.path().join("pki")
+        );
+        assert!(matches!(
+            check_directory(&directory.path().join(".."), spec.owner, 0o700),
+            Err(FileError::InvalidPath { .. })
+        ));
+        assert!(matches!(
+            read_file(
+                &directory.path().join("../installed"),
+                spec.owner,
+                spec.mode,
+                8
+            ),
+            Err(FileError::InvalidPath { .. })
+        ));
+        Ok(())
     }
 
     #[test]
