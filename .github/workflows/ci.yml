@@ -53,6 +53,9 @@ jobs:
       - name: Build orchestration tests
         if: runner.os == 'Linux'
         run: deno task test scripts
+      - name: Install pinned Helper test runner
+        if: runner.os == 'Linux'
+        run: cargo install cargo-nextest --version 0.9.150 --locked
       - name: Rust workspace tests
         run: deno task test rust
       - name: Test portable staging on Windows
