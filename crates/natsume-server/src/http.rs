@@ -46,7 +46,9 @@ pub(crate) fn router(state: AppState, web_root: &Path) -> Router {
 // have the same cache policy as its handlers.
 async fn private_namespace_no_store(request: Request, next: Next) -> Response {
     let path = request.uri().path();
-    let private = path == "/api/v2/operator"
+    let private = path == "/api/v2/journal"
+        || path.starts_with("/api/v2/journal/")
+        || path == "/api/v2/operator"
         || path.starts_with("/api/v2/operator/")
         || path == "/api/v2/print"
         || path.starts_with("/api/v2/print/");
@@ -73,6 +75,7 @@ fn route_groups(state: &AppState) -> [Routes; 4] {
     .collect();
     let operator = [
         handler::contest::operator_routes(),
+        handler::journal::operator_routes(),
         handler::device::operator_routes(),
         handler::enrollment::operator_routes(),
         handler::import::operator_routes(),
@@ -135,7 +138,14 @@ fn api_v2(state: &AppState) -> Router<AppState> {
         .merge(client_group(state.clone(), client))
         .fallback(not_found)
         .layer(axum_middleware::from_fn(middleware::reject_head))
-        .layer(axum_middleware::from_fn(middleware::complete_mutation))
+        .layer(axum_middleware::from_fn_with_state(
+            state.journal().emitter(),
+            middleware::audit::audit_request,
+        ))
+        .layer(axum_middleware::from_fn_with_state(
+            middleware::CompletionState::new(state.lifecycle().clone(), state.journal().emitter()),
+            middleware::complete_mutation,
+        ))
 }
 
 async fn not_found() -> ApiError {

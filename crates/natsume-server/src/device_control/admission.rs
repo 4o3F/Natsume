@@ -300,5 +300,31 @@ pub(super) enum AdmissionError {
     EnrollmentActivationMismatch,
 }
 
+impl AdmissionError {
+    pub(super) fn journal_stage(&self) -> crate::journal::event::types::AdmissionStage {
+        use crate::journal::event::types::AdmissionStage;
+        match self {
+            Self::EntropyUnavailable { .. } => AdmissionStage::Challenge,
+            Self::InvalidDaemonVersion
+            | Self::InvalidAgentVersion
+            | Self::InvalidClientIp
+            | Self::InvalidMachineHardwareId
+            | Self::InvalidCandidatePublicKey
+            | Self::InvalidEnrollmentEvidenceQuality => AdmissionStage::Metadata,
+            Self::ProofWindowConsumed
+            | Self::UnexpectedHandshakeMessage
+            | Self::MissingProofPurpose
+            | Self::ProofRejected => AdmissionStage::Proof,
+            Self::ResumeAuthorityUnavailable | Self::ResumeAuthorityInactive => {
+                AdmissionStage::ResumeAuthority
+            }
+            Self::EnrollmentAuthorityMismatch | Self::EnrollmentAuthorityInactive => {
+                AdmissionStage::ReadyExchange
+            }
+            Self::EnrollmentActivationMismatch => AdmissionStage::Activation,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

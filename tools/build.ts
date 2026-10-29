@@ -17,36 +17,52 @@ import {
 async function checkSchema(): Promise<void> {
   // Diesel otherwise silently skips Rust formatting when rustfmt is unavailable.
   await run("rustfmt", ["--version"]);
-  const directory = await Deno.makeTempDir({ dir: work, prefix: "schema-" });
-  try {
-    const database = resolve(directory, "schema.sqlite3");
-    await run("diesel", [
-      "--database-url",
-      database,
-      "--config-file",
-      "/dev/null",
-      "migration",
-      "run",
-      "--migration-dir",
-      "crates/natsume-server/migrations",
-    ], { env: offline });
-    const schema = await run("diesel", [
-      "--database-url",
-      database,
-      "--config-file",
-      "crates/natsume-server/diesel.toml",
-      "print-schema",
-    ], { env: offline, capture: true });
-    const generated = resolve(directory, "schema.rs");
-    await Deno.writeTextFile(generated, schema);
-    await run("diff", [
-      "-u",
-      "--",
-      generated,
-      resolve(root, "crates/natsume-server/diesel/schema.rs"),
-    ]);
-  } finally {
-    await Deno.remove(directory, { recursive: true });
+  for (
+    const tree of [
+      {
+        config: "diesel/business/diesel.toml",
+        migrations: "diesel/business/migrations",
+        schema: "diesel/business/schema.rs",
+      },
+      {
+        config: "diesel/journal/diesel.toml",
+        migrations: "diesel/journal/migrations",
+        schema: "diesel/journal/schema.rs",
+      },
+    ]
+  ) {
+    const base = "crates/natsume-server";
+    const directory = await Deno.makeTempDir({ dir: work, prefix: "schema-" });
+    try {
+      const database = resolve(directory, "schema.sqlite3");
+      await run("diesel", [
+        "--database-url",
+        database,
+        "--config-file",
+        "/dev/null",
+        "migration",
+        "run",
+        "--migration-dir",
+        resolve(base, tree.migrations),
+      ], { env: offline });
+      const schema = await run("diesel", [
+        "--database-url",
+        database,
+        "--config-file",
+        resolve(base, tree.config),
+        "print-schema",
+      ], { env: offline, capture: true });
+      const generated = resolve(directory, "schema.rs");
+      await Deno.writeTextFile(generated, schema);
+      await run("diff", [
+        "-u",
+        "--",
+        generated,
+        resolve(root, base, tree.schema),
+      ]);
+    } finally {
+      await Deno.remove(directory, { recursive: true });
+    }
   }
 }
 

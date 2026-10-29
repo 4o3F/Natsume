@@ -1,5 +1,6 @@
+use crate::http::middleware::audit::RequestAudit;
 use axum::{
-    Json,
+    Extension, Json,
     extract::{
         Path, Query, State,
         rejection::{JsonRejection, QueryRejection},
@@ -185,8 +186,10 @@ pub(crate) async fn get_device(
     }
 }
 
-pub(crate) async fn update_device(
+pub(in crate::http) async fn update_device(
+    Extension(audit): Extension<RequestAudit>,
     State(state): State<AppState>,
+    Extension(admission): Extension<crate::lifecycle::Admission>,
     Path(path): Path<DevicePath>,
     request: Result<Json<DeviceUpdateRequest>, JsonRejection>,
 ) -> Response {
@@ -196,10 +199,21 @@ pub(crate) async fn update_device(
     let Some(device_id) = parse_device_id(&path) else {
         return invalid_device_id();
     };
+    let context = audit.context();
     let outcome = match request.state {
-        DeviceStateResponse::Enabled => state.device().enable(device_id).await,
-        DeviceStateResponse::Disabled => state.device_control().disable_device(device_id).await,
-        DeviceStateResponse::Revoked => state.device_control().revoke_device(device_id).await,
+        DeviceStateResponse::Enabled => state.device().enable(device_id, context.clone()).await,
+        DeviceStateResponse::Disabled => {
+            state
+                .device_control()
+                .disable_device(&admission, device_id, context.clone())
+                .await
+        }
+        DeviceStateResponse::Revoked => {
+            state
+                .device_control()
+                .revoke_device(&admission, device_id, context.clone())
+                .await
+        }
     };
     match outcome {
         Ok(LifecycleOutcome::Changed | LifecycleOutcome::Unchanged) => {

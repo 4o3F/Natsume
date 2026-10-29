@@ -34,8 +34,7 @@ where
             .map_err(|source| CommandError::PasswordReset {
                 source: WorkError::Operator { source },
             })?;
-    OperatorComponent::new(database)
-        .reset_password(credentials.login_name(), &password_hash)
+    OperatorComponent::reset_password_offline(&database, credentials.login_name(), &password_hash)
         .await
         .map_err(|source| CommandError::PasswordReset {
             source: WorkError::Operator { source },

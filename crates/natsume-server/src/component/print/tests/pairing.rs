@@ -290,7 +290,7 @@ async fn print_migration_rollback_preserves_roster_and_document_files() {
     let mut connection = must(diesel::sqlite::SqliteConnection::establish(path));
     let migrations = || {
         must(FileBasedMigrations::from_path(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("diesel/business/migrations"),
         ))
     };
     // Rolling back the Print migrations removes their database records,

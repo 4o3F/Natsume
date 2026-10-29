@@ -316,7 +316,7 @@ async fn requeue_migration_preserves_live_attempts_and_receipts_and_refuses_loss
     assert_eq!(live.ready_sequence, ahead);
     let migrations = || {
         must(FileBasedMigrations::from_path(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("diesel/business/migrations"),
         ))
     };
     let mut connection = must(SqliteConnection::establish(

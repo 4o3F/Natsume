@@ -34,6 +34,7 @@ pub(super) async fn reconcile(
     control: &DeviceControl,
     device_id: DeviceId,
     snapshot: &ClientStateSnapshot,
+    context: crate::journal::JournalContext,
 ) -> Result<(ServerStateSnapshot, ObservedActualState), ReconcileError> {
     let input = snapshot.input.as_ref().context(InvalidSnapshotSnafu)?;
     let actual = snapshot.actual.as_ref().context(InvalidSnapshotSnafu)?;
@@ -55,7 +56,7 @@ pub(super) async fn reconcile(
         .context(GatewayIngestSnafu)?;
     control
         .binding
-        .ingest(device_id, binding_input)
+        .ingest(device_id, binding_input, context)
         .await
         .context(BindingIngestSnafu)?;
 

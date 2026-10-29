@@ -34,11 +34,15 @@ mod application {
                 return ExitCode::FAILURE;
             }
         };
-        run(logging)
+        let utc_offset = time::UtcOffset::current_local_offset().unwrap_or_else(|error| {
+            tracing::warn!(error = %snafu::Report::from_error(error), "server UTC offset unavailable; using UTC");
+            time::UtcOffset::UTC
+        });
+        run(logging, utc_offset)
     }
 
     #[tokio::main]
-    async fn run(logging: Logging) -> ExitCode {
+    async fn run(logging: Logging, utc_offset: time::UtcOffset) -> ExitCode {
         let cli = Cli::parse();
         let config = match ServerConfig::load() {
             Ok(config) => config,
@@ -47,7 +51,7 @@ mod application {
                 return ExitCode::FAILURE;
             }
         };
-        match commands::run(config, cli.command, logging).await {
+        match commands::run(config, cli.command, logging, utc_offset).await {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 tracing::error!(config_path = CONFIG_PATH, error = %snafu::Report::from_error(error), "server command failed");

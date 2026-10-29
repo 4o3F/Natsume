@@ -2,7 +2,10 @@ use std::{
     collections::{HashMap, hash_map::Entry},
     future::Future,
     net::IpAddr,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,7 +20,183 @@ use tokio::{
 use tracing::instrument::WithSubscriber as _;
 use uuid::Uuid;
 
-use crate::component::device::{ControlAuthority, DeviceId};
+use crate::{
+    component::device::{ControlAuthority, DeviceId},
+    journal::{
+        Journal, JournalContext,
+        event::{
+            Event,
+            payload::{ActorStopped, Disconnected, LeaseAttached, LeaseReplaced, ReconcileRetry},
+            types::{DisconnectReason, SessionId},
+        },
+    },
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum FenceKind {
+    Disabled,
+    Revoked,
+    ControlKeyReplaced,
+}
+
+#[derive(Clone)]
+pub(super) struct FenceReason {
+    /// Committed authority change that invalidates the lease.
+    pub(super) kind: FenceKind,
+    /// Explicit initiating context attached to the committed lease invalidation.
+    pub(super) context: JournalContext,
+}
+
+impl FenceKind {
+    pub(super) fn reason(self) -> DisconnectReason {
+        match self {
+            Self::Disabled => DisconnectReason::Disabled,
+            Self::Revoked => DisconnectReason::Revoked,
+            Self::ControlKeyReplaced => DisconnectReason::ControlKeyReplaced,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct LeaseEnd {
+    /// Closed termination cause, without transport errors or protocol contents.
+    pub(super) reason: DisconnectReason,
+    /// Explicit initiating context; actor-local causes use the default context.
+    pub(super) context: JournalContext,
+}
+
+impl LeaseEnd {
+    pub(super) fn connection(cause: super::ConnectionEnd) -> Self {
+        Self {
+            reason: cause.reason(),
+            context: JournalContext::default(),
+        }
+    }
+    pub(super) fn local(reason: DisconnectReason) -> Self {
+        Self {
+            reason,
+            context: JournalContext::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum EndSource {
+    Connection,
+    Eviction,
+}
+
+struct PendingLeaseEnd {
+    /// Exact lease whose caller has observed termination, checked again before using it.
+    session_id: Uuid,
+    /// Explicit eviction outranks a connection-side termination intent.
+    source: EndSource,
+    /// Closed cause and explicit initiator facts, never an error or protocol payload.
+    end: LeaseEnd,
+}
+
+#[derive(Clone)]
+struct ActorJournal {
+    /// Emit-only handle explicitly supplied by the device coordinator.
+    journal: Journal,
+    /// Stable device identity attached to all actor and supervisor events.
+    device_id: DeviceId,
+    /// Actor-updated current lease; retained on abnormal exit for the supervisor.
+    current_session: watch::Sender<Option<SessionId>>,
+    /// Caller-observed termination retained while reconciliation awaits I/O; actor owns consumption.
+    pending_end: Arc<std::sync::Mutex<Option<PendingLeaseEnd>>>,
+}
+
+impl ActorJournal {
+    fn context(&self, session: Uuid) -> JournalContext {
+        JournalContext::default()
+            .with_device(self.device_id)
+            .with_session(SessionId::from_lease(session))
+    }
+
+    fn observe_end(&self, session_id: Uuid, source: EndSource, end: &LeaseEnd) {
+        let current = self.current_session.borrow();
+        if current
+            .as_ref()
+            .is_none_or(|current| current.value() != session_id)
+        {
+            return;
+        }
+        // Only a complete named value is replaced; poisoning cannot leave a partial intent.
+        let mut pending = self
+            .pending_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if pending.as_ref().is_none_or(|pending| {
+            pending.session_id != session_id
+                || matches!(
+                    (pending.source, source),
+                    (EndSource::Connection, EndSource::Eviction)
+                )
+        }) {
+            *pending = Some(PendingLeaseEnd {
+                session_id,
+                source,
+                end: end.clone(),
+            });
+        }
+    }
+
+    fn terminate_after_fault(&self, current: &mut Option<CurrentLease>, reason: DisconnectReason) {
+        let Some(session_id) = current.as_ref().map(|lease| lease.session_id) else {
+            return;
+        };
+        // Taking one complete value preserves validity even after lock poisoning.
+        let pending = self
+            .pending_end
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        let end = pending
+            .filter(|pending| pending.session_id == session_id)
+            .map_or_else(|| LeaseEnd::local(reason), |pending| pending.end);
+        self.terminate(current, None, end);
+    }
+
+    fn terminate_fenced(&self, current: &mut Option<CurrentLease>, fence: &FenceReason) {
+        self.terminate(
+            current,
+            None,
+            LeaseEnd {
+                reason: fence.kind.reason(),
+                context: fence.context.clone(),
+            },
+        );
+    }
+
+    fn terminate(
+        &self,
+        current: &mut Option<CurrentLease>,
+        fence: Option<&FenceReason>,
+        end: LeaseEnd,
+    ) {
+        if let Some(lease) = current.take() {
+            let end = match fence {
+                Some(fence) => LeaseEnd {
+                    reason: fence.kind.reason(),
+                    context: fence.context.clone(),
+                },
+                None => end,
+            };
+            let session_id = SessionId::from_lease(lease.session_id);
+            self.journal.emit(
+                Event::Disconnected(Disconnected {
+                    session_id,
+                    reason: end.reason,
+                }),
+                end.context
+                    .with_device(self.device_id)
+                    .with_session(session_id),
+            );
+            self.current_session.send_replace(None);
+        }
+    }
+}
 
 use super::{DeviceControl, convergence::ObservedActualState, state};
 
@@ -28,49 +207,147 @@ pub(super) const TRANSIENT_FAILURE_LIMIT: u8 = 3;
 
 /// Process-local directory of the single event consumer assigned to each Device.
 ///
-/// Healthy entries live for the process lifetime. Reattaching a Device reuses its actor and
+/// Healthy entries live until permanent registry closure. Reattaching a Device reuses its actor and
 /// replaces the actor's current connection lease instead of spawning competing
 /// consumers for the same Device.
 pub(super) struct DeviceRegistry {
-    devices: Arc<Mutex<HashMap<DeviceId, DeviceHandle>>>,
+    /// Directory and closure latch; insertion, identity checks and draining share this mutex.
+    state: Arc<Mutex<RegistryState>>,
+    /// Journal dependency copied into each actor and its supervisor.
+    journal: Journal,
+}
+
+#[derive(Default)]
+struct RegistryState {
+    /// Initially false; shutdown sets true permanently before draining, under the directory lock.
+    closed: bool,
+    /// Current actor handles; registry inserts only while open, supervisors remove by identity.
+    handles: HashMap<DeviceId, DeviceHandle>,
+    /// Owns all supervisors, including retired actors, until registry shutdown joins them.
+    supervisors: JoinSet<()>,
+}
+
+#[derive(Clone)]
+pub(crate) struct LiveLeaseView {
+    /// Weak directory view; querying never prolongs coordinator or actor lifetime.
+    state: Weak<Mutex<RegistryState>>,
+}
+
+impl LiveLeaseView {
+    pub(crate) async fn session(&self, device_id: DeviceId) -> Option<SessionId> {
+        let state = self.state.upgrade()?;
+        let state = state.lock().await;
+        if state.closed {
+            return None;
+        }
+        let handle = state.handles.get(&device_id)?;
+        if handle.sender.is_closed() {
+            return None;
+        }
+        *handle.events.current_session.borrow()
+    }
 }
 
 impl DeviceRegistry {
-    pub(super) fn new() -> Self {
-        Self {
-            devices: Arc::new(Mutex::new(HashMap::new())),
+    pub(super) fn live_view(&self) -> LiveLeaseView {
+        LiveLeaseView {
+            state: Arc::downgrade(&self.state),
         }
     }
 
-    pub(super) async fn get_or_spawn(&self, device_id: DeviceId) -> DeviceHandle {
+    pub(super) fn new(journal: Journal) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RegistryState::default())),
+            journal,
+        }
+    }
+
+    pub(super) async fn shutdown(&self) {
+        let handles = {
+            let mut state = self.state.lock().await;
+            state.closed = true;
+            state
+                .handles
+                .drain()
+                .map(|(_, handle)| handle)
+                .collect::<Vec<_>>()
+        };
+        let mut stopped = JoinSet::new();
+        for handle in handles {
+            stopped.spawn(async move { handle.shutdown().await });
+        }
+        while let Some(result) = stopped.join_next().await {
+            if let Err(source) = result {
+                tracing::warn!(error = %crate::task::TaskFailure::from(source), "Device shutdown task failed");
+            }
+        }
+        let mut supervisors = std::mem::take(&mut self.state.lock().await.supervisors);
+        while let Some(result) = supervisors.join_next().await {
+            if let Err(source) = result {
+                tracing::warn!(error = %crate::task::TaskFailure::from(source), "Device supervisor task failed");
+            }
+        }
+    }
+
+    pub(super) async fn is_closed(&self) -> bool {
+        self.state.lock().await.closed
+    }
+
+    pub(super) async fn get_or_spawn(&self, device_id: DeviceId) -> Option<DeviceHandle> {
         loop {
-            let stale = {
-                let mut devices = self.devices.lock().await;
-                match devices.entry(device_id) {
+            let retired = {
+                let mut state = self.state.lock().await;
+                if state.closed {
+                    return None;
+                }
+                while let Some(result) = state.supervisors.try_join_next() {
+                    if let Err(source) = result {
+                        tracing::warn!(error = %crate::task::TaskFailure::from(source), "Device supervisor task failed");
+                    }
+                }
+                let RegistryState {
+                    handles,
+                    supervisors,
+                    ..
+                } = &mut *state;
+                match handles.entry(device_id) {
                     Entry::Vacant(entry) => {
-                        let handle =
-                            DeviceHandle::spawn_actor(device_id, Arc::downgrade(&self.devices));
+                        let handle = DeviceHandle::spawn_actor(
+                            device_id,
+                            Arc::downgrade(&self.state),
+                            self.journal.clone(),
+                            supervisors,
+                        );
                         entry.insert(handle.clone());
-                        return handle;
+                        return Some(handle);
                     }
                     Entry::Occupied(entry) if !entry.get().sender.is_closed() => {
-                        return entry.get().clone();
+                        return Some(entry.get().clone());
                     }
                     Entry::Occupied(entry) => entry.get().clone(),
                 }
             };
             // Cleanup and respawn wait for the old fence's authority commit. A fresh
-            // false fence is safe because attach re-checks durable authority before and after replacement.
-            let _fenced = stale.authority_fence.lock().await;
-            let mut devices = self.devices.lock().await;
-            if devices
+            // empty fence is safe because attach re-checks durable authority before and after replacement.
+            let _fenced = retired.authority_fence.lock().await;
+            let mut state = self.state.lock().await;
+            if state.closed {
+                return None;
+            }
+            if state
+                .handles
                 .get(&device_id)
-                .is_some_and(|current| current.sender.same_channel(&stale.sender))
+                .is_some_and(|current| current.sender.same_channel(&retired.sender))
             {
                 tracing::warn!(device_id = %device_id.as_text(), "Replacing closed Device actor mailbox");
-                let handle = DeviceHandle::spawn_actor(device_id, Arc::downgrade(&self.devices));
-                devices.insert(device_id, handle.clone());
-                return handle;
+                let handle = DeviceHandle::spawn_actor(
+                    device_id,
+                    Arc::downgrade(&self.state),
+                    self.journal.clone(),
+                    &mut state.supervisors,
+                );
+                state.handles.insert(device_id, handle.clone());
+                return Some(handle);
             }
         }
     }
@@ -78,35 +355,37 @@ impl DeviceRegistry {
     pub(super) async fn lock_current_fence(
         &self,
         device_id: DeviceId,
-    ) -> (DeviceHandle, OwnedMutexGuard<bool>) {
+    ) -> Option<(DeviceHandle, OwnedMutexGuard<Option<FenceReason>>)> {
         loop {
             let handle = match self.get(device_id).await {
                 Some(handle) => handle,
-                None => self.get_or_spawn(device_id).await,
+                None => self.get_or_spawn(device_id).await?,
             };
             let fenced = Arc::clone(&handle.authority_fence).lock_owned().await;
             // Mutation, replacement and supervisor cleanup all lock fence before registry.
-            // Rechecking identity closes the lookup gap; this entry cannot change until
-            // the mutation commits and sets its fence, because cleanup needs the same guard.
-            if self
-                .devices
-                .lock()
-                .await
+            // Rechecking identity closes the lookup gap; replacement and cleanup require
+            // the same fence, while shutdown can only remove entries after permanent closure.
+            let state = self.state.lock().await;
+            if state.closed {
+                return None;
+            }
+            if state
+                .handles
                 .get(&device_id)
                 .is_some_and(|current| current.sender.same_channel(&handle.sender))
             {
-                return (handle, fenced);
+                return Some((handle, fenced));
             }
         }
     }
 
     /// Returns an existing actor without allocating process-lifetime state.
     pub(super) async fn get(&self, device_id: DeviceId) -> Option<DeviceHandle> {
-        self.devices.lock().await.get(&device_id).cloned()
+        self.state.lock().await.handles.get(&device_id).cloned()
     }
 
     pub(super) async fn dirty_one(&self, device_id: DeviceId) {
-        let handle = self.devices.lock().await.get(&device_id).cloned();
+        let handle = self.state.lock().await.handles.get(&device_id).cloned();
         if let Some(handle) = handle {
             handle.dirty();
         }
@@ -114,9 +393,9 @@ impl DeviceRegistry {
 
     pub(super) async fn dirty_many(&self, ids: &[DeviceId]) {
         let handles = {
-            let devices = self.devices.lock().await;
+            let state = self.state.lock().await;
             ids.iter()
-                .filter_map(|id| devices.get(id).cloned())
+                .filter_map(|id| state.handles.get(id).cloned())
                 .collect::<Vec<_>>()
         };
         for handle in handles {
@@ -126,9 +405,10 @@ impl DeviceRegistry {
 
     pub(super) async fn dirty_all(&self) {
         let handles = self
-            .devices
+            .state
             .lock()
             .await
+            .handles
             .values()
             .cloned()
             .collect::<Vec<_>>();
@@ -138,7 +418,7 @@ impl DeviceRegistry {
     }
 
     pub(super) async fn read_connection_state(&self, device_id: DeviceId) -> DeviceConnectionState {
-        let handle = self.devices.lock().await.get(&device_id).cloned();
+        let handle = self.state.lock().await.handles.get(&device_id).cloned();
         match handle {
             Some(handle) => handle.read_connection_state().await,
             None => DeviceConnectionState::Offline,
@@ -151,11 +431,12 @@ impl DeviceRegistry {
         device_ids: &[DeviceId],
     ) -> HashMap<DeviceId, DeviceConnectionState> {
         let handles = {
-            let devices = self.devices.lock().await;
+            let state = self.state.lock().await;
             device_ids
                 .iter()
                 .filter_map(|device_id| {
-                    devices
+                    state
+                        .handles
                         .get(device_id)
                         .cloned()
                         .map(|handle| (*device_id, handle))
@@ -178,9 +459,10 @@ impl DeviceRegistry {
 
     pub(super) async fn active_device_ids(&self) -> Vec<DeviceId> {
         let handles = self
-            .devices
+            .state
             .lock()
             .await
+            .handles
             .iter()
             .map(|(id, handle)| (*id, handle.clone()))
             .collect::<Vec<_>>();
@@ -219,52 +501,85 @@ pub(super) enum DeviceConnectionState {
 /// the current lease.
 #[derive(Clone)]
 pub(super) struct DeviceHandle {
+    /// Bounded actor mailbox; closure means the actor has stopped consuming events.
     sender: mpsc::Sender<DeviceEvent>,
+    /// Coalescing target-refresh notifications sent by the coordinator, consumed by the actor.
     dirty: watch::Sender<()>,
+    /// Initially false; handle shutdown sets true so the supervisor recognizes expected actor exit.
+    stopping: Arc<AtomicBool>,
     /// Excludes authority commits from in-flight component writes and fences queued work.
-    pub(super) authority_fence: Arc<Mutex<bool>>,
+    pub(super) authority_fence: Arc<Mutex<Option<FenceReason>>>,
+    /// Shared actor emission facts, including the current session retained for supervision.
+    events: ActorJournal,
 }
 
 impl DeviceHandle {
     /// Starts the sole event loop for a Device with a bounded mailbox.
-    fn spawn_actor(device_id: DeviceId, registry: Weak<Mutex<HashMap<DeviceId, Self>>>) -> Self {
-        let (handle, supervisor) =
-            Self::spawn_actor_with(device_id, registry, move |fence, receiver, dirty| {
-                run_actor(device_id, fence, receiver, dirty)
-            });
-        tokio::spawn(supervisor.with_current_subscriber());
+    fn spawn_actor(
+        device_id: DeviceId,
+        registry: Weak<Mutex<RegistryState>>,
+        journal: Journal,
+        supervisors: &mut JoinSet<()>,
+    ) -> Self {
+        let (handle, supervisor) = Self::spawn_actor_with(
+            device_id,
+            registry,
+            journal,
+            move |fence, receiver, dirty, events| {
+                run_actor(device_id, fence, receiver, dirty, events)
+            },
+        );
+        supervisors.spawn(supervisor.with_current_subscriber());
         handle
     }
 
     fn spawn_actor_with<F>(
         device_id: DeviceId,
-        registry: Weak<Mutex<HashMap<DeviceId, Self>>>,
-        run: impl FnOnce(Arc<Mutex<bool>>, mpsc::Receiver<DeviceEvent>, watch::Receiver<()>) -> F,
+        registry: Weak<Mutex<RegistryState>>,
+        journal: Journal,
+        run: impl FnOnce(
+            Arc<Mutex<Option<FenceReason>>>,
+            mpsc::Receiver<DeviceEvent>,
+            watch::Receiver<()>,
+            ActorJournal,
+        ) -> F,
     ) -> (Self, impl Future<Output = ()> + Send + 'static)
     where
         F: Future<Output = ()> + Send + 'static,
     {
         let (sender, receiver) = mpsc::channel(MAILBOX_CAPACITY);
         let (dirty, dirty_receiver) = watch::channel(());
-        let authority_fence = Arc::new(Mutex::new(false));
+        let (current_session, _) = watch::channel(None);
+        let handle = Self {
+            sender,
+            dirty,
+            stopping: Arc::new(AtomicBool::new(false)),
+            authority_fence: Arc::new(Mutex::new(None)),
+            events: ActorJournal {
+                journal,
+                device_id,
+                current_session,
+                pending_end: Arc::new(std::sync::Mutex::new(None)),
+            },
+        };
         let actor = tokio::spawn(
-            run(Arc::clone(&authority_fence), receiver, dirty_receiver).with_current_subscriber(),
+            run(
+                Arc::clone(&handle.authority_fence),
+                receiver,
+                dirty_receiver,
+                handle.events.clone(),
+            )
+            .with_current_subscriber(),
         );
         let supervisor = supervise_actor(
-            device_id,
+            handle.events.clone(),
             registry,
-            sender.downgrade(),
-            Arc::clone(&authority_fence),
+            handle.sender.downgrade(),
+            Arc::clone(&handle.authority_fence),
+            Arc::clone(&handle.stopping),
             actor,
         );
-        (
-            Self {
-                sender,
-                dirty,
-                authority_fence,
-            },
-            supervisor,
-        )
+        (handle, supervisor)
     }
 
     /// Replaces the current connection lease and waits until stale sessions are fenced.
@@ -308,10 +623,21 @@ impl DeviceHandle {
 
     /// Announces connection loss without allowing an old session to clear a newer
     /// lease. Failure to enqueue is terminal only for the already-closing caller.
-    pub(super) async fn clear_lease_if_current(&self, session_id: Uuid) {
+    pub(super) async fn clear_lease_if_current(
+        &self,
+        session_id: Uuid,
+        cause: super::ConnectionEnd,
+    ) {
+        self.end_lease_if_current(session_id, LeaseEnd::connection(cause))
+            .await;
+    }
+
+    pub(super) async fn end_lease_if_current(&self, session_id: Uuid, cause: LeaseEnd) {
+        self.events
+            .observe_end(session_id, EndSource::Connection, &cause);
         let _ = self
             .sender
-            .send(DeviceEvent::ClearLeaseIfCurrent { session_id })
+            .send(DeviceEvent::ClearLeaseIfCurrent { session_id, cause })
             .await;
     }
 
@@ -337,11 +663,29 @@ impl DeviceHandle {
         self.dirty.send_replace(());
     }
 
-    pub(super) async fn evict_current_lease(&self) {
+    pub(super) async fn evict_current_lease(&self, end: LeaseEnd) {
+        let session = *self.events.current_session.borrow();
+        if let Some(session) = session {
+            self.events
+                .observe_end(session.value(), EndSource::Eviction, &end);
+        }
         let (evicted, received) = oneshot::channel();
         if self
             .sender
-            .send(DeviceEvent::EvictCurrentLease { evicted })
+            .send(DeviceEvent::EvictCurrentLease { evicted, end })
+            .await
+            .is_ok()
+        {
+            let _ = received.await;
+        }
+    }
+
+    async fn shutdown(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let (stopped, received) = oneshot::channel();
+        if self
+            .sender
+            .send(DeviceEvent::Shutdown { stopped })
             .await
             .is_ok()
         {
@@ -364,32 +708,47 @@ impl DeviceHandle {
 }
 
 async fn supervise_actor(
-    device_id: DeviceId,
-    registry: Weak<Mutex<HashMap<DeviceId, DeviceHandle>>>,
+    events: ActorJournal,
+    registry: Weak<Mutex<RegistryState>>,
     sender: mpsc::WeakSender<DeviceEvent>,
-    authority_fence: Arc<Mutex<bool>>,
+    authority_fence: Arc<Mutex<Option<FenceReason>>>,
+    stopping: Arc<AtomicBool>,
     actor: JoinHandle<()>,
 ) {
     let result = actor.await;
-    if result.is_ok() && sender.strong_count() == 0 {
+    if result.is_ok() && (sender.strong_count() == 0 || stopping.load(Ordering::Acquire)) {
         return;
     }
+    let device_id = events.device_id;
+    let session_id = *events.current_session.borrow();
+    let mut context = JournalContext::default().with_device(device_id);
+    if let Some(session_id) = session_id {
+        context = context.with_session(session_id);
+    }
+    events.journal.emit(
+        Event::ActorStopped(ActorStopped {
+            panicked: result.as_ref().is_err_and(tokio::task::JoinError::is_panic),
+            session_id,
+        }),
+        context,
+    );
     // JoinError can display a secret panic payload; report only the failure classification.
     tracing::error!(device_id = %device_id.as_text(), panicked = result.as_ref().is_err_and(tokio::task::JoinError::is_panic), "Device actor stopped unexpectedly");
     drop(result);
     let _fenced = authority_fence.lock().await;
-    let Some(devices) = registry.upgrade() else {
+    let Some(state) = registry.upgrade() else {
         return;
     };
     let Some(sender) = sender.upgrade() else {
         return;
     };
-    let mut devices = devices.lock().await;
-    if devices
+    let mut state = state.lock().await;
+    if state
+        .handles
         .get(&device_id)
         .is_some_and(|current| current.sender.same_channel(&sender))
     {
-        devices.remove(&device_id);
+        state.handles.remove(&device_id);
     }
 }
 
@@ -399,6 +758,9 @@ async fn supervise_actor(
 /// lease replacement atomic with respect to Client snapshots. The snapshot is boxed
 /// only to keep mailbox events small; it adds no separate lifecycle.
 enum DeviceEvent {
+    Shutdown {
+        stopped: oneshot::Sender<()>,
+    },
     /// Persists metadata only while its authenticated lease remains current.
     RecordNetworkAddresses {
         session_id: Uuid,
@@ -419,7 +781,11 @@ enum DeviceEvent {
         received_at_unix_ms: i64,
     },
     /// Clears the current lease and acknowledges once its outbound path is closed.
-    EvictCurrentLease { evicted: oneshot::Sender<()> },
+    EvictCurrentLease {
+        /// Explicit committed eviction reason and initiating context.
+        end: LeaseEnd,
+        evicted: oneshot::Sender<()>,
+    },
     /// Reads the current lease observation without introducing a durable projection.
     ReadConnectionState {
         respond: oneshot::Sender<DeviceConnectionState>,
@@ -428,6 +794,8 @@ enum DeviceEvent {
     ClearLeaseIfCurrent {
         /// Identifies the lease being closed, not necessarily the current lease.
         session_id: Uuid,
+        /// Explicit termination facts; a committed fence takes precedence.
+        cause: LeaseEnd,
     },
 }
 
@@ -458,9 +826,10 @@ struct CurrentLease {
 )]
 async fn run_actor(
     device_id: DeviceId,
-    authority_fence: Arc<Mutex<bool>>,
+    authority_fence: Arc<Mutex<Option<FenceReason>>>,
     mut receiver: mpsc::Receiver<DeviceEvent>,
     mut dirty: watch::Receiver<()>,
+    events: ActorJournal,
 ) {
     let mut current: Option<CurrentLease> = None;
     let mut refresh = tokio::time::interval_at(
@@ -476,16 +845,17 @@ async fn run_actor(
                     break;
                 }
                 dirty.borrow_and_update();
-                let fenced = *authority_fence.lock().await;
-                if fenced {
-                    current = None;
+                let fenced = authority_fence.lock().await;
+                if let Some(reason) = fenced.as_ref() {
+                    events.terminate_fenced(&mut current, reason);
                 } else if current.as_ref().is_some_and(|lease| lease.consecutive_failures == 0) {
-                    refresh_target(device_id, &authority_fence, &mut current, &mut refresh).await;
+                    drop(fenced);
+                    refresh_target(device_id, &authority_fence, &mut current, &mut refresh, &events).await;
                 }
                 continue;
             }
             _ = refresh.tick() => {
-                refresh_target(device_id, &authority_fence, &mut current, &mut refresh).await;
+                refresh_target(device_id, &authority_fence, &mut current, &mut refresh, &events).await;
                 continue;
             }
         };
@@ -493,6 +863,12 @@ async fn run_actor(
             break;
         };
         match event {
+            DeviceEvent::Shutdown { stopped } => {
+                let fence = authority_fence.lock().await;
+                terminate_for_server_shutdown(&events, &mut current, fence.as_ref());
+                let _ = stopped.send(());
+                break;
+            }
             DeviceEvent::RecordNetworkAddresses {
                 session_id,
                 authority,
@@ -507,7 +883,7 @@ async fn run_actor(
                     continue;
                 };
                 let fenced = authority_fence.lock().await;
-                if *fenced {
+                if fenced.is_some() {
                     continue;
                 }
                 if let Err(error) = control
@@ -523,9 +899,30 @@ async fn run_actor(
                 outbound,
                 replaced,
             } => {
+                let mut fence = authority_fence.lock().await;
+                if let Some(reason) = fence.as_ref() {
+                    events.terminate_fenced(&mut current, reason);
+                }
+                let previous = current.take();
                 let session_id = Uuid::now_v7();
+                let new = SessionId::from_lease(session_id);
+                match previous {
+                    Some(lease) => events.journal.emit(
+                        Event::LeaseReplaced(LeaseReplaced {
+                            old: SessionId::from_lease(lease.session_id),
+                            new,
+                        }),
+                        events.context(session_id),
+                    ),
+                    None => events.journal.emit(
+                        Event::LeaseAttached(LeaseAttached { session_id: new }),
+                        events.context(session_id),
+                    ),
+                }
+                *fence = None;
+                drop(fence);
+                events.current_session.send_replace(Some(new));
                 refresh.reset_at(Instant::now() + target_refresh_delay(&session_id));
-                *authority_fence.lock().await = false;
                 current = Some(CurrentLease {
                     session_id,
                     outbound,
@@ -546,11 +943,19 @@ async fn run_actor(
                     .filter(|lease| lease.session_id == session_id)
                 {
                     lease.pending = Some((snapshot, received_at_unix_ms));
-                    refresh_target(device_id, &authority_fence, &mut current, &mut refresh).await;
+                    refresh_target(
+                        device_id,
+                        &authority_fence,
+                        &mut current,
+                        &mut refresh,
+                        &events,
+                    )
+                    .await;
                 }
             }
-            DeviceEvent::EvictCurrentLease { evicted } => {
-                current = None;
+            DeviceEvent::EvictCurrentLease { evicted, end } => {
+                let fence = authority_fence.lock().await;
+                events.terminate(&mut current, fence.as_ref(), end);
                 let _ = evicted.send(());
             }
             DeviceEvent::ReadConnectionState { respond } => {
@@ -566,16 +971,29 @@ async fn run_actor(
                 };
                 let _ = respond.send(state);
             }
-            DeviceEvent::ClearLeaseIfCurrent { session_id } => {
+            DeviceEvent::ClearLeaseIfCurrent { session_id, cause } => {
                 if current
                     .as_ref()
                     .is_some_and(|lease| lease.session_id == session_id)
                 {
-                    current = None;
+                    let fence = authority_fence.lock().await;
+                    events.terminate(&mut current, fence.as_ref(), cause);
                 }
             }
         }
     }
+}
+
+fn terminate_for_server_shutdown(
+    events: &ActorJournal,
+    current: &mut Option<CurrentLease>,
+    fence: Option<&FenceReason>,
+) {
+    events.terminate(
+        current,
+        fence,
+        LeaseEnd::local(DisconnectReason::ServerShutdown),
+    );
 }
 
 fn target_refresh_delay(session_id: &Uuid) -> Duration {
@@ -584,9 +1002,10 @@ fn target_refresh_delay(session_id: &Uuid) -> Duration {
 
 async fn refresh_target(
     device_id: DeviceId,
-    authority_fence: &Mutex<bool>,
+    authority_fence: &Mutex<Option<FenceReason>>,
     current: &mut Option<CurrentLease>,
     refresh: &mut tokio::time::Interval,
+    events: &ActorJournal,
 ) {
     let Some((session_id, outbound, control)) = current
         .as_ref()
@@ -601,15 +1020,17 @@ async fn refresh_target(
         return;
     };
     let fenced = authority_fence.lock().await;
-    if *fenced {
-        *current = None;
+    if let Some(reason) = fenced.as_ref() {
+        events.terminate_fenced(current, reason);
         return;
     }
     let pending = current.as_mut().and_then(|lease| lease.pending.take());
     let result = match pending.as_ref() {
-        Some((snapshot, received_at)) => state::reconcile(&control, device_id, snapshot)
-            .await
-            .map(|(snapshot, actual)| (snapshot, Some((actual, *received_at)))),
+        Some((snapshot, received_at)) => {
+            state::reconcile(&control, device_id, snapshot, events.context(session_id))
+                .await
+                .map(|(snapshot, actual)| (snapshot, Some((actual, *received_at))))
+        }
         None => state::materialize(&control, device_id)
             .await
             .map(|snapshot| (snapshot, None)),
@@ -620,7 +1041,7 @@ async fn refresh_target(
             if let Some(lease) = current.as_mut() {
                 lease.pending = pending;
             }
-            reconcile_failed(device_id, error, current, refresh);
+            reconcile_failed(device_id, error, current, refresh, events);
             return;
         }
     };
@@ -628,10 +1049,19 @@ async fn refresh_target(
         session_id: session_id.as_bytes().to_vec(),
         body: Some(server_active_envelope::Body::ServerState(snapshot)),
     };
-    if outbound.try_send(envelope).is_err() {
-        *current = None;
+    if let Err(error) = outbound.try_send(envelope) {
+        let reason = match error {
+            mpsc::error::TrySendError::Full(_) => DisconnectReason::OutboundBackpressure,
+            mpsc::error::TrySendError::Closed(_) => DisconnectReason::OutboundClosed,
+        };
+        events.terminate_after_fault(current, reason);
     } else if let Some(lease) = current.as_mut() {
         if let Some(observation) = observation {
+            observation.0.emit_journal_changes(
+                lease.observation.as_ref().map(|previous| &previous.0),
+                &events.journal,
+                &events.context(session_id),
+            );
             lease.observation = Some(observation);
         }
         if lease.consecutive_failures != 0 {
@@ -646,6 +1076,7 @@ fn reconcile_failed(
     error: state::ReconcileError,
     current: &mut Option<CurrentLease>,
     refresh: &mut tokio::time::Interval,
+    events: &ActorJournal,
 ) {
     let Some(lease) = current.as_mut() else {
         return;
@@ -653,17 +1084,27 @@ fn reconcile_failed(
     match error.fault() {
         state::ReconcileFault::Client => {
             tracing::info!(device_id = %device_id.as_text(), error = %snafu::Report::from_error(error), "Device Client snapshot rejected");
-            *current = None;
+            events.terminate_after_fault(current, DisconnectReason::ClientFault);
         }
         state::ReconcileFault::Server => {
             tracing::error!(device_id = %device_id.as_text(), error = %snafu::Report::from_error(error), "Device reconciliation failed");
-            *current = None;
+            events.terminate_after_fault(current, DisconnectReason::ServerFault);
         }
         state::ReconcileFault::ServerTransient => {
             lease.consecutive_failures += 1;
+            if lease.consecutive_failures == 1
+                || lease.consecutive_failures == TRANSIENT_FAILURE_LIMIT
+            {
+                events.journal.emit(
+                    Event::ReconcileRetry(ReconcileRetry {
+                        attempt: u32::from(lease.consecutive_failures),
+                    }),
+                    events.context(lease.session_id),
+                );
+            }
             if lease.consecutive_failures >= TRANSIENT_FAILURE_LIMIT {
                 tracing::error!(device_id = %device_id.as_text(), consecutive_failures = lease.consecutive_failures, error = %snafu::Report::from_error(error), "Device transient failure limit reached");
-                *current = None;
+                events.terminate_after_fault(current, DisconnectReason::TransientLimit);
             } else {
                 tracing::warn!(device_id = %device_id.as_text(), consecutive_failures = lease.consecutive_failures, error = %snafu::Report::from_error(error), "Device reconciliation will retry");
                 refresh.reset_at(Instant::now() + TRANSIENT_RETRY_DELAY);
@@ -681,7 +1122,7 @@ fn current_unix_ms() -> Option<i64> {
 }
 
 #[cfg(test)]
-pub(super) use tests::spawn_test_actor;
+pub(super) use tests::{spawn_panicking_actor, spawn_test_actor};
 
 #[cfg(test)]
 mod tests {
@@ -691,19 +1132,95 @@ mod tests {
         registry: &DeviceRegistry,
         device_id: DeviceId,
         future: impl Future<Output = ()> + Send + 'static,
-    ) -> (DeviceHandle, impl Future<Output = ()> + Send + 'static) {
-        let mut devices = registry.devices.lock().await;
+    ) -> Option<(DeviceHandle, impl Future<Output = ()> + Send + 'static)> {
+        let mut state = registry.state.lock().await;
+        if state.closed {
+            return None;
+        }
         let (handle, supervisor) = DeviceHandle::spawn_actor_with(
             device_id,
-            Arc::downgrade(&registry.devices),
-            move |_fence, receiver, dirty| async move {
+            Arc::downgrade(&registry.state),
+            registry.journal.clone(),
+            move |_fence, receiver, dirty, _events| async move {
                 let _receiver = receiver;
                 let _dirty = dirty;
                 future.await;
             },
         );
-        devices.insert(device_id, handle.clone());
-        (handle, supervisor)
+        state.handles.insert(device_id, handle.clone());
+        Some((handle, supervisor))
+    }
+
+    pub(in crate::device_control) async fn spawn_panicking_actor(
+        registry: &DeviceRegistry,
+        device_id: DeviceId,
+        trigger: oneshot::Receiver<()>,
+    ) -> Option<(DeviceHandle, impl Future<Output = ()> + Send + 'static)> {
+        let mut state = registry.state.lock().await;
+        if state.closed {
+            return None;
+        }
+        let (handle, supervisor) = DeviceHandle::spawn_actor_with(
+            device_id,
+            Arc::downgrade(&registry.state),
+            registry.journal.clone(),
+            move |fence, receiver, dirty, events| async move {
+                tokio::select! {
+                    () = run_actor(device_id, fence, receiver, dirty, events) => {},
+                    _ = trigger => panic!("actor-session-secret-canary"),
+                }
+            },
+        );
+        state.handles.insert(device_id, handle.clone());
+        Some((handle, supervisor))
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_late_supervisor_even_after_actor_acknowledgement() {
+        let (journal, mut receiver) = crate::journal::JournalComponent::channel(16);
+        let registry = DeviceRegistry::new(journal.emitter());
+        let device_id =
+            DeviceId::parse(&Uuid::now_v7().to_string()).unwrap_or_else(|| panic!("device"));
+        let (release, released) = oneshot::channel();
+        let (entered, entering) = oneshot::channel();
+        let (handle, supervisor) = DeviceHandle::spawn_actor_with(
+            device_id,
+            Arc::downgrade(&registry.state),
+            journal.emitter(),
+            move |_fence, mut receiver, _dirty, _events| async move {
+                if let Some(DeviceEvent::Shutdown { stopped }) = receiver.recv().await {
+                    let _ = stopped.send(());
+                    let _ = entered.send(());
+                    let _ = released.await;
+                    panic!("supervisor-panic-canary");
+                }
+            },
+        );
+        {
+            let mut state = registry.state.lock().await;
+            state.handles.insert(device_id, handle);
+            state.supervisors.spawn(supervisor);
+        }
+        let shutdown = registry.shutdown();
+        tokio::pin!(shutdown);
+        assert!(futures_util::poll!(&mut shutdown).is_pending());
+        tokio::select! {
+            () = &mut shutdown => panic!("shutdown returned before supervision"),
+            _ = entering => {},
+        }
+        assert!(
+            futures_util::poll!(&mut shutdown).is_pending(),
+            "supervisor must finish before journal closes"
+        );
+        let _ = release.send(());
+        tokio::time::timeout(Duration::from_secs(3), shutdown)
+            .await
+            .unwrap_or_else(|error| panic!("shutdown: {error}"));
+        assert!(
+            crate::journal::tests::drain_events(&mut receiver)
+                .iter()
+                .any(|record| matches!(record.event, Event::ActorStopped(_)))
+        );
     }
 
     #[tokio::test]
@@ -716,19 +1233,24 @@ mod tests {
         let _guard = SubscriberTestGuard::acquire();
         let captured = CapturedLogs::default();
         async {
-            let registry = DeviceRegistry::new();
+            let registry =
+                DeviceRegistry::new(crate::journal::JournalComponent::channel(32).0.emitter());
             let device_id = DeviceId::parse("01900000-0000-7000-8000-000000000001")
                 .unwrap_or_else(|| panic!("device ID"));
-            let (handle, supervisor) = DeviceHandle::spawn_actor_with(
-                device_id,
-                Arc::downgrade(&registry.devices),
-                move |fence, receiver, dirty| run_actor(device_id, fence, receiver, dirty),
-            );
-            registry
-                .devices
-                .lock()
-                .await
-                .insert(device_id, handle.clone());
+            let (handle, supervisor) = {
+                let mut state = registry.state.lock().await;
+                assert!(!state.closed);
+                let (handle, supervisor) = DeviceHandle::spawn_actor_with(
+                    device_id,
+                    Arc::downgrade(&registry.state),
+                    registry.journal.clone(),
+                    move |fence, receiver, dirty, events| {
+                        run_actor(device_id, fence, receiver, dirty, events)
+                    },
+                );
+                state.handles.insert(device_id, handle.clone());
+                (handle, supervisor)
+            };
             let sender = handle.sender.downgrade();
             drop(registry);
             drop(handle);
@@ -752,6 +1274,7 @@ mod tests {
                 sender
                     .try_send(DeviceEvent::ClearLeaseIfCurrent {
                         session_id: Uuid::nil(),
+                        cause: LeaseEnd::connection(super::super::ConnectionEnd::ClientClose),
                     })
                     .is_ok()
             );
@@ -760,7 +1283,15 @@ mod tests {
         let handle = DeviceHandle {
             sender,
             dirty,
-            authority_fence: Arc::new(Mutex::new(false)),
+            stopping: Arc::new(AtomicBool::new(false)),
+            authority_fence: Arc::new(Mutex::new(None)),
+            events: ActorJournal {
+                journal: crate::journal::JournalComponent::channel(32).0.emitter(),
+                device_id: DeviceId::parse("01900000-0000-7000-8000-000000000001")
+                    .unwrap_or_else(|| panic!("device ID")),
+                current_session: watch::channel(None).0,
+                pending_end: Arc::new(std::sync::Mutex::new(None)),
+            },
         };
 
         handle.dirty();

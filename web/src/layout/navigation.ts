@@ -1,6 +1,7 @@
 import {
   ClipboardList,
   Cpu,
+  History,
   KeyRound,
   LayoutGrid,
   type LucideIcon,
@@ -55,6 +56,13 @@ export const navigation: NavGroup[] = [
         label: "Enrollment",
         icon: ShieldCheck,
         description: "Provisioning window and device approvals",
+      },
+      {
+        to: "/events",
+        label: "Events",
+        icon: History,
+        description:
+          "Journal of connections, state changes and operator activity",
       },
     ],
   },

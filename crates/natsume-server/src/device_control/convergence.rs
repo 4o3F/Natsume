@@ -14,6 +14,7 @@ use super::actor::DeviceConnectionState;
 mod binding;
 mod gateway;
 mod home;
+mod journal;
 mod runtime;
 mod session;
 
@@ -93,6 +94,8 @@ pub(super) struct ObservedActualState {
     runtime_config: RuntimeConfigActual,
     session_control: SessionActual,
     home: HomeActual,
+    /// Closed power state for journal comparison; absent or unknown wire values remain None.
+    power: Option<natsume_workstation_protocol::generated::PowerState>,
 }
 
 /// Durable component targets required to calculate one Device convergence view.
@@ -121,6 +124,9 @@ pub(super) fn parse_actual(
             runtime_config,
             session_control,
             home,
+            power: actual.power.and_then(|power| {
+                natsume_workstation_protocol::generated::PowerState::try_from(power.state).ok()
+            }),
         },
     ))
 }

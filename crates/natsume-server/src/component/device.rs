@@ -6,7 +6,20 @@ mod types;
 
 use std::net::IpAddr;
 
-use crate::db::{Database, PersistenceError, Transaction};
+use crate::{
+    db::{Database, PersistenceError, Transaction},
+    journal::{
+        Journal, JournalContext,
+        event::{
+            Event,
+            payload::{
+                EnrollmentApproved, EnrollmentDenied, LifecycleChanged, ReviewCancelled,
+                ReviewCreated,
+            },
+            types::{LifecycleState, ReviewCancelCause, ReviewId},
+        },
+    },
+};
 
 use self::enrollment::EnrollmentReviewRegistry;
 pub(crate) use self::enrollment::{
@@ -27,6 +40,8 @@ pub(crate) use self::types::{
 pub(crate) struct DeviceComponent {
     database: Database,
     reviews: EnrollmentReviewRegistry,
+    /// Emit-only handle for committed authority and process-local review transitions.
+    journal: Journal,
 }
 
 /// Lifecycle selection for the Operator device list; it does not change authority.
@@ -34,6 +49,19 @@ pub(crate) struct DeviceComponent {
 pub(crate) enum DeviceListFilter {
     All,
     States(Vec<DeviceState>),
+}
+
+/// Origin of the approval that commits a proved enrollment candidate.
+#[derive(Clone, Copy)]
+pub(crate) enum EnrollmentApprovalMode {
+    Manual,
+    Automatic,
+}
+
+impl EnrollmentApprovalMode {
+    pub(crate) fn is_automatic(self) -> bool {
+        matches!(self, Self::Automatic)
+    }
 }
 
 impl DeviceComponent {
@@ -79,10 +107,11 @@ impl DeviceComponent {
         db::find_by_id(transaction, device).map(|record| record.map(|device| device.state()))
     }
 
-    pub(crate) fn new(database: Database) -> Self {
+    pub(crate) fn new(database: Database, journal: Journal) -> Self {
         Self {
             database,
             reviews: EnrollmentReviewRegistry::new(),
+            journal,
         }
     }
 
@@ -123,6 +152,8 @@ impl DeviceComponent {
     pub(crate) async fn start_enrollment(
         &self,
         evidence: ValidatedEnrollmentEvidence,
+        peer_ip: IpAddr,
+        context: JournalContext,
     ) -> Result<EnrollmentStartOutcome, EnrollmentStartError> {
         let current_authority = self
             .find_current_authority(evidence.machine_hardware_id())
@@ -133,6 +164,13 @@ impl DeviceComponent {
             return Ok(EnrollmentStartOutcome::Replay(authority));
         }
         let (review, activation) = self.reviews.create(evidence).await?;
+        self.journal.emit(
+            Event::ReviewCreated(ReviewCreated {
+                review_id: ReviewId::from_enrollment_review(review.review_id()),
+                peer_ip,
+            }),
+            context,
+        );
         Ok(EnrollmentStartOutcome::Pending(review, activation))
     }
 
@@ -157,6 +195,8 @@ impl DeviceComponent {
     pub(crate) async fn approve_enrollment(
         &self,
         review_id: EnrollmentReviewId,
+        mode: EnrollmentApprovalMode,
+        context: JournalContext,
     ) -> Result<EnrollmentApproval, EnrollmentApprovalError> {
         let (evidence, activation) = self
             .reviews
@@ -171,10 +211,19 @@ impl DeviceComponent {
         )
         .await
         {
-            Ok(authority) => Ok(EnrollmentApproval {
-                authority,
-                completion: activation,
-            }),
+            Ok(authority) => {
+                self.journal.emit(
+                    Event::EnrollmentApproved(EnrollmentApproved {
+                        review_id: ReviewId::from_enrollment_review(review_id),
+                        automatic: mode.is_automatic(),
+                    }),
+                    context.with_device(authority.device_id()),
+                );
+                Ok(EnrollmentApproval {
+                    authority,
+                    completion: activation,
+                })
+            }
             Err(error) => {
                 let error = EnrollmentApprovalError::from(error);
                 let _ = activation.send(Err(error.clone()));
@@ -184,18 +233,43 @@ impl DeviceComponent {
     }
 
     /// Claims one pending review and attempts to notify only its originating connection.
-    pub(crate) async fn deny_enrollment_review(&self, review_id: EnrollmentReviewId) -> bool {
+    pub(crate) async fn deny_enrollment_review(
+        &self,
+        review_id: EnrollmentReviewId,
+        context: JournalContext,
+    ) -> bool {
         let Some((_, completion)) = self.reviews.take(review_id).await else {
             return false;
         };
         let _ = completion.send(Ok(EnrollmentReviewDecision::Denied));
+        self.journal.emit(
+            Event::EnrollmentDenied(EnrollmentDenied {
+                review_id: ReviewId::from_enrollment_review(review_id),
+            }),
+            context,
+        );
         true
     }
 
     /// Cancels one process-local review and wakes its waiting connection by dropping
     /// the attached result sender.
-    pub(crate) async fn remove_enrollment_review(&self, review_id: EnrollmentReviewId) -> bool {
-        self.reviews.remove(review_id).await
+    pub(crate) async fn remove_enrollment_review(
+        &self,
+        review_id: EnrollmentReviewId,
+        cause: ReviewCancelCause,
+        context: JournalContext,
+    ) -> bool {
+        let winning = self.reviews.remove(review_id).await;
+        if winning {
+            self.journal.emit(
+                Event::ReviewCancelled(ReviewCancelled {
+                    review_id: ReviewId::from_enrollment_review(review_id),
+                    cause,
+                }),
+                context,
+            );
+        }
+        winning
     }
 
     /// Lists non-secret projections of reviews pending in this process.
@@ -206,22 +280,52 @@ impl DeviceComponent {
     pub(crate) async fn enable(
         &self,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        lifecycle::enable(&self.database, device_id).await
+        let outcome = lifecycle::enable(&self.database, device_id).await?;
+        if outcome == LifecycleOutcome::Changed {
+            self.journal.emit(
+                Event::LifecycleChanged(LifecycleChanged {
+                    to: LifecycleState::Enabled,
+                }),
+                context.with_device(device_id),
+            );
+        }
+        Ok(outcome)
     }
 
     pub(crate) async fn disable(
         &self,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        lifecycle::disable(&self.database, device_id).await
+        let outcome = lifecycle::disable(&self.database, device_id).await?;
+        if outcome == LifecycleOutcome::Changed {
+            self.journal.emit(
+                Event::LifecycleChanged(LifecycleChanged {
+                    to: LifecycleState::Disabled,
+                }),
+                context.with_device(device_id),
+            );
+        }
+        Ok(outcome)
     }
 
     pub(crate) async fn revoke(
         &self,
         device_id: DeviceId,
+        context: JournalContext,
     ) -> Result<LifecycleOutcome, DeviceError> {
-        lifecycle::revoke(&self.database, device_id).await
+        let outcome = lifecycle::revoke(&self.database, device_id).await?;
+        if outcome == LifecycleOutcome::Changed {
+            self.journal.emit(
+                Event::LifecycleChanged(LifecycleChanged {
+                    to: LifecycleState::Revoked,
+                }),
+                context.with_device(device_id),
+            );
+        }
+        Ok(outcome)
     }
 }
 

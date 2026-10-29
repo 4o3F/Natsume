@@ -7,6 +7,27 @@ use crate::{
     diesel_schema::operator_accounts,
 };
 
+pub(in crate::component::operator) fn display_names(
+    transaction: &mut Transaction<'_>,
+    ids: &[Uuid],
+) -> Result<std::collections::HashMap<Uuid, String>, PersistenceError> {
+    operator_accounts::table
+        .filter(
+            operator_accounts::operator_id
+                .eq_any(ids.iter().map(Uuid::to_string).collect::<Vec<_>>()),
+        )
+        .select((operator_accounts::operator_id, operator_accounts::username))
+        .load::<(String, String)>(transaction.connection())
+        .map_err(PersistenceError::from)?
+        .into_iter()
+        .map(|(id, name)| {
+            Uuid::parse_str(&id).map(|id| (id, name)).map_err(|source| {
+                super::persisted_identity_error(OperatorError::InvalidPersistedIdentity { source })
+            })
+        })
+        .collect()
+}
+
 pub(in crate::component::operator) fn list_accounts(
     transaction: &mut Transaction<'_>,
 ) -> Result<Vec<OperatorSummary>, PersistenceError> {

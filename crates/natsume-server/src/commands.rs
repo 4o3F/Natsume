@@ -10,6 +10,7 @@ mod serve;
 pub use crate::logging::Logging;
 pub use error::CommandError;
 /// Builds the mounted Server HTTP surface over an already-bootstrapped database.
+/// The caller supplies the UTC offset captured before process threads start.
 ///
 /// # Errors
 ///
@@ -17,22 +18,28 @@ pub use error::CommandError;
 pub async fn router(
     config: ServerConfig,
     web_root: &std::path::Path,
+    utc_offset: time::UtcOffset,
 ) -> Result<axum::Router, CommandError> {
-    serve::router(config, web_root)
+    serve::router(config, web_root, utc_offset)
         .await
         .map_err(CommandError::from)
 }
 
 /// Runs the production Server stack until the supplied shutdown future resolves.
+/// The caller supplies the UTC offset captured before process threads start.
 ///
 /// # Errors
 ///
 /// Returns a redacted [`CommandError`] when a startup or serving stage fails.
-pub async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), CommandError>
+pub async fn run_until<F>(
+    config: ServerConfig,
+    shutdown: F,
+    utc_offset: time::UtcOffset,
+) -> Result<(), CommandError>
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    serve::run_until(config, shutdown)
+    serve::run_until(config, shutdown, utc_offset)
         .await
         .map_err(CommandError::from)
 }
@@ -67,6 +74,7 @@ pub fn bootstrap_logging() -> Result<Logging, CommandError> {
 }
 
 /// Configures the startup subscriber and runs the selected Server command.
+/// The UTC offset is supplied by main before its runtime starts.
 ///
 /// # Errors
 ///
@@ -75,6 +83,7 @@ pub async fn run(
     config: ServerConfig,
     command: Command,
     logging: Logging,
+    utc_offset: time::UtcOffset,
 ) -> Result<(), CommandError> {
     let telemetry = logging::initialize(logging, config.log_level())
         .map_err(|source| error::CommandFailure::Logging { source })?;
@@ -87,7 +96,7 @@ pub async fn run(
         match command {
             Command::Serve => {
                 log_mode("serve");
-                serve::execute(config).await
+                serve::execute(config, utc_offset).await
             }
             Command::Bootstrap => {
                 log_mode("bootstrap");

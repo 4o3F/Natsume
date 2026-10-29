@@ -1,6 +1,7 @@
+use crate::journal::JournalContext;
 use std::{fs, os::unix::fs::PermissionsExt as _, path::PathBuf, sync::Arc};
 
-use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl};
+use diesel::{ExpressionMethods, QueryDsl, RunQueryDsl, connection::SimpleConnection as _};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -206,15 +207,19 @@ async fn concurrent_acceptance_preserves_seat_and_device_occupancy() {
     let first_negotiation = fixture.negotiation_id(first_device).await;
     let second_negotiation = fixture.negotiation_id(second_device).await;
 
-    let first = fixture
-        .component
-        .ingest(first_device, Some(input(first_negotiation, 1, "A-01")));
-    let second = fixture
-        .component
-        .ingest(second_device, Some(input(second_negotiation, 1, "A-01")));
+    let first = fixture.component.ingest(
+        first_device,
+        Some(input(first_negotiation, 1, "A-01")),
+        JournalContext::default(),
+    );
+    let second = fixture.component.ingest(
+        second_device,
+        Some(input(second_negotiation, 1, "A-01")),
+        JournalContext::default(),
+    );
     let (first, second) = tokio::join!(first, second);
-    assert!(matches!(first, Ok(())));
-    assert!(matches!(second, Ok(())));
+    assert!(first.is_ok());
+    assert!(second.is_ok());
 
     let first = fixture.materialize(first_device).await;
     let second = fixture.materialize(second_device).await;
@@ -243,15 +248,19 @@ async fn concurrent_acceptance_preserves_seat_and_device_occupancy() {
         .insert_mapped_seat("A-03", "team-gamma", b"third-password")
         .await;
     let third_negotiation = fixture.negotiation_id(third_device).await;
-    let first_seat = fixture
-        .component
-        .ingest(third_device, Some(input(third_negotiation, 1, "A-02")));
-    let second_seat = fixture
-        .component
-        .ingest(third_device, Some(input(third_negotiation, 1, "A-03")));
+    let first_seat = fixture.component.ingest(
+        third_device,
+        Some(input(third_negotiation, 1, "A-02")),
+        JournalContext::default(),
+    );
+    let second_seat = fixture.component.ingest(
+        third_device,
+        Some(input(third_negotiation, 1, "A-03")),
+        JournalContext::default(),
+    );
     let (first_seat, second_seat) = tokio::join!(first_seat, second_seat);
-    assert!(matches!(first_seat, Ok(())));
-    assert!(matches!(second_seat, Ok(())));
+    assert!(first_seat.is_ok());
+    assert!(second_seat.is_ok());
     assert_eq!(fixture.binding_count(third_device).await, 1);
     assert_eq!(fixture.negotiation_count(third_device).await, 0);
     assert_eq!(fixture.total_binding_count().await, 2);
@@ -413,6 +422,8 @@ struct Fixture {
     database: Database,
     vault: Arc<VaultSession>,
     component: BindingComponent,
+    /// Captured component facts, without a database journal writer.
+    events: tokio::sync::mpsc::Receiver<crate::journal::Envelope>,
     control: Arc<crate::device_control::DeviceControl>,
 }
 
@@ -434,7 +445,9 @@ impl Fixture {
             Database::connect_and_migrate(&DatabaseConfig::new(root.join("server.sqlite3"), true))
                 .await
                 .unwrap_or_else(|error| panic!("Binding fixture database failed: {error:?}"));
-        let component = BindingComponent::new(database.clone(), Arc::clone(&vault));
+        let (journal, events) = crate::journal::JournalComponent::channel(crate::journal::CAPACITY);
+        let component =
+            BindingComponent::new(database.clone(), Arc::clone(&vault), journal.emitter());
         let state = crate::server_state::tests::for_test(database.clone(), root.join("documents"))
             .unwrap_or_else(|error| panic!("state: {error}"));
         let control = Arc::clone(state.device_control());
@@ -443,12 +456,16 @@ impl Fixture {
             database,
             vault,
             component,
+            events,
             control,
         }
     }
 
     async fn unbind(&self, device_id: DeviceId) -> Result<(), BindingError> {
-        let change = self.component.unbind(device_id).await?;
+        let change = self
+            .component
+            .unbind(device_id, JournalContext::default())
+            .await?;
         self.control.publish(change).await;
         Ok(())
     }
@@ -583,7 +600,11 @@ impl Fixture {
         seat_code: &str,
     ) -> Result<(), BindingError> {
         self.component
-            .ingest(device_id, Some(input(negotiation_id, epoch, seat_code)))
+            .ingest(
+                device_id,
+                Some(input(negotiation_id, epoch, seat_code)),
+                JournalContext::default(),
+            )
             .await
     }
 
@@ -717,4 +738,151 @@ async fn bound_profile_refresh_preserves_credentials_and_missing_profile_fails_c
         .await
         .unwrap_or_else(|e| panic!("remove profile: {e:?}"));
     assert!(fixture.component.materialize(device).await.is_err());
+}
+
+#[tokio::test]
+async fn binding_events_use_committed_facts_and_noop_unbind_emits_nothing() {
+    use crate::diesel_schema::seats;
+    use crate::journal::{
+        JournalContext, event::Event, event::types::SessionId, tests::drain_events,
+    };
+    let mut fixture = Fixture::new().await;
+    let device = fixture.insert_device("enabled").await;
+    fixture
+        .insert_mapped_seat(
+            "A-01",
+            "attempted-login-secret-canary",
+            b"password-secret-canary",
+        )
+        .await;
+    let component = &fixture.component;
+    let negotiation = component
+        .materialize(device)
+        .await
+        .unwrap_or_else(|error| panic!("intent: {error}"))
+        .intent()
+        .unwrap_or_else(|| panic!("intent"))
+        .negotiation_id();
+    let context = JournalContext::default().with_session(SessionId::from_lease(Uuid::now_v7()));
+    for seat_code in ["missing-seat", "missing-seat"] {
+        component
+            .ingest(
+                device,
+                Some(BindingInput::new(
+                    negotiation,
+                    BindingSubmissionEpoch::new(1).unwrap_or_else(|| panic!("epoch")),
+                    seat_code.into(),
+                )),
+                context.clone(),
+            )
+            .await
+            .unwrap_or_else(|error| panic!("rejected input: {error}"));
+    }
+    component
+        .ingest(
+            device,
+            Some(BindingInput::new(
+                negotiation,
+                BindingSubmissionEpoch::new(2).unwrap_or_else(|| panic!("epoch")),
+                "A-01".into(),
+            )),
+            JournalContext::default(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("bind: {error}"));
+    fixture
+        .database
+        .write(|tx| {
+            diesel::update(seats::table)
+                .set(seats::seat_code.eq("A-renamed"))
+                .execute(tx.connection())
+                .map_err(PersistenceError::from)
+        })
+        .await
+        .map_err(crate::db::TransactionError::into_error)
+        .unwrap_or_else(|error| panic!("rename committed seat: {error}"));
+    for _ in 0..2 {
+        let change = component
+            .unbind(device, JournalContext::default())
+            .await
+            .unwrap_or_else(|error| panic!("unbind: {error}"));
+        fixture.control.publish(change).await;
+    }
+    let records = drain_events(&mut fixture.events);
+    assert_eq!(records.len(), 3);
+    assert!(
+        matches!(&records[0].event, Event::BindingRejected(event) if event.code == crate::journal::event::types::BindingCode::NotFound)
+    );
+    assert!(
+        matches!(&records[1].event, Event::BindingBound(event) if event.seat_code.as_str() == "A-01")
+    );
+    assert!(
+        matches!(&records[2].event, Event::BindingUnbound(event) if event.seat_code.as_str() == "A-renamed")
+    );
+    for record in records {
+        let details = record.details();
+        for secret in [
+            "attempted-login-secret-canary",
+            "password-secret-canary",
+            "token-secret-canary",
+            "-----BEGIN CERTIFICATE-----",
+            "-----BEGIN CERTIFICATE REQUEST-----",
+        ] {
+            assert!(!details.contains(secret));
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_unbind_commit_emits_nothing_and_keeps_the_binding() {
+    use crate::journal::{JournalContext, tests::drain_events};
+    let mut fixture = Fixture::new().await;
+    let device = fixture.insert_device("enabled").await;
+    fixture
+        .insert_mapped_seat(
+            "A-01",
+            "attempted-login-secret-canary",
+            b"password-secret-canary",
+        )
+        .await;
+    let component = &fixture.component;
+    let negotiation = component
+        .materialize(device)
+        .await
+        .unwrap_or_else(|error| panic!("intent: {error}"))
+        .intent()
+        .unwrap_or_else(|| panic!("intent"))
+        .negotiation_id();
+    component
+        .ingest(
+            device,
+            Some(BindingInput::new(
+                negotiation,
+                BindingSubmissionEpoch::new(1).unwrap_or_else(|| panic!("epoch")),
+                "A-01".into(),
+            )),
+            JournalContext::default(),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("bind: {error}"));
+    drain_events(&mut fixture.events);
+    fixture.database.write(|tx| tx.connection().batch_execute("CREATE TRIGGER fail_unbind BEFORE DELETE ON device_bindings BEGIN SELECT RAISE(ABORT, 'unbind fault'); END;").map_err(PersistenceError::from)).await.map_err(crate::db::TransactionError::into_error).unwrap_or_else(|error| panic!("fault injection: {error}"));
+    assert!(
+        component
+            .unbind(device, JournalContext::default())
+            .await
+            .is_err()
+    );
+    assert!(drain_events(&mut fixture.events).is_empty());
+    assert!(
+        fixture
+            .database
+            .read(move |tx| crate::diesel_schema::device_bindings::table
+                .select(crate::diesel_schema::device_bindings::device_id)
+                .filter(crate::diesel_schema::device_bindings::device_id.eq(device.as_text()))
+                .first::<String>(tx.connection())
+                .map_err(PersistenceError::from))
+            .await
+            .is_ok()
+    );
 }

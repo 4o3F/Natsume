@@ -1,4 +1,9 @@
-use std::{future::Future, path::Path, sync::Arc};
+use std::{
+    future::{Future, IntoFuture},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
 use tracing::instrument::WithSubscriber as _;
 
@@ -12,16 +17,22 @@ use crate::{
     tls::{PeerAddress, TlsListener},
 };
 
+/// Maximum time admitted mutations may finish before actor shutdown proceeds.
+const PRODUCER_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
 use super::error::CommandFailure as CommandError;
 
 const WEB_ASSETS_PATH: &str = "/usr/share/natsume-server/web";
 
-pub(super) async fn execute(config: ServerConfig) -> Result<(), CommandError> {
+pub(super) async fn execute(
+    config: ServerConfig,
+    utc_offset: time::UtcOffset,
+) -> Result<(), CommandError> {
     if !Path::new(WEB_ASSETS_PATH).join("index.html").is_file() {
         return Err(CommandError::WebAssets);
     }
     let shutdown = shutdown_signal()?;
-    run_until(config, shutdown).await
+    run_until(config, shutdown, utc_offset).await
 }
 
 /// Builds the mounted Server HTTP surface over an already-bootstrapped database.
@@ -32,18 +43,22 @@ pub(super) async fn execute(config: ServerConfig) -> Result<(), CommandError> {
 pub(super) async fn router(
     config: ServerConfig,
     web_root: &Path,
+    utc_offset: time::UtcOffset,
 ) -> Result<axum::Router, CommandError> {
-    let state = Arc::new(load_state(&config).await?);
+    let state = Arc::new(load_state(&config, utc_offset).await?);
     Ok(http::router(state, web_root))
 }
 
-async fn load_state(config: &ServerConfig) -> Result<ServerState, CommandError> {
+async fn load_state(
+    config: &ServerConfig,
+    utc_offset: time::UtcOffset,
+) -> Result<ServerState, CommandError> {
     let database_config = DatabaseConfig::new(config.database_path(), false);
     let database = Database::connect_and_migrate(&database_config)
         .await
         .map_err(|source| CommandError::Database { source })?;
     tracing::info!("database ready");
-    let state = ServerState::load(database.clone(), config)
+    let state = ServerState::load(database.clone(), config, utc_offset)
         .await
         .map_err(CommandError::from)?;
     configure_runtime(&database, config.domjudge_origin()).await?;
@@ -76,11 +91,15 @@ async fn configure_runtime(database: &Database, origin: &str) -> Result<(), Comm
 /// # Errors
 ///
 /// Returns a redacted [`CommandError`] when a startup or serving stage fails.
-pub(super) async fn run_until<F>(config: ServerConfig, shutdown: F) -> Result<(), CommandError>
+pub(super) async fn run_until<F>(
+    config: ServerConfig,
+    shutdown: F,
+    utc_offset: time::UtcOffset,
+) -> Result<(), CommandError>
 where
     F: Future<Output = ()> + Send + 'static,
 {
-    let state = Arc::new(load_state(&config).await?);
+    let state = Arc::new(load_state(&config, utc_offset).await?);
     tracing::info!("server state ready");
     let listener = TlsListener::bind(
         config.listen_address(),
@@ -94,26 +113,51 @@ where
     let background = start_background_tasks(&state)
         .await
         .map_err(|source| CommandError::Background { source })?;
-    let router = http::router(state, Path::new(WEB_ASSETS_PATH));
+    let router = http::router(Arc::clone(&state), Path::new(WEB_ASSETS_PATH));
 
-    let dispatcher = tracing::dispatcher::get_default(Clone::clone);
-    let shutdown = async move {
-        shutdown.await;
-        tracing::info!("graceful shutdown initiated");
+    let http_stop = tokio_util::sync::CancellationToken::new();
+    let stopped = http_stop.clone();
+    let mut serving = tokio::spawn(
+        axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<PeerAddress>(),
+        )
+        .with_graceful_shutdown(stopped.cancelled_owned())
+        .into_future()
+        .with_subscriber(tracing::dispatcher::get_default(Clone::clone)),
+    );
+    tokio::pin!(shutdown);
+    let completed = tokio::select! {
+        () = &mut shutdown => None,
+        result = &mut serving => Some(result),
+    };
+    state.lifecycle().begin_shutdown();
+    http_stop.cancel();
+    tracing::info!("graceful shutdown initiated");
+    if tokio::time::timeout(PRODUCER_WAIT_TIMEOUT, state.lifecycle().wait())
+        .await
+        .is_err()
+    {
+        state.journal().record_producer_timeout();
+        tracing::warn!("in-flight mutation shutdown timed out");
     }
-    .with_subscriber(dispatcher);
-    let result = axum::serve(
-        listener,
-        router.into_make_service_with_connect_info::<PeerAddress>(),
-    )
-    .with_graceful_shutdown(shutdown)
-    .await
-    .map_err(|source| CommandError::Http { source });
-    let stopped = background
+    state.device_control().shutdown().await;
+    let background_result = background
         .shutdown()
         .await
         .map_err(|source| CommandError::Background { source });
-    let result = result.and(stopped);
+    state.journal().shutdown().await;
+    let serving_result = match completed {
+        Some(result) => result,
+        None => serving.await,
+    };
+    let result = match serving_result {
+        Ok(result) => result.map_err(|source| CommandError::Http { source }),
+        Err(source) => Err(CommandError::ServingTask {
+            source: source.into(),
+        }),
+    }
+    .and(background_result);
     if result.is_ok() {
         tracing::info!("graceful shutdown completed");
     }

@@ -20,8 +20,8 @@ struct ErrorResponse {
 
 /// Closed set emitted by the current HTTP API. This type belongs to the HTTP
 /// adapter; it is not a domain error or a cross-transport registry.
-#[derive(Clone, Copy)]
-enum ApiErrorCode {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::http) enum ApiErrorCode {
     AuthenticationFailed,
     AuthorizationDenied,
     InvalidRequest,
@@ -45,7 +45,7 @@ enum ApiErrorCode {
 }
 
 impl ApiErrorCode {
-    const fn as_str(self) -> &'static str {
+    pub(in crate::http) const fn as_str(self) -> &'static str {
         match self {
             Self::AuthenticationFailed => "AUTHENTICATION_FAILED",
             Self::AuthorizationDenied => "AUTHORIZATION_DENIED",
@@ -69,6 +69,14 @@ impl ApiErrorCode {
             Self::OperatorLogoutRequired => "OPERATOR_LOGOUT_REQUIRED",
         }
     }
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::http) struct ApiErrorMetadata {
+    /// Closed public API code selected by the HTTP adapter.
+    pub(in crate::http) code: ApiErrorCode,
+    /// Compile-time failure discriminant; excludes titles and source errors.
+    pub(in crate::http) cause: &'static str,
 }
 
 pub(super) struct ApiError {
@@ -280,6 +288,7 @@ impl ApiError {
     pub(super) fn from_device(error: impl std::borrow::Borrow<DeviceError>) -> Self {
         let error = error.borrow();
         match error {
+            DeviceError::ServerStopping => Self::unavailable("server_stopping"),
             DeviceError::DeviceNotFound => Self::not_found("device_not_found"),
             DeviceError::InvalidPersistedFacts { .. } => {
                 Self::internal_error_from(error, "device_invalid_persisted_facts")
@@ -455,6 +464,10 @@ impl IntoResponse for ApiError {
             }
         }
         let mut response = (self.status, Json(error_response)).into_response();
+        response.extensions_mut().insert(ApiErrorMetadata {
+            code: self.code,
+            cause: self.cause,
+        });
         if self.status == StatusCode::SERVICE_UNAVAILABLE {
             response
                 .headers_mut()

@@ -11,29 +11,57 @@ use crate::{
     component::device::DeviceId,
     db::{Database, PersistenceError, Transaction, TransactionError},
     device_control::TargetChange,
+    journal::{Journal, JournalContext, event::Event},
     vault::VaultSession,
 };
 
 const PASSWORD_LENGTH_LIMIT: usize = 512;
 
+#[derive(Debug, PartialEq, Eq)]
+enum IngestOutcome {
+    Unchanged,
+    Bound {
+        /// Binding identity inserted by the committed ingest transaction.
+        binding_id: Uuid,
+        /// Seat code selected from the committed binding's seat row.
+        seat_code: String,
+    },
+    Rejected {
+        /// Evaluation newly committed for this submission epoch.
+        code: BindingEvaluationCode,
+    },
+}
+
 pub(crate) struct BindingComponent {
     database: Database,
     vault: Arc<VaultSession>,
+    /// Emit-only handle for facts committed by this component.
+    journal: Journal,
 }
 
 impl BindingComponent {
-    pub(crate) const fn new(database: Database, vault: Arc<VaultSession>) -> Self {
-        Self { database, vault }
+    pub(crate) const fn new(
+        database: Database,
+        vault: Arc<VaultSession>,
+        journal: Journal,
+    ) -> Self {
+        Self {
+            database,
+            vault,
+            journal,
+        }
     }
 
     pub(crate) async fn ingest(
         &self,
         device_id: DeviceId,
         input: Option<BindingInput>,
+        context: JournalContext,
     ) -> Result<(), BindingError> {
         let initial_negotiation_id = BindingNegotiationId::new();
         let binding_id = BindingId::new();
-        self.database
+        let outcome = self
+            .database
             .write(move |transaction| {
                 require_enabled_device(transaction, &device_id)?;
                 let has_binding = db::device_has_binding(transaction, &device_id)?;
@@ -42,7 +70,7 @@ impl BindingComponent {
                     (true, Some(_)) => Err(BindingError::InvalidPersistedFacts {
                         source: crate::db::PersistenceError::invalid("persisted facts"),
                     }),
-                    (true, None) => Ok(()),
+                    (true, None) => Ok(IngestOutcome::Unchanged),
                     (false, negotiation) => {
                         let negotiation = if let Some(row) = negotiation {
                             NegotiationFact::from_persisted(&row)?
@@ -65,7 +93,43 @@ impl BindingComponent {
                 }
             })
             .await
-            .map_err(TransactionError::into_error)
+            .map_err(TransactionError::into_error)?;
+        self.record_ingest(device_id, context, outcome);
+        Ok(())
+    }
+
+    fn record_ingest(&self, device_id: DeviceId, context: JournalContext, outcome: IngestOutcome) {
+        use crate::journal::event::{
+            payload::{BindingBound, BindingRejected},
+            types::BindingCode,
+        };
+        let context = context.with_device(device_id);
+        match outcome {
+            IngestOutcome::Unchanged => {}
+            IngestOutcome::Bound {
+                binding_id,
+                seat_code,
+            } => {
+                if let Some(seat_code) = committed_seat_code(&seat_code) {
+                    self.journal.emit(
+                        Event::BindingBound(BindingBound {
+                            binding_id,
+                            seat_code: seat_code.clone(),
+                        }),
+                        context.with_seat(seat_code),
+                    );
+                }
+            }
+            IngestOutcome::Rejected { code } => {
+                let code = match code {
+                    BindingEvaluationCode::NotFound => BindingCode::NotFound,
+                    BindingEvaluationCode::Unmapped => BindingCode::Unmapped,
+                    BindingEvaluationCode::Occupied => BindingCode::Occupied,
+                };
+                self.journal
+                    .emit(Event::BindingRejected(BindingRejected { code }), context);
+            }
+        }
     }
 
     pub(crate) async fn materialize(
@@ -209,37 +273,59 @@ impl BindingComponent {
     }
 
     /// Removes the current Binding and starts a fresh negotiation if needed.
-    pub(crate) async fn unbind(&self, device_id: DeviceId) -> Result<TargetChange, BindingError> {
+    pub(crate) async fn unbind(
+        &self,
+        device_id: DeviceId,
+        context: JournalContext,
+    ) -> Result<TargetChange, BindingError> {
         let replacement_negotiation_id = BindingNegotiationId::new();
-        self.database
+        let seat_code = self
+            .database
             .write(move |transaction| {
                 require_existing_device(transaction, &device_id)?;
-                let has_binding = db::device_has_binding(transaction, &device_id)?;
+                let seat_code = db::find_bound_seat_code(transaction, &device_id)?;
                 let negotiation = db::find_negotiation(transaction, &device_id)?;
-                match (has_binding, negotiation) {
-                    (true, Some(_)) => Err(BindingError::InvalidPersistedFacts {
-                        source: crate::db::PersistenceError::invalid("persisted facts"),
-                    }),
-                    (true, None) => {
+                match (seat_code.as_ref(), negotiation) {
+                    (Some(_), Some(_)) => {
+                        return Err(BindingError::InvalidPersistedFacts {
+                            source: crate::db::PersistenceError::invalid("persisted facts"),
+                        });
+                    }
+                    (Some(_), None) => {
                         require_one(db::delete_binding(transaction, &device_id)?)?;
                         require_one(db::insert_negotiation(
                             transaction,
                             &device_id,
                             replacement_negotiation_id.value(),
-                        )?)
+                        )?)?;
                     }
-                    (false, Some(_)) => Ok(()),
-                    (false, None) => require_one(db::insert_negotiation(
+                    (None, Some(_)) => {}
+                    (None, None) => require_one(db::insert_negotiation(
                         transaction,
                         &device_id,
                         replacement_negotiation_id.value(),
-                    )?),
+                    )?)?,
                 }
+                Ok(seat_code)
             })
             .await
-            .map_err(TransactionError::into_error)
-            .map(|()| TargetChange::device(device_id))
+            .map_err(TransactionError::into_error)?;
+        if let Some(seat_code) = seat_code.as_deref().and_then(committed_seat_code) {
+            self.journal.emit(
+                Event::BindingUnbound(crate::journal::event::payload::BindingUnbound {
+                    seat_code: seat_code.clone(),
+                }),
+                context.with_device(device_id).with_seat(seat_code),
+            );
+        }
+        Ok(TargetChange::device(device_id))
     }
+}
+
+fn committed_seat_code(value: &str) -> Option<crate::journal::event::types::SeatCode> {
+    crate::journal::event::types::SeatCode::from_committed_binding(value)
+        .inspect_err(|error| tracing::warn!(error = %snafu::Report::from_error(error), "committed binding is outside journal bounds"))
+        .ok()
 }
 
 fn ingest_submission(
@@ -248,12 +334,12 @@ fn ingest_submission(
     negotiation: &NegotiationFact,
     input: Option<&BindingInput>,
     binding_id: BindingId,
-) -> Result<(), BindingError> {
+) -> Result<IngestOutcome, BindingError> {
     let Some(input) = input else {
-        return Ok(());
+        return Ok(IngestOutcome::Unchanged);
     };
     if input.negotiation_id != negotiation.negotiation_id {
-        return Ok(());
+        return Ok(IngestOutcome::Unchanged);
     }
     if let Some(rejected) = negotiation.rejected_submission.as_ref() {
         match input
@@ -261,8 +347,10 @@ fn ingest_submission(
             .value()
             .cmp(&rejected.submission_epoch.value())
         {
-            std::cmp::Ordering::Less => return Ok(()),
-            std::cmp::Ordering::Equal if input.seat_code == rejected.seat_code => return Ok(()),
+            std::cmp::Ordering::Less => return Ok(IngestOutcome::Unchanged),
+            std::cmp::Ordering::Equal if input.seat_code == rejected.seat_code => {
+                return Ok(IngestOutcome::Unchanged);
+            }
             std::cmp::Ordering::Equal => return Err(BindingError::ConflictingSubmission),
             std::cmp::Ordering::Greater => {}
         }
@@ -283,7 +371,8 @@ fn ingest_submission(
             input.submission_epoch.value(),
             &input.seat_code,
             evaluation.as_persisted(),
-        )?);
+        )?)
+        .map(|()| IngestOutcome::Rejected { code: evaluation });
     }
 
     let seat = seat.ok_or(BindingError::InvalidPersistedFacts {
@@ -299,7 +388,11 @@ fn ingest_submission(
         transaction,
         device_id,
         negotiation.negotiation_id.value(),
-    )?)
+    )?)?;
+    Ok(IngestOutcome::Bound {
+        binding_id: binding_id.value(),
+        seat_code: seat.seat_code,
+    })
 }
 
 fn require_enabled_device(

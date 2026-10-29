@@ -162,6 +162,7 @@ tower-http = { version = "0.7", default-features = false, features = [
   "fs",
   "set-header"
 ] }
+trybuild = "1.0"
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = [

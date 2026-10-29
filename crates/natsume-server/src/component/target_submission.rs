@@ -7,6 +7,7 @@ use uuid::Uuid;
 use crate::{
     db::{Database, PersistenceError, Transaction, TransactionError},
     device_control::TargetChange,
+    journal::{Journal, JournalContext, event::Event},
 };
 
 use super::{
@@ -20,24 +21,66 @@ use super::{
 /// Session/Home retain all validation and mutation of their own tables.
 pub(crate) struct TargetSubmissionComponent {
     database: Database,
+    /// Emit-only handle for committed submissions and matching receipt replays.
+    journal: Journal,
+}
+
+pub(crate) struct TargetSubmissionOutcome {
+    /// Committed per-device receipt, preserving the HTTP result shape on replay.
+    pub(crate) result: TargetSubmissionResult,
+    /// Existing dirty notifications for successfully targeted devices.
+    pub(crate) change: TargetChange,
+    /// True only when this call read an already committed matching receipt.
+    replayed: bool,
+    /// Closed action supplied by the validated request, identical on matching replay.
+    action: TargetAction,
+}
+
+#[derive(Clone, Copy)]
+enum ReceiptOrigin {
+    New,
+    Replayed,
+}
+
+impl TargetSubmissionOutcome {
+    fn committed(
+        result: TargetSubmissionResult,
+        action: TargetAction,
+        origin: ReceiptOrigin,
+    ) -> Self {
+        let devices = result
+            .results
+            .iter()
+            .filter(|row| row.rejection.is_none())
+            .map(|row| row.device_id)
+            .collect();
+        Self {
+            result,
+            change: TargetChange::devices(devices),
+            replayed: matches!(origin, ReceiptOrigin::Replayed),
+            action,
+        }
+    }
 }
 
 impl TargetSubmissionComponent {
-    pub(crate) const fn new(database: Database) -> Self {
-        Self { database }
+    pub(crate) const fn new(database: Database, journal: Journal) -> Self {
+        Self { database, journal }
     }
 
     pub(crate) async fn submit(
         &self,
         operator_id: Uuid,
         mut request: TargetSubmissionRequest,
-    ) -> Result<(TargetSubmissionResult, TargetChange), TargetSubmissionError> {
+        context: JournalContext,
+    ) -> Result<TargetSubmissionOutcome, TargetSubmissionError> {
         if let TargetScope::Devices(devices) = &mut request.scope {
             devices.sort_unstable_by_key(DeviceId::as_text);
             devices.dedup();
         }
         let canonical = request.canonical()?;
-        self.database
+        let outcome = self
+            .database
             .write(move |transaction| {
                 let operation_id = request.operation_id.hyphenated().to_string();
                 let owner = operator_id.hyphenated().to_string();
@@ -48,7 +91,13 @@ impl TargetSubmissionComponent {
                     if stored_owner != owner || stored_request != canonical {
                         return Err(TargetSubmissionError::OperationIdConflict);
                     }
-                    return decode_result(request.operation_id, &stored_results);
+                    return decode_result(request.operation_id, &stored_results).map(|result| {
+                        TargetSubmissionOutcome::committed(
+                            result,
+                            request.action,
+                            ReceiptOrigin::Replayed,
+                        )
+                    });
                 }
                 let devices = match request.scope {
                     TargetScope::AllEnabled => {
@@ -83,22 +132,54 @@ impl TargetSubmissionComponent {
                 })?;
                 // Even zero devices or all rejected results must reserve this ID.
                 db::insert(transaction, &operation_id, &owner, &canonical, &stored)?;
-                Ok(TargetSubmissionResult {
-                    operation_id: request.operation_id,
-                    results,
-                })
+                Ok(TargetSubmissionOutcome::committed(
+                    TargetSubmissionResult {
+                        operation_id: request.operation_id,
+                        results,
+                    },
+                    request.action,
+                    ReceiptOrigin::New,
+                ))
             })
             .await
-            .map_err(TransactionError::into_error)
-            .map(|result| {
-                let devices = result
-                    .results
-                    .iter()
-                    .filter(|row| row.rejection.is_none())
-                    .map(|row| row.device_id)
-                    .collect();
-                (result, TargetChange::devices(devices))
-            })
+            .map_err(TransactionError::into_error)?;
+        self.record_submission(&outcome, context);
+        Ok(outcome)
+    }
+
+    fn record_submission(&self, outcome: &TargetSubmissionOutcome, context: JournalContext) {
+        use self::TargetAction as SubmittedAction;
+        use crate::journal::event::{
+            payload::TargetSubmitted,
+            types::{OperationId, TargetAction, TargetResult},
+        };
+        let action = match outcome.action {
+            SubmittedAction::SetForeground(_) => TargetAction::SetForeground,
+            SubmittedAction::TerminateSession => TargetAction::TerminateSession,
+            SubmittedAction::ResetHome => TargetAction::ResetHome,
+            SubmittedAction::PowerOff { .. } => TargetAction::PowerOff,
+        };
+        let operation_id = outcome.result.operation_id;
+        let context = context.with_operation(OperationId::from_operation(operation_id));
+        for row in &outcome.result.results {
+            let result = match row.rejection {
+                None => TargetResult::Accepted,
+                Some(TargetRejection::DeviceNotFound) => TargetResult::DeviceNotFound,
+                Some(TargetRejection::DeviceNotEnabled) => TargetResult::DeviceNotEnabled,
+                Some(TargetRejection::InvalidDeviceState) => TargetResult::InvalidDeviceState,
+                Some(TargetRejection::InvalidTarget) => TargetResult::InvalidTarget,
+                Some(TargetRejection::EpochExhausted) => TargetResult::EpochExhausted,
+            };
+            self.journal.emit(
+                Event::TargetSubmitted(TargetSubmitted {
+                    operation_id,
+                    action: action.clone(),
+                    result,
+                    replayed: outcome.replayed,
+                }),
+                context.clone().with_device(row.device_id),
+            );
+        }
     }
 }
 

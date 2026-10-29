@@ -1,4 +1,6 @@
 use crate::http::Routes;
+use crate::http::middleware::audit::RequestAudit;
+use axum::Extension;
 
 use axum::{
     Json,
@@ -198,18 +200,26 @@ pub(crate) async fn get_template() -> Response {
         .into_response()
 }
 
-pub(crate) async fn create_import(upload: RosterUpload) -> Response {
+pub(in crate::http) async fn create_import(
+    Extension(audit): Extension<RequestAudit>,
+    upload: RosterUpload,
+) -> Response {
     match upload.operation.create_candidate(&upload.bytes).await {
-        Ok(created) => (
-            StatusCode::CREATED,
-            Json(ImportPreviewResponse {
-                candidate_id: created.candidate_id(),
-                preview_token: encode_preview_token(created.preview_token_bytes()),
-                expires_at_unix_ms: created.expires_at_unix_ms(),
-                diff: ImportRedactedDiff::from(created.diff()),
-            }),
-        )
-            .into_response(),
+        Ok(created) => {
+            audit.record_target(crate::journal::event::types::AuditTarget::Import(
+                created.candidate_id(),
+            ));
+            (
+                StatusCode::CREATED,
+                Json(ImportPreviewResponse {
+                    candidate_id: created.candidate_id(),
+                    preview_token: encode_preview_token(created.preview_token_bytes()),
+                    expires_at_unix_ms: created.expires_at_unix_ms(),
+                    diff: ImportRedactedDiff::from(created.diff()),
+                }),
+            )
+                .into_response()
+        }
         Err(error) => ApiError::from_import(error).into_response(),
     }
 }

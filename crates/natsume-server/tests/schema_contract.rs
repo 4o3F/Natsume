@@ -19,7 +19,7 @@ type TestError = Box<dyn Error + Send + Sync>;
 
 fn migrations() -> Result<FileBasedMigrations, TestError> {
     Ok(FileBasedMigrations::from_path(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("migrations"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("diesel/business/migrations"),
     )?)
 }
 

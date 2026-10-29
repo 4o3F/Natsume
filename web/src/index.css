@@ -4,6 +4,8 @@
 @import "tw-animate-css";
 
 @custom-variant dark (&:where(.dark, .dark *));
+/* Touch viewports need 48px controls (DESIGN.md). */
+@custom-variant touch (@media (pointer: coarse));
 
 /*
  * Carbon colors and square geometry, with Noto Sans SC for interface text.
