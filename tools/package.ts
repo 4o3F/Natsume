@@ -144,13 +144,16 @@ async function packages(): Promise<void> {
         },
       );
     }
-    if (target === "print-domjudge") {
+    if (target === "server" || target === "print-domjudge") {
       config.depends = [
         ...(config.depends ?? []),
-        ...await dependencies([
-          variables.WRAPPER_BIN,
-          resolve(runtime, "typst"),
-        ]),
+        ...await dependencies(
+          target === "server"
+            ? packageTargets.server.binaries.map((name) =>
+              resolve(release, name)
+            )
+            : [variables.WRAPPER_BIN, resolve(runtime, "typst")],
+        ),
       ];
     }
     const directory = await Deno.makeTempDir({ dir: work });

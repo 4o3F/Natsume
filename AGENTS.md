@@ -94,6 +94,7 @@ Read [DESIGN.md](DESIGN.md) before changing Web layouts, components, or styles. 
 ## Logging and output
 
 - Rust application output must use `tracing`, including normal results, startup failures, runtime errors, and test diagnostics. Do not use `println!`, `eprintln!`, `print!`, `eprint!`, `dbg!`, or handwritten stdout/stderr writes to bypass tracing.
+- Interactive terminal prompts and their answer context (the Server `bootstrap` / `reset-operator-password` credential prompts and the `natsume-server-setup` wizard, including its one-time encrypted key export) write directly to the controlling terminal rather than through tracing; secrets never enter tracing; progress, results and errors still use tracing.
 - Initialize the tracing subscriber at the executable entry point before parsing CLI arguments or loading configuration. Libraries emit events through tracing and do not initialize global subscribers.
 - Preserve required output channels when configuring the subscriber. In particular, DOMjudge reads the print wrapper's stdout; route its result and error events there. Do not log credentials, source contents, or PDF contents, and escape untrusted display values.
 - Cargo build directives and generated files are protocol or artifact output, not logs. Keep their required formats; do not replace them with tracing events or use this distinction to bypass application logging.
