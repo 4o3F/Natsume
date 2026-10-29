@@ -133,9 +133,6 @@ impl ApiError {
             InitializationError::Unconfirmed => {
                 Self::authorization_denied("photo_enrollment_unconfirmed")
             }
-            InitializationError::InvalidRequest => {
-                Self::invalid_request("photo_initialization_request")
-            }
             InitializationError::NotFound => Self::not_found("photo_initialization_resource"),
             InitializationError::Conflict => Self::conflict("photo_initialization_conflict"),
             InitializationError::EmptyRoster => Self::conflict("photo_roster_empty"),
@@ -151,6 +148,13 @@ impl ApiError {
             }
             InitializationError::Persistence { .. } => {
                 Self::internal_error_from(error, "photo_initialization_persistence")
+            }
+            InitializationError::InvalidRoster { .. } => {
+                Self::internal_error_from(error, "photo_roster_invalid")
+            }
+            InitializationError::InvalidContract { .. }
+            | InitializationError::InvalidSnapshot { .. } => {
+                Self::internal_error_from(error, "photo_initialization_contract")
             }
             InitializationError::Corrupt => {
                 Self::internal_error_from(error, "photo_initialization_corrupt")

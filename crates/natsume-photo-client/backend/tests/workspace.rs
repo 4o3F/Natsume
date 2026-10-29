@@ -37,7 +37,7 @@ async fn only_one_writable_owner_is_allowed_but_readonly_diagnosis_can_open() ->
         })
     ));
     drop(
-        Workspace::open_readonly(&root)
+        natsume_photo_client::workspace::WorkspaceReader::inspect(&root)
             .await
             .context(WorkspaceSnafu)?,
     );

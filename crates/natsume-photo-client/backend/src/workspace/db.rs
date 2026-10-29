@@ -13,10 +13,8 @@ use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use snafu::{IntoError as _, ResultExt as _, Snafu};
 
 use super::resources::Cache;
-use crate::{
-    diesel_schema::{photo_roster, photo_workspace},
-    roster::Team,
-};
+use crate::diesel_schema::{photo_roster, photo_workspace};
+use natsume_photo_protocol::PhotoTeam;
 
 const MIGRATIONS: EmbeddedMigrations = embed_migrations!("migrations");
 const PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC.remove(b'/').remove(b':');
@@ -53,6 +51,7 @@ pub(super) struct Metadata {
     pub ready: i32,
 }
 pub(super) type LogoColumns = (Option<String>, Option<String>);
+#[derive(Clone)]
 pub(super) struct Database(Arc<Mutex<SqliteConnection>>, Option<Arc<std::fs::File>>);
 pub(super) struct Transaction<'connection> {
     connection: &'connection mut SqliteConnection,
@@ -62,17 +61,28 @@ impl Transaction<'_> {
         self.connection
     }
 }
+#[derive(Clone, Copy)]
+enum ConnectionMode {
+    ReadOnly,
+    Writable,
+}
 impl Database {
     // Storage invokes connection and schema installation only inside spawn_blocking.
     pub(super) fn connect(path: &Path) -> Result<Self> {
-        Self::connect_mode(path, false)
+        Self::connect_mode(path, ConnectionMode::Writable)
     }
-    pub(super) fn connect_mode(path: &Path, read_only: bool) -> Result<Self> {
+    pub(super) fn connect_readonly(path: &Path) -> Result<Self> {
+        Self::connect_mode(path, ConnectionMode::ReadOnly)
+    }
+    fn connect_mode(path: &Path, mode: ConnectionMode) -> Result<Self> {
         let path = path.to_str().ok_or_else(|| PathSnafu.build())?;
         let encoded = utf8_percent_encode(path, PATH_ENCODE_SET);
         SqliteConnection::establish(&format!(
             "sqlite://{encoded}?mode={}",
-            if read_only { "ro" } else { "rw" }
+            match mode {
+                ConnectionMode::ReadOnly => "ro",
+                ConnectionMode::Writable => "rw",
+            }
         ))
         .context(ConnectionSnafu)
         .and_then(|mut connection| {
@@ -112,15 +122,17 @@ impl Database {
         &self,
         operation: impl FnOnce(&mut Transaction<'_>) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let database = Arc::clone(&self.0);
-        let owner = self.1.clone();
-        tokio::task::spawn_blocking(move || {
-            let _owner = owner;
-            let mut connection = database.lock().map_err(|_| UnavailableSnafu.build())?;
-            connection.transaction(|connection| operation(&mut Transaction { connection }))
-        })
-        .await
-        .context(WorkerSnafu)?
+        let database = self.clone();
+        tokio::task::spawn_blocking(move || database.write_blocking(operation))
+            .await
+            .context(WorkerSnafu)?
+    }
+    fn write_blocking<T>(
+        &self,
+        operation: impl FnOnce(&mut Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let mut connection = self.0.lock().map_err(|_| UnavailableSnafu.build())?;
+        connection.transaction(|connection| operation(&mut Transaction { connection }))
     }
     pub(super) async fn metadata(&self) -> Result<Metadata> {
         self.read(|tx| {
@@ -132,8 +144,9 @@ impl Database {
         })
         .await
     }
-    pub(super) async fn save_roster(&self, teams: Vec<Team>, cache: Cache) -> Result<()> {
-        self.write(move |tx| {
+    // Used only by the complete preparation operation on its blocking thread.
+    pub(super) fn save_roster_blocking(&self, teams: Vec<PhotoTeam>, cache: Cache) -> Result<()> {
+        self.write_blocking(move |tx| {
             for team in teams {
                 let logo = cache.logos.get(&team.organization_id);
                 diesel::insert_into(photo_roster::table)
@@ -155,7 +168,6 @@ impl Database {
                 .execute(tx.connection())?;
             Ok(())
         })
-        .await
     }
     pub(super) async fn logo(&self, account_id: String) -> Result<Option<LogoColumns>> {
         self.read(move |tx| {
@@ -192,7 +204,7 @@ impl Database {
         })
         .await
     }
-    pub(super) async fn teams(&self) -> Result<Vec<Team>> {
+    pub(super) async fn teams(&self) -> Result<Vec<PhotoTeam>> {
         self.read(|tx| {
             type Row = (String, String, i64, String, String, String, String);
             let rows: Vec<Row> = photo_roster::table
@@ -218,7 +230,7 @@ impl Database {
                         school_name_en,
                         team_name_zh,
                         team_name_en,
-                    )| Team {
+                    )| PhotoTeam {
                         account_id,
                         account,
                         organization_id,

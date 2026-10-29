@@ -87,7 +87,7 @@ Client 在同级 `.Contest.photo-init` 目录记录非秘密恢复日志、暂�
 
 ## 拍摄后端边界
 
-[`capture::Session`](backend/src/capture.rs) 定义组规则；[`hot_folder::HotFolder`](backend/src/hot_folder.rs) 协调真实目录收图。调用方依次 await `Workspace::open`、`HotFolder::prepare`、`select_team`、`start_group`。结束使用时 await `shutdown()`，等待已开始的文件任务退出；Drop 仅发送取消。准备时先建立原生监听，再检查热文件夹完全为空；目录必须与工作区互不包含。构造裸 Session 不代表真实目录、来源或显示条件已通过。
+[`capture::Session`](backend/src/capture.rs) 定义组规则；[`capture_session::CaptureSession`](backend/src/capture_session.rs) 协调真实目录收图。调用方依次 await `Workspace::open`、`CaptureSession::prepare`、`select_team`、`start_group`。结束使用时 await `shutdown()`，等待已开始的文件任务退出；Drop 仅发送取消。准备时先建立原生监听，再检查热文件夹完全为空；目录必须与工作区互不包含。构造裸 Session 不代表真实目录、来源或显示条件已通过。
 
 安全 WinRT 文件通知不依赖系统索引服务；通知和 Tokio 定时对账共用扫描入口，只处理顶层 `.jpg`、`.jpeg`、`.png`，扩展名大小写不敏感。运行中出现子目录/链接会暂停，其他扩展名保留但不导入。每次等待 250ms 超时也会对账，扫描耗时会延长周期，不保证照片在固定时间内完成归档。
 

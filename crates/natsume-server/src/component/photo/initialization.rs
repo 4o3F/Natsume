@@ -21,8 +21,6 @@ pub(crate) enum InitializationError {
     Enrollment { source: EnrollmentError },
     #[snafu(display("Photo enrollment has not been confirmed"))]
     Unconfirmed,
-    #[snafu(display("Photo initialization request is invalid"))]
-    InvalidRequest,
     #[snafu(display("Photo initialization conflicts with the recorded snapshot"))]
     Conflict,
     #[snafu(display("Photo initialization or resource does not exist"))]
@@ -33,6 +31,18 @@ pub(crate) enum InitializationError {
     Limit,
     #[snafu(display("Import a nonempty team roster before Photo initialization"))]
     EmptyRoster,
+    #[snafu(display("Photo roster contains invalid Server facts"))]
+    InvalidRoster {
+        source: natsume_photo_protocol::ValidationError,
+    },
+    #[snafu(display("Photo snapshot contract is inconsistent"))]
+    InvalidContract {
+        source: natsume_photo_protocol::ValidationError,
+    },
+    #[snafu(display("Photo persisted snapshot identity is invalid"))]
+    InvalidSnapshot {
+        source: natsume_photo_protocol::ValueError,
+    },
     #[snafu(display("Photo initialization cache is inconsistent"))]
     Corrupt,
     #[snafu(display("Photo initialization persistence failed"))]
@@ -48,7 +58,10 @@ impl From<PersistenceError> for InitializationError {
     }
 }
 
-pub(crate) use natsume_photo_protocol::{PhotoInitialization, PhotoLogo};
+use natsume_photo_protocol::{
+    DatasetId, FormatVersion, InitializationId, LogoContentType, PhotoInitialization,
+    PhotoInitializationComplete, PhotoLogo, PhotoTeam, Sha256Digest, SourceId,
+};
 pub(crate) struct SnapshotDownload {
     pub json: String,
     pub sha256: String,
@@ -78,28 +91,57 @@ pub(crate) struct InitializationDraft {
     credential: Credential,
     permit: OwnedSemaphorePermit,
     files: super::storage::SnapshotFiles,
-    stored: BTreeSet<String>,
+    stored: BTreeSet<Sha256Digest>,
     total: u64,
-    pub manifest: PhotoInitialization,
+    manifest: PhotoInitialization,
 }
 impl InitializationDraft {
+    pub(crate) fn set_teams(&mut self, teams: Vec<PhotoTeam>) -> Result<(), InitializationError> {
+        ensure!(
+            self.manifest.teams.is_empty() && self.manifest.school_logos.is_empty(),
+            ConflictSnafu
+        );
+        ensure!(!teams.is_empty(), EmptyRosterSnafu);
+        natsume_photo_protocol::validate_teams(&teams).context(InvalidRosterSnafu)?;
+        self.manifest.teams = teams;
+        Ok(())
+    }
+
     pub(crate) async fn add_logo(
         &mut self,
         organization_id: i64,
         bytes: Vec<u8>,
     ) -> Result<(), InitializationError> {
         let size_bytes = bytes.len() as u64;
-        ensure!(size_bytes <= IMAGE_LIMIT as u64, LimitSnafu);
-        let sha256 = hex::encode(enrollment::hash(&bytes));
-        if self.stored.insert(sha256.clone()) {
-            self.total += size_bytes;
-            ensure!(self.total <= RESOURCE_LIMIT, LimitSnafu);
+        ensure!((1..=IMAGE_LIMIT as u64).contains(&size_bytes), LimitSnafu);
+        if !self
+            .manifest
+            .teams
+            .iter()
+            .any(|team| team.organization_id == organization_id)
+            || self
+                .manifest
+                .school_logos
+                .iter()
+                .any(|logo| logo.organization_id == organization_id)
+        {
+            return Err(InvalidContractSnafu
+                .into_error(natsume_photo_protocol::ValidationError::SchoolLogo));
+        }
+        let sha256 = Sha256Digest::of(&bytes);
+        if !self.stored.contains(&sha256) {
+            ensure!(
+                size_bytes <= RESOURCE_LIMIT.saturating_sub(self.total),
+                LimitSnafu
+            );
             self.files.put(sha256.clone(), bytes).await?;
+            self.stored.insert(sha256.clone());
+            self.total += size_bytes;
         }
         self.manifest.school_logos.push(PhotoLogo {
             organization_id,
             sha256,
-            content_type: "image/png".into(),
+            content_type: LogoContentType::Png,
             size_bytes,
         });
         Ok(())
@@ -136,9 +178,10 @@ impl PhotoComponent {
             })
             .await
             .map_err(TransactionError::into_error)?;
-        let id = Uuid::now_v7().to_string();
+        let id = InitializationId::generate();
         let files = self.storage.begin(id.clone()).await?;
-        let source_id = credential.source.clone();
+        let source_id: SourceId = credential.source.parse().context(InvalidSnapshotSnafu)?;
+        let dataset_id: DatasetId = dataset_id.parse().context(InvalidSnapshotSnafu)?;
         Ok(Preparation::Build(Box::new(InitializationDraft {
             credential,
             permit,
@@ -146,7 +189,7 @@ impl PhotoComponent {
             stored: BTreeSet::new(),
             total: 0,
             manifest: PhotoInitialization {
-                format_version: 1,
+                format_version: FormatVersion::V1,
                 source_id,
                 dataset_id,
                 initialization_id: id,
@@ -169,7 +212,7 @@ impl PhotoComponent {
         } = draft;
         manifest
             .validate(&manifest.source_id)
-            .map_err(|_| CorruptSnafu.build())?;
+            .context(InvalidContractSnafu)?;
         let json = serde_json::to_string(&manifest).context(JsonSnafu)?;
         ensure!(json.len() <= SNAPSHOT_LIMIT, LimitSnafu);
         files.finish().await?;
@@ -183,7 +226,7 @@ impl PhotoComponent {
                 if let Some(existing) = db::initialization(tx, &source.id)? {
                     return snapshot(existing);
                 }
-                db::insert_initialization(tx, &source.id, &id, &json, &hash)?;
+                db::insert_initialization(tx, &source.id, id.as_str(), &json, &hash)?;
                 Ok(SnapshotDownload { json, sha256: hash })
             })
             .await
@@ -220,22 +263,14 @@ impl PhotoComponent {
         let manifest: PhotoInitialization =
             serde_json::from_str(&download.json).context(JsonSnafu)?;
         ensure!(
-            manifest.source_id == credential.source
-                && enrollment::canonical_id(&manifest.initialization_id).is_ok(),
+            manifest.source_id.as_str() == credential.source,
             CorruptSnafu
         );
         let logo = manifest
             .school_logos
             .iter()
-            .find(|logo| logo.sha256 == hash)
+            .find(|logo| logo.sha256.as_str() == hash)
             .context(NotFoundSnafu)?;
-        ensure!(
-            hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
-            CorruptSnafu
-        );
         let permit = self
             .download_work
             .clone()
@@ -243,7 +278,11 @@ impl PhotoComponent {
             .map_err(|_| BusySnafu.build())?;
         let bytes = self
             .storage
-            .read(manifest.initialization_id, hash.to_owned(), logo.size_bytes)
+            .read(
+                manifest.initialization_id,
+                logo.sha256.clone(),
+                logo.size_bytes,
+            )
             .await?;
         Ok(ResourceDownload { bytes, permit })
     }
@@ -251,30 +290,32 @@ impl PhotoComponent {
     pub(crate) async fn complete(
         &self,
         token: &str,
-        id: String,
-        hash: String,
-        request: String,
+        receipt: PhotoInitializationComplete,
     ) -> Result<(), InitializationError> {
         let credential = enrollment::credential(token)?;
-        ensure!(
-            enrollment::canonical_id(&id).is_ok() && enrollment::canonical_id(&request).is_ok(),
-            InvalidRequestSnafu
-        );
+        let PhotoInitializationComplete {
+            initialization_id: id,
+            manifest_sha256: hash,
+            request_id: request,
+        } = receipt;
         self.database
             .write(move |tx| -> Result<_, InitializationError> {
                 let source = enrollment::authorized(tx, &credential, CredentialUse::Completion)?;
                 ensure!(source.confirmed, UnconfirmedSnafu);
                 let record = db::initialization(tx, &source.id)?.context(NotFoundSnafu)?;
-                ensure!(record.id == id && record.hash == hash, ConflictSnafu);
+                ensure!(
+                    record.id == id.as_str() && record.hash == hash.as_str(),
+                    ConflictSnafu
+                );
                 if let Some(previous) = record.completion_request {
                     ensure!(
-                        previous == request && record.completed_at.is_some(),
+                        previous == request.as_str() && record.completed_at.is_some(),
                         ConflictSnafu
                     );
                     return Ok(());
                 }
                 let now = db::now(tx)?;
-                db::complete(tx, &id, &request, now)?;
+                db::complete(tx, id.as_str(), request.as_str(), now)?;
                 Ok(())
             })
             .await

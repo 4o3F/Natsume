@@ -3,8 +3,9 @@
 use std::io::Write as _;
 use std::{fs, path::PathBuf, time::Duration};
 
+use natsume_photo_client::capture_session::CaptureSession;
 use natsume_photo_client::{
-    hot_folder::{Error as HotFolderError, HotFolder, HotFolderSnapshot, IngestionState},
+    hot_folder::{Error as HotFolderError, HotFolderSnapshot, IngestionState},
     roster::Roster,
     workspace::Workspace,
 };
@@ -61,7 +62,7 @@ async fn fixture() -> Result<Fixture> {
 async fn awaited_commands_publish_their_snapshot_and_capture_keeps_workspace_ownership() -> Result {
     let fixture = fixture().await?;
     let root = fixture.workspace.root().to_owned();
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
@@ -91,7 +92,7 @@ async fn awaited_commands_publish_their_snapshot_and_capture_keeps_workspace_own
 }
 
 async fn wait(
-    folder: &HotFolder,
+    folder: &CaptureSession,
     predicate: impl Fn(&HotFolderSnapshot) -> bool,
 ) -> Result<HotFolderSnapshot> {
     folder
@@ -107,21 +108,21 @@ async fn rejects_nonempty_folders_files_subdirectories_and_workspace_overlap() -
     let path = fixture.hot.join("unrelated.txt");
     fs::write(&path, b"must remain").context(IoSnafu)?;
     assert!(matches!(
-        HotFolder::prepare(&fixture.workspace, &fixture.hot).await,
+        CaptureSession::prepare(&fixture.workspace, &fixture.hot).await,
         Err(HotFolderError::NotEmpty)
     ));
     assert_eq!(fs::read(&path).context(IoSnafu)?, b"must remain");
     fs::remove_file(&path).context(IoSnafu)?;
     fs::create_dir(&path).context(IoSnafu)?;
     assert!(matches!(
-        HotFolder::prepare(&fixture.workspace, &fixture.hot).await,
+        CaptureSession::prepare(&fixture.workspace, &fixture.hot).await,
         Err(HotFolderError::NotEmpty)
     ));
     assert!(path.is_dir());
     let nested = fixture.workspace.root().join("empty-hot");
     fs::create_dir(&nested).context(IoSnafu)?;
     assert!(matches!(
-        HotFolder::prepare(&fixture.workspace, &nested).await,
+        CaptureSession::prepare(&fixture.workspace, &nested).await,
         Err(HotFolderError::UnsafePath)
     ));
     let ancestor = fixture
@@ -131,11 +132,11 @@ async fn rejects_nonempty_folders_files_subdirectories_and_workspace_overlap() -
         .context(FixtureSnafu)?
         .to_owned();
     assert!(matches!(
-        HotFolder::prepare(&fixture.workspace, &ancestor).await,
+        CaptureSession::prepare(&fixture.workspace, &ancestor).await,
         Err(HotFolderError::UnsafePath)
     ));
     assert!(matches!(
-        HotFolder::prepare(&fixture.workspace, std::path::Path::new("relative")).await,
+        CaptureSession::prepare(&fixture.workspace, std::path::Path::new("relative")).await,
         Err(HotFolderError::UnsafePath)
     ));
     assert!(!fixture.workspace.root().join("captures").exists());
@@ -147,7 +148,7 @@ async fn real_native_notifications_and_automatic_archive_preserve_source_and_dat
     let fixture = fixture().await?;
     let database_path = fixture.workspace.root().join("workspace.sqlite3");
     let database_before = fs::read(&database_path).context(IoSnafu)?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
@@ -201,7 +202,7 @@ async fn real_native_notifications_and_automatic_archive_preserve_source_and_dat
 async fn segmented_windows_write_blocks_group_closure_until_writer_closes() -> Result {
     use std::os::windows::fs::OpenOptionsExt as _;
     let fixture = fixture().await?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
@@ -236,7 +237,7 @@ async fn segmented_windows_write_blocks_group_closure_until_writer_closes() -> R
 #[tokio::test]
 async fn arrivals_without_group_and_reused_path_across_groups_stay_for_review() -> Result {
     let fixture = fixture().await?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     let waiting = fixture.hot.join("before-selection.jpg");
@@ -300,7 +301,7 @@ async fn arrivals_without_group_and_reused_path_across_groups_stay_for_review() 
 #[tokio::test]
 async fn archive_failure_pauses_and_automatic_retry_keeps_group_identity() -> Result {
     let fixture = fixture().await?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
@@ -339,7 +340,7 @@ async fn archive_failure_pauses_and_automatic_retry_keeps_group_identity() -> Re
 async fn removed_monitor_directory_pauses_then_rewatches_and_quarantines_uncertain_files() -> Result
 {
     let fixture = fixture().await?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;
@@ -369,7 +370,7 @@ async fn removed_monitor_directory_pauses_then_rewatches_and_quarantines_uncerta
 #[tokio::test]
 async fn restart_refuses_hot_folder_leftovers_and_does_not_restore_old_records() -> Result {
     let fixture = fixture().await?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     let old_session = folder.snapshot().context(HotFolderSnafu)?.session_id;
@@ -380,14 +381,14 @@ async fn restart_refuses_hot_folder_leftovers_and_does_not_restore_old_records()
     let state = wait(&folder, |state| state.photos.len() == 1).await?;
     folder.shutdown().await.context(HotFolderSnafu)?;
     assert!(matches!(
-        HotFolder::prepare(&fixture.workspace, &fixture.hot).await,
+        CaptureSession::prepare(&fixture.workspace, &fixture.hot).await,
         Err(HotFolderError::NotEmpty)
     ));
     assert!(path.is_file());
     assert!(state.photos[0].path.is_file());
     let fresh_hot = fixture.hot.with_extension("new-empty");
     fs::create_dir(&fresh_hot).context(IoSnafu)?;
-    let fresh = HotFolder::prepare(&fixture.workspace, &fresh_hot)
+    let fresh = CaptureSession::prepare(&fixture.workspace, &fresh_hot)
         .await
         .context(HotFolderSnafu)?;
     let state = fresh.snapshot().context(HotFolderSnafu)?;
@@ -401,7 +402,7 @@ async fn restart_refuses_hot_folder_leftovers_and_does_not_restore_old_records()
 #[tokio::test]
 async fn unknown_extensions_are_not_imported_but_remain_in_source_folder() -> Result {
     let fixture = fixture().await?;
-    let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+    let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
         .await
         .context(HotFolderSnafu)?;
     fs::write(fixture.hot.join("camera.raw"), b"raw bytes").context(IoSnafu)?;
@@ -423,7 +424,7 @@ async fn worker_reports_deleted_and_renamed_pending_sources_without_stalling() -
     use std::os::windows::fs::OpenOptionsExt as _;
     for rename in [false, true] {
         let fixture = fixture().await?;
-        let folder = HotFolder::prepare(&fixture.workspace, &fixture.hot)
+        let folder = CaptureSession::prepare(&fixture.workspace, &fixture.hot)
             .await
             .context(HotFolderSnafu)?;
         folder.select_team(TEAM_A).await.context(HotFolderSnafu)?;

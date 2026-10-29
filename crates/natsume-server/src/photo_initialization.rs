@@ -15,11 +15,11 @@ pub(crate) enum Error {
     #[snafu(display("Photo logo could not be prepared"))]
     Logo { source: PhotoLogoError },
 }
-pub(crate) struct PhotoInitialization<'a> {
+pub(crate) struct PreparePhotoInitialization<'a> {
     pub photo: &'a PhotoComponent,
     pub contest: &'a ContestComponent,
 }
-impl PhotoInitialization<'_> {
+impl PreparePhotoInitialization<'_> {
     pub(crate) async fn run(&self, token: &str) -> Result<SnapshotDownload, Error> {
         let mut draft = match self
             .photo
@@ -31,13 +31,6 @@ impl PhotoInitialization<'_> {
             Preparation::Build(draft) => draft,
         };
         let teams = self.contest.photo_roster().await.context(RosterSnafu)?;
-        natsume_photo_protocol::validate_teams(&teams).map_err(|_| Error::Photo {
-            source: if teams.is_empty() {
-                InitializationError::EmptyRoster
-            } else {
-                InitializationError::InvalidRequest
-            },
-        })?;
         let schools: BTreeMap<_, _> = teams
             .iter()
             .map(|team| {
@@ -47,7 +40,7 @@ impl PhotoInitialization<'_> {
                 )
             })
             .collect();
-        draft.manifest.teams = teams;
+        draft.set_teams(teams).context(PhotoSnafu)?;
         for (organization_id, (zh, en)) in schools {
             if let Some(bytes) = self.contest.photo_logo(&zh, &en).await.context(LogoSnafu)? {
                 draft

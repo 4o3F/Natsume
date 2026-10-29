@@ -33,26 +33,9 @@ pub(crate) struct PhotoSourceStateUpdate {
 #[derive(Deserialize, specta::Type)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PhotoPairingCodeRequest {}
-#[derive(Deserialize, specta::Type)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PhotoPairRequest {
-    code: String,
-    signing_public_key: String,
-    client_version: String,
-}
-#[derive(Deserialize, specta::Type)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PhotoConfirmation {
-    enrollment_id: String,
-    signing_public_key: String,
-}
-#[derive(Deserialize, specta::Type)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PhotoInitializationComplete {
-    initialization_id: String,
-    manifest_sha256: String,
-    request_id: String,
-}
+pub(crate) use natsume_photo_protocol::{
+    PhotoConfirmation, PhotoInitializationComplete, PhotoPairRequest,
+};
 
 pub(in crate::http) fn operator_routes() -> Routes {
     vec![
@@ -111,7 +94,7 @@ async fn create_source(
     };
     match state.photo().create_source(body.name).await {
         Ok(source) => {
-            if let Some(id) = canonical_uuid(&source.source_id) {
+            if let Some(id) = canonical_uuid(source.source_id.as_str()) {
                 audit.record_target(AuditTarget::PhotoSource(id));
             }
             (StatusCode::CREATED, Json(source)).into_response()
@@ -177,11 +160,7 @@ async fn pair(State(state): State<AppState>, request: Request) -> Response {
     let Ok(Json(body)) = Json::<PhotoPairRequest>::from_request(request, &state).await else {
         return ApiError::invalid_request("photo_pairing_json").into_response();
     };
-    match state
-        .photo()
-        .pair(body.code, body.signing_public_key, body.client_version)
-        .await
-    {
+    match state.photo().pair(body).await {
         Ok(issued) => (StatusCode::CREATED, Json(issued)).into_response(),
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
@@ -208,11 +187,7 @@ async fn confirm(State(state): State<AppState>, request: Request) -> Response {
     let Ok(Json(body)) = Json::<PhotoConfirmation>::from_request(request, &state).await else {
         return ApiError::invalid_request("photo_confirmation_json").into_response();
     };
-    match state
-        .photo()
-        .confirm(&token, body.enrollment_id, body.signing_public_key)
-        .await
-    {
+    match state.photo().confirm(&token, body).await {
         Ok(source) => Json(source).into_response(),
         Err(error) => ApiError::from_photo_enrollment(error).into_response(),
     }
@@ -273,16 +248,7 @@ async fn complete(State(state): State<AppState>, request: Request) -> Response {
     else {
         return ApiError::invalid_request("photo_completion_json").into_response();
     };
-    match state
-        .photo()
-        .complete(
-            &token,
-            body.initialization_id,
-            body.manifest_sha256,
-            body.request_id,
-        )
-        .await
-    {
+    match state.photo().complete(&token, body).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => initialization_error(error),
     }

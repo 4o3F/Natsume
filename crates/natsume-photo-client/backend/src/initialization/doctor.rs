@@ -1,7 +1,7 @@
-use super::{
-    AuthorizationSnafu, MissingSecretSnafu, Result, Secrets, WorkspaceSnafu, api, store, wire,
-};
-use crate::workspace::Workspace;
+use super::ClientId;
+use super::{AuthorizationSnafu, MissingSecretSnafu, Result, Secrets, WorkspaceSnafu, api, store};
+use crate::workspace::{Workspace, WorkspaceReader};
+use natsume_photo_protocol::{DatasetId, InitializationId, Sha256Digest, SourceId};
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, ensure};
 use zeroize::Zeroizing;
@@ -10,22 +10,41 @@ use zeroize::Zeroizing;
 #[serde(deny_unknown_fields)]
 pub(super) struct Authorization {
     pub server_url: String,
-    pub client_id: String,
+    pub client_id: ClientId,
     pub signing_public_key: String,
-    pub source_id: String,
-    pub dataset_id: String,
-    pub initialization_id: String,
-    pub manifest_sha256: String,
+    pub source_id: SourceId,
+    pub dataset_id: DatasetId,
+    pub initialization_id: InitializationId,
+    pub manifest_sha256: Sha256Digest,
 }
 
 /// Checks local data and the original signing key without network access or writes.
 /// # Errors
 /// Reports missing credentials or changed local data.
-pub async fn diagnose(workspace: &Workspace, secrets: &impl Secrets) -> Result<()> {
-    verify(workspace, secrets).await.map(|_| ())
+pub async fn diagnose<Access>(workspace: &Workspace<Access>, secrets: &impl Secrets) -> Result<()> {
+    workspace.verify_resources().await.context(WorkspaceSnafu)?;
+    verify_authorization(workspace, secrets).await.map(|_| ())
 }
 
-pub(super) async fn verify(workspace: &Workspace, secrets: &impl Secrets) -> Result<Authorization> {
+/// Opens and diagnoses a path with one resource-integrity pass and no network access.
+/// # Errors
+/// Reports invalid workspace data, authorization or original signing credentials.
+pub async fn diagnose_path(
+    path: &std::path::Path,
+    secrets: &impl Secrets,
+) -> Result<WorkspaceReader> {
+    let workspace = WorkspaceReader::inspect(path)
+        .await
+        .context(WorkspaceSnafu)?;
+    verify_authorization(&workspace, secrets).await?;
+    Ok(workspace)
+}
+
+// Resource bytes are verified by WorkspaceReader::inspect or diagnose.
+pub(super) async fn verify_authorization<Access>(
+    workspace: &Workspace<Access>,
+    secrets: &impl Secrets,
+) -> Result<Authorization> {
     let root = workspace.root().to_owned();
     let secrets = secrets.clone();
     let (identity, manifest) = tokio::task::spawn_blocking(move || {
@@ -36,15 +55,15 @@ pub(super) async fn verify(workspace: &Workspace, secrets: &impl Secrets) -> Res
         .map_err(super::json_error)?;
         ensure!(
             api::origin(&identity.server_url)? == identity.server_url
-                && wire::id(&identity.client_id)
-                && wire::hash(&identity.signing_public_key),
+                && natsume_photo_protocol::is_lowercase_sha256(&identity.signing_public_key),
             AuthorizationSnafu
         );
         let secret = secrets
             .load(
                 &identity.server_url,
-                &format!("{}/signing", identity.client_id),
-            )?
+                &super::SecretSlot::new(identity.client_id.clone(), super::SecretKind::Signing),
+            )
+            .context(super::CredentialSnafu)?
             .ok_or_else(|| MissingSecretSnafu.build())?;
         let mut seed = Zeroizing::new([0; 32]);
         hex::decode_to_slice(secret.as_str(), seed.as_mut()).map_err(super::key_encoding_error)?;
@@ -55,13 +74,14 @@ pub(super) async fn verify(workspace: &Workspace, secrets: &impl Secrets) -> Res
         );
         let bytes = store::read_bounded(
             &root.join("initialization.json"),
-            wire::MANIFEST_LIMIT as u64,
+            natsume_photo_protocol::MANIFEST_LIMIT as u64,
         )?;
         ensure!(
-            wire::digest(&bytes) == identity.manifest_sha256,
+            Sha256Digest::of(&bytes) == identity.manifest_sha256,
             AuthorizationSnafu
         );
-        let manifest: wire::Manifest = serde_json::from_slice(&bytes).map_err(super::json_error)?;
+        let manifest: natsume_photo_protocol::PhotoInitialization =
+            serde_json::from_slice(&bytes).map_err(super::json_error)?;
         manifest
             .validate(&identity.source_id)
             .context(super::ContractSnafu)?;
@@ -87,6 +107,5 @@ pub(super) async fn verify(workspace: &Workspace, secrets: &impl Secrets) -> Res
                 .context(WorkspaceSnafu)?,
         AuthorizationSnafu
     );
-    workspace.verify_resources().await.context(WorkspaceSnafu)?;
     Ok(identity)
 }

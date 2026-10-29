@@ -1,5 +1,6 @@
 use std::{net::IpAddr, time::Instant};
 
+use natsume_photo_protocol::{PhotoConfirmation, PhotoPairRequest};
 use sha2::{Digest as _, Sha256};
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, Snafu, ensure};
 use subtle::ConstantTimeEq as _;
@@ -42,28 +43,20 @@ impl From<PersistenceError> for EnrollmentError {
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, specta::Type)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum SourceState {
-    Enabled,
-    Disabled,
-    Revoked,
-}
-impl SourceState {
-    fn wire(self) -> &'static str {
-        match self {
-            Self::Enabled => "enabled",
-            Self::Disabled => "disabled",
-            Self::Revoked => "revoked",
-        }
+pub(crate) use natsume_photo_protocol::{PhotoSource, SourceState};
+fn source_state_wire(state: SourceState) -> &'static str {
+    match state {
+        SourceState::Enabled => "enabled",
+        SourceState::Disabled => "disabled",
+        SourceState::Revoked => "revoked",
     }
-    pub(super) fn from_persisted(value: &str) -> Result<Self, PersistenceError> {
-        match value {
-            "enabled" => Ok(Self::Enabled),
-            "disabled" => Ok(Self::Disabled),
-            "revoked" => Ok(Self::Revoked),
-            _ => Err(PersistenceError::invalid("photo source state")),
-        }
+}
+pub(super) fn source_state_from_persisted(value: &str) -> Result<SourceState, PersistenceError> {
+    match value {
+        "enabled" => Ok(SourceState::Enabled),
+        "disabled" => Ok(SourceState::Disabled),
+        "revoked" => Ok(SourceState::Revoked),
+        _ => Err(PersistenceError::invalid("photo source state")),
     }
 }
 
@@ -82,14 +75,6 @@ pub(crate) enum PendingEnrollment {
 }
 
 #[derive(serde::Serialize, specta::Type)]
-pub(crate) struct PhotoSource {
-    pub source_id: String,
-    pub name: String,
-    pub state: SourceState,
-    pub enrollment_confirmed: bool,
-    pub initialization_completed: bool,
-}
-#[derive(serde::Serialize, specta::Type)]
 pub(crate) struct PhotoPairingCode {
     pub source_id: String,
     pub code: String,
@@ -107,16 +92,35 @@ pub(super) struct Credential {
 }
 
 pub(super) fn canonical_id(value: &str) -> Result<(), EnrollmentError> {
-    ensure!(natsume_photo_protocol::id(value), InvalidIdSnafu);
+    ensure!(
+        natsume_photo_protocol::is_canonical_uuid_v7(value),
+        InvalidIdSnafu
+    );
     Ok(())
 }
 
 pub(super) fn hash(value: &[u8]) -> [u8; 32] {
     Sha256::digest(value).into()
 }
+fn credential_parts(token: &str) -> Option<(&str, &str)> {
+    let mut parts = token.split('.');
+    let (Some("nph1"), Some(source), Some(enrollment), Some(secret), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return None;
+    };
+    (natsume_photo_protocol::is_canonical_uuid_v7(source)
+        && natsume_photo_protocol::is_canonical_uuid_v7(enrollment)
+        && natsume_photo_protocol::is_lowercase_sha256(secret))
+    .then_some((source, enrollment))
+}
+
 pub(super) fn credential(token: &str) -> Result<Credential, EnrollmentError> {
-    let (source, enrollment) =
-        natsume_photo_protocol::credential_parts(token).context(AuthenticationSnafu)?;
+    let (source, enrollment) = credential_parts(token).context(AuthenticationSnafu)?;
     Ok(Credential {
         source: source.to_owned(),
         enrollment: enrollment.to_owned(),
@@ -157,7 +161,10 @@ fn projection(
 ) -> Result<PhotoSource, EnrollmentError> {
     Ok(PhotoSource {
         initialization_completed: db::initialization_completed(tx, &source.id)?,
-        source_id: source.id,
+        source_id: source
+            .id
+            .parse()
+            .map_err(|_| PersistenceError::invalid("photo source id"))?,
         name: source.name,
         state: source.state,
         enrollment_confirmed: source.confirmed,
@@ -233,7 +240,7 @@ impl PhotoComponent {
                         || matches!(state, SourceState::Revoked),
                     ConflictSnafu
                 );
-                db::update_state(tx, &id, state.wire())?;
+                db::update_state(tx, &id, source_state_wire(state))?;
                 Ok(())
             })
             .await
@@ -277,10 +284,13 @@ impl PhotoComponent {
 
     pub(crate) async fn pair(
         &self,
-        code: String,
-        public_key: String,
-        version: String,
+        request: PhotoPairRequest,
     ) -> Result<PhotoEnrollmentIssued, EnrollmentError> {
+        let PhotoPairRequest {
+            code,
+            signing_public_key: public_key,
+            client_version: version,
+        } = request;
         let raw = super::super::pairing::normalize(&code).context(InvalidPairingSnafu)?;
         ensure!(
             semver::Version::parse(&version).is_ok(),
@@ -328,8 +338,12 @@ impl PhotoComponent {
                     expires,
                 )?;
                 Ok(PhotoEnrollmentIssued {
-                    source_id: id,
-                    enrollment_id: enrollment,
+                    source_id: id
+                        .parse()
+                        .map_err(|_| PersistenceError::invalid("photo source id"))?,
+                    enrollment_id: enrollment
+                        .parse()
+                        .map_err(|_| PersistenceError::invalid("photo enrollment id"))?,
                     token,
                     expires_at_unix_ms: expires,
                 })
@@ -341,16 +355,16 @@ impl PhotoComponent {
     pub(crate) async fn confirm(
         &self,
         token: &str,
-        enrollment_id: String,
-        public_key: String,
+        request: PhotoConfirmation,
     ) -> Result<PhotoSource, EnrollmentError> {
         let credential = credential(token)?;
         self.database
             .write(move |tx| {
                 let source = authorized(tx, &credential, CredentialUse::Initialization)?;
                 ensure!(
-                    source.enrollment_id.as_deref() == Some(&enrollment_id)
-                        && source.public_key.as_deref() == Some(&public_key),
+                    source.enrollment_id.as_deref() == Some(request.enrollment_id.as_str())
+                        && source.public_key.as_deref()
+                            == Some(request.signing_public_key.as_str()),
                     ConflictSnafu
                 );
                 db::confirm(tx, &source.id)?;

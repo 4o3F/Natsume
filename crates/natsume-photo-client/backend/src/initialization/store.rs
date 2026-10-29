@@ -7,8 +7,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use snafu::{ResultExt as _, ensure};
 
-use super::{Config, IoSnafu, JournalSnafu, Result, WorkspaceSnafu, wire};
-use crate::workspace::Workspace;
+use super::{ClientId, identity::PreparedId};
+use super::{Config, IoSnafu, JournalSnafu, Result, WorkspaceSnafu};
+use crate::workspace::{Workspace, WorkspaceReader};
+use natsume_photo_protocol::{InitializationId, InitializationRequestId, Sha256Digest, SourceId};
 
 const JOURNAL_LIMIT: u64 = 64 * 1024;
 
@@ -19,10 +21,10 @@ mod tests;
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Receipt {
-    pub prepared: String,
-    pub initialization_id: String,
-    pub manifest_sha256: String,
-    pub request_id: String,
+    pub prepared: PreparedId,
+    pub initialization_id: InitializationId,
+    pub manifest_sha256: Sha256Digest,
+    pub request_id: InitializationRequestId,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
@@ -38,24 +40,40 @@ pub(super) struct State {
     format_version: u32,
     origin: String,
     target: PathBuf,
-    pub client_id: String,
-    pub source_id: Option<String>,
+    pub client_id: ClientId,
+    pub source_id: Option<SourceId>,
     pub phase: Phase,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Record {
     state: State,
-    sha256: String,
+    sha256: Sha256Digest,
 }
 
 pub(super) struct Store {
-    pub root: PathBuf,
-    pub state: State,
+    root: PathBuf,
+    state: State,
     journal: std::sync::Arc<File>,
     lock: std::sync::Arc<File>,
 }
 impl Store {
+    pub fn lease(&self) -> std::sync::Arc<File> {
+        std::sync::Arc::clone(&self.lock)
+    }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+    pub fn state(&self) -> &State {
+        &self.state
+    }
+    pub async fn record_pairing(&mut self, source: SourceId) -> Result<()> {
+        ensure!(matches!(self.state.phase, Phase::Unpaired), JournalSnafu);
+        let mut next = self.state.clone();
+        next.source_id = Some(source);
+        next.phase = Phase::Paired;
+        self.commit(next).await
+    }
     pub fn open(config: &Config) -> Result<Self> {
         let target = &config.workspace;
         ensure!(
@@ -116,7 +134,7 @@ impl Store {
                 format_version: 1,
                 origin: config.server_url.clone(),
                 target: target.clone(),
-                client_id: uuid::Uuid::now_v7().to_string(),
+                client_id: ClientId::generate(),
                 source_id: None,
                 phase: Phase::Unpaired,
             }
@@ -126,25 +144,12 @@ impl Store {
         ensure!(
             state.format_version == 1
                 && state.origin == config.server_url
-                && state.target == target
-                && wire::id(&state.client_id),
+                && state.target == target,
             JournalSnafu
         );
         match &state.phase {
             Phase::Unpaired => ensure!(state.source_id.is_none(), JournalSnafu),
-            _ => ensure!(
-                state.source_id.as_deref().is_some_and(wire::id),
-                JournalSnafu
-            ),
-        }
-        if let Phase::Saved { receipt } | Phase::Completed { receipt } = &state.phase {
-            ensure!(
-                wire::id(&receipt.prepared)
-                    && wire::id(&receipt.initialization_id)
-                    && wire::id(&receipt.request_id)
-                    && wire::hash(&receipt.manifest_sha256),
-                JournalSnafu
-            );
+            _ => ensure!(state.source_id.is_some(), JournalSnafu),
         }
         let store = Self {
             root,
@@ -161,7 +166,7 @@ impl Store {
 
     // A cancelled async caller must not release ownership while blocking I/O
     // can still append or publish. The task holds the same locked handle.
-    pub async fn blocking<T: Send + 'static>(
+    pub async fn with_locked_files<T: Send + 'static>(
         &self,
         operation: impl FnOnce() -> Result<T> + Send + 'static,
     ) -> Result<T> {
@@ -176,33 +181,49 @@ impl Store {
     fn append(&self) -> Result<()> {
         append(&self.journal, &self.root, &self.state)
     }
-    pub async fn advance(&mut self, phase: Phase) -> Result<()> {
-        let mut state = self.state.clone();
-        state.phase = phase;
+    pub async fn record_saved(&mut self, receipt: Receipt) -> Result<()> {
+        ensure!(matches!(self.state.phase, Phase::Paired), JournalSnafu);
+        let mut next = self.state.clone();
+        next.phase = Phase::Saved { receipt };
+        self.commit(next).await
+    }
+    pub async fn record_completed(&mut self) -> Result<Receipt> {
+        let Phase::Saved { receipt } = &self.state.phase else {
+            return JournalSnafu.fail();
+        };
+        let receipt = receipt.clone();
+        let mut next = self.state.clone();
+        next.phase = Phase::Completed {
+            receipt: receipt.clone(),
+        };
+        self.commit(next).await?;
+        Ok(receipt)
+    }
+    async fn commit(&mut self, state: State) -> Result<()> {
         let written = state.clone();
         let journal = std::sync::Arc::clone(&self.journal);
         let root = self.root.clone();
-        self.blocking(move || append(&journal, &root, &written))
+        self.with_locked_files(move || append(&journal, &root, &written))
             .await?;
         self.state = state;
         Ok(())
     }
     async fn workspace_path(&self, receipt: &Receipt) -> Result<PathBuf> {
-        let staged = self.root.join(&receipt.prepared);
+        let staged = self.root.join(receipt.prepared.as_str());
         let target = self.state.target.clone();
-        self.blocking(move || Ok(if staged.exists() { staged } else { target }))
+        self.with_locked_files(move || Ok(if staged.exists() { staged } else { target }))
             .await
     }
     pub async fn verify(
         &self,
         receipt: &Receipt,
         secrets: &impl super::Secrets,
-    ) -> Result<Workspace> {
+    ) -> Result<WorkspaceReader> {
         let path = self.workspace_path(receipt).await?;
-        let workspace = Workspace::open_for_verification(&path, true)
+        let workspace = WorkspaceReader::inspect(&path)
             .await
             .context(WorkspaceSnafu)?;
-        let identity = super::doctor::verify(&workspace, secrets).await?;
+        let identity = super::doctor::verify_authorization(&workspace, secrets).await?;
         ensure!(
             identity.client_id == self.state.client_id
                 && identity.server_url == self.state.origin
@@ -218,21 +239,8 @@ impl Store {
         receipt: &Receipt,
         secrets: &impl super::Secrets,
     ) -> Result<Workspace> {
-        drop(self.verify(receipt, secrets).await?);
-        let staged = self.root.join(&receipt.prepared);
-        let root = self.root.clone();
-        let target = self.state.target.clone();
-        self.blocking(move || {
-            if staged.exists() {
-                ensure!(!target.exists(), JournalSnafu);
-                std::fs::rename(staged, &target).context(IoSnafu)?;
-                validate_directory(&root)?;
-                validate_directory(target.parent().ok_or_else(|| JournalSnafu.build())?)?;
-            }
-            Ok(())
-        })
-        .await?;
-        Workspace::open_for_verification(&self.state.target, false)
+        let verified = self.verify(receipt, secrets).await?;
+        Workspace::publish_verified(verified, self.state.target.clone(), self.lease())
             .await
             .context(WorkspaceSnafu)
     }
@@ -257,7 +265,7 @@ fn append(mut journal: &File, root: &Path, state: &State) -> Result<()> {
     let encoded = serde_json::to_vec(state).map_err(super::json_error)?;
     let mut line = serde_json::to_vec(&Record {
         state: state.clone(),
-        sha256: wire::digest(&encoded),
+        sha256: Sha256Digest::of(&encoded),
     })
     .map_err(super::json_error)?;
     line.push(b'\n');
@@ -290,7 +298,7 @@ fn read_state(journal: &mut File) -> Result<State> {
         let record: Record = serde_json::from_slice(line).map_err(super::json_error)?;
         ensure!(
             record.sha256
-                == wire::digest(&serde_json::to_vec(&record.state).map_err(super::json_error)?),
+                == Sha256Digest::of(&serde_json::to_vec(&record.state).map_err(super::json_error)?),
             JournalSnafu
         );
         state = Some(record.state);
@@ -308,27 +316,53 @@ pub(super) fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
         .take(limit + 1)
         .read_to_end(&mut bytes)
         .context(IoSnafu)?;
-    ensure!(bytes.len() as u64 <= limit, JournalSnafu);
+    ensure!(
+        bytes.len() as u64 <= limit,
+        super::LimitSnafu {
+            limit: usize::try_from(limit).unwrap_or(usize::MAX)
+        }
+    );
     Ok(bytes)
 }
 pub(super) fn save_new_or_verify(path: &Path, bytes: &[u8]) -> Result<()> {
-    match File::create_new(path) {
-        Ok(mut file) => {
-            file.write_all(bytes).context(IoSnafu)?;
-            file.sync_all().context(IoSnafu)?;
+    let parent = path.parent().ok_or_else(|| super::PathSnafu.build())?;
+    let temporary = write_synced_temporary(parent, |file| file.write_all(bytes))?;
+    match temporary.persist_noclobber(path) {
+        Ok(_) => {}
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            ensure!(
+                read_bounded(path, bytes.len() as u64)? == bytes,
+                super::FileConflictSnafu
+            );
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => ensure!(
-            read_bounded(path, bytes.len() as u64)? == bytes,
-            JournalSnafu
-        ),
-        Err(source) => return Err(source).context(IoSnafu),
+        Err(error) => return Err(error.error).context(IoSnafu),
     }
-    validate_directory(path.parent().ok_or_else(|| JournalSnafu.build())?)
+    validate_directory(parent)
+}
+
+// Only Server-verified downloads use replacement, at a content-addressed cache path.
+pub(super) fn save_download(directory: &Path, digest: &Sha256Digest, bytes: &[u8]) -> Result<()> {
+    let temporary = write_synced_temporary(directory, |file| file.write_all(bytes))?;
+    temporary
+        .persist(directory.join(format!("{digest}.png")))
+        .map_err(|error| error.error)
+        .context(IoSnafu)?;
+    validate_directory(directory)
+}
+
+fn write_synced_temporary(
+    parent: &Path,
+    write: impl FnOnce(&mut File) -> std::io::Result<()>,
+) -> Result<tempfile::NamedTempFile> {
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).context(IoSnafu)?;
+    write(temporary.as_file_mut()).context(IoSnafu)?;
+    temporary.as_file().sync_all().context(IoSnafu)?;
+    Ok(temporary)
 }
 pub(super) fn validate_directory(path: &Path) -> Result<()> {
     ensure!(
         std::fs::metadata(path).context(IoSnafu)?.is_dir(),
-        JournalSnafu
+        super::NotDirectorySnafu
     );
     Ok(())
 }

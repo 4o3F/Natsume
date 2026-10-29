@@ -7,7 +7,8 @@ use std::collections::BTreeSet;
 use snafu::{OptionExt as _, Snafu, ensure};
 use uuid::Uuid;
 
-use crate::roster::{Roster, Team};
+use crate::roster::Roster;
+use natsume_photo_protocol::PhotoTeam;
 
 /// An opaque group identity, unique across sessions and process restarts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +114,7 @@ impl Session {
     }
 
     #[must_use]
-    pub fn selected_team(&self) -> Option<&Team> {
+    pub fn selected_team(&self) -> Option<&PhotoTeam> {
         let account_id = self.selected_account_id.as_deref()?;
         self.roster
             .teams()

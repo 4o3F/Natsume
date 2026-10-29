@@ -1,3 +1,4 @@
+use super::super::*;
 use super::*;
 use crate::hot_folder::{Error, archive};
 use snafu::Snafu;
@@ -40,6 +41,7 @@ fn fixture() -> TestResult<(tempfile::TempDir, Inner)> {
                 state: IngestionState::Running,
                 uncertain: false,
             },
+            tasks: BTreeMap::new(),
         },
     ))
 }
@@ -58,18 +60,12 @@ fn start(inner: &mut Inner, index: usize) -> TestResult<GroupId> {
 }
 
 fn settle(inner: &mut Inner) -> TestResult {
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     // Advance only the fixture's observation clock, never sleep or add test fields.
     for pending in inner.ingestion.pending.values_mut() {
         pending.stable_since = Instant::now().checked_sub(INTERVAL).context(FixtureSnafu)?;
     }
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)
+    inner.scan().context(HotFolderSnafu)
 }
 
 #[test]
@@ -85,17 +81,14 @@ fn deleting_a_pending_source_releases_its_task_without_losing_archives() -> Test
     let archived = inner.ingestion.photos[0].clone();
     let pending = inner.ingestion.hot_folder.join("unfinished.jpg");
     fs::write(&pending, b"not archived").context(IoSnafu)?;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     assert_eq!(
         inner.session.group().context(FixtureSnafu)?.pending_tasks(),
         1
     );
     fs::remove_file(&pending).context(IoSnafu)?;
     for _ in 0..2 {
-        inner.ingestion.reconcile(&mut inner.session);
+        inner.reconcile();
     }
     assert!(
         !inner.session.is_paused(),
@@ -140,12 +133,9 @@ fn renaming_a_pending_source_releases_the_old_task_and_requires_review() -> Test
     let original = inner.ingestion.hot_folder.join("temporary.jpg");
     let renamed = inner.ingestion.hot_folder.join("final.jpg");
     fs::write(&original, b"camera renamed this source").context(IoSnafu)?;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     fs::rename(&original, &renamed).context(IoSnafu)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert!(
         !inner.ingestion.pending.contains_key(&original),
         "a vanished path must be retired rather than block all later reconciliation"
@@ -161,7 +151,7 @@ fn renaming_a_pending_source_releases_the_old_task_and_requires_review() -> Test
         "a new path observed during source loss must require photographer review"
     );
     settle(&mut inner)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert!(!inner.session.is_paused());
     assert_eq!(
         inner.session.group().context(FixtureSnafu)?.pending_tasks(),
@@ -181,12 +171,9 @@ fn reappearing_lost_source_requires_review_even_after_starting_a_group() -> Test
     let (_directory, mut inner) = fixture()?;
     let source = inner.ingestion.hot_folder.join("unowned.png");
     fs::write(&source, b"unowned source").context(IoSnafu)?;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     fs::remove_file(&source).context(IoSnafu)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert_eq!(inner.ingestion.state, IngestionState::Running);
     assert_eq!(inner.ingestion.missing_sources.len(), 1);
     assert!(inner.ingestion.missing_sources[0].group_id.is_none());
@@ -210,20 +197,17 @@ fn removing_a_pending_source_after_it_exceeds_the_limit_unblocks_the_group() -> 
     let group = start(&mut inner, 0)?;
     let source = inner.ingestion.hot_folder.join("growing.jpg");
     fs::write(&source, b"initial segment").context(IoSnafu)?;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     let file = fs::OpenOptions::new()
         .write(true)
         .open(&source)
         .context(IoSnafu)?;
     file.set_len(50 * 1024 * 1024 + 1).context(IoSnafu)?;
     drop(file);
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert!(inner.session.is_paused());
     fs::remove_file(&source).context(IoSnafu)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert_eq!(inner.ingestion.missing_sources.len(), 1);
     assert!(inner.ingestion.photos.is_empty());
     inner
@@ -240,10 +224,7 @@ fn reconciliation_without_notifications_and_duplicate_scans_share_ingestion() ->
     fs::write(&path, b"source bytes").context(IoSnafu)?;
     settle(&mut inner)?;
     for _ in 0..3 {
-        inner
-            .ingestion
-            .scan(&mut inner.session)
-            .context(HotFolderSnafu)?;
+        inner.scan().context(HotFolderSnafu)?;
     }
     assert_eq!(inner.ingestion.photos.len(), 1);
     assert_eq!(inner.ingestion.photos[0].group_id, Some(group));
@@ -385,14 +366,11 @@ fn directory_failure_pauses_instead_of_dropping_missing_tasks() -> TestResult {
     start(&mut inner, 0)?;
     let path = inner.ingestion.hot_folder.join("unfinished.png");
     fs::write(&path, b"in progress").context(IoSnafu)?;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     let unavailable = inner.ingestion.hot_folder.with_file_name("unavailable-hot");
     assert_eq!(unavailable.parent(), inner.ingestion.hot_folder.parent());
     fs::rename(&inner.ingestion.hot_folder, &unavailable).context(IoSnafu)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert!(inner.session.is_paused());
     assert_eq!(
         inner.session.group().context(FixtureSnafu)?.pending_tasks(),
@@ -401,7 +379,7 @@ fn directory_failure_pauses_instead_of_dropping_missing_tasks() -> TestResult {
     assert!(inner.ingestion.missing_sources.is_empty());
     fs::rename(&unavailable, &inner.ingestion.hot_folder).context(IoSnafu)?;
     settle(&mut inner)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     assert!(!inner.session.is_paused());
     assert_eq!(inner.ingestion.photos.len(), 1);
     Ok(())
@@ -424,10 +402,13 @@ fn unchanged_archived_sources_skip_content_reads_and_periodic_audits_are_bounded
     for _ in 0..5 {
         inner
             .ingestion
-            .scan_with_probe(&mut inner.session, |path, root| {
-                reads += 1;
-                archive::probe(path, root)
-            })
+            .scan_with_probe(
+                inner.session.group().map(capture::Group::id),
+                |path, root| {
+                    reads += 1;
+                    archive::probe(path, root)
+                },
+            )
             .context(HotFolderSnafu)?;
     }
     assert_eq!(
@@ -444,18 +425,24 @@ fn unchanged_archived_sources_skip_content_reads_and_periodic_audits_are_bounded
     }
     inner
         .ingestion
-        .scan_with_probe(&mut inner.session, |path, root| {
-            reads += 1;
-            archive::probe(path, root)
-        })
+        .scan_with_probe(
+            inner.session.group().map(capture::Group::id),
+            |path, root| {
+                reads += 1;
+                archive::probe(path, root)
+            },
+        )
         .context(HotFolderSnafu)?;
     assert_eq!(reads, 1, "one pass must not audit every unchanged original");
     inner
         .ingestion
-        .scan_with_probe(&mut inner.session, |path, root| {
-            reads += 1;
-            archive::probe(path, root)
-        })
+        .scan_with_probe(
+            inner.session.group().map(capture::Group::id),
+            |path, root| {
+                reads += 1;
+                archive::probe(path, root)
+            },
+        )
         .context(HotFolderSnafu)?;
     assert_eq!(
         reads, 1,
@@ -470,12 +457,9 @@ fn missing_source_acknowledgement_does_not_erase_reappearance_uncertainty() -> T
     let a = start(&mut inner, 0)?;
     let source = inner.ingestion.hot_folder.join("lost.jpg");
     fs::write(&source, b"partial A photo").context(IoSnafu)?;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     fs::remove_file(&source).context(IoSnafu)?;
-    inner.ingestion.reconcile(&mut inner.session);
+    inner.reconcile();
     inner
         .apply(Action::AcknowledgeMissing(source.clone()), true)
         .context(HotFolderSnafu)?;
@@ -519,7 +503,7 @@ fn bounded_audit_detects_same_length_content_with_restored_timestamps() -> TestR
         .seen
         .get(&source)
         .context(FixtureSnafu)?
-        .0
+        .version
         .clone();
     inner
         .apply(Action::Abandon(a), true)
@@ -544,10 +528,7 @@ fn bounded_audit_detects_same_length_content_with_restored_timestamps() -> TestR
         .checked
         .get_mut(&source)
         .context(FixtureSnafu)? = inner.ingestion.last_audit;
-    inner
-        .ingestion
-        .scan(&mut inner.session)
-        .context(HotFolderSnafu)?;
+    inner.scan().context(HotFolderSnafu)?;
     settle(&mut inner)?;
     assert_eq!(inner.ingestion.photos.len(), 2);
     assert_ne!(

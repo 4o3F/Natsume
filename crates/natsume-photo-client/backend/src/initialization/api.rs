@@ -1,15 +1,14 @@
-use std::time::Duration;
-
+//! Photo enrollment HTTPS transport; retry and response policies are explicit.
+use super::{IoSnafu, RejectedSnafu, Result, TransportSnafu};
+use ed25519_dalek::VerifyingKey;
+use natsume_photo_protocol::{
+    PhotoConfirmation, PhotoEnrollmentIssued, PhotoInitialization, PhotoInitializationComplete,
+    PhotoLogo, PhotoPairRequest, PhotoSource, Sha256Digest, SourceState,
+};
 use reqwest::{Client, Method, StatusCode, header};
 use serde::de::DeserializeOwned;
-use serde_json::{Value, json};
 use snafu::{ResultExt as _, ensure};
-
-use super::{
-    Config, InvalidSnafu, IoSnafu, RejectedSnafu, Result, TransportSnafu,
-    store::Receipt,
-    wire::{self, Logo, Manifest, PairingCredentials},
-};
+use std::{path::PathBuf, time::Duration};
 
 pub(super) fn origin(value: &str) -> Result<String> {
     let url = url::Url::parse(value).context(super::UrlSnafu)?;
@@ -25,13 +24,47 @@ pub(super) fn origin(value: &str) -> Result<String> {
     );
     Ok(url.origin().ascii_serialization())
 }
-
-pub(super) struct Api {
+#[derive(Clone, Copy)]
+enum Endpoint<'a> {
+    Pair,
+    Confirm,
+    PrepareInitialization,
+    Resource(&'a Sha256Digest),
+    Complete,
+}
+impl Endpoint<'_> {
+    fn path(&self) -> String {
+        match self {
+            Self::Pair => "enrollment/pair".into(),
+            Self::Confirm => "enrollment/confirm".into(),
+            Self::PrepareInitialization => "client/initialization".into(),
+            Self::Resource(hash) => format!("client/resources/{hash}"),
+            Self::Complete => "client/initialization/complete".into(),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum RetryPolicy {
+    Never,
+    Capacity,
+}
+struct Download {
+    bytes: Vec<u8>,
+    etag: Option<String>,
+    content_type: Option<String>,
+}
+/// Original bytes are retained because integrity is defined over bytes, not reserialization.
+pub(super) struct InitializationDownload {
+    pub bytes: Vec<u8>,
+    pub manifest: PhotoInitialization,
+}
+pub(super) struct PhotoEnrollmentClient {
     http: Client,
     origin: String,
 }
-impl Api {
-    pub fn new(config: &Config) -> Result<Self> {
+impl PhotoEnrollmentClient {
+    /// Reads an optional CA bundle and builds TLS; called on a blocking thread.
+    pub fn load_tls(origin: String, ca_certificate: Option<PathBuf>) -> Result<Self> {
         let mut builder = Client::builder()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
@@ -39,50 +72,52 @@ impl Api {
             .no_proxy()
             .connect_timeout(Duration::from_secs(5))
             .timeout(Duration::from_secs(30));
-        if let Some(path) = &config.ca_certificate {
+        if let Some(path) = ca_certificate {
             let bytes = std::fs::read(path).context(IoSnafu)?;
             let certificates =
                 reqwest::Certificate::from_pem_bundle(&bytes).context(TransportSnafu)?;
-            ensure!(!certificates.is_empty(), InvalidSnafu);
+            ensure!(!certificates.is_empty(), super::EmptyCaSnafu);
             for certificate in certificates {
                 builder = builder.add_root_certificate(certificate);
             }
         }
         Ok(Self {
             http: builder.build().context(TransportSnafu)?,
-            origin: config.server_url.clone(),
+            origin,
         })
     }
-    fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
-        self.http
-            .request(method, format!("{}/api/v2/photo/{path}", self.origin))
+    fn photo_request(&self, endpoint: Endpoint<'_>) -> reqwest::RequestBuilder {
+        let method = if matches!(endpoint, Endpoint::Resource(_)) {
+            Method::GET
+        } else {
+            Method::POST
+        };
+        self.http.request(
+            method,
+            format!("{}/api/v2/photo/{}", self.origin, endpoint.path()),
+        )
     }
-    async fn bytes(
+    async fn send_bounded(
         request: reqwest::RequestBuilder,
-        status: StatusCode,
+        expected: StatusCode,
         limit: usize,
-    ) -> Result<(reqwest::header::HeaderMap, Vec<u8>)> {
+        retry: RetryPolicy,
+    ) -> Result<Download> {
         let retryable = request.try_clone();
         let mut response = request.send().await.context(TransportSnafu)?;
-        if let Some(request) = retryable {
+        if let (RetryPolicy::Capacity, Some(request)) = (retry, retryable) {
             for attempt in 0..4_u32 {
-                // Only snapshot/download capacity rejections carry Retry-After.
-                // Pairing and acknowledgements are deliberately not retried.
                 if response.status() != StatusCode::SERVICE_UNAVAILABLE {
                     break;
                 }
                 let Some(delay) = response
                     .headers()
                     .get(header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
                 else {
                     break;
                 };
-                let url = response.url().path();
-                if !url.ends_with("/client/initialization") && !url.contains("/client/resources/") {
-                    break;
-                }
                 let Some(next) = request.try_clone() else {
                     break;
                 };
@@ -95,7 +130,7 @@ impl Api {
             }
         }
         ensure!(
-            response.status() == status,
+            response.status() == expected,
             RejectedSnafu {
                 status: response.status().as_u16()
             }
@@ -106,7 +141,16 @@ impl Api {
                 .is_none_or(|length| length <= limit as u64),
             super::LimitSnafu { limit }
         );
-        let headers = response.headers().clone();
+        let etag = response
+            .headers()
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let content_type = response
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.context(TransportSnafu)? {
             ensure!(
@@ -115,72 +159,136 @@ impl Api {
             );
             bytes.extend_from_slice(&chunk);
         }
-        Ok((headers, bytes))
+        Ok(Download {
+            bytes,
+            etag,
+            content_type,
+        })
     }
-    async fn json<T: DeserializeOwned>(
+    async fn send_json<T: DeserializeOwned>(
         request: reqwest::RequestBuilder,
         status: StatusCode,
+        limit: usize,
     ) -> Result<T> {
-        let (_, bytes) = Self::bytes(request, status, 8192).await?;
-        serde_json::from_slice(&bytes).map_err(super::json_error)
+        let download = Self::send_bounded(request, status, limit, RetryPolicy::Never).await?;
+        serde_json::from_slice(&download.bytes).map_err(super::json_error)
     }
-    pub async fn pair(&self, code: &str, public_key: &str) -> Result<PairingCredentials> {
-        let issued: PairingCredentials = Self::json(self.request(Method::POST, "enrollment/pair").json(&json!({"code":code,"signing_public_key":public_key,"client_version":env!("CARGO_PKG_VERSION")})), StatusCode::CREATED).await?;
+    pub async fn pair(
+        &self,
+        code: &str,
+        public_key: &VerifyingKey,
+    ) -> Result<PhotoEnrollmentIssued> {
+        let body = PhotoPairRequest {
+            code: code.to_owned(),
+            signing_public_key: hex::encode(public_key.as_bytes()),
+            client_version: env!("CARGO_PKG_VERSION").to_owned(),
+        };
+        let issued: PhotoEnrollmentIssued = Self::send_json(
+            self.photo_request(Endpoint::Pair).json(&body),
+            StatusCode::CREATED,
+            natsume_photo_protocol::ENROLLMENT_RESPONSE_LIMIT,
+        )
+        .await?;
         issued.validate().context(super::ContractSnafu)?;
         Ok(issued)
     }
-    pub async fn confirm(&self, enrollment: &PairingCredentials, public_key: &str) -> Result<()> {
-        let value: Value = Self::json(self.request(Method::POST, "enrollment/confirm").bearer_auth(&enrollment.token).json(&json!({"enrollment_id":enrollment.enrollment_id,"signing_public_key":public_key})), StatusCode::OK).await?;
+    pub async fn confirm(
+        &self,
+        enrollment: &PhotoEnrollmentIssued,
+        public_key: &VerifyingKey,
+    ) -> Result<()> {
+        let body = PhotoConfirmation {
+            enrollment_id: enrollment.enrollment_id.clone(),
+            signing_public_key: hex::encode(public_key.as_bytes()),
+        };
+        let source: PhotoSource = Self::send_json(
+            self.photo_request(Endpoint::Confirm)
+                .bearer_auth(&enrollment.token)
+                .json(&body),
+            StatusCode::OK,
+            natsume_photo_protocol::ENROLLMENT_RESPONSE_LIMIT,
+        )
+        .await?;
         ensure!(
-            value["source_id"] == enrollment.source_id
-                && value["state"] == "enabled"
-                && value["enrollment_confirmed"] == true
-                && value["initialization_completed"] == false,
-            InvalidSnafu
+            source.source_id == enrollment.source_id
+                && source.state == SourceState::Enabled
+                && source.enrollment_confirmed
+                && !source.initialization_completed,
+            super::ConfirmationSnafu
         );
         Ok(())
     }
-    pub async fn manifest(&self, enrollment: &PairingCredentials) -> Result<(Vec<u8>, Manifest)> {
-        let (headers, bytes) = Self::bytes(
-            self.request(Method::POST, "client/initialization")
+    pub async fn prepare_initialization(
+        &self,
+        enrollment: &PhotoEnrollmentIssued,
+    ) -> Result<InitializationDownload> {
+        let download = Self::send_bounded(
+            self.photo_request(Endpoint::PrepareInitialization)
                 .bearer_auth(&enrollment.token),
             StatusCode::OK,
-            wire::MANIFEST_LIMIT,
+            natsume_photo_protocol::MANIFEST_LIMIT,
+            RetryPolicy::Capacity,
         )
         .await?;
         ensure!(
-            headers.get(header::ETAG).and_then(|h| h.to_str().ok())
-                == Some(format!("\"{}\"", wire::digest(&bytes)).as_str()),
-            InvalidSnafu
+            download.etag.as_deref()
+                == Some(format!("\"{}\"", Sha256Digest::of(&download.bytes)).as_str()),
+            super::IntegritySnafu
         );
-        let manifest: Manifest = serde_json::from_slice(&bytes).map_err(super::json_error)?;
+        let manifest: PhotoInitialization =
+            serde_json::from_slice(&download.bytes).map_err(super::json_error)?;
         manifest
             .validate(&enrollment.source_id)
             .context(super::ContractSnafu)?;
-        Ok((bytes, manifest))
+        Ok(InitializationDownload {
+            bytes: download.bytes,
+            manifest,
+        })
     }
-    pub async fn resource(&self, enrollment: &PairingCredentials, logo: &Logo) -> Result<Vec<u8>> {
-        let (headers, bytes) = Self::bytes(
-            self.request(Method::GET, &format!("client/resources/{}", logo.sha256))
+    pub async fn resource(
+        &self,
+        enrollment: &PhotoEnrollmentIssued,
+        logo: &PhotoLogo,
+    ) -> Result<Vec<u8>> {
+        let download = Self::send_bounded(
+            self.photo_request(Endpoint::Resource(&logo.sha256))
                 .bearer_auth(&enrollment.token),
             StatusCode::OK,
-            wire::IMAGE_LIMIT,
+            natsume_photo_protocol::IMAGE_LIMIT,
+            RetryPolicy::Capacity,
         )
         .await?;
         ensure!(
-            headers
-                .get(header::CONTENT_TYPE)
-                .and_then(|h| h.to_str().ok())
-                == Some("image/png")
-                && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-                && bytes.len() as u64 == logo.size_bytes
-                && wire::digest(&bytes) == logo.sha256,
-            InvalidSnafu
+            download.content_type.as_deref() == Some(logo.content_type.as_str())
+                && download.bytes.starts_with(b"\x89PNG\r\n\x1a\n")
+                && download.bytes.len() as u64 == logo.size_bytes
+                && Sha256Digest::of(&download.bytes) == logo.sha256,
+            super::IntegritySnafu
         );
-        Ok(bytes)
+        Ok(download.bytes)
     }
-    pub async fn complete(&self, enrollment: &PairingCredentials, receipt: &Receipt) -> Result<()> {
-        Self::bytes(self.request(Method::POST, "client/initialization/complete").bearer_auth(&enrollment.token).json(&json!({"initialization_id":receipt.initialization_id,"manifest_sha256":receipt.manifest_sha256,"request_id":receipt.request_id})), StatusCode::NO_CONTENT, 0).await?;
+    pub async fn complete(
+        &self,
+        enrollment: &PhotoEnrollmentIssued,
+        receipt: &PhotoInitializationComplete,
+    ) -> Result<()> {
+        let mut response = self
+            .photo_request(Endpoint::Complete)
+            .bearer_auth(&enrollment.token)
+            .json(receipt)
+            .send()
+            .await
+            .context(TransportSnafu)?;
+        ensure!(
+            response.status() == StatusCode::NO_CONTENT,
+            RejectedSnafu {
+                status: response.status().as_u16()
+            }
+        );
+        ensure!(
+            response.chunk().await.context(TransportSnafu)?.is_none(),
+            super::UnexpectedBodySnafu
+        );
         Ok(())
     }
 }

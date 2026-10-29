@@ -3,7 +3,7 @@ use std::{collections::BTreeSet, path::Path};
 
 use snafu::{ResultExt as _, Snafu, ensure};
 
-pub use natsume_photo_protocol::PhotoTeam as Team;
+use natsume_photo_protocol::PhotoTeam;
 
 #[derive(Debug, Snafu)]
 pub enum Error {
@@ -24,7 +24,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// A validated roster. Its team list cannot be mutated through the public API.
 #[derive(Debug)]
 pub struct Roster {
-    teams: Vec<Team>,
+    teams: Vec<PhotoTeam>,
 }
 
 impl Roster {
@@ -42,11 +42,11 @@ impl Roster {
     /// # Errors
     /// Rejects malformed/unknown fields, an empty roster, or empty/duplicate identities.
     pub fn parse(bytes: &[u8]) -> Result<Self> {
-        let teams: Vec<Team> = serde_json::from_slice(bytes).context(JsonSnafu)?;
+        let teams: Vec<PhotoTeam> = serde_json::from_slice(bytes).context(JsonSnafu)?;
         Self::from_teams(teams)
     }
 
-    pub(crate) fn from_teams(teams: Vec<Team>) -> Result<Self> {
+    pub(crate) fn from_teams(teams: Vec<PhotoTeam>) -> Result<Self> {
         ensure!(!teams.is_empty(), EmptySnafu);
         let mut account_ids = BTreeSet::new();
         let mut accounts = BTreeSet::new();
@@ -70,7 +70,7 @@ impl Roster {
     }
 
     #[must_use]
-    pub fn teams(&self) -> &[Team] {
+    pub fn teams(&self) -> &[PhotoTeam] {
         &self.teams
     }
 }

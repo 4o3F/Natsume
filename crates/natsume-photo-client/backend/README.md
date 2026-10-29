@@ -33,7 +33,7 @@ cargo test -p natsume-photo-client --locked
 
 ## 收图状态与生命周期
 
-依次 await `HotFolder::prepare`、`select_team`、`start_group`。准备时先注册通知，再验证热文件夹为空。目录与工作区不得互相包含。消息通道处理操作，Tokio 定时器和原生通知触发同一对账入口；WinRT 对象在一个 Tokio 管理的线程中创建、使用和释放，不添加 unsafe 或手写 Send。
+依次 await `CaptureSession::prepare`、`select_team`、`start_group`。准备时先注册通知，再验证热文件夹为空。目录与工作区不得互相包含。消息通道处理操作，Tokio 定时器和原生通知触发同一对账入口；WinRT 对象在一个 Tokio 管理的线程中创建、使用和释放，不添加 unsafe 或手写 Send。
 
 `IngestionState` 区分 Running、RecoveringMonitor、PausedDirectory、PausedArchive、Stopped。`Error` 表示一次调用失败，状态表示持续运行情况。文件句柄共享限制防止读取正在写入的照片；通知可能晚于写入，周期扫描仍会发现待处理任务。复制、目录或监控故障阻止切组并重试，身份和任务不丢失。完整目录枚举成功后发现 pending 源消失，则解除对应任务，在 `missing_sources: Vec<MissingSource>` 记录源路径与组身份；不创建虚假 ArchivedPhoto。同轮出现的新路径先留待核对，目录失效仍暂停。
 
@@ -51,4 +51,10 @@ Windows 测试覆盖事务回滚、资料完整性、校徽限额、拍摄屏障
 
 Server 测试在 WSL 运行。真实联调用例由 WSL Server 启动 Windows 的 `initialization` 测试可执行文件，通过临时 CA 和真实 HTTPS 完成初始化；双方显式 ignored 的联调用例需要一起执行，常规测试不会将它算为通过。Windows 凭据库的阻塞线程读写有显式运行的专项测试，使用隔离的临时条目并删除；完整现场恢复和真实相机仍需手工验收。全仓检查统一使用 `prek run --all-files`。
 
-工作区可写打开持有排他锁，并设置 SQLite 三秒 busy_timeout；后者只应对短暂数据库竞争，不能替代写锁。`Workspace::open_readonly()` 只打开就绪名单元信息，CLI 随后调用 `diagnose()` 完整检查资源、授权与签名凭据。初始化的 verify 与 doctor 使用同一校验入口；同一轮校徽按内容引用去重读取/解码，工作区发布前保留必要的重新校验。
+工作区可写打开持有排他锁，并设置 SQLite 三秒 busy_timeout；后者只应对短暂数据库竞争，不能替代写锁。CLI 通过 `diagnose_path()` 一次完成只读打开、资源校验、授权与签名凭据检查；对已经打开的工作区调用 `diagnose()` 仍会重新检查当前资源。只读类型不能用于启动拍摄。初始化保留完成前与发布前的完整校验，发布时消费已检查的只读工作区，关闭旧 SQLite 句柄后移动目录并取得目标写锁，不在发布后再次解码校徽。
+
+初始化请求和响应直接使用 `natsume-photo-protocol` 中的同名类型；不再把 Manifest、PairingCredentials、Team 或 HotFolder 作为它们的别名。Token 只作为不透明凭据保存和发送，内部格式由 Server 验证。HTTPS 客户端的端点、响应限额和容量重试策略均显式指定；初始化存储只管理本地状态和文件，凭据适配器使用 `SecretSlot` 和独立的 `CredentialError`。
+
+`capture_session/ingestion.rs` 私有管理文件观测、归档和来源丢失状态。它不修改拍摄会话，`CaptureSession` 根据待处理文件事实登记／结束任务，并决定暂停或恢复。
+
+初始化标记与授权资料先写入同目录临时文件、同步后再以不覆盖方式发布。已由 Server 验证的校徽下载缓存使用内容摘要生成文件名，允许通过同样的完整临时文件替换损坏缓存；不会沿用半写入的下载文件。工作区准备从资源检查、创建、复制到名单事务都由同一个阻塞任务持有初始化 lease，调用方取消后仍等待实际任务结束才释放该锁。

@@ -1,6 +1,7 @@
 //! Workspace business rules, separate from storage assembly and typed queries.
 use crate::roster::Roster;
 use db::Database;
+use natsume_photo_protocol::PhotoTeam;
 use resources::{ImageRef, Prepared};
 use snafu::{ResultExt as _, Snafu, ensure};
 use std::{
@@ -31,16 +32,19 @@ pub enum Error {
     Resource { source: ResourceError },
     #[snafu(display("team is not in this workspace"))]
     UnknownTeam,
-    #[snafu(display("capture requires a writable workspace owner"))]
-    ReadOnly,
     #[snafu(display("workspace resource task failed"))]
     Worker { source: tokio::task::JoinError },
 }
 pub type Result<T> = std::result::Result<T, Error>;
-pub struct Workspace {
+/// Exclusive filesystem ownership permitting capture and workspace writes.
+pub struct Writable(std::sync::Arc<std::fs::File>);
+/// Read-only access; cannot be passed to capture or mutation APIs.
+pub struct ReadOnly;
+/// A fully validated workspace with access selected by its type.
+pub struct Workspace<Access = Writable> {
     root: PathBuf,
     database: Database,
-    writer: Option<std::sync::Arc<std::fs::File>>,
+    access: Access,
 }
 
 impl Workspace {
@@ -72,79 +76,133 @@ impl Workspace {
         roster: &Roster,
         source: PathBuf,
         logos: Vec<resources::SchoolLogo>,
+        initialization_lease: std::sync::Arc<std::fs::File>,
     ) -> Result<Self> {
         let organizations = roster
             .teams()
             .iter()
             .map(|team| team.organization_id)
             .collect();
-        let prepared = tokio::task::spawn_blocking(move || {
-            Prepared::from_paths(&source, logos, &organizations)
+        let teams = roster.teams().to_vec();
+        let root = root.to_owned();
+        tokio::task::spawn_blocking(move || {
+            // This one task owns every preparation side effect, even if its caller is cancelled.
+            let _lease = initialization_lease;
+            let prepared =
+                Prepared::from_paths(&source, logos, &organizations).context(ResourceSnafu)?;
+            Self::create_blocking(root, teams, Some(prepared))
         })
         .await
         .context(WorkerSnafu)?
-        .context(ResourceSnafu)?;
-        Self::create_prepared(root, roster, Some(prepared)).await
     }
     async fn create_prepared(
         root: &Path,
         roster: &Roster,
         prepared: Option<Prepared>,
     ) -> Result<Self> {
-        let (root, database, writer) = storage::create(root.to_owned())
+        let root = root.to_owned();
+        let teams = roster.teams().to_vec();
+        tokio::task::spawn_blocking(move || Self::create_blocking(root, teams, prepared))
             .await
-            .context(StorageSnafu)?;
-        let cache_root = root.clone();
-        let cache_owner = std::sync::Arc::clone(&writer);
-        let cache = tokio::task::spawn_blocking(move || {
-            let _owner = cache_owner;
-            prepared
-                .map(|p| p.copy_to(&cache_root))
-                .transpose()
-                .map(Option::unwrap_or_default)
-        })
-        .await
-        .context(WorkerSnafu)?
-        .context(ResourceSnafu)?;
+            .context(WorkerSnafu)?
+    }
+    fn create_blocking(
+        root: PathBuf,
+        teams: Vec<PhotoTeam>,
+        prepared: Option<Prepared>,
+    ) -> Result<Self> {
+        let (root, database, writer) = storage::create(root).context(StorageSnafu)?;
+        let cache = prepared
+            .map(|p| p.copy_to(&root))
+            .transpose()
+            .context(ResourceSnafu)?
+            .unwrap_or_default();
         database
-            .save_roster(roster.teams().to_vec(), cache)
-            .await
+            .save_roster_blocking(teams, cache)
             .context(PersistenceSnafu)?;
         Ok(Self {
             root,
             database,
-            writer: Some(writer),
+            access: Writable(writer),
         })
     }
-    /// Opens a prepared workspace without migrating or rewriting existing files.
+    pub(crate) async fn publish_verified(
+        verified: WorkspaceReader,
+        target: PathBuf,
+        initialization_lease: std::sync::Arc<std::fs::File>,
+    ) -> Result<Self> {
+        tokio::task::spawn_blocking(move || {
+            let _lease = initialization_lease;
+            let Workspace {
+                root,
+                database,
+                access: _,
+            } = verified;
+            // SQLite handles must be closed before moving the directory on Windows.
+            drop(database);
+            let (root, database, writer) =
+                storage::publish_verified(root, &target).context(StorageSnafu)?;
+            Ok(Self {
+                root,
+                database,
+                access: Writable(writer),
+            })
+        })
+        .await
+        .context(WorkerSnafu)?
+    }
+    /// Opens and validates a workspace while retaining exclusive write ownership.
     /// # Errors
-    /// Rejects incomplete workspaces and damaged roster or logo data.
+    /// Rejects concurrent writers, invalid metadata, roster or resources.
     pub async fn open(root: &Path) -> Result<Self> {
-        let workspace = Self::open_for_verification(root, false).await?;
-        workspace.verify_resources().await?;
-        Ok(workspace)
-    }
-    /// Opens read-only metadata for diagnosis without installing migrations.
-    /// Resource integrity must subsequently be checked by `initialization::diagnose`.
-    /// # Errors
-    /// Rejects incomplete or invalid persisted data.
-    pub async fn open_readonly(root: &Path) -> Result<Self> {
-        Self::open_for_verification(root, true).await
-    }
-    pub(crate) async fn open_for_verification(root: &Path, read_only: bool) -> Result<Self> {
-        let (root, database, writer) = storage::open(root.to_owned(), read_only)
+        let (root, database, owner) = storage::open_writer(root.to_owned())
             .await
             .context(StorageSnafu)?;
-        let metadata = database.metadata().await.context(PersistenceSnafu)?;
-        ensure!(matches!(metadata.ready, 0 | 1), InvalidReadinessSnafu);
-        ensure!(metadata.ready == 1, IncompleteSnafu);
         let workspace = Self {
             root,
             database,
-            writer,
+            access: Writable(owner),
         };
-        workspace.roster().await?;
+        workspace.verify().await?;
         Ok(workspace)
+    }
+    pub(crate) fn writable_owner(&self) -> std::sync::Arc<std::fs::File> {
+        std::sync::Arc::clone(&self.access.0)
+    }
+}
+/// Read-only view of a fully validated workspace.
+/// Read access cannot authorize capture:
+/// ```compile_fail
+/// use natsume_photo_client::{capture_session::CaptureSession, workspace::WorkspaceReader};
+/// async fn capture(reader: &WorkspaceReader, folder: &std::path::Path) {
+///     CaptureSession::prepare(reader, folder).await;
+/// }
+/// ```
+pub type WorkspaceReader = Workspace<ReadOnly>;
+impl Workspace<ReadOnly> {
+    /// Opens without creating locks, installing migrations or writing files.
+    /// # Errors
+    /// Rejects invalid metadata, roster or resources.
+    pub async fn inspect(root: &Path) -> Result<Self> {
+        let (root, database) = storage::open_reader(root.to_owned())
+            .await
+            .context(StorageSnafu)?;
+        let workspace = Self {
+            root,
+            database,
+            access: ReadOnly,
+        };
+        workspace.verify().await?;
+        Ok(workspace)
+    }
+}
+impl<Access> Workspace<Access> {
+    async fn verify(&self) -> Result<()> {
+        let metadata = self.database.metadata().await.context(PersistenceSnafu)?;
+        ensure!(matches!(metadata.ready, 0 | 1), InvalidReadinessSnafu);
+        ensure!(metadata.ready == 1, IncompleteSnafu);
+        self.roster().await?;
+        self.verify_resources().await
     }
     pub(crate) async fn verify_resources(&self) -> Result<()> {
         let rows = self.database.logos().await.context(PersistenceSnafu)?;
@@ -222,14 +280,12 @@ impl Workspace {
         }
         Ok(true)
     }
-    pub(crate) fn writable_owner(&self) -> Result<std::sync::Arc<std::fs::File>> {
-        self.writer
-            .as_ref()
-            .map(std::sync::Arc::clone)
-            .ok_or_else(|| ReadOnlySnafu.build())
-    }
     #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/workspace_publication.rs"]
+mod tests;

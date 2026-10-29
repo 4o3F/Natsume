@@ -187,8 +187,8 @@ impl ServerState {
 
     pub(crate) fn photo_initialization(
         &self,
-    ) -> crate::photo_initialization::PhotoInitialization<'_> {
-        crate::photo_initialization::PhotoInitialization {
+    ) -> crate::photo_initialization::PreparePhotoInitialization<'_> {
+        crate::photo_initialization::PreparePhotoInitialization {
             photo: &self.photo,
             contest: &self.contest,
         }

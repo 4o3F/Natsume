@@ -1,13 +1,14 @@
 use super::*;
 use crate::{
     roster::Roster,
-    workspace::{Error, Workspace, storage},
+    workspace::{Error, storage},
 };
 use diesel::connection::SimpleConnection as _;
 
 #[derive(Debug, Snafu)]
 enum TestError {
     Io { source: std::io::Error },
+    Worker { source: tokio::task::JoinError },
     Storage { source: storage::StorageError },
     Persistence { source: PersistenceError },
     Roster { source: crate::roster::Error },
@@ -19,8 +20,10 @@ fn roster() -> TestResult<Roster> {
 }
 async fn unready() -> TestResult<(tempfile::TempDir, std::path::PathBuf, Database)> {
     let directory = tempfile::tempdir().context(IoSnafu)?;
-    let (root, database, _owner) = storage::create(directory.path().join("workspace"))
+    let path = directory.path().join("workspace");
+    let (root, database, _owner) = tokio::task::spawn_blocking(move || storage::create(path))
         .await
+        .context(WorkerSnafu)?
         .context(StorageSnafu)?;
     Ok((directory, root, database))
 }
@@ -29,7 +32,7 @@ async fn unready() -> TestResult<(tempfile::TempDir, std::path::PathBuf, Databas
 async fn incomplete_workspace_is_rejected() -> TestResult {
     let (_directory, root, _database) = unready().await?;
     assert!(matches!(
-        Workspace::open_readonly(&root).await,
+        crate::workspace::WorkspaceReader::inspect(&root).await,
         Err(Error::Incomplete)
     ));
     Ok(())
@@ -50,9 +53,7 @@ async fn failed_roster_write_rolls_back_all_rows_and_ready_flag() -> TestResult 
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        database
-            .save_roster(roster()?.teams().to_vec(), Cache::default())
-            .await,
+        save_roster(&database, roster()?.teams().to_vec()).await,
         Err(PersistenceError::Query { .. })
     ));
     let count: i64 = database
@@ -65,7 +66,7 @@ async fn failed_roster_write_rolls_back_all_rows_and_ready_flag() -> TestResult 
         0
     );
     assert!(matches!(
-        Workspace::open_readonly(&root).await,
+        crate::workspace::WorkspaceReader::inspect(&root).await,
         Err(Error::Incomplete)
     ));
     Ok(())
@@ -74,8 +75,7 @@ async fn failed_roster_write_rolls_back_all_rows_and_ready_flag() -> TestResult 
 #[tokio::test]
 async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
     let (_directory, root, database) = unready().await?;
-    database
-        .save_roster(roster()?.teams().to_vec(), Cache::default())
+    save_roster(&database, roster()?.teams().to_vec())
         .await
         .context(PersistenceSnafu)?;
     database
@@ -88,7 +88,7 @@ async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        Workspace::open_readonly(&root).await,
+        crate::workspace::WorkspaceReader::inspect(&root).await,
         Err(Error::InvalidReadiness)
     ));
     database
@@ -104,7 +104,7 @@ async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        Workspace::open_readonly(&root).await,
+        crate::workspace::WorkspaceReader::inspect(&root).await,
         Err(Error::Roster {
             source: crate::roster::Error::MissingIdentity { .. }
         })
@@ -117,7 +117,7 @@ async fn readiness_and_persisted_roster_are_validated_in_rust() -> TestResult {
         .await
         .context(PersistenceSnafu)?;
     assert!(matches!(
-        Workspace::open_readonly(&root).await,
+        crate::workspace::WorkspaceReader::inspect(&root).await,
         Err(Error::Roster {
             source: crate::roster::Error::Empty
         })
@@ -154,4 +154,11 @@ async fn database_work_does_not_block_the_async_runtime() -> TestResult {
     let (released_by_async_task, ()) = tokio::join!(operation, other_task);
     assert!(released_by_async_task.context(PersistenceSnafu)?);
     Ok(())
+}
+
+async fn save_roster(database: &Database, teams: Vec<PhotoTeam>) -> Result<()> {
+    let database = database.clone();
+    tokio::task::spawn_blocking(move || database.save_roster_blocking(teams, Cache::default()))
+        .await
+        .context(super::WorkerSnafu)?
 }

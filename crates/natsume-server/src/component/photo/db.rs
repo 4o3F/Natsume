@@ -48,7 +48,7 @@ fn source_record(row: SourceRow) -> Result<SourceRecord, PersistenceError> {
         token_hash,
         token_expires,
     ) = row;
-    let state = SourceState::from_persisted(&state)?;
+    let state = super::enrollment::source_state_from_persisted(&state)?;
     let confirmed = match confirmed {
         0 => false,
         1 => true,

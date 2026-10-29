@@ -1,5 +1,6 @@
 //! Private, handle-relative immutable snapshot files.
 use super::initialization::{CorruptSnafu, InitializationError, IoSnafu, WorkerSnafu};
+use natsume_photo_protocol::{InitializationId, Sha256Digest};
 use rustix::fs::{Mode, OFlags, mkdirat, open, openat};
 use snafu::{ResultExt as _, ensure};
 use std::{
@@ -48,10 +49,12 @@ impl PhotoStore {
             .context(IoSnafu)?;
         Ok(Self(Arc::new(file)))
     }
-    pub(super) async fn begin(&self, id: String) -> Result<SnapshotFiles, InitializationError> {
+    pub(super) async fn begin(
+        &self,
+        id: InitializationId,
+    ) -> Result<SnapshotFiles, InitializationError> {
         let root = Arc::clone(&self.0);
         tokio::task::spawn_blocking(move || {
-            ensure!(natsume_photo_protocol::id(&id), CorruptSnafu);
             mkdirat(
                 root.as_ref(),
                 id.as_str(),
@@ -74,16 +77,12 @@ impl PhotoStore {
     }
     pub(super) async fn read(
         &self,
-        id: String,
-        hash: String,
+        id: InitializationId,
+        hash: Sha256Digest,
         size: u64,
     ) -> Result<Vec<u8>, InitializationError> {
         let root = Arc::clone(&self.0);
         tokio::task::spawn_blocking(move || {
-            ensure!(
-                natsume_photo_protocol::id(&id) && natsume_photo_protocol::hash(&hash),
-                CorruptSnafu
-            );
             let directory = openat(root.as_ref(), id.as_str(), DIRECTORY, Mode::empty())
                 .map_err(std::io::Error::from)
                 .context(IoSnafu)?;
@@ -107,7 +106,7 @@ impl PhotoStore {
                 .read_to_end(&mut bytes)
                 .context(IoSnafu)?;
             ensure!(
-                bytes.len() as u64 == size && hex::encode(super::enrollment::hash(&bytes)) == hash,
+                bytes.len() as u64 == size && Sha256Digest::of(&bytes) == hash,
                 CorruptSnafu
             );
             Ok(bytes)
@@ -120,15 +119,14 @@ impl PhotoStore {
 impl SnapshotFiles {
     pub(super) async fn put(
         &self,
-        hash: String,
+        hash: Sha256Digest,
         bytes: Vec<u8>,
     ) -> Result<(), InitializationError> {
         let directory = Arc::clone(&self.directory);
         tokio::task::spawn_blocking(move || {
             ensure!(
-                natsume_photo_protocol::hash(&hash)
-                    && bytes.len() <= natsume_photo_protocol::IMAGE_LIMIT
-                    && hex::encode(super::enrollment::hash(&bytes)) == hash,
+                bytes.len() <= natsume_photo_protocol::IMAGE_LIMIT
+                    && Sha256Digest::of(&bytes) == hash,
                 CorruptSnafu
             );
             let mut file = File::from(

@@ -6,7 +6,9 @@ use std::{
 };
 
 use natsume_photo_client::{
-    initialization::{Config, Error as InitError, Initializer, Secrets},
+    initialization::{
+        Config, CredentialError, Error as InitError, Initializer, SecretSlot, Secrets,
+    },
     workspace::Workspace,
 };
 use serde_json::{Value, json};
@@ -54,25 +56,28 @@ impl Secrets for MemorySecrets {
     fn load(
         &self,
         origin: &str,
-        slot: &str,
-    ) -> natsume_photo_client::initialization::Result<Option<Zeroizing<String>>> {
+        slot: &SecretSlot,
+    ) -> natsume_photo_client::initialization::CredentialResult<Option<Zeroizing<String>>> {
         Ok(self
             .0
             .lock()
-            .map_err(|_| InitError::Invalid)?
-            .get(&format!("{origin}/{slot}"))
+            .map_err(|_| CredentialError::Unavailable)?
+            .get(&format!("{origin}/{}", slot.storage_key()))
             .cloned())
     }
     fn save(
         &self,
         origin: &str,
-        slot: &str,
+        slot: &SecretSlot,
         value: &str,
-    ) -> natsume_photo_client::initialization::Result<()> {
+    ) -> natsume_photo_client::initialization::CredentialResult<()> {
         self.0
             .lock()
-            .map_err(|_| InitError::Invalid)?
-            .insert(format!("{origin}/{slot}"), Zeroizing::new(value.into()));
+            .map_err(|_| CredentialError::Unavailable)?
+            .insert(
+                format!("{origin}/{}", slot.storage_key()),
+                Zeroizing::new(value.into()),
+            );
         Ok(())
     }
 }
@@ -81,8 +86,8 @@ enum Reply {
     Busy,
     Pair,
     Confirm,
-    Manifest(Vec<u8>),
-    Logo(Vec<u8>),
+    PhotoInitialization(Vec<u8>),
+    PhotoLogo(Vec<u8>),
     Complete,
     Lost,
     Redirect,
@@ -219,7 +224,7 @@ fn response(reply: Reply) -> Result<(u16, String, Vec<u8>)> {
                 &json!({"source_id":SOURCE,"name":"desk","state":"enabled","enrollment_confirmed":true,"initialization_completed":false}),
             )?,
         ),
-        Reply::Manifest(bytes) => (
+        Reply::PhotoInitialization(bytes) => (
             200,
             format!(
                 "Content-Type: application/json\r\nETag: \"{}\"\r\n",
@@ -227,7 +232,7 @@ fn response(reply: Reply) -> Result<(u16, String, Vec<u8>)> {
             ),
             bytes,
         ),
-        Reply::Logo(bytes) => (200, "Content-Type: image/png\r\n".into(), bytes),
+        Reply::PhotoLogo(bytes) => (200, "Content-Type: image/png\r\n".into(), bytes),
         Reply::Complete => (204, String::new(), Vec::new()),
         Reply::Redirect => (
             307,
@@ -282,8 +287,8 @@ async fn https_enrollment_downloads_shared_logo_and_then_opens_offline() -> Resu
     let server = Https::start(vec![
         Reply::Pair,
         Reply::Confirm,
-        Reply::Manifest(bytes.clone()),
-        Reply::Logo(image.clone()),
+        Reply::PhotoInitialization(bytes.clone()),
+        Reply::PhotoLogo(image.clone()),
         Reply::Complete,
     ])
     .await?;
@@ -340,7 +345,7 @@ async fn https_enrollment_downloads_shared_logo_and_then_opens_offline() -> Resu
         database_before
     );
     assert_eq!(
-        Workspace::open_readonly(&config.workspace)
+        natsume_photo_client::workspace::WorkspaceReader::inspect(&config.workspace)
             .await?
             .roster()
             .await?
@@ -365,8 +370,8 @@ async fn lost_completion_replays_the_same_receipt_without_redownloading() -> Res
     let server = Https::start(vec![
         Reply::Pair,
         Reply::Confirm,
-        Reply::Manifest(bytes.clone()),
-        Reply::Logo(image),
+        Reply::PhotoInitialization(bytes.clone()),
+        Reply::PhotoLogo(image),
         Reply::Lost,
         Reply::Complete,
     ])
@@ -407,11 +412,11 @@ async fn corrupt_logo_stops_completion_and_retry_keeps_the_same_binding() -> Res
     let server = Https::start(vec![
         Reply::Pair,
         Reply::Confirm,
-        Reply::Manifest(bytes.clone()),
-        Reply::Logo(b"wrong".to_vec()),
+        Reply::PhotoInitialization(bytes.clone()),
+        Reply::PhotoLogo(b"wrong".to_vec()),
         Reply::Confirm,
-        Reply::Manifest(bytes),
-        Reply::Logo(image),
+        Reply::PhotoInitialization(bytes),
+        Reply::PhotoLogo(image),
         Reply::Complete,
     ])
     .await?;
@@ -420,7 +425,7 @@ async fn corrupt_logo_stops_completion_and_retry_keeps_the_same_binding() -> Res
     let secrets = MemorySecrets::default();
     assert!(matches!(
         reopen(&config, &secrets)?.run(Some("ABCD-EFGH")).await,
-        Err(InitError::Invalid)
+        Err(InitError::Integrity)
     ));
     assert!(!config.workspace.exists());
     drop(reopen(&config, &secrets)?.run(None).await?);
@@ -441,6 +446,81 @@ async fn corrupt_logo_stops_completion_and_retry_keeps_the_same_binding() -> Res
 }
 
 #[tokio::test]
+async fn partial_download_cache_recovers_without_pairing_again() -> Result {
+    let image = png()?;
+    let bytes = manifest(&image)?;
+    let server = Https::start(vec![
+        Reply::Pair,
+        Reply::Confirm,
+        Reply::PhotoInitialization(bytes.clone()),
+        Reply::PhotoLogo(b"wrong".to_vec()),
+        Reply::Confirm,
+        Reply::PhotoInitialization(bytes),
+        Reply::PhotoLogo(image.clone()),
+        Reply::Complete,
+    ])
+    .await?;
+    let directory = tempfile::tempdir()?;
+    let config = config(&server, directory.path())?;
+    let secrets = MemorySecrets::default();
+    assert!(matches!(
+        reopen(&config, &secrets)?.run(Some("ABCD-EFGH")).await,
+        Err(InitError::Integrity)
+    ));
+    let cache = directory
+        .path()
+        .join(".workspace.photo-init")
+        .join(format!("downloads-{SNAPSHOT}"))
+        .join(format!("{}.png", hex::encode(Sha256::digest(&image))));
+    // Model a process exit after only the prefix reached the old cache filename.
+    std::fs::write(&cache, &image[..8])?;
+    let workspace = reopen(&config, &secrets)?.run(None).await?;
+    let teams = workspace.roster().await?;
+    let logo = workspace
+        .logo_path(&teams.teams()[0].account_id)
+        .await?
+        .ok_or(TestError::Fixture)?;
+    assert_eq!(std::fs::read(&logo)?, image);
+    {
+        let requests = server.requests()?;
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("enrollment/pair"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|r| r.path.ends_with("initialization/complete"))
+                .count(),
+            1
+        );
+    }
+    drop(workspace);
+    let inspected =
+        natsume_photo_client::initialization::diagnose_path(&config.workspace, &secrets).await?;
+    assert_eq!(inspected.roster().await?.teams().len(), 2);
+    let request_count = server.requests()?.len();
+    std::fs::write(&logo, b"changed after inspection")?;
+    assert!(matches!(
+        natsume_photo_client::initialization::diagnose(&inspected, &secrets).await,
+        Err(InitError::Workspace {
+            source: natsume_photo_client::workspace::Error::Resource { .. }
+        })
+    ));
+    assert!(matches!(
+        natsume_photo_client::initialization::diagnose_path(&config.workspace, &secrets).await,
+        Err(InitError::Workspace {
+            source: natsume_photo_client::workspace::Error::Resource { .. }
+        })
+    ));
+    assert_eq!(server.requests()?.len(), request_count);
+    Ok(())
+}
+
+#[tokio::test]
 async fn wrong_source_or_secret_fields_in_manifest_are_rejected() -> Result {
     for field in ["source_id", "password"] {
         let image = png()?;
@@ -453,7 +533,7 @@ async fn wrong_source_or_secret_fields_in_manifest_are_rejected() -> Result {
         let server = Https::start(vec![
             Reply::Pair,
             Reply::Confirm,
-            Reply::Manifest(serde_json::to_vec(&value)?),
+            Reply::PhotoInitialization(serde_json::to_vec(&value)?),
         ])
         .await?;
         let directory = tempfile::tempdir()?;
@@ -549,8 +629,8 @@ async fn damaged_saved_workspace_prevents_completion_replay() -> Result {
     let server = Https::start(vec![
         Reply::Pair,
         Reply::Confirm,
-        Reply::Manifest(manifest(&image)?),
-        Reply::Logo(image),
+        Reply::PhotoInitialization(manifest(&image)?),
+        Reply::PhotoLogo(image),
         Reply::Lost,
     ])
     .await?;
@@ -657,8 +737,8 @@ async fn changed_signing_public_key_prevents_completion_replay() -> Result {
     let server = Https::start(vec![
         Reply::Pair,
         Reply::Confirm,
-        Reply::Manifest(manifest(&image)?),
-        Reply::Logo(image),
+        Reply::PhotoInitialization(manifest(&image)?),
+        Reply::PhotoLogo(image),
         Reply::Lost,
         Reply::Complete,
     ])
@@ -701,8 +781,8 @@ async fn capacity_response_retries_snapshot_without_repeating_pairing() -> Resul
         Reply::Pair,
         Reply::Confirm,
         Reply::Busy,
-        Reply::Manifest(manifest(&image)?),
-        Reply::Logo(image),
+        Reply::PhotoInitialization(manifest(&image)?),
+        Reply::PhotoLogo(image),
         Reply::Complete,
     ])
     .await?;
@@ -738,7 +818,7 @@ async fn rejected_json_value_is_absent_from_debug_and_error_chain() -> Result {
     let server = Https::start(vec![
         Reply::Pair,
         Reply::Confirm,
-        Reply::Manifest(serde_json::to_vec(&value)?),
+        Reply::PhotoInitialization(serde_json::to_vec(&value)?),
     ])
     .await?;
     let directory = tempfile::tempdir()?;

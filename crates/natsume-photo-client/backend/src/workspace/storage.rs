@@ -29,66 +29,105 @@ fn validate(path: &Path) -> Result<()> {
     );
     Ok(())
 }
-pub(super) async fn create(
-    path: PathBuf,
-) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
-    tokio::task::spawn_blocking(move || {
-        validate(&path)?;
-        match std::fs::create_dir(&path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return ExistsSnafu.fail();
-            }
-            Err(source) => {
-                return Err(source).context(IoSnafu {
-                    operation: "create workspace directory",
-                });
-            }
+// The caller owns the blocking boundary for the entire preparation transaction.
+pub(super) fn create(path: PathBuf) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
+    validate(&path)?;
+    match std::fs::create_dir(&path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return ExistsSnafu.fail();
         }
-        let root = std::fs::canonicalize(path).context(IoSnafu {
-            operation: "resolve workspace directory",
-        })?;
-        let lock = std::sync::Arc::new(lock_writer(&root)?);
-        let path = root.join("workspace.sqlite3");
-        std::fs::File::create_new(&path).context(IoSnafu {
-            operation: "reserve workspace database",
-        })?;
-        let database = Database::connect(&path)
-            .context(DatabaseSnafu)?
-            .with_owner(std::sync::Arc::clone(&lock));
-        database.install().context(DatabaseSnafu)?;
-        Ok((root, database, lock))
+        Err(source) => {
+            return Err(source).context(IoSnafu {
+                operation: "create workspace directory",
+            });
+        }
+    }
+    let root = std::fs::canonicalize(path).context(IoSnafu {
+        operation: "resolve workspace directory",
+    })?;
+    let lock = std::sync::Arc::new(lock_writer(&root)?);
+    let path = root.join("workspace.sqlite3");
+    std::fs::File::create_new(&path).context(IoSnafu {
+        operation: "reserve workspace database",
+    })?;
+    let database = Database::connect(&path)
+        .context(DatabaseSnafu)?
+        .with_owner(std::sync::Arc::clone(&lock));
+    database.install().context(DatabaseSnafu)?;
+    Ok((root, database, lock))
+}
+fn existing_database(path: PathBuf) -> Result<(PathBuf, PathBuf)> {
+    validate(&path)?;
+    let root = std::fs::canonicalize(path).context(IoSnafu {
+        operation: "resolve workspace directory",
+    })?;
+    let path = root.join("workspace.sqlite3");
+    let resolved = std::fs::canonicalize(&path).context(IoSnafu {
+        operation: "resolve existing database",
+    })?;
+    ensure!(resolved == path && resolved.is_file(), PathSnafu);
+    Ok((root, resolved))
+}
+pub(super) async fn open_reader(path: PathBuf) -> Result<(PathBuf, Database)> {
+    tokio::task::spawn_blocking(move || {
+        let (root, path) = existing_database(path)?;
+        let database = Database::connect_readonly(&path).context(DatabaseSnafu)?;
+        Ok((root, database))
     })
     .await
     .context(WorkerSnafu)?
 }
-pub(super) async fn open(
+pub(super) async fn open_writer(
     path: PathBuf,
-    read_only: bool,
-) -> Result<(PathBuf, Database, Option<std::sync::Arc<std::fs::File>>)> {
+) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
     tokio::task::spawn_blocking(move || {
-        validate(&path)?;
-        let root = std::fs::canonicalize(path).context(IoSnafu {
-            operation: "resolve workspace directory",
-        })?;
-        let path = root.join("workspace.sqlite3");
-        let resolved = std::fs::canonicalize(&path).context(IoSnafu {
-            operation: "resolve existing database",
-        })?;
-        ensure!(resolved == path && resolved.is_file(), PathSnafu);
-        let lock = if read_only {
-            None
-        } else {
-            Some(std::sync::Arc::new(lock_writer(&root)?))
-        };
-        let mut database = Database::connect_mode(&resolved, read_only).context(DatabaseSnafu)?;
-        if let Some(owner) = &lock {
-            database = database.with_owner(std::sync::Arc::clone(owner));
-        }
-        Ok((root, database, lock))
+        let (root, path) = existing_database(path)?;
+        let owner = std::sync::Arc::new(lock_writer(&root)?);
+        let database = Database::connect(&path)
+            .context(DatabaseSnafu)?
+            .with_owner(std::sync::Arc::clone(&owner));
+        Ok((root, database, owner))
     })
     .await
     .context(WorkerSnafu)?
+}
+
+// The caller consumes an inspected workspace and runs this under its initialization lease.
+pub(super) fn publish_verified(
+    source: PathBuf,
+    target: &Path,
+) -> Result<(PathBuf, Database, std::sync::Arc<std::fs::File>)> {
+    let (root, _) = existing_database(source)?;
+    validate(target)?;
+    let parent = target.parent().ok_or_else(|| PathSnafu.build())?;
+    let name = target.file_name().ok_or_else(|| PathSnafu.build())?;
+    let target = std::fs::canonicalize(parent)
+        .context(IoSnafu {
+            operation: "resolve publication parent",
+        })?
+        .join(name);
+    let mut owner = std::sync::Arc::new(lock_writer(&root)?);
+    if root != target {
+        ensure!(
+            !target.try_exists().context(IoSnafu {
+                operation: "check publication target"
+            })?,
+            ExistsSnafu
+        );
+        // Windows cannot move the directory while its lock file is open.
+        // The initialization lease still excludes other publication operations;
+        // a writer winning the target afterwards is rejected by lock_writer.
+        drop(owner);
+        std::fs::rename(&root, &target).context(IoSnafu {
+            operation: "publish verified workspace",
+        })?;
+        owner = std::sync::Arc::new(lock_writer(&target)?);
+    }
+    let database = Database::connect(&target.join("workspace.sqlite3"))
+        .context(DatabaseSnafu)?
+        .with_owner(std::sync::Arc::clone(&owner));
+    Ok((target, database, owner))
 }
 
 fn lock_writer(root: &Path) -> Result<std::fs::File> {

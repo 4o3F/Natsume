@@ -452,6 +452,9 @@ export type ConnectionStateResponse =
 export type ConvergenceStatusResponse =
   "awaiting_actual" | "converged" | "reconciling" | "drifted" | "failed";
 
+/**  A canonical `UUIDv7` with a distinct protocol role. */
+export type DatasetId = string;
+
 /**  Current durable targets and latest validated Actual for one Device. */
 export type DeviceConvergenceResponse =
   DeviceConvergenceResponse_Serialize | DeviceConvergenceResponse_Deserialize;
@@ -612,6 +615,9 @@ export type EnrollmentDenied = {
   review_id: ReviewId;
 };
 
+/**  A canonical `UUIDv7` with a distinct protocol role. */
+export type EnrollmentId = string;
+
 /**  Non-secret evidence awaiting an Administrator decision in this process. */
 export type EnrollmentReviewResponse = {
   review_id: string;
@@ -771,6 +777,9 @@ export type ExportLine =
 /**  Desired Session foreground role accepted and returned by the API. */
 export type ForegroundTargetResponse = "contest" | "waiting";
 
+/**  The initialization snapshot format currently supported by both consumers. */
+export type FormatVersion = number;
+
 export type GapKind = "pruned" | "dropped" | "paused" | "unreadable";
 
 /**  Latest validated Gateway Actual reported by the current lease. */
@@ -917,6 +926,12 @@ export type ImportTeamResponse = {
   category: string;
 };
 
+/**  A canonical `UUIDv7` with a distinct protocol role. */
+export type InitializationId = string;
+
+/**  A canonical `UUIDv7` with a distinct protocol role. */
+export type InitializationRequestId = string;
+
 export type InvitationRegistered = Record<string, never>;
 
 export type JobIdentity = {
@@ -1014,6 +1029,9 @@ export type LifecycleChanged = {
 export type LifecycleState = "enabled" | "disabled" | "revoked";
 
 export type LoggedOut = Record<string, never>;
+
+/**  Logos are normalized by Contest before entering this protocol. */
+export type LogoContentType = "image/png";
 
 export type OperationId =
   /**  Operation correlation UUID supplied explicitly by the producer. */
@@ -1136,41 +1154,44 @@ export type PasswordResetIssued = Record<string, never>;
 
 export type PauseReason = "disk_budget";
 
+/**  Confirms that the issued enrollment is bound to the original signing key. */
 export type PhotoConfirmation = {
-  enrollment_id: string;
+  enrollment_id: EnrollmentId;
   signing_public_key: string;
 };
 
 /**  Contains a secret: intentionally has no Debug implementation. */
 export type PhotoEnrollmentIssued = {
-  source_id: string;
-  enrollment_id: string;
+  source_id: SourceId;
+  enrollment_id: EnrollmentId;
   token: string;
   expires_at_unix_ms: number;
 };
 
 export type PhotoInitialization = {
-  format_version: number;
-  source_id: string;
-  dataset_id: string;
-  initialization_id: string;
+  format_version: FormatVersion;
+  source_id: SourceId;
+  dataset_id: DatasetId;
+  initialization_id: InitializationId;
   teams: PhotoTeam[];
   school_logos: PhotoLogo[];
 };
 
+/**  Idempotent completion receipt, sent only after local integrity verification. */
 export type PhotoInitializationComplete = {
-  initialization_id: string;
-  manifest_sha256: string;
-  request_id: string;
+  initialization_id: InitializationId;
+  manifest_sha256: Sha256Digest;
+  request_id: InitializationRequestId;
 };
 
 export type PhotoLogo = {
   organization_id: number;
-  sha256: string;
-  content_type: string;
+  sha256: Sha256Digest;
+  content_type: LogoContentType;
   size_bytes: number;
 };
 
+/**  First enrollment request. The one-time code is sensitive. */
 export type PhotoPairRequest = {
   code: string;
   signing_public_key: string;
@@ -1185,8 +1206,9 @@ export type PhotoPairingCode = {
 
 export type PhotoPairingCodeRequest = Record<string, never>;
 
+/**  Public source projection used by Operators and the enrollment confirmation. */
 export type PhotoSource = {
-  source_id: string;
+  source_id: SourceId;
   name: string;
   state: SourceState;
   enrollment_confirmed: boolean;
@@ -1528,6 +1550,13 @@ export type SessionStateResponse =
 
 export type Severity = "info" | "warning" | "error";
 
+/**  A validated lowercase SHA-256 digest, distinct from identities and keys. */
+export type Sha256Digest = string;
+
+/**  A canonical `UUIDv7` with a distinct protocol role. */
+export type SourceId = string;
+
+/**  Source lifecycle; authority remains entirely on Server. */
 export type SourceState = "enabled" | "disabled" | "revoked";
 
 export type TargetAction =

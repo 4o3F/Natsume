@@ -1,9 +1,10 @@
 //! First-time HTTPS enrollment; ordinary workspace operations remain offline.
 mod api;
 mod doctor;
+mod identity;
+mod secrets;
 mod store;
 mod windows;
-mod wire;
 
 use std::{collections::BTreeSet, path::PathBuf};
 
@@ -11,11 +12,15 @@ use snafu::{ResultExt as _, Snafu, ensure};
 use zeroize::Zeroizing;
 
 use crate::{roster::Roster, workspace::Workspace};
-use api::Api;
+use api::PhotoEnrollmentClient;
+use natsume_photo_protocol::{InitializationRequestId, PhotoInitializationComplete, Sha256Digest};
+use natsume_photo_protocol::{PhotoEnrollmentIssued, PhotoInitialization};
 use store::{Phase, Receipt, Store};
-use wire::{Manifest, PairingCredentials};
 
-pub use doctor::diagnose;
+pub use doctor::{diagnose, diagnose_path};
+use identity::PreparedId;
+pub use identity::{ClientId, LocalIdentityError};
+pub use secrets::{CredentialError, CredentialResult, SecretKind, SecretSlot, Secrets};
 pub use windows::VaultSecrets;
 
 /// Initialization failures never include credentials or response body contents.
@@ -44,10 +49,20 @@ pub enum Error {
     Path,
     #[snafu(display("Photo server origin is invalid"))]
     Origin,
-    #[snafu(display("Photo response exceeds the byte limit ({limit})"))]
+    #[snafu(display("Photo initialization data exceeds the byte limit ({limit})"))]
     Limit { limit: usize },
-    #[snafu(display("Photo initialization input or response is invalid"))]
-    Invalid,
+    #[snafu(display("Photo CA bundle contains no certificates"))]
+    EmptyCa,
+    #[snafu(display("Photo completion unexpectedly returned a response body"))]
+    UnexpectedBody,
+    #[snafu(display("Photo confirmation does not match this enrollment"))]
+    Confirmation,
+    #[snafu(display("Photo downloaded resource integrity check failed"))]
+    Integrity,
+    #[snafu(display("Photo initialization file conflicts with existing content"))]
+    FileConflict,
+    #[snafu(display("Photo initialization expected a directory"))]
+    NotDirectory,
     #[snafu(display("Photo initialization directory is already in use"))]
     Busy,
     #[snafu(display("Photo initialization requires the original signing key and credentials"))]
@@ -63,24 +78,11 @@ pub enum Error {
     #[snafu(display("Photo initialization workspace could not be saved or verified"))]
     Workspace { source: crate::workspace::Error },
     #[snafu(display("Photo initialization Windows credential storage failed"))]
-    Credential { source: ::windows::core::Error },
+    Credential { source: CredentialError },
 }
 
 /// Result type shared with platform credential adapters.
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// Platform secret storage, separated from public initialization metadata.
-/// Implementations must reliably save values before returning success.
-pub trait Secrets: Clone + Send + Sync + 'static {
-    /// Reads a value without logging it; absence is distinct from storage failure.
-    /// # Errors
-    /// Returns a platform credential storage error.
-    fn load(&self, origin: &str, slot: &str) -> Result<Option<Zeroizing<String>>>;
-    /// Saves a credential under an initialization-specific slot.
-    /// # Errors
-    /// Returns a platform credential storage error.
-    fn save(&self, origin: &str, slot: &str, value: &str) -> Result<()>;
-}
 
 // serde_json errors can embed the rejected value. Preserve location, never the
 // source string or a Debug/source chain containing secret input.
@@ -137,60 +139,61 @@ impl<S: Secrets> Initializer<S> {
     /// # Errors
     /// Returns a credential-store error; credentials are never silently replaced.
     pub fn needs_pairing_code(&self) -> Result<bool> {
-        Ok(matches!(self.store.state.phase, Phase::Unpaired)
+        Ok(matches!(self.store.state().phase, Phase::Unpaired)
             && self
                 .secrets
-                .load(&self.config.server_url, &self.slot("enrollment"))?
+                .load(&self.config.server_url, &self.slot(SecretKind::Enrollment))
+                .context(CredentialSnafu)?
                 .is_none())
     }
 
-    fn slot(&self, name: &str) -> String {
-        format!("{}/{name}", self.store.state.client_id)
+    fn slot(&self, kind: SecretKind) -> SecretSlot {
+        SecretSlot::new(self.store.state().client_id.clone(), kind)
     }
 
     async fn signing_key(&self) -> Result<ed25519_dalek::SigningKey> {
         let secrets = self.secrets.clone();
         let origin = self.config.server_url.clone();
-        let slot = self.slot("signing");
-        let unpaired = matches!(self.store.state.phase, Phase::Unpaired);
-        let marker = self.store.root.join("pairing-started");
-        self.store
-            .blocking(move || {
-                let secret = secrets.load(&origin, &slot)?;
-                let seed = if let Some(secret) = secret {
-                    let mut seed = Zeroizing::new([0; 32]);
-                    hex::decode_to_slice(secret.as_str(), seed.as_mut())
-                        .map_err(key_encoding_error)?;
-                    seed
-                } else {
-                    ensure!(unpaired, MissingSecretSnafu);
-                    // Do not replace a key after a pairing request could have reached Server.
-                    ensure!(!marker.exists(), MissingSecretSnafu);
-                    let mut seed = Zeroizing::new([0; 32]);
-                    getrandom::fill(seed.as_mut()).context(EntropySnafu)?;
-                    secrets.save(&origin, &slot, &Zeroizing::new(hex::encode(seed.as_ref())))?;
-                    seed
-                };
-                Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
-            })
-            .await
+        let slot = self.slot(SecretKind::Signing);
+        let unpaired = matches!(self.store.state().phase, Phase::Unpaired);
+        let marker = self.store.root().join("pairing-started");
+        run_with_initialization_lease(self.store.lease(), move || {
+            let secret = secrets.load(&origin, &slot).context(CredentialSnafu)?;
+            let seed = if let Some(secret) = secret {
+                let mut seed = Zeroizing::new([0; 32]);
+                hex::decode_to_slice(secret.as_str(), seed.as_mut()).map_err(key_encoding_error)?;
+                seed
+            } else {
+                ensure!(unpaired, MissingSecretSnafu);
+                // Do not replace a key after a pairing request could have reached Server.
+                ensure!(!marker.exists(), MissingSecretSnafu);
+                let mut seed = Zeroizing::new([0; 32]);
+                getrandom::fill(seed.as_mut()).context(EntropySnafu)?;
+                secrets
+                    .save(&origin, &slot, &Zeroizing::new(hex::encode(seed.as_ref())))
+                    .context(CredentialSnafu)?;
+                seed
+            };
+            Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
+        })
+        .await
     }
 
-    async fn enrollment(&self) -> Result<PairingCredentials> {
+    async fn enrollment(&self) -> Result<PhotoEnrollmentIssued> {
         let secrets = self.secrets.clone();
         let origin = self.config.server_url.clone();
-        let slot = self.slot("enrollment");
-        self.store
-            .blocking(move || {
-                let secret = secrets
-                    .load(&origin, &slot)?
-                    .ok_or_else(|| MissingSecretSnafu.build())?;
-                let issued: PairingCredentials =
-                    serde_json::from_str(&secret).map_err(json_error)?;
-                issued.validate().context(ContractSnafu)?;
-                Ok(issued)
-            })
-            .await
+        let slot = self.slot(SecretKind::Enrollment);
+        run_with_initialization_lease(self.store.lease(), move || {
+            let secret = secrets
+                .load(&origin, &slot)
+                .context(CredentialSnafu)?
+                .ok_or_else(|| MissingSecretSnafu.build())?;
+            let issued: PhotoEnrollmentIssued =
+                serde_json::from_str(&secret).map_err(json_error)?;
+            issued.validate().context(ContractSnafu)?;
+            Ok(issued)
+        })
+        .await
     }
 
     /// Pairs, downloads, saves, acknowledges and publishes the offline workspace.
@@ -198,100 +201,113 @@ impl<S: Secrets> Initializer<S> {
     /// # Errors
     /// Returns typed storage, TLS, authorization, validation or workspace errors.
     pub async fn run(mut self, code: Option<&str>) -> Result<Workspace> {
-        if let Phase::Completed { receipt } = &self.store.state.phase {
+        if let Phase::Completed { receipt } = &self.store.state().phase {
             return self.store.publish(receipt, &self.secrets).await;
         }
         let key = self.signing_key().await?;
-        let public_key = hex::encode(key.verifying_key().to_bytes());
-        let config = Config {
-            server_url: self.config.server_url.clone(),
-            workspace: self.config.workspace.clone(),
-            ca_certificate: self.config.ca_certificate.clone(),
-        };
-        let api = self.store.blocking(move || Api::new(&config)).await?;
+        let public_key = key.verifying_key();
+        let origin = self.config.server_url.clone();
+        let ca = self.config.ca_certificate.clone();
+        let api = run_blocking(move || PhotoEnrollmentClient::load_tls(origin, ca)).await?;
         self.pair(&api, code, &public_key).await?;
         let enrollment = self.enrollment().await?;
         ensure!(
-            self.store.state.source_id.as_deref() == Some(&enrollment.source_id),
-            InvalidSnafu
+            self.store.state().source_id.as_ref() == Some(&enrollment.source_id),
+            AuthorizationSnafu
         );
-        if matches!(self.store.state.phase, Phase::Paired) {
+        if matches!(self.store.state().phase, Phase::Paired) {
             api.confirm(&enrollment, &public_key).await?;
-            let (bytes, manifest) = api.manifest(&enrollment).await?;
+            let download = api.prepare_initialization(&enrollment).await?;
             let receipt = self
-                .prepare(&api, &enrollment, &public_key, &bytes, manifest)
+                .prepare(
+                    &api,
+                    &enrollment,
+                    &public_key,
+                    &download.bytes,
+                    download.manifest,
+                )
                 .await?;
-            self.store.advance(Phase::Saved { receipt }).await?;
+            self.store.record_saved(receipt).await?;
         }
-        let Phase::Saved { receipt } = &self.store.state.phase else {
-            return InvalidSnafu.fail();
+        let Phase::Saved { receipt } = &self.store.state().phase else {
+            return JournalSnafu.fail();
         };
         // Revalidate every local file before closing download rights on Server.
         self.store.verify(receipt, &self.secrets).await?;
-        api.complete(&enrollment, receipt).await?;
-        let receipt = receipt.clone();
-        self.store
-            .advance(Phase::Completed {
-                receipt: receipt.clone(),
-            })
-            .await?;
+        api.complete(
+            &enrollment,
+            &PhotoInitializationComplete {
+                initialization_id: receipt.initialization_id.clone(),
+                manifest_sha256: receipt.manifest_sha256.clone(),
+                request_id: receipt.request_id.clone(),
+            },
+        )
+        .await?;
+        let receipt = self.store.record_completed().await?;
         self.store.publish(&receipt, &self.secrets).await
     }
 
-    async fn pair(&mut self, api: &Api, code: Option<&str>, public_key: &str) -> Result<()> {
-        if !matches!(self.store.state.phase, Phase::Unpaired) {
+    async fn pair(
+        &mut self,
+        api: &PhotoEnrollmentClient,
+        code: Option<&str>,
+        public_key: &ed25519_dalek::VerifyingKey,
+    ) -> Result<()> {
+        if !matches!(self.store.state().phase, Phase::Unpaired) {
             return Ok(());
         }
         let secrets = self.secrets.clone();
         let origin = self.config.server_url.clone();
-        let slot = self.slot("enrollment");
-        let existing = self
-            .store
-            .blocking(move || secrets.load(&origin, &slot))
-            .await?;
+        let slot = self.slot(SecretKind::Enrollment);
+        let existing = run_with_initialization_lease(self.store.lease(), move || {
+            secrets.load(&origin, &slot).context(CredentialSnafu)
+        })
+        .await?;
         if existing.is_none() {
             let code = code
                 .filter(|code| !code.trim().is_empty())
                 .ok_or_else(|| MissingSecretSnafu.build())?;
-            let marker = self.store.root.join("pairing-started");
+            let marker = self.store.root().join("pairing-started");
             self.store
-                .blocking(move || store::save_new_or_verify(&marker, b"1"))
+                .with_locked_files(move || store::save_new_or_verify(&marker, b"1"))
                 .await?;
             let issued = api.pair(code, public_key).await?;
             let encoded = Zeroizing::new(serde_json::to_string(&issued).map_err(json_error)?);
             let secrets = self.secrets.clone();
             let origin = self.config.server_url.clone();
-            let slot = self.slot("enrollment");
-            self.store
-                .blocking(move || secrets.save(&origin, &slot, &encoded))
-                .await?;
+            let slot = self.slot(SecretKind::Enrollment);
+            run_with_initialization_lease(self.store.lease(), move || {
+                secrets
+                    .save(&origin, &slot, &encoded)
+                    .context(CredentialSnafu)
+            })
+            .await?;
         }
         let issued = self.enrollment().await?;
-        self.store.state.source_id = Some(issued.source_id.clone());
-        self.store.advance(Phase::Paired).await
+        self.store.record_pairing(issued.source_id.clone()).await
     }
 
     async fn prepare(
         &self,
-        api: &Api,
-        enrollment: &PairingCredentials,
-        public_key: &str,
+        api: &PhotoEnrollmentClient,
+        enrollment: &PhotoEnrollmentIssued,
+        public_key: &ed25519_dalek::VerifyingKey,
         bytes: &[u8],
-        manifest: Manifest,
+        manifest: PhotoInitialization,
     ) -> Result<Receipt> {
         let roster = Roster::from_teams(manifest.teams).context(RosterSnafu)?;
-        let prepared = uuid::Uuid::now_v7().to_string();
+        let prepared = PreparedId::generate();
         let download = self
             .store
-            .root
+            .root()
             .join(format!("downloads-{}", manifest.initialization_id));
         let directory = download.clone();
         self.store
-            .blocking(move || {
+            .with_locked_files(move || {
                 std::fs::create_dir_all(&directory).context(IoSnafu)?;
                 ensure!(
                     std::fs::canonicalize(&directory).context(IoSnafu)? == directory,
-                    InvalidSnafu
+                    PathSnafu
                 );
                 Ok(())
             })
@@ -302,9 +318,10 @@ impl<S: Secrets> Initializer<S> {
             let filename = format!("{}.png", logo.sha256);
             if downloaded.insert(logo.sha256.clone()) {
                 let image = api.resource(enrollment, &logo).await?;
-                let path = download.join(&filename);
+                let directory = download.clone();
+                let digest = logo.sha256.clone();
                 self.store
-                    .blocking(move || store::save_new_or_verify(&path, &image))
+                    .with_locked_files(move || store::save_download(&directory, &digest, &image))
                     .await?;
             }
             logos.push(crate::workspace::resources::SchoolLogo {
@@ -312,17 +329,17 @@ impl<S: Secrets> Initializer<S> {
                 path: filename.into(),
             });
         }
-        let workspace = self.store.root.join(&prepared);
+        let workspace = self.store.root().join(prepared.as_str());
         drop(
-            Workspace::create_with_logos(&workspace, &roster, download, logos)
+            Workspace::create_with_logos(&workspace, &roster, download, logos, self.store.lease())
                 .await
                 .context(WorkspaceSnafu)?,
         );
-        let hash = wire::digest(bytes);
+        let hash = Sha256Digest::of(bytes);
         let identity = doctor::Authorization {
             server_url: self.config.server_url.clone(),
-            client_id: self.store.state.client_id.clone(),
-            signing_public_key: public_key.to_owned(),
+            client_id: self.store.state().client_id.clone(),
+            signing_public_key: hex::encode(public_key.as_bytes()),
             source_id: enrollment.source_id.clone(),
             dataset_id: manifest.dataset_id,
             initialization_id: manifest.initialization_id.clone(),
@@ -330,7 +347,7 @@ impl<S: Secrets> Initializer<S> {
         };
         let bytes = bytes.to_owned();
         self.store
-            .blocking(move || {
+            .with_locked_files(move || {
                 store::save_new_or_verify(&workspace.join("initialization.json"), &bytes)?;
                 store::save_new_or_verify(
                     &workspace.join("authorization.json"),
@@ -343,7 +360,27 @@ impl<S: Secrets> Initializer<S> {
             prepared,
             initialization_id: manifest.initialization_id,
             manifest_sha256: hash,
-            request_id: uuid::Uuid::now_v7().to_string(),
+            request_id: InitializationRequestId::generate(),
         })
     }
+}
+
+async fn run_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    tokio::task::spawn_blocking(operation)
+        .await
+        .context(WorkerSnafu)?
+}
+
+// Credential writes may outlive cancellation, so a new initializer must wait for them.
+async fn run_with_initialization_lease<T: Send + 'static>(
+    lease: std::sync::Arc<std::fs::File>,
+    operation: impl FnOnce() -> Result<T> + Send + 'static,
+) -> Result<T> {
+    run_blocking(move || {
+        let _lease = lease;
+        operation()
+    })
+    .await
 }

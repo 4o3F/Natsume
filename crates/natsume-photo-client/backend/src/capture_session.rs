@@ -1,8 +1,8 @@
 //! Owns capture policy and coordinates ordered ingestion work independently of UI.
 use crate::hot_folder::{
-    self, CaptureSnafu, HotFolderSnapshot, INTERVAL, Ingestion, IngestionState, InvariantSnafu,
-    IoSnafu, MonitorSnafu, MonitorUnavailableSnafu, NotEmptySnafu, NotReviewableSnafu, Result,
-    StoppedSnafu, UnsafePathSnafu, WorkerSnafu, WorkspaceSnafu,
+    self, CaptureSnafu, HotFolderSnapshot, INTERVAL, IngestionState, InvariantSnafu, IoSnafu,
+    MonitorSnafu, MonitorUnavailableSnafu, NotEmptySnafu, NotReviewableSnafu, Result, StoppedSnafu,
+    UnsafePathSnafu, WorkerSnafu, WorkspaceSnafu,
 };
 use crate::{
     capture::{self, GroupId, Session},
@@ -12,7 +12,7 @@ use hot_folder::native::NativeMonitor;
 use snafu::{IntoError as _, OptionExt as _, ResultExt as _, ensure};
 use std::time::Duration;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -20,9 +20,18 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+mod ingestion;
+use ingestion::Ingestion;
+
+struct CaptureTask {
+    group: GroupId,
+    id: capture::TaskId,
+}
+
 struct CaptureState {
     session: Session,
     ingestion: Ingestion,
+    tasks: BTreeMap<PathBuf, CaptureTask>,
 }
 enum Action {
     Select(String),
@@ -54,7 +63,7 @@ impl CaptureSession {
     /// # Errors
     /// Rejects nonempty, overlapping or unsafe directories and failed setup.
     pub async fn prepare(workspace: &Workspace, hot_folder: &Path) -> Result<Self> {
-        let workspace_owner = workspace.writable_owner().context(WorkspaceSnafu)?;
+        let workspace_owner = workspace.writable_owner();
         let session = Session::new(workspace.roster().await.context(WorkspaceSnafu)?);
         let hot_folder = hot_folder.to_owned();
         let root = workspace.root().to_owned();
@@ -74,19 +83,8 @@ impl CaptureSession {
             let archive = root.join("captures").join(session.id().to_string());
             Ok(CaptureState {
                 session,
-                ingestion: Ingestion {
-                    archive,
-                    hot_folder,
-                    pending: BTreeMap::new(),
-                    seen: BTreeMap::new(),
-                    checked: BTreeMap::new(),
-                    last_audit: std::time::Instant::now(),
-                    lost: BTreeSet::new(),
-                    photos: Vec::new(),
-                    missing_sources: Vec::new(),
-                    state: IngestionState::Running,
-                    uncertain: false,
-                },
+                ingestion: Ingestion::new(hot_folder, archive),
+                tasks: BTreeMap::new(),
             })
         })
         .await
@@ -231,15 +229,16 @@ impl Drop for CaptureSession {
 async fn prepare_archive(inner: CaptureState) -> Result<CaptureState> {
     tokio::task::spawn_blocking(move || {
         ensure!(
-            fs::read_dir(&inner.ingestion.hot_folder)
+            fs::read_dir(inner.ingestion.hot_folder())
                 .context(IoSnafu)?
                 .next()
                 .is_none(),
             NotEmptySnafu
         );
-        fs::create_dir_all(&inner.ingestion.archive).context(IoSnafu)?;
+        fs::create_dir_all(inner.ingestion.archive()).context(IoSnafu)?;
         ensure!(
-            fs::canonicalize(&inner.ingestion.archive).context(IoSnafu)? == inner.ingestion.archive,
+            fs::canonicalize(inner.ingestion.archive()).context(IoSnafu)?
+                == inner.ingestion.archive(),
             UnsafePathSnafu
         );
         Ok(inner)
@@ -254,7 +253,7 @@ async fn start_worker(
     wake: mpsc::Sender<()>,
     ready: oneshot::Sender<Result<()>>,
 ) -> Result<(CaptureState, NativeMonitor)> {
-    let monitor = match NativeMonitor::open(&inner.ingestion.hot_folder, wake.clone())
+    let monitor = match NativeMonitor::open(inner.ingestion.hot_folder(), wake.clone())
         .await
         .context(MonitorSnafu)
     {
@@ -288,7 +287,7 @@ async fn run_worker(
     let (mut inner, monitor) = start_worker(inner, wake.clone(), ready).await?;
     let mut monitor = Some(monitor);
     let mut notifications = 0;
-    let mut stamp = fs::metadata(&inner.ingestion.hot_folder)
+    let mut stamp = fs::metadata(inner.ingestion.hot_folder())
         .ok()
         .and_then(|m| m.created().ok());
     let mut timer = tokio::time::interval(INTERVAL);
@@ -306,7 +305,7 @@ async fn run_worker(
             command=commands.recv()=>{if command.is_none(){break;}command},
             _=timer.tick()=>None,
         };
-        let folder = inner.ingestion.hot_folder.clone();
+        let folder = inner.ingestion.hot_folder().to_owned();
         let current = tokio::task::spawn_blocking(move || {
             fs::metadata(folder).ok().and_then(|m| m.created().ok())
         })
@@ -323,18 +322,13 @@ async fn run_worker(
         };
         if current != stamp || current.is_none() {
             monitor = None;
-            inner.ingestion.uncertain = true;
-            inner
-                .ingestion
-                .fail(&mut inner.session, IngestionState::RecoveringMonitor);
+            inner.monitor_lost();
             stamp = current;
         }
         if monitor.is_none() {
-            inner
-                .ingestion
-                .fail(&mut inner.session, IngestionState::RecoveringMonitor);
+            inner.monitor_lost();
             if let Ok(replacement) =
-                NativeMonitor::open(&inner.ingestion.hot_folder, wake.clone()).await
+                NativeMonitor::open(inner.ingestion.hot_folder(), wake.clone()).await
             {
                 monitor = Some(replacement);
             }
@@ -371,12 +365,64 @@ async fn run_worker(
         }
     }
     drop(monitor);
-    inner.ingestion.state = IngestionState::Stopped;
+    inner.ingestion.stop();
     inner.session.pause();
     publish.send_replace(inner.snapshot(notifications));
     Ok(())
 }
 impl CaptureState {
+    fn monitor_lost(&mut self) {
+        self.ingestion.monitor_lost();
+        self.session.pause();
+    }
+    fn sync_tasks(&mut self) -> Result<()> {
+        let pending: BTreeMap<_, _> = self
+            .ingestion
+            .pending_owners()
+            .map(|(path, group)| (path.clone(), group))
+            .collect();
+        let finished: Vec<_> = self
+            .tasks
+            .keys()
+            .filter(|path| !pending.contains_key(*path))
+            .cloned()
+            .collect();
+        for path in finished {
+            let task = self.tasks.remove(&path).context(InvariantSnafu)?;
+            self.session
+                .task_finished(task.group, task.id)
+                .context(CaptureSnafu)?;
+        }
+        for (path, group) in pending {
+            if let std::collections::btree_map::Entry::Vacant(entry) = self.tasks.entry(path) {
+                let task = self.session.task_started(group).context(CaptureSnafu)?;
+                entry.insert(CaptureTask { group, id: task });
+            }
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    fn scan(&mut self) -> Result<()> {
+        let result = self
+            .ingestion
+            .scan(self.session.group().map(capture::Group::id));
+        self.sync_tasks()?;
+        result
+    }
+    fn reconcile(&mut self) {
+        let result = self
+            .ingestion
+            .reconcile(self.session.group().map(capture::Group::id));
+        let result = result.and(self.sync_tasks());
+        match result {
+            Ok(()) => self.session.resume(),
+            Err(error) => {
+                tracing::warn!(error = %error, "Photo ingestion reconciliation failed");
+                self.session.pause();
+            }
+        }
+    }
+
     fn snapshot(&self, notifications: u64) -> HotFolderSnapshot {
         HotFolderSnapshot {
             session_id: self.session.id(),
@@ -387,9 +433,9 @@ impl CaptureState {
                 .group()
                 .map_or(0, capture::Group::pending_tasks),
             paused: self.session.is_paused(),
-            state: self.ingestion.state,
-            photos: self.ingestion.photos.clone(),
-            missing_sources: self.ingestion.missing_sources.clone(),
+            state: self.ingestion.state(),
+            photos: self.ingestion.photos().to_vec(),
+            missing_sources: self.ingestion.missing_sources().to_vec(),
             notifications,
         }
     }
@@ -400,7 +446,7 @@ impl CaptureState {
             }
             Action::Start => {
                 ensure!(monitor_available, MonitorUnavailableSnafu);
-                self.ingestion.reconcile(&mut self.session);
+                self.reconcile();
                 return self
                     .session
                     .start_group()
@@ -409,7 +455,7 @@ impl CaptureState {
             }
             Action::Abandon(id) => {
                 ensure!(monitor_available, MonitorUnavailableSnafu);
-                self.ingestion.reconcile(&mut self.session);
+                self.reconcile();
                 self.session.abandon_group(id).context(CaptureSnafu)?;
             }
             Action::Assign(photo, group) => {
@@ -418,29 +464,13 @@ impl CaptureState {
                         && self.session.group().is_some_and(|g| g.id() == group),
                     NotReviewableSnafu
                 );
-                self.ingestion
-                    .photos
-                    .iter_mut()
-                    .find(|p| p.id == photo && p.group_id.is_none())
-                    .context(NotReviewableSnafu)?
-                    .group_id = Some(group);
+                self.ingestion.assign_reviewed(photo, group)?;
             }
-            Action::Scan => self.ingestion.reconcile(&mut self.session),
+            Action::Scan => self.reconcile(),
             Action::AcknowledgeMissing(path) => {
-                let before = self.ingestion.missing_sources.len();
-                self.ingestion
-                    .missing_sources
-                    .retain(|missing| missing.source != path);
-                ensure!(
-                    before != self.ingestion.missing_sources.len(),
-                    NotReviewableSnafu
-                );
+                self.ingestion.acknowledge_missing(&path)?;
             }
         }
         Ok(Response::Done)
     }
 }
-
-#[cfg(test)]
-#[path = "../tests/unit/hot_folder.rs"]
-mod tests;

@@ -822,7 +822,7 @@ Server按调用职责分成四层，依赖只向下：
 
 `ServerState`是组合入口构造后交给入口层的共享句柄容器，不是额外一层。HTTP从容器取得具体组件或协调器；WSS处理取得显式传入的`Arc<DeviceControl>`，后台任务只保留自己需要的依赖，不重新组装组件，也不让协调器反向依赖`ServerState`。
 
-协调层有两个成员：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用`state.journal_query()`并序列化，不实现重建或跨组件业务规则。
+协调层按具体用例划分：`DeviceControl`负责设备mutation与运行时编排，`JournalQuery`负责只读日志查询、时间线重建、概要、导出和状态。`JournalQuery`只持有`JournalComponent::reader()`、共享`Arc<OperatorComponent>`和构造时注入的`LiveLeaseView`；该view只弱引用Registry目录、读取actor维护的当前session cell，不持有整个DeviceControl、不发送actor消息、不延长协调器或actor生命周期。另一协调器所需的运行时事实必须通过这种窄只读视图注入，不能互持协调器句柄。Photo 初始化使用 `PreparePhotoInitialization`，显式借用 Contest 和 Photo；它只组织事实读取与发布，草稿校验、资源预算和存储仍由 Photo 独占。Operator通过自己的只读DB方法批量解析当前显示名；失败时保留ID，显示名未知。handler只解析／校验输入、检查权限、调用`state.journal_query()`并序列化，不实现重建或跨组件业务规则。
 
 1. **依赖只向下。** 组件只持有自身需要的基础设施，不持有协调器、Registry或其他组件实例；不为日志发出互调组件。TargetSubmission既有的同步事务业务入口继续遵循§10.5，不扩展成组件实例间的隐式调用。协调器依赖具体组件和基础设施，不能依赖入口或父容器；协调器之间也不互相依赖。
 2. **调用路径由实际用例决定。** 单组件操作由入口直调组件；设备mutation只有跨组件编排或需要Registry、fence、actor等运行时状态时才走`DeviceControl`；日志查询由`JournalQuery`协调只读依赖。协调器不增加一对一转发方法；组件返回的`TargetChange`仍由调用方交给`publish`，组件不反向通知Registry。
@@ -1579,6 +1579,7 @@ crates/natsume-workstation-ipc/
 crates/natsume-print-client/
 crates/natsume-print-domjudge/
 crates/natsume-photo-client/
+crates/natsume-photo-protocol/   # 首次授权初始化的双端 HTTP 数据契约
 crates/natsume-contest-domain/    # 实际多生产消费者需要时提取
 crates/natsume-photo-package/     # 成果包契约随双端实现提取，不预建空包
 ```
@@ -1588,6 +1589,8 @@ crates/natsume-photo-package/     # 成果包契约随双端实现提取，不�
 目录／Cargo 命名迁移与业务重构分别审阅，更新 workspace、依赖、生成工具、CI、 架构检查、打包与文档路径。显式保持现有安装 binary、systemd 与 D-Bus 名称， 必要时用 `[[bin]]` 固定目标名；不修改 Device wire、密码 profile 或既有部署语义。 XLSX／密码输入归 Server Import 内部，校徽文件与图像处理归 Server Contest 内部，不建立独立 roster 公共库或离线校徽预检工具。
 
 `natsume-contest-domain` 只承载共同需要的稳定身份、非秘密基础资料和纯值约束， 不含 DB、网络、文件系统、GUI、输入格式或业务编排，不创建第二套队伍身份。 `natsume-photo-package` 只承载专用成果格式与签名／完整性契约，不接管名单、来源授权和审批。 域类型共享不共享 authority，也不把所有领域状态机、DTO 或错误码塞进全局 core。
+
+`natsume-photo-protocol` 承载当前 Server 和 Photo Client 都消费的首次初始化 HTTP 请求、响应、快照关系校验和协议值类型，不承载未来的照片成果包。`PhotoTeam` 是既有 Contest account/team 事实的七字段传输投影，沿用 `account_id`，不生成或维护另一套队伍身份；将来其他领域确实需要共同的身份约束时，再按上面的条件提取 `natsume-contest-domain`。本 PR 尚未发布的版本 1 契约允许双端同步修改；发布后的版本变更必须显式协调，不能通过手动重复校验掩盖漂移。
 
 共享 crate准入条件：
 
@@ -2345,7 +2348,7 @@ Photo Client 首次联网登记来源、信任和非秘密名单快照，之后�
 
 初始化快照获取使用 `POST /photo/client/initialization`，因为首次请求会写缓存与数据库；复用 ServerLifecycle mutation 准入、在途跟踪与停止等待。资源 GET 保持只读。普通 `POST /photo/sources/{source_id}/pairing-code` 不重置授权；显式重置使用独立的 `POST /photo/sources/{source_id}/reset-enrollment`，生成新码与失效旧绑定在同一事务内完成，并形成可区分的 OperatorRequest 路由分类。
 
-Photo 与 Contest 的初始化编排由具体 `PhotoInitialization` 协调入口负责，PhotoComponent 不持有或接收 ContestComponent 实例。Contest 提供非秘密名单和按学校名称解析的 PNG；Photo 拥有来源验证、快照发布与存储。`natsume-photo-protocol` 统一两端 DTO、规范 UUIDv7、凭据格式、资源限额和发布／安装校验；不承载数据库、HTTP 或 Windows 凭据逻辑。私有缓存启动时校验 owner／权限，运行时以固定目录句柄进行相对打开，拒绝符号链接；容量拒绝给出 Retry-After，Client 只对快照获取与资源下载做有界重试，不自动重试配对和完成操作。Print／Photo 共用配对原语与一分钟阻断机制，各自保留独立领域预算。
+Photo 与 Contest 的初始化编排由具体 `PreparePhotoInitialization` 协调入口负责，PhotoComponent 不持有或接收 ContestComponent 实例。Contest 提供非秘密名单和按学校名称解析的 PNG；Photo 拥有来源验证、快照发布与存储。`natsume-photo-protocol` 统一配对、确认、完成的请求和响应、初始化快照、不同用途的规范 UUIDv7 类型、摘要、格式版本、资源限额和发布／安装校验；Bearer token 对 Client 不透明，其内部编码只由 Server 解析；不承载数据库、HTTP 或 Windows 凭据逻辑。私有缓存启动时校验 owner／权限，运行时以固定目录句柄进行相对打开，拒绝符号链接；容量拒绝给出 Retry-After，Client 只对快照获取与资源下载做有界重试，不自动重试配对和完成操作。Print／Photo 共用配对原语与一分钟阻断机制，各自保留独立领域预算。
 
 首次下载发布来源专属、不可变的初始化 JSON 快照，包含独立 dataset ID、initialization ID、七字段队伍名单与按 organization ID 关联的 PNG 校徽目录。名单保持 Contest 原有队伍／账号／学校／座位关联语义，但只选择 account_id、account、organization_id、学校及队伍的中英文名，不读取密码或输出座位、credential revision。校徽归 Contest 解析并转换为保持原尺寸的 PNG；同校共用，缺失或名称匹配不唯一时省略，已匹配但损坏时整体失败。Client 不配置默认展示图；没有照片时展示留空。
 
@@ -2406,3 +2409,7 @@ Slint 不直接移植现有强制 Wayland／D-Bus Agent；需核对 Windows back
 - 成果包抗篡改、重复幂等、名单漂移逐项处理、替换明确，真实外部系统图片匹配；
 - 无未经同意的照片历史／素材云盘，文件限额、授权、清理及备份恢复明确；
 - Slint／Tauri 选择和打印后端取得 Windows 实机证据，部署支持矩阵与运行依赖清楚。
+
+Photo Client 的 `Workspace<Writable>` 保留可写所有权，`WorkspaceReader = Workspace<ReadOnly>` 只提供读取；`Workspace::open` 与 `WorkspaceReader::inspect` 都验证就绪状态、名单和资源。拍摄入口只接收可写工作区。`CaptureSession` 独占队伍选择、拍摄组、任务登记和暂停／恢复决策；私有 `Ingestion` 只接受当前组身份并返回文件事实、待处理来源和收图状态，不接收或修改 `Session`。初始化 `Store` 私有持有日志状态，只有明确的配对、保存和完成转换可提交；其文件任务与独立凭据任务在取消后仍保留初始化锁，直至实际操作完成。
+
+初始化工作区的资源准备、目录和数据库创建、资源复制及名单事务在一个持有初始化 lease 的阻塞任务中完成，不因外层 future 取消而提前释放所有权。标记及授权资料经同目录临时文件完整写入、同步后以不覆盖方式发布；按摘要命名的下载缓存允许用已验证的新资源修复。Server 的配对、确认入口直接消费共享的具名请求，EnrollmentId 保留至持久化事实比较的表示边界。Client 在完成前、发布前各做一次完整资源检查；发布消费已验证工作区，关闭旧连接及必要的源句柄后移动目录，取得目标写锁并重新连接，不重复解码资源。CLI 的 diagnose_path 合并只读检查与授权诊断；对既有句柄的 diagnose 仍重验当前资源。

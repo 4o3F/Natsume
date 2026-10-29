@@ -47,11 +47,15 @@ async fn replace_and_confirm(f: &mut Fixture) -> TestResult {
     let issued = f
         .state
         .photo()
-        .pair(replacement?.code, key.clone(), "2.11.0".into())
+        .pair(PhotoPairRequest {
+            code: replacement?.code,
+            signing_public_key: key.clone(),
+            client_version: "2.11.0".into(),
+        })
         .await?;
-    assert_eq!(issued.source_id, f.source);
+    assert_eq!(issued.source_id.as_str(), f.source);
     f.token = issued.token.clone();
-    f.enrollment = issued.enrollment_id.clone();
+    f.enrollment = issued.enrollment_id.to_string();
     f.key = key;
     f.confirm().await
 }

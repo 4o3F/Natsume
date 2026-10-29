@@ -16,10 +16,7 @@ fn main() -> ExitCode {
 #[cfg(windows)]
 mod application {
     use clap::Parser as _;
-    use natsume_photo_client::{
-        initialization::{Config, Initializer, VaultSecrets},
-        workspace::Workspace,
-    };
+    use natsume_photo_client::initialization::{Config, Initializer, VaultSecrets};
     use snafu::{ResultExt as _, Snafu};
     use std::{path::PathBuf, process::ExitCode};
 
@@ -113,18 +110,16 @@ mod application {
                 );
             }
             Command::Doctor { path } => {
-                let workspace = Workspace::open_readonly(&path)
-                    .await
-                    .context(WorkspaceSnafu)?;
+                let workspace =
+                    natsume_photo_client::initialization::diagnose_path(&path, &VaultSecrets)
+                        .await
+                        .context(InitializationSnafu)?;
                 let teams = workspace
                     .roster()
                     .await
                     .context(WorkspaceSnafu)?
                     .teams()
                     .len();
-                natsume_photo_client::initialization::diagnose(&workspace, &VaultSecrets)
-                    .await
-                    .context(InitializationSnafu)?;
                 tracing::info!(
                     team_count = teams,
                     "workspace, school logos, authorization and signing credentials verified; no network request was made"

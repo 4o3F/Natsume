@@ -1,3 +1,4 @@
+use natsume_photo_protocol::{PhotoConfirmation, PhotoPairRequest};
 use std::sync::Arc;
 
 use axum::{
@@ -28,6 +29,38 @@ type TestResult = Result<(), TestError>;
 
 mod client_interop;
 mod recovery;
+
+#[tokio::test]
+async fn invalid_server_roster_is_an_internal_error_and_cannot_publish_a_snapshot() -> TestResult {
+    let f = Fixture::new().await?;
+    f.confirm().await?;
+    f.database
+        .database
+        .write(|tx| -> Result<(), PersistenceError> {
+            diesel::update(accounts::table.filter(accounts::account_id.eq("account-a")))
+                .set(accounts::domjudge_username.eq(""))
+                .execute(tx.connection())?;
+            Ok(())
+        })
+        .await
+        .map_err(crate::db::TransactionError::into_error)?;
+    let response = f
+        .send(Method::POST, "client/initialization", Value::Null)
+        .await?;
+    assert_eq!(response.status, StatusCode::INTERNAL_SERVER_ERROR);
+    let published = f
+        .database
+        .database
+        .read(|tx| -> Result<i64, PersistenceError> {
+            Ok(photo_initializations::table
+                .count()
+                .get_result(tx.connection())?)
+        })
+        .await
+        .map_err(crate::db::TransactionError::into_error)?;
+    assert_eq!(published, 0);
+    Ok(())
+}
 
 #[tokio::test]
 async fn invalid_persisted_source_state_cannot_be_silently_reenabled() -> TestResult {
@@ -170,7 +203,7 @@ impl Fixture {
             .source_id;
         let code = state
             .photo()
-            .issue_code(source.clone(), PendingEnrollment::Preserve)
+            .issue_code(source.to_string(), PendingEnrollment::Preserve)
             .await?;
         let key = hex::encode(
             ed25519_dalek::SigningKey::from_bytes(&[17; 32])
@@ -179,7 +212,11 @@ impl Fixture {
         );
         let issued = state
             .photo()
-            .pair(code.code, key.clone(), "2.11.0".into())
+            .pair(PhotoPairRequest {
+                code: code.code,
+                signing_public_key: key.clone(),
+                client_version: "2.11.0".into(),
+            })
             .await?;
         let app = router(state.clone(), unused_web_root());
         Ok(Self {
@@ -187,9 +224,9 @@ impl Fixture {
             logos,
             state,
             app,
-            source,
+            source: source.to_string(),
             token: issued.token.clone(),
-            enrollment: issued.enrollment_id.clone(),
+            enrollment: issued.enrollment_id.to_string(),
             key,
         })
     }
@@ -320,7 +357,7 @@ async fn completion_closes_downloads_and_only_replays_the_same_receipt() -> Test
     let resource_path = format!("client/resources/{hash}");
     let digest = hex::encode(Sha256::digest(&first.body));
     assert_eq!(first.headers[header::ETAG], format!("\"{digest}\""));
-    let mut receipt = json!({"initialization_id":manifest["initialization_id"], "manifest_sha256": "incorrect", "request_id":Uuid::now_v7().to_string()});
+    let mut receipt = json!({"initialization_id":manifest["initialization_id"], "manifest_sha256": "00".repeat(32), "request_id":Uuid::now_v7().to_string()});
     assert_eq!(
         f.send(
             Method::POST,
@@ -406,21 +443,27 @@ async fn enrollment_recovery_expiry_and_revocation_are_explicit() -> TestResult 
         StatusCode::UNAUTHORIZED
     );
     let (a, b) = tokio::join!(
-        f.state
-            .photo()
-            .pair(replacement.code.clone(), f.key.clone(), "2.11.0".into()),
-        f.state
-            .photo()
-            .pair(replacement.code, f.key.clone(), "2.11.0".into())
+        f.state.photo().pair(PhotoPairRequest {
+            code: replacement.code.clone(),
+            signing_public_key: f.key.clone(),
+            client_version: "2.11.0".into()
+        }),
+        f.state.photo().pair(PhotoPairRequest {
+            code: replacement.code,
+            signing_public_key: f.key.clone(),
+            client_version: "2.11.0".into()
+        })
     );
     assert_eq!(usize::from(a.is_ok()) + usize::from(b.is_ok()), 1);
     let issued = a.or(b)?;
     f.state
         .photo()
         .confirm(
-            &issued.token.clone(),
-            issued.enrollment_id.clone(),
-            f.key.clone(),
+            &issued.token,
+            PhotoConfirmation {
+                enrollment_id: issued.enrollment_id.clone(),
+                signing_public_key: f.key.clone(),
+            },
         )
         .await?;
     assert!(matches!(
@@ -492,7 +535,7 @@ async fn expired_pairing_code_cannot_be_redeemed() -> TestResult {
     let code = f
         .state
         .photo()
-        .issue_code(source, PendingEnrollment::Preserve)
+        .issue_code(source.to_string(), PendingEnrollment::Preserve)
         .await?;
     f.database
         .database
@@ -507,7 +550,11 @@ async fn expired_pairing_code_cannot_be_redeemed() -> TestResult {
     assert!(matches!(
         f.state
             .photo()
-            .pair(code.code, f.key, "2.11.0".into())
+            .pair(PhotoPairRequest {
+                code: code.code,
+                signing_public_key: f.key,
+                client_version: "2.11.0".into()
+            })
             .await,
         Err(EnrollmentError::Authentication)
     ));
@@ -649,16 +696,26 @@ async fn secret_storage_and_resource_ownership_are_scoped() -> TestResult {
     let code = f
         .state
         .photo()
-        .issue_code(source, PendingEnrollment::Preserve)
+        .issue_code(source.to_string(), PendingEnrollment::Preserve)
         .await?;
     let other = f
         .state
         .photo()
-        .pair(code.code, f.key.clone(), "2.11.0".into())
+        .pair(PhotoPairRequest {
+            code: code.code,
+            signing_public_key: f.key.clone(),
+            client_version: "2.11.0".into(),
+        })
         .await?;
     f.state
         .photo()
-        .confirm(&other.token, other.enrollment_id.clone(), f.key.clone())
+        .confirm(
+            &other.token,
+            PhotoConfirmation {
+                enrollment_id: other.enrollment_id.clone(),
+                signing_public_key: f.key.clone(),
+            },
+        )
         .await?;
     assert!(matches!(
         f.state.photo().resource(&other.token, hash).await,
